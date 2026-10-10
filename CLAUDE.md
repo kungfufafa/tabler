@@ -30,8 +30,8 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
 
 ## Milestones
 
-- [ ] M0 toolchain + scaffold + empty shell
-- [ ] M1 app store + secrets + profiles + connect + sidebar
+- [x] M0 toolchain + scaffold + empty shell
+- [x] M1 app store + secrets + profiles + connect + sidebar (drivers: sqlite, postgres, mysql)
 - [ ] M2 read-only data grid
 - [ ] M3 inline editing + staging + Preview SQL
 - [ ] M4 SQL editor

@@ -46,7 +46,7 @@ export function toIpcError(err: unknown): IpcError {
 export async function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   try {
     if (isMock) {
-      const { mockInvoke } = await import("./mock/transport");
+      const { mockInvoke } = await import("./mock");
       return await mockInvoke<T>(cmd, args ?? {});
     }
     return await tauriInvoke<T>(cmd, args);

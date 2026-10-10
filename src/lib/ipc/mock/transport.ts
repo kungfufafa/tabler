@@ -15,14 +15,31 @@ export function setMockLatency(ms: number): void {
   mockLatency = ms;
 }
 
+export function mockError(code: string, message: string): never {
+  throw { code, message };
+}
+
 export async function mockInvoke<T>(cmd: string, args: InvokeArgs): Promise<T> {
   const handler = handlers.get(cmd);
-  if (!handler) {
-    throw { code: "NOT_FOUND", message: `mock: no handler registered for command "${cmd}"` };
-  }
+  if (!handler) mockError("NOT_FOUND", `mock: no handler registered for command "${cmd}"`);
   if (mockLatency > 0) await new Promise((r) => setTimeout(r, mockLatency));
   return (await handler(args)) as T;
 }
 
-// --- built-in handlers -------------------------------------------------------
-registerMock("app_info", () => ({ version: "0.1.0", platform: "mock", debug: true }));
+// --- events ----------------------------------------------------------------
+type Listener = (payload: unknown) => void;
+const listeners = new Map<string, Set<Listener>>();
+
+export function mockListen(event: string, listener: Listener): () => void {
+  let set = listeners.get(event);
+  if (!set) {
+    set = new Set();
+    listeners.set(event, set);
+  }
+  set.add(listener);
+  return () => set?.delete(listener);
+}
+
+export function mockEmit(event: string, payload: unknown): void {
+  listeners.get(event)?.forEach((l) => l(payload));
+}

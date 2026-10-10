@@ -3,10 +3,15 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useDefaultActions } from "@/features/palette/defaultActions";
+import { useConnectionEvents } from "@/hooks/useConnectionEvents";
 import { useTheme } from "@/hooks/useTheme";
+import { KeyboardProvider } from "@/lib/keys/useShortcuts";
 
-function ThemeEffect() {
+function GlobalEffects() {
   useTheme();
+  useDefaultActions();
+  useConnectionEvents();
   return null;
 }
 
@@ -23,9 +28,11 @@ export function Providers({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={400}>
-        <ThemeEffect />
-        {children}
-        <Toaster />
+        <KeyboardProvider>
+          <GlobalEffects />
+          {children}
+          <Toaster />
+        </KeyboardProvider>
       </TooltipProvider>
     </QueryClientProvider>
   );

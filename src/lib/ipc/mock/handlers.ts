@@ -1,0 +1,288 @@
+import type { BrowsePage } from "../bindings/BrowsePage";
+import type { BrowseRequest } from "../bindings/BrowseRequest";
+import type { ConnectionInfo } from "../bindings/ConnectionInfo";
+import type { ConnectionProfile } from "../bindings/ConnectionProfile";
+import type { FilterGroup } from "../bindings/FilterGroup";
+import type { ProfileInput } from "../bindings/ProfileInput";
+import type { RowCount } from "../bindings/RowCount";
+import type { RowIdentity } from "../bindings/RowIdentity";
+import type { RowKey } from "../bindings/RowKey";
+import type { TableRef } from "../bindings/TableRef";
+import { SEED_PROFILES, tableMetaFor, tablesFor } from "./fixtures";
+import { matchesGroup, rowsFor, sortRows } from "./rows";
+import { mockEmit, mockError, registerMock } from "./transport";
+
+const profiles = new Map<string, ConnectionProfile>(SEED_PROFILES.map((p) => [p.id, p]));
+const secrets = new Map<string, string>([["p-local-pg", "secret"]]);
+const connections = new Map<string, ConnectionInfo & { profile: ConnectionProfile }>();
+
+const uuid = () => crypto.randomUUID();
+const now = () => new Date().toISOString();
+
+function serverVersion(p: ConnectionProfile): string {
+  return p.driver === "postgres"
+    ? "PostgreSQL 17.6 (Homebrew) on aarch64-apple-darwin"
+    : p.driver === "mysql"
+      ? "MySQL 9.6.0"
+      : "SQLite 3.54.0";
+}
+
+function conn(connectionId: string) {
+  const c = connections.get(connectionId);
+  if (!c) mockError("NOT_CONNECTED", "not connected");
+  return c;
+}
+
+registerMock("app_info", () => ({ version: "0.1.0", platform: "mock", debug: true }));
+
+// --- profiles ---
+registerMock("list_profiles", () =>
+  [...profiles.values()].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)),
+);
+registerMock(
+  "get_profile",
+  ({ id }) => profiles.get(id as string) ?? mockError("NOT_FOUND", `profile ${id}`),
+);
+registerMock("save_profile", ({ input }) => {
+  const { profile, password, clearPassword } = input as ProfileInput;
+  if (!profile.name.trim()) mockError("INVALID_INPUT", "Connection name is required");
+  const existing = profiles.get(profile.id);
+  const stored: ConnectionProfile = {
+    ...profile,
+    createdAt: existing?.createdAt ?? now(),
+    updatedAt: now(),
+    sortOrder: existing?.sortOrder ?? profiles.size + 1,
+    lastConnectedAt: existing?.lastConnectedAt ?? null,
+  };
+  profiles.set(stored.id, stored);
+  if (clearPassword) secrets.delete(stored.id);
+  else if (password) secrets.set(stored.id, password);
+  return stored;
+});
+registerMock("delete_profile", ({ id }) => {
+  profiles.delete(id as string);
+  secrets.delete(id as string);
+});
+registerMock("duplicate_profile", ({ id }) => {
+  const src = profiles.get(id as string) ?? mockError("NOT_FOUND", `profile ${id}`);
+  const copy: ConnectionProfile = {
+    ...src,
+    id: uuid(),
+    name: `${src.name} copy`,
+    sortOrder: profiles.size + 1,
+    lastConnectedAt: null,
+    createdAt: now(),
+    updatedAt: now(),
+  };
+  profiles.set(copy.id, copy);
+  const pw = secrets.get(src.id);
+  if (pw) secrets.set(copy.id, pw);
+  return copy;
+});
+registerMock("reorder_profiles", ({ ids }) => {
+  (ids as string[]).forEach((id, i) => {
+    const p = profiles.get(id);
+    if (p) profiles.set(id, { ...p, sortOrder: i + 1 });
+  });
+});
+registerMock("get_secret_status", ({ id }) => ({
+  hasPassword: secrets.has(id as string),
+  hasSshPassword: false,
+  hasSshPassphrase: false,
+}));
+registerMock("test_connection", async ({ input }) => {
+  const { profile } = input as ProfileInput;
+  await new Promise((r) => setTimeout(r, 300));
+  if ((profile.host ?? "").includes("bad") || (profile.sqlitePath ?? "").includes("missing")) {
+    return {
+      ok: false,
+      serverVersion: null,
+      latencyMs: 312,
+      message: "connection refused (mock)",
+      tunnelUsed: false,
+    };
+  }
+  return {
+    ok: true,
+    serverVersion: serverVersion(profile),
+    latencyMs: 12,
+    message: `Connected to ${serverVersion(profile)}`,
+    tunnelUsed: false,
+  };
+});
+
+// --- connections ---
+registerMock("connect", async ({ profileId }) => {
+  const p = profiles.get(profileId as string) ?? mockError("NOT_FOUND", `profile ${profileId}`);
+  await new Promise((r) => setTimeout(r, 250));
+  if ((p.host ?? "").includes("bad"))
+    mockError("CONNECT_FAILED", `could not connect to ${p.host}:${p.port}: connection refused`);
+  const info: ConnectionInfo = {
+    connectionId: uuid(),
+    profileId: p.id,
+    name: p.name,
+    color: p.color,
+    driver: p.driver,
+    serverVersion: serverVersion(p),
+    currentDatabase: p.driver === "sqlite" ? p.sqlitePath : (p.database ?? "postgres"),
+    currentUser: p.user,
+    tunnel: null,
+  };
+  connections.set(info.connectionId, { ...info, profile: p });
+  profiles.set(p.id, { ...p, lastConnectedAt: now() });
+  queueMicrotask(() =>
+    mockEmit("connection:status", {
+      connectionId: info.connectionId,
+      status: "connected",
+      message: null,
+    }),
+  );
+  return info;
+});
+registerMock("disconnect", ({ connectionId }) => {
+  connections.delete(connectionId as string);
+  mockEmit("connection:status", { connectionId, status: "disconnected", message: null });
+});
+registerMock("list_connections", () =>
+  [...connections.values()].map(({ profile: _p, ...info }) => info),
+);
+registerMock("ping", ({ connectionId }) =>
+  connections.has(connectionId as string) ? "connected" : "disconnected",
+);
+registerMock("switch_database", ({ connectionId, database }) => {
+  const c = conn(connectionId as string);
+  c.currentDatabase = database as string;
+  const { profile: _p, ...info } = c;
+  return info;
+});
+
+// --- schema ---
+registerMock("list_databases", ({ connectionId }) => {
+  const c = conn(connectionId as string);
+  const names =
+    c.driver === "postgres"
+      ? ["tabler_dev", "postgres", "ecommerce_sales"]
+      : c.driver === "mysql"
+        ? ["tabler_dev", "tabler_inv", "shop", "sys"]
+        : [c.profile.sqlitePath ?? "sample.sqlite"];
+  return names.map((name) => ({
+    name,
+    owner: c.driver === "postgres" ? "tabler" : null,
+    encoding: c.driver === "sqlite" ? null : "UTF8",
+    isCurrent: name === c.currentDatabase,
+  }));
+});
+registerMock("list_schemas", ({ connectionId }) => {
+  const c = conn(connectionId as string);
+  if (c.driver === "postgres")
+    return [
+      { name: "public", isDefault: true },
+      { name: "inventory", isDefault: false },
+    ];
+  if (c.driver === "mysql") return [{ name: c.currentDatabase ?? "tabler_dev", isDefault: true }];
+  return [
+    { name: "main", isDefault: true },
+    { name: "temp", isDefault: false },
+  ];
+});
+registerMock("list_tables", ({ connectionId, schema }) => {
+  const c = conn(connectionId as string);
+  if (schema === "temp") return [];
+  return tablesFor(c.driver, schema as string);
+});
+registerMock("get_table", ({ connectionId, table }) => {
+  const c = conn(connectionId as string);
+  const t = table as TableRef;
+  return (
+    tableMetaFor(c.driver, t.schema ?? "public", t.name) ??
+    mockError("NOT_FOUND", `table ${t.name}`)
+  );
+});
+registerMock(
+  "get_view_definition",
+  ({ table }) => `SELECT * FROM users WHERE is_active -- ${(table as TableRef).name}`,
+);
+registerMock("get_completion_metadata", ({ connectionId }) => {
+  const c = conn(connectionId as string);
+  const schemas: Record<string, Record<string, string[]>> = {};
+  const names =
+    c.driver === "postgres"
+      ? ["public", "inventory"]
+      : c.driver === "mysql"
+        ? [c.currentDatabase ?? "tabler_dev"]
+        : ["main"];
+  for (const s of names) {
+    schemas[s] = Object.fromEntries(
+      tablesFor(c.driver, s).map((t) => [
+        t.name,
+        (tableMetaFor(c.driver, s, t.name)?.columns ?? []).map((col) => col.name),
+      ]),
+    );
+  }
+  return { defaultSchema: names[0] ?? null, schemas };
+});
+registerMock("invalidate_schema_cache", () => undefined);
+
+// --- browse ---
+registerMock("browse_table", async ({ connectionId, req }) => {
+  const c = conn(connectionId as string);
+  const { table, columns: selected, filter, sort, limit, offset } = req as BrowseRequest;
+  const schema = table.schema ?? "public";
+  const meta =
+    tableMetaFor(c.driver, schema, table.name) ?? mockError("NOT_FOUND", `table ${table.name}`);
+  const total = meta.rowEstimate ?? 25;
+  const all = rowsFor(`${c.driver}:${schema}.${table.name}`, meta.columns, total);
+  let rows = filter ? all.filter((r) => matchesGroup(filter, r, meta.columns)) : all;
+  rows = sortRows(rows, sort ?? [], meta.columns);
+  const page = rows.slice(offset, offset + limit);
+  const cols = selected ? meta.columns.filter((col) => selected.includes(col.name)) : meta.columns;
+  const idx = cols.map((col) => meta.columns.indexOf(col));
+  const identity: RowIdentity =
+    meta.primaryKey.length > 0 ? "pk" : c.driver === "sqlite" ? "rowid" : "none";
+  // The generator is O(rows); simulate the backend's latency for big tables so loading states show.
+  if (total > 50_000) await new Promise((r) => setTimeout(r, 120));
+  return {
+    columns: cols,
+    rows: page.map((r) => idx.map((i) => r[i]!)),
+    pkColumns: meta.primaryKey,
+    identity,
+    rowIds: identity === "rowid" ? page.map((_, i) => offset + i + 1) : null,
+    offset,
+    limit,
+    sql: `SELECT ${cols.map((col) => `"${col.name}"`).join(", ")} FROM "${schema}"."${table.name}"${sort?.length ? ` ORDER BY ${sort.map((s) => `"${s.column}" ${s.dir.toUpperCase()}`).join(", ")}` : ""} LIMIT ${limit} OFFSET ${offset}`,
+    durationMs: total > 50_000 ? 118 : 4,
+  } satisfies BrowsePage;
+});
+registerMock("count_table_rows", ({ connectionId, table, filter, exact }) => {
+  const c = conn(connectionId as string);
+  const t = table as TableRef;
+  const schema = t.schema ?? "public";
+  const meta = tableMetaFor(c.driver, schema, t.name) ?? mockError("NOT_FOUND", `table ${t.name}`);
+  const total = meta.rowEstimate ?? 25;
+  if (!filter && !exact && total > 200_000) return { count: total, exact: false };
+  const all = rowsFor(`${c.driver}:${schema}.${t.name}`, meta.columns, total);
+  const rows = filter
+    ? all.filter((r) => matchesGroup(filter as FilterGroup, r, meta.columns))
+    : all;
+  return { count: rows.length, exact: true } satisfies RowCount;
+});
+registerMock("fetch_cell", ({ connectionId, table, key, column }) => {
+  const c = conn(connectionId as string);
+  const t = table as TableRef;
+  const schema = t.schema ?? "public";
+  const meta = tableMetaFor(c.driver, schema, t.name) ?? mockError("NOT_FOUND", `table ${t.name}`);
+  const all = rowsFor(`${c.driver}:${schema}.${t.name}`, meta.columns, meta.rowEstimate ?? 25);
+  const colIdx = meta.columns.findIndex((col) => col.name === column);
+  const k = key as RowKey;
+  const row =
+    k.kind === "rowid"
+      ? all[k.value - 1]
+      : all.find((r) =>
+          Object.entries(k.value).every(
+            ([name, v]) =>
+              JSON.stringify(r[meta.columns.findIndex((col) => col.name === name)]) ===
+              JSON.stringify(v),
+          ),
+        );
+  return row?.[colIdx] ?? { t: "null" };
+});

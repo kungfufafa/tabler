@@ -2,3 +2,8 @@
 //! `src/lib/ipc/bindings/` when `cargo test` runs (see `.cargo/config.toml`).
 
 pub mod app;
+pub mod browse;
+pub mod profile;
+pub mod query;
+pub mod schema;
+pub mod value;
