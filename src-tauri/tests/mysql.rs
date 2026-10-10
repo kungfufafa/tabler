@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use tabler_lib::drivers::{ConnectTarget, DbSession, connect};
+use tabler_lib::drivers::{ConnectTarget, DbSession, TxStatement, connect};
 use tabler_lib::types::profile::{ConnectionProfile, Driver, ProfileOptions, SslMode};
 use tabler_lib::types::schema::{TableKind, TableRef, ValueKind};
 use tabler_lib::types::value::Value;
@@ -410,11 +410,11 @@ async fn execute_transaction_and_table_meta() {
             // Transaction: all-or-nothing.
             let outs = s
                 .transaction(vec![
-                    (
+                    TxStatement::new(
                         q("INSERT INTO {t} (name) VALUES (?)"),
                         vec![Value::Text("bob".into())],
                     ),
-                    (
+                    TxStatement::new(
                         q("INSERT INTO {t} (name) VALUES (?)"),
                         vec![Value::Text("carol".into())],
                     ),
@@ -424,11 +424,11 @@ async fn execute_transaction_and_table_meta() {
             assert_eq!(outs[1].last_insert_id.as_deref(), Some("3"));
             let err = s
                 .transaction(vec![
-                    (
+                    TxStatement::new(
                         q("INSERT INTO {t} (name) VALUES (?)"),
                         vec![Value::Text("dave".into())],
                     ),
-                    (
+                    TxStatement::new(
                         q("INSERT INTO {t} (name) VALUES (?)"),
                         vec![Value::Text("alice".into())], // duplicate key
                     ),

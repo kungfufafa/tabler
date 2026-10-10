@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::drivers::postgres::decode::text_to_value;
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
+use crate::sqlgen::mutate::{TableSpec, row_key_where};
 use crate::sqlgen::select::{ROWID_ALIAS, SelectSpec, build_count, build_select, inline_params};
 use crate::state::{AppState, Connection};
 use crate::types::browse::{BrowsePage, BrowseRequest, FilterGroup, RowCount, RowIdentity, RowKey};
@@ -71,6 +72,13 @@ pub async fn browse_table(
     let conn = state.connection(connection_id).await?;
     let session = conn.session().await;
     let driver = session.driver();
+    log::debug!(
+        "browse_table {}.{} limit={} offset={}",
+        req.table.schema.as_deref().unwrap_or(""),
+        req.table.name,
+        req.limit,
+        req.offset
+    );
     let dialect = session.dialect();
     let meta = cached_meta(&conn, &req.table).await?;
     let mut identity = identity_for(driver, &meta);
@@ -187,51 +195,6 @@ pub async fn count_table_rows(
     Ok(RowCount { count, exact: true })
 }
 
-/// Builds `WHERE` + params for a `RowKey` (shared with mutations later).
-pub fn row_key_where(
-    dialect: Dialect,
-    columns: &[ColumnMeta],
-    key: &RowKey,
-    params: &mut Vec<Value>,
-) -> Result<String, AppError> {
-    let mut parts = Vec::new();
-    let mut push = |col: &str, v: &Value, params: &mut Vec<Value>| -> Result<(), AppError> {
-        let meta = columns
-            .iter()
-            .find(|c| c.name == col)
-            .ok_or_else(|| AppError::InvalidInput(format!("unknown column \"{col}\"")))?;
-        let ident = dialect.quote_ident(col);
-        if v.is_null() {
-            parts.push(format!("{ident} IS NULL"));
-        } else {
-            params.push(v.clone());
-            let ph = dialect.placeholder(params.len());
-            let rhs = if dialect == Dialect::Postgres {
-                format!("{ph}::{}", meta.data_type)
-            } else {
-                ph
-            };
-            parts.push(format!("{ident} = {rhs}"));
-        }
-        Ok(())
-    };
-    match key {
-        RowKey::Rowid(id) => {
-            params.push(Value::from_i64(*id));
-            parts.push(format!("rowid = {}", dialect.placeholder(params.len())));
-        }
-        RowKey::Pk(map) | RowKey::AllColumns(map) => {
-            if map.is_empty() {
-                return Err(AppError::InvalidInput("row key is empty".into()));
-            }
-            for (col, v) in map {
-                push(col, v, params)?;
-            }
-        }
-    }
-    Ok(parts.join(" AND "))
-}
-
 /// Fetches one full cell (used for blobs/long text beyond the preview cap and for refreshes).
 #[tauri::command]
 pub async fn fetch_cell(
@@ -251,7 +214,13 @@ pub async fn fetch_cell(
         .find(|c| c.name == column)
         .ok_or_else(|| AppError::InvalidInput(format!("unknown column \"{column}\"")))?;
     let mut params = Vec::new();
-    let where_sql = row_key_where(dialect, &meta.columns, &key, &mut params)?;
+    let spec = TableSpec {
+        dialect,
+        table: &meta.table,
+        columns: &meta.columns,
+    };
+    let w = row_key_where(&spec, &key, &mut params)?;
+    let where_sql = format!("{}{}", w.condition, w.suffix);
     let expr = match dialect {
         Dialect::Postgres => format!("{}::text", dialect.quote_ident(&col.name)),
         _ => dialect.quote_ident(&col.name),

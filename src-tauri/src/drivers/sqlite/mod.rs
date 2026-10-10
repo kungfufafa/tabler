@@ -8,7 +8,7 @@ mod introspect;
 use async_trait::async_trait;
 use rusqlite::OpenFlags;
 
-use crate::drivers::{DbSession, ServerInfo};
+use crate::drivers::{DbSession, ServerInfo, TxStatement, check_affected};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::types::profile::{ConnectionProfile, Driver};
@@ -148,14 +148,17 @@ impl DbSession for LiteSession {
 
     async fn transaction(
         &self,
-        statements: Vec<(String, Vec<Value>)>,
+        statements: Vec<TxStatement>,
     ) -> Result<Vec<ExecOutcome>, AppError> {
         self.worker
             .run(move |conn| {
                 conn.execute_batch("BEGIN")?;
                 let mut out = Vec::with_capacity(statements.len());
-                for (sql, params) in &statements {
-                    match decode::run_execute(conn, sql, params) {
+                for (i, st) in statements.iter().enumerate() {
+                    match decode::run_execute(conn, &st.sql, &st.params).and_then(|o| {
+                        check_affected(st, &o, i)?;
+                        Ok(o)
+                    }) {
                         Ok(o) => out.push(o),
                         Err(e) => {
                             let _ = conn.execute_batch("ROLLBACK");

@@ -69,6 +69,8 @@ pub fn run() {
             commands::browse::browse_table,
             commands::browse::count_table_rows,
             commands::browse::fetch_cell,
+            commands::mutate::preview_changes,
+            commands::mutate::apply_changes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { TableRef } from "@/lib/ipc";
+import { useTableTabsStore } from "./tableTabs";
 
 export type Tab =
   | { id: string; kind: "table"; connectionId: string; table: TableRef; title: string }
@@ -69,6 +70,7 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
 
   close: (id) =>
     set((s) => {
+      useTableTabsStore.getState().remove(id);
       const index = s.tabs.findIndex((t) => t.id === id);
       if (index < 0) return s;
       const tab = s.tabs[index]!;

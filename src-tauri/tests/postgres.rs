@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use tabler_lib::drivers::{ConnectTarget, DbSession, connect};
+use tabler_lib::drivers::{ConnectTarget, DbSession, TxStatement, connect};
 use tabler_lib::types::profile::{ConnectionProfile, Driver, ProfileOptions, SslMode};
 use tabler_lib::types::schema::{TableKind, TableRef, ValueKind};
 use tabler_lib::types::value::Value;
@@ -280,11 +280,11 @@ async fn executes_and_rolls_back_transactions() {
     // transaction: commit path.
     let outcomes = session
         .transaction(vec![
-            (
+            TxStatement::new(
                 format!("INSERT INTO {table} (name, qty) VALUES ($1::text, $2::int)"),
                 vec![Value::Text("two".into()), Value::Null],
             ),
-            (
+            TxStatement::new(
                 format!("UPDATE {table} SET qty = $1::int WHERE name = $2::text"),
                 vec![Value::Int(7), Value::Text("one".into())],
             ),
@@ -299,11 +299,11 @@ async fn executes_and_rolls_back_transactions() {
     // transaction: rollback on error leaves no trace.
     let err = session
         .transaction(vec![
-            (
+            TxStatement::new(
                 format!("INSERT INTO {table} (name) VALUES ($1::text)"),
                 vec![Value::Text("ghost".into())],
             ),
-            (format!("INSERT INTO {table} (name) VALUES (NULL)"), vec![]),
+            TxStatement::new(format!("INSERT INTO {table} (name) VALUES (NULL)"), vec![]),
         ])
         .await
         .expect_err("not-null violation");
@@ -336,9 +336,9 @@ async fn executes_and_rolls_back_transactions() {
     // Temp tables are per connection, so create+use must share one transaction.
     let outcomes = session
         .transaction(vec![
-            ("CREATE TEMP TABLE tmp_t (v int)".into(), vec![]),
-            ("INSERT INTO tmp_t VALUES (1), (2)".into(), vec![]),
-            ("SELECT sum(v)::text FROM tmp_t".into(), vec![]),
+            TxStatement::new("CREATE TEMP TABLE tmp_t (v int)", vec![]),
+            TxStatement::new("INSERT INTO tmp_t VALUES (1), (2)", vec![]),
+            TxStatement::new("SELECT sum(v)::text FROM tmp_t", vec![]),
         ])
         .await
         .expect("temp table transaction");

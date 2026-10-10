@@ -11,6 +11,7 @@ use crate::types::profile::{ConnectionProfile, ProfileInput, SecretStatus, TestR
 
 #[tauri::command]
 pub async fn list_profiles(state: State<'_, AppState>) -> Result<Vec<ConnectionProfile>, AppError> {
+    log::debug!("list_profiles");
     state.appdb.list_profiles()
 }
 
@@ -143,6 +144,11 @@ pub async fn test_connection(
     input: ProfileInput,
 ) -> Result<TestResult, AppError> {
     validate(&input.profile)?;
+    log::info!(
+        "test_connection {} ({:?})",
+        input.profile.name,
+        input.profile.driver
+    );
     let password = resolve_password(&state, &input).await?;
     let started = Instant::now();
     let attempt = async {

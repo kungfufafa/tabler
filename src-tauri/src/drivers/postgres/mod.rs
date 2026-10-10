@@ -16,7 +16,7 @@ use futures::TryStreamExt as _;
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, Config};
 
-use crate::drivers::{ConnectTarget, DbSession, ServerInfo};
+use crate::drivers::{ConnectTarget, DbSession, ServerInfo, TxStatement, check_affected};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::types::profile::{Driver, SslMode};
@@ -219,13 +219,18 @@ impl DbSession for PgSession {
 
     async fn transaction(
         &self,
-        statements: Vec<(String, Vec<Value>)>,
+        statements: Vec<TxStatement>,
     ) -> Result<Vec<ExecOutcome>, AppError> {
         let client = self.client().await?;
         client.batch_execute("BEGIN").await?;
         let mut out = Vec::with_capacity(statements.len());
-        for (i, (sql, params)) in statements.iter().enumerate() {
-            match run_execute(&client, sql, params).await {
+        for (i, st) in statements.iter().enumerate() {
+            match run_execute(&client, &st.sql, &st.params)
+                .await
+                .and_then(|o| {
+                    check_affected(st, &o, i)?;
+                    Ok(o)
+                }) {
                 Ok(outcome) => out.push(outcome),
                 Err(err) => {
                     if client.batch_execute("ROLLBACK").await.is_err() {

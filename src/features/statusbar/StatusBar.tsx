@@ -2,7 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { ColorDot } from "@/components/ColorDot";
 import { ipc } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
+import { formatDuration } from "@/lib/format/time";
 import { useActiveConnection } from "@/stores/connections";
+import { useActiveTab } from "@/stores/tabs";
+import { useTableTab } from "@/stores/tableTabs";
 
 const STATUS = {
   connected: { label: "Connected", dot: "bg-success" },
@@ -14,6 +17,8 @@ const STATUS = {
 export function StatusBar() {
   const info = useQuery({ queryKey: ["app-info"], queryFn: ipc.appInfo, staleTime: Infinity });
   const active = useActiveConnection();
+  const tab = useActiveTab();
+  const tableState = useTableTab(tab?.kind === "table" ? tab.id : "");
   const status = active ? STATUS[active.status] : null;
   return (
     <footer className="border-border bg-surface-2 text-muted-foreground flex h-6 shrink-0 items-center gap-3 border-t px-3 text-[11px]">
@@ -36,6 +41,12 @@ export function StatusBar() {
         </span>
       )}
       <span className="flex-1" />
+      {tab?.kind === "table" && tableState.page && (
+        <span className="tabular-nums" title={tableState.page.sql}>
+          {tableState.page.rows.toLocaleString()} rows ·{" "}
+          {formatDuration(tableState.page.durationMs)}
+        </span>
+      )}
       {info.data && (
         <span className="tabular-nums">
           Tabler {info.data.version}

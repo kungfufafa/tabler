@@ -50,11 +50,50 @@ pub trait DbSession: Send + Sync {
     async fn query(&self, sql: &str, params: &[Value]) -> Result<ResultSet, AppError>;
     /// Runs a statement for its side effects (optionally with RETURNING rows).
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecOutcome, AppError>;
-    /// Runs several statements inside one transaction; rolls back on the first error.
-    async fn transaction(
-        &self,
-        statements: Vec<(String, Vec<Value>)>,
-    ) -> Result<Vec<ExecOutcome>, AppError>;
+    /// Runs several statements inside one transaction; rolls back on the first error or when a
+    /// statement's `expect_affected` is not met.
+    async fn transaction(&self, statements: Vec<TxStatement>)
+    -> Result<Vec<ExecOutcome>, AppError>;
+}
+
+/// One statement of a transaction. `expect_affected` makes the driver roll back when the
+/// statement touches a different number of rows (guards UPDATE/DELETE by key).
+#[derive(Debug, Clone)]
+pub struct TxStatement {
+    pub sql: String,
+    pub params: Vec<Value>,
+    pub expect_affected: Option<u64>,
+}
+
+impl TxStatement {
+    pub fn new(sql: impl Into<String>, params: Vec<Value>) -> TxStatement {
+        TxStatement {
+            sql: sql.into(),
+            params,
+            expect_affected: None,
+        }
+    }
+
+    pub fn expecting(mut self, n: u64) -> TxStatement {
+        self.expect_affected = Some(n);
+        self
+    }
+}
+
+/// Shared check used by every driver inside `transaction`.
+pub fn check_affected(
+    st: &TxStatement,
+    outcome: &ExecOutcome,
+    index: usize,
+) -> Result<(), AppError> {
+    match st.expect_affected {
+        Some(n) if outcome.affected != n => Err(AppError::db(format!(
+            "expected to affect {n} row(s) but matched {}; the row may have been changed or deleted by someone else",
+            outcome.affected
+        ))
+        .with_statement_index(index)),
+        _ => Ok(()),
+    }
 }
 
 /// Everything needed to open a session. `host_override` points at a local SSH tunnel listener.

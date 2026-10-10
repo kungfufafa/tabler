@@ -16,7 +16,7 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Pool, Row, TxOpts};
 use tokio::sync::Mutex;
 
-use crate::drivers::{ConnectTarget, DbSession, ServerInfo};
+use crate::drivers::{ConnectTarget, DbSession, ServerInfo, TxStatement, check_affected};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::types::profile::Driver;
@@ -161,13 +161,18 @@ impl DbSession for MySession {
 
     async fn transaction(
         &self,
-        statements: Vec<(String, Vec<Value>)>,
+        statements: Vec<TxStatement>,
     ) -> Result<Vec<ExecOutcome>, AppError> {
         let mut conn = self.conn().await?;
         let mut tx = conn.start_transaction(TxOpts::default()).await?;
         let mut out = Vec::with_capacity(statements.len());
-        for (index, (sql, params)) in statements.iter().enumerate() {
-            match exec::run_execute(&mut tx, sql, params).await {
+        for (index, st) in statements.iter().enumerate() {
+            match exec::run_execute(&mut tx, &st.sql, &st.params)
+                .await
+                .and_then(|o| {
+                    check_affected(st, &o, index)?;
+                    Ok(o)
+                }) {
                 Ok(outcome) => out.push(outcome),
                 Err(e) => {
                     // Dropping the transaction would also roll back; do it explicitly so the

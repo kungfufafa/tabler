@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Launcher } from "@/features/connections/Launcher";
+import { InspectorPanel } from "@/features/inspector/InspectorPanel";
 import { Sidebar } from "@/features/sidebar/Sidebar";
 import { StatusBar } from "@/features/statusbar/StatusBar";
 import { TabContent } from "@/features/tabs/TabContent";
@@ -39,7 +40,7 @@ export function AppShell() {
           <>
             <ResizableHandle />
             <ResizablePanel id="inspector" defaultSize={300} minSize={220} maxSize={600}>
-              <aside className="border-border bg-surface h-full border-l" />
+              <InspectorPanel />
             </ResizablePanel>
           </>
         )}

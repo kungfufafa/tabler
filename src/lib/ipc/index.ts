@@ -1,4 +1,10 @@
 import type { AppInfo } from "./bindings/AppInfo";
+import type { BrowsePage } from "./bindings/BrowsePage";
+import type { BrowseRequest } from "./bindings/BrowseRequest";
+import type { FilterGroup } from "./bindings/FilterGroup";
+import type { RowCount } from "./bindings/RowCount";
+import type { RowKey } from "./bindings/RowKey";
+import type { Value } from "./bindings/Value";
 import type { CompletionMetadata } from "./bindings/CompletionMetadata";
 import type { ConnStatus } from "./bindings/ConnStatus";
 import type { ConnectionInfo } from "./bindings/ConnectionInfo";
@@ -16,6 +22,12 @@ import { invoke } from "./transport";
 export { IpcError, isMock, isTauri, toIpcError } from "./transport";
 export type {
   AppInfo,
+  Value,
+  BrowsePage,
+  BrowseRequest,
+  FilterGroup,
+  RowCount,
+  RowKey,
   CompletionMetadata,
   ConnStatus,
   ConnectionInfo,
@@ -35,8 +47,15 @@ export type { SslMode } from "./bindings/SslMode";
 export type { SshAuth } from "./bindings/SshAuth";
 export type { SshConfig } from "./bindings/SshConfig";
 export type { TableKind } from "./bindings/TableKind";
-export type { Value } from "./bindings/Value";
 export type { ValueKind } from "./bindings/ValueKind";
+export type { FilterNode } from "./bindings/FilterNode";
+export type { FilterOp } from "./bindings/FilterOp";
+export type { Conjunction } from "./bindings/Conjunction";
+export type { SortSpec } from "./bindings/SortSpec";
+export type { SortDir } from "./bindings/SortDir";
+export type { RowIdentity } from "./bindings/RowIdentity";
+export type { ForeignKeyMeta } from "./bindings/ForeignKeyMeta";
+export type { Dialect } from "./bindings/Dialect";
 export type { ConnectionStatusEvent } from "./bindings/ConnectionStatusEvent";
 
 /** Typed facade over every Tauri command. The renderer never calls `invoke` directly. */
@@ -61,6 +80,15 @@ export const ipc = {
     ping: (connectionId: string) => invoke<ConnStatus>("ping", { connectionId }),
     switchDatabase: (connectionId: string, database: string) =>
       invoke<ConnectionInfo>("switch_database", { connectionId, database }),
+  },
+
+  browse: {
+    rows: (connectionId: string, req: BrowseRequest) =>
+      invoke<BrowsePage>("browse_table", { connectionId, req }),
+    count: (connectionId: string, table: TableRef, filter: FilterGroup | null, exact = false) =>
+      invoke<RowCount>("count_table_rows", { connectionId, table, filter, exact }),
+    cell: (connectionId: string, table: TableRef, key: RowKey, column: string) =>
+      invoke<Value>("fetch_cell", { connectionId, table, key, column }),
   },
 
   schema: {
