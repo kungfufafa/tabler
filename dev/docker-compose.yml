@@ -1,0 +1,126 @@
+# Tabler dev databases -- OPTIONAL alternative to the local Homebrew servers.
+#
+#   pnpm dev:db:up                       # postgres + mysql + ssh   (docker compose -f dev/docker-compose.yml up -d --wait)
+#   docker compose -f dev/docker-compose.yml --profile mariadb up -d --wait   # + mariadb
+#   pnpm dev:db:reset                    # down -v (drops the volumes => reseeds on next up)
+#
+# Seeds in dev/seed/<engine>/ are applied by each image's /docker-entrypoint-initdb.d on
+# FIRST start only (fresh volume). To reseed, run `pnpm dev:db:reset`.
+#
+# Host ports are bound to 127.0.0.1 only and deliberately differ from the Homebrew defaults:
+#   postgres  127.0.0.1:54329   tabler / tabler        postgres://tabler:tabler@127.0.0.1:54329/tabler_dev
+#   mysql     127.0.0.1:33069   root   / tabler        mysql://root:tabler@127.0.0.1:33069/tabler_dev
+#   mariadb   127.0.0.1:33079   root   / tabler        mysql://root:tabler@127.0.0.1:33079/tabler_dev   (profile "mariadb")
+#   ssh       127.0.0.1:2222    tabler / tabler, or the key dev/ssh/tabler_dev (generate it first, see README)
+#
+# Inside the compose network the services are reachable as postgres:5432, mysql:3306,
+# mariadb:3306 -- that is what you tunnel to through the ssh service.
+
+name: tabler-dev
+
+services:
+  postgres:
+    image: postgres:17
+    ports:
+      - "127.0.0.1:54329:5432"
+    environment:
+      POSTGRES_USER: tabler
+      POSTGRES_PASSWORD: tabler
+      POSTGRES_DB: tabler_dev
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./seed/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tabler -d tabler_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+
+  mysql:
+    image: mysql:9.7
+    # cte-max-recursion-depth: dev/seed/mysql/003_big.sql builds 100 000 rows with one recursive CTE.
+    command:
+      - mysqld
+      - --cte-max-recursion-depth=1000000
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "127.0.0.1:33069:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: tabler
+      MYSQL_DATABASE: tabler_dev # tabler_inv is created by 001_schema.sql
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./seed/mysql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # TCP ping: during init the server only listens on the socket, so this stays
+      # unhealthy until the seeds have finished and the real server is up.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-ptabler", "--silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 20s
+
+  mariadb:
+    image: mariadb:11.8
+    profiles: ["mariadb"]
+    # max-recursive-iterations is MariaDB's name for the recursive-CTE limit.
+    command:
+      - mariadbd
+      - --max-recursive-iterations=1000000
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "127.0.0.1:33079:3306"
+    environment:
+      MARIADB_ROOT_PASSWORD: tabler
+      MARIADB_DATABASE: tabler_dev
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./seed/mysql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 20s
+
+  ssh:
+    image: lscr.io/linuxserver/openssh-server:latest
+    ports:
+      - "127.0.0.1:2222:2222"
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: Etc/UTC
+      USER_NAME: tabler
+      PASSWORD_ACCESS: "true"
+      USER_PASSWORD: tabler
+      PUBLIC_KEY_FILE: /keys/tabler_dev.pub
+      SUDO_ACCESS: "false"
+      LOG_STDOUT: "true"
+    volumes:
+      # Generate with:  ssh-keygen -t ed25519 -N '' -f dev/ssh/tabler_dev
+      - ./ssh/tabler_dev.pub:/keys/tabler_dev.pub:ro
+      # Enables AllowTcpForwarding (off in this image by default) so the app can tunnel.
+      - ./ssh-init:/custom-cont-init.d:ro
+      - ssh_config:/config
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 2222 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  postgres_data:
+  mysql_data:
+  mariadb_data:
+  ssh_config:
