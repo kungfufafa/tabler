@@ -36,7 +36,8 @@ export type ActionId =
   | "query.format"
   | "query.history"
   | "query.save"
-  | "query.open";
+  | "query.open"
+  | "export.open";
 
 export type ActionHandler = () => void | Promise<void>;
 

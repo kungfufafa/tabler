@@ -5,3 +5,4 @@ src-tauri/gen
 src/lib/ipc/bindings
 pnpm-lock.yaml
 src/components/ui
+.claude

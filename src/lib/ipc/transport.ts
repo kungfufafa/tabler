@@ -54,3 +54,22 @@ export async function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
     throw toIpcError(err);
   }
 }
+
+/**
+ * Streaming callback channel for commands that take a `tauri::ipc::Channel<T>` argument.
+ * In Tauri this is a real `Channel`; in the browser mock it is a plain object whose `send`
+ * the mock handler calls.
+ */
+export interface StreamChannel<T> {
+  send?: (message: T) => void;
+}
+
+export async function makeChannel<T>(
+  onMessage: (message: T) => void,
+): Promise<StreamChannel<T> | object> {
+  if (isMock) return { send: onMessage } satisfies StreamChannel<T>;
+  const { Channel } = await import("@tauri-apps/api/core");
+  const ch = new Channel<T>();
+  ch.onmessage = onMessage;
+  return ch;
+}

@@ -1,10 +1,12 @@
 import type { ConnectionStatusEvent } from "./bindings/ConnectionStatusEvent";
+import type { TunnelStatusEvent } from "./bindings/TunnelStatusEvent";
 import { isMock } from "./transport";
 
 export type Unlisten = () => void;
 
 type EventMap = {
   "connection:status": ConnectionStatusEvent;
+  "tunnel:status": TunnelStatusEvent;
 };
 
 /** Subscribes to a global backend event (Tauri `listen`, or the mock emitter in the browser). */

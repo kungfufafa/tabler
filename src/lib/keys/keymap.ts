@@ -127,6 +127,13 @@ export const KEYMAP: ShortcutDef[] = [
   { id: "query.format", keys: "Alt+Shift+F", scope: "editor", label: "Format SQL" },
   { id: "query.history", keys: "Mod+H", scope: "editor", label: "Query history" },
   { id: "query.save", keys: "Mod+S", scope: "editor", label: "Save query to file" },
+  {
+    id: "export.open",
+    keys: "Mod+Shift+E",
+    scope: "global",
+    label: "Export…",
+    allowInEditor: true,
+  },
   { id: "query.open", keys: "Mod+O", scope: "editor", label: "Open .sql file" },
 ];
 

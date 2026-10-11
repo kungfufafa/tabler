@@ -19,7 +19,20 @@ import type { TableMeta } from "./bindings/TableMeta";
 import type { TableRef } from "./bindings/TableRef";
 import type { TableSummary } from "./bindings/TableSummary";
 import type { TestResult } from "./bindings/TestResult";
-import { invoke } from "./transport";
+import type { DdlOp } from "./bindings/DdlOp";
+import type { DdlPlan } from "./bindings/DdlPlan";
+import type { DdlResult } from "./bindings/DdlResult";
+import type { ExplainMode } from "./bindings/ExplainMode";
+import type { ExplainResult } from "./bindings/ExplainResult";
+import type { ExportProgress } from "./bindings/ExportProgress";
+import type { ExportRequest } from "./bindings/ExportRequest";
+import type { ExportResult } from "./bindings/ExportResult";
+import type { HistoryEntry } from "./bindings/HistoryEntry";
+import type { HistoryFilter } from "./bindings/HistoryFilter";
+import type { QueryEvent } from "./bindings/QueryEvent";
+import type { RunOptions } from "./bindings/RunOptions";
+import type { StatementResult } from "./bindings/StatementResult";
+import { invoke, makeChannel } from "./transport";
 
 export { IpcError, isMock, isTauri, toIpcError } from "./transport";
 export type {
@@ -63,6 +76,33 @@ export type { Dialect } from "./bindings/Dialect";
 export type { StagedChange } from "./bindings/StagedChange";
 export type { RowResult } from "./bindings/RowResult";
 export type { ConnectionStatusEvent } from "./bindings/ConnectionStatusEvent";
+export type { TunnelStatusEvent } from "./bindings/TunnelStatusEvent";
+export type { ErrorPayload } from "./bindings/ErrorPayload";
+export type { ResultColumn } from "./bindings/ResultColumn";
+export type { StatementSpan } from "./bindings/StatementSpan";
+export type { StatementKind } from "./bindings/StatementKind";
+export type { ColumnDef } from "./bindings/ColumnDef";
+export type { IndexDef } from "./bindings/IndexDef";
+export type { FkDef } from "./bindings/FkDef";
+export type { IndexMeta } from "./bindings/IndexMeta";
+export type { TriggerMeta } from "./bindings/TriggerMeta";
+export type { ExportSource } from "./bindings/ExportSource";
+export type { ExportFormat } from "./bindings/ExportFormat";
+export type {
+  DdlOp,
+  DdlPlan,
+  DdlResult,
+  ExplainMode,
+  ExplainResult,
+  ExportProgress,
+  ExportRequest,
+  ExportResult,
+  HistoryEntry,
+  HistoryFilter,
+  QueryEvent,
+  RunOptions,
+  StatementResult,
+};
 
 /** Typed facade over every Tauri command. The renderer never calls `invoke` directly. */
 export const ipc = {
@@ -89,6 +129,8 @@ export const ipc = {
     disconnect: (connectionId: string) => invoke<void>("disconnect", { connectionId }),
     list: () => invoke<ConnectionInfo[]>("list_connections"),
     ping: (connectionId: string) => invoke<ConnStatus>("ping", { connectionId }),
+    acceptHostKey: (profileId: string, fingerprint: string, persistToKnownHosts = false) =>
+      invoke<void>("accept_host_key", { profileId, fingerprint, persistToKnownHosts }),
     switchDatabase: (connectionId: string, database: string) =>
       invoke<ConnectionInfo>("switch_database", { connectionId, database }),
   },
@@ -100,6 +142,66 @@ export const ipc = {
       invoke<RowCount>("count_table_rows", { connectionId, table, filter, exact }),
     cell: (connectionId: string, table: TableRef, key: RowKey, column: string) =>
       invoke<Value>("fetch_cell", { connectionId, table, key, column }),
+  },
+
+  query: {
+    /** Runs one or more statements on the connection's editor session, streaming events. */
+    run: async (
+      connectionId: string,
+      queryId: string,
+      sql: string,
+      options: Partial<RunOptions>,
+      onEvent: (e: QueryEvent) => void,
+    ) =>
+      invoke<StatementResult[]>("run_sql", {
+        connectionId,
+        queryId,
+        sql,
+        options: { maxRows: 10_000, stopOnError: true, explain: null, ...options },
+        onEvent: await makeChannel<QueryEvent>(onEvent),
+      }),
+    cancel: (connectionId: string, queryId: string) =>
+      invoke<void>("cancel_query", { connectionId, queryId }),
+    explain: (connectionId: string, sql: string, mode: ExplainMode, queryId?: string) =>
+      invoke<ExplainResult>("explain", { connectionId, sql, mode, queryId: queryId ?? null }),
+  },
+
+  history: {
+    list: (filter: Partial<HistoryFilter> = {}) =>
+      invoke<HistoryEntry[]>("list_history", {
+        filter: { profileId: null, search: null, limit: null, beforeId: null, ...filter },
+      }),
+    delete: (ids: number[]) => invoke<void>("delete_history", { ids }),
+    clear: (profileId: string | null = null) => invoke<void>("clear_history", { profileId }),
+  },
+
+  ddl: {
+    preview: (connectionId: string, table: TableRef | null, ops: DdlOp[]) =>
+      invoke<DdlPlan>("preview_ddl", { connectionId, table, ops }),
+    apply: (connectionId: string, table: TableRef | null, ops: DdlOp[]) =>
+      invoke<DdlResult>("apply_ddl", { connectionId, table, ops }),
+    tableDdl: (connectionId: string, table: TableRef) =>
+      invoke<string>("get_table_ddl", { connectionId, table }),
+  },
+
+  exports: {
+    run: async (
+      connectionId: string,
+      req: ExportRequest,
+      onProgress: (p: ExportProgress) => void,
+    ) =>
+      invoke<ExportResult>("export_data", {
+        connectionId,
+        req,
+        onProgress: await makeChannel<ExportProgress>(onProgress),
+      }),
+    cancel: (exportId: string) => invoke<void>("cancel_export", { exportId }),
+  },
+
+  files: {
+    readText: (path: string) => invoke<string>("read_text_file", { path }),
+    writeText: (path: string, content: string) =>
+      invoke<void>("write_text_file", { path, content }),
   },
 
   mutate: {
