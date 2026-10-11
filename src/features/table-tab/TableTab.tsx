@@ -40,6 +40,7 @@ import {
 import { valueText } from "@/lib/values";
 import { useConnectionsStore } from "@/stores/connections";
 import { useInspectorStore } from "@/stores/inspector";
+import { getPrefs } from "@/stores/prefs";
 import { useTabsStore, type Tab } from "@/stores/tabs";
 import {
   newFilterRow,
@@ -278,35 +279,60 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     }
   };
 
+  /** Applies `req`; on success clears the staging and reloads, on failure marks the failed rows. */
+  const apply = async (req: NonNullable<ReturnType<typeof buildRequest>>) => {
+    const result = await ipc.mutate.apply(connectionId, req);
+    if (result.success) {
+      setPreview(PREVIEW_CLOSED);
+      update(tab.id, (s) => ({ staging: discardAll(), refreshToken: s.refreshToken + 1 }));
+      toast.success(
+        `Applied ${result.results.length} change${result.results.length === 1 ? "" : "s"} · ${result.durationMs} ms`,
+      );
+      return;
+    }
+    setStaging((s) =>
+      result.results.reduce(
+        (acc, r) => (r.error ? setRowError(acc, r.rowId, r.error.message) : acc),
+        s,
+      ),
+    );
+    const failed = result.results.findIndex((r) => r.error);
+    // Show what failed in the Preview SQL sheet (opened here when ⌘S skipped it).
+    setPreview((p) => ({
+      ...p,
+      open: true,
+      statements: p.statements.length > 0 ? p.statements : result.sql,
+      loading: false,
+      applying: false,
+      error: result.error?.message ?? "Failed",
+      failedIndex: failed >= 0 ? failed : null,
+    }));
+  };
+
   const applyPreview = async () => {
     const req = buildRequest();
     if (!req) return;
     setPreview((p) => ({ ...p, applying: true, error: null, failedIndex: null }));
     try {
-      const result = await ipc.mutate.apply(connectionId, req);
-      if (result.success) {
-        setPreview(PREVIEW_CLOSED);
-        update(tab.id, (s) => ({ staging: discardAll(), refreshToken: s.refreshToken + 1 }));
-        toast.success(
-          `Applied ${result.results.length} change${result.results.length === 1 ? "" : "s"} · ${result.durationMs} ms`,
-        );
-      } else {
-        const failed = result.results.findIndex((r) => r.error);
-        setPreview((p) => ({
-          ...p,
-          applying: false,
-          error: result.error?.message ?? "Failed",
-          failedIndex: failed >= 0 ? failed : null,
-        }));
-        setStaging((s) =>
-          result.results.reduce(
-            (acc, r) => (r.error ? setRowError(acc, r.rowId, r.error.message) : acc),
-            s,
-          ),
-        );
-      }
+      await apply(req);
     } catch (e) {
       setPreview((p) => ({ ...p, applying: false, error: (e as Error).message }));
+    }
+  };
+
+  /** ⌘S: opens the Preview SQL sheet, or applies right away when "Confirm before commit" is off. */
+  const [committing, setCommitting] = useState(false);
+  const commit = async () => {
+    if (getPrefs().confirmCommit) return openPreview();
+    const req = buildRequest();
+    if (!req || req.changes.length === 0 || committing) return;
+    setCommitting(true);
+    try {
+      await apply(req);
+    } catch (e) {
+      toast.error("Could not apply changes", { description: (e as Error).message });
+    } finally {
+      setCommitting(false);
     }
   };
 
@@ -321,7 +347,8 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     "grid.filter",
     isActive ? () => update(tab.id, (s) => ({ filtersVisible: !s.filtersVisible })) : null,
   );
-  useAction("grid.commit", isActive && pending > 0 ? () => void openPreview() : null);
+  useAction("grid.commit", isActive && pending > 0 ? () => void commit() : null);
+  useAction("grid.preview", isActive && pending > 0 ? () => void openPreview() : null);
   useAction("grid.discard", isActive && pending > 0 ? discard : null);
   useAction(
     "grid.open-fk",

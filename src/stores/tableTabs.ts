@@ -3,6 +3,7 @@ import type { ColumnState } from "@/features/datagrid/types";
 import { emptyStaging } from "@/features/staging/model";
 import type { StagingState } from "@/features/staging/types";
 import type { Conjunction, FilterOp, RowCount, SortSpec } from "@/lib/ipc";
+import { DEFAULT_PREFS, getPrefs } from "./prefs";
 
 export interface FilterRowSpec {
   id: string;
@@ -35,7 +36,8 @@ export interface TableTabState {
   staging: StagingState;
 }
 
-export const DEFAULT_LIMIT = 200;
+/** Built-in page size; new tabs use the "default page size" preference (`getPrefs().pageSize`). */
+export const DEFAULT_LIMIT: number = DEFAULT_PREFS.pageSize;
 
 export function newFilterRow(column: string, op: FilterOp = "eq", value = ""): FilterRowSpec {
   return { id: crypto.randomUUID(), column, op, value, value2: "", enabled: true };
@@ -47,7 +49,7 @@ function initial(init?: Partial<TableTabState>): TableTabState {
     filters: [],
     conjunction: "and",
     filtersVisible: false,
-    limit: DEFAULT_LIMIT,
+    limit: getPrefs().pageSize,
     offset: 0,
     columnState: { widths: {}, order: [], hidden: [] },
     page: null,
@@ -91,8 +93,18 @@ export const useTableTabsStore = create<TableTabsStore>()((set, get) => ({
     }),
 }));
 
-const FALLBACK = initial();
+/** Stable placeholder per page size (selectors must not return a fresh object every render). */
+const fallbacks = new Map<number, TableTabState>();
+function fallback(): TableTabState {
+  const limit = getPrefs().pageSize;
+  let s = fallbacks.get(limit);
+  if (!s) {
+    s = initial({ limit });
+    fallbacks.set(limit, s);
+  }
+  return s;
+}
 
 export function useTableTab(tabId: string): TableTabState {
-  return useTableTabsStore((s) => s.slices[tabId] ?? FALLBACK);
+  return useTableTabsStore((s) => s.slices[tabId] ?? fallback());
 }

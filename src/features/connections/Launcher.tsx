@@ -20,6 +20,7 @@ import { useConnectionsStore } from "@/stores/connections";
 import { ConnectionCard } from "./ConnectionCard";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { connectionSummary } from "./schema";
+import { openConnectionDialog, useConnectionDialog } from "./store";
 import { useConnect, useDeleteProfile, useDuplicateProfile, useProfiles } from "./useConnections";
 
 function groupProfiles(
@@ -52,10 +53,9 @@ export function Launcher() {
     useShallow((s) => Object.values(s.byId).map((c) => c.info.profileId)),
   );
   const [query, setQuery] = useState("");
-  const [dialog, setDialog] = useState<{ open: boolean; profile: ConnectionProfile | null }>({
-    open: false,
-    profile: null,
-  });
+  const dialogOpen = useConnectionDialog((s) => s.open);
+  const dialogProfile = useConnectionDialog((s) => s.profile);
+  const setDialogOpen = useConnectionDialog((s) => s.setOpen);
   const [pendingDelete, setPendingDelete] = useState<ConnectionProfile | null>(null);
   const groups = useMemo(() => groupProfiles(profiles.data ?? [], query), [profiles.data, query]);
 
@@ -76,7 +76,7 @@ export function Launcher() {
             className="h-8 pl-7"
           />
         </div>
-        <Button size="sm" onClick={() => setDialog({ open: true, profile: null })}>
+        <Button size="sm" onClick={() => openConnectionDialog()}>
           <Plus /> New Connection
         </Button>
       </div>
@@ -101,7 +101,7 @@ export function Launcher() {
             }
           >
             {!query && (
-              <Button onClick={() => setDialog({ open: true, profile: null })}>
+              <Button onClick={() => openConnectionDialog()}>
                 <Plus /> New Connection
               </Button>
             )}
@@ -122,7 +122,7 @@ export function Launcher() {
                     connecting={connect.isPending && connect.variables === p.id}
                     connected={openIds.includes(p.id)}
                     onConnect={() => connect.mutate(p.id)}
-                    onEdit={() => setDialog({ open: true, profile: p })}
+                    onEdit={() => openConnectionDialog(p)}
                     onDuplicate={() => duplicate.mutate(p.id)}
                     onDelete={() => setPendingDelete(p)}
                   />
@@ -133,11 +133,7 @@ export function Launcher() {
         )}
       </div>
 
-      <ConnectionDialog
-        open={dialog.open}
-        profile={dialog.profile}
-        onOpenChange={(open) => setDialog((d) => ({ ...d, open }))}
-      />
+      <ConnectionDialog open={dialogOpen} profile={dialogProfile} onOpenChange={setDialogOpen} />
 
       <AlertDialog
         open={pendingDelete !== null}

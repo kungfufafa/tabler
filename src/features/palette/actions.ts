@@ -18,6 +18,8 @@ export type ActionId =
   | "sidebar.focus-search"
   | "view.refresh"
   | "grid.commit"
+  /** Always opens the Preview SQL sheet, whatever "Confirm before commit" says (not in KEYMAP). */
+  | "grid.preview"
   | "grid.discard"
   | "grid.filter"
   | "grid.new-row"

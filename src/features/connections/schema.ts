@@ -91,6 +91,14 @@ export const DEFAULT_FORM: ConnectionFormValues = {
   connectTimeoutSecs: "",
 };
 
+/**
+ * Form values for a new profile. `connectTimeout` is the "Connect timeout" preference (seconds),
+ * the default for new connections.
+ */
+export function newProfileForm(connectTimeout: number): ConnectionFormValues {
+  return { ...DEFAULT_FORM, port: "5432", connectTimeoutSecs: String(connectTimeout) };
+}
+
 export function profileToForm(p: ConnectionProfile): ConnectionFormValues {
   return {
     ...DEFAULT_FORM,

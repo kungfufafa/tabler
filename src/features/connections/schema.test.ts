@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
-import { connectionFormSchema, DEFAULT_FORM, formToProfileInput, profileToForm } from "./schema";
+import {
+  connectionFormSchema,
+  DEFAULT_FORM,
+  formToProfileInput,
+  newProfileForm,
+  profileToForm,
+} from "./schema";
 
 describe("connection form schema", () => {
   it("requires host and user for server drivers, a path for sqlite", () => {
@@ -68,5 +74,12 @@ describe("connection form schema", () => {
       localPort: null,
       keepaliveSecs: null,
     });
+  });
+
+  it("starts new profiles with the connect-timeout preference", () => {
+    const values = newProfileForm(30);
+    expect(values).toMatchObject({ port: "5432", connectTimeoutSecs: "30" });
+    const input = formToProfileInput({ ...values, name: "n", user: "u" }, null, "id-1");
+    expect(input.profile.options.connectTimeoutSecs).toBe(30);
   });
 });

@@ -1,9 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback } from "react";
 import { toast } from "sonner";
 import { ipc, type ProfileInput } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
+import { closeConnectionTabs } from "./closeGuard";
 
 export const profileKeys = {
   all: ["profiles"] as const,
@@ -77,6 +79,10 @@ export function useConnect() {
   });
 }
 
+/**
+ * Raw disconnect: drops the connection's tabs without asking. UI entry points go through
+ * `useGuardedDisconnect` so unsaved work gets the "Discard changes?" prompt first.
+ */
 export function useDisconnect() {
   const remove = useConnectionsStore((s) => s.remove);
   const closeForConnection = useTabsStore((s) => s.closeForConnection);
@@ -89,4 +95,16 @@ export function useDisconnect() {
       if (useConnectionsStore.getState().order.length === 0) setView("launcher");
     },
   });
+}
+
+/**
+ * Disconnect behind the unsaved-changes guard: the connection's tabs are closed first (asking when
+ * any hold staged edits or an unsaved query). Resolves false when the user kept them.
+ */
+export function useGuardedDisconnect(): (connectionId: string) => Promise<boolean> {
+  const { mutate } = useDisconnect();
+  return useCallback(
+    (connectionId: string) => closeConnectionTabs(connectionId, () => mutate(connectionId)),
+    [mutate],
+  );
 }

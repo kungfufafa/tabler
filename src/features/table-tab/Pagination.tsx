@@ -9,8 +9,7 @@ import {
 } from "@/components/ui/select";
 import { formatCount } from "@/lib/format/time";
 import type { RowCount } from "@/lib/ipc";
-
-const LIMITS = [100, 200, 500, 1000];
+import { PAGE_SIZES } from "@/stores/prefs";
 
 export function Pagination({
   offset,
@@ -49,7 +48,7 @@ export function Pagination({
           <span className="text-muted-foreground">rows</span>
         </SelectTrigger>
         <SelectContent>
-          {LIMITS.map((n) => (
+          {PAGE_SIZES.map((n) => (
             <SelectItem key={n} value={String(n)} className="text-xs">
               {n}
             </SelectItem>

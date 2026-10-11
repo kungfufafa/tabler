@@ -27,11 +27,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isMock, type ConnectionProfile, type Driver } from "@/lib/ipc";
 import { ACCENT_PRESETS } from "@/lib/theme";
 import { cn } from "@/lib/utils";
+import { getPrefs } from "@/stores/prefs";
 import { accentColor, DRIVER_LABEL } from "./colors";
 import {
   connectionFormSchema,
   DEFAULT_FORM,
   formToProfileInput,
+  newProfileForm,
   profileToForm,
   type ConnectionFormValues,
 } from "./schema";
@@ -387,7 +389,7 @@ function AdvancedTab({ form }: { form: Form }) {
         label="Connect timeout (s)"
         error={formState.errors.connectTimeoutSecs?.message}
         className="col-span-3"
-        hint="Default 15"
+        hint="Empty means 15"
       >
         <Input {...register("connectTimeoutSecs")} className="font-mono" inputMode="numeric" />
       </Field>
@@ -429,7 +431,7 @@ export function ConnectionDialog({
   useEffect(() => {
     if (!open) return;
     setId(profile?.id ?? crypto.randomUUID());
-    form.reset(profile ? profileToForm(profile) : { ...DEFAULT_FORM, port: "5432" });
+    form.reset(profile ? profileToForm(profile) : newProfileForm(getPrefs().connectTimeout));
     test.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, profile?.id]);

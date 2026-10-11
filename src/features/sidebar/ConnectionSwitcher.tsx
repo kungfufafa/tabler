@@ -9,7 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useDisconnect } from "@/features/connections/useConnections";
+import { useGuardedDisconnect } from "@/features/connections/useConnections";
 import { cn } from "@/lib/utils";
 import { useShallow } from "zustand/react/shallow";
 import { useActiveConnection, useConnectionsStore } from "@/stores/connections";
@@ -27,7 +27,7 @@ export function ConnectionSwitcher() {
   const all = useConnectionsStore(useShallow((s) => s.order.map((id) => s.byId[id]!)));
   const setActive = useConnectionsStore((s) => s.setActive);
   const setView = useUiStore((s) => s.setView);
-  const disconnect = useDisconnect();
+  const disconnect = useGuardedDisconnect();
   if (!active) return null;
   return (
     <DropdownMenu>
@@ -65,7 +65,7 @@ export function ConnectionSwitcher() {
         </DropdownMenuItem>
         <DropdownMenuItem
           variant="destructive"
-          onSelect={() => disconnect.mutate(active.info.connectionId)}
+          onSelect={() => void disconnect(active.info.connectionId)}
         >
           <Unplug /> Disconnect {active.info.name}
         </DropdownMenuItem>

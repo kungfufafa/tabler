@@ -105,7 +105,7 @@ export const KEYMAP: ShortcutDef[] = [
     allowInEditor: true,
   },
   { id: "view.refresh", keys: "Mod+R", scope: "global", label: "Refresh" },
-  { id: "grid.commit", keys: "Mod+S", scope: "grid", label: "Commit changes (Preview SQL)" },
+  { id: "grid.commit", keys: "Mod+S", scope: "grid", label: "Commit changes" },
   { id: "grid.discard", keys: "Mod+Shift+Z", scope: "grid", label: "Discard all changes" },
   { id: "grid.filter", keys: "Mod+F", scope: "grid", label: "Toggle filter bar" },
   { id: "grid.new-row", keys: "Mod+N", scope: "grid", label: "New row" },

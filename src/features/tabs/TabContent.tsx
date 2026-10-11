@@ -3,6 +3,8 @@ import { EmptyState } from "@/components/EmptyState";
 import { QueryTab } from "@/features/editor/QueryTab";
 import { StructureTab } from "@/features/structure/StructureTab";
 import { TableTab } from "@/features/table-tab/TableTab";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { useActiveTab } from "@/stores/tabs";
 
 export function TabContent() {
@@ -12,7 +14,7 @@ export function TabContent() {
       <EmptyState
         icon={Table2}
         title="No tab open"
-        description="Pick a table in the sidebar, or press ⌘T for a new query."
+        description={`Pick a table in the sidebar, or press ${formatCombo(shortcutFor("tab.new-query") ?? "Mod+T")} for a new query.`}
       />
     );
   }

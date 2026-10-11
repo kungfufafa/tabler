@@ -7,6 +7,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { closeConnectionTabs } from "@/features/connections/closeGuard";
 import { ipc } from "@/lib/ipc";
 import { useConnectionsStore, type OpenConnection } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
@@ -42,7 +43,11 @@ export function DatabasePicker({ connection }: { connection: OpenConnection }) {
       {showDb && (
         <Select
           value={connection.info.currentDatabase ?? ""}
-          onValueChange={(v) => switchDb.mutate(v)}
+          onValueChange={(v) => {
+            // Switching drops every tab of this connection: ask first when any holds unsaved work.
+            if (v !== connection.info.currentDatabase)
+              void closeConnectionTabs(id, () => switchDb.mutate(v));
+          }}
           disabled={switchDb.isPending}
         >
           <SelectTrigger size="sm" className="bg-surface h-7 w-full text-xs">
