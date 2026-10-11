@@ -1,2 +1,959 @@
-// Mock handlers for run_sql, cancel_query, explain, list_history, delete_history, clear_history, read_text_file, write_text_file (implemented by the query work package).
-export {};
+// Mock handlers for run_sql, cancel_query, explain, list_history, delete_history, clear_history,
+// read_text_file and write_text_file. They run against the same fixture data as browse_table.
+import { utf16ToChar } from "@/features/editor/offsets";
+import { splitStatements } from "@/features/editor/scanner";
+import type { ColumnMeta } from "../bindings/ColumnMeta";
+import type { ConnectionInfo } from "../bindings/ConnectionInfo";
+import type { Driver } from "../bindings/Driver";
+import type { ErrorPayload } from "../bindings/ErrorPayload";
+import type { ExplainMode } from "../bindings/ExplainMode";
+import type { ExplainResult } from "../bindings/ExplainResult";
+import type { HistoryEntry } from "../bindings/HistoryEntry";
+import type { HistoryFilter } from "../bindings/HistoryFilter";
+import type { QueryEvent } from "../bindings/QueryEvent";
+import type { ResultColumn } from "../bindings/ResultColumn";
+import type { RunOptions } from "../bindings/RunOptions";
+import type { StatementResult } from "../bindings/StatementResult";
+import type { TableMeta } from "../bindings/TableMeta";
+import type { Value } from "../bindings/Value";
+import type { ValueKind } from "../bindings/ValueKind";
+import { tableMetaFor, tablesFor } from "./fixtures";
+import { rowsFor } from "./rows";
+import { mockError, mockInvoke, registerMock } from "./transport";
+
+const CHUNK = 500;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// --- shared state ----------------------------------------------------------------
+
+interface Running {
+  cancelled: boolean;
+}
+/** queryId → cancel flag of the statement batch / explain in flight. */
+const running = new Map<string, Running>();
+
+const SEED_FILES: Array<[string, string]> = [
+  [
+    "/Users/me/queries/sample.sql",
+    "-- Recent posts with their authors\nSELECT p.id, p.title, u.name, p.published_at\nFROM posts p\nJOIN users u ON u.id = p.user_id\nORDER BY p.published_at DESC\nLIMIT 20;\n",
+  ],
+];
+const files = new Map<string, string>(SEED_FILES);
+
+let history: HistoryEntry[] = [];
+let nextHistoryId = 1;
+
+function seedHistory(): void {
+  const day = 86_400_000;
+  const at = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
+  const base = {
+    profileId: "p-local-pg",
+    connectionName: "Local Postgres",
+    database: "tabler_dev",
+    affected: null,
+    error: null,
+    success: true,
+    source: "editor",
+  };
+  history = [
+    {
+      ...base,
+      id: 1,
+      sql: "select * from users limit 50",
+      startedAt: at(3 * day),
+      durationMs: 4,
+      rowCount: 50,
+    },
+    {
+      ...base,
+      id: 2,
+      sql: "selec * from posts",
+      startedAt: at(day + 3_600_000),
+      durationMs: 1,
+      rowCount: null,
+      success: false,
+      error: 'syntax error at or near "selec"',
+    },
+    {
+      ...base,
+      id: 3,
+      sql: "update posts set views = views + 1 where id = 7",
+      startedAt: at(day),
+      durationMs: 3,
+      rowCount: null,
+      affected: 1,
+    },
+    {
+      ...base,
+      id: 4,
+      sql: "select count(*) from events_big",
+      startedAt: at(600_000),
+      durationMs: 41,
+      rowCount: 1,
+    },
+  ];
+  nextHistoryId = history.length + 1;
+}
+seedHistory();
+
+/** Test helper: back to the seeded history and files, nothing running. */
+export function resetMockQueryState(opts: { emptyHistory?: boolean } = {}): void {
+  running.clear();
+  files.clear();
+  for (const [k, v] of SEED_FILES) files.set(k, v);
+  seedHistory();
+  if (opts.emptyHistory) {
+    history = [];
+    nextHistoryId = 1;
+  }
+}
+
+function record(
+  info: ConnectionInfo,
+  sql: string,
+  source: "editor" | "explain",
+  r: {
+    durationMs: number;
+    rowCount?: number | null;
+    affected?: number | null;
+    error?: string | null;
+  },
+): void {
+  history.push({
+    id: nextHistoryId++,
+    profileId: info.profileId,
+    connectionName: info.name,
+    database: info.currentDatabase,
+    sql,
+    startedAt: new Date().toISOString(),
+    durationMs: r.durationMs,
+    rowCount: r.rowCount ?? null,
+    affected: r.affected ?? null,
+    success: !r.error,
+    error: r.error ?? null,
+    source,
+  });
+}
+
+async function connectionInfo(connectionId: unknown): Promise<ConnectionInfo> {
+  const list = await mockInvoke<ConnectionInfo[]>("list_connections", {});
+  return (
+    list.find((c) => c.connectionId === connectionId) ?? mockError("NOT_CONNECTED", "not connected")
+  );
+}
+
+// --- errors ------------------------------------------------------------------------
+
+class SqlError extends Error {
+  constructor(readonly payload: ErrorPayload) {
+    super(payload.message);
+  }
+}
+
+function payload(p: Partial<ErrorPayload> & { code: string; message: string }): ErrorPayload {
+  return {
+    detail: null,
+    hint: null,
+    sqlstate: null,
+    vendorCode: null,
+    position: null,
+    statementIndex: null,
+    data: null,
+    ...p,
+  };
+}
+
+/** Position of UTF-16 index `at` in `text`, as the backend reports it (chars, 1-based line/col). */
+function positionIn(text: string, at: number) {
+  const before = text.slice(0, at);
+  const lineStart = before.lastIndexOf("\n") + 1;
+  return {
+    offset: utf16ToChar(text, at),
+    line: before.split("\n").length,
+    column: utf16ToChar(before.slice(lineStart), at - lineStart) + 1,
+  };
+}
+
+function syntaxError(driver: Driver, text: string, at: number, index: number): SqlError {
+  const token = /^\S+/.exec(text.slice(at))?.[0]?.replace(/[;,)]+$/, "") ?? "";
+  const position = positionIn(text, at);
+  if (driver === "mysql")
+    return new SqlError(
+      payload({
+        code: "DB_ERROR",
+        message: `You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '${text.slice(at, at + 40).split("\n")[0]}' at line ${position.line}`,
+        sqlstate: "42000",
+        vendorCode: 1064,
+        position,
+        statementIndex: index,
+      }),
+    );
+  return new SqlError(
+    payload({
+      code: "DB_ERROR",
+      message:
+        driver === "sqlite"
+          ? `near "${token}": syntax error`
+          : `syntax error at or near "${token}"`,
+      sqlstate: driver === "sqlite" ? null : "42601",
+      vendorCode: driver === "sqlite" ? 1 : null,
+      position,
+      statementIndex: index,
+    }),
+  );
+}
+
+function missingTable(
+  driver: Driver,
+  name: string,
+  text: string,
+  at: number,
+  index: number,
+  db: string,
+) {
+  const position = positionIn(text, at);
+  if (driver === "mysql")
+    return new SqlError(
+      payload({
+        code: "DB_ERROR",
+        message: `Table '${db}.${name}' doesn't exist`,
+        sqlstate: "42S02",
+        vendorCode: 1146,
+        position,
+        statementIndex: index,
+      }),
+    );
+  return new SqlError(
+    payload({
+      code: "DB_ERROR",
+      message: driver === "sqlite" ? `no such table: ${name}` : `relation "${name}" does not exist`,
+      sqlstate: driver === "sqlite" ? null : "42P01",
+      vendorCode: driver === "sqlite" ? 1 : null,
+      position,
+      statementIndex: index,
+    }),
+  );
+}
+
+function cancelledError(driver: Driver, index: number): SqlError {
+  return new SqlError(
+    payload({
+      code: "CANCELLED",
+      message:
+        driver === "postgres"
+          ? "canceling statement due to user request"
+          : driver === "mysql"
+            ? "Query execution was interrupted"
+            : "interrupted",
+      sqlstate: driver === "postgres" ? "57014" : driver === "mysql" ? "70100" : null,
+      vendorCode: driver === "mysql" ? 1317 : null,
+      statementIndex: index,
+    }),
+  );
+}
+
+// --- tiny SQL "engine" -----------------------------------------------------------------
+
+const KNOWN = new Set([
+  "select",
+  "with",
+  "values",
+  "table",
+  "insert",
+  "update",
+  "delete",
+  "create",
+  "drop",
+  "alter",
+  "truncate",
+  "set",
+  "show",
+  "begin",
+  "start",
+  "commit",
+  "rollback",
+  "savepoint",
+  "release",
+  "explain",
+  "analyze",
+  "vacuum",
+  "use",
+  "grant",
+  "revoke",
+  "comment",
+  "call",
+  "do",
+  "refresh",
+  "reindex",
+  "lock",
+  "pragma",
+  "describe",
+  "desc",
+  "replace",
+  "merge",
+  "listen",
+  "notify",
+]);
+
+interface Ctx {
+  info: ConnectionInfo;
+  driver: Driver;
+  /** The whole submitted text (positions are relative to it). */
+  text: string;
+  run: Running;
+  maxRows: number;
+  send: (e: QueryEvent) => void;
+}
+
+interface Exec {
+  kind: StatementResult["kind"];
+  columns: ResultColumn[];
+  rowCount: number;
+  resultSets: number;
+  truncated: boolean;
+  affected: number | null;
+  lastInsertId: string | null;
+  notices: string[];
+}
+
+const DATA_TYPES: Record<Driver, Partial<Record<ValueKind, string>>> = {
+  postgres: {
+    int: "int4",
+    bigInt: "int8",
+    decimal: "numeric",
+    text: "text",
+    bool: "bool",
+    timestampTz: "timestamptz",
+    float: "float8",
+    date: "date",
+  },
+  mysql: {
+    int: "BIGINT",
+    bigInt: "BIGINT",
+    decimal: "DECIMAL",
+    text: "VARCHAR",
+    bool: "TINYINT",
+    timestampTz: "DATETIME",
+    float: "DOUBLE",
+    date: "DATE",
+  },
+  sqlite: {
+    int: "INTEGER",
+    bigInt: "INTEGER",
+    decimal: "NUMERIC",
+    text: "TEXT",
+    bool: "INTEGER",
+    timestampTz: "TEXT",
+    float: "REAL",
+    date: "TEXT",
+  },
+};
+
+function resultColumn(
+  driver: Driver,
+  name: string,
+  kind: ValueKind,
+  table: string | null = null,
+): ResultColumn {
+  return { name, dataType: DATA_TYPES[driver][kind] ?? "text", kind, nullable: null, table };
+}
+
+function fromMeta(c: ColumnMeta, table: string): ResultColumn {
+  return { name: c.name, dataType: c.dataType, kind: c.kind, nullable: c.nullable, table };
+}
+
+const IDENT = String.raw`(?:"[^"]+"|\x60[^\x60]+\x60|\[[^\]]+\]|[\p{L}_][\p{L}\p{N}_$]*)`;
+const FROM_RE = new RegExp(
+  String.raw`\b(?:from|into|update|table)\s+(${IDENT}(?:\s*\.\s*${IDENT})?)`,
+  "iu",
+);
+
+function unquote(ident: string): { name: string; quoted: boolean } {
+  const t = ident.trim();
+  const q = t[0];
+  if ((q === '"' || q === "`" || q === "[") && t.length >= 2)
+    return { name: t.slice(1, -1), quoted: true };
+  return { name: t, quoted: false };
+}
+
+interface TableHit {
+  meta: TableMeta;
+  schema: string;
+  name: string;
+  rows: () => Value[][];
+}
+
+/** Finds the table a statement reads or writes (`from x`, `into x`, `update x`). */
+function findTable(ctx: Ctx, sql: string, start: number, index: number): TableHit | null {
+  const m = FROM_RE.exec(sql);
+  if (!m) return null;
+  const raw = m[1]!;
+  const parts = raw.split(/\s*\.\s*/);
+  const nameTok = unquote(parts[parts.length - 1]!);
+  const schemaTok = parts.length > 1 ? unquote(parts[0]!).name : null;
+  const schema =
+    schemaTok ??
+    (ctx.driver === "postgres"
+      ? "public"
+      : ctx.driver === "mysql"
+        ? (ctx.info.currentDatabase ?? "tabler_dev")
+        : "main");
+  const tables = tablesFor(ctx.driver, schema);
+  const found = tables.find((t) =>
+    nameTok.quoted ? t.name === nameTok.name : t.name.toLowerCase() === nameTok.name.toLowerCase(),
+  );
+  if (!found) {
+    const at = start + m.index + m[0].length - raw.length;
+    throw missingTable(ctx.driver, nameTok.name, ctx.text, at, index, schema);
+  }
+  const meta = tableMetaFor(ctx.driver, schema, found.name)!;
+  return {
+    meta,
+    schema,
+    name: found.name,
+    rows: () =>
+      rowsFor(`${ctx.driver}:${schema}.${found.name}`, meta.columns, meta.rowEstimate ?? 25),
+  };
+}
+
+/** Splits a select list at top-level commas. */
+function splitList(list: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let cur = "";
+  for (const ch of list) {
+    if (quote) {
+      if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"' || ch === "`") quote = ch;
+    else if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "," && depth === 0) {
+      out.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+function literalValue(ctx: Ctx, expr: string): { value: Value; kind: ValueKind; name: string } {
+  const e = expr.trim();
+  const lower = e.toLowerCase();
+  const fn = /^([a-z_]+)\s*\(/i.exec(e)?.[1]?.toLowerCase();
+  const pgName = (n: string) => (ctx.driver === "postgres" ? n : e);
+  if (/^[+-]?\d+$/.test(e)) {
+    const n = Number(e);
+    return Number.isSafeInteger(n)
+      ? { value: { t: "int", v: n }, kind: "int", name: pgName("?column?") }
+      : { value: { t: "bigInt", v: e }, kind: "bigInt", name: pgName("?column?") };
+  }
+  if (/^[+-]?(\d+\.\d*|\.\d+)$/.test(e))
+    return { value: { t: "decimal", v: e }, kind: "decimal", name: pgName("?column?") };
+  const str = /^[eE]?'((?:[^']|'')*)'$/s.exec(e);
+  if (str)
+    return {
+      value: { t: "text", v: str[1]!.replace(/''/g, "'") },
+      kind: "text",
+      name: pgName("?column?"),
+    };
+  if (lower === "true" || lower === "false")
+    return { value: { t: "bool", v: lower === "true" }, kind: "bool", name: pgName("bool") };
+  if (lower === "null") return { value: { t: "null" }, kind: "text", name: pgName("?column?") };
+  if (fn === "now" || lower === "current_timestamp")
+    return {
+      value: { t: "timestampTz", v: "2026-10-11 09:41:07.512+07" },
+      kind: "timestampTz",
+      name: pgName(fn ?? "current_timestamp"),
+    };
+  if (lower === "current_date")
+    return { value: { t: "date", v: "2026-10-11" }, kind: "date", name: pgName("current_date") };
+  if (fn === "version")
+    return {
+      value: { t: "text", v: ctx.info.serverVersion },
+      kind: "text",
+      name: pgName("version"),
+    };
+  if (fn === "current_user" || lower === "current_user" || fn === "user")
+    return {
+      value: { t: "text", v: ctx.info.currentUser ?? "tabler" },
+      kind: "text",
+      name: pgName("current_user"),
+    };
+  if (fn === "current_database" || fn === "database")
+    return {
+      value: { t: "text", v: ctx.info.currentDatabase ?? "" },
+      kind: "text",
+      name: pgName(fn),
+    };
+  if (fn === "gen_random_uuid" || fn === "uuid")
+    return { value: { t: "uuid", v: crypto.randomUUID() }, kind: "uuid", name: pgName(fn) };
+  const sum = /^(\d+)\s*([+*-])\s*(\d+)$/.exec(e);
+  if (sum) {
+    const [a, op, b] = [Number(sum[1]), sum[2], Number(sum[3])];
+    const v = op === "+" ? a + b : op === "-" ? a - b : a * b;
+    return { value: { t: "int", v }, kind: "int", name: pgName("?column?") };
+  }
+  return { value: { t: "text", v: e }, kind: "text", name: pgName(fn ?? "?column?") };
+}
+
+/** `select <expr> [as alias], …` without FROM: one row. */
+function selectLiterals(ctx: Ctx, list: string): { columns: ResultColumn[]; row: Value[] } {
+  const columns: ResultColumn[] = [];
+  const row: Value[] = [];
+  for (const item of splitList(list)) {
+    const alias = /^(.*?)\s+(?:as\s+)?("[^"]+"|`[^`]+`|[\p{L}_][\p{L}\p{N}_]*)$/isu.exec(item);
+    const useAlias =
+      alias && !/^[eE]?'.*'$/s.test(item) && !/^\d/.test(alias[2]!) && /\s/.test(item);
+    const lit = literalValue(ctx, useAlias ? alias[1]! : item);
+    columns.push(resultColumn(ctx.driver, useAlias ? unquote(alias[2]!).name : lit.name, lit.kind));
+    row.push(lit.value);
+  }
+  return { columns, row };
+}
+
+async function streamRows(
+  ctx: Ctx,
+  index: number,
+  set: number,
+  columns: ResultColumn[],
+  rows: Value[][],
+): Promise<void> {
+  ctx.send({ event: "columns", data: { index, set, columns } });
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    if (ctx.run.cancelled) throw cancelledError(ctx.driver, index);
+    ctx.send({ event: "rows", data: { index, set, rows: rows.slice(i, i + CHUNK) } });
+    await sleep(rows.length > 2000 ? 8 : 1);
+  }
+}
+
+function planLines(
+  ctx: Ctx,
+  sql: string,
+  mode: ExplainMode,
+  start: number,
+  index: number,
+): string[] {
+  const hit = /\bfrom\b/i.test(sql) ? findTable(ctx, sql, start, index) : null;
+  const rows = hit?.meta.rowEstimate ?? 1;
+  const limit = /\blimit\s+(\d+)/i.exec(sql)?.[1];
+  const where = /\bwhere\s+(.+?)(?:\border\b|\blimit\b|$)/is.exec(sql)?.[1]?.trim();
+  const analyze = mode === "analyze";
+  if (ctx.driver === "mysql") {
+    const scan = hit
+      ? `-> Table scan on ${hit.name}  (cost=${(rows * 0.105).toFixed(2)} rows=${rows})`
+      : "-> Rows fetched before execution  (cost=0..0 rows=1)";
+    const lines = [
+      ...(limit
+        ? [`-> Limit: ${limit} row(s)  (cost=${(rows * 0.105).toFixed(2)} rows=${limit})`]
+        : []),
+      ...(where
+        ? [
+            `    -> Filter: (${where})  (cost=${(rows * 0.105).toFixed(2)} rows=${Math.ceil(rows / 3)})`,
+          ]
+        : []),
+      `${limit || where ? "        " : ""}${scan}${analyze ? `  (actual time=0.031..0.412 rows=${rows} loops=1)` : ""}`,
+    ];
+    return lines;
+  }
+  if (ctx.driver === "sqlite") {
+    return hit ? [`QUERY PLAN`, `\`--SCAN ${hit.name}`] : ["QUERY PLAN", "`--SCAN CONSTANT ROW"];
+  }
+  const actual = (n: number) =>
+    analyze ? ` (actual time=0.012..0.${String(n).padStart(3, "0")} rows=${n} loops=1)` : "";
+  const width = (hit?.meta.columns.length ?? 1) * 18;
+  const scan = hit
+    ? `Seq Scan on ${hit.name}  (cost=0.00..${(rows * 0.12 + 1).toFixed(2)} rows=${rows} width=${width})${actual(rows)}`
+    : `Result  (cost=0.00..0.01 rows=1 width=4)${actual(1)}`;
+  const lines = limit
+    ? [
+        `Limit  (cost=0.00..${(Number(limit) * 0.12).toFixed(2)} rows=${limit} width=${width})${actual(Math.min(rows, Number(limit)))}`,
+        `  ->  ${scan}`,
+      ]
+    : [scan];
+  if (where) lines.push(`${limit ? "        " : "  "}Filter: (${where})`);
+  if (analyze) lines.push("Planning Time: 0.084 ms", "Execution Time: 0.391 ms");
+  return lines;
+}
+
+async function execute(
+  ctx: Ctx,
+  sql: string,
+  start: number,
+  index: number,
+  explain: ExplainMode | null,
+): Promise<Exec> {
+  const empty: Exec = {
+    kind: "empty",
+    columns: [],
+    rowCount: 0,
+    resultSets: 0,
+    truncated: false,
+    affected: null,
+    lastInsertId: null,
+    notices: [],
+  };
+  const leadAt = sql.search(/\S/);
+  const keyword = /^[\p{L}_]+/u.exec(sql.slice(leadAt))?.[0]?.toLowerCase() ?? "";
+  const syntax = /\bsyntax\b/i.exec(sql);
+  if (syntax) throw syntaxError(ctx.driver, ctx.text, start + syntax.index, index);
+  if (!KNOWN.has(keyword)) throw syntaxError(ctx.driver, ctx.text, start + leadAt, index);
+
+  await sleep(2);
+
+  // EXPLAIN (statement prefix or RunOptions.explain)
+  const explainPrefix = /^explain(\s+analyze)?\s+/i.exec(sql);
+  if (explainPrefix || explain) {
+    const target = explainPrefix ? sql.slice(explainPrefix[0].length) : sql;
+    const lines = planLines(
+      ctx,
+      target,
+      explainPrefix?.[1] || explain === "analyze" ? "analyze" : "plan",
+      start + (explainPrefix?.[0].length ?? 0),
+      index,
+    );
+    const columns = [
+      resultColumn(ctx.driver, ctx.driver === "mysql" ? "EXPLAIN" : "QUERY PLAN", "text"),
+    ];
+    await streamRows(
+      ctx,
+      index,
+      0,
+      columns,
+      lines.map((l) => [{ t: "text", v: l }]),
+    );
+    return { ...empty, kind: "explain", columns, rowCount: lines.length, resultSets: 1 };
+  }
+
+  const sleepCall = /\b(?:pg_)?sleep\s*\(\s*([\d.]+)\s*\)/i.exec(sql);
+  if (sleepCall) {
+    const until = Date.now() + Number(sleepCall[1]) * 1000;
+    while (Date.now() < until) {
+      if (ctx.run.cancelled) throw cancelledError(ctx.driver, index);
+      await sleep(Math.min(50, until - Date.now()));
+    }
+    if (ctx.run.cancelled) throw cancelledError(ctx.driver, index);
+    const pg = ctx.driver === "postgres";
+    const columns = [
+      {
+        ...resultColumn(ctx.driver, pg ? "pg_sleep" : sleepCall[0], pg ? "other" : "int"),
+        dataType: pg ? "void" : "BIGINT",
+      },
+    ];
+    await streamRows(ctx, index, 0, columns, [[pg ? { t: "null" } : { t: "int", v: 0 }]]);
+    return { ...empty, kind: "rows", columns, rowCount: 1, resultSets: 1 };
+  }
+
+  if (keyword === "select" || keyword === "with" || keyword === "table" || keyword === "values") {
+    const hit = /\bfrom\b|^\s*table\b/i.test(sql) ? findTable(ctx, sql, start, index) : null;
+    if (!hit) {
+      const list = sql.replace(/^\s*select\s+/i, "").replace(/;\s*$/, "");
+      const { columns, row } = selectLiterals(ctx, list);
+      await streamRows(ctx, index, 0, columns, [row]);
+      return { ...empty, kind: "rows", columns, rowCount: 1, resultSets: 1 };
+    }
+    const selectList = /^\s*select\s+(.*?)\s+from\b/is.exec(sql)?.[1]?.trim() ?? "*";
+    const all = hit.rows();
+    if (/^count\s*\(\s*\*\s*\)$/i.test(selectList)) {
+      const columns = [
+        resultColumn(ctx.driver, ctx.driver === "postgres" ? "count" : "count(*)", "bigInt"),
+      ];
+      await streamRows(ctx, index, 0, columns, [[{ t: "int", v: all.length }]]);
+      return { ...empty, kind: "rows", columns, rowCount: 1, resultSets: 1 };
+    }
+    // Pick the named columns when every item is a plain column of the table; else all columns.
+    const names =
+      selectList === "*"
+        ? []
+        : splitList(selectList).map((s) => unquote(s.replace(/^.*\./, "")).name);
+    const idx = names.map((n) =>
+      hit.meta.columns.findIndex((c) => c.name.toLowerCase() === n.toLowerCase()),
+    );
+    const picked =
+      names.length > 0 && idx.every((i) => i >= 0) ? idx : hit.meta.columns.map((_, i) => i);
+    const columns = picked.map((i) => fromMeta(hit.meta.columns[i]!, hit.name));
+    const limit = /\blimit\s+(\d+)(?:\s+offset\s+(\d+))?/i.exec(sql);
+    const offset = Number(limit?.[2] ?? 0);
+    const wanted = limit ? all.slice(offset, offset + Number(limit[1])) : all.slice(offset);
+    const truncated = wanted.length > ctx.maxRows;
+    const rows = (truncated ? wanted.slice(0, ctx.maxRows) : wanted).map((r) =>
+      picked.map((i) => r[i]!),
+    );
+    await streamRows(ctx, index, 0, columns, rows);
+    return { ...empty, kind: "rows", columns, rowCount: rows.length, resultSets: 1, truncated };
+  }
+
+  if (keyword === "call" && ctx.driver === "mysql") {
+    // A procedure returning two result sets.
+    const users = tableMetaFor(ctx.driver, "tabler_dev", "users")!;
+    const tags = tableMetaFor(ctx.driver, "tabler_dev", "tags")!;
+    const c1 = users.columns.slice(0, 3).map((c) => fromMeta(c, "users"));
+    const c2 = tags.columns.map((c) => fromMeta(c, "tags"));
+    const r1 = rowsFor("mysql:tabler_dev.users", users.columns, 50)
+      .slice(0, 5)
+      .map((r) => r.slice(0, 3));
+    const r2 = rowsFor("mysql:tabler_dev.tags", tags.columns, 15);
+    await streamRows(ctx, index, 0, c1, r1);
+    await streamRows(ctx, index, 1, c2, r2);
+    return { ...empty, kind: "rows", columns: c1, rowCount: r1.length + r2.length, resultSets: 2 };
+  }
+
+  if (keyword === "show" && /^\s*show\s+tables/i.test(sql)) {
+    const db = ctx.info.currentDatabase ?? "tabler_dev";
+    const columns = [resultColumn(ctx.driver, `Tables_in_${db}`, "text")];
+    const rows: Value[][] = tablesFor(ctx.driver, db).map((t) => [{ t: "text", v: t.name }]);
+    await streamRows(ctx, index, 0, columns, rows);
+    return { ...empty, kind: "rows", columns, rowCount: rows.length, resultSets: 1 };
+  }
+
+  const writes = [
+    "insert",
+    "update",
+    "delete",
+    "replace",
+    "merge",
+    "truncate",
+    "create",
+    "drop",
+    "alter",
+  ];
+  if (ctx.info.readOnly && writes.includes(keyword)) {
+    throw new SqlError(
+      payload({
+        code: "DB_ERROR",
+        message: `cannot execute ${keyword.toUpperCase()} in a read-only transaction`,
+        sqlstate: "25006",
+        statementIndex: index,
+      }),
+    );
+  }
+
+  if (
+    keyword === "insert" ||
+    keyword === "update" ||
+    keyword === "delete" ||
+    keyword === "replace"
+  ) {
+    const hit = findTable(ctx, sql, start, index);
+    let affected: number;
+    if (keyword === "insert" || keyword === "replace") {
+      const values = /\bvalues\b([\s\S]*)$/i.exec(sql)?.[1] ?? "";
+      affected = Math.max(1, splitList(values).filter((v) => v.startsWith("(")).length);
+    } else if (!/\bwhere\b/i.test(sql)) {
+      affected = hit?.meta.rowEstimate ?? 0;
+    } else {
+      affected = 1 + ((hit?.name.length ?? 0) % 3);
+    }
+    return {
+      ...empty,
+      kind: "affected",
+      affected,
+      lastInsertId:
+        keyword === "insert" && ctx.driver !== "postgres"
+          ? String((hit?.meta.rowEstimate ?? 0) + affected)
+          : null,
+    };
+  }
+
+  const notices: string[] = [];
+  const dropIfExists = /^\s*drop\s+(table|view|index|schema)\s+if\s+exists\s+(\S+)/i.exec(sql);
+  if (dropIfExists && ctx.driver === "postgres")
+    notices.push(
+      `${dropIfExists[1]!.toLowerCase()} "${unquote(dropIfExists[2]!.replace(/;$/, "")).name}" does not exist, skipping`,
+    );
+  return { ...empty, notices };
+}
+
+// --- commands ------------------------------------------------------------------------
+
+registerMock("run_sql", async ({ connectionId, queryId, sql, options, onEvent }) => {
+  const info = await connectionInfo(connectionId);
+  const text = String(sql ?? "");
+  const opts = {
+    maxRows: 10_000,
+    stopOnError: true,
+    explain: null,
+    ...(options as Partial<RunOptions>),
+  };
+  const channel = onEvent as { send?: (e: QueryEvent) => void } | undefined;
+  const run: Running = { cancelled: false };
+  const id = String(queryId);
+  running.set(id, run);
+  const ctx: Ctx = {
+    info,
+    driver: info.driver,
+    text,
+    run,
+    maxRows: opts.maxRows,
+    send: (e) => channel?.send?.(e),
+  };
+  const began = performance.now();
+  const results: StatementResult[] = [];
+  try {
+    const statements = splitStatements(text, info.driver);
+    for (let index = 0; index < statements.length; index++) {
+      const st = statements[index]!;
+      const stmtSql = text.slice(st.start, st.end);
+      const span = {
+        start: utf16ToChar(text, st.start),
+        end: utf16ToChar(text, st.end),
+        line: st.line,
+      };
+      const startedAt = new Date().toISOString();
+      const t0 = performance.now();
+      ctx.send({ event: "started", data: { index, sql: stmtSql, span } });
+      const base: StatementResult = {
+        index,
+        sql: stmtSql,
+        span,
+        kind: "empty",
+        columns: [],
+        resultSets: 0,
+        rowCount: 0,
+        truncated: false,
+        affected: null,
+        lastInsertId: null,
+        startedAt,
+        durationMs: 0,
+        error: null,
+        notices: [],
+      };
+      try {
+        if (run.cancelled) throw cancelledError(info.driver, index);
+        const r = await execute(ctx, stmtSql, st.start, index, opts.explain);
+        const result: StatementResult = {
+          ...base,
+          ...r,
+          durationMs: Math.max(1, Math.round(performance.now() - t0)),
+        };
+        results.push(result);
+        ctx.send({ event: "finished", data: { index, result } });
+        record(info, stmtSql, "editor", {
+          durationMs: result.durationMs,
+          rowCount: r.kind === "rows" ? r.rowCount : null,
+          affected: r.affected,
+        });
+      } catch (e) {
+        if (!(e instanceof SqlError)) throw e;
+        const result: StatementResult = {
+          ...base,
+          error: e.payload,
+          durationMs: Math.round(performance.now() - t0),
+        };
+        results.push(result);
+        ctx.send({ event: "failed", data: { index, error: e.payload } });
+        record(info, stmtSql, "editor", {
+          durationMs: result.durationMs,
+          error: e.payload.message,
+        });
+        if (e.payload.code === "CANCELLED" || opts.stopOnError) break;
+      }
+    }
+  } finally {
+    running.delete(id);
+  }
+  ctx.send({
+    event: "done",
+    data: { totalMs: Math.max(1, Math.round(performance.now() - began)) },
+  });
+  return results;
+});
+
+registerMock("cancel_query", ({ queryId }) => {
+  const run = running.get(String(queryId));
+  if (run) run.cancelled = true;
+  return null;
+});
+
+registerMock("explain", async ({ connectionId, sql, mode, queryId }) => {
+  const info = await connectionInfo(connectionId);
+  const text = String(sql ?? "");
+  const run: Running = { cancelled: false };
+  const id = queryId ? String(queryId) : crypto.randomUUID();
+  running.set(id, run);
+  const ctx: Ctx = { info, driver: info.driver, text, run, maxRows: 10_000, send: () => undefined };
+  const t0 = performance.now();
+  try {
+    const st = splitStatements(text, info.driver)[0];
+    if (!st) mockError("INVALID_INPUT", "nothing to explain");
+    const stmtSql = text.slice(st.start, st.end);
+    const leadAt = stmtSql.search(/\S/);
+    const keyword = /^[\p{L}_]+/u.exec(stmtSql.slice(leadAt))?.[0]?.toLowerCase() ?? "";
+    const syntax = /\bsyntax\b/i.exec(stmtSql);
+    if (syntax) throw syntaxError(info.driver, text, st.start + syntax.index, 0);
+    if (!KNOWN.has(keyword)) throw syntaxError(info.driver, text, st.start + leadAt, 0);
+    await sleep(mode === "analyze" ? 60 : 15);
+    if (run.cancelled) throw cancelledError(info.driver, 0);
+    const lines = planLines(ctx, stmtSql, mode as ExplainMode, st.start, 0);
+    const durationMs = Math.max(1, Math.round(performance.now() - t0));
+    record(info, `EXPLAIN${mode === "analyze" ? " ANALYZE" : ""} ${stmtSql}`, "explain", {
+      durationMs,
+      rowCount: lines.length,
+    });
+    return {
+      columns: [
+        resultColumn(info.driver, info.driver === "mysql" ? "EXPLAIN" : "QUERY PLAN", "text"),
+      ],
+      rows: lines.map((l) => [{ t: "text", v: l }]),
+      text: lines.join("\n"),
+      durationMs,
+    } satisfies ExplainResult;
+  } catch (e) {
+    if (e instanceof SqlError) {
+      record(info, String(sql), "explain", {
+        durationMs: Math.round(performance.now() - t0),
+        error: e.payload.message,
+      });
+      throw e.payload;
+    }
+    throw e;
+  } finally {
+    running.delete(id);
+  }
+});
+
+registerMock("list_history", ({ filter }) => {
+  const f = {
+    profileId: null,
+    search: null,
+    limit: null,
+    beforeId: null,
+    ...(filter as Partial<HistoryFilter>),
+  };
+  const needle = f.search?.trim().toLowerCase() ?? "";
+  const limit = Math.min(1000, Math.max(1, f.limit ?? 200));
+  return history
+    .filter(
+      (h) =>
+        (f.profileId === null || h.profileId === f.profileId) &&
+        (f.beforeId === null || h.id < f.beforeId) &&
+        (!needle || h.sql.toLowerCase().includes(needle)),
+    )
+    .sort((a, b) => b.id - a.id)
+    .slice(0, limit);
+});
+
+registerMock("delete_history", ({ ids }) => {
+  const drop = new Set((ids as number[]) ?? []);
+  history = history.filter((h) => !drop.has(h.id));
+  return null;
+});
+
+registerMock("clear_history", ({ profileId }) => {
+  history = profileId ? history.filter((h) => h.profileId !== profileId) : [];
+  return null;
+});
+
+registerMock("read_text_file", ({ path }) => {
+  const content = files.get(String(path));
+  if (content === undefined) mockError("NOT_FOUND", `No such file: ${String(path)}`);
+  return content;
+});
+
+registerMock("write_text_file", ({ path, content }) => {
+  if (typeof path !== "string" || !path.trim()) mockError("INVALID_INPUT", "path required");
+  files.set(path, String(content ?? ""));
+  return null;
+});

@@ -79,6 +79,47 @@ export const SEED_PROFILES: ConnectionProfile[] = [
       sqliteForeignKeys: true,
     },
   }),
+  // SSH host-key flow (see mock/export.ts): the first connect / test asks to trust the bastion's
+  // key, later ones succeed; "Rotated host" always presents a key that differs from the trusted one.
+  profile({
+    id: "p-staging-ssh",
+    name: "Staging via SSH",
+    driver: "postgres",
+    color: "purple",
+    group: "Staging",
+    sortOrder: 5,
+    host: "10.0.1.20",
+    user: "app",
+    database: "app_staging",
+    ssh: {
+      host: "bastion.example.com",
+      port: 22,
+      user: "deploy",
+      auth: "agent",
+      keyPath: null,
+      localPort: null,
+      keepaliveSecs: null,
+    },
+  }),
+  profile({
+    id: "p-rotated-ssh",
+    name: "Rotated host",
+    driver: "mysql",
+    color: "yellow",
+    group: "Staging",
+    sortOrder: 6,
+    host: "10.0.2.15",
+    user: "app",
+    ssh: {
+      host: "rotated.example.com",
+      port: 2222,
+      user: "deploy",
+      auth: "key",
+      keyPath: "~/.ssh/id_ed25519",
+      localPort: null,
+      keepaliveSecs: null,
+    },
+  }),
 ];
 
 type ColSpec = [name: string, dataType: string, kind: ValueKind, opts?: Partial<ColumnMeta>];

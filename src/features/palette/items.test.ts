@@ -63,10 +63,12 @@ describe("keymapActionItems", () => {
     expect(actionApplies("tab.new-query", idle)).toBe(false);
     expect(actionApplies("tab.close", idle)).toBe(false);
     expect(actionApplies("tab.reopen", idle)).toBe(false);
+    expect(actionApplies("export.open", idle)).toBe(false);
     expect(actionApplies("ui.toggle-sidebar", idle)).toBe(true);
     const busy = { hasConnection: true, tabCount: 1, closedCount: 1 };
     expect(actionApplies("tab.new-query", busy)).toBe(true);
     expect(actionApplies("tab.close", busy)).toBe(true);
+    expect(actionApplies("export.open", busy)).toBe(true);
     expect(actionApplies("tab.next", busy)).toBe(false);
     expect(actionApplies("tab.next", { ...busy, tabCount: 2 })).toBe(true);
   });

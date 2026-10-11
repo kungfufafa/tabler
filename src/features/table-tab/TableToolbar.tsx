@@ -1,4 +1,4 @@
-import { Columns3, Filter, RefreshCw, TableProperties } from "lucide-react";
+import { Columns3, FileDown, Filter, RefreshCw, TableProperties } from "lucide-react";
 import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { openExportForActiveTab } from "@/features/export/store";
 import type { ColumnMeta, TableRef } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 
@@ -113,6 +114,22 @@ export function TableToolbar({
           ))}
         </DropdownMenuContent>
       </DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => openExportForActiveTab()}
+            aria-label="Export"
+          >
+            <FileDown />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent className="flex items-center gap-1.5">
+          Export…{" "}
+          <Kbd combo="Mod+Shift+E" className="border-border/40 bg-transparent text-inherit" />
+        </TooltipContent>
+      </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon-sm" onClick={onOpenStructure} aria-label="Structure">

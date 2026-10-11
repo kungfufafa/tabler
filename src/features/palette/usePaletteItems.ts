@@ -4,6 +4,7 @@ import { connectionSummary } from "@/features/connections/schema";
 import { useProfiles } from "@/features/connections/useConnections";
 import { useCurrentSchema, useSchemas, useTables } from "@/features/sidebar/useSchemaTree";
 import { pendingCount } from "@/features/staging/model";
+import { useStructureStore } from "@/features/structure/store";
 import { KEYMAP } from "@/lib/keys/keymap";
 import { useActiveConnection, useConnectionsStore } from "@/stores/connections";
 import { useTableTabsStore } from "@/stores/tableTabs";
@@ -52,6 +53,7 @@ export function usePaletteItems(query: string, commands: PaletteCommands): Palet
   const activeTabId = useTabsStore((s) => s.activeId);
   const closedCount = useTabsStore((s) => s.closed.length);
   const slices = useTableTabsStore((s) => s.slices);
+  const structure = useStructureStore((s) => s.byTab);
   const openConnections = useConnectionsStore(
     useShallow((s) => s.order.map((id) => s.byId[id]).filter((c) => c !== undefined)),
   );
@@ -76,7 +78,8 @@ export function usePaletteItems(query: string, commands: PaletteCommands): Palet
     // Same rule as the tab strip (`unsavedCount`), read from the subscribed slices.
     const isDirty = (tab: Tab) => {
       if (tab.kind === "query") return tab.dirty === true;
-      const staging = tab.kind === "table" ? slices[tab.id]?.staging : undefined;
+      if (tab.kind === "structure") return (structure[tab.id]?.ops.length ?? 0) > 0;
+      const staging = slices[tab.id]?.staging;
       return staging !== undefined && pendingCount(staging) > 0;
     };
     return tabItems(tabs, {
@@ -85,7 +88,7 @@ export function usePaletteItems(query: string, commands: PaletteCommands): Palet
       connectionName: names.size > 1 ? (id) => names.get(id) ?? null : undefined,
       activate: commands.activateTab,
     });
-  }, [tabs, activeTabId, slices, openConnections, commands]);
+  }, [tabs, activeTabId, slices, structure, openConnections, commands]);
 
   const connectionGroup = useMemo(() => {
     const openByProfile = new Map(

@@ -13,6 +13,7 @@ import type { RowResult } from "../bindings/RowResult";
 import type { StagedChange } from "../bindings/StagedChange";
 import type { TableRef } from "../bindings/TableRef";
 import type { Value } from "../bindings/Value";
+import { mockCheckHostKey } from "./export";
 import { SEED_PROFILES, tableMetaFor, tablesFor } from "./fixtures";
 import { matchesGroup, rowsFor, sortRows } from "./rows";
 import { mockEmit, mockError, registerMock } from "./transport";
@@ -30,6 +31,11 @@ function serverVersion(p: ConnectionProfile): string {
     : p.driver === "mysql"
       ? "MySQL 9.6.0"
       : "SQLite 3.54.0";
+}
+
+/** The SSH tunnel settings a profile connects through (SQLite files never use one). */
+function sshOf(p: ConnectionProfile) {
+  return p.driver === "sqlite" ? null : p.ssh;
 }
 
 function conn(connectionId: string) {
@@ -98,21 +104,24 @@ registerMock("get_secret_status", ({ id }) => ({
 registerMock("test_connection", async ({ input }) => {
   const { profile } = input as ProfileInput;
   await new Promise((r) => setTimeout(r, 300));
+  // SSH profiles verify the server's host key first (unknown keys are parked under the profile id).
+  const ssh = sshOf(profile);
+  mockCheckHostKey(profile.id, ssh);
   if ((profile.host ?? "").includes("bad") || (profile.sqlitePath ?? "").includes("missing")) {
     return {
       ok: false,
       serverVersion: null,
       latencyMs: 312,
       message: "connection refused (mock)",
-      tunnelUsed: false,
+      tunnelUsed: ssh !== null,
     };
   }
   return {
     ok: true,
     serverVersion: serverVersion(profile),
-    latencyMs: 12,
+    latencyMs: ssh ? 48 : 12,
     message: `Connected to ${serverVersion(profile)}`,
-    tunnelUsed: false,
+    tunnelUsed: ssh !== null,
   };
 });
 
@@ -120,6 +129,8 @@ registerMock("test_connection", async ({ input }) => {
 registerMock("connect", async ({ profileId }) => {
   const p = profiles.get(profileId as string) ?? mockError("NOT_FOUND", `profile ${profileId}`);
   await new Promise((r) => setTimeout(r, 250));
+  const ssh = sshOf(p);
+  mockCheckHostKey(p.id, ssh);
   if ((p.host ?? "").includes("bad"))
     mockError("CONNECT_FAILED", `could not connect to ${p.host}:${p.port}: connection refused`);
   const info: ConnectionInfo = {
@@ -131,7 +142,7 @@ registerMock("connect", async ({ profileId }) => {
     serverVersion: serverVersion(p),
     currentDatabase: p.driver === "sqlite" ? p.sqlitePath : (p.database ?? "postgres"),
     currentUser: p.user,
-    tunnel: null,
+    tunnel: ssh ? { localPort: 50000 + (connections.size % 1000) } : null,
     readOnly: p.options.readOnly,
   };
   connections.set(info.connectionId, { ...info, profile: p });
@@ -171,6 +182,8 @@ registerMock("list_databases", ({ connectionId }) => {
       : c.driver === "mysql"
         ? ["tabler_dev", "tabler_inv", "shop", "sys"]
         : [c.profile.sqlitePath ?? "sample.sqlite"];
+  // The server always lists the database the session is connected to.
+  if (c.currentDatabase && !names.includes(c.currentDatabase)) names.unshift(c.currentDatabase);
   return names.map((name) => ({
     name,
     owner: c.driver === "postgres" ? "tabler" : null,

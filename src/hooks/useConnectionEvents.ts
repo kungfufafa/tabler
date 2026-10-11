@@ -2,7 +2,14 @@ import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { profileKeys } from "@/features/connections/useConnections";
-import { IpcError, ipc, toIpcError, type ConnStatus, type ConnectionInfo } from "@/lib/ipc";
+import {
+  IpcError,
+  ipc,
+  toIpcError,
+  type ConnStatus,
+  type ConnectionInfo,
+  type TunnelStatusEvent,
+} from "@/lib/ipc";
 import { listenEvent } from "@/lib/ipc/events";
 import { useConnectionsStore, type OpenConnection } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
@@ -47,6 +54,80 @@ function refetchFailed(qc: QueryClient | undefined, connectionId: string): void 
 /** One toast slot per profile, so "lost" / "reconnected" replace each other instead of stacking. */
 const statusToastId = (profileId: string) => `connection-status:${profileId}`;
 
+// ---- SSH tunnel status ----------------------------------------------------------------------
+
+/**
+ * How long a tunnel that went down while its connection still looks healthy waits for the
+ * connection's "lost" status before it is announced anyway. A deliberate disconnect also closes
+ * the tunnel (and reports it) just before the connection leaves the store; waiting lets that case
+ * stay silent.
+ */
+export const TUNNEL_DOWN_GRACE_MS = 1_500;
+
+interface PendingTunnelDown {
+  message: string | null;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/** Tunnels reported down whose connection has not been marked lost yet, by connection id. */
+const pendingTunnelDown = new Map<string, PendingTunnelDown>();
+/** Connections whose tunnel failure was announced; cleared when the tunnel is up again. */
+const tunnelAnnounced = new Set<string>();
+
+function takePendingTunnel(connectionId: string): PendingTunnelDown | undefined {
+  const pending = pendingTunnelDown.get(connectionId);
+  if (pending) {
+    clearTimeout(pending.timer);
+    pendingTunnelDown.delete(connectionId);
+  }
+  return pending;
+}
+
+function announceTunnelDown(connectionId: string, message: string | null): void {
+  const conn = useConnectionsStore.getState().byId[connectionId];
+  if (!conn || conn.status === "disconnected" || tunnelAnnounced.has(connectionId)) return;
+  tunnelAnnounced.add(connectionId);
+  // Same slot as "Connection … lost", which it explains (the banner keeps the details).
+  toast.error(`SSH tunnel to ${conn.info.name} closed`, {
+    id: statusToastId(conn.info.profileId),
+    description: message ?? undefined,
+  });
+}
+
+/**
+ * Handles a `tunnel:status` event: a tunnel that went down (or failed) under an open connection is
+ * announced once; "up" (after a reconnect) only resets that. The backend flips the connection to
+ * "lost" itself, which the banner shows.
+ */
+export function applyTunnelStatus(e: TunnelStatusEvent): void {
+  const id = e.connectionId;
+  if (e.status === "up") {
+    takePendingTunnel(id);
+    tunnelAnnounced.delete(id);
+    return;
+  }
+  const conn = useConnectionsStore.getState().byId[id];
+  if (!conn || conn.status === "disconnected") return;
+  if (conn.status !== "connected") {
+    takePendingTunnel(id);
+    announceTunnelDown(id, e.message);
+    return;
+  }
+  if (pendingTunnelDown.has(id)) return;
+  const timer = setTimeout(() => {
+    pendingTunnelDown.delete(id);
+    announceTunnelDown(id, e.message);
+  }, TUNNEL_DOWN_GRACE_MS);
+  pendingTunnelDown.set(id, { message: e.message, timer });
+}
+
+/** Test helper: forget pending / announced tunnel failures. */
+export function resetTunnelState(): void {
+  for (const p of pendingTunnelDown.values()) clearTimeout(p.timer);
+  pendingTunnelDown.clear();
+  tunnelAnnounced.clear();
+}
+
 /**
  * Writes a status into the store and announces meaningful transitions. With `qc`, a recovery also
  * refetches the connection's queries that failed while it was down.
@@ -59,10 +140,16 @@ export function applyStatus(
 ): void {
   const store = useConnectionsStore.getState();
   const conn = store.byId[connectionId];
+  if (status === "disconnected") takePendingTunnel(connectionId);
   if (!conn || (conn.status === status && conn.message === message)) return;
   store.setStatus(connectionId, status, message);
   const id = statusToastId(conn.info.profileId);
-  if (status === "lost" && conn.status === "connected") {
+  const tunnel = status === "lost" ? takePendingTunnel(connectionId) : undefined;
+  if (tunnel) {
+    // The SSH tunnel went first: say so instead of a generic "connection lost".
+    announceTunnelDown(connectionId, tunnel.message);
+  } else if (status === "lost" && conn.status === "connected") {
+    if (tunnelAnnounced.has(connectionId)) return;
     toast.error(`Connection to ${conn.info.name} lost`, { id, description: message ?? undefined });
   } else if (status === "connected" && conn.status !== "connected") {
     toast.success(`Reconnected to ${conn.info.name}`, { id });
@@ -370,6 +457,20 @@ export function useConnectionEvents(): void {
       unlisten?.();
     };
   }, [qc]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void listenEvent("tunnel:status", applyTunnelStatus).then((u) => {
+      if (cancelled) u();
+      else unlisten = u;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      resetTunnelState();
+    };
+  }, []);
 
   useEffect(
     () =>

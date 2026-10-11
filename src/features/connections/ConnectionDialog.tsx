@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Check, FolderOpen, Loader2, X } from "lucide-react";
+import { ArrowRight, Check, FolderOpen, Info, Loader2, Network, ShieldOff, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Controller, useForm, type UseFormReturn } from "react-hook-form";
 import { toast } from "sonner";
@@ -37,7 +37,12 @@ import {
   profileToForm,
   type ConnectionFormValues,
 } from "./schema";
-import { useSaveProfile, useSecretStatus, useTestConnection } from "./useConnections";
+import {
+  hostKeyDeclined,
+  useSaveProfile,
+  useSecretStatus,
+  useTestConnection,
+} from "./useConnections";
 
 type Form = UseFormReturn<ConnectionFormValues>;
 
@@ -86,11 +91,50 @@ async function pickFile(title: string): Promise<string | null> {
   return typeof picked === "string" ? picked : null;
 }
 
-function GeneralTab({ form, hasStoredPassword }: { form: Form; hasStoredPassword: boolean }) {
+/** "via ssh deploy@bastion:22" under the host fields while the SSH tunnel is on. */
+function SshSummary({ form, onEdit }: { form: Form; onEdit: () => void }) {
+  const { watch } = form;
+  const host = watch("sshHost").trim();
+  const user = watch("sshUser").trim();
+  const port = watch("sshPort").trim() || "22";
+  const configured = host !== "" && user !== "";
+  return (
+    <button
+      type="button"
+      onClick={onEdit}
+      className="border-border bg-surface-2 hover:border-border-strong group col-span-6 flex h-7 min-w-0 items-center gap-1.5 rounded-md border px-2 text-left text-[11px]"
+      title="Edit SSH tunnel"
+    >
+      <Network className="text-brand size-3.5 shrink-0" />
+      {configured ? (
+        <span className="text-muted-foreground min-w-0 truncate">
+          via ssh{" "}
+          <span className="text-foreground font-mono">
+            {user}@{host}:{port}
+          </span>
+        </span>
+      ) : (
+        <span className="text-warning truncate">SSH tunnel is on but not configured</span>
+      )}
+      <ArrowRight className="text-muted-foreground ml-auto size-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
+    </button>
+  );
+}
+
+function GeneralTab({
+  form,
+  hasStoredPassword,
+  onEditSsh,
+}: {
+  form: Form;
+  hasStoredPassword: boolean;
+  onEditSsh: () => void;
+}) {
   const { register, control, formState, watch, setValue } = form;
   const errors = formState.errors;
   const driver = watch("driver");
   const clearPassword = watch("clearPassword");
+  const sshEnabled = watch("sshEnabled");
   const sqlite = driver === "sqlite";
   return (
     <div className="grid grid-cols-6 gap-3">
@@ -184,6 +228,7 @@ function GeneralTab({ form, hasStoredPassword }: { form: Form; hasStoredPassword
               inputMode="numeric"
             />
           </Field>
+          {sshEnabled && <SshSummary form={form} onEdit={onEditSsh} />}
           <Field label="User" error={errors.user?.message} className="col-span-3">
             <Input
               {...register("user")}
@@ -353,6 +398,19 @@ function SshTab({ form }: { form: Form }) {
             />
           </Field>
         )}
+        {auth === "agent" && (
+          <p className="text-muted-foreground col-span-6 text-[11px]">
+            Uses the identities loaded in your SSH agent (<span className="font-mono">ssh-add</span>
+            ).
+          </p>
+        )}
+        <div className="border-border text-muted-foreground col-span-6 flex items-center gap-1.5 border-t pt-2.5 text-[11px]">
+          <Info className="size-3.5 shrink-0" />
+          <span className="min-w-0">
+            Local port: <span className="text-foreground font-mono">auto</span> · keepalive is
+            automatic · the host key is confirmed on first connect
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -427,16 +485,19 @@ export function ConnectionDialog({
   const save = useSaveProfile();
   const test = useTestConnection();
   const secret = useSecretStatus(profile?.id ?? null);
+  const [tab, setTab] = useState("general");
 
   useEffect(() => {
     if (!open) return;
     setId(profile?.id ?? crypto.randomUUID());
     form.reset(profile ? profileToForm(profile) : newProfileForm(getPrefs().connectTimeout));
     test.reset();
+    setTab("general");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, profile?.id]);
 
-  const testResult = test.data;
+  const testResult = test.isSuccess ? test.data : undefined;
+  const testError = test.isError ? test.error : null;
   const title = useMemo(() => (profile ? `Edit ${profile.name}` : "New connection"), [profile]);
 
   const buildInput = (values: ConnectionFormValues) => formToProfileInput(values, profile, id);
@@ -451,40 +512,53 @@ export function ConnectionDialog({
   const onTest = async () => {
     const valid = await form.trigger();
     if (!valid) return;
-    await test.mutateAsync(buildInput(form.getValues()));
+    try {
+      // Uses the form's (possibly unsaved) profile id, which also keys a pending SSH host key.
+      await test.mutateAsync(buildInput(form.getValues()));
+    } catch {
+      // Shown next to the Test button.
+    }
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl gap-0 p-0" showCloseButton>
-        <form onSubmit={onSubmit}>
-          <DialogHeader className="border-border border-b px-5 py-4">
+      {/* Header and footer stay put; the tab body scrolls when the window is short (min 600px). */}
+      <DialogContent
+        className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl"
+        showCloseButton
+      >
+        <form onSubmit={onSubmit} className="flex min-h-0 flex-1 flex-col">
+          <DialogHeader className="border-border shrink-0 border-b px-5 py-4">
             <DialogTitle>{title}</DialogTitle>
             <DialogDescription>
               Credentials are stored in the macOS Keychain, never in plain files.
             </DialogDescription>
           </DialogHeader>
-          <Tabs defaultValue="general" className="px-5 pt-3">
-            <TabsList>
+          <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1 pt-3">
+            <TabsList className="mx-5 shrink-0">
               <TabsTrigger value="general">General</TabsTrigger>
               <TabsTrigger value="ssh" disabled={form.watch("driver") === "sqlite"}>
                 SSH
               </TabsTrigger>
               <TabsTrigger value="advanced">Advanced</TabsTrigger>
             </TabsList>
-            <div className="min-h-[300px] py-4">
-              <TabsContent value="general">
-                <GeneralTab form={form} hasStoredPassword={secret.data?.hasPassword ?? false} />
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+              <TabsContent value="general" className="min-h-[268px]">
+                <GeneralTab
+                  form={form}
+                  hasStoredPassword={secret.data?.hasPassword ?? false}
+                  onEditSsh={() => setTab("ssh")}
+                />
               </TabsContent>
-              <TabsContent value="ssh">
+              <TabsContent value="ssh" className="min-h-[268px]">
                 <SshTab form={form} />
               </TabsContent>
-              <TabsContent value="advanced">
+              <TabsContent value="advanced" className="min-h-[268px]">
                 <AdvancedTab form={form} />
               </TabsContent>
             </div>
           </Tabs>
-          <DialogFooter className="border-border items-center border-t px-5 py-3 sm:justify-between">
+          <DialogFooter className="border-border mx-0 mb-0 shrink-0 items-center border-t px-5 py-3 sm:justify-between">
             <div className="flex min-w-0 items-center gap-2">
               <Button
                 type="button"
@@ -511,8 +585,27 @@ export function ConnectionDialog({
                   )}
                   <span className="truncate">
                     {testResult.ok
-                      ? `${testResult.serverVersion ?? "OK"} · ${testResult.latencyMs} ms`
+                      ? `${testResult.serverVersion ?? "OK"} · ${testResult.latencyMs} ms${testResult.tunnelUsed ? " · via SSH" : ""}`
                       : testResult.message}
+                  </span>
+                </span>
+              )}
+              {testError && (
+                <span
+                  role="status"
+                  className={cn(
+                    "flex min-w-0 items-center gap-1 truncate text-xs",
+                    hostKeyDeclined(testError) ? "text-muted-foreground" : "text-error",
+                  )}
+                  title={testError.message}
+                >
+                  {hostKeyDeclined(testError) ? (
+                    <ShieldOff className="size-3.5 shrink-0" />
+                  ) : (
+                    <X className="size-3.5 shrink-0" />
+                  )}
+                  <span className="truncate">
+                    {hostKeyDeclined(testError) ? "Host key not trusted" : testError.message}
                   </span>
                 </span>
               )}

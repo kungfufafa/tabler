@@ -10,6 +10,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { pendingCount } from "@/features/staging/model";
+import { useStructureStore } from "@/features/structure/store";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import type { ActionId } from "@/features/palette/actions";
@@ -28,14 +29,18 @@ function Shortcut({ id }: { id: ActionId }) {
   ) : null;
 }
 
-/** Staged row edits (table tabs) or 1 for a dirty query tab. */
+/** Staged row edits (table tabs), staged DDL ops (structure tabs) or 1 for a dirty query tab. */
 function useUnsaved(tab: Tab): number {
   const pending = useTableTabsStore((s) => {
     if (tab.kind !== "table") return 0;
     const slice = s.slices[tab.id];
     return slice ? pendingCount(slice.staging) : 0;
   });
-  return tab.kind === "query" ? (tab.dirty ? 1 : 0) : pending;
+  const staged = useStructureStore((s) =>
+    tab.kind === "structure" ? (s.byTab[tab.id]?.ops.length ?? 0) : 0,
+  );
+  if (tab.kind === "query") return tab.dirty ? 1 : 0;
+  return tab.kind === "structure" ? staged : pending;
 }
 
 function TabMenu({ tab }: { tab: Tab }) {

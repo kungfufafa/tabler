@@ -8,6 +8,7 @@ import {
   CircleSlash2,
   Copy,
   Eraser,
+  FileDown,
   FolderOpen,
   Funnel,
   History,
@@ -384,6 +385,7 @@ const ACTION_ICONS: Partial<Record<ActionId, LucideIcon>> = {
   "query.history": History,
   "query.save": Save,
   "query.open": FolderOpen,
+  "export.open": FileDown,
 };
 
 export function actionIcon(id: ActionId): LucideIcon {
@@ -409,8 +411,10 @@ export function actionApplies(id: ActionId, ctx: ActionContext): boolean {
   switch (id) {
     case "tab.new-query":
       return ctx.hasConnection;
+    // Without a tab, export.open only reports "Nothing to export here".
     case "tab.close":
     case "tab.close-all":
+    case "export.open":
       return ctx.tabCount > 0;
     case "tab.next":
     case "tab.prev":

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { pendingCount } from "@/features/staging/model";
+import { structurePendingCount, useStructureStore } from "@/features/structure/store";
 import type { TableRef } from "@/lib/ipc";
 import { useTableTabsStore } from "./tableTabs";
 
@@ -89,14 +90,22 @@ export function sameTable(a: TableRef, b: TableRef): boolean {
   return a.name === b.name && (a.schema ?? "") === (b.schema ?? "");
 }
 
-/** Pending staged edits for a table tab, 1 for a dirty query tab, 0 otherwise. */
+/**
+ * Pending staged edits of a table tab, staged DDL ops of a structure tab, 1 for a dirty query tab.
+ */
 export function unsavedCount(tab: Tab): number {
   if (tab.kind === "query") return tab.dirty ? 1 : 0;
-  if (tab.kind === "table") {
-    const slice = useTableTabsStore.getState().slices[tab.id];
-    return slice ? pendingCount(slice.staging) : 0;
-  }
-  return 0;
+  if (tab.kind === "structure") return structurePendingCount(tab.id);
+  const slice = useTableTabsStore.getState().slices[tab.id];
+  return slice ? pendingCount(slice.staging) : 0;
+}
+
+/** Drops the per-tab state (staged rows, staged DDL) of tabs that are going away. */
+function dropTabState(ids: readonly string[]): void {
+  if (ids.length === 0) return;
+  const removeSlice = useTableTabsStore.getState().remove;
+  for (const id of ids) removeSlice(id);
+  useStructureStore.getState().remove(ids);
 }
 
 export function dirtyTabs(tabs: readonly Tab[]): DirtyTab[] {
@@ -249,8 +258,7 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
     const s = get();
     const removed = s.tabs.filter((t) => closing.has(t.id));
     if (removed.length === 0) return;
-    const removeSlice = useTableTabsStore.getState().remove;
-    for (const t of removed) removeSlice(t.id);
+    dropTabState(removed.map((t) => t.id));
     set({
       tabs: s.tabs.filter((t) => !closing.has(t.id)),
       activeId: pickNeighbour(s.tabs, s.activeId, closing),
@@ -261,8 +269,7 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
   closeForConnection: (connectionId) => {
     const s = get();
     const closing = new Set(s.tabs.filter((t) => t.connectionId === connectionId).map((t) => t.id));
-    const removeSlice = useTableTabsStore.getState().remove;
-    for (const id of closing) removeSlice(id);
+    dropTabState([...closing]);
     const request = s.closeRequest;
     const ids = request?.ids.filter((id) => !closing.has(id)) ?? [];
     const dirty = request?.dirty.filter((d) => !closing.has(d.id)) ?? [];

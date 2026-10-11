@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { emptyStaging, insertRow } from "@/features/staging/model";
+import { useStructureStore } from "@/features/structure/store";
+import type { DdlOp } from "@/lib/ipc";
 import { pickNeighbour, useTabsStore, type Tab } from "./tabs";
 import { useTableTabsStore } from "./tableTabs";
 
@@ -9,6 +11,17 @@ const orders = { schema: "public", name: "orders" };
 
 const ids = () => useTabsStore.getState().tabs.map((t) => t.id);
 const state = () => useTabsStore.getState();
+
+/** Stages `n` DDL ops (table renames, enough for counting) on a structure tab. */
+function stageDdl(tabId: string, n: number) {
+  for (let i = 0; i < n; i++)
+    useStructureStore
+      .getState()
+      .stage(tabId, (ops): DdlOp[] => [
+        ...ops,
+        { op: "renameTable", table: users, newName: `u${i}` },
+      ]);
+}
 
 /** Stages `n` inserted rows on a table tab. */
 function stage(tabId: string, n: number) {
@@ -27,6 +40,7 @@ describe("tabs store", () => {
       closeRequest: null,
     });
     useTableTabsStore.setState({ slices: {} });
+    useStructureStore.setState({ byTab: {} });
   });
 
   it("dedupes table tabs per connection and kind", () => {
@@ -128,6 +142,21 @@ describe("tabs store", () => {
       expect(state().tabs).toHaveLength(0);
       expect(state().closeRequest).toBeNull();
       expect(useTableTabsStore.getState().slices[a]).toBeUndefined();
+    });
+
+    it("asks before closing a structure tab with staged DDL and drops it on confirm", () => {
+      const s = state();
+      const a = s.openTable("c1", users, "structure");
+      stageDdl(a, 2);
+      expect(s.requestClose([a])).toBe(false);
+      expect(state().closeRequest).toMatchObject({
+        total: 2,
+        dirty: [{ id: a, kind: "structure", title: "users", count: 2 }],
+      });
+      expect(s.requestWindowClose()).toBe(false);
+      state().cancelClose();
+      state().forceClose([a]);
+      expect(useStructureStore.getState().byTab[a]).toBeUndefined();
     });
 
     it("keeps everything on cancel", () => {
@@ -241,12 +270,15 @@ describe("tabs store", () => {
     const b = s.openTable("c2", posts);
     const q = s.newQuery("c1");
     s.close(q);
+    const st = s.openTable("c1", users, "structure");
     stage(a, 1);
+    stageDdl(st, 1);
     s.activate(a);
     s.closeForConnection("c1");
     expect(ids()).toEqual([b]);
     expect(state().activeId).toBe(b);
     expect(state().closed).toHaveLength(0);
     expect(useTableTabsStore.getState().slices[a]).toBeUndefined();
+    expect(useStructureStore.getState().byTab[st]).toBeUndefined();
   });
 });

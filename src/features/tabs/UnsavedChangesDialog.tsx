@@ -1,4 +1,4 @@
-import { FileCode2, Table2 } from "lucide-react";
+import { FileCode2, Table2, TableProperties } from "lucide-react";
 import { useState } from "react";
 import { Kbd } from "@/components/Kbd";
 import {
@@ -19,6 +19,7 @@ import { useTabsStore, type CloseRequest } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
 
 const DISCARD_COMBO = "Mod+D";
+const KIND_ICONS = { table: Table2, structure: TableProperties, query: FileCode2 } as const;
 
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -52,7 +53,8 @@ export function UnsavedChangesDialog() {
   const [last, setLast] = useState<CloseRequest | null>(live);
   if (live && live !== last) setLast(live);
   const request = live ?? last;
-  const reviewTarget = request?.dirty.find((d) => d.kind === "table") ?? null;
+  // Table and structure tabs both answer `grid.preview` with their Preview SQL sheet.
+  const reviewTarget = request?.dirty.find((d) => d.kind !== "query") ?? null;
 
   const discard = () => {
     const req = useTabsStore.getState().confirmClose();
@@ -92,7 +94,7 @@ export function UnsavedChangesDialog() {
         {request && request.dirty.length > 1 && (
           <ul className="border-border bg-surface-2 max-h-32 overflow-y-auto rounded-md border py-1 text-xs">
             {request.dirty.map((d) => {
-              const Icon = d.kind === "query" ? FileCode2 : Table2;
+              const Icon = KIND_ICONS[d.kind];
               return (
                 <li key={d.id} className="flex h-6 items-center gap-1.5 px-2">
                   <Icon className="text-muted-foreground size-3.5 shrink-0" />

@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { HostKeyPromptHost } from "@/features/connections/HostKeyPrompt";
 import { Launcher } from "@/features/connections/Launcher";
+import { ExportHost } from "@/features/export";
 import { CommandPalette } from "@/features/palette/CommandPalette";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { ConnectionBanner } from "./ConnectionBanner";
@@ -60,6 +62,9 @@ export function AppShell() {
       <StatusBar />
       <CommandPalette />
       <SettingsDialog />
+      {/* App-wide hosts: the export dialog (and its ⌘⇧E default) and the SSH host-key prompt. */}
+      <ExportHost />
+      <HostKeyPromptHost />
     </div>
   );
 }

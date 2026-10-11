@@ -1,6 +1,14 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Copy, Table2, TableProperties } from "lucide-react";
-import { useRef } from "react";
+import {
+  Copy,
+  Eraser,
+  PencilLine,
+  SquarePlus,
+  Table2,
+  TableProperties,
+  Trash2,
+} from "lucide-react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
 import { TableIcon } from "@/components/TypeIcon";
@@ -12,11 +20,14 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TableDialogs, type TableDialogState } from "@/features/structure/TableDialogs";
+import { isAlterable, isViewKind } from "@/features/structure/tableActions";
 import { formatCount } from "@/lib/format/time";
 import type { TableSummary } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
+import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
-import type { TreeRow } from "./useSchemaTree";
+import { useCurrentSchema, type TreeRow } from "./useSchemaTree";
 
 const ROW_H = 24;
 
@@ -50,6 +61,22 @@ export function SchemaTree({
     overscan: 12,
     getItemKey: (i) => rows[i]?.key ?? i,
   });
+  // DDL actions of the context menu (New table / Rename / Truncate / Drop).
+  const [dialog, setDialog] = useState<TableDialogState | null>(null);
+  // Set when a context-menu item opened a tab: the closing menu must then not hand focus back to
+  // the sidebar, or the new tab (which focuses itself) loses its keyboard shortcuts.
+  const openedFromMenu = useRef(false);
+  const driver = useConnectionsStore((s) => s.byId[connectionId]?.info.driver ?? "postgres");
+  const readOnly = useConnectionsStore((s) => s.byId[connectionId]?.info.readOnly ?? false);
+  const currentSchema = useCurrentSchema(connectionId);
+  const dialogs = (
+    <TableDialogs
+      connectionId={connectionId}
+      dialect={driver}
+      state={dialog}
+      onClose={() => setDialog(null)}
+    />
+  );
 
   if (loading) {
     return (
@@ -63,13 +90,30 @@ export function SchemaTree({
   if (error) return <EmptyState title="Could not load tables" description={error} />;
   if (rows.length === 0) {
     return (
-      <EmptyState
-        icon={Table2}
-        title={search ? "No tables match" : "No tables"}
-        description={
-          search ? `Nothing matches “${search}”.` : "This schema has no tables or views."
-        }
-      />
+      <>
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div className="min-h-0 flex-1">
+              <EmptyState
+                icon={Table2}
+                title={search ? "No tables match" : "No tables"}
+                description={
+                  search ? `Nothing matches “${search}”.` : "This schema has no tables or views."
+                }
+              />
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem
+              disabled={readOnly}
+              onSelect={() => setDialog({ kind: "create", schema: currentSchema })}
+            >
+              <SquarePlus /> New table…
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+        {dialogs}
+      </>
     );
   }
 
@@ -79,6 +123,7 @@ export function SchemaTree({
 
   return (
     <div ref={parentRef} className="min-h-0 flex-1 overflow-auto" data-scope="sidebar">
+      {dialogs}
       <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
         {virtualizer.getVirtualItems().map((v) => {
           const row = rows[v.index]!;
@@ -131,13 +176,61 @@ export function SchemaTree({
                   )}
                 </button>
               </ContextMenuTrigger>
-              <ContextMenuContent>
-                <ContextMenuItem onSelect={() => open(t)}>
+              <ContextMenuContent
+                onCloseAutoFocus={(e) => {
+                  if (!openedFromMenu.current) return;
+                  openedFromMenu.current = false;
+                  e.preventDefault();
+                }}
+              >
+                <ContextMenuItem
+                  onSelect={() => {
+                    openedFromMenu.current = true;
+                    open(t);
+                  }}
+                >
                   <Table2 /> Open data
                 </ContextMenuItem>
-                <ContextMenuItem onSelect={() => open(t, "structure")}>
+                <ContextMenuItem
+                  onSelect={() => {
+                    openedFromMenu.current = true;
+                    open(t, "structure");
+                  }}
+                >
                   <TableProperties /> Structure
                 </ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem
+                  disabled={readOnly}
+                  onSelect={() => setDialog({ kind: "create", schema: t.schema })}
+                >
+                  <SquarePlus /> New table…
+                </ContextMenuItem>
+                {isAlterable(t.kind) && (
+                  <>
+                    <ContextMenuItem
+                      disabled={readOnly}
+                      onSelect={() => setDialog({ kind: "rename", table: t })}
+                    >
+                      <PencilLine /> Rename…
+                    </ContextMenuItem>
+                    <ContextMenuItem
+                      disabled={readOnly}
+                      onSelect={() => setDialog({ kind: "truncate", table: t })}
+                    >
+                      <Eraser /> Truncate…
+                    </ContextMenuItem>
+                  </>
+                )}
+                {(isAlterable(t.kind) || isViewKind(t.kind)) && (
+                  <ContextMenuItem
+                    variant="destructive"
+                    disabled={readOnly}
+                    onSelect={() => setDialog({ kind: "drop", table: t })}
+                  >
+                    <Trash2 /> {isViewKind(t.kind) ? "Drop view…" : "Drop…"}
+                  </ContextMenuItem>
+                )}
                 <ContextMenuSeparator />
                 <ContextMenuItem onSelect={() => copyText(t.name)}>
                   <Copy /> Copy name

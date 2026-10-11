@@ -1,0 +1,86 @@
+import { Copy, Loader2 } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { writeClipboard } from "@/features/datagrid/clipboard";
+import { formatDuration } from "@/lib/format/time";
+import type { Dialect } from "@/lib/ipc";
+import type { PlanState } from "@/stores/queryTabs";
+import { ElapsedTimer } from "./ElapsedTimer";
+import { ErrorBlock } from "./ErrorBlock";
+import { errorRange } from "./errorPos";
+import { firstLine } from "./labels";
+import { StaticGrid } from "./ResultSetGrid";
+
+/** The "Plan" pane: EXPLAIN output as text (when the dialect has a textual plan) or rows. */
+export function PlanView({
+  tabId,
+  plan,
+  dialect,
+}: {
+  tabId: string;
+  plan: PlanState;
+  dialect: Dialect;
+}) {
+  const title = plan.mode === "analyze" ? "EXPLAIN ANALYZE" : "EXPLAIN";
+  const text = plan.result?.text ?? null;
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="border-gridline text-muted-foreground flex h-7 shrink-0 items-center gap-2 border-b px-3 text-[11px]">
+        <span className="text-foreground/80 font-semibold tracking-wide">{title}</span>
+        <span className="min-w-0 flex-1 truncate font-mono">{firstLine(plan.sql)}</span>
+        {plan.status === "running" && (
+          <span className="flex items-center gap-1.5">
+            <Loader2 className="size-3 animate-spin" />
+            <ElapsedTimer since={plan.startedAt} />
+          </span>
+        )}
+        {plan.result && (
+          <span className="tabular-nums">{formatDuration(plan.result.durationMs)}</span>
+        )}
+        {text && (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Copy plan"
+            onClick={() =>
+              void writeClipboard(text).then(() => toast.success("Plan copied to the clipboard"))
+            }
+          >
+            <Copy />
+          </Button>
+        )}
+      </div>
+      <div className="min-h-0 flex-1">
+        {plan.status === "running" ? (
+          <div className="text-muted-foreground flex items-center gap-2 p-3 text-xs">
+            <Loader2 className="size-3.5 animate-spin" /> Explaining…
+          </div>
+        ) : plan.status === "cancelled" ? (
+          <div className="text-warning p-3 text-xs">
+            {plan.error?.message ?? "The explain was cancelled."}
+          </div>
+        ) : plan.error ? (
+          <div className="p-3">
+            <ErrorBlock
+              tabId={tabId}
+              submission={plan.id}
+              error={plan.error}
+              range={errorRange(plan.error, plan)}
+            />
+          </div>
+        ) : text !== null ? (
+          <pre className="selectable h-full overflow-auto p-3 font-mono text-[11.5px] leading-[1.55] whitespace-pre">
+            {text}
+          </pre>
+        ) : plan.result ? (
+          <StaticGrid
+            columns={plan.result.columns}
+            rows={plan.result.rows}
+            label="Plan"
+            dialect={dialect}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}

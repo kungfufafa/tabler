@@ -1,0 +1,331 @@
+import { describe, expect, it } from "vitest";
+import type { ColumnMeta, FilterGroup } from "@/lib/ipc";
+import {
+  browsePageOf,
+  buildExportRequest,
+  canExportPage,
+  currentPageSql,
+  DEFAULT_EXPORT_OPTIONS,
+  defaultFileName,
+  exportProblem,
+  fileFilter,
+  formatBytes,
+  formatElapsed,
+  loadExportOptions,
+  parseExportOptions,
+  safeFileBase,
+  saveExportOptions,
+  stripRowidAlias,
+  visibleColumnNames,
+  type ExportInput,
+  type ExportOptions,
+} from "./options";
+
+const opts = (patch: Partial<ExportOptions> = {}): ExportOptions => ({
+  ...DEFAULT_EXPORT_OPTIONS,
+  csv: { ...DEFAULT_EXPORT_OPTIONS.csv },
+  json: { ...DEFAULT_EXPORT_OPTIONS.json },
+  sql: { ...DEFAULT_EXPORT_OPTIONS.sql },
+  ...patch,
+});
+
+const filter: FilterGroup = {
+  conjunction: "and",
+  items: [{ kind: "condition", column: "id", op: "gt", values: [{ t: "int", v: 10 }] }],
+};
+
+function tableInput(patch: Partial<Extract<ExportInput, { kind: "table" }>> = {}): ExportInput {
+  return {
+    kind: "table",
+    table: { schema: "public", name: "users" },
+    filter,
+    sort: [{ column: "name", dir: "asc", nulls: null }],
+    columns: null,
+    generated: [],
+    scope: "all",
+    page: { limit: 200, offset: 0, sql: 'SELECT "id" FROM "users" LIMIT 200 OFFSET 0' },
+    ...patch,
+  };
+}
+
+const build = (input: ExportInput, options = opts(), sqlTableName = "") =>
+  buildExportRequest({ exportId: "e1", path: "/tmp/out", input, options, sqlTableName });
+
+describe("buildExportRequest", () => {
+  it("maps CSV options, including a tab delimiter", () => {
+    const req = build(
+      tableInput(),
+      opts({ csv: { delimiter: "\t", header: false, quoteAll: true, nullAs: "\\N" } }),
+    );
+    expect(req.format).toEqual({
+      format: "csv",
+      delimiter: "\t",
+      header: false,
+      quoteAll: true,
+      nullAs: "\\N",
+    });
+    expect(req.exportId).toBe("e1");
+    expect(req.path).toBe("/tmp/out");
+  });
+
+  it("maps JSON array / NDJSON; NDJSON is never pretty", () => {
+    expect(build(tableInput(), opts({ format: "json" })).format).toEqual({
+      format: "json",
+      ndjson: false,
+      pretty: true,
+    });
+    expect(
+      build(tableInput(), opts({ format: "json", json: { ndjson: true, pretty: true } })).format,
+    ).toEqual({ format: "json", ndjson: true, pretty: false });
+  });
+
+  it("maps SQL INSERT with a trimmed table name and a clamped batch size", () => {
+    expect(
+      build(tableInput(), opts({ format: "sqlInsert", sql: { batchSize: 250 } }), "  archive  ")
+        .format,
+    ).toEqual({ format: "sqlInsert", tableName: "archive", batchSize: 250 });
+    expect(
+      build(tableInput(), opts({ format: "sqlInsert", sql: { batchSize: 0 } })).format,
+    ).toEqual({ format: "sqlInsert", tableName: "", batchSize: 1 });
+    expect(
+      build(tableInput(), opts({ format: "sqlInsert", sql: { batchSize: 1e9 } })).format,
+    ).toMatchObject({ batchSize: 10_000 });
+  });
+
+  it("exports every row matching the filter with the tab's sort and columns", () => {
+    const req = build(tableInput({ columns: ["id", "email"] }));
+    expect(req.source).toEqual({
+      kind: "table",
+      table: { schema: "public", name: "users" },
+      filter,
+      sort: [{ column: "name", dir: "asc", nulls: null }],
+      columns: ["id", "email"],
+    });
+    expect(req.maxRows).toBeNull();
+  });
+
+  it("exports the first page as the table query capped at the page size", () => {
+    const req = build(tableInput({ scope: "page" }));
+    expect(req.source.kind).toBe("table");
+    expect(req.maxRows).toBe(200);
+  });
+
+  it("exports a later page by re-running the browse statement (without SQLite's rowid)", () => {
+    const sql =
+      'SELECT "id", "name", rowid AS "_tabler_rowid"\nFROM "main"."users"\nORDER BY rowid ASC\nLIMIT 200 OFFSET 400';
+    const req = build(
+      tableInput({ scope: "page", page: { limit: 200, offset: 400, sql } }),
+      opts({ format: "sqlInsert" }),
+    );
+    expect(req.source).toEqual({
+      kind: "sql",
+      sql: 'SELECT "id", "name"\nFROM "main"."users"\nORDER BY rowid ASC\nLIMIT 200 OFFSET 400',
+    });
+    expect(req.maxRows).toBe(200);
+    // A query source has no table to name the INSERTs after: the table's name is filled in.
+    expect(req.format).toMatchObject({ format: "sqlInsert", tableName: "users" });
+  });
+
+  it("never exports a later page with hidden columns (the browse statement selects them all)", () => {
+    const sql =
+      'SELECT "id"::text AS "id", "password_hash"::text AS "password_hash"\nFROM "public"."users"\nLIMIT 200 OFFSET 200';
+    const input = tableInput({
+      scope: "page",
+      columns: ["id", "email"],
+      page: { limit: 200, offset: 200, sql },
+    });
+    expect(exportProblem(input, "csv")).toMatchObject({
+      field: "rows",
+      message: expect.stringContaining("Only visible columns"),
+    });
+    expect(() => build(input)).toThrow(/Only visible columns/);
+    // With every column chosen explicitly (unchecked), the page re-runs as before.
+    const all = build(tableInput({ scope: "page", page: { limit: 200, offset: 200, sql } }));
+    expect(all.source).toEqual({ kind: "sql", sql });
+    // The first page stays a table export and keeps the column choice.
+    const first = build(tableInput({ scope: "page", columns: ["id", "email"] }));
+    expect(first.source).toMatchObject({ kind: "table", columns: ["id", "email"] });
+  });
+
+  it("leaves generated columns out of INSERT exports of a column subset", () => {
+    const input = tableInput({ columns: ["id", "qty", "price", "total"], generated: ["total"] });
+    expect(build(input, opts({ format: "sqlInsert" })).source).toMatchObject({
+      kind: "table",
+      columns: ["id", "qty", "price"],
+    });
+    // Other formats write what the grid shows.
+    expect(build(input).source).toMatchObject({ columns: ["id", "qty", "price", "total"] });
+    // Every column (null): the backend skips generated columns itself.
+    expect(
+      build(tableInput({ generated: ["total"] }), opts({ format: "sqlInsert" })).source,
+    ).toMatchObject({ kind: "table", columns: null });
+  });
+
+  it("refuses INSERT exports with nothing insertable", () => {
+    const onlyGenerated = tableInput({ columns: ["total"], generated: ["total"] });
+    expect(exportProblem(onlyGenerated, "sqlInsert")).toMatchObject({ field: "columns" });
+    expect(exportProblem(onlyGenerated, "json")).toBeNull();
+    // A later page re-runs the browse statement, which can't drop generated columns.
+    const laterPage = tableInput({
+      scope: "page",
+      generated: ["total"],
+      page: { limit: 200, offset: 200, sql: "SELECT 1 LIMIT 200 OFFSET 200" },
+    });
+    expect(exportProblem(laterPage, "sqlInsert")).toMatchObject({ field: "rows" });
+    expect(exportProblem(laterPage, "csv")).toBeNull();
+    expect(() => build(laterPage, opts({ format: "sqlInsert" }))).toThrow();
+  });
+
+  it("passes SQL sources through unchanged", () => {
+    const req = build({ kind: "sql", sql: "SELECT 1" }, opts({ format: "json" }));
+    expect(req.source).toEqual({ kind: "sql", sql: "SELECT 1" });
+    expect(req.maxRows).toBeNull();
+  });
+});
+
+describe("page export helpers", () => {
+  it("needs the browse statement only for later pages", () => {
+    expect(canExportPage({ offset: 0, sql: null })).toBe(true);
+    expect(canExportPage({ offset: 200, sql: null })).toBe(false);
+    expect(canExportPage({ offset: 200, sql: "SELECT 1" })).toBe(true);
+  });
+
+  it("reads the page of a browse statement (backend and mock spellings)", () => {
+    expect(browsePageOf('SELECT "a"\nFROM "t" ORDER BY "a" ASC\nLIMIT 200 OFFSET 400')).toEqual({
+      limit: 200,
+      offset: 400,
+    });
+    expect(browsePageOf('SELECT "a" FROM "t" LIMIT 20 OFFSET 0')).toEqual({ limit: 20, offset: 0 });
+    expect(browsePageOf("SELECT 1")).toBeNull();
+  });
+
+  it("accepts the tab's statement only for the page on screen", () => {
+    const page1 = 'SELECT "post_id" FROM "public"."post_tags" LIMIT 200 OFFSET 0';
+    const page2 = 'SELECT "post_id" FROM "public"."post_tags" LIMIT 200 OFFSET 200';
+    expect(currentPageSql({ limit: 200, offset: 200, sql: page2 })).toBe(page2);
+    // Page 2 is still loading (or failed): the tab still holds page 1's statement.
+    expect(currentPageSql({ limit: 200, offset: 200, sql: page1 })).toBeNull();
+    // Page 3 → 2 while loading.
+    expect(
+      currentPageSql({ limit: 200, offset: 200, sql: page2.replace("OFFSET 200", "OFFSET 400") }),
+    ).toBeNull();
+    // The page size changed.
+    expect(currentPageSql({ limit: 100, offset: 200, sql: page2 })).toBeNull();
+    expect(currentPageSql({ limit: 200, offset: 200, sql: null })).toBeNull();
+    expect(currentPageSql({ limit: 200, offset: 200, sql: "SELECT 1" })).toBeNull();
+    // Not loaded = "wait for the page", never another page's rows.
+    const stale = tableInput({ scope: "page", page: { limit: 200, offset: 200, sql: null } });
+    expect(exportProblem(stale, "csv")).toMatchObject({ field: "rows", message: /Wait/ });
+  });
+
+  it("strips only the synthetic rowid column", () => {
+    expect(stripRowidAlias('SELECT "a", rowid AS "_tabler_rowid" FROM t')).toBe(
+      'SELECT "a" FROM t',
+    );
+    expect(stripRowidAlias('SELECT "rowid" FROM t')).toBe('SELECT "rowid" FROM t');
+  });
+});
+
+describe("visibleColumnNames", () => {
+  const cols = ["id", "name", "email", "bio"].map((name) => ({ name }) as ColumnMeta);
+
+  it("is null when nothing is hidden", () => {
+    expect(visibleColumnNames(cols, { order: ["email"], hidden: [] })).toBeNull();
+    expect(visibleColumnNames(cols, { order: [], hidden: ["gone"] })).toBeNull();
+  });
+
+  it("follows the grid order and drops hidden columns", () => {
+    expect(visibleColumnNames(cols, { order: ["email", "id"], hidden: ["bio"] })).toEqual([
+      "email",
+      "id",
+      "name",
+    ]);
+  });
+});
+
+describe("file names", () => {
+  const at = new Date(2026, 9, 11, 9, 5);
+
+  it("uses table_YYYYMMDD-HHmm with the format's extension", () => {
+    expect(defaultFileName("users", opts(), at)).toBe("users_20261011-0905.csv");
+    expect(defaultFileName("users", opts({ format: "json" }), at)).toBe("users_20261011-0905.json");
+    expect(defaultFileName("users", opts({ format: "sqlInsert" }), at)).toBe(
+      "users_20261011-0905.sql",
+    );
+  });
+
+  it("names tab-separated and NDJSON files by what they hold", () => {
+    const tsv = opts({ csv: { ...DEFAULT_EXPORT_OPTIONS.csv, delimiter: "\t" } });
+    expect(defaultFileName("users", tsv, at)).toBe("users_20261011-0905.tsv");
+    expect(fileFilter(tsv).extensions).toContain("tsv");
+    const nd = opts({ format: "json", json: { ndjson: true, pretty: false } });
+    expect(defaultFileName("query", nd, at)).toBe("query_20261011-0905.ndjson");
+  });
+
+  it("makes table names safe for the file system", () => {
+    expect(safeFileBase("Order Items")).toBe("Order_Items");
+    expect(safeFileBase("a/b:c")).toBe("a_b_c");
+    expect(safeFileBase("///")).toBe("export");
+    expect(safeFileBase('q*?"<>|\u0000x')).toBe("q_x");
+    expect(safeFileBase(".hidden")).toBe("hidden");
+  });
+
+  it("keeps accented and non-Latin table names readable", () => {
+    expect(safeFileBase("pedidos_año")).toBe("pedidos_año");
+    expect(safeFileBase("Größe")).toBe("Größe");
+    expect(safeFileBase("usuários")).toBe("usuários");
+    expect(safeFileBase("顧客")).toBe("顧客");
+    expect(safeFileBase("заказы 2026")).toBe("заказы_2026");
+    // Decomposed input is composed (NFC), not split around its accents.
+    expect(safeFileBase("cafe\u0301")).toBe("caf\u00e9");
+    expect(defaultFileName("顧客", opts(), at)).toBe("顧客_20261011-0905.csv");
+  });
+});
+
+describe("persistence", () => {
+  function memory(): Pick<Storage, "getItem" | "setItem"> & { data: Map<string, string> } {
+    const data = new Map<string, string>();
+    return {
+      data,
+      getItem: (k) => data.get(k) ?? null,
+      setItem: (k, v) => void data.set(k, v),
+    };
+  }
+
+  it("round-trips the last used options", () => {
+    const storage = memory();
+    const o = opts({ format: "json", json: { ndjson: true, pretty: false } });
+    saveExportOptions(o, storage);
+    expect(loadExportOptions(storage)).toEqual(o);
+  });
+
+  it("falls back to defaults for garbage, field by field", () => {
+    expect(parseExportOptions("nope")).toEqual(DEFAULT_EXPORT_OPTIONS);
+    expect(parseExportOptions({ format: "xml", csv: { delimiter: "::", header: false } })).toEqual({
+      ...opts(),
+      csv: { ...DEFAULT_EXPORT_OPTIONS.csv, header: false },
+    });
+  });
+
+  it("survives storage that throws", () => {
+    const broken = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+    expect(loadExportOptions(broken)).toEqual(DEFAULT_EXPORT_OPTIONS);
+    expect(() => saveExportOptions(opts(), broken)).not.toThrow();
+  });
+});
+
+describe("formatting", () => {
+  it("formats sizes and elapsed time", () => {
+    expect(formatBytes(512)).toBe("512 B");
+    expect(formatBytes(4.2 * 1024 * 1024)).toBe("4.2 MB");
+    expect(formatElapsed(3_400)).toBe("0:03");
+    expect(formatElapsed(3_723_000)).toBe("1:02:03");
+  });
+});
