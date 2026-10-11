@@ -1,6 +1,9 @@
 import { useEffect } from "react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Launcher } from "@/features/connections/Launcher";
+import { CommandPalette } from "@/features/palette/CommandPalette";
+import { SettingsDialog } from "@/features/settings/SettingsDialog";
+import { ConnectionBanner } from "./ConnectionBanner";
 import { InspectorPanel } from "@/features/inspector/InspectorPanel";
 import { Sidebar } from "@/features/sidebar/Sidebar";
 import { StatusBar } from "@/features/statusbar/StatusBar";
@@ -34,7 +37,16 @@ export function AppShell() {
           </>
         )}
         <ResizablePanel id="main" minSize={360}>
-          {showLauncher ? <Launcher /> : <TabContent />}
+          {showLauncher ? (
+            <Launcher />
+          ) : (
+            <div className="flex h-full min-h-0 flex-col">
+              <ConnectionBanner />
+              <div className="min-h-0 flex-1">
+                <TabContent />
+              </div>
+            </div>
+          )}
         </ResizablePanel>
         {inspectorOpen && (
           <>
@@ -46,6 +58,8 @@ export function AppShell() {
         )}
       </ResizablePanelGroup>
       <StatusBar />
+      <CommandPalette />
+      <SettingsDialog />
     </div>
   );
 }

@@ -73,7 +73,12 @@ export function Titlebar() {
       {/* The filler keeps the empty area draggable. */}
       <div data-tauri-drag-region className="min-w-6 flex-1" />
       <div className="flex items-center gap-0.5 pr-2">
-        <Button variant="ghost" size="sm" className="text-muted-foreground" disabled>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground"
+          onClick={() => void actions.run("palette.open")}
+        >
           <Search />
           <span>Search</span>
           <Kbd combo="Mod+K" className="ml-1" />

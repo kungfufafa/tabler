@@ -68,6 +68,11 @@ export type { ConnectionStatusEvent } from "./bindings/ConnectionStatusEvent";
 export const ipc = {
   appInfo: () => invoke<AppInfo>("app_info"),
 
+  settings: {
+    get: () => invoke<Record<string, unknown>>("get_settings"),
+    set: (key: string, value: unknown) => invoke<void>("set_setting", { key, value }),
+  },
+
   profiles: {
     list: () => invoke<ConnectionProfile[]>("list_profiles"),
     get: (id: string) => invoke<ConnectionProfile>("get_profile", { id }),
