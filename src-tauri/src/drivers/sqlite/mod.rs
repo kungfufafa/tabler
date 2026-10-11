@@ -3,12 +3,18 @@
 
 mod actor;
 mod decode;
+mod exec;
 mod introspect;
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use rusqlite::OpenFlags;
 
-use crate::drivers::{DbSession, ServerInfo, TxStatement, check_affected};
+use crate::drivers::{
+    CancelHandle, CancelSlot, DbSession, RowSink, ServerInfo, StatementOutcome, TxState,
+    TxStatement, check_affected,
+};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::types::profile::{ConnectionProfile, Driver};
@@ -24,6 +30,10 @@ pub struct LiteSession {
     pub(crate) path: String,
     pub(crate) editor: Actor,
     pub(crate) worker: Actor,
+    /// Editor transaction state (`!is_autocommit()`), refreshed after every editor statement.
+    tx_state: Arc<TxState>,
+    /// Held by one editor run at a time (`lock_editor_runs`).
+    editor_runs: tokio::sync::Mutex<()>,
 }
 
 impl LiteSession {
@@ -48,6 +58,8 @@ impl LiteSession {
             path,
             editor,
             worker,
+            tx_state: Arc::new(TxState::default()),
+            editor_runs: tokio::sync::Mutex::new(()),
         })
     }
 }
@@ -86,6 +98,8 @@ impl DbSession for LiteSession {
             .await
     }
 
+    /// Interrupts whatever runs on either connection (a long write would otherwise keep the file
+    /// locked after a disconnect) and shuts both actors down.
     async fn close(&self) {
         self.editor.close();
         self.worker.close();
@@ -170,5 +184,53 @@ impl DbSession for LiteSession {
                 Ok(out)
             })
             .await
+    }
+
+    async fn run_statement(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        sink: &mut dyn RowSink,
+        cancel: CancelSlot,
+    ) -> Result<StatementOutcome, AppError> {
+        exec::run_on_actor(
+            &self.editor,
+            sql,
+            &[],
+            Some(max_rows),
+            sink,
+            cancel,
+            Some(self.tx_state.clone()),
+        )
+        .await
+    }
+
+    async fn stream_query(
+        &self,
+        sql: &str,
+        params: &[Value],
+        sink: &mut dyn RowSink,
+        cancel: CancelSlot,
+    ) -> Result<u64, AppError> {
+        let outcome =
+            exec::run_on_actor(&self.worker, sql, params, None, sink, cancel, None).await?;
+        Ok(outcome.row_count)
+    }
+
+    async fn cancel(&self, handle: CancelHandle) -> Result<(), AppError> {
+        // The ticket (if any) is released once the interrupt has been raised.
+        let (handle, _ticket) = handle.into_parts();
+        if let CancelHandle::Sqlite(interrupt) = handle {
+            interrupt.interrupt();
+        }
+        Ok(())
+    }
+
+    fn in_transaction(&self) -> Option<bool> {
+        self.tx_state.get()
+    }
+
+    fn editor_run_lock(&self) -> Option<&tokio::sync::Mutex<()>> {
+        Some(&self.editor_runs)
     }
 }

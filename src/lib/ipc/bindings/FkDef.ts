@@ -2,7 +2,8 @@
 import type { TableRef } from "./TableRef";
 
 /**
- * A foreign key to add. `name` is optional: the server picks one when it is `None`.
+ * A foreign key to add. `name` is optional: the server picks one when it is `None`. SQLite
+ * does not report constraint names; its keys are addressed as `fk_<table>_<n>` (introspection).
  */
 export type FkDef = { name: string | null, columns: Array<string>, refTable: TableRef, refColumns: Array<string>, 
 /**

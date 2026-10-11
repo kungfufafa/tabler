@@ -2,7 +2,10 @@
 
 /**
  * Statements to run, in order, plus what the generator could not express faithfully.
- * `transactional` is false for MySQL (DDL auto-commits) and for SQLite rebuilds (the plan
- * carries its own `BEGIN`/`COMMIT` because `PRAGMA foreign_keys` must run outside them).
+ * `transactional` plans run in one transaction. It is false for MySQL (DDL auto-commits), for
+ * SQLite rebuilds (the plan carries its own `BEGIN`/`COMMIT` because `PRAGMA foreign_keys` must
+ * run outside a transaction) and when a raw statement cannot run in a transaction block (PG
+ * `VACUUM`, `… CONCURRENTLY`; SQLite `VACUUM`, `PRAGMA`); such plans run statement by statement
+ * (a SQLite `BEGIN` … `COMMIT` block, with the `PRAGMA` toggles around it, as one unit).
  */
 export type DdlPlan = { statements: Array<string>, warnings: Array<string>, transactional: boolean, };

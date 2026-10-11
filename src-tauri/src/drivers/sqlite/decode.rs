@@ -74,6 +74,15 @@ pub fn value_from_ref(v: ValueRef<'_>, kind: ValueKind) -> Value {
     }
 }
 
+/// Decodes one cell; the runtime storage class wins over the declared type (dynamic typing).
+pub(crate) fn cell_value(v: ValueRef<'_>, kind: ValueKind) -> Value {
+    let k = match v {
+        ValueRef::Text(_) | ValueRef::Integer(_) => kind,
+        _ => ValueKind::Other,
+    };
+    value_from_ref(v, k)
+}
+
 /// Binds a `Value` as a SQLite parameter.
 pub fn to_sql(v: &Value) -> Result<ToSqlOutput<'static>, AppError> {
     use base64::Engine as _;
@@ -96,7 +105,7 @@ pub fn to_sql(v: &Value) -> Result<ToSqlOutput<'static>, AppError> {
     }))
 }
 
-fn columns_of(stmt: &Statement<'_>) -> Vec<ResultColumn> {
+pub(crate) fn columns_of(stmt: &Statement<'_>) -> Vec<ResultColumn> {
     stmt.columns()
         .iter()
         .map(|c| {
@@ -135,14 +144,7 @@ pub fn run_query(
         }
         let mut cells = Vec::with_capacity(kinds.len());
         for (i, kind) in kinds.iter().enumerate() {
-            let v = row.get_ref(i)?;
-            // Runtime type wins over the declared type for SQLite's dynamic typing.
-            let k = match v {
-                ValueRef::Text(_) => *kind,
-                ValueRef::Integer(_) => *kind,
-                _ => ValueKind::Other,
-            };
-            cells.push(value_from_ref(v, k));
+            cells.push(cell_value(row.get_ref(i)?, *kind));
         }
         out.push(cells);
     }

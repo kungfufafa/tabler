@@ -3,6 +3,11 @@ import type { ErrorPayload } from "./ErrorPayload";
 
 /**
  * Outcome of `apply_ddl`. A failed transactional plan has an empty `executed` (rolled back);
- * a failed sequential plan lists the statements that did commit before `failed_index`.
+ * a failed sequential plan lists the statements whose effects persist (statements of an
+ * explicit `BEGIN` block that was rolled back are left out; settings restored after the
+ * failure, such as SQLite's `PRAGMA foreign_keys = ON`, are included). `failed_index` and
+ * `error.statement_index` point into `DdlPlan.statements`; they can be `None` for a failed
+ * transactional plan, or a failed `BEGIN` block of a SQLite plan (which runs as one
+ * transaction), whose driver does not report which statement failed.
  */
 export type DdlResult = { executed: Array<string>, failedIndex: number | null, error: ErrorPayload | null, durationMs: number, };

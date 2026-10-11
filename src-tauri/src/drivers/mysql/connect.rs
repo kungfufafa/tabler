@@ -26,6 +26,8 @@ const STATS_EXPIRY_SQL: &str = "SET SESSION information_schema_stats_expiry = 0"
 
 pub(super) struct Opened {
     pub pool: Pool,
+    /// Options the pool connects with (for one-off side connections, e.g. `KILL QUERY`).
+    pub pool_opts: Opts,
     /// Dedicated SQL-editor connection (session state must persist between statements).
     pub editor: Conn,
     pub is_mariadb: bool,
@@ -187,9 +189,11 @@ pub(super) async fn open(target: &ConnectTarget<'_>) -> Result<Opened, AppError>
         }
     }
 
-    let pool = Pool::new(build_opts(target, ssl, setup));
+    let pool_opts = build_opts(target, ssl, setup);
+    let pool = Pool::new(pool_opts.clone());
     Ok(Opened {
         pool,
+        pool_opts,
         editor,
         is_mariadb,
     })

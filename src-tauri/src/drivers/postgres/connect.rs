@@ -335,17 +335,65 @@ async fn connect_once(
     }
 }
 
+/// Server notices (`RAISE NOTICE`, warnings…) received on the editor connection, oldest first.
+pub type NoticeBuffer = Arc<std::sync::Mutex<Vec<String>>>;
+
+/// Notices kept between two statements; older ones are dropped.
+const MAX_NOTICES: usize = 1000;
+
+fn format_notice(n: &tokio_postgres::error::DbError) -> String {
+    let mut text = format!("{}: {}", n.severity(), n.message());
+    if let Some(detail) = n.detail() {
+        text.push_str("\nDETAIL: ");
+        text.push_str(detail);
+    }
+    if let Some(hint) = n.hint() {
+        text.push_str("\nHINT: ");
+        text.push_str(hint);
+    }
+    text
+}
+
 /// Spawns the connection task; `lost` flips to `true` once it ends (error or orderly close).
-fn spawn_connection(connection: EditorConnection) -> Arc<AtomicBool> {
+/// Notices are collected into the returned buffer. The abort handle ends the task (and closes
+/// the socket) without waiting for the client.
+fn spawn_connection(
+    mut connection: EditorConnection,
+) -> (Arc<AtomicBool>, tokio::task::AbortHandle, NoticeBuffer) {
+    use futures::StreamExt as _;
     let lost = Arc::new(AtomicBool::new(false));
+    let notices = NoticeBuffer::default();
     let flag = lost.clone();
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            log::warn!("postgres editor connection ended: {e}");
+    let buffer = notices.clone();
+    // Flags the connection as lost however the task ends (also when it is aborted).
+    struct LostOnDrop(Arc<AtomicBool>);
+    impl Drop for LostOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
         }
-        flag.store(true, Ordering::SeqCst);
+    }
+    let task = tokio::spawn(async move {
+        let _lost = LostOnDrop(flag);
+        let mut messages = futures::stream::poll_fn(move |cx| connection.poll_message(cx));
+        loop {
+            match messages.next().await {
+                Some(Ok(tokio_postgres::AsyncMessage::Notice(notice))) => {
+                    let mut buf = buffer.lock().unwrap_or_else(|p| p.into_inner());
+                    if buf.len() >= MAX_NOTICES {
+                        buf.remove(0);
+                    }
+                    buf.push(format_notice(&notice));
+                }
+                Some(Ok(_)) => {}
+                Some(Err(e)) => {
+                    log::warn!("postgres editor connection ended: {e}");
+                    break;
+                }
+                None => break,
+            }
+        }
     });
-    lost
+    (lost, task.abort_handle(), notices)
 }
 
 /// Opens the dedicated editor client and runs the session init on it. With `prefer`, a TLS
@@ -357,7 +405,16 @@ pub async fn open_editor(
     init_sql: &str,
     timeout: Duration,
     prefer: bool,
-) -> Result<(Config, Client, Arc<AtomicBool>), AppError> {
+) -> Result<
+    (
+        Config,
+        Client,
+        Arc<AtomicBool>,
+        tokio::task::AbortHandle,
+        NoticeBuffer,
+    ),
+    AppError,
+> {
     let (client, connection) = match connect_once(&config, tls, timeout).await {
         Ok(pair) => pair,
         Err(ConnectFailure::TlsHandshake(e)) if prefer => {
@@ -369,9 +426,9 @@ pub async fn open_editor(
         }
         Err(e) => return Err(e.into()),
     };
-    let lost = spawn_connection(connection);
+    let (lost, task, notices) = spawn_connection(connection);
     client.batch_execute(init_sql).await?;
-    Ok((config, client, lost))
+    Ok((config, client, lost, task, notices))
 }
 
 /// Builds the worker pool; every new connection runs the session init batch.

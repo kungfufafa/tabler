@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -12,6 +13,8 @@ type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 pub struct Actor {
     tx: Mutex<Option<mpsc::Sender<Job>>>,
     interrupt: Arc<InterruptHandle>,
+    /// Set by `close`: jobs still queued are answered with `NotConnected` instead of running.
+    closed: Arc<AtomicBool>,
 }
 
 impl Actor {
@@ -38,6 +41,7 @@ impl Actor {
         Ok(Actor {
             tx: Mutex::new(Some(tx)),
             interrupt,
+            closed: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -48,8 +52,14 @@ impl Actor {
         F: FnOnce(&mut Connection) -> Result<R, AppError> + Send + 'static,
     {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        let closed = self.closed.clone();
         let job: Job = Box::new(move |conn| {
-            let _ = reply_tx.send(f(conn));
+            let result = if closed.load(Ordering::SeqCst) {
+                Err(AppError::NotConnected)
+            } else {
+                f(conn)
+            };
+            let _ = reply_tx.send(result);
         });
         {
             let guard = self.tx.lock().unwrap_or_else(|p| p.into_inner());
@@ -70,8 +80,11 @@ impl Actor {
         self.interrupt.clone()
     }
 
-    /// Drops the sender so the thread exits after finishing queued jobs.
+    /// Stops the statement running now, makes queued jobs fail with `NotConnected` and drops
+    /// the sender, so the thread exits (closing the connection and its file locks) right away.
     pub fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.interrupt.interrupt();
         let mut guard = self.tx.lock().unwrap_or_else(|p| p.into_inner());
         guard.take();
     }
