@@ -7,7 +7,7 @@ use tokio::sync::{RwLock, watch};
 use uuid::Uuid;
 
 use crate::appdb::AppDb;
-use crate::drivers::DbSession;
+use crate::drivers::{CancelSlot, DbSession};
 use crate::error::AppError;
 use crate::secrets::Secrets;
 use crate::types::profile::{ConnStatus, ConnectionInfo, ConnectionProfile};
@@ -17,6 +17,12 @@ pub struct AppState {
     pub appdb: AppDb,
     pub secrets: Secrets,
     pub connections: RwLock<HashMap<Uuid, Arc<Connection>>>,
+    /// Running editor queries, keyed by (connection id, query id from the renderer).
+    pub active_queries: std::sync::Mutex<HashMap<(Uuid, String), CancelSlot>>,
+    /// Running exports, keyed by export id.
+    pub exports: std::sync::Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
+    /// Host keys awaiting the user's decision, keyed by profile id.
+    pub pending_host_keys: std::sync::Mutex<HashMap<Uuid, crate::tunnel::PendingHostKey>>,
 }
 
 /// One open connection: the driver session plus caches and status.
@@ -27,6 +33,8 @@ pub struct Connection {
     pub info: RwLock<ConnectionInfo>,
     pub schema_cache: RwLock<HashMap<TableRef, Arc<TableMeta>>>,
     pub status: watch::Sender<ConnStatus>,
+    /// SSH tunnel the session connects through, if the profile uses one.
+    pub tunnel: Option<crate::tunnel::TunnelHandle>,
 }
 
 impl Connection {
@@ -55,6 +63,9 @@ impl AppState {
             appdb,
             secrets,
             connections: RwLock::new(HashMap::new()),
+            active_queries: std::sync::Mutex::new(HashMap::new()),
+            exports: std::sync::Mutex::new(HashMap::new()),
+            pending_host_keys: std::sync::Mutex::new(HashMap::new()),
         }
     }
 

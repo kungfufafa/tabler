@@ -4,6 +4,7 @@
 pub mod app;
 pub mod browse;
 pub mod ddl;
+pub mod export;
 pub mod history;
 pub mod mutate;
 pub mod profile;

@@ -18,6 +18,23 @@ pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
 
+/// Receives rows streamed by `run_statement` / `stream_query`. Returning `Break` from `rows`
+/// stops consumption (row cap reached or export cancelled).
+pub trait RowSink: Send {
+    fn begin_set(&mut self, columns: Vec<crate::types::query::ResultColumn>);
+    fn rows(&mut self, rows: Vec<Vec<Value>>) -> std::ops::ControlFlow<()>;
+}
+
+/// A handle that can abort the statement currently running on a specific connection.
+pub enum CancelHandle {
+    Postgres(tokio_postgres::CancelToken),
+    Mysql { conn_id: u32 },
+    Sqlite(Arc<rusqlite::InterruptHandle>),
+}
+
+/// Filled by the driver right before executing, cleared afterwards; read by `cancel_query`.
+pub type CancelSlot = Arc<std::sync::Mutex<Option<CancelHandle>>>;
+
 #[derive(Debug, Clone, Default)]
 pub struct ServerInfo {
     pub version: String,

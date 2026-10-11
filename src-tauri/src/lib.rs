@@ -8,9 +8,11 @@ pub mod appdb;
 pub mod commands;
 pub mod drivers;
 pub mod error;
+pub mod export;
 pub mod secrets;
 pub mod sqlgen;
 pub mod state;
+pub mod tunnel;
 pub mod types;
 
 use tauri::Manager;
@@ -84,6 +86,9 @@ pub fn run() {
             commands::files::write_text_file,
             commands::settings::get_settings,
             commands::settings::set_setting,
+            commands::export::export_data,
+            commands::export::cancel_export,
+            commands::connections::accept_host_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

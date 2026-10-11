@@ -85,6 +85,7 @@ pub async fn connect(
         info: RwLock::new(info.clone()),
         schema_cache: RwLock::new(HashMap::new()),
         status: status_tx,
+        tunnel: None,
     });
     state.connections.write().await.insert(connection_id, conn);
     let _ = state.appdb.touch_last_connected(profile_id);
@@ -166,4 +167,17 @@ pub async fn switch_database(
     info.current_database = server.current_database;
     info.current_user = server.current_user;
     Ok(info.clone())
+}
+
+/// Trusts the pending host key of a profile (after the user confirmed its fingerprint).
+#[tauri::command]
+pub async fn accept_host_key(
+    _state: State<'_, AppState>,
+    _profile_id: Uuid,
+    _fingerprint: String,
+    _persist_to_known_hosts: Option<bool>,
+) -> Result<(), AppError> {
+    Err(AppError::Unsupported(
+        "SSH tunnels are not implemented yet".into(),
+    ))
 }
