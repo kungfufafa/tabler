@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4C8DF6"/>
+      <stop offset="1" stop-color="#2459D8"/>
+    </linearGradient>
+    <linearGradient id="sheet" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E8EEFB"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#0B2A73" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <!-- macOS Big Sur style squircle on the 824px grid with 100px margins -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="none" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="4"/>
+  <!-- the table sheet -->
+  <g filter="url(#shadow)">
+    <rect x="232" y="262" width="560" height="500" rx="56" fill="url(#sheet)"/>
+  </g>
+  <!-- header row -->
+  <path d="M232 318a56 56 0 0 1 56-56h448a56 56 0 0 1 56 56v58H232z" fill="#1E3F9E"/>
+  <circle cx="290" cy="320" r="13" fill="#FF6B5E"/>
+  <circle cx="330" cy="320" r="13" fill="#FFC145"/>
+  <circle cx="370" cy="320" r="13" fill="#3DD68C"/>
+  <!-- grid lines -->
+  <g stroke="#C9D5F2" stroke-width="8" stroke-linecap="round">
+    <line x1="268" y1="476" x2="756" y2="476"/>
+    <line x1="268" y1="572" x2="756" y2="572"/>
+    <line x1="268" y1="668" x2="756" y2="668"/>
+    <line x1="420" y1="400" x2="420" y2="736"/>
+    <line x1="596" y1="400" x2="596" y2="736"/>
+  </g>
+  <!-- highlighted (edited) cell, TablePlus-style -->
+  <rect x="432" y="488" width="152" height="72" rx="14" fill="#FFE27A"/>
+  <rect x="432" y="488" width="152" height="72" rx="14" fill="none" stroke="#2459D8" stroke-width="8"/>
+  <!-- value bars -->
+  <g fill="#9FB3E6">
+    <rect x="284" y="424" width="96" height="22" rx="11"/>
+    <rect x="452" y="424" width="112" height="22" rx="11"/>
+    <rect x="628" y="424" width="96" height="22" rx="11"/>
+    <rect x="284" y="613" width="80" height="22" rx="11"/>
+    <rect x="628" y="613" width="108" height="22" rx="11"/>
+    <rect x="284" y="700" width="104" height="22" rx="11"/>
+    <rect x="452" y="700" width="88" height="22" rx="11"/>
+    <rect x="628" y="700" width="72" height="22" rx="11"/>
+  </g>
+  <rect x="452" y="513" width="112" height="22" rx="11" fill="#8A6500"/>
+  <rect x="284" y="513" width="96" height="22" rx="11" fill="#9FB3E6"/>
+  <rect x="628" y="513" width="90" height="22" rx="11" fill="#9FB3E6"/>
+  <rect x="452" y="613" width="100" height="22" rx="11" fill="#9FB3E6"/>
+</svg>
