@@ -71,6 +71,19 @@ pub fn run() {
             commands::browse::fetch_cell,
             commands::mutate::preview_changes,
             commands::mutate::apply_changes,
+            commands::ddl::preview_ddl,
+            commands::ddl::apply_ddl,
+            commands::ddl::get_table_ddl,
+            commands::query::run_sql,
+            commands::query::cancel_query,
+            commands::query::explain,
+            commands::history::list_history,
+            commands::history::delete_history,
+            commands::history::clear_history,
+            commands::files::read_text_file,
+            commands::files::write_text_file,
+            commands::settings::get_settings,
+            commands::settings::set_setting,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

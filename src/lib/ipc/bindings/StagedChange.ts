@@ -5,4 +5,4 @@ import type { Value } from "./Value";
 /**
  * One staged edit from the grid. `row_id` is the renderer's own key, echoed back in results.
  */
-export type StagedChange = { "op": "update", row_id: string, key: RowKey, changes: { [key in string]: Value }, } | { "op": "insert", row_id: string, values: { [key in string]: Value }, } | { "op": "delete", row_id: string, key: RowKey, };
+export type StagedChange = { "op": "update", rowId: string, key: RowKey, changes: { [key in string]: Value }, } | { "op": "insert", rowId: string, values: { [key in string]: Value }, } | { "op": "delete", rowId: string, key: RowKey, };

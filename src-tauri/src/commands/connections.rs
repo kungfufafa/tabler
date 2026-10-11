@@ -75,6 +75,7 @@ pub async fn connect(
         current_database: server.current_database,
         current_user: server.current_user,
         tunnel: None,
+        read_only: profile.options.read_only,
     };
     let (status_tx, _) = watch::channel(ConnStatus::Connected);
     let conn = Arc::new(Connection {

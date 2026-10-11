@@ -33,7 +33,7 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
 - [x] M0 toolchain + scaffold + empty shell
 - [x] M1 app store + secrets + profiles + connect + sidebar (drivers: sqlite, postgres, mysql)
 - [x] M2 read-only data grid (virtualized grid, sort/filter/paging, inspector, copy formats, FK jump)
-- [ ] M3 inline editing + staging + Preview SQL
+- [x] M3 inline editing + staging + Preview SQL (commit ⌘S, discard ⌘⇧Z, undo ⌘Z, NULL/DEFAULT, new/duplicate/delete rows)
 - [ ] M4 SQL editor
 - [ ] M5 structure + DDL
 - [ ] M6 tunnel + export + palette + settings + polish

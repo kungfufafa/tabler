@@ -115,3 +115,90 @@ export function inspectText(v: Value): string {
     return `${formatBytes(v.v.len)}${v.v.truncated ? " (preview truncated)" : ""}\nbase64: ${v.v.base64.slice(0, 2000)}`;
   return displayValue(v).text === "NULL" && v.t === "null" ? "NULL" : (valueText(v) ?? "");
 }
+
+/** Raw text shown in an inline editor (NULL/DEFAULT become empty). */
+export function editText(v: Value): string {
+  if (v.t === "null" || v.t === "default") return "";
+  if (v.t === "bool") return v.v ? "true" : "false";
+  return valueText(v) ?? "";
+}
+
+export type ParseResult = { ok: true; value: Value } | { ok: false; error: string };
+
+const INT_RE = /^[+-]?\d+$/;
+const DEC_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+
+/** Turns editor text into a typed value; never uses `Number()` for integers/decimals. */
+export function parseEditText(kind: ValueKind, text: string, previous?: Value): ParseResult {
+  const t = text.trim();
+  switch (kind) {
+    case "int":
+    case "bigInt": {
+      if (!INT_RE.test(t)) return { ok: false, error: "Enter a whole number" };
+      const n = Number(t);
+      return {
+        ok: true,
+        value: Number.isSafeInteger(n)
+          ? { t: "int", v: n }
+          : { t: "bigInt", v: t.replace(/^\+/, "") },
+      };
+    }
+    case "decimal":
+      return DEC_RE.test(t)
+        ? { ok: true, value: { t: "decimal", v: t } }
+        : { ok: false, error: "Enter a number" };
+    case "float": {
+      if (!DEC_RE.test(t) && !/^[+-]?(inf|infinity|nan)$/i.test(t))
+        return { ok: false, error: "Enter a number" };
+      const n = Number(t);
+      return Number.isFinite(n)
+        ? { ok: true, value: { t: "float", v: n } }
+        : { ok: true, value: { t: "other", v: { ty: "float", text: t } } };
+    }
+    case "bool": {
+      if (/^(true|t|1|yes|y|on)$/i.test(t)) return { ok: true, value: { t: "bool", v: true } };
+      if (/^(false|f|0|no|n|off)$/i.test(t)) return { ok: true, value: { t: "bool", v: false } };
+      return { ok: false, error: "Enter true or false" };
+    }
+    case "json": {
+      try {
+        JSON.parse(text);
+        return { ok: true, value: { t: "json", v: text } };
+      } catch (e) {
+        return { ok: false, error: `Invalid JSON: ${(e as Error).message}` };
+      }
+    }
+    case "uuid":
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t)
+        ? { ok: true, value: { t: "uuid", v: t } }
+        : { ok: false, error: "Enter a UUID" };
+    case "enum":
+      return { ok: true, value: { t: "enum", v: text } };
+    case "date":
+      return { ok: true, value: { t: "date", v: t } };
+    case "time":
+      return { ok: true, value: { t: "time", v: t } };
+    case "timestamp":
+      return { ok: true, value: { t: "timestamp", v: t } };
+    case "timestampTz":
+      return { ok: true, value: { t: "timestampTz", v: t } };
+    case "interval":
+      return { ok: true, value: { t: "interval", v: t } };
+    case "array":
+      return {
+        ok: true,
+        value: { t: "other", v: { ty: previous?.t === "other" ? previous.v.ty : "array", text } },
+      };
+    case "bytes":
+      return { ok: false, error: "Binary values cannot be edited inline" };
+    case "bit":
+    case "geometry":
+    case "other":
+      return {
+        ok: true,
+        value: { t: "other", v: { ty: previous?.t === "other" ? previous.v.ty : kind, text } },
+      };
+    default:
+      return { ok: true, value: { t: "text", v: text } };
+  }
+}

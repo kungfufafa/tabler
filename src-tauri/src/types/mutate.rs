@@ -10,8 +10,8 @@ use crate::error::ErrorPayload;
 
 /// One staged edit from the grid. `row_id` is the renderer's own key, echoed back in results.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "op", rename_all = "camelCase")]
-#[ts(export)]
+#[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[ts(export, rename_all_fields = "camelCase")]
 pub enum StagedChange {
     Update {
         row_id: String,

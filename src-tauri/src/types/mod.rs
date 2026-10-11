@@ -3,6 +3,8 @@
 
 pub mod app;
 pub mod browse;
+pub mod ddl;
+pub mod history;
 pub mod mutate;
 pub mod profile;
 pub mod query;

@@ -1,3 +1,5 @@
+import type { ApplyRequest } from "../bindings/ApplyRequest";
+import type { ApplyResult } from "../bindings/ApplyResult";
 import type { BrowsePage } from "../bindings/BrowsePage";
 import type { BrowseRequest } from "../bindings/BrowseRequest";
 import type { ConnectionInfo } from "../bindings/ConnectionInfo";
@@ -7,7 +9,10 @@ import type { ProfileInput } from "../bindings/ProfileInput";
 import type { RowCount } from "../bindings/RowCount";
 import type { RowIdentity } from "../bindings/RowIdentity";
 import type { RowKey } from "../bindings/RowKey";
+import type { RowResult } from "../bindings/RowResult";
+import type { StagedChange } from "../bindings/StagedChange";
 import type { TableRef } from "../bindings/TableRef";
+import type { Value } from "../bindings/Value";
 import { SEED_PROFILES, tableMetaFor, tablesFor } from "./fixtures";
 import { matchesGroup, rowsFor, sortRows } from "./rows";
 import { mockEmit, mockError, registerMock } from "./transport";
@@ -127,6 +132,7 @@ registerMock("connect", async ({ profileId }) => {
     currentDatabase: p.driver === "sqlite" ? p.sqlitePath : (p.database ?? "postgres"),
     currentUser: p.user,
     tunnel: null,
+    readOnly: p.options.readOnly,
   };
   connections.set(info.connectionId, { ...info, profile: p });
   profiles.set(p.id, { ...p, lastConnectedAt: now() });
@@ -285,4 +291,189 @@ registerMock("fetch_cell", ({ connectionId, table, key, column }) => {
           ),
         );
   return row?.[colIdx] ?? { t: "null" };
+});
+
+// --- mutate ---
+function literalOf(v: Value): string {
+  switch (v.t) {
+    case "null":
+      return "NULL";
+    case "default":
+      return "DEFAULT";
+    case "bool":
+      return v.v ? "TRUE" : "FALSE";
+    case "int":
+    case "float":
+      return String(v.v);
+    case "bigInt":
+    case "decimal":
+      return v.v;
+    case "bytes":
+      return `'\\x…'::bytea`;
+    case "other":
+      return `'${v.v.text}'`;
+    case "array":
+      return `'{…}'`;
+    default:
+      return `'${String(v.v).replace(/'/g, "''")}'`;
+  }
+}
+
+function whereOf(key: RowKey): string {
+  if (key.kind === "rowid") return `rowid = ${key.value}`;
+  return Object.entries(key.value)
+    .map(([k, v]) => (v.t === "null" ? `"${k}" IS NULL` : `"${k}" = ${literalOf(v)}`))
+    .join(" AND ");
+}
+
+function statementsOf(req: ApplyRequest): Array<{ change: StagedChange; sql: string }> {
+  const t = `"${req.table.schema ?? "public"}"."${req.table.name}"`;
+  const order = [
+    ...req.changes.filter((c) => c.op === "delete"),
+    ...req.changes.filter((c) => c.op === "update"),
+    ...req.changes.filter((c) => c.op === "insert"),
+  ];
+  return order.map((change) => {
+    if (change.op === "delete")
+      return { change, sql: `DELETE FROM ${t} WHERE ${whereOf(change.key)}` };
+    if (change.op === "update") {
+      const sets = Object.entries(change.changes)
+        .map(([k, v]) => `"${k}" = ${literalOf(v)}`)
+        .join(", ");
+      return { change, sql: `UPDATE ${t} SET ${sets} WHERE ${whereOf(change.key)} RETURNING *` };
+    }
+    const cols = Object.entries(change.values).filter(([, v]) => v.t !== "default");
+    return {
+      change,
+      sql: `INSERT INTO ${t} (${cols.map(([k]) => `"${k}"`).join(", ")}) VALUES (${cols.map(([, v]) => literalOf(v)).join(", ")}) RETURNING *`,
+    };
+  });
+}
+
+registerMock("preview_changes", ({ req }) => statementsOf(req as ApplyRequest).map((s) => s.sql));
+
+registerMock("apply_changes", async ({ connectionId, req }) => {
+  const c = conn(connectionId as string);
+  const r = req as ApplyRequest;
+  const schema = r.table.schema ?? "public";
+  const meta =
+    tableMetaFor(c.driver, schema, r.table.name) ?? mockError("NOT_FOUND", `table ${r.table.name}`);
+  const all = rowsFor(
+    `${c.driver}:${schema}.${r.table.name}`,
+    meta.columns,
+    meta.rowEstimate ?? 25,
+  );
+  const colIdx = (name: string) => meta.columns.findIndex((col) => col.name === name);
+  const findRow = (key: RowKey): number => {
+    if (key.kind === "rowid") return key.value - 1;
+    return all.findIndex((row) =>
+      Object.entries(key.value).every(
+        ([name, v]) => JSON.stringify(row[colIdx(name)]) === JSON.stringify(v),
+      ),
+    );
+  };
+  const started = performance.now();
+  const statements = statementsOf(r);
+  const sql = statements.map((s) => s.sql);
+  const results: RowResult[] = [];
+  const snapshot = all.map((row) => row.slice());
+  const emailIdx = colIdx("email");
+  const emails = new Set(emailIdx >= 0 ? all.map((row) => JSON.stringify(row[emailIdx])) : []);
+  for (let i = 0; i < statements.length; i++) {
+    const { change } = statements[i]!;
+    const fail = (message: string) => {
+      all.splice(0, all.length, ...snapshot);
+      const error = {
+        code: "DB_ERROR",
+        message,
+        detail: null,
+        hint: null,
+        sqlstate: "23505",
+        vendorCode: null,
+        position: null,
+        statementIndex: i,
+        data: null,
+      };
+      return {
+        success: false,
+        results: statements.map((s, j) => ({
+          rowId: s.change.rowId,
+          op: s.change.op,
+          affected: 0,
+          returned: null,
+          error: j === i ? error : null,
+        })),
+        sql,
+        error,
+        durationMs: Math.round(performance.now() - started),
+      } satisfies ApplyResult;
+    };
+    if (change.op === "delete") {
+      const idx = findRow(change.key);
+      if (idx < 0)
+        return fail(
+          "expected to affect 1 row(s) but matched 0; the row may have been changed or deleted by someone else",
+        );
+      all.splice(idx, 1);
+      results.push({ rowId: change.rowId, op: "delete", affected: 1, returned: null, error: null });
+    } else if (change.op === "update") {
+      const idx = findRow(change.key);
+      if (idx < 0)
+        return fail(
+          "expected to affect 1 row(s) but matched 0; the row may have been changed or deleted by someone else",
+        );
+      const row = all[idx]!.slice();
+      for (const [name, v] of Object.entries(change.changes)) {
+        if (
+          name === "email" &&
+          v.t === "text" &&
+          emails.has(JSON.stringify(v)) &&
+          JSON.stringify(row[emailIdx]) !== JSON.stringify(v)
+        ) {
+          return fail(`duplicate key value violates unique constraint "users_email_key"`);
+        }
+        row[colIdx(name)] = v.t === "default" ? { t: "null" } : v;
+      }
+      all[idx] = row;
+      results.push({
+        rowId: change.rowId,
+        op: "update",
+        affected: 1,
+        returned: Object.fromEntries(meta.columns.map((col, k) => [col.name, row[k]!])),
+        error: null,
+      });
+    } else {
+      const row: Value[] = meta.columns.map((col, k) => {
+        const v = change.values[col.name] ?? { t: "default" };
+        if (v.t !== "default") return v;
+        if (col.isAutoIncrement) return { t: "int", v: all.length + 1 };
+        if (col.kind === "timestampTz" || col.kind === "timestamp")
+          return { t: "timestampTz", v: "2026-10-11 09:00:00+07" };
+        if (col.kind === "bool") return { t: "bool", v: true };
+        if (col.kind === "uuid")
+          return {
+            t: "uuid",
+            v: `00000000-0000-4000-8000-${String(all.length + 1).padStart(12, "0")}`,
+          };
+        return k === 0 ? { t: "int", v: all.length + 1 } : { t: "null" };
+      });
+      if (emailIdx >= 0 && emails.has(JSON.stringify(row[emailIdx])))
+        return fail(`duplicate key value violates unique constraint "users_email_key"`);
+      all.push(row);
+      results.push({
+        rowId: change.rowId,
+        op: "insert",
+        affected: 1,
+        returned: Object.fromEntries(meta.columns.map((col, k) => [col.name, row[k]!])),
+        error: null,
+      });
+    }
+  }
+  return {
+    success: true,
+    results,
+    sql,
+    error: null,
+    durationMs: Math.round(performance.now() - started),
+  } satisfies ApplyResult;
 });

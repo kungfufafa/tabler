@@ -2,4 +2,4 @@
 import type { Driver } from "./Driver";
 import type { TunnelInfo } from "./TunnelInfo";
 
-export type ConnectionInfo = { connectionId: string, profileId: string, name: string, color: string | null, driver: Driver, serverVersion: string, currentDatabase: string | null, currentUser: string | null, tunnel: TunnelInfo | null, };
+export type ConnectionInfo = { connectionId: string, profileId: string, name: string, color: string | null, driver: Driver, serverVersion: string, currentDatabase: string | null, currentUser: string | null, tunnel: TunnelInfo | null, readOnly: boolean, };

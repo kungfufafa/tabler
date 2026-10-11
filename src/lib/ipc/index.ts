@@ -1,3 +1,5 @@
+import type { ApplyRequest } from "./bindings/ApplyRequest";
+import type { ApplyResult } from "./bindings/ApplyResult";
 import type { AppInfo } from "./bindings/AppInfo";
 import type { BrowsePage } from "./bindings/BrowsePage";
 import type { BrowseRequest } from "./bindings/BrowseRequest";
@@ -21,6 +23,8 @@ import { invoke } from "./transport";
 
 export { IpcError, isMock, isTauri, toIpcError } from "./transport";
 export type {
+  ApplyRequest,
+  ApplyResult,
   AppInfo,
   Value,
   BrowsePage,
@@ -56,6 +60,8 @@ export type { SortDir } from "./bindings/SortDir";
 export type { RowIdentity } from "./bindings/RowIdentity";
 export type { ForeignKeyMeta } from "./bindings/ForeignKeyMeta";
 export type { Dialect } from "./bindings/Dialect";
+export type { StagedChange } from "./bindings/StagedChange";
+export type { RowResult } from "./bindings/RowResult";
 export type { ConnectionStatusEvent } from "./bindings/ConnectionStatusEvent";
 
 /** Typed facade over every Tauri command. The renderer never calls `invoke` directly. */
@@ -89,6 +95,13 @@ export const ipc = {
       invoke<RowCount>("count_table_rows", { connectionId, table, filter, exact }),
     cell: (connectionId: string, table: TableRef, key: RowKey, column: string) =>
       invoke<Value>("fetch_cell", { connectionId, table, key, column }),
+  },
+
+  mutate: {
+    preview: (connectionId: string, req: ApplyRequest) =>
+      invoke<string[]>("preview_changes", { connectionId, req }),
+    apply: (connectionId: string, req: ApplyRequest) =>
+      invoke<ApplyResult>("apply_changes", { connectionId, req }),
   },
 
   schema: {

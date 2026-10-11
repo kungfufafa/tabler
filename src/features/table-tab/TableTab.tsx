@@ -1,16 +1,42 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
-import { Skeleton } from "@/components/ui/skeleton";
-import { DataGrid } from "@/features/datagrid/DataGrid";
 import {
-  buildGridColumns,
-  type ColumnState,
-  type GridColumn,
-  type ViewRow,
-} from "@/features/datagrid/types";
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Skeleton } from "@/components/ui/skeleton";
+import { DataGrid, type GridAction } from "@/features/datagrid/DataGrid";
+import { buildGridColumns, type ColumnState, type GridColumn } from "@/features/datagrid/types";
 import { useAction } from "@/features/palette/actions";
-import { ipc, type BrowsePage, type Dialect, type SortSpec, type Value } from "@/lib/ipc";
+import { defaultsFor, mergeRows } from "@/features/staging/merge";
+import {
+  deleteRows,
+  discardAll,
+  insertRow,
+  pendingCount,
+  revertCell,
+  revertRow,
+  setCell,
+  setRowError,
+  undo,
+} from "@/features/staging/model";
+import { rowKeyFor, toStagedChanges } from "@/features/staging/toPayload";
+import {
+  ipc,
+  type BrowsePage,
+  type Dialect,
+  type RowKey,
+  type SortSpec,
+  type Value,
+} from "@/lib/ipc";
 import { valueText } from "@/lib/values";
 import { useConnectionsStore } from "@/stores/connections";
 import { useInspectorStore } from "@/stores/inspector";
@@ -20,28 +46,30 @@ import {
   useTableTab,
   useTableTabsStore,
   type FilterRowSpec,
+  type TableTabState,
 } from "@/stores/tableTabs";
 import { FilterBar } from "./FilterBar";
 import { toFilterGroup } from "./filters";
 import { Pagination } from "./Pagination";
+import { PREVIEW_CLOSED, type PreviewState } from "./previewState";
+import { PreviewSqlSheet } from "./PreviewSqlSheet";
 import { TableToolbar } from "./TableToolbar";
 import { rowKeys, useRowCount, useTableMeta, useTableRows } from "./useTableRows";
 
 const DIALECT: Record<string, Dialect> = { postgres: "postgres", mysql: "mysql", sqlite: "sqlite" };
 
-function rowKeyOf(page: BrowsePage, index: number): string {
-  const row = page.rows[index]!;
-  if (page.identity === "rowid" && page.rowIds) return `rid:${page.rowIds[index]}`;
-  if (page.identity === "pk" && page.pkColumns.length > 0) {
-    return `pk:${page.pkColumns.map((c) => valueText(row[page.columns.findIndex((col) => col.name === c)] ?? { t: "null" }) ?? "NULL").join("|")}`;
-  }
-  return `row:${page.offset + index}`;
+function rowKeyString(page: BrowsePage, index: number): string {
+  const key = rowKeyFor(page, index);
+  if (key.kind === "rowid") return `rid:${key.value}`;
+  const vals = Object.values(key.value).map((v) => valueText(v) ?? "NULL");
+  return `${key.kind === "pk" ? "pk" : "all"}:${vals.join("|")}`;
 }
 
 export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   const { connectionId, table } = tab;
   const qc = useQueryClient();
-  const driver = useConnectionsStore((s) => s.byId[connectionId]?.info.driver ?? "postgres");
+  const connection = useConnectionsStore((s) => s.byId[connectionId]);
+  const driver = connection?.info.driver ?? "postgres";
   const isActive = useTabsStore((s) => s.activeId === tab.id);
   const openTable = useTabsStore((s) => s.openTable);
   const ensure = useTableTabsStore((s) => s.ensure);
@@ -50,18 +78,21 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     ensure(tab.id);
   }, [tab.id, ensure]);
   const state = useTableTab(tab.id);
+  const staging = state.staging;
+  const pending = pendingCount(staging);
   const setInspector = useInspectorStore((s) => s.set);
 
   const meta = useTableMeta(connectionId, table);
+  const editable =
+    !!meta.data && meta.data.kind === "table" && !(connection?.info.readOnly ?? false);
   const columns = useMemo(
-    () => (meta.data ? buildGridColumns(meta.data.columns, meta.data.foreignKeys, true) : []),
-    [meta.data],
+    () => (meta.data ? buildGridColumns(meta.data.columns, meta.data.foreignKeys, editable) : []),
+    [meta.data, editable],
   );
 
-  // Draft filter rows live locally until "Apply"; the applied ones are in the slice.
   const [draft, setDraft] = useState<{
     rows: FilterRowSpec[];
-    conjunction: typeof state.conjunction;
+    conjunction: TableTabState["conjunction"];
   }>({ rows: state.filters, conjunction: state.conjunction });
   useEffect(
     () => setDraft({ rows: state.filters, conjunction: state.conjunction }),
@@ -106,26 +137,192 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   }, [count.data, tab.id, update]);
 
   const page = rows.data;
-  const viewRows = useMemo<ViewRow[]>(
-    () => (page ? page.rows.map((cells, i) => ({ key: rowKeyOf(page, i), cells })) : []),
-    [page],
+  const keys = useMemo(() => (page ? page.rows.map((_, i) => rowKeyString(page, i)) : []), [page]);
+  const backendKeys = useMemo(() => {
+    const m = new Map<string, RowKey>();
+    if (page) page.rows.forEach((_, i) => m.set(keys[i]!, rowKeyFor(page, i)));
+    return m;
+  }, [page, keys]);
+  const viewRows = useMemo(
+    () => (page ? mergeRows(page, keys, staging) : []),
+    [page, keys, staging],
   );
   const getRow = useCallback((i: number) => viewRows[i], [viewRows]);
+  const setStaging = useCallback(
+    (fn: (s: TableTabState["staging"]) => TableTabState["staging"]) =>
+      update(tab.id, (s) => ({ staging: fn(s.staging) })),
+    [tab.id, update],
+  );
+
+  // ---- guard: anything that replaces the page asks about pending edits ----
+  const [guard, setGuard] = useState<null | { run: () => void }>(null);
+  const guarded = useCallback(
+    (run: () => void) => {
+      if (pending > 0) setGuard({ run });
+      else run();
+    },
+    [pending],
+  );
 
   const applyFilters = useCallback(
-    () => update(tab.id, { filters: draft.rows, conjunction: draft.conjunction, offset: 0 }),
-    [draft, tab.id, update],
+    () =>
+      guarded(() =>
+        update(tab.id, { filters: draft.rows, conjunction: draft.conjunction, offset: 0 }),
+      ),
+    [draft, tab.id, update, guarded],
   );
-  const refresh = useCallback(() => {
-    update(tab.id, (s) => ({ refreshToken: s.refreshToken + 1 }));
-    void qc.invalidateQueries({ queryKey: rowKeys.meta(connectionId, table) });
-  }, [tab.id, update, qc, connectionId, table]);
+  const refresh = useCallback(
+    () =>
+      guarded(() => {
+        update(tab.id, (s) => ({ refreshToken: s.refreshToken + 1, staging: discardAll() }));
+        void qc.invalidateQueries({ queryKey: rowKeys.meta(connectionId, table) });
+      }),
+    [tab.id, update, qc, connectionId, table, guarded],
+  );
+
+  // ---- editing -------------------------------------------------------------
+  const originalOf = (r: number): Value[] | undefined => page?.rows[r];
+  const onEditCommit = (r: number, c: number, value: Value) => {
+    const key = viewRows[r]?.key;
+    if (!key) return;
+    setStaging((s) => setCell(s, key, c, value, originalOf(r)));
+  };
+  const onAction = (a: GridAction) => {
+    if (!page) return;
+    switch (a.type) {
+      case "setNull":
+      case "setDefault":
+        setStaging((s) => {
+          let next = s;
+          for (const { r, c } of a.cells) {
+            const row = viewRows[r];
+            const col = columns[c];
+            if (!row || !col || !col.editable || row.status === "deleted") continue;
+            if (a.type === "setNull" && !col.nullable) continue;
+            if (a.type === "setDefault" && !col.hasDefault) continue;
+            next = setCell(
+              next,
+              row.key,
+              c,
+              a.type === "setNull" ? { t: "null" } : { t: "default" },
+              originalOf(r),
+            );
+          }
+          return next;
+        });
+        return;
+      case "revertCells":
+        setStaging((s) =>
+          a.cells.reduce(
+            (acc, { r, c }) => (viewRows[r] ? revertCell(acc, viewRows[r]!.key, c) : acc),
+            s,
+          ),
+        );
+        return;
+      case "revertRows":
+        setStaging((s) =>
+          a.rows.reduce((acc, r) => (viewRows[r] ? revertRow(acc, viewRows[r]!.key) : acc), s),
+        );
+        return;
+      case "deleteRows":
+        setStaging((s) =>
+          deleteRows(
+            s,
+            a.rows.flatMap((r) =>
+              viewRows[r] ? [{ rowKey: viewRows[r]!.key, original: originalOf(r) }] : [],
+            ),
+          ),
+        );
+        return;
+      case "duplicateRows":
+        setStaging((s) =>
+          a.rows.reduce((acc, r) => {
+            const row = viewRows[r];
+            if (!row) return acc;
+            const cells = row.cells.map((v, i) =>
+              page.columns[i]?.isAutoIncrement ? { t: "default" as const } : v,
+            );
+            return insertRow(acc, `new:${crypto.randomUUID()}`, cells);
+          }, s),
+        );
+        return;
+      case "newRow":
+        setStaging((s) => insertRow(s, `new:${crypto.randomUUID()}`, defaultsFor(page.columns)));
+        return;
+      case "undo":
+        setStaging((s) => undo(s));
+        return;
+    }
+  };
+
+  // ---- commit / discard ----------------------------------------------------
+  const [preview, setPreview] = useState<PreviewState>(PREVIEW_CLOSED);
+  const buildRequest = () =>
+    page
+      ? {
+          table,
+          changes: toStagedChanges(staging, page.columns, (k) => backendKeys.get(k) ?? null),
+          returning: true,
+        }
+      : null;
+
+  const openPreview = async () => {
+    const req = buildRequest();
+    if (!req || req.changes.length === 0) return;
+    setPreview({ ...PREVIEW_CLOSED, open: true, loading: true });
+    try {
+      const statements = await ipc.mutate.preview(connectionId, req);
+      setPreview((p) => ({ ...p, statements, loading: false }));
+    } catch (e) {
+      setPreview((p) => ({ ...p, loading: false, error: (e as Error).message }));
+    }
+  };
+
+  const applyPreview = async () => {
+    const req = buildRequest();
+    if (!req) return;
+    setPreview((p) => ({ ...p, applying: true, error: null, failedIndex: null }));
+    try {
+      const result = await ipc.mutate.apply(connectionId, req);
+      if (result.success) {
+        setPreview(PREVIEW_CLOSED);
+        update(tab.id, (s) => ({ staging: discardAll(), refreshToken: s.refreshToken + 1 }));
+        toast.success(
+          `Applied ${result.results.length} change${result.results.length === 1 ? "" : "s"} · ${result.durationMs} ms`,
+        );
+      } else {
+        const failed = result.results.findIndex((r) => r.error);
+        setPreview((p) => ({
+          ...p,
+          applying: false,
+          error: result.error?.message ?? "Failed",
+          failedIndex: failed >= 0 ? failed : null,
+        }));
+        setStaging((s) =>
+          result.results.reduce(
+            (acc, r) => (r.error ? setRowError(acc, r.rowId, r.error.message) : acc),
+            s,
+          ),
+        );
+      }
+    } catch (e) {
+      setPreview((p) => ({ ...p, applying: false, error: (e as Error).message }));
+    }
+  };
+
+  const discard = () => {
+    if (pending === 0) return;
+    setStaging(() => discardAll());
+    toast.message("Changes discarded");
+  };
 
   useAction("view.refresh", isActive ? refresh : null);
   useAction(
     "grid.filter",
     isActive ? () => update(tab.id, (s) => ({ filtersVisible: !s.filtersVisible })) : null,
   );
+  useAction("grid.commit", isActive && pending > 0 ? () => void openPreview() : null);
+  useAction("grid.discard", isActive && pending > 0 ? discard : null);
   useAction(
     "grid.open-fk",
     isActive
@@ -135,19 +332,33 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         }
       : null,
   );
+  useEffect(() => {
+    if (!preview.open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !preview.applying && !preview.loading) {
+        e.preventDefault();
+        void applyPreview();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preview.open, preview.applying, preview.loading, staging]);
 
   const openFk = (column: GridColumn, value: Value) => {
     const fk = column.fk!;
     const target = { schema: fk.schema ?? table.schema, name: fk.table };
     const id = openTable(connectionId, target, "table");
-    const filter = newFilterRow(fk.column, "eq", valueText(value) ?? "");
     useTableTabsStore.getState().ensure(id);
-    useTableTabsStore
-      .getState()
-      .update(id, { filters: [filter], conjunction: "and", filtersVisible: true, offset: 0 });
+    useTableTabsStore.getState().update(id, {
+      filters: [newFilterRow(fk.column, "eq", valueText(value) ?? "")],
+      conjunction: "and",
+      filtersVisible: true,
+      offset: 0,
+    });
   };
 
-  const onSortChange = (sort: SortSpec[]) => update(tab.id, { sort, offset: 0 });
+  const onSortChange = (sort: SortSpec[]) => guarded(() => update(tab.id, { sort, offset: 0 }));
   const onColumnStateChange = (columnState: ColumnState) => update(tab.id, { columnState });
 
   if (meta.isPending) {
@@ -160,6 +371,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   }
   if (meta.isError)
     return <EmptyState title="Could not load table" description={meta.error.message} />;
+  const noKey = page?.identity === "none";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -200,9 +412,15 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
           onApply={applyFilters}
           onClear={() => {
             setDraft({ rows: [], conjunction: "and" });
-            update(tab.id, { filters: [], offset: 0 });
+            guarded(() => update(tab.id, { filters: [], offset: 0 }));
           }}
         />
+      )}
+      {noKey && editable && (
+        <div className="border-warning/40 bg-warning/10 text-warning shrink-0 border-b px-3 py-1 text-[11px]">
+          This table has no primary key: edits match every column of the original row and affect at
+          most one row.
+        </div>
       )}
       <div className="min-h-0 flex-1">
         {rows.isError ? (
@@ -236,22 +454,65 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
               schema: meta.data.table.schema,
               table: meta.data.table.name,
             }}
+            editable={editable && !!page}
+            active={isActive}
+            onEditCommit={onEditCommit}
+            onAction={onAction}
           />
         )}
       </div>
       <Pagination
         offset={state.offset}
         limit={state.limit}
-        pageRows={viewRows.length}
+        pageRows={page?.rows.length ?? 0}
         count={count.data ?? null}
         countPending={count.isPending}
-        onChange={(next) => update(tab.id, next)}
+        onChange={(next) => guarded(() => update(tab.id, next))}
         onCountExact={() =>
           void ipc.browse
             .count(connectionId, table, filterGroup, true)
             .then((c) => update(tab.id, { count: c }))
         }
       />
+      <PreviewSqlSheet
+        state={preview}
+        onOpenChange={(open) => setPreview((p) => (open ? p : PREVIEW_CLOSED))}
+        onApply={() => void applyPreview()}
+      />
+      <AlertDialog open={guard !== null} onOpenChange={(open) => !open && setGuard(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pending} pending change{pending === 1 ? "" : "s"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Reloading the rows will drop your unsaved edits. Commit them first, or discard them.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction
+              variant="outline"
+              onClick={() => {
+                const run = guard?.run;
+                setGuard(null);
+                setStaging(() => discardAll());
+                run?.();
+              }}
+            >
+              Discard and continue
+            </AlertDialogAction>
+            <AlertDialogAction
+              onClick={() => {
+                setGuard(null);
+                void openPreview();
+              }}
+            >
+              Commit…
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

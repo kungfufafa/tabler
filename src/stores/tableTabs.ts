@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import type { ColumnState } from "@/features/datagrid/types";
+import { emptyStaging } from "@/features/staging/model";
+import type { StagingState } from "@/features/staging/types";
 import type { Conjunction, FilterOp, RowCount, SortSpec } from "@/lib/ipc";
 
 export interface FilterRowSpec {
@@ -30,6 +32,7 @@ export interface TableTabState {
   count: RowCount | null;
   /** Bumped by "Refresh" to refetch without changing the request. */
   refreshToken: number;
+  staging: StagingState;
 }
 
 export const DEFAULT_LIMIT = 200;
@@ -50,6 +53,7 @@ function initial(init?: Partial<TableTabState>): TableTabState {
     page: null,
     count: null,
     refreshToken: 0,
+    staging: emptyStaging(),
     ...init,
   };
 }

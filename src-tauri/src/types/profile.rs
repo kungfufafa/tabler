@@ -152,6 +152,8 @@ pub struct ConnectionInfo {
     pub current_database: Option<String>,
     pub current_user: Option<String>,
     pub tunnel: Option<TunnelInfo>,
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
