@@ -37,4 +37,4 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
 - [x] M4 SQL editor (CodeMirror, streaming multi-result runs, cancel, explain, history, .sql files)
 - [x] M5 structure + DDL (staged column/index/FK edits, preview/apply, create/rename/truncate/drop)
 - [x] M6 tunnel + export + palette + settings + polish
-- [ ] M7 packaging + docs
+- [x] M7 packaging + docs (icon, production CSP, `pnpm tauri build` → Tabler.app + DMG, README, docs/qa-macos.md)
