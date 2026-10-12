@@ -65,4 +65,26 @@ describe("inspector store", () => {
     expect(cellAtColumn({ ...cell, row: undefined }, 1).column.name).toBe("id");
     expect(cellAtColumn({ ...cell, fetch: null }, 1).fetch).toBeNull();
   });
+
+  it("asks a result where the full value of another column comes from", () => {
+    // select id, thumbnail as avatar, now() as t from users: the alias is no column of users.
+    const columns = [col("id", "int"), col("avatar", "bytes"), col("t", "timestamp")];
+    const table = { schema: null, name: "users" };
+    const key = { kind: "pk" as const, value: { id: { t: "int" as const, v: 1 } } };
+    const origins = ["id", "thumbnail", null];
+    const cell: InspectedCell = {
+      column: columns[0]!,
+      value: { t: "int", v: 1 },
+      rowIndex: 0,
+      source: "Result 1",
+      row: { columns, cells: [{ t: "int", v: 1 }], focused: 0 },
+      fetch: { connectionId: "c1", table, key, column: "id" },
+      fetchAt: (c) => {
+        const column = origins[c];
+        return column ? { connectionId: "c1", table, key, column } : null;
+      },
+    };
+    expect(cellAtColumn(cell, 1).fetch?.column).toBe("thumbnail");
+    expect(cellAtColumn(cell, 2).fetch).toBeNull();
+  });
 });

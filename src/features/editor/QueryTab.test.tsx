@@ -578,7 +578,7 @@ describe("Editor bar", () => {
       expect(limit).toHaveTextContent("Limit 10,000");
       type("select * from events_big");
       await act(() => actions.run("query.run"));
-      expect(run.mock.calls.at(-1)?.[3]).toEqual({ maxRows: 10_000 });
+      expect(run.mock.calls.at(-1)?.[3]).toEqual({ maxRows: 10_000, stopOnError: true });
 
       act(() => limit.focus());
       await user.keyboard("{Enter}");
@@ -589,7 +589,7 @@ describe("Editor bar", () => {
 
       await act(() => actions.run("query.run"));
       act(() => flushResultVersions());
-      expect(run.mock.calls.at(-1)?.[3]).toEqual({ maxRows: 100 });
+      expect(run.mock.calls.at(-1)?.[3]).toEqual({ maxRows: 100, stopOnError: true });
       expect(getQueryTab(id).run?.results[0]?.truncated).toBe(true);
       expect(screen.getByText(/^1 statement · 100 rows · \d+ ms$/)).toBeInTheDocument();
       expect(screen.getByText("limit reached")).toBeInTheDocument();
@@ -599,7 +599,7 @@ describe("Editor bar", () => {
       expect(limit).toHaveTextContent("No limit");
       type("select 1");
       await act(() => actions.run("query.run"));
-      expect(run.mock.calls.at(-1)?.[3]).toEqual({ maxRows: NO_LIMIT_MAX_ROWS });
+      expect(run.mock.calls.at(-1)?.[3]).toEqual({ maxRows: NO_LIMIT_MAX_ROWS, stopOnError: true });
     } finally {
       run.mockRestore();
     }

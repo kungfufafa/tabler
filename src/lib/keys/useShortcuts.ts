@@ -1,13 +1,26 @@
 import { useEffect, type ReactNode } from "react";
-import { actions } from "@/features/palette/actions";
+import { actions, type ActionId } from "@/features/palette/actions";
 import { comboFromEvent } from "./combo";
 import { findShortcut, type Scope } from "./keymap";
 
-/** Resolves the keyboard scope from the focused element (`data-scope` attributes, CodeMirror, dialogs). */
+const DIALOGS = "[role='dialog'], [role='alertdialog']";
+
+/**
+ * Resolves the keyboard scope from the focused element (`data-scope` attributes, CodeMirror,
+ * dialogs). A CodeMirror editor inside a dialog (Bootstrap commands, a trigger's body) is the
+ * dialog's: the SQL editor's keys (⌘↩ Run, ⌘O, ⌘W…) must not reach the tab behind it, and the
+ * editor's own keymap (⌘↩ / ⌘S save) must get them. A dialog that shields the app's shortcuts
+ * itself (Quick Look) opts in to the editor scope with `data-shortcut-scope="editor"`.
+ */
 export function resolveScope(target: Element | null): Scope {
   if (!target) return "global";
-  if (target.closest(".cm-editor")) return "editor";
-  if (target.closest("[role='dialog'], [role='alertdialog']")) return "dialog";
+  const dialog = target.closest(DIALOGS);
+  if (target.closest(".cm-editor")) {
+    if (!dialog) return "editor";
+    const optIn = target.closest("[data-shortcut-scope='editor']");
+    return optIn && dialog.contains(optIn) ? "editor" : "dialog";
+  }
+  if (dialog) return "dialog";
   const scoped = target.closest<HTMLElement>("[data-scope]");
   const scope = scoped?.dataset.scope as Scope | undefined;
   return scope ?? "global";
@@ -20,11 +33,52 @@ function isTextEntry(el: Element | null): boolean {
   return el.matches("input, textarea, select");
 }
 
+let capturing = 0;
+
+/**
+ * Settings ▸ Shortcuts is recording a new shortcut: every key goes to the recorder, none runs its
+ * action. Returns the function that ends it.
+ */
+export function beginShortcutCapture(): () => void {
+  capturing++;
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    capturing--;
+  };
+}
+
+export function isCapturingShortcut(): boolean {
+  return capturing > 0;
+}
+
+let dispatching = 0;
+
+/**
+ * Runs `id` as its keyboard shortcut. Its handler is called synchronously inside, so it can tell
+ * (`isShortcutDispatch`) a key from the menu bar or the palette: ⌘. cancels the running query,
+ * Connection ▸ Process List… always opens the list.
+ */
+export function runShortcut(id: ActionId): void {
+  dispatching++;
+  try {
+    void actions.run(id);
+  } finally {
+    dispatching--;
+  }
+}
+
+/** Whether the action handler running right now was started by its keyboard shortcut. */
+export function isShortcutDispatch(): boolean {
+  return dispatching > 0;
+}
+
 /** One capture-phase keydown listener for the whole app; dispatches into the action registry. */
 export function KeyboardProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.defaultPrevented) return;
+      if (e.defaultPrevented || capturing > 0) return;
       const combo = comboFromEvent(e);
       const target = e.target instanceof Element ? e.target : document.activeElement;
       // Shortcuts without a modifier (Space for the row detail…) never steal typing.
@@ -35,11 +89,12 @@ export function KeyboardProvider({ children }: { children: ReactNode }) {
       if (!actions.has(def.id)) {
         // Nothing handles it yet; still stop the webview from doing something odd (⌘R reload, ⌘P print).
         if (def.id === "view.refresh" || def.id === "palette.open") e.preventDefault();
+        actions.notify(def.id);
         return;
       }
       e.preventDefault();
       e.stopPropagation();
-      void actions.run(def.id);
+      runShortcut(def.id);
     };
     window.addEventListener("keydown", handler, { capture: true });
     return () => window.removeEventListener("keydown", handler, { capture: true });

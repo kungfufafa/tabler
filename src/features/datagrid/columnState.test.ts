@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { effectiveOrder, fitWidth, hideColumn, idAfter, moveColumn, showAll } from "./columnState";
+import {
+  effectiveOrder,
+  fitWidth,
+  hideColumn,
+  idAfter,
+  moveColumn,
+  resetLayout,
+  showAll,
+} from "./columnState";
 import {
   EMPTY_COLUMN_STATE,
   gutterWidth,
@@ -98,5 +106,14 @@ describe("column state helpers", () => {
     expect(gutterWidth(999)).toBe(35);
     expect(gutterWidth(1000)).toBe(42);
     expect(gutterWidth(123_456)).toBe(56);
+  });
+});
+
+describe("resetLayout", () => {
+  it("drops custom positions and widths but keeps hidden columns hidden", () => {
+    const state: ColumnState = { widths: { id: 90 }, order: ["name", "id"], hidden: ["bio"] };
+    expect(resetLayout(state)).toEqual({ widths: {}, order: [], hidden: ["bio"] });
+    const plain: ColumnState = { widths: {}, order: [], hidden: ["bio"] };
+    expect(resetLayout(plain)).toBe(plain);
   });
 });

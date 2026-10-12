@@ -19,7 +19,9 @@ use tabler_lib::drivers::{ConnectTarget, DbSession, connect};
 use tabler_lib::error::AppError;
 use tabler_lib::export::run_export;
 use tabler_lib::types::browse::{Conjunction, FilterGroup, FilterNode, FilterOp};
-use tabler_lib::types::export::{ExportFormat, ExportRequest, ExportResult, ExportSource};
+use tabler_lib::types::export::{
+    CsvQuote, ExportFormat, ExportRequest, ExportResult, ExportSource,
+};
 use tabler_lib::types::profile::{ConnectionProfile, Driver, ProfileOptions, SslMode};
 use tabler_lib::types::schema::TableRef;
 use tabler_lib::types::value::{BytesValue, Value};
@@ -222,20 +224,34 @@ fn sql(text: &str) -> ExportSource {
 }
 
 fn csv() -> ExportFormat {
-    ExportFormat::Csv {
-        delimiter: ",".into(),
-        header: true,
-        quote_all: false,
-        null_as: String::new(),
-    }
+    csv_with(false, "")
 }
 
+/// CSV as the M6 tests expect it: CRLF records, `"` quotes.
 fn csv_with(quote_all: bool, null_as: &str) -> ExportFormat {
     ExportFormat::Csv {
         delimiter: ",".into(),
         header: true,
-        quote_all,
+        quote: if quote_all {
+            CsvQuote::Double
+        } else {
+            CsvQuote::IfNeeded
+        },
         null_as: null_as.into(),
+        line_break: "\r\n".into(),
+        decimal: ".".into(),
+        line_break_to_space: false,
+    }
+}
+
+fn insert(table_name: &str, batch_size: u32) -> ExportFormat {
+    ExportFormat::SqlInsert {
+        table_name: table_name.into(),
+        batch_size,
+        drop_table: false,
+        structure: false,
+        content: true,
+        gzip: false,
     }
 }
 
@@ -598,10 +614,7 @@ async fn pg_large_bytea_and_insert_export() {
         let r = export(
             s.as_ref(),
             table(Some("public"), &name),
-            ExportFormat::SqlInsert {
-                table_name: copy.clone(),
-                batch_size: 2,
-            },
+            insert(&copy, 2),
             &path,
         )
         .await
@@ -874,17 +887,9 @@ async fn mysql_large_blob_and_insert_export() {
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rows.sql");
-        let r = export(
-            s.as_ref(),
-            table(Some(&db), &name),
-            ExportFormat::SqlInsert {
-                table_name: copy.clone(),
-                batch_size: 2,
-            },
-            &path,
-        )
-        .await
-        .unwrap();
+        let r = export(s.as_ref(), table(Some(&db), &name), insert(&copy, 2), &path)
+            .await
+            .unwrap();
         assert_eq!(r.rows, 3);
         let script = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -1042,10 +1047,7 @@ async fn sqlite_insert_export_round_trips_fixture_tables() {
         let result = export(
             s.as_ref(),
             table(Some("main"), name),
-            ExportFormat::SqlInsert {
-                table_name: String::new(),
-                batch_size: 500,
-            },
+            insert("", 500),
             &path,
         )
         .await
@@ -1120,10 +1122,7 @@ async fn sqlite_insert_export_round_trips_fixture_tables() {
     export(
         s.as_ref(),
         table(Some("main"), &name),
-        ExportFormat::SqlInsert {
-            table_name: String::new(),
-            batch_size: 10,
-        },
+        insert("", 10),
         &path,
     )
     .await

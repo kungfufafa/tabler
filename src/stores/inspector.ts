@@ -18,9 +18,24 @@ export interface InspectedRow {
   status?: RowStatus;
   /**
    * Stages `value` into source column `col` of this row, like an inline edit in the grid (table
-   * tabs on an editable table only; absent for query results and read-only tables).
+   * tabs on an editable table only; absent for query results and read-only tables). In a bulk
+   * edit it stages the value on every selected row.
    */
   edit?: (col: number, value: Value) => void;
+  /**
+   * Several rows are selected (TablePlus's bulk edit): `cells` holds the first one's values, and
+   * the source columns in `mixed` differ between them ("Multiple values").
+   */
+  bulk?: BulkSelection;
+}
+
+export interface BulkSelection {
+  /** Selected rows (at least two). */
+  count: number;
+  /** Source column indexes whose values differ between the selected rows. */
+  mixed: ReadonlySet<number>;
+  /** Identity of the selection (its row keys): a new one drops unstaged drafts. */
+  id: string;
 }
 
 /** Where the full value of a (blob) cell can be fetched from (`ipc.browse.cell`). */
@@ -39,6 +54,12 @@ export interface InspectedCell {
   row?: InspectedRow;
   /** Only for saved rows of a table (not for new rows or query results). */
   fetch?: CellFetch | null;
+  /**
+   * Where the full value of source column `col` of the row can be fetched from, when the columns
+   * are not simply the table's (a query result: aliased, computed or other tables' columns). Absent:
+   * `fetch` with the column's name.
+   */
+  fetchAt?: (col: number) => CellFetch | null;
 }
 
 /**
@@ -86,6 +107,10 @@ export function cellAtColumn(cell: InspectedCell, col: number): InspectedCell {
     column,
     value: row.cells[col] ?? { t: "null" },
     row: { ...row, focused: col },
-    fetch: cell.fetch ? { ...cell.fetch, column: column.name } : cell.fetch,
+    fetch: cell.fetchAt
+      ? cell.fetchAt(col)
+      : cell.fetch
+        ? { ...cell.fetch, column: column.name }
+        : cell.fetch,
   };
 }

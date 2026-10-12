@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useResultsStore } from "@/features/results/store";
 import { useStructureStore } from "@/features/structure/store";
 import { ipc, isTauri } from "@/lib/ipc";
 import { listenEvent } from "@/lib/ipc/events";
@@ -183,10 +184,12 @@ export const subscribeUnsaved = (onChange: () => void) => {
   const a = useTabsStore.subscribe(onChange);
   const b = useTableTabsStore.subscribe(onChange);
   const c = useStructureStore.subscribe(onChange);
+  const d = useResultsStore.subscribe(onChange);
   return () => {
     a();
     b();
     c();
+    d();
   };
 };
 

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { emptyStaging, insertRow } from "@/features/staging/model";
 import { useStructureStore } from "@/features/structure/store";
 import type { DdlOp } from "@/lib/ipc";
@@ -6,7 +6,10 @@ import {
   canGoBack,
   canGoForward,
   dirtyTabs,
+  maxQueryNumber,
   pickNeighbour,
+  registerUnsavedSource,
+  setWindowCloseHooks,
   unsavedCount,
   useTabsStore,
   workspaceTabs,
@@ -186,6 +189,17 @@ describe("tabs store", () => {
       const b = s.openTable("c1", posts, "table", { preview: true });
       expect(ids()).toEqual([a, b]);
     });
+  });
+
+  it("adds registered unsaved sources (e.g. staged result edits) to a tab's count", () => {
+    const s = state();
+    const q = s.newQuery("c1");
+    expect(unsavedCount(tabOf(q))).toBe(0);
+    const remove = registerUnsavedSource((tab) => (tab.id === q ? 3 : 0));
+    expect(unsavedCount(tabOf(q))).toBe(3);
+    expect(dirtyTabs(state().tabs)).toEqual([{ id: q, kind: "query", title: "Query 1", count: 3 }]);
+    remove();
+    expect(unsavedCount(tabOf(q))).toBe(0);
   });
 
   it("counts staged rows and staged DDL of a table's tab together, in either view", () => {
@@ -638,6 +652,65 @@ describe("tabs store", () => {
       expect(state().history).toHaveLength(50);
       expect(state().historyIndex).toBe(49);
       expect(state().history.at(-1)).toBe(b);
+    });
+  });
+  describe("rename and restore", () => {
+    it("renames with a trimmed title and ignores blank names", () => {
+      const s = state();
+      const q = s.newQuery("c1");
+      s.rename(q, "  Daily report ");
+      expect(tabOf(q).title).toBe("Daily report");
+      s.rename(q, "   ");
+      expect(tabOf(q).title).toBe("Daily report");
+      const t = s.openTable("c1", users);
+      s.rename(t, "People");
+      expect(tabOf(t).title).toBe("People");
+    });
+
+    it("appends restored tabs without activating them and continues the query numbering", () => {
+      const s = state();
+      const a = s.openTable("c1", users);
+      s.restoreTabs([
+        { id: "r1", kind: "query", connectionId: "c2", title: "Query 12" },
+        { id: "r2", kind: "structure", connectionId: "c2", table: posts, title: "posts" },
+        { id: a, kind: "table", connectionId: "c1", table: users, title: "dup" },
+      ]);
+      expect(ids()).toEqual([a, "r1", "r2"]);
+      expect(state().activeId).toBe(a);
+      expect(tabOf(a).title).toBe("users");
+      s.newQuery("c2");
+      expect(state().tabs.at(-1)?.title).toBe("Query 13");
+      expect(
+        maxQueryNumber([
+          { kind: "query", title: "Query 4" },
+          { kind: "table", title: "Query 9" },
+        ]),
+      ).toBe(4);
+    });
+
+    it("lets the session keep auto-saved query tabs out of the window-close prompt", () => {
+      const s = state();
+      const q = s.newQuery("c1");
+      const f = s.newQuery("c1");
+      s.setDirty(q, true);
+      const save = vi.fn();
+      const closeAfterSave = vi.fn();
+      const uninstall = setWindowCloseHooks({
+        survivesClose: (tab) => tab.id === q,
+        save,
+        closeAfterSave,
+      });
+      expect(s.requestWindowClose()).toBe(false);
+      expect(closeAfterSave).toHaveBeenCalledTimes(1);
+      expect(state().closeRequest).toBeNull();
+      s.setDirty(f, true);
+      expect(s.requestWindowClose()).toBe(false);
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(state().closeRequest?.dirty.map((d) => d.id)).toEqual([f]);
+      s.cancelClose();
+      uninstall();
+      expect(s.requestWindowClose()).toBe(false);
+      expect(state().closeRequest?.dirty.map((d) => d.id)).toEqual([q, f]);
     });
   });
 });

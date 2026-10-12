@@ -46,12 +46,15 @@ export function IconAction({
   children,
   className,
   disabled,
+  tabIndex,
 }: {
   label: string;
   onClick: () => void;
   children: ReactNode;
   className?: string;
   disabled?: boolean;
+  /** -1 keeps row actions out of the Tab order (Tab moves field to field). */
+  tabIndex?: number;
 }) {
   return (
     <Tooltip>
@@ -63,6 +66,7 @@ export function IconAction({
           aria-label={label}
           onClick={onClick}
           disabled={disabled}
+          tabIndex={tabIndex}
           className={cn("text-muted-foreground hover:text-foreground", className)}
         >
           {children}
@@ -101,9 +105,12 @@ export function CellInput({
   placeholder,
   list,
   className,
+  onLeave,
 }: {
   value: string;
   onCommit: (raw: string) => void;
+  /** Called when focus leaves the cell (after any commit), with what it holds. */
+  onLeave?: (raw: string) => void;
   /** `<row>|<field>` for ↑/↓ navigation. */
   cell: string;
   /** `<row key>:<field>` for programmatic focus. */
@@ -128,7 +135,9 @@ export function CellInput({
     setDraft(value);
   };
   const onBlur = () => {
+    const raw = draft;
     if (!moving.current) commit();
+    onLeave?.(raw);
   };
   // Full text as a tooltip only when the cell clips it.
   const onMouseEnter = (e: MouseEvent<HTMLInputElement>) => {

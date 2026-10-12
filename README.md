@@ -46,6 +46,43 @@ renderer.
   exports the result on screen; a result cut at the row limit can export all its rows by running a
   read-only statement again, never a `DELETE … RETURNING` or `CALL`) with progress and cancel;
   partial files are removed on cancel and on quit.
+- **Safe mode** — TablePlus's five levels per connection (Silent, Alert Mode 1/2, Safe Mode 1/2)
+  from the toolbar lock: an alert or the connection's password before queries, commits, imports,
+  restores and kills reach the server (levels 2 skip SELECT / EXPLAIN / SHOW). A default level for
+  new connections lives in Settings → Security.
+- **Connections, more** — client SSL key / certificate, Bootstrap commands (SQL run after every
+  login), password storage Keychain / Ask every time / No password, `~/.ssh/config` fallback for
+  SSH, connection groups (drag a row onto a group), sort by name / tag / driver, keep-alive pings,
+  import / export of connections to an encrypted `.tablerconnections` file.
+- **Workspace** — workspaces and SQL tabs reopen at startup (Auto Save SQL Query Tab: none / first
+  / all), Rename Tab, Show Workspaces (⇧⌘\), remappable shortcuts (Settings → Shortcuts).
+- **Database objects** — sidebar Functions (functions, procedures, aggregates) and PostgreSQL
+  Sequences that open their definition in a SQL tab; TablePlus item menus (Open Structure, Item
+  Overview, Export…, Import ▸, New ▸, Clone…, Truncate ⌥⌫, Delete ⌫ / CASCADE ⇧⌫ / without FK
+  checks ⌘⌫, Copy Script As ▸); multi-selection (⌘ / ⇧-click); Item Overview with editable comments;
+  Open Anything also finds functions and saved queries.
+- **Grid, more** — every TablePlus filter operator (Contains, Not contains, Has prefix / suffix and
+  their case variants, ILIKE, NOT BETWEEN, JSON contains), an **Any column** filter, Apply All with
+  AND (⌘↩) or OR (⇧⌘↩), filters remembered per table, Quick Look editor (⌘↩: JSON tree, hex,
+  image preview, referenced row), bulk edit of many rows in the right sidebar, Set Value ▸ NOW() /
+  Add a File…, Copy Rows As ▸ Plain text / JSON / HTML / Markdown / CSV / CSV with header / SQL Insert.
+- **Structure, more** — TablePlus header (Name, Primary, Comment, Options, Triggers, Info), default
+  presets, MySQL `extra`, column CHECKs and table CHECK constraints, triggers, MySQL engine / charset /
+  collation / auto increment, editable view definitions.
+- **SQL workflow** — a Queries pane (saved queries in folders, bound to keywords that expand in the
+  editor; ⌥⌘S adds one), query parameters (`:name`, `${name}`, … with a values dialog), Return on
+  Error, ⚙ editor settings, multiple carets, split pane (⇧⌘D), Save Selected Statements As (⇧⌘S),
+  **editable query results** (one source table with its primary key; ⌘S commits), pinned results,
+  append-all-results mode, a query time out (300 s by default).
+- **Import / export, backup** — CSV export options (NULL → empty, line breaks, quote, decimal…), SQL
+  export with DROP / structure / content / Gzip, Excel (.xlsx), export of many tables at once, the
+  CSV import wizard (create table, matching strategies, STOP ON ERROR / REPLACE / UPDATE ON
+  DUPLICATE) and SQL dump import (.sql / .sql.gz); Backup / Restore through the installed
+  `pg_dump` / `pg_restore` / `psql` / `mysqldump` / `mysql` with version picker, option chips, Gzip
+  and a file-name pattern.
+- **Server admin** — create / rename (PostgreSQL) / drop databases and schemas from ⌘K, Running
+  Queries (⌘.) with Kill Query / Kill Connection, User Management (roles, global and database
+  privileges, MySQL resource limits; passwords never logged).
 - **Comfort** — TablePlus keys by default: Open Anything (⌘P), database switcher (⌘K), connection
   switcher (⇧⌘K), a console log of every statement the app runs (⇧⌘C), keyboard-first everything,
   a native macOS menu bar (File / Edit / View / Window) wired to the same actions, light/dark
@@ -110,33 +147,39 @@ tests) is in `dev/docker-compose.yml`; see `dev/README.md`.
 The defaults follow TablePlus, so its muscle memory carries over (older Tabler keys such as ⌘B,
 ⌘L, ⌘N and ⌥⇧F still work as alternatives).
 
-| Global    |                        | Data grid |                           | SQL editor |                         |
-| --------- | ---------------------- | --------- | ------------------------- | ---------- | ----------------------- |
-| ⌘P        | open anything          | ↩ / F2    | edit cell                 | ⌘↩         | run current / selection |
-| ⌘K        | switch database        | ⌥↩        | multi-line / JSON edit    | ⇧⌘↩        | run all                 |
-| ⇧⌘K       | switch connection      | ⌘S        | commit                    | ⌘.         | cancel                  |
-| ⌘T / ⌘E   | new query tab          | ⇧⌘P       | preview SQL               | ⌘E         | explain                 |
-| ⌘W        | close tab              | ⇧⌘⌫       | discard changes           | ⌘I / ⇧⌘I   | beautify / uglify       |
-| ⇧⌘T       | reopen closed tab      | ⌘Z / ⇧⌘Z  | undo / redo staged change | ⌃\`        | toggle result pane      |
-| ⌘[ / ⌘]   | previous / next tab    | ⌘F        | filter bar                | ⌘H         | history                 |
-| ⌘1…9      | go to tab              | ⌥⌘F       | show / hide columns       | ⌘S / ⌘O    | save / open `.sql`      |
-| ⌃⌘[ / ⌃⌘] | data / structure view  | ⌘I        | new row                   | ⌘/         | toggle comment          |
-| ⌘0        | toggle sidebar         | ⌘D        | duplicate row             | ⇧⌘E        | export the result       |
-| ⇧⌘I       | toggle row detail      | ⌫ / ⌘⌫    | delete rows               |            |                         |
-| ⇧⌘C       | console log            | ⇧⌘N / ⇧⌘D | set NULL / DEFAULT        |            |                         |
-| ⇧⌘F       | search tables          | ␣ (Space) | row detail                |            |                         |
-| ⌘R / ⌥⌘R  | refresh                | ⌘J        | open referenced row       |            |                         |
-| ⇧⌘R       | reconnect              | ⌘C / ⌥⌘C  | copy rows / copy as…      |            |                         |
-| ⇧⌘E       | export                 | ⌘V        | paste cells / rows        |            |                         |
-| ⌘N        | new connection         |           |                           |            |                         |
-| ⇧⌘O       | connection manager     |           |                           |            |                         |
-| ⌘,        | settings               |           |                           |            |                         |
-| ⌘Q        | quit (asks if unsaved) |           |                           |            |                         |
+| Global    |                           | Data grid   |                             | SQL editor  |                         |
+| --------- | ------------------------- | ----------- | --------------------------- | ----------- | ----------------------- |
+| ⌘P        | open anything             | ↩ / F2      | edit cell                   | ⌘↩          | run current / selection |
+| ⌘K        | switch database           | ⌥↩          | multi-line / JSON edit      | ⇧⌘↩         | run all                 |
+| ⇧⌘K       | switch connection         | ⌘S          | commit                      | ⌘.          | cancel                  |
+| ⌘T / ⌘E   | new query tab             | ⇧⌘P         | preview SQL                 | ⌘E          | explain                 |
+| ⌘W        | close tab                 | ⇧⌘⌫         | discard changes             | ⌘I / ⇧⌘I    | beautify / uglify       |
+| ⇧⌘T       | reopen closed tab         | ⌘Z / ⇧⌘Z    | undo / redo staged change   | ⌃\`         | toggle result pane      |
+| ⌘[ / ⌘]   | previous / next tab       | ⌘F          | filter bar                  | ⌘H          | history                 |
+| ⌘1…9      | go to tab                 | ⌥⌘F         | show / hide columns         | ⌘S / ⌘O     | save / open `.sql`      |
+| ⌃⌘[ / ⌃⌘] | data / structure view     | ⌘I          | new row                     | ⌘/          | toggle comment          |
+| ⌘0        | toggle sidebar            | ⌘D          | duplicate row               | ⇧⌘E         | export the result       |
+| ⇧⌘I       | toggle row detail         | ⌫ / ⌘⌫      | delete rows                 | ⌥⌘S         | add to Queries          |
+| ⇧⌘C       | console log               | ⇧⌘N / ⇧⌘D   | set NULL / DEFAULT          | ⇧⌘S         | save selected as…       |
+| ⇧⌘F       | search tables             | ␣ (Space)   | row detail                  | ⇧⌘D         | split pane              |
+| ⌘R / ⌥⌘R  | refresh                   | ⌘J          | open referenced row         | ⌘D / ⌃⌘G    | next / all occurrences  |
+| ⇧⌘R       | reconnect                 | ⌘C / ⌥⌘C    | copy rows / copy as…        | ⌃⇧↑ / ⌃⇧↓   | add caret above / below |
+| ⇧⌘E       | export                    | ⌘V          | paste cells / rows          | ⌘+ / ⌘−     | font size               |
+| ⌘N        | new connection            | ⌘↩          | Quick Look editor           |             |                         |
+| ⇧⌘O       | connection manager        | ⌥↩          | Set Value menu              | **Filters** |                         |
+| ⌘,        | settings                  | ⌘← / ⌘→     | previous / next page        | ⌘↩ / ⇧⌘↩    | apply all with AND / OR |
+| ⌘.        | running queries           |             |                             | ⌘I / ⇧⌘I    | duplicate / remove row  |
+| ⇧⌘\       | show workspaces           | **Sidebar** |                             | ⌘↑ / ⌘↓     | previous / next filter  |
+| ⌃⌘← / ⌃⌘→ | previous / next workspace | ⌥⌫          | truncate                    | ⌘B          | toggle the filter       |
+| ⌃- / ⌃⇧-  | back / forward            | ⇧⌫ / ⌘⌫     | drop CASCADE / no FK checks |             |                         |
+| ⌘Q        | quit (asks if unsaved)    | ⌘A          | select all items            |             |                         |
 
 The full, searchable list is in Settings → Shortcuts. The native menu bar offers the same
-commands (File: New Query Tab, Open SQL File…, Close Tab, Reopen Closed Tab, Export…, Connection
-Manager; View: Open Anything, Switch Database, Switch Connection, Data, Structure, Toggle Sidebar,
-Toggle Row Detail, Toggle Console Log, Refresh, Reconnect, Full Screen); its shortcuts only act
+commands (File: New Query Tab, Open SQL File…, Close Tab, Close All Tabs, Reopen Closed Tab,
+Backup…, Restore…, Export…, Import ▸, Connection Manager; View: Open Anything, Switch Database,
+Switch Connection, Data, Structure, Toggle Sidebar, Toggle Row Detail, Toggle Console Log, Refresh,
+Full Screen; Connection: Process List…, User Management…, Reconnect, Disconnect; Window: Show
+Workspaces, Select Next / Previous Workspace); its shortcuts only act
 when the focused part of the page does not handle the key itself, and Edit keeps the standard
 Undo / Cut / Copy / Paste / Select All for text fields.
 

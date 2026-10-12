@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Value } from "@/lib/ipc";
-import { formatCells, parseTsv } from "./clipboard";
+import { formatCells, formatColumnValues, parseTsv } from "./clipboard";
 import type { GridColumn } from "./types";
 
 const col = (name: string, kind: GridColumn["kind"]): GridColumn => ({
@@ -32,8 +32,37 @@ describe("formatCells", () => {
       '1\t"a\tb"\t9007199254740993\t{"x":1}\n2\t\t5\t',
     );
   });
-  it("csv includes a header", () => {
-    expect(formatCells("csv", columns, rows).split("\r\n")[0]).toBe("id,name,big,j");
+  it("csv names the columns only with a header", () => {
+    expect(formatCells("csv", columns, rows, { headers: true }).split("\r\n")[0]).toBe(
+      "id,name,big,j",
+    );
+    expect(formatCells("csv", columns, rows)).toBe('1,a\tb,9007199254740993,"{""x"":1}"\r\n2,,5,');
+  });
+  it("tsv adds a header line on request (plain text has none)", () => {
+    expect(formatCells("tsv", columns, rows, { headers: true }).split("\n")[0]).toBe(
+      "id\tname\tbig\tj",
+    );
+  });
+  it("html writes an escaped table, NULL as an empty cell", () => {
+    const html = formatCells(
+      "html",
+      [col("a", "text"), col("b", "int")],
+      [
+        [
+          { t: "text", v: "<b>&'\"\nx" },
+          { t: "int", v: 1 },
+        ],
+        [{ t: "null" }, { t: "int", v: 2 }],
+      ],
+    );
+    expect(html).toBe(
+      "<table>\n<thead>\n<tr><th>a</th><th>b</th></tr>\n</thead>\n<tbody>\n" +
+        "<tr><td>&lt;b&gt;&amp;&#39;&quot;<br>x</td><td>1</td></tr>\n" +
+        "<tr><td></td><td>2</td></tr>\n</tbody>\n</table>",
+    );
+    expect(formatCells("html", [col("a", "text")], [])).toBe(
+      "<table>\n<thead>\n<tr><th>a</th></tr>\n</thead>\n<tbody>\n</tbody>\n</table>",
+    );
   });
   it("json keeps unsafe ints as strings and parses json cells", () => {
     const parsed = JSON.parse(formatCells("json", columns, rows)) as Array<Record<string, unknown>>;
@@ -58,6 +87,24 @@ describe("formatCells", () => {
   it("markdown escapes pipes", () => {
     const md = formatCells("markdown", [col("a", "text")], [[{ t: "text", v: "x|y" }]]);
     expect(md).toBe("| a |\n| --- |\n| x\\|y |");
+  });
+});
+
+describe("formatColumnValues", () => {
+  it("lists values comma-separated, strings single-quoted, numbers and NULL bare", () => {
+    expect(
+      formatColumnValues([
+        { t: "int", v: 1 },
+        { t: "text", v: "it's" },
+        { t: "null" },
+        { t: "decimal", v: "1.50" },
+        { t: "bool", v: true },
+        { t: "uuid", v: "a-b" },
+        { t: "date", v: "2024-01-02" },
+        { t: "default" },
+      ]),
+    ).toBe("1, 'it''s', NULL, 1.50, true, 'a-b', '2024-01-02', DEFAULT");
+    expect(formatColumnValues([])).toBe("");
   });
 });
 

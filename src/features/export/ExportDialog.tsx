@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "re
 import { toast } from "sonner";
 import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -18,11 +17,12 @@ import { isReadOnlyStatement } from "@/lib/sql/statement";
 import { useConnectionsStore } from "@/stores/connections";
 import { cn } from "@/lib/utils";
 import { pickExportPath } from "./destination";
+import { Check, FormatOptions, Row } from "./formParts";
 import {
   BATCH_SIZE_RANGE,
+  FORMATS,
   buildExportRequest,
   clampBatchSize,
-  CSV_DELIMITERS,
   defaultFileName,
   dirname,
   exportProblem,
@@ -35,6 +35,7 @@ import {
   loadLastDir,
   saveExportOptions,
   saveLastDir,
+  sqlWritesStructure,
   type ExportInput,
   type ExportOptions,
   type ExportProblem,
@@ -51,70 +52,8 @@ import {
   type ExportRun,
   type OpenExportArgs,
 } from "./store";
+import { TablesExportForm } from "./TablesExportForm";
 import { useExportSource, type ResolvedExportSource } from "./useExportSource";
-
-const FORMATS: ReadonlyArray<{ value: FormatKind; label: string; title: string }> = [
-  { value: "csv", label: "CSV", title: "Comma-separated values" },
-  { value: "json", label: "JSON", title: "JSON array or newline-delimited JSON" },
-  { value: "sqlInsert", label: "SQL", title: "INSERT statements" },
-];
-
-/** Label column + control column; `id` labels a Segmented group (`${id}-label`). */
-function Row({
-  id,
-  label,
-  hint,
-  children,
-}: {
-  id: string;
-  label: string;
-  hint?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <div className="grid grid-cols-[84px_minmax(0,1fr)] items-start gap-x-3">
-      <label
-        id={`${id}-label`}
-        htmlFor={id}
-        className="text-muted-foreground pt-1.5 text-xs leading-4"
-      >
-        {label}
-      </label>
-      <div className="flex min-w-0 flex-col items-start gap-1">
-        {children}
-        {hint && <div className="text-muted-foreground text-[11px] leading-4">{hint}</div>}
-      </div>
-    </div>
-  );
-}
-
-function Check({
-  checked,
-  onChange,
-  disabled,
-  children,
-}: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  disabled?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <label
-      className={cn(
-        "flex h-7 cursor-default items-center gap-2 text-xs",
-        disabled && "text-muted-foreground opacity-60",
-      )}
-    >
-      <Checkbox
-        checked={checked}
-        disabled={disabled}
-        onCheckedChange={(v) => onChange(v === true)}
-      />
-      {children}
-    </label>
-  );
-}
 
 const problemHint = (problem: ExportProblem) =>
   problem.severity === "fix" ? (
@@ -141,7 +80,7 @@ function rowsHint(
   return src.filtered ? `${n} ${what} match the filter` : `${n} ${what}`;
 }
 
-function Progress({ run }: { run: ExportRun }) {
+export function Progress({ run }: { run: ExportRun }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 500);
@@ -253,19 +192,23 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
     () => defaultFileName(src.fileBase, options, new Date()),
     [src.fileBase, options],
   );
-  const set = <K extends keyof ExportOptions>(key: K, patch: Partial<ExportOptions[K]>) =>
-    setOptions((o) => ({ ...o, [key]: { ...(o[key] as object), ...patch } }));
 
   const running = run !== null;
+  const tableSource = input?.kind === "table";
+  // The script creates the source table: its INSERTs go there.
+  const scriptsTable = tableSource && sqlWritesStructure(options);
   // Table and result sources name their INSERT target themselves (when the result's table is
   // known); a query needs one.
   const needsTableName =
-    options.format === "sqlInsert" && tableName.trim() === "" && !src.defaultTableName;
+    options.format === "sqlInsert" &&
+    options.sql.content &&
+    tableName.trim() === "" &&
+    !src.defaultTableName;
   const emptySql =
     isSql && (target.source.kind === "sql" ? target.source.sql.trim() === "" : false);
   const problem = useMemo(
-    () => (input ? exportProblem(input, options.format) : null),
-    [input, options.format],
+    () => (input ? exportProblem(input, options.format, options.sql) : null),
+    [input, options.format, options.sql],
   );
   const canSubmit =
     !running && !picking && input !== null && !needsTableName && !emptySql && !problem;
@@ -274,7 +217,7 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
     if (!canSubmit || !input) return;
     const finalOptions: ExportOptions = {
       ...options,
-      sql: { batchSize: clampBatchSize(Number.parseInt(batchText, 10)) },
+      sql: { ...options.sql, batchSize: clampBatchSize(Number.parseInt(batchText, 10)) },
     };
     setPicking(true);
     let path: string | null;
@@ -299,7 +242,9 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
         input,
         options: finalOptions,
         // Running the statement again exports a query, which has no table of its own.
-        sqlTableName: tableName.trim() || (rerun ? (src.defaultTableName ?? "") : ""),
+        sqlTableName: scriptsTable
+          ? ""
+          : tableName.trim() || (rerun ? (src.defaultTableName ?? "") : ""),
       });
     } catch (e) {
       useExportStore.setState({ error: toIpcError(e).message });
@@ -429,120 +374,62 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
           />
         </Row>
 
-        {options.format === "csv" && (
-          <>
-            <Row id="export-delimiter" label="Delimiter">
-              <Segmented
-                id="export-delimiter"
-                value={options.csv.delimiter}
-                onChange={(delimiter) => set("csv", { delimiter })}
-                options={CSV_DELIMITERS.map((d) => ({
-                  ...d,
-                  label: <span className={cn(d.label !== "Tab" && "font-mono")}>{d.label}</span>,
-                }))}
-              />
-            </Row>
-            <Row id="export-csv-options" label="Options">
-              <div className="flex flex-wrap items-center gap-x-4">
-                <Check checked={options.csv.header} onChange={(header) => set("csv", { header })}>
-                  Header row
-                </Check>
-                <Check
-                  checked={options.csv.quoteAll}
-                  onChange={(quoteAll) => set("csv", { quoteAll })}
+        <FormatOptions
+          options={options}
+          setOptions={setOptions}
+          tableSource={tableSource}
+          sqlExtra={
+            options.sql.content && (
+              <>
+                <Row
+                  id="export-table-name"
+                  label="Table name"
+                  hint={
+                    scriptsTable ? (
+                      "The script creates and fills the source table"
+                    ) : needsTableName ? (
+                      <span className="text-warning">
+                        {held && !rerun
+                          ? "The result's table is unknown: it needs a target table name"
+                          : "A query export needs a target table name"}
+                      </span>
+                    ) : (
+                      "Target of the INSERT statements"
+                    )
+                  }
                 >
-                  Quote all fields
-                </Check>
-              </div>
-            </Row>
-            <Row id="export-null" label="NULL as" hint="Text written for SQL NULL values">
-              <Input
-                id="export-null"
-                value={options.csv.nullAs}
-                onChange={(e) => set("csv", { nullAs: e.target.value })}
-                placeholder="(empty)"
-                maxLength={32}
-                spellCheck={false}
-                className="h-7 w-36 font-mono text-xs"
-              />
-            </Row>
-          </>
-        )}
-
-        {options.format === "json" && (
-          <>
-            <Row
-              id="export-json-layout"
-              label="Layout"
-              hint={
-                options.json.ndjson
-                  ? "One JSON object per line (NDJSON)"
-                  : "A single array of row objects"
-              }
-            >
-              <Segmented<"array" | "ndjson">
-                id="export-json-layout"
-                value={options.json.ndjson ? "ndjson" : "array"}
-                onChange={(v) => set("json", { ndjson: v === "ndjson" })}
-                options={[
-                  { value: "array", label: "Array" },
-                  { value: "ndjson", label: "NDJSON" },
-                ]}
-              />
-            </Row>
-            <Row id="export-json-options" label="Options">
-              <Check
-                checked={options.json.pretty && !options.json.ndjson}
-                disabled={options.json.ndjson}
-                onChange={(pretty) => set("json", { pretty })}
-              >
-                Pretty print
-              </Check>
-            </Row>
-          </>
-        )}
-
-        {options.format === "sqlInsert" && (
-          <>
-            <Row
-              id="export-table-name"
-              label="Table name"
-              hint={
-                needsTableName ? (
-                  <span className="text-warning">
-                    {held && !rerun
-                      ? "The result's table is unknown: it needs a target table name"
-                      : "A query export needs a target table name"}
-                  </span>
-                ) : (
-                  "Target of the INSERT statements"
-                )
-              }
-            >
-              <Input
-                id="export-table-name"
-                value={tableName}
-                onChange={(e) => setTableName(e.target.value)}
-                placeholder={src.defaultTableName ?? "table_name"}
-                spellCheck={false}
-                autoComplete="off"
-                className="h-7 w-56 font-mono text-xs"
-              />
-            </Row>
-            <Row id="export-batch" label="Batch size" hint="Rows per INSERT statement">
-              <Input
-                id="export-batch"
-                type="number"
-                inputMode="numeric"
-                min={BATCH_SIZE_RANGE.min}
-                max={BATCH_SIZE_RANGE.max}
-                value={batchText}
-                onChange={(e) => setBatchText(e.target.value)}
-                onBlur={() => setBatchText(String(clampBatchSize(Number.parseInt(batchText, 10))))}
-                className="h-7 w-24 font-mono text-xs tabular-nums"
-              />
-            </Row>
-          </>
+                  <Input
+                    id="export-table-name"
+                    value={scriptsTable ? "" : tableName}
+                    disabled={scriptsTable}
+                    onChange={(e) => setTableName(e.target.value)}
+                    placeholder={src.defaultTableName ?? "table_name"}
+                    spellCheck={false}
+                    autoComplete="off"
+                    className="h-7 w-56 font-mono text-xs"
+                  />
+                </Row>
+                <Row id="export-batch" label="Batch size" hint="Rows per INSERT statement">
+                  <Input
+                    id="export-batch"
+                    type="number"
+                    inputMode="numeric"
+                    min={BATCH_SIZE_RANGE.min}
+                    max={BATCH_SIZE_RANGE.max}
+                    value={batchText}
+                    onChange={(e) => setBatchText(e.target.value)}
+                    onBlur={() =>
+                      setBatchText(String(clampBatchSize(Number.parseInt(batchText, 10))))
+                    }
+                    className="h-7 w-24 font-mono text-xs tabular-nums"
+                  />
+                </Row>
+              </>
+            )
+          }
+        />
+        {problem?.field === "options" && (
+          <div className="text-warning text-[11px] leading-4">{problem.message}</div>
         )}
       </fieldset>
 
@@ -614,7 +501,11 @@ export function ExportDialog() {
         // Closed and animated out: the source (a shown result's rows) is no longer needed.
         onCloseAutoFocus={releaseExportTarget}
       >
-        {target && <ExportForm key={session} target={target} />}
+        {target?.source.kind === "tables" ? (
+          <TablesExportForm key={session} target={target} />
+        ) : (
+          target && <ExportForm key={session} target={target} />
+        )}
       </DialogContent>
     </Dialog>
   );

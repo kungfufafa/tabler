@@ -8,6 +8,8 @@ export const ROW_H = 22;
 export const HEADER_H = 24;
 /** Narrowest row-number gutter (enough for three digits). */
 export const MIN_GUTTER_W = 32;
+/** The gutter without row numbers: a slim strip for the staged / error tint and row selection. */
+export const SLIM_GUTTER_W = 8;
 export const MIN_COL_W = 48;
 
 /** Row-number gutter width: just wide enough for the largest row number (11px tabular digits). */

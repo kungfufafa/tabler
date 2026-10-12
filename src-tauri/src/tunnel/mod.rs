@@ -15,6 +15,7 @@
 //! listens on the wildcard address of that port.
 
 mod hostkeys;
+pub mod ssh_config;
 
 use std::fmt::Display;
 use std::io;
@@ -237,6 +238,69 @@ impl Drop for TunnelHandle {
     }
 }
 
+/// Where and as whom the tunnel connects, once `~/.ssh/config` filled the form's gaps.
+#[derive(Debug, PartialEq, Eq)]
+struct ResolvedSsh {
+    host: String,
+    port: u16,
+    user: String,
+    /// The private key for key authentication (None when none could be found).
+    key_path: Option<String>,
+}
+
+/// Merges the form's SSH settings with the `~/.ssh/config` entry of its host: a typed user, port
+/// (non-zero) or key wins; then the config's `User` / `Port` / `IdentityFile`; then OpenSSH's
+/// defaults (the local user, port 22, the first existing `~/.ssh/id_*` key). The config's
+/// `HostName` replaces an alias.
+fn resolve_ssh(
+    cfg: &SshConfig,
+    alias: &str,
+    config: &ssh_config::HostConfig,
+) -> Result<ResolvedSsh, AppError> {
+    let host = config
+        .host_name
+        .clone()
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| alias.to_string());
+    let port = match cfg.port {
+        0 => config.port.unwrap_or(22),
+        p => p,
+    };
+    let user = Some(cfg.user.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .or_else(|| config.user.clone())
+        .or_else(ssh_config::default_user)
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "SSH user is required (none typed, none in ~/.ssh/config for this host)".into(),
+            )
+        })?;
+    let key_path = match cfg.auth {
+        SshAuth::Key => cfg
+            .key_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                config
+                    .identity_files
+                    .iter()
+                    .map(String::as_str)
+                    .chain(ssh_config::DEFAULT_IDENTITIES)
+                    .find(|p| expand_tilde(p).is_file())
+                    .map(str::to_string)
+            }),
+        _ => None,
+    };
+    Ok(ResolvedSsh {
+        host,
+        port,
+        user,
+        key_path,
+    })
+}
+
 /// Opens an SSH session described by `cfg`, verifies the server key against `trust`,
 /// authenticates and listens on `127.0.0.1:<cfg.local_port or ephemeral>`; every accepted
 /// connection is forwarded to `target_host:target_port` as seen from the SSH server.
@@ -247,20 +311,23 @@ pub async fn open_tunnel(
     target_port: u16,
     trust: &dyn HostKeyTrust,
 ) -> Result<TunnelHandle, AppError> {
-    let ssh_host = cfg.host.trim().to_string();
-    if ssh_host.is_empty() {
+    let alias = cfg.host.trim().to_string();
+    if alias.is_empty() {
         return Err(AppError::InvalidInput("SSH host is required".into()));
-    }
-    let user = cfg.user.trim().to_string();
-    if user.is_empty() {
-        return Err(AppError::InvalidInput("SSH user is required".into()));
     }
     if target_port == 0 {
         return Err(AppError::InvalidInput(
             "database port is required for an SSH tunnel".into(),
         ));
     }
-    let ssh_port = if cfg.port == 0 { 22 } else { cfg.port };
+    // What the form leaves empty comes from ~/.ssh/config (the form wins, as in TablePlus).
+    let config = ssh_config::for_host(&alias);
+    let ResolvedSsh {
+        host: ssh_host,
+        port: ssh_port,
+        user,
+        key_path,
+    } = resolve_ssh(cfg, &alias, &config)?;
 
     // Local problems (missing key, wrong passphrase, port in use) fail before any network I/O.
     let credential = match cfg.auth {
@@ -268,7 +335,7 @@ pub async fn open_tunnel(
             AppError::Auth("ssh: no SSH password is saved for this connection".into())
         })?),
         SshAuth::Key => Credential::Key(load_private_key(
-            cfg.key_path.as_deref(),
+            key_path.as_deref(),
             auth.passphrase.as_deref(),
         )?),
         SshAuth::Agent => Credential::Agent(auth.agent_socket.clone()),
@@ -928,7 +995,9 @@ pub fn load_private_key(
         .filter(|p| !p.is_empty())
         .ok_or_else(|| {
             AppError::InvalidInput(
-                "an SSH private key file is required for key authentication".into(),
+                "an SSH private key file is required for key authentication (none chosen, none \
+                 in ~/.ssh/config, no ~/.ssh/id_ed25519, id_ecdsa or id_rsa)"
+                    .into(),
             )
         })?;
     let path = expand_tilde(raw);
@@ -1248,5 +1317,51 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Tunnel(_)), "{err:?}");
+    }
+
+    #[test]
+    fn form_values_win_over_ssh_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("deploy_key");
+        std::fs::write(&key, "key").unwrap();
+        let key = key.to_string_lossy().into_owned();
+        let config = ssh_config::HostConfig {
+            host_name: Some("bastion.example.com".into()),
+            user: Some("deploy".into()),
+            port: Some(2222),
+            identity_files: vec!["/nonexistent/first".into(), key.clone()],
+        };
+        let mut cfg = SshConfig {
+            host: "bastion".into(),
+            port: 0,
+            user: " ".into(),
+            auth: SshAuth::Key,
+            key_path: None,
+            local_port: None,
+            keepalive_secs: None,
+        };
+        // Empty form fields: the config fills them (the first existing IdentityFile).
+        assert_eq!(
+            resolve_ssh(&cfg, "bastion", &config).unwrap(),
+            ResolvedSsh {
+                host: "bastion.example.com".into(),
+                port: 2222,
+                user: "deploy".into(),
+                key_path: Some(key.clone()),
+            }
+        );
+        // Typed values win.
+        cfg.port = 22;
+        cfg.user = "me".into();
+        cfg.key_path = Some("/keys/mine".into());
+        let r = resolve_ssh(&cfg, "bastion", &config).unwrap();
+        assert_eq!((r.port, r.user.as_str()), (22, "me"));
+        assert_eq!(r.key_path.as_deref(), Some("/keys/mine"));
+        // No config entry: the alias is the host, port 22; password auth needs no key.
+        cfg.port = 0;
+        cfg.auth = SshAuth::Password;
+        let r = resolve_ssh(&cfg, "db.example.com", &ssh_config::HostConfig::default()).unwrap();
+        assert_eq!((r.host.as_str(), r.port), ("db.example.com", 22));
+        assert_eq!(r.key_path, None);
     }
 }

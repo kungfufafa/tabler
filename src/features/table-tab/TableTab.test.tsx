@@ -12,6 +12,9 @@ import { useConnectionsStore } from "@/stores/connections";
 import { DEFAULT_PREFS, resetPrefsForTests } from "@/stores/prefs";
 import { newFilterRow, useTableTabsStore } from "@/stores/tableTabs";
 import { useTabsStore, type Tab } from "@/stores/tabs";
+import { useExportStore } from "@/features/export/store";
+import { useImportStore } from "@/features/import/store";
+import { filterMemoryKey, rememberFilters, resetFilterMemoryForTests } from "./filterMemory";
 import { TableTab } from "./TableTab";
 
 const toast = vi.hoisted(() => ({
@@ -20,6 +23,15 @@ const toast = vi.hoisted(() => ({
   message: vi.fn(),
 }));
 vi.mock("sonner", () => ({ toast }));
+
+// The connection's safe-mode check (another package's): allowed unless a test says otherwise.
+const guard = vi.hoisted(() => ({ allow: true, calls: [] as unknown[] }));
+vi.mock("@/features/safety/guard", () => ({
+  guardExecution: async (connectionId: string, request: unknown) => {
+    guard.calls.push({ connectionId, request });
+    return guard.allow;
+  },
+}));
 
 // The grid is replaced by a probe: tests drive TableTab through the props it hands the grid.
 const grid = vi.hoisted(() => ({ props: null as DataGridProps | null }));
@@ -99,6 +111,9 @@ const column = (name: string) => gridProps().columns[colIndex(name)]!;
 
 beforeEach(() => {
   grid.props = null;
+  resetFilterMemoryForTests();
+  guard.allow = true;
+  guard.calls = [];
   useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
   useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
   useTableTabsStore.setState({ slices: {} });
@@ -123,11 +138,12 @@ describe("TableTab commit", () => {
 
   it("⌘S applies straight away when it is off", async () => {
     const { pending } = await setup({ confirmCommit: false });
+    // The statements are generated for the connection's safe-mode check, not shown.
     const preview = vi.spyOn(ipc.mutate, "preview");
     const apply = vi.spyOn(ipc.mutate, "apply").mockResolvedValue(ok);
     await act(() => actions.run("grid.commit"));
     expect(apply).toHaveBeenCalledOnce();
-    expect(preview).not.toHaveBeenCalled();
+    expect(preview).toHaveBeenCalledOnce();
     expect(pending()).toBe(0);
     expect(toast.success).toHaveBeenCalled();
     expect(screen.queryByText("Preview changes")).not.toBeInTheDocument();
@@ -789,5 +805,168 @@ describe("TableTab row details", () => {
     const cell = await focus(0, "email");
     expect(cell().row).toBeDefined();
     expect(cell().row?.edit).toBeUndefined();
+  });
+});
+
+describe("TableTab M8 grid features", () => {
+  async function focus(r: number, column: string) {
+    const { useInspectorStore } = await import("@/stores/inspector");
+    const c = colIndex(column);
+    const row = gridProps().getRow(r)!;
+    act(() =>
+      gridProps().onFocusCell!({
+        pos: { r, c: 0 },
+        sourceIndex: c,
+        column: gridProps().columns[c]!,
+        value: row.cells[c]!,
+        row,
+      }),
+    );
+    return () => useInspectorStore.getState().cell!;
+  }
+
+  it("commits only after the connection's safe-mode check, with the generated SQL", async () => {
+    const { pending } = await setup({ confirmCommit: false });
+    vi.spyOn(ipc.mutate, "preview").mockResolvedValue(["INSERT INTO users DEFAULT VALUES"]);
+    const apply = vi.spyOn(ipc.mutate, "apply").mockResolvedValue(ok);
+    guard.allow = false;
+    await act(() => actions.run("grid.commit"));
+    expect(guard.calls).toEqual([
+      {
+        connectionId: expect.any(String),
+        request: { kind: "commit", statements: ["INSERT INTO users DEFAULT VALUES"] },
+      },
+    ]);
+    expect(apply).not.toHaveBeenCalled();
+    expect(pending()).toBe(1);
+    guard.allow = true;
+    await act(() => actions.run("grid.commit"));
+    expect(apply).toHaveBeenCalledOnce();
+    expect(pending()).toBe(0);
+  });
+
+  it("the Preview SQL sheet's Commit goes through the check too", async () => {
+    await setup({ confirmCommit: true });
+    vi.spyOn(ipc.mutate, "preview").mockResolvedValue(["INSERT 1"]);
+    const apply = vi.spyOn(ipc.mutate, "apply").mockResolvedValue(ok);
+    guard.allow = false;
+    await act(() => actions.run("grid.commit"));
+    fireEvent.click(await screen.findByRole("button", { name: /^Apply/ }));
+    await waitFor(() => expect(guard.calls).toHaveLength(1));
+    expect(apply).not.toHaveBeenCalled();
+    expect(screen.getByText("Preview changes")).toBeInTheDocument();
+  });
+
+  it("several selected rows make the sidebar a bulk edit", async () => {
+    const { pending, slice } = await setup({ stage: false });
+    act(() => gridProps().onSelectedRowsChange!([0, 1]));
+    const cell = await focus(0, "name");
+    const name = colIndex("name");
+    const row = () => cell().row!;
+    expect(row().bulk?.count).toBe(2);
+    // Different names; the same (NULL) avatar.
+    expect(row().bulk?.mixed.has(name)).toBe(true);
+    expect(row().bulk?.mixed.has(colIndex("avatar"))).toBe(false);
+    act(() => row().edit!(name, { t: "text", v: "Same" }));
+    expect(pending()).toBe(2);
+    expect(slice().staging.undo).toHaveLength(1);
+    for (const change of slice().staging.changes.values())
+      expect(change.patch.get(name)).toEqual({ t: "text", v: "Same" });
+    await waitFor(() => expect(row().bulk?.mixed.has(name)).toBe(false));
+    // Back to one row: a plain Details view.
+    act(() => gridProps().onSelectedRowsChange!([1]));
+    await waitFor(() => expect(row().bulk).toBeUndefined());
+  });
+
+  it("Set Value ▸ NOW() stages the current time; Add a File… a file's bytes", async () => {
+    const { slice } = await setup({ stage: false });
+    const created = colIndex("last_login");
+    act(() => gridProps().onAction!({ type: "setNow", cells: [{ r: 0, c: created }] }));
+    const [change] = [...slice().staging.changes.values()];
+    expect(change!.patch.get(created)).toMatchObject({
+      t: "timestamp",
+      v: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
+    });
+    const avatar = colIndex("avatar");
+    vi.spyOn(window, "prompt").mockReturnValue("/Users/me/avatar.png");
+    act(() => gridProps().onAction!({ type: "setFile", cells: [{ r: 1, c: avatar }] }));
+    await waitFor(() => expect(slice().staging.changes.size).toBe(2));
+    const blob = [...slice().staging.changes.values()][1]!.patch.get(avatar);
+    expect(blob).toMatchObject({ t: "bytes", v: { truncated: false } });
+    expect(blob?.t === "bytes" && atob(blob.v.base64).startsWith("\x89PNG")).toBe(true);
+  });
+
+  it("⌘← / ⌘→ turn the page", async () => {
+    const { slice } = await setup({ stage: false, limit: 10 });
+    await act(() => actions.run("grid.prev-page"));
+    expect(slice().offset).toBe(0);
+    await act(() => actions.run("grid.next-page"));
+    expect(slice().offset).toBe(10);
+    await act(() => actions.run("grid.prev-page"));
+    expect(slice().offset).toBe(0);
+  });
+
+  it("counts with the 'Estimate count' preference", async () => {
+    const count = vi.spyOn(ipc.browse, "count");
+    await setup({ stage: false });
+    expect(count).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.anything(),
+      null,
+      false,
+      500_000,
+    );
+  });
+
+  it("restores a table's remembered filters, and remembers new ones", async () => {
+    const info = await ipc.connections.connect("p-local-pg");
+    const key = filterMemoryKey(info.profileId, info.currentDatabase, {
+      schema: "public",
+      name: "users",
+    });
+    const remembered = [newFilterRow("name", "contains", "a")];
+    rememberFilters(key, { filters: remembered, conjunction: "or", visible: true });
+    const { slice, id } = await setup({ stage: false });
+    expect(slice().filters).toEqual(remembered);
+    expect(slice().conjunction).toBe("or");
+    expect(slice().filtersVisible).toBe(true);
+    act(() => useTableTabsStore.getState().update(id, { filtersVisible: false, filters: [] }));
+    const { recallFilters } = await import("./filterMemory");
+    expect(recallFilters(key)).toBeNull();
+  });
+
+  it("⇧⌘↩ in the filter bar applies with OR", async () => {
+    const { slice, id } = await setup({ stage: false });
+    act(() => useTableTabsStore.getState().update(id, { filtersVisible: true }));
+    const value = await screen.findByRole("textbox", { name: "Filter value" });
+    fireEvent.change(value, { target: { value: "1" } });
+    act(() => value.focus());
+    fireEvent.keyDown(value, { key: "Enter", code: "Enter", ...mod, shiftKey: true });
+    await waitFor(() => expect(slice().filters).toHaveLength(1));
+    expect(slice().conjunction).toBe("or");
+  });
+
+  it("wires the cell menu's Import / Export Current Page… and the FK viewer", async () => {
+    const { id } = await setup({ stage: false, table: { schema: "public", name: "posts" } });
+    act(() => gridProps().onImportCsv!());
+    expect(useImportStore.getState().request).toMatchObject({
+      kind: "csv",
+      table: { schema: "public", name: "posts" },
+    });
+    act(() => gridProps().onExportPage!());
+    expect(useExportStore.getState()).toMatchObject({
+      open: true,
+      target: { source: { kind: "table", tabId: id } },
+      draft: { scope: "page" },
+    });
+    const fk = column("user_id");
+    expect(fk.fk).toMatchObject({ table: "users", column: "id" });
+    const userId = { t: "int" as const, v: 3 };
+    const ref = await gridProps().onLoadReferenced!(fk, userId);
+    expect(ref.table).toBe("public.users");
+    expect(ref.rows).toHaveLength(1);
+    expect(ref.rows[0]![ref.columns.findIndex((c) => c.name === "id")]).toEqual(userId);
+    expect(gridProps().quickLookKey).toBe(true);
+    expect(gridProps().rowNumbers).toBe(false);
   });
 });

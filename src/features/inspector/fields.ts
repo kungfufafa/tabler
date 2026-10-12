@@ -1,4 +1,5 @@
 import { jsonError, reformatJson } from "@/features/datagrid/editors/json";
+import { emptyBecomesNull } from "@/features/datagrid/setValue";
 import type { GridColumn } from "@/features/datagrid/types";
 import type { Value, ValueKind } from "@/lib/ipc";
 import { editText, inspectText, parseEditText, type ParseResult } from "@/lib/values";
@@ -76,11 +77,13 @@ export function clearedPlaceholder(col: Pick<GridColumn, "kind" | "nullable">): 
 /**
  * Turns a field's text into a value of the column's kind, with the inline editor's parser
  * (`parseEditText`). A cleared box in a nullable, non-text column means NULL (as pasting an empty
- * cell does); enum labels must be one of the column's labels when they are known.
+ * cell does) — a blank (spaces only) one too in numeric / UUID / JSON / array columns while "Auto
+ * convert empty … to NULL" is on; enum labels must be one of the column's labels when known.
  */
 export function parseFieldText(col: GridColumn, text: string, previous: Value): ParseResult {
   if (text === "" && col.nullable && !TEXT_LIKE.has(col.kind))
     return { ok: true, value: { t: "null" } };
+  if (emptyBecomesNull(col, text)) return { ok: true, value: { t: "null" } };
   const labels = col.enumValues ?? [];
   if (col.kind === "enum" && labels.length > 0 && !labels.includes(text))
     return { ok: false, error: `Pick one of: ${labels.join(", ")}` };

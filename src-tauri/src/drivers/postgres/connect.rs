@@ -8,9 +8,10 @@ use std::time::Duration;
 use deadpool_postgres::{
     ClientWrapper, Hook, HookError, ManagerConfig, Metrics, Pool, RecyclingMethod,
 };
+use rustls::client::WantsClientCert;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::{ClientConfig, ConfigBuilder, DigitallySignedStruct, RootCertStore, SignatureScheme};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_postgres::tls::MakeTlsConnect;
 use tokio_postgres::{Client, Config};
@@ -194,32 +195,103 @@ fn root_store(ca_path: Option<&str>) -> Result<RootCertStore, AppError> {
     Ok(roots)
 }
 
-fn client_config(mode: SslMode, ca_path: Option<&str>) -> Result<ClientConfig, AppError> {
+/// A TLS client certificate (chain) and its private key, for servers that authenticate clients.
+pub struct ClientIdentity {
+    certs: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+}
+
+/// Loads the profile's SSL key / cert pair (PEM). Both empty: no client certificate; only one of
+/// them: an error (the server could not use it).
+pub fn client_identity(
+    key_path: Option<&str>,
+    cert_path: Option<&str>,
+) -> Result<Option<ClientIdentity>, AppError> {
+    use rustls::pki_types::pem::PemObject as _;
+    let key_path = key_path.map(str::trim).filter(|p| !p.is_empty());
+    let cert_path = cert_path.map(str::trim).filter(|p| !p.is_empty());
+    let (key_path, cert_path) = match (key_path, cert_path) {
+        (None, None) => return Ok(None),
+        (Some(k), Some(c)) => (k, c),
+        (Some(_), None) => {
+            return Err(AppError::InvalidInput(
+                "SSL: choose the client certificate (Cert…) that goes with the key".into(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(AppError::InvalidInput(
+                "SSL: choose the private key (Key…) of the client certificate".into(),
+            ));
+        }
+    };
+    let read = |path: &str| {
+        std::fs::read(crate::tunnel::expand_tilde(path))
+            .map_err(|e| AppError::Connect(format!("cannot read {path}: {e}")))
+    };
+    let pem = read(cert_path)?;
+    let certs = CertificateDer::pem_slice_iter(&pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| AppError::Connect(format!("invalid PEM in {cert_path}: {e:?}")))?;
+    if certs.is_empty() {
+        return Err(AppError::Connect(format!(
+            "no certificate found in {cert_path}"
+        )));
+    }
+    let key = PrivateKeyDer::from_pem_slice(&read(key_path)?).map_err(|e| {
+        AppError::Connect(format!(
+            "no usable private key in {key_path} (PEM, unencrypted): {e:?}"
+        ))
+    })?;
+    Ok(Some(ClientIdentity { certs, key }))
+}
+
+fn with_identity(
+    builder: ConfigBuilder<ClientConfig, WantsClientCert>,
+    identity: Option<ClientIdentity>,
+) -> Result<ClientConfig, AppError> {
+    match identity {
+        None => Ok(builder.with_no_client_auth()),
+        Some(ClientIdentity { certs, key }) => builder
+            .with_client_auth_cert(certs, key)
+            .map_err(|e| AppError::Connect(format!("SSL client certificate: {e}"))),
+    }
+}
+
+fn client_config(
+    mode: SslMode,
+    ca_path: Option<&str>,
+    identity: Option<ClientIdentity>,
+) -> Result<ClientConfig, AppError> {
     let builder = ClientConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
         .map_err(|e| AppError::Connect(format!("tls: {e}")))?;
-    Ok(match mode {
+    let builder = match mode {
         SslMode::Disable | SslMode::Prefer | SslMode::Require => builder
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(NoVerify))
-            .with_no_client_auth(),
+            .with_custom_certificate_verifier(Arc::new(NoVerify)),
         SslMode::VerifyCa => builder
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(VerifyChainOnly {
                 roots: root_store(ca_path)?,
-            }))
-            .with_no_client_auth(),
-        SslMode::VerifyFull => builder
-            .with_root_certificates(root_store(ca_path)?)
-            .with_no_client_auth(),
-    })
+            })),
+        SslMode::VerifyFull => builder.with_root_certificates(root_store(ca_path)?),
+    };
+    with_identity(builder, identity)
 }
 
 /// Builds the TLS connector for a target. `Disable` still gets a (never used) connector so the
-/// pool and the editor share one concrete type.
+/// pool and the editor share one concrete type; its client certificate is not loaded.
 pub fn make_tls(target: &ConnectTarget<'_>) -> Result<PgTls, AppError> {
     let profile = target.profile;
-    let config = client_config(profile.ssl, profile.ssl_ca_path.as_deref())?;
+    let identity = if profile.ssl == SslMode::Disable {
+        None
+    } else {
+        client_identity(
+            profile.options.ssl_key_path.as_deref(),
+            profile.options.ssl_cert_path.as_deref(),
+        )?
+    };
+    let config = client_config(profile.ssl, profile.ssl_ca_path.as_deref(), identity)?;
     Ok(PgTls {
         inner: MakeRustlsConnect::new(config),
         sni_host: target.tls_host(),
@@ -544,10 +616,54 @@ mod tests {
             .install_default()
             .ok();
         for mode in [SslMode::Disable, SslMode::Prefer, SslMode::Require] {
-            assert!(client_config(mode, None).is_ok());
+            assert!(client_config(mode, None, None).is_ok());
         }
         // Verify modes need roots; the native store normally has some.
-        let _ = client_config(SslMode::VerifyFull, None);
-        assert!(client_config(SslMode::VerifyCa, Some("/nonexistent/ca.pem")).is_err());
+        let _ = client_config(SslMode::VerifyFull, None, None);
+        assert!(client_config(SslMode::VerifyCa, Some("/nonexistent/ca.pem"), None).is_err());
+    }
+
+    #[test]
+    fn client_identity_needs_both_files() {
+        assert!(client_identity(None, Some(" ")).unwrap().is_none());
+        let err = client_identity(Some("/k.pem"), None).err().unwrap();
+        assert_eq!(err.code(), "INVALID_INPUT");
+        assert!(err.to_string().contains("Cert…"), "{err}");
+        let err = client_identity(None, Some("/c.pem")).err().unwrap();
+        assert!(err.to_string().contains("Key…"), "{err}");
+        let err = client_identity(Some("/nonexistent/k.pem"), Some("/nonexistent/c.pem"))
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("cannot read"), "{err}");
+
+        // A file without PEM blocks is refused with its path.
+        let dir = tempfile::tempdir().unwrap();
+        let junk = dir.path().join("junk.pem");
+        std::fs::write(&junk, "hello").unwrap();
+        let junk = junk.to_string_lossy();
+        let err = client_identity(Some(&junk), Some(&junk)).err().unwrap();
+        assert!(err.to_string().contains("junk.pem"), "{err}");
+
+        // Disabled SSL never loads (or fails on) the client files.
+        let mut p = profile();
+        p.ssl = SslMode::Disable;
+        p.options.ssl_key_path = Some("/nonexistent/k.pem".into());
+        p.options.ssl_cert_path = Some("/nonexistent/c.pem".into());
+        let target = ConnectTarget {
+            profile: &p,
+            password: None,
+            host_override: None,
+        };
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .ok();
+        assert!(make_tls(&target).is_ok());
+        p.ssl = SslMode::Require;
+        let target = ConnectTarget {
+            profile: &p,
+            password: None,
+            host_override: None,
+        };
+        assert!(make_tls(&target).is_err());
     }
 }

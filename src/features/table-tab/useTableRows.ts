@@ -4,8 +4,13 @@ import { ipc, tableKey, type BrowseRequest, type FilterGroup, type TableRef } fr
 export const rowKeys = {
   page: (connectionId: string, table: TableRef, req: Omit<BrowseRequest, "table">, token: number) =>
     ["rows", connectionId, tableKey(table), req, token] as const,
-  count: (connectionId: string, table: TableRef, filter: FilterGroup | null, token: number) =>
-    ["count", connectionId, tableKey(table), filter, token] as const,
+  count: (
+    connectionId: string,
+    table: TableRef,
+    filter: FilterGroup | null,
+    token: number,
+    estimate: CountEstimate = DEFAULT_ESTIMATE,
+  ) => ["count", connectionId, tableKey(table), filter, token, estimate] as const,
   meta: (connectionId: string, table: TableRef) =>
     ["table", connectionId, table.schema ?? "", table.name] as const,
 };
@@ -50,16 +55,28 @@ export function useTableRows(
   });
 }
 
+/**
+ * "Estimate count when table has more than [N] rows": `above` is N, or null to always count
+ * exactly (the preference unchecked).
+ */
+export interface CountEstimate {
+  above: number | null;
+}
+
+export const DEFAULT_ESTIMATE: CountEstimate = { above: 500_000 };
+
 export function useRowCount(
   connectionId: string,
   table: TableRef,
   filter: FilterGroup | null,
   token: number,
   enabled: boolean,
+  estimate: CountEstimate = DEFAULT_ESTIMATE,
 ) {
   return useQuery({
-    queryKey: rowKeys.count(connectionId, table, filter, token),
-    queryFn: () => ipc.browse.count(connectionId, table, filter, false),
+    queryKey: rowKeys.count(connectionId, table, filter, token, estimate),
+    queryFn: () =>
+      ipc.browse.count(connectionId, table, filter, estimate.above === null, estimate.above),
     enabled,
     placeholderData: keepPreviousData,
     staleTime: 15_000,

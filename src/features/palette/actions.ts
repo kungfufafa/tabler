@@ -9,6 +9,13 @@ export type ActionId =
   | "tab.reopen"
   | "tab.next"
   | "tab.prev"
+  /** The tab bar's ‹ › (tab history). */
+  | "tab.back"
+  | "tab.forward"
+  /** Show Workspaces (⇧⌘\): the open workspaces, to switch to one. */
+  | "workspace.show"
+  | "workspace.next"
+  | "workspace.prev"
   | TabGoto
   /** Open Anything (⌘P): tables, tabs, schemas, databases, connections and actions. */
   | "palette.open"
@@ -50,10 +57,27 @@ export type ActionId =
   | "grid.copy"
   | "grid.copy-as"
   | "grid.paste"
+  /** The Quick Look Editor on the focused cell (⌘↩ in a grid, middle-click). */
+  | "grid.quick-look"
+  /** The Set Value menu on the focused cell (⌥↩). */
+  | "grid.set-value"
+  /** Table grids: the previous / next page (⌘← / ⌘→). */
+  | "grid.prev-page"
+  | "grid.next-page"
   /** Filter bar: apply every checked filter, duplicate / remove the focused one. */
   | "filter.apply"
   | "filter.duplicate"
   | "filter.remove"
+  /** Filter bar: apply every checked filter joined with OR (⇧⌘↩). */
+  | "filter.apply-or"
+  /** Filter bar: focus the previous / next filter row (⌘↑ / ⌘↓). */
+  | "filter.prev"
+  | "filter.next"
+  /** Filter bar: check / uncheck the focused row (⌘B). */
+  | "filter.toggle"
+  /** Filter bar: open the focused row's column / operator popup (⌘← / ⌘→). */
+  | "filter.column"
+  | "filter.operator"
   | "query.run"
   | "query.run-current"
   | "query.cancel"
@@ -64,7 +88,35 @@ export type ActionId =
   | "query.history"
   | "query.save"
   | "query.open"
-  | "export.open";
+  /** "Add to Queries…": saves the selection / current statement as a saved query (⌥⌘S). */
+  | "query.add-to-queries"
+  /** "Save SQL As…": the editor text to a new file (the tab follows it). */
+  | "query.save-as"
+  /** "Save Selected SQL Statements As…" (⇧⌘S): the selection to a new file. */
+  | "query.save-selection"
+  /** SQL editor font size up / down (⌘+ / ⌘−). */
+  | "query.font-bigger"
+  | "query.font-smaller"
+  /** Splits the query editor in two (⇧⌘D), or closes the split. */
+  | "query.split"
+  /** Connection ▸ Process List… (⌘.; inside the SQL editor ⌘. stays Cancel). */
+  | "admin.process-list"
+  /** Connection ▸ User Management… */
+  | "admin.users"
+  /** ⌘K database list: New Database… / Drop Database…; PostgreSQL New Schema… / Drop Schema…. */
+  | "admin.new-database"
+  | "admin.drop-database"
+  | "admin.new-schema"
+  | "admin.drop-schema"
+  /** Connection ▸ Disconnect (asks first when tabs hold unsaved work). */
+  | "connection.disconnect"
+  /** File ▸ Backup… / Restore…: the backup window (pg_dump / mysqldump and friends). */
+  | "backup.open"
+  | "restore.open"
+  | "export.open"
+  /** File ▸ Import ▸ From CSV… / From SQL Dump… into the active connection. */
+  | "import.csv"
+  | "import.sql";
 
 export type ActionHandler = () => void | Promise<void>;
 
@@ -75,6 +127,26 @@ export type ActionHandler = () => void | Promise<void>;
  */
 class ActionRegistry {
   private handlers = new Map<ActionId, ActionHandler[]>();
+  private observers = new Map<ActionId, Set<() => void>>();
+
+  /**
+   * Calls `fn` whenever `id` is dispatched (shortcut, toolbar, palette, native menu), before and
+   * independently of its handler, e.g. the sidebar reloading its lists on `view.refresh`.
+   */
+  observe(id: ActionId, fn: () => void): () => void {
+    const set = this.observers.get(id) ?? new Set();
+    set.add(fn);
+    this.observers.set(id, set);
+    return () => {
+      set.delete(fn);
+      if (set.size === 0) this.observers.delete(id);
+    };
+  }
+
+  /** Tells the observers of `id` it was dispatched (also when nothing handles it). */
+  notify(id: ActionId): void {
+    for (const fn of this.observers.get(id) ?? []) fn();
+  }
 
   register(id: ActionId, handler: ActionHandler): () => void {
     const list = this.handlers.get(id) ?? [];
@@ -94,6 +166,7 @@ class ActionRegistry {
   }
 
   async run(id: ActionId): Promise<boolean> {
+    this.notify(id);
     const list = this.handlers.get(id);
     const handler = list?.[list.length - 1];
     if (!handler) return false;

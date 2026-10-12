@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { usePaletteStore } from "@/features/palette/store";
 import { useConnectionsStore } from "@/stores/connections";
 import { useUiStore } from "@/stores/ui";
+import { dropHandedOverPassword } from "./passwordPromptStore";
 import { useConnect } from "./useConnections";
 
 /** The newest open connection of a profile, if any. */
@@ -25,11 +26,16 @@ export function useOpenProfile(): (profileId: string) => void {
     (profileId: string) => {
       const open = openConnectionOf(profileId);
       if (open) {
+        // No connect: a password the connection form handed over for it must not linger.
+        dropHandedOverPassword(profileId);
         useConnectionsStore.getState().setActive(open);
         useUiStore.getState().setView("workspace");
         return;
       }
-      if (!usePaletteStore.getState().beginConnect(profileId)) return;
+      if (!usePaletteStore.getState().beginConnect(profileId)) {
+        dropHandedOverPassword(profileId);
+        return;
+      }
       mutateAsync(profileId)
         .finally(() => usePaletteStore.getState().endConnect(profileId))
         // useConnect's onError already told the user.

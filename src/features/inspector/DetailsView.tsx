@@ -10,7 +10,9 @@ const NULL: Value = { t: "null" };
 /**
  * The Details view: a "Search for field…" box, then one block per column of the focused row
  * (hidden grid columns too, muted). On a table tab with an editable table the boxes stage edits
- * through `row.edit`; everywhere else they are read-only and copyable.
+ * through `row.edit`; everywhere else they are read-only and copyable. With several rows selected
+ * it reads "N rows selected": fields whose values differ show "Multiple values", and an edit
+ * stages on every selected row.
  */
 export function DetailsView({
   cell,
@@ -28,7 +30,10 @@ export function DetailsView({
   const [query, setQuery] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const hidden = useMemo(() => new Set(row.hidden ?? []), [row.hidden]);
-  const rowKey = `${cell.source}\u0000${cell.rowIndex}`;
+  const bulk = row.bulk;
+  const rowKey = bulk
+    ? `${cell.source}\u0000bulk\u0000${bulk.id}`
+    : `${cell.source}\u0000${cell.rowIndex}`;
   const edit = row.status === "deleted" ? undefined : row.edit;
   const fields = row.columns
     .map((col, i) => ({ col, i }))
@@ -43,6 +48,17 @@ export function DetailsView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {bulk && (
+        <div
+          role="status"
+          className="border-border text-foreground bg-brand-soft shrink-0 border-b px-3 py-1.5 text-xs font-medium"
+        >
+          {bulk.count.toLocaleString()} rows selected
+          {edit && (
+            <span className="text-muted-foreground font-normal"> · edits apply to all of them</span>
+          )}
+        </div>
+      )}
       <div className="shrink-0 px-2 pt-2 pb-1">
         <div className="relative">
           <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3 -translate-y-1/2" />
@@ -84,6 +100,7 @@ export function DetailsView({
             focused={i === row.focused}
             hidden={hidden.has(col.id)}
             changed={row.changed?.has(i) ?? false}
+            mixed={bulk?.mixed.has(i) ?? false}
             onEdit={edit && col.editable ? (value) => edit(i, value) : undefined}
             onViewCell={() => onViewCell(i)}
           />

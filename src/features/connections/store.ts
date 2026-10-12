@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { ConnectionProfile } from "@/lib/ipc";
+import { CONNECTION_SORTS, type ConnectionSort } from "./list";
 import type { ParsedConnectionUrl } from "./url";
 
 interface ConnectionDialogState {
@@ -55,7 +56,15 @@ interface LauncherPrefsState {
    */
   collapsedGroups: readonly string[];
   toggleGroup: (group: string) => void;
+  /** "Sort by ▸" of the welcome screen (inside each group). */
+  sortBy: ConnectionSort;
+  setSortBy: (sort: ConnectionSort) => void;
+  /** Follows a renamed group's collapsed state; forgets a deleted one. */
+  renameCollapsed: (from: string, to: string | null) => void;
 }
+
+const isSort = (v: unknown): v is ConnectionSort =>
+  (CONNECTION_SORTS as readonly unknown[]).includes(v);
 
 /** Launcher list preferences, remembered across launches. */
 export const useLauncherPrefs = create<LauncherPrefsState>()(
@@ -70,17 +79,32 @@ export const useLauncherPrefs = create<LauncherPrefsState>()(
             : [...s.collapsedGroups, group],
         }));
       },
+      sortBy: "manual",
+      setSortBy: (sortBy) => set({ sortBy }),
+      renameCollapsed: (from, to) =>
+        set((s) =>
+          s.collapsedGroups.includes(from)
+            ? {
+                collapsedGroups: [
+                  ...s.collapsedGroups.filter((g) => g !== from && g !== to),
+                  ...(to ? [to] : []),
+                ],
+              }
+            : s,
+        ),
     }),
     {
       name: "tabler.launcher",
-      version: 2,
-      partialize: (s) => ({ collapsedGroups: s.collapsedGroups }),
+      version: 3,
+      partialize: (s) => ({ collapsedGroups: s.collapsedGroups, sortBy: s.sortBy }),
       // v1 had an "Ungrouped" header that could collapse "": drop it, there is no header to undo it.
+      // v3 added the sort order.
       migrate: (persisted) => {
-        const stored = (persisted as { collapsedGroups?: unknown } | null)?.collapsedGroups;
-        const groups = Array.isArray(stored) ? stored : [];
+        const state = persisted as { collapsedGroups?: unknown; sortBy?: unknown } | null;
+        const groups = Array.isArray(state?.collapsedGroups) ? state.collapsedGroups : [];
         return {
           collapsedGroups: groups.filter((g): g is string => typeof g === "string" && g !== ""),
+          sortBy: isSort(state?.sortBy) ? state.sortBy : "manual",
         };
       },
     },

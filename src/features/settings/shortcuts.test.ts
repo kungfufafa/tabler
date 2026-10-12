@@ -92,6 +92,7 @@ describe("reference shortcuts", () => {
     const groups = groupShortcuts(KEYMAP, "", true);
     expect(groups.map((g) => g.title)).toEqual([
       "Global",
+      "Sidebar",
       "Table grid",
       "Cell editor",
       "Filter bar",

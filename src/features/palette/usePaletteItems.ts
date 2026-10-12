@@ -1,7 +1,13 @@
-import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { openCreateDatabase, openCreateSchema } from "@/features/admin/store";
 import { connectionSummary } from "@/features/connections/schema";
 import { useProfiles } from "@/features/connections/useConnections";
+import { openRoutine } from "@/features/objects/actions";
+import { useRoutines } from "@/features/objects/queries";
+import { openSavedQuery, runSavedQuery } from "@/features/queries/open";
+import { ensureSavedQueries, queriesFor, useSavedQueriesStore } from "@/features/queries/store";
 import { useSwitchingDatabase } from "@/features/sidebar/switchDatabase";
 import {
   useCurrentSchema,
@@ -17,15 +23,19 @@ import { useTableTabsStore } from "@/stores/tableTabs";
 import { useTabsStore, type Tab } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
 import { actions, type ActionId } from "./actions";
-import { paletteCommandItems, type PaletteCommands } from "./commands";
+import { databaseMenu, schemaMenu } from "./adminItems";
+import { PALETTE_ONLY_ACTIONS, paletteCommandItems, type PaletteCommands } from "./commands";
 import {
   actionApplies,
   buildOpenAnything,
   buildSections,
   connectionItems,
+  createItem,
   databaseItems,
   isCommandQuery,
   keymapActionItems,
+  routineItems,
+  savedQueryItems,
   schemaItems,
   tabItems,
   tableItems,
@@ -46,7 +56,8 @@ export interface PaletteData {
 
 /** Action ids that have a handler right now. Snapshotted on mount, i.e. when the palette opens. */
 function availableActions(): ReadonlySet<ActionId> {
-  return new Set(KEYMAP.map((d) => d.id).filter((id) => actions.has(id)));
+  const ids = [...KEYMAP.map((d) => d.id), ...PALETTE_ONLY_ACTIONS];
+  return new Set(ids.filter((id) => actions.has(id)));
 }
 
 /** Group order of the narrowed palettes (⌘K, ⇧⌘K). */
@@ -74,6 +85,9 @@ export function usePaletteItems(
   const schema = useCurrentSchema(connectionId);
   const tables = useTables(connectionId, schema);
   const switching = useSwitchingDatabase(connectionId);
+  const routines = useRoutines(connectionId, schema, mode === "all" && driver !== "sqlite");
+  const savedQueries = useSavedQueriesStore((s) => s.queries);
+  const qc = useQueryClient();
   const profiles = useProfiles();
   const tabs = useTabsStore((s) => s.tabs);
   const activeTabId = useTabsStore((s) => s.activeId);
@@ -97,6 +111,33 @@ export function usePaletteItems(
           })
         : [],
     [tables.data, connectionId, profileId, commands],
+  );
+
+  useEffect(() => {
+    if (mode === "all") void ensureSavedQueries();
+  }, [mode]);
+
+  const routineGroup = useMemo(() => {
+    if (!connectionId || driver === null) return [];
+    const ctx = {
+      connectionId,
+      driver,
+      readOnly: active?.info.readOnly ?? false,
+      schema,
+      pinScope: null,
+    };
+    return routineItems(routines.data ?? [], { profileId, open: (r) => openRoutine(ctx, r) });
+  }, [routines.data, connectionId, driver, active?.info.readOnly, schema, profileId]);
+
+  const queryGroup = useMemo(
+    () =>
+      active
+        ? savedQueryItems(queriesFor(savedQueries, active.info.profileId), {
+            open: (q) => openSavedQuery(active, q),
+            run: (q) => runSavedQuery(qc, active, q),
+          })
+        : [],
+    [savedQueries, active, qc],
   );
 
   const tabGroup = useMemo(() => {
@@ -123,23 +164,42 @@ export function usePaletteItems(
     const list = schemas.data ?? [];
     if (!connectionId || (driver !== "postgres" && driver !== "sqlite") || list.length < 2)
       return [];
+    const select = (name: string) => commands.selectSchema(connectionId, name);
     return schemaItems(list, {
       profileId,
       database: currentDatabase,
       current: schema,
-      select: (name) => commands.selectSchema(connectionId, name),
+      select,
+      menu: (name) => schemaMenu({ connectionId, driver, show: select }, name),
     });
   }, [schemas.data, connectionId, driver, profileId, currentDatabase, schema, commands]);
 
   const databaseGroup = useMemo(() => {
-    if (!connectionId || driver === "sqlite") return [];
+    if (!connectionId || driver === null || driver === "sqlite") return [];
+    const open = (name: string) => commands.switchDatabase(connectionId, name);
     return databaseItems(databases.data ?? [], {
       profileId,
       current: currentDatabase,
       switching,
-      switchTo: (name) => commands.switchDatabase(connectionId, name),
+      switchTo: open,
+      menu: (name, current) => databaseMenu({ connectionId, driver, open }, name, current),
     });
   }, [databases.data, connectionId, driver, profileId, currentDatabase, switching, commands]);
+
+  // ⌘K's "+" rows: New Database… (PostgreSQL, MySQL) once the list is in, New Schema… (PG).
+  const createRows = useMemo(() => {
+    if (!connectionId) return { databases: [], schemas: [] };
+    return {
+      databases:
+        (driver === "postgres" || driver === "mysql") && databases.data
+          ? [createItem("databases", { profileId, run: () => openCreateDatabase(connectionId) })]
+          : [],
+      schemas:
+        driver === "postgres" && schemas.data
+          ? [createItem("schemas", { profileId, run: () => openCreateSchema(connectionId) })]
+          : [],
+    };
+  }, [connectionId, driver, profileId, databases.data, schemas.data]);
 
   const connectionGroup = useMemo(() => {
     const openByProfile = new Map(
@@ -169,6 +229,7 @@ export function usePaletteItems(
         active:
           connectionId && activeName !== null ? { connectionId, name: activeName, schema } : null,
         commands,
+        has: (id) => available.has(id),
       }),
     ];
   }, [available, tabs.length, closedCount, themePref, connectionId, activeName, schema, commands]);
@@ -183,11 +244,18 @@ export function usePaletteItems(
 
   const sections = useMemo(() => {
     if (mode === "databases")
-      return buildSections({ databases: databaseGroup, schemas: schemaGroup }, query, {
-        mru,
-        order: DATABASE_ORDER,
-        loading: databasesLoading ? [databasesPrimary] : [],
-      });
+      return buildSections(
+        {
+          databases: [...databaseGroup, ...createRows.databases],
+          schemas: [...schemaGroup, ...createRows.schemas],
+        },
+        query,
+        {
+          mru,
+          order: DATABASE_ORDER,
+          loading: databasesLoading ? [databasesPrimary] : [],
+        },
+      );
     if (mode === "connections")
       return buildSections({ connections: connectionGroup }, query, {
         mru,
@@ -200,7 +268,9 @@ export function usePaletteItems(
     return buildOpenAnything(
       {
         tables: tableGroup,
+        routines: routineGroup,
         tabs: tabGroup,
+        queries: queryGroup,
         schemas: schemaGroup,
         databases: databaseGroup,
         connections: connectionGroup,
@@ -214,7 +284,9 @@ export function usePaletteItems(
     mode,
     connectionId,
     tableGroup,
+    routineGroup,
     tabGroup,
+    queryGroup,
     schemaGroup,
     databaseGroup,
     connectionGroup,
@@ -222,6 +294,7 @@ export function usePaletteItems(
     query,
     mru,
     tablesLoading,
+    createRows,
     databasesLoading,
     databasesPrimary,
     profilesLoading,

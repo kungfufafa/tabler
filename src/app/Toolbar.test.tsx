@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { actions, type ActionId } from "@/features/palette/actions";
 import { useConnectionDialog } from "@/features/connections/store";
+import { SafetyHost } from "@/features/safety/SafetyHost";
 import { emptyStaging, insertRow } from "@/features/staging/model";
 import { useStructureStore } from "@/features/structure/store";
 import { ipc, type ConnectionInfo, type ConnectionProfile } from "@/lib/ipc";
@@ -239,36 +240,136 @@ describe("Toolbar", () => {
     for (const spy of spies) expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it("shows the read-only lock; its popover explains the mode", async () => {
+  it("shows the safe-mode level; its menu lists the five levels and the read-only note", async () => {
+    vi.mocked(ipc.profiles.list).mockResolvedValue([
+      { id: "p-a", name: "Conn a", options: { safeMode: "alertNonSelect" } } as ConnectionProfile,
+    ]);
     useConnectionsStore.getState().add(info("a", { readOnly: true }));
     wrap(<Toolbar launcher={false} />);
-    const lock = screen.getByRole("button", { name: "Safe mode: read-only" });
+    const lock = await screen.findByRole("button", { name: "Safe mode: Alert Mode 2 (read-only)" });
+    expect(lock).toHaveAttribute("data-level", "alertNonSelect");
     expect(lock).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(lock);
-    const popover = await screen.findByRole("dialog", { name: "Read-only connection" });
+    fireEvent.keyDown(lock, { key: "Enter" });
+    const menu = await screen.findByRole("menu", { name: /^Safe mode: / });
     expect(lock).toHaveAttribute("aria-expanded", "true");
-    expect(popover).toHaveTextContent("Edits and DDL are disabled for this connection.");
-    expect(within(popover).getByRole("button", { name: "Edit Connection…" })).toBeInTheDocument();
+    const radios = within(menu).getAllByRole("menuitemradio");
+    expect(radios.map((r) => r.textContent)).toEqual([
+      "Silent ModeSend queries to the server without any warnings",
+      "Alert Mode 1Warn before sending queries to the server",
+      "Alert Mode 2Warn before sending queries to the server, except SELECT/EXPLAIN/SHOW queries",
+      "Safe Mode 1Prompt for password before sending queries to the server",
+      "Safe Mode 2Prompt for password before sending queries to the server, except SELECT/EXPLAIN/SHOW queries",
+    ]);
+    expect(radios.map((r) => r.getAttribute("aria-checked"))).toEqual([
+      "false",
+      "false",
+      "true",
+      "false",
+      "false",
+    ]);
+    expect(menu).toHaveTextContent("Read-only connection: edits and DDL are disabled.");
+    expect(within(menu).getByRole("menuitem", { name: "Edit Connection…" })).toBeInTheDocument();
   });
 
-  it("the unlocked popover's Edit Connection… opens the connection's form", async () => {
+  it("treats a profile without a level as Silent Mode (open lock)", async () => {
+    vi.mocked(ipc.profiles.list).mockResolvedValue([
+      { id: "p-a", name: "Conn a", options: { safeMode: null } } as ConnectionProfile,
+    ]);
+    useConnectionsStore.getState().add(info("a"));
+    wrap(<Toolbar launcher={false} />);
+    const lock = await screen.findByRole("button", { name: "Safe mode: Silent Mode" });
+    expect(lock).toHaveAttribute("data-level", "silent");
+    expect(document.querySelector("[data-slot=read-only-dot]")).toBeNull();
+  });
+
+  it("choosing a level saves the connection's profile", async () => {
+    const profile = {
+      id: "p-a",
+      name: "Conn a",
+      options: { safeMode: "silent" },
+    } as ConnectionProfile;
+    vi.mocked(ipc.profiles.list).mockResolvedValue([profile]);
+    vi.spyOn(ipc.profiles, "get").mockResolvedValue(profile);
+    const save = vi.spyOn(ipc.profiles, "save").mockImplementation(async (input) => {
+      vi.mocked(ipc.profiles.list).mockResolvedValue([input.profile]);
+      return input.profile;
+    });
+    useConnectionsStore.getState().add(info("a"));
+    wrap(<Toolbar launcher={false} />);
+    const lock = await screen.findByRole("button", { name: "Safe mode: Silent Mode" });
+    fireEvent.keyDown(lock, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^Alert Mode 1/ }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0]).toMatchObject({
+      profile: { id: "p-a", options: { safeMode: "alert" } },
+      password: null,
+      clearPassword: false,
+    });
+    expect(await screen.findByRole("button", { name: "Safe mode: Alert Mode 1" })).toHaveAttribute(
+      "data-level",
+      "alert",
+    );
+  });
+
+  it("asks for the password before lowering a Safe level", async () => {
+    const profile = {
+      id: "p-a",
+      name: "Conn a",
+      options: { safeMode: "safe" },
+    } as ConnectionProfile;
+    vi.mocked(ipc.profiles.list).mockResolvedValue([profile]);
+    vi.spyOn(ipc.profiles, "get").mockResolvedValue(profile);
+    vi.spyOn(ipc.profiles, "secretStatus").mockResolvedValue({
+      hasPassword: true,
+      hasSshPassword: false,
+      hasSshPassphrase: false,
+    });
+    const verify = vi
+      .spyOn(ipc.safety, "verifyPassword")
+      .mockImplementation(async (_id, password) => password === "pw");
+    const save = vi.spyOn(ipc.profiles, "save").mockImplementation(async (i) => i.profile);
+    useConnectionsStore.getState().add(info("a"));
+    wrap(
+      <>
+        <Toolbar launcher={false} />
+        <SafetyHost />
+      </>,
+    );
+    const lock = await screen.findByRole("button", { name: "Safe mode: Safe Mode 1" });
+    expect(lock).toHaveAttribute("data-level", "safe");
+    fireEvent.keyDown(lock, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^Silent Mode/ }));
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "Enter the password of Conn a to continue",
+    });
+    const field = within(dialog).getByLabelText("Password");
+    fireEvent.change(field, { target: { value: "nope" } });
+    fireEvent.submit(field.closest("form")!);
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Wrong password");
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.change(field, { target: { value: "pw" } });
+    fireEvent.submit(field.closest("form")!);
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(verify).toHaveBeenLastCalledWith("p-a", "pw");
+    expect(save.mock.calls[0]![0].profile.options.safeMode).toBe("silent");
+  });
+
+  it("the menu's Edit Connection… opens the connection's form", async () => {
     const profile = { id: "p-a", name: "Conn a", options: {} } as ConnectionProfile;
     vi.mocked(ipc.profiles.list).mockResolvedValue([profile]);
     useConnectionsStore.getState().add(info("a"));
     useConnectionDialog.setState({ open: false, profile: null, prefill: null });
     wrap(<Toolbar launcher={false} />);
-    fireEvent.click(screen.getByRole("button", { name: "Safe mode: off" }));
-    const popover = await screen.findByRole("dialog", { name: "Normal mode" });
-    expect(popover).toHaveTextContent(
-      "Queries run without confirmation. Safe-mode levels are coming.",
-    );
-    const edit = within(popover).getByRole("button", { name: "Edit Connection…" });
-    await vi.waitFor(() => expect(edit).toBeEnabled());
+    const lock = screen.getByRole("button", { name: "Safe mode: Silent Mode" });
+    fireEvent.keyDown(lock, { key: "Enter" });
+    const menu = await screen.findByRole("menu", { name: /^Safe mode: / });
+    const edit = within(menu).getByRole("menuitem", { name: "Edit Connection…" });
+    await vi.waitFor(() => expect(edit).not.toHaveAttribute("data-disabled"));
     fireEvent.click(edit);
     // The form is mounted app-wide: it opens over the workspace, on the profile.
     expect(useUiStore.getState().view).not.toBe("launcher");
     expect(useConnectionDialog.getState()).toMatchObject({ open: true, profile });
-    expect(screen.queryByRole("dialog", { name: "Normal mode" })).toBeNull();
+    await vi.waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   });
 
   it("puts the connection tag in the pill and opens the connection switcher on click", async () => {

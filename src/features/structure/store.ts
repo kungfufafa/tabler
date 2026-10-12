@@ -2,10 +2,12 @@ import { create } from "zustand";
 import type { DdlOp, TableRef } from "@/lib/ipc";
 import { retargetOps } from "./model";
 
-/** Staged DDL of one structure tab: the op list plus the earlier lists for undo. */
+/** Staged DDL of one structure tab: the op list plus the earlier lists for undo / redo. */
 export interface StagedSlice {
   ops: DdlOp[];
   past: DdlOp[][];
+  /** Lists undone since the last edit (redo pops from the end). */
+  future?: DdlOp[][];
   /**
    * Set when the last apply stopped partway on a non-transactional plan (MySQL): the number of
    * statements that already ran, so the staged ops no longer match the table. Cleared with the
@@ -21,14 +23,37 @@ const MAX_HISTORY = 200;
 /** Records `next` as the staged list (no-op when the reducer returned the same list). */
 export function pushOps(slice: StagedSlice, next: DdlOp[]): StagedSlice {
   if (next === slice.ops) return slice;
-  return { ...slice, ops: next, past: [...slice.past, slice.ops].slice(-MAX_HISTORY) };
+  return {
+    ...slice,
+    ops: next,
+    past: [...slice.past, slice.ops].slice(-MAX_HISTORY),
+    future: [],
+  };
 }
 
 /** Steps back to the op list before the last edit. */
 export function undoOps(slice: StagedSlice): StagedSlice {
   const prev = slice.past[slice.past.length - 1];
   if (!prev) return slice;
-  return { ...slice, ops: prev, past: slice.past.slice(0, -1) };
+  return {
+    ...slice,
+    ops: prev,
+    past: slice.past.slice(0, -1),
+    future: [...(slice.future ?? []), slice.ops],
+  };
+}
+
+/** Steps forward again to the op list an undo stepped back from. */
+export function redoOps(slice: StagedSlice): StagedSlice {
+  const future = slice.future ?? [];
+  const next = future[future.length - 1];
+  if (!next) return slice;
+  return {
+    ...slice,
+    ops: next,
+    past: [...slice.past, slice.ops].slice(-MAX_HISTORY),
+    future: future.slice(0, -1),
+  };
 }
 
 interface StructureState {
@@ -36,6 +61,12 @@ interface StructureState {
   /** Replaces the staged ops of `tabId` with `update(current)`, remembering the old list. */
   stage: (tabId: string, update: (ops: DdlOp[]) => DdlOp[]) => void;
   undo: (tabId: string) => void;
+  redo: (tabId: string) => void;
+  /**
+   * Replaces the staged ops of `tabId` without recording a history entry (a view definition
+   * being typed: the editor keeps its own undo history).
+   */
+  replace: (tabId: string, ops: DdlOp[]) => void;
   /** Drops every staged op (and the undo history) of `tabId`. */
   discard: (tabId: string) => void;
   /** Records that an apply of `tabId` stopped after `ran` statements had run (see `partial`). */
@@ -63,6 +94,25 @@ export const useStructureStore = create<StructureState>()((set) => ({
       const next = undoOps(slice);
       return next === slice ? s : { byTab: { ...s.byTab, [tabId]: next } };
     }),
+  redo: (tabId) =>
+    set((s) => {
+      const slice = s.byTab[tabId];
+      if (!slice) return s;
+      const next = redoOps(slice);
+      return next === slice ? s : { byTab: { ...s.byTab, [tabId]: next } };
+    }),
+  replace: (tabId, ops) =>
+    set((s) => {
+      const slice = s.byTab[tabId] ?? EMPTY_SLICE;
+      if (slice.ops === ops) return s;
+      if (ops.length === 0 && slice.past.length === 0) {
+        if (!s.byTab[tabId]) return s;
+        const byTab = { ...s.byTab };
+        delete byTab[tabId];
+        return { byTab };
+      }
+      return { byTab: { ...s.byTab, [tabId]: { ...slice, ops } } };
+    }),
   discard: (tabId) =>
     set((s) => {
       if (!s.byTab[tabId]) return s;
@@ -87,6 +137,9 @@ export const useStructureStore = create<StructureState>()((set) => ({
           ...slice,
           ops: retargetOps(slice.ops, from, to),
           past: slice.past.map((ops) => retargetOps(ops, from, to)),
+          ...(slice.future && {
+            future: slice.future.map((ops) => retargetOps(ops, from, to)),
+          }),
         };
       }
       return { byTab };
@@ -120,6 +173,10 @@ export function usePartialApply(tabId: string): number {
 
 export function useCanUndo(tabId: string): boolean {
   return useStructureStore((s) => (s.byTab[tabId]?.past.length ?? 0) > 0);
+}
+
+export function useCanRedo(tabId: string): boolean {
+  return useStructureStore((s) => (s.byTab[tabId]?.future?.length ?? 0) > 0);
 }
 
 export function stagedOps(tabId: string): DdlOp[] {

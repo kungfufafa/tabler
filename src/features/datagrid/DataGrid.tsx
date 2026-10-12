@@ -7,11 +7,15 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  FileDown,
+  FileUp,
   Filter,
   KeyRound,
+  Maximize2,
   MoveHorizontal,
   PanelRight,
   Plus,
+  RefreshCw,
   RotateCcw,
   Trash2,
 } from "lucide-react";
@@ -50,10 +54,12 @@ import { findShortcut, shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { cellDisplay, displayValue, editText, valueText } from "@/lib/values";
 import { toggleRowDetail, useInspectorStore } from "@/stores/inspector";
+import { usePrefs } from "@/stores/prefs";
 import { useUiStore } from "@/stores/ui";
 import { CellEditor, type EditorExit } from "./CellEditor";
 import {
   formatCells,
+  formatColumnValues,
   parseTsv,
   readClipboardText,
   writeClipboard,
@@ -66,11 +72,12 @@ import {
   hideColumn,
   idAfter,
   moveColumn,
-  resetOrder,
+  resetLayout,
   showAll,
 } from "./columnState";
 import { GridCell } from "./GridCell";
 import { holdsWholeRows, pastedRows, pastedValue, planPaste, type PastedRow } from "./paste";
+import { QuickLook, type ReferencedRows } from "./quicklook/QuickLook";
 import {
   EMPTY_SELECTION,
   isCellSelected,
@@ -83,6 +90,7 @@ import {
   type SelectionAction,
   type SelectionState,
 } from "./selection";
+import { NOW_KINDS, NOW_LABEL } from "./setValue";
 import { nextSort } from "./sort";
 import {
   acceptsEmpty,
@@ -94,6 +102,7 @@ import {
   MAX_COL_W,
   MIN_COL_W,
   ROW_H,
+  SLIM_GUTTER_W,
   type CellPos,
   type ColumnState,
   type GridColumn,
@@ -106,8 +115,11 @@ import {
  * never visual positions (columns can be hidden or reordered). `r` is the row index.
  */
 export type GridAction =
-  /** Set Value ▸ NULL / EMPTY ('' in text columns) / DEFAULT. */
-  | { type: "setNull" | "setEmpty" | "setDefault"; cells: CellPos[] }
+  /**
+   * Set Value ▸ NULL / EMPTY ('' in text columns) / DEFAULT / NOW() (date and time columns) /
+   * Add a File… (a file's bytes into binary columns; the owner asks for the file).
+   */
+  | { type: "setNull" | "setEmpty" | "setDefault" | "setNow" | "setFile"; cells: CellPos[] }
   /** Delete, Duplicate and Discard Changes on the selected rows. */
   | { type: "deleteRows" | "duplicateRows" | "revertRows"; rows: number[] }
   | { type: "newRow" }
@@ -165,6 +177,25 @@ export interface DataGridProps {
   onQuickFilter?: (filter: QuickFilter) => void;
   /** Enables the header menu's "Filter with Column" (a new filter condition on that column). */
   onFilterColumn?: (column: GridColumn) => void;
+  /** Called with the selected row indexes whenever they change (the sidebar's bulk edit). */
+  onSelectedRowsChange?: (rows: number[]) => void;
+  /** Row numbers in the gutter (default on); without them the gutter is a slim status strip. */
+  rowNumbers?: boolean;
+  /** Enables the cell menu's "Refresh". */
+  onRefresh?: () => void;
+  /** Enables the cell menu's "Import ▸ From CSV…". */
+  onImportCsv?: () => void;
+  /** Enables the cell menu's "Export Current Page…". */
+  onExportPage?: () => void;
+  /**
+   * ⌘↩ opens Quick Look (table grids). Off by default: in a SQL tab's results ⌘↩ stays Run
+   * Current; the menu and a middle-click still open it there.
+   */
+  quickLookKey?: boolean;
+  /** Quick Look on an FK cell: the row(s) it references. */
+  onLoadReferenced?: (column: GridColumn, value: Value) => Promise<ReferencedRows>;
+  /** Quick Look on a blob cut to its preview: the whole value (`c` is a SOURCE index). */
+  onLoadFullValue?: (r: number, c: number) => Promise<Value>;
   className?: string;
 }
 
@@ -187,12 +218,15 @@ interface CopyChoice {
   headers?: boolean;
 }
 
+/** Copy Rows As ▸ (TablePlus's list and order); ⌘⌥C opens it with number keys 1–7. */
 const COPY_CHOICES: CopyChoice[] = [
-  { label: "TSV with header", short: "TSV", format: "tsv", headers: true },
-  { label: "CSV", short: "CSV", format: "csv" },
+  { label: "Plain text", short: "plain text", format: "tsv" },
   { label: "JSON", short: "JSON", format: "json" },
-  { label: "INSERT statements", short: "INSERT statements", format: "insert" },
-  { label: "Markdown table", short: "Markdown", format: "markdown" },
+  { label: "HTML", short: "HTML", format: "html" },
+  { label: "Markdown", short: "Markdown", format: "markdown" },
+  { label: "CSV", short: "CSV", format: "csv" },
+  { label: "CSV with header", short: "CSV with header", format: "csv", headers: true },
+  { label: "SQL Insert statement", short: "INSERT statements", format: "insert" },
 ];
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -358,6 +392,14 @@ export function DataGrid({
   onAction,
   onQuickFilter,
   onFilterColumn,
+  onSelectedRowsChange,
+  rowNumbers = true,
+  onRefresh,
+  onImportCsv,
+  onExportPage,
+  quickLookKey = false,
+  onLoadReferenced,
+  onLoadFullValue,
   className,
 }: DataGridProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -382,8 +424,9 @@ export function DataGrid({
     return out;
   }, [widths]);
   const totalWidth = offsets[offsets.length - 1] ?? 0;
-  /** Row-number gutter: as narrow as the largest row number allows. */
-  const gutterW = gutterWidth(rowCount);
+  /** Row-number gutter: as narrow as the largest row number allows (a slim strip without them). */
+  const gutterW = rowNumbers ? gutterWidth(rowCount) : SLIM_GUTTER_W;
+  const zebra = usePrefs((p) => p.gridAlternatingRows);
   const colIndexById = useMemo(() => new Map(cols.map((c, i) => [c.id, i])), [cols]);
   const valueAt = useCallback(
     (row: ViewRow, c: number): Value => row.cells[src[c] ?? -1] ?? NULL,
@@ -409,6 +452,8 @@ export function DataGrid({
   } | null>(null);
   const [copyMenu, setCopyMenu] = useState(false);
   const [quickMenu, setQuickMenu] = useState<QuickMenu | null>(null);
+  /** The Quick Look Editor's cell: its row and SOURCE column. */
+  const [quickLook, setQuickLook] = useState<{ r: number; source: number } | null>(null);
   const [menuTarget, setMenuTarget] = useState<MenuTarget>({ kind: "cell" });
   const [reorder, setReorder] = useState<Reorder | null>(null);
 
@@ -454,6 +499,11 @@ export function DataGrid({
   useEffect(() => {
     onSelectionChange?.(selectedCount);
   }, [selectedCount, onSelectionChange]);
+  // `selection.rows` changes identity only when the selected rows do.
+  useEffect(() => {
+    onSelectedRowsChange?.(selectedRows(selection));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection.rows, onSelectedRowsChange]);
 
   const focusGrid = useCallback(() => scrollerRef.current?.focus({ preventScroll: true }), []);
 
@@ -575,9 +625,24 @@ export function DataGrid({
     () => act((s) => ({ type: "setDefault", cells: sourceCells(s) })),
     [act, sourceCells],
   );
+  const setNow = useCallback(
+    () => act((s) => ({ type: "setNow", cells: sourceCells(s) })),
+    [act, sourceCells],
+  );
+  const setFile = useCallback(
+    () => act((s) => ({ type: "setFile", cells: sourceCells(s) })),
+    [act, sourceCells],
+  );
   useAction("grid.set-null", enabled ? setNull : null);
   useAction("grid.set-empty", enabled ? setEmpty : null);
   useAction("grid.set-default", enabled ? setDefault : null);
+  /** ⌥↩: the Set Value menu under the focused cell (like an ⌥-click on it). */
+  const openSetValueMenu = useCallback(() => {
+    const f = selectionRef.current.focus;
+    if (!f) return;
+    setQuickMenu({ x: gutterW + (offsets[f.c] ?? 0), y: HEADER_H + (f.r + 1) * ROW_H });
+  }, [gutterW, offsets]);
+  useAction("grid.set-value", enabled ? openSetValueMenu : null);
   /** A row action on the selected rows (nothing when none are, e.g. while columns are selected). */
   const rowAction = useCallback(
     (type: "deleteRows" | "duplicateRows" | "revertRows") =>
@@ -644,6 +709,17 @@ export function DataGrid({
     (col: GridColumn) => void copyText(col.name, "Column name copied"),
     [copyText],
   );
+  /** Context menu ▸ Copy All Column Values: the focused column of every row the grid holds. */
+  const copyColumnValues = useCallback(() => {
+    const f = selectionRef.current.focus;
+    if (!f) return;
+    const values: Value[] = [];
+    for (let r = 0; r < rowCount; r++) {
+      const row = getRow(r);
+      if (row) values.push(valueAt(row, f.c));
+    }
+    void copyText(formatColumnValues(values), `Copied ${plural(values.length, "value")}`);
+  }, [rowCount, getRow, valueAt, copyText]);
 
   const copyAs = useCallback(
     async (choice: CopyChoice) => {
@@ -771,6 +847,18 @@ export function DataGrid({
     pasteText(text);
   }, [canPaste, readOnlyNotice, pasteText]);
 
+  // ---- Quick Look --------------------------------------------------------
+  const openQuickLook = useCallback(
+    (pos?: CellPos) => {
+      const f = pos ?? selectionRef.current.focus;
+      const source = f ? src[f.c] : undefined;
+      if (!f || source === undefined || !getRow(f.r)) return;
+      setQuickLook({ r: f.r, source });
+    },
+    [src, getRow],
+  );
+  useAction("grid.quick-look", active && quickLookKey ? () => openQuickLook() : null);
+
   useAction("grid.copy", active ? () => void copy() : null);
   useAction("grid.copy-as", active ? openCopyMenu : null);
   useAction("grid.paste", enabled ? () => void paste() : null);
@@ -829,6 +917,16 @@ export function DataGrid({
     if (!e.currentTarget.contains(e.target as Node)) return;
     const target = e.target as HTMLElement;
     if (editing) return;
+    if (e.button === 1) {
+      // Middle-click: Quick Look on the cell (TablePlus).
+      const cell = cellFromEvent(target);
+      if (!cell) return;
+      e.preventDefault();
+      focusGrid();
+      dispatch({ type: isCellSelected(selection, cell.r, cell.c) ? "focus" : "set", pos: cell });
+      openQuickLook(cell);
+      return;
+    }
     const contextClick = e.button === 2 || (e.button === 0 && e.ctrlKey && isMac);
     if (e.button === 0 && !contextClick) pressedCell.current = null;
     quickPress.current = null;
@@ -1042,7 +1140,14 @@ export function DataGrid({
 
   // ---- keyboard ------------------------------------------------------------
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (editing || copyMenu || quickMenu || !e.currentTarget.contains(e.target as Node)) return;
+    if (
+      editing ||
+      copyMenu ||
+      quickMenu ||
+      quickLook ||
+      !e.currentTarget.contains(e.target as Node)
+    )
+      return;
     if (e.key === "Escape" && headerPress.current?.dragging) {
       e.preventDefault();
       cancelHeaderDrag();
@@ -1067,6 +1172,11 @@ export function DataGrid({
         // Space shows the row detail; it never starts an edit with a space.
         e.preventDefault();
         toggleRowDetail();
+        return;
+      case "grid.quick-look":
+        if (!quickLookKey) break;
+        e.preventDefault();
+        openQuickLook();
         return;
     }
     const mod = e.metaKey || e.ctrlKey;
@@ -1182,7 +1292,7 @@ export function DataGrid({
   const hiddenN = hiddenCount(columns, columnState);
 
   // Set Value items that would change nothing for the target column(s) are disabled.
-  const settable = { null: false, empty: false, default: false };
+  const settable = { null: false, empty: false, default: false, now: false, file: false };
   if (editable) {
     const targets = byColumn
       ? selectedColumns(selection)
@@ -1195,6 +1305,8 @@ export function DataGrid({
       settable.null ||= col.nullable;
       settable.empty ||= acceptsEmpty(col);
       settable.default ||= col.hasDefault;
+      settable.now ||= NOW_KINDS.has(col.kind);
+      settable.file ||= col.kind === "bytes";
     }
   }
   const canQuickFilter =
@@ -1269,6 +1381,32 @@ export function DataGrid({
     : null;
   const editingCol = editing ? columns[editing.source] : undefined;
   const editingRow = editing ? getRow(editing.pos.r) : undefined;
+  const quickLookCell = (() => {
+    if (!quickLook) return null;
+    const row = getRow(quickLook.r);
+    const column = columns[quickLook.source];
+    if (!row || !column) return null;
+    return {
+      row,
+      column,
+      value: row.cells[quickLook.source] ?? NULL,
+      editable:
+        editable &&
+        !!onEditCommit &&
+        column.editable &&
+        column.kind !== "bytes" &&
+        row.status !== "deleted",
+    };
+  })();
+  const closeQuickLook = () => {
+    setQuickLook(null);
+    focusGrid();
+    // The dialog settles the focus in a timeout as it closes; take it back.
+    window.setTimeout(() => {
+      const a = document.activeElement;
+      if (!a || a === document.body) focusGrid();
+    }, 0);
+  };
 
   const altClick = isMac ? "⌥Click" : "Alt+Click";
   /** Row and value actions (Set Value, Insert / Duplicate / Delete, Discard Changes). */
@@ -1390,7 +1528,7 @@ export function DataGrid({
                     "group/row hover:bg-row-hover absolute left-0",
                     // Subtle zebra striping; staged cell colours and the selection paint over it (a
                     // selected row shows the accent tint alone).
-                    !selected && vr.index % 2 === 1 && ZEBRA,
+                    !selected && zebra && vr.index % 2 === 1 && ZEBRA,
                   )}
                   style={{ top: vr.start, height: vr.size, width: gutterW + totalWidth }}
                 >
@@ -1411,7 +1549,7 @@ export function DataGrid({
                           : undefined)
                     }
                   >
-                    {row?.status === "inserted" ? "+" : vr.index + 1}
+                    {rowNumbers ? (row?.status === "inserted" ? "+" : vr.index + 1) : null}
                   </div>
                   {row
                     ? virtualCols.map((vc) => {
@@ -1536,22 +1674,63 @@ export function DataGrid({
                   <DropdownMenuLabel className="text-muted-foreground py-1 text-[11px] font-medium">
                     Set Value
                   </DropdownMenuLabel>
-                  <DropdownMenuItem disabled={!settable.null} onSelect={setNull}>
-                    NULL
-                    <DropdownMenuShortcut>{keysFor("grid.set-null")}</DropdownMenuShortcut>
-                  </DropdownMenuItem>
                   <DropdownMenuItem disabled={!settable.empty} onSelect={setEmpty}>
                     EMPTY
                     <DropdownMenuShortcut>{keysFor("grid.set-empty")}</DropdownMenuShortcut>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={!settable.null} onSelect={setNull}>
+                    NULL
+                    <DropdownMenuShortcut>{keysFor("grid.set-null")}</DropdownMenuShortcut>
                   </DropdownMenuItem>
                   <DropdownMenuItem disabled={!settable.default} onSelect={setDefault}>
                     DEFAULT
                     <DropdownMenuShortcut>{keysFor("grid.set-default")}</DropdownMenuShortcut>
                   </DropdownMenuItem>
+                  {settable.now && (
+                    <DropdownMenuItem onSelect={setNow}>{NOW_LABEL}</DropdownMenuItem>
+                  )}
+                  {settable.file && (
+                    <DropdownMenuItem onSelect={setFile}>Add a File…</DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
           </div>
+          {quickLookCell && (
+            <QuickLook
+              key={`${quickLook!.r}:${quickLook!.source}`}
+              column={quickLookCell.column}
+              value={quickLookCell.value}
+              rowNumber={quickLook!.r + 1}
+              onClose={closeQuickLook}
+              onSave={
+                quickLookCell.editable
+                  ? (v) => {
+                      onEditCommit?.(quickLook!.r, quickLook!.source, v);
+                      closeQuickLook();
+                    }
+                  : undefined
+              }
+              loadReferenced={
+                quickLookCell.column.fk && onLoadReferenced && quickLookCell.value.t !== "null"
+                  ? () => onLoadReferenced(quickLookCell.column, quickLookCell.value)
+                  : undefined
+              }
+              onOpenReferenced={
+                quickLookCell.column.fk && onOpenFk
+                  ? () => {
+                      closeQuickLook();
+                      onOpenFk(quickLookCell.column, quickLookCell.value);
+                    }
+                  : undefined
+              }
+              loadFull={
+                onLoadFullValue && quickLookCell.row.status !== "inserted"
+                  ? () => onLoadFullValue(quickLook!.r, quickLook!.source)
+                  : undefined
+              }
+            />
+          )}
 
           {rowCount === 0 && !loading && (
             <div
@@ -1575,46 +1754,59 @@ export function DataGrid({
       >
         {headerId !== null && headerCol ? (
           <>
+            <ContextMenuItem onSelect={() => copyColumnName(headerCol)}>
+              <Copy /> Copy Name
+            </ContextMenuItem>
+            {onFilterColumn && (
+              <ContextMenuItem
+                onSelect={() => {
+                  afterMenuClose.current = () => onFilterColumn(headerCol);
+                }}
+              >
+                <Filter /> Filter with Column
+              </ContextMenuItem>
+            )}
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              disabled={cols.length <= 1 || headerVi === undefined}
+              onSelect={() => setColumnState(hideColumn(columnState, headerCol.id))}
+            >
+              <EyeOff /> Hide Column
+            </ContextMenuItem>
+            <ContextMenuItem
+              inset
+              disabled={
+                columnState.order.length === 0 && Object.keys(columnState.widths).length === 0
+              }
+              onSelect={() => setColumnState(resetLayout(columnState))}
+            >
+              Reset Column Positions and Widths
+            </ContextMenuItem>
             {onSortChange && (
               <>
+                <ContextMenuSeparator />
                 <ContextMenuItem
                   onSelect={() => onSortChange([{ column: headerCol.id, dir: "asc", nulls: null }])}
                 >
-                  <ArrowUp /> Sort Ascending
+                  <ArrowUp /> Sort ASC
                 </ContextMenuItem>
                 <ContextMenuItem
                   onSelect={() =>
                     onSortChange([{ column: headerCol.id, dir: "desc", nulls: null }])
                   }
                 >
-                  <ArrowDown /> Sort Descending
+                  <ArrowDown /> Sort DESC
                 </ContextMenuItem>
-                {headerSorted && (
-                  <ContextMenuItem
-                    inset
-                    onSelect={() => onSortChange(sort.filter((s) => s.column !== headerCol.id))}
-                  >
-                    Remove from Sort
-                  </ContextMenuItem>
-                )}
-                <ContextMenuSeparator />
-              </>
-            )}
-            {onFilterColumn && (
-              <>
                 <ContextMenuItem
-                  onSelect={() => {
-                    afterMenuClose.current = () => onFilterColumn(headerCol);
-                  }}
+                  inset
+                  disabled={!headerSorted}
+                  onSelect={() => onSortChange(sort.filter((s) => s.column !== headerCol.id))}
                 >
-                  <Filter /> Filter with Column
+                  Remove Sort
                 </ContextMenuItem>
-                <ContextMenuSeparator />
               </>
             )}
-            <ContextMenuItem onSelect={() => copyColumnName(headerCol)}>
-              <Copy /> Copy Column Name
-            </ContextMenuItem>
+            <ContextMenuSeparator />
             <ContextMenuItem
               inset
               disabled={headerVi === undefined}
@@ -1626,13 +1818,6 @@ export function DataGrid({
               Select Column
               <ContextMenuShortcut>{altClick}</ContextMenuShortcut>
             </ContextMenuItem>
-            <ContextMenuSeparator />
-            <ContextMenuItem
-              disabled={cols.length <= 1 || headerVi === undefined}
-              onSelect={() => setColumnState(hideColumn(columnState, headerCol.id))}
-            >
-              <EyeOff /> Hide Column
-            </ContextMenuItem>
             <ContextMenuItem
               disabled={hiddenN === 0}
               onSelect={() => setColumnState(showAll(columnState))}
@@ -1642,22 +1827,81 @@ export function DataGrid({
             <ContextMenuItem onSelect={() => fitColumn(headerCol.id)}>
               <MoveHorizontal /> Size to Fit
             </ContextMenuItem>
-            {columnState.order.length > 0 && (
-              <ContextMenuItem inset onSelect={() => setColumnState(resetOrder(columnState))}>
-                Reset Column Order
-              </ContextMenuItem>
-            )}
           </>
         ) : (
           <>
+            <ContextMenuItem disabled={!selection.focus} onSelect={() => openQuickLook()}>
+              <Maximize2 /> Quick Look Editor
+              {quickLookKey && <MenuKeys id="grid.quick-look" />}
+            </ContextMenuItem>
             <ContextMenuItem disabled={!selection.focus} onSelect={openRowDetail}>
               <PanelRight /> Open Row Details
               <MenuKeys id="grid.toggle-detail" />
             </ContextMenuItem>
+            {onRefresh && (
+              <ContextMenuItem onSelect={onRefresh}>
+                <RefreshCw /> Refresh
+                <ContextMenuShortcut>{formatCombo("Mod+Alt+R")}</ContextMenuShortcut>
+              </ContextMenuItem>
+            )}
+            {(canPaste || canAct) && <ContextMenuSeparator />}
+            {canPaste && (
+              <ContextMenuItem onSelect={() => void paste()}>
+                <ClipboardPaste /> Paste
+                <MenuKeys id="grid.paste" />
+              </ContextMenuItem>
+            )}
+            {canAct && (
+              <>
+                <ContextMenuItem onSelect={newRow}>
+                  <Plus /> Add Row
+                  <MenuKeys id="grid.new-row" />
+                </ContextMenuItem>
+                <ContextMenuItem inset disabled={selectedCount === 0} onSelect={duplicateRows}>
+                  Duplicate
+                  <MenuKeys id="grid.duplicate-row" />
+                </ContextMenuItem>
+                <ContextMenuSub>
+                  <ContextMenuSubTrigger inset disabled={!selection.focus}>
+                    Set Value
+                    <MenuKeys id="grid.set-value" />
+                  </ContextMenuSubTrigger>
+                  <ContextMenuSubContent className="w-44">
+                    <ContextMenuItem disabled={!settable.empty} onSelect={setEmpty}>
+                      EMPTY
+                      <MenuKeys id="grid.set-empty" />
+                    </ContextMenuItem>
+                    <ContextMenuItem disabled={!settable.null} onSelect={setNull}>
+                      NULL
+                      <MenuKeys id="grid.set-null" />
+                    </ContextMenuItem>
+                    <ContextMenuItem disabled={!settable.default} onSelect={setDefault}>
+                      DEFAULT
+                      <MenuKeys id="grid.set-default" />
+                    </ContextMenuItem>
+                    {settable.now && (
+                      <ContextMenuItem onSelect={setNow}>{NOW_LABEL}</ContextMenuItem>
+                    )}
+                    {settable.file && (
+                      <>
+                        <ContextMenuSeparator />
+                        <ContextMenuItem onSelect={setFile}>Add a File…</ContextMenuItem>
+                      </>
+                    )}
+                  </ContextMenuSubContent>
+                </ContextMenuSub>
+              </>
+            )}
             <ContextMenuSeparator />
             <ContextMenuItem disabled={copyRows === 0} onSelect={() => void copy()}>
               <Copy /> Copy
               <MenuKeys id="grid.copy" />
+            </ContextMenuItem>
+            <ContextMenuItem inset disabled={!focusedValue} onSelect={copyCellValue}>
+              Copy Cell Value
+            </ContextMenuItem>
+            <ContextMenuItem inset disabled={!focusedCol} onSelect={copyColumnValues}>
+              Copy All Column Values
             </ContextMenuItem>
             <ContextMenuSub>
               <ContextMenuSubTrigger inset disabled={copyRows === 0}>
@@ -1672,45 +1916,7 @@ export function DataGrid({
                 ))}
               </ContextMenuSubContent>
             </ContextMenuSub>
-            <ContextMenuItem inset disabled={!focusedValue} onSelect={copyCellValue}>
-              Copy Cell Value
-            </ContextMenuItem>
-            <ContextMenuItem
-              inset
-              disabled={!focusedCol}
-              onSelect={() => focusedCol && copyColumnName(focusedCol)}
-            >
-              Copy Column Name
-            </ContextMenuItem>
-            {canPaste && (
-              <ContextMenuItem onSelect={() => void paste()}>
-                <ClipboardPaste /> Paste
-                <MenuKeys id="grid.paste" />
-              </ContextMenuItem>
-            )}
-            {(canAct || canQuickFilter || openFkItem) && <ContextMenuSeparator />}
-            {canAct && (
-              <ContextMenuSub>
-                <ContextMenuSubTrigger inset disabled={!selection.focus}>
-                  Set Value
-                  <ContextMenuShortcut>{altClick}</ContextMenuShortcut>
-                </ContextMenuSubTrigger>
-                <ContextMenuSubContent className="w-44">
-                  <ContextMenuItem disabled={!settable.null} onSelect={setNull}>
-                    NULL
-                    <MenuKeys id="grid.set-null" />
-                  </ContextMenuItem>
-                  <ContextMenuItem disabled={!settable.empty} onSelect={setEmpty}>
-                    EMPTY
-                    <MenuKeys id="grid.set-empty" />
-                  </ContextMenuItem>
-                  <ContextMenuItem disabled={!settable.default} onSelect={setDefault}>
-                    DEFAULT
-                    <MenuKeys id="grid.set-default" />
-                  </ContextMenuItem>
-                </ContextMenuSubContent>
-              </ContextMenuSub>
-            )}
+            {(canQuickFilter || openFkItem) && <ContextMenuSeparator />}
             {canQuickFilter && (
               <ContextMenuSub>
                 <ContextMenuSubTrigger>
@@ -1727,17 +1933,35 @@ export function DataGrid({
               </ContextMenuSub>
             )}
             {openFkItem}
+            {(onImportCsv || onExportPage) && <ContextMenuSeparator />}
+            {onImportCsv && (
+              <ContextMenuSub>
+                <ContextMenuSubTrigger>
+                  <FileUp /> Import
+                </ContextMenuSubTrigger>
+                <ContextMenuSubContent className="w-40">
+                  <ContextMenuItem
+                    onSelect={() => {
+                      afterMenuClose.current = onImportCsv;
+                    }}
+                  >
+                    From CSV…
+                  </ContextMenuItem>
+                </ContextMenuSubContent>
+              </ContextMenuSub>
+            )}
+            {onExportPage && (
+              <ContextMenuItem
+                onSelect={() => {
+                  afterMenuClose.current = onExportPage;
+                }}
+              >
+                <FileDown /> Export Current Page…
+              </ContextMenuItem>
+            )}
             {canAct && (
               <>
                 <ContextMenuSeparator />
-                <ContextMenuItem onSelect={newRow}>
-                  <Plus /> Insert Row
-                  <MenuKeys id="grid.new-row" />
-                </ContextMenuItem>
-                <ContextMenuItem inset disabled={selectedCount === 0} onSelect={duplicateRows}>
-                  Duplicate
-                  <MenuKeys id="grid.duplicate-row" />
-                </ContextMenuItem>
                 <ContextMenuItem
                   variant="destructive"
                   disabled={selectedCount === 0}

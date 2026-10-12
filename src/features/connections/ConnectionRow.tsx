@@ -1,26 +1,10 @@
-import {
-  Copy,
-  Link2,
-  MoreHorizontal,
-  Network,
-  Pencil,
-  Plug,
-  Trash2,
-  type LucideIcon,
-} from "lucide-react";
+import { useDraggable } from "@dnd-kit/core";
+import { MoreHorizontal, Network } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { relativeTime } from "@/lib/format/time";
@@ -28,35 +12,15 @@ import type { ConnectionProfile } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { DriverBadge, TagPill } from "./badges";
 import { connectionRowId } from "./list";
+import { ContextMenuEntries, DropdownMenuEntries, type MenuEntry } from "./menuModel";
 import { connectionDetail } from "./schema";
-
-interface RowActions {
-  onConnect: () => void;
-  onEdit: () => void;
-  onDuplicate: () => void;
-  onCopyUrl: () => void;
-  onDelete: () => void;
-}
-
-type MenuEntry =
-  { label: string; icon: LucideIcon; run: () => void; destructive?: boolean } | "separator";
-
-function menuEntries(a: RowActions): MenuEntry[] {
-  return [
-    { label: "Connect", icon: Plug, run: a.onConnect },
-    { label: "Edit…", icon: Pencil, run: a.onEdit },
-    { label: "Duplicate", icon: Copy, run: a.onDuplicate },
-    { label: "Copy as URL", icon: Link2, run: a.onCopyUrl },
-    "separator",
-    { label: "Delete…", icon: Trash2, run: a.onDelete, destructive: true },
-  ];
-}
 
 /**
  * One saved connection in the launcher list (44px): driver badge tinted with the connection
  * colour, name + tag + read-only, `host : port : user : database` below, last connect on the right.
  * Selection and keyboard handling live in the list (`Launcher`); a click selects, a double-click
- * connects, right-click or "…" opens the actions.
+ * connects, right-click or "…" opens the actions (`menu`). The row can be dragged onto a group
+ * header to move it there.
  *
  * Two marks: `selected` is a real selection (a click, ↑/↓…), filled with the accent while the
  * connection pane has the focus and grey otherwise; `current` is only the keyboard target before
@@ -68,36 +32,45 @@ export function ConnectionRow({
   current,
   connecting,
   connected,
+  menu,
   onSelect,
-  ...actions
-}: RowActions & {
+  onConnect,
+}: {
   profile: ConnectionProfile;
   selected: boolean;
   /** The row ↑/↓/↩ start from (the list's active descendant). */
   current: boolean;
   connecting: boolean;
   connected: boolean;
+  menu: readonly MenuEntry[];
   onSelect: () => void;
+  onConnect: () => void;
 }) {
-  const entries = menuEntries(actions);
   const last = profile.lastConnectedAt;
+  const drag = useDraggable({ id: profile.id, data: { profile } });
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div
+          ref={drag.setNodeRef}
           id={connectionRowId(profile.id)}
           role="option"
           aria-selected={selected}
           data-current={current || undefined}
+          data-dragging={drag.isDragging || undefined}
           onClick={onSelect}
-          onDoubleClick={actions.onConnect}
+          onDoubleClick={onConnect}
           onContextMenu={onSelect}
+          onPointerDown={
+            drag.listeners?.onPointerDown as React.PointerEventHandler<HTMLElement> | undefined
+          }
           className={cn(
             "group/row relative mx-1.5 flex h-11 items-center gap-2.5 rounded-md pr-1.5 pl-2.5",
             selected ? "bg-accent group-focus-within/pane:bg-brand-soft" : "hover:bg-row-hover",
             !selected &&
               current &&
               "group-focus/list:ring-brand/45 group-focus/list:ring-1 group-focus/list:ring-inset",
+            drag.isDragging && "opacity-50",
           )}
         >
           <DriverBadge driver={profile.driver} color={profile.color} busy={connecting} />
@@ -147,6 +120,8 @@ export function ConnectionRow({
                 tabIndex={-1}
                 className="opacity-0 group-hover/row:opacity-100 group-aria-selected/row:opacity-100 data-[state=open]:opacity-100"
                 onDoubleClick={(e) => e.stopPropagation()}
+                // A press on "…" must not start dragging the row.
+                onPointerDown={(e) => e.stopPropagation()}
                 aria-label="Connection actions"
               >
                 <MoreHorizontal />
@@ -154,40 +129,17 @@ export function ConnectionRow({
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
+              className="w-52"
               onClick={(e) => e.stopPropagation()}
               onDoubleClick={(e) => e.stopPropagation()}
             >
-              {entries.map((e, i) =>
-                e === "separator" ? (
-                  <DropdownMenuSeparator key={i} />
-                ) : (
-                  <DropdownMenuItem
-                    key={e.label}
-                    variant={e.destructive ? "destructive" : "default"}
-                    onSelect={e.run}
-                  >
-                    <e.icon /> {e.label}
-                  </DropdownMenuItem>
-                ),
-              )}
+              <DropdownMenuEntries entries={menu} />
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
       </ContextMenuTrigger>
-      <ContextMenuContent className="w-48">
-        {entries.map((e, i) =>
-          e === "separator" ? (
-            <ContextMenuSeparator key={i} />
-          ) : (
-            <ContextMenuItem
-              key={e.label}
-              variant={e.destructive ? "destructive" : "default"}
-              onSelect={e.run}
-            >
-              <e.icon /> {e.label}
-            </ContextMenuItem>
-          ),
-        )}
+      <ContextMenuContent className="w-52">
+        <ContextMenuEntries entries={menu} />
       </ContextMenuContent>
     </ContextMenu>
   );

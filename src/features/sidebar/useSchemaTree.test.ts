@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { TableSummary } from "@/lib/ipc";
-import { buildTreeRows } from "./useSchemaTree";
+import type { RoutineSummary, SequenceSummary, TableSummary } from "@/lib/ipc";
+import { buildTreeRows, mergeObjectRows } from "./useSchemaTree";
 
 function table(
   name: string,
@@ -135,6 +135,104 @@ describe("buildTreeRows", () => {
       { type: "header", key: "h:Tables", label: "Tables", count: 1, collapsed: false },
       { type: "table", key: "t:public.users", table: tables[0] },
       { type: "header", key: "h:Views", label: "Views", count: 1, collapsed: true },
+    ]);
+  });
+});
+
+function routine(
+  name: string,
+  kind: RoutineSummary["kind"] = "function",
+  args = "",
+): RoutineSummary {
+  return {
+    schema: "public",
+    name,
+    kind,
+    arguments: args,
+    identityArguments: args,
+    returnType: kind === "procedure" ? null : "integer",
+    language: "sql",
+    comment: null,
+  };
+}
+
+function sequence(name: string): SequenceSummary {
+  return { schema: "public", name, dataType: "bigint", ownedBy: null, comment: null };
+}
+
+describe("buildTreeRows search syntax", () => {
+  it("supports anchors, alternatives and exact quotes", () => {
+    expect(keys(buildTreeRows(tables, "^users$"))).toEqual(["h:Tables", "t:public.users"]);
+    expect(keys(buildTreeRows(tables, "^posts$ | orders"))).toEqual([
+      "h:Tables",
+      "t:public.posts",
+      "t:inventory.orders",
+    ]);
+    expect(keys(buildTreeRows(tables, '"r_s"'))).toEqual(["h:Views", "t:public.user_stats"]);
+    // Fuzzy by default.
+    expect(keys(buildTreeRows(tables, "pst"))).toEqual(["h:Tables", "t:public.posts"]);
+  });
+});
+
+describe("mergeObjectRows", () => {
+  const routines = [
+    routine("add", "function", "a integer, b integer"),
+    routine("add", "function", "a numeric, b numeric"),
+    routine("archive_posts", "procedure"),
+  ];
+  const sequences = [sequence("users_id_seq")];
+
+  it("puts Functions before the tables and Sequences last", () => {
+    const pinned = new Set(["public.posts"]);
+    const rows = mergeObjectRows(buildTreeRows(tables, "", pinned), routines, sequences, "");
+    expect(keys(rows)).toEqual([
+      "h:Pinned",
+      "p:public.posts",
+      "h:Functions",
+      "f:public.add(a integer, b integer)",
+      "f:public.add(a numeric, b numeric)",
+      "f:public.archive_posts()",
+      "h:Tables",
+      "t:public.users",
+      "t:public.posts",
+      "t:inventory.orders",
+      "h:Views",
+      "t:public.user_stats",
+      "h:Sequences",
+      "s:public.users_id_seq",
+    ]);
+    expect(new Set(keys(rows)).size).toBe(rows.length);
+  });
+
+  it("filters with the search and collapses like the other sections", () => {
+    const rows = mergeObjectRows(buildTreeRows(tables, "arch"), routines, sequences, "arch");
+    expect(keys(rows)).toEqual(["h:Functions", "f:public.archive_posts()"]);
+    const collapsed = new Set(["Functions"] as const);
+    const folded = mergeObjectRows(
+      buildTreeRows(tables, "", undefined, undefined, collapsed),
+      routines,
+      undefined,
+      "",
+      collapsed,
+    );
+    expect(folded[0]).toEqual({
+      type: "header",
+      key: "h:Functions",
+      label: "Functions",
+      count: 3,
+      collapsed: true,
+    });
+    expect(folded[1]?.key).toBe("h:Tables");
+  });
+
+  it("adds nothing for turned-off or empty sections", () => {
+    const base = buildTreeRows(tables, "");
+    expect(mergeObjectRows(base, undefined, undefined, "")).toBe(base);
+    expect(mergeObjectRows(base, [], [], "")).toBe(base);
+    // No tables at all: the routines still show.
+    expect(keys(mergeObjectRows([], routines.slice(2), undefined, ""))).toEqual([
+      "h:Functions",
+      "f:public.archive_posts()",
     ]);
   });
 });

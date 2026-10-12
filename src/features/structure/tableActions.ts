@@ -97,6 +97,11 @@ export function supportsPartialIndex(dialect: Dialect): boolean {
   return dialect !== "mysql";
 }
 
+/** Index comments: MySQL (`COMMENT '…'`) and PostgreSQL (`COMMENT ON INDEX`). */
+export function supportsIndexComment(dialect: Dialect): boolean {
+  return dialect !== "sqlite";
+}
+
 export interface IndexDraft {
   name: string;
   columns: string[];
@@ -121,7 +126,14 @@ export function validateIndex(
   const predicate = supportsPartialIndex(dialect) ? draft.predicate.trim() || null : null;
   return {
     ok: true,
-    index: { name, columns: [...draft.columns], unique: draft.unique, method, predicate },
+    index: {
+      name,
+      columns: [...draft.columns],
+      unique: draft.unique,
+      method,
+      predicate,
+      comment: null,
+    },
   };
 }
 

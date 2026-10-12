@@ -16,4 +16,9 @@ stopOnError: boolean,
 /**
  * Wrap every statement in the dialect's EXPLAIN instead of running it.
  */
-explain: ExplainMode | null, };
+explain: ExplainMode | null, 
+/**
+ * Cancels a statement still running after this many seconds and reports it as timed out
+ * (Preferences ▸ Connections ▸ Query time out); 0 = no limit.
+ */
+timeoutSecs: number, };

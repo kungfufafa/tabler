@@ -51,6 +51,26 @@ export class ResultStore {
     return this.buffers.get(id)?.rows.length ?? 0;
   }
 
+  /** Replaces a buffer's rows (committed result edits), keeping its columns. */
+  replaceRows(id: string, rows: Value[][]): void {
+    const buf = this.buffers.get(id);
+    if (!buf) return;
+    buf.rows = rows;
+    this.onChange(id);
+  }
+
+  /**
+   * Copies buffer `from` into a new buffer `to` (a pinned result keeps its rows when the run that
+   * produced them is replaced). Rows are copied shallowly: cells are never mutated in place.
+   */
+  copy(from: string, to: string): boolean {
+    const buf = this.buffers.get(from);
+    if (!buf) return false;
+    this.buffers.set(to, { columns: buf.columns.slice(), rows: buf.rows.slice() });
+    this.onChange(to);
+    return true;
+  }
+
   /** Drops every buffer whose id matches `pred` (e.g. all results of a previous run). */
   dropWhere(pred: (id: string) => boolean): string[] {
     const dropped: string[] = [];

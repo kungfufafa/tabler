@@ -7,8 +7,11 @@ import {
   currentPageSql,
   DEFAULT_EXPORT_OPTIONS,
   defaultFileName,
+  buildExportTablesRequest,
   exportProblem,
   fileFilter,
+  filterTables,
+  multiLayout,
   formatBytes,
   formatElapsed,
   hasCappedBytes,
@@ -27,6 +30,13 @@ const opts = (patch: Partial<ExportOptions> = {}): ExportOptions => ({
   csv: { ...DEFAULT_EXPORT_OPTIONS.csv },
   json: { ...DEFAULT_EXPORT_OPTIONS.json },
   sql: { ...DEFAULT_EXPORT_OPTIONS.sql },
+  xlsx: { ...DEFAULT_EXPORT_OPTIONS.xlsx },
+  multi: { ...DEFAULT_EXPORT_OPTIONS.multi },
+  ...patch,
+});
+
+const sqlOpts = (patch: Partial<ExportOptions["sql"]>): ExportOptions["sql"] => ({
+  ...DEFAULT_EXPORT_OPTIONS.sql,
   ...patch,
 });
 
@@ -56,17 +66,76 @@ describe("buildExportRequest", () => {
   it("maps CSV options, including a tab delimiter", () => {
     const req = build(
       tableInput(),
-      opts({ csv: { delimiter: "\t", header: false, quoteAll: true, nullAs: "\\N" } }),
+      opts({
+        csv: {
+          delimiter: "\t",
+          header: false,
+          quote: "single",
+          nullToEmpty: false,
+          lineBreakToSpace: true,
+          lineBreak: "\r\n",
+          decimal: ",",
+        },
+      }),
     );
     expect(req.format).toEqual({
       format: "csv",
       delimiter: "\t",
       header: false,
-      quoteAll: true,
-      nullAs: "\\N",
+      quote: "single",
+      nullAs: "NULL",
+      lineBreak: "\r\n",
+      decimal: ",",
+      lineBreakToSpace: true,
     });
     expect(req.exportId).toBe("e1");
     expect(req.path).toBe("/tmp/out");
+    // TablePlus's defaults: NULL as empty, quotes only when needed, \n records.
+    expect(build(tableInput()).format).toEqual({
+      format: "csv",
+      delimiter: ",",
+      header: true,
+      quote: "ifNeeded",
+      nullAs: "",
+      lineBreak: "\n",
+      decimal: ".",
+      lineBreakToSpace: false,
+    });
+  });
+
+  it("maps Excel and the SQL script options", () => {
+    expect(build(tableInput(), opts({ format: "xlsx", xlsx: { header: false } })).format).toEqual({
+      format: "xlsx",
+      header: false,
+    });
+    expect(
+      build(
+        tableInput(),
+        opts({
+          format: "sqlInsert",
+          sql: sqlOpts({ dropTable: true, structure: true, content: false, gzip: true }),
+        }),
+      ).format,
+    ).toEqual({
+      format: "sqlInsert",
+      tableName: "",
+      batchSize: 100,
+      dropTable: true,
+      structure: true,
+      content: false,
+      gzip: true,
+    });
+  });
+
+  it("refuses a script with nothing in it, or a query without its content", () => {
+    const none = opts({ format: "sqlInsert", sql: sqlOpts({ content: false }) });
+    expect(exportProblem(tableInput(), "sqlInsert", none.sql)?.field).toBe("options");
+    expect(() => build(tableInput(), none)).toThrow(/Nothing to export/);
+    const structureOnly = sqlOpts({ content: false, structure: true });
+    expect(exportProblem(tableInput(), "sqlInsert", structureOnly)).toBeNull();
+    expect(exportProblem({ kind: "sql", sql: "select 1" }, "sqlInsert", structureOnly)?.field).toBe(
+      "options",
+    );
   });
 
   it("maps JSON array / NDJSON; NDJSON is never pretty", () => {
@@ -82,14 +151,17 @@ describe("buildExportRequest", () => {
 
   it("maps SQL INSERT with a trimmed table name and a clamped batch size", () => {
     expect(
-      build(tableInput(), opts({ format: "sqlInsert", sql: { batchSize: 250 } }), "  archive  ")
-        .format,
-    ).toEqual({ format: "sqlInsert", tableName: "archive", batchSize: 250 });
+      build(
+        tableInput(),
+        opts({ format: "sqlInsert", sql: sqlOpts({ batchSize: 250 }) }),
+        "  archive  ",
+      ).format,
+    ).toMatchObject({ format: "sqlInsert", tableName: "archive", batchSize: 250 });
     expect(
-      build(tableInput(), opts({ format: "sqlInsert", sql: { batchSize: 0 } })).format,
-    ).toEqual({ format: "sqlInsert", tableName: "", batchSize: 1 });
+      build(tableInput(), opts({ format: "sqlInsert", sql: sqlOpts({ batchSize: 0 }) })).format,
+    ).toMatchObject({ format: "sqlInsert", tableName: "", batchSize: 1 });
     expect(
-      build(tableInput(), opts({ format: "sqlInsert", sql: { batchSize: 1e9 } })).format,
+      build(tableInput(), opts({ format: "sqlInsert", sql: sqlOpts({ batchSize: 1e9 }) })).format,
     ).toMatchObject({ batchSize: 10_000 });
   });
 
@@ -197,7 +269,7 @@ describe("buildExportRequest", () => {
       rows: input.rows,
       table: "t",
     });
-    expect(req.format).toEqual({ format: "sqlInsert", tableName: "", batchSize: 100 });
+    expect(req.format).toMatchObject({ format: "sqlInsert", tableName: "", batchSize: 100 });
     expect(req.maxRows).toBeNull();
     expect(exportProblem(input, "sqlInsert")).toBeNull();
     expect(build(input, opts({ format: "sqlInsert" }), " archive ").format).toMatchObject({
@@ -362,6 +434,17 @@ describe("persistence", () => {
     });
   });
 
+  it("keeps the meaning of options stored by earlier versions", () => {
+    const old = parseExportOptions({
+      format: "csv",
+      csv: { delimiter: ";", header: true, quoteAll: true, nullAs: "NULL" },
+      sql: { batchSize: 50 },
+    });
+    expect(old.csv).toMatchObject({ delimiter: ";", quote: "double", nullToEmpty: false });
+    expect(old.sql).toEqual({ ...DEFAULT_EXPORT_OPTIONS.sql, batchSize: 50 });
+    expect(parseExportOptions({ csv: { delimiter: "|" } }).csv.delimiter).toBe(",");
+  });
+
   it("survives storage that throws", () => {
     const broken = {
       getItem: () => {
@@ -382,5 +465,60 @@ describe("formatting", () => {
     expect(formatBytes(4.2 * 1024 * 1024)).toBe("4.2 MB");
     expect(formatElapsed(3_400)).toBe("0:03");
     expect(formatElapsed(3_723_000)).toBe("1:02:03");
+  });
+});
+
+describe("several tables", () => {
+  const tables = [
+    { schema: "public", name: "users" },
+    { schema: "public", name: "posts" },
+  ];
+
+  it("writes CSV and JSON per table, SQL and Excel as one file unless asked", () => {
+    expect(multiLayout(opts())).toBe("filePerTable");
+    expect(multiLayout(opts({ format: "json" }))).toBe("filePerTable");
+    expect(multiLayout(opts({ format: "sqlInsert" }))).toBe("singleFile");
+    expect(multiLayout(opts({ format: "xlsx" }))).toBe("singleFile");
+    expect(
+      multiLayout(
+        opts({ format: "xlsx", multi: { ...DEFAULT_EXPORT_OPTIONS.multi, xlsxSingleFile: false } }),
+      ),
+    ).toBe("filePerTable");
+  });
+
+  it("builds the request with every table's own INSERT target", () => {
+    const req = buildExportTablesRequest({
+      exportId: "m",
+      tables,
+      options: opts({ format: "sqlInsert", sql: sqlOpts({ structure: true }) }),
+      target: "/tmp/all.sql",
+    });
+    expect(req).toMatchObject({
+      exportId: "m",
+      tables,
+      layout: "singleFile",
+      target: "/tmp/all.sql",
+      format: { format: "sqlInsert", tableName: "", structure: true, content: true },
+    });
+    expect(() =>
+      buildExportTablesRequest({ exportId: "m", tables: [], options: opts(), target: "/tmp" }),
+    ).toThrow();
+  });
+
+  it("filters the table list case-insensitively", () => {
+    expect(filterTables(tables, "POS").map((t) => t.name)).toEqual(["posts"]);
+    expect(filterTables(tables, " ")).toHaveLength(2);
+  });
+
+  it("names compressed scripts and workbooks", () => {
+    expect(fileFilter(opts({ format: "sqlInsert", sql: sqlOpts({ gzip: true }) }))).toEqual({
+      name: "Gzip-compressed SQL",
+      extensions: ["gz"],
+    });
+    const at = new Date(2026, 9, 11, 9, 5);
+    expect(defaultFileName("t", opts({ format: "xlsx" }), at)).toBe("t_20261011-0905.xlsx");
+    expect(
+      defaultFileName("t", opts({ format: "sqlInsert", sql: sqlOpts({ gzip: true }) }), at),
+    ).toBe("t_20261011-0905.sql.gz");
   });
 });

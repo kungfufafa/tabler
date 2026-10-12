@@ -14,8 +14,8 @@ use crate::tunnel::{
     self, AppHostKeys, TunnelAuth, TunnelHandle, TunnelState, TunnelStatus, TunnelStatusEvent,
 };
 use crate::types::profile::{
-    ConnStatus, ConnectionInfo, ConnectionProfile, ConnectionStatusEvent, Driver, SshAuth,
-    SshConfig, TunnelInfo,
+    ConnStatus, ConnectionInfo, ConnectionProfile, ConnectionStatusEvent, Driver, PasswordMode,
+    SshAuth, SshConfig, TunnelInfo,
 };
 
 pub const EVENT_CONNECTION_STATUS: &str = "connection:status";
@@ -135,20 +135,44 @@ pub async fn open_profile_tunnel(
     Ok(Some(opened))
 }
 
-async fn open_session(
+/// The DB password a connect uses, following the profile's password mode:
+/// - Keychain: the one passed in (typed in a prompt), else the stored one.
+/// - Ask every time: the one passed in, else the one typed earlier this app session (reconnects,
+///   database switches); without either the connect is refused so the renderer asks.
+/// - No password: none, whatever is passed in or stored.
+pub async fn connect_password(
     state: &AppState,
     profile: &ConnectionProfile,
+    typed: Option<String>,
+) -> Result<Option<String>, AppError> {
+    match profile.options.password_mode() {
+        PasswordMode::None => Ok(None),
+        PasswordMode::Ask => match typed {
+            Some(p) => Ok(Some(p)),
+            None => state.session_password(profile.id).map(Some).ok_or_else(|| {
+                AppError::Auth(format!(
+                    "the password of \u{201c}{}\u{201d} is asked on every connect; enter it to connect",
+                    profile.name
+                ))
+            }),
+        },
+        PasswordMode::Keychain => match typed {
+            Some(p) => Ok(Some(p)),
+            None => state.secrets.get(profile.id, SecretKind::DbPassword).await,
+        },
+    }
+}
+
+async fn open_session(
+    profile: &ConnectionProfile,
+    password: Option<&str>,
     host_override: Option<(String, u16)>,
 ) -> Result<(Arc<dyn drivers::DbSession>, crate::drivers::ServerInfo), AppError> {
-    let password = state
-        .secrets
-        .get(profile.id, SecretKind::DbPassword)
-        .await?;
     let session = tokio::time::timeout(
         connect_timeout(profile),
         drivers::connect(ConnectTarget {
             profile,
-            password: password.as_deref(),
+            password,
             host_override,
         }),
     )
@@ -272,11 +296,14 @@ fn watch_tunnel(
     });
 }
 
+/// Opens a saved profile. `password` is the DB password typed in the renderer's prompt (profiles
+/// whose password is asked on every connect); `None` uses the stored or remembered one.
 #[tauri::command]
 pub async fn connect(
     app: AppHandle,
     state: State<'_, AppState>,
     profile_id: Uuid,
+    password: Option<String>,
 ) -> Result<ConnectionInfo, AppError> {
     let profile = state
         .appdb
@@ -286,6 +313,8 @@ pub async fn connect(
         // Opening would create a missing file: a moved or mistyped path must not "connect".
         drivers::sqlite::check_database_file(&profile)?;
     }
+    let typed = password.clone();
+    let password = connect_password(&state, &profile, password).await?;
     let tunnel = match tunnel_config(&profile) {
         Some(ssh) => {
             let auth = stored_tunnel_auth(&state, profile.id, ssh).await?;
@@ -298,7 +327,7 @@ pub async fn connect(
     };
     let host_override = tunnel.as_ref().map(TunnelHandle::connect_addr);
     let attempt = Instant::now();
-    let (session, server) = match open_session(&state, &profile, host_override).await {
+    let (session, server) = match open_session(&profile, password.as_deref(), host_override).await {
         Ok(opened) => opened,
         Err(e) => {
             if let Some(t) = &tunnel {
@@ -309,6 +338,8 @@ pub async fn connect(
             return Err(e);
         }
     };
+    // Never persisted: reconnects reuse it while a connection of the profile is open.
+    let session_password = typed.filter(|_| profile.options.password_mode() == PasswordMode::Ask);
     let connection_id = Uuid::new_v4();
     let tunnel_port = tunnel.as_ref().map(TunnelHandle::local_port);
     let info = ConnectionInfo {
@@ -337,7 +368,7 @@ pub async fn connect(
         emit_tunnel_status(&app, connection_id, port, TunnelStatus::Up, None);
         watch_tunnel(app.clone(), Arc::downgrade(&conn), t.subscribe(), port);
     }
-    state.connections.write().await.insert(connection_id, conn);
+    state.insert_connection(conn, session_password).await;
     let _ = state.appdb.touch_last_connected(profile_id);
     emit_status(&app, connection_id, ConnStatus::Connected, None);
     log::info!(
@@ -358,7 +389,8 @@ pub async fn disconnect(
     state: State<'_, AppState>,
     connection_id: Uuid,
 ) -> Result<(), AppError> {
-    let conn = state.connections.write().await.remove(&connection_id);
+    // The profile's last connection also forgets its "Ask every time" password.
+    let conn = state.remove_connection(connection_id).await;
     if let Some(conn) = conn {
         conn.session().await.close().await;
         // Marked before the tunnel closes so the tunnel watcher does not report a lost connection.
@@ -433,8 +465,9 @@ pub async fn switch_database(
         Some(t) => Some(t.connect_addr()),
         None => None,
     };
+    let password = connect_password(&state, &profile, None).await?;
     let attempt = Instant::now();
-    let (session, server) = open_session(&state, &profile, host_override)
+    let (session, server) = open_session(&profile, password.as_deref(), host_override)
         .await
         .map_err(|e| match &conn.tunnel {
             Some(t) => t.explain_error(e, attempt),

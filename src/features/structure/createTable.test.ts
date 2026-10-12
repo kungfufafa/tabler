@@ -47,7 +47,8 @@ describe("buildCreateTable", () => {
     expect(r.op.primaryKey).toEqual(["id", "slug"]);
     expect(r.op.columns[0]).toMatchObject({
       name: "id",
-      dataType: "bigint",
+      // TablePlus: a serial (an integer with a sequence default) on PostgreSQL
+      dataType: "serial",
       nullable: false,
       autoIncrement: true,
     });
@@ -124,7 +125,14 @@ describe("table actions", () => {
     );
     expect(ok).toEqual({
       ok: true,
-      index: { name: "ix", columns: ["a"], unique: false, method: "gin", predicate: "a > 1" },
+      index: {
+        name: "ix",
+        columns: ["a"],
+        unique: false,
+        method: "gin",
+        predicate: "a > 1",
+        comment: null,
+      },
     });
     const mysql = validateIndex(
       { name: "ix", columns: ["a"], unique: false, method: "gin", predicate: "a > 1" },

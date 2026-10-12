@@ -7,6 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::decode::kind_from_decltype;
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
+use crate::sqlgen::ddl::{index_predicate, sqlite_checks, trigger_tail};
 use crate::types::schema::{
     ColumnMeta, CompletionMetadata, ForeignKeyMeta, IndexMeta, SchemaInfo, TableKind, TableMeta,
     TableRef, TableSummary, TriggerMeta, ValueKind,
@@ -231,18 +232,23 @@ pub fn table_meta(conn: &mut Connection, table: &TableRef) -> Result<TableMeta, 
                 )
                 .optional()?
                 .flatten();
+            let predicate = if partial {
+                definition
+                    .as_deref()
+                    .and_then(index_predicate)
+                    .or_else(|| Some("partial".into()))
+            } else {
+                None
+            };
             indexes.push(IndexMeta {
                 name,
                 columns: cols,
                 unique,
                 primary: origin == "pk",
                 method: None,
-                predicate: if partial {
-                    Some("partial".into())
-                } else {
-                    None
-                },
+                predicate,
                 definition,
+                comment: None,
             });
         }
     }
@@ -297,16 +303,7 @@ pub fn table_meta(conn: &mut Connection, table: &TableRef) -> Result<TableMeta, 
         for row in rows {
             let (name, sql) = row?;
             let def = sql.unwrap_or_default();
-            let upper = def.to_ascii_uppercase();
-            let timing = ["BEFORE", "AFTER", "INSTEAD OF"]
-                .iter()
-                .find(|t| upper.contains(&format!(" {t} ")))
-                .map(|t| t.to_string());
-            let events = ["INSERT", "UPDATE", "DELETE"]
-                .iter()
-                .filter(|e| upper.contains(&format!(" {e} ")) || upper.contains(&format!(" {e}\n")))
-                .map(|e| e.to_string())
-                .collect();
+            let (timing, events) = parse_trigger_head(&def);
             triggers.push(TriggerMeta {
                 name,
                 timing,
@@ -316,6 +313,14 @@ pub fn table_meta(conn: &mut Connection, table: &TableRef) -> Result<TableMeta, 
             });
         }
     }
+
+    let checks = match (kind, ddl.as_deref()) {
+        (TableKind::Table, Some(sql)) => {
+            let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+            sqlite_checks(sql, &table.name, &names)
+        }
+        _ => Vec::new(),
+    };
 
     Ok(TableMeta {
         table: TableRef::new(Some(&schema), &table.name),
@@ -328,7 +333,35 @@ pub fn table_meta(conn: &mut Connection, table: &TableRef) -> Result<TableMeta, 
         comment: None,
         row_estimate: None,
         ddl,
+        checks,
+        options: None,
     })
+}
+
+/// Timing and event of a SQLite trigger from its `CREATE TRIGGER` text: the words between the
+/// trigger name and `ON` (`AFTER UPDATE OF a, b ON …`). SQLite's default timing is BEFORE.
+pub fn parse_trigger_head(def: &str) -> (Option<String>, Vec<String>) {
+    let Some(tail) = trigger_tail(def) else {
+        return (None, Vec::new());
+    };
+    let words: Vec<String> = tail
+        .split_whitespace()
+        .take_while(|w| !w.eq_ignore_ascii_case("ON"))
+        .map(str::to_ascii_uppercase)
+        .collect();
+    let timing = if words.first().is_some_and(|w| w == "INSTEAD") {
+        "INSTEAD OF"
+    } else if words.first().is_some_and(|w| w == "AFTER") {
+        "AFTER"
+    } else {
+        "BEFORE"
+    };
+    let events = words
+        .iter()
+        .find(|w| matches!(w.as_str(), "INSERT" | "UPDATE" | "DELETE"))
+        .map(|w| vec![w.clone()])
+        .unwrap_or_default();
+    (Some(timing.to_string()), events)
 }
 
 pub fn completion_metadata(conn: &mut Connection) -> Result<CompletionMetadata, AppError> {
@@ -358,6 +391,111 @@ pub fn completion_metadata(conn: &mut Connection) -> Result<CompletionMetadata, 
 mod tests {
     use super::*;
 
+    /// A rebuild planned from introspected metadata keeps the table's CHECK constraints, adds and
+    /// drops them, and runs on a real SQLite database.
+    #[test]
+    fn rebuilds_keep_and_change_checks() {
+        use crate::sqlgen::ddl::plan_ddl;
+        use crate::types::ddl::{CheckDef, DdlOp};
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE stock (id INTEGER PRIMARY KEY, qty INT CHECK (qty >= 0), price REAL, CONSTRAINT cheap CHECK (price < 100));
+             INSERT INTO stock (qty, price) VALUES (1, 2.5);",
+        )
+        .unwrap();
+        let t = TableRef::new(None, "stock");
+        let meta = table_meta(&mut conn, &t).unwrap();
+        let plan = plan_ddl(
+            Dialect::Sqlite,
+            Some(&meta),
+            &[
+                DdlOp::RenameColumn {
+                    table: t.clone(),
+                    name: "price".into(),
+                    new_name: "cost".into(),
+                },
+                DdlOp::DropCheck {
+                    table: t.clone(),
+                    name: "ck_stock_1".into(),
+                },
+                DdlOp::AddCheck {
+                    table: t.clone(),
+                    check: CheckDef {
+                        name: Some("cost_ok".into()),
+                        expression: "cost > 0".into(),
+                    },
+                },
+            ],
+        )
+        .unwrap();
+        for sql in plan.statements.iter().filter(|s| !s.starts_with("SELECT")) {
+            conn.execute_batch(sql)
+                .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        }
+        let after = table_meta(&mut conn, &t).unwrap();
+        let checks: Vec<(&str, &str)> = after
+            .checks
+            .iter()
+            .map(|c| (c.name.as_str(), c.expression.as_str()))
+            .collect();
+        assert_eq!(
+            checks,
+            [("cheap", "\"cost\" < 100"), ("cost_ok", "\"cost\" > 0")]
+        );
+        // the new check holds
+        assert!(conn.execute("UPDATE stock SET cost = -1", []).is_err());
+        assert!(conn.execute("UPDATE stock SET qty = -1", []).is_ok());
+    }
+
+    #[test]
+    fn reads_checks_partial_indexes_and_trigger_heads() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE items (
+                id INTEGER PRIMARY KEY,
+                price REAL NOT NULL CHECK (price > 0),
+                qty INTEGER CONSTRAINT qty_ok CHECK(qty >= 0) DEFAULT 0,
+                note TEXT DEFAULT 'CHECK (x)',
+                CONSTRAINT cheap CHECK (price < 1000 OR qty = 0),
+                CHECK (length(note) < 200)
+             );
+             CREATE INDEX items_live ON items (price) WHERE qty > 0;
+             CREATE TRIGGER items_audit BEFORE DELETE ON items BEGIN SELECT RAISE(ABORT, 'no INSERT or UPDATE'); END;
+             CREATE TRIGGER items_touch UPDATE OF qty ON items BEGIN SELECT 1; END;",
+        )
+        .unwrap();
+        let m = table_meta(&mut conn, &TableRef::new(None, "items")).unwrap();
+        let checks: Vec<(&str, &str, Vec<&str>)> = m
+            .checks
+            .iter()
+            .map(|c| {
+                (
+                    c.name.as_str(),
+                    c.expression.as_str(),
+                    c.columns.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            checks,
+            [
+                ("ck_items_1", "price > 0", vec!["price"]),
+                ("qty_ok", "qty >= 0", vec!["qty"]),
+                ("cheap", "price < 1000 OR qty = 0", vec!["price", "qty"]),
+                ("ck_items_2", "length(note) < 200", vec!["note"]),
+            ]
+        );
+        let live = m.indexes.iter().find(|i| i.name == "items_live").unwrap();
+        assert_eq!(live.predicate.as_deref(), Some("qty > 0"));
+        let audit = m.triggers.iter().find(|t| t.name == "items_audit").unwrap();
+        assert_eq!(audit.timing.as_deref(), Some("BEFORE"));
+        assert_eq!(audit.events, ["DELETE"]);
+        let touch = m.triggers.iter().find(|t| t.name == "items_touch").unwrap();
+        assert_eq!(touch.timing.as_deref(), Some("BEFORE"));
+        assert_eq!(touch.events, ["UPDATE"]);
+    }
+
     #[test]
     fn introspects_a_small_schema() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -386,6 +524,8 @@ mod tests {
         assert_eq!(users.columns[3].kind, ValueKind::Float);
         assert_eq!(users.triggers.len(), 1);
         assert_eq!(users.triggers[0].timing.as_deref(), Some("AFTER"));
+        assert_eq!(users.triggers[0].events, ["UPDATE"]);
+        assert!(users.checks.is_empty());
         assert!(
             users
                 .indexes
@@ -410,6 +550,7 @@ mod tests {
         assert!(!pt.columns[0].is_auto_increment);
 
         let meta = completion_metadata(&mut conn).unwrap();
+        assert!(meta.schemas["main"].contains_key("users"));
         assert_eq!(
             meta.schemas["main"]["users"],
             ["id", "email", "name", "score"]

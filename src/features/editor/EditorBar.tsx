@@ -1,4 +1,5 @@
 import {
+  BookmarkPlus,
   ChevronDown,
   Ellipsis,
   FileDown,
@@ -45,10 +46,12 @@ import { updateQueryTab, useQueryTabField } from "@/stores/queryTabs";
 import { useResultRowCount } from "@/stores/resultData";
 import { ROW_LIMITS } from "./controller";
 import { useCursorLabel } from "./cursor";
+import { EditorSettingsMenu } from "./EditorSettingsMenu";
 import { ElapsedTimer } from "./ElapsedTimer";
 import { runSummaryText } from "./labels";
 import { resolvePane } from "./panes";
 import { RUN_BUTTON_ACTION, useRunButtonStore, type RunButtonMode } from "./runButton";
+import { useActiveEditorKey } from "./split";
 import { summarize } from "./runModel";
 
 export interface EditorBarHandlers {
@@ -69,6 +72,10 @@ export interface EditorBarHandlers {
   open: () => void;
   save: () => void;
   saveAs: () => void;
+  /** "Save Selected SQL Statements As…" (⇧⌘S). */
+  saveSelection: () => void;
+  /** "Add to Queries…" (⌥⌘S): the selection / current statement as a saved query. */
+  addToQueries: () => void;
   /** Opens the export dialog on the shown result, or the selection / statement under the cursor. */
   exportResults: () => void;
 }
@@ -150,9 +157,9 @@ function ButtonKbd({ action, className }: { action: ActionId; className?: string
 const splitMain = "h-6 gap-1 rounded-r-none px-1.5 text-[11px] font-normal";
 const splitMenu = "h-6 w-4 rounded-l-none px-0";
 
-/** "Line 4, Column 13", or "12 characters selected". */
+/** "Line 4, Column 13", or "12 characters selected" (of the pane used last when split). */
 function CursorPosition({ tabId }: { tabId: string }) {
-  const label = useCursorLabel(tabId);
+  const label = useCursorLabel(useActiveEditorKey(tabId));
   return (
     <span
       data-testid="cursor-position"
@@ -351,6 +358,16 @@ function RunButton({
             <MenuShortcut action="query.run" />
           </DropdownMenuItem>
           <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={handlers.addToQueries}>
+            Add to Queries…
+            <MenuShortcut action="query.add-to-queries" />
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={handlers.saveAs}>Save SQL As…</DropdownMenuItem>
+          <DropdownMenuItem onSelect={handlers.saveSelection}>
+            Save Selected SQL Statements As…
+            <MenuShortcut action="query.save-selection" />
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           <DropdownMenuLabel className="text-muted-foreground text-[11px] font-normal">
             The Run button runs
           </DropdownMenuLabel>
@@ -528,6 +545,11 @@ function FileActions({ handlers }: { handlers: EditorBarHandlers }) {
             <span className="size-4" aria-hidden />
             Save As…
           </DropdownMenuItem>
+          <DropdownMenuItem onSelect={handlers.addToQueries}>
+            <BookmarkPlus />
+            Add to Queries…
+            <MenuShortcut action="query.add-to-queries" />
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={handlers.exportResults}>
             <FileDown />
@@ -541,11 +563,11 @@ function FileActions({ handlers }: { handlers: EditorBarHandlers }) {
 }
 
 /**
- * The bar under the SQL editor, as in TablePlus: the cursor position, the file actions and the
- * outcome of the last run on the left; the row limit, Beautify, Explain and Run on the right. It is
- * a size container so it degrades instead of overflowing when the main panel is narrow: below
- * 760px the file actions fold into a "⋯" menu, below 640px the Beautify / Explain captions and the
- * shortcut hints go, below 520px the cursor position, below 440px the Run caption.
+ * The bar under the SQL editor, as in TablePlus: the ⚙ settings, the cursor position, the file
+ * actions and the outcome of the last run on the left; the row limit, Beautify, Explain and Run on
+ * the right. It is a size container so it degrades instead of overflowing when the main panel is
+ * narrow: below 760px the file actions fold into a "⋯" menu, below 640px the Beautify / Explain
+ * captions and the shortcut hints go, below 520px the cursor position, below 440px the Run caption.
  */
 export function EditorBar({ tabId, handlers }: { tabId: string; handlers: EditorBarHandlers }) {
   const run = useQueryTabField(tabId, "run");
@@ -560,6 +582,7 @@ export function EditorBar({ tabId, handlers }: { tabId: string; handlers: Editor
       aria-label="Query"
       className="border-border bg-surface-2 @container flex h-8 shrink-0 items-center gap-1 border-t px-1.5"
     >
+      <EditorSettingsMenu />
       <IconButton
         icon={resultsCollapsed ? PanelBottomOpen : PanelBottomClose}
         label={resultsCollapsed ? "Show results" : "Hide results"}

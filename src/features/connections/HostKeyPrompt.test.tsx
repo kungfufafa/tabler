@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ipc } from "@/lib/ipc";
 import { mockFingerprint, mockKnownHosts, resetMockHostKeys } from "@/lib/ipc/mock/export";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
@@ -43,6 +43,12 @@ function renderConnect({ withHost = true } = {}) {
   );
   return renderHook(() => useConnect(), { wrapper }).result;
 }
+
+beforeAll(async () => {
+  // The transport loads the mock backend on the first call; load it up front so the first
+  // prompt shows within the default wait.
+  await import("@/lib/ipc/mock");
+});
 
 beforeEach(() => {
   resetMockHostKeys();
@@ -255,8 +261,16 @@ describe("ConnectionDialog", () => {
     );
     const form = await screen.findByRole("dialog");
     const ssh = within(form).getByRole("region", { name: "SSH tunnel" });
-    expect(within(ssh).getByText(/keepalive is/)).toBeInTheDocument();
-    expect(within(ssh).getByText("auto")).toBeInTheDocument();
+    expect(within(ssh).getByText(/host key is confirmed on first connect/)).toBeInTheDocument();
+    expect(within(ssh).getByLabelText("Local port")).toHaveAttribute("placeholder", "auto");
+    expect(within(ssh).getByLabelText("Keep-alive interval (s)")).toHaveAttribute(
+      "placeholder",
+      "30",
+    );
+    expect(within(ssh).getByLabelText("SSH user")).toHaveAttribute(
+      "placeholder",
+      "Leave empty to use ~/.ssh/config",
+    );
     expect(within(ssh).getByText(/identities loaded in your SSH agent/)).toBeInTheDocument();
     await user.click(within(form).getByRole("button", { name: "Over SSH" }));
     expect(within(form).queryByRole("region", { name: "SSH tunnel" })).toBeNull();

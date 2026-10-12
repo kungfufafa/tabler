@@ -3,7 +3,7 @@ import { Ban, CircleCheck, CircleX, Info, Loader2 } from "lucide-react";
 import { memo, useState } from "react";
 import { formatDuration } from "@/lib/format/time";
 import { cn } from "@/lib/utils";
-import { toCurrentDoc } from "./docAnchors";
+import { locateSubmitted } from "./submissions";
 import { focusEditor } from "./editorStates";
 import { ErrorBlock } from "./ErrorBlock";
 import { errorRange, spanRange } from "./errorPos";
@@ -62,8 +62,8 @@ const StatementRow = memo(function StatementRow({ tabId, runId, sql, baseOffset,
         className="hover:text-foreground flex w-full items-center gap-2 text-left"
         title="Select this statement in the editor"
         onClick={() => {
-          const range = toCurrentDoc(tabId, runId, spanRange(st.span, sub));
-          if (range) focusEditor(tabId, range);
+          const at = locateSubmitted(tabId, runId, spanRange(st.span, sub));
+          if (at) focusEditor(at.key, at.range);
         }}
       >
         <StatusIcon status={st.status} />

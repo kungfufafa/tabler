@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { actions } from "@/features/palette/actions";
 import type { Value } from "@/lib/ipc";
 import { formatCombo, isMac } from "@/lib/keys/combo";
+import { DEFAULT_PREFS, resetPrefsForTests } from "@/stores/prefs";
 import { useInspectorStore } from "@/stores/inspector";
 import { useUiStore } from "@/stores/ui";
 import { DataGrid, type DataGridProps } from "./DataGrid";
@@ -11,6 +12,7 @@ import {
   HEADER_H,
   MIN_GUTTER_W,
   ROW_H,
+  SLIM_GUTTER_W,
   type ColumnState,
   type GridColumn,
   type ViewRow,
@@ -408,8 +410,10 @@ describe("DataGrid context menus", () => {
     fireEvent.pointerDown(header, { button: 2 });
     fireEvent.contextMenu(header);
     expect(screen.getByRole("menuitem", { name: /Select Column/ })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: /Remove from Sort/ })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: /Reset Column Order/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Remove Sort/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: /Reset Column Positions and Widths/ }),
+    ).toBeInTheDocument();
     expect(misaligned()).toEqual([]);
   });
 
@@ -849,46 +853,93 @@ describe("DataGrid cell menu (TablePlus order)", () => {
       label.querySelectorAll('[data-slot="context-menu-shortcut"]').forEach((k) => k.remove());
       return label.textContent!.trim();
     });
+  /** Top-level items whose label neither starts with an icon nor is inset (see context menus). */
+  const misalignedItems = () =>
+    [...document.querySelectorAll<HTMLElement>('[role="menu"] > [role="menuitem"]')]
+      .filter((el) => el.firstElementChild?.tagName.toLowerCase() !== "svg")
+      .filter((el) => !el.hasAttribute("data-inset"))
+      .map((el) => el.textContent);
 
-  it("lists Open Row Details, the copy items, Set Value, Quick Filter, then the row items", () => {
+  it("lists the items in TablePlus's 2021 order", () => {
+    const { cell, click } = setup(state, {
+      quickLookKey: true,
+      onQuickFilter: vi.fn(),
+      onRefresh: vi.fn(),
+      onImportCsv: vi.fn(),
+      onExportPage: vi.fn(),
+    });
+    click(0, 1);
+    openMenu(cell(0, 1));
+    expect(entries()).toEqual([
+      "Quick Look Editor",
+      "Open Row Details",
+      "Refresh",
+      "—",
+      "Paste",
+      "Add Row",
+      "Duplicate",
+      "Set Value",
+      "—",
+      "Copy",
+      "Copy Cell Value",
+      "Copy All Column Values",
+      "Copy Rows As",
+      "—",
+      "Quick Filter",
+      "—",
+      "Import",
+      "Export Current Page…",
+      "—",
+      "Delete",
+    ]);
+    // ⌫ is Delete's shortcut, ⌘↩ Quick Look's, ⌥⌘R Refresh's, ⌥↩ Set Value's.
+    expect(item(/^Delete/)).toHaveTextContent(formatCombo("Backspace"));
+    expect(item(/^Quick Look Editor/)).toHaveTextContent(formatCombo("Mod+Enter"));
+    expect(item(/^Refresh/)).toHaveTextContent(formatCombo("Mod+Alt+R"));
+    expect(item(/^Set Value/)).toHaveTextContent(formatCombo("Alt+Enter"));
+    expect(misalignedItems()).toEqual([]);
+  });
+
+  it("leaves out what the grid's owner does not offer", () => {
     const { cell, click } = setup(state, { onQuickFilter: vi.fn() });
     click(0, 1);
     openMenu(cell(0, 1));
     expect(entries()).toEqual([
+      "Quick Look Editor",
       "Open Row Details",
       "—",
-      "Copy",
-      "Copy Rows As",
-      "Copy Cell Value",
-      "Copy Column Name",
       "Paste",
-      "—",
+      "Add Row",
+      "Duplicate",
       "Set Value",
+      "—",
+      "Copy",
+      "Copy Cell Value",
+      "Copy All Column Values",
+      "Copy Rows As",
+      "—",
       "Quick Filter",
       "—",
-      "Insert Row",
-      "Duplicate",
       "Delete",
     ]);
-    // ⌫ is Delete's shortcut.
-    expect(item(/^Delete/)).toHaveTextContent(formatCombo("Backspace"));
   });
 
-  it("keeps a read-only grid to the copy items", () => {
+  it("keeps a read-only grid to Quick Look and the copy items", () => {
     const { cell, click } = setup(state, { editable: false });
     click(1, 1);
     openMenu(cell(1, 1));
     expect(entries()).toEqual([
+      "Quick Look Editor",
       "Open Row Details",
       "—",
       "Copy",
-      "Copy Rows As",
       "Copy Cell Value",
-      "Copy Column Name",
+      "Copy All Column Values",
+      "Copy Rows As",
     ]);
   });
 
-  it("copies the right-clicked cell's value and its column name", async () => {
+  it("copies the right-clicked cell's value, and every value of its column", async () => {
     const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -902,14 +953,16 @@ describe("DataGrid cell menu (TablePlus order)", () => {
     expect(document.querySelectorAll("[data-row][data-selected]")).toHaveLength(2);
     await act(async () => fireEvent.click(item("Copy Cell Value")));
     expect(writeText).toHaveBeenLastCalledWith("bob@x.io");
+    openMenu(cell(0, 1));
+    await act(async () => fireEvent.click(item("Copy All Column Values")));
+    expect(writeText).toHaveBeenLastCalledWith("'Ann', 'Bob'");
+    expect(toast.success).toHaveBeenLastCalledWith("Copied 2 values");
     openMenu(cell(0, 0));
-    expect(document.querySelectorAll("[data-row][data-selected]")).toHaveLength(2);
-    await act(async () => fireEvent.click(item("Copy Column Name")));
-    expect(writeText).toHaveBeenLastCalledWith("id");
-    expect(toast.success).toHaveBeenLastCalledWith("Column name copied");
+    await act(async () => fireEvent.click(item("Copy All Column Values")));
+    expect(writeText).toHaveBeenLastCalledWith("1, 2");
   });
 
-  it("Delete, Duplicate and Insert Row act on the selected rows", () => {
+  it("Delete, Duplicate and Add Row act on the selected rows", () => {
     const { cell, click, onAction } = setup(state);
     click(0, 1);
     fireEvent.pointerDown(cell(1, 1), { button: 0, shiftKey: true });
@@ -920,8 +973,26 @@ describe("DataGrid cell menu (TablePlus order)", () => {
     fireEvent.click(item(/^Delete/));
     expect(onAction).toHaveBeenLastCalledWith({ type: "deleteRows", rows: [0, 1] });
     openMenu(cell(1, 1));
-    fireEvent.click(item(/^Insert Row/));
+    fireEvent.click(item(/^Add Row/));
     expect(onAction).toHaveBeenLastCalledWith({ type: "newRow" });
+  });
+
+  it("Refresh, Import ▸ From CSV… and Export Current Page… call their owner", async () => {
+    const onRefresh = vi.fn();
+    const onImportCsv = vi.fn();
+    const onExportPage = vi.fn();
+    const { cell, click } = setup(state, { onRefresh, onImportCsv, onExportPage });
+    click(0, 1);
+    openMenu(cell(0, 1));
+    fireEvent.click(item(/^Refresh/));
+    expect(onRefresh).toHaveBeenCalledOnce();
+    openMenu(cell(0, 1));
+    fireEvent.click(item(/^Export Current Page/));
+    await waitFor(() => expect(onExportPage).toHaveBeenCalledOnce());
+    openMenu(cell(0, 1));
+    fireEvent.click(item(/^Import/));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "From CSV…" }));
+    await waitFor(() => expect(onImportCsv).toHaveBeenCalledOnce());
   });
 
   it("offers Discard Changes only on rows with staged changes", () => {
@@ -1148,5 +1219,169 @@ describe("DataGrid look (TablePlus)", () => {
     click(0, 1);
     fireEvent.keyDown(grid, { key: "Enter" });
     expect(screen.getByRole("textbox", { name: "Edit name" })).toHaveValue("");
+  });
+});
+
+describe("DataGrid M8 grid features", () => {
+  const state: ColumnState = { widths: {}, order: [], hidden: [] };
+  beforeAll(() => {
+    // CodeMirror (Quick Look) measures text ranges; jsdom has no layout.
+    Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
+    Range.prototype.getBoundingClientRect ??= () => new DOMRect();
+  });
+  const rowEl = (r: number) => document.querySelector<HTMLElement>(`[data-row="${r}"]`)!;
+  const gutter = (r: number) => document.querySelector<HTMLElement>(`[data-gutter="${r}"]`)!;
+  afterEach(() => resetPrefsForTests());
+
+  it("Set Value ▸ NOW() for date and time columns, Add a File… for binary ones", () => {
+    const typed = [col("id", "int"), col("born", "date"), col("photo", "bytes")];
+    const typedRows: ViewRow[] = [
+      { key: "pk:1", cells: [{ t: "int", v: 1 }, { t: "null" }, { t: "null" }] },
+    ];
+    const { cell, click, onAction } = setup(state, {
+      columns: typed,
+      rowCount: 1,
+      getRow: (i) => typedRows[i],
+    });
+    click(0, 1);
+    openMenu(cell(0, 1));
+    fireEvent.click(item(/Set Value/));
+    // TablePlus's order: EMPTY, NULL, DEFAULT, then NOW().
+    const labels = [
+      ...document.querySelectorAll('[role="menu"] [role="menu"] [role="menuitem"]'),
+    ].map((el) => {
+      const label = el.cloneNode(true) as HTMLElement;
+      label.querySelectorAll('[data-slot="context-menu-shortcut"]').forEach((k) => k.remove());
+      return label.textContent?.trim();
+    });
+    expect(labels.slice(0, 4)).toEqual(["EMPTY", "NULL", "DEFAULT", "Now (local time)"]);
+    expect(screen.queryByRole("menuitem", { name: /Add a File/ })).not.toBeInTheDocument();
+    fireEvent.click(item("Now (local time)"));
+    expect(onAction).toHaveBeenLastCalledWith({ type: "setNow", cells: [{ r: 0, c: 1 }] });
+    click(0, 2);
+    openMenu(cell(0, 2));
+    fireEvent.click(item(/Set Value/));
+    expect(screen.queryByRole("menuitem", { name: /^Now/ })).not.toBeInTheDocument();
+    fireEvent.click(item(/Add a File/));
+    expect(onAction).toHaveBeenLastCalledWith({ type: "setFile", cells: [{ r: 0, c: 2 }] });
+  });
+
+  it("⌥↩ opens the Set Value menu on the focused cell", async () => {
+    const { click, onAction } = setup(state);
+    click(1, 1);
+    await act(() => actions.run("grid.set-value"));
+    expect(screen.getByText("Set Value")).toBeInTheDocument();
+    fireEvent.click(item(/EMPTY/));
+    expect(onAction).toHaveBeenLastCalledWith({ type: "setEmpty", cells: [{ r: 1, c: 1 }] });
+  });
+
+  it("Copy Rows As offers TablePlus's seven formats, numbered in the ⌘⌥C popup", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText, readText: vi.fn() },
+    });
+    const { grid, click } = setup(state, { active: false });
+    click(0, 1);
+    fireEvent.keyDown(grid, { key: "ç", code: "KeyC", ...mod, altKey: true });
+    const names = screen
+      .getAllByRole("menuitem")
+      .map((el) => el.textContent?.replace(/\d$/, "").trim());
+    expect(names).toEqual([
+      "Plain text",
+      "JSON",
+      "HTML",
+      "Markdown",
+      "CSV",
+      "CSV with header",
+      "SQL Insert statement",
+    ]);
+    // 3 is HTML.
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "3" });
+    });
+    expect(writeText).toHaveBeenLastCalledWith(expect.stringContaining("<td>Ann</td>"));
+    expect(toast.success).toHaveBeenLastCalledWith("Copied 1 row as HTML");
+  });
+
+  it("orders the header menu like TablePlus and resets positions and widths", () => {
+    const onColumnStateChange = vi.fn();
+    const onSortChange = vi.fn();
+    setup(
+      { widths: { name: 300 }, order: ["name", "id", "email"], hidden: [] },
+      { onSortChange, onFilterColumn: vi.fn(), onColumnStateChange },
+    );
+    const header = document.querySelector<HTMLElement>('[data-header="name"]')!;
+    openMenu(header);
+    const top = [
+      ...document.querySelectorAll<HTMLElement>('[role="menu"] > [role="menuitem"]'),
+    ].map((el) => el.textContent?.trim());
+    expect(top.slice(0, 7)).toEqual([
+      "Copy Name",
+      "Filter with Column",
+      "Hide Column",
+      "Reset Column Positions and Widths",
+      "Sort ASC",
+      "Sort DESC",
+      "Remove Sort",
+    ]);
+    expect(item("Remove Sort")).toHaveAttribute("data-disabled");
+    fireEvent.click(item("Reset Column Positions and Widths"));
+    expect(onColumnStateChange).toHaveBeenLastCalledWith({ widths: {}, order: [], hidden: [] });
+    openMenu(header);
+    fireEvent.click(item(/Sort DESC/));
+    expect(onSortChange).toHaveBeenLastCalledWith([{ column: "name", dir: "desc", nulls: null }]);
+  });
+
+  it("opens Quick Look with ⌘↩ (table grids), a middle-click or the menu, and saves through onEditCommit", async () => {
+    const { cell, click, onEditCommit } = setup(state, { quickLookKey: true });
+    click(1, 1);
+    await act(() => actions.run("grid.quick-look"));
+    expect(screen.getByRole("dialog", { name: /^name/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.pointerDown(cell(0, 2), { button: 1 });
+    expect(screen.getByRole("dialog", { name: /^email/ })).toBeInTheDocument();
+    const view = (await import("@codemirror/view")).EditorView.findFromDOM(
+      document.querySelector<HTMLElement>(".cm-editor")!,
+    )!;
+    act(() =>
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "new@x.io" } }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+    expect(onEditCommit).toHaveBeenCalledWith(0, 2, { t: "text", v: "new@x.io" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    openMenu(cell(1, 0));
+    fireEvent.click(item(/Quick Look Editor/));
+    expect(screen.getByRole("dialog", { name: /^id/ })).toBeInTheDocument();
+  });
+
+  it("leaves ⌘↩ alone without quickLookKey (a SQL tab's results run the query)", async () => {
+    const { click } = setup(state);
+    click(0, 1);
+    expect(actions.has("grid.quick-look")).toBe(false);
+    openMenu(document.querySelector<HTMLElement>('[data-cell][data-r="0"][data-c="1"]')!);
+    expect(item(/Quick Look Editor/)).not.toHaveTextContent(formatCombo("Mod+Enter"));
+  });
+
+  it("reports the selected row indexes", () => {
+    const onSelectedRowsChange = vi.fn();
+    const { cell, click } = setup(state, { onSelectedRowsChange });
+    click(0, 1);
+    expect(onSelectedRowsChange).toHaveBeenLastCalledWith([0]);
+    fireEvent.pointerDown(cell(1, 1), { button: 0, shiftKey: true });
+    expect(onSelectedRowsChange).toHaveBeenLastCalledWith([0, 1]);
+  });
+
+  it("can drop the row numbers to a slim status strip", () => {
+    setup(state, { rowNumbers: false });
+    expect(gutter(0).style.width).toBe(`${SLIM_GUTTER_W}px`);
+    expect(gutter(0)).toHaveTextContent("");
+  });
+
+  it("stripes rows only while 'Alternating row background colors' is on", () => {
+    resetPrefsForTests({ ...DEFAULT_PREFS, gridAlternatingRows: false });
+    setup(state);
+    expect(rowEl(1).className).not.toContain("bg-foreground/[2.5%]");
   });
 });

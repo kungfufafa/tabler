@@ -1,31 +1,47 @@
 import {
+  AArrowDown,
+  AArrowUp,
+  Activity,
+  ArrowLeft,
+  ArrowRight,
   ArrowUpRight,
+  BookmarkPlus,
   Cable,
   Check,
   ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   CircleDashed,
   CircleDot,
+  CircleMinus,
   CirclePlay,
   CircleSlash2,
   ClipboardCopy,
   ClipboardPaste,
+  Columns2,
   Columns3Cog,
   Copy,
   CopyPlus,
   Database,
+  DatabaseZap,
   Eraser,
+  Eye,
+  FileCode,
   FileDown,
   FileSearch,
   FoldVertical,
   FolderOpen,
   Funnel,
   History,
+  LayoutGrid,
   ListTree,
+  ListX,
   PanelBottom,
   PanelLeft,
   PanelRight,
   PanelRightOpen,
+  PencilLine,
   Play,
   Plug,
   PlugZap,
@@ -34,17 +50,25 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  SaveAll,
   ScrollText,
   Search,
   Settings,
+  Sigma,
   Square,
+  SquareArrowLeft,
+  SquareArrowRight,
   SquareChevronRight,
+  SquareFunction,
   SquareX,
   Table2,
   TableProperties,
   TextAlignStart,
   Trash2,
   Undo2,
+  Unplug,
+  UserCog,
+  Workflow,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -52,6 +76,9 @@ import type {
   ConnectionProfile,
   DatabaseInfo,
   Driver,
+  RoutineKind,
+  RoutineSummary,
+  SavedQuery,
   SchemaInfo,
   TableKind,
   TableSummary,
@@ -69,7 +96,7 @@ import {
 } from "./fuzzy";
 
 export type PaletteGroupId =
-  "tables" | "tabs" | "schemas" | "databases" | "connections" | "actions";
+  "tables" | "routines" | "tabs" | "queries" | "schemas" | "databases" | "connections" | "actions";
 /**
  * Grouped sections (⌘K, ⇧⌘K) use their group's id; Open Anything (⌘P) shows one flat list of
  * database objects, or of commands once the query starts with `>`.
@@ -79,7 +106,9 @@ export type PaletteSectionId = PaletteGroupId | "objects" | "commands";
 /** Group order: of the narrowed lists' sections, and the last tie-break of Open Anything. */
 export const GROUP_ORDER: readonly PaletteGroupId[] = [
   "tables",
+  "routines",
   "tabs",
+  "queries",
   "schemas",
   "databases",
   "connections",
@@ -89,7 +118,9 @@ export const GROUP_ORDER: readonly PaletteGroupId[] = [
 /** What Open Anything lists without the `>` prefix. */
 export const OBJECT_GROUPS: readonly PaletteGroupId[] = [
   "tables",
+  "routines",
   "tabs",
+  "queries",
   "schemas",
   "databases",
   "connections",
@@ -97,7 +128,9 @@ export const OBJECT_GROUPS: readonly PaletteGroupId[] = [
 
 export const SECTION_HEADINGS: Record<PaletteGroupId, string> = {
   tables: "Tables",
+  routines: "Functions",
   tabs: "Open tabs",
+  queries: "Queries",
   schemas: "Schemas",
   databases: "Databases",
   connections: "Connections",
@@ -156,6 +189,20 @@ export interface PaletteItem {
    * Disconnect, database switches) so it never becomes the default ↩ target of an empty query.
    */
   noRecent?: boolean;
+  /** Right-click menu of the row (⌘K database list). */
+  menu?: PaletteMenuEntry[];
+}
+
+/** One entry of a row's right-click menu. */
+export interface PaletteMenuEntry {
+  label: string;
+  run: () => unknown;
+  destructive?: boolean;
+  disabled?: boolean;
+  /** Draws a separator above the entry. */
+  separated?: boolean;
+  /** Runs with the palette left open (Copy Name). */
+  keepOpen?: boolean;
 }
 
 export interface RankedItem {
@@ -536,6 +583,65 @@ export function tableItems(
   }));
 }
 
+const ROUTINE_ICONS: Record<RoutineKind, LucideIcon> = {
+  function: SquareFunction,
+  procedure: Workflow,
+  aggregate: Sigma,
+  window: SquareFunction,
+};
+
+const ROUTINE_KIND_LABELS: Record<RoutineKind, string> = {
+  function: "function",
+  procedure: "procedure",
+  aggregate: "aggregate function",
+  window: "window function",
+};
+
+/**
+ * The schema's functions and procedures (TablePlus Open Anything lists them next to the tables).
+ * ↩ opens the definition in a new SQL tab, as a click in the sidebar's Functions section does.
+ */
+export function routineItems(
+  routines: readonly RoutineSummary[],
+  ctx: { profileId: string; open: (routine: RoutineSummary) => unknown },
+): PaletteItem[] {
+  return routines.map((r) => ({
+    key: `routine:${enc(ctx.profileId)}:${enc(r.schema)}:${enc(r.name)}:${enc(r.identityArguments)}`,
+    group: "routines",
+    label: r.name,
+    detail: r.identityArguments || undefined,
+    tags: r.kind === "procedure" ? ["procedure", "routine"] : ["function", "routine"],
+    kind: ROUTINE_KIND_LABELS[r.kind],
+    icon: { type: "action", icon: ROUTINE_ICONS[r.kind] },
+    run: () => ctx.open(r),
+    verb: "Open",
+  }));
+}
+
+/**
+ * Saved queries of the Queries pane (TablePlus b388: Open Anything searches "Queries"). ↩ opens
+ * the query in a new SQL tab; ⌘↩ opens and runs it. The binding keyword is searchable.
+ */
+export function savedQueryItems(
+  queries: readonly SavedQuery[],
+  ctx: { open: (query: SavedQuery) => unknown; run: (query: SavedQuery) => unknown },
+): PaletteItem[] {
+  return queries.map((q) => ({
+    key: `query:${enc(q.id)}`,
+    group: "queries",
+    label: q.name,
+    detail: q.keyword ?? undefined,
+    keywords: q.keyword ? [q.keyword] : undefined,
+    tags: ["query", "queries"],
+    kind: "query",
+    icon: { type: "action", icon: FileCode },
+    run: () => ctx.open(q),
+    verb: "Open",
+    runAlt: () => void ctx.run(q),
+    altLabel: "Run",
+  }));
+}
+
 export function tabItems(
   tabs: readonly Tab[],
   ctx: {
@@ -614,6 +720,8 @@ export function schemaItems(
     database: string | null;
     current: string | null;
     select: (schema: string) => void;
+    /** The row's right-click menu. */
+    menu?: (schema: string) => PaletteMenuEntry[];
   },
 ): PaletteItem[] {
   return schemas.map((s) => ({
@@ -627,6 +735,7 @@ export function schemaItems(
     current: s.name === ctx.current,
     run: () => ctx.select(s.name),
     verb: "Switch",
+    ...(ctx.menu ? { menu: ctx.menu(s.name) } : {}),
   }));
 }
 
@@ -640,22 +749,49 @@ export function databaseItems(
     /** Database a switch is on its way to. */
     switching?: string | null;
     switchTo: (database: string) => unknown;
+    /** The row's right-click menu. */
+    menu?: (database: string, current: boolean) => PaletteMenuEntry[];
   },
 ): PaletteItem[] {
-  return databases.map((d) => ({
-    key: `db:${enc(ctx.profileId)}:${enc(d.name)}`,
-    group: "databases",
-    label: d.name,
-    tags: DATABASE_TAGS,
-    meta: d.name === ctx.switching ? "Switching…" : undefined,
-    kind: "database",
-    icon: { type: "database" },
-    current: ctx.current !== null ? d.name === ctx.current : d.isCurrent,
-    run: () => ctx.switchTo(d.name),
-    verb: "Switch",
-    // Switching closes every tab of the connection: never the ↩ default of an empty query.
+  return databases.map((d) => {
+    const current = ctx.current !== null ? d.name === ctx.current : d.isCurrent;
+    return {
+      key: `db:${enc(ctx.profileId)}:${enc(d.name)}`,
+      group: "databases",
+      label: d.name,
+      tags: DATABASE_TAGS,
+      meta: d.name === ctx.switching ? "Switching…" : undefined,
+      kind: "database",
+      icon: { type: "database" },
+      current,
+      run: () => ctx.switchTo(d.name),
+      verb: "Switch",
+      // Switching closes every tab of the connection: never the ↩ default of an empty query.
+      noRecent: true,
+      ...(ctx.menu ? { menu: ctx.menu(d.name, current) } : {}),
+    };
+  });
+}
+
+/**
+ * The "+ New Database…" / "+ New Schema…" row at the end of the ⌘K list. Never a Recent default,
+ * and listed for "new", "create" or "+".
+ */
+export function createItem(
+  group: "databases" | "schemas",
+  ctx: { profileId: string; run: () => unknown },
+): PaletteItem {
+  const what = group === "databases" ? "Database" : "Schema";
+  return {
+    key: `${group === "databases" ? "db-new" : "schema-new"}:${enc(ctx.profileId)}`,
+    group,
+    label: `New ${what}…`,
+    keywords: [`create add + new ${what.toLowerCase()}`],
+    icon: { type: "action", icon: Plus },
+    run: ctx.run,
+    verb: "Create",
     noRecent: true,
-  }));
+  };
 }
 
 const ACTION_ICONS: Partial<Record<ActionId, LucideIcon>> = {
@@ -708,6 +844,27 @@ const ACTION_ICONS: Partial<Record<ActionId, LucideIcon>> = {
   "query.open": FolderOpen,
   "export.open": FileDown,
   "connection.new": Plus,
+  "admin.process-list": Activity,
+  "admin.users": UserCog,
+  "admin.new-database": DatabaseZap,
+  "admin.drop-database": CircleMinus,
+  "admin.new-schema": Plus,
+  "admin.drop-schema": ListX,
+  "connection.disconnect": Unplug,
+  "grid.quick-look": Eye,
+  "grid.set-value": PencilLine,
+  "grid.prev-page": ChevronsLeft,
+  "grid.next-page": ChevronsRight,
+  "query.add-to-queries": BookmarkPlus,
+  "query.save-selection": SaveAll,
+  "query.font-bigger": AArrowUp,
+  "query.font-smaller": AArrowDown,
+  "query.split": Columns2,
+  "workspace.show": LayoutGrid,
+  "workspace.next": SquareArrowRight,
+  "workspace.prev": SquareArrowLeft,
+  "tab.back": ArrowLeft,
+  "tab.forward": ArrowRight,
 };
 
 export function actionIcon(id: ActionId): LucideIcon {

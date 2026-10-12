@@ -1,6 +1,9 @@
 import { useConnectionsStore } from "./connections";
 import { useTabsStore, type Tab } from "./tabs";
 
+/** The installed sync's memory of the tab each connection showed last. */
+let installed: ReadonlyMap<string, string> | null = null;
+
 /**
  * Keeps the visible tab and the active connection describing the same connection, so the
  * sidebar, database picker, status bar, banner, accent colour and ⌘T always follow the tab on
@@ -17,6 +20,7 @@ import { useTabsStore, type Tab } from "./tabs";
 export function installActiveSync(): () => void {
   /** The tab each connection showed last, by connection id. */
   const lastTab = new Map<string, string>();
+  installed = lastTab;
   let syncing = false;
 
   const run = (fn: () => void) => {
@@ -78,7 +82,20 @@ export function installActiveSync(): () => void {
   });
 
   return () => {
+    if (installed === lastTab) installed = null;
     unsubscribeTabs();
     unsubscribeConnections();
   };
+}
+
+/**
+ * The tab a workspace (connection) showed last: the visible tab for the active connection, else
+ * what the active-tab sync remembers (null when it is not installed or the tab is gone).
+ */
+export function lastShownTab(connectionId: string): string | null {
+  const { tabs, activeId } = useTabsStore.getState();
+  const active = tabs.find((t) => t.id === activeId);
+  if (active?.connectionId === connectionId) return active.id;
+  const id = installed?.get(connectionId);
+  return id && tabs.some((t) => t.id === id && t.connectionId === connectionId) ? id : null;
 }

@@ -13,7 +13,7 @@ import { Kbd } from "@/components/Kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { actions } from "@/features/palette/actions";
 import { isTauri } from "@/lib/ipc";
-import { shortcutFor } from "@/lib/keys/keymap";
+import { shortcutFor, useKeymapVersion } from "@/lib/keys/keymap";
 import { useConnectionsStore } from "@/stores/connections";
 import { canGoBack, canGoForward, useTabsStore, workspaceTabs } from "@/stores/tabs";
 import { TabItem } from "./TabItem";
@@ -103,6 +103,8 @@ export function TabStrip() {
   const hasConnection = useConnectionsStore((s) => s.activeId !== null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const listRef = useRef<HTMLDivElement>(null);
+  // Tooltips show the current (possibly remapped) shortcuts.
+  useKeymapVersion();
 
   // Keep the active tab visible (new tabs, ⌘1…9, ⌃Tab, reopen).
   useEffect(() => {
@@ -136,10 +138,20 @@ export function TabStrip() {
       className="border-border bg-surface-2 flex h-7 shrink-0 items-stretch border-b dark:bg-black/20"
     >
       <div className="border-border flex shrink-0 items-center gap-px border-r px-1">
-        <BarButton label="Back" disabled={!backEnabled} onClick={back}>
+        <BarButton
+          label="Back"
+          combo={shortcutFor("tab.back")}
+          disabled={!backEnabled}
+          onClick={back}
+        >
           <ChevronLeft className="size-3.5" />
         </BarButton>
-        <BarButton label="Forward" disabled={!forwardEnabled} onClick={forward}>
+        <BarButton
+          label="Forward"
+          combo={shortcutFor("tab.forward")}
+          disabled={!forwardEnabled}
+          onClick={forward}
+        >
           <ChevronRight className="size-3.5" />
         </BarButton>
       </div>

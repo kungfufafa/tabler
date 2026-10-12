@@ -1,6 +1,7 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { FileCode2, Table2, TableProperties, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -19,6 +20,7 @@ import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore, type Tab } from "@/stores/tabs";
 import { useTableTabsStore } from "@/stores/tableTabs";
+import { startTabRename, stopTabRename, useTabRenameStore } from "./renameStore";
 
 const ICONS = { table: Table2, structure: TableProperties, query: FileCode2 } as const;
 
@@ -59,7 +61,13 @@ function TabMenu({ tab }: { tab: Tab }) {
   const store = useTabsStore.getState;
   const item = "py-0.5 text-xs";
   return (
-    <ContextMenuContent className="min-w-48">
+    <ContextMenuContent
+      className="min-w-48"
+      // Rename Tab… edits the title in the tab: focus goes there, not back to the tab.
+      onCloseAutoFocus={(e) => {
+        if (useTabRenameStore.getState().renamingId === tab.id) e.preventDefault();
+      }}
+    >
       {tab.kind !== "query" && tab.preview && (
         <>
           <ContextMenuItem className={item} onSelect={() => store().pin(tab.id)}>
@@ -68,6 +76,10 @@ function TabMenu({ tab }: { tab: Tab }) {
           <ContextMenuSeparator />
         </>
       )}
+      <ContextMenuItem className={item} onSelect={() => startTabRename(tab.id)}>
+        Rename Tab…
+      </ContextMenuItem>
+      <ContextMenuSeparator />
       <ContextMenuItem className={item} onSelect={() => store().close(tab.id)}>
         Close
         <Shortcut id="tab.close" />
@@ -87,7 +99,7 @@ function TabMenu({ tab }: { tab: Tab }) {
         Close Tabs to the Right
       </ContextMenuItem>
       <ContextMenuItem className={item} onSelect={() => store().closeAll()}>
-        Close All
+        Close All Tabs
         <Shortcut id="tab.close-all" />
       </ContextMenuItem>
       <ContextMenuSeparator />
@@ -108,6 +120,52 @@ function TabMenu({ tab }: { tab: Tab }) {
   );
 }
 
+/** The tab's title as a text field (Rename Tab…): ↩ or leaving it renames, ⎋ keeps the name. */
+function TitleInput({ tab }: { tab: Tab }) {
+  const [value, setValue] = useState(tab.title);
+  const ref = useRef<HTMLInputElement>(null);
+  const done = useRef(false);
+  useEffect(() => {
+    // A closing context menu hands focus back to its trigger first; take it after that.
+    const timer = setTimeout(() => {
+      ref.current?.focus();
+      ref.current?.select();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
+  const finish = (rename: boolean) => {
+    if (done.current) return;
+    done.current = true;
+    if (rename) useTabsStore.getState().rename(tab.id, value);
+    stopTabRename();
+  };
+  return (
+    <input
+      ref={ref}
+      aria-label="Tab name"
+      value={value}
+      spellCheck={false}
+      autoComplete="off"
+      onChange={(e) => setValue(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          finish(true);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          finish(false);
+        }
+      }}
+      onBlur={() => finish(true)}
+      // Typing and selecting text must not drag, activate or close the tab.
+      onPointerDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      className="bg-background ring-brand h-5 w-full min-w-0 rounded px-1 text-center text-xs ring-1 outline-none select-text"
+    />
+  );
+}
+
 export function TabItem({
   tab,
   active,
@@ -124,6 +182,7 @@ export function TabItem({
   });
   const color = useConnectionsStore((s) => s.byId[tab.connectionId]?.info.color ?? null);
   const pin = useTabsStore((s) => s.pin);
+  const renaming = useTabRenameStore((s) => s.renamingId === tab.id);
   const unsaved = useUnsaved(tab);
   const Icon = ICONS[tab.kind];
   const subtitle = tab.kind === "query" ? undefined : (tab.table.schema ?? undefined);
@@ -170,9 +229,12 @@ export function TabItem({
           onMouseDown={(e) => {
             if (e.button === 1) e.preventDefault();
           }}
-          // A preview tab (italic) becomes a regular one on double-click.
-          onDoubleClick={() => {
+          // A preview tab (italic) becomes a regular one on double-click; a query tab's title
+          // turns into a text field to rename it.
+          onDoubleClick={(e) => {
+            if (e.target instanceof Element && e.target.closest("button")) return;
             if (preview) pin(tab.id);
+            else if (tab.kind === "query") startTabRename(tab.id);
           }}
           className={cn(
             // macOS document tabs (TablePlus): the tabs share the whole bar in equal widths (one tab
@@ -228,7 +290,11 @@ export function TabItem({
               className={cn("size-3.5 shrink-0", active ? "text-brand" : "opacity-70")}
               aria-hidden
             />
-            <span className={cn("truncate", preview && "italic")}>{tab.title}</span>
+            {renaming ? (
+              <TitleInput tab={tab} />
+            ) : (
+              <span className={cn("truncate", preview && "italic")}>{tab.title}</span>
+            )}
           </span>
         </div>
       </ContextMenuTrigger>

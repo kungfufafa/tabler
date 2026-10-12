@@ -22,7 +22,10 @@
 //! and the temporary file behave exactly as for a query.
 
 pub mod file;
+pub mod structure;
+pub mod tables;
 pub mod writer;
+pub mod xlsx;
 
 /// For the app's exit hook (`RunEvent::Exit`): deletes the temporary files of exports that are
 /// still running, which would otherwise stay behind as hidden partial files.
@@ -45,16 +48,18 @@ use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::select::{SelectSpec, build_select};
 use crate::sqlgen::split::{is_meta_command, leading_keywords, split_statements};
+use crate::sqlgen::transfer::script_table;
 use crate::types::browse::{FilterGroup, RowIdentity, SortSpec};
 use crate::types::export::{
     ExportFormat, ExportProgress, ExportRequest, ExportResult, ExportSource,
 };
 use crate::types::query::ResultColumn;
-use crate::types::schema::{ColumnMeta, TableMeta, ValueKind};
+use crate::types::schema::{ColumnMeta, TableKind, TableMeta, ValueKind};
 use crate::types::value::{BYTES_PREVIEW_CAP, BytesValue, Value};
 
-use file::{BlockingWrite, CountingWriter, TempTarget, validate_target};
-use writer::{FormatSpec, RowWriter};
+use file::{BlockingWrite, Compressed, CountingWriter, TempTarget, validate_target};
+use structure::{ScriptTable, closing_text, context_for, script_layout};
+use writer::{FormatSpec, RowOut, RowWriter, SqlScript};
 
 /// Progress is reported when this much time passed since the last report…
 pub const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -485,8 +490,8 @@ fn truncated_len(v: &Value) -> Option<u64> {
 }
 
 /// Receives the streamed rows and writes them; decides when to stop.
-struct ExportSink<'a, W: Write> {
-    writer: Option<RowWriter<W>>,
+struct ExportSink<'a, O: RowOut> {
+    writer: O,
     dialect: Dialect,
     planned: Option<Vec<OutputColumn>>,
     columns: Vec<OutputColumn>,
@@ -498,8 +503,8 @@ struct ExportSink<'a, W: Write> {
     pg_text: bool,
     max_rows: Option<u64>,
     cancel: CancellationToken,
-    progress: &'a mut (dyn FnMut(ExportProgress) + Send),
-    bytes: Arc<AtomicU64>,
+    /// Gets the rows written so far.
+    progress: &'a mut (dyn FnMut(u64) + Send),
     rows: u64,
     sets: u32,
     cancelled: bool,
@@ -509,7 +514,7 @@ struct ExportSink<'a, W: Write> {
     rows_at_emit: u64,
 }
 
-impl<W: Write> ExportSink<'_, W> {
+impl<O: RowOut> ExportSink<'_, O> {
     fn prepare(&self, mut row: Vec<Value>) -> Result<Vec<Value>, AppError> {
         let n = self.columns.len();
         if !self.blob_hex.is_empty() && row.len() == n + self.blob_hex.len() {
@@ -563,23 +568,17 @@ impl<W: Write> ExportSink<'_, W> {
 
     fn write(&mut self, row: Vec<Value>) -> Result<(), AppError> {
         let row = self.prepare(row)?;
-        match self.writer.as_mut() {
-            Some(w) => w.write_row(&row),
-            None => Err(AppError::internal("export writer already closed")),
-        }
+        self.writer.write_row(&row)
     }
 
     fn emit_progress(&mut self) {
-        (self.progress)(ExportProgress {
-            rows: self.rows,
-            bytes: self.bytes.load(Ordering::Relaxed),
-        });
+        (self.progress)(self.rows);
         self.last_emit = Instant::now();
         self.rows_at_emit = self.rows;
     }
 }
 
-impl<W: Write + Send> RowSink for ExportSink<'_, W> {
+impl<O: RowOut + Send> RowSink for ExportSink<'_, O> {
     fn begin_set(&mut self, columns: Vec<ResultColumn>) {
         self.sets += 1;
         // Only the first result set is exported (MySQL `CALL` can return several).
@@ -610,9 +609,7 @@ impl<W: Write + Send> RowSink for ExportSink<'_, W> {
                 .collect();
         }
         self.columns = cols;
-        if let Some(w) = self.writer.as_mut()
-            && let Err(e) = w.begin(&names)
-        {
+        if let Err(e) = self.writer.begin(&names) {
             self.error = Some(e);
         }
     }
@@ -659,7 +656,7 @@ async fn stream_export(
     query: &ExportQuery,
     sink: &mut dyn RowSink,
     cancel: &CancellationToken,
-    req: &ExportRequest,
+    export_id: &str,
 ) -> Result<u64, AppError> {
     let slot = CancelSlot::default();
     let stream = session.stream_query(&query.sql, &query.params, sink, slot.clone());
@@ -673,7 +670,7 @@ async fn stream_export(
         if let Some(handle) = request_cancel(&slot)
             && let Err(e) = session.cancel(handle).await
         {
-            log::warn!("export {}: cancel failed: {e}", req.export_id);
+            log::warn!("export {export_id}: cancel failed: {e}");
         }
         std::future::pending::<std::convert::Infallible>().await
     };
@@ -681,6 +678,116 @@ async fn stream_export(
         result = stream => result,
         never = watch => match never {},
     }
+}
+
+/// Streams a planned export into `out` (the statement's rows, or the rows held) and returns
+/// the rows written. `progress` gets the rows written so far, throttled. Fails with `Cancelled`
+/// once `cancel` fires.
+async fn stream_plan<O: RowOut + Send>(
+    session: &dyn DbSession,
+    plan: &Plan<'_>,
+    out: O,
+    max_rows: Option<u64>,
+    cancel: &CancellationToken,
+    progress: &mut (dyn FnMut(u64) + Send),
+    export_id: &str,
+) -> Result<u64, AppError> {
+    let dialect = session.dialect();
+    let (planned, blob_hex) = match plan {
+        Plan::Query(query) => (query.columns.clone(), query.blob_hex.clone()),
+        Plan::Rows { .. } => (None, Vec::new()),
+    };
+    let mut sink = ExportSink {
+        writer: out,
+        dialect,
+        planned,
+        columns: Vec::new(),
+        mysql_floats: Vec::new(),
+        blob_hex,
+        pg_text: dialect == Dialect::Postgres && matches!(plan, Plan::Query(_)),
+        max_rows,
+        cancel: cancel.clone(),
+        progress,
+        rows: 0,
+        sets: 0,
+        cancelled: false,
+        limit_reached: max_rows == Some(0),
+        error: None,
+        last_emit: Instant::now(),
+        rows_at_emit: 0,
+    };
+    let streamed = match plan {
+        Plan::Rows { columns, rows } => {
+            feed_rows(&mut sink, columns, rows).await;
+            Ok(rows.len() as u64)
+        }
+        Plan::Query(query) => stream_export(session, query, &mut sink, cancel, export_id).await,
+    };
+    let rows = sink.rows;
+    let sets = sink.sets;
+    let cancelled = sink.cancelled;
+    let limit_reached = sink.limit_reached;
+    let error = sink.error.take();
+    drop(sink);
+
+    if cancelled || cancel.is_cancelled() {
+        return Err(AppError::Cancelled);
+    }
+    if let Some(e) = error {
+        return Err(e);
+    }
+    match streamed {
+        Ok(_) => {}
+        // Stopping at `max_rows` may surface as a cancelled statement on some servers.
+        Err(AppError::Cancelled) if limit_reached => {}
+        Err(e) => return Err(e),
+    }
+    if sets == 0 {
+        return Err(AppError::InvalidInput(
+            "the statement returned no result set to export".into(),
+        ));
+    }
+    Ok(rows)
+}
+
+/// The writer chain of an export file: counted, buffered, written off the async workers.
+pub type FileOut = CountingWriter<BufWriter<BlockingWrite<std::fs::File>>>;
+
+fn file_out(file: std::fs::File, bytes: Arc<AtomicU64>) -> FileOut {
+    CountingWriter::new(
+        BufWriter::with_capacity(FILE_BUFFER, BlockingWrite::new(file)),
+        bytes,
+    )
+}
+
+/// Flushes the chain and syncs the file to disk (blocking). The last flush and the fsync
+/// (F_FULLFSYNC on macOS: the whole file plus the drive cache) take a while on a slow or network
+/// disk: call it off the async workers.
+fn sync_file(out: FileOut) -> Result<(), AppError> {
+    let file = out
+        .into_inner()
+        .into_inner()
+        .map_err(|e| AppError::Io(e.error().to_string()))?
+        .into_inner();
+    file.sync_all()?;
+    Ok(())
+}
+
+async fn blocking<T: Send + 'static>(
+    what: &str,
+    f: impl FnOnce() -> Result<T, AppError> + Send + 'static,
+) -> Result<T, AppError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| AppError::internal(format!("export {what} task failed: {e}")))?
+}
+
+/// Views have no table structure to write (TablePlus does not export view bodies either).
+fn is_view(kind: TableKind) -> bool {
+    matches!(
+        kind,
+        TableKind::View | TableKind::MaterializedView | TableKind::SystemView
+    )
 }
 
 /// Runs one export on `session`: plans the statement, streams it into the chosen format on a
@@ -697,6 +804,15 @@ pub async fn run_export(
     let started = Instant::now();
     let dialect = session.dialect();
     let dest = validate_target(&req.path)?;
+    let fetched;
+    let table_meta: Option<&TableMeta> = match (&req.source, meta) {
+        (ExportSource::Table { .. }, Some(m)) => Some(m),
+        (ExportSource::Table { table, .. }, None) => {
+            fetched = session.table_meta(table).await?;
+            Some(&fetched)
+        }
+        _ => None,
+    };
     let (plan, default_table) = match &req.source {
         ExportSource::Table {
             table,
@@ -704,14 +820,7 @@ pub async fn run_export(
             sort,
             columns,
         } => {
-            let fetched;
-            let meta = match meta {
-                Some(m) => m,
-                None => {
-                    fetched = session.table_meta(table).await?;
-                    &fetched
-                }
-            };
+            let meta = table_meta.ok_or_else(|| AppError::internal("table metadata missing"))?;
             let query = table_query(
                 dialect,
                 meta,
@@ -734,15 +843,46 @@ pub async fn run_export(
         }
     };
     let mut spec = FormatSpec::from_request(&req.format, dialect, default_table)?;
-    if let (
-        FormatSpec::Insert {
-            overriding_system_value,
-            ..
-        },
-        Plan::Query(query),
-    ) = (&mut spec, &plan)
+    let script = SqlScript::of(&req.format);
+    // Structure and DROP exist for table sources only (not views): the script then has the
+    // layout of a multi-table one (rows between the tables and their keys and triggers).
+    let layout = match (script, table_meta) {
+        (Some(s), Some(meta)) if (s.drop_table || s.structure) && !is_view(meta.kind) => {
+            let context = context_for(session, meta, s.structure, false).await;
+            Some(script_layout(
+                dialect,
+                &[ScriptTable { meta, context }],
+                s,
+                true,
+            ))
+        }
+        _ => None,
+    };
+    let (preamble, closing, footer) = match layout {
+        Some(l) => (l.opening, l.closing, l.footer),
+        None => (String::new(), Vec::new(), Vec::new()),
+    };
+    let content = script.is_none_or(|s| s.content);
+    if !content && preamble.is_empty() {
+        return Err(AppError::InvalidInput(
+            "nothing to export: include the table structure or its content".into(),
+        ));
+    }
+    if let FormatSpec::Insert {
+        overriding_system_value,
+        table,
+        ..
+    } = &mut spec
     {
-        *overriding_system_value = query.identity_always;
+        if let Plan::Query(query) = &plan {
+            *overriding_system_value = query.identity_always;
+        }
+        // The INSERTs go into the table the script creates.
+        if !preamble.is_empty()
+            && let Some(meta) = table_meta
+        {
+            *table = script_table(dialect, &meta.table);
+        }
     }
     if cancel.is_cancelled() {
         return Err(AppError::Cancelled);
@@ -765,90 +905,47 @@ pub async fn run_export(
     // Resolving links, checking the old file and sweeping leftovers touch the disk too.
     let (target, file) = {
         let dest = dest.clone();
-        tokio::task::spawn_blocking(move || TempTarget::create(&dest))
-            .await
-            .map_err(|e| AppError::internal(format!("export file task failed: {e}")))??
+        blocking("file", move || TempTarget::create(&dest)).await?
     };
-    let bytes = Arc::new(AtomicU64::new(0));
-    let out = CountingWriter::new(
-        BufWriter::with_capacity(FILE_BUFFER, BlockingWrite::new(file)),
-        bytes.clone(),
-    );
-    let (planned, blob_hex) = match &plan {
-        Plan::Query(query) => (query.columns.clone(), query.blob_hex.clone()),
-        Plan::Rows { .. } => (None, Vec::new()),
-    };
-    let mut sink = ExportSink {
-        writer: Some(RowWriter::new(spec, out)),
-        dialect,
-        planned,
-        columns: Vec::new(),
-        mysql_floats: Vec::new(),
-        blob_hex,
-        pg_text: dialect == Dialect::Postgres && matches!(plan, Plan::Query(_)),
-        max_rows: req.max_rows,
-        cancel: cancel.clone(),
-        progress: &mut progress,
-        bytes: bytes.clone(),
-        rows: 0,
-        sets: 0,
-        cancelled: false,
-        limit_reached: req.max_rows == Some(0),
-        error: None,
-        last_emit: Instant::now(),
-        rows_at_emit: 0,
-    };
-
-    let streamed = match &plan {
-        Plan::Rows { columns, rows } => {
-            feed_rows(&mut sink, columns, rows).await;
-            Ok(rows.len() as u64)
-        }
-        Plan::Query(query) => stream_export(session, query, &mut sink, &cancel, req).await,
-    };
-
-    let rows = sink.rows;
-    let sets = sink.sets;
-    let cancelled = sink.cancelled;
-    let limit_reached = sink.limit_reached;
-    let error = sink.error.take();
-    let writer = sink.writer.take();
-    drop(sink);
-
     // Every early return below drops `target`, which deletes the temporary file.
-    if cancelled || cancel.is_cancelled() {
-        return Err(AppError::Cancelled);
-    }
-    if let Some(e) = error {
-        return Err(e);
-    }
-    match streamed {
-        Ok(_) => {}
-        // Stopping at `max_rows` may surface as a cancelled statement on some servers.
-        Err(AppError::Cancelled) if limit_reached => {}
-        Err(e) => return Err(e),
-    }
-    if sets == 0 {
-        return Err(AppError::InvalidInput(
-            "the statement returned no result set to export".into(),
-        ));
-    }
-    let writer = writer.ok_or_else(|| AppError::internal("export writer missing"))?;
-    // The last flush, the fsync (F_FULLFSYNC on macOS: the whole file plus the drive cache) and
-    // the rename block for a while on a slow or network disk: keep them off the async workers.
-    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let file = writer
-            .finish()?
-            .into_inner()
-            .into_inner()
-            .map_err(|e| AppError::Io(e.error().to_string()))?
-            .into_inner();
-        file.sync_all()?;
-        drop(file);
+    let bytes = Arc::new(AtomicU64::new(0));
+    let mut out = Compressed::new(
+        file_out(file, bytes.clone()),
+        script.is_some_and(|s| s.gzip),
+    );
+    out.write_all(preamble.as_bytes())?;
+    let mut writer = RowWriter::new(spec, out);
+    let rows = if content {
+        let mut on_rows = |rows: u64| {
+            progress(ExportProgress {
+                rows,
+                bytes: bytes.load(Ordering::Relaxed),
+            })
+        };
+        stream_plan(
+            session,
+            &plan,
+            &mut writer,
+            req.max_rows,
+            &cancel,
+            &mut on_rows,
+            &req.export_id,
+        )
+        .await?
+    } else {
+        0
+    };
+    blocking("finishing", move || -> Result<(), AppError> {
+        let mut out = writer.finish()?;
+        out.write_all(closing_text(&closing, rows > 0).as_bytes())?;
+        for line in &footer {
+            out.write_all(line.as_bytes())?;
+            out.write_all(b"\n")?;
+        }
+        sync_file(out.finish()?)?;
         target.commit()
     })
-    .await
-    .map_err(|e| AppError::internal(format!("export finishing task failed: {e}")))??;
+    .await?;
 
     let bytes = bytes.load(Ordering::Relaxed);
     progress(ExportProgress { rows, bytes });

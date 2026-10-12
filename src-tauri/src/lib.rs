@@ -4,11 +4,16 @@
 // `AppError::Db` carries the full server diagnostic; boxing it everywhere is not worth the noise.
 #![allow(clippy::result_large_err)]
 
+pub mod admin;
 pub mod appdb;
+pub mod backup;
 pub mod commands;
 pub mod drivers;
 pub mod error;
 pub mod export;
+pub mod import;
+pub mod objects;
+pub mod profiles_io;
 pub mod secrets;
 pub mod sqlgen;
 pub mod state;
@@ -46,12 +51,17 @@ pub mod shell {
         ("tab.new-query", "New Query Tab", "CmdOrCtrl+T"),
         ("query.open", "Open SQL File…", "CmdOrCtrl+O"),
         ("tab.close", "Close Tab", "CmdOrCtrl+W"),
+        ("tab.close-all", "Close All Tabs", "CmdOrCtrl+Shift+W"),
         ("tab.reopen", "Reopen Closed Tab", "CmdOrCtrl+Shift+T"),
         ("export.open", "Export…", "CmdOrCtrl+Shift+E"),
         ("ui.launcher", "Connection Manager", "CmdOrCtrl+Shift+O"),
         ("palette.open", "Open Anything…", "CmdOrCtrl+P"),
         ("palette.databases", "Switch Database…", "CmdOrCtrl+K"),
-        ("palette.connections", "Switch Connection…", "CmdOrCtrl+Shift+K"),
+        (
+            "palette.connections",
+            "Switch Connection…",
+            "CmdOrCtrl+Shift+K",
+        ),
         ("view.data", "Data", "CmdOrCtrl+Ctrl+["),
         ("view.structure", "Structure", "CmdOrCtrl+Ctrl+]"),
         ("ui.toggle-sidebar", "Toggle Sidebar", "CmdOrCtrl+0"),
@@ -60,9 +70,35 @@ pub mod shell {
             "Toggle Row Detail",
             "CmdOrCtrl+Shift+I",
         ),
-        ("ui.toggle-console", "Toggle Console Log", "CmdOrCtrl+Shift+C"),
+        (
+            "ui.toggle-console",
+            "Toggle Console Log",
+            "CmdOrCtrl+Shift+C",
+        ),
         ("view.refresh", "Refresh", "CmdOrCtrl+R"),
         ("connection.reconnect", "Reconnect", "CmdOrCtrl+Shift+R"),
+        ("admin.process-list", "Process List…", "CmdOrCtrl+."),
+        ("workspace.show", "Show Workspaces", "CmdOrCtrl+Shift+\\"),
+        (
+            "workspace.next",
+            "Select Next Workspace",
+            "CmdOrCtrl+Ctrl+Right",
+        ),
+        (
+            "workspace.prev",
+            "Select Previous Workspace",
+            "CmdOrCtrl+Ctrl+Left",
+        ),
+    ];
+
+    /// Menu items without a keyboard shortcut (TablePlus gives them none): (action id, label).
+    const PLAIN_MENU_ACTIONS: &[(&str, &str)] = &[
+        ("backup.open", "Backup…"),
+        ("restore.open", "Restore…"),
+        ("admin.users", "User Management…"),
+        ("connection.disconnect", "Disconnect"),
+        ("import.csv", "From CSV…"),
+        ("import.sql", "From SQL Dump…"),
     ];
 
     /// The renderer action a menu item id stands for; `None` for predefined items and Quit.
@@ -71,9 +107,18 @@ pub mod shell {
             .iter()
             .find(|(action, _, _)| *action == id)
             .map(|(action, _, _)| *action)
+            .or_else(|| {
+                PLAIN_MENU_ACTIONS
+                    .iter()
+                    .find(|(action, _)| *action == id)
+                    .map(|(action, _)| *action)
+            })
     }
 
     fn action_item<R: Runtime>(app: &AppHandle<R>, id: &str) -> tauri::Result<MenuItem<R>> {
+        if let Some((action, label)) = PLAIN_MENU_ACTIONS.iter().find(|(action, _)| *action == id) {
+            return MenuItemBuilder::with_id(*action, *label).build(app);
+        }
         let (action, label, accelerator) = MENU_ACTIONS
             .iter()
             .find(|(action, _, _)| *action == id)
@@ -88,8 +133,8 @@ pub mod shell {
             .build(app)
     }
 
-    /// App / File / Edit / View / Window. Edit keeps the predefined items: they are what makes
-    /// ⌘C / ⌘V / ⌘Z work in text fields on macOS.
+    /// App / File / Edit / View / Connection / Window. Edit keeps the predefined items: they are
+    /// what makes ⌘C / ⌘V / ⌘Z work in text fields on macOS.
     pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         let name = app.package_info().name.clone();
         let quit = MenuItemBuilder::with_id(QUIT_ITEM_ID, format!("Quit {name}"))
@@ -113,9 +158,18 @@ pub mod shell {
             .item(&action_item(app, "tab.new-query")?)
             .item(&action_item(app, "query.open")?)
             .item(&action_item(app, "tab.close")?)
+            .item(&action_item(app, "tab.close-all")?)
             .item(&action_item(app, "tab.reopen")?)
             .separator()
+            .item(&action_item(app, "backup.open")?)
+            .item(&action_item(app, "restore.open")?)
             .item(&action_item(app, "export.open")?)
+            .item(
+                &SubmenuBuilder::new(app, "Import")
+                    .item(&action_item(app, "import.csv")?)
+                    .item(&action_item(app, "import.sql")?)
+                    .build()?,
+            )
             .item(&action_item(app, "ui.launcher")?)
             .build()?;
         let edit = SubmenuBuilder::new(app, "Edit")
@@ -140,16 +194,27 @@ pub mod shell {
             .item(&action_item(app, "ui.toggle-console")?)
             .separator()
             .item(&action_item(app, "view.refresh")?)
-            .item(&action_item(app, "connection.reconnect")?)
             .separator()
             .item(&PredefinedMenuItem::fullscreen(app, None)?)
+            .build()?;
+        // TablePlus's Connection menu.
+        let connection = SubmenuBuilder::new(app, "Connection")
+            .item(&action_item(app, "admin.process-list")?)
+            .item(&action_item(app, "admin.users")?)
+            .separator()
+            .item(&action_item(app, "connection.reconnect")?)
+            .item(&action_item(app, "connection.disconnect")?)
             .build()?;
         let window = SubmenuBuilder::new(app, "Window")
             .minimize()
             .item(&PredefinedMenuItem::maximize(app, None)?)
+            .separator()
+            .item(&action_item(app, "workspace.show")?)
+            .item(&action_item(app, "workspace.next")?)
+            .item(&action_item(app, "workspace.prev")?)
             .build()?;
         MenuBuilder::new(app)
-            .items(&[&app_menu, &file, &edit, &view, &window])
+            .items(&[&app_menu, &file, &edit, &view, &connection, &window])
             .build()
     }
 
@@ -416,6 +481,17 @@ pub mod shell {
             assert_eq!(menu_action("tab.new-query"), Some("tab.new-query"));
             assert_eq!(menu_action("settings.open"), Some("settings.open"));
             assert_eq!(menu_action("view.refresh"), Some("view.refresh"));
+            assert_eq!(menu_action("backup.open"), Some("backup.open"));
+            assert_eq!(menu_action("restore.open"), Some("restore.open"));
+            assert_eq!(
+                menu_action("admin.process-list"),
+                Some("admin.process-list")
+            );
+            assert_eq!(menu_action("admin.users"), Some("admin.users"));
+            assert_eq!(
+                menu_action("connection.disconnect"),
+                Some("connection.disconnect")
+            );
             assert_eq!(menu_action(QUIT_ITEM_ID), None);
             assert_eq!(menu_action("grid.commit"), None);
             assert_eq!(menu_action(""), None);
@@ -566,6 +642,10 @@ pub fn run() {
             commands::profiles::get_secret_status,
             commands::profiles::test_connection,
             commands::profiles::create_sqlite_database,
+            commands::profiles::move_profiles_to_group,
+            commands::profiles::export_connections,
+            commands::profiles::inspect_connections_file,
+            commands::profiles::import_connections,
             commands::connections::connect,
             commands::connections::disconnect,
             commands::connections::list_connections,
@@ -578,6 +658,7 @@ pub fn run() {
             commands::schema::get_view_definition,
             commands::schema::get_completion_metadata,
             commands::schema::invalidate_schema_cache,
+            commands::schema::get_structure_choices,
             commands::browse::browse_table,
             commands::browse::count_table_rows,
             commands::browse::fetch_cell,
@@ -586,19 +667,56 @@ pub fn run() {
             commands::ddl::preview_ddl,
             commands::ddl::apply_ddl,
             commands::ddl::get_table_ddl,
+            commands::objects::list_routines,
+            commands::objects::list_sequences,
+            commands::objects::list_system_schemas,
+            commands::objects::get_routine_definition,
+            commands::objects::get_sequence_definition,
+            commands::objects::get_item_overview,
+            commands::objects::preview_object_op,
+            commands::objects::apply_object_op,
             commands::query::run_sql,
             commands::query::cancel_query,
             commands::query::explain,
+            commands::safety::verify_connection_password,
             commands::history::list_history,
             commands::history::delete_history,
             commands::history::clear_history,
+            commands::saved_queries::list_saved_queries,
+            commands::saved_queries::save_saved_query,
+            commands::saved_queries::delete_saved_query,
+            commands::saved_queries::save_query_folder,
+            commands::saved_queries::delete_query_folder,
             commands::files::read_text_file,
             commands::files::write_text_file,
+            commands::files::read_binary_file,
             commands::settings::get_settings,
             commands::settings::set_setting,
+            commands::menu::set_menu_accelerators,
             commands::export::export_data,
             commands::export::cancel_export,
+            commands::export::export_tables,
+            commands::import::preview_csv_import,
+            commands::import::import_csv,
+            commands::import::preview_sql_dump,
+            commands::import::import_sql_dump,
+            commands::import::cancel_import,
+            commands::backup::backup_list_binaries,
+            commands::backup::backup_inspect_target,
+            commands::backup::backup_inspect_file,
+            commands::backup::backup_run,
+            commands::backup::backup_cancel,
+            commands::backup::backup_copy_sqlite,
             commands::connections::accept_host_key,
+            commands::admin::admin_database_options,
+            commands::admin::admin_preview_ddl,
+            commands::admin::admin_apply_ddl,
+            commands::admin::admin_list_processes,
+            commands::admin::admin_kill_processes,
+            commands::admin::admin_list_users,
+            commands::admin::admin_get_user,
+            commands::admin::admin_preview_user,
+            commands::admin::admin_apply_user,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -619,6 +737,11 @@ pub fn run() {
             let removed = export::remove_partial_files();
             if removed > 0 {
                 log::info!("removed {removed} partial export file(s) on exit");
+            }
+            // Dump / restore binaries still running are killed; partial backups removed.
+            let removed = backup::shutdown();
+            if removed > 0 {
+                log::info!("removed {removed} partial backup file(s) on exit");
             }
         }
         _ => {}

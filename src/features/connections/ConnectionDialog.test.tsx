@@ -1,14 +1,20 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EditorView } from "@codemirror/view";
+import { act } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePaletteStore } from "@/features/palette/store";
+import { SafetyHost } from "@/features/safety/SafetyHost";
 import { ipc, type ConnectionProfile } from "@/lib/ipc";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
 import { useConnectionsStore } from "@/stores/connections";
+import { resetPrefsForTests, setPref } from "@/stores/prefs";
 import { useUiStore } from "@/stores/ui";
 import { ConnectionDialog } from "./ConnectionDialog";
+import { PasswordPromptHost } from "./PasswordPrompt";
+import { usePasswordPromptStore } from "./passwordPromptStore";
 import { parseConnectionUrl, type ParsedConnectionUrl } from "./url";
 import { profileKeys } from "./useConnections";
 
@@ -38,12 +44,36 @@ function renderDialog({
         onOpenChange={onOpenChange}
         onSaved={onSaved}
       />
+      <PasswordPromptHost />
     </QueryClientProvider>,
   );
   return { onOpenChange, onSaved };
 }
 
+beforeAll(async () => {
+  // jsdom lacks these; Radix Select needs them to open and scroll to the selected item.
+  Element.prototype.hasPointerCapture ??= () => false;
+  Element.prototype.releasePointerCapture ??= () => {};
+  Element.prototype.scrollIntoView ??= () => {};
+  // Load the mock backend before the first call (the transport imports it lazily).
+  await import("@/lib/ipc/mock");
+});
+
+/** Picks `option` in the Radix select labelled `label`. */
+async function choose(
+  user: ReturnType<typeof userEvent.setup>,
+  scope: HTMLElement,
+  label: string,
+  option: string,
+) {
+  within(scope).getByRole("combobox", { name: label }).focus();
+  await user.keyboard("{Enter}");
+  await user.click(await screen.findByRole("option", { name: option }));
+}
+
 beforeEach(() => {
+  resetPrefsForTests();
+  usePasswordPromptStore.setState({ queue: [] });
   useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
   usePaletteStore.setState({ connecting: [] });
   useUiStore.setState({ view: "launcher" });
@@ -185,7 +215,7 @@ describe("ConnectionDialog — form", () => {
     expect(within(form).getByLabelText("Port")).toHaveValue("6543");
     expect(within(form).getByLabelText("User")).toHaveValue("app");
     expect(within(form).getByLabelText("Database")).toHaveValue("shop");
-    expect(within(form).getByLabelText("SSL mode")).toHaveTextContent("Require");
+    expect(within(form).getByLabelText("SSL mode")).toHaveTextContent("require");
     await user.click(within(form).getByRole("button", { name: "Save" }));
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save.mock.calls[0]![0]).toMatchObject({
@@ -219,12 +249,26 @@ describe("ConnectionDialog — form", () => {
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     const ssh = within(form).getByRole("region", { name: "SSH tunnel" });
     await vi.waitFor(() => expect(within(ssh).getByLabelText("SSH host")).toHaveFocus());
-    expect(within(ssh).getByLabelText("Private key")).toBeInTheDocument();
+    expect(within(ssh).getByLabelText("Private key")).toHaveAttribute(
+      "placeholder",
+      "Leave empty to use ~/.ssh/config",
+    );
     await user.click(within(form).getByRole("button", { name: "Save" }));
     expect(within(ssh).getByText("SSH host is required")).toBeInTheDocument();
-    expect(within(ssh).getByText("SSH user is required")).toBeInTheDocument();
-    expect(within(ssh).getByText("Private key path is required")).toBeInTheDocument();
+    // User and key may come from ~/.ssh/config.
+    expect(within(ssh).queryByText(/SSH user is required/)).toBeNull();
     expect(save).not.toHaveBeenCalled();
+    await user.type(within(ssh).getByLabelText("SSH host"), "bastion");
+    await user.type(within(ssh).getByLabelText("Local port"), "15432");
+    await user.type(within(ssh).getByLabelText("Keep-alive interval (s)"), "20");
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile.ssh).toMatchObject({
+      host: "bastion",
+      user: "",
+      localPort: 15432,
+      keepaliveSecs: 20,
+    });
   });
 
   it("Advanced holds read-only, time zone and timeout, and opens itself on an invalid value", async () => {
@@ -247,6 +291,34 @@ describe("ConnectionDialog — form", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  it("a Safe Mode connection asks for its password before Read-only is turned off", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    render(<SafetyHost />);
+    const pg = SEED_PROFILES.find((p) => p.id === "p-local-pg")!;
+    renderDialog({
+      profile: { ...pg, options: { ...pg.options, safeMode: "safe", readOnly: true } },
+    });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    await user.click(within(form).getByRole("button", { name: "Advanced" }));
+    await user.click(within(form).getByLabelText("Read-only"));
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    let prompt = await screen.findByRole("alertdialog", {
+      name: "Enter the password of Local Postgres to continue",
+    });
+    expect(prompt).toHaveTextContent("Turning off Read-only.");
+    fireEvent.keyDown(prompt, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(save).not.toHaveBeenCalled();
+
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    prompt = await screen.findByRole("alertdialog");
+    // The mock backend stores "secret" for this profile.
+    await user.type(within(prompt).getByLabelText("Password"), "secret{Enter}");
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile.options.readOnly).toBe(false);
+  });
+
   it("SQLite profiles show the database file with Choose… and New…", async () => {
     renderDialog({ profile: SQLITE });
     const form = await screen.findByRole("dialog", { name: "Edit sample.sqlite" });
@@ -262,5 +334,186 @@ describe("ConnectionDialog — form", () => {
     const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
     await user.click(within(form).getByRole("button", { name: "Test" }));
     expect(await within(form).findByRole("status")).toHaveTextContent(/PostgreSQL.* · 12 ms$/);
+  });
+});
+
+describe("ConnectionDialog — TablePlus parity", () => {
+  const PG = SEED_PROFILES[0]!;
+
+  it("Test saves the connection first and keeps the form open", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const test = vi.spyOn(ipc.profiles, "test");
+    const user = userEvent.setup();
+    const { onOpenChange, onSaved } = renderDialog({
+      prefill: parseConnectionUrl("mysql://root@127.0.0.1/shop?name=Shop"),
+    });
+    const form = await screen.findByRole("dialog", { name: "New MySQL / MariaDB connection" });
+    await user.click(within(form).getByRole("button", { name: "Test" }));
+    expect(await within(form).findByRole("status")).toHaveTextContent(/MySQL 9\.6\.0/);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(test).toHaveBeenCalledTimes(1);
+    expect(save.mock.invocationCallOrder[0]!).toBeLessThan(test.mock.invocationCallOrder[0]!);
+    const saved = await save.mock.results[0]!.value;
+    expect(test.mock.calls[0]![0].profile.id).toBe(saved.id);
+    expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ name: "Shop" }));
+    expect(onOpenChange).not.toHaveBeenCalled();
+    // A later Save updates the same connection.
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(toast.success).toHaveBeenCalledWith("Connection updated"));
+    expect(save.mock.calls[1]![0].profile.id).toBe(saved.id);
+  });
+
+  it("Ask every time: no password is stored; Test asks for it and Connect reuses it", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const test = vi.spyOn(ipc.profiles, "test");
+    const connect = vi.spyOn(ipc.connections, "connect");
+    const user = userEvent.setup();
+    renderDialog({ profile: { ...PG, id: "p-ask-pg", name: "Ask PG" } });
+    const form = await screen.findByRole("dialog", { name: "Edit Ask PG" });
+    await user.type(within(form).getByLabelText("Password"), "typed");
+    await choose(user, form, "Password storage", "Ask every time");
+    expect(within(form).getByLabelText("Password")).toBeDisabled();
+    expect(within(form).getByLabelText("Password")).toHaveValue("");
+    expect(within(form).getByText(/Asked on every connect/)).toBeInTheDocument();
+
+    await user.click(within(form).getByRole("button", { name: "Test" }));
+    const prompt = await screen.findByRole("dialog", { name: "Password for Ask PG" });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0]![0]).toMatchObject({
+      password: null,
+      profile: { options: { passwordMode: "ask" } },
+    });
+    await user.type(within(prompt).getByLabelText("Password"), "s3cret{Enter}");
+    expect(await within(form).findByRole("status")).toHaveTextContent(/PostgreSQL/);
+    expect(test.mock.calls[0]![0].password).toBe("s3cret");
+
+    // Connect does not ask again in this dialog session.
+    await user.click(within(form).getByRole("button", { name: "Connect" }));
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledWith("p-ask-pg", "s3cret"));
+    expect(screen.queryByRole("dialog", { name: "Password for Ask PG" })).toBeNull();
+  });
+
+  it("cancelling the password prompt of Test shows nothing", async () => {
+    const test = vi.spyOn(ipc.profiles, "test");
+    const user = userEvent.setup();
+    renderDialog({
+      profile: { ...PG, id: "p-ask-2", options: { ...PG.options, passwordMode: "ask" } },
+    });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    expect(within(form).getByLabelText("Password storage")).toHaveTextContent("Ask every time");
+    await user.click(within(form).getByRole("button", { name: "Test" }));
+    const prompt = await screen.findByRole("dialog", { name: "Password for Local Postgres" });
+    await user.click(within(prompt).getByRole("button", { name: "Cancel" }));
+    await vi.waitFor(() =>
+      expect(within(form).getByRole("button", { name: "Test" })).toBeEnabled(),
+    );
+    expect(test).not.toHaveBeenCalled();
+    expect(within(form).queryByRole("status")).toBeNull();
+  });
+
+  it("SSL keys: Key… / Cert… / CA Cert… pick files, — clears them, a key needs its cert", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const prompt = vi.spyOn(window, "prompt");
+    const user = userEvent.setup();
+    renderDialog({ profile: PG });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    const keys = within(form).getByRole("group", { name: "SSL keys" });
+    expect(
+      within(keys)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Key…", "Cert…", "CA Cert…"]);
+
+    prompt.mockReturnValueOnce("/certs/client-key.pem");
+    await user.click(within(keys).getByRole("button", { name: "Key…" }));
+    expect(within(keys).getByRole("button", { name: "Key… client-key.pem" })).toBeInTheDocument();
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    expect(
+      await within(form).findByText("Choose the certificate that goes with the key (Cert…)"),
+    ).toBeInTheDocument();
+    expect(save).not.toHaveBeenCalled();
+
+    prompt.mockReturnValueOnce("/certs/client-cert.pem");
+    await user.click(within(keys).getByRole("button", { name: "Cert…" }));
+    prompt.mockReturnValueOnce("/certs/ca.pem");
+    await user.click(within(keys).getByRole("button", { name: "CA Cert…" }));
+    await user.click(within(keys).getByRole("button", { name: "Clear CA Cert" }));
+    expect(within(keys).getByRole("button", { name: "CA Cert…" })).toBeInTheDocument();
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile).toMatchObject({
+      sslCaPath: null,
+      options: { sslKeyPath: "/certs/client-key.pem", sslCertPath: "/certs/client-cert.pem" },
+    });
+  });
+
+  it("lists MySQL's SSL mode names for MySQL and libpq's for PostgreSQL", async () => {
+    const user = userEvent.setup();
+    renderDialog({ profile: SEED_PROFILES.find((p) => p.id === "p-shop-mysql")! });
+    const form = await screen.findByRole("dialog", { name: "Edit Shop MySQL" });
+    expect(within(form).getByLabelText("SSL mode")).toHaveTextContent("PREFERRED");
+    within(form).getByLabelText("SSL mode").focus();
+    await user.keyboard("{Enter}");
+    expect((await screen.findAllByRole("option")).map((o) => o.textContent)).toEqual([
+      "PREFERRED",
+      "DISABLED",
+      "REQUIRED",
+      "VERIFY-CA",
+      "VERIFY-IDENTITY",
+    ]);
+    await user.click(screen.getByRole("option", { name: "VERIFY-IDENTITY" }));
+    // Same stored value as PostgreSQL's verify-full.
+    await choose(user, form, "Driver", "PostgreSQL");
+    expect(within(form).getByLabelText("SSL mode")).toHaveTextContent("verify-full");
+  });
+
+  it("Bootstrap commands… edits the SQL run after login in a modal editor", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog({ profile: PG });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    await user.click(within(form).getByRole("button", { name: /Bootstrap commands/ }));
+    const editor = await screen.findByRole("dialog", { name: "Bootstrap commands" });
+    const view = EditorView.findFromDOM(
+      within(editor).getByTestId("bootstrap-editor").querySelector(".cm-editor") as HTMLElement,
+    )!;
+    act(() =>
+      view.dispatch({ changes: { from: 0, insert: "SET search_path = app;\nSET jit = off;" } }),
+    );
+    await user.click(within(editor).getByRole("button", { name: "Save" }));
+    expect(screen.queryByRole("dialog", { name: "Bootstrap commands" })).toBeNull();
+    expect(within(form).getByTestId("bootstrap-summary")).toHaveTextContent(
+      "SET search_path = app; (+1 more)",
+    );
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile.options.startupSql).toBe(
+      "SET search_path = app;\nSET jit = off;",
+    );
+  });
+
+  it("Advanced has TablePlus's safe-mode levels; new connections start from the preference", async () => {
+    setPref("defaultSafeMode", "alertNonSelect");
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog({ prefill: parseConnectionUrl("postgres://app@db/x?name=Safe") });
+    const form = await screen.findByRole("dialog", { name: "New PostgreSQL connection" });
+    await user.click(within(form).getByRole("button", { name: "Advanced" }));
+    const select = within(form).getByRole("combobox", { name: "Safe mode" });
+    expect(select).toHaveTextContent("Alert Mode 2");
+    select.focus();
+    await user.keyboard("{Enter}");
+    expect((await screen.findAllByRole("option")).map((o) => o.textContent)).toEqual([
+      "Silent Mode",
+      "Alert Mode 1",
+      "Alert Mode 2",
+      "Safe Mode 1",
+      "Safe Mode 2",
+    ]);
+    await user.click(screen.getByRole("option", { name: "Safe Mode 1" }));
+    expect(within(form).getByText(/Ask for the password before sending/)).toBeInTheDocument();
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile.options.safeMode).toBe("safe");
   });
 });

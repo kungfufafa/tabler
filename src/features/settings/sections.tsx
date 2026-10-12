@@ -9,19 +9,25 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { EditorWorkflowSettings } from "@/features/editor/EditorSettingsRows";
+import { SAFE_MODE_OPTIONS } from "@/features/safety/levels";
+import { TableDataSettings } from "@/features/table-tab/TableDataSettings";
 import { shortcutFor } from "@/lib/keys/keymap";
 import {
   CONNECT_TIMEOUT_RANGE,
   EDITOR_FONT_SIZE_RANGE,
+  QUERY_TIMEOUT_RANGE,
   PAGE_SIZES,
   setPref,
   TAB_SIZES,
   UI_FONT_SIZES,
   usePrefs,
+  type Prefs,
   type UiFontSize,
 } from "@/stores/prefs";
 import { useUiStore, type ThemePref } from "@/stores/ui";
 import { NumberField, SectionShell, Segmented, SettingGroup, SettingRow } from "./controls";
+import { AutoSaveQueryTabsRow, ReopenWorkspacesRow } from "./sessionRows";
 
 const THEME_OPTIONS = [
   { value: "system", label: "System", icon: <Monitor /> },
@@ -83,6 +89,10 @@ export function GeneralSection() {
         </SettingRow>
       </SettingGroup>
 
+      <SettingGroup title="Application">
+        <ReopenWorkspacesRow />
+      </SettingGroup>
+
       <SettingGroup title="Tables">
         <SettingRow
           id="pref-page-size"
@@ -121,6 +131,7 @@ export function GeneralSection() {
           />
         </SettingRow>
       </SettingGroup>
+      <TableDataSettings />
     </SectionShell>
   );
 }
@@ -227,12 +238,53 @@ export function EditorSection() {
             aria-describedby="pref-editor-upper-description"
           />
         </SettingRow>
+        <AutoSaveQueryTabsRow />
       </SettingGroup>
+      <EditorWorkflowSettings />
       <section className="flex flex-col gap-1.5">
         <h3 className="text-muted-foreground px-1 text-[11px] font-medium">Preview</h3>
         <EditorPreview />
       </section>
     </SectionShell>
+  );
+}
+
+/** TablePlus's "Query time out": SQL editor statements running longer are cancelled. */
+function QueryTimeoutRow() {
+  const timeout = usePrefs((p) => p.queryTimeout);
+  return (
+    <SettingRow
+      id="pref-query-timeout"
+      label="Query time out"
+      description="SQL editor queries running longer are cancelled. 0 = no limit."
+    >
+      <NumberField
+        id="pref-query-timeout"
+        value={timeout}
+        min={QUERY_TIMEOUT_RANGE.min}
+        max={QUERY_TIMEOUT_RANGE.max}
+        suffix="seconds"
+        onCommit={(v) => setPref("queryTimeout", v)}
+      />
+    </SettingRow>
+  );
+}
+
+/** TablePlus's "Keep connection alive" (on by default). */
+function KeepAliveRow() {
+  const keepAlive = usePrefs((p) => p.keepAlive);
+  return (
+    <SettingRow
+      id="pref-keep-alive"
+      label="Keep connection alive (ping every 30 s)"
+      description="Stops servers and firewalls from dropping idle connections. When off, a health check still pings every 60 s."
+    >
+      <Switch
+        id="pref-keep-alive"
+        checked={keepAlive}
+        onCheckedChange={(v) => setPref("keepAlive", v)}
+      />
+    </SettingRow>
   );
 }
 
@@ -255,6 +307,8 @@ export function ConnectionsSection() {
             onCommit={(v) => setPref("connectTimeout", v)}
           />
         </SettingRow>
+        <QueryTimeoutRow />
+        <KeepAliveRow />
       </SettingGroup>
       <SettingGroup title="Security">
         <div className="flex items-start gap-2.5 px-3 py-2.5">
@@ -266,6 +320,43 @@ export function ConnectionsSection() {
             </p>
           </div>
         </div>
+      </SettingGroup>
+    </SectionShell>
+  );
+}
+
+export function SecuritySection() {
+  const defaultSafeMode = usePrefs((p) => p.defaultSafeMode);
+  const selected = SAFE_MODE_OPTIONS.find((o) => o.level === defaultSafeMode);
+  return (
+    <SectionShell title="Security">
+      <SettingGroup title="Safe mode">
+        <SettingRow
+          id="pref-default-safe-mode"
+          label="Default safe mode for new connections"
+          description={`${selected?.description ?? ""}. Change a connection's level from the lock in the toolbar.`}
+        >
+          <Select
+            value={defaultSafeMode}
+            onValueChange={(v) => setPref("defaultSafeMode", v as Prefs["defaultSafeMode"])}
+          >
+            <SelectTrigger
+              id="pref-default-safe-mode"
+              size="sm"
+              className="h-7 w-32 rounded-md text-xs"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            {/* Kept in the dialog's keyboard scope, like the editor font size list. */}
+            <SelectContent data-scope="dialog">
+              {SAFE_MODE_OPTIONS.map((o) => (
+                <SelectItem key={o.level} value={o.level} className="text-xs">
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </SettingRow>
       </SettingGroup>
     </SectionShell>
   );

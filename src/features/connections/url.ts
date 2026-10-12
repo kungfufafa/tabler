@@ -1,6 +1,6 @@
-import type { ConnectionProfile, Driver, SslMode } from "@/lib/ipc";
+import type { ConnectionProfile, ConnectionTag, Driver, SafeModeLevel, SslMode } from "@/lib/ipc";
 import { ACCENT_PRESETS } from "@/lib/theme";
-import type { ConnectionFormValues } from "./schema";
+import { CONNECTION_TAGS, type ConnectionFormValues } from "./schema";
 
 /**
  * Connection URLs, as TablePlus reads and writes them ("New connection from URL…", "Copy as
@@ -33,6 +33,39 @@ const SSL_MODES: Record<string, SslMode> = {
   verify_identity: "verify-full",
   "verify-identity": "verify-full",
 };
+
+/**
+ * TablePlus's `safeModeLevel` (0 silent, 1 alert, 2 safe) with `advancedSafeModeLevel=1`
+ * (skip SELECT / EXPLAIN / SHOW), both ints.
+ */
+function safeModeFromParams(level: string | null, advanced: string | null): SafeModeLevel | null {
+  const skipReads = advanced === "1";
+  switch (level) {
+    case "0":
+      return "silent";
+    case "1":
+      return skipReads ? "alertNonSelect" : "alert";
+    case "2":
+      return skipReads ? "safeNonSelect" : "safe";
+    default:
+      return null;
+  }
+}
+
+function safeModeParams(mode: SafeModeLevel): [level: string, advanced: string | null] {
+  switch (mode) {
+    case "silent":
+      return ["0", null];
+    case "alert":
+      return ["1", null];
+    case "alertNonSelect":
+      return ["1", "1"];
+    case "safe":
+      return ["2", null];
+    case "safeNonSelect":
+      return ["2", "1"];
+  }
+}
 
 export interface ParsedConnectionUrl {
   /** Form fields the URL sets; the rest keep the form's defaults. */
@@ -93,6 +126,15 @@ export function parseConnectionUrl(input: string): ParsedConnectionUrl {
   const color = (params.get("color") ?? params.get("statusColor"))?.toLowerCase();
   if (color && (ACCENT_PRESETS as readonly string[]).includes(color))
     values.color = color as ConnectionFormValues["color"];
+  // `env` (TablePlus; older builds spelled it `enviroment`) or `tag`.
+  const tag = (params.get("env") ?? params.get("enviroment") ?? params.get("tag"))?.toLowerCase();
+  if (tag && (CONNECTION_TAGS as readonly string[]).includes(tag))
+    values.tag = tag as ConnectionTag;
+  const safeMode = safeModeFromParams(
+    params.get("safeModeLevel"),
+    params.get("advancedSafeModeLevel"),
+  );
+  if (safeMode) values.safeMode = safeMode;
   return { values, password: url.password === "" ? null : decode(url.password) };
 }
 
@@ -112,5 +154,11 @@ export function profileToUrl(p: ConnectionProfile, password: string | null = nul
   const db = p.database ? `/${enc(p.database)}` : "";
   const query = new URLSearchParams({ name: p.name });
   if (p.ssl !== "prefer") query.set("sslmode", p.ssl);
+  if (p.options.tag) query.set("env", p.options.tag);
+  if (p.options.safeMode && p.options.safeMode !== "silent") {
+    const [level, advanced] = safeModeParams(p.options.safeMode);
+    query.set("safeModeLevel", level);
+    if (advanced) query.set("advancedSafeModeLevel", advanced);
+  }
   return `${scheme}://${user}${host}${port}${db}?${query.toString()}`;
 }

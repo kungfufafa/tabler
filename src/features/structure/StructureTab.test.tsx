@@ -8,12 +8,20 @@ import { resetMockDdl } from "@/lib/ipc/mock/ddl";
 import { isMac } from "@/lib/keys/combo";
 import { KeyboardProvider } from "@/lib/keys/useShortcuts";
 import { getEditorState } from "@/features/editor/editorStates";
+import { EditorView } from "@codemirror/view";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore, type Tab } from "@/stores/tabs";
 import { useStructureStore } from "./store";
 import { StructureTab } from "./StructureTab";
 
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), message: vi.fn() }));
+
+// CodeMirror measures text ranges, which jsdom does not lay out.
+if (!Range.prototype.getClientRects) {
+  const empty = () => ({ length: 0, item: () => null, [Symbol.iterator]: [][Symbol.iterator] });
+  Range.prototype.getClientRects = empty as unknown as Range["getClientRects"];
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
+}
 vi.mock("sonner", () => ({ toast }));
 
 async function setup(
@@ -72,15 +80,32 @@ afterEach(() => {
 });
 
 describe("StructureTab", () => {
-  it("lists columns, indexes, foreign keys and triggers", async () => {
+  it("lists columns, indexes, foreign keys and (Triggers button) triggers", async () => {
     await setup("p-local-pg", { schema: "public", name: "posts" });
     expect(cell("c:user_id:name").value).toBe("user_id");
-    expect(screen.getByText("posts_pkey")).toBeInTheDocument();
+    expect(cell("i:posts_pkey:name").value).toBe("posts_pkey");
     expect(screen.getByText("posts_user_id_fkey")).toBeInTheDocument();
-    const trigger = screen.getByRole("button", { name: /posts_set_updated_at/ });
-    fireEvent.click(trigger);
-    expect(trigger).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText(/set_updated_at\(\)/)).toBeInTheDocument();
+    // The foreign_key cell names the referenced table.
+    expect(cell("c:user_id:foreignKey")).toHaveTextContent("users(id)");
+    // TablePlus's PostgreSQL grid columns.
+    const heads = within(screen.getByRole("region", { name: "Columns" }))
+      .getAllByRole("columnheader")
+      .map((h) => h.textContent);
+    expect(heads.slice(1, -1)).toEqual([
+      "column_name",
+      "data_type",
+      "is_nullable",
+      "check",
+      "column_default",
+      "foreign_key",
+      "comment",
+    ]);
+    expect(screen.queryByRole("region", { name: "Triggers" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Triggers" }));
+    const triggers = screen.getByRole("region", { name: "Triggers" });
+    expect(within(triggers).getByText("posts_set_updated_at")).toBeInTheDocument();
+    expect(within(triggers).getByText(/EXECUTE FUNCTION set_updated_at\(\)/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Columns" })).toBeNull();
   });
 
   it("stages a rename, reviews it with ⌘S and applies it", async () => {
@@ -168,9 +193,20 @@ describe("StructureTab", () => {
   });
 
   it("SQLite: warns about the table rebuild and hides comments", async () => {
-    await setup("p-sample-sqlite", { schema: "main", name: "tags" });
-    expect(screen.queryByRole("columnheader", { name: "Comment" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("checkbox", { name: "name nullable" }));
+    const { ops } = await setup("p-sample-sqlite", { schema: "main", name: "tags" });
+    expect(screen.queryByRole("columnheader", { name: "comment" })).not.toBeInTheDocument();
+    // is_nullable is keyboard-first: Y / N set it.
+    const nullable = screen.getByRole("button", { name: "name nullable" });
+    expect(nullable).toHaveTextContent("NO");
+    fireEvent.keyDown(nullable, { key: "y" });
+    expect(ops()).toEqual([
+      {
+        op: "alterColumnNullable",
+        table: { schema: "main", name: "tags" },
+        name: "name",
+        nullable: true,
+      },
+    ]);
     await act(() => actions.run("grid.commit"));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /rebuilt from introspected metadata/,
@@ -217,12 +253,13 @@ describe("StructureTab", () => {
     expect(current().kind).toBe("table");
   });
 
-  it("has no header row: the bottom bar holds the summary, the staged changes and the actions", async () => {
+  it("the bottom bar holds + Column, + Index, the search, the summary and the staged changes", async () => {
     const { ops } = await setup("p-local-pg", { schema: "public", name: "posts" });
     const bar = screen.getByRole("toolbar", { name: "Table structure" });
     expect(bar).toHaveTextContent("9 columns · 1 index · 1 foreign key");
-    for (const name of ["Show DDL", "Open in SQL", "Refresh"])
+    for (const name of ["Column", "Index", "Open in SQL", "Refresh"])
       expect(within(bar).getByRole("button", { name })).toBeInTheDocument();
+    expect(within(bar).getByRole("textbox", { name: "Search columns" })).toBeInTheDocument();
     expect(within(bar).queryByRole("button", { name: "Review & apply" })).toBeNull();
 
     type(cell("c:title:name"), "headline");
@@ -269,17 +306,23 @@ describe("StructureTab", () => {
     expect(screen.queryByRole("checkbox", { name: "column_1 auto increment" })).toBeNull();
   });
 
-  it("PostgreSQL: auto increment on a new column needs an integer type", async () => {
+  it("PostgreSQL: the Sequence default of a new column needs an integer type", async () => {
     const { ops } = await setup();
     await act(() => actions.run("grid.new-row"));
-    const ai = () => screen.getByRole("checkbox", { name: "column_1 auto increment" });
     const column = () => (ops()[0] as Extract<DdlOp, { op: "addColumn" }>).column;
-    fireEvent.click(ai());
+    const sequence = async () => {
+      fireEvent.keyDown(screen.getByRole("button", { name: "column_1 default presets" }), {
+        key: "Enter",
+      });
+      fireEvent.click(await screen.findByRole("menuitem", { name: /^Sequence/ }));
+    };
+    await sequence();
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/integer type/));
     expect(column().autoIncrement).toBe(false);
     type(cell("n:0:dataType"), "bigint");
-    fireEvent.click(ai());
+    await sequence();
     expect(column()).toMatchObject({ dataType: "bigint", autoIncrement: true });
+    expect(cell("n:0:defaultExpr")).toHaveAttribute("placeholder", "identity");
     expect(toast.error).toHaveBeenCalledTimes(1);
   });
 
@@ -336,8 +379,8 @@ describe("StructureTab", () => {
     expect(first).toMatchObject({ kind: "query", connectionId, title: "users.sql" });
     expect(getEditorState(first.id)?.doc.toString()).toBe(ddl);
 
-    // The same from the DDL dialog, which closes on the way.
-    fireEvent.click(screen.getByRole("button", { name: "Show DDL" }));
+    // The same from the Info dialog (the CREATE statement), which closes on the way.
+    fireEvent.click(screen.getByRole("button", { name: "Info" }));
     const dialog = await screen.findByRole("dialog");
     const open = within(dialog).getByRole("button", { name: "Open in SQL Editor" });
     await waitFor(() => expect(open).toBeEnabled());
@@ -365,28 +408,35 @@ describe("StructureTab", () => {
     vi.restoreAllMocks();
   });
 
-  it("toggles the primary key, reviews and applies it", async () => {
+  it("changes the primary key in the Primary token field, reviews and applies it", async () => {
     const { ops } = await setup();
     const users = { schema: "public", name: "users" };
-    const pk = (name: string) => screen.getByRole("button", { name: `${name} primary key` });
-    expect(pk("id")).toHaveAttribute("aria-pressed", "true");
-    expect(pk("email")).toHaveAttribute("aria-pressed", "false");
+    const keyField = () => screen.getByRole("list", { name: "Primary key" });
+    const tokens = () =>
+      within(keyField())
+        .getAllByRole("listitem")
+        .map((t) => t.textContent);
+    expect(tokens()).toEqual(["id"]);
 
-    fireEvent.click(pk("email"));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Add a column to the primary key" }), {
+      key: "Enter",
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "email" }));
     expect(ops()).toEqual([
       { op: "dropPrimaryKey", table: users },
       { op: "addPrimaryKey", table: users, columns: ["id", "email"] },
     ]);
-    expect(pk("email")).toHaveAttribute("aria-pressed", "true");
-    expect(pk("email").closest("td")).toHaveClass("bg-changed");
-    // Key columns are NOT NULL: their nullable box is off and locked.
-    expect(screen.getByRole("checkbox", { name: "email nullable" })).toBeDisabled();
+    expect(tokens()).toEqual(["id", "email"]);
+    // Key columns are NOT NULL: their is_nullable cell says NO and is locked.
+    const nullable = screen.getByRole("button", { name: "email nullable" });
+    expect(nullable).toHaveTextContent("NO");
+    expect(nullable).toBeDisabled();
 
-    // ⌘Z takes the toggle back like any other staged edit.
+    // ⌘Z takes the change back like any other staged edit; ⇧⌘Z redoes it.
     await act(() => actions.run("grid.undo"));
     expect(ops()).toEqual([]);
-    expect(pk("email")).toHaveAttribute("aria-pressed", "false");
-    fireEvent.click(pk("email"));
+    await act(() => actions.run("grid.redo"));
+    expect(ops()).toHaveLength(2);
 
     await act(() => actions.run("grid.commit"));
     expect(await screen.findByTestId("ddl-statement-1")).toHaveTextContent(
@@ -395,21 +445,38 @@ describe("StructureTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Apply/ }));
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
     expect(ops()).toEqual([]);
-    await waitFor(() => expect(pk("email")).toHaveAttribute("aria-pressed", "true"));
-    expect(pk("email").closest("td")).not.toHaveClass("bg-changed");
+    await waitFor(() => expect(tokens()).toEqual(["id", "email"]));
 
-    // A dropped column's key cell is locked.
-    const row = cell("c:bio:name").closest("tr")!;
-    fireEvent.click(within(row).getByRole("button", { name: "Drop column" }));
-    expect(pk("bio")).toBeDisabled();
+    // Removing a token drops it from the key.
+    fireEvent.click(screen.getByRole("button", { name: "Remove email from the primary key" }));
+    expect(ops()).toEqual([
+      { op: "dropPrimaryKey", table: users },
+      { op: "addPrimaryKey", table: users, columns: ["id"] },
+    ]);
   });
 
-  it("views are read-only", async () => {
-    await setup("p-local-pg", { schema: "public", name: "active_users" });
-    expect(screen.getByText("Views are shown read-only.")).toBeInTheDocument();
+  it("views: the Structure view edits the definition (CREATE OR REPLACE VIEW)", async () => {
+    const { ops } = await setup("p-local-pg", { schema: "public", name: "active_users" });
+    const host = await screen.findByTestId("structure-sql-editor");
+    await waitFor(() => expect(host.textContent).toMatch(/CREATE OR REPLACE VIEW/));
+    // The columns are listed read-only below.
     expect(cell("c:email:name")).toHaveAttribute("readonly");
-    expect(screen.getByRole("button", { name: "email primary key" })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: /Column/ })).not.toBeInTheDocument();
-    expect(actions.has("grid.commit")).toBe(false);
+    expect(screen.queryByRole("button", { name: "Column" })).not.toBeInTheDocument();
+    const view = EditorView.findFromDOM(host.querySelector(".cm-editor") as HTMLElement)!;
+    const text = view.state.doc.toString();
+    act(() =>
+      view.dispatch({
+        changes: {
+          from: 0,
+          to: text.length,
+          insert: text.replace("WHERE is_active", "WHERE true"),
+        },
+      }),
+    );
+    expect(ops()).toEqual([{ op: "rawSql", sql: expect.stringMatching(/WHERE true;$/) }]);
+    await act(() => actions.run("grid.commit"));
+    expect(await screen.findByTestId("ddl-statement-0")).toHaveTextContent(
+      /CREATE OR REPLACE VIEW "public"\."active_users" AS SELECT .* WHERE true;/,
+    );
   });
 });

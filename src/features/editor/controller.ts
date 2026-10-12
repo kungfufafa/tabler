@@ -1,4 +1,4 @@
-import { setDiagnostics } from "@codemirror/lint";
+import { diagnosticCount, setDiagnostics } from "@codemirror/lint";
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import { toast } from "sonner";
 import {
@@ -12,6 +12,8 @@ import {
 } from "@/lib/ipc";
 import { openExport, type ExportSourceSpec } from "@/features/export";
 import { resultTable } from "@/features/export/resultTable";
+import { commitResultEdits, hasPendingResultEdits } from "@/features/results/commit";
+import { guardExecution } from "@/features/safety/guard";
 import { useConnectionsStore } from "@/stores/connections";
 import { getPrefs } from "@/stores/prefs";
 import {
@@ -26,7 +28,14 @@ import { dropResults, flushResultVersions, resultData } from "@/stores/resultDat
 import { useTabsStore } from "@/stores/tabs";
 import { anchorSubmission, toCurrentDoc } from "./docAnchors";
 import { applyToEditor, focusEditor, getEditorState, markSaved, seedEditor } from "./editorStates";
-import { clampRange, diagnostic, errorRange, runDiagnostics, type Submission } from "./errorPos";
+import {
+  clampRange,
+  diagnostic,
+  errorRange,
+  runDiagnostics,
+  type DocRange,
+  type Submission,
+} from "./errorPos";
 import { baseName, pickOpenPath, pickSavePath } from "./files";
 import {
   applyEvent,
@@ -37,8 +46,18 @@ import {
   normalizeError,
   type RunState,
 } from "./runModel";
-import { minifySql, splitStatements, statementAt, type SqlDialect } from "./scanner";
+import { findParams, paramFields, substituteParams, type Replacement } from "./params";
+import { askParams } from "./paramsPrompt";
+import {
+  minifySql,
+  splitStatements,
+  statementAt,
+  statementTexts,
+  type SqlDialect,
+} from "./scanner";
 import { changesSchema } from "./schemaChange";
+import { activeEditorKey, splitKey } from "./split";
+import { recordSubmission, unsubstituteRange } from "./submissions";
 
 /** Row cap per statement (matches the backend default). */
 export const MAX_ROWS = DEFAULT_ROW_LIMIT;
@@ -98,12 +117,47 @@ export function resolveTarget(
   return st ? { sql: text.slice(st.start, st.end), baseOffset: st.start } : null;
 }
 
+/** Clears the error squiggles of the tab's editors (both panes when it is split). */
 function clearDiagnostics(tabId: string) {
-  applyToEditor(tabId, (s) => setDiagnostics(s, []));
+  for (const key of [tabId, splitKey(tabId)])
+    applyToEditor(key, (s) => (diagnosticCount(s) > 0 ? setDiagnostics(s, []) : null));
 }
 
 function busyNotice(): void {
   toast.message("A query is already running", { description: "Stop it first with ⌘." });
+}
+
+/** SQL about to run, after its query parameters were filled in. */
+export interface PreparedSql extends Submission {
+  /** The variables replaced (empty when there were none); offsets of the submitted text. */
+  replacements: Replacement[];
+}
+
+/**
+ * Fills in the query parameters of `sub` when they are enabled and it has any: asks for their
+ * values (null when the user cancels) and substitutes them as SQL text, as TablePlus does.
+ */
+export async function prepareSql(
+  tabId: string,
+  sub: Submission,
+  dialect: SqlDialect,
+): Promise<PreparedSql | null> {
+  const prefs = getPrefs();
+  if (!prefs.editorQueryParams) return { ...sub, replacements: [] };
+  const occurrences = findParams(sub.sql, dialect, {
+    syntax: prefs.editorQueryParamsRegex,
+    inQuotes: prefs.editorQueryParamsInQuotes,
+  });
+  if (occurrences.length === 0) return { ...sub, replacements: [] };
+  const values = await askParams(tabId, paramFields(occurrences));
+  if (!values) return null;
+  const { sql, replacements } = substituteParams(sub.sql, occurrences, values);
+  return { sql, baseOffset: sub.baseOffset, replacements };
+}
+
+/** Maps a document range of the substituted text back to the variables it came from. */
+function unsubstitute(range: DocRange, prepared: PreparedSql): DocRange {
+  return unsubstituteRange(range, prepared.baseOffset, prepared.replacements);
 }
 
 const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -155,22 +209,36 @@ export async function runQuery(
   hooks: ControllerHooks = {},
 ): Promise<void> {
   const info = queryTab(tabId);
-  const state = getEditorState(tabId);
+  // The pane focused last, when the editor is split.
+  const key = activeEditorKey(tabId);
+  const state = getEditorState(key);
   if (!info || !state) return;
-  const before = getQueryTab(tabId);
-  if (isBusy(before)) return busyNotice();
-  const sub = resolveTarget(state, target, info.dialect);
-  if (!sub || splitStatements(sub.sql, info.dialect).length === 0) {
+  if (isBusy(getQueryTab(tabId))) return busyNotice();
+  const target0 = resolveTarget(state, target, info.dialect);
+  if (!target0 || splitStatements(target0.sql, info.dialect).length === 0) {
     toast.message(target === "current" ? "No statement under the cursor" : "Nothing to run");
     return;
   }
+  const sub = await prepareSql(tabId, target0, info.dialect);
+  if (!sub) return;
+  // The connection's safe mode may ask first; declining is not an error.
+  const statements = statementTexts(sub.sql, info.dialect);
+  if (!(await guardExecution(info.connectionId, { kind: "query", statements }))) return;
+  const before = getQueryTab(tabId);
+  // Another run may have started while the dialogs were open.
+  if (isBusy(before)) return busyNotice();
 
   clearDiagnostics(tabId);
   const previous = before.run;
   if (previous) dropResults((id) => id.startsWith(`${previous.id}:`));
   const queryId = crypto.randomUUID();
   // Error positions and spans refer to the document as it is now; edits made later are mapped.
-  anchorSubmission(tabId, "run", queryId);
+  anchorSubmission(key, "run", queryId);
+  recordSubmission(tabId, "run", queryId, {
+    key,
+    baseOffset: sub.baseOffset,
+    replacements: sub.replacements,
+  });
   const live: LiveRun = {
     tabId,
     state: newRun(queryId, sub.sql, sub.baseOffset),
@@ -194,7 +262,8 @@ export async function runQuery(
       info.connectionId,
       queryId,
       sub.sql,
-      { maxRows: maxRowsFor(before.rowLimit) },
+      // "Return on Error" off: the statements after a failing one still run.
+      { maxRows: maxRowsFor(before.rowLimit), stopOnError: getPrefs().editorStopOnError },
       onEvent,
     );
     ran = results;
@@ -213,9 +282,9 @@ export async function runQuery(
   if (alive()) {
     commitLive(live);
     const run = live.state;
-    applyToEditor(tabId, (s) => {
+    applyToEditor(key, (s) => {
       const diagnostics = runDiagnostics(run, s.doc.length, (r) =>
-        toCurrentDoc(tabId, run.id, r, { unlessEdited: true }),
+        toCurrentDoc(key, run.id, unsubstitute(r, sub), { unlessEdited: true }),
       );
       return diagnostics.length > 0 ? setDiagnostics(s, diagnostics) : null;
     });
@@ -251,17 +320,28 @@ export async function explainQuery(
   hooks: ControllerHooks = {},
 ): Promise<void> {
   const info = queryTab(tabId);
-  const state = getEditorState(tabId);
+  const key = activeEditorKey(tabId);
+  const state = getEditorState(key);
   if (!info || !state) return;
   if (isBusy(getQueryTab(tabId))) return busyNotice();
-  const sub = resolveTarget(state, "current", info.dialect);
-  if (!sub || sub.sql.trim() === "") {
+  const target = resolveTarget(state, "current", info.dialect);
+  if (!target || target.sql.trim() === "") {
     toast.message("No statement under the cursor");
     return;
   }
+  const sub = await prepareSql(tabId, target, info.dialect);
+  if (!sub) return;
+  const wrapped = `${mode === "analyze" ? "EXPLAIN ANALYZE" : "EXPLAIN"} ${sub.sql}`;
+  if (!(await guardExecution(info.connectionId, { kind: "query", statements: [wrapped] }))) return;
+  if (isBusy(getQueryTab(tabId))) return busyNotice();
   clearDiagnostics(tabId);
   const id = crypto.randomUUID();
-  anchorSubmission(tabId, "plan", id);
+  anchorSubmission(key, "plan", id);
+  recordSubmission(tabId, "plan", id, {
+    key,
+    baseOffset: sub.baseOffset,
+    replacements: sub.replacements,
+  });
   const startedAt = Date.now();
   updateQueryTab(tabId, {
     pane: "plan",
@@ -291,9 +371,9 @@ export async function explainQuery(
     const error = normalizeError(toIpcError(e).payload);
     settle({ status: error.code === "CANCELLED" ? "cancelled" : "error", error });
     const range = error.code === "CANCELLED" ? null : errorRange(error, sub);
-    const at = range && toCurrentDoc(tabId, id, range, { unlessEdited: true });
+    const at = range && toCurrentDoc(key, id, unsubstitute(range, sub), { unlessEdited: true });
     if (at)
-      applyToEditor(tabId, (s) =>
+      applyToEditor(key, (s) =>
         setDiagnostics(s, [diagnostic(clampRange(at, s.doc.length), error)]),
       );
   }
@@ -318,7 +398,8 @@ async function rewriteQuery(
   rewrite: (sql: string, dialect: SqlDialect) => string | Promise<string>,
 ): Promise<void> {
   const info = queryTab(tabId);
-  const state = getEditorState(tabId);
+  const key = activeEditorKey(tabId);
+  const state = getEditorState(key);
   if (!info || !state) return;
   const sub = resolveTarget(state, "current", info.dialect);
   if (!sub || sub.sql.trim() === "") return;
@@ -326,7 +407,7 @@ async function rewriteQuery(
   if (out === sub.sql) return;
   const from = sub.baseOffset;
   const to = from + sub.sql.length;
-  const applied = applyToEditor(tabId, (s) => {
+  const applied = applyToEditor(key, (s) => {
     if (s.doc !== state.doc) return null;
     const sel = s.selection.main;
     return {
@@ -338,7 +419,7 @@ async function rewriteQuery(
       userEvent: "input.format",
     };
   });
-  if (applied) focusEditor(tabId);
+  if (applied) focusEditor(key);
 }
 
 /** "Beautify SQL": formats the selection (or the statement under the cursor) with sql-formatter. */
@@ -375,7 +456,8 @@ export async function insertSql(
   if (!text) return;
   if (!/;\s*$/.test(text)) text += ";";
   let inserted: Submission | null = null;
-  applyToEditor(tabId, (s) => {
+  const key = activeEditorKey(tabId);
+  applyToEditor(key, (s) => {
     const sel = s.selection.main;
     const line = s.doc.lineAt(sel.from);
     const prefix = s.sliceDoc(line.from, sel.from).trim() ? "\n" : "";
@@ -392,12 +474,15 @@ export async function insertSql(
       userEvent: "input.paste",
     };
   });
-  focusEditor(tabId);
+  focusEditor(key);
   if (opts.run && inserted) await runQuery(tabId, inserted, opts);
 }
 
 /** Saves the buffer to its file (asking for a path the first time, or always with `saveAs`). */
 export async function saveQuery(tabId: string, opts: { saveAs?: boolean } = {}): Promise<boolean> {
+  // Results package: with staged edits in an editable result, ⌘S commits them instead of saving
+  // the file (TablePlus); Save As still saves.
+  if (!opts.saveAs && hasPendingResultEdits(tabId)) return commitResultEdits(tabId);
   const info = queryTab(tabId);
   const state = getEditorState(tabId);
   if (!info || !state) return false;
@@ -419,6 +504,59 @@ export async function saveQuery(tabId: string, opts: { saveAs?: boolean } = {}):
   markSaved(tabId, text);
   updateQueryTab(tabId, { filePath: path });
   useTabsStore.getState().rename(tabId, baseName(path));
+  toast.success(`Saved ${baseName(path)}`);
+  return true;
+}
+
+/** The selected text (every selection range, one per line), or "" when nothing is selected. */
+function selectedText(state: EditorState): string {
+  return state.selection.ranges
+    .filter((r) => !r.empty)
+    .map((r) => state.sliceDoc(r.from, r.to))
+    .join("\n");
+}
+
+/**
+ * The SQL a tab would save as a query ("Add to Queries…"): the selection, else the statement
+ * under the cursor, else the whole document.
+ */
+export function sqlToKeep(tabId: string): string {
+  const info = queryTab(tabId);
+  const state = getEditorState(activeEditorKey(tabId));
+  if (!info || !state) return "";
+  const selected = selectedText(state);
+  if (selected.trim()) return selected.trim();
+  const current = resolveTarget(state, "current", info.dialect);
+  return (current?.sql ?? state.doc.toString()).trim();
+}
+
+/**
+ * "Save Selected SQL Statements As…" (⇧⌘S): writes the selection, or the statement under the
+ * cursor, to a new file. The tab keeps its own file and stays as it is.
+ */
+export async function saveSelectionAs(tabId: string): Promise<boolean> {
+  const info = queryTab(tabId);
+  const state = getEditorState(activeEditorKey(tabId));
+  if (!info || !state) return false;
+  const selected = selectedText(state);
+  const text = selected.trim()
+    ? selected
+    : (resolveTarget(state, "current", info.dialect)?.sql ?? "");
+  if (!text.trim()) {
+    toast.message("Nothing to save", {
+      description: "Select statements, or put the cursor in one.",
+    });
+    return false;
+  }
+  const title = info.tab.title.replace(/\.sql$/i, "").replace(/[^\w.-]+/g, "-");
+  const path = await pickSavePath(`${title}-selection.sql`);
+  if (!path) return false;
+  try {
+    await ipc.files.writeText(path, text.endsWith("\n") ? text : `${text}\n`);
+  } catch (e) {
+    toast.error("Could not save the file", { description: toIpcError(e).message });
+    return false;
+  }
   toast.success(`Saved ${baseName(path)}`);
   return true;
 }
@@ -509,7 +647,7 @@ export function exportQuery(tabId: string): void {
     openExport({ connectionId: info.connectionId, source: shown });
     return;
   }
-  const state = getEditorState(tabId);
+  const state = getEditorState(activeEditorKey(tabId));
   if (!state) return;
   const sub = resolveTarget(state, "current", info.dialect);
   const statements = sub ? splitStatements(sub.sql, info.dialect) : [];

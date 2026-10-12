@@ -113,6 +113,7 @@ fn col(name: &str, ty: &str, nullable: bool) -> ColumnDef {
         comment: None,
         collation: None,
         unsigned: false,
+        on_update: None,
     }
 }
 
@@ -268,6 +269,7 @@ async fn steps(session: Arc<dyn DbSession>, prefix: String) {
                 unique: true,
                 method: None,
                 predicate: None,
+                comment: None,
             },
         }],
     )

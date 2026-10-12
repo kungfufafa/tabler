@@ -39,8 +39,18 @@ describe("sidebar preferences", () => {
     expect(DEFAULT_SIDEBAR_OPTIONS).toEqual({
       showRecent: false,
       showRowCounts: false,
+      showFunctions: true,
+      showSequences: false,
+      showSystemSchemas: false,
       historyAllConnections: false,
     });
+  });
+
+  it("keeps stored options of older builds and fills in the new ones", () => {
+    localStorage.setItem(OPTIONS_STORAGE_KEY, JSON.stringify({ showRecent: true }));
+    reloadSidebarPrefs();
+    expect(state().options).toEqual({ ...DEFAULT_SIDEBAR_OPTIONS, showRecent: true });
+    expect([...parseCollapsed(["Functions", "Sequences"])]).toEqual(["Functions", "Sequences"]);
   });
 
   it("moves the first build's options to the new key, keeping only the history scope", () => {

@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as controller from "@/features/editor/controller";
 import { getEditorState } from "@/features/editor/editorStates";
+import { closeSavedQueryDialog, useSavedQueryDialogStore } from "@/features/queries/dialogStore";
 import { ipc, type ConnectionInfo } from "@/lib/ipc";
 import { resetMockQueryState } from "@/lib/ipc/mock/query";
 import type { OpenConnection } from "@/stores/connections";
@@ -208,6 +209,17 @@ describe("HistoryPane", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /Delete Entry/ }));
     await waitFor(() => expect(screen.queryByText(UPDATE)).toBeNull());
     expect(screen.getByText(NEWEST)).toBeInTheDocument();
+  });
+
+  it("adds an entry to the saved queries", async () => {
+    const { entry } = setup();
+    fireEvent.contextMenu(await entry(UPDATE));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add to Queries…" }));
+    expect(useSavedQueryDialogStore.getState().request).toMatchObject({
+      draft: { id: null, sql: UPDATE },
+      connection: { profileId: "p-local-pg", name: "Local Postgres" },
+    });
+    closeSavedQueryDialog();
   });
 });
 

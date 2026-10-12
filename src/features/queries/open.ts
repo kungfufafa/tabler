@@ -1,0 +1,59 @@
+import type { QueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { dialectOf, insertSql, runQuery } from "@/features/editor/controller";
+import { HISTORY_KEY } from "@/features/editor/historyGroups";
+import { openSqlInNewQueryTab } from "@/features/editor/openSql";
+import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
+import { writeClipboard } from "@/features/datagrid/clipboard";
+import type { SavedQuery } from "@/lib/ipc";
+import type { OpenConnection } from "@/stores/connections";
+import { useTabsStore } from "@/stores/tabs";
+import { useUiStore } from "@/stores/ui";
+
+function hooks(qc: QueryClient, connectionId: string) {
+  return {
+    onHistoryChanged: () => void qc.invalidateQueries({ queryKey: HISTORY_KEY }),
+    onSchemaChanged: () => reportHeldTables(invalidateConnectionSchema(qc, connectionId)),
+  };
+}
+
+/** "Open in New Tab": a new query tab of the connection, titled after the query. */
+export function openSavedQuery(connection: OpenConnection, query: SavedQuery): string {
+  const { connectionId, driver } = connection.info;
+  const tabId = openSqlInNewQueryTab(connectionId, query.sql, dialectOf(driver), query.name);
+  useUiStore.getState().setView("workspace");
+  return tabId;
+}
+
+/** "Run": opens the query in a new tab and runs all of it there. */
+export function runSavedQuery(
+  qc: QueryClient,
+  connection: OpenConnection,
+  query: SavedQuery,
+): void {
+  const tabId = openSavedQuery(connection, query);
+  void runQuery(tabId, "auto", hooks(qc, connection.info.connectionId));
+}
+
+/**
+ * "Insert to SQL Editor": at the cursor of the connection's active query tab, or into a new query
+ * tab when the active tab is something else.
+ */
+export function insertSavedQuery(connection: OpenConnection, query: SavedQuery): void {
+  const tabs = useTabsStore.getState();
+  const active = tabs.tabs.find((t) => t.id === tabs.activeId);
+  if (active?.kind === "query" && active.connectionId === connection.info.connectionId) {
+    useUiStore.getState().setView("workspace");
+    void insertSql(active.id, query.sql);
+    return;
+  }
+  openSavedQuery(connection, query);
+}
+
+/** "Copy" (⌘C): the query's SQL. */
+export function copySavedQuery(query: SavedQuery): void {
+  void writeClipboard(query.sql).then(
+    () => toast.success("Copied SQL"),
+    () => toast.error("Could not copy"),
+  );
+}

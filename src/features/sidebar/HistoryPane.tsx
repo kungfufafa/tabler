@@ -1,5 +1,14 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { Copy, History, Layers, Loader2, Play, SquareStack, Trash2 } from "lucide-react";
+import {
+  BookmarkPlus,
+  Copy,
+  History,
+  Layers,
+  Loader2,
+  Play,
+  SquareStack,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
@@ -15,6 +24,7 @@ import { dialectOf, runQuery } from "@/features/editor/controller";
 import { groupByDay, HISTORY_KEY } from "@/features/editor/historyGroups";
 import { firstLine } from "@/features/editor/labels";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
+import { openAddToQueries } from "@/features/queries/dialogStore";
 import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
 import { ipc, toIpcError, type HistoryEntry } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
@@ -213,6 +223,19 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
               </ContextMenuItem>
               <ContextMenuItem onSelect={() => copySql(e.sql)}>
                 <Copy /> Copy SQL
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() =>
+                  openAddToQueries({
+                    sql: e.sql,
+                    connection: {
+                      profileId: connection.info.profileId,
+                      name: connection.info.name,
+                    },
+                  })
+                }
+              >
+                <BookmarkPlus /> Add to Queries…
               </ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem variant="destructive" onSelect={() => remove.mutate([e.id])}>

@@ -4,7 +4,8 @@ import { create } from "zustand";
 export type SidebarPane = "items" | "history";
 
 /** Collapsible sections of the items tree (also their header labels). */
-export type SidebarSection = "Recent" | "Pinned" | "Tables" | "Views" | "Materialized views";
+export type SidebarSection =
+  "Recent" | "Pinned" | "Functions" | "Tables" | "Views" | "Materialized views" | "Sequences";
 
 /** localStorage key of the visible pane (`"items"` / `"history"`). */
 export const PANE_STORAGE_KEY = "tabler.sidebar.pane";
@@ -24,6 +25,12 @@ export interface SidebarOptions {
   showRecent: boolean;
   /** Show each table's estimated row count on the right of its row. */
   showRowCounts: boolean;
+  /** List functions and procedures in a "Functions" section (TablePlus: on by default). */
+  showFunctions: boolean;
+  /** PostgreSQL: list the schema's sequences in a "Sequences" section. */
+  showSequences: boolean;
+  /** PostgreSQL: offer information_schema, pg_catalog and pg_toast in the schema picker. */
+  showSystemSchemas: boolean;
   /** The history pane lists every connection's statements, not just the active one's. */
   historyAllConnections: boolean;
 }
@@ -32,15 +39,20 @@ export const DEFAULT_SIDEBAR_OPTIONS: SidebarOptions = {
   // Off: the section grew on every open and moved the list under the pointer (⚙ turns it on).
   showRecent: false,
   showRowCounts: false,
+  showFunctions: true,
+  showSequences: false,
+  showSystemSchemas: false,
   historyAllConnections: false,
 };
 
 const SECTIONS: readonly SidebarSection[] = [
   "Recent",
   "Pinned",
+  "Functions",
   "Tables",
   "Views",
   "Materialized views",
+  "Sequences",
 ];
 
 export const EMPTY_COLLAPSED: ReadonlySet<SidebarSection> = new Set();

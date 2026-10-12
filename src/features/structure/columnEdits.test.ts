@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   columnEditError,
   columnFields,
+  gridColumns,
+  onUpdateOf,
   columnOp,
   supportsAddAutoIncrement,
   defaultColumnType,
@@ -84,7 +86,30 @@ describe("columnOp", () => {
     });
     expect(columnOp("mysql", T, "a", "comment", null)).toMatchObject({ comment: null });
     expect(columnOp("sqlite", T, "a", "comment", "hi")).toBeNull();
-    expect(columnOp("postgres", T, "a", "autoIncrement", true)).toBeNull();
+  });
+
+  it("auto increment, ON UPDATE and collation of existing columns", () => {
+    expect(columnOp("postgres", T, "a", "autoIncrement", true)).toEqual({
+      op: "alterColumnAutoIncrement",
+      table: T,
+      name: "a",
+      autoIncrement: true,
+    });
+    expect(columnOp("mysql", T, "a", "onUpdate", "CURRENT_TIMESTAMP")).toEqual({
+      op: "alterColumnOnUpdate",
+      table: T,
+      name: "a",
+      onUpdate: "CURRENT_TIMESTAMP",
+    });
+    expect(columnOp("mysql", T, "a", "onUpdate", "")).toMatchObject({ onUpdate: null });
+    expect(columnOp("postgres", T, "a", "onUpdate", "now()")).toBeNull();
+    expect(columnOp("mysql", T, "a", "collation", "utf8mb4_bin")).toEqual({
+      op: "alterColumnCollation",
+      table: T,
+      name: "a",
+      collation: "utf8mb4_bin",
+    });
+    expect(columnOp("mysql", T, "a", "collation", " ")).toMatchObject({ collation: null });
   });
 });
 
@@ -157,5 +182,55 @@ describe("columnEditError", () => {
     expect(columnEditError("postgres", existing, "dataType", "bigint")).toBeNull();
     expect(columnEditError("postgres", added, "dataType", "serial")).toBeNull();
     expect(columnEditError("mysql", existing, "dataType", "serial")).toBeNull();
+  });
+});
+
+describe("TablePlus grid columns", () => {
+  it("lists the columns of each dialect in TablePlus order", () => {
+    expect(gridColumns("postgres")).toEqual([
+      "name",
+      "dataType",
+      "nullable",
+      "check",
+      "defaultExpr",
+      "foreignKey",
+      "comment",
+    ]);
+    expect(gridColumns("mysql")).toEqual([
+      "name",
+      "dataType",
+      "nullable",
+      "defaultExpr",
+      "extra",
+      "foreignKey",
+      "comment",
+    ]);
+    expect(gridColumns("sqlite")).toEqual([
+      "name",
+      "dataType",
+      "nullable",
+      "defaultExpr",
+      "foreignKey",
+    ]);
+  });
+
+  it("reads ON UPDATE out of MySQL's EXTRA", () => {
+    expect(onUpdateOf("DEFAULT_GENERATED on update CURRENT_TIMESTAMP(3)")).toBe(
+      "CURRENT_TIMESTAMP(3)",
+    );
+    expect(onUpdateOf("auto_increment")).toBeNull();
+    expect(onUpdateOf(null)).toBeNull();
+  });
+
+  it("MySQL AUTO_INCREMENT on an existing column needs a key and an integer", () => {
+    const col = { added: false, name: "n", dataType: "int", autoIncrement: false };
+    expect(columnEditError("mysql", { ...col, isKey: false }, "autoIncrement", true)).toMatch(
+      /needs a key/,
+    );
+    expect(columnEditError("mysql", { ...col, isKey: true }, "autoIncrement", true)).toBeNull();
+    expect(
+      columnEditError("mysql", { ...col, dataType: "text", isKey: true }, "autoIncrement", true),
+    ).toMatch(/integer type/);
+    expect(columnEditError("mysql", { ...col, isKey: false }, "autoIncrement", false)).toBeNull();
   });
 });

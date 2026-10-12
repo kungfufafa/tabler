@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use mysql_async::Column;
 use mysql_async::consts::{ColumnFlags, ColumnType};
 
-use crate::types::query::ResultColumn;
+use crate::types::query::{ColumnOrigin, ResultColumn};
 use crate::types::schema::ValueKind;
 use crate::types::value::Value;
 
@@ -127,7 +127,27 @@ pub fn result_column(col: &Column) -> ResultColumn {
         } else {
             Some(table.into_owned())
         },
+        origin: origin_of(col),
     }
+}
+
+/// The base-table column a wire column reads: `org_table` / `org_name` in the database `schema`.
+/// The server leaves them empty for expressions, and leaves the database empty for the internal
+/// temporary tables of materialized derived tables and views (whose `org_table` is then only
+/// the alias), so a column without a database has no origin either.
+///
+/// The column's `table` (the alias it was read through, or the table name) is the origin's
+/// `instance`: the two sides of a self-join (`employees e JOIN employees m`) share `org_table`
+/// but not `table`. A merged derived table or CTE reports its own alias as `table` and the
+/// inner alias as `org_table` (`(SELECT p.id FROM posts p) d` → `d` / `p`); the renderer only
+/// trusts an aliased origin whose alias the query defines on that very table.
+pub fn origin_of(col: &Column) -> Option<ColumnOrigin> {
+    let schema = col.schema_str();
+    if schema.is_empty() {
+        return None;
+    }
+    ColumnOrigin::from_names(&schema, &col.org_table_str(), &col.org_name_str())
+        .map(|o| o.with_instance(&col.table_str()))
 }
 
 /// `YYYY-MM-DD HH:MM:SS[.ffffff]` (fraction only when non-zero).
@@ -277,6 +297,58 @@ pub fn int_of(v: mysql_async::Value) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn results_origin_from_org_names() {
+        let base = Column::new(ColumnType::MYSQL_TYPE_LONG)
+            .with_schema(b"tabler_dev")
+            .with_table(b"u")
+            .with_org_table(b"users")
+            .with_name(b"user_id")
+            .with_org_name(b"id");
+        let rc = result_column(&base);
+        // The alias stays the reported table; the origin names the base table and column.
+        assert_eq!(rc.table.as_deref(), Some("u"));
+        let origin = rc.origin.expect("origin");
+        assert_eq!(origin.table.schema.as_deref(), Some("tabler_dev"));
+        assert_eq!(origin.table.name, "users");
+        assert_eq!(origin.column, "id");
+        // The alias tells the table references apart.
+        assert_eq!(origin.instance.as_deref(), Some("u"));
+
+        // A self-join: both sides read `employees`, through different aliases.
+        let side = |alias: &[u8], name: &[u8]| {
+            Column::new(ColumnType::MYSQL_TYPE_LONG)
+                .with_schema(b"tabler_dev")
+                .with_table(alias)
+                .with_org_table(b"employees")
+                .with_name(name)
+                .with_org_name(name)
+        };
+        let (e, m) = (
+            origin_of(&side(b"e", b"id")).unwrap(),
+            origin_of(&side(b"m", b"name")).unwrap(),
+        );
+        assert_eq!(e.table, m.table);
+        assert_eq!(
+            (e.instance.as_deref(), m.instance.as_deref()),
+            (Some("e"), Some("m"))
+        );
+        // Without an alias the instance is the table's name.
+        let plain = origin_of(&side(b"employees", b"id")).unwrap();
+        assert_eq!(plain.instance.as_deref(), Some("employees"));
+
+        // An expression: no table, no origin.
+        let expr = Column::new(ColumnType::MYSQL_TYPE_LONGLONG).with_name(b"count(*)");
+        assert_eq!(origin_of(&expr), None);
+        // A materialized derived table: org_table is the alias, without a database.
+        let derived = Column::new(ColumnType::MYSQL_TYPE_LONG)
+            .with_table(b"t")
+            .with_org_table(b"t")
+            .with_name(b"id")
+            .with_org_name(b"id");
+        assert_eq!(origin_of(&derived), None);
+    }
 
     fn col(ty: ColumnType, flags: ColumnFlags, charset: u16) -> Column {
         Column::new(ty)

@@ -3,11 +3,13 @@ import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { useGroupRef, usePanelRef, type Layout } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { actions, useAction } from "@/features/palette/actions";
+import { openAddToQueries } from "@/features/queries/dialogStore";
 import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
 import { comboFromEvent } from "@/lib/keys/combo";
 import { KEYMAP } from "@/lib/keys/keymap";
 import { resolveScope } from "@/lib/keys/useShortcuts";
 import { useConnectionsStore } from "@/stores/connections";
+import { getPrefs } from "@/stores/prefs";
 import { getQueryTab, updateQueryTab, useQueryTabBusy, useQueryTabField } from "@/stores/queryTabs";
 import { useTabsStore, type Tab } from "@/stores/tabs";
 import {
@@ -21,6 +23,8 @@ import {
   openQueryFile,
   runQuery,
   saveQuery,
+  saveSelectionAs,
+  sqlToKeep,
   toggleHistory,
   toggleResults,
   type ControllerHooks,
@@ -28,10 +32,13 @@ import {
 import { focusEditor, getEditorState, syncDirty } from "./editorStates";
 import { HISTORY_KEY } from "./historyGroups";
 import { EditorBar } from "./EditorBar";
+import { EditorPanes, type EditorPaneHandlers } from "./EditorPanes";
+import { changeEditorFontSize } from "./editorSettings";
 import { HistorySheet } from "./HistorySheet";
 import { installQueryTabLifecycle } from "./lifecycle";
+import { QueryParamsDialog } from "./QueryParamsDialog";
 import { ResultsPane } from "./ResultsPane";
-import { SqlEditor } from "./SqlEditor";
+import { activeEditorKey, closeSplit, isSplitOpen, openSplit } from "./split";
 
 installQueryTabLifecycle();
 
@@ -65,9 +72,10 @@ const COLLAPSED_LAYOUT: Layout = { editor: 100, results: 0 };
 const isCollapsedLayout = (layout: Layout) => (layout.results ?? 100) < 0.01;
 
 /**
- * The SQL editor tab, laid out like TablePlus: the CodeMirror editor right under the tab bar, the
- * editor bar under it (cursor position, run summary, row limit, Beautify, Explain, Run), then the
- * results / messages / plan, which collapse (⌃`) to leave the editor and its bar.
+ * The SQL editor tab, laid out like TablePlus: the CodeMirror editor right under the tab bar (split
+ * in two panes with ⇧⌘D), the editor bar under it (⚙ settings, cursor position, run summary, row
+ * limit, Beautify, Explain, Run), then the results / messages / plan, which collapse (⌃`) to leave
+ * the editor and its bar.
  */
 export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
   const tabId = tab.id;
@@ -93,7 +101,12 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
       // metadata cache too); grids holding staged row edits keep their page and say so.
       onSchemaChanged: () => reportHeldTables(invalidateConnectionSchema(qc, tab.connectionId)),
     };
-    return {
+    const handlers: EditorPaneHandlers & {
+      insert: (sql: string) => Promise<void>;
+      runSql: (sql: string) => Promise<void>;
+      fontBigger: () => void;
+      fontSmaller: () => void;
+    } = {
       run: () => runQuery(tabId, "auto", hooks),
       runCurrent: () => runQuery(tabId, "current", hooks),
       cancel: () => cancelQuery(tabId),
@@ -106,10 +119,26 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
       open: () => openQueryFile(tabId),
       save: () => void saveQuery(tabId),
       saveAs: () => void saveQuery(tabId, { saveAs: true }),
+      saveSelection: () => void saveSelectionAs(tabId),
+      addToQueries: () => {
+        const info = useConnectionsStore.getState().byId[tab.connectionId]?.info;
+        openAddToQueries({
+          sql: sqlToKeep(tabId),
+          connection: info ? { profileId: info.profileId, name: info.name } : null,
+        });
+      },
       exportResults: () => exportQuery(tabId),
       insert: (sql: string) => insertSql(tabId, sql),
       runSql: (sql: string) => insertSql(tabId, sql, { ...hooks, run: true }),
+      fontBigger: () => changeEditorFontSize(getPrefs().editorFontSize, 1),
+      fontSmaller: () => changeEditorFontSize(getPrefs().editorFontSize, -1),
+      split: () => {
+        if (!isSplitOpen(tabId)) return openSplit(tabId);
+        closeSplit(tabId);
+        focusEditor(tabId);
+      },
     };
+    return handlers;
   }, [tabId, qc, tab.connectionId]);
 
   // Shortcuts, the palette and the native menu reach the visible query tab only.
@@ -123,6 +152,12 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
   useAction("query.history", isActive ? handlers.history : null);
   useAction("query.save", isActive ? handlers.save : null);
   useAction("query.open", isActive ? handlers.open : null);
+  useAction("query.save-as", isActive ? handlers.saveAs : null);
+  useAction("query.save-selection", isActive ? handlers.saveSelection : null);
+  useAction("query.add-to-queries", isActive ? handlers.addToQueries : null);
+  useAction("query.font-bigger", isActive ? handlers.fontBigger : null);
+  useAction("query.font-smaller", isActive ? handlers.fontSmaller : null);
+  useAction("query.split", isActive ? handlers.split : null);
   // Registered after the app shell's default (which exports the active table tab), so it wins here.
   useAction("export.open", isActive ? handlers.exportResults : null);
 
@@ -139,7 +174,8 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
     if (!panel) return;
     try {
       if (resultsCollapsed) {
-        if (resultsElement.current?.contains(document.activeElement)) focusEditor(tabId);
+        if (resultsElement.current?.contains(document.activeElement))
+          focusEditor(activeEditorKey(tabId));
         panel.collapse();
       } else if (panel.isCollapsed()) {
         groupRef.current?.setLayout(getQueryTab(tabId).layout ?? DEFAULT_LAYOUT);
@@ -174,11 +210,12 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
           {/* The bar stays with the editor: it ends up at the bottom when the results collapse. */}
           <div className="flex h-full min-h-0 flex-col">
             <div className="min-h-0 flex-1">
-              <SqlEditor
+              <EditorPanes
                 tabId={tabId}
                 connectionId={tab.connectionId}
                 dialect={dialect}
                 currentDatabase={currentDatabase}
+                handlers={handlers}
               />
             </div>
             <EditorBar tabId={tabId} handlers={handlers} />
@@ -205,6 +242,7 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
         onInsert={(sql) => void handlers.insert(sql)}
         onRun={(sql) => void handlers.runSql(sql)}
       />
+      <QueryParamsDialog tabId={tabId} />
     </div>
   );
 }

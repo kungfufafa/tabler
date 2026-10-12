@@ -113,6 +113,29 @@ impl LiteSession {
         };
         let editor = Actor::spawn(&path, flags, foreign_keys)?;
         let worker = Actor::spawn(&path, flags, foreign_keys)?;
+        // Bootstrap commands run on both connections, after the session's own pragmas.
+        if let Some(sql) = profile
+            .options
+            .startup_sql
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            for actor in [&editor, &worker] {
+                let sql = sql.to_string();
+                let ran = actor
+                    .run(move |conn| {
+                        conn.execute_batch(&sql)?;
+                        Ok(())
+                    })
+                    .await;
+                if let Err(e) = ran {
+                    editor.close();
+                    worker.close();
+                    return Err(e);
+                }
+            }
+        }
         Ok(LiteSession {
             path,
             editor,
@@ -323,6 +346,39 @@ mod tests {
             updated_at: String::new(),
             last_connected_at: None,
         }
+    }
+
+    #[tokio::test]
+    async fn bootstrap_commands_run_on_both_connections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("boot.sqlite");
+        let path = path.to_string_lossy().into_owned();
+        create_database_file(&path).await.unwrap();
+        let mut p = profile(Some(&path));
+        p.options.sqlite_foreign_keys = true;
+        p.options.startup_sql =
+            Some("PRAGMA foreign_keys = OFF;\nCREATE TEMP TABLE boot (x);".into());
+        let session = LiteSession::open(&p).await.unwrap();
+        for actor in [&session.editor, &session.worker] {
+            let (fk, temp): (i64, i64) = actor
+                .run(|c| {
+                    Ok(c.query_row(
+                        "SELECT (SELECT foreign_keys FROM pragma_foreign_keys), \
+                         (SELECT count(*) FROM temp.sqlite_master WHERE name = 'boot')",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?)
+                })
+                .await
+                .unwrap();
+            assert_eq!((fk, temp), (0, 1));
+        }
+        session.close().await;
+
+        // A failing bootstrap command fails the connect.
+        p.options.startup_sql = Some("SELECT * FROM no_such_table".into());
+        let err = LiteSession::open(&p).await.err().unwrap();
+        assert!(err.to_string().contains("no_such_table"), "{err}");
     }
 
     #[test]

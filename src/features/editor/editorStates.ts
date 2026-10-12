@@ -7,15 +7,24 @@ import {
   type TransactionSpec,
 } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
+import { subscribeKeymap } from "@/lib/keys/keymap";
 import { getPrefs } from "@/stores/prefs";
 import { useTabsStore } from "@/stores/tabs";
-import { editorExtensions, type LanguageConfig } from "./cmExtensions";
+import {
+  actionKeymap,
+  actionKeymapConf,
+  editorExtensions,
+  editorPrefsOf,
+  type LanguageConfig,
+} from "./cmExtensions";
 import { dropAnchors, recordDocChanges } from "./docAnchors";
+import { isSplitKey } from "./split";
 
 /**
  * Each query tab keeps one CodeMirror `EditorState` for its whole life, so the document, the undo
  * history, the selection and folds survive tab switches (the view is destroyed when the tab is not
- * shown). While a tab is visible its live `EditorView` is the source of truth.
+ * shown). While a tab is visible its live `EditorView` is the source of truth. States are keyed by
+ * editor key: the tab id, or `splitKey(tabId)` for the second pane of a split editor.
  */
 
 interface Stored {
@@ -46,8 +55,24 @@ function notify(tabId: string): void {
   listeners.get(tabId)?.forEach((fn) => fn());
 }
 
-/** Recomputes the tab's dirty flag from its document. */
+/**
+ * A remapped or removed shortcut (Settings ▸ Shortcuts) applies to the editors already open too:
+ * every live view and every stored state gets the query keymap rebuilt from KEYMAP.
+ */
+function refreshActionKeymaps(): void {
+  const effects = actionKeymapConf.reconfigure(actionKeymap());
+  for (const view of views.values()) view.dispatch({ effects });
+  for (const [key, entry] of stored)
+    if (!views.has(key)) entry.state = entry.state.update({ effects }).state;
+}
+subscribeKeymap(refreshActionKeymaps);
+
+/**
+ * Recomputes the tab's dirty flag from its document. A split pane (`splitKey`) is a scratch
+ * editor: it never makes the tab dirty.
+ */
 export function syncDirty(tabId: string, doc: Text): void {
+  if (isSplitKey(tabId)) return;
   const saved = savedDocs.get(tabId) ?? Text.empty;
   useTabsStore.getState().setDirty(tabId, !doc.eq(saved));
 }
@@ -79,7 +104,7 @@ export function createEditorState(
     selection: EditorSelection.cursor(0),
     extensions: editorExtensions({
       language: { upperCaseKeywords: p.editorUppercaseKeywords, ...language },
-      prefs: { fontSize: p.editorFontSize, tabSize: p.editorTabSize, lineWrap: p.editorLineWrap },
+      prefs: editorPrefsOf(p),
       onUpdate: onUpdate(tabId),
     }),
   });

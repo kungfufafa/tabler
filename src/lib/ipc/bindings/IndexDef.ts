@@ -14,4 +14,8 @@ method: string | null,
 /**
  * Partial-index predicate (PG, SQLite); ignored on MySQL with a warning.
  */
-predicate: string | null, };
+predicate: string | null, 
+/**
+ * MySQL `COMMENT '…'` index option, PG `COMMENT ON INDEX`; ignored on SQLite with a warning.
+ */
+comment: string | null, };

@@ -4,6 +4,7 @@ export {
   closeExport,
   openExport,
   openExportForActiveTab,
+  openExportTables,
   type ExportSourceSpec,
   type OpenExportArgs,
 } from "./store";

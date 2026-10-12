@@ -23,6 +23,7 @@ export function profile(
     ssh: null,
     options: {
       tag: null,
+      safeMode: null,
       timezone: null,
       connectTimeoutSecs: null,
       readOnly: false,
@@ -85,6 +86,7 @@ export const SEED_PROFILES: ConnectionProfile[] = [
     host: "db.internal.example.com",
     options: {
       tag: "production",
+      safeMode: "alertNonSelect",
       timezone: null,
       connectTimeoutSecs: null,
       readOnly: true,
@@ -378,6 +380,7 @@ export function tableMetaFor(driver: Driver, schema: string, name: string): Tabl
               method: "btree",
               predicate: null,
               definition: null,
+              comment: null,
             },
           ]
         : [],
@@ -432,5 +435,7 @@ export function tableMetaFor(driver: Driver, schema: string, name: string): Tabl
     comment: null,
     rowEstimate: PUBLIC_TABLES.find(([n]) => n === name)?.[2] ?? null,
     ddl: driver === "postgres" ? null : `CREATE TABLE "${name}" (...)`,
+    checks: [],
+    options: null,
   };
 }

@@ -14,7 +14,10 @@ export const MENU_ACTIONS = [
   "tab.new-query",
   "query.open",
   "tab.close",
+  "tab.close-all",
   "tab.reopen",
+  "backup.open",
+  "restore.open",
   "export.open",
   "ui.launcher",
   "palette.open",
@@ -27,6 +30,14 @@ export const MENU_ACTIONS = [
   "ui.toggle-console",
   "view.refresh",
   "connection.reconnect",
+  "workspace.show",
+  "workspace.next",
+  "workspace.prev",
+  "admin.process-list",
+  "admin.users",
+  "connection.disconnect",
+  "import.csv",
+  "import.sql",
 ] as const satisfies readonly ActionId[];
 
 export type MenuActionId = (typeof MENU_ACTIONS)[number];
@@ -51,8 +62,9 @@ function whenRegistered(id: ActionId, attempts = 30): Promise<boolean> {
  * Whether a menu item may run its action while focus is in `scope`, by the same rules as its
  * keyboard shortcut (`findShortcut`): global shortcuts are inert inside a dialog unless
  * `allowInDialog`, and inside CodeMirror unless `allowInEditor`; editor-scoped ones (Open SQL
- * File…) do not reach into a dialog either; `notWhileEditing` ones (Data / Structure) wait while a
- * cell editor has the focus.
+ * File…) do not reach into a dialog either, not even from an editor inside one (`resolveScope`
+ * gives it the dialog's scope); `notWhileEditing` ones (Data / Structure) wait while a cell editor
+ * has the focus.
  *
  * This matters because the page's shortcut listener leaves a key it suppresses unhandled, and
  * WKWebView then hands that key equivalent to the menu: without this check ⌘T in the connection
@@ -61,6 +73,8 @@ function whenRegistered(id: ActionId, attempts = 30): Promise<boolean> {
  */
 export function menuActionAllowed(id: MenuActionId, scope: Scope): boolean {
   const defs = KEYMAP.filter((d) => d.id === id);
+  // Menu-only items (User Management…, Disconnect) have no key the page could have suppressed.
+  if (defs.length === 0) return scope !== "dialog";
   if (scope === "dialog") return defs.some((d) => d.allowInDialog);
   if (scope === "editor") return defs.some((d) => d.scope === "editor" || d.allowInEditor);
   if (scope === "grid-edit") return !defs.every((d) => d.notWhileEditing);

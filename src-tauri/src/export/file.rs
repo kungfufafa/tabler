@@ -127,6 +127,66 @@ impl<W: Write> Write for CountingWriter<W> {
     }
 }
 
+/// The output of an export file, gzip-compressed or not (`.sql.gz`).
+pub enum Compressed<W: Write> {
+    Plain(W),
+    Gzip(flate2::write::GzEncoder<W>),
+}
+
+impl<W: Write> Compressed<W> {
+    pub fn new(inner: W, gzip: bool) -> Compressed<W> {
+        if gzip {
+            Compressed::Gzip(flate2::write::GzEncoder::new(
+                inner,
+                flate2::Compression::default(),
+            ))
+        } else {
+            Compressed::Plain(inner)
+        }
+    }
+
+    /// Writes the gzip trailer (if any) and returns the inner writer.
+    pub fn finish(self) -> io::Result<W> {
+        match self {
+            Compressed::Plain(w) => Ok(w),
+            Compressed::Gzip(gz) => gz.finish(),
+        }
+    }
+}
+
+impl<W: Write> Write for Compressed<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Compressed::Plain(w) => w.write(buf),
+            Compressed::Gzip(gz) => gz.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Compressed::Plain(w) => w.flush(),
+            Compressed::Gzip(gz) => gz.flush(),
+        }
+    }
+}
+
+/// Checks the destination folder of a multi-file export: absolute, an existing directory.
+pub fn validate_folder(path: &str) -> Result<PathBuf, AppError> {
+    let dir = PathBuf::from(path);
+    if path.trim().is_empty() || !dir.is_absolute() {
+        return Err(AppError::InvalidInput(
+            "the export folder must be an absolute path".into(),
+        ));
+    }
+    if !dir.is_dir() {
+        return Err(AppError::Io(format!(
+            "the folder \"{}\" does not exist",
+            dir.display()
+        )));
+    }
+    Ok(dir)
+}
+
 /// Checks the destination path: absolute, names a file, in an existing directory.
 pub fn validate_target(path: &str) -> Result<PathBuf, AppError> {
     let dest = PathBuf::from(path);

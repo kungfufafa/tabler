@@ -2,17 +2,21 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { usePaletteStore } from "@/features/palette/store";
 import { ipc, type ConnectionInfo } from "@/lib/ipc";
+import { DEMO_IMPORT_PATH, resetMockConnectionFiles } from "@/lib/ipc/mock/connections_io";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
+import { resetMockSettings } from "@/lib/ipc/mock/settings";
 import { isMac } from "@/lib/keys/combo";
 import { useConnectionsStore } from "@/stores/connections";
+import { useBackupStore } from "@/features/backup/store";
 import { useTabsStore } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
 import { Launcher } from "./Launcher";
 import { ConnectionDialogHost } from "./ConnectionDialogHost";
+import { useConnectionsIo } from "./ioStore";
 import { useConnectionDialog, useLauncherPrefs } from "./store";
 
 vi.mock("sonner", () => ({
@@ -68,8 +72,20 @@ function info(connectionId: string, profileId: string): ConnectionInfo {
   };
 }
 
+beforeAll(async () => {
+  // jsdom lacks these; Radix menus and selects need them.
+  Element.prototype.hasPointerCapture ??= () => false;
+  Element.prototype.releasePointerCapture ??= () => {};
+  Element.prototype.scrollIntoView ??= () => {};
+  await import("@/lib/ipc/mock");
+});
+
 describe("Launcher", () => {
   beforeEach(() => {
+    resetMockSettings();
+    resetMockConnectionFiles();
+    useConnectionsIo.setState({ exportScope: null, importPath: null, groupDialog: null });
+    useLauncherPrefs.setState({ sortBy: "manual" });
     useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
     useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
     usePaletteStore.setState({ connecting: [] });
@@ -83,13 +99,34 @@ describe("Launcher", () => {
   });
 
   describe("welcome column", () => {
-    it("shows the app name, version and the actions; Import is not there yet", async () => {
+    it("shows the app name, version and the actions, Backup… and Restore… at the bottom", async () => {
       renderLauncher();
       expect(screen.getByRole("heading", { name: "Tabler" })).toBeInTheDocument();
       expect(await screen.findByText("Version 0.1.0")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /Create a new connection/ })).toBeEnabled();
       expect(screen.getByRole("button", { name: /New connection from URL/ })).toBeEnabled();
-      expect(screen.getByRole("button", { name: /Import connections/ })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /Import connections/ })).toBeEnabled();
+      const bottom = screen.getByRole("navigation", { name: "Backup and restore" });
+      expect(within(bottom).getByRole("button", { name: /Backup…/ })).toBeEnabled();
+      expect(within(bottom).getByRole("button", { name: /Restore…/ })).toBeEnabled();
+    });
+
+    it("Backup… / Restore… open the backup window for the selected connection", async () => {
+      const user = userEvent.setup();
+      renderLauncher();
+      await user.click(screen.getByRole("button", { name: /Backup…/ }));
+      expect(useBackupStore.getState().request).toEqual({
+        mode: "backup",
+        profileId: null,
+        database: null,
+      });
+      fireEvent.click(await row("Shop MySQL"));
+      await user.click(screen.getByRole("button", { name: /Restore…/ }));
+      expect(useBackupStore.getState().request).toEqual({
+        mode: "restore",
+        profileId: "p-shop-mysql",
+        database: null,
+      });
     });
 
     it("Create a new connection… opens the form at the driver picker", async () => {
@@ -167,6 +204,11 @@ describe("Launcher", () => {
       const migrate = useLauncherPrefs.persist.getOptions().migrate;
       expect(await migrate?.({ collapsedGroups: ["", "Local"] }, 1)).toEqual({
         collapsedGroups: ["Local"],
+        sortBy: "manual",
+      });
+      expect(await migrate?.({ collapsedGroups: [], sortBy: "tag" }, 2)).toEqual({
+        collapsedGroups: [],
+        sortBy: "tag",
       });
       useLauncherPrefs.getState().toggleGroup("");
       expect(useLauncherPrefs.getState().collapsedGroups).toEqual([""]);
@@ -361,7 +403,16 @@ describe("Launcher", () => {
         within(menu)
           .getAllByRole("menuitem")
           .map((i) => i.textContent?.trim()),
-      ).toEqual(["Connect", "Edit…", "Duplicate", "Copy as URL", "Delete…"]);
+      ).toEqual([
+        "Connect",
+        "Edit…",
+        "Duplicate",
+        "Copy as URL",
+        "Move to Group",
+        "Export Connections",
+        "Import Connections…",
+        "Delete…",
+      ]);
       expect(usePaletteStore.getState().connecting).toEqual([]);
       expect(connect).not.toHaveBeenCalled();
       expect(useUiStore.getState().view).toBe("launcher");
@@ -406,11 +457,178 @@ describe("Launcher", () => {
       fireEvent.contextMenu(el);
       expect(el).toHaveAttribute("aria-selected", "true");
       await user.click(await screen.findByRole("menuitem", { name: "Copy as URL" }));
-      const url = "postgresql://app@10.0.1.20:5432/app_staging?name=Staging+via+SSH";
+      const url = "postgresql://app@10.0.1.20:5432/app_staging?name=Staging+via+SSH&env=staging";
       await vi.waitFor(() =>
         expect(toast.success).toHaveBeenCalledWith("Copied", { description: url }),
       );
       expect(await navigator.clipboard.readText()).toBe(url);
+    });
+  });
+
+  describe("groups, sorting, import and export", () => {
+    /** Opens the submenu `name` of the open menu (→ on its trigger). */
+    const openSub = async (user: ReturnType<typeof userEvent.setup>, name: string) => {
+      const trigger = await screen.findByRole("menuitem", { name });
+      trigger.focus();
+      await user.keyboard("{ArrowRight}");
+      return trigger;
+    };
+    const menuItems = (menu: HTMLElement) =>
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((i) => i.textContent?.trim());
+
+    it("the … menu offers New ▸, Sort by ▸, Import / Export Connections and Backup / Restore", async () => {
+      const user = userEvent.setup();
+      renderLauncher();
+      await row("Local Postgres");
+      await user.click(screen.getByRole("button", { name: "More connection actions" }));
+      const menu = await screen.findByRole("menu");
+      expect(menuItems(menu)).toEqual([
+        "New",
+        "Sort by",
+        "Import Connections…",
+        "Export Connections",
+        "Backup…",
+        "Restore…",
+      ]);
+    });
+
+    it("Sort by ▸ Name reorders each group and is remembered", async () => {
+      const user = userEvent.setup();
+      renderLauncher();
+      await row("Rotated host");
+      const staging = () =>
+        within(screen.getByRole("group", { name: "Staging" }))
+          .getAllByRole("option")
+          .map((o) => o.textContent);
+      expect(staging()[0]).toContain("Staging via SSH");
+      fireEvent.contextMenu(screen.getByTestId("connection-list-area"));
+      await openSub(user, "Sort by");
+      await user.click(await screen.findByRole("menuitemradio", { name: "Name" }));
+      expect(useLauncherPrefs.getState().sortBy).toBe("name");
+      expect(staging()[0]).toContain("Rotated host");
+    });
+
+    it("right-click on empty space ▸ New ▸ Group… creates an empty group", async () => {
+      const user = userEvent.setup();
+      renderLauncher();
+      await row("Local Postgres");
+      fireEvent.contextMenu(screen.getByTestId("connection-list-area"));
+      await openSub(user, "New");
+      await user.click(await screen.findByRole("menuitem", { name: "Group…" }));
+      const dialog = await screen.findByRole("dialog", { name: "New Group" });
+      const name = within(dialog).getByRole("textbox", { name: "Group name" });
+      await user.type(name, "staging{Enter}");
+      expect(within(dialog).getByRole("alert")).toHaveTextContent("“staging” already exists");
+      await user.clear(name);
+      await user.type(name, "Archive{Enter}");
+      const header = await within(list()).findByRole("button", { name: /Archive\s*0/ });
+      expect(header).toBeInTheDocument();
+      expect((await ipc.settings.get()).connectionGroups).toEqual(["Archive"]);
+    });
+
+    it("a row's Move to Group ▸ moves it; No Group takes it out", async () => {
+      const move = vi.spyOn(ipc.profiles, "moveToGroup");
+      const user = userEvent.setup();
+      renderLauncher();
+      fireEvent.contextMenu(await row("Local Postgres"));
+      await openSub(user, "Move to Group");
+      const sub = (await screen.findAllByRole("menu")).at(-1)!;
+      expect(menuItems(sub)).toEqual(["Local", "Production", "Staging", "New Group…", "No Group"]);
+      expect(within(sub).getByRole("menuitem", { name: "Local" })).toHaveAttribute("data-disabled");
+      await user.click(within(sub).getByRole("menuitem", { name: "Production" }));
+      await vi.waitFor(() => expect(move).toHaveBeenCalledWith(["p-local-pg"], "Production"));
+      await vi.waitFor(() =>
+        expect(
+          within(screen.getByRole("group", { name: "Production" })).getByText("Local Postgres"),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.contextMenu(await row("Local Postgres"));
+      await openSub(user, "Move to Group");
+      await user.click(await screen.findByRole("menuitem", { name: "No Group" }));
+      await vi.waitFor(() => expect(move).toHaveBeenLastCalledWith(["p-local-pg"], null));
+    });
+
+    it("a group header's menu renames and deletes the group", async () => {
+      const move = vi.spyOn(ipc.profiles, "moveToGroup");
+      const user = userEvent.setup();
+      renderLauncher();
+      await row("Rotated host");
+      fireEvent.contextMenu(within(list()).getByRole("button", { name: /Staging\s*2/ }));
+      const menu = await screen.findByRole("menu");
+      expect(menuItems(menu)).toEqual([
+        "Rename Group…",
+        "Delete Group",
+        "Export this group…",
+        "Import Connections…",
+        "New",
+      ]);
+      await user.click(within(menu).getByRole("menuitem", { name: "Rename Group…" }));
+      const dialog = await screen.findByRole("dialog", { name: "Rename Group" });
+      const name = within(dialog).getByRole("textbox", { name: "Group name" });
+      expect(name).toHaveValue("Staging");
+      await user.clear(name);
+      await user.type(name, "Pre-prod{Enter}");
+      await vi.waitFor(() =>
+        expect(move).toHaveBeenCalledWith(["p-staging-ssh", "p-rotated-ssh"], "Pre-prod"),
+      );
+      const header = await within(list()).findByRole("button", { name: /Pre-prod\s*2/ });
+      expect((await ipc.settings.get()).connectionGroups).toEqual(["Pre-prod"]);
+
+      fireEvent.contextMenu(header);
+      await user.click(await screen.findByRole("menuitem", { name: "Delete Group" }));
+      await vi.waitFor(() =>
+        expect(move).toHaveBeenLastCalledWith(["p-staging-ssh", "p-rotated-ssh"], null),
+      );
+      await vi.waitFor(() =>
+        expect(within(list()).queryByRole("button", { name: /Pre-prod/ })).toBeNull(),
+      );
+      // Its connections stay, without a group.
+      expect((await row("Rotated host")).closest("[role='group']")).toBeNull();
+      expect((await ipc.settings.get()).connectionGroups).toEqual([]);
+      // Put the seed data back for the other tests.
+      await ipc.profiles.moveToGroup(["p-staging-ssh", "p-rotated-ssh"], "Staging");
+    });
+
+    it("Export Connections ▸ Export this group… opens the export dialog for the group", async () => {
+      const user = userEvent.setup();
+      renderLauncher();
+      fireEvent.contextMenu(await row("Rotated host"));
+      await openSub(user, "Export Connections");
+      await user.click(await screen.findByRole("menuitem", { name: "Export this group…" }));
+      expect(useConnectionsIo.getState().exportScope).toEqual({
+        title: "Export “Staging”",
+        profileIds: ["p-staging-ssh", "p-rotated-ssh"],
+        groups: ["Staging"],
+        fileName: "Staging",
+      });
+      expect(await screen.findByRole("dialog", { name: "Export “Staging”" })).toBeVisible();
+    });
+
+    it("Import connections… picks a file, asks its password and imports the ticked ones", async () => {
+      vi.spyOn(window, "prompt").mockReturnValue(DEMO_IMPORT_PATH);
+      const user = userEvent.setup();
+      renderLauncher();
+      await row("Local Postgres");
+      await user.click(screen.getByRole("button", { name: /Import connections/ }));
+      const dialog = await screen.findByRole("dialog", { name: "Import Connections" });
+      await user.type(await within(dialog).findByLabelText("File password"), "tabler{Enter}");
+      await user.click(
+        await within(dialog).findByRole("checkbox", { name: "Import Local Postgres" }),
+      );
+      await user.click(within(dialog).getByRole("button", { name: "Import" }));
+      expect(await row("Team Postgres")).toHaveAttribute("aria-selected", "true");
+      expect(await row("Analytics warehouse")).toBeInTheDocument();
+      expect(within(list()).getAllByText("Local Postgres")).toHaveLength(1);
+      expect(
+        within(screen.getByRole("group", { name: "Team" })).getAllByRole("option"),
+      ).toHaveLength(2);
+      // The file's empty group came along only with a full import: not here.
+      expect(within(list()).queryByRole("group", { name: "Archive" })).toBeNull();
+      expect(toast.success).toHaveBeenCalledWith("Imported 2 connections", {
+        description: "team.tablerconnections",
+      });
     });
   });
 });

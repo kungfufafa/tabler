@@ -10,6 +10,7 @@ import {
 import { JsonEditorDialog } from "@/features/datagrid/editors/JsonEditorDialog";
 import { choiceKeyOf, choicesFor, NULL_CHOICE } from "@/features/datagrid/editors/registry";
 import { insertAtCaret } from "@/features/datagrid/editors/useGrabFocus";
+import { NOW_KINDS, NOW_LABEL, nowValue } from "@/features/datagrid/setValue";
 import { acceptsEmpty, type GridColumn } from "@/features/datagrid/types";
 import { actions } from "@/features/palette/actions";
 import type { Value } from "@/lib/ipc";
@@ -51,6 +52,8 @@ export interface FieldBlockProps {
   hidden: boolean;
   /** Holds a staged edit (highlighted value). */
   changed: boolean;
+  /** Bulk edit: the selected rows hold different values here ("Multiple values"). */
+  mixed?: boolean;
   /** Stages a value into this field; absent when the field is read-only. */
   onEdit?: (value: Value) => void;
   /** Shows this field in the Cell view (hex dump, full blob load). */
@@ -76,11 +79,12 @@ export function FieldBlock({
   focused,
   hidden,
   changed,
+  mixed = false,
   onEdit,
   onViewCell,
 }: FieldBlockProps) {
-  const base = fieldText(value);
-  const ident = `${rowKey}\u0000${value.t}\u0000${base}`;
+  const base = mixed ? "" : fieldText(value);
+  const ident = `${rowKey}\u0000${mixed ? "mixed" : value.t}\u0000${base}`;
   const [seen, setSeen] = useState(ident);
   /** Unstaged text; null while the box shows the value itself. */
   const [draft, setDraft] = useState<string | null>(null);
@@ -95,7 +99,7 @@ export function FieldBlock({
   const blockRef = useRef<HTMLDivElement>(null);
 
   const editable = !!onEdit;
-  const isBytes = value.t === "bytes";
+  const isBytes = value.t === "bytes" && !mixed;
   const typeable = editable && col.kind !== "bytes" && !isBytes;
   const text = draft ?? base;
   const dirty = draft !== null && draft !== base;
@@ -173,8 +177,11 @@ export function FieldBlock({
     }
   };
 
-  const placeholder =
-    draft !== null && draft !== base ? clearedPlaceholder(col) : placeholderOf(value);
+  const placeholder = mixed
+    ? "Multiple values"
+    : draft !== null && draft !== base
+      ? clearedPlaceholder(col)
+      : placeholderOf(value);
   const boxClass = cn(
     BOX,
     changed && "bg-changed",
@@ -204,8 +211,20 @@ export function FieldBlock({
         </button>
       </div>
     );
+  } else if (mixed && col.kind === "bytes") {
+    box = (
+      <div className={cn(BOX, "text-null flex h-[26px] items-center italic")}>Multiple values</div>
+    );
   } else if (typeable && isChoiceColumn(col)) {
-    box = <ChoiceBox col={col} value={value} className={boxClass} onPick={(v) => v && stage(v)} />;
+    box = (
+      <ChoiceBox
+        col={col}
+        value={value}
+        mixed={mixed}
+        className={boxClass}
+        onPick={(v) => v && stage(v)}
+      />
+    );
   } else {
     const common = {
       value: text,
@@ -279,7 +298,8 @@ export function FieldBlock({
           <FieldMenu
             col={col}
             value={value}
-            canCopy={!truncatedBlob}
+            mixed={mixed}
+            canCopy={!truncatedBlob && !mixed}
             onStage={stage}
             onCopy={() => copy(copyText(value))}
             onEditJson={() => setJsonOpen(true)}
@@ -340,17 +360,20 @@ export function FieldBlock({
 function ChoiceBox({
   col,
   value,
+  mixed = false,
   className,
   onPick,
 }: {
   col: GridColumn;
   value: Value;
+  /** Bulk edit with differing values: nothing is picked yet. */
+  mixed?: boolean;
   className: string;
   onPick: (value: Value | null) => void;
 }) {
   const choices = useMemo(() => choicesFor(col), [col]);
-  const key = choiceKeyOf(value, choices);
-  const isNullish = value.t === "null" || value.t === "default";
+  const key = mixed ? null : choiceKeyOf(value, choices);
+  const isNullish = mixed || value.t === "null" || value.t === "default";
   return (
     <div className="relative">
       <select
@@ -366,7 +389,13 @@ function ChoiceBox({
       >
         {key === null && (
           <option value="" disabled>
-            {value.t === "default" ? "DEFAULT" : value.t === "null" ? "NULL" : editText(value)}
+            {mixed
+              ? "Multiple values"
+              : value.t === "default"
+                ? "DEFAULT"
+                : value.t === "null"
+                  ? "NULL"
+                  : editText(value)}
           </option>
         )}
         {choices.map((c) => (
@@ -380,10 +409,14 @@ function ChoiceBox({
   );
 }
 
-/** The ⋯ menu of an editable field: Set NULL / EMPTY / DEFAULT, JSON editor, copy, Cell view. */
+/**
+ * The ⋯ menu of an editable field: Set NULL / EMPTY / DEFAULT / NOW() (dates and times), JSON
+ * editor, copy, Cell view.
+ */
 function FieldMenu({
   col,
   value,
+  mixed = false,
   canCopy,
   onStage,
   onCopy,
@@ -392,13 +425,16 @@ function FieldMenu({
 }: {
   col: GridColumn;
   value: Value;
+  /** Bulk edit with differing values: every Set item applies. */
+  mixed?: boolean;
   canCopy: boolean;
   onStage: (value: Value) => void;
   onCopy: () => void;
   onEditJson: () => void;
   onViewCell: () => void;
 }) {
-  const isEmpty = value.t === "text" && value.v === "";
+  const isEmpty = !mixed && value.t === "text" && value.v === "";
+  const now = NOW_KINDS.has(col.kind);
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
@@ -415,7 +451,7 @@ function FieldMenu({
         {col.nullable && (
           <DropdownMenuItem
             className="text-xs"
-            disabled={value.t === "null"}
+            disabled={!mixed && value.t === "null"}
             onSelect={() => onStage({ t: "null" })}
           >
             Set NULL
@@ -433,10 +469,21 @@ function FieldMenu({
         {col.hasDefault && (
           <DropdownMenuItem
             className="text-xs"
-            disabled={value.t === "default"}
+            disabled={!mixed && value.t === "default"}
             onSelect={() => onStage({ t: "default" })}
           >
             Set DEFAULT
+          </DropdownMenuItem>
+        )}
+        {now && (
+          <DropdownMenuItem
+            className="text-xs"
+            onSelect={() => {
+              const v = nowValue(col.kind);
+              if (v) onStage(v);
+            }}
+          >
+            Set {NOW_LABEL}
           </DropdownMenuItem>
         )}
         {col.kind === "json" && (
@@ -444,7 +491,7 @@ function FieldMenu({
             Edit JSON…
           </DropdownMenuItem>
         )}
-        {(col.nullable || acceptsEmpty(col) || col.hasDefault || col.kind === "json") && (
+        {(col.nullable || acceptsEmpty(col) || col.hasDefault || now || col.kind === "json") && (
           <DropdownMenuSeparator />
         )}
         <DropdownMenuItem className="text-xs" disabled={!canCopy} onSelect={onCopy}>

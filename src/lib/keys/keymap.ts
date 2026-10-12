@@ -1,4 +1,7 @@
+import { useSyncExternalStore } from "react";
 import type { ActionId } from "@/features/palette/actions";
+import { getPrefs, usePrefsStore } from "@/stores/prefs";
+import { EMPTY_OVERRIDES, resolveKeymap, type KeymapOverrides } from "./overrides";
 
 export type Scope = "global" | "sidebar" | "grid" | "grid-edit" | "filter" | "editor" | "dialog";
 
@@ -179,6 +182,16 @@ export const KEYMAP: ShortcutDef[] = [
     label: "Reconnect",
     allowInEditor: true,
   },
+  // Inside the SQL editor ⌘. stays "Cancel running query" (editor scope wins); allowInEditor lets
+  // the Connection menu item still open the list while the editor has the focus. Elsewhere in a
+  // SQL tab that runs a query (its results grid…) the handler cancels the run instead (AdminHost).
+  {
+    id: "admin.process-list",
+    keys: "Mod+.",
+    scope: "global",
+    label: "Process list",
+    allowInEditor: true,
+  },
   // Staging works from anywhere in the tab (toolbar, filter bar…), not only with the grid focused.
   {
     id: "grid.commit",
@@ -215,10 +228,26 @@ export const KEYMAP: ShortcutDef[] = [
   { id: "grid.copy", keys: "Mod+C", scope: "grid", label: "Copy selected rows" },
   { id: "grid.copy-as", keys: "Mod+Alt+C", scope: "grid", label: "Copy rows as…" },
   { id: "grid.paste", keys: "Mod+V", scope: "grid", label: "Paste" },
+  // In a grid ⌘↩ is Quick Look (TablePlus); elsewhere it keeps its own meaning.
+  { id: "grid.quick-look", keys: "Mod+Enter", scope: "grid", label: "Quick Look editor" },
+  { id: "grid.set-value", keys: "Alt+Enter", scope: "grid", label: "Set value…" },
+  { id: "grid.prev-page", keys: "Mod+Left", scope: "grid", label: "Previous page" },
+  { id: "grid.next-page", keys: "Mod+Right", scope: "grid", label: "Next page" },
   // The filter bar above the grid (TablePlus's keys); ↩ in a value applies too.
   { id: "filter.apply", keys: "Mod+Enter", scope: "filter", label: "Apply all filters" },
   { id: "filter.duplicate", keys: "Mod+I", scope: "filter", label: "Duplicate filter" },
   { id: "filter.remove", keys: "Mod+Shift+I", scope: "filter", label: "Remove filter" },
+  {
+    id: "filter.apply-or",
+    keys: "Mod+Shift+Enter",
+    scope: "filter",
+    label: "Apply all filters with OR",
+  },
+  { id: "filter.prev", keys: "Mod+Up", scope: "filter", label: "Previous filter" },
+  { id: "filter.next", keys: "Mod+Down", scope: "filter", label: "Next filter" },
+  { id: "filter.toggle", keys: "Mod+B", scope: "filter", label: "Check / uncheck filter" },
+  { id: "filter.column", keys: "Mod+Left", scope: "filter", label: "Choose filter column" },
+  { id: "filter.operator", keys: "Mod+Right", scope: "filter", label: "Choose filter operator" },
   {
     id: "query.run-current",
     keys: "Mod+Enter",
@@ -248,6 +277,47 @@ export const KEYMAP: ShortcutDef[] = [
     allowInEditor: true,
   },
   { id: "query.open", keys: "Mod+O", scope: "editor", label: "Open .sql file" },
+  { id: "query.add-to-queries", keys: "Mod+Alt+S", scope: "editor", label: "Add to Queries…" },
+  {
+    id: "query.save-selection",
+    keys: "Mod+Shift+S",
+    scope: "editor",
+    label: "Save selected SQL statements as…",
+  },
+  { id: "query.font-bigger", keys: "Mod+=", scope: "editor", label: "Increase font size" },
+  { id: "query.font-bigger", keys: "Mod+Shift+=", scope: "editor", label: "Increase font size" },
+  { id: "query.font-smaller", keys: "Mod+-", scope: "editor", label: "Decrease font size" },
+  { id: "query.split", keys: "Mod+Shift+D", scope: "editor", label: "Split pane horizontally" },
+  // Workspaces (TablePlus ⇧⌘\ and Keymap ▸ Navigate) and the tab bar's ‹ › history.
+  {
+    id: "workspace.show",
+    keys: "Mod+Shift+\\",
+    scope: "global",
+    label: "Show workspaces",
+    allowInEditor: true,
+  },
+  {
+    id: "workspace.next",
+    keys: "Mod+Ctrl+Right",
+    scope: "global",
+    label: "Select next workspace",
+    allowInEditor: true,
+  },
+  {
+    id: "workspace.prev",
+    keys: "Mod+Ctrl+Left",
+    scope: "global",
+    label: "Select previous workspace",
+    allowInEditor: true,
+  },
+  { id: "tab.back", keys: "Ctrl+-", scope: "global", label: "Go back", allowInEditor: true },
+  {
+    id: "tab.forward",
+    keys: "Ctrl+Shift+-",
+    scope: "global",
+    label: "Go forward",
+    allowInEditor: true,
+  },
 ];
 
 const SCOPE_CHAIN: Record<Scope, Scope[]> = {
@@ -280,3 +350,48 @@ export function findShortcut(
 export function shortcutFor(id: ActionId): string | undefined {
   return KEYMAP.find((d) => d.id === id)?.keys;
 }
+
+// --- user overrides (Settings ▸ Shortcuts) ---------------------------------------------------
+
+/**
+ * KEYMAP as shipped. KEYMAP itself is the effective keymap: `applyKeymapOverrides` rewrites it in
+ * place, so every reader (the shortcut listener, menus, tooltips, the palette, the native menu
+ * guard) sees the user's bindings without knowing about them.
+ */
+export const DEFAULT_KEYMAP: readonly ShortcutDef[] = Object.freeze(
+  KEYMAP.map((d) => Object.freeze({ ...d })),
+);
+
+let appliedOverrides: KeymapOverrides = EMPTY_OVERRIDES;
+let keymapVersion = 0;
+const keymapListeners = new Set<() => void>();
+
+/** Rebuilds KEYMAP from the defaults plus `overrides` (no-op for the overrides already applied). */
+export function applyKeymapOverrides(overrides: KeymapOverrides): void {
+  if (overrides === appliedOverrides) return;
+  appliedOverrides = overrides;
+  KEYMAP.splice(0, KEYMAP.length, ...resolveKeymap(DEFAULT_KEYMAP, overrides));
+  keymapVersion++;
+  keymapListeners.forEach((fn) => fn());
+}
+
+/** Calls `fn` after every keymap change. */
+export function subscribeKeymap(fn: () => void): () => void {
+  keymapListeners.add(fn);
+  return () => void keymapListeners.delete(fn);
+}
+
+/** Bumped on every keymap change. */
+export function getKeymapVersion(): number {
+  return keymapVersion;
+}
+
+/** The keymap version, reactively: components that show shortcut labels re-render with it. */
+export function useKeymapVersion(): number {
+  return useSyncExternalStore(subscribeKeymap, getKeymapVersion);
+}
+
+// The preference is the source of truth; its localStorage mirror is read when prefs.ts loads, so
+// even labels computed at import time see the user's bindings.
+applyKeymapOverrides(getPrefs().keymapOverrides);
+usePrefsStore.subscribe((s) => applyKeymapOverrides(s.prefs.keymapOverrides));

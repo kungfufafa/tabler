@@ -63,6 +63,7 @@ const META: TableMeta = {
       method: "btree",
       predicate: null,
       definition: null,
+      comment: null,
     },
     {
       name: "users_email_idx",
@@ -72,6 +73,7 @@ const META: TableMeta = {
       method: "btree",
       predicate: null,
       definition: null,
+      comment: null,
     },
   ],
   foreignKeys: [],
@@ -79,6 +81,8 @@ const META: TableMeta = {
   comment: null,
   rowEstimate: 10,
   ddl: null,
+  checks: [],
+  options: null,
 };
 
 const edit = (ops: DdlOp[], key: string, field: Parameters<typeof editColumn>[4], value: unknown) =>
@@ -211,6 +215,7 @@ describe("addColumn / dropColumn", () => {
       unique: false,
       method: null,
       predicate: null,
+      comment: null,
     });
     ops = edit(ops, "c:email", "nullable", true);
     expect(dropColumn(META, ops, "n:0")).toEqual([ops[2]]);
@@ -224,6 +229,7 @@ describe("addColumn / dropColumn", () => {
       unique: false,
       method: null,
       predicate: null,
+      comment: null,
     });
     ops = edit(ops, "n:0", "name", "slug");
     expect(ops[1]).toMatchObject({ index: { columns: ["slug DESC"] } });
@@ -255,6 +261,7 @@ describe("indexes", () => {
       unique: true,
       method: null,
       predicate: null,
+      comment: null,
     });
     expect(dropIndex(META, ops, "ni:0")).toEqual([]);
   });
@@ -478,7 +485,7 @@ describe("staged ops store", () => {
     const s1 = pushOps(EMPTY_SLICE, a);
     const s2 = pushOps(s1, b);
     expect(pushOps(s2, s2.ops)).toBe(s2);
-    expect(undoOps(s2)).toEqual({ ops: a, past: [[]] });
+    expect(undoOps(s2)).toEqual({ ops: a, past: [[]], future: [b] });
     expect(undoOps(undoOps(s2)).ops).toEqual([]);
     expect(undoOps(EMPTY_SLICE)).toBe(EMPTY_SLICE);
   });

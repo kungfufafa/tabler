@@ -63,6 +63,12 @@ export function resetOrder(state: ColumnState): ColumnState {
   return { ...state, order: [] };
 }
 
+/** "Reset Column Positions and Widths": the default order and widths (hidden columns stay hidden). */
+export function resetLayout(state: ColumnState): ColumnState {
+  if (state.order.length === 0 && Object.keys(state.widths).length === 0) return state;
+  return { ...state, order: [], widths: {} };
+}
+
 /** Hidden ids that still name a column (stale ids from an older schema are ignored). */
 export function hiddenCount(columns: readonly GridColumn[], state: ColumnState): number {
   const hidden = new Set(state.hidden);

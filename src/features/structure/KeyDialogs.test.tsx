@@ -4,7 +4,7 @@ import { createContext, useContext, useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ipc } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
-import { AddForeignKeyDialog, AddIndexDialog } from "./KeyDialogs";
+import { AddForeignKeyDialog } from "./KeyDialogs";
 
 // Radix Select needs pointer / layout APIs jsdom lacks: stand in a native <select>.
 vi.mock("@/components/ui/select", () => {
@@ -109,22 +109,5 @@ describe("AddForeignKeyDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "reopen" }));
     await screen.findByRole("dialog");
     await pickUsers();
-  });
-});
-
-describe("AddIndexDialog", () => {
-  it("labels the method select", () => {
-    render(
-      <AddIndexDialog
-        open
-        onOpenChange={() => {}}
-        dialect="mysql"
-        table={POSTS}
-        columns={["id", "title"]}
-        existingNames={[]}
-        onAdd={() => {}}
-      />,
-    );
-    expect(screen.getByLabelText("Type / method")).toBeInTheDocument();
   });
 });

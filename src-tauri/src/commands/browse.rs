@@ -157,6 +157,27 @@ pub async fn browse_table(
     }
 }
 
+/// Rows above which an unfiltered count uses the planner's estimate (TablePlus's default for
+/// "Estimate count when table has more than … rows").
+pub const DEFAULT_ESTIMATE_ABOVE: i64 = 500_000;
+
+/// The planner estimate to report instead of counting, when it applies: no exact count asked for,
+/// no filter, and a table estimated to hold more than `estimate_above` rows.
+fn estimated_count(
+    meta: &TableMeta,
+    filtered: bool,
+    exact: bool,
+    estimate_above: i64,
+) -> Option<RowCount> {
+    let est = meta.row_estimate?;
+    (!exact && !filtered && est > estimate_above).then_some(RowCount {
+        count: est,
+        exact: false,
+    })
+}
+
+/// Counts a table's rows (`filter` applied). An unfiltered table estimated above `estimate_above`
+/// rows (default 500,000) reports the planner estimate, unless `exact` is set.
 #[tauri::command]
 pub async fn count_table_rows(
     state: State<'_, AppState>,
@@ -164,21 +185,18 @@ pub async fn count_table_rows(
     table: TableRef,
     filter: Option<FilterGroup>,
     exact: Option<bool>,
+    estimate_above: Option<i64>,
 ) -> Result<RowCount, AppError> {
     let conn = state.connection(connection_id).await?;
     let session = conn.session().await;
     let meta = cached_meta(&conn, &table).await?;
-    let exact = exact.unwrap_or(false);
-    // Large unfiltered tables: use the planner estimate unless an exact count was requested.
-    if !exact
-        && filter.is_none()
-        && let Some(est) = meta.row_estimate
-        && est > 200_000
-    {
-        return Ok(RowCount {
-            count: est,
-            exact: false,
-        });
+    if let Some(estimate) = estimated_count(
+        &meta,
+        filter.is_some(),
+        exact.unwrap_or(false),
+        estimate_above.unwrap_or(DEFAULT_ESTIMATE_ABOVE),
+    ) {
+        return Ok(estimate);
     }
     let built = build_count(
         session.dialect(),
@@ -475,6 +493,35 @@ mod tests {
             array_elem_type: None,
             extra: None,
         }
+    }
+
+    #[test]
+    fn estimates_only_big_unfiltered_tables() {
+        let meta = |est: Option<i64>| TableMeta {
+            table: TableRef::new(None, "t"),
+            kind: TableKind::Table,
+            columns: vec![],
+            primary_key: vec![],
+            indexes: vec![],
+            foreign_keys: vec![],
+            triggers: vec![],
+            comment: None,
+            row_estimate: est,
+            ddl: None,
+            checks: vec![],
+            options: None,
+        };
+        let big = meta(Some(600_000));
+        assert_eq!(
+            estimated_count(&big, false, false, DEFAULT_ESTIMATE_ABOVE).map(|c| (c.count, c.exact)),
+            Some((600_000, false))
+        );
+        // An exact count, a filter, a higher threshold or no estimate at all: count.
+        assert!(estimated_count(&big, false, true, DEFAULT_ESTIMATE_ABOVE).is_none());
+        assert!(estimated_count(&big, true, false, DEFAULT_ESTIMATE_ABOVE).is_none());
+        assert!(estimated_count(&big, false, false, 1_000_000).is_none());
+        assert!(estimated_count(&meta(None), false, false, 0).is_none());
+        assert!(estimated_count(&meta(Some(500_000)), false, false, 500_000).is_none());
     }
 
     #[test]

@@ -288,6 +288,63 @@ describe("InspectorPanel editing (Details)", () => {
   }
   const box = (name: string) => screen.getByRole("textbox", { name });
 
+  it("bulk edit: N rows selected, Multiple values, and an edit for all of them", () => {
+    const edit = vi.fn();
+    render(<InspectorPanel />);
+    showRow({
+      edit,
+      bulk: { count: 3, mixed: new Set([idx("name"), idx("active")]), id: "a|b|c" },
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("3 rows selected");
+    expect(box("name")).toHaveValue("");
+    expect(box("name")).toHaveAttribute("placeholder", "Multiple values");
+    // A field the rows agree on shows its value.
+    expect(box("bio")).toHaveValue("line 1\nline 2");
+    expect(screen.getByRole("combobox", { name: "active" })).toHaveDisplayValue("Multiple values");
+    fireEvent.change(box("name"), { target: { value: "Same" } });
+    fireEvent.keyDown(box("name"), { key: "Enter", code: "Enter" });
+    expect(edit).toHaveBeenCalledWith(idx("name"), { t: "text", v: "Same" });
+  });
+
+  it("each field's menu offers NULL / EMPTY / DEFAULT, and NOW() for dates", async () => {
+    const edit = vi.fn();
+    const cols = [...ecols, col("born", "date")];
+    const cells = [...ecells, { t: "null" } as Value];
+    render(<InspectorPanel />);
+    act(() =>
+      useInspectorStore.setState({
+        cell: {
+          column: cols[1]!,
+          value: cells[1]!,
+          rowIndex: 0,
+          source: "users",
+          row: {
+            columns: cols,
+            cells,
+            focused: 1,
+            edit,
+            bulk: { count: 2, mixed: new Set([cols.length - 1]), id: "x" },
+          },
+          fetch: null,
+        },
+      }),
+    );
+    fireEvent.pointerDown(screen.getByRole("button", { name: "born options" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    const menu = await screen.findByRole("menu");
+    // Mixed values: Set NULL applies even though the first row is NULL.
+    expect(within(menu).getByRole("menuitem", { name: "Set NULL" })).not.toHaveAttribute(
+      "data-disabled",
+    );
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Set Now (local time)" }));
+    expect(edit).toHaveBeenCalledWith(cols.length - 1, {
+      t: "date",
+      v: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+    });
+  });
+
   it("stages a single-line field on Enter, as a value of the column's kind", () => {
     const edit = vi.fn();
     render(<InspectorPanel />);

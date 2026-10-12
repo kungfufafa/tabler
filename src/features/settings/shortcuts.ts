@@ -43,8 +43,6 @@ export const REFERENCE_SHORTCUTS: ReadonlyArray<ReferenceShortcut> = [
   { scope: "grid", keys: "Mod+Down", label: "First / last row" },
   { scope: "grid", keys: "Mod+Home", label: "First / last row" },
   { scope: "grid", keys: "Mod+End", label: "First / last row" },
-  { scope: "grid", keys: "Mod+Left", label: "First / last column" },
-  { scope: "grid", keys: "Mod+Right", label: "First / last column" },
   { scope: "grid", keys: "Home", label: "First / last column" },
   { scope: "grid", keys: "End", label: "First / last column" },
   { scope: "grid", keys: "PageUp", label: "Page up / down" },
@@ -75,6 +73,28 @@ export const REFERENCE_SHORTCUTS: ReadonlyArray<ReferenceShortcut> = [
   { scope: "editor", keys: "Alt+Up", label: "Move line up / down" },
   { scope: "editor", keys: "Alt+Down", label: "Move line up / down" },
   { scope: "editor", keys: "Ctrl+Space", label: "Show completions" },
+  // SQL editor: TablePlus's multiple carets and block comments (cmExtensions.multiCaretKeymap).
+  { scope: "editor", keys: "Mod+Alt+/", label: "Wrap in /* */, or unwrap" },
+  { scope: "editor", keys: "Mod+Click", label: "Add a caret" },
+  { scope: "editor", keys: "Ctrl+Shift+Up", label: "Add a caret above / below" },
+  { scope: "editor", keys: "Ctrl+Shift+Down", label: "Add a caret above / below" },
+  { scope: "editor", keys: "Mod+Ctrl+G", label: "Select all occurrences" },
+  { scope: "editor", keys: "Escape", label: "Back to a single caret" },
+  // Sidebar items tree (SchemaTree's keydown handler and clicks).
+  { scope: "sidebar", keys: "Mod+Click", label: "Add / remove an item" },
+  { scope: "sidebar", keys: "Shift+Click", label: "Select a range of items" },
+  { scope: "sidebar", keys: "Shift+Up", label: "Select a range of items" },
+  { scope: "sidebar", keys: "Shift+Down", label: "Select a range of items" },
+  { scope: "sidebar", keys: "Mod+A", label: "Select all items" },
+  { scope: "sidebar", keys: "Mod+C", label: "Copy the selected names" },
+  { scope: "sidebar", keys: "Backspace", label: "Delete the selected items" },
+  { scope: "sidebar", keys: "Alt+Backspace", label: "Truncate the selected tables" },
+  { scope: "sidebar", keys: "Shift+Backspace", label: "Delete with CASCADE (PostgreSQL)" },
+  {
+    scope: "sidebar",
+    keys: "Mod+Backspace",
+    label: "Delete ignoring foreign key checks (MySQL)",
+  },
 ];
 
 export const SCOPE_TITLES: Record<Scope, string> = {
@@ -87,7 +107,7 @@ export const SCOPE_TITLES: Record<Scope, string> = {
   dialog: "Dialogs",
 };
 
-const SCOPE_ORDER: Scope[] = [
+export const SCOPE_ORDER: Scope[] = [
   "global",
   "sidebar",
   "grid",
@@ -97,10 +117,10 @@ const SCOPE_ORDER: Scope[] = [
   "dialog",
 ];
 
-const isReference = (row: ShortcutRow) => row.id.startsWith("ref:");
+export const isReference = (row: Pick<ShortcutRow, "id">) => row.id.startsWith("ref:");
 
 /** Lower-cased text a row can be found by: label, action id, scope and every spelling of its keys. */
-function haystack(row: ShortcutRow, scope: Scope, mac: boolean): string {
+export function haystack(row: ShortcutRow, scope: Scope, mac: boolean): string {
   const keys = row.keys.flatMap((k) => [
     k,
     k.replace(/\bMod\b/g, mac ? "Cmd" : "Ctrl"),
@@ -108,6 +128,11 @@ function haystack(row: ShortcutRow, scope: Scope, mac: boolean): string {
   ]);
   const id = isReference(row) ? [] : [row.id];
   return [row.label, ...id, SCOPE_TITLES[scope], ...keys].join(" ").toLowerCase();
+}
+
+/** The lower-cased, whitespace-separated terms of a search (every one must match). */
+export function queryTerms(query: string): string[] {
+  return query.toLowerCase().split(/\s+/).filter(Boolean);
 }
 
 /** One binding on its way into a row. */
@@ -172,7 +197,7 @@ export function groupShortcuts(
     else rows.set(e.rowKey, { id: e.id, label: e.label, keys: [e.keys] });
   }
 
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const terms = queryTerms(query);
   return SCOPE_ORDER.flatMap((scope) => {
     const all = [...(byScope.get(scope)?.values() ?? [])];
     const rows =

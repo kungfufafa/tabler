@@ -25,7 +25,7 @@ serde_json = "1"
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 tauri-plugin-clipboard-manager = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs", "process"] }
 tokio-util = "0.7"
 futures = "0.3"
 tokio-postgres = "0.7"
@@ -41,11 +41,17 @@ base64 = "0.23"
 csv = "1"
 async-trait = "0.1"
 regex = "1"
-rusqlite = { version = "0.40", features = ["bundled", "column_decltype"] }
+rusqlite = { version = "0.40", features = ["bundled", "column_decltype", "column_metadata"] }
 mysql_async = { version = "0.37", default-features = false, features = ["default-rustls"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 ts-rs = { version = "12", features = ["uuid-impl", "chrono-impl"] }
+# Import / export: .sql.gz files and the deflate streams of .xlsx workbooks (already in the lock).
+flate2 = "1"
+# Connection export files: AES-256-GCM + PBKDF2 (already built for rustls).
+aws-lc-rs = "1.18"
+# SASLprep of PostgreSQL passwords for client-side SCRAM verifiers (already in the lock via tokio-postgres).
+stringprep = "0.1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

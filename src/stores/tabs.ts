@@ -140,6 +140,44 @@ interface TabsState {
   back: () => void;
   /** Undoes `back` (› in the tab bar). */
   forward: () => void;
+  /**
+   * Appends tabs rebuilt from the saved session (none of them active) and moves the "Query N"
+   * counter past their titles.
+   */
+  restoreTabs: (tabs: readonly Tab[]) => void;
+}
+
+/**
+ * What the window-close guard asks the session layer (installed by it): which tabs' unsaved work
+ * the session keeps anyway (auto-saved SQL query tabs, restored on the next start), so closing the
+ * window does not ask about them, and how to close once that work is written.
+ */
+export interface WindowCloseHooks {
+  survivesClose: (tab: Tab, tabs: readonly Tab[]) => boolean;
+  /** Starts writing the session now (the close dialog may close the window right after). */
+  save: () => void;
+  /** Writes the session, then closes the window (the guard was told not to close yet). */
+  closeAfterSave: () => void;
+}
+
+let windowCloseHooks: WindowCloseHooks | null = null;
+
+/** Installs the session's close hooks; returns the uninstall function. */
+export function setWindowCloseHooks(hooks: WindowCloseHooks): () => void {
+  windowCloseHooks = hooks;
+  return () => {
+    if (windowCloseHooks === hooks) windowCloseHooks = null;
+  };
+}
+
+/** Highest N of the "Query N" titles in `tabs` (0 when there is none). */
+export function maxQueryNumber(tabs: readonly Pick<Tab, "kind" | "title">[]): number {
+  let n = 0;
+  for (const t of tabs) {
+    const m = t.kind === "query" ? /^Query (\d+)$/.exec(t.title) : null;
+    if (m) n = Math.max(n, Number(m[1]));
+  }
+  return n;
 }
 
 const MAX_CLOSED = 20;
@@ -173,9 +211,22 @@ export function sameTable(a: TableRef, b: TableRef): boolean {
  * other one shows), 1 for a dirty query tab.
  */
 export function unsavedCount(tab: Tab): number {
-  if (tab.kind === "query") return tab.dirty ? 1 : 0;
+  const extra = unsavedSources.reduce((n, count) => n + count(tab), 0);
+  if (tab.kind === "query") return (tab.dirty ? 1 : 0) + extra;
   const slice = useTableTabsStore.getState().slices[tab.id];
-  return (slice ? pendingCount(slice.staging) : 0) + structurePendingCount(tab.id);
+  return (slice ? pendingCount(slice.staging) : 0) + structurePendingCount(tab.id) + extra;
+}
+
+/** Unsaved work counted by features this store cannot import (staged edits of query results). */
+const unsavedSources: ((tab: Tab) => number)[] = [];
+
+/** Adds a counter to `unsavedCount` (and so to every close / quit guard); returns its removal. */
+export function registerUnsavedSource(count: (tab: Tab) => number): () => void {
+  unsavedSources.push(count);
+  return () => {
+    const i = unsavedSources.indexOf(count);
+    if (i >= 0) unsavedSources.splice(i, 1);
+  };
 }
 
 /** Drops the per-tab state (staged rows, staged DDL) of tabs that are going away. */
@@ -460,8 +511,18 @@ export const useTabsStore = create<TabsState>()(
 
     requestWindowClose: () => {
       const s = get();
-      const request = buildRequest("window", s.tabs);
-      if (!request) return true;
+      const hooks = windowCloseHooks;
+      const guarded = hooks ? s.tabs.filter((t) => !hooks.survivesClose(t, s.tabs)) : s.tabs;
+      const request = buildRequest("window", guarded);
+      if (!request) {
+        // Only auto-saved query text is unsaved: write the session first, then close.
+        if (hooks && guarded.length < s.tabs.length && dirtyTabs(s.tabs).length > 0) {
+          hooks.closeAfterSave();
+          return false;
+        }
+        return true;
+      }
+      hooks?.save();
       if (s.closeRequest?.kind !== "window") set({ closeRequest: request });
       return false;
     },
@@ -582,7 +643,12 @@ export const useTabsStore = create<TabsState>()(
       }),
 
     rename: (id, title) =>
-      set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, title } : t)) })),
+      set((s) => {
+        const name = title.trim();
+        const tab = s.tabs.find((t) => t.id === id);
+        if (!tab || !name || tab.title === name) return s;
+        return { tabs: s.tabs.map((t) => (t.id === id ? { ...t, title: name } : t)) };
+      }),
 
     back: () =>
       set((s) => {
@@ -594,6 +660,17 @@ export const useTabsStore = create<TabsState>()(
       set((s) => {
         const i = forwardTarget(s);
         return i < 0 ? s : { activeId: s.history[i]!, historyIndex: i };
+      }),
+
+    restoreTabs: (restored) =>
+      set((s) => {
+        const known = new Set(s.tabs.map((t) => t.id));
+        const added = restored.filter((t) => !known.has(t.id));
+        if (added.length === 0) return s;
+        return {
+          tabs: [...s.tabs, ...added],
+          queryCounter: Math.max(s.queryCounter, maxQueryNumber(added)),
+        };
       }),
   })),
 );

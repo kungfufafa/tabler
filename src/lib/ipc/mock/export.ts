@@ -1,11 +1,14 @@
-// Mock handlers for export_data, cancel_export and accept_host_key, plus the SSH host-key check the
-// mock `connect` / `test_connection` run for profiles with an SSH tunnel.
+// Mock handlers for export_data, export_tables, cancel_export and accept_host_key, plus the SSH
+// host-key check the mock `connect` / `test_connection` run for profiles with an SSH tunnel.
 import type { ConnectionInfo } from "../bindings/ConnectionInfo";
 import type { Driver } from "../bindings/Driver";
 import type { ExportFormat } from "../bindings/ExportFormat";
 import type { ExportProgress } from "../bindings/ExportProgress";
 import type { ExportRequest } from "../bindings/ExportRequest";
 import type { ExportResult } from "../bindings/ExportResult";
+import type { ExportTablesProgress } from "../bindings/ExportTablesProgress";
+import type { ExportTablesRequest } from "../bindings/ExportTablesRequest";
+import type { ExportTablesResult } from "../bindings/ExportTablesResult";
 import type { SshConfig } from "../bindings/SshConfig";
 import type { Value } from "../bindings/Value";
 import { tableMetaFor } from "./fixtures";
@@ -151,16 +154,22 @@ function heldRows(
 function validateFormat(format: ExportFormat, hasTable: boolean): void {
   if (format.format === "csv") {
     const d = format.delimiter;
-    if (d.length !== 1 || d.charCodeAt(0) > 127 || d === '"' || d === "\r" || d === "\n")
+    if (d.length !== 1 || d.charCodeAt(0) > 127 || ['"', "'", "\r", "\n"].includes(d))
       mockError(
         "INVALID_INPUT",
         "the CSV delimiter must be a single ASCII character other than a quote or a line break",
       );
+    if (!["\n", "\r\n", "\r"].includes(format.lineBreak))
+      mockError("INVALID_INPUT", "the CSV line break must be \\n, \\r\\n or \\r");
+    if (format.decimal !== "." && format.decimal !== ",")
+      mockError("INVALID_INPUT", "the CSV decimal separator must be . or ,");
   }
   if (format.format === "sqlInsert") {
     if (format.batchSize < 1)
       mockError("INVALID_INPUT", "the INSERT batch size must be at least 1");
-    if (!hasTable && format.tableName.trim() === "")
+    if (!format.content && !format.structure && !format.dropTable)
+      mockError("INVALID_INPUT", "nothing to export: include the table structure or its content");
+    if (format.content && !hasTable && format.tableName.trim() === "")
       mockError("INVALID_INPUT", "a target table name is required for an INSERT export");
   }
 }
@@ -206,9 +215,10 @@ function sqlRows(driver: Driver, sql: string): number {
 
 /** Rough size of one written row, so the progress shows plausible megabytes. */
 function bytesPerRow(format: ExportFormat): number {
-  if (format.format === "csv") return format.quoteAll ? 96 : 84;
+  if (format.format === "csv") return format.quote === "ifNeeded" ? 84 : 96;
   if (format.format === "json") return format.pretty && !format.ndjson ? 210 : 140;
-  return 120;
+  if (format.format === "xlsx") return 48;
+  return format.gzip ? 30 : 120;
 }
 
 registerMock("export_data", async ({ connectionId, req, onProgress }) => {
@@ -264,4 +274,78 @@ registerMock("export_data", async ({ connectionId, req, onProgress }) => {
 registerMock("cancel_export", ({ exportId }) => {
   if (running.has(exportId as string)) cancelled.add(exportId as string);
   return null;
+});
+
+// --- multi-table export ----------------------------------------------------------------------
+
+function fileExt(format: ExportFormat): string {
+  switch (format.format) {
+    case "csv":
+      return format.delimiter === "\t" ? "tsv" : "csv";
+    case "json":
+      return format.ndjson ? "ndjson" : "json";
+    case "sqlInsert":
+      return format.gzip ? "sql.gz" : "sql";
+    case "xlsx":
+      return "xlsx";
+  }
+}
+
+registerMock("export_tables", async ({ connectionId, req, onProgress }) => {
+  const r = req as ExportTablesRequest;
+  const channel = onProgress as { send?: (p: ExportTablesProgress) => void } | undefined;
+  if (!r.exportId?.trim()) mockError("INVALID_INPUT", "exportId is required");
+  if (running.has(r.exportId))
+    mockError("INVALID_INPUT", `export "${r.exportId}" is already running`);
+  if (r.tables.length === 0) mockError("INVALID_INPUT", "no tables to export");
+  if (!r.target.startsWith("/")) mockError("INVALID_INPUT", "the export target must be absolute");
+  if (r.layout === "singleFile" && (r.format.format === "csv" || r.format.format === "json"))
+    mockError("INVALID_INPUT", "CSV and JSON exports write one file per table");
+  const conns = await mockInvoke<ConnectionInfo[]>("list_connections", {});
+  const conn =
+    conns.find((c) => c.connectionId === connectionId) ??
+    mockError("NOT_CONNECTED", "not connected");
+  validateFormat(r.format, true);
+  const counts = r.tables.map(
+    (t) => tableMetaFor(conn.driver, t.schema ?? "public", t.name)?.rowEstimate ?? 25,
+  );
+  const perRow = bytesPerRow(r.format);
+  const content = r.format.format !== "sqlInsert" || r.format.content;
+  const delay = mockLatency === 0 ? 2 : 60;
+  const started = performance.now();
+  let rows = 0;
+  running.add(r.exportId);
+  try {
+    const tables = [];
+    for (const [i, table] of r.tables.entries()) {
+      const total = content ? (counts[i] ?? 0) : 0;
+      for (let step = 1; step <= 3; step++) {
+        await sleep(delay);
+        if (cancelled.has(r.exportId)) mockError("CANCELLED", "export cancelled");
+        const done = Math.round((total * step) / 3);
+        channel?.send?.({
+          tableIndex: i,
+          tableCount: r.tables.length,
+          table: table.name,
+          tableRows: done,
+          rows: rows + done,
+          bytes: (rows + done) * perRow,
+        });
+      }
+      rows += total;
+      const path =
+        r.layout === "singleFile" ? r.target : `${r.target}/${table.name}.${fileExt(r.format)}`;
+      tables.push({ table, path, rows: total });
+    }
+    return {
+      tables,
+      paths: r.layout === "singleFile" ? [r.target] : tables.map((t) => t.path),
+      rows,
+      bytes: rows * perRow,
+      durationMs: Math.max(1, Math.round(performance.now() - started)),
+    } satisfies ExportTablesResult;
+  } finally {
+    running.delete(r.exportId);
+    cancelled.delete(r.exportId);
+  }
 });

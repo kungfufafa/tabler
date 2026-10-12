@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
-import { groupProfiles, isGroupCollapsed, visibleProfiles } from "./list";
+import {
+  groupDropId,
+  groupOfDropTarget,
+  groupProfiles,
+  isGroupCollapsed,
+  sortProfiles,
+  visibleProfiles,
+} from "./list";
 
 const names = (groups: ReturnType<typeof groupProfiles>) =>
   groups.map(([g, items]) => [g, items.map((p) => p.name)]);
@@ -52,5 +59,60 @@ describe("visibleProfiles", () => {
     expect(
       ids(visibleProfiles(groupProfiles(SEED_PROFILES, "staging"), ["Staging"], true)),
     ).toEqual(["p-staging-ssh", "p-rotated-ssh"]);
+  });
+});
+
+describe("sorting and empty groups", () => {
+  const order = (sort: Parameters<typeof sortProfiles>[1]) =>
+    sortProfiles(SEED_PROFILES, sort).map((p) => p.name);
+
+  it("sorts by name, tag (TablePlus's order, untagged last), driver or the saved order", () => {
+    expect(order("manual")).toEqual(SEED_PROFILES.map((p) => p.name));
+    expect(order("name")).toEqual([
+      "Local Postgres",
+      "Production (read-only)",
+      "Rotated host",
+      "sample.sqlite",
+      "Shop MySQL",
+      "Staging via SSH",
+    ]);
+    expect(order("tag")).toEqual([
+      "Local Postgres",
+      "sample.sqlite",
+      "Shop MySQL",
+      "Staging via SSH",
+      "Production (read-only)",
+      "Rotated host",
+    ]);
+    expect(order("driver")).toEqual([
+      "Rotated host",
+      "Shop MySQL",
+      "Local Postgres",
+      "Production (read-only)",
+      "Staging via SSH",
+      "sample.sqlite",
+    ]);
+  });
+
+  it("sorts inside each group and shows saved empty groups unless searching", () => {
+    expect(
+      names(groupProfiles(SEED_PROFILES, "", { groups: ["Archive", "Local"], sort: "name" })),
+    ).toEqual([
+      ["", ["sample.sqlite"]],
+      ["Archive", []],
+      ["Local", ["Local Postgres", "Shop MySQL"]],
+      ["Production", ["Production (read-only)"]],
+      ["Staging", ["Rotated host", "Staging via SSH"]],
+    ]);
+    expect(names(groupProfiles(SEED_PROFILES, "shop", { groups: ["Archive"] }))).toEqual([
+      ["Local", ["Shop MySQL"]],
+    ]);
+  });
+
+  it("maps drop targets to groups", () => {
+    expect(groupOfDropTarget(groupDropId("Staging"))).toBe("Staging");
+    expect(groupOfDropTarget(groupDropId(""))).toBeNull();
+    expect(groupOfDropTarget("p-local-pg")).toBeUndefined();
+    expect(groupOfDropTarget(null)).toBeUndefined();
   });
 });

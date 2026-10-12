@@ -1,6 +1,7 @@
 import { toast } from "sonner";
 import { create } from "zustand";
-import { ipc } from "@/lib/ipc";
+import { ipc, type SafeModeLevel } from "@/lib/ipc";
+import { EMPTY_OVERRIDES, isKeymapOverrides, type KeymapOverrides } from "@/lib/keys/overrides";
 
 /**
  * User preferences. One JSON object stored under the `prefs` key of the app DB settings table,
@@ -25,6 +26,52 @@ export type TabSize = (typeof TAB_SIZES)[number];
 
 export const EDITOR_FONT_SIZE_RANGE = { min: 11, max: 18 } as const;
 export const CONNECT_TIMEOUT_RANGE = { min: 1, max: 300 } as const;
+/** Query time out in seconds (0 = no limit); TablePlus defaults to 300 s. */
+export const QUERY_TIMEOUT_RANGE = { min: 0, max: 86_400 } as const;
+
+/** SQL editor results: one tab per result set, or every result set stacked in one tab. */
+export const RESULT_VIEW_MODES = ["tabs", "append"] as const;
+export type ResultViewMode = (typeof RESULT_VIEW_MODES)[number];
+
+export const SAFE_MODE_LEVELS = [
+  "silent",
+  "alert",
+  "alertNonSelect",
+  "safe",
+  "safeNonSelect",
+] as const satisfies readonly SafeModeLevel[];
+
+/**
+ * The variable syntaxes the SQL editor's query parameters can use (⚙ ▸ Query Params Options ▸
+ * Change Query Params Regex), as TablePlus lists them; there is no custom regex.
+ */
+export const QUERY_PARAM_SYNTAXES = [
+  ":[\\w.]+",
+  "%[\\w.]+%",
+  "\\?",
+  "\\$\\{[\\w.]+\\}",
+  "\\$[\\w.]+",
+  "\\{\\{[\\w.]+\\}\\}",
+] as const;
+export type QueryParamSyntax = (typeof QUERY_PARAM_SYNTAXES)[number];
+
+/** Filter bar ⚙ ▸ Default filter column / operator / state (TablePlus's choices). */
+export const FILTER_DEFAULT_COLUMNS = ["primaryKey", "anyColumn", "rawSql"] as const;
+export type FilterDefaultColumn = (typeof FILTER_DEFAULT_COLUMNS)[number];
+export const FILTER_DEFAULT_OPERATORS = ["eq", "contains"] as const;
+export type FilterDefaultOperator = (typeof FILTER_DEFAULT_OPERATORS)[number];
+export const FILTER_DEFAULT_STATES = ["restore", "show", "hide"] as const;
+export type FilterDefaultState = (typeof FILTER_DEFAULT_STATES)[number];
+/** "Estimate count when table has more than [N] rows". */
+export const ESTIMATE_COUNT_RANGE = { min: 1_000, max: 1_000_000_000 } as const;
+
+/**
+ * SQL editor ⚙ ▸ Auto Save SQL Query Tab: which query tabs keep their text across restarts.
+ * "none": none ("Do not save the SQL query"), "first": the first query tab of each workspace,
+ * "all": every one (TablePlus's default since b632).
+ */
+export const AUTO_SAVE_QUERY_TABS = ["none", "first", "all"] as const;
+export type AutoSaveQueryTabs = (typeof AUTO_SAVE_QUERY_TABS)[number];
 
 export interface Prefs {
   /** Interface text size (Small 12px / Default 13px / Large 14px). */
@@ -44,6 +91,53 @@ export interface Prefs {
   editorUppercaseKeywords: boolean;
   /** Default connect timeout for new connections, in seconds. */
   connectTimeout: number;
+  /** Safe-mode level preselected for new connections (Preferences → Security). */
+  defaultSafeMode: SafeModeLevel;
+  /** Ping every open connection every 30 s so idle sessions are not dropped. */
+  keepAlive: boolean;
+  /** SQL editor statements still running after this many seconds are cancelled; 0 = never. */
+  queryTimeout: number;
+  /** Row numbers in the SQL editor's result grids. */
+  resultRowNumbers: boolean;
+  /** Results header menu ▸ Split Results into Tabs / Append All Results in One Tab. */
+  resultViewMode: ResultViewMode;
+  /** SQL editor: highlight the statement under the cursor. */
+  editorHighlightCurrentQuery: boolean;
+  /** SQL editor: show spaces, tabs and line ends. */
+  editorShowInvisibles: boolean;
+  /** SQL editor: no completion popup while typing (⌃Space still asks). */
+  editorDisableSuggestions: boolean;
+  /** SQL editor: typing an opening bracket or quote inserts the closing one. */
+  editorCloseBrackets: boolean;
+  /** SQL editor: a run with variables (see `editorQueryParamsRegex`) asks for their values. */
+  editorQueryParams: boolean;
+  editorQueryParamsRegex: QueryParamSyntax;
+  /** Variables inside quoted strings count too. */
+  editorQueryParamsInQuotes: boolean;
+  /** "Return on Error": a multi-statement run stops at the first error. */
+  editorStopOnError: boolean;
+  /** Queries pane: a double-click inserts the query into the SQL editor instead of running it. */
+  queriesDoubleClickInsert: boolean;
+  /** Filter bar: the column a new filter row starts on. */
+  filterDefaultColumn: FilterDefaultColumn;
+  /** Filter bar: the operator a new filter row starts with. */
+  filterDefaultOperator: FilterDefaultOperator;
+  /** Filter bar on opening a table: its last state (per table), always shown, or always hidden. */
+  filterDefaultState: FilterDefaultState;
+  /** Table Data: zebra-striped grid rows. */
+  gridAlternatingRows: boolean;
+  /** Table Data: unfiltered tables over `gridEstimateThreshold` rows show a "~" planner estimate. */
+  gridEstimateCount: boolean;
+  gridEstimateThreshold: number;
+  /** Table Data: an empty numeric / UUID / JSON / array value is staged as NULL. */
+  gridAutoNullEmpty: boolean;
+  /** Table Data: a row-number gutter in table grids. */
+  gridRowNumbers: boolean;
+  /** General ▸ Application: reconnect the workspaces (and their tabs) open at the last quit. */
+  reopenWorkspaces: boolean;
+  autoSaveQueryTabs: AutoSaveQueryTabs;
+  /** Settings ▸ Shortcuts: remapped bindings (see `KeymapOverrides`). */
+  keymapOverrides: KeymapOverrides;
 }
 
 export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
@@ -55,6 +149,31 @@ export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
   editorLineWrap: false,
   editorUppercaseKeywords: true,
   connectTimeout: 15,
+  defaultSafeMode: "silent",
+  keepAlive: true,
+  queryTimeout: 300,
+  resultRowNumbers: true,
+  resultViewMode: "tabs",
+  editorHighlightCurrentQuery: true,
+  editorShowInvisibles: false,
+  editorDisableSuggestions: false,
+  editorCloseBrackets: true,
+  editorQueryParams: false,
+  editorQueryParamsRegex: ":[\\w.]+",
+  editorQueryParamsInQuotes: false,
+  editorStopOnError: true,
+  queriesDoubleClickInsert: false,
+  filterDefaultColumn: "primaryKey",
+  filterDefaultOperator: "eq",
+  filterDefaultState: "restore",
+  gridAlternatingRows: true,
+  gridEstimateCount: true,
+  gridEstimateThreshold: 500_000,
+  gridAutoNullEmpty: true,
+  gridRowNumbers: false,
+  reopenWorkspaces: true,
+  autoSaveQueryTabs: "all",
+  keymapOverrides: EMPTY_OVERRIDES,
 });
 
 const PREF_KEYS = Object.keys(DEFAULT_PREFS) as (keyof Prefs)[];
@@ -78,6 +197,31 @@ const VALID: { [K in keyof Prefs]: (v: unknown) => boolean } = {
   editorLineWrap: isBool,
   editorUppercaseKeywords: isBool,
   connectTimeout: intIn(CONNECT_TIMEOUT_RANGE.min, CONNECT_TIMEOUT_RANGE.max),
+  defaultSafeMode: oneOf(SAFE_MODE_LEVELS),
+  keepAlive: isBool,
+  queryTimeout: intIn(QUERY_TIMEOUT_RANGE.min, QUERY_TIMEOUT_RANGE.max),
+  resultRowNumbers: isBool,
+  resultViewMode: oneOf(RESULT_VIEW_MODES),
+  editorHighlightCurrentQuery: isBool,
+  editorShowInvisibles: isBool,
+  editorDisableSuggestions: isBool,
+  editorCloseBrackets: isBool,
+  editorQueryParams: isBool,
+  editorQueryParamsRegex: oneOf(QUERY_PARAM_SYNTAXES),
+  editorQueryParamsInQuotes: isBool,
+  editorStopOnError: isBool,
+  queriesDoubleClickInsert: isBool,
+  filterDefaultColumn: oneOf(FILTER_DEFAULT_COLUMNS),
+  filterDefaultOperator: oneOf(FILTER_DEFAULT_OPERATORS),
+  filterDefaultState: oneOf(FILTER_DEFAULT_STATES),
+  gridAlternatingRows: isBool,
+  gridEstimateCount: isBool,
+  gridEstimateThreshold: intIn(ESTIMATE_COUNT_RANGE.min, ESTIMATE_COUNT_RANGE.max),
+  gridAutoNullEmpty: isBool,
+  gridRowNumbers: isBool,
+  reopenWorkspaces: isBool,
+  autoSaveQueryTabs: oneOf(AUTO_SAVE_QUERY_TABS),
+  keymapOverrides: isKeymapOverrides,
 };
 
 function assign<K extends keyof Prefs>(target: Prefs, key: K, value: unknown): void {

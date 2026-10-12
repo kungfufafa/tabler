@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { openConnectionDialog } from "@/features/connections/store";
+import { cycleWorkspace } from "@/features/tabs/workspaces";
 import { resolveScope } from "@/lib/keys/useShortcuts";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
@@ -17,7 +18,7 @@ export function useDefaultActions(): void {
       actions.register("tab.close", () => {
         // ⌘W is allowed inside dialogs so Settings can claim it (its handler stacks on top while
         // open). Any other modal (palette, Preview SQL, connection form…) must not close the tab
-        // behind it.
+        // behind it, nor may an editor inside one (Bootstrap commands, a trigger's body).
         if (resolveScope(document.activeElement) === "dialog") return;
         const id = tabs().activeId;
         if (id) tabs().close(id);
@@ -27,6 +28,10 @@ export function useDefaultActions(): void {
       actions.register("tab.reopen", () => tabs().reopenClosed()),
       actions.register("tab.next", () => tabs().next(workspace())),
       actions.register("tab.prev", () => tabs().prev(workspace())),
+      actions.register("tab.back", () => tabs().back()),
+      actions.register("tab.forward", () => tabs().forward()),
+      actions.register("workspace.next", () => cycleWorkspace(1)),
+      actions.register("workspace.prev", () => cycleWorkspace(-1)),
       ...([1, 2, 3, 4, 5, 6, 7, 8, 9] as const).map((n) =>
         actions.register(`tab.goto-${n}`, () => tabs().activateIndex(n - 1, workspace())),
       ),

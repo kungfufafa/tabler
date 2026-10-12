@@ -138,6 +138,117 @@ describe("connection form schema", () => {
   });
 });
 
+describe("connection form — TablePlus parity fields", () => {
+  const pgForm = { ...DEFAULT_FORM, name: "n", user: "u" };
+
+  it("round-trips password mode, SSL client files, safe mode and bootstrap commands", () => {
+    const input = formToProfileInput(
+      {
+        ...pgForm,
+        passwordMode: "ask",
+        password: "typed",
+        sslKeyPath: "/k.pem",
+        sslCertPath: "/c.pem",
+        sslCaPath: "/ca.pem",
+        safeMode: "safeNonSelect",
+        startupSql: "SET search_path = app;\n",
+      },
+      null,
+      "id-1",
+    );
+    // "Ask every time" never sends the typed password to be stored.
+    expect(input.password).toBeNull();
+    expect(input.clearPassword).toBe(false);
+    expect(input.profile.sslCaPath).toBe("/ca.pem");
+    expect(input.profile.options).toMatchObject({
+      passwordMode: "ask",
+      sslKeyPath: "/k.pem",
+      sslCertPath: "/c.pem",
+      safeMode: "safeNonSelect",
+      startupSql: "SET search_path = app;\n",
+    });
+    const back = profileToForm(input.profile);
+    expect(back).toMatchObject({
+      passwordMode: "ask",
+      sslKeyPath: "/k.pem",
+      sslCertPath: "/c.pem",
+      safeMode: "safeNonSelect",
+      startupSql: "SET search_path = app;\n",
+    });
+    // Blank bootstrap commands are stored as none; disabled SSL drops the client files.
+    const plain = formToProfileInput(
+      { ...pgForm, startupSql: "  \n", ssl: "disable", sslKeyPath: "/k.pem" },
+      null,
+      "id-2",
+    );
+    expect(plain.profile.options.startupSql).toBeNull();
+    expect(plain.profile.options.sslKeyPath).toBeNull();
+    // "No password" never stores or clears through the form either.
+    const none = formToProfileInput(
+      { ...pgForm, passwordMode: "none", password: "x", clearPassword: true },
+      null,
+      "id-3",
+    );
+    expect(none.password).toBeNull();
+    expect(none.clearPassword).toBe(false);
+  });
+
+  it("old profiles read as Keychain and Silent Mode; new ones start from the preferences", () => {
+    const old = SEED_PROFILES.find((p) => p.id === "p-local-pg")!;
+    expect(profileToForm(old)).toMatchObject({
+      passwordMode: "keychain",
+      safeMode: "silent",
+      sslKeyPath: "",
+      startupSql: "",
+    });
+    expect(newProfileForm(15, "alert").safeMode).toBe("alert");
+    expect(newProfileForm(15).safeMode).toBe("silent");
+  });
+
+  it("an SSL key needs its certificate and the other way round (unless SSL is disabled)", () => {
+    const paths = (v: typeof pgForm) => {
+      const r = connectionFormSchema.safeParse(v);
+      return r.success ? [] : r.error.issues.map((i) => i.path.join("."));
+    };
+    expect(paths({ ...pgForm, sslKeyPath: "/k.pem" })).toEqual(["sslCertPath"]);
+    expect(paths({ ...pgForm, sslCertPath: "/c.pem" })).toEqual(["sslKeyPath"]);
+    expect(paths({ ...pgForm, sslKeyPath: "/k.pem", sslCertPath: "/c.pem" })).toEqual([]);
+    expect(paths({ ...pgForm, ssl: "disable", sslKeyPath: "/k.pem" })).toEqual([]);
+  });
+
+  it("SSH: user, key and port may be left to ~/.ssh/config; local port and keep-alive round-trip", () => {
+    const ssh = {
+      ...pgForm,
+      sshEnabled: true,
+      sshHost: "bastion",
+      sshUser: "",
+      sshKeyPath: "",
+      sshPort: "",
+      sshLocalPort: "15432",
+      sshKeepaliveSecs: "20",
+    };
+    expect(connectionFormSchema.safeParse(ssh).success).toBe(true);
+    const input = formToProfileInput(ssh, null, "id-1");
+    expect(input.profile.ssh).toEqual({
+      host: "bastion",
+      port: 0,
+      user: "",
+      auth: "key",
+      keyPath: null,
+      localPort: 15432,
+      keepaliveSecs: 20,
+    });
+    expect(profileToForm(input.profile)).toMatchObject({
+      sshPort: "",
+      sshLocalPort: "15432",
+      sshKeepaliveSecs: "20",
+    });
+    expect(connectionFormSchema.safeParse({ ...ssh, sshLocalPort: "70000" }).success).toBe(false);
+    expect(connectionFormSchema.safeParse({ ...ssh, sshKeepaliveSecs: "x" }).success).toBe(false);
+    expect(connectionFormSchema.safeParse({ ...ssh, sshHost: "" }).success).toBe(false);
+  });
+});
+
 describe("connectionDetail", () => {
   it("reads host : port : user : database, leaving out what is not set", () => {
     const pg = SEED_PROFILES[0]!;

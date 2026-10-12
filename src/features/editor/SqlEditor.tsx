@@ -1,10 +1,14 @@
 import { EditorView } from "@codemirror/view";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useShallow } from "zustand/react/shallow";
+import { ensureSavedQueries } from "@/features/queries/store";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
 import { ipc } from "@/lib/ipc";
-import { usePrefs } from "@/stores/prefs";
+import { useConnectionsStore } from "@/stores/connections";
+import { usePrefsStore } from "@/stores/prefs";
 import {
+  editorPrefsOf,
   languageConf,
   languageExtension,
   prefsConf,
@@ -36,10 +40,12 @@ export function SqlEditor({
     queryFn: () => ipc.schema.completion(connectionId),
     staleTime: 5 * 60_000,
   });
-  const upperCaseKeywords = usePrefs((p) => p.editorUppercaseKeywords);
-  const fontSize = usePrefs((p) => p.editorFontSize);
-  const tabSize = usePrefs((p) => p.editorTabSize);
-  const lineWrap = usePrefs((p) => p.editorLineWrap);
+  const upperCaseKeywords = usePrefsStore((s) => s.prefs.editorUppercaseKeywords);
+  const prefs = usePrefsStore(useShallow((s) => editorPrefsOf(s.prefs)));
+  const profileId = useConnectionsStore((s) => s.byId[connectionId]?.info.profileId ?? null);
+
+  // Keyword binding completes from the saved queries.
+  useEffect(() => void ensureSavedQueries(), []);
 
   const language = useMemo<LanguageConfig>(
     () => ({
@@ -47,8 +53,9 @@ export function SqlEditor({
       schema: completionNamespace(completion.data),
       defaultSchema: completionDefaultSchema(dialect, completion.data, currentDatabase),
       upperCaseKeywords,
+      profileId,
     }),
-    [dialect, completion.data, currentDatabase, upperCaseKeywords],
+    [dialect, completion.data, currentDatabase, upperCaseKeywords, profileId],
   );
   const languageRef = useRef(language);
   languageRef.current = language;
@@ -81,10 +88,8 @@ export function SqlEditor({
   }, [language]);
 
   useEffect(() => {
-    viewRef.current?.dispatch({
-      effects: prefsConf.reconfigure(prefsExtension({ fontSize, tabSize, lineWrap })),
-    });
-  }, [fontSize, tabSize, lineWrap]);
+    viewRef.current?.dispatch({ effects: prefsConf.reconfigure(prefsExtension(prefs)) });
+  }, [prefs]);
 
   return <div ref={hostRef} className="h-full min-h-0 overflow-hidden" data-testid="sql-editor" />;
 }

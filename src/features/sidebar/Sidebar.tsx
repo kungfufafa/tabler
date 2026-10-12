@@ -3,6 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { useAction } from "@/features/palette/actions";
+import { QueriesPane } from "@/features/queries/QueriesPane";
+import {
+  showSidebarPane,
+  useSidebarPaneId,
+  type SidebarPaneId,
+} from "@/features/queries/sidebarPane";
 import { cn } from "@/lib/utils";
 import { useActiveConnection, type OpenConnection } from "@/stores/connections";
 import { pinScope, usePinned } from "@/stores/pins";
@@ -12,16 +18,17 @@ import { HistoryPane } from "./HistoryPane";
 import { SchemaTree, type SchemaTreeHandle } from "./SchemaTree";
 import { SidebarFooter } from "./SidebarFooter";
 import { SidebarSearch } from "./SidebarSearch";
-import { setSidebarPane, useSidebarPrefs, type SidebarPane } from "./sidebarPrefs";
+import { useSidebarPrefs } from "./sidebarPrefs";
 import { useCurrentSchema, useTables, useTreeRows } from "./useSchemaTree";
 
-const PANES: Array<{ id: SidebarPane; label: string }> = [
+const PANES: Array<{ id: SidebarPaneId; label: string }> = [
   { id: "items", label: "Items" },
+  { id: "queries", label: "Queries" },
   { id: "history", label: "History" },
 ];
 
-/** TablePlus's "Items | History" switch at the top of the sidebar. */
-function PaneSwitch({ pane }: { pane: SidebarPane }) {
+/** TablePlus's "Items | Queries | History" switch at the top of the sidebar. */
+function PaneSwitch({ pane }: { pane: SidebarPaneId }) {
   return (
     <div
       role="radiogroup"
@@ -36,7 +43,7 @@ function PaneSwitch({ pane }: { pane: SidebarPane }) {
             type="button"
             role="radio"
             aria-checked={checked}
-            onClick={() => setSidebarPane(p.id)}
+            onClick={() => showSidebarPane(p.id)}
             className={cn(
               "focus-visible:ring-ring/50 h-full flex-1 rounded-[5px] text-[11px] leading-none outline-none focus-visible:ring-2",
               checked
@@ -122,12 +129,12 @@ function ItemsPane({
 export function Sidebar() {
   const active = useActiveConnection();
   const setView = useUiStore((s) => s.setView);
-  const pane = useSidebarPrefs((s) => s.pane);
+  const pane = useSidebarPaneId();
   const [focusSearch, setFocusSearch] = useState(0);
 
-  // ⇧⌘F: the Items search, from either pane.
+  // ⇧⌘F: the Items search, from any pane.
   useAction("sidebar.focus-search", () => {
-    setSidebarPane("items");
+    showSidebarPane("items");
     setFocusSearch((n) => n + 1);
   });
 
@@ -145,6 +152,7 @@ export function Sidebar() {
             hidden={pane !== "items"}
             focusSearch={focusSearch}
           />
+          {pane === "queries" && <QueriesPane connection={active} />}
           {pane === "history" && <HistoryPane connection={active} />}
           <SidebarFooter connection={active} />
         </>

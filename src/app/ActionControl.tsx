@@ -45,8 +45,9 @@ function Segment({
 }
 
 /**
- * TablePlus's action control: Discard / Preview SQL / Commit of the visible tab's staged work, in
- * one segmented group. Disabled while nothing is staged; Commit shows the pending count.
+ * TablePlus's action control: Discard / Preview SQL / Commit of the visible tab's staged work (a
+ * table's rows or structure, or the edits in a query tab's results), in one segmented group.
+ * Disabled while nothing is staged; Commit shows the pending count.
  */
 export function ActionControl() {
   const pending = useActivePendingCount();

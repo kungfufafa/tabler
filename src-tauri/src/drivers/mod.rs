@@ -694,6 +694,7 @@ mod tests {
             kind: ValueKind::Int,
             nullable: None,
             table: None,
+            origin: None,
         }
     }
 

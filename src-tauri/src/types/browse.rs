@@ -6,6 +6,10 @@ use ts_rs::TS;
 use super::schema::{ColumnMeta, TableRef};
 use super::value::Value;
 
+/// A filter-bar operator (TablePlus's list). The `…Case` variants are the driver's other case
+/// behaviour: case-insensitive on PostgreSQL and SQLite ("– Case insensitive"), case-sensitive on
+/// MySQL ("– Case sensitive"). Contains / prefix / suffix match their value literally (`%` and `_`
+/// are escaped); `Like` / `NotLike` / `Ilike` take the user's own pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -23,6 +27,37 @@ pub enum FilterOp {
     IsNull,
     IsNotNull,
     Between,
+    NotBetween,
+    Contains,
+    NotContains,
+    ContainsCase,
+    NotContainsCase,
+    HasPrefix,
+    HasSuffix,
+    HasPrefixCase,
+    HasSuffixCase,
+    /// PostgreSQL only.
+    Ilike,
+    /// PostgreSQL `json` / `jsonb` columns only: `col::jsonb @> value`.
+    JsonContains,
+    JsonNotContains,
+}
+
+impl FilterOp {
+    /// Operators that match rows NOT satisfying their positive form; "Any column" joins them with
+    /// AND (no column matches) instead of OR (some column matches).
+    pub fn is_negated(self) -> bool {
+        matches!(
+            self,
+            FilterOp::Ne
+                | FilterOp::NotLike
+                | FilterOp::NotIn
+                | FilterOp::NotBetween
+                | FilterOp::NotContains
+                | FilterOp::NotContainsCase
+                | FilterOp::JsonNotContains
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -46,6 +81,12 @@ pub enum FilterNode {
     /// Raw SQL appended verbatim inside parentheses (the user's own WHERE fragment).
     Raw {
         sql: String,
+    },
+    /// The filter bar's "Any column": `op` applied to every column's textual form, expanded by the
+    /// backend from the table's columns (OR; AND for negated operators).
+    AnyColumn {
+        op: FilterOp,
+        values: Vec<Value>,
     },
 }
 

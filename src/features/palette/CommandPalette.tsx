@@ -2,6 +2,8 @@ import { Command as CommandPrimitive } from "cmdk";
 import {
   Check,
   Database,
+  Minus,
+  Plus,
   FileCode2,
   Layers,
   LoaderCircle,
@@ -10,6 +12,7 @@ import {
   TableProperties,
 } from "lucide-react";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -25,12 +28,20 @@ import { toast } from "sonner";
 import { ColorDot } from "@/components/ColorDot";
 import { Kbd } from "@/components/Kbd";
 import { TableIcon } from "@/components/TypeIcon";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { openCreateDatabase, openDropDatabase } from "@/features/admin/store";
 import { comboFromEvent, isMac } from "@/lib/keys/combo";
 import { KEYMAP } from "@/lib/keys/keymap";
 import { accentColor } from "@/lib/theme";
 import { cn } from "@/lib/utils";
-import { useConnectionsStore } from "@/stores/connections";
+import { useActiveConnection, useConnectionsStore } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
 import type { ActionId } from "./actions";
@@ -42,6 +53,7 @@ import {
   flattenSections,
   type PaletteIcon,
   type PaletteItem,
+  type PaletteMenuEntry,
   type PaletteSection,
   type RankedItem,
 } from "./items";
@@ -246,6 +258,9 @@ function PaletteBody({
       : (flat[0]?.key ?? "");
   const selected = flat.find((i) => i.key === selectedKey) ?? null;
   const modClick = useRef(false);
+  // ⌘K's list (TablePlus): a click only selects a row, a double-click or ↩ opens it.
+  const pointerSelect = useRef(false);
+  const clickSelects = mode === "databases";
   const listRef = useRef<HTMLDivElement>(null);
   const objects = mode === "all" && !data.commandMode;
   // Inline completion (TablePlus): the rest of the selected object's name after what was typed.
@@ -264,8 +279,16 @@ function PaletteBody({
     onRun(alt && item.runAlt ? item.runAlt : item.run);
   };
 
+  /** A row's right-click entry: most close the palette first, Copy Name keeps it open. */
+  const runMenuEntry = (entry: PaletteMenuEntry) => {
+    if (!usePaletteStore.getState().open) return;
+    if (entry.keepOpen) execute(entry.run);
+    else onRun(entry.run);
+  };
+
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     modClick.current = false;
+    pointerSelect.current = false;
     if (e.nativeEvent.isComposing) return;
     const combo = comboFromEvent(e.nativeEvent);
     const toggleTo = TOGGLE_COMBOS.get(combo);
@@ -338,11 +361,25 @@ function PaletteBody({
           </div>
         )}
         {data.sections.map((section) => (
-          <Section key={section.id} section={section} onChoose={choose} modClick={modClick} />
+          <Section
+            key={section.id}
+            section={section}
+            onChoose={choose}
+            modClick={modClick}
+            pointerSelect={clickSelects ? pointerSelect : null}
+            onMenu={(key) => setSelection({ query, key })}
+            onMenuEntry={runMenuEntry}
+          />
         ))}
       </CommandPrimitive.List>
 
-      <Footer selected={selected} verb={text.verb} hint={objects} />
+      <Footer
+        selected={selected}
+        verb={text.verb}
+        hint={objects}
+        databaseActions={mode === "databases"}
+        onRun={onRun}
+      />
     </CommandPrimitive>
   );
 }
@@ -371,10 +408,18 @@ function Section({
   section,
   onChoose,
   modClick,
+  pointerSelect,
+  onMenu,
+  onMenuEntry,
 }: {
   section: PaletteSection;
   onChoose: (item: PaletteItem, alt: boolean) => void;
   modClick: RefObject<boolean>;
+  /** Set: a click only selects (cmdk already did on hover), a double-click chooses. */
+  pointerSelect: RefObject<boolean> | null;
+  /** A row's context menu opens: select that row. */
+  onMenu: (key: string) => void;
+  onMenuEntry: (entry: PaletteMenuEntry) => void;
 }) {
   const body = (
     <>
@@ -385,12 +430,20 @@ function Section({
           showKind={section.showKind ?? false}
           onPointerDown={(e) => {
             modClick.current = isMac ? e.metaKey : e.ctrlKey;
+            if (pointerSelect) pointerSelect.current = true;
           }}
           onSelect={() => {
             const alt = modClick.current;
             modClick.current = false;
+            if (pointerSelect?.current) {
+              pointerSelect.current = false;
+              return;
+            }
             onChoose(ranked.item, alt);
           }}
+          onDoubleClick={pointerSelect ? () => onChoose(ranked.item, false) : undefined}
+          onMenu={() => onMenu(ranked.item.key)}
+          onMenuEntry={onMenuEntry}
         />
       ))}
       {section.loading !== undefined && <LoadingRow what={section.loading} />}
@@ -406,22 +459,78 @@ function Section({
 }
 
 function PaletteRow({
-  ranked: { item, ranges },
+  ranked,
   showKind,
   onSelect,
   onPointerDown,
+  onDoubleClick,
+  onMenu,
+  onMenuEntry,
 }: {
   ranked: RankedItem;
   /** Open Anything's objects: the kind on the right instead of the detail after the label. */
   showKind: boolean;
   onSelect: () => void;
   onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  onDoubleClick?: () => void;
+  onMenu: () => void;
+  onMenuEntry: (entry: PaletteMenuEntry) => void;
+}) {
+  const row = (
+    <PaletteItemRow
+      ranked={ranked}
+      showKind={showKind}
+      onSelect={onSelect}
+      onPointerDown={onPointerDown}
+      onDoubleClick={onDoubleClick}
+    />
+  );
+  const menu = ranked.item.menu;
+  if (!menu || menu.length === 0) return row;
+  return (
+    <ContextMenu onOpenChange={(open) => open && onMenu()}>
+      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+      <ContextMenuContent className="min-w-48">
+        {menu.map((entry) => (
+          <Fragment key={entry.label}>
+            {entry.separated && <ContextMenuSeparator />}
+            <ContextMenuItem
+              variant={entry.destructive ? "destructive" : "default"}
+              disabled={entry.disabled}
+              onSelect={() => onMenuEntry(entry)}
+            >
+              {entry.label}
+            </ContextMenuItem>
+          </Fragment>
+        ))}
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
+function PaletteItemRow({
+  ranked: { item, ranges },
+  showKind,
+  onSelect,
+  onPointerDown,
+  onDoubleClick,
+  ...rest
+}: {
+  ranked: RankedItem;
+  showKind: boolean;
+  onSelect: () => void;
+  onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  onDoubleClick?: () => void;
 }) {
   return (
     <CommandPrimitive.Item
+      // ContextMenuTrigger (asChild) hands its handlers and data attributes down.
+      {...rest}
       value={item.key}
       onSelect={onSelect}
+      // A ContextMenuTrigger parent composes its own pointer handler into this one.
       onPointerDown={onPointerDown}
+      onDoubleClick={onDoubleClick}
       className="data-[selected=true]:bg-brand-soft relative flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-sm outline-none select-none"
     >
       <ItemIcon icon={item.icon} />
@@ -507,14 +616,20 @@ function Footer({
   selected,
   verb,
   hint,
+  databaseActions,
+  onRun,
 }: {
   selected: PaletteItem | null;
   verb: string;
   /** Shows "Type > for commands" (Open Anything's object list). */
   hint: boolean;
+  /** ⌘K: the database list's + / − buttons. */
+  databaseActions: boolean;
+  onRun: (fn: PaletteRun) => void;
 }) {
   return (
     <div className="border-border bg-surface-2 text-muted-foreground flex h-7 shrink-0 items-center gap-3 border-t px-3 text-[11px]">
+      {databaseActions && <DatabaseButtons selected={selected} onRun={onRun} />}
       <span className="flex items-center gap-1">
         <Kbd combo="Up" />
         <Kbd combo="Down" />
@@ -540,5 +655,54 @@ function Footer({
         Close
       </span>
     </div>
+  );
+}
+
+/**
+ * ⌘K's "+" (New Database…) and "−" (Drop the selected database), like the buttons under
+ * TablePlus's database list. PostgreSQL and MySQL only; the current database cannot be dropped.
+ */
+function DatabaseButtons({
+  selected,
+  onRun,
+}: {
+  selected: PaletteItem | null;
+  onRun: (fn: PaletteRun) => void;
+}) {
+  const active = useActiveConnection();
+  const driver = active?.info.driver;
+  if (!active || (driver !== "postgres" && driver !== "mysql")) return null;
+  const connectionId = active.info.connectionId;
+  const database =
+    selected?.group === "databases" && selected.icon.type === "database" ? selected : null;
+  const dropTitle = !database
+    ? "Drop Database… (select a database)"
+    : database.current
+      ? "The current database cannot be dropped"
+      : `Drop ${database.label}…`;
+  const button =
+    "hover:bg-muted hover:text-foreground flex size-5 items-center justify-center rounded disabled:pointer-events-none disabled:opacity-40";
+  return (
+    <span className="-ml-1.5 flex items-center gap-0.5">
+      <button
+        type="button"
+        aria-label="New Database…"
+        title="New Database…"
+        className={button}
+        onClick={() => onRun(() => openCreateDatabase(connectionId))}
+      >
+        <Plus className="size-3.5" />
+      </button>
+      <button
+        type="button"
+        aria-label="Drop Database…"
+        title={dropTitle}
+        className={button}
+        disabled={!database || database.current === true}
+        onClick={() => database && onRun(() => openDropDatabase(connectionId, database.label))}
+      >
+        <Minus className="size-3.5" />
+      </button>
+    </span>
   );
 }

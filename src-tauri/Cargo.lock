@@ -5371,10 +5371,12 @@ name = "tabler"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "base64 0.23.1",
  "chrono",
  "csv",
  "deadpool-postgres",
+ "flate2",
  "futures",
  "keyring",
  "log",
@@ -5386,6 +5388,7 @@ dependencies = [
  "rustls-native-certs",
  "serde",
  "serde_json",
+ "stringprep",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
@@ -5968,6 +5971,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

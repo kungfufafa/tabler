@@ -13,6 +13,7 @@ import type { RowResult } from "../bindings/RowResult";
 import type { StagedChange } from "../bindings/StagedChange";
 import type { TableRef } from "../bindings/TableRef";
 import type { Value } from "../bindings/Value";
+import { mockAdminDatabases, mockAdminSchemas } from "./admin";
 import { mockCheckHostKey } from "./export";
 import { SEED_PROFILES, tableMetaFor, tablesFor } from "./fixtures";
 import { matchesGroup, rowsFor, sortRows } from "./rows";
@@ -20,7 +21,13 @@ import { mockEmit, mockError, registerMock } from "./transport";
 
 const profiles = new Map<string, ConnectionProfile>(SEED_PROFILES.map((p) => [p.id, p]));
 const secrets = new Map<string, string>([["p-local-pg", "secret"]]);
+/** The DB password the mock stores for a profile (safe-mode prompts check it). */
+export const mockStoredPassword = (profileId: string): string | null =>
+  secrets.get(profileId) ?? null;
 const connections = new Map<string, ConnectionInfo & { profile: ConnectionProfile }>();
+/** "Ask every time" passwords typed this session, by profile id (see mock/connections_io.ts). */
+const sessionPasswords = new Map<string, string>();
+export { profiles as mockProfiles, secrets as mockSecrets };
 
 const uuid = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
@@ -89,7 +96,8 @@ registerMock("save_profile", ({ input }) => {
     lastConnectedAt: existing?.lastConnectedAt ?? null,
   };
   profiles.set(stored.id, stored);
-  if (clearPassword) secrets.delete(stored.id);
+  const keychain = (stored.options.passwordMode ?? "keychain") === "keychain";
+  if (clearPassword || !keychain) secrets.delete(stored.id);
   else if (password) secrets.set(stored.id, password);
   return stored;
 });
@@ -152,9 +160,16 @@ registerMock("test_connection", async ({ input }) => {
 });
 
 // --- connections ---
-registerMock("connect", async ({ profileId }) => {
+registerMock("connect", async ({ profileId, password }) => {
   const p = profiles.get(profileId as string) ?? mockError("NOT_FOUND", `profile ${profileId}`);
   await new Promise((r) => setTimeout(r, 250));
+  if (p.options.passwordMode === "ask") {
+    const typed = typeof password === "string" ? password : sessionPasswords.get(p.id);
+    if (typed === undefined)
+      mockError("AUTH_FAILED", `authentication failed: enter the password of “${p.name}”`);
+    if (typed === "wrong") mockError("AUTH_FAILED", "authentication failed: wrong password");
+    sessionPasswords.set(p.id, typed);
+  }
   const missing = missingSqliteFile(p);
   if (missing) mockError("NOT_FOUND", `not found: ${missing}`);
   const ssh = sshOf(p);
@@ -212,7 +227,7 @@ registerMock("list_databases", ({ connectionId }) => {
         : [c.profile.sqlitePath ?? "sample.sqlite"];
   // The server always lists the database the session is connected to.
   if (c.currentDatabase && !names.includes(c.currentDatabase)) names.unshift(c.currentDatabase);
-  return names.map((name) => ({
+  return mockAdminDatabases(c.driver, names).map((name) => ({
     name,
     owner: c.driver === "postgres" ? "tabler" : null,
     encoding: c.driver === "sqlite" ? null : "UTF8",
@@ -222,10 +237,10 @@ registerMock("list_databases", ({ connectionId }) => {
 registerMock("list_schemas", ({ connectionId }) => {
   const c = conn(connectionId as string);
   if (c.driver === "postgres")
-    return [
+    return mockAdminSchemas(c.connectionId, c.currentDatabase, [
       { name: "public", isDefault: true },
       { name: "inventory", isDefault: false },
-    ];
+    ]);
   if (c.driver === "mysql") return [{ name: c.currentDatabase ?? "tabler_dev", isDefault: true }];
   return [
     { name: "main", isDefault: true },
@@ -300,13 +315,14 @@ registerMock("browse_table", async ({ connectionId, req }) => {
     durationMs: total > 50_000 ? 118 : 4,
   } satisfies BrowsePage;
 });
-registerMock("count_table_rows", ({ connectionId, table, filter, exact }) => {
+registerMock("count_table_rows", ({ connectionId, table, filter, exact, estimateAbove }) => {
   const c = conn(connectionId as string);
   const t = table as TableRef;
   const schema = t.schema ?? "public";
   const meta = tableMetaFor(c.driver, schema, t.name) ?? mockError("NOT_FOUND", `table ${t.name}`);
   const total = meta.rowEstimate ?? 25;
-  if (!filter && !exact && total > 200_000) return { count: total, exact: false };
+  const above = typeof estimateAbove === "number" ? estimateAbove : 500_000;
+  if (!filter && !exact && total > above) return { count: total, exact: false };
   const all = rowsFor(`${c.driver}:${schema}.${t.name}`, meta.columns, total);
   const rows = filter
     ? all.filter((r) => matchesGroup(filter as FilterGroup, r, meta.columns))

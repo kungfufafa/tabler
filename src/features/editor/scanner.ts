@@ -459,6 +459,20 @@ export function statementAt(
   return loose ? (prev ?? next) : null;
 }
 
+/** A stretch the scanner skips: strings and quoted identifiers, comments, client directives. */
+export interface SkippedSpan {
+  kind: "quoted" | "comment" | "line";
+  start: number;
+  end: number;
+}
+
+/** Where the strings, quoted identifiers, comments and client directives of `text` are. */
+export function skippedSpans(text: string, dialect: SqlDialect): SkippedSpan[] {
+  const spans: LexSpan[] = [];
+  new Splitter(text, dialect, spans).run();
+  return spans;
+}
+
 /** Convenience for tests and callers that want the statement texts. */
 export function statementTexts(text: string, dialect: SqlDialect): string[] {
   return splitStatements(text, dialect).map((s) => text.slice(s.start, s.end));

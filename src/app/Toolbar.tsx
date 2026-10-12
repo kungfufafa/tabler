@@ -1,97 +1,180 @@
-import { Database, Lock, LockOpen, PanelLeft, RefreshCw, Search } from "lucide-react";
-import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  Database,
+  LayoutGrid,
+  Lock,
+  LockKeyhole,
+  LockOpen,
+  PanelLeft,
+  RefreshCw,
+  Search,
+  UserCog,
+  type LucideIcon,
+} from "lucide-react";
+import { useRef, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
-  Popover,
-  PopoverContent,
-  PopoverDescription,
-  PopoverHeader,
-  PopoverTitle,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { openConnectionDialog } from "@/features/connections/store";
-import { useProfiles } from "@/features/connections/useConnections";
+import { profileKeys, useProfiles } from "@/features/connections/useConnections";
 import { actions } from "@/features/palette/actions";
+import {
+  effectiveLevel,
+  isPasswordLevel,
+  SAFE_MODE_LABEL,
+  SAFE_MODE_OPTIONS,
+} from "@/features/safety/levels";
+import { changeSafeModeLevel } from "@/features/safety/setLevel";
 import { useWindowFullscreen } from "@/hooks/useWindowFullscreen";
-import { cn } from "@/lib/utils";
+import { toIpcError, type ConnectionProfile, type SafeModeLevel } from "@/lib/ipc";
 import { useActiveConnection } from "@/stores/connections";
 import { ActionControl } from "./ActionControl";
 import { PanelToggles } from "./PanelToggles";
 import { StatusPill } from "./StatusPill";
 import { ToolbarButton, ToolbarTip } from "./ToolbarButton";
 
+/** The lock's icon: open = Silent, closed = Alert Mode 1 / 2, keyhole (accent) = Safe Mode 1 / 2. */
+function levelIcon(level: SafeModeLevel): LucideIcon {
+  if (level === "silent") return LockOpen;
+  return isPasswordLevel(level) ? LockKeyhole : Lock;
+}
+
 /**
- * The lock: the active connection's mode (read-only or normal). Click → a popover that says what
- * the mode means and opens the connection form to change it (safe-mode levels come later).
+ * The lock: the active connection's safe-mode level. Click → TablePlus's menu of the five levels;
+ * picking one saves the connection's profile and applies to the next query. Leaving a Safe level
+ * for one that asks less needs the password first. Below: the read-only note and Edit Connection….
  */
 function SafeModeLock() {
   const active = useActiveConnection();
   const profiles = useProfiles();
-  const [open, setOpen] = useState(false);
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  /** Set when a menu item opened a dialog: the closing menu leaves focus to it. */
+  const openedDialog = useRef(false);
   const readOnly = active?.info.readOnly ?? false;
   const profile = profiles.data?.find((p) => p.id === active?.info.profileId) ?? null;
-  const Icon = readOnly ? Lock : LockOpen;
+  const level = effectiveLevel(profile?.options.safeMode);
+  const label = SAFE_MODE_LABEL[level];
+  const Icon = levelIcon(level);
+
+  const choose = async (next: SafeModeLevel) => {
+    if (!active || busy || next === level) return;
+    setBusy(true);
+    try {
+      const saved = await changeSafeModeLevel(active.info, next);
+      if (saved) {
+        qc.setQueryData<ConnectionProfile[]>(profileKeys.all, (list) =>
+          list?.map((p) => (p.id === saved.id ? saved : p)),
+        );
+        void qc.invalidateQueries({ queryKey: profileKeys.all });
+      }
+    } catch (err) {
+      toast.error("Could not change the safe mode", { description: toIpcError(err).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const editConnection = () => {
     if (!profile) return;
-    setOpen(false);
+    openedDialog.current = true;
     openConnectionDialog(profile);
   };
   // While open the trigger is styled from `aria-expanded`: its `data-state` is the tooltip's.
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <ToolbarTip label={readOnly ? "Read-only connection" : "Normal mode"}>
-        <PopoverTrigger asChild>
+    <DropdownMenu>
+      <ToolbarTip label={readOnly ? `${label} · Read-only connection` : label}>
+        <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label={readOnly ? "Safe mode: read-only" : "Safe mode: off"}
+            aria-label={`Safe mode: ${label}${readOnly ? " (read-only)" : ""}`}
+            data-level={level}
             data-read-only={readOnly}
             disabled={!active}
-            className="text-muted-foreground hover:text-foreground data-[read-only=true]:text-brand aria-expanded:bg-muted aria-expanded:text-foreground size-6.5"
+            className="text-muted-foreground hover:text-foreground data-[level=alert]:text-foreground data-[level=alertNonSelect]:text-foreground data-[level=safe]:text-brand data-[level=safeNonSelect]:text-brand aria-expanded:bg-muted aria-expanded:text-foreground relative size-6.5"
           >
             <Icon className="size-3.5" />
+            {readOnly && (
+              <span
+                aria-hidden
+                data-slot="read-only-dot"
+                className="bg-brand ring-surface-2 absolute right-1 bottom-1 size-1.5 rounded-full ring-1"
+              />
+            )}
           </Button>
-        </PopoverTrigger>
+        </DropdownMenuTrigger>
       </ToolbarTip>
-      <PopoverContent
+      <DropdownMenuContent
         align="start"
-        className="w-64 gap-2 p-3 text-xs"
-        aria-label={readOnly ? "Read-only connection" : "Normal mode"}
+        className="w-80"
+        onCloseAutoFocus={(e) => {
+          if (openedDialog.current) e.preventDefault();
+          openedDialog.current = false;
+        }}
       >
-        <PopoverHeader className="gap-1 text-xs">
-          <PopoverTitle className="flex items-center gap-1.5 text-[13px]">
-            <Icon className={cn("size-3.5 shrink-0", readOnly && "text-brand")} aria-hidden />
-            {readOnly ? "Read-only connection" : "Normal mode"}
-          </PopoverTitle>
-          <PopoverDescription className="text-xs leading-snug">
-            {readOnly
-              ? "Edits and DDL are disabled for this connection."
-              : "Queries run without confirmation. Safe-mode levels are coming."}
-          </PopoverDescription>
-        </PopoverHeader>
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={!profile}
-          onClick={editConnection}
-          className="self-start"
+        <DropdownMenuLabel className="text-muted-foreground truncate text-[11px] font-normal">
+          Safe mode{profile ? ` · ${profile.name}` : ""}
+        </DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={level}
+          onValueChange={(v) => void choose(v as SafeModeLevel)}
         >
+          {SAFE_MODE_OPTIONS.map((o) => (
+            <DropdownMenuRadioItem
+              key={o.level}
+              value={o.level}
+              textValue={o.label}
+              disabled={!profile || busy}
+              className="items-start py-1.5"
+            >
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-[13px] leading-4">{o.label}</span>
+                <span className="text-muted-foreground text-[11px] leading-snug">
+                  {o.description}
+                </span>
+              </span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        {readOnly && (
+          <p
+            data-slot="read-only-note"
+            className="text-muted-foreground flex items-start gap-1.5 px-1.5 py-1 text-[11px] leading-snug"
+          >
+            <Lock className="text-brand mt-px size-3 shrink-0" aria-hidden />
+            Read-only connection: edits and DDL are disabled.
+          </p>
+        )}
+        <DropdownMenuItem disabled={!profile} onSelect={editConnection} className="text-[13px]">
           Edit Connection…
-        </Button>
-      </PopoverContent>
-    </Popover>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
 /**
  * TablePlus's single toolbar row in the macOS title bar: sidebar toggle, the staged-changes action
- * control, the read-only lock, Databases / SQL, the centred status pill, then Refresh, Open
+ * control, the safe-mode lock, Databases / SQL, the centred status pill, then Refresh, Open
  * Anything and the panel toggles. The empty space drags the window. The traffic lights sit in the
  * left inset (gone in fullscreen). The launcher shows only the title.
  */
 export function Toolbar({ launcher }: { launcher: boolean }) {
   const fullscreen = useWindowFullscreen();
-  const hasConnection = useActiveConnection() !== null;
+  const active = useActiveConnection();
+  const hasConnection = active !== null;
+  const canManageUsers = active !== null && active.info.driver !== "sqlite";
   const inset = fullscreen ? 8 : 80;
 
   if (launcher) {
@@ -155,6 +238,13 @@ export function Toolbar({ launcher }: { launcher: boolean }) {
         </ToolbarButton>
         <ToolbarButton label="Open anything" action="palette.open">
           <Search className="size-3.5" />
+        </ToolbarButton>
+        {/* TablePlus's toolbar order: Open Anything, Show Workspaces, User Management, panels. */}
+        <ToolbarButton label="Show workspaces" action="workspace.show">
+          <LayoutGrid className="size-3.5" />
+        </ToolbarButton>
+        <ToolbarButton label="User management" action="admin.users" disabled={!canManageUsers}>
+          <UserCog className="size-3.5" />
         </ToolbarButton>
         <PanelToggles />
       </div>

@@ -3,4 +3,4 @@ import type { FilterGroup } from "./FilterGroup";
 import type { FilterOp } from "./FilterOp";
 import type { Value } from "./Value";
 
-export type FilterNode = { "kind": "condition", column: string, op: FilterOp, values: Array<Value>, } | { "kind": "group" } & FilterGroup | { "kind": "raw", sql: string, };
+export type FilterNode = { "kind": "condition", column: string, op: FilterOp, values: Array<Value>, } | { "kind": "group" } & FilterGroup | { "kind": "raw", sql: string, } | { "kind": "anyColumn", op: FilterOp, values: Array<Value>, };

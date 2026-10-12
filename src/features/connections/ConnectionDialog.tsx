@@ -7,10 +7,11 @@ import {
   Info,
   Loader2,
   Network,
+  ScrollText,
   ShieldOff,
   X,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Controller, useForm, type FieldErrors, type UseFormReturn } from "react-hook-form";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { rememberSafeModeLevel } from "@/features/safety/guard";
+import { confirmProtectedChange, protectedChanges } from "@/features/safety/setLevel";
 import {
   ipc,
   isMock,
@@ -40,6 +43,8 @@ import {
   type ConnectionProfile,
   type ConnectionTag,
   type Driver,
+  type PasswordMode,
+  type SafeModeLevel,
   type SslMode,
 } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
@@ -48,21 +53,29 @@ import { ACCENT_PRESETS } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { getPrefs } from "@/stores/prefs";
 import { DriverBadge } from "./badges";
+import { BootstrapCommandsDialog } from "./BootstrapCommandsDialog";
 import { accentColor, DRIVER_LABEL, DRIVER_TINT, DRIVERS, TAG_COLOR, TAG_LABEL } from "./colors";
+import { knownGroups, useStoredGroups } from "./groups";
 import { openConnectionOf, useOpenProfile } from "./openProfile";
+import { askConnectionPassword, handOverPassword, isPromptCancelled } from "./passwordPromptStore";
 import {
   CONNECTION_TAGS,
   connectionFormSchema,
   DEFAULT_FORM,
   formToProfileInput,
   newProfileForm,
+  PASSWORD_MODE_LABEL,
+  PASSWORD_MODES,
   profileToForm,
+  SAFE_MODE_LABEL,
+  SAFE_MODES,
   urlToForm,
   type ConnectionFormValues,
 } from "./schema";
 import type { ParsedConnectionUrl } from "./url";
 import {
   hostKeyDeclined,
+  useProfiles,
   useSaveProfile,
   useSecretStatus,
   useTestConnection,
@@ -72,13 +85,38 @@ type Form = UseFormReturn<ConnectionFormValues>;
 
 const DEFAULT_PORT: Record<Driver, string> = { postgres: "5432", mysql: "3306", sqlite: "" };
 
-const SSL_LABEL: Record<SslMode, string> = {
-  disable: "Disable",
-  prefer: "Prefer (default)",
-  require: "Require",
-  "verify-ca": "Verify CA",
-  "verify-full": "Verify full",
+/** SSL modes per driver, in menu order: libpq's names for PostgreSQL, MySQL's for MySQL. */
+const SSL_MODES: Record<Exclude<Driver, "sqlite">, ReadonlyArray<[SslMode, string]>> = {
+  postgres: [
+    ["disable", "disable"],
+    ["prefer", "prefer"],
+    ["require", "require"],
+    ["verify-ca", "verify-ca"],
+    ["verify-full", "verify-full"],
+  ],
+  mysql: [
+    ["prefer", "PREFERRED"],
+    ["disable", "DISABLED"],
+    ["require", "REQUIRED"],
+    ["verify-ca", "VERIFY-CA"],
+    ["verify-full", "VERIFY-IDENTITY"],
+  ],
 };
+
+const SAFE_MODE_HINT: Record<SafeModeLevel, string> = {
+  silent: "Send queries to the server without any warnings",
+  alert: "Warn before sending queries to the server",
+  alertNonSelect: "Warn before sending queries, except SELECT, EXPLAIN and SHOW",
+  safe: "Ask for the password before sending queries to the server",
+  safeNonSelect: "Ask for the password before sending queries, except SELECT, EXPLAIN and SHOW",
+};
+
+const PASSWORD_HINT: Record<Exclude<PasswordMode, "keychain">, string> = {
+  ask: "Asked on every connect; kept in memory while connected",
+  none: "Connects without a password",
+};
+
+const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 
 /** Label column + field column, TablePlus's connection form layout. */
 const GRID = "grid grid-cols-[104px_minmax(0,1fr)] items-start gap-x-3 gap-y-2.5";
@@ -190,6 +228,56 @@ async function pickFile(title: string): Promise<string | null> {
   return typeof picked === "string" ? picked : null;
 }
 
+type SslFileField = "sslKeyPath" | "sslCertPath" | "sslCaPath";
+
+/** TablePlus's "Key…" / "Cert…" / "CA Cert…" buttons: the chosen file's name, and "—" to clear. */
+function SslFileButton({
+  form,
+  field,
+  label,
+  title,
+}: {
+  form: Form;
+  field: SslFileField;
+  label: string;
+  title: string;
+}) {
+  const path = form.watch(field);
+  const set = (v: string) =>
+    form.setValue(field, v, { shouldDirty: true, shouldValidate: form.formState.isSubmitted });
+  return (
+    <div className="flex items-center">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        title={path ? path : title}
+        aria-label={path ? `${label} ${baseName(path)}` : label}
+        className={cn("max-w-40", path && "rounded-r-none font-mono text-[11px]")}
+        onClick={async () => {
+          const p = await pickFile(title);
+          if (p) set(p);
+        }}
+      >
+        <span className="truncate">{path ? baseName(path) : label}</span>
+      </Button>
+      {path && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label={`Clear ${label.replace("…", "")}`}
+          title="Remove"
+          className="-ml-px rounded-l-none px-2"
+          onClick={() => set("")}
+        >
+          —
+        </Button>
+      )}
+    </div>
+  );
+}
+
 /**
  * New connection, step 1: three big driver tiles. A click selects, a double-click or ↩ (or the
  * dialog's Create button) goes on to the form; ←/→ move between the tiles.
@@ -253,16 +341,55 @@ function DriverPicker({
   );
 }
 
-function GeneralFields({ form, hasStoredPassword }: { form: Form; hasStoredPassword: boolean }) {
+/** "Bootstrap commands…" and a one-line preview of what is set. */
+function BootstrapRow({ form, onOpen }: { form: Form; onOpen: () => void }) {
+  const sql = form.watch("startupSql").trim();
+  const lines = sql === "" ? [] : sql.split("\n").filter((l) => l.trim() !== "");
+  return (
+    <Row label="">
+      <div className="flex h-8 min-w-0 items-center gap-2">
+        <Button type="button" variant="outline" size="sm" onClick={onOpen}>
+          <ScrollText /> Bootstrap commands…
+        </Button>
+        {lines.length > 0 && (
+          <span
+            className="text-muted-foreground min-w-0 truncate font-mono text-[11px]"
+            title={sql}
+            data-testid="bootstrap-summary"
+          >
+            {lines[0]}
+            {lines.length > 1 ? ` (+${lines.length - 1} more)` : ""}
+          </span>
+        )}
+      </div>
+    </Row>
+  );
+}
+
+function GeneralFields({
+  form,
+  hasStoredPassword,
+  groups,
+  onBootstrap,
+}: {
+  form: Form;
+  hasStoredPassword: boolean;
+  /** Existing group names, suggested in the Group field. */
+  groups: readonly string[];
+  onBootstrap: () => void;
+}) {
   const { register, control, formState, watch, setValue, getValues } = form;
   const errors = formState.errors;
   const uid = useId();
   const driver = watch("driver");
   const clearPassword = watch("clearPassword");
+  const passwordMode = watch("passwordMode");
   const ssl = watch("ssl");
-  const sslCaPath = watch("sslCaPath");
   const sqlite = driver === "sqlite";
-  const showCa = ssl === "verify-ca" || ssl === "verify-full" || sslCaPath.trim() !== "";
+  const keychain = passwordMode === "keychain";
+  const sslKeys =
+    ssl !== "disable" ||
+    [watch("sslKeyPath"), watch("sslCertPath"), watch("sslCaPath")].some((p) => p.trim() !== "");
   return (
     <div className={GRID}>
       <Row label="Name" htmlFor={`${uid}-name`} error={errors.name?.message}>
@@ -339,7 +466,14 @@ function GeneralFields({ form, hasStoredPassword }: { form: Form; hasStoredPassw
           id={`${uid}-group`}
           {...register("group")}
           placeholder="Optional, groups connections in the list"
+          list={`${uid}-groups`}
+          autoComplete="off"
         />
+        <datalist id={`${uid}-groups`}>
+          {groups.map((g) => (
+            <option key={g} value={g} />
+          ))}
+        </datalist>
       </Row>
       <Row label="Driver" htmlFor={`${uid}-driver`}>
         <Controller
@@ -403,6 +537,9 @@ function GeneralFields({ form, hasStoredPassword }: { form: Form; hasStoredPassw
             </Button>
           </div>
         </Row>
+      ) : null}
+      {sqlite ? (
+        <BootstrapRow form={form} onOpen={onBootstrap} />
       ) : (
         <>
           <Row
@@ -448,11 +585,13 @@ function GeneralFields({ form, hasStoredPassword }: { form: Form; hasStoredPassw
             label="Password"
             htmlFor={`${uid}-password`}
             hint={
-              hasStoredPassword && !clearPassword
-                ? "Stored in Keychain — leave empty to keep"
-                : clearPassword
-                  ? "The stored password is removed on save"
-                  : "Stored in the macOS Keychain"
+              !keychain
+                ? PASSWORD_HINT[passwordMode]
+                : hasStoredPassword && !clearPassword
+                  ? "Stored in Keychain — leave empty to keep"
+                  : clearPassword
+                    ? "The stored password is removed on save"
+                    : "Stored in the macOS Keychain"
             }
           >
             <div className="flex items-center gap-2">
@@ -460,12 +599,45 @@ function GeneralFields({ form, hasStoredPassword }: { form: Form; hasStoredPassw
                 id={`${uid}-password`}
                 {...register("password")}
                 type="password"
-                placeholder={hasStoredPassword && !clearPassword ? "••••••••" : ""}
+                placeholder={
+                  passwordMode === "ask"
+                    ? "Asked when connecting"
+                    : passwordMode === "none"
+                      ? "No password"
+                      : hasStoredPassword && !clearPassword
+                        ? "••••••••"
+                        : ""
+                }
                 className="font-mono"
                 autoComplete="new-password"
-                disabled={clearPassword}
+                disabled={clearPassword || !keychain}
               />
-              {hasStoredPassword && (
+              <Controller
+                control={control}
+                name="passwordMode"
+                render={({ field }) => (
+                  <Select
+                    value={field.value}
+                    onValueChange={(v) => {
+                      field.onChange(v as PasswordMode);
+                      // Only the Keychain keeps a typed password.
+                      if (v !== "keychain") setValue("password", "");
+                    }}
+                  >
+                    <SelectTrigger aria-label="Password storage" className="w-40 shrink-0">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PASSWORD_MODES.map((m) => (
+                        <SelectItem key={m} value={m}>
+                          {PASSWORD_MODE_LABEL[m]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+              {hasStoredPassword && keychain && (
                 <label
                   className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-[11px] whitespace-nowrap"
                   title="Remove the password stored in the Keychain"
@@ -492,6 +664,7 @@ function GeneralFields({ form, hasStoredPassword }: { form: Form; hasStoredPassw
           >
             <Input id={`${uid}-database`} {...register("database")} className="font-mono" />
           </Row>
+          <BootstrapRow form={form} onOpen={onBootstrap} />
           <Row label="SSL mode" htmlFor={`${uid}-ssl`}>
             <Controller
               control={control}
@@ -502,9 +675,9 @@ function GeneralFields({ form, hasStoredPassword }: { form: Form; hasStoredPassw
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {(Object.keys(SSL_LABEL) as SslMode[]).map((m) => (
+                    {SSL_MODES[driver === "mysql" ? "mysql" : "postgres"].map(([m, label]) => (
                       <SelectItem key={m} value={m}>
-                        {SSL_LABEL[m]}
+                        {label}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -512,29 +685,35 @@ function GeneralFields({ form, hasStoredPassword }: { form: Form; hasStoredPassw
               )}
             />
           </Row>
-          {showCa && (
+          {sslKeys && (
             <Row
-              label="CA file"
-              htmlFor={`${uid}-ca`}
-              hint="CA certificate (PEM), used with Verify CA / Verify full"
+              label="SSL keys"
+              error={errors.sslKeyPath?.message ?? errors.sslCertPath?.message}
+              hint="Client key and certificate (PEM) for servers that check them; the CA certificate for verify-ca / verify-full"
             >
-              <div className="flex gap-2">
-                <Input
-                  id={`${uid}-ca`}
-                  {...register("sslCaPath")}
-                  className="font-mono"
-                  placeholder="/path/to/ca.pem"
+              <div
+                role="group"
+                aria-label="SSL keys"
+                className="flex min-h-8 flex-wrap items-center gap-1.5"
+              >
+                <SslFileButton
+                  form={form}
+                  field="sslKeyPath"
+                  label="Key…"
+                  title="Choose the client private key (PEM)"
                 />
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={async () => {
-                    const p = await pickFile("Choose CA certificate");
-                    if (p) setValue("sslCaPath", p, { shouldDirty: true });
-                  }}
-                >
-                  <FolderOpen /> Browse…
-                </Button>
+                <SslFileButton
+                  form={form}
+                  field="sslCertPath"
+                  label="Cert…"
+                  title="Choose the client certificate (PEM)"
+                />
+                <SslFileButton
+                  form={form}
+                  field="sslCaPath"
+                  label="CA Cert…"
+                  title="Choose the CA certificate (PEM)"
+                />
               </div>
             </Row>
           )}
@@ -584,6 +763,7 @@ function SshFields({ form }: { form: Form }) {
         <Input
           id={`${uid}-user`}
           {...register("sshUser")}
+          placeholder="Leave empty to use ~/.ssh/config"
           className="font-mono"
           autoComplete="off"
           aria-invalid={errors.sshUser ? true : undefined}
@@ -614,7 +794,7 @@ function SshFields({ form }: { form: Form }) {
               <Input
                 id={`${uid}-key`}
                 {...register("sshKeyPath")}
-                placeholder="~/.ssh/id_ed25519"
+                placeholder="Leave empty to use ~/.ssh/config"
                 className="font-mono"
                 aria-invalid={errors.sshKeyPath ? true : undefined}
               />
@@ -665,12 +845,42 @@ function SshFields({ form }: { form: Form }) {
           </p>
         </>
       )}
+      <Row
+        label="Local port"
+        htmlFor={`${uid}-local-port`}
+        error={errors.sshLocalPort?.message ?? errors.sshKeepaliveSecs?.message}
+      >
+        <div className="flex items-center gap-2">
+          <Input
+            id={`${uid}-local-port`}
+            {...register("sshLocalPort")}
+            placeholder="auto"
+            className="w-24 shrink-0 font-mono"
+            inputMode="numeric"
+            aria-invalid={errors.sshLocalPort ? true : undefined}
+          />
+          <Label
+            htmlFor={`${uid}-keepalive`}
+            className="text-muted-foreground shrink-0 text-xs font-normal"
+          >
+            Keep-alive interval (s)
+          </Label>
+          <Input
+            id={`${uid}-keepalive`}
+            {...register("sshKeepaliveSecs")}
+            placeholder="30"
+            className="w-20 shrink-0 font-mono"
+            inputMode="numeric"
+            aria-invalid={errors.sshKeepaliveSecs ? true : undefined}
+          />
+        </div>
+      </Row>
       <span />
       <p className="text-muted-foreground flex items-start gap-1.5 text-[11px]">
         <Info className="mt-px size-3.5 shrink-0" />
         <span className="min-w-0">
-          Local port: <span className="text-foreground font-mono">auto</span> · keepalive is
-          automatic · the host key is confirmed on first connect
+          Empty fields use <span className="font-mono">~/.ssh/config</span> · the host key is
+          confirmed on first connect
         </span>
       </p>
     </>
@@ -681,8 +891,29 @@ function AdvancedFields({ form }: { form: Form }) {
   const { register, control, formState, watch } = form;
   const uid = useId();
   const driver = watch("driver");
+  const safeMode = watch("safeMode");
   return (
     <>
+      <Row label="Safe mode" htmlFor={`${uid}-safe`} hint={SAFE_MODE_HINT[safeMode]}>
+        <Controller
+          control={control}
+          name="safeMode"
+          render={({ field }) => (
+            <Select value={field.value} onValueChange={(v) => field.onChange(v as SafeModeLevel)}>
+              <SelectTrigger id={`${uid}-safe`} className="w-48">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SAFE_MODES.map((m) => (
+                  <SelectItem key={m} value={m}>
+                    {SAFE_MODE_LABEL[m]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        />
+      </Row>
       <Row label="Read-only" htmlFor={`${uid}-ro`}>
         <div className="flex h-8 items-center gap-2">
           <Controller
@@ -741,7 +972,7 @@ function AdvancedFields({ form }: { form: Form }) {
 }
 
 /** Fields that live in the (collapsible) Advanced block. */
-const ADVANCED_FIELDS = ["connectTimeoutSecs", "timezone"] as const;
+const ADVANCED_FIELDS = ["connectTimeoutSecs", "timezone", "safeMode"] as const;
 
 export function ConnectionDialog({
   open,
@@ -768,29 +999,48 @@ export function ConnectionDialog({
   const test = useTestConnection();
   const secret = useSecretStatus(profile?.id ?? null);
   const openProfile = useOpenProfile();
+  const profiles = useProfiles();
+  const storedGroups = useStoredGroups();
+  const groups = useMemo(
+    () => knownGroups(storedGroups.data ?? [], profiles.data ?? []),
+    [storedGroups.data, profiles.data],
+  );
   const [step, setStep] = useState<"driver" | "form">("form");
   const [pickedDriver, setPickedDriver] = useState<Driver>("postgres");
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [bootstrapOpen, setBootstrapOpen] = useState(false);
   const [busy, setBusy] = useState<"save" | "connect" | null>(null);
+  const [testing, setTesting] = useState(false);
+  /** Saved by Test (or Save) during this dialog session: later saves update it. */
+  const savedOnce = useRef(false);
+  /** The "Ask every time" password typed for Test, reused by Connect. */
+  const askedPassword = useRef<string | null>(null);
+  /** The Safe Mode password was confirmed for a protected change during this dialog session. */
+  const unlocked = useRef(false);
   const sshRef = useRef<HTMLElement>(null);
   const advancedRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (!open) return;
     setId(profile?.id ?? crypto.randomUUID());
-    const timeout = getPrefs().connectTimeout;
+    const { connectTimeout: timeout, defaultSafeMode } = getPrefs();
     form.reset(
       profile
         ? profileToForm(profile)
         : prefill
-          ? urlToForm(prefill, timeout)
-          : newProfileForm(timeout),
+          ? urlToForm(prefill, timeout, defaultSafeMode)
+          : newProfileForm(timeout, defaultSafeMode),
     );
     test.reset();
     setStep(profile || prefill ? "form" : "driver");
     setPickedDriver("postgres");
     setAdvancedOpen(false);
+    setBootstrapOpen(false);
     setBusy(null);
+    setTesting(false);
+    savedOnce.current = false;
+    askedPassword.current = null;
+    unlocked.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, profile?.id, prefill]);
 
@@ -814,23 +1064,42 @@ export function ConnectionDialog({
     if (ADVANCED_FIELDS.some((f) => errors[f])) setAdvancedOpen(true);
   };
 
+  /** Saves the form (no toast); null when it failed (useSaveProfile told the user). */
+  const persist = async (values: ConnectionFormValues): Promise<ConnectionProfile | null> => {
+    const input = buildInput(values);
+    // A saved Safe Mode 1 / 2 connection asks for its password before a save that weakens its
+    // protection (a lower level, Read-only off, another password), as the toolbar lock does for
+    // the level; once per dialog session.
+    const changes = profile && !unlocked.current ? protectedChanges(profile, input) : [];
+    if (profile && changes.length > 0) {
+      if (!(await confirmProtectedChange(profile, changes.join("\n")))) return null;
+      unlocked.current = true;
+    }
+    try {
+      const saved = await save.mutateAsync(input);
+      rememberSafeModeLevel(saved.id, saved.options.safeMode);
+      savedOnce.current = true;
+      onSaved?.(saved);
+      return saved;
+    } catch {
+      return null;
+    }
+  };
+
   /** Save, or Save + Connect (the form's default action, like TablePlus). */
   const submit = (connect: boolean) =>
     form.handleSubmit(async (values) => {
       setBusy(connect ? "connect" : "save");
-      let saved: ConnectionProfile;
-      try {
-        saved = await save.mutateAsync(buildInput(values));
-      } catch {
-        // useSaveProfile already told the user; the form stays open.
-        setBusy(null);
-        return;
-      }
+      const updating = profile !== null || savedOnce.current;
+      const saved = await persist(values);
       setBusy(null);
-      if (!connect) toast.success(profile ? "Connection updated" : "Connection created");
-      onSaved?.(saved);
+      // The form stays open when saving failed.
+      if (!saved) return;
+      if (!connect) toast.success(updating ? "Connection updated" : "Connection created");
       onOpenChange(false);
       if (!connect) return;
+      if (values.passwordMode === "ask" && askedPassword.current !== null)
+        handOverPassword(saved.id, askedPassword.current);
       // An open session keeps its old settings: Connect switches to it, so say how to apply them.
       if (profile && openConnectionOf(saved.id))
         toast.message("Connection updated", {
@@ -839,17 +1108,33 @@ export function ConnectionDialog({
       openProfile(saved.id);
     }, onInvalid);
 
+  /**
+   * Test: saves the (valid) connection first, as TablePlus does, then tries it. An "Ask every
+   * time" connection asks for its password (once per dialog session while it works).
+   */
   const onTest = async () => {
     const valid = await form.trigger();
     if (!valid) {
       onInvalid(form.formState.errors);
       return;
     }
+    const values = form.getValues();
+    setTesting(true);
     try {
-      // Uses the form's (possibly unsaved) profile id, which also keys a pending SSH host key.
-      await test.mutateAsync(buildInput(form.getValues()));
-    } catch {
-      // Shown in the footer.
+      if (!(await persist(values))) return;
+      const input = buildInput(values);
+      if (values.passwordMode === "ask") {
+        askedPassword.current ??= await askConnectionPassword(values.name, "test");
+        input.password = askedPassword.current;
+      }
+      // The form's profile id also keys a pending SSH host key.
+      const result = await test.mutateAsync(input);
+      if (!result.ok) askedPassword.current = null;
+    } catch (err) {
+      // A failure is shown in the footer; a cancelled prompt shows nothing.
+      if (!isPromptCancelled(err)) askedPassword.current = null;
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -913,7 +1198,12 @@ export function ConnectionDialog({
               </div>
             </DialogHeader>
             <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-4">
-              <GeneralFields form={form} hasStoredPassword={secret.data?.hasPassword ?? false} />
+              <GeneralFields
+                form={form}
+                hasStoredPassword={secret.data?.hasPassword ?? false}
+                groups={groups}
+                onBootstrap={() => setBootstrapOpen(true)}
+              />
               {sshEnabled && !sqlite && (
                 <Section title="SSH tunnel" sectionRef={sshRef}>
                   <SshFields form={form} />
@@ -965,9 +1255,10 @@ export function ConnectionDialog({
                   variant="outline"
                   size="sm"
                   onClick={onTest}
-                  disabled={test.isPending}
+                  disabled={test.isPending || testing || busy !== null}
+                  title="Save and test the connection"
                 >
-                  {test.isPending ? <Loader2 className="animate-spin" /> : null}
+                  {test.isPending || testing ? <Loader2 className="animate-spin" /> : null}
                   Test
                 </Button>
                 <Button
@@ -988,6 +1279,14 @@ export function ConnectionDialog({
             </DialogFooter>
           </form>
         )}
+        {/* Nested inside the form's content, so clicks in it do not dismiss the form. */}
+        <BootstrapCommandsDialog
+          open={bootstrapOpen}
+          value={form.watch("startupSql")}
+          driver={driver}
+          onOpenChange={setBootstrapOpen}
+          onSave={(sql) => form.setValue("startupSql", sql, { shouldDirty: true })}
+        />
       </DialogContent>
     </Dialog>
   );

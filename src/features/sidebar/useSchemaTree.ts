@@ -1,6 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
-import { ipc, tableKey, type TableSummary } from "@/lib/ipc";
+import { compileSearch, isSearching } from "@/features/objects/search";
+import {
+  ipc,
+  tableKey,
+  type RoutineSummary,
+  type SequenceSummary,
+  type TableSummary,
+} from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { EMPTY_PINS } from "@/stores/pins";
 import { EMPTY_RECENT } from "@/stores/recent";
@@ -25,7 +32,33 @@ export type TreeRow =
       /** The section's rows are left out of the list. */
       collapsed: boolean;
     }
-  | { type: "table"; key: string; table: TableSummary };
+  | { type: "table"; key: string; table: TableSummary }
+  | { type: "routine"; key: string; routine: RoutineSummary }
+  | { type: "sequence"; key: string; sequence: SequenceSummary };
+
+/** A row that stands for a database object (not a section header). */
+export type ItemRow = Exclude<TreeRow, { type: "header" }>;
+
+export function isItemRow(row: TreeRow | undefined): row is ItemRow {
+  return row !== undefined && row.type !== "header";
+}
+
+/** The name an item row shows (and that Copy Name copies). */
+export function itemName(row: ItemRow): string {
+  switch (row.type) {
+    case "table":
+      return row.table.name;
+    case "routine":
+      return row.routine.name;
+    case "sequence":
+      return row.sequence.name;
+  }
+}
+
+/** Overloads share a name: routine rows are keyed by their identity arguments too. */
+export function routineKey(r: RoutineSummary): string {
+  return `${r.schema ?? ""}.${r.name}(${r.identityArguments})`;
+}
 
 export function useDatabases(connectionId: string | null) {
   return useQuery({
@@ -76,7 +109,8 @@ const GROUP_ORDER: Array<[TableSummary["kind"][], SidebarSection]> = [
 ];
 
 /**
- * Flattens tables into header+row entries for the virtualized tree, filtered by `search`. With an
+ * Flattens tables into header+row entries for the virtualized tree, filtered by `search` (see
+ * `compileSearch`: fuzzy terms, `^name$` anchors, `|` / `,` alternatives, "exact" quotes). With an
  * empty search, recently opened tables (`tableKey`s, most recent first) come first under "Recent"
  * (rows keyed `r:`). Pinned tables that match come next under "Pinned" (rows keyed `p:`). Both
  * stay in their regular group too. A `collapsed` section keeps its header (with its count) but
@@ -89,8 +123,8 @@ export function buildTreeRows(
   recent: readonly string[] = EMPTY_RECENT,
   collapsed: ReadonlySet<SidebarSection> = EMPTY_COLLAPSED,
 ): TreeRow[] {
-  const q = search.trim().toLowerCase();
-  const matches = (t: TableSummary) => !q || t.name.toLowerCase().includes(q);
+  const matchName = compileSearch(search);
+  const matches = (t: TableSummary) => matchName(t.name);
   const rows: TreeRow[] = [];
   const section = (label: SidebarSection, prefix: string, items: TableSummary[]) => {
     if (items.length === 0) return;
@@ -106,7 +140,7 @@ export function buildTreeRows(
     for (const t of items)
       rows.push({ type: "table", key: `${prefix}:${t.schema ?? ""}.${t.name}`, table: t });
   };
-  if (!q && recent.length > 0) {
+  if (!isSearching(search) && recent.length > 0) {
     const byKey = new Map(tables.map((t) => [tableKey(t), t]));
     section(
       "Recent",
@@ -140,4 +174,54 @@ export function useTreeRows(
     () => buildTreeRows(tables ?? [], search, pinned, recent, collapsed),
     [tables, search, pinned, recent, collapsed],
   );
+}
+
+/** Where the Functions section goes: before the first of Tables / Views / Materialized views. */
+const AFTER_FUNCTIONS = new Set<SidebarSection>(["Tables", "Views", "Materialized views"]);
+
+/**
+ * Adds the "Functions" (functions and procedures, before the tables) and "Sequences" (last)
+ * sections to the table rows of `buildTreeRows`, filtered by the same `search`. `undefined`
+ * lists (section turned off, or not loaded) add nothing.
+ */
+export function mergeObjectRows(
+  rows: readonly TreeRow[],
+  routines: readonly RoutineSummary[] | undefined,
+  sequences: readonly SequenceSummary[] | undefined,
+  search: string,
+  collapsed: ReadonlySet<SidebarSection> = EMPTY_COLLAPSED,
+): TreeRow[] {
+  const matches = compileSearch(search);
+  const section = (label: SidebarSection, items: ItemRow[]): TreeRow[] => {
+    if (items.length === 0) return [];
+    const isCollapsed = collapsed.has(label);
+    const header: TreeRow = {
+      type: "header",
+      key: `h:${label}`,
+      label,
+      count: items.length,
+      collapsed: isCollapsed,
+    };
+    return isCollapsed ? [header] : [header, ...items];
+  };
+  const functions = section(
+    "Functions",
+    (routines ?? [])
+      .filter((r) => matches(r.name))
+      .map((routine) => ({ type: "routine", key: `f:${routineKey(routine)}`, routine })),
+  );
+  const seqs = section(
+    "Sequences",
+    (sequences ?? [])
+      .filter((s) => matches(s.name))
+      .map((sequence) => ({
+        type: "sequence",
+        key: `s:${sequence.schema ?? ""}.${sequence.name}`,
+        sequence,
+      })),
+  );
+  if (functions.length === 0 && seqs.length === 0) return rows as TreeRow[];
+  let at = rows.findIndex((r) => r.type === "header" && AFTER_FUNCTIONS.has(r.label));
+  if (at < 0) at = rows.length;
+  return [...rows.slice(0, at), ...functions, ...rows.slice(at), ...seqs];
 }

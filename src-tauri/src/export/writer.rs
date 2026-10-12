@@ -1,5 +1,5 @@
-//! Format writers: turn rows of `Value`s into CSV, JSON / NDJSON or SQL `INSERT` text,
-//! incrementally, into any `io::Write`. Nothing here buffers more than the current row.
+//! Format writers: turn rows of `Value`s into CSV, JSON / NDJSON, SQL `INSERT` text or an Excel
+//! sheet, incrementally, into any `io::Write`. Nothing here buffers more than the current row.
 
 use std::io::{self, Write};
 use std::sync::LazyLock;
@@ -11,18 +11,15 @@ use base64::Engine as _;
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::select::literal;
-use crate::types::export::ExportFormat;
+use crate::types::export::{CsvQuote, ExportFormat};
 use crate::types::value::Value;
+
+use super::xlsx::XlsxWriter;
 
 /// A validated `ExportFormat`, ready to build a writer from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormatSpec {
-    Csv {
-        delimiter: u8,
-        header: bool,
-        quote_all: bool,
-        null_as: String,
-    },
+    Csv(CsvSpec),
     Json {
         ndjson: bool,
         pretty: bool,
@@ -36,11 +33,89 @@ pub enum FormatSpec {
         /// column declared `GENERATED ALWAYS`, which a plain INSERT may not set).
         overriding_system_value: bool,
     },
+    Xlsx {
+        header: bool,
+        /// Name of the (single) sheet.
+        sheet: String,
+    },
+}
+
+/// The CSV options, validated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CsvSpec {
+    pub delimiter: u8,
+    pub header: bool,
+    /// `"` or `'`.
+    pub quote: u8,
+    /// Quote every value, not only the ones that need it.
+    pub always_quote: bool,
+    pub null_as: String,
+    /// `\n`, `\r\n` or `\r`.
+    pub line_break: &'static [u8],
+    /// Write numbers with `,` as the decimal separator.
+    pub decimal_comma: bool,
+    /// Line breaks inside values become one space.
+    pub line_break_to_space: bool,
+}
+
+impl CsvSpec {
+    /// The defaults of the export dialog (and of TablePlus).
+    pub fn standard(delimiter: u8) -> CsvSpec {
+        CsvSpec {
+            delimiter,
+            header: true,
+            quote: b'"',
+            always_quote: false,
+            null_as: String::new(),
+            line_break: b"\n",
+            decimal_comma: false,
+            line_break_to_space: false,
+        }
+    }
+}
+
+/// The SQL script options of an `SqlInsert` format: what precedes / makes up the INSERTs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SqlScript {
+    pub drop_table: bool,
+    pub structure: bool,
+    pub content: bool,
+    pub gzip: bool,
+}
+
+impl SqlScript {
+    pub fn of(format: &ExportFormat) -> Option<SqlScript> {
+        match format {
+            ExportFormat::SqlInsert {
+                drop_table,
+                structure,
+                content,
+                gzip,
+                ..
+            } => Some(SqlScript {
+                drop_table: *drop_table,
+                structure: *structure,
+                content: *content,
+                gzip: *gzip,
+            }),
+            _ => None,
+        }
+    }
+}
+
+fn single_ascii(text: &str, what: &str, forbidden: &[char]) -> Result<u8, AppError> {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if c.is_ascii() && !forbidden.contains(&c) => Ok(c as u8),
+        _ => Err(AppError::InvalidInput(format!(
+            "the CSV {what} must be a single ASCII character other than a quote or a line break"
+        ))),
+    }
 }
 
 impl FormatSpec {
     /// Validates the renderer's format options. `default_table` names the INSERT target when
-    /// `table_name` is empty (table exports).
+    /// `table_name` is empty (table exports) and the Excel sheet.
     pub fn from_request(
         format: &ExportFormat,
         dialect: Dialect,
@@ -50,17 +125,34 @@ impl FormatSpec {
             ExportFormat::Csv {
                 delimiter,
                 header,
-                quote_all,
+                quote,
                 null_as,
+                line_break,
+                decimal,
+                line_break_to_space,
             } => {
-                let mut chars = delimiter.chars();
-                let delimiter = match (chars.next(), chars.next()) {
-                    (Some(c), None) if c.is_ascii() && !matches!(c, '"' | '\r' | '\n') => c as u8,
+                let delimiter = single_ascii(delimiter, "delimiter", &['"', '\'', '\r', '\n'])?;
+                let (quote, always_quote) = match quote {
+                    CsvQuote::Double => (b'"', true),
+                    CsvQuote::Single => (b'\'', true),
+                    CsvQuote::IfNeeded => (b'"', false),
+                };
+                let line_break: &'static [u8] = match line_break.as_str() {
+                    "\n" => b"\n",
+                    "\r\n" => b"\r\n",
+                    "\r" => b"\r",
                     _ => {
                         return Err(AppError::InvalidInput(
-                            "the CSV delimiter must be a single ASCII character other than a \
-                             quote or a line break"
-                                .into(),
+                            "the CSV line break must be \\n, \\r\\n or \\r".into(),
+                        ));
+                    }
+                };
+                let decimal_comma = match decimal.as_str() {
+                    "." => false,
+                    "," => true,
+                    _ => {
+                        return Err(AppError::InvalidInput(
+                            "the CSV decimal separator must be . or ,".into(),
                         ));
                     }
                 };
@@ -68,19 +160,23 @@ impl FormatSpec {
                 // not contain anything that would need quoting.
                 if null_as
                     .bytes()
-                    .any(|b| b == delimiter || matches!(b, b'"' | b'\r' | b'\n'))
+                    .any(|b| b == delimiter || b == quote || matches!(b, b'\r' | b'\n'))
                 {
                     return Err(AppError::InvalidInput(
                         "the CSV NULL text must not contain the delimiter, a quote or a line break"
                             .into(),
                     ));
                 }
-                FormatSpec::Csv {
+                FormatSpec::Csv(CsvSpec {
                     delimiter,
                     header: *header,
-                    quote_all: *quote_all,
+                    quote,
+                    always_quote,
                     null_as: null_as.clone(),
-                }
+                    line_break,
+                    decimal_comma,
+                    line_break_to_space: *line_break_to_space,
+                })
             }
             ExportFormat::Json { ndjson, pretty } => FormatSpec::Json {
                 ndjson: *ndjson,
@@ -89,6 +185,7 @@ impl FormatSpec {
             ExportFormat::SqlInsert {
                 table_name,
                 batch_size,
+                ..
             } => {
                 if *batch_size == 0 {
                     return Err(AppError::InvalidInput(
@@ -111,6 +208,10 @@ impl FormatSpec {
                     overriding_system_value: false,
                 }
             }
+            ExportFormat::Xlsx { header } => FormatSpec::Xlsx {
+                header: *header,
+                sheet: default_table.unwrap_or("Result").to_string(),
+            },
         })
     }
 }
@@ -119,28 +220,46 @@ fn io_err(e: impl std::fmt::Display) -> AppError {
     AppError::Io(e.to_string())
 }
 
+/// What the export sink writes rows into: a `RowWriter`, or a sheet of a multi-sheet workbook.
+pub trait RowOut {
+    /// Called once per result set with its column names, before its rows.
+    fn begin(&mut self, columns: &[String]) -> Result<(), AppError>;
+    fn write_row(&mut self, row: &[Value]) -> Result<(), AppError>;
+}
+
+impl<T: RowOut + ?Sized> RowOut for &mut T {
+    fn begin(&mut self, columns: &[String]) -> Result<(), AppError> {
+        (**self).begin(columns)
+    }
+    fn write_row(&mut self, row: &[Value]) -> Result<(), AppError> {
+        (**self).write_row(row)
+    }
+}
+
+impl<W: Write> RowOut for XlsxWriter<W> {
+    fn begin(&mut self, columns: &[String]) -> Result<(), AppError> {
+        XlsxWriter::begin(self, columns)
+    }
+    fn write_row(&mut self, row: &[Value]) -> Result<(), AppError> {
+        XlsxWriter::write_row(self, row)
+    }
+}
+
 /// Writes rows in one format. Call `begin` once with the column names, `write_row` per row and
 /// `finish` at the end (also when no row or no result set arrived: JSON then writes `[]`).
 pub enum RowWriter<W: Write> {
     Csv(Box<CsvWriter<W>>),
     Json(JsonWriter<W>),
     Insert(InsertWriter<W>),
+    Xlsx(Box<XlsxWriter<W>>),
 }
 
 impl<W: Write> RowWriter<W> {
     pub fn new(spec: FormatSpec, out: W) -> RowWriter<W> {
         match spec {
-            FormatSpec::Csv {
-                delimiter,
-                header,
-                quote_all,
-                null_as,
-            } => RowWriter::Csv(Box::new(CsvWriter {
+            FormatSpec::Csv(spec) => RowWriter::Csv(Box::new(CsvWriter {
                 w: out,
-                delimiter,
-                header,
-                quote_all,
-                null_as,
+                spec,
                 line: Vec::new(),
             })),
             FormatSpec::Json { ndjson, pretty } => RowWriter::Json(JsonWriter {
@@ -164,6 +283,11 @@ impl<W: Write> RowWriter<W> {
                 batch_size,
                 in_batch: 0,
             }),
+            FormatSpec::Xlsx { header, sheet } => {
+                let mut w = XlsxWriter::new(out, header);
+                w.next_sheet(&sheet);
+                RowWriter::Xlsx(Box::new(w))
+            }
         }
     }
 
@@ -172,6 +296,7 @@ impl<W: Write> RowWriter<W> {
             RowWriter::Csv(w) => w.begin(columns),
             RowWriter::Json(w) => w.begin(columns),
             RowWriter::Insert(w) => w.begin(columns),
+            RowWriter::Xlsx(w) => w.begin(columns),
         }
     }
 
@@ -180,6 +305,7 @@ impl<W: Write> RowWriter<W> {
             RowWriter::Csv(w) => w.write_row(row).map_err(io_err),
             RowWriter::Json(w) => w.write_row(row).map_err(io_err),
             RowWriter::Insert(w) => w.write_row(row),
+            RowWriter::Xlsx(w) => w.write_row(row),
         }
     }
 
@@ -189,7 +315,17 @@ impl<W: Write> RowWriter<W> {
             RowWriter::Csv(w) => w.finish().map_err(io_err),
             RowWriter::Json(w) => w.finish().map_err(io_err),
             RowWriter::Insert(w) => w.finish().map_err(io_err),
+            RowWriter::Xlsx(w) => w.finish(),
         }
+    }
+}
+
+impl<W: Write> RowOut for RowWriter<W> {
+    fn begin(&mut self, columns: &[String]) -> Result<(), AppError> {
+        RowWriter::begin(self, columns)
+    }
+    fn write_row(&mut self, row: &[Value]) -> Result<(), AppError> {
+        RowWriter::write_row(self, row)
     }
 }
 
@@ -197,29 +333,26 @@ impl<W: Write> RowWriter<W> {
 // CSV
 // ---------------------------------------------------------------------------------------------
 
-/// RFC 4180 CSV with CRLF line ends, written by hand because the NULL marker and the values
-/// need different quoting rules (the csv crate quotes every field the same way). As in
-/// PostgreSQL's CSV output, NULL is always the unquoted marker, even with `quote_all`, and a
-/// value whose text equals the marker (including `''` when the marker is empty) is always
-/// quoted, so a loader such as `COPY … CSV` tells the two apart.
+/// CSV written by hand because the NULL marker and the values need different quoting rules (the
+/// csv crate quotes every field the same way). As in PostgreSQL's CSV output, NULL is always the
+/// unquoted marker, even when every value is quoted, and a value whose text equals the marker
+/// (including `''` when the marker is empty) is always quoted, so a loader such as `COPY … CSV`
+/// tells the two apart.
 pub struct CsvWriter<W: Write> {
     w: W,
-    delimiter: u8,
-    header: bool,
-    quote_all: bool,
-    null_as: String,
+    spec: CsvSpec,
     /// The record being built (reused between rows).
     line: Vec<u8>,
 }
 
 impl<W: Write> CsvWriter<W> {
     fn begin(&mut self, columns: &[String]) -> Result<(), AppError> {
-        if self.header {
+        if self.spec.header {
             self.line.clear();
             for (i, name) in columns.iter().enumerate() {
                 self.push_field(i, name, false);
             }
-            self.line.extend_from_slice(b"\r\n");
+            self.line.extend_from_slice(self.spec.line_break);
             self.w.write_all(&self.line).map_err(io_err)?;
         }
         Ok(())
@@ -228,37 +361,38 @@ impl<W: Write> CsvWriter<W> {
     fn write_row(&mut self, row: &[Value]) -> io::Result<()> {
         self.line.clear();
         for (i, v) in row.iter().enumerate() {
-            match csv_text(v) {
+            match csv_text(v, &self.spec) {
                 Some(text) => {
-                    let clashes = text == self.null_as;
+                    let clashes = text == self.spec.null_as;
                     self.push_field(i, &text, clashes);
                 }
                 None => {
                     if i > 0 {
-                        self.line.push(self.delimiter);
+                        self.line.push(self.spec.delimiter);
                     }
-                    self.line.extend_from_slice(self.null_as.as_bytes());
+                    self.line.extend_from_slice(self.spec.null_as.as_bytes());
                 }
             }
         }
-        self.line.extend_from_slice(b"\r\n");
+        self.line.extend_from_slice(self.spec.line_break);
         self.w.write_all(&self.line)
     }
 
     fn push_field(&mut self, i: usize, text: &str, force_quotes: bool) {
+        let (delimiter, quote) = (self.spec.delimiter, self.spec.quote);
         if i > 0 {
-            self.line.push(self.delimiter);
+            self.line.push(delimiter);
         }
-        if force_quotes || self.quote_all || csv_needs_quotes(text, self.delimiter) {
-            self.line.push(b'"');
-            // `"` is ASCII, so working on the UTF-8 bytes is safe.
+        if force_quotes || self.spec.always_quote || csv_needs_quotes(text, delimiter, quote) {
+            self.line.push(quote);
+            // The quote is ASCII, so working on the UTF-8 bytes is safe.
             for &b in text.as_bytes() {
-                if b == b'"' {
-                    self.line.push(b'"');
+                if b == quote {
+                    self.line.push(quote);
                 }
                 self.line.push(b);
             }
-            self.line.push(b'"');
+            self.line.push(quote);
         } else {
             self.line.extend_from_slice(text.as_bytes());
         }
@@ -270,21 +404,32 @@ impl<W: Write> CsvWriter<W> {
     }
 }
 
-/// Whether a value must be quoted: it contains the delimiter, a quote or a line break, or it is
-/// `\.` (PostgreSQL's end-of-data marker when it stands alone on a line).
-fn csv_needs_quotes(text: &str, delimiter: u8) -> bool {
+/// Whether a value must be quoted: it contains the delimiter, the quote character or a line
+/// break, or it is `\.` (PostgreSQL's end-of-data marker when it stands alone on a line).
+fn csv_needs_quotes(text: &str, delimiter: u8, quote: u8) -> bool {
     text == "\\."
         || text
             .bytes()
-            .any(|b| b == delimiter || matches!(b, b'"' | b'\r' | b'\n'))
+            .any(|b| b == delimiter || b == quote || matches!(b, b'\r' | b'\n'))
 }
 
 /// Text of a CSV cell: `None` for NULL, base64 for bytes, raw text for JSON, a PostgreSQL array
-/// literal for arrays.
-fn csv_text(v: &Value) -> Option<String> {
-    match v {
-        Value::Float(f) => Some(float_text(*f)),
-        other => other.as_text(),
+/// literal for arrays; numbers with the chosen decimal separator; line breaks as spaces when
+/// asked.
+fn csv_text(v: &Value, spec: &CsvSpec) -> Option<String> {
+    let text = match v {
+        Value::Float(f) => float_text(*f),
+        other => other.as_text()?,
+    };
+    let text = if spec.decimal_comma && matches!(v, Value::Float(_) | Value::Decimal(_)) {
+        text.replace('.', ",")
+    } else {
+        text
+    };
+    if spec.line_break_to_space && text.contains(['\r', '\n']) {
+        Some(text.replace("\r\n", " ").replace(['\r', '\n'], " "))
+    } else {
+        Some(text)
     }
 }
 
@@ -613,13 +758,23 @@ mod tests {
         String::from_utf8(w.finish().unwrap()).unwrap()
     }
 
+    /// The CSV of the M6 tests: CRLF line ends, `"` quotes.
     fn csv(delimiter: u8, header: bool, quote_all: bool, null_as: &str) -> FormatSpec {
-        FormatSpec::Csv {
+        FormatSpec::Csv(CsvSpec {
             delimiter,
             header,
-            quote_all,
+            quote: b'"',
+            always_quote: quote_all,
             null_as: null_as.into(),
-        }
+            line_break: b"\r\n",
+            decimal_comma: false,
+            line_break_to_space: false,
+        })
+    }
+
+    fn csv_request(format: serde_json::Value) -> Result<FormatSpec, AppError> {
+        let format: ExportFormat = serde_json::from_value(format).unwrap();
+        FormatSpec::from_request(&format, Dialect::Postgres, None)
     }
 
     fn sample_rows() -> Vec<Vec<Value>> {
@@ -892,6 +1047,10 @@ mod tests {
             &ExportFormat::SqlInsert {
                 table_name: String::new(),
                 batch_size: batch,
+                drop_table: false,
+                structure: false,
+                content: true,
+                gzip: false,
             },
             dialect,
             Some("my table"),
@@ -1181,16 +1340,9 @@ mod tests {
     #[test]
     fn validates_format_options() {
         let bad = |delimiter: &str| {
-            FormatSpec::from_request(
-                &ExportFormat::Csv {
-                    delimiter: delimiter.into(),
-                    header: true,
-                    quote_all: false,
-                    null_as: String::new(),
-                },
-                Dialect::Postgres,
-                None,
-            )
+            csv_request(serde_json::json!({
+                "format": "csv", "delimiter": delimiter, "header": true, "nullAs": ""
+            }))
             .is_err()
         };
         assert!(bad(""));
@@ -1200,38 +1352,11 @@ mod tests {
         assert!(bad("€"));
         assert!(!bad(";"));
         assert!(!bad("\t"));
-        assert!(
-            FormatSpec::from_request(
-                &ExportFormat::SqlInsert {
-                    table_name: "t".into(),
-                    batch_size: 0
-                },
-                Dialect::Postgres,
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            FormatSpec::from_request(
-                &ExportFormat::SqlInsert {
-                    table_name: " ".into(),
-                    batch_size: 10
-                },
-                Dialect::Postgres,
-                None
-            )
-            .is_err()
-        );
+        assert!(FormatSpec::from_request(&sql_insert("t", 0), Dialect::Postgres, None).is_err());
+        assert!(FormatSpec::from_request(&sql_insert(" ", 10), Dialect::Postgres, None).is_err());
         assert_eq!(
-            FormatSpec::from_request(
-                &ExportFormat::SqlInsert {
-                    table_name: "Dest`x".into(),
-                    batch_size: 10
-                },
-                Dialect::Mysql,
-                Some("src")
-            )
-            .unwrap(),
+            FormatSpec::from_request(&sql_insert("Dest`x", 10), Dialect::Mysql, Some("src"))
+                .unwrap(),
             FormatSpec::Insert {
                 dialect: Dialect::Mysql,
                 table: "`Dest``x`".into(),
@@ -1242,21 +1367,151 @@ mod tests {
         // The NULL text is written unquoted, so it cannot hold the delimiter, a quote or a
         // line break.
         let null_as = |delimiter: &str, null_as: &str| {
-            FormatSpec::from_request(
-                &ExportFormat::Csv {
-                    delimiter: delimiter.into(),
-                    header: true,
-                    quote_all: false,
-                    null_as: null_as.into(),
-                },
-                Dialect::Postgres,
-                None,
-            )
+            csv_request(serde_json::json!({
+                "format": "csv", "delimiter": delimiter, "header": true, "nullAs": null_as
+            }))
         };
         assert!(null_as(",", "a,b").is_err());
         assert!(null_as(";", "\"").is_err());
         assert!(null_as(",", "x\ny").is_err());
         assert!(null_as(",", "a;b").is_ok());
         assert!(null_as(",", "\\N").is_ok());
+    }
+
+    fn sql_insert(table_name: &str, batch_size: u32) -> ExportFormat {
+        ExportFormat::SqlInsert {
+            table_name: table_name.into(),
+            batch_size,
+            drop_table: false,
+            structure: false,
+            content: true,
+            gzip: false,
+        }
+    }
+
+    #[test]
+    fn csv_options_of_the_export_dialog() {
+        let rows = vec![
+            vec![
+                Value::Int(1),
+                Value::Text("it's, \"x\"".into()),
+                Value::Decimal("12.50".into()),
+                Value::Float(0.25),
+                Value::Null,
+            ],
+            vec![
+                Value::Int(2),
+                Value::Text("a\r\nb\nc\rd".into()),
+                Value::BigInt("9007199254740993".into()),
+                Value::Float(-1.5e300),
+                Value::Text(String::new()),
+            ],
+        ];
+        let cols = ["id", "t", "d", "f", "n"];
+        let spec = |patch: serde_json::Value| {
+            let mut base = serde_json::json!({
+                "format": "csv", "delimiter": ",", "header": true, "nullAs": ""
+            });
+            for (k, v) in patch.as_object().unwrap() {
+                base[k] = v.clone();
+            }
+            csv_request(base).unwrap()
+        };
+        // Defaults: \n line ends, quotes only when needed, NULL empty.
+        assert_eq!(
+            run(spec(serde_json::json!({})), &cols, &rows),
+            "id,t,d,f,n\n1,\"it's, \"\"x\"\"\",12.50,0.25,\n2,\"a\r\nb\nc\rd\",9007199254740993,-1.5e300,\"\"\n"
+        );
+        // `'` around every value (doubled inside), NULL as `NULL` unquoted, CRLF, no header.
+        assert_eq!(
+            run(
+                spec(serde_json::json!({
+                    "quote": "single", "nullAs": "NULL", "lineBreak": "\r\n", "header": false
+                })),
+                &cols,
+                &rows[..1]
+            ),
+            "'1','it''s, \"x\"','12.50','0.25',NULL\r\n"
+        );
+        // `"` around every value; \r records; line breaks inside values become spaces.
+        assert_eq!(
+            run(
+                spec(serde_json::json!({
+                    "quote": "double", "lineBreak": "\r", "lineBreakToSpace": true,
+                    "header": false
+                })),
+                &cols,
+                &rows[1..]
+            ),
+            "\"2\",\"a b c d\",\"9007199254740993\",\"-1.5e300\",\"\"\r"
+        );
+        // Decimal comma with a `;` delimiter: numbers keep their comma unquoted.
+        assert_eq!(
+            run(
+                spec(serde_json::json!({"delimiter": ";", "decimal": ",", "header": false})),
+                &cols,
+                &rows[..1]
+            ),
+            "1;\"it's, \"\"x\"\"\";12,50;0,25;\n"
+        );
+        // …while with a `,` delimiter they are quoted, and the output reads back.
+        let out = run(
+            spec(serde_json::json!({"decimal": ",", "header": false})),
+            &cols,
+            &rows[..1],
+        );
+        assert_eq!(out, "1,\"it's, \"\"x\"\"\",\"12,50\",\"0,25\",\n");
+        let rec = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_reader(out.as_bytes())
+            .records()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(&rec[2], "12,50");
+        // Bad values are refused.
+        assert!(
+            csv_request(serde_json::json!({
+                "format": "csv", "delimiter": ",", "header": true, "nullAs": "", "lineBreak": "x"
+            }))
+            .is_err()
+        );
+        assert!(
+            csv_request(serde_json::json!({
+                "format": "csv", "delimiter": ",", "header": true, "nullAs": "", "decimal": ";"
+            }))
+            .is_err()
+        );
+        assert!(
+            csv_request(serde_json::json!({
+                "format": "csv", "delimiter": "'", "header": true, "nullAs": ""
+            }))
+            .is_err()
+        );
+        assert!(csv_request(serde_json::json!({
+            "format": "csv", "delimiter": ",", "header": true, "nullAs": "a'b", "quote": "single"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn xlsx_through_the_row_writer() {
+        let spec = FormatSpec::from_request(
+            &ExportFormat::Xlsx { header: true },
+            Dialect::Sqlite,
+            Some("people"),
+        )
+        .unwrap();
+        let mut w = RowWriter::new(spec, Vec::new());
+        w.begin(&["id".into(), "name".into()]).unwrap();
+        w.write_row(&[Value::Int(7), Value::Text("Ann".into())])
+            .unwrap();
+        let bytes = w.finish().unwrap();
+        let files = crate::export::xlsx::tests::unzip(&bytes);
+        let wb = String::from_utf8(files["xl/workbook.xml"].clone()).unwrap();
+        assert!(wb.contains("name=\"people\""));
+        let sheet = String::from_utf8(files["xl/worksheets/sheet1.xml"].clone()).unwrap();
+        assert!(sheet.contains("<c r=\"A2\"><v>7</v></c>"));
+        assert!(sheet.contains(">Ann</t>"));
     }
 }

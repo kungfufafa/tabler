@@ -12,7 +12,9 @@ import { useTabsStore } from "@/stores/tabs";
 import {
   ddlKey,
   invalidateConnectionSchema,
+  invalidateSchema,
   resetDatabaseCaches,
+  structureChoicesKey,
   tablesWithPendingEdits,
 } from "./invalidate";
 import { useStructureStore } from "./store";
@@ -38,6 +40,7 @@ function seeded() {
     databases: schemaKeys.databases("c1"),
     completion: schemaKeys.completion("c1"),
     ddl: ddlKey("c1", users),
+    choices: structureChoicesKey("c1"),
     meta: rowKeys.meta("c1", users),
     rows: rowKeys.page("c1", users, page, 0),
     count: rowKeys.count("c1", users, null, 0),
@@ -100,6 +103,18 @@ describe("invalidateConnectionSchema", () => {
   });
 });
 
+describe("invalidateSchema", () => {
+  it("refreshes the lists, completion, DDL and structure choices, plus the table's own data", () => {
+    const { qc, keys, other, state } = seeded();
+    invalidateSchema(qc, "c1", users);
+    for (const [name, key] of Object.entries(keys)) {
+      const expected = name !== "schemas" && name !== "databases";
+      expect(state(key)?.state.isInvalidated, name).toBe(expected);
+    }
+    expect(state(other)?.state.isInvalidated).toBe(false);
+  });
+});
+
 describe("resetDatabaseCaches", () => {
   it("drops the old database's metadata, rows, counts, DDL, completion and lists", () => {
     const { qc, keys, other, state } = seeded();
@@ -115,6 +130,15 @@ describe("resetDatabaseCaches", () => {
     // Other connections keep theirs.
     expect(qc.getQueryData(other)).toEqual({ seeded: true });
     expect(state(other)?.state.isInvalidated).toBe(false);
+  });
+
+  it("resets the structure editor's choices (the old database's user types)", () => {
+    const { qc, keys } = seeded();
+    const otherChoices = structureChoicesKey("c2");
+    qc.setQueryData(otherChoices, { seeded: true });
+    resetDatabaseCaches(qc, "c1");
+    expect(qc.getQueryData(keys.choices)).toBeUndefined();
+    expect(qc.getQueryData(otherChoices)).toEqual({ seeded: true });
   });
 
   it("never shows the old database's tables, nor picks its schema again (MySQL)", async () => {

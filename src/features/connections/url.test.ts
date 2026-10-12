@@ -18,6 +18,7 @@ const base: ConnectionProfile = {
   ssh: null,
   options: {
     tag: null,
+    safeMode: null,
     timezone: null,
     connectTimeoutSecs: null,
     readOnly: false,
@@ -77,6 +78,18 @@ describe("parseConnectionUrl", () => {
     expect(parseConnectionUrl("sqlite:/tmp/a%20b.db").values.sqlitePath).toBe("/tmp/a b.db");
   });
 
+  it("reads TablePlus's env and safe-mode parameters", () => {
+    const r = parseConnectionUrl(
+      "postgres://u@h/d?env=production&safeModeLevel=2&advancedSafeModeLevel=1&statusColor=red",
+    );
+    expect(r.values).toMatchObject({ tag: "production", safeMode: "safeNonSelect", color: "red" });
+    expect(parseConnectionUrl("mysql://u@h?enviroment=Staging").values.tag).toBe("staging");
+    expect(parseConnectionUrl("mysql://u@h?safeModeLevel=1").values.safeMode).toBe("alert");
+    const ignored = parseConnectionUrl("mysql://u@h?env=moon&safeModeLevel=9").values;
+    expect(ignored.tag).toBeUndefined();
+    expect(ignored.safeMode).toBeUndefined();
+  });
+
   it("rejects what is not a connection URL", () => {
     expect(() => parseConnectionUrl("https://example.com")).toThrow(/postgres/);
     expect(() => parseConnectionUrl("not a url")).toThrow();
@@ -96,6 +109,23 @@ describe("profileToUrl", () => {
     const back = parseConnectionUrl(url);
     expect(back.values).toMatchObject({ user: "a@b", database: "x/y", name: "Local Postgres" });
     expect(back.password).toBe("s3cr:t");
+  });
+
+  it("carries the tag and a safe mode other than silent", () => {
+    const p: ConnectionProfile = {
+      ...base,
+      options: { ...base.options, tag: "staging", safeMode: "alertNonSelect" },
+    };
+    const url = profileToUrl(p);
+    expect(url).toBe(
+      "postgresql://app@127.0.0.1:5432/tabler_dev?name=Local+Postgres&env=staging&safeModeLevel=1&advancedSafeModeLevel=1",
+    );
+    expect(parseConnectionUrl(url).values).toMatchObject({
+      tag: "staging",
+      safeMode: "alertNonSelect",
+    });
+    const silent = { ...base, options: { ...base.options, safeMode: "silent" as const } };
+    expect(profileToUrl(silent)).not.toContain("safeModeLevel");
   });
 
   it("leaves the password out unless given", () => {

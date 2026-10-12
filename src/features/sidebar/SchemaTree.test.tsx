@@ -162,15 +162,12 @@ describe("SchemaTree", () => {
     });
   });
 
-  it("opens from the context menu: Open (preview), Open in New Tab, Structure", () => {
+  it("opens from the context menu: Open in New Tab, Open Structure", () => {
     renderTree({ scope: SCOPE, recent: ["public.tags"] });
     // The Recent row and the group row are both there.
     expect(screen.getAllByRole("button", { name: "tags" })).toHaveLength(2);
 
-    fireEvent.contextMenu(row("users"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Open" }));
-    expect(tabs()).toEqual([expect.objectContaining({ title: "users", preview: true })]);
-
+    fireEvent.click(row("users"));
     fireEvent.contextMenu(row("posts"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Open in New Tab" }));
     expect(opened()).toEqual([
@@ -179,7 +176,7 @@ describe("SchemaTree", () => {
     ]);
 
     fireEvent.contextMenu(screen.getAllByRole("button", { name: "tags" })[0]!);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Structure" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open Structure" }));
     expect(activeTab()).toMatchObject({ title: "tags", kind: "structure" });
     expect(activeTab()).not.toHaveProperty("preview");
     expect(recent()).toEqual(["public.tags", "public.posts", "public.users"]);

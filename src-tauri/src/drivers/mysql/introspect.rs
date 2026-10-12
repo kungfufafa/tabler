@@ -8,9 +8,10 @@ use mysql_async::{Conn, Params, Row};
 use super::decode::{int_of, text_of};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
+use crate::sqlgen::ddl::{check_columns, check_expression};
 use crate::types::schema::{
-    ColumnMeta, CompletionMetadata, DatabaseInfo, ForeignKeyMeta, IndexMeta, SchemaInfo, TableKind,
-    TableMeta, TableRef, TableSummary, TriggerMeta, ValueKind,
+    CheckMeta, ColumnMeta, CompletionMetadata, DatabaseInfo, ForeignKeyMeta, IndexMeta, SchemaInfo,
+    TableKind, TableMeta, TableOptions, TableRef, TableSummary, TriggerMeta, ValueKind,
 };
 
 /// Schemas hidden from "user" listings.
@@ -336,15 +337,16 @@ struct IndexRow {
     sub_part: Option<i64>,
     index_type: Option<String>,
     descending: bool,
+    comment: Option<String>,
 }
 
 async fn index_rows(conn: &mut Conn, schema: &str, name: &str) -> Result<Vec<IndexRow>, AppError> {
     // `EXPRESSION` (functional indexes) exists on MySQL >= 8.0.13 only; retry without it.
     const WITH_EXPR: &str = "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME, SUB_PART, INDEX_TYPE, \
-         COLLATION, EXPRESSION FROM information_schema.STATISTICS \
+         COLLATION, EXPRESSION, INDEX_COMMENT FROM information_schema.STATISTICS \
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX";
     const WITHOUT_EXPR: &str = "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME, SUB_PART, INDEX_TYPE, \
-         COLLATION, NULL FROM information_schema.STATISTICS \
+         COLLATION, NULL, INDEX_COMMENT FROM information_schema.STATISTICS \
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX";
     let raw = match rows(conn, WITH_EXPR, vec![p(schema), p(name)]).await {
         Ok(rows) => rows,
@@ -364,6 +366,7 @@ async fn index_rows(conn: &mut Conn, schema: &str, name: &str) -> Result<Vec<Ind
             index_type: non_empty(s(&mut row, 4)),
             descending: s(&mut row, 5).as_deref() == Some("D"),
             expression: non_empty(s(&mut row, 6)),
+            comment: non_empty(s(&mut row, 7)),
         });
     }
     Ok(out)
@@ -393,6 +396,7 @@ fn group_indexes(rows: Vec<IndexRow>) -> Vec<IndexMeta> {
                 method: r.index_type,
                 predicate: None,
                 definition: None,
+                comment: r.comment,
             }),
         }
     }
@@ -449,6 +453,82 @@ async fn foreign_keys(
     Ok(out)
 }
 
+/// CHECK constraints (MySQL 8.0.16+, MariaDB 10.2+); empty where the server has no
+/// `CHECK_CONSTRAINTS` table.
+async fn checks(
+    conn: &mut Conn,
+    schema: &str,
+    name: &str,
+    columns: &[String],
+) -> Result<Vec<CheckMeta>, AppError> {
+    let raw = rows(
+        conn,
+        "SELECT cc.CONSTRAINT_NAME, cc.CHECK_CLAUSE \
+         FROM information_schema.CHECK_CONSTRAINTS cc \
+         JOIN information_schema.TABLE_CONSTRAINTS tc \
+           ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA \
+          AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME \
+          AND tc.CONSTRAINT_TYPE = 'CHECK' \
+         WHERE tc.TABLE_SCHEMA = ? AND tc.TABLE_NAME = ? \
+         ORDER BY cc.CONSTRAINT_NAME",
+        vec![p(schema), p(name)],
+    )
+    .await;
+    let raw = match raw {
+        Ok(rows) => rows,
+        // 1109 unknown table (no CHECK_CONSTRAINTS), 1054 unknown column, 1146 no such table
+        Err(AppError::Db {
+            vendor_code: Some(1109 | 1054 | 1146),
+            ..
+        }) => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut out = Vec::with_capacity(raw.len());
+    for mut row in raw {
+        let clause = s_or_empty(&mut row, 1);
+        let expression = check_expression(&clause);
+        out.push(CheckMeta {
+            name: s_or_empty(&mut row, 0),
+            columns: check_columns(&expression, columns),
+            expression,
+        });
+    }
+    Ok(out)
+}
+
+/// Table options from `information_schema.TABLES` (`ENGINE`, `TABLE_COLLATION`,
+/// `AUTO_INCREMENT`, `ROW_FORMAT`) and `SHOW CREATE TABLE`, whose `AUTO_INCREMENT=` is current
+/// (MySQL 8 caches the `information_schema` value).
+pub fn table_options(
+    engine: Option<String>,
+    collation: Option<String>,
+    auto_increment: Option<i64>,
+    row_format: Option<String>,
+    ddl: Option<&str>,
+) -> TableOptions {
+    let from_ddl = ddl.and_then(|d| {
+        let tail = &d[d.rfind(')')? + 1..];
+        let at = tail.to_ascii_uppercase().find("AUTO_INCREMENT=")?;
+        let digits: String = tail[at + "AUTO_INCREMENT=".len()..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse::<u64>().ok()
+    });
+    // a table created without rows or keys has no counter in SHOW CREATE TABLE
+    let auto_increment = from_ddl.or(auto_increment.and_then(|n| u64::try_from(n).ok()));
+    let charset = collation
+        .as_deref()
+        .map(|c| c.split('_').next().unwrap_or(c).to_string());
+    TableOptions {
+        engine,
+        charset,
+        collation,
+        auto_increment,
+        row_format,
+    }
+}
+
 async fn triggers(conn: &mut Conn, schema: &str, name: &str) -> Result<Vec<TriggerMeta>, AppError> {
     let raw = rows(
         conn,
@@ -478,8 +558,8 @@ pub async fn table_meta(conn: &mut Conn, table: &TableRef) -> Result<TableMeta, 
 
     let mut head = rows(
         conn,
-        "SELECT TABLE_TYPE, TABLE_ROWS, TABLE_COMMENT FROM information_schema.TABLES \
-         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+        "SELECT TABLE_TYPE, TABLE_ROWS, TABLE_COMMENT, ENGINE, TABLE_COLLATION, AUTO_INCREMENT, \
+         ROW_FORMAT FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
         vec![p(&schema), p(name)],
     )
     .await?;
@@ -493,6 +573,10 @@ pub async fn table_meta(conn: &mut Conn, table: &TableRef) -> Result<TableMeta, 
         None
     };
     let comment = non_empty(s(head, 2));
+    let engine = non_empty(s(head, 3));
+    let table_collation = non_empty(s(head, 4));
+    let next_auto_increment = n(head, 5);
+    let row_format = non_empty(s(head, 6));
 
     let mut columns = columns(conn, &schema, name).await?;
 
@@ -528,6 +612,22 @@ pub async fn table_meta(conn: &mut Conn, table: &TableRef) -> Result<TableMeta, 
         _ => show_create(conn, "TABLE", &schema, name).await,
     };
 
+    let (checks, options) = if kind == TableKind::Table {
+        let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+        (
+            checks(conn, &schema, name, &names).await?,
+            Some(table_options(
+                engine,
+                table_collation,
+                next_auto_increment,
+                row_format,
+                ddl.as_deref(),
+            )),
+        )
+    } else {
+        (Vec::new(), None)
+    };
+
     Ok(TableMeta {
         table: TableRef::new(Some(&schema), name),
         kind,
@@ -539,6 +639,8 @@ pub async fn table_meta(conn: &mut Conn, table: &TableRef) -> Result<TableMeta, 
         comment,
         row_estimate,
         ddl,
+        checks,
+        options,
     })
 }
 
@@ -653,6 +755,7 @@ mod tests {
                 sub_part: Some(10),
                 index_type: Some("BTREE".into()),
                 descending: false,
+                comment: None,
             },
             IndexRow {
                 name: "idx_name".into(),
@@ -662,6 +765,7 @@ mod tests {
                 sub_part: None,
                 index_type: Some("BTREE".into()),
                 descending: true,
+                comment: Some("by name".into()),
             },
             IndexRow {
                 name: "PRIMARY".into(),
@@ -671,6 +775,7 @@ mod tests {
                 sub_part: None,
                 index_type: Some("BTREE".into()),
                 descending: false,
+                comment: None,
             },
             IndexRow {
                 name: "fx".into(),
@@ -680,6 +785,7 @@ mod tests {
                 sub_part: None,
                 index_type: Some("BTREE".into()),
                 descending: false,
+                comment: None,
             },
         ];
         let grouped = group_indexes(rows);
@@ -690,7 +796,40 @@ mod tests {
         assert_eq!(grouped[1].columns, ["name(10)", "created_at DESC"]);
         assert!(!grouped[1].unique);
         assert_eq!(grouped[1].method.as_deref(), Some("BTREE"));
+        assert_eq!(grouped[1].comment, None);
         assert_eq!(grouped[2].columns, ["(lower(`email`))"]);
+    }
+
+    #[test]
+    fn reads_table_options() {
+        let ddl = "CREATE TABLE `t` (\n  `id` int NOT NULL AUTO_INCREMENT,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB AUTO_INCREMENT=42 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci";
+        let o = table_options(
+            Some("InnoDB".into()),
+            Some("utf8mb4_0900_ai_ci".into()),
+            Some(7),
+            Some("Dynamic".into()),
+            Some(ddl),
+        );
+        assert_eq!(o.engine.as_deref(), Some("InnoDB"));
+        assert_eq!(o.charset.as_deref(), Some("utf8mb4"));
+        assert_eq!(o.collation.as_deref(), Some("utf8mb4_0900_ai_ci"));
+        // SHOW CREATE TABLE wins over the cached information_schema value
+        assert_eq!(o.auto_increment, Some(42));
+        assert_eq!(o.row_format.as_deref(), Some("Dynamic"));
+        // the column's AUTO_INCREMENT keyword is not the table option
+        let no_counter = "CREATE TABLE `t` (\n  `id` int NOT NULL AUTO_INCREMENT\n) ENGINE=InnoDB";
+        let o = table_options(
+            None,
+            Some("latin1_swedish_ci".into()),
+            Some(3),
+            None,
+            Some(no_counter),
+        );
+        assert_eq!(o.auto_increment, Some(3));
+        assert_eq!(o.charset.as_deref(), Some("latin1"));
+        let o = table_options(None, Some("binary".into()), None, None, None);
+        assert_eq!(o.charset.as_deref(), Some("binary"));
+        assert_eq!(o.auto_increment, None);
     }
 
     #[test]

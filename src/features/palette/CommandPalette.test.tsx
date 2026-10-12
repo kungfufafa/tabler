@@ -569,8 +569,10 @@ describe("CommandPalette", () => {
       expect(optionTexts()).toEqual([
         expect.stringMatching(/^app/),
         expect.stringMatching(/^shop/),
+        expect.stringMatching(/^New Database…/),
         expect.stringMatching(/^public.*default/),
         expect.stringMatching(/^inventory/),
+        expect.stringMatching(/^New Schema…/),
       ]);
       expect(screen.getByText("Switch")).toBeInTheDocument();
       fireEvent.change(input, { target: { value: "inv" } });
@@ -648,8 +650,10 @@ describe("CommandPalette", () => {
     it("shows a placeholder while the databases load", () => {
       vi.spyOn(ipc.schema, "databases").mockReturnValue(new Promise(() => {}));
       renderPalette(undefined, { mode: "databases" });
-      expect(groupLabels()).toEqual(["Databases"]);
+      // The schemas are in already: only their "+" row (one schema is no choice to list).
+      expect(groupLabels()).toEqual(["Databases", "Schemas"]);
       expect(screen.getByText("Loading databases…")).toBeInTheDocument();
+      expect(screen.queryByText("New Database…")).toBeNull();
     });
   });
 

@@ -90,6 +90,7 @@ fn col(name: &str, ty: &str, nullable: bool) -> ColumnDef {
         comment: None,
         collation: None,
         unsigned: false,
+        on_update: None,
     }
 }
 
@@ -261,6 +262,7 @@ async fn steps(session: Arc<dyn DbSession>, schema: String) {
                 unique: true,
                 method: Some("btree".into()),
                 predicate: Some("qty > 0".into()),
+                comment: None,
             },
         }],
     )

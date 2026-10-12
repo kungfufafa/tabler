@@ -5,10 +5,13 @@ import {
   toIpcError,
   type ExportRequest,
   type ExportResult,
+  type ExportTablesRequest,
+  type ExportTablesResult,
   type ResultColumn,
   type TableRef,
   type Value,
 } from "@/lib/ipc";
+import { useConnectionsStore } from "@/stores/connections";
 import { useTableTabsStore } from "@/stores/tableTabs";
 import { useTabsStore } from "@/stores/tabs";
 import { revealExport } from "./destination";
@@ -53,6 +56,14 @@ export type ExportSourceSpec =
        * rows held are only those that arrived before it stopped. Null when it completed.
        */
       stopped: "cancelled" | "error" | null;
+    }
+  | {
+      /** Several tables in full, chosen in the dialog from the tables of `schema`. */
+      kind: "tables";
+      schema: string | null;
+      /** Checked when the dialog opens; with `all`, every table of the schema is. */
+      tables: TableRef[];
+      all?: boolean;
     };
 
 export interface OpenExportArgs {
@@ -70,6 +81,8 @@ export interface ExportRun {
   rows: number;
   bytes: number;
   cancelling: boolean;
+  /** Multi-table exports: the table being written. */
+  table?: { index: number; count: number; name: string; rows: number };
 }
 
 /** The dialog's choices, kept for the session so the form reopens as it was (e.g. mid-export). */
@@ -135,8 +148,20 @@ export function releaseExportTarget(): void {
 }
 
 /**
+ * Exports several tables at once (sidebar "Export…" on a selection, File ▸ Export… without a
+ * table): the dialog lists the schema's tables with these checked.
+ */
+export function openExportTables(connectionId: string, tables: TableRef[]): void {
+  const schema =
+    tables[0]?.schema ?? useConnectionsStore.getState().byId[connectionId]?.currentSchema ?? null;
+  openExport({ connectionId, source: { kind: "tables", schema, tables } });
+}
+
+/**
  * `export.open` (⌘⇧E) outside the SQL editor: exports the active table tab (its filter, sort and
- * page), or the table behind a structure tab. Returns false when there is nothing to export.
+ * page), or the table behind a structure tab. Anywhere else on a connection it opens the
+ * multi-table export with every table of the current schema checked. Returns false when there
+ * is nothing to export.
  */
 export function openExportForActiveTab(): boolean {
   const { tabs, activeId } = useTabsStore.getState();
@@ -150,8 +175,21 @@ export function openExportForActiveTab(): boolean {
     });
     return true;
   }
+  const { activeId: connectionId, byId } = useConnectionsStore.getState();
+  if (connectionId && byId[connectionId]) {
+    openExport({
+      connectionId,
+      source: {
+        kind: "tables",
+        schema: byId[connectionId].currentSchema ?? null,
+        tables: [],
+        all: true,
+      },
+    });
+    return true;
+  }
   toast.message("Nothing to export here", {
-    description: "Open a table, or export a query from the SQL editor.",
+    description: "Connect to a database, or export a query from the SQL editor.",
   });
   return false;
 }
@@ -208,6 +246,86 @@ export async function runExport(
         label: "Reveal in Finder",
         onClick: () =>
           void revealExport(result.path).catch((e: unknown) =>
+            toast.error("Could not reveal the file", { description: toIpcError(e).message }),
+          ),
+      },
+    });
+    return result;
+  } catch (err) {
+    const e = toIpcError(err);
+    const open = useExportStore.getState().open;
+    useExportStore.setState({ run: null });
+    if (!open) releaseExportTarget();
+    if (e.code === "CANCELLED") {
+      toast.message("Export cancelled", { description: "No file was written." });
+    } else if (open) {
+      useExportStore.setState({ error: e.message });
+    } else {
+      toast.error("Export failed", { description: e.message });
+    }
+    return null;
+  }
+}
+
+function tablesLabel(n: number): string {
+  return `${formatCount(n)} table${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * Exports several tables (see `runExport`): progress per table in the store; success closes the
+ * dialog and offers "Reveal in Finder" on the (first) file.
+ */
+export async function runExportTables(
+  connectionId: string,
+  req: ExportTablesRequest,
+  { now = Date.now }: { now?: () => number } = {},
+): Promise<ExportTablesResult | null> {
+  if (useExportStore.getState().run) return null;
+  useExportStore.setState({
+    error: null,
+    run: {
+      exportId: req.exportId,
+      connectionId,
+      path: req.target,
+      startedAt: now(),
+      expectedRows: null,
+      rows: 0,
+      bytes: 0,
+      cancelling: false,
+      table: { index: 0, count: req.tables.length, name: req.tables[0]?.name ?? "", rows: 0 },
+    },
+  });
+  try {
+    const result = await ipc.exports.runTables(connectionId, req, (p) =>
+      useExportStore.setState((s) =>
+        s.run?.exportId === req.exportId
+          ? {
+              run: {
+                ...s.run,
+                rows: p.rows,
+                bytes: p.bytes,
+                table: {
+                  index: p.tableIndex,
+                  count: p.tableCount,
+                  name: p.table,
+                  rows: p.tableRows,
+                },
+              },
+            }
+          : s,
+      ),
+    );
+    const wasOpen = useExportStore.getState().open;
+    useExportStore.setState({ run: null, open: false });
+    if (!wasOpen) releaseExportTarget();
+    const first = result.paths[0] ?? req.target;
+    const where = result.paths.length === 1 ? basename(first) : basename(req.target);
+    toast.success(`Exported ${tablesLabel(result.tables.length)}`, {
+      description: `${where} · ${rowsLabel(result.rows)} · ${formatBytes(result.bytes)} · ${formatDuration(result.durationMs)}`,
+      action: {
+        label: "Reveal in Finder",
+        onClick: () =>
+          void revealExport(first).catch((e: unknown) =>
             toast.error("Could not reveal the file", { description: toIpcError(e).message }),
           ),
       },

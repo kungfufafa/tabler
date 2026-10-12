@@ -22,7 +22,7 @@ import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore, type OpenTableOptions, type Tab } from "@/stores/tabs";
 import { useUiStore, type ThemePref } from "@/stores/ui";
 import { actions, type ActionId } from "./actions";
-import type { PaletteItem } from "./items";
+import { actionIcon, type PaletteItem } from "./items";
 import { usePaletteStore } from "./store";
 
 /** Side effects the palette items trigger. Built once by the always-mounted palette shell. */
@@ -172,6 +172,45 @@ const THEMES: Array<{ pref: ThemePref; label: string; icon: LucideIcon }> = [
   { pref: "system", label: "Theme: System", icon: Monitor },
 ];
 
+/**
+ * Registered actions without a keyboard shortcut that the palette lists as commands (the
+ * Connection menu and the ⌘K database list's commands). Shown only while they have a handler,
+ * i.e. when the active connection's driver supports them.
+ */
+export const PALETTE_ONLY_ACTIONS = [
+  "admin.users",
+  "admin.new-database",
+  "admin.drop-database",
+  "admin.new-schema",
+  "admin.drop-schema",
+  "backup.open",
+  "restore.open",
+] as const satisfies readonly ActionId[];
+
+const ADMIN_COMMANDS: Record<
+  (typeof PALETTE_ONLY_ACTIONS)[number],
+  { label: string; keywords: string; noRecent?: boolean }
+> = {
+  "admin.users": {
+    label: "User Management…",
+    keywords: "users roles accounts privileges grants permissions password",
+  },
+  "admin.new-database": { label: "New Database…", keywords: "create add database" },
+  "admin.drop-database": {
+    label: "Drop Database…",
+    keywords: "delete remove database",
+    noRecent: true,
+  },
+  "admin.new-schema": { label: "New Schema…", keywords: "create add schema namespace" },
+  "admin.drop-schema": {
+    label: "Drop Schema…",
+    keywords: "delete remove schema namespace cascade",
+    noRecent: true,
+  },
+  "backup.open": { label: "Backup…", keywords: "dump pg_dump mysqldump export database file" },
+  "restore.open": { label: "Restore…", keywords: "load dump pg_restore psql mysql import file" },
+};
+
 /** Actions that only exist in the palette (no keyboard shortcut). */
 export function paletteCommandItems(ctx: {
   themePref: ThemePref;
@@ -180,7 +219,10 @@ export function paletteCommandItems(ctx: {
   commands: Pick<
     PaletteCommands,
     "setTheme" | "newConnection" | "openShortcuts" | "disconnect" | "reloadSchema"
-  >;
+  > &
+    Partial<Pick<PaletteCommands, "runAction">>;
+  /** Whether an action has a handler (lists `PALETTE_ONLY_ACTIONS`); none listed without it. */
+  has?: (id: ActionId) => boolean;
 }): PaletteItem[] {
   const { commands, active } = ctx;
   const items: PaletteItem[] = THEMES.map(({ pref, label, icon }) => ({
@@ -236,5 +278,22 @@ export function paletteCommandItems(ctx: {
       },
     );
   }
+  const run = commands.runAction;
+  if (ctx.has && run)
+    for (const id of PALETTE_ONLY_ACTIONS) {
+      if (!ctx.has(id)) continue;
+      const c = ADMIN_COMMANDS[id];
+      items.push({
+        key: `action:${id}`,
+        group: "actions",
+        label: c.label,
+        detail: active?.name,
+        keywords: [c.keywords],
+        icon: { type: "action", icon: actionIcon(id) },
+        run: () => run(id),
+        verb: "Run",
+        ...(c.noRecent ? { noRecent: true } : {}),
+      });
+    }
   return items;
 }
