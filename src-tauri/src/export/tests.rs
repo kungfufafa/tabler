@@ -11,10 +11,12 @@ use crate::drivers::{
     CancelHandle, RowChunker, ServerInfo, StatementOutcome, TxStatement, arm_cancel,
     cancel_requested,
 };
+use crate::types::export::{CsvQuote, ExportLayout, ExportTablesRequest};
 use crate::types::profile::Driver;
 use crate::types::query::{ExecOutcome, ResultSet};
 use crate::types::schema::{
-    CompletionMetadata, DatabaseInfo, SchemaInfo, TableKind, TableRef, TableSummary,
+    CompletionMetadata, DatabaseInfo, ForeignKeyMeta, SchemaInfo, TableKind, TableRef,
+    TableSummary, TriggerMeta,
 };
 
 type Set = (Vec<ResultColumn>, Vec<Vec<Value>>);
@@ -183,6 +185,7 @@ fn rcol(name: &str, kind: ValueKind, data_type: &str) -> ResultColumn {
         kind,
         nullable: None,
         table: None,
+        origin: None,
     }
 }
 
@@ -227,6 +230,8 @@ fn table_meta(schema: &str, name: &str, columns: Vec<ColumnMeta>) -> TableMeta {
         comment: None,
         row_estimate: None,
         ddl: None,
+        checks: vec![],
+        options: None,
     }
 }
 
@@ -234,8 +239,22 @@ fn csv_format() -> ExportFormat {
     ExportFormat::Csv {
         delimiter: ",".into(),
         header: true,
-        quote_all: false,
+        quote: CsvQuote::IfNeeded,
         null_as: String::new(),
+        line_break: "\r\n".into(),
+        decimal: ".".into(),
+        line_break_to_space: false,
+    }
+}
+
+fn insert_format(table_name: &str, batch_size: u32) -> ExportFormat {
+    ExportFormat::SqlInsert {
+        table_name: table_name.into(),
+        batch_size,
+        drop_table: false,
+        structure: false,
+        content: true,
+        gzip: false,
     }
 }
 
@@ -553,10 +572,7 @@ async fn postgres_insert_export_overrides_identity_always() {
     if let ExportSource::Table { table, .. } = &mut source {
         table.schema = Some("public".into());
     }
-    let insert = ExportFormat::SqlInsert {
-        table_name: String::new(),
-        batch_size: 10,
-    };
+    let insert = insert_format("", 10);
     let req = request(source.clone(), insert.clone(), &dest, None);
     run_export(&fake, &req, Some(&meta), |_| {}, CancellationToken::new())
         .await
@@ -951,8 +967,11 @@ async fn rejects_bad_requests_without_touching_files() {
         ExportFormat::Csv {
             delimiter: "ab".into(),
             header: true,
-            quote_all: false,
+            quote: CsvQuote::IfNeeded,
             null_as: String::new(),
+            line_break: "\n".into(),
+            decimal: ".".into(),
+            line_break_to_space: false,
         },
         &dest,
         None,
@@ -1101,15 +1120,7 @@ async fn insert_export_of_a_table_skips_generated_columns() {
             ],
         )],
     );
-    let req = request(
-        table_source("items"),
-        ExportFormat::SqlInsert {
-            table_name: String::new(),
-            batch_size: 2,
-        },
-        &dest,
-        None,
-    );
+    let req = request(table_source("items"), insert_format("", 2), &dest, None);
     run_export(&fake, &req, Some(&meta), |_| {}, CancellationToken::new())
         .await
         .unwrap();
@@ -1183,10 +1194,7 @@ async fn rows_export_writes_the_given_rows_without_running_anything() {
 
     // INSERT statements into the result's table by default…
     let dest = dir.path().join("result.sql");
-    let insert = |table_name: &str| ExportFormat::SqlInsert {
-        table_name: table_name.into(),
-        batch_size: 2,
-    };
+    let insert = |table_name: &str| insert_format(table_name, 2);
     let req = request(
         rows_source(id_name_set(3), Some("users")),
         insert(""),
@@ -1343,4 +1351,596 @@ async fn rows_export_can_be_cancelled() {
     assert!(matches!(err, AppError::Cancelled), "{err:?}");
     assert!(reports >= 1);
     assert!(files_in(dir.path()).is_empty());
+}
+
+// ---- SQL scripts, Excel, multi-table ---------------------------------------------------------
+
+/// What a SQLite table export of `id, name` streams: the values plus the blob hex columns.
+fn lite_set(n: i64) -> Set {
+    (
+        vec![
+            rcol("id", ValueKind::Int, "INTEGER"),
+            rcol("name", ValueKind::Text, "TEXT"),
+            rcol("_tabler_hex_0", ValueKind::Text, ""),
+            rcol("_tabler_hex_1", ValueKind::Text, ""),
+        ],
+        (0..n)
+            .map(|i| {
+                vec![
+                    Value::Int(i + 1),
+                    Value::Text(format!("n{i}")),
+                    Value::Null,
+                    Value::Null,
+                ]
+            })
+            .collect(),
+    )
+}
+
+fn lite_meta(name: &str, references: Option<&str>) -> TableMeta {
+    let mut meta = table_meta(
+        "main",
+        name,
+        vec![
+            mcol("id", "INTEGER", ValueKind::Int, true),
+            mcol("name", "TEXT", ValueKind::Text, false),
+        ],
+    );
+    meta.ddl = Some(match references {
+        Some(parent) => format!(
+            "CREATE TABLE {name} (id INTEGER PRIMARY KEY REFERENCES {parent}(id), name TEXT)"
+        ),
+        None => format!("CREATE TABLE {name} (id INTEGER PRIMARY KEY, name TEXT)"),
+    });
+    if let Some(parent) = references {
+        meta.foreign_keys = vec![
+            serde_json::from_value(serde_json::json!({
+                "name": "fk", "columns": ["id"],
+                "refTable": {"schema": "main", "name": parent}, "refColumns": ["id"],
+                "onUpdate": "NO ACTION", "onDelete": "NO ACTION"
+            }))
+            .unwrap(),
+        ];
+    }
+    meta
+}
+
+fn script(drop_table: bool, structure: bool, content: bool, gzip: bool) -> ExportFormat {
+    ExportFormat::SqlInsert {
+        table_name: String::new(),
+        batch_size: 2,
+        drop_table,
+        structure,
+        content,
+        gzip,
+    }
+}
+
+fn gunzip(path: &Path) -> String {
+    use std::io::Read as _;
+    let mut out = String::new();
+    flate2::read::GzDecoder::new(std::fs::File::open(path).unwrap())
+        .read_to_string(&mut out)
+        .unwrap();
+    out
+}
+
+#[tokio::test]
+async fn sql_export_with_structure_drop_and_gzip() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("items.sql.gz");
+    let mut meta = lite_meta("items", None);
+    meta.indexes = vec![
+        serde_json::from_value(serde_json::json!({
+            "name": "items_name", "columns": ["name"], "unique": false, "primary": false,
+            "definition": "CREATE INDEX items_name ON items (name)"
+        }))
+        .unwrap(),
+    ];
+    let fake = FakeSession::new(Dialect::Sqlite, vec![lite_set(3)]);
+    let req = request(
+        table_source("items"),
+        script(true, true, true, true),
+        &dest,
+        None,
+    );
+    let result = run_export(&fake, &req, Some(&meta), |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(result.rows, 3);
+    assert_eq!(result.bytes, std::fs::metadata(&dest).unwrap().len());
+    let text = gunzip(&dest);
+    assert_eq!(
+        text,
+        "DROP TABLE IF EXISTS \"items\";\n\
+         CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);\n\
+         CREATE INDEX items_name ON items (name);\n\n\
+         INSERT INTO \"items\" (\"id\", \"name\") VALUES\n(1, 'n0'),\n(2, 'n1');\n\
+         INSERT INTO \"items\" (\"id\", \"name\") VALUES\n(3, 'n2');\n"
+    );
+    // The script loads, also over an existing table.
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(&text).unwrap();
+    db.execute_batch(&text).unwrap();
+    let n: i64 = db
+        .query_row("SELECT count(*) FROM items", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 3);
+
+    // Structure only: nothing is queried.
+    let dest = dir.path().join("structure.sql");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![lite_set(3)]);
+    let req = request(
+        table_source("items"),
+        script(false, true, false, false),
+        &dest,
+        None,
+    );
+    let result = run_export(&fake, &req, Some(&meta), |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(result.rows, 0);
+    assert!(fake.seen.lock().unwrap().is_empty());
+    assert!(
+        std::fs::read_to_string(&dest)
+            .unwrap()
+            .starts_with("CREATE TABLE items")
+    );
+    // Neither structure nor content: refused.
+    let req = request(
+        table_source("items"),
+        script(true, false, false, false),
+        &dest,
+        None,
+    );
+    let req_nothing = request(
+        table_source("items"),
+        script(false, false, false, false),
+        &dest,
+        None,
+    );
+    assert!(
+        run_export(&fake, &req, Some(&meta), |_| {}, CancellationToken::new())
+            .await
+            .is_ok()
+    );
+    assert!(
+        run_export(
+            &fake,
+            &req_nothing,
+            Some(&meta),
+            |_| {},
+            CancellationToken::new()
+        )
+        .await
+        .is_err()
+    );
+
+    // MySQL: foreign key checks are off while the script loads, restored at its end.
+    let dest = dir.path().join("my.sql");
+    let mut my = table_meta(
+        "app",
+        "items",
+        vec![
+            mcol("id", "int", ValueKind::Int, true),
+            mcol("name", "varchar(20)", ValueKind::Text, false),
+        ],
+    );
+    my.ddl = Some("CREATE TABLE `items` (\n  `id` int NOT NULL\n)".into());
+    let fake = FakeSession::new(Dialect::Mysql, vec![id_name_set(1)]);
+    let mut source = table_source("items");
+    if let ExportSource::Table { table, .. } = &mut source {
+        table.schema = Some("app".into());
+    }
+    let req = request(source, script(true, true, true, false), &dest, None);
+    run_export(&fake, &req, Some(&my), |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&dest).unwrap(),
+        "SET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS = 0;\n\
+         DROP TABLE IF EXISTS `items`;\n\
+         CREATE TABLE `items` (\n  `id` int NOT NULL\n);\n\n\
+         INSERT INTO `items` (`id`, `name`) VALUES\n(0, 'row 0');\n\
+         SET FOREIGN_KEY_CHECKS = @OLD_FOREIGN_KEY_CHECKS;\n"
+    );
+}
+
+#[tokio::test]
+async fn xlsx_export_of_a_query() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("q.xlsx");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![id_name_set(2)]);
+    let req = request(
+        sql_source("select id, name from t"),
+        ExportFormat::Xlsx { header: true },
+        &dest,
+        None,
+    );
+    let result = run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(result.rows, 2);
+    let files = crate::export::xlsx::tests::unzip(&std::fs::read(&dest).unwrap());
+    let sheet = String::from_utf8(files["xl/worksheets/sheet1.xml"].clone()).unwrap();
+    assert!(sheet.contains("<c r=\"A3\"><v>1</v></c>"), "{sheet}");
+    assert!(sheet.contains(">row 1</t>"));
+    let wb = String::from_utf8(files["xl/workbook.xml"].clone()).unwrap();
+    assert!(wb.contains("name=\"Result\""));
+}
+
+fn tables_request(
+    tables: &[&str],
+    format: ExportFormat,
+    layout: ExportLayout,
+    target: &Path,
+) -> ExportTablesRequest {
+    ExportTablesRequest {
+        export_id: "multi".into(),
+        tables: tables
+            .iter()
+            .map(|t| TableRef::new(Some("main"), t))
+            .collect(),
+        format,
+        layout,
+        target: target.to_string_lossy().into_owned(),
+    }
+}
+
+#[tokio::test]
+async fn multi_table_exports() {
+    use crate::export::tables::run_export_tables;
+    let dir = tempfile::tempdir().unwrap();
+    // `child` references `parent`; requested child first.
+    let metas = vec![
+        Arc::new(lite_meta("child", Some("parent"))),
+        Arc::new(lite_meta("parent", None)),
+    ];
+
+    // One CSV per table, with progress per table.
+    let folder = dir.path().join("csv");
+    std::fs::create_dir(&folder).unwrap();
+    let fake = FakeSession::new(Dialect::Sqlite, vec![lite_set(3)]);
+    let mut seen = Vec::new();
+    let result = run_export_tables(
+        &fake,
+        &tables_request(
+            &["child", "parent"],
+            csv_format(),
+            ExportLayout::FilePerTable,
+            &folder,
+        ),
+        &metas,
+        |p| seen.push(p),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(files_in(&folder), ["child.csv", "parent.csv"]);
+    assert_eq!(result.rows, 6);
+    assert_eq!(result.paths.len(), 2);
+    assert_eq!(result.tables[0].table.name, "child");
+    assert_eq!(result.tables[1].rows, 3);
+    assert_eq!(
+        std::fs::read_to_string(folder.join("parent.csv")).unwrap(),
+        "id,name\r\n1,n0\r\n2,n1\r\n3,n2\r\n"
+    );
+    assert!(
+        seen.iter()
+            .any(|p| p.table_index == 1 && p.table == "parent")
+    );
+    assert!(seen.iter().all(|p| p.table_count == 2));
+
+    // One SQL script: parents first, loadable.
+    let file = dir.path().join("all.sql");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![lite_set(2)]);
+    run_export_tables(
+        &fake,
+        &tables_request(
+            &["child", "parent"],
+            script(true, true, true, false),
+            ExportLayout::SingleFile,
+            &file,
+        ),
+        &metas,
+        |_| {},
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    let parent_at = text.find("CREATE TABLE parent").unwrap();
+    let child_at = text.find("CREATE TABLE child").unwrap();
+    assert!(parent_at < child_at, "{text}");
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(&text).unwrap();
+    let n: i64 = db
+        .query_row("SELECT count(*) FROM child", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 2);
+
+    // One workbook, a sheet per table in the order asked.
+    let book = dir.path().join("all.xlsx");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![lite_set(1)]);
+    run_export_tables(
+        &fake,
+        &tables_request(
+            &["child", "parent"],
+            ExportFormat::Xlsx { header: true },
+            ExportLayout::SingleFile,
+            &book,
+        ),
+        &metas,
+        |_| {},
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let files = crate::export::xlsx::tests::unzip(&std::fs::read(&book).unwrap());
+    let wb = String::from_utf8(files["xl/workbook.xml"].clone()).unwrap();
+    let (c, p) = (
+        wb.find("name=\"child\"").unwrap(),
+        wb.find("name=\"parent\"").unwrap(),
+    );
+    assert!(c < p);
+    assert!(files.contains_key("xl/worksheets/sheet2.xml"));
+
+    // Cancelled: no file at all, not even the first table's.
+    let folder = dir.path().join("cancelled");
+    std::fs::create_dir(&folder).unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let fake = FakeSession::new(Dialect::Sqlite, vec![lite_set(3)]);
+    let err = run_export_tables(
+        &fake,
+        &tables_request(
+            &["child", "parent"],
+            json_format(),
+            ExportLayout::FilePerTable,
+            &folder,
+        ),
+        &metas,
+        |_| {},
+        cancel,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AppError::Cancelled));
+    assert!(files_in(&folder).is_empty());
+}
+
+// ---- Script layout: DROPs, tables, rows, then keys and triggers ------------------------------
+
+fn fk(name: &str, columns: &[&str], ref_schema: &str, ref_table: &str) -> ForeignKeyMeta {
+    ForeignKeyMeta {
+        name: name.into(),
+        columns: columns.iter().map(|c| c.to_string()).collect(),
+        ref_table: TableRef::new(Some(ref_schema), ref_table),
+        ref_columns: vec!["id".into()],
+        on_update: "NO ACTION".into(),
+        on_delete: "NO ACTION".into(),
+        definition: None,
+    }
+}
+
+#[tokio::test]
+async fn postgres_script_loads_keys_triggers_and_sequences_after_the_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("emp.sql");
+    let mut id = mcol("id", "integer", ValueKind::Int, true);
+    id.is_auto_increment = true;
+    id.extra = Some("BY DEFAULT".into());
+    let mut meta = table_meta(
+        "public",
+        "emp",
+        vec![id, mcol("boss", "integer", ValueKind::Int, false)],
+    );
+    // a key referencing the table itself: a row may point at a later row
+    meta.foreign_keys = vec![fk("emp_boss_fk", &["boss"], "public", "emp")];
+    meta.triggers = vec![TriggerMeta {
+        name: "emp_audit".into(),
+        timing: Some("AFTER".into()),
+        events: vec!["INSERT".into()],
+        enabled: true,
+        definition: "CREATE TRIGGER emp_audit AFTER INSERT ON public.emp FOR EACH ROW EXECUTE FUNCTION audit()".into(),
+    }];
+    let columns = vec![
+        rcol("id", ValueKind::Text, "text"),
+        rcol("boss", ValueKind::Text, "text"),
+    ];
+    let rows = vec![
+        vec![Value::Text("1".into()), Value::Text("2".into())],
+        vec![Value::Text("2".into()), Value::Null],
+    ];
+    // (the fake answers no catalog query: the script has what `TableMeta` says)
+    let fake = FakeSession::new(Dialect::Postgres, vec![(columns, rows)]);
+    let mut source = table_source("emp");
+    if let ExportSource::Table { table, .. } = &mut source {
+        table.schema = Some("public".into());
+    }
+    let req = request(source, script(true, true, true, false), &dest, None);
+    run_export(&fake, &req, Some(&meta), |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&dest).unwrap(),
+        "DROP TABLE IF EXISTS \"public\".\"emp\";\n\
+         CREATE TABLE \"public\".\"emp\" (\n  \"id\" integer GENERATED BY DEFAULT AS IDENTITY NOT NULL,\n  \"boss\" integer,\n  PRIMARY KEY (\"id\")\n);\n\n\
+         INSERT INTO \"public\".\"emp\" (\"id\", \"boss\") VALUES\n(1, 2),\n(2, NULL);\n\n\
+         SELECT setval(pg_get_serial_sequence('\"public\".\"emp\"', 'id'), GREATEST(MAX(\"id\"), 1)) FROM \"public\".\"emp\" HAVING MAX(\"id\") IS NOT NULL;\n\n\
+         ALTER TABLE \"public\".\"emp\" ADD CONSTRAINT \"emp_boss_fk\" FOREIGN KEY (\"boss\") REFERENCES \"public\".\"emp\" (\"id\");\n\n\
+         CREATE TRIGGER emp_audit AFTER INSERT ON public.emp FOR EACH ROW EXECUTE FUNCTION audit();\n"
+    );
+
+    // Structure only: no reset (there are no rows), the keys right after the table.
+    let req = request(
+        table_source("emp"),
+        script(false, true, false, false),
+        &dest,
+        None,
+    );
+    run_export(&fake, &req, Some(&meta), |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    let text = std::fs::read_to_string(&dest).unwrap();
+    assert!(!text.contains("setval"), "{text}");
+    assert!(
+        text.contains(");\n\nALTER TABLE \"public\".\"emp\" ADD CONSTRAINT"),
+        "{text}"
+    );
+}
+
+#[test]
+fn script_layout_orders_like_pg_dump_and_loads_partitions_once() {
+    use crate::export::structure::{ScriptTable, script_layout};
+    use crate::sqlgen::ddl::{PgPartition, PgTableContext};
+
+    let col = |name: &str| mcol(name, "integer", ValueKind::Int, name == "id");
+    // `events` is partitioned: `events_2024` is exported too, `events_2025` and the
+    // sub-partitioned `events_eu` (with `events_eu_1`) are not.
+    let mut events = table_meta("public", "events", vec![col("id"), col("ts")]);
+    events.kind = TableKind::Partitioned;
+    let events_2024 = table_meta("public", "events_2024", vec![col("id"), col("ts")]);
+    let mut audit = table_meta("public", "audit", vec![col("id"), col("event_id")]);
+    audit.foreign_keys = vec![fk("audit_event_fk", &["event_id"], "public", "events")];
+    let part = |name: &str, parent: &str, bound: &str, key: Option<&str>| PgPartition {
+        table: TableRef::new(Some("public"), name),
+        parent: TableRef::new(Some("public"), parent),
+        bound: bound.into(),
+        key: key.map(str::to_string),
+    };
+    let events_context = PgTableContext {
+        partition_key: Some("RANGE (ts)".into()),
+        partitions: vec![
+            part("events_2024", "events", "FOR VALUES FROM (0) TO (10)", None),
+            part(
+                "events_2025",
+                "events",
+                "FOR VALUES FROM (10) TO (20)",
+                None,
+            ),
+            part(
+                "events_eu",
+                "events",
+                "FOR VALUES FROM (20) TO (30)",
+                Some("LIST (id)"),
+            ),
+            part("events_eu_1", "events_eu", "FOR VALUES IN (1)", None),
+        ],
+        ..PgTableContext::default()
+    };
+    let child_context = PgTableContext {
+        partition_bound: Some("FOR VALUES FROM (0) TO (10)".into()),
+        ancestors: vec![TableRef::new(Some("public"), "events")],
+        ..PgTableContext::default()
+    };
+    // requested: the partition, the referencing table, then the partitioned one
+    let tables = [
+        ScriptTable {
+            meta: &events_2024,
+            context: child_context,
+        },
+        ScriptTable {
+            meta: &audit,
+            context: PgTableContext::default(),
+        },
+        ScriptTable {
+            meta: &events,
+            context: events_context,
+        },
+    ];
+    let layout = script_layout(
+        Dialect::Postgres,
+        &tables,
+        SqlScript {
+            drop_table: true,
+            structure: true,
+            content: true,
+            gzip: false,
+        },
+        true,
+    );
+    // referenced and partitioned tables first
+    assert_eq!(layout.order, [2, 0, 1]);
+    // the partition's rows come through its partitioned table
+    assert_eq!(layout.rows, [false, true, true]);
+    let text = &layout.opening;
+    let at = |needle: &str| {
+        text.find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing in\n{text}"))
+    };
+    // DROPs first, dependants first
+    assert!(
+        at("DROP TABLE IF EXISTS \"public\".\"audit\"")
+            < at("DROP TABLE IF EXISTS \"public\".\"events\";")
+    );
+    assert!(
+        at("DROP TABLE IF EXISTS \"public\".\"events_2024\"")
+            < at("DROP TABLE IF EXISTS \"public\".\"events\";")
+    );
+    assert!(at("DROP TABLE IF EXISTS \"public\".\"events\";") < at("CREATE TABLE"));
+    // the partitioned table with the partitions not exported on their own, then the partition
+    // as a table of its own, attached
+    assert!(
+        at(") PARTITION BY RANGE (ts);") < at("\"events_2025\" PARTITION OF \"public\".\"events\"")
+    );
+    assert!(
+        at(
+            "\"events_eu\" PARTITION OF \"public\".\"events\" FOR VALUES FROM (20) TO (30) PARTITION BY LIST (id);"
+        ) < at("\"events_eu_1\" PARTITION OF \"public\".\"events_eu\"")
+    );
+    assert!(!text.contains("\"events_2024\" PARTITION OF"));
+    assert!(
+        at("CREATE TABLE \"public\".\"events_2024\" (")
+            < at("ATTACH PARTITION \"public\".\"events_2024\" FOR VALUES FROM (0) TO (10);")
+    );
+    assert!(at("ATTACH PARTITION") < at("CREATE TABLE \"public\".\"audit\""));
+    // keys after the rows
+    assert!(!text.contains("FOREIGN KEY"));
+    assert_eq!(layout.closing.len(), 1);
+    assert!(
+        layout.closing[0]
+            .starts_with("ALTER TABLE \"public\".\"audit\" ADD CONSTRAINT \"audit_event_fk\"")
+    );
+}
+
+#[tokio::test]
+async fn multi_table_sql_script_reloads_over_an_existing_copy_with_foreign_keys_on() {
+    use crate::export::tables::run_export_tables;
+    let dir = tempfile::tempdir().unwrap();
+    let metas = vec![
+        Arc::new(lite_meta("parent", None)),
+        Arc::new(lite_meta("child", Some("parent"))),
+    ];
+    let file = dir.path().join("all.sql");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![lite_set(2)]);
+    run_export_tables(
+        &fake,
+        &tables_request(
+            &["parent", "child"],
+            script(true, true, true, false),
+            ExportLayout::SingleFile,
+            &file,
+        ),
+        &metas,
+        |_| {},
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    // every DROP first, the referencing table first
+    assert!(
+        text.starts_with("DROP TABLE IF EXISTS \"child\";\nDROP TABLE IF EXISTS \"parent\";\n\n"),
+        "{text}"
+    );
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+    db.execute_batch(&text).unwrap();
+    // a second load drops the referencing table before the one it references
+    db.execute_batch(&text).unwrap();
+    let n: i64 = db
+        .query_row("SELECT count(*) FROM child", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 2);
 }

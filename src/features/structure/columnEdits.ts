@@ -2,7 +2,15 @@ import type { ColumnDef, DdlOp, Dialect, TableRef } from "@/lib/ipc";
 
 /** Column attributes the structure grid can edit. */
 export type ColumnField =
-  "name" | "dataType" | "nullable" | "defaultExpr" | "comment" | "autoIncrement";
+  | "name"
+  | "dataType"
+  | "nullable"
+  | "defaultExpr"
+  | "comment"
+  | "autoIncrement"
+  /** MySQL `ON UPDATE …` (the "extra" cell). */
+  | "onUpdate"
+  | "collation";
 
 export type ColumnValue = string | boolean | null;
 
@@ -11,9 +19,39 @@ export function supportsComments(dialect: Dialect): boolean {
   return dialect !== "sqlite";
 }
 
+/** A column of the structure grid (TablePlus names them after `information_schema`). */
+export type GridColumn =
+  "name" | "dataType" | "nullable" | "check" | "defaultExpr" | "extra" | "foreignKey" | "comment";
+
+export const GRID_LABEL: Record<GridColumn, string> = {
+  name: "column_name",
+  dataType: "data_type",
+  nullable: "is_nullable",
+  check: "check",
+  defaultExpr: "column_default",
+  extra: "extra",
+  foreignKey: "foreign_key",
+  comment: "comment",
+};
+
+/**
+ * The columns of the structure grid per dialect, in TablePlus's order:
+ * PG `column_name, data_type, is_nullable, check, column_default, foreign_key, comment`;
+ * MySQL `column_name, data_type, is_nullable, column_default, extra, foreign_key, comment`;
+ * SQLite `column_name, data_type, is_nullable, column_default, foreign_key`.
+ */
+export function gridColumns(dialect: Dialect): GridColumn[] {
+  if (dialect === "postgres")
+    return ["name", "dataType", "nullable", "check", "defaultExpr", "foreignKey", "comment"];
+  if (dialect === "mysql")
+    return ["name", "dataType", "nullable", "defaultExpr", "extra", "foreignKey", "comment"];
+  return ["name", "dataType", "nullable", "defaultExpr", "foreignKey"];
+}
+
 /** Fields shown (and editable) in the columns grid for a dialect, in display order. */
 export function columnFields(dialect: Dialect): ColumnField[] {
-  const fields: ColumnField[] = ["name", "dataType", "nullable", "defaultExpr", "autoIncrement"];
+  const fields: ColumnField[] = ["name", "dataType", "nullable", "defaultExpr"];
+  if (dialect === "mysql") fields.push("autoIncrement", "onUpdate");
   if (supportsComments(dialect)) fields.push("comment");
   return fields;
 }
@@ -30,6 +68,18 @@ export function supportsColumnPosition(dialect: Dialect): boolean {
  */
 export function supportsAddAutoIncrement(dialect: Dialect): boolean {
   return dialect === "postgres";
+}
+
+/** Per-column collations are editable on MySQL text columns (details popover). */
+export function supportsColumnCollation(dialect: Dialect, dataType: string): boolean {
+  return dialect === "mysql" && isTextualType(dataType);
+}
+
+const TEXTUAL = /^(national\s+)?(var)?char|^(tiny|medium|long)?text\b|^enum\b|^set\b|^n(var)?char/i;
+
+/** MySQL character types (the ones with a character set and collation). */
+export function isTextualType(type: string): boolean {
+  return TEXTUAL.test(type.trim());
 }
 
 const TYPES: Record<Dialect, string[]> = {
@@ -61,6 +111,7 @@ const TYPES: Record<Dialect, string[]> = {
   ],
   mysql: [
     "int",
+    "int unsigned",
     "bigint",
     "bigint unsigned",
     "tinyint(1)",
@@ -114,9 +165,12 @@ export function defaultColumnType(dialect: Dialect): string {
   return dialect === "mysql" ? "varchar(255)" : dialect === "sqlite" ? "TEXT" : "text";
 }
 
-/** Type of the default `id` column of a new table. */
+/**
+ * Type of the default `id` column of a new table (TablePlus): PostgreSQL `serial` (an `integer`
+ * with a sequence default), MySQL `int` + AUTO_INCREMENT, SQLite `INTEGER PRIMARY KEY`.
+ */
 export function idColumnType(dialect: Dialect): string {
-  return dialect === "sqlite" ? "INTEGER" : "bigint";
+  return dialect === "sqlite" ? "INTEGER" : dialect === "mysql" ? "int" : "serial";
 }
 
 const INTEGER_TYPE =
@@ -136,12 +190,15 @@ export interface EditTarget {
   name: string;
   dataType: string;
   autoIncrement: boolean;
+  /** Whether the column is (staged to be) part of the primary key or leads an index. */
+  isKey?: boolean;
 }
 
 /**
  * Error for setting `field` of `target` to the parsed `value`, else null. Catches edits that
- * would stage a statement bound to fail: auto increment on a non-integer new column, and
- * PostgreSQL's serial pseudo-types on an existing column (`ALTER COLUMN … TYPE serial` fails).
+ * would stage a statement bound to fail: auto increment on a non-integer column, MySQL
+ * AUTO_INCREMENT on a column that is no key (error 1075), and PostgreSQL's serial pseudo-types
+ * on an existing column (`ALTER COLUMN … TYPE serial` fails).
  */
 export function columnEditError(
   dialect: Dialect,
@@ -154,6 +211,12 @@ export function columnEditError(
     if (dialect === "postgres" && PG_SERIAL.test(type)) {
       const base = /^big/i.test(type) ? "bigint" : /^small/i.test(type) ? "smallint" : "integer";
       return `${type} only exists for new columns; use ${base} with a sequence default instead`;
+    }
+    if (field === "autoIncrement" && value === true) {
+      if (!isIntegerType(target.dataType))
+        return `Auto increment needs an integer type such as bigint (column “${target.name}”)`;
+      if (dialect === "mysql" && target.isKey === false)
+        return `MySQL AUTO_INCREMENT needs a key: add “${target.name}” to the primary key or an index first`;
     }
     return null;
   }
@@ -185,7 +248,9 @@ export function parseColumnInput(
       const type = text.trim().replace(/\s+/g, " ");
       return type ? { ok: true, value: type } : { ok: false, error: "Column type is required" };
     }
-    case "defaultExpr": {
+    case "defaultExpr":
+    case "onUpdate":
+    case "collation": {
       const expr = text.trim();
       return { ok: true, value: expr === "" ? null : expr };
     }
@@ -197,10 +262,13 @@ export function parseColumnInput(
   }
 }
 
+const textOrNull = (value: ColumnValue) =>
+  typeof value === "string" && value.trim() !== "" ? value : null;
+
 /**
  * The single DDL op expressing "set `field` of column `name` to `value`" on an existing column,
- * or null when the dialect cannot change that attribute in place (comments on SQLite, auto
- * increment anywhere).
+ * or null when the dialect cannot change that attribute in place (comments on SQLite, ON UPDATE
+ * outside MySQL).
  */
 export function columnOp(
   dialect: Dialect,
@@ -217,12 +285,7 @@ export function columnOp(
     case "nullable":
       return { op: "alterColumnNullable", table, name, nullable: value === true };
     case "defaultExpr":
-      return {
-        op: "alterColumnDefault",
-        table,
-        name,
-        defaultExpr: typeof value === "string" && value.trim() !== "" ? value : null,
-      };
+      return { op: "alterColumnDefault", table, name, defaultExpr: textOrNull(value) };
     case "comment":
       if (!supportsComments(dialect)) return null;
       return {
@@ -232,7 +295,12 @@ export function columnOp(
         comment: typeof value === "string" && value !== "" ? value : null,
       };
     case "autoIncrement":
-      return null;
+      return { op: "alterColumnAutoIncrement", table, name, autoIncrement: value === true };
+    case "onUpdate":
+      if (dialect !== "mysql") return null;
+      return { op: "alterColumnOnUpdate", table, name, onUpdate: textOrNull(value) };
+    case "collation":
+      return { op: "alterColumnCollation", table, name, collation: textOrNull(value) };
   }
 }
 
@@ -247,6 +315,7 @@ export function newColumnDef(dialect: Dialect, name: string): ColumnDef {
     comment: null,
     collation: null,
     unsigned: false,
+    onUpdate: null,
   };
 }
 
@@ -272,5 +341,15 @@ export function withField(
         : def;
     case "autoIncrement":
       return supportsAddAutoIncrement(dialect) ? { ...def, autoIncrement: value === true } : def;
+    case "onUpdate":
+      return dialect === "mysql" ? { ...def, onUpdate: textOrNull(value) } : def;
+    case "collation":
+      return { ...def, collation: textOrNull(value) };
   }
+}
+
+/** The `ON UPDATE …` expression of a MySQL `EXTRA` text (`on update CURRENT_TIMESTAMP(3)`). */
+export function onUpdateOf(extra: string | null): string | null {
+  const m = /\bon update ([a-z_]+(?:\(\d*\))?)/i.exec(extra ?? "");
+  return m ? m[1]!.toUpperCase() : null;
 }

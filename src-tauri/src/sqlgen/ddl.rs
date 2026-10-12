@@ -25,11 +25,14 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::error::AppError;
-use crate::sqlgen::Dialect;
+use crate::sqlgen::quote::MysqlLiteralMode;
+use crate::sqlgen::{BuiltSql, Dialect};
 use crate::types::ddl::{ColumnDef, DdlOp, DdlPlan, IndexDef};
 use crate::types::schema::{
-    ColumnMeta, IndexMeta, TableKind, TableMeta, TableRef, TriggerMeta, ValueKind,
+    CheckMeta, ColumnMeta, IndexMeta, TableKind, TableMeta, TableOptions, TableRef, TriggerMeta,
+    ValueKind,
 };
+use crate::types::value::Value;
 
 /// Suffix of the scratch table a SQLite rebuild copies into.
 pub const REBUILD_SUFFIX: &str = "__tabler_new";
@@ -175,6 +178,13 @@ pub struct PlanContext {
     /// KEY, UNIQUE or EXCLUDE constraint). PostgreSQL refuses `DROP INDEX` on them, so dropping
     /// one becomes `ALTER TABLE … DROP CONSTRAINT` (the constraint has the index's name).
     pub constraint_indexes: Vec<String>,
+    /// PG: sequences owned by a column of the table without being its identity sequence
+    /// (`serial`, `OWNED BY`): `(column, sequence)`. Turning such a column into an identity
+    /// column detaches them first (see `pg_auto_increment`).
+    pub owned_sequences: Vec<(String, TableRef)>,
+    /// MySQL: how the session that runs the plan reads backslashes in string literals
+    /// (comments, defaults); `sql_mode` with `NO_BACKSLASH_ESCAPES` takes them as they are.
+    pub mysql_mode: MysqlLiteralMode,
 }
 
 /// Plans `ops` for `dialect`. `meta` describes the table being designed (when there is one);
@@ -195,13 +205,16 @@ pub fn plan_ddl_with(
     ops: &[DdlOp],
     context: &PlanContext,
 ) -> Result<DdlPlan, AppError> {
-    let mut planner = Planner::new(dialect, meta);
+    let mut planner = Planner::with_mode(dialect, meta, context.mysql_mode);
     if let Some(m) = planner.model.as_mut() {
         m.constraint_indexes = context.constraint_indexes.clone();
+        m.owned_sequences = context.owned_sequences.clone();
     }
     let mut i = 0;
     while i < ops.len() {
-        if planner.replace_primary_key(&ops[i], ops.get(i + 1))? {
+        if planner.replace_primary_key(&ops[i], ops.get(i + 1))?
+            || planner.replace_index_or_check(&ops[i], ops.get(i + 1))?
+        {
             i += 2;
             continue;
         }
@@ -215,7 +228,22 @@ pub fn plan_ddl_with(
 /// the table with identity/defaults/primary key, then its indexes, foreign keys, triggers and
 /// comments, one statement per line.
 pub fn create_table_sql(dialect: Dialect, meta: &TableMeta) -> String {
-    Planner::new(dialect, Some(meta)).render_create_table()
+    create_table_sql_with(dialect, meta, &PgTableContext::default())
+}
+
+/// `create_table_sql` with what the server reported beyond `meta` (PG: sequences, partitioning,
+/// cloned constraints; see `PgTableContext`).
+pub fn create_table_sql_with(
+    dialect: Dialect,
+    meta: &TableMeta,
+    context: &PgTableContext,
+) -> String {
+    table_parts(dialect, meta, context).script()
+}
+
+/// The statements that recreate a table, in the parts an export script orders separately.
+pub fn table_parts(dialect: Dialect, meta: &TableMeta, context: &PgTableContext) -> TableParts {
+    Planner::new(dialect, Some(meta)).render_parts(context)
 }
 
 /// `DROP TABLE` / `DROP VIEW` / `DROP MATERIALIZED VIEW` for a relation of the given kind.
@@ -230,6 +258,285 @@ pub fn drop_statement_for(dialect: Dialect, table: &TableRef, kind: TableKind) -
         "DROP {what} {}",
         dialect.qualify(table.schema.as_deref(), &table.name)
     )
+}
+
+// ---------------------------------------------------------------------------------------------
+// PostgreSQL: what a script that recreates a table needs beyond its `TableMeta`
+// ---------------------------------------------------------------------------------------------
+
+/// A sequence a column default draws from (`nextval('…'::regclass)`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PgSequence {
+    pub column: String,
+    pub schema: String,
+    pub name: String,
+    /// Owned by the column (`serial`, `OWNED BY`): it goes when the table is dropped.
+    pub owned: bool,
+    /// `integer`, `bigint`, `smallint`; the options are `None` when the catalog was unreadable.
+    pub data_type: Option<String>,
+    pub start: Option<i64>,
+    pub increment: Option<i64>,
+    pub min: Option<i64>,
+    pub max: Option<i64>,
+    pub cache: Option<i64>,
+    pub cycle: bool,
+}
+
+/// A partition below a partitioned table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PgPartition {
+    pub table: TableRef,
+    pub parent: TableRef,
+    /// `FOR VALUES …` or `DEFAULT`.
+    pub bound: String,
+    /// The partition is partitioned itself: its key (`LIST (region)`).
+    pub key: Option<String>,
+}
+
+/// What the PostgreSQL catalog says about a table beyond its `TableMeta`, for a script that
+/// recreates it (`pg_context_*_sql`). Empty elsewhere.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PgTableContext {
+    /// The sequences column defaults draw from: a fresh database needs them before the table.
+    pub sequences: Vec<PgSequence>,
+    /// A partitioned table: its key (`RANGE (ts)`).
+    pub partition_key: Option<String>,
+    /// A partition: its bound (`FOR VALUES …` / `DEFAULT`); its parent is `ancestors[0]`.
+    pub partition_bound: Option<String>,
+    /// A partition: the partitioned tables above it, nearest first.
+    pub ancestors: Vec<TableRef>,
+    /// A partitioned table: the partitions below it, parents before their own partitions
+    /// (only when asked for).
+    pub partitions: Vec<PgPartition>,
+    /// Foreign keys PostgreSQL keeps as clones of another constraint (`conparentid`): those of a
+    /// partition inherited from its parent, and the per-partition copies of a key that references
+    /// a partitioned table. Recreating the original recreates them.
+    pub inherited_fks: Vec<String>,
+    /// Triggers of a partition that are clones of its parent's.
+    pub cloned_triggers: Vec<String>,
+}
+
+/// `sql` with `{schema}` naming the table's schema (`$2`, or the current schema when the
+/// reference has none); `$1` is the table's name.
+fn pg_catalog_query(table: &TableRef, sql: &str) -> BuiltSql {
+    let mut params = vec![Value::Text(table.name.clone())];
+    let schema = match table.schema.as_deref().filter(|s| !s.is_empty()) {
+        Some(s) => {
+            params.push(Value::Text(s.to_string()));
+            "$2"
+        }
+        None => "current_schema()",
+    };
+    BuiltSql {
+        sql: sql.replace("{schema}", schema),
+        params,
+    }
+}
+
+/// `relkind`, `relispartition`, the partition key of a partitioned table and the bound of a
+/// partition (one row, text columns).
+pub fn pg_context_relation_sql(table: &TableRef) -> BuiltSql {
+    pg_catalog_query(
+        table,
+        "SELECT c.relkind::text, c.relispartition::text, \
+                CASE WHEN c.relkind = 'p' THEN pg_catalog.pg_get_partkeydef(c.oid) END, \
+                CASE WHEN c.relispartition THEN pg_catalog.pg_get_expr(c.relpartbound, c.oid) END \
+         FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relname = $1 AND n.nspname = {schema}",
+    )
+}
+
+/// The partitioned tables above a partition, nearest first: schema, name.
+pub fn pg_context_ancestors_sql(table: &TableRef) -> BuiltSql {
+    pg_catalog_query(
+        table,
+        "WITH RECURSIVE up(oid, depth) AS ( \
+           SELECT i.inhparent, 1 FROM pg_catalog.pg_inherits i \
+             JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+            WHERE c.relname = $1 AND n.nspname = {schema} AND c.relispartition \
+           UNION ALL \
+           SELECT i.inhparent, up.depth + 1 FROM up \
+             JOIN pg_catalog.pg_class c ON c.oid = up.oid AND c.relispartition \
+             JOIN pg_catalog.pg_inherits i ON i.inhrelid = up.oid) \
+         SELECT n.nspname::text, c.relname::text FROM up \
+           JOIN pg_catalog.pg_class c ON c.oid = up.oid \
+           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         ORDER BY up.depth",
+    )
+}
+
+/// The partitions below a partitioned table, parents first: schema, name, parent schema, parent
+/// name, bound, key (when partitioned itself). Foreign-table partitions are left out.
+pub fn pg_context_partitions_sql(table: &TableRef) -> BuiltSql {
+    pg_catalog_query(
+        table,
+        "WITH RECURSIVE down(oid, parent, depth) AS ( \
+           SELECT i.inhrelid, i.inhparent, 1 FROM pg_catalog.pg_inherits i \
+             JOIN pg_catalog.pg_class c ON c.oid = i.inhparent \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+            WHERE c.relname = $1 AND n.nspname = {schema} AND c.relkind = 'p' \
+           UNION ALL \
+           SELECT i.inhrelid, i.inhparent, down.depth + 1 FROM down \
+             JOIN pg_catalog.pg_inherits i ON i.inhparent = down.oid) \
+         SELECT cn.nspname::text, c.relname::text, pn.nspname::text, p.relname::text, \
+                pg_catalog.pg_get_expr(c.relpartbound, c.oid), \
+                CASE WHEN c.relkind = 'p' THEN pg_catalog.pg_get_partkeydef(c.oid) END \
+         FROM down \
+           JOIN pg_catalog.pg_class c ON c.oid = down.oid \
+           JOIN pg_catalog.pg_namespace cn ON cn.oid = c.relnamespace \
+           JOIN pg_catalog.pg_class p ON p.oid = down.parent \
+           JOIN pg_catalog.pg_namespace pn ON pn.oid = p.relnamespace \
+         WHERE c.relispartition AND c.relkind IN ('r', 'p') \
+         ORDER BY down.depth, cn.nspname, c.relname",
+    )
+}
+
+/// The sequences the table's column defaults draw from: column, sequence schema, sequence name,
+/// type, start, increment, min, max, cache, cycle, owned by the column (all text).
+pub fn pg_context_sequences_sql(table: &TableRef) -> BuiltSql {
+    pg_catalog_query(
+        table,
+        "SELECT a.attname::text, sn.nspname::text, s.relname::text, \
+                pg_catalog.format_type(q.seqtypid, NULL), q.seqstart::text, q.seqincrement::text, \
+                q.seqmin::text, q.seqmax::text, q.seqcache::text, q.seqcycle::text, \
+                EXISTS (SELECT 1 FROM pg_catalog.pg_depend o \
+                         WHERE o.classid = 'pg_catalog.pg_class'::regclass AND o.objid = s.oid \
+                           AND o.refclassid = 'pg_catalog.pg_class'::regclass \
+                           AND o.refobjid = c.oid AND o.refobjsubid = a.attnum \
+                           AND o.deptype = 'a')::text \
+         FROM pg_catalog.pg_class c \
+           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+           JOIN pg_catalog.pg_attrdef d ON d.adrelid = c.oid \
+           JOIN pg_catalog.pg_attribute a \
+             ON a.attrelid = c.oid AND a.attnum = d.adnum AND NOT a.attisdropped \
+           JOIN pg_catalog.pg_depend x \
+             ON x.classid = 'pg_catalog.pg_attrdef'::regclass AND x.objid = d.oid \
+            AND x.refclassid = 'pg_catalog.pg_class'::regclass \
+           JOIN pg_catalog.pg_class s ON s.oid = x.refobjid AND s.relkind = 'S' \
+           JOIN pg_catalog.pg_namespace sn ON sn.oid = s.relnamespace \
+           LEFT JOIN pg_catalog.pg_sequence q ON q.seqrelid = s.oid \
+         WHERE c.relname = $1 AND n.nspname = {schema} \
+         ORDER BY a.attnum, sn.nspname, s.relname",
+    )
+}
+
+/// Constraints and triggers PostgreSQL maintains as clones: `f` + the name of a cloned foreign
+/// key, `t` + the name of a trigger a partition took from its parent.
+pub fn pg_context_clones_sql(table: &TableRef) -> BuiltSql {
+    pg_catalog_query(
+        table,
+        "SELECT 'f', con.conname::text FROM pg_catalog.pg_constraint con \
+           JOIN pg_catalog.pg_class c ON c.oid = con.conrelid \
+           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+          WHERE con.contype = 'f' AND con.conparentid <> 0 \
+            AND c.relname = $1 AND n.nspname = {schema} \
+         UNION ALL \
+         SELECT 't', t.tgname::text FROM pg_catalog.pg_trigger t \
+           JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid \
+           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+          WHERE NOT t.tgisinternal AND c.relispartition \
+            AND c.relname = $1 AND n.nspname = {schema} \
+            AND EXISTS (SELECT 1 FROM pg_catalog.pg_inherits i \
+                          JOIN pg_catalog.pg_trigger p \
+                            ON p.tgrelid = i.inhparent AND p.tgname = t.tgname \
+                         WHERE i.inhrelid = t.tgrelid)",
+    )
+}
+
+/// Sequences owned by a column of the table that are not its identity sequence: column,
+/// sequence schema, sequence name (see `PlanContext::owned_sequences`).
+pub fn pg_owned_sequences_sql(table: &TableRef) -> BuiltSql {
+    pg_catalog_query(
+        table,
+        "SELECT a.attname::text, sn.nspname::text, s.relname::text \
+         FROM pg_catalog.pg_depend o \
+           JOIN pg_catalog.pg_class s ON s.oid = o.objid AND s.relkind = 'S' \
+           JOIN pg_catalog.pg_namespace sn ON sn.oid = s.relnamespace \
+           JOIN pg_catalog.pg_class c ON c.oid = o.refobjid \
+           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+           JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = o.refobjsubid \
+         WHERE o.classid = 'pg_catalog.pg_class'::regclass \
+           AND o.refclassid = 'pg_catalog.pg_class'::regclass AND o.deptype = 'a' \
+           AND c.relname = $1 AND n.nspname = {schema} \
+         ORDER BY a.attnum, sn.nspname, s.relname",
+    )
+}
+
+/// `CREATE TABLE … PARTITION OF …` for a partition an export recreates along with its parent.
+pub fn partition_of_sql(partition: &PgPartition) -> String {
+    let d = Dialect::Postgres;
+    let key = partition
+        .key
+        .as_deref()
+        .map(|k| format!(" PARTITION BY {k}"))
+        .unwrap_or_default();
+    format!(
+        "CREATE TABLE {} PARTITION OF {} {}{key};",
+        d.qualify(partition.table.schema.as_deref(), &partition.table.name),
+        d.qualify(partition.parent.schema.as_deref(), &partition.parent.name),
+        partition.bound.trim()
+    )
+}
+
+/// The statements that recreate a table (`table_parts`), every one terminated. A script loads
+/// them in this order: `sequences`, `table`, `indexes`, `attach`, `comments`, then the rows,
+/// then `sequence_resets`, `foreign_keys` and `triggers` (as pg_dump does: keys that rows of a
+/// later table satisfy, and triggers that would fire on the loaded rows, come last).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TableParts {
+    /// PG: `CREATE SEQUENCE IF NOT EXISTS` for the sequences the column defaults draw from.
+    pub sequences: Vec<String>,
+    /// `CREATE TABLE` (PG: `PARTITION BY …`), then PG `ALTER SEQUENCE … OWNED BY …`.
+    pub table: Vec<String>,
+    pub indexes: Vec<String>,
+    /// PG partition: `ALTER TABLE <parent> ATTACH PARTITION …`. It comes after the partition's
+    /// indexes, which the attach then adopts instead of creating its own.
+    pub attach: Option<String>,
+    pub foreign_keys: Vec<String>,
+    pub triggers: Vec<String>,
+    pub comments: Vec<String>,
+    /// PG, after the rows: moves the sequence of each serial / identity column past them.
+    pub sequence_resets: Vec<String>,
+}
+
+impl TableParts {
+    /// The parts that come before the rows, as sections (lines joined), in load order;
+    /// `partitions` (`partition_of_sql`) go after the indexes and before the attach.
+    pub fn create_sections(&self, partitions: &[String]) -> Vec<String> {
+        let attach: Vec<String> = self.attach.iter().cloned().collect();
+        [
+            &self.sequences[..],
+            &self.table,
+            &self.indexes,
+            partitions,
+            &attach,
+            &self.comments,
+        ]
+        .into_iter()
+        .filter(|section| !section.is_empty())
+        .map(|section| section.join("\n"))
+        .collect()
+    }
+
+    /// The whole script ("Show DDL"): table, indexes, foreign keys, triggers and comments.
+    pub fn script(&self) -> String {
+        let attach: Vec<String> = self.attach.iter().cloned().collect();
+        [
+            &self.sequences[..],
+            &self.table,
+            &self.indexes,
+            &attach,
+            &self.foreign_keys,
+            &self.triggers,
+            &self.comments,
+        ]
+        .into_iter()
+        .filter(|section| !section.is_empty())
+        .map(|section| section.join("\n"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -268,7 +575,7 @@ struct Col {
 }
 
 impl Col {
-    fn from_meta(dialect: Dialect, c: &ColumnMeta) -> Col {
+    fn from_meta(dialect: Dialect, c: &ColumnMeta, mode: MysqlLiteralMode) -> Col {
         let mut col = Col {
             name: c.name.clone(),
             source: Some(c.name.clone()),
@@ -297,7 +604,7 @@ impl Col {
             Dialect::Mysql => {
                 col.generated = mysql_is_generated(c);
                 col.auto_increment = c.is_auto_increment;
-                col.default_expr = mysql_default_from_meta(c);
+                col.default_expr = mysql_default_from_meta(c, mode);
                 col.on_update = MYSQL_ON_UPDATE.captures(extra).map(|m| m[1].to_string());
                 col.invisible = extra.to_ascii_lowercase().contains("invisible");
             }
@@ -332,6 +639,15 @@ fn col_from_def(dialect: Dialect, def: &ColumnDef) -> (Col, Vec<String>) {
         implicit_not_null: false,
     };
     let name = &def.name;
+    if let Some(e) = non_empty(def.on_update.as_deref()) {
+        if dialect == Dialect::Mysql {
+            col.on_update = Some(e);
+        } else {
+            warnings.push(format!(
+                "ON UPDATE is MySQL-only; ignored for column \"{name}\""
+            ));
+        }
+    }
     if col.unsigned && dialect != Dialect::Mysql {
         warnings.push(format!(
             "UNSIGNED is MySQL-only; ignored for column \"{name}\""
@@ -405,14 +721,33 @@ struct Model {
     stale_triggers: Vec<(String, String)>,
     /// PG: indexes backing a constraint (`PlanContext::constraint_indexes`).
     constraint_indexes: Vec<String>,
+    /// PG: sequences owned by a column besides its identity (`PlanContext::owned_sequences`).
+    owned_sequences: Vec<(String, TableRef)>,
+    checks: Vec<Check>,
+    /// MySQL table options as introspected (the current character set of `CONVERT TO`).
+    options: TableOptions,
+}
+
+/// A CHECK constraint as the planner tracks it.
+#[derive(Debug, Clone)]
+struct Check {
+    name: String,
+    /// Whether `name` is a real constraint name to emit as `CONSTRAINT …` (SQLite does not
+    /// report names of unnamed checks; they get a synthetic `ck_<table>_<n>`).
+    named: bool,
+    expression: String,
+    columns: Vec<String>,
+    /// SQLite: added while a rebuild is pending; its expression spells the final column names
+    /// (the stored ones spell the physical names of the table as it is in the database).
+    fresh: bool,
 }
 
 impl Model {
-    fn from_meta(dialect: Dialect, meta: &TableMeta) -> Model {
+    fn from_meta(dialect: Dialect, meta: &TableMeta, mode: MysqlLiteralMode) -> Model {
         let mut columns: Vec<Col> = meta
             .columns
             .iter()
-            .map(|c| Col::from_meta(dialect, c))
+            .map(|c| Col::from_meta(dialect, c, mode))
             .collect();
         let mut table_options = None;
         if dialect == Dialect::Sqlite
@@ -489,6 +824,43 @@ impl Model {
                 definition: f.definition.clone(),
             })
             .collect();
+        let checks = match (dialect, meta.ddl.as_deref()) {
+            (Dialect::Sqlite, Some(ddl)) => {
+                let generated: Vec<&str> = columns
+                    .iter()
+                    .filter(|c| c.generated)
+                    .map(|c| c.name.as_str())
+                    .collect();
+                let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+                parse_sqlite_checks(ddl, &meta.table.name)
+                    .into_iter()
+                    // a generated column carries its own checks in its verbatim definition
+                    .filter(|p| {
+                        p.column
+                            .as_deref()
+                            .is_none_or(|c| !generated.iter().any(|g| g.eq_ignore_ascii_case(c)))
+                    })
+                    .map(|p| Check {
+                        columns: parsed_check_columns(&p, &names),
+                        named: p.name.is_some(),
+                        name: p.name.unwrap_or(p.synthetic),
+                        expression: p.expression,
+                        fresh: false,
+                    })
+                    .collect()
+            }
+            _ => meta
+                .checks
+                .iter()
+                .map(|c| Check {
+                    name: c.name.clone(),
+                    named: true,
+                    expression: c.expression.clone(),
+                    columns: c.columns.clone(),
+                    fresh: false,
+                })
+                .collect(),
+        };
         Model {
             table: meta.table.clone(),
             columns,
@@ -507,6 +879,9 @@ impl Model {
             fresh_indexes: Vec::new(),
             stale_triggers: Vec::new(),
             constraint_indexes: Vec::new(),
+            owned_sequences: Vec::new(),
+            checks,
+            options: meta.options.clone().unwrap_or_default(),
         }
     }
 
@@ -559,6 +934,10 @@ impl Model {
         self.primary_key.iter().any(|c| c == name)
             || self.indexes.iter().any(|i| self.index_uses(i, name))
             || self.fks.iter().any(|f| f.columns.iter().any(|c| c == name))
+            || self
+                .checks
+                .iter()
+                .any(|k| k.columns.iter().any(|c| c == name))
     }
 
     /// Clears the primary key; SQLite columns that were NOT NULL only because of it become
@@ -625,6 +1004,17 @@ impl Model {
                 f.name
             ));
         }
+        let (gone, kept): (Vec<Check>, Vec<Check>) = self
+            .checks
+            .drain(..)
+            .partition(|k| k.columns.iter().any(|c| c == name));
+        self.checks = kept;
+        for k in gone {
+            notes.push(format!(
+                "CHECK constraint \"{}\" uses \"{name}\" and is dropped with it",
+                k.name
+            ));
+        }
         notes
     }
 
@@ -656,6 +1046,9 @@ impl Model {
                 rename_in(&mut f.ref_columns, old, new);
             }
         }
+        for k in &mut self.checks {
+            rename_in(&mut k.columns, old, new);
+        }
         if physical {
             self.renamed_in_database(dialect, old, new);
         } else {
@@ -665,6 +1058,9 @@ impl Model {
                 {
                     i.definition = Some(rename_in_index_def(def, old, &quoted));
                 }
+            }
+            for k in self.checks.iter_mut().filter(|k| k.fresh) {
+                k.expression = rename_ident(&k.expression, old, &quoted);
             }
         }
     }
@@ -687,6 +1083,9 @@ impl Model {
             {
                 i.definition = Some(rename_in_index_def(def, old, &quoted));
             }
+        }
+        for k in self.checks.iter_mut().filter(|k| !k.fresh) {
+            k.expression = rename_ident(&k.expression, old, &quoted);
         }
         if dialect == Dialect::Sqlite {
             for t in &self.triggers {
@@ -747,6 +1146,8 @@ const SQLITE_NO_COMMENTS: &str = "SQLite does not store table or column comments
 
 struct Planner {
     dialect: Dialect,
+    /// MySQL: how the session reads backslashes in string literals (`PlanContext::mysql_mode`).
+    mysql_mode: MysqlLiteralMode,
     model: Option<Model>,
     statements: Vec<String>,
     warnings: Vec<String>,
@@ -758,6 +1159,8 @@ struct Planner {
     rebuilt: bool,
     /// A raw statement cannot run inside a transaction block (PG `VACUUM`, SQLite `PRAGMA`).
     sequential: bool,
+    /// Triggers dropped so far in the plan.
+    dropped_triggers: Vec<String>,
 }
 
 fn op_table(op: &DdlOp) -> Option<&TableRef> {
@@ -773,6 +1176,14 @@ fn op_table(op: &DdlOp) -> Option<&TableRef> {
         | DdlOp::AlterColumnNullable { table, .. }
         | DdlOp::AlterColumnDefault { table, .. }
         | DdlOp::SetColumnComment { table, .. }
+        | DdlOp::AlterColumnAutoIncrement { table, .. }
+        | DdlOp::AlterColumnOnUpdate { table, .. }
+        | DdlOp::AlterColumnCollation { table, .. }
+        | DdlOp::AlterTableOptions { table, .. }
+        | DdlOp::AddCheck { table, .. }
+        | DdlOp::DropCheck { table, .. }
+        | DdlOp::CreateTrigger { table, .. }
+        | DdlOp::DropTrigger { table, .. }
         | DdlOp::SetTableComment { table, .. }
         | DdlOp::AddIndex { table, .. }
         | DdlOp::DropIndex { table, .. }
@@ -797,6 +1208,14 @@ fn op_table_mut(op: &mut DdlOp) -> Option<&mut TableRef> {
         | DdlOp::AlterColumnNullable { table, .. }
         | DdlOp::AlterColumnDefault { table, .. }
         | DdlOp::SetColumnComment { table, .. }
+        | DdlOp::AlterColumnAutoIncrement { table, .. }
+        | DdlOp::AlterColumnOnUpdate { table, .. }
+        | DdlOp::AlterColumnCollation { table, .. }
+        | DdlOp::AlterTableOptions { table, .. }
+        | DdlOp::AddCheck { table, .. }
+        | DdlOp::DropCheck { table, .. }
+        | DdlOp::CreateTrigger { table, .. }
+        | DdlOp::DropTrigger { table, .. }
         | DdlOp::SetTableComment { table, .. }
         | DdlOp::AddIndex { table, .. }
         | DdlOp::DropIndex { table, .. }
@@ -816,6 +1235,9 @@ fn foldable(op: &DdlOp) -> bool {
             | DdlOp::DropTable { .. }
             | DdlOp::TruncateTable { .. }
             | DdlOp::RenameTable { .. }
+            | DdlOp::AlterTableOptions { .. }
+            | DdlOp::CreateTrigger { .. }
+            | DdlOp::DropTrigger { .. }
             | DdlOp::RawSql { .. }
     )
 }
@@ -949,7 +1371,39 @@ fn validate(dialect: Dialect, op: &DdlOp) -> Result<(), AppError> {
         DdlOp::DropColumn { name, .. }
         | DdlOp::AlterColumnNullable { name, .. }
         | DdlOp::AlterColumnDefault { name, .. }
-        | DdlOp::SetColumnComment { name, .. } => require(name, "column name")?,
+        | DdlOp::SetColumnComment { name, .. }
+        | DdlOp::AlterColumnAutoIncrement { name, .. } => require(name, "column name")?,
+        DdlOp::AlterColumnOnUpdate {
+            name, on_update, ..
+        } => {
+            require(name, "column name")?;
+            if on_update.as_deref().is_some_and(|e| e.contains(';')) {
+                return Err(invalid("an ON UPDATE expression must not contain ';'"));
+            }
+        }
+        DdlOp::AlterColumnCollation {
+            name, collation, ..
+        } => {
+            require(name, "column name")?;
+            if let Some(c) = non_empty(collation.as_deref())
+                && !COLLATION_NAME.is_match(&c)
+            {
+                return Err(invalid(format!("invalid collation name \"{c}\"")));
+            }
+        }
+        DdlOp::AlterTableOptions { options, .. } => validate_table_options(options)?,
+        DdlOp::AddCheck { check, .. } => {
+            require(&check.expression, "CHECK expression")?;
+            if let Some(n) = &check.name {
+                require(n, "CHECK constraint name")?;
+            }
+        }
+        DdlOp::DropCheck { name, .. } => require(name, "CHECK constraint name")?,
+        DdlOp::CreateTrigger { name, sql, .. } => {
+            require(name, "trigger name")?;
+            require(sql, "trigger SQL")?;
+        }
+        DdlOp::DropTrigger { name, .. } => require(name, "trigger name")?,
         DdlOp::RenameColumn { name, new_name, .. } => {
             require(name, "column name")?;
             require(new_name, "new column name")?;
@@ -1010,6 +1464,34 @@ fn validate(dialect: Dialect, op: &DdlOp) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Engine, character set, collation and row format names: one word.
+static OPTION_NAME: LazyLock<Regex> = LazyLock::new(|| re(r"^[A-Za-z][A-Za-z0-9_]*$"));
+
+fn validate_table_options(o: &TableOptions) -> Result<(), AppError> {
+    let fields = [
+        ("engine", &o.engine),
+        ("character set", &o.charset),
+        ("collation", &o.collation),
+        ("row format", &o.row_format),
+    ];
+    for (what, value) in fields {
+        if let Some(v) = value
+            && !OPTION_NAME.is_match(v.trim())
+        {
+            return Err(invalid(format!("invalid {what} \"{v}\"")));
+        }
+    }
+    if *o == TableOptions::default() {
+        return Err(invalid("no table option to change"));
+    }
+    Ok(())
+}
+
+/// The character set a MySQL collation belongs to (`utf8mb4_0900_ai_ci` → `utf8mb4`).
+fn charset_of_collation(collation: &str) -> String {
+    collation.split('_').next().unwrap_or(collation).to_string()
+}
+
 /// A column after `op` (type / nullable / default / comment change) is applied to it.
 fn changed_col(dialect: Dialect, col: &Col, op: &DdlOp) -> Col {
     let mut c = col.clone();
@@ -1052,22 +1534,64 @@ fn changed_col(dialect: Dialect, col: &Col, op: &DdlOp) -> Col {
         DdlOp::SetColumnComment { comment, .. } => {
             c.comment = comment.clone().filter(|s| !s.is_empty());
         }
+        DdlOp::AlterColumnAutoIncrement { auto_increment, .. } => {
+            c.auto_increment = *auto_increment;
+            // (MySQL refuses a DEFAULT on an AUTO_INCREMENT column)
+            if dialect == Dialect::Mysql && *auto_increment {
+                c.default_expr = None;
+            }
+            if dialect == Dialect::Postgres {
+                if *auto_increment {
+                    c.identity = c.identity.clone().or(Some("BY DEFAULT".into()));
+                    c.default_expr = None;
+                    c.nullable = false;
+                } else {
+                    c.identity = None;
+                    if c.default_expr.as_deref().is_some_and(is_nextval) {
+                        c.default_expr = None;
+                    }
+                }
+            }
+        }
+        DdlOp::AlterColumnOnUpdate { on_update, .. } => {
+            c.on_update = non_empty(on_update.as_deref());
+        }
+        DdlOp::AlterColumnCollation { collation, .. } => {
+            c.collation = non_empty(collation.as_deref());
+        }
         _ => {}
     }
     c
 }
 
+/// A PG sequence default (`nextval('t_id_seq'::regclass)`).
+fn is_nextval(expr: &str) -> bool {
+    expr.trim_start()
+        .to_ascii_lowercase()
+        .starts_with("nextval(")
+}
+
 impl Planner {
     fn new(dialect: Dialect, meta: Option<&TableMeta>) -> Planner {
+        Planner::with_mode(dialect, meta, MysqlLiteralMode::default())
+    }
+
+    fn with_mode(
+        dialect: Dialect,
+        meta: Option<&TableMeta>,
+        mysql_mode: MysqlLiteralMode,
+    ) -> Planner {
         Planner {
             dialect,
-            model: meta.map(|m| Model::from_meta(dialect, m)),
+            mysql_mode,
+            model: meta.map(|m| Model::from_meta(dialect, m, mysql_mode)),
             statements: Vec::new(),
             warnings: Vec::new(),
             pending: false,
             rebuild_base: Vec::new(),
             rebuilt: false,
             sequential: false,
+            dropped_triggers: Vec::new(),
         }
     }
 
@@ -1087,8 +1611,13 @@ impl Planner {
             .join(", ")
     }
 
+    /// A string literal in a statement that runs: MySQL spells it for the session's
+    /// `sql_mode` (backslashes doubled only where they are escapes).
     fn lit(&self, s: &str) -> String {
-        self.dialect.quote_literal(s)
+        match self.dialect {
+            Dialect::Mysql => self.dialect.quote_literal_with(s, self.mysql_mode),
+            Dialect::Postgres | Dialect::Sqlite => self.dialect.quote_literal(s),
+        }
     }
 
     fn warn(&mut self, msg: impl Into<String>) {
@@ -1184,6 +1713,76 @@ impl Planner {
         Ok(true)
     }
 
+    /// MySQL: an index drop directly followed by an index add on the same table (how the
+    /// structure editor stages an edited index), or a CHECK drop directly followed by a CHECK
+    /// add, becomes one `ALTER TABLE … DROP …, ADD …`. MySQL DDL is not transactional: as two
+    /// statements, a failing add (a UNIQUE index over duplicates, a CHECK the rows violate)
+    /// would leave the original dropped; one ALTER TABLE fails as a whole. Returns whether both
+    /// ops were handled.
+    fn replace_index_or_check(
+        &mut self,
+        first: &DdlOp,
+        next: Option<&DdlOp>,
+    ) -> Result<bool, AppError> {
+        let Some(next) = next.filter(|_| self.dialect == Dialect::Mysql) else {
+            return Ok(false);
+        };
+        let drop = self.normalize(first);
+        let add = self.normalize(next);
+        let (table, sql) = match (&drop, &add) {
+            (
+                DdlOp::DropIndex { table, name },
+                DdlOp::AddIndex {
+                    table: add_table,
+                    index,
+                },
+            ) if same_table(table, add_table) => {
+                validate(self.dialect, first)?;
+                validate(self.dialect, next)?;
+                self.index_warnings(index);
+                let dropped = if name == "PRIMARY" {
+                    "DROP PRIMARY KEY".to_string()
+                } else {
+                    format!("DROP INDEX {}", self.q(name))
+                };
+                let sql = format!(
+                    "ALTER TABLE {} {dropped}, {}",
+                    self.qt(table),
+                    self.mysql_add_index_clause(table, index)
+                );
+                (table, sql)
+            }
+            (
+                DdlOp::DropCheck { table, name },
+                DdlOp::AddCheck {
+                    table: add_table,
+                    check,
+                },
+            ) if same_table(table, add_table) => {
+                validate(self.dialect, first)?;
+                validate(self.dialect, next)?;
+                let sql = format!(
+                    "ALTER TABLE {} DROP CONSTRAINT {}, ADD {}",
+                    self.qt(table),
+                    self.q(name),
+                    self.check_clause(
+                        non_empty(check.name.as_deref()).as_deref(),
+                        &check.expression
+                    )
+                );
+                (table, sql)
+            }
+            _ => return Ok(false),
+        };
+        let on_model = self.is_model(table);
+        self.push(sql);
+        if on_model {
+            self.update_model(&drop, true)?;
+            self.update_model(&add, true)?;
+        }
+        Ok(true)
+    }
+
     /// `rest` are the ops after `op` (SQLite looks ahead for a rebuild of the same table).
     fn op(&mut self, op: &DdlOp, rest: &[DdlOp]) -> Result<(), AppError> {
         validate(self.dialect, op)?;
@@ -1216,6 +1815,7 @@ impl Planner {
     fn group_needs_rebuild(&self, first: &DdlOp, rest: &[DdlOp]) -> bool {
         let mut sim = Planner {
             dialect: self.dialect,
+            mysql_mode: self.mysql_mode,
             model: self.model.clone(),
             statements: Vec::new(),
             warnings: Vec::new(),
@@ -1223,6 +1823,7 @@ impl Planner {
             rebuild_base: Vec::new(),
             rebuilt: false,
             sequential: false,
+            dropped_triggers: Vec::new(),
         };
         if sim.update_model(first, true).is_err() {
             return false;
@@ -1290,10 +1891,14 @@ impl Planner {
             DdlOp::AlterColumnType { .. }
             | DdlOp::AlterColumnNullable { .. }
             | DdlOp::AlterColumnDefault { .. }
+            | DdlOp::AlterColumnAutoIncrement { .. }
+            | DdlOp::AlterColumnCollation { .. }
             | DdlOp::AddForeignKey { .. }
             | DdlOp::DropForeignKey { .. }
             | DdlOp::AddPrimaryKey { .. }
-            | DdlOp::DropPrimaryKey { .. } => true,
+            | DdlOp::DropPrimaryKey { .. }
+            | DdlOp::AddCheck { .. }
+            | DdlOp::DropCheck { .. } => true,
             DdlOp::AddColumn { column, .. } => column
                 .default_expr
                 .as_deref()
@@ -1343,8 +1948,14 @@ impl Planner {
                     );
                 }
             }
-            DdlOp::AlterColumnNullable { name, .. } | DdlOp::AlterColumnDefault { name, .. } => {
+            DdlOp::AlterColumnNullable { name, .. }
+            | DdlOp::AlterColumnDefault { name, .. }
+            | DdlOp::AlterColumnAutoIncrement { name, .. }
+            | DdlOp::AlterColumnCollation { name, .. } => {
                 self.ensure_not_generated(&table, name)?;
+            }
+            DdlOp::AlterColumnOnUpdate { .. } => {
+                return Err(AppError::Unsupported("ON UPDATE is MySQL-only".into()));
             }
             DdlOp::AddIndex { index, .. } => self.index_warnings(index),
             _ => {}
@@ -1417,7 +2028,7 @@ impl Planner {
         let tmp = d.qualify(schema, &tmp_name);
         let current = d.qualify(schema, &name);
         self.warn(format!(
-            "\"{name}\" is rebuilt from introspected metadata (new table, copy, drop, rename): CHECK constraints, ON CONFLICT clauses, DEFERRABLE foreign-key options and any COLLATE or generated-column expression that cannot be recovered from the original definition may be lost; review the statements before applying"
+            "\"{name}\" is rebuilt from introspected metadata (new table, copy, drop, rename): ON CONFLICT clauses, DEFERRABLE foreign-key options and any COLLATE or generated-column expression that cannot be recovered from the original definition may be lost; review the statements before applying"
         ));
 
         // The new table keeps the physical column names (stored index and trigger text uses
@@ -1454,8 +2065,37 @@ impl Planner {
             })
             .collect();
 
+        // Checks added in this rebuild spell the final column names; the new table still has
+        // the physical ones.
+        let to_physical: Vec<(String, String)> = m
+            .columns
+            .iter()
+            .zip(&phys)
+            .filter(|(c, p)| &c.name != *p)
+            .map(|(c, p)| (c.name.clone(), p.clone()))
+            .collect();
+        let checks: Vec<Check> = m
+            .checks
+            .iter()
+            .map(|k| {
+                let mut k = k.clone();
+                if k.fresh {
+                    k.expression = rename_all(d, &k.expression, &to_physical);
+                    k.fresh = false;
+                }
+                k
+            })
+            .collect();
         let inline = self.sqlite_inline_pk(&cols, &pk);
-        let body = self.table_body(&cols, &pk, inline, None, &uniques, &fks);
+        for (i, c) in m.columns.iter().enumerate() {
+            if c.auto_increment && inline != Some(i) {
+                self.warn(format!(
+                    "AUTOINCREMENT needs a single INTEGER PRIMARY KEY column; ignored for \"{}\"",
+                    c.name
+                ));
+            }
+        }
+        let body = self.table_body(&cols, &pk, inline, None, &uniques, &fks, &checks);
         let mut create = format!("CREATE TABLE {tmp} (\n{body}\n)");
         if let Some(opts) = &m.table_options {
             create.push(' ');
@@ -1559,6 +2199,7 @@ impl Planner {
             }
         }
         if let Some(model) = self.model.as_mut() {
+            model.checks = checks;
             for (from, to) in &renames {
                 model.renamed_in_database(d, from, to);
             }
@@ -1643,17 +2284,96 @@ impl Planner {
                     return Ok(notes);
                 }
                 m.rename_column(dialect, name, new_name, physical);
+                for (column, _) in &mut m.owned_sequences {
+                    if column == name {
+                        column.clone_from(new_name);
+                    }
+                }
             }
             DdlOp::AlterColumnType { name, .. }
             | DdlOp::AlterColumnNullable { name, .. }
             | DdlOp::AlterColumnDefault { name, .. }
-            | DdlOp::SetColumnComment { name, .. } => match m.col_index(name) {
+            | DdlOp::SetColumnComment { name, .. }
+            | DdlOp::AlterColumnAutoIncrement { name, .. }
+            | DdlOp::AlterColumnOnUpdate { name, .. }
+            | DdlOp::AlterColumnCollation { name, .. } => match m.col_index(name) {
                 Some(i) => m.columns[i] = changed_col(dialect, &m.columns[i], op),
                 None if strict => return Err(unknown_column(name, &m.table)),
                 None => {}
             },
             DdlOp::SetTableComment { comment, .. } => {
                 m.comment = comment.clone().filter(|s| !s.is_empty());
+            }
+            DdlOp::AlterTableOptions { options, .. } => {
+                let o = &mut m.options;
+                if let Some(v) = &options.engine {
+                    o.engine = Some(v.clone());
+                }
+                if let Some(v) = &options.collation {
+                    o.charset = Some(charset_of_collation(v));
+                    o.collation = Some(v.clone());
+                } else if let Some(v) = &options.charset {
+                    o.charset = Some(v.clone());
+                    o.collation = None;
+                }
+                if let Some(v) = options.auto_increment {
+                    o.auto_increment = Some(v);
+                }
+                if let Some(v) = &options.row_format {
+                    o.row_format = Some(v.clone());
+                }
+            }
+            DdlOp::AddCheck { check, .. } => {
+                let name = non_empty(check.name.as_deref());
+                if let Some(n) = &name
+                    && m.checks.iter().any(|k| k.name.eq_ignore_ascii_case(n))
+                {
+                    if strict {
+                        return Err(invalid(format!(
+                            "CHECK constraint \"{n}\" already exists on \"{}\"",
+                            m.table.name
+                        )));
+                    }
+                    return Ok(notes);
+                }
+                let expression = check.expression.trim().to_string();
+                let names = m.names();
+                let synthetic = unique_name(
+                    &format!("ck_{}_{}", m.table.name, m.checks.len() + 1),
+                    &[&m.checks.iter().map(|k| k.name.clone()).collect::<Vec<_>>()],
+                );
+                m.checks.push(Check {
+                    columns: check_columns(&expression, &names),
+                    named: name.is_some(),
+                    name: name.unwrap_or(synthetic),
+                    expression,
+                    fresh: !physical && dialect == Dialect::Sqlite,
+                });
+            }
+            DdlOp::DropCheck { name, .. } => {
+                let before = m.checks.len();
+                m.checks.retain(|k| &k.name != name);
+                if strict && before == m.checks.len() {
+                    return Err(invalid(format!(
+                        "CHECK constraint \"{name}\" does not exist on \"{}\"",
+                        m.table.name
+                    )));
+                }
+            }
+            DdlOp::CreateTrigger { name, sql, .. } => {
+                m.triggers.retain(|t| &t.name != name);
+                m.stale_triggers.retain(|(t, _)| t != name);
+                m.triggers.push(TriggerMeta {
+                    name: name.clone(),
+                    timing: None,
+                    events: Vec::new(),
+                    enabled: true,
+                    definition: sql.trim().trim_end_matches(';').trim_end().to_string(),
+                });
+            }
+            DdlOp::DropTrigger { name, .. } => {
+                m.triggers.retain(|t| &t.name != name);
+                m.stale_triggers.retain(|(t, _)| t != name);
             }
             DdlOp::AddIndex { index, .. } => {
                 if m.indexes.iter().any(|i| i.name == index.name) {
@@ -1670,6 +2390,7 @@ impl Planner {
                     method: index.method.clone(),
                     predicate: index.predicate.clone(),
                     definition: index_def,
+                    comment: non_empty(index.comment.as_deref()),
                 });
                 if !physical && dialect == Dialect::Sqlite {
                     m.fresh_indexes.push(index.name.clone());
@@ -1923,6 +2644,98 @@ impl Planner {
                 Dialect::Mysql => self.mysql_modify(table, name, op)?,
                 Dialect::Sqlite => self.warn(SQLITE_NO_COMMENTS),
             },
+            DdlOp::AlterColumnAutoIncrement {
+                table,
+                name,
+                auto_increment,
+            } => match d {
+                Dialect::Postgres => self.pg_auto_increment(table, name, *auto_increment),
+                Dialect::Mysql => self.mysql_modify(table, name, op)?,
+                Dialect::Sqlite => return Err(self.need_meta(table, "changing AUTOINCREMENT")),
+            },
+            DdlOp::AlterColumnOnUpdate { table, name, .. } => match d {
+                Dialect::Mysql => self.mysql_modify(table, name, op)?,
+                _ => return Err(AppError::Unsupported("ON UPDATE is MySQL-only".into())),
+            },
+            DdlOp::AlterColumnCollation {
+                table,
+                name,
+                collation,
+            } => match d {
+                Dialect::Postgres => {
+                    let col = self.model_col(table, name, "changing a collation")?;
+                    let ty = col.data_type.clone();
+                    let coll = match non_empty(collation.as_deref()) {
+                        Some(c) => self.q(&c),
+                        None => "\"default\"".to_string(),
+                    };
+                    let sql = format!(
+                        "ALTER TABLE {} ALTER COLUMN {} TYPE {ty} COLLATE {coll}",
+                        self.qt(table),
+                        self.q(name)
+                    );
+                    self.push(sql);
+                }
+                Dialect::Mysql => self.mysql_modify(table, name, op)?,
+                Dialect::Sqlite => return Err(self.need_meta(table, "changing a collation")),
+            },
+            DdlOp::AlterTableOptions { table, options } => {
+                if d != Dialect::Mysql {
+                    return Err(AppError::Unsupported(
+                        "engine, character set, AUTO_INCREMENT and row format are MySQL table options"
+                            .into(),
+                    ));
+                }
+                let sql = self.mysql_table_options(table, options);
+                self.push(sql);
+            }
+            DdlOp::AddCheck { table, check } => {
+                if d == Dialect::Sqlite {
+                    return Err(self.need_meta(table, "adding a CHECK constraint"));
+                }
+                let sql = format!(
+                    "ALTER TABLE {} ADD {}",
+                    self.qt(table),
+                    self.check_clause(
+                        non_empty(check.name.as_deref()).as_deref(),
+                        &check.expression
+                    )
+                );
+                self.push(sql);
+            }
+            DdlOp::DropCheck { table, name } => {
+                if d == Dialect::Sqlite {
+                    return Err(self.need_meta(table, "dropping a CHECK constraint"));
+                }
+                // (MySQL 8.0.19+ and MariaDB; `DROP CHECK` is MySQL-only)
+                let sql = format!(
+                    "ALTER TABLE {} DROP CONSTRAINT {}",
+                    self.qt(table),
+                    self.q(name)
+                );
+                self.push(sql);
+            }
+            DdlOp::CreateTrigger { name, sql, .. } => {
+                if d == Dialect::Mysql && self.dropped_triggers.iter().any(|t| t == name) {
+                    self.warn(format!(
+                        "MySQL runs these statements one by one: if creating trigger \"{name}\" fails, the old trigger is already dropped"
+                    ));
+                }
+                let sql = sql.trim().trim_end_matches(';').trim_end().to_string();
+                self.push(sql);
+            }
+            DdlOp::DropTrigger { table, name } => {
+                let sql = match d {
+                    Dialect::Postgres => {
+                        format!("DROP TRIGGER {} ON {}", self.q(name), self.qt(table))
+                    }
+                    Dialect::Mysql | Dialect::Sqlite => {
+                        format!("DROP TRIGGER {}", d.qualify(table.schema.as_deref(), name))
+                    }
+                };
+                self.dropped_triggers.push(name.clone());
+                self.push(sql);
+            }
             DdlOp::SetTableComment { table, comment } => match d {
                 Dialect::Postgres => {
                     let sql = format!(
@@ -1946,6 +2759,16 @@ impl Planner {
                 self.index_warnings(index);
                 let sql = self.index_sql(table, index);
                 self.push(sql);
+                if d == Dialect::Postgres
+                    && let Some(comment) = non_empty(index.comment.as_deref())
+                {
+                    let sql = format!(
+                        "COMMENT ON INDEX {} IS {}",
+                        d.qualify(table.schema.as_deref(), &index.name),
+                        self.lit(&comment)
+                    );
+                    self.push(sql);
+                }
             }
             DdlOp::DropIndex { table, name } => {
                 let sql = match d {
@@ -2141,7 +2964,7 @@ impl Planner {
                 }
             }
         }
-        let body = self.table_body(&cols, primary_key, inline, None, &[], &[]);
+        let body = self.table_body(&cols, primary_key, inline, None, &[], &[], &[]);
         let mut sql = format!(
             "CREATE TABLE {}{} (\n{body}\n)",
             if if_not_exists { "IF NOT EXISTS " } else { "" },
@@ -2234,6 +3057,107 @@ impl Planner {
         );
         self.push(sql);
         Ok(())
+    }
+
+    /// PG identity on / off. Turning it on drops the column's default and makes it NOT NULL
+    /// first (both are required), then moves the new sequence past the existing values.
+    ///
+    /// A `serial` column still owns its old sequence, and `pg_get_serial_sequence` would keep
+    /// returning that one instead of the identity sequence: the old sequence is detached first
+    /// (`OWNED BY NONE`). It is kept, not dropped: something else (another default, the
+    /// application) may still draw from it, and it holds no rows.
+    fn pg_auto_increment(&mut self, table: &TableRef, name: &str, on: bool) {
+        let qt = self.qt(table);
+        let qc = self.q(name);
+        let model = self.model.as_ref().filter(|m| same_table(&m.table, table));
+        let col = model.and_then(|m| m.col(name)).cloned();
+        let owned: Vec<TableRef> = model
+            .map(|m| {
+                m.owned_sequences
+                    .iter()
+                    .filter(|(column, _)| column == name)
+                    .map(|(_, seq)| seq.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if on {
+            if col.as_ref().is_some_and(|c| c.identity.is_some()) {
+                self.warn(format!("\"{name}\" already is an identity column"));
+                return;
+            }
+            if col.as_ref().is_some_and(|c| c.default_expr.is_some()) {
+                self.push(format!("ALTER TABLE {qt} ALTER COLUMN {qc} DROP DEFAULT"));
+            }
+            for seq in &owned {
+                let qs = self.qt(seq);
+                self.push(format!("ALTER SEQUENCE {qs} OWNED BY NONE"));
+                self.warn(format!(
+                    "the sequence {qs} that \"{name}\" drew from is kept, no longer owned by the column; drop it when nothing else uses it"
+                ));
+            }
+            if col.as_ref().is_some_and(|c| c.nullable) {
+                self.push(format!("ALTER TABLE {qt} ALTER COLUMN {qc} SET NOT NULL"));
+            }
+            self.push(format!(
+                "ALTER TABLE {qt} ALTER COLUMN {qc} ADD GENERATED BY DEFAULT AS IDENTITY"
+            ));
+            self.push(format!(
+                "SELECT setval(pg_get_serial_sequence({}, {}), GREATEST(COALESCE(MAX({qc}), 0) + 1, 1), false) FROM {qt}",
+                self.lit(&qt),
+                self.lit(name)
+            ));
+        } else {
+            match col {
+                Some(c) if c.identity.is_none() => {
+                    if c.default_expr.as_deref().is_some_and(is_nextval) {
+                        self.push(format!("ALTER TABLE {qt} ALTER COLUMN {qc} DROP DEFAULT"));
+                    } else {
+                        self.warn(format!("\"{name}\" does not auto-increment"));
+                    }
+                }
+                _ => self.push(format!(
+                    "ALTER TABLE {qt} ALTER COLUMN {qc} DROP IDENTITY IF EXISTS"
+                )),
+            }
+        }
+    }
+
+    /// `ALTER TABLE … ENGINE = …, CONVERT TO CHARACTER SET … COLLATE …, AUTO_INCREMENT = …,
+    /// ROW_FORMAT = …` (MySQL).
+    fn mysql_table_options(&self, table: &TableRef, o: &TableOptions) -> String {
+        let mut parts = Vec::new();
+        if let Some(e) = &o.engine {
+            parts.push(format!("ENGINE = {}", e.trim()));
+        }
+        let collation = o.collation.as_deref().map(str::trim);
+        let charset = o
+            .charset
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_string)
+            .or_else(|| collation.map(charset_of_collation));
+        if let Some(cs) = charset {
+            let mut convert = format!("CONVERT TO CHARACTER SET {cs}");
+            if let Some(c) = collation {
+                convert.push_str(&format!(" COLLATE {c}"));
+            }
+            parts.push(convert);
+        }
+        if let Some(n) = o.auto_increment {
+            parts.push(format!("AUTO_INCREMENT = {n}"));
+        }
+        if let Some(r) = &o.row_format {
+            parts.push(format!("ROW_FORMAT = {}", r.trim().to_ascii_uppercase()));
+        }
+        format!("ALTER TABLE {} {}", self.qt(table), parts.join(", "))
+    }
+
+    /// `[CONSTRAINT name] CHECK (expr)`.
+    fn check_clause(&self, name: Option<&str>, expression: &str) -> String {
+        let constraint = name
+            .map(|n| format!("CONSTRAINT {} ", self.q(n)))
+            .unwrap_or_default();
+        format!("{constraint}CHECK ({})", expression.trim())
     }
 
     // --- rendering ----------------------------------------------------------------------------
@@ -2329,7 +3253,9 @@ impl Planner {
         s
     }
 
-    /// The inside of `CREATE TABLE (…)`: columns, primary key, unique constraints, foreign keys.
+    /// The inside of `CREATE TABLE (…)`: columns, primary key, unique constraints, CHECK
+    /// constraints, foreign keys.
+    #[allow(clippy::too_many_arguments)]
     fn table_body(
         &self,
         cols: &[Col],
@@ -2338,6 +3264,7 @@ impl Planner {
         pk_name: Option<&str>,
         uniques: &[Vec<String>],
         fks: &[Fk],
+        checks: &[Check],
     ) -> String {
         let mut lines: Vec<String> = cols
             .iter()
@@ -2352,6 +3279,9 @@ impl Planner {
         }
         for u in uniques {
             lines.push(format!("UNIQUE ({})", self.cols(u)));
+        }
+        for k in checks {
+            lines.push(self.check_clause(k.named.then_some(k.name.as_str()), &k.expression));
         }
         for f in fks {
             lines.push(self.fk_clause(
@@ -2417,6 +3347,12 @@ impl Planner {
             )),
             _ => {}
         }
+        if self.dialect == Dialect::Sqlite && non_empty(index.comment.as_deref()).is_some() {
+            self.warn(format!(
+                "SQLite does not store index comments; the comment of \"{}\" is ignored",
+                index.name
+            ));
+        }
     }
 
     fn index_sql(&self, table: &TableRef, index: &IndexDef) -> String {
@@ -2446,18 +3382,11 @@ impl Planner {
                 method.map(|m| format!(" USING {m}")).unwrap_or_default()
             ),
             Dialect::Mysql => {
-                let upper = method.as_deref().map(str::to_ascii_uppercase);
-                let (kind, using) = match upper.as_deref() {
-                    Some("FULLTEXT") => ("FULLTEXT ", None),
-                    Some("SPATIAL") => ("SPATIAL ", None),
-                    Some(m) => (unique, Some(m.to_string())),
-                    None => (unique, None),
-                };
+                let (kind, tail) = self.mysql_index_kind_and_options(index);
                 format!(
-                    "CREATE {kind}INDEX {} ON {} ({parts}){}",
+                    "CREATE {kind}INDEX {} ON {} ({parts}){tail}",
                     self.q(&index.name),
-                    self.qt(table),
-                    using.map(|m| format!(" USING {m}")).unwrap_or_default()
+                    self.qt(table)
                 )
             }
             Dialect::Sqlite => format!(
@@ -2466,6 +3395,42 @@ impl Planner {
                 self.q(&table.name)
             ),
         }
+    }
+
+    /// MySQL: the index kind (`UNIQUE `, `FULLTEXT `, `SPATIAL ` or nothing) and what follows
+    /// the column list (` USING …`, ` COMMENT …`).
+    fn mysql_index_kind_and_options(&self, index: &IndexDef) -> (&'static str, String) {
+        let unique = if index.unique { "UNIQUE " } else { "" };
+        let upper = non_empty(index.method.as_deref()).map(|m| m.to_ascii_uppercase());
+        let (kind, using) = match upper.as_deref() {
+            Some("FULLTEXT") => ("FULLTEXT ", None),
+            Some("SPATIAL") => ("SPATIAL ", None),
+            Some(m) => (unique, Some(m.to_string())),
+            None => (unique, None),
+        };
+        let using = using.map(|m| format!(" USING {m}")).unwrap_or_default();
+        let comment = non_empty(index.comment.as_deref())
+            .map(|c| format!(" COMMENT {}", self.lit(&c)))
+            .unwrap_or_default();
+        (kind, format!("{using}{comment}"))
+    }
+
+    /// MySQL `ADD [UNIQUE|FULLTEXT|SPATIAL] INDEX name (…) …` clause of an `ALTER TABLE`.
+    fn mysql_add_index_clause(&self, table: &TableRef, index: &IndexDef) -> String {
+        let known = self
+            .model
+            .as_ref()
+            .filter(|m| same_table(&m.table, table))
+            .map(Model::names)
+            .unwrap_or_default();
+        let parts = index
+            .columns
+            .iter()
+            .map(|c| self.index_part(c, &known))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (kind, tail) = self.mysql_index_kind_and_options(index);
+        format!("ADD {kind}INDEX {} ({parts}){tail}", self.q(&index.name))
     }
 
     /// One entry of an index column list: quoted when it names a column, verbatim otherwise.
@@ -2497,31 +3462,53 @@ impl Planner {
         }
     }
 
-    /// `CREATE TABLE` plus indexes, foreign keys, triggers and comments, from the model.
-    fn render_create_table(&self) -> String {
+    /// `CREATE TABLE` plus indexes, foreign keys, triggers and comments, from the model; on PG
+    /// also what `context` adds: the sequences of the column defaults, `PARTITION BY`, the
+    /// attach of a partition, and no clones of a parent's foreign keys or triggers.
+    fn render_parts(&self, context: &PgTableContext) -> TableParts {
         let d = self.dialect;
         let Some(m) = &self.model else {
-            return String::new();
+            return TableParts::default();
         };
+        let pg = d == Dialect::Postgres;
         let qt = self.qt(&m.table);
-        let inline = self.sqlite_inline_pk(&m.columns, &m.primary_key);
+        let parent = context
+            .ancestors
+            .first()
+            .filter(|_| pg && context.partition_bound.is_some());
+        // A partition takes its identity from its parent: PostgreSQL refuses to attach a table
+        // with an identity column of its own.
+        let stripped: Vec<Col>;
+        let columns: &[Col] = if parent.is_some() {
+            stripped = m
+                .columns
+                .iter()
+                .cloned()
+                .map(|mut c| {
+                    c.identity = None;
+                    c.auto_increment = false;
+                    c
+                })
+                .collect();
+            &stripped
+        } else {
+            &m.columns
+        };
+        let inline = self.sqlite_inline_pk(columns, &m.primary_key);
         let (uniques, inline_fks): (Vec<Vec<String>>, &[Fk]) = if d == Dialect::Sqlite {
             (sqlite_unique_constraints(m), &m.fks)
         } else {
             (Vec::new(), &[])
         };
-        let pk_name = if d == Dialect::Postgres {
-            m.pk_name.as_deref()
-        } else {
-            None
-        };
+        let pk_name = if pg { m.pk_name.as_deref() } else { None };
         let body = self.table_body(
-            &m.columns,
+            columns,
             &m.primary_key,
             inline,
             pk_name,
             &uniques,
             inline_fks,
+            &m.checks,
         );
         let mut create = format!("CREATE TABLE {qt} (\n{body}\n)");
         match d {
@@ -2536,9 +3523,36 @@ impl Planner {
                     create.push_str(opts);
                 }
             }
-            Dialect::Postgres => {}
+            Dialect::Postgres => {
+                if let Some(key) = context.partition_key.as_deref().map(str::trim) {
+                    create.push_str(&format!(" PARTITION BY {key}"));
+                }
+            }
         }
         create.push(';');
+        let mut table = vec![create];
+
+        // PG: the sequences the defaults draw from exist before the table (a fresh database has
+        // none); one owned by its column is owned again, so it goes with the table and
+        // `pg_get_serial_sequence` finds it.
+        let mut sequences = Vec::new();
+        let mut owned: Vec<&PgSequence> = Vec::new();
+        if pg {
+            for s in &context.sequences {
+                let sql = self.create_sequence_sql(s);
+                if !sequences.contains(&sql) {
+                    sequences.push(sql);
+                }
+                if s.owned && columns.iter().any(|c| c.name == s.column) {
+                    table.push(format!(
+                        "ALTER SEQUENCE {} OWNED BY {qt}.{};",
+                        d.qualify(Some(&s.schema), &s.name),
+                        self.q(&s.column)
+                    ));
+                    owned.push(s);
+                }
+            }
+        }
 
         let mut indexes = Vec::new();
         for i in m.indexes.iter().filter(|i| !i.primary) {
@@ -2560,15 +3574,30 @@ impl Planner {
                         unique: i.unique,
                         method,
                         predicate: None,
+                        comment: i.comment.clone(),
                     };
                     indexes.push(terminated(&self.index_sql(&m.table, &def)));
                 }
             }
         }
 
+        let attach = parent
+            .zip(context.partition_bound.as_deref())
+            .map(|(p, bound)| {
+                format!(
+                    "ALTER TABLE {} ATTACH PARTITION {qt} {};",
+                    self.qt(p),
+                    bound.trim()
+                )
+            });
+
         let mut fks = Vec::new();
         if d != Dialect::Sqlite {
-            for f in &m.fks {
+            for f in m
+                .fks
+                .iter()
+                .filter(|f| !context.inherited_fks.contains(&f.name))
+            {
                 let clause = match &f.definition {
                     Some(def) => format!("CONSTRAINT {} {def}", self.q(&f.name)),
                     None => self.fk_clause(
@@ -2586,11 +3615,11 @@ impl Planner {
 
         let mut triggers = Vec::new();
         for t in &m.triggers {
-            if t.definition.trim().is_empty() {
+            if t.definition.trim().is_empty() || context.cloned_triggers.contains(&t.name) {
                 continue;
             }
             match d {
-                Dialect::Mysql => {
+                Dialect::Mysql if !first_word(&t.definition).eq_ignore_ascii_case("CREATE") => {
                     // information_schema only has the action statement
                     let timing = t.timing.as_deref().unwrap_or("BEFORE");
                     let event = t.events.first().map(String::as_str).unwrap_or("INSERT");
@@ -2605,9 +3634,18 @@ impl Planner {
         }
 
         let mut comments = Vec::new();
-        if d == Dialect::Postgres {
+        if pg {
             if let Some(c) = &m.comment {
                 comments.push(format!("COMMENT ON TABLE {qt} IS {};", self.lit(c)));
+            }
+            for i in &m.indexes {
+                if let Some(text) = i.comment.as_deref().filter(|c| !c.is_empty()) {
+                    comments.push(format!(
+                        "COMMENT ON INDEX {} IS {};",
+                        d.qualify(m.table.schema.as_deref(), &i.name),
+                        self.lit(text)
+                    ));
+                }
             }
             for c in &m.columns {
                 if let Some(text) = &c.comment {
@@ -2620,13 +3658,128 @@ impl Planner {
             }
         }
 
-        [vec![create], indexes, fks, triggers, comments]
-            .into_iter()
-            .filter(|section| !section.is_empty())
-            .map(|section| section.join("\n"))
-            .collect::<Vec<_>>()
-            .join("\n\n")
+        // PG: rows loaded with their own key values leave the sequences where they started.
+        let mut sequence_resets = Vec::new();
+        if pg {
+            for c in columns.iter().filter(|c| !c.generated) {
+                let bounds = if c.identity.is_some() {
+                    // the identity the script creates has the default options
+                    Some((1, 1))
+                } else {
+                    owned
+                        .iter()
+                        .find(|s| s.column == c.name)
+                        .map(|s| (s.increment.unwrap_or(1), sequence_bounds(s)))
+                        .map(|(inc, (min, max))| (inc, if inc < 0 { max } else { min }))
+                };
+                if let Some((increment, limit)) = bounds {
+                    sequence_resets
+                        .push(self.sequence_reset_sql(&m.table, &c.name, increment, limit));
+                }
+            }
+        }
+
+        TableParts {
+            sequences,
+            table,
+            indexes,
+            attach,
+            foreign_keys: fks,
+            triggers,
+            comments,
+            sequence_resets,
+        }
     }
+
+    /// `CREATE SEQUENCE IF NOT EXISTS` with the options that differ from the defaults.
+    fn create_sequence_sql(&self, s: &PgSequence) -> String {
+        let mut sql = format!(
+            "CREATE SEQUENCE IF NOT EXISTS {}",
+            self.dialect.qualify(Some(&s.schema), &s.name)
+        );
+        if let Some(t) = s.data_type.as_deref().filter(|t| !t.is_empty()) {
+            sql.push_str(&format!(" AS {t}"));
+        }
+        let increment = s.increment.unwrap_or(1);
+        let (default_min, default_max) = type_bounds(s.data_type.as_deref());
+        let (default_min, default_max) = if increment < 0 {
+            (default_min, -1)
+        } else {
+            (1, default_max)
+        };
+        if increment != 1 {
+            sql.push_str(&format!(" INCREMENT BY {increment}"));
+        }
+        if let Some(min) = s.min.filter(|&v| v != default_min) {
+            sql.push_str(&format!(" MINVALUE {min}"));
+        }
+        if let Some(max) = s.max.filter(|&v| v != default_max) {
+            sql.push_str(&format!(" MAXVALUE {max}"));
+        }
+        let default_start = if increment < 0 {
+            s.max.unwrap_or(default_max)
+        } else {
+            s.min.unwrap_or(default_min)
+        };
+        if let Some(start) = s.start.filter(|&v| v != default_start) {
+            sql.push_str(&format!(" START WITH {start}"));
+        }
+        if let Some(cache) = s.cache.filter(|&v| v != 1) {
+            sql.push_str(&format!(" CACHE {cache}"));
+        }
+        if s.cycle {
+            sql.push_str(" CYCLE");
+        }
+        sql.push(';');
+        sql
+    }
+
+    /// Moves the sequence of `column` past the loaded rows: the next value follows the largest
+    /// key (the smallest for a descending sequence), never beyond the sequence's `limit` (its
+    /// MINVALUE, or MAXVALUE when descending). An empty table leaves it where it starts.
+    fn sequence_reset_sql(
+        &self,
+        table: &TableRef,
+        column: &str,
+        increment: i64,
+        limit: i64,
+    ) -> String {
+        let qt = self.qt(table);
+        let qc = self.q(column);
+        let (agg, clamp) = if increment < 0 {
+            ("MIN", "LEAST")
+        } else {
+            ("MAX", "GREATEST")
+        };
+        format!(
+            "SELECT setval(pg_get_serial_sequence({}, {}), {clamp}({agg}({qc}), {limit})) FROM {qt} HAVING {agg}({qc}) IS NOT NULL;",
+            self.lit(&qt),
+            self.lit(column)
+        )
+    }
+}
+
+/// The value range of a sequence type (`bigint` when unknown).
+fn type_bounds(data_type: Option<&str>) -> (i64, i64) {
+    match data_type.map(str::trim) {
+        Some("smallint") => (i16::MIN.into(), i16::MAX.into()),
+        Some("integer") => (i32::MIN.into(), i32::MAX.into()),
+        _ => (i64::MIN, i64::MAX),
+    }
+}
+
+/// MINVALUE and MAXVALUE of a sequence (the defaults of its type and direction when unknown).
+fn sequence_bounds(s: &PgSequence) -> (i64, i64) {
+    let (type_min, type_max) = type_bounds(s.data_type.as_deref());
+    let descending = s.increment.unwrap_or(1) < 0;
+    let min = s.min.unwrap_or(if descending { type_min } else { 1 });
+    let max = s.max.unwrap_or(if descending { -1 } else { type_max });
+    (min, max)
+}
+
+/// The first word of a statement (`CREATE`).
+fn first_word(sql: &str) -> &str {
+    sql.split_whitespace().next().unwrap_or("")
 }
 
 fn terminated(sql: &str) -> String {
@@ -2908,7 +4061,7 @@ fn default_value(chars: &[char], start: usize) -> Option<(String, usize)> {
 /// Fallback for a default from `information_schema` when `SHOW CREATE TABLE` is unavailable.
 /// MySQL reports literals unquoted and marks expressions `DEFAULT_GENERATED`; MariaDB quotes
 /// literals and reports expressions bare.
-fn mysql_default_from_meta(c: &ColumnMeta) -> Option<String> {
+fn mysql_default_from_meta(c: &ColumnMeta, mode: MysqlLiteralMode) -> Option<String> {
     let d = c.default_expr.as_deref()?;
     let extra = c.extra.as_deref().unwrap_or("").to_ascii_lowercase();
     let numeric = matches!(
@@ -2937,7 +4090,7 @@ fn mysql_default_from_meta(c: &ColumnMeta) -> Option<String> {
     Some(if as_is || bare_literal {
         d.to_string()
     } else {
-        Dialect::Mysql.quote_literal(d)
+        Dialect::Mysql.quote_literal_with(d, mode)
     })
 }
 
@@ -3174,6 +4327,25 @@ fn replay_trigger(def: &str, schema: Option<&str>) -> String {
 /// Column definitions `(name, text)` of a SQLite `CREATE TABLE` statement, plus the table
 /// options after the closing parenthesis (`WITHOUT ROWID`, `STRICT`).
 fn split_create_table(ddl: &str) -> (Vec<(String, String)>, Option<String>) {
+    let (parts, tail) = split_create_parts(ddl);
+    let defs = parts
+        .into_iter()
+        .filter_map(|p| {
+            let (name, quoted) = leading_ident(&p)?;
+            let keyword = !quoted
+                && matches!(
+                    name.to_ascii_uppercase().as_str(),
+                    "CONSTRAINT" | "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN"
+                );
+            (!keyword).then_some((name, p))
+        })
+        .collect();
+    (defs, tail)
+}
+
+/// Every element (column definition or table constraint) of a `CREATE TABLE` statement, with
+/// comments blanked out, plus the table options after the closing parenthesis.
+fn split_create_parts(ddl: &str) -> (Vec<String>, Option<String>) {
     let chars: Vec<char> = ddl.chars().collect();
     let mut parts = Vec::new();
     let mut cur = String::new();
@@ -3260,19 +4432,7 @@ fn split_create_table(ddl: &str) -> (Vec<(String, String)>, Option<String>) {
         }
         i += 1;
     }
-    let defs = parts
-        .into_iter()
-        .filter_map(|p| {
-            let (name, quoted) = leading_ident(&p)?;
-            let keyword = !quoted
-                && matches!(
-                    name.to_ascii_uppercase().as_str(),
-                    "CONSTRAINT" | "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN"
-                );
-            (!keyword).then_some((name, p))
-        })
-        .collect();
-    (defs, tail)
+    (parts, tail)
 }
 
 /// The collation of a SQLite column definition (`COLLATE NOCASE`), ignoring anything inside
@@ -3483,10 +4643,301 @@ fn leading_ident(s: &str) -> Option<(String, bool)> {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// CHECK constraints, index predicates (introspection helpers)
+// ---------------------------------------------------------------------------------------------
+
+/// A CHECK constraint found in a SQLite `CREATE TABLE` statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedCheck {
+    /// `CONSTRAINT <name>` before it, when there is one.
+    name: Option<String>,
+    /// `ck_<table>_<n>` for the n-th unnamed check (how it is addressed).
+    synthetic: String,
+    expression: String,
+    /// The column whose definition holds it (column-level check).
+    column: Option<String>,
+}
+
+/// Index just past the SQLite quoted run (`'…'`, `"…"`, `` `…` ``, `[…]`) starting at `start`.
+/// SQLite has no backslash escapes: quotes are doubled.
+fn sqlite_skip_quoted(chars: &[char], start: usize) -> usize {
+    let close = if chars[start] == '[' {
+        ']'
+    } else {
+        chars[start]
+    };
+    let mut i = start + 1;
+    while i < chars.len() {
+        if chars[i] == close {
+            if close != ']' && chars.get(i + 1) == Some(&close) {
+                i += 2;
+                continue;
+            }
+            return i + 1;
+        }
+        i += 1;
+    }
+    chars.len()
+}
+
+/// Index just past the parenthesised group starting at `start` (SQLite quoting).
+fn sqlite_skip_group(chars: &[char], start: usize) -> usize {
+    let mut depth = 0i32;
+    let mut i = start;
+    while i < chars.len() {
+        match chars[i] {
+            '\'' | '"' | '`' | '[' => {
+                i = sqlite_skip_quoted(chars, i);
+                continue;
+            }
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    chars.len()
+}
+
+/// The CHECK constraints at the top level of one table-element text (a column definition after
+/// its name, or a table constraint), with the `CONSTRAINT` name before each.
+fn scan_checks(text: &str, column: Option<&str>, out: &mut Vec<ParsedCheck>) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    let mut pending: Option<String> = None;
+    // the next token is the name of a `CONSTRAINT`
+    let mut naming = false;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\'' | '"' | '`' | '[' => {
+                let end = sqlite_skip_quoted(&chars, i);
+                if naming && c != '\'' {
+                    let raw: String = chars[i..end].iter().collect();
+                    pending = leading_ident(&raw).map(|(n, _)| n);
+                } else {
+                    pending = None;
+                }
+                naming = false;
+                i = end;
+            }
+            '(' => {
+                i = sqlite_skip_group(&chars, i);
+                pending = None;
+                naming = false;
+            }
+            c if is_word_char(c) => {
+                let start = i;
+                while i < chars.len() && is_word_char(chars[i]) {
+                    i += 1;
+                }
+                let word: String = chars[start..i].iter().collect();
+                if naming {
+                    pending = Some(word);
+                    naming = false;
+                } else if word.eq_ignore_ascii_case("CONSTRAINT") {
+                    naming = true;
+                    pending = None;
+                } else if word.eq_ignore_ascii_case("CHECK") {
+                    let mut j = i;
+                    while j < chars.len() && chars[j].is_whitespace() {
+                        j += 1;
+                    }
+                    if chars.get(j) == Some(&'(') {
+                        let end = sqlite_skip_group(&chars, j);
+                        let close = if end > j + 1 && chars[end - 1] == ')' {
+                            end - 1
+                        } else {
+                            end
+                        };
+                        let inner: String = chars[j + 1..close].iter().collect();
+                        out.push(ParsedCheck {
+                            name: pending.take(),
+                            synthetic: String::new(),
+                            expression: inner.trim().to_string(),
+                            column: column.map(str::to_string),
+                        });
+                        i = end;
+                    }
+                    pending = None;
+                } else {
+                    // the name belonged to another kind of constraint
+                    pending = None;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+}
+
+/// Every CHECK constraint of a SQLite `CREATE TABLE` statement, column-level ones first (the
+/// order SQLite requires: column definitions come before table constraints).
+fn parse_sqlite_checks(ddl: &str, table: &str) -> Vec<ParsedCheck> {
+    let (parts, _) = split_create_parts(ddl);
+    let mut out = Vec::new();
+    for p in &parts {
+        let Some((lead, quoted)) = leading_ident(p) else {
+            continue;
+        };
+        let constraint = !quoted
+            && matches!(
+                lead.to_ascii_uppercase().as_str(),
+                "CONSTRAINT" | "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN"
+            );
+        if constraint {
+            scan_checks(p, None, &mut out);
+        } else {
+            scan_checks(after_leading_ident(p), Some(&lead), &mut out);
+        }
+    }
+    let mut n = 0;
+    for c in &mut out {
+        if c.name.is_none() {
+            n += 1;
+            c.synthetic = format!("ck_{table}_{n}");
+        }
+    }
+    out
+}
+
+/// Columns of `columns` a check uses: its own column first, then those its expression names.
+fn parsed_check_columns(p: &ParsedCheck, columns: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = p
+        .column
+        .iter()
+        .filter_map(|c| columns.iter().find(|n| n.eq_ignore_ascii_case(c)).cloned())
+        .collect();
+    for c in check_columns(&p.expression, columns) {
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The columns (of `columns`) that `expression` mentions, compared ignoring ASCII case; string
+/// literals and comments are not looked at.
+pub fn check_columns(expression: &str, columns: &[String]) -> Vec<String> {
+    columns
+        .iter()
+        .filter(|c| references_ident(expression, c))
+        .cloned()
+        .collect()
+}
+
+/// The CHECK constraints of a SQLite table from its `CREATE TABLE` text. Unnamed checks are
+/// called `ck_<table>_<n>`.
+pub fn sqlite_checks(ddl: &str, table: &str, columns: &[String]) -> Vec<CheckMeta> {
+    parse_sqlite_checks(ddl, table)
+        .into_iter()
+        .map(|p| CheckMeta {
+            columns: parsed_check_columns(&p, columns),
+            name: p.name.clone().unwrap_or(p.synthetic.clone()),
+            expression: p.expression,
+        })
+        .collect()
+}
+
+/// The expression of a check as PG's `pg_get_constraintdef` or MySQL's `CHECK_CLAUSE` spell it
+/// (`CHECK ((price > 0)) NOT VALID`, `(`price` > 0)`), without `CHECK` and redundant outer
+/// parentheses: `price > 0`.
+pub fn check_expression(def: &str) -> String {
+    let t = def.trim();
+    let body = match t.get(..5) {
+        Some(head) if head.eq_ignore_ascii_case("CHECK") => t[5..].trim_start(),
+        _ => t,
+    };
+    let chars: Vec<char> = body.chars().collect();
+    let mut expr = if chars.first() == Some(&'(') {
+        let end = skip_group(&chars, 0);
+        let close = if end > 1 && chars[end - 1] == ')' {
+            end - 1
+        } else {
+            end
+        };
+        chars[1..close].iter().collect::<String>()
+    } else {
+        body.to_string()
+    };
+    loop {
+        let e = expr.trim();
+        if e.len() >= 2 && wrapped_in_parens(e) {
+            expr = e[1..e.len() - 1].to_string();
+        } else {
+            return e.to_string();
+        }
+    }
+}
+
+/// What follows the trigger name in a `CREATE TRIGGER` statement (`AFTER INSERT ON t …`).
+pub fn trigger_tail(def: &str) -> Option<&str> {
+    TRIGGER_DEF.captures(def)?.get(3).map(|m| m.as_str())
+}
+
+/// The partial-index predicate of a stored `CREATE INDEX … WHERE …` statement.
+pub fn index_predicate(def: &str) -> Option<String> {
+    let rest = INDEX_DEF.captures(def)?.get(5)?.as_str();
+    let chars: Vec<char> = rest.chars().collect();
+    let end = sqlite_skip_group(&chars, 0);
+    let tail: String = chars[end..].iter().collect();
+    let tail = tail.trim().trim_end_matches(';').trim();
+    let head = tail.get(..5)?;
+    if !head.eq_ignore_ascii_case("WHERE") || !tail[5..].starts_with(char::is_whitespace) {
+        return None;
+    }
+    non_empty(Some(&tail[5..]))
+}
+
+/// `expr` with every identifier `from` replaced by `to` (quoted), all at once: swapped names
+/// (`a` → `b`, `b` → `a`) do not interfere.
+fn rename_all(dialect: Dialect, expr: &str, renames: &[(String, String)]) -> String {
+    let mut out = expr.to_string();
+    let marks: Vec<String> = (0..renames.len())
+        .map(|i| format!("\"__tabler_mark_{i}__\""))
+        .collect();
+    for ((from, _), mark) in renames.iter().zip(&marks) {
+        out = rename_ident(&out, from, mark);
+    }
+    for (i, (_, to)) in renames.iter().enumerate() {
+        out = rename_ident(
+            &out,
+            &format!("__tabler_mark_{i}__"),
+            &dialect.quote_ident(to),
+        );
+    }
+    out
+}
+
+/// PG: user-defined types a column can use (enums, domains, ranges, standalone composite
+/// types) as `format_type` spells them (qualified when not on the search path).
+pub const PG_USER_TYPES_SQL: &str = "SELECT format_type(t.oid, NULL)::text, \
+     CASE t.typtype WHEN 'e' THEN 'enum' WHEN 'd' THEN 'domain' WHEN 'r' THEN 'range' ELSE 'composite' END \
+     FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
+     WHERE (t.typtype IN ('e', 'd', 'r') OR (t.typtype = 'c' AND EXISTS \
+       (SELECT 1 FROM pg_catalog.pg_class c WHERE c.oid = t.typrelid AND c.relkind = 'c'))) \
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast') \
+       AND n.nspname NOT LIKE 'pg\\_%' \
+     ORDER BY 1";
+
+/// MySQL: storage engines that can be used (the default first).
+pub const MYSQL_ENGINES_SQL: &str = "SELECT ENGINE FROM information_schema.ENGINES \
+     WHERE SUPPORT IN ('YES', 'DEFAULT') ORDER BY SUPPORT = 'DEFAULT' DESC, ENGINE";
+
+/// MySQL: `charset, collation, is default` rows, default collation of each set first.
+pub const MYSQL_COLLATIONS_SQL: &str = "SELECT CHARACTER_SET_NAME, COLLATION_NAME, IS_DEFAULT \
+     FROM information_schema.COLLATIONS WHERE CHARACTER_SET_NAME IS NOT NULL \
+     ORDER BY CHARACTER_SET_NAME, IS_DEFAULT DESC, COLLATION_NAME";
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ddl::FkDef;
+    use crate::types::ddl::{CheckDef, FkDef};
     use crate::types::schema::ForeignKeyMeta;
 
     fn t(schema: Option<&str>, name: &str) -> TableRef {
@@ -3529,6 +4980,8 @@ mod tests {
             comment: None,
             row_estimate: None,
             ddl: None,
+            checks: vec![],
+            options: None,
         }
     }
 
@@ -3547,6 +5000,7 @@ mod tests {
             method: None,
             predicate: None,
             definition: def.map(str::to_string),
+            comment: None,
         }
     }
 
@@ -3560,6 +5014,7 @@ mod tests {
             comment: None,
             collation: None,
             unsigned: false,
+            on_update: None,
         }
     }
 
@@ -3742,6 +5197,7 @@ mod tests {
                         unique: true,
                         method: Some("btree".into()),
                         predicate: Some("deleted_at IS NULL".into()),
+                        comment: None,
                     },
                 },
                 DdlOp::DropIndex {
@@ -3943,6 +5399,7 @@ mod tests {
                 unique: false,
                 method: Some("btree; drop".into()),
                 predicate: None,
+                comment: None,
             },
         };
         assert!(invalid_input(Dialect::Postgres, None, vec![idx]).contains("index method"));
@@ -4110,9 +5567,9 @@ mod tests {
                 "ALTER TABLE `shop`.`items` MODIFY COLUMN `qty` bigint UNSIGNED NOT NULL DEFAULT 0 COMMENT 'how many'",
                 // the second change to qty sees the first one
                 "ALTER TABLE `shop`.`items` MODIFY COLUMN `qty` bigint UNSIGNED NULL DEFAULT 0 COMMENT 'how many'",
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `name` varchar(50) COLLATE utf8mb4_bin NULL DEFAULT 'it\\'s' COMMENT 'label'",
+                "ALTER TABLE `shop`.`items` MODIFY COLUMN `name` varchar(50) COLLATE utf8mb4_bin NULL DEFAULT 'it''s' COMMENT 'label'",
                 // a non-text type drops the collation and keeps the (quoted) default
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `name` int NULL DEFAULT 'it\\'s' COMMENT 'label'",
+                "ALTER TABLE `shop`.`items` MODIFY COLUMN `name` int NULL DEFAULT 'it''s' COMMENT 'label'",
                 "ALTER TABLE `shop`.`items` MODIFY COLUMN `touched_at` timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)",
             ]
         );
@@ -4236,6 +5693,7 @@ mod tests {
                         unique: true,
                         method: Some("btree".into()),
                         predicate: Some("x > 1".into()),
+                        comment: None,
                     },
                 },
                 DdlOp::AddIndex {
@@ -4246,6 +5704,7 @@ mod tests {
                         unique: false,
                         method: Some("fulltext".into()),
                         predicate: None,
+                        comment: None,
                     },
                 },
                 DdlOp::DropIndex {
@@ -4325,13 +5784,13 @@ mod tests {
             c.kind = kind;
             c.default_expr = Some(default.into());
             c.extra = Some(extra.into());
-            mysql_default_from_meta(&c).unwrap()
+            mysql_default_from_meta(&c, MysqlLiteralMode::default()).unwrap()
         };
         assert_eq!(col("int", ValueKind::Int, "0", ""), "0");
         assert_eq!(col("decimal(5,2)", ValueKind::Decimal, "1.50", ""), "1.50");
         assert_eq!(col("varchar(5)", ValueKind::Text, "", ""), "''");
         assert_eq!(col("varchar(5)", ValueKind::Text, "12", ""), "'12'");
-        assert_eq!(col("varchar(5)", ValueKind::Text, "it's", ""), "'it\\'s'");
+        assert_eq!(col("varchar(5)", ValueKind::Text, "it's", ""), "'it''s'");
         assert_eq!(col("bit(1)", ValueKind::Bit, "b'1'", ""), "b'1'");
         assert_eq!(
             col(
@@ -4369,7 +5828,7 @@ mod tests {
         );
         assert_eq!(
             col("varchar(30)", ValueKind::Text, "'quoted", ""),
-            "'\\'quoted'"
+            "'''quoted'"
         );
         assert_eq!(col("varchar(30)", ValueKind::Text, "now", ""), "'now'");
         assert_eq!(
@@ -4651,6 +6110,7 @@ mod tests {
                         unique: true,
                         method: None,
                         predicate: Some("qty > 0".into()),
+                        comment: None,
                     },
                 },
                 DdlOp::DropIndex {
@@ -4742,7 +6202,9 @@ mod tests {
         assert!(is_fk_check(&p.statements[12]));
         assert!(!p.transactional);
         assert!(
-            p.warnings.iter().any(|w| w.contains("CHECK")),
+            p.warnings
+                .iter()
+                .any(|w| w.contains("rebuilt from introspected metadata")),
             "{:?}",
             p.warnings
         );
@@ -4790,6 +6252,7 @@ mod tests {
                         unique: false,
                         method: None,
                         predicate: None,
+                        comment: None,
                     },
                 },
                 // a different table ends the fold
@@ -5005,7 +6468,7 @@ mod tests {
         );
         assert_eq!(
             p.statements[2],
-            "CREATE TABLE \"main\".\"g__tabler_new\" (\n  \"a\" INT NOT NULL,\n  \"total\" INT GENERATED ALWAYS AS (a * 2) VIRTUAL\n)"
+            "CREATE TABLE \"main\".\"g__tabler_new\" (\n  \"a\" INT NOT NULL,\n  \"total\" INT GENERATED ALWAYS AS (a * 2) VIRTUAL,\n  CHECK (a > 0)\n)"
         );
         assert_eq!(
             p.statements[3],
@@ -5059,7 +6522,7 @@ mod tests {
         );
         assert_eq!(
             p.statements[2],
-            "CREATE TABLE \"main\".\"c__tabler_new\" (\n  \"a\" TEXT COLLATE \"NOCASE\",\n  \"b\" TEXT NOT NULL,\n  \"c\" TEXT COLLATE \"RTRIM\"\n)"
+            "CREATE TABLE \"main\".\"c__tabler_new\" (\n  \"a\" TEXT COLLATE \"NOCASE\",\n  \"b\" TEXT NOT NULL,\n  \"c\" TEXT COLLATE \"RTRIM\",\n  CHECK (b COLLATE BINARY <> 'x')\n)"
         );
     }
 
@@ -5281,6 +6744,7 @@ mod tests {
                         unique: false,
                         method: None,
                         predicate: Some("a IS NOT NULL".into()),
+                        comment: None,
                     },
                 },
             ],
@@ -5356,7 +6820,7 @@ mod tests {
         );
         assert_eq!(
             p.statements[2],
-            "CREATE TABLE \"main\".\"p__tabler_new\" (\n  \"id\" INTEGER,\n  \"code\" TEXT NOT NULL,\n  \"name\" TEXT\n)"
+            "CREATE TABLE \"main\".\"p__tabler_new\" (\n  \"id\" INTEGER,\n  \"code\" TEXT NOT NULL,\n  \"name\" TEXT,\n  CHECK (code IS NOT NULL)\n)"
         );
         // A NOT NULL requested in the same change set stays.
         let p = plan(
@@ -5515,7 +6979,7 @@ mod tests {
         m.comment = Some("stock".into());
         assert_eq!(
             create_table_sql(Dialect::Mysql, &m),
-            "CREATE TABLE `shop`.`items` (\n  `id` int unsigned NOT NULL AUTO_INCREMENT,\n  `qty` int unsigned NOT NULL DEFAULT 0 COMMENT 'how many',\n  `name` varchar(50) COLLATE utf8mb4_bin NULL DEFAULT 'it\\'s',\n  `touched_at` timestamp(3) NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),\n  PRIMARY KEY (`id`)\n) COMMENT='stock';\n\n\
+            "CREATE TABLE `shop`.`items` (\n  `id` int unsigned NOT NULL AUTO_INCREMENT,\n  `qty` int unsigned NOT NULL DEFAULT 0 COMMENT 'how many',\n  `name` varchar(50) COLLATE utf8mb4_bin NULL DEFAULT 'it''s',\n  `touched_at` timestamp(3) NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),\n  PRIMARY KEY (`id`)\n) COMMENT='stock';\n\n\
              CREATE INDEX `items_name` ON `shop`.`items` (`name`(10), `qty` DESC);"
         );
         let lite = lite_items();
@@ -5889,7 +7353,7 @@ mod tests {
             .statements
             .remove(0)
         };
-        let tail = "NULL DEFAULT 'it\\'s'";
+        let tail = "NULL DEFAULT 'it''s'";
         for ty in [
             "varchar(20) CHARACTER SET latin1",
             "varchar(20) charset latin1",
@@ -6003,6 +7467,7 @@ mod tests {
         };
         let context = PlanContext {
             constraint_indexes: vec!["users_pkey".into(), "users_email_key".into()],
+            ..PlanContext::default()
         };
         let p = plan_ddl_with(
             Dialect::Postgres,
@@ -6017,6 +7482,1240 @@ mod tests {
                 r#"ALTER TABLE "public"."users" DROP CONSTRAINT "users_email_key""#,
                 r#"DROP INDEX "public"."users_other""#,
             ]
+        );
+    }
+
+    // --- checks, triggers, table options, identity, collations (M8) ------------------------
+
+    fn unsupported(d: Dialect, meta: Option<&TableMeta>, ops: Vec<DdlOp>) -> String {
+        match plan_ddl(d, meta, &ops) {
+            Err(AppError::Unsupported(msg)) => msg,
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+    }
+
+    fn check(name: Option<&str>, expression: &str) -> CheckDef {
+        CheckDef {
+            name: name.map(str::to_string),
+            expression: expression.into(),
+        }
+    }
+
+    #[test]
+    fn pg_checks_triggers_and_index_comments() {
+        let users = pg_users();
+        let tbl = t(None, "users");
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![
+                DdlOp::AddCheck {
+                    table: tbl.clone(),
+                    check: check(Some("users_name_check"), "length(name) > 1"),
+                },
+                DdlOp::AddCheck {
+                    table: tbl.clone(),
+                    check: check(None, " name <> '' "),
+                },
+                DdlOp::DropCheck {
+                    table: tbl.clone(),
+                    name: "users_email_check".into(),
+                },
+                DdlOp::DropTrigger {
+                    table: tbl.clone(),
+                    name: "users_touch".into(),
+                },
+                DdlOp::CreateTrigger {
+                    table: tbl.clone(),
+                    name: "users_touch".into(),
+                    sql: "CREATE TRIGGER users_touch BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION touch();\n".into(),
+                },
+                DdlOp::AddIndex {
+                    table: tbl.clone(),
+                    index: IndexDef {
+                        name: "users_name_idx".into(),
+                        columns: vec!["name".into()],
+                        unique: false,
+                        method: None,
+                        predicate: None,
+                        comment: Some("for search".into()),
+                    },
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."users" ADD CONSTRAINT "users_name_check" CHECK (length(name) > 1)"#,
+                r#"ALTER TABLE "public"."users" ADD CHECK (name <> '')"#,
+                r#"ALTER TABLE "public"."users" DROP CONSTRAINT "users_email_check""#,
+                r#"DROP TRIGGER "users_touch" ON "public"."users""#,
+                "CREATE TRIGGER users_touch BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION touch()",
+                r#"CREATE INDEX "users_name_idx" ON "public"."users" ("name")"#,
+                r#"COMMENT ON INDEX "public"."users_name_idx" IS 'for search'"#,
+            ]
+        );
+        assert!(p.transactional);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        let msg = invalid_input(
+            Dialect::Postgres,
+            Some(&users),
+            vec![DdlOp::AddCheck {
+                table: tbl.clone(),
+                check: check(None, "  "),
+            }],
+        );
+        assert!(msg.contains("CHECK expression"), "{msg}");
+    }
+
+    #[test]
+    fn pg_identity_on_and_off() {
+        let mut users = pg_users();
+        let mut legacy = cm("legacy_id", "integer", true);
+        legacy.default_expr = Some("0".into());
+        users.columns.push(legacy);
+        let mut serial = cm("seq_id", "integer", false);
+        serial.default_expr = Some("nextval('users_seq_id_seq'::regclass)".into());
+        serial.is_auto_increment = true;
+        users.columns.push(serial);
+        let tbl = t(None, "users");
+        let ai = |name: &str, on: bool| DdlOp::AlterColumnAutoIncrement {
+            table: tbl.clone(),
+            name: name.into(),
+            auto_increment: on,
+        };
+        let p = plan(Dialect::Postgres, Some(&users), vec![ai("legacy_id", true)]);
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "legacy_id" DROP DEFAULT"#,
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "legacy_id" SET NOT NULL"#,
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "legacy_id" ADD GENERATED BY DEFAULT AS IDENTITY"#,
+                r#"SELECT setval(pg_get_serial_sequence('"public"."users"', 'legacy_id'), GREATEST(COALESCE(MAX("legacy_id"), 0) + 1, 1), false) FROM "public"."users""#,
+            ]
+        );
+        // A serial column: its old sequence is detached first, so `pg_get_serial_sequence`
+        // (and the setval) reaches the identity sequence, not the old one.
+        let context = PlanContext {
+            owned_sequences: vec![("seq_id".into(), t(Some("public"), "users_seq_id_seq"))],
+            ..PlanContext::default()
+        };
+        let p = plan_ddl_with(
+            Dialect::Postgres,
+            Some(&users),
+            &[ai("seq_id", true)],
+            &context,
+        )
+        .unwrap();
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "seq_id" DROP DEFAULT"#,
+                r#"ALTER SEQUENCE "public"."users_seq_id_seq" OWNED BY NONE"#,
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "seq_id" ADD GENERATED BY DEFAULT AS IDENTITY"#,
+                r#"SELECT setval(pg_get_serial_sequence('"public"."users"', 'seq_id'), GREATEST(COALESCE(MAX("seq_id"), 0) + 1, 1), false) FROM "public"."users""#,
+            ]
+        );
+        assert_eq!(p.warnings.len(), 1, "{:?}", p.warnings);
+        assert!(p.warnings[0].contains("users_seq_id_seq"));
+        // …also after a rename earlier in the plan
+        let p = plan_ddl_with(
+            Dialect::Postgres,
+            Some(&users),
+            &[
+                DdlOp::RenameColumn {
+                    table: tbl.clone(),
+                    name: "seq_id".into(),
+                    new_name: "n".into(),
+                },
+                ai("n", true),
+            ],
+            &context,
+        )
+        .unwrap();
+        assert!(
+            p.statements.contains(
+                &r#"ALTER SEQUENCE "public"."users_seq_id_seq" OWNED BY NONE"#.to_string()
+            ),
+            "{:?}",
+            p.statements
+        );
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![ai("id", false), ai("seq_id", false)],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "id" DROP IDENTITY IF EXISTS"#,
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "seq_id" DROP DEFAULT"#,
+            ]
+        );
+        // already an identity: nothing to do
+        let p = plan(Dialect::Postgres, Some(&users), vec![ai("id", true)]);
+        assert!(p.statements.is_empty());
+        assert_eq!(p.warnings, [r#""id" already is an identity column"#]);
+        // the model follows: a later MODIFY-like reconstruction sees the identity
+        let ddl = create_table_sql(Dialect::Postgres, &users);
+        assert!(
+            ddl.contains(r#""id" bigint GENERATED BY DEFAULT AS IDENTITY NOT NULL"#),
+            "{ddl}"
+        );
+    }
+
+    #[test]
+    fn pg_collations_and_mysql_only_options() {
+        let users = pg_users();
+        let tbl = t(None, "users");
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![
+                DdlOp::AlterColumnCollation {
+                    table: tbl.clone(),
+                    name: "email".into(),
+                    collation: Some("C".into()),
+                },
+                DdlOp::AlterColumnCollation {
+                    table: tbl.clone(),
+                    name: "name".into(),
+                    collation: None,
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "email" TYPE character varying(255) COLLATE "C""#,
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "name" TYPE text COLLATE "default""#,
+            ]
+        );
+        let msg = unsupported(
+            Dialect::Postgres,
+            Some(&users),
+            vec![DdlOp::AlterColumnOnUpdate {
+                table: tbl.clone(),
+                name: "name".into(),
+                on_update: Some("now()".into()),
+            }],
+        );
+        assert!(msg.contains("MySQL-only"), "{msg}");
+        let msg = unsupported(
+            Dialect::Postgres,
+            Some(&users),
+            vec![DdlOp::AlterTableOptions {
+                table: tbl.clone(),
+                options: TableOptions {
+                    engine: Some("InnoDB".into()),
+                    ..TableOptions::default()
+                },
+            }],
+        );
+        assert!(msg.contains("MySQL table options"), "{msg}");
+        let msg = invalid_input(
+            Dialect::Postgres,
+            Some(&users),
+            vec![DdlOp::AlterColumnCollation {
+                table: tbl,
+                name: "name".into(),
+                collation: Some("bad name".into()),
+            }],
+        );
+        assert!(msg.contains("invalid collation"), "{msg}");
+    }
+
+    #[test]
+    fn pg_reconstruction_lists_checks() {
+        let mut users = pg_users();
+        users.checks = vec![CheckMeta {
+            name: "users_name_check".into(),
+            expression: "length(name) > 1".into(),
+            columns: vec!["name".into()],
+        }];
+        users.indexes[1].comment = Some("unique login".into());
+        let ddl = create_table_sql(Dialect::Postgres, &users);
+        assert!(
+            ddl.contains(
+                "  CONSTRAINT \"users_pkey\" PRIMARY KEY (\"id\"),\n  CONSTRAINT \"users_name_check\" CHECK (length(name) > 1)\n);"
+            ),
+            "{ddl}"
+        );
+        assert!(
+            ddl.contains(r#"COMMENT ON INDEX "public"."users_email_key" IS 'unique login';"#),
+            "{ddl}"
+        );
+        // dropping the column drops the check (as PostgreSQL does)
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![DdlOp::DropColumn {
+                table: t(None, "users"),
+                name: "name".into(),
+            }],
+        );
+        assert_eq!(
+            p.statements,
+            [r#"ALTER TABLE "public"."users" DROP COLUMN "name""#]
+        );
+    }
+
+    #[test]
+    fn mysql_checks_options_and_extra() {
+        let items = my_items();
+        let tbl = t(None, "items");
+        let p = plan(
+            Dialect::Mysql,
+            Some(&items),
+            vec![
+                DdlOp::AddCheck {
+                    table: tbl.clone(),
+                    check: check(Some("qty_max"), "qty < 1000"),
+                },
+                DdlOp::DropCheck {
+                    table: tbl.clone(),
+                    name: "items_chk_1".into(),
+                },
+                DdlOp::AlterColumnOnUpdate {
+                    table: tbl.clone(),
+                    name: "touched_at".into(),
+                    on_update: None,
+                },
+                DdlOp::AlterColumnAutoIncrement {
+                    table: tbl.clone(),
+                    name: "id".into(),
+                    auto_increment: false,
+                },
+                DdlOp::AlterColumnCollation {
+                    table: tbl.clone(),
+                    name: "name".into(),
+                    collation: Some("utf8mb4_unicode_ci".into()),
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` ADD CONSTRAINT `qty_max` CHECK (qty < 1000)",
+                "ALTER TABLE `shop`.`items` DROP CONSTRAINT `items_chk_1`",
+                "ALTER TABLE `shop`.`items` MODIFY COLUMN `touched_at` timestamp(3) NULL DEFAULT CURRENT_TIMESTAMP(3)",
+                "ALTER TABLE `shop`.`items` MODIFY COLUMN `id` int unsigned NOT NULL",
+                "ALTER TABLE `shop`.`items` MODIFY COLUMN `name` varchar(50) COLLATE utf8mb4_unicode_ci NULL DEFAULT 'it''s'",
+            ]
+        );
+        assert!(!p.transactional);
+        // AUTO_INCREMENT on, with ON UPDATE back on another column; the default goes (MySQL
+        // refuses one on an AUTO_INCREMENT column)
+        let p = plan(
+            Dialect::Mysql,
+            Some(&items),
+            vec![
+                DdlOp::AlterColumnAutoIncrement {
+                    table: tbl.clone(),
+                    name: "qty".into(),
+                    auto_increment: true,
+                },
+                DdlOp::AlterColumnOnUpdate {
+                    table: tbl.clone(),
+                    name: "name".into(),
+                    on_update: Some("CURRENT_TIMESTAMP".into()),
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements[0],
+            "ALTER TABLE `shop`.`items` MODIFY COLUMN `qty` int unsigned NOT NULL AUTO_INCREMENT COMMENT 'how many'"
+        );
+        assert!(
+            p.statements[1].ends_with("ON UPDATE CURRENT_TIMESTAMP"),
+            "{}",
+            p.statements[1]
+        );
+    }
+
+    #[test]
+    fn mysql_table_options_and_triggers() {
+        let items = my_items();
+        let tbl = t(None, "items");
+        let opts = |o: TableOptions| DdlOp::AlterTableOptions {
+            table: tbl.clone(),
+            options: o,
+        };
+        let p = plan(
+            Dialect::Mysql,
+            Some(&items),
+            vec![
+                opts(TableOptions {
+                    engine: Some("MyISAM".into()),
+                    charset: None,
+                    collation: Some("utf8mb4_bin".into()),
+                    auto_increment: Some(100),
+                    row_format: Some("dynamic".into()),
+                }),
+                opts(TableOptions {
+                    charset: Some("latin1".into()),
+                    ..TableOptions::default()
+                }),
+                DdlOp::SetTableComment {
+                    table: tbl.clone(),
+                    comment: Some("stock".into()),
+                },
+                DdlOp::DropTrigger {
+                    table: tbl.clone(),
+                    name: "items_bi".into(),
+                },
+                DdlOp::CreateTrigger {
+                    table: tbl.clone(),
+                    name: "items_bi".into(),
+                    sql: "CREATE TRIGGER items_bi BEFORE INSERT ON items FOR EACH ROW BEGIN SET NEW.qty = 0; END;".into(),
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` ENGINE = MyISAM, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_bin, AUTO_INCREMENT = 100, ROW_FORMAT = DYNAMIC",
+                "ALTER TABLE `shop`.`items` CONVERT TO CHARACTER SET latin1",
+                "ALTER TABLE `shop`.`items` COMMENT = 'stock'",
+                "DROP TRIGGER `shop`.`items_bi`",
+                "CREATE TRIGGER items_bi BEFORE INSERT ON items FOR EACH ROW BEGIN SET NEW.qty = 0; END",
+            ]
+        );
+        assert!(
+            p.warnings
+                .iter()
+                .any(|w| w.contains("old trigger is already dropped")),
+            "{:?}",
+            p.warnings
+        );
+        let msg = invalid_input(
+            Dialect::Mysql,
+            Some(&items),
+            vec![opts(TableOptions::default())],
+        );
+        assert!(msg.contains("no table option"), "{msg}");
+        let msg = invalid_input(
+            Dialect::Mysql,
+            Some(&items),
+            vec![opts(TableOptions {
+                engine: Some("Inno DB; DROP".into()),
+                ..TableOptions::default()
+            })],
+        );
+        assert!(msg.contains("invalid engine"), "{msg}");
+        // index comments are an index option
+        let p = plan(
+            Dialect::Mysql,
+            Some(&items),
+            vec![DdlOp::AddIndex {
+                table: tbl,
+                index: IndexDef {
+                    name: "items_name".into(),
+                    columns: vec!["name".into()],
+                    unique: false,
+                    method: Some("BTREE".into()),
+                    predicate: None,
+                    comment: Some("by name".into()),
+                },
+            }],
+        );
+        assert_eq!(
+            p.statements,
+            ["CREATE INDEX `items_name` ON `shop`.`items` (`name`) USING BTREE COMMENT 'by name'"]
+        );
+    }
+
+    #[test]
+    fn on_update_of_a_new_column_is_mysql_only() {
+        let mut col = cdef("updated_at", "timestamp", true);
+        col.default_expr = Some("CURRENT_TIMESTAMP".into());
+        col.on_update = Some("CURRENT_TIMESTAMP".into());
+        let add = |table: TableRef| DdlOp::AddColumn {
+            table,
+            column: col.clone(),
+            after: None,
+        };
+        let p = plan(Dialect::Mysql, None, vec![add(t(Some("shop"), "items"))]);
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` ADD COLUMN `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
+            ]
+        );
+        let p = plan(
+            Dialect::Postgres,
+            None,
+            vec![add(t(Some("public"), "items"))],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."items" ADD COLUMN "updated_at" timestamp DEFAULT CURRENT_TIMESTAMP"#
+            ]
+        );
+        assert_eq!(
+            p.warnings,
+            [r#"ON UPDATE is MySQL-only; ignored for column "updated_at""#]
+        );
+    }
+
+    /// `items(id INTEGER PRIMARY KEY, price REAL CHECK (price > 0), qty INT,
+    /// CONSTRAINT cheap CHECK (price < 1000))`.
+    fn lite_checked() -> TableMeta {
+        let mut id = cm("id", "INTEGER", false);
+        id.is_pk = true;
+        id.is_auto_increment = true;
+        id.extra = Some("rowid alias".into());
+        let mut m = meta(
+            t(Some("main"), "items"),
+            vec![id, cm("price", "REAL", true), cm("qty", "INT", true)],
+            &["id"],
+        );
+        m.ddl = Some(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, price REAL CHECK (price > 0), qty INT, CONSTRAINT cheap CHECK (price < 1000))"
+                .into(),
+        );
+        m.triggers = vec![TriggerMeta {
+            name: "items_touch".into(),
+            timing: Some("AFTER".into()),
+            events: vec!["UPDATE".into()],
+            enabled: true,
+            definition: "CREATE TRIGGER items_touch AFTER UPDATE ON items BEGIN SELECT 1; END"
+                .into(),
+        }];
+        m
+    }
+
+    fn create_of(p: &DdlPlan) -> &str {
+        p.statements
+            .iter()
+            .find(|s| s.starts_with("CREATE TABLE"))
+            .map(String::as_str)
+            .unwrap_or_else(|| panic!("no CREATE TABLE in {:#?}", p.statements))
+    }
+
+    #[test]
+    fn sqlite_checks_go_through_the_rebuild() {
+        let items = lite_checked();
+        let tbl = t(None, "items");
+        // an unrelated rebuild keeps both checks (named and unnamed)
+        let p = plan(
+            Dialect::Sqlite,
+            Some(&items),
+            vec![DdlOp::AlterColumnType {
+                table: tbl.clone(),
+                name: "qty".into(),
+                new_type: "INTEGER".into(),
+                using: None,
+            }],
+        );
+        assert_eq!(
+            create_of(&p),
+            "CREATE TABLE \"main\".\"items__tabler_new\" (\n  \"id\" INTEGER,\n  \"price\" REAL,\n  \"qty\" INTEGER,\n  PRIMARY KEY (\"id\"),\n  CHECK (price > 0),\n  CONSTRAINT \"cheap\" CHECK (price < 1000)\n)"
+        );
+        assert!(
+            !p.warnings.iter().any(|w| w.contains("CHECK")),
+            "{:?}",
+            p.warnings
+        );
+        // add one, drop the unnamed one
+        let p = plan(
+            Dialect::Sqlite,
+            Some(&items),
+            vec![
+                DdlOp::AddCheck {
+                    table: tbl.clone(),
+                    check: check(Some("qty_ok"), "qty >= 0"),
+                },
+                DdlOp::DropCheck {
+                    table: tbl.clone(),
+                    name: "ck_items_1".into(),
+                },
+            ],
+        );
+        let create = create_of(&p);
+        assert!(!create.contains("price > 0"), "{create}");
+        assert!(create.contains("  CONSTRAINT \"cheap\" CHECK (price < 1000),\n  CONSTRAINT \"qty_ok\" CHECK (qty >= 0)\n)"), "{create}");
+        assert_eq!(p.statements[0], "PRAGMA foreign_keys = OFF");
+        assert!(p.statements.contains(
+            &"CREATE TRIGGER items_touch AFTER UPDATE ON items BEGIN SELECT 1; END".to_string()
+        ));
+        // a check added after a rename spells the new name; the new table still has the old one
+        let p = plan(
+            Dialect::Sqlite,
+            Some(&items),
+            vec![
+                DdlOp::RenameColumn {
+                    table: tbl.clone(),
+                    name: "price".into(),
+                    new_name: "cost".into(),
+                },
+                DdlOp::AddCheck {
+                    table: tbl.clone(),
+                    check: check(None, "cost < 5"),
+                },
+            ],
+        );
+        assert!(
+            create_of(&p).contains("  CHECK (\"price\" < 5)\n)"),
+            "{}",
+            create_of(&p)
+        );
+        assert!(
+            p.statements.contains(
+                &"ALTER TABLE \"main\".\"items\" RENAME COLUMN \"price\" TO \"cost\"".to_string()
+            ),
+            "{:#?}",
+            p.statements
+        );
+        // dropping a column drops its checks, with a note
+        let p = plan(
+            Dialect::Sqlite,
+            Some(&items),
+            vec![DdlOp::DropColumn {
+                table: tbl.clone(),
+                name: "price".into(),
+            }],
+        );
+        assert!(!create_of(&p).contains("CHECK"), "{}", create_of(&p));
+        assert!(
+            p.warnings
+                .iter()
+                .any(|w| w.contains("CHECK constraint \"cheap\" uses \"price\"")),
+            "{:?}",
+            p.warnings
+        );
+        // unknown check
+        let msg = invalid_input(
+            Dialect::Sqlite,
+            Some(&items),
+            vec![DdlOp::DropCheck {
+                table: tbl.clone(),
+                name: "nope".into(),
+            }],
+        );
+        assert!(msg.contains("\"nope\" does not exist"), "{msg}");
+        // without metadata there is no rebuild to do it with
+        let msg = invalid_input(
+            Dialect::Sqlite,
+            None,
+            vec![DdlOp::AddCheck {
+                table: tbl,
+                check: check(None, "1"),
+            }],
+        );
+        assert!(msg.contains("needs the table's metadata"), "{msg}");
+    }
+
+    #[test]
+    fn sqlite_autoincrement_triggers_and_collations() {
+        let items = lite_checked();
+        let tbl = t(None, "items");
+        let p = plan(
+            Dialect::Sqlite,
+            Some(&items),
+            vec![
+                DdlOp::AlterColumnAutoIncrement {
+                    table: tbl.clone(),
+                    name: "id".into(),
+                    auto_increment: true,
+                },
+                DdlOp::AlterColumnCollation {
+                    table: tbl.clone(),
+                    name: "price".into(),
+                    collation: Some("NOCASE".into()),
+                },
+            ],
+        );
+        let create = create_of(&p);
+        assert!(
+            create.contains(
+                "  \"id\" INTEGER PRIMARY KEY AUTOINCREMENT,\n  \"price\" REAL COLLATE \"NOCASE\","
+            ),
+            "{create}"
+        );
+        // AUTOINCREMENT on a column that cannot have it
+        let p = plan(
+            Dialect::Sqlite,
+            Some(&items),
+            vec![DdlOp::AlterColumnAutoIncrement {
+                table: tbl.clone(),
+                name: "qty".into(),
+                auto_increment: true,
+            }],
+        );
+        assert!(
+            p.warnings.iter().any(|w| w.contains("ignored for \"qty\"")),
+            "{:?}",
+            p.warnings
+        );
+        // triggers: dropped and created in place, after a pending rebuild
+        let p = plan(
+            Dialect::Sqlite,
+            Some(&items),
+            vec![
+                DdlOp::DropCheck {
+                    table: tbl.clone(),
+                    name: "cheap".into(),
+                },
+                DdlOp::DropTrigger {
+                    table: tbl.clone(),
+                    name: "items_touch".into(),
+                },
+                DdlOp::CreateTrigger {
+                    table: tbl.clone(),
+                    name: "items_touch".into(),
+                    sql: "CREATE TRIGGER items_touch AFTER INSERT ON items BEGIN SELECT 2; END"
+                        .into(),
+                },
+            ],
+        );
+        // (inside the rebuild's BEGIN … COMMIT block, after the old trigger was replayed)
+        let n = p.statements.len();
+        assert_eq!(
+            &p.statements[n - 5..n - 2],
+            [
+                "DROP TRIGGER \"main\".\"items_touch\"",
+                "CREATE TRIGGER items_touch AFTER INSERT ON items BEGIN SELECT 2; END",
+                &p.statements[n - 3],
+            ]
+        );
+        assert!(is_fk_check(&p.statements[n - 3]));
+        assert_eq!(
+            &p.statements[n - 2..],
+            ["COMMIT", "PRAGMA foreign_keys = ON"]
+        );
+        assert!(!create_of(&p).contains("cheap"), "{}", create_of(&p));
+        let msg = unsupported(
+            Dialect::Sqlite,
+            Some(&items),
+            vec![DdlOp::AlterColumnOnUpdate {
+                table: tbl,
+                name: "qty".into(),
+                on_update: None,
+            }],
+        );
+        assert!(msg.contains("MySQL-only"), "{msg}");
+    }
+
+    #[test]
+    fn parses_check_expressions_and_index_predicates() {
+        assert_eq!(
+            check_expression("CHECK ((price > (0)::numeric))"),
+            "price > (0)::numeric"
+        );
+        assert_eq!(
+            check_expression("CHECK ((a > 0) AND (b > 0)) NOT VALID"),
+            "(a > 0) AND (b > 0)"
+        );
+        assert_eq!(check_expression("(`price` > 0)"), "`price` > 0");
+        assert_eq!(check_expression("json_valid(`doc`)"), "json_valid(`doc`)");
+        assert_eq!(
+            check_columns(
+                "\"Price\" > 0 AND qty <> 'price'",
+                &["price".into(), "qty".into(), "id".into()]
+            ),
+            ["price", "qty"]
+        );
+        assert_eq!(
+            index_predicate("CREATE INDEX i ON t (a, (lower(b))) WHERE a IS NOT NULL;").as_deref(),
+            Some("a IS NOT NULL")
+        );
+        assert_eq!(index_predicate("CREATE INDEX i ON t (a)"), None);
+        assert_eq!(index_predicate("CREATE INDEX i ON t (\"where\")"), None);
+        let checks = sqlite_checks(
+            "CREATE TABLE \"t\" (\n  a INT CONSTRAINT \"pos\" CHECK (a > 0) NOT NULL, -- CHECK (no)\n  b TEXT DEFAULT ('CHECK (x)') CHECK(b IN ('x', 'y')),\n  [c d] INT CHECK ([c d] < a),\n  CHECK (a < 10)\n)",
+            "t",
+            &["a".into(), "b".into(), "c d".into()],
+        );
+        let got: Vec<(String, String, Vec<String>)> = checks
+            .into_iter()
+            .map(|c| (c.name, c.expression, c.columns))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    "pos".to_string(),
+                    "a > 0".to_string(),
+                    vec!["a".to_string()]
+                ),
+                ("ck_t_1".into(), "b IN ('x', 'y')".into(), vec!["b".into()]),
+                (
+                    "ck_t_2".into(),
+                    "[c d] < a".into(),
+                    vec!["c d".into(), "a".into()]
+                ),
+                ("ck_t_3".into(), "a < 10".into(), vec!["a".into()]),
+            ]
+        );
+        assert_eq!(
+            rename_all(
+                Dialect::Sqlite,
+                "a < b AND 'a' <> b",
+                &[("a".into(), "b".into()), ("b".into(), "a".into())]
+            ),
+            "\"b\" < \"a\" AND 'a' <> \"a\""
+        );
+    }
+
+    // --- PG context: sequences, partitions, clones (export / Show DDL) ------------------------
+
+    fn serial_users() -> (TableMeta, PgTableContext) {
+        let mut id = cm("id", "integer", false);
+        id.is_pk = true;
+        id.is_auto_increment = true;
+        id.default_expr = Some("nextval('users_id_seq'::regclass)".into());
+        let mut code = cm("code", "bigint", true);
+        code.default_expr = Some("nextval('shared_seq'::regclass)".into());
+        let mut m = meta(t(Some("public"), "users"), vec![id, code], &["id"]);
+        m.indexes = vec![index("users_pkey", &["id"], true, true, None)];
+        m.foreign_keys = vec![ForeignKeyMeta {
+            name: "users_boss_fk".into(),
+            columns: vec!["code".into()],
+            ref_table: t(Some("public"), "users"),
+            ref_columns: vec!["id".into()],
+            on_update: "NO ACTION".into(),
+            on_delete: "NO ACTION".into(),
+            definition: Some("FOREIGN KEY (code) REFERENCES users(id)".into()),
+        }];
+        let context = PgTableContext {
+            sequences: vec![
+                PgSequence {
+                    column: "id".into(),
+                    schema: "public".into(),
+                    name: "users_id_seq".into(),
+                    owned: true,
+                    data_type: Some("integer".into()),
+                    start: Some(1),
+                    increment: Some(1),
+                    min: Some(1),
+                    max: Some(i32::MAX.into()),
+                    cache: Some(1),
+                    cycle: false,
+                },
+                PgSequence {
+                    column: "code".into(),
+                    schema: "public".into(),
+                    name: "shared_seq".into(),
+                    owned: false,
+                    data_type: Some("bigint".into()),
+                    start: Some(1000),
+                    increment: Some(10),
+                    min: Some(1000),
+                    max: Some(i64::MAX),
+                    cache: Some(5),
+                    cycle: true,
+                },
+            ],
+            ..PgTableContext::default()
+        };
+        (m, context)
+    }
+
+    #[test]
+    fn pg_serial_columns_get_their_sequences_and_a_reset() {
+        let (m, context) = serial_users();
+        let parts = table_parts(Dialect::Postgres, &m, &context);
+        assert_eq!(
+            parts.sequences,
+            [
+                r#"CREATE SEQUENCE IF NOT EXISTS "public"."users_id_seq" AS integer;"#,
+                r#"CREATE SEQUENCE IF NOT EXISTS "public"."shared_seq" AS bigint INCREMENT BY 10 MINVALUE 1000 CACHE 5 CYCLE;"#,
+            ]
+        );
+        assert!(
+            parts.table[0]
+                .contains(r#""id" integer NOT NULL DEFAULT nextval('users_id_seq'::regclass)"#),
+            "{:?}",
+            parts.table
+        );
+        // only the owned sequence is owned again (and reset): the shared one is not this
+        // table's to move
+        assert_eq!(
+            parts.table[1],
+            r#"ALTER SEQUENCE "public"."users_id_seq" OWNED BY "public"."users"."id";"#
+        );
+        assert_eq!(parts.table.len(), 2);
+        assert_eq!(
+            parts.sequence_resets,
+            [
+                r#"SELECT setval(pg_get_serial_sequence('"public"."users"', 'id'), GREATEST(MAX("id"), 1)) FROM "public"."users" HAVING MAX("id") IS NOT NULL;"#
+            ]
+        );
+        assert_eq!(parts.foreign_keys.len(), 1);
+        // Show DDL: the sequences come first
+        let ddl = create_table_sql_with(Dialect::Postgres, &m, &context);
+        assert!(
+            ddl.starts_with("CREATE SEQUENCE IF NOT EXISTS \"public\".\"users_id_seq\" AS integer;\nCREATE SEQUENCE"),
+            "{ddl}"
+        );
+        // without a context the script is the one `TableMeta` alone gives
+        assert_eq!(
+            create_table_sql(Dialect::Postgres, &m),
+            table_parts(Dialect::Postgres, &m, &PgTableContext::default()).script()
+        );
+        assert!(!create_table_sql(Dialect::Postgres, &m).contains("SEQUENCE"));
+    }
+
+    #[test]
+    fn pg_identity_columns_are_reset_after_the_rows() {
+        let users = pg_users();
+        let parts = table_parts(Dialect::Postgres, &users, &PgTableContext::default());
+        assert_eq!(
+            parts.sequence_resets,
+            [
+                r#"SELECT setval(pg_get_serial_sequence('"public"."users"', 'id'), GREATEST(MAX("id"), 1)) FROM "public"."users" HAVING MAX("id") IS NOT NULL;"#
+            ]
+        );
+        // a descending serial sequence follows the smallest key
+        let (m, mut context) = serial_users();
+        context.sequences[0].increment = Some(-1);
+        context.sequences[0].min = Some(i32::MIN.into());
+        context.sequences[0].max = Some(-1);
+        context.sequences[0].start = Some(-1);
+        let parts = table_parts(Dialect::Postgres, &m, &context);
+        assert_eq!(
+            parts.sequences[0],
+            r#"CREATE SEQUENCE IF NOT EXISTS "public"."users_id_seq" AS integer INCREMENT BY -1;"#
+        );
+        assert_eq!(
+            parts.sequence_resets,
+            [
+                r#"SELECT setval(pg_get_serial_sequence('"public"."users"', 'id'), LEAST(MIN("id"), -1)) FROM "public"."users" HAVING MIN("id") IS NOT NULL;"#
+            ]
+        );
+    }
+
+    #[test]
+    fn pg_partitioned_tables_and_partitions() {
+        // the parent: PARTITION BY
+        let mut parent = pg_users();
+        parent.kind = TableKind::Partitioned;
+        let context = PgTableContext {
+            partition_key: Some("RANGE (created_at)".into()),
+            ..PgTableContext::default()
+        };
+        let parts = table_parts(Dialect::Postgres, &parent, &context);
+        assert!(
+            parts.table[0].ends_with(") PARTITION BY RANGE (created_at);"),
+            "{}",
+            parts.table[0]
+        );
+        assert_eq!(parts.attach, None);
+
+        // a partition: a table of its own without an identity (it takes the parent's), its
+        // indexes, then the attach; no clones of the parent's keys and triggers
+        let mut child = pg_users();
+        child.table = t(Some("public"), "users_2024");
+        child.foreign_keys = vec![
+            ForeignKeyMeta {
+                name: "users_org_fk".into(),
+                columns: vec!["name".into()],
+                ref_table: t(Some("public"), "orgs"),
+                ref_columns: vec!["name".into()],
+                on_update: "NO ACTION".into(),
+                on_delete: "NO ACTION".into(),
+                definition: Some("FOREIGN KEY (name) REFERENCES orgs(name)".into()),
+            },
+            ForeignKeyMeta {
+                name: "users_2024_own_fk".into(),
+                columns: vec!["email".into()],
+                ref_table: t(Some("public"), "emails"),
+                ref_columns: vec!["email".into()],
+                on_update: "NO ACTION".into(),
+                on_delete: "NO ACTION".into(),
+                definition: Some("FOREIGN KEY (email) REFERENCES emails(email)".into()),
+            },
+        ];
+        child.triggers = vec![
+            TriggerMeta {
+                name: "users_touch".into(),
+                timing: Some("BEFORE".into()),
+                events: vec!["UPDATE".into()],
+                enabled: true,
+                definition: "CREATE TRIGGER users_touch BEFORE UPDATE ON public.users_2024 FOR EACH ROW EXECUTE FUNCTION touch()".into(),
+            },
+            TriggerMeta {
+                name: "own_trigger".into(),
+                timing: Some("AFTER".into()),
+                events: vec!["INSERT".into()],
+                enabled: true,
+                definition: "CREATE TRIGGER own_trigger AFTER INSERT ON public.users_2024 FOR EACH ROW EXECUTE FUNCTION audit()".into(),
+            },
+        ];
+        let context = PgTableContext {
+            partition_bound: Some("FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')".into()),
+            ancestors: vec![t(Some("public"), "users")],
+            inherited_fks: vec!["users_org_fk".into()],
+            cloned_triggers: vec!["users_touch".into()],
+            ..PgTableContext::default()
+        };
+        let parts = table_parts(Dialect::Postgres, &child, &context);
+        assert!(
+            parts.table[0].contains("\"id\" bigint NOT NULL,"),
+            "{}",
+            parts.table[0]
+        );
+        assert!(!parts.table[0].contains("IDENTITY"));
+        assert_eq!(
+            parts.attach.as_deref(),
+            Some(
+                r#"ALTER TABLE "public"."users" ATTACH PARTITION "public"."users_2024" FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');"#
+            )
+        );
+        assert!(parts.sequence_resets.is_empty());
+        assert_eq!(parts.foreign_keys.len(), 1);
+        assert!(parts.foreign_keys[0].contains("users_2024_own_fk"));
+        assert_eq!(parts.triggers.len(), 1);
+        assert!(parts.triggers[0].contains("own_trigger"));
+        let sections = parts.create_sections(&["CREATE TABLE p PARTITION OF x DEFAULT;".into()]);
+        let joined = sections.join("\n\n");
+        let index_at = joined.find("CREATE UNIQUE INDEX users_email_key").unwrap();
+        let partition_at = joined.find("PARTITION OF x").unwrap();
+        let attach_at = joined.find("ATTACH PARTITION").unwrap();
+        assert!(
+            index_at < partition_at && partition_at < attach_at,
+            "{joined}"
+        );
+        assert!(!joined.contains("FOREIGN KEY") && !joined.contains("CREATE TRIGGER"));
+
+        assert_eq!(
+            partition_of_sql(&PgPartition {
+                table: t(Some("public"), "m_2025"),
+                parent: t(Some("public"), "m"),
+                bound: "FOR VALUES IN ('eu')".into(),
+                key: Some("RANGE (ts)".into()),
+            }),
+            r#"CREATE TABLE "public"."m_2025" PARTITION OF "public"."m" FOR VALUES IN ('eu') PARTITION BY RANGE (ts);"#
+        );
+    }
+
+    #[test]
+    fn pg_catalog_queries_bind_the_table() {
+        let q = pg_context_relation_sql(&t(Some("app"), "users"));
+        assert!(
+            q.sql.contains("c.relname = $1 AND n.nspname = $2"),
+            "{}",
+            q.sql
+        );
+        assert_eq!(
+            q.params,
+            [Value::Text("users".into()), Value::Text("app".into())]
+        );
+        let q = pg_context_sequences_sql(&t(None, "users"));
+        assert!(q.sql.contains("n.nspname = current_schema()"), "{}", q.sql);
+        assert_eq!(q.params, [Value::Text("users".into())]);
+        for q in [
+            pg_context_ancestors_sql(&t(Some("a"), "b")),
+            pg_context_partitions_sql(&t(Some("a"), "b")),
+            pg_context_clones_sql(&t(Some("a"), "b")),
+            pg_owned_sequences_sql(&t(Some("a"), "b")),
+        ] {
+            assert!(!q.sql.contains("{schema}"));
+            assert_eq!(q.params.len(), 2);
+        }
+    }
+
+    // --- MySQL: an edited index / CHECK is one ALTER TABLE --------------------------------------
+
+    #[test]
+    fn mysql_index_and_check_edits_are_atomic() {
+        let mut m = my_items();
+        m.indexes
+            .push(index("items_qty", &["qty"], false, false, None));
+        m.checks = vec![CheckMeta {
+            name: "qty_positive".into(),
+            expression: "qty > 0".into(),
+            columns: vec!["qty".into()],
+        }];
+        let tbl = t(None, "items");
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                DdlOp::DropIndex {
+                    table: tbl.clone(),
+                    name: "items_qty".into(),
+                },
+                DdlOp::AddIndex {
+                    table: tbl.clone(),
+                    index: IndexDef {
+                        name: "items_qty".into(),
+                        columns: vec!["qty".into(), "name(10)".into()],
+                        unique: true,
+                        method: Some("btree".into()),
+                        predicate: None,
+                        comment: Some("it's".into()),
+                    },
+                },
+                DdlOp::DropCheck {
+                    table: tbl.clone(),
+                    name: "qty_positive".into(),
+                },
+                DdlOp::AddCheck {
+                    table: tbl.clone(),
+                    check: CheckDef {
+                        name: Some("qty_positive".into()),
+                        expression: "qty >= 0".into(),
+                    },
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` DROP INDEX `items_qty`, ADD UNIQUE INDEX `items_qty` (`qty`, `name`(10)) USING BTREE COMMENT 'it''s'",
+                "ALTER TABLE `shop`.`items` DROP CONSTRAINT `qty_positive`, ADD CONSTRAINT `qty_positive` CHECK (qty >= 0)",
+            ]
+        );
+        // the model follows: a later op sees the new index
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                DdlOp::DropIndex {
+                    table: tbl.clone(),
+                    name: "items_qty".into(),
+                },
+                DdlOp::AddIndex {
+                    table: tbl.clone(),
+                    index: IndexDef {
+                        name: "items_qty2".into(),
+                        columns: vec!["qty".into()],
+                        unique: false,
+                        method: Some("FULLTEXT".into()),
+                        predicate: None,
+                        comment: None,
+                    },
+                },
+                DdlOp::DropIndex {
+                    table: tbl.clone(),
+                    name: "items_qty2".into(),
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` DROP INDEX `items_qty`, ADD FULLTEXT INDEX `items_qty2` (`qty`)",
+                "DROP INDEX `items_qty2` ON `shop`.`items`",
+            ]
+        );
+        // a creation on its own stays CREATE INDEX; PostgreSQL keeps two statements (its DDL
+        // runs in one transaction)
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![DdlOp::AddIndex {
+                table: tbl.clone(),
+                index: IndexDef {
+                    name: "x".into(),
+                    columns: vec!["qty".into()],
+                    unique: false,
+                    method: None,
+                    predicate: None,
+                    comment: None,
+                },
+            }],
+        );
+        assert_eq!(p.statements, ["CREATE INDEX `x` ON `shop`.`items` (`qty`)"]);
+        let users = pg_users();
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![
+                DdlOp::DropIndex {
+                    table: t(None, "users"),
+                    name: "users_name_idx".into(),
+                },
+                DdlOp::AddIndex {
+                    table: t(None, "users"),
+                    index: IndexDef {
+                        name: "users_name_idx".into(),
+                        columns: vec!["name".into()],
+                        unique: true,
+                        method: None,
+                        predicate: None,
+                        comment: None,
+                    },
+                },
+            ],
+        );
+        assert_eq!(p.statements.len(), 2);
+        assert!(p.transactional);
+    }
+
+    #[test]
+    fn mysql_literals_follow_the_session_sql_mode() {
+        let m = my_items();
+        let tbl = t(None, "items");
+        let ops = [
+            DdlOp::SetTableComment {
+                table: tbl.clone(),
+                comment: Some(r"C:\temp it's".into()),
+            },
+            DdlOp::SetColumnComment {
+                table: tbl.clone(),
+                name: "qty".into(),
+                comment: Some(r"a\b".into()),
+            },
+        ];
+        let plan_in = |mode: MysqlLiteralMode| {
+            let context = PlanContext {
+                mysql_mode: mode,
+                ..PlanContext::default()
+            };
+            plan_ddl_with(Dialect::Mysql, Some(&m), &ops, &context)
+                .unwrap()
+                .statements
+        };
+        // backslashes are escapes (the default): doubled
+        assert_eq!(
+            plan_in(MysqlLiteralMode::BackslashEscapes),
+            [
+                r"ALTER TABLE `shop`.`items` COMMENT = 'C:\\temp it''s'",
+                r"ALTER TABLE `shop`.`items` MODIFY COLUMN `qty` int unsigned NOT NULL DEFAULT 0 COMMENT 'a\\b'",
+            ]
+        );
+        // NO_BACKSLASH_ESCAPES: as they are (doubling would store two); the default from
+        // information_schema (`it's`) is spelled the same way
+        assert_eq!(
+            plan_in(MysqlLiteralMode::NoBackslashEscapes),
+            [
+                r"ALTER TABLE `shop`.`items` COMMENT = 'C:\temp it''s'",
+                r"ALTER TABLE `shop`.`items` MODIFY COLUMN `qty` int unsigned NOT NULL DEFAULT 0 COMMENT 'a\b'",
+            ]
+        );
+        let mut c = cm("c", "varchar(9)", true);
+        c.default_expr = Some(r"x\y'z".into());
+        assert_eq!(
+            mysql_default_from_meta(&c, MysqlLiteralMode::NoBackslashEscapes).unwrap(),
+            r"'x\y''z'"
+        );
+        assert_eq!(
+            mysql_default_from_meta(&c, MysqlLiteralMode::BackslashEscapes).unwrap(),
+            r"'x\\y''z'"
+        );
+        // PostgreSQL keeps its quoting whatever the mode
+        let users = pg_users();
+        let context = PlanContext {
+            mysql_mode: MysqlLiteralMode::NoBackslashEscapes,
+            ..PlanContext::default()
+        };
+        let p = plan_ddl_with(
+            Dialect::Postgres,
+            Some(&users),
+            &[DdlOp::SetTableComment {
+                table: t(None, "users"),
+                comment: Some(r"a\b it's".into()),
+            }],
+            &context,
+        )
+        .unwrap();
+        assert_eq!(
+            p.statements,
+            [r#"COMMENT ON TABLE "public"."users" IS 'a\b it''s'"#]
         );
     }
 }

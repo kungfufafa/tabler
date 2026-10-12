@@ -75,6 +75,7 @@ fn col(name: &str, ty: &str, nullable: bool) -> ColumnDef {
         comment: None,
         collation: None,
         unsigned: false,
+        on_update: None,
     }
 }
 
@@ -240,6 +241,7 @@ async fn plans_and_applies_ddl_with_rebuilds() {
                     unique: true,
                     method: None,
                     predicate: Some("qty >= 0".into()),
+                    comment: None,
                 },
             },
             DdlOp::RawSql {

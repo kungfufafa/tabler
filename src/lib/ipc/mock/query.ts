@@ -235,6 +235,18 @@ function missingTable(
   );
 }
 
+/** A statement past the query time out (the backend's `timeout_payload`). */
+function timeoutError(secs: number, index: number): SqlError {
+  return new SqlError(
+    payload({
+      code: "QUERY_TIMEOUT",
+      message: `Query timed out after ${secs} s`,
+      hint: "The statement was cancelled. The limit is Settings ▸ Connections ▸ Query time out (0 = no limit).",
+      statementIndex: index,
+    }),
+  );
+}
+
 function cancelledError(driver: Driver, index: number): SqlError {
   return new SqlError(
     payload({
@@ -302,6 +314,9 @@ interface Ctx {
   text: string;
   run: Running;
   maxRows: number;
+  /** When the running statement times out (`RunOptions.timeoutSecs`); null = never. */
+  deadline: number | null;
+  timeoutSecs: number;
   send: (e: QueryEvent) => void;
 }
 
@@ -358,8 +373,31 @@ function resultColumn(
   return { name, dataType: DATA_TYPES[driver][kind] ?? "text", kind, nullable: null, table };
 }
 
-function fromMeta(c: ColumnMeta, table: string): ResultColumn {
-  return { name: c.name, dataType: c.dataType, kind: c.kind, nullable: c.nullable, table };
+/**
+ * A column read straight from a table. With `source` it reports its origin (so the result can be
+ * editable); MySQL also names the table reference it was read through (its alias).
+ */
+function fromMeta(
+  c: ColumnMeta,
+  table: string,
+  schema: string,
+  source: { driver: Driver; alias: string | null } | null,
+): ResultColumn {
+  const instance = source?.driver === "mysql" ? (source.alias ?? table) : null;
+  return {
+    name: c.name,
+    dataType: c.dataType,
+    kind: c.kind,
+    nullable: c.nullable,
+    table: instance ?? table,
+    origin: source
+      ? {
+          table: { schema, name: table },
+          column: c.name,
+          ...(instance !== null && { instance }),
+        }
+      : null,
+  };
 }
 
 const IDENT = String.raw`(?:"[^"]+"|\x60[^\x60]+\x60|\[[^\]]+\]|[\p{L}_][\p{L}\p{N}_$]*)`;
@@ -374,6 +412,57 @@ function unquote(ident: string): { name: string; quoted: boolean } {
   if ((q === '"' || q === "`" || q === "[") && t.length >= 2)
     return { name: t.slice(1, -1), quoted: true };
   return { name: t, quoted: false };
+}
+
+const NOT_ALIAS = new Set([
+  "where",
+  "group",
+  "order",
+  "limit",
+  "having",
+  "window",
+  "offset",
+  "fetch",
+  "for",
+  "natural",
+  "left",
+  "right",
+  "inner",
+  "cross",
+  "full",
+  "join",
+  "on",
+  "using",
+  "union",
+  "except",
+  "intersect",
+]);
+
+/**
+ * How a SELECT reads its table: `single` when it reads that one table once (no join, subquery,
+ * set operation or second FROM item), the only case where the mock reports column origins, plus
+ * the alias it gives the table. The real servers report origins for joins too; the renderer then
+ * decides what is editable.
+ */
+function selectSource(sql: string): { single: boolean; alias: string | null } {
+  if (/^\s*table\s+[^;]*;?\s*$/i.test(sql)) return { single: true, alias: null };
+  const code = sql.replace(/'(?:[^']|'')*'/g, "''");
+  const from = /\bfrom\s+([\s\S]*?)(?:\b(?:where|group|order|limit|having|window)\b|;|$)/i.exec(
+    code,
+  );
+  const single =
+    !!from &&
+    !/\b(?:join|union|except|intersect)\b/i.test(code) &&
+    !/\(\s*(?:select|with|values|table)\b/i.test(code) &&
+    !/\bwith\b/i.test(code.slice(0, from.index)) &&
+    !from[1]!.includes(",");
+  const alias = from
+    ? new RegExp(String.raw`^\s*${IDENT}(?:\s*\.\s*${IDENT})?\s+(?:as\s+)?(${IDENT})`, "iu").exec(
+        from[1]!,
+      )?.[1]
+    : undefined;
+  const name = alias === undefined ? null : unquote(alias).name;
+  return { single, alias: name !== null && !NOT_ALIAS.has(name.toLowerCase()) ? name : null };
 }
 
 interface TableHit {
@@ -632,6 +721,8 @@ async function execute(
     const until = Date.now() + Number(sleepCall[1]) * 1000;
     while (Date.now() < until) {
       if (ctx.run.cancelled) throw cancelledError(ctx.driver, index);
+      if (ctx.deadline !== null && Date.now() >= ctx.deadline)
+        throw timeoutError(ctx.timeoutSecs, index);
       await sleep(Math.min(50, until - Date.now()));
     }
     if (ctx.run.cancelled) throw cancelledError(ctx.driver, index);
@@ -673,7 +764,15 @@ async function execute(
     );
     const picked =
       names.length > 0 && idx.every((i) => i >= 0) ? idx : hit.meta.columns.map((_, i) => i);
-    const columns = picked.map((i) => fromMeta(hit.meta.columns[i]!, hit.name));
+    const { single, alias } = selectSource(sql);
+    const columns = picked.map((i) =>
+      fromMeta(
+        hit.meta.columns[i]!,
+        hit.name,
+        hit.schema,
+        single ? { driver: ctx.driver, alias } : null,
+      ),
+    );
     const limit = /\blimit\s+(\d+)(?:\s+offset\s+(\d+))?/i.exec(sql);
     const offset = Number(limit?.[2] ?? 0);
     const wanted = limit ? all.slice(offset, offset + Number(limit[1])) : all.slice(offset);
@@ -689,8 +788,9 @@ async function execute(
     // A procedure returning two result sets.
     const users = tableMetaFor(ctx.driver, "tabler_dev", "users")!;
     const tags = tableMetaFor(ctx.driver, "tabler_dev", "tags")!;
-    const c1 = users.columns.slice(0, 3).map((c) => fromMeta(c, "users"));
-    const c2 = tags.columns.map((c) => fromMeta(c, "tags"));
+    const src = { driver: ctx.driver, alias: null };
+    const c1 = users.columns.slice(0, 3).map((c) => fromMeta(c, "users", "tabler_dev", src));
+    const c2 = tags.columns.map((c) => fromMeta(c, "tags", "tabler_dev", src));
     const r1 = rowsFor("mysql:tabler_dev.users", users.columns, 50)
       .slice(0, 5)
       .map((r) => r.slice(0, 3));
@@ -787,6 +887,8 @@ registerMock("run_sql", async ({ connectionId, queryId, sql, options, onEvent })
     text,
     run,
     maxRows: opts.maxRows,
+    deadline: null,
+    timeoutSecs: opts.timeoutSecs ?? 0,
     send: (e) => channel?.send?.(e),
   };
   const began = performance.now();
@@ -822,6 +924,7 @@ registerMock("run_sql", async ({ connectionId, queryId, sql, options, onEvent })
       };
       try {
         if (run.cancelled) throw cancelledError(info.driver, index);
+        ctx.deadline = ctx.timeoutSecs > 0 ? Date.now() + ctx.timeoutSecs * 1000 : null;
         const r = await execute(ctx, stmtSql, st.start, index, opts.explain);
         const result: StatementResult = {
           ...base,
@@ -848,7 +951,12 @@ registerMock("run_sql", async ({ connectionId, queryId, sql, options, onEvent })
           durationMs: result.durationMs,
           error: e.payload.message,
         });
-        if (e.payload.code === "CANCELLED" || opts.stopOnError) break;
+        if (
+          e.payload.code === "CANCELLED" ||
+          e.payload.code === "QUERY_TIMEOUT" ||
+          opts.stopOnError
+        )
+          break;
       }
     }
   } finally {
@@ -873,7 +981,16 @@ registerMock("explain", async ({ connectionId, sql, mode, queryId }) => {
   const run: Running = { cancelled: false };
   const id = queryId ? String(queryId) : crypto.randomUUID();
   running.set(id, run);
-  const ctx: Ctx = { info, driver: info.driver, text, run, maxRows: 10_000, send: () => undefined };
+  const ctx: Ctx = {
+    info,
+    driver: info.driver,
+    text,
+    run,
+    maxRows: 10_000,
+    deadline: null,
+    timeoutSecs: 0,
+    send: () => undefined,
+  };
   const t0 = performance.now();
   try {
     const st = splitStatements(text, info.driver)[0];

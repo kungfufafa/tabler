@@ -3,13 +3,27 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { schemaKeys, useCurrentSchema, useTables } from "@/features/sidebar/useSchemaTree";
+import { emptyStaging, insertRow } from "@/features/staging/model";
 import { rowKeys } from "@/features/table-tab/useTableRows";
 import { ipc, type SchemaInfo, type TableRef, type TableSummary } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
-import { ddlKey, invalidateConnectionSchema, resetDatabaseCaches } from "./invalidate";
+import { useTableTabsStore } from "@/stores/tableTabs";
+import { useTabsStore } from "@/stores/tabs";
+import {
+  ddlKey,
+  invalidateConnectionSchema,
+  invalidateSchema,
+  resetDatabaseCaches,
+  structureChoicesKey,
+  tablesWithPendingEdits,
+} from "./invalidate";
+import { useStructureStore } from "./store";
 
 afterEach(() => {
   vi.restoreAllMocks();
+  useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
+  useTableTabsStore.setState({ slices: {} });
+  useStructureStore.setState({ byTab: {} });
 });
 
 const users: TableRef = { schema: "public", name: "users" };
@@ -26,6 +40,7 @@ function seeded() {
     databases: schemaKeys.databases("c1"),
     completion: schemaKeys.completion("c1"),
     ddl: ddlKey("c1", users),
+    choices: structureChoicesKey("c1"),
     meta: rowKeys.meta("c1", users),
     rows: rowKeys.page("c1", users, page, 0),
     count: rowKeys.count("c1", users, null, 0),
@@ -38,6 +53,43 @@ function seeded() {
   return { qc, keys, other, state };
 }
 
+/** Stages one inserted row on a table's tab. */
+function stageRow(tabId: string) {
+  useTableTabsStore.getState().update(tabId, { staging: insertRow(emptyStaging(), "new:0", []) });
+}
+
+describe("tablesWithPendingEdits", () => {
+  const posts: TableRef = { schema: "public", name: "posts" };
+  const tags: TableRef = { schema: "public", name: "tags" };
+
+  it("lists tables whose tab holds staged rows, in either view, but not staged DDL alone", () => {
+    const s = useTabsStore.getState();
+    const a = s.openTable("c1", users);
+    const b = s.openTable("c1", posts);
+    const c = s.openTable("c1", tags);
+    const other = s.openTable("c2", users);
+    stageRow(a);
+    stageRow(b);
+    stageRow(other);
+    // The structure view keeps the rows staged in the data view.
+    s.setView(b, "structure");
+    // Staged DDL does not hold the table's rows.
+    useStructureStore.getState().stage(c, () => [{ op: "rawSql", sql: "x" }]);
+    expect(tablesWithPendingEdits("c1")).toEqual([users, posts]);
+    expect(tablesWithPendingEdits("c2")).toEqual([users]);
+  });
+
+  it("keeps the held table's rows when invalidating the connection's schema", () => {
+    const { qc, keys, state } = seeded();
+    const a = useTabsStore.getState().openTable("c1", users, "structure");
+    stageRow(a);
+    expect(invalidateConnectionSchema(qc, "c1")).toEqual([users]);
+    expect(state(keys.rows)?.state.isInvalidated).toBe(false);
+    expect(state(keys.meta)?.state.isInvalidated).toBe(false);
+    expect(state(keys.tables)?.state.isInvalidated).toBe(true);
+  });
+});
+
 describe("invalidateConnectionSchema", () => {
   it("marks every schema-derived query of the connection stale, and only those", () => {
     const { qc, keys, other, state } = seeded();
@@ -46,6 +98,18 @@ describe("invalidateConnectionSchema", () => {
       expect(state(key)?.state.isInvalidated, name).toBe(true);
       // Still cached: the old data shows until the refetch lands.
       expect(qc.getQueryData(key), name).toEqual({ seeded: true });
+    }
+    expect(state(other)?.state.isInvalidated).toBe(false);
+  });
+});
+
+describe("invalidateSchema", () => {
+  it("refreshes the lists, completion, DDL and structure choices, plus the table's own data", () => {
+    const { qc, keys, other, state } = seeded();
+    invalidateSchema(qc, "c1", users);
+    for (const [name, key] of Object.entries(keys)) {
+      const expected = name !== "schemas" && name !== "databases";
+      expect(state(key)?.state.isInvalidated, name).toBe(expected);
     }
     expect(state(other)?.state.isInvalidated).toBe(false);
   });
@@ -66,6 +130,15 @@ describe("resetDatabaseCaches", () => {
     // Other connections keep theirs.
     expect(qc.getQueryData(other)).toEqual({ seeded: true });
     expect(state(other)?.state.isInvalidated).toBe(false);
+  });
+
+  it("resets the structure editor's choices (the old database's user types)", () => {
+    const { qc, keys } = seeded();
+    const otherChoices = structureChoicesKey("c2");
+    qc.setQueryData(otherChoices, { seeded: true });
+    resetDatabaseCaches(qc, "c1");
+    expect(qc.getQueryData(keys.choices)).toBeUndefined();
+    expect(qc.getQueryData(otherChoices)).toEqual({ seeded: true });
   });
 
   it("never shows the old database's tables, nor picks its schema again (MySQL)", async () => {

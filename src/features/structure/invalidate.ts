@@ -1,20 +1,30 @@
 import type { Query, QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
+import { pendingCount } from "@/features/staging/model";
 import { tableKey, type TableRef } from "@/lib/ipc";
-import { unsavedCount, useTabsStore } from "@/stores/tabs";
+import { useTableTabsStore } from "@/stores/tableTabs";
+import { useTabsStore } from "@/stores/tabs";
 
 export const ddlKey = (connectionId: string, table: TableRef) =>
   ["tableDdl", connectionId, table.schema ?? "", table.name] as const;
 
 /**
- * Refetches everything a schema change can affect: table lists, editor completion, DDL text and,
- * for `table`, its metadata, rows and counts.
+ * The structure editor's choices (types, engines, charsets, collations): user-defined types
+ * belong to the database, so DDL and a database switch refresh them too.
+ */
+export const structureChoicesKey = (connectionId: string) =>
+  ["structureChoices", connectionId] as const;
+
+/**
+ * Refetches everything a schema change can affect: table lists, editor completion, DDL text, the
+ * structure editor's type choices and, for `table`, its metadata, rows and counts.
  */
 export function invalidateSchema(qc: QueryClient, connectionId: string, table?: TableRef): void {
   void qc.invalidateQueries({ queryKey: ["tables", connectionId] });
   void qc.invalidateQueries({ queryKey: schemaKeys.completion(connectionId) });
   void qc.invalidateQueries({ queryKey: ["tableDdl", connectionId] });
+  void qc.invalidateQueries({ queryKey: structureChoicesKey(connectionId) });
   if (!table) return;
   void qc.invalidateQueries({ queryKey: schemaKeys.table(connectionId, table.schema, table.name) });
   void qc.invalidateQueries({ queryKey: ["rows", connectionId, tableKey(table)] });
@@ -22,15 +32,20 @@ export function invalidateSchema(qc: QueryClient, connectionId: string, table?: 
 }
 
 /**
- * Tables of the connection whose table tab holds staged (uncommitted) row edits. Staged edits
- * name their columns by position in the page they were made on: reloading that page after a
- * schema change (a dropped or added column) would move them onto other columns, so these pages
- * are left as they are until the user commits or discards the edits (then reloads with ⌘R).
+ * Tables of the connection whose tab holds staged (uncommitted) row edits, whichever view (data or
+ * structure) the tab shows: the row staging stays while the structure view is up. Staged DDL does
+ * not count here. Staged edits name their columns by position in the page they were made on:
+ * reloading that page after a schema change (a dropped or added column) would move them onto
+ * other columns, so these pages are left as they are until the user commits or discards the edits
+ * (then reloads with ⌘R).
  */
 export function tablesWithPendingEdits(connectionId: string): TableRef[] {
   const out: TableRef[] = [];
+  const slices = useTableTabsStore.getState().slices;
   for (const t of useTabsStore.getState().tabs) {
-    if (t.kind !== "table" || t.connectionId !== connectionId || unsavedCount(t) === 0) continue;
+    if (t.kind === "query" || t.connectionId !== connectionId) continue;
+    const slice = slices[t.id];
+    if (!slice || pendingCount(slice.staging) === 0) continue;
     if (!out.some((r) => tableKey(r) === tableKey(t.table))) out.push(t.table);
   }
   return out;
@@ -60,8 +75,8 @@ function queryTable(query: Query): string | null {
 
 /**
  * After DDL of unknown reach (run in the SQL editor): refetches every schema-derived query of the
- * connection — schemas, databases, table lists, completion, DDL text, and every table's metadata,
- * rows and counts. Queries nobody shows are only marked stale. Tables whose tab holds staged row
+ * connection — schemas, databases, table lists, completion, DDL text, the structure editor's
+ * type choices, and every table's metadata, rows and counts. Queries nobody shows are only marked stale. Tables whose tab holds staged row
  * edits keep their page (see `tablesWithPendingEdits`); they are returned so the caller can say so.
  */
 export function invalidateConnectionSchema(qc: QueryClient, connectionId: string): TableRef[] {
@@ -71,6 +86,7 @@ export function invalidateConnectionSchema(qc: QueryClient, connectionId: string
     schemaKeys.databases(connectionId),
     schemaKeys.completion(connectionId),
     ["tableDdl", connectionId],
+    structureChoicesKey(connectionId),
   ])
     void qc.invalidateQueries({ queryKey });
   const held = tablesWithPendingEdits(connectionId);
@@ -91,9 +107,9 @@ export function invalidateConnectionSchema(qc: QueryClient, connectionId: string
 /**
  * The connection now points at another database (same connection id): nothing cached for the
  * old one may show again, not even while the new one loads. Metadata, rows, counts, DDL and
- * completion are dropped; the schema and table lists are reset, so the sidebar shows its loading
- * state (and picks the new database's default schema) instead of the old lists; the list of
- * databases (the same server) refetches.
+ * completion are dropped; the schema and table lists and the structure editor's type choices are
+ * reset, so the sidebar shows its loading state (and picks the new database's default schema)
+ * instead of the old lists; the list of databases (the same server) refetches.
  */
 export function resetDatabaseCaches(qc: QueryClient, connectionId: string): void {
   for (const queryKey of [
@@ -106,5 +122,6 @@ export function resetDatabaseCaches(qc: QueryClient, connectionId: string): void
     qc.removeQueries({ queryKey });
   void qc.resetQueries({ queryKey: schemaKeys.schemas(connectionId) });
   void qc.resetQueries({ queryKey: ["tables", connectionId] });
+  void qc.resetQueries({ queryKey: structureChoicesKey(connectionId) });
   void qc.invalidateQueries({ queryKey: schemaKeys.databases(connectionId) });
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { KEYMAP, type ShortcutDef } from "@/lib/keys/keymap";
+import { findShortcut, KEYMAP, type ShortcutDef } from "@/lib/keys/keymap";
 import { groupShortcuts, REFERENCE_SHORTCUTS } from "./shortcuts";
 
 const defs: ShortcutDef[] = [
@@ -51,7 +51,12 @@ describe("groupShortcuts", () => {
 
   it("covers the real keymap without duplicate bindings", () => {
     const groups = groupShortcuts(KEYMAP, "", true, []);
-    expect(groups.map((g) => g.title)).toEqual(["Global", "Table grid", "SQL editor"]);
+    expect(groups.map((g) => g.title)).toEqual([
+      "Global",
+      "Table grid",
+      "Filter bar",
+      "SQL editor",
+    ]);
     const bindings = groups.flatMap((g) =>
       g.rows.flatMap((r) => r.keys.map((k) => `${r.id} ${k}`)),
     );
@@ -60,6 +65,22 @@ describe("groupShortcuts", () => {
     expect(bindings).toHaveLength(unique.size);
     const settings = groups[0]?.rows.find((r) => r.id === "settings.open");
     expect(settings?.keys).toEqual(["Mod+,"]);
+  });
+
+  it("lists the TablePlus editor keys, primary combo first", () => {
+    const groups = groupShortcuts(KEYMAP, "", true, []);
+    const row = (title: string, label: string) =>
+      groups.find((g) => g.title === title)?.rows.find((r) => r.label === label);
+    expect(row("SQL editor", "Run current statement")).toEqual({
+      id: "query.run-current",
+      label: "Run current statement",
+      keys: ["Mod+Enter"],
+    });
+    expect(row("SQL editor", "Run all")?.keys).toEqual(["Mod+Shift+Enter"]);
+    expect(row("SQL editor", "Beautify SQL")?.keys).toEqual(["Mod+I", "Alt+Shift+F"]);
+    expect(row("SQL editor", "Uglify SQL")?.keys).toEqual(["Mod+Shift+I"]);
+    expect(row("SQL editor", "Explain")?.keys).toEqual(["Mod+E"]);
+    expect(row("Global", "Toggle result pane")?.keys).toEqual(["Ctrl+`"]);
   });
 });
 
@@ -71,38 +92,56 @@ describe("reference shortcuts", () => {
     const groups = groupShortcuts(KEYMAP, "", true);
     expect(groups.map((g) => g.title)).toEqual([
       "Global",
+      "Sidebar",
       "Table grid",
       "Cell editor",
+      "Filter bar",
       "SQL editor",
     ]);
     const grid = rowsOf("Table grid");
     // Keymap rows first, then the reference rows, alternatives merged into one row.
-    expect(grid[0]?.id).toBe("grid.commit");
-    expect(grid.find((r) => r.label === "Edit cell")).toEqual({
+    const isRef = (r: { id: string }) => r.id.startsWith("ref:");
+    const firstRef = grid.findIndex(isRef);
+    expect(firstRef).toBeGreaterThan(0);
+    expect(grid.slice(0, firstRef).some(isRef)).toBe(false);
+    expect(grid.slice(firstRef).every(isRef)).toBe(true);
+    // The grid selects rows (TablePlus): typing never edits, ⌫ / ⌦ delete the selected rows.
+    expect(grid.find((r) => r.label.startsWith("Edit cell"))).toEqual({
       id: "ref:Enter",
-      label: "Edit cell",
+      label: "Edit cell (typing does not edit)",
       keys: ["Enter", "F2"],
     });
-    expect(grid.find((r) => r.label === "Move the selection")?.keys).toEqual([
+    expect(grid.find((r) => r.label === "Select the row above / below")?.keys).toEqual([
       "Up",
       "Down",
+    ]);
+    expect(grid.find((r) => r.label === "Extend the row selection")?.keys).toEqual([
+      "Shift+Up",
+      "Shift+Down",
+      "Shift+Click",
+    ]);
+    expect(grid.find((r) => r.label === "Previous / next cell in the row")?.keys).toEqual([
       "Left",
       "Right",
+      "Tab",
+      "Shift+Tab",
     ]);
+    expect(grid.find((r) => r.id.startsWith("ref:") && r.label === "Delete selected rows")).toEqual(
+      { id: "ref:Backspace", label: "Delete selected rows", keys: ["Backspace", "Delete"] },
+    );
+    expect(grid.find((r) => r.id === "grid.copy")?.label).toBe("Copy selected rows");
     expect(grid.map((r) => r.label)).toEqual(
       expect.arrayContaining([
-        "Extend the selection",
-        "Jump to the edge",
+        "Add / remove a row",
         "First / last column",
         "First / last row",
         "Page up / down",
-        "Next / previous cell",
-        "Clear and edit cell",
-        "Collapse the selection",
-        "Select all",
+        "Select only the focused row",
+        "Select all rows",
         "Select a column (on its header)",
       ]),
     );
+    expect(grid.map((r) => r.label)).not.toContain("Clear and edit cell");
     expect(rowsOf("Cell editor").map((r) => r.label)).toEqual([
       "Save and move down",
       "Save and move to the next / previous cell",
@@ -122,7 +161,7 @@ describe("reference shortcuts", () => {
     expect(labels("comment")).toEqual(["Toggle comment"]);
     expect(labels("⌘/")).toEqual(["Toggle comment"]);
     expect(labels("cell editor escape")).toEqual(["Cancel the edit"]);
-    expect(labels("f2")).toEqual(["Edit cell"]);
+    expect(labels("f2")).toEqual(["Edit cell (typing does not edit)"]);
     expect(labels("ref:")).toEqual([]);
   });
 
@@ -145,5 +184,35 @@ describe("reference shortcuts", () => {
       [{ scope: "grid", keys: "Mod+A", label: "Select all" }],
     );
     expect(shadowed.flatMap((g) => g.rows.map((r) => r.label))).toEqual(["Copy"]);
+  });
+
+  it("drops a built-in key that a global shortcut takes in its scope", () => {
+    const labels = (defs: ShortcutDef[]) =>
+      groupShortcuts(defs, "", true, [
+        { scope: "editor", keys: "Mod+D", label: "Select next occurrence" },
+      ]).flatMap((g) => g.rows.map((r) => r.label));
+    // Global keys reach the editor only when allowed there.
+    expect(labels([{ id: "tab.next", keys: "Mod+D", scope: "global", label: "Next" }])).toEqual([
+      "Next",
+      "Select next occurrence",
+    ]);
+    expect(
+      labels([
+        { id: "tab.next", keys: "Mod+D", scope: "global", label: "Next", allowInEditor: true },
+      ]),
+    ).toEqual(["Next"]);
+  });
+
+  it("only lists built-in keys the keymap leaves alone", () => {
+    for (const r of REFERENCE_SHORTCUTS)
+      expect(findShortcut(r.keys, r.scope), `${r.scope} ${r.keys}`).toBeUndefined();
+    // ⌘I is Beautify in the editor now, not CodeMirror's "select parent syntax"; ⌘D stays there.
+    expect(findShortcut("Mod+I", "editor")?.id).toBe("query.format");
+    expect(REFERENCE_SHORTCUTS.some((r) => r.scope === "editor" && r.keys === "Mod+I")).toBe(false);
+    expect(REFERENCE_SHORTCUTS).toContainEqual({
+      scope: "editor",
+      keys: "Mod+D",
+      label: "Select next occurrence",
+    });
   });
 });

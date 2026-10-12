@@ -11,12 +11,16 @@
 //!   (bool, ints, floats, text-likes, bytea, uuid, json/jsonb, date/time/timestamp). Everything
 //!   else is reported as `Value::Other` with a placeholder telling the caller to cast to text.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use tokio_postgres::Row;
 use tokio_postgres::types::{FromSql, Kind, Type};
 
 use crate::error::AppError;
-use crate::types::query::ResultColumn;
-use crate::types::schema::ValueKind;
+use crate::types::query::{ColumnOrigin, ResultColumn};
+use crate::types::schema::{TableRef, ValueKind};
 use crate::types::value::Value;
 
 /// Separator used by the catalog queries to join arrays into one text column
@@ -325,7 +329,87 @@ pub fn result_column(col: &tokio_postgres::Column) -> ResultColumn {
         kind: kind_from_type(col.type_()),
         nullable: None,
         table: None,
+        origin: None,
     }
+}
+
+/// Names of one relation as the catalog reported them: its schema and name, and its columns by
+/// attribute number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationNames {
+    pub schema: String,
+    pub name: String,
+    pub columns: HashMap<i16, String>,
+}
+
+/// What `RelationNames` lookups found, by table OID; `None`: no such relation (dropped).
+pub type RelationCache = HashMap<u32, Option<Arc<RelationNames>>>;
+
+tokio::task_local! {
+    /// Relation names looked up while one SQL-editor run executes (`with_origin_cache`), so a
+    /// script of many SELECTs on the same tables asks the catalog once per table.
+    static ORIGIN_CACHE: RefCell<RelationCache>;
+}
+
+/// Runs `fut` (one SQL-editor run) with a fresh cache of the relation names that resolve result
+/// column origins. Outside such a scope every lookup goes to the catalog.
+pub async fn with_origin_cache<F: std::future::Future>(fut: F) -> F::Output {
+    ORIGIN_CACHE.scope(RefCell::new(HashMap::new()), fut).await
+}
+
+/// Forgets the cached names: a statement of the run may have renamed or dropped a relation.
+pub fn clear_origin_cache() {
+    let _ = ORIGIN_CACHE.try_with(|c| c.borrow_mut().clear());
+}
+
+/// The cached lookup of `oid`: `None` when it was not looked up yet in this run (or there is no
+/// run scope), `Some(None)` when the relation does not exist.
+pub fn cached_relation(oid: u32) -> Option<Option<Arc<RelationNames>>> {
+    ORIGIN_CACHE
+        .try_with(|c| c.borrow().get(&oid).cloned())
+        .ok()
+        .flatten()
+}
+
+/// Remembers lookups for the rest of the run (no-op outside a run scope).
+pub fn cache_relations(found: &RelationCache) {
+    let _ = ORIGIN_CACHE.try_with(|c| {
+        let mut cache = c.borrow_mut();
+        for (oid, names) in found {
+            cache.insert(*oid, names.clone());
+        }
+    });
+}
+
+/// The table OID and attribute number a RowDescription field reports, when it is a plain column
+/// of a relation (0 / missing for expressions; negative attribute numbers are system columns such
+/// as `ctid`, which cannot be edited).
+pub fn column_source(col: &tokio_postgres::Column) -> Option<(u32, i16)> {
+    let oid = col.table_oid().filter(|o| *o != 0)?;
+    let attnum = col.column_id().filter(|n| *n > 0)?;
+    Some((oid, attnum))
+}
+
+/// Origins of result columns from their `column_source` and the relations looked up.
+pub fn origins_from(
+    sources: &[Option<(u32, i16)>],
+    relations: &RelationCache,
+) -> Vec<Option<ColumnOrigin>> {
+    sources
+        .iter()
+        .map(|src| {
+            let (oid, attnum) = (*src)?;
+            let rel = relations.get(&oid)?.as_ref()?;
+            let column = rel.columns.get(&attnum)?;
+            // RowDescription does not say which reference to the table a column came through
+            // (a self-join's two sides look alike): no instance.
+            Some(ColumnOrigin {
+                table: TableRef::new(Some(rel.schema.as_str()), &rel.name),
+                column: column.clone(),
+                instance: None,
+            })
+        })
+        .collect()
 }
 
 /// Decodes one binary-format row by its described column types.
@@ -487,6 +571,56 @@ fn trim_fraction(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::types::value::BytesValue;
+
+    #[test]
+    fn results_origins_from_relations() {
+        let users = RelationNames {
+            schema: "public".into(),
+            name: "users".into(),
+            columns: HashMap::from([(1, "id".to_string()), (3, "email".to_string())]),
+        };
+        let relations: RelationCache =
+            HashMap::from([(16384, Some(Arc::new(users))), (16999, None)]);
+        let origins = origins_from(
+            &[
+                Some((16384, 1)),
+                Some((16384, 3)),
+                None,             // an expression
+                Some((16384, 2)), // a column unknown to the lookup (dropped meanwhile)
+                Some((16999, 1)), // a relation that no longer exists
+                Some((17000, 1)), // never looked up
+            ],
+            &relations,
+        );
+        let o = origins[0].as_ref().unwrap();
+        assert_eq!(o.table, TableRef::new(Some("public"), "users"));
+        assert_eq!(o.column, "id");
+        assert_eq!(origins[1].as_ref().unwrap().column, "email");
+        assert!(origins[2..].iter().all(Option::is_none));
+    }
+
+    #[tokio::test]
+    async fn results_origin_cache_is_scoped_to_a_run() {
+        let names = Some(Arc::new(RelationNames {
+            schema: "s".into(),
+            name: "t".into(),
+            columns: HashMap::new(),
+        }));
+        // Outside a run nothing is cached.
+        cache_relations(&HashMap::from([(1, names.clone())]));
+        assert_eq!(cached_relation(1), None);
+        with_origin_cache(async {
+            assert_eq!(cached_relation(1), None);
+            cache_relations(&HashMap::from([(1, names.clone()), (2, None)]));
+            assert_eq!(cached_relation(1), Some(names.clone()));
+            assert_eq!(cached_relation(2), Some(None));
+            clear_origin_cache();
+            assert_eq!(cached_relation(1), None);
+        })
+        .await;
+        // A new run starts empty.
+        with_origin_cache(async { assert_eq!(cached_relation(1), None) }).await;
+    }
 
     #[test]
     fn parses_array_literals() {

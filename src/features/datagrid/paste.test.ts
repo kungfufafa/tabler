@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { planPaste } from "./paste";
+import { holdsWholeRows, pastedRows, pastedValue, planPaste } from "./paste";
+import type { GridColumn } from "./types";
 
 const rect = (r0: number, c0: number, r1: number, c1: number) => ({ r0, c0, r1, c1 });
 
@@ -56,5 +57,87 @@ describe("planPaste", () => {
       { r: 4, c: 1, text: "1" },
       { r: 4, c: 2, text: "2" },
     ]);
+  });
+});
+
+const col = (
+  id: string,
+  kind: GridColumn["kind"],
+  extra: Partial<GridColumn> = {},
+): GridColumn => ({
+  id,
+  name: id,
+  kind,
+  dataType: kind,
+  nullable: true,
+  isPk: false,
+  hasDefault: false,
+  isAutoInc: false,
+  editable: true,
+  align: "left",
+  ...extra,
+});
+
+describe("pasting whole rows", () => {
+  it("recognises copied rows: one field per visible column on every line", () => {
+    expect(holdsWholeRows([["1", "Ann", "a@x"]], 3)).toBe(true);
+    expect(
+      holdsWholeRows(
+        [
+          ["1", "Ann", "a@x"],
+          ["2", "Bob", ""],
+        ],
+        3,
+      ),
+    ).toBe(true);
+    expect(
+      holdsWholeRows(
+        [
+          ["1", "Ann", "a@x"],
+          ["2", "Bob"],
+        ],
+        3,
+      ),
+    ).toBe(false);
+    expect(holdsWholeRows([["Ann", "a@x"]], 3)).toBe(false);
+    // A single value in a one-column grid is a value, not a row.
+    expect(holdsWholeRows([["x"]], 1)).toBe(false);
+    expect(holdsWholeRows([], 3)).toBe(false);
+  });
+
+  it("types each field by its column, an empty field as NULL outside text columns", () => {
+    expect(pastedValue(col("n", "int"), "7")).toEqual({ t: "int", v: 7 });
+    expect(pastedValue(col("n", "int"), "")).toEqual({ t: "null" });
+    expect(pastedValue(col("s", "text"), "")).toEqual({ t: "text", v: "" });
+    expect(pastedValue(col("n", "int"), "seven")).toBeNull();
+    expect(pastedValue(col("e", "enum", { enumValues: ["a", "b"] }), "c")).toBeNull();
+  });
+
+  it("maps visible fields to source columns and leaves keys, blobs and read-only columns to their defaults", () => {
+    // Visible: name (source 2), id (source 0, auto-increment), score (source 1), avatar (3), gen (4).
+    const cols = [
+      col("name", "text"),
+      col("id", "int", { isAutoInc: true, isPk: true }),
+      col("score", "int"),
+      col("avatar", "bytes"),
+      col("gen", "text", { editable: false }),
+    ];
+    const src = [2, 0, 1, 3, 4];
+    const { rows, skipped } = pastedRows(
+      [
+        ["Ann", "1", "5", "AA==", "x"],
+        ["Bob", "2", "lots", "", "y"],
+      ],
+      cols,
+      src,
+    );
+    expect(rows).toEqual([
+      [
+        { c: 2, value: { t: "text", v: "Ann" } },
+        { c: 1, value: { t: "int", v: 5 } },
+      ],
+      [{ c: 2, value: { t: "text", v: "Bob" } }],
+    ]);
+    expect(skipped).toBe(1);
   });
 });

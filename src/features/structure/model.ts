@@ -1,16 +1,21 @@
 import type {
+  CheckMeta,
   ColumnDef,
   ColumnMeta,
   DdlOp,
   Dialect,
   FkDef,
   IndexDef,
+  IndexMeta,
   TableMeta,
+  TableOptions,
   TableRef,
+  TriggerMeta,
 } from "@/lib/ipc";
 import {
   columnOp,
   newColumnDef,
+  onUpdateOf,
   supportsColumnPosition,
   withField,
   type ColumnField,
@@ -26,9 +31,10 @@ import {
  * a column discards the staged edits that only concerned it.
  */
 
-export type RowStatus = "existing" | "added" | "dropped";
+/** `changed`: an existing index / check / trigger replaced by a staged drop + create. */
+export type RowStatus = "existing" | "added" | "dropped" | "changed";
 
-type ExistingField = Exclude<ColumnField, "autoIncrement">;
+type ExistingField = ColumnField;
 
 export interface ColumnRow {
   /** Stable React key: `c:<db name>` for existing columns, `n:<k>` for the k-th staged column. */
@@ -41,6 +47,9 @@ export interface ColumnRow {
   defaultExpr: string | null;
   comment: string | null;
   autoIncrement: boolean;
+  /** MySQL `ON UPDATE …` expression. */
+  onUpdate: string | null;
+  collation: string | null;
   isPk: boolean;
   status: RowStatus;
   /** Attributes of an existing column that differ from the database. */
@@ -63,9 +72,53 @@ export interface IndexRow {
   method: string | null;
   predicate: string | null;
   definition: string | null;
+  comment: string | null;
   status: RowStatus;
-  /** Op that added (status added) or dropped (status dropped) the index. */
+  /** Op that added (status added) or dropped (status dropped / changed) the index. */
   opIndex: number | null;
+  /** Status changed: the `addIndex` op that recreates it. */
+  addAt: number | null;
+  /** The index as the database has it (null for a staged new one). */
+  original: IndexMeta | null;
+}
+
+export interface CheckRow {
+  key: string;
+  name: string;
+  expression: string;
+  columns: string[];
+  status: RowStatus;
+  /** Op that added (status added) or dropped (status dropped / changed) the check. */
+  opIndex: number | null;
+  /** Status changed: the `addCheck` op that recreates it. */
+  addAt: number | null;
+  original: CheckMeta | null;
+}
+
+export interface TriggerRow {
+  key: string;
+  name: string;
+  timing: string | null;
+  events: string[];
+  enabled: boolean;
+  /** As the database reports it (PG / SQLite: the CREATE statement; MySQL: the body). */
+  definition: string;
+  /** The staged CREATE TRIGGER statement (added / changed rows). */
+  sql: string | null;
+  status: RowStatus;
+  opIndex: number | null;
+  addAt: number | null;
+  original: TriggerMeta | null;
+}
+
+/** The table's own attributes once the staged ops are applied. */
+export interface TableInfo {
+  name: string;
+  comment: string | null;
+  /** MySQL options with the staged `alterTableOptions` merged in. */
+  options: TableOptions | null;
+  /** Position of the staged `renameTable`, `setTableComment`, `alterTableOptions` op. */
+  opAt: Partial<Record<"name" | "comment" | "options", number>>;
 }
 
 export interface FkRow {
@@ -84,8 +137,11 @@ export interface StructureView {
   columns: ColumnRow[];
   indexes: IndexRow[];
   foreignKeys: FkRow[];
+  checks: CheckRow[];
+  triggers: TriggerRow[];
   /** Primary key columns (current names) in key order, once the staged ops are applied. */
   primaryKey: string[];
+  info: TableInfo;
 }
 
 type AddColumnOp = Extract<DdlOp, { op: "addColumn" }>;
@@ -149,6 +205,9 @@ export function renameRefs(op: DdlOp, table: TableRef, from: string, to: string)
     case "alterColumnNullable":
     case "alterColumnDefault":
     case "setColumnComment":
+    case "alterColumnAutoIncrement":
+    case "alterColumnOnUpdate":
+    case "alterColumnCollation":
       return op.name === from ? { ...op, name: to } : op;
     case "addColumn":
       return op.after === from ? { ...op, after: to } : op;
@@ -176,6 +235,8 @@ function existingRow(c: ColumnMeta): ColumnRow {
     defaultExpr: c.defaultExpr,
     comment: c.comment,
     autoIncrement: c.isAutoIncrement,
+    onUpdate: onUpdateOf(c.extra),
+    collation: c.collation,
     isPk: c.isPk,
     status: "existing",
     changed: [],
@@ -197,6 +258,8 @@ function addedRow(op: AddColumnOp, index: number, key: string): ColumnRow {
     defaultExpr: d.defaultExpr,
     comment: d.comment,
     autoIncrement: d.autoIncrement,
+    onUpdate: d.onUpdate,
+    collation: d.collation,
     isPk: false,
     status: "added",
     changed: [],
@@ -207,7 +270,16 @@ function addedRow(op: AddColumnOp, index: number, key: string): ColumnRow {
   };
 }
 
-const EXISTING_FIELDS: ExistingField[] = ["name", "dataType", "nullable", "defaultExpr", "comment"];
+const EXISTING_FIELDS: ExistingField[] = [
+  "name",
+  "dataType",
+  "nullable",
+  "defaultExpr",
+  "comment",
+  "autoIncrement",
+  "onUpdate",
+  "collation",
+];
 
 function originalOf(meta: ColumnMeta, field: ExistingField): ColumnValue {
   switch (field) {
@@ -221,7 +293,57 @@ function originalOf(meta: ColumnMeta, field: ExistingField): ColumnValue {
       return meta.defaultExpr;
     case "comment":
       return meta.comment;
+    case "autoIncrement":
+      return meta.isAutoIncrement;
+    case "onUpdate":
+      return onUpdateOf(meta.extra);
+    case "collation":
+      return meta.collation;
   }
+}
+
+const isNextval = (expr: string | null) => expr !== null && /^\s*nextval\(/i.test(expr);
+
+/** CHECK constraints: the columns an expression names (case-insensitive, outside literals). */
+export function checkColumns(expression: string, columns: readonly string[]): string[] {
+  const words = new Set<string>();
+  const re = /'(?:[^']|'')*'|"((?:[^"]|"")+)"|`((?:[^`]|``)+)`|\[([^\]]+)\]|([A-Za-z_][\w$]*)/g;
+  for (const m of expression.matchAll(re)) {
+    const w = m[1]?.replace(/""/g, '"') ?? m[2]?.replace(/``/g, "`") ?? m[3] ?? m[4];
+    if (w !== undefined) words.add(w.toLowerCase());
+  }
+  return columns.filter((c) => words.has(c.toLowerCase()));
+}
+
+/** Trigger name, timing and events of a `CREATE TRIGGER` statement (best effort). */
+export function parseTriggerSql(sql: string): {
+  name: string | null;
+  timing: string | null;
+  events: string[];
+} {
+  const ident = String.raw`(?:"(?:[^"]|"")+"|\`(?:[^\`]|\`\`)+\`|\[[^\]]+\]|[\w$]+)`;
+  const head = new RegExp(
+    String.raw`^\s*create\s+(?:or\s+replace\s+)?(?:definer\s*=\s*\S+\s+)?(?:constraint\s+)?(?:temp(?:orary)?\s+)?trigger\s+(?:if\s+not\s+exists\s+)?((?:${ident}\s*\.\s*)?${ident})([\s\S]*)$`,
+    "i",
+  ).exec(sql);
+  if (!head) return { name: null, timing: null, events: [] };
+  const raw = head[1]!;
+  const parts = [...raw.matchAll(new RegExp(ident, "g"))].map((m) => m[0]);
+  const last = parts[parts.length - 1] ?? raw;
+  const name = /^["`[]/.test(last)
+    ? last.slice(1, -1).replace(/""/g, '"').replace(/``/g, "`")
+    : last;
+  const words = head[2]!.split(/\s+/).filter(Boolean);
+  const stop = words.findIndex((w) => /^on$/i.test(w));
+  const before = (stop >= 0 ? words.slice(0, stop) : words).map((w) => w.toUpperCase());
+  const timing =
+    before[0] === "INSTEAD"
+      ? "INSTEAD OF"
+      : (before.find((w) => w === "BEFORE" || w === "AFTER") ?? null);
+  const events = before
+    .map((w) => w.replace(/,$/, ""))
+    .filter((w) => ["INSERT", "UPDATE", "DELETE", "TRUNCATE"].includes(w));
+  return { name, timing, events: [...new Set(events)] };
 }
 
 function currentOf(row: ColumnRow, field: ColumnField): ColumnValue {
@@ -241,8 +363,11 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
     method: i.method,
     predicate: i.predicate,
     definition: i.definition,
+    comment: i.comment,
     status: "existing",
     opIndex: null,
+    addAt: null,
+    original: i,
   }));
   const foreignKeys: FkRow[] = meta.foreignKeys.map((f) => ({
     key: `f:${f.name}`,
@@ -255,11 +380,52 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
     status: "existing",
     opIndex: null,
   }));
+  const checks: CheckRow[] = meta.checks.map((c) => ({
+    key: `k:${c.name}`,
+    name: c.name,
+    expression: c.expression,
+    columns: c.columns,
+    status: "existing",
+    opIndex: null,
+    addAt: null,
+    original: c,
+  }));
+  const triggers: TriggerRow[] = meta.triggers.map((t) => ({
+    key: `t:${t.name}`,
+    name: t.name,
+    timing: t.timing,
+    events: t.events,
+    enabled: t.enabled,
+    definition: t.definition,
+    sql: null,
+    status: "existing",
+    opIndex: null,
+    addAt: null,
+    original: t,
+  }));
+  const info: TableInfo = {
+    name: table.name,
+    comment: meta.comment,
+    options: meta.options,
+    opAt: {},
+  };
   let addedColumns = 0;
   let addedIndexes = 0;
   let addedFks = 0;
+  let addedChecks = 0;
+  let addedTriggers = 0;
   let primaryKey = [...meta.primaryKey];
   const live = (name: string) => columns.find((c) => c.status !== "dropped" && c.name === name);
+  const liveNames = () => columns.filter((c) => c.status !== "dropped").map((c) => c.name);
+  /** Whether op `i` drops `name` and op `i + 1` (same kind of object) recreates it. */
+  const replaced = (i: number, kind: "addIndex" | "addCheck" | "createTrigger", name: string) => {
+    const next = ops[i + 1];
+    if (!next || !targets(next, table)) return false;
+    if (kind === "addIndex" && next.op === "addIndex") return next.index.name === name;
+    if (kind === "addCheck" && next.op === "addCheck") return next.check.name === name;
+    if (kind === "createTrigger" && next.op === "createTrigger") return next.name === name;
+    return false;
+  };
 
   ops.forEach((op, i) => {
     if (!targets(op, table)) return;
@@ -326,6 +492,33 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
         }
         return;
       }
+      case "alterColumnAutoIncrement": {
+        const r = live(op.name);
+        if (r) {
+          r.autoIncrement = op.autoIncrement;
+          r.opAt.autoIncrement = i;
+          // An identity / AUTO_INCREMENT column has no default; turning a PostgreSQL sequence
+          // default off drops it.
+          if (op.autoIncrement || isNextval(r.defaultExpr)) r.defaultExpr = null;
+        }
+        return;
+      }
+      case "alterColumnOnUpdate": {
+        const r = live(op.name);
+        if (r) {
+          r.onUpdate = op.onUpdate;
+          r.opAt.onUpdate = i;
+        }
+        return;
+      }
+      case "alterColumnCollation": {
+        const r = live(op.name);
+        if (r) {
+          r.collation = op.collation;
+          r.opAt.collation = i;
+        }
+        return;
+      }
       case "addPrimaryKey":
         for (const name of op.columns) {
           const r = live(name);
@@ -343,25 +536,47 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
         return;
       case "addIndex": {
         const x = op.index;
-        indexes.push({
-          key: `ni:${addedIndexes++}`,
-          name: x.name,
-          columns: x.columns,
-          unique: x.unique,
-          primary: false,
-          method: x.method,
-          predicate: x.predicate,
-          definition: null,
-          status: "added",
-          opIndex: i,
-        });
+        const changed = indexes.find(
+          (r) => r.status === "changed" && r.addAt === null && r.opIndex === i - 1,
+        );
+        if (changed) {
+          Object.assign(changed, {
+            name: x.name,
+            columns: x.columns,
+            unique: x.unique,
+            method: x.method,
+            predicate: x.predicate,
+            comment: x.comment,
+            definition: null,
+            addAt: i,
+          });
+        } else {
+          indexes.push({
+            key: `ni:${addedIndexes++}`,
+            name: x.name,
+            columns: x.columns,
+            unique: x.unique,
+            primary: false,
+            method: x.method,
+            predicate: x.predicate,
+            definition: null,
+            comment: x.comment,
+            status: "added",
+            opIndex: i,
+            addAt: null,
+            original: null,
+          });
+        }
         for (const entry of x.columns) live(entryBase(entry))?.refs.push(i);
         return;
       }
       case "dropIndex": {
-        const r = indexes.find((x) => x.status !== "dropped" && x.name === op.name);
+        const r = indexes.find(
+          (x) => (x.status === "existing" || x.status === "added") && x.name === op.name,
+        );
         if (r) {
-          r.status = "dropped";
+          r.status =
+            r.status === "existing" && replaced(i, "addIndex", op.name) ? "changed" : "dropped";
           r.opIndex = i;
         }
         return;
@@ -390,6 +605,104 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
         }
         return;
       }
+      case "addCheck": {
+        const c = op.check;
+        const changed = checks.find(
+          (r) => r.status === "changed" && r.addAt === null && r.opIndex === i - 1,
+        );
+        const columnsOf = checkColumns(c.expression, liveNames());
+        if (changed) {
+          Object.assign(changed, { expression: c.expression, columns: columnsOf, addAt: i });
+        } else {
+          checks.push({
+            key: `nk:${addedChecks++}`,
+            name: c.name ?? "",
+            expression: c.expression,
+            columns: columnsOf,
+            status: "added",
+            opIndex: i,
+            addAt: null,
+            original: null,
+          });
+        }
+        return;
+      }
+      case "dropCheck": {
+        const r = checks.find(
+          (x) => (x.status === "existing" || x.status === "added") && x.name === op.name,
+        );
+        if (r) {
+          r.status =
+            r.status === "existing" && replaced(i, "addCheck", op.name) ? "changed" : "dropped";
+          r.opIndex = i;
+        }
+        return;
+      }
+      case "createTrigger": {
+        const head = parseTriggerSql(op.sql);
+        const changed = triggers.find(
+          (r) => r.status === "changed" && r.addAt === null && r.opIndex === i - 1,
+        );
+        const fields = {
+          timing: head.timing,
+          events: head.events,
+          sql: op.sql,
+          definition: op.sql,
+        };
+        if (changed) Object.assign(changed, fields, { addAt: i });
+        else
+          triggers.push({
+            key: `nt:${addedTriggers++}`,
+            name: op.name,
+            enabled: true,
+            ...fields,
+            status: "added",
+            opIndex: i,
+            addAt: null,
+            original: null,
+          });
+        return;
+      }
+      case "dropTrigger": {
+        const r = triggers.find(
+          (x) => (x.status === "existing" || x.status === "added") && x.name === op.name,
+        );
+        if (r) {
+          r.status =
+            r.status === "existing" && replaced(i, "createTrigger", op.name)
+              ? "changed"
+              : "dropped";
+          r.opIndex = i;
+        }
+        return;
+      }
+      case "renameTable":
+        info.name = op.newName;
+        info.opAt.name = i;
+        return;
+      case "setTableComment":
+        info.comment = op.comment;
+        info.opAt.comment = i;
+        return;
+      case "alterTableOptions": {
+        const o = op.options;
+        const base = info.options ?? {
+          engine: null,
+          charset: null,
+          collation: null,
+          autoIncrement: null,
+          rowFormat: null,
+        };
+        info.options = {
+          engine: o.engine ?? base.engine,
+          charset: o.collation ? o.collation.split("_")[0]! : (o.charset ?? base.charset),
+          collation: o.collation ?? (o.charset ? null : base.collation),
+          autoIncrement: o.autoIncrement ?? base.autoIncrement,
+          rowFormat: o.rowFormat ?? base.rowFormat,
+        };
+        info.opAt.options = i;
+        return;
+      }
       default:
         return;
     }
@@ -405,7 +718,7 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
   }
   if (renamed.size > 0) {
     for (const x of indexes)
-      if (x.status !== "added")
+      if (x.status !== "added" && x.addAt === null)
         x.columns = x.columns.map((e) => {
           const base = entryBase(e);
           const to = renamed.get(base);
@@ -413,8 +726,11 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
         });
     for (const f of foreignKeys)
       if (f.status !== "added") f.columns = f.columns.map((c) => renamed.get(c) ?? c);
+    for (const k of checks)
+      if (k.status !== "added" && k.addAt === null)
+        k.columns = k.columns.map((c) => renamed.get(c) ?? c);
   }
-  return { columns, indexes, foreignKeys, primaryKey };
+  return { columns, indexes, foreignKeys, checks, triggers, primaryKey, info };
 }
 
 // --- reducers ------------------------------------------------------------------------------
@@ -485,7 +801,7 @@ export function editColumn(
     return field === "name" ? rewriteFrom(next, i + 1, table, row.name, column.name) : next;
   }
 
-  if (field === "autoIncrement" || !row.meta) return current;
+  if (!row.meta) return current;
   const original = originalOf(row.meta, field);
   const k = row.opAt[field];
 
@@ -680,18 +996,75 @@ export function addIndex(meta: TableMeta, ops: readonly DdlOp[], index: IndexDef
   return [...ops, { op: "addIndex", table: meta.table, index }];
 }
 
+/** The index definition of a row (what `addIndex` would recreate it with). */
+export function indexDefOf(
+  row: Pick<IndexRow, "name" | "columns" | "unique" | "method" | "predicate" | "comment">,
+): IndexDef {
+  return {
+    name: row.name,
+    columns: [...row.columns],
+    unique: row.unique,
+    method: row.method,
+    predicate: row.predicate,
+    comment: row.comment,
+  };
+}
+
+const sameIndexDef = (a: IndexDef, b: IndexDef) =>
+  a.name === b.name &&
+  a.unique === b.unique &&
+  (a.method ?? "") === (b.method ?? "") &&
+  (a.predicate ?? "") === (b.predicate ?? "") &&
+  (a.comment ?? "") === (b.comment ?? "") &&
+  a.columns.length === b.columns.length &&
+  a.columns.every((c, i) => c === b.columns[i]);
+
+/**
+ * Stages an edit of index `key`: a staged new index changes in place; an existing one is dropped
+ * and created again (`dropIndex` + `addIndex`, adjacent at the end), and setting it back to what
+ * the database has removes both.
+ */
+export function editIndex(
+  meta: TableMeta,
+  ops: readonly DdlOp[],
+  key: string,
+  patch: Partial<IndexDef>,
+): DdlOp[] {
+  const current = ops as DdlOp[];
+  const row = foldStructure(meta, ops).indexes.find((x) => x.key === key);
+  if (!row || row.status === "dropped" || row.primary) return current;
+  const next = { ...indexDefOf(row), ...patch };
+  if (sameIndexDef(next, indexDefOf(row))) return current;
+  const table = meta.table;
+  if (row.status === "added")
+    return replaceAt(ops, row.opIndex!, { op: "addIndex", table, index: next });
+  const original = indexDefOf(row.original!);
+  if (row.status === "changed") {
+    if (sameIndexDef(next, original))
+      return ops.filter((_, i) => i !== row.opIndex && i !== row.addAt);
+    return replaceAt(ops, row.addAt!, { op: "addIndex", table, index: next });
+  }
+  return [
+    ...ops,
+    { op: "dropIndex", table, name: row.name },
+    { op: "addIndex", table, index: next },
+  ];
+}
+
 /** Drops an existing index (not the primary key) or discards a staged one. */
 export function dropIndex(meta: TableMeta, ops: readonly DdlOp[], key: string): DdlOp[] {
   const row = foldStructure(meta, ops).indexes.find((x) => x.key === key);
   if (!row || row.status === "dropped" || row.primary) return ops as DdlOp[];
   if (row.status === "added") return ops.filter((_, i) => i !== row.opIndex);
+  if (row.status === "changed") return ops.filter((_, i) => i !== row.addAt);
   return [...ops, { op: "dropIndex", table: meta.table, name: row.name }];
 }
 
+/** Undoes a staged drop (or edit) of an existing index. */
 export function restoreIndex(meta: TableMeta, ops: readonly DdlOp[], key: string): DdlOp[] {
   const row = foldStructure(meta, ops).indexes.find((x) => x.key === key);
-  if (row?.status !== "dropped") return ops as DdlOp[];
-  return ops.filter((_, i) => i !== row.opIndex);
+  if (row?.status !== "dropped" && row?.status !== "changed") return ops as DdlOp[];
+  return ops.filter((_, i) => i !== row.opIndex && i !== row.addAt);
 }
 
 export function addForeignKey(meta: TableMeta, ops: readonly DdlOp[], fk: FkDef): DdlOp[] {
@@ -711,4 +1084,33 @@ export function restoreForeignKey(meta: TableMeta, ops: readonly DdlOp[], key: s
   const row = foldStructure(meta, ops).foreignKeys.find((x) => x.key === key);
   if (row?.status !== "dropped") return ops as DdlOp[];
   return ops.filter((_, i) => i !== row.opIndex);
+}
+
+/**
+ * The foreign key editor of a column (`foreign_key` popover) saved `fk` for row `key`: a staged
+ * key changes in place, an existing one is dropped and added again.
+ */
+export function replaceForeignKey(
+  meta: TableMeta,
+  ops: readonly DdlOp[],
+  key: string,
+  fk: FkDef,
+): DdlOp[] {
+  const row = foldStructure(meta, ops).foreignKeys.find((x) => x.key === key);
+  if (!row || row.status === "dropped") return ops as DdlOp[];
+  const table = meta.table;
+  if (row.status === "added")
+    return replaceAt(ops, row.opIndex!, { op: "addForeignKey", table, fk });
+  const same =
+    row.columns.join("\u0000") === fk.columns.join("\u0000") &&
+    sameRef(row.refTable, fk.refTable) &&
+    row.refColumns.join("\u0000") === fk.refColumns.join("\u0000") &&
+    (row.onUpdate ?? "NO ACTION") === (fk.onUpdate ?? "NO ACTION") &&
+    (row.onDelete ?? "NO ACTION") === (fk.onDelete ?? "NO ACTION");
+  if (same || !row.name) return ops as DdlOp[];
+  return [
+    ...ops,
+    { op: "dropForeignKey", table, name: row.name },
+    { op: "addForeignKey", table, fk },
+  ];
 }

@@ -1,6 +1,12 @@
 import { create } from "zustand";
 
-export const SETTINGS_SECTIONS = ["general", "editor", "connections", "shortcuts"] as const;
+export const SETTINGS_SECTIONS = [
+  "general",
+  "editor",
+  "connections",
+  "shortcuts",
+  "security",
+] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 interface SettingsDialogState {

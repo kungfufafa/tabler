@@ -13,4 +13,8 @@ autoIncrement: boolean, comment: string | null, collation: string | null,
 /**
  * MySQL only (`UNSIGNED`); ignored elsewhere with a warning.
  */
-unsigned: boolean, };
+unsigned: boolean, 
+/**
+ * MySQL only (`ON UPDATE CURRENT_TIMESTAMP`); ignored elsewhere with a warning.
+ */
+onUpdate: string | null, };

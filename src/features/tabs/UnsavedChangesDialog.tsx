@@ -13,8 +13,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { actions } from "@/features/palette/actions";
+import { pendingCount } from "@/features/staging/model";
+import { structurePendingCount } from "@/features/structure/store";
 import { closeWindowNow } from "@/hooks/useUnsavedGuard";
 import { comboFromEvent } from "@/lib/keys/combo";
+import { useTableTabsStore } from "@/stores/tableTabs";
 import { useTabsStore, type CloseRequest } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
 
@@ -66,6 +69,11 @@ export function UnsavedChangesDialog() {
     const tabs = useTabsStore.getState();
     tabs.cancelClose();
     tabs.activate(reviewTarget.id);
+    // A table's tab keeps row edits and structure changes in its two views: show the view that
+    // holds the work (rows first), whichever one is up, so its Preview SQL sheet answers.
+    const slice = useTableTabsStore.getState().slices[reviewTarget.id];
+    if (slice && pendingCount(slice.staging) > 0) tabs.setView(reviewTarget.id, "table");
+    else if (structurePendingCount(reviewTarget.id) > 0) tabs.setView(reviewTarget.id, "structure");
     useUiStore.getState().setView("workspace");
     // Always the Preview SQL sheet: "Review…" must not apply even when ⌘S skips the preview.
     afterTabSwitch(() => void actions.run("grid.preview"));

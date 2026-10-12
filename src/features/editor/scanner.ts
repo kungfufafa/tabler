@@ -13,6 +13,9 @@
  *
  * Offsets are UTF-16 code units (what CodeMirror uses). Spans are trimmed, exclude the terminator
  * and leading comments; empty and comment-only statements are skipped.
+ *
+ * The same pass also drives `minifySql` ("Uglify SQL"), which needs to know where the strings,
+ * quoted identifiers and comments are.
  */
 
 export type SqlDialect = "postgres" | "mysql" | "sqlite";
@@ -36,6 +39,17 @@ const isIdentStart = (c: string | undefined): boolean => c !== undefined && IDEN
 const isWordChar = (c: string | undefined): boolean => c !== undefined && WORD_CHAR.test(c);
 const isWs = (c: string | undefined): boolean => c !== undefined && WS.test(c);
 
+/**
+ * A stretch of text the scanner skipped over: `quoted` (strings, quoted identifiers, dollar
+ * quotes, MySQL executable comments: kept as they are), `comment`, or `line` (a client directive
+ * that runs to the end of its line: psql meta-commands, MySQL `DELIMITER`).
+ */
+interface LexSpan {
+  kind: "quoted" | "comment" | "line";
+  start: number;
+  end: number;
+}
+
 class Splitter {
   readonly out: StatementRange[] = [];
   private contentStart: number | null = null;
@@ -51,8 +65,15 @@ class Splitter {
   constructor(
     private readonly s: string,
     private readonly dialect: SqlDialect,
+    /** Collects the skipped spans when given (only `minifySql` needs them). */
+    private readonly spans: LexSpan[] | null = null,
   ) {
     this.n = s.length;
+  }
+
+  private note(kind: LexSpan["kind"], start: number, end: number): number {
+    this.spans?.push({ kind, start, end });
+    return end;
   }
 
   private get mysql(): boolean {
@@ -114,30 +135,31 @@ class Splitter {
       const next = s[i + 1];
       if (c === "'") {
         this.mark(i);
-        i = this.skipQuoted(i, "'", this.mysql);
+        i = this.note("quoted", i, this.skipQuoted(i, "'", this.mysql));
       } else if (c === '"') {
         this.mark(i);
-        i = this.skipQuoted(i, '"', this.mysql);
+        i = this.note("quoted", i, this.skipQuoted(i, '"', this.mysql));
       } else if (c === "`" && !this.pg) {
         this.mark(i);
-        i = this.skipQuoted(i, "`", false);
+        i = this.note("quoted", i, this.skipQuoted(i, "`", false));
       } else if (c === "[" && this.dialect === "sqlite") {
         this.mark(i);
-        i = this.skipUntil(i + 1, "]");
+        i = this.note("quoted", i, this.skipUntil(i + 1, "]"));
       } else if (c === "-" && next === "-" && this.dashCommentOk(i)) {
-        i = this.skipLine(i);
+        i = this.note("comment", i, this.skipLine(i));
       } else if (c === "#" && this.mysql) {
-        i = this.skipLine(i);
+        i = this.note("comment", i, this.skipLine(i));
       } else if (c === "/" && next === "*") {
         // MySQL executable comments (`/*! … */`) and optimizer hints are code.
-        if (this.mysql && (s[i + 2] === "!" || s[i + 2] === "+")) this.mark(i);
-        i = this.skipBlockComment(i);
+        const code = this.mysql && (s[i + 2] === "!" || s[i + 2] === "+");
+        if (code) this.mark(i);
+        i = this.note(code ? "quoted" : "comment", i, this.skipBlockComment(i));
       } else if (c === "$" && this.pg) {
         const tag = this.dollarTag(i);
         this.mark(i);
-        i = tag === null ? i + 1 : this.skipDollar(i, tag);
+        i = tag === null ? i + 1 : this.note("quoted", i, this.skipDollar(i, tag));
       } else if (c === "\\" && this.pg && this.atLineStart(i)) {
-        i = this.metaCommand(i);
+        i = this.note("line", i, this.metaCommand(i));
       } else if (isIdentStart(c)) {
         i = this.word(i);
       } else if (isWs(c)) {
@@ -342,13 +364,13 @@ class Splitter {
     // PostgreSQL escape strings: E'…' with backslash escapes.
     if (this.pg && word === "E" && s[j] === "'") {
       this.mark(i);
-      return this.skipQuoted(j, "'", true);
+      return this.note("quoted", i, this.skipQuoted(j, "'", true));
     }
 
     const first = this.contentStart === null;
     if (first && this.mysql && word === "DELIMITER") {
       const end = this.delimiterDirective(j);
-      if (end !== null) return end;
+      if (end !== null) return this.note("line", i, end);
     }
 
     this.mark(i);
@@ -437,7 +459,86 @@ export function statementAt(
   return loose ? (prev ?? next) : null;
 }
 
+/** A stretch the scanner skips: strings and quoted identifiers, comments, client directives. */
+export interface SkippedSpan {
+  kind: "quoted" | "comment" | "line";
+  start: number;
+  end: number;
+}
+
+/** Where the strings, quoted identifiers, comments and client directives of `text` are. */
+export function skippedSpans(text: string, dialect: SqlDialect): SkippedSpan[] {
+  const spans: LexSpan[] = [];
+  new Splitter(text, dialect, spans).run();
+  return spans;
+}
+
 /** Convenience for tests and callers that want the statement texts. */
 export function statementTexts(text: string, dialect: SqlDialect): string[] {
   return splitStatements(text, dialect).map((s) => text.slice(s.start, s.end));
+}
+
+/**
+ * "Uglify SQL": the text on one line. Whitespace runs collapse to one space and comments go
+ * (leaving a space so tokens never merge); strings, quoted identifiers, dollar quotes and MySQL
+ * executable comments are kept exactly. Client directives (psql meta-commands, `DELIMITER`) keep
+ * their own line, since they end at the line break.
+ */
+export function minifySql(text: string, dialect: SqlDialect): string {
+  const spans: LexSpan[] = [];
+  new Splitter(text, dialect, spans).run();
+  let out = "";
+  // Whitespace or a comment since the last thing written, and whether it held a line break.
+  let gap = false;
+  let gapNewline = false;
+  // The last thing written was a '…' string constant.
+  let afterString = false;
+  const put = (s: string, quoted = false) => {
+    if (gap && out !== "" && !out.endsWith("\n")) {
+      // PostgreSQL joins two string constants ('a'\n'b') only when a line break separates them.
+      const joined =
+        dialect === "postgres" && afterString && quoted && gapNewline && /^[A-Za-z&]*'/.test(s);
+      out += joined ? "\n" : " ";
+    }
+    gap = false;
+    gapNewline = false;
+    afterString = quoted && s.endsWith("'");
+    out += s;
+  };
+  const space = (ws: string) => {
+    if (ws === "") return;
+    gap = true;
+    if (ws.includes("\n")) gapNewline = true;
+  };
+  const code = (from: number, to: number) => {
+    const chunk = text.slice(from, to);
+    const words = /\S+/g;
+    let last = 0;
+    for (let m = words.exec(chunk); m; m = words.exec(chunk)) {
+      space(chunk.slice(last, m.index));
+      put(m[0]);
+      last = m.index + m[0].length;
+    }
+    space(chunk.slice(last));
+  };
+  let pos = 0;
+  for (const span of spans) {
+    code(pos, span.start);
+    pos = span.end;
+    const raw = text.slice(span.start, span.end);
+    if (span.kind === "quoted") put(raw, true);
+    else if (span.kind === "comment") {
+      gap = true;
+      // A line comment ends at a line break.
+      if (/^(--|#)/.test(raw) || raw.includes("\n")) gapNewline = true;
+    } else {
+      if (out !== "" && !out.endsWith("\n")) out += "\n";
+      out += `${raw.trim()}\n`;
+      gap = false;
+      gapNewline = false;
+      afterString = false;
+    }
+  }
+  code(pos, text.length);
+  return out.trim();
 }

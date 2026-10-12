@@ -12,6 +12,7 @@
 //
 // `get_table` and `list_tables` are re-registered here (same behaviour as in handlers.ts) so they
 // can include the overlays.
+import type { CheckMeta } from "../bindings/CheckMeta";
 import type { ColumnDef } from "../bindings/ColumnDef";
 import type { ColumnMeta } from "../bindings/ColumnMeta";
 import type { ConnectionInfo } from "../bindings/ConnectionInfo";
@@ -23,9 +24,12 @@ import type { ErrorPayload } from "../bindings/ErrorPayload";
 import type { ForeignKeyMeta } from "../bindings/ForeignKeyMeta";
 import type { IndexDef } from "../bindings/IndexDef";
 import type { IndexMeta } from "../bindings/IndexMeta";
+import type { StructureChoices } from "../bindings/StructureChoices";
 import type { TableMeta } from "../bindings/TableMeta";
+import type { TableOptions } from "../bindings/TableOptions";
 import type { TableRef } from "../bindings/TableRef";
 import type { TableSummary } from "../bindings/TableSummary";
+import type { TriggerMeta } from "../bindings/TriggerMeta";
 import type { Value } from "../bindings/Value";
 import type { ValueKind } from "../bindings/ValueKind";
 // handlers.ts registers the base get_table / list_tables; it must run before the overrides below.
@@ -44,6 +48,11 @@ interface Overlay {
   fks: ForeignKeyMeta[];
   droppedFks: string[];
   comment?: string | null;
+  checks: CheckMeta[];
+  droppedChecks: string[];
+  triggers: TriggerMeta[];
+  droppedTriggers: string[];
+  options?: TableOptions;
 }
 
 /** `${driver}:${schema}` → the table list once a DDL changed it. */
@@ -89,10 +98,60 @@ function overlayOf(d: Driver, t: TableRef): Overlay {
   const key = tableId(d, t);
   let o = overlays.get(key);
   if (!o) {
-    o = { indexes: [], droppedIndexes: [], fks: [], droppedFks: [] };
+    o = {
+      indexes: [],
+      droppedIndexes: [],
+      fks: [],
+      droppedFks: [],
+      checks: [],
+      droppedChecks: [],
+      triggers: [],
+      droppedTriggers: [],
+    };
     overlays.set(key, o);
   }
   return o;
+}
+
+/** The fixture CHECK constraints of a table, named the way each server names them. */
+function baseChecks(d: Driver, name: string): CheckMeta[] {
+  const n = (column: string, i: number) =>
+    d === "postgres"
+      ? `${name}_${column}_check`
+      : d === "mysql"
+        ? `${name}_chk_${i}`
+        : `ck_${name}_${i}`;
+  if (name === "users")
+    return [{ name: n("balance", 1), expression: "balance >= 0", columns: ["balance"] }];
+  if (name === "Order Items")
+    return [{ name: n("qty", 1), expression: "qty > 0", columns: ["qty"] }];
+  return [];
+}
+
+/** Fixture triggers as each server reports them (MySQL: the body only). */
+function baseTriggers(d: Driver, meta: TableMeta): TriggerMeta[] {
+  return meta.triggers.map((t) => {
+    if (d === "mysql") return { ...t, definition: "SET NEW.updated_at = NOW()" };
+    if (d === "sqlite")
+      return {
+        ...t,
+        timing: "AFTER",
+        definition: `CREATE TRIGGER ${t.name} AFTER UPDATE ON ${meta.table.name} BEGIN UPDATE ${meta.table.name} SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END`,
+      };
+    return t;
+  });
+}
+
+function baseOptions(d: Driver, meta: TableMeta): TableOptions | null {
+  if (d !== "mysql" || meta.kind !== "table") return null;
+  const ai = meta.columns.some((c) => c.isAutoIncrement);
+  return {
+    engine: "InnoDB",
+    charset: "utf8mb4",
+    collation: "utf8mb4_0900_ai_ci",
+    autoIncrement: ai ? (meta.rowEstimate ?? 0) + 1 : null,
+    rowFormat: "Dynamic",
+  };
 }
 
 /** Catalog metadata of a table including the DDL overlays; null when it does not exist. */
@@ -100,8 +159,24 @@ function metaOf(d: Driver, t: TableRef): TableMeta | null {
   const schema = schemaOf(t);
   if (lists.has(listId(d, schema)) && !listOf(d, schema).some((x) => x.name === t.name))
     return null;
-  const meta = tableMetaFor(d, schema, t.name);
-  if (!meta) return null;
+  const fixture = tableMetaFor(d, schema, t.name);
+  if (!fixture) return null;
+  const meta: TableMeta = {
+    ...fixture,
+    // MySQL reports AUTO_INCREMENT in EXTRA (the fixtures carry PostgreSQL's spelling).
+    columns:
+      d === "mysql"
+        ? fixture.columns.map((c) =>
+            c.isAutoIncrement && c.extra === null
+              ? { ...c, extra: "auto_increment", defaultExpr: null }
+              : c,
+          )
+        : fixture.columns,
+    indexes: fixture.indexes.map((i) => ({ ...i, comment: i.comment ?? null })),
+    checks: fixture.kind === "table" ? baseChecks(d, t.name) : [],
+    triggers: baseTriggers(d, fixture),
+  };
+  meta.options = baseOptions(d, meta);
   const summary = listOf(d, schema).find((x) => x.name === t.name);
   if (summary && meta.rowEstimate === null) meta.rowEstimate = summary.rowEstimate;
   const o = overlays.get(tableId(d, t));
@@ -110,7 +185,10 @@ function metaOf(d: Driver, t: TableRef): TableMeta | null {
     ...meta,
     indexes: [...meta.indexes.filter((i) => !o.droppedIndexes.includes(i.name)), ...o.indexes],
     foreignKeys: [...meta.foreignKeys.filter((f) => !o.droppedFks.includes(f.name)), ...o.fks],
+    checks: [...meta.checks.filter((c) => !o.droppedChecks.includes(c.name)), ...o.checks],
+    triggers: [...meta.triggers.filter((x) => !o.droppedTriggers.includes(x.name)), ...o.triggers],
     comment: o.comment !== undefined ? o.comment : meta.comment,
+    options: o.options ?? meta.options,
   };
 }
 
@@ -163,20 +241,34 @@ function columnSql(
     comment: string | null;
     unsigned?: boolean;
     identity?: "ALWAYS" | "BY DEFAULT";
+    onUpdate?: string | null;
+    collation?: string | null;
   },
   inlinePk = false,
 ): string {
   let sql = `${q(d, c.name)} ${c.dataType}`;
   if (d === "mysql" && c.unsigned && !/unsigned/i.test(c.dataType)) sql += " UNSIGNED";
-  if (d === "postgres" && c.autoIncrement && !/nextval\(/i.test(c.defaultExpr ?? ""))
+  if (c.collation) sql += ` COLLATE ${d === "mysql" ? c.collation : q(d, c.collation)}`;
+  const serial = /^(small|big)?serial$/i.test(c.dataType.trim());
+  if (d === "postgres" && c.autoIncrement && !serial && !/nextval\(/i.test(c.defaultExpr ?? ""))
     sql += ` GENERATED ${c.identity ?? "BY DEFAULT"} AS IDENTITY`;
   if (d === "mysql") sql += c.nullable ? " NULL" : " NOT NULL";
   else if (!c.nullable) sql += " NOT NULL";
   if (inlinePk) sql += " PRIMARY KEY" + (c.autoIncrement ? " AUTOINCREMENT" : "");
   if (c.defaultExpr !== null) sql += ` DEFAULT ${c.defaultExpr}`;
+  if (d === "mysql" && c.onUpdate) sql += ` ON UPDATE ${c.onUpdate}`;
   if (d === "mysql" && c.autoIncrement) sql += " AUTO_INCREMENT";
   if (d === "mysql" && c.comment) sql += ` COMMENT ${lit(d, c.comment)}`;
   return sql;
+}
+
+/** MySQL `ON UPDATE …` of an EXTRA text. */
+function onUpdateOf(extra: string | null): string | null {
+  return /\bon update ([a-z_]+(?:\(\d*\))?)/i.exec(extra ?? "")?.[1]?.toUpperCase() ?? null;
+}
+
+function checkSql(d: Driver, name: string | null, expression: string): string {
+  return `${name ? `CONSTRAINT ${q(d, name)} ` : ""}CHECK (${expression.trim()})`;
 }
 
 function fkSql(
@@ -201,7 +293,8 @@ function indexSql(d: Driver, t: TableRef, index: IndexDef, warn: (w: string) => 
     const special = kind === "FULLTEXT" || kind === "SPATIAL" ? `${kind} ` : "";
     if (index.predicate) warn(`partial indexes (WHERE) are not supported by MySQL; ignored`);
     const using = kind === "BTREE" || kind === "HASH" ? ` USING ${kind}` : "";
-    return `CREATE ${index.unique ? "UNIQUE " : special}INDEX ${q(d, index.name)} ON ${qt(d, t)} (${entries})${using}`;
+    const comment = index.comment ? ` COMMENT ${lit(d, index.comment)}` : "";
+    return `CREATE ${index.unique ? "UNIQUE " : special}INDEX ${q(d, index.name)} ON ${qt(d, t)} (${entries})${using}${comment}`;
   }
   if (d === "sqlite") {
     if (index.method) warn(`index method "${index.method}" is not supported by SQLite; ignored`);
@@ -272,7 +365,7 @@ function columnFromDef(def: ColumnDef, ordinal: number, pk: boolean): ColumnMeta
     numericScale: null,
     collation: def.collation,
     arrayElemType: null,
-    extra: null,
+    extra: def.onUpdate ? `on update ${def.onUpdate}` : null,
   };
 }
 
@@ -285,18 +378,25 @@ const SQLITE_REBUILD_OPS = new Set<DdlOp["op"]>([
   "alterColumnType",
   "alterColumnNullable",
   "alterColumnDefault",
+  "alterColumnAutoIncrement",
+  "alterColumnCollation",
   "addForeignKey",
   "dropForeignKey",
   "addPrimaryKey",
   "dropPrimaryKey",
+  "addCheck",
+  "dropCheck",
 ]);
 
-/** Ops that act on a whole table and are never folded into a SQLite rebuild. */
+/** Ops that act on a whole table (or run on their own) and are never folded into a rebuild. */
 const TABLE_LEVEL = new Set<DdlOp["op"]>([
   "createTable",
   "dropTable",
   "truncateTable",
   "renameTable",
+  "alterTableOptions",
+  "createTrigger",
+  "dropTrigger",
 ]);
 
 interface Planned extends DdlPlan {
@@ -313,7 +413,33 @@ function mysqlModify(d: Driver, t: TableRef, c: ColumnMeta): string {
     defaultExpr: c.defaultExpr,
     autoIncrement: c.isAutoIncrement,
     comment: c.comment,
+    onUpdate: onUpdateOf(c.extra),
+    collation: c.collation,
   })}`;
+}
+
+/** MySQL EXTRA with auto_increment / on update set as given (other words kept). */
+function withExtra(extra: string | null, ai: boolean, onUpdate: string | null): string | null {
+  const rest = (extra ?? "")
+    .replace(/\bauto_increment\b/i, "")
+    .replace(/\bon update [a-z_]+(\(\d*\))?/i, "")
+    .trim();
+  const words = [ai ? "auto_increment" : "", rest, onUpdate ? `on update ${onUpdate}` : ""];
+  const out = words.filter(Boolean).join(" ");
+  return out || null;
+}
+
+function tableOptionsSql(d: Driver, t: TableRef, o: TableOptions): string {
+  const parts: string[] = [];
+  if (o.engine) parts.push(`ENGINE = ${o.engine}`);
+  const charset = o.charset ?? (o.collation ? o.collation.split("_")[0]! : null);
+  if (charset)
+    parts.push(
+      `CONVERT TO CHARACTER SET ${charset}${o.collation ? ` COLLATE ${o.collation}` : ""}`,
+    );
+  if (o.autoIncrement !== null) parts.push(`AUTO_INCREMENT = ${o.autoIncrement}`);
+  if (o.rowFormat) parts.push(`ROW_FORMAT = ${o.rowFormat.toUpperCase()}`);
+  return `ALTER TABLE ${qt(d, t)} ${parts.join(", ")}`;
 }
 
 function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
@@ -327,7 +453,12 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
   const base = table ? metaOf(d, table) : null;
   const work: Work | null = base
     ? {
-        meta: { ...base, columns: base.columns.map((c) => ({ ...c })), indexes: [...base.indexes] },
+        meta: {
+          ...base,
+          columns: base.columns.map((c) => ({ ...c })),
+          indexes: [...base.indexes],
+          checks: [...base.checks],
+        },
         sources: base.columns.map((c) => c.name),
       }
     : null;
@@ -552,6 +683,14 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
           invalid(`index "${op.index.name}" already exists on "${op.table.name}"`);
         const sql = indexSql(d, op.table, op.index, warn);
         push(sql);
+        if (d === "postgres" && op.index.comment)
+          push(
+            `COMMENT ON INDEX ${op.table.schema ? `${q(d, op.table.schema)}.` : ""}${q(d, op.index.name)} IS ${lit(d, op.index.comment)}`,
+          );
+        if (d === "sqlite" && op.index.comment)
+          warn(
+            `SQLite does not store index comments; the comment of "${op.index.name}" is ignored`,
+          );
         w.meta.indexes.push({
           name: op.index.name,
           columns: op.index.columns,
@@ -560,6 +699,7 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
           method: op.index.method,
           predicate: op.index.predicate,
           definition: sql,
+          comment: op.index.comment,
         });
         break;
       }
@@ -634,6 +774,115 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         w.meta.primaryKey = [];
         break;
       }
+      case "alterColumnAutoIncrement": {
+        const w = needWork(op.table);
+        const c = findCol(w, op.name);
+        const qc = `ALTER TABLE ${qt(d, op.table)} ALTER COLUMN ${q(d, op.name)}`;
+        if (d === "postgres") {
+          if (op.autoIncrement) {
+            if (c.defaultExpr !== null) push(`${qc} DROP DEFAULT`);
+            if (c.nullable) push(`${qc} SET NOT NULL`);
+            push(`${qc} ADD GENERATED BY DEFAULT AS IDENTITY`);
+            push(
+              `SELECT setval(pg_get_serial_sequence(${lit(d, qt(d, op.table))}, ${lit(d, op.name)}), COALESCE(MAX(${q(d, op.name)}), 0) + 1, false) FROM ${qt(d, op.table)}`,
+            );
+            c.defaultExpr = null;
+            c.nullable = false;
+          } else if (/^nextval\(/i.test(c.defaultExpr ?? "")) {
+            push(`${qc} DROP DEFAULT`);
+            c.defaultExpr = null;
+          } else push(`${qc} DROP IDENTITY IF EXISTS`);
+          c.isAutoIncrement = op.autoIncrement;
+        } else {
+          c.isAutoIncrement = op.autoIncrement;
+          if (d === "mysql") {
+            if (op.autoIncrement) c.defaultExpr = null;
+            c.extra = withExtra(c.extra, op.autoIncrement, onUpdateOf(c.extra));
+            push(mysqlModify(d, op.table, c));
+          }
+        }
+        break;
+      }
+      case "alterColumnOnUpdate": {
+        if (d !== "mysql") mockError("UNSUPPORTED", "ON UPDATE is MySQL-only");
+        const w = needWork(op.table);
+        const c = findCol(w, op.name);
+        c.extra = withExtra(c.extra, c.isAutoIncrement, op.onUpdate);
+        push(mysqlModify(d, op.table, c));
+        break;
+      }
+      case "alterColumnCollation": {
+        const w = needWork(op.table);
+        const c = findCol(w, op.name);
+        c.collation = op.collation;
+        if (d === "postgres")
+          push(
+            `ALTER TABLE ${qt(d, op.table)} ALTER COLUMN ${q(d, op.name)} TYPE ${c.dataType} COLLATE ${op.collation ? q(d, op.collation) : '"default"'}`,
+          );
+        else if (d === "mysql") push(mysqlModify(d, op.table, c));
+        break;
+      }
+      case "alterTableOptions": {
+        if (d !== "mysql")
+          mockError(
+            "UNSUPPORTED",
+            "engine, character set, AUTO_INCREMENT and row format are MySQL table options",
+          );
+        const o = op.options;
+        if (!o.engine && !o.charset && !o.collation && o.autoIncrement === null && !o.rowFormat)
+          invalid("no table option to change");
+        statements.push(tableOptionsSql(d, op.table, o));
+        break;
+      }
+      case "addCheck": {
+        const w = needWork(op.table);
+        requireName(op.check.expression, "CHECK expression");
+        const name = op.check.name;
+        if (name && w.meta.checks.some((k) => k.name.toLowerCase() === name.toLowerCase()))
+          invalid(`CHECK constraint "${name}" already exists on "${op.table.name}"`);
+        push(`ALTER TABLE ${qt(d, op.table)} ADD ${checkSql(d, name, op.check.expression)}`);
+        const columns = w.meta.columns
+          .map((c) => c.name)
+          .filter((c) =>
+            new RegExp(`\\b${c.replace(/[^\w]/g, "")}\\b`, "i").test(op.check.expression),
+          );
+        w.meta.checks = [
+          ...w.meta.checks,
+          {
+            name: name ?? `${op.table.name}_check${w.meta.checks.length + 1}`,
+            expression: op.check.expression.trim(),
+            columns,
+          },
+        ];
+        break;
+      }
+      case "dropCheck": {
+        const w = needWork(op.table);
+        if (!w.meta.checks.some((k) => k.name === op.name))
+          invalid(`CHECK constraint "${op.name}" does not exist on "${op.table.name}"`);
+        push(`ALTER TABLE ${qt(d, op.table)} DROP CONSTRAINT ${q(d, op.name)}`);
+        w.meta.checks = w.meta.checks.filter((k) => k.name !== op.name);
+        break;
+      }
+      case "createTrigger": {
+        requireName(op.name, "trigger name");
+        requireName(op.sql, "trigger SQL");
+        statements.push(op.sql.trim().replace(/;\s*$/, ""));
+        if (d === "mysql" && ops.some((o) => o.op === "dropTrigger" && o.name === op.name))
+          warn(
+            `MySQL runs these statements one by one: if creating trigger "${op.name}" fails, the old trigger is already dropped`,
+          );
+        break;
+      }
+      case "dropTrigger": {
+        const schema = op.table.schema ? `${q(d, op.table.schema)}.` : "";
+        statements.push(
+          d === "postgres"
+            ? `DROP TRIGGER ${q(d, op.name)} ON ${qt(d, op.table)}`
+            : `DROP TRIGGER ${schema}${q(d, op.name)}`,
+        );
+        break;
+      }
     }
     ranges.push([start, statements.length]);
   }
@@ -642,7 +891,7 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
     const start = statements.length;
     statements.push(...rebuildStatements(d, work));
     warn(
-      `"${table.name}" is rebuilt from introspected metadata (new table, copy, drop, rename): CHECK constraints, ON CONFLICT clauses, DEFERRABLE foreign-key options and any COLLATE or generated-column expression that cannot be recovered from the original definition may be lost; review the statements before applying`,
+      `"${table.name}" is rebuilt from introspected metadata (new table, copy, drop, rename): ON CONFLICT clauses, DEFERRABLE foreign-key options and any COLLATE or generated-column expression that cannot be recovered from the original definition may be lost; review the statements before applying`,
     );
     ops.forEach((op, i) => {
       if (onPlanned(op) && !TABLE_LEVEL.has(op.op)) ranges[i] = [start, statements.length];
@@ -669,11 +918,14 @@ function rebuildStatements(d: Driver, w: Work): string[] {
           defaultExpr: c.defaultExpr,
           autoIncrement: c.isAutoIncrement && inline,
           comment: null,
+          collation: c.collation,
         },
         inline && c.isPk,
       )}`,
   );
   if (pk.length > 0 && !inline) lines.push(`  PRIMARY KEY (${cols(d, pk)})`);
+  for (const k of w.meta.checks)
+    lines.push(`  ${checkSql(d, /^ck_/.test(k.name) ? null : k.name, k.expression)}`);
   for (const f of w.meta.foreignKeys) lines.push(`  ${fkSql(d, { ...f, name: null })}`);
   const copied = w.meta.columns
     .map((c, i) => [c.name, w.sources[i]] as const)
@@ -711,10 +963,12 @@ function rebuildStatements(d: Driver, w: Work): string[] {
             unique: idx.unique,
             method: null,
             predicate: idx.predicate,
+            comment: null,
           },
           () => {},
         ),
       );
+  for (const tr of w.meta.triggers) out.push(tr.definition);
   out.push(`PRAGMA foreign_key_check(${q(d, t.name)})`, "COMMIT", "PRAGMA foreign_keys = ON");
   return out;
 }
@@ -814,6 +1068,7 @@ function specOf(c: ColumnMeta): ColSpec {
       enumValues: c.enumValues,
       arrayElemType: c.arrayElemType,
       extra: c.extra,
+      collation: c.collation,
     },
   ];
 }
@@ -1009,8 +1264,116 @@ function applyToCatalog(d: Driver, table: TableRef | null, ops: DdlOp[]) {
           method: op.index.method ?? (d === "postgres" ? "btree" : null),
           predicate: op.index.predicate,
           definition: indexSql(d, t, op.index, () => {}),
+          comment: d === "sqlite" ? null : op.index.comment,
         });
         break;
+      case "alterColumnAutoIncrement":
+      case "alterColumnOnUpdate":
+      case "alterColumnCollation": {
+        if (!specs) break;
+        const i = specs.findIndex((x) => x[0] === op.name);
+        const spec = specs[i];
+        if (!spec) break;
+        const [name, type, kind, opts = {}] = spec;
+        const extra = opts.extra ?? null;
+        if (op.op === "alterColumnAutoIncrement") {
+          const next: typeof opts = { ...opts, isAutoIncrement: op.autoIncrement };
+          if (d === "mysql") {
+            next.extra = withExtra(extra, op.autoIncrement, onUpdateOf(extra));
+            if (op.autoIncrement) next.defaultExpr = null;
+          } else if (d === "postgres") {
+            next.extra = op.autoIncrement ? "BY DEFAULT" : null;
+            if (op.autoIncrement || /^nextval\(/i.test(opts.defaultExpr ?? ""))
+              next.defaultExpr = null;
+            if (op.autoIncrement) next.nullable = false;
+          }
+          specs[i] = [name, type, kind, next];
+        } else if (op.op === "alterColumnOnUpdate")
+          specs[i] = [
+            name,
+            type,
+            kind,
+            { ...opts, extra: withExtra(extra, opts.isAutoIncrement ?? false, op.onUpdate) },
+          ];
+        else specs[i] = [name, type, kind, { ...opts, collation: op.collation }];
+        break;
+      }
+      case "alterTableOptions": {
+        const o = overlayOf(d, t);
+        const now = metaOf(d, t)?.options ?? {
+          engine: null,
+          charset: null,
+          collation: null,
+          autoIncrement: null,
+          rowFormat: null,
+        };
+        const x = op.options;
+        o.options = {
+          engine: x.engine ?? now.engine,
+          charset: x.collation ? x.collation.split("_")[0]! : (x.charset ?? now.charset),
+          collation:
+            x.collation ??
+            (x.charset
+              ? x.charset === "utf8mb4"
+                ? "utf8mb4_0900_ai_ci"
+                : `${x.charset}_general_ci`
+              : now.collation),
+          autoIncrement: x.autoIncrement ?? now.autoIncrement,
+          rowFormat: x.rowFormat
+            ? x.rowFormat.charAt(0) + x.rowFormat.slice(1).toLowerCase()
+            : now.rowFormat,
+        };
+        break;
+      }
+      case "addCheck": {
+        const o = overlayOf(d, t);
+        const names = (metaOf(d, t)?.columns ?? []).map((c) => c.name);
+        const words = new Set(
+          (op.check.expression.match(/[A-Za-z_][\w$]*/g) ?? []).map((w) => w.toLowerCase()),
+        );
+        const n = (metaOf(d, t)?.checks.length ?? 0) + 1;
+        o.checks.push({
+          name:
+            op.check.name ??
+            (d === "postgres"
+              ? `${t.name}_check${n}`
+              : d === "mysql"
+                ? `${t.name}_chk_${n}`
+                : `ck_${t.name}_${n}`),
+          expression: op.check.expression.trim(),
+          columns: names.filter((c) => words.has(c.toLowerCase())),
+        });
+        break;
+      }
+      case "dropCheck": {
+        const o = overlayOf(d, t);
+        const i = o.checks.findIndex((x) => x.name === op.name);
+        if (i >= 0) o.checks.splice(i, 1);
+        else o.droppedChecks.push(op.name);
+        break;
+      }
+      case "createTrigger": {
+        const o = overlayOf(d, t);
+        const head = /\b(before|after|instead\s+of)\s+(insert|update|delete|truncate)/i.exec(
+          op.sql,
+        );
+        const body = /\bfor\s+each\s+row\s+([\s\S]*)$/i.exec(op.sql)?.[1]?.trim();
+        o.triggers.push({
+          name: op.name,
+          timing: head ? head[1]!.toUpperCase().replace(/\s+/g, " ") : null,
+          events: head ? [head[2]!.toUpperCase()] : [],
+          enabled: true,
+          definition: d === "mysql" ? (body ?? op.sql) : op.sql,
+        });
+        break;
+      }
+      case "dropTrigger": {
+        const o = overlayOf(d, t);
+        const i = o.triggers.findIndex((x) => x.name === op.name);
+        if (i >= 0) o.triggers.splice(i, 1);
+        else o.droppedTriggers.push(op.name);
+        break;
+      }
       case "dropIndex": {
         const o = overlayOf(d, t);
         const i = o.indexes.findIndex((x) => x.name === op.name);
@@ -1122,6 +1485,8 @@ function createTableText(d: Driver, meta: TableMeta): string {
           comment: c.comment,
           unsigned: c.isUnsigned,
           identity: c.extra === "ALWAYS" ? "ALWAYS" : "BY DEFAULT",
+          onUpdate: d === "mysql" ? onUpdateOf(c.extra) : null,
+          collation: c.collation,
         },
         inline && c.isPk,
       )}`,
@@ -1131,10 +1496,17 @@ function createTableText(d: Driver, meta: TableMeta): string {
     lines.push(
       `  ${d === "postgres" && pkIndex ? `CONSTRAINT ${q(d, pkIndex.name)} ` : ""}PRIMARY KEY (${cols(d, pk)})`,
     );
+  for (const k of meta.checks)
+    lines.push(
+      `  ${checkSql(d, d === "sqlite" && /^ck_/.test(k.name) ? null : k.name, k.expression)}`,
+    );
   for (const f of meta.foreignKeys) lines.push(`  ${fkSql(d, f)}`);
   let sql = `CREATE TABLE ${qt(d, t)} (\n${lines.join(",\n")}\n)`;
   if (d === "mysql") {
-    sql += " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci";
+    const o = meta.options;
+    sql += ` ENGINE=${o?.engine ?? "InnoDB"}`;
+    if (o?.autoIncrement) sql += ` AUTO_INCREMENT=${o.autoIncrement}`;
+    sql += ` DEFAULT CHARSET=${o?.charset ?? "utf8mb4"} COLLATE=${o?.collation ?? "utf8mb4_0900_ai_ci"}`;
     if (meta.comment) sql += ` COMMENT=${lit(d, meta.comment)}`;
   }
   const out = [sql];
@@ -1151,6 +1523,7 @@ function createTableText(d: Driver, meta: TableMeta): string {
               unique: idx.unique,
               method: idx.method,
               predicate: idx.predicate,
+              comment: idx.comment,
             },
             () => {},
           ),
@@ -1161,7 +1534,12 @@ function createTableText(d: Driver, meta: TableMeta): string {
       if (c.comment)
         out.push(`COMMENT ON COLUMN ${qt(d, t)}.${q(d, c.name)} IS ${lit(d, c.comment)}`);
   }
-  for (const tr of meta.triggers) out.push(tr.definition);
+  for (const tr of meta.triggers)
+    out.push(
+      d === "mysql" && !/^\s*create\b/i.test(tr.definition)
+        ? `CREATE TRIGGER ${q(d, tr.name)} ${tr.timing ?? "BEFORE"} ${tr.events[0] ?? "INSERT"} ON ${qt(d, t)} FOR EACH ROW ${tr.definition}`
+        : tr.definition,
+    );
   return out.map((s) => `${s};`).join("\n\n");
 }
 
@@ -1178,4 +1556,56 @@ registerMock("get_table_ddl", async ({ connectionId, table }) => {
     )}\nFROM ${qt(c.driver, { schema: meta.table.schema, name: "users" })}\nWHERE is_active;`;
   }
   return createTableText(c.driver, meta);
+});
+
+// --- get_structure_choices -----------------------------------------------------------------------
+
+const MYSQL_CHARSETS: StructureChoices["charsets"] = [
+  {
+    name: "ascii",
+    defaultCollation: "ascii_general_ci",
+    collations: ["ascii_general_ci", "ascii_bin"],
+  },
+  {
+    name: "latin1",
+    defaultCollation: "latin1_swedish_ci",
+    collations: ["latin1_swedish_ci", "latin1_bin", "latin1_general_ci"],
+  },
+  {
+    name: "utf8mb3",
+    defaultCollation: "utf8mb3_general_ci",
+    collations: ["utf8mb3_general_ci", "utf8mb3_bin", "utf8mb3_unicode_ci"],
+  },
+  {
+    name: "utf8mb4",
+    defaultCollation: "utf8mb4_0900_ai_ci",
+    collations: [
+      "utf8mb4_0900_ai_ci",
+      "utf8mb4_0900_as_cs",
+      "utf8mb4_bin",
+      "utf8mb4_general_ci",
+      "utf8mb4_unicode_ci",
+    ],
+  },
+];
+
+registerMock("get_structure_choices", async ({ connectionId }) => {
+  const c = await connectionOf(connectionId);
+  if (c.driver === "postgres")
+    return {
+      userTypes: [
+        { name: "email_address", kind: "domain" },
+        { name: "post_status", kind: "enum" },
+        { name: "user_role", kind: "enum" },
+      ],
+      engines: [],
+      charsets: [],
+    } satisfies StructureChoices;
+  if (c.driver === "mysql")
+    return {
+      userTypes: [],
+      engines: ["InnoDB", "MyISAM", "MEMORY", "CSV", "ARCHIVE"],
+      charsets: MYSQL_CHARSETS,
+    } satisfies StructureChoices;
+  return { userTypes: [], engines: [], charsets: [] } satisfies StructureChoices;
 });

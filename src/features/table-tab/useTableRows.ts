@@ -4,8 +4,13 @@ import { ipc, tableKey, type BrowseRequest, type FilterGroup, type TableRef } fr
 export const rowKeys = {
   page: (connectionId: string, table: TableRef, req: Omit<BrowseRequest, "table">, token: number) =>
     ["rows", connectionId, tableKey(table), req, token] as const,
-  count: (connectionId: string, table: TableRef, filter: FilterGroup | null, token: number) =>
-    ["count", connectionId, tableKey(table), filter, token] as const,
+  count: (
+    connectionId: string,
+    table: TableRef,
+    filter: FilterGroup | null,
+    token: number,
+    estimate: CountEstimate = DEFAULT_ESTIMATE,
+  ) => ["count", connectionId, tableKey(table), filter, token, estimate] as const,
   meta: (connectionId: string, table: TableRef) =>
     ["table", connectionId, table.schema ?? "", table.name] as const,
 };
@@ -18,11 +23,19 @@ export function useTableMeta(connectionId: string, table: TableRef) {
   });
 }
 
+/**
+ * One page of rows. `hold`: the page carries staged edits, which name their columns by position in
+ * it; it is then never refetched behind the user's back (remounting after switching to the
+ * structure view, window focus, reconnect) nor garbage-collected, so a schema change cannot move
+ * the edits onto other columns. Changing the request (paging, sorting, filtering, ⌘R) still goes
+ * through the pending-edits guard.
+ */
 export function useTableRows(
   connectionId: string,
   table: TableRef,
   req: Omit<BrowseRequest, "table"> | null,
   token: number,
+  hold = false,
 ) {
   return useQuery({
     queryKey: rowKeys.page(
@@ -34,9 +47,23 @@ export function useTableRows(
     queryFn: () => ipc.browse.rows(connectionId, { table, ...req! }),
     enabled: req !== null,
     placeholderData: keepPreviousData,
-    staleTime: 15_000,
+    staleTime: hold ? Infinity : 15_000,
+    gcTime: hold ? Infinity : 5 * 60_000,
+    refetchOnMount: !hold,
+    refetchOnWindowFocus: !hold,
+    refetchOnReconnect: !hold,
   });
 }
+
+/**
+ * "Estimate count when table has more than [N] rows": `above` is N, or null to always count
+ * exactly (the preference unchecked).
+ */
+export interface CountEstimate {
+  above: number | null;
+}
+
+export const DEFAULT_ESTIMATE: CountEstimate = { above: 500_000 };
 
 export function useRowCount(
   connectionId: string,
@@ -44,10 +71,12 @@ export function useRowCount(
   filter: FilterGroup | null,
   token: number,
   enabled: boolean,
+  estimate: CountEstimate = DEFAULT_ESTIMATE,
 ) {
   return useQuery({
-    queryKey: rowKeys.count(connectionId, table, filter, token),
-    queryFn: () => ipc.browse.count(connectionId, table, filter, false),
+    queryKey: rowKeys.count(connectionId, table, filter, token, estimate),
+    queryFn: () =>
+      ipc.browse.count(connectionId, table, filter, estimate.above === null, estimate.above),
     enabled,
     placeholderData: keepPreviousData,
     staleTime: 15_000,

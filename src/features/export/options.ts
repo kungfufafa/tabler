@@ -1,7 +1,10 @@
 import type {
   ColumnMeta,
+  CsvQuote,
   ExportFormat,
+  ExportLayout,
   ExportRequest,
+  ExportTablesRequest,
   ExportSource,
   FilterGroup,
   ResultColumn,
@@ -11,33 +14,89 @@ import type {
 } from "@/lib/ipc";
 
 export type FormatKind = ExportFormat["format"];
-export type CsvDelimiter = "," | ";" | "\t" | "|";
+export type CsvDelimiter = "," | "\t" | ";";
+export type CsvLineBreak = "\n" | "\r\n" | "\r";
+export type CsvDecimal = "." | ",";
 /** Which rows of a table tab: everything matching its filter, or only the page on screen. */
 export type RowScope = "all" | "page";
 
-/** The user's choices in the export dialog (remembered between exports). */
+/** The user's choices in the export dialog (remembered between exports), as TablePlus names them. */
 export interface ExportOptions {
   format: FormatKind;
-  csv: { delimiter: CsvDelimiter; header: boolean; quoteAll: boolean; nullAs: string };
+  csv: {
+    delimiter: CsvDelimiter;
+    /** "Put field names in the first row". */
+    header: boolean;
+    quote: CsvQuote;
+    /** "Convert NULL to EMPTY"; off writes `NULL`. */
+    nullToEmpty: boolean;
+    /** "Convert line break to space". */
+    lineBreakToSpace: boolean;
+    lineBreak: CsvLineBreak;
+    decimal: CsvDecimal;
+  };
   json: { ndjson: boolean; pretty: boolean };
-  sql: { batchSize: number };
+  sql: {
+    batchSize: number;
+    dropTable: boolean;
+    structure: boolean;
+    content: boolean;
+    gzip: boolean;
+  };
+  xlsx: { header: boolean };
+  /** Several tables at once: one SQL script / one workbook, or a file per table. */
+  multi: { sqlSingleFile: boolean; xlsxSingleFile: boolean };
 }
 
 const DEFAULTS: ExportOptions = {
   format: "csv",
-  csv: { delimiter: ",", header: true, quoteAll: false, nullAs: "" },
+  csv: {
+    delimiter: ",",
+    header: true,
+    quote: "ifNeeded",
+    nullToEmpty: true,
+    lineBreakToSpace: false,
+    lineBreak: "\n",
+    decimal: ".",
+  },
   json: { ndjson: false, pretty: true },
-  sql: { batchSize: 100 },
+  sql: { batchSize: 100, dropTable: false, structure: false, content: true, gzip: false },
+  xlsx: { header: true },
+  multi: { sqlSingleFile: true, xlsxSingleFile: true },
 };
 export const DEFAULT_EXPORT_OPTIONS: Readonly<ExportOptions> = Object.freeze(DEFAULTS);
 
 export const CSV_DELIMITERS: ReadonlyArray<{ value: CsvDelimiter; label: string; title: string }> =
   [
     { value: ",", label: ",", title: "Comma" },
-    { value: ";", label: ";", title: "Semicolon" },
     { value: "\t", label: "Tab", title: "Tab" },
-    { value: "|", label: "|", title: "Pipe" },
+    { value: ";", label: ";", title: "Semicolon" },
   ];
+
+export const FORMATS: ReadonlyArray<{ value: FormatKind; label: string; title: string }> = [
+  { value: "csv", label: "CSV", title: "Comma-separated values" },
+  { value: "json", label: "JSON", title: "JSON array or newline-delimited JSON" },
+  { value: "sqlInsert", label: "SQL", title: "A SQL script: structure and INSERT statements" },
+  { value: "xlsx", label: "Excel", title: "Excel workbook (.xlsx)" },
+];
+
+export const CSV_QUOTES: ReadonlyArray<{ value: CsvQuote; label: string; title: string }> = [
+  { value: "double", label: '"', title: "Put every value in double quotes" },
+  { value: "single", label: "'", title: "Put every value in single quotes" },
+  { value: "ifNeeded", label: "Quote if needed", title: "Quote only values that need it" },
+];
+
+export const CSV_LINE_BREAKS: ReadonlyArray<{ value: CsvLineBreak; label: string; title: string }> =
+  [
+    { value: "\n", label: "\\n", title: "LF (macOS, Linux)" },
+    { value: "\r\n", label: "\\r\\n", title: "CRLF (Windows)" },
+    { value: "\r", label: "\\r", title: "CR (classic Mac)" },
+  ];
+
+export const CSV_DECIMALS: ReadonlyArray<{ value: CsvDecimal; label: string; title: string }> = [
+  { value: ".", label: ".", title: "Point: 12.5" },
+  { value: ",", label: ",", title: "Comma: 12,5" },
+];
 
 export const BATCH_SIZE_RANGE = { min: 1, max: 10_000 } as const;
 
@@ -83,8 +142,11 @@ export function toExportFormat(options: ExportOptions, tableName: string): Expor
         format: "csv",
         delimiter: options.csv.delimiter,
         header: options.csv.header,
-        quoteAll: options.csv.quoteAll,
-        nullAs: options.csv.nullAs,
+        quote: options.csv.quote,
+        nullAs: options.csv.nullToEmpty ? "" : "NULL",
+        lineBreak: options.csv.lineBreak,
+        decimal: options.csv.decimal,
+        lineBreakToSpace: options.csv.lineBreakToSpace,
       };
     case "json":
       return {
@@ -98,8 +160,19 @@ export function toExportFormat(options: ExportOptions, tableName: string): Expor
         format: "sqlInsert",
         tableName: tableName.trim(),
         batchSize: clampBatchSize(options.sql.batchSize),
+        dropTable: options.sql.dropTable,
+        structure: options.sql.structure,
+        content: options.sql.content,
+        gzip: options.sql.gzip,
       };
+    case "xlsx":
+      return { format: "xlsx", header: options.xlsx.header };
   }
+}
+
+/** SQL scripts: structure and DROP exist for table sources only. */
+export function sqlWritesStructure(options: ExportOptions): boolean {
+  return options.format === "sqlInsert" && (options.sql.structure || options.sql.dropTable);
 }
 
 /** SQLite browses add `rowid AS "_tabler_rowid"` to address rows; an export must not write it. */
@@ -138,7 +211,7 @@ export function canExportPage(page: { offset: number; sql: string | null }): boo
 
 /** Why the dialog's choices cannot be exported (shown under the `field` row), or null. */
 export interface ExportProblem {
-  field: "rows" | "columns";
+  field: "rows" | "columns" | "options";
   message: string;
   /** "wait" resolves by itself (the page is loading); "fix" needs another choice. */
   severity: "wait" | "fix";
@@ -167,7 +240,25 @@ export function hasCappedBytes(rows: readonly (readonly Value[])[]): boolean {
   return rows.some((row) => row.some(isCappedBytes));
 }
 
-export function exportProblem(input: ExportInput, format: FormatKind): ExportProblem | null {
+export function exportProblem(
+  input: ExportInput,
+  format: FormatKind,
+  sql?: ExportOptions["sql"],
+): ExportProblem | null {
+  if (format === "sqlInsert" && sql && !sql.content) {
+    if (input.kind !== "table")
+      return {
+        field: "options",
+        message: "A query or result has no structure: include its content.",
+        severity: "fix",
+      };
+    if (!sql.structure && !sql.dropTable)
+      return {
+        field: "options",
+        message: "Nothing to export: include the table structure or its content.",
+        severity: "fix",
+      };
+  }
   if (input.kind === "rows") {
     return hasCappedBytes(input.rows)
       ? {
@@ -226,7 +317,7 @@ export function buildExportRequest(args: {
 }): ExportRequest {
   const { exportId, path, input, options } = args;
   // The dialog never submits these; refuse rather than silently export something else.
-  const problem = exportProblem(input, options.format);
+  const problem = exportProblem(input, options.format, options.sql);
   if (problem) throw new Error(problem.message);
   let source: ExportSource;
   let maxRows: number | null = null;
@@ -280,6 +371,56 @@ export function visibleColumnNames(
   return out;
 }
 
+// ---- several tables ---------------------------------------------------------------------------
+
+/** Where a multi-table export writes for these options (CSV / JSON: always a file per table). */
+export function multiLayout(options: ExportOptions): ExportLayout {
+  switch (options.format) {
+    case "sqlInsert":
+      return options.multi.sqlSingleFile ? "singleFile" : "filePerTable";
+    case "xlsx":
+      return options.multi.xlsxSingleFile ? "singleFile" : "filePerTable";
+    default:
+      return "filePerTable";
+  }
+}
+
+/** Builds the `export_tables` request: every table in full, in the order given. */
+export function buildExportTablesRequest(args: {
+  exportId: string;
+  tables: TableRef[];
+  options: ExportOptions;
+  /** Folder (file per table) or file (one file). */
+  target: string;
+}): ExportTablesRequest {
+  const { exportId, tables, options, target } = args;
+  if (tables.length === 0) throw new Error("Choose at least one table to export.");
+  if (
+    options.format === "sqlInsert" &&
+    !options.sql.content &&
+    !options.sql.structure &&
+    !options.sql.dropTable
+  )
+    throw new Error("Nothing to export: include the table structure or its content.");
+  return {
+    exportId,
+    tables,
+    // Every table's INSERTs name that table.
+    format: toExportFormat(options, ""),
+    layout: multiLayout(options),
+    target,
+  };
+}
+
+/** Tables a multi-table export lists: tables and views, matching `search` (case-insensitively). */
+export function filterTables<T extends { name: string }>(
+  tables: readonly T[],
+  search: string,
+): T[] {
+  const q = search.trim().toLowerCase();
+  return q === "" ? [...tables] : tables.filter((t) => t.name.toLowerCase().includes(q));
+}
+
 // ---- file names -------------------------------------------------------------------------------
 
 export function fileExtension(options: ExportOptions): string {
@@ -289,7 +430,9 @@ export function fileExtension(options: ExportOptions): string {
     case "json":
       return options.json.ndjson ? "ndjson" : "json";
     case "sqlInsert":
-      return "sql";
+      return options.sql.gzip ? "sql.gz" : "sql";
+    case "xlsx":
+      return "xlsx";
   }
 }
 
@@ -303,6 +446,10 @@ export function fileFilter(options: ExportOptions): { name: string; extensions: 
       return { name: "NDJSON", extensions: ["ndjson", "jsonl"] };
     case "json":
       return { name: "JSON", extensions: ["json"] };
+    case "sql.gz":
+      return { name: "Gzip-compressed SQL", extensions: ["gz"] };
+    case "xlsx":
+      return { name: "Excel workbook", extensions: ["xlsx"] };
     default:
       return { name: "SQL", extensions: ["sql"] };
   }
@@ -389,29 +536,49 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
 
-/** Validates stored options field by field; anything unknown falls back to the default. */
+function oneOf<T>(options: ReadonlyArray<{ value: T }>, v: unknown, d: T): T {
+  return options.some((o) => o.value === v) ? (v as T) : d;
+}
+
+/**
+ * Validates stored options field by field; anything unknown falls back to the default. Options
+ * stored by earlier versions (`quoteAll`, `nullAs`) keep their meaning.
+ */
 export function parseExportOptions(raw: unknown): ExportOptions {
   const d = DEFAULT_EXPORT_OPTIONS;
-  if (!isObj(raw))
-    return { format: d.format, csv: { ...d.csv }, json: { ...d.json }, sql: { ...d.sql } };
-  const csv = isObj(raw.csv) ? raw.csv : {};
-  const json = isObj(raw.json) ? raw.json : {};
-  const sql = isObj(raw.sql) ? raw.sql : {};
-  const formats: FormatKind[] = ["csv", "json", "sqlInsert"];
+  const r = isObj(raw) ? raw : {};
+  const csv = isObj(r.csv) ? r.csv : {};
+  const json = isObj(r.json) ? r.json : {};
+  const sql = isObj(r.sql) ? r.sql : {};
+  const xlsx = isObj(r.xlsx) ? r.xlsx : {};
+  const multi = isObj(r.multi) ? r.multi : {};
+  const formats: FormatKind[] = ["csv", "json", "sqlInsert", "xlsx"];
+  const legacyQuote = csv.quoteAll === true ? "double" : undefined;
+  const legacyNull = typeof csv.nullAs === "string" ? csv.nullAs === "" : undefined;
   return {
-    format: formats.includes(raw.format as FormatKind) ? (raw.format as FormatKind) : d.format,
+    format: formats.includes(r.format as FormatKind) ? (r.format as FormatKind) : d.format,
     csv: {
-      delimiter: CSV_DELIMITERS.some((o) => o.value === csv.delimiter)
-        ? (csv.delimiter as CsvDelimiter)
-        : d.csv.delimiter,
+      delimiter: oneOf(CSV_DELIMITERS, csv.delimiter, d.csv.delimiter),
       header: bool(csv.header, d.csv.header),
-      quoteAll: bool(csv.quoteAll, d.csv.quoteAll),
-      nullAs: typeof csv.nullAs === "string" ? csv.nullAs.slice(0, 32) : d.csv.nullAs,
+      quote: oneOf(CSV_QUOTES, csv.quote ?? legacyQuote, d.csv.quote),
+      nullToEmpty: bool(csv.nullToEmpty ?? legacyNull, d.csv.nullToEmpty),
+      lineBreakToSpace: bool(csv.lineBreakToSpace, d.csv.lineBreakToSpace),
+      lineBreak: oneOf(CSV_LINE_BREAKS, csv.lineBreak, d.csv.lineBreak),
+      decimal: oneOf(CSV_DECIMALS, csv.decimal, d.csv.decimal),
     },
     json: { ndjson: bool(json.ndjson, d.json.ndjson), pretty: bool(json.pretty, d.json.pretty) },
     sql: {
       batchSize:
         typeof sql.batchSize === "number" ? clampBatchSize(sql.batchSize) : d.sql.batchSize,
+      dropTable: bool(sql.dropTable, d.sql.dropTable),
+      structure: bool(sql.structure, d.sql.structure),
+      content: bool(sql.content, d.sql.content),
+      gzip: bool(sql.gzip, d.sql.gzip),
+    },
+    xlsx: { header: bool(xlsx.header, d.xlsx.header) },
+    multi: {
+      sqlSingleFile: bool(multi.sqlSingleFile, d.multi.sqlSingleFile),
+      xlsxSingleFile: bool(multi.xlsxSingleFile, d.multi.xlsxSingleFile),
     },
   };
 }

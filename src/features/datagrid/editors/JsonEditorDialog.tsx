@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { formatCombo } from "@/lib/keys/combo";
 import { cn } from "@/lib/utils";
 import type { GridColumn } from "../types";
 import { jsonError, reformatJson } from "./json";
@@ -112,7 +113,7 @@ export function JsonEditorDialog({
             </Button>
             <Button size="sm" disabled={!!error} onClick={save}>
               Save
-              <kbd className="ml-1 text-[10px] opacity-70">⌘↩</kbd>
+              <kbd className="ml-1 text-[10px] opacity-70">{formatCombo("Mod+Enter")}</kbd>
             </Button>
           </div>
         </DialogFooter>

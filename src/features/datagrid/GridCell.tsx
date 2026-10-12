@@ -2,19 +2,24 @@ import { ArrowUpRight } from "lucide-react";
 import { memo } from "react";
 import type { Value } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
-import { displayValue } from "@/lib/values";
+import { cellDisplay, type CellDisplayClass } from "@/lib/values";
 import type { GridColumn, RowStatus } from "./types";
 
-const CLS: Record<string, string> = {
+/**
+ * One font for every kind (TablePlus); the cell sets `tabular-nums` so digits line up. Only the
+ * placeholders (NULL / DEFAULT / EMPTY, a blob's size) are muted.
+ */
+const CLS: Record<CellDisplayClass, string> = {
   null: "text-null italic",
-  default: "text-null italic font-mono",
-  bool: "font-mono text-syn-keyword",
-  num: "font-mono tabular-nums",
-  json: "font-mono text-muted-foreground",
-  bytes: "font-mono text-muted-foreground",
-  other: "font-mono text-muted-foreground",
-  temporal: "font-mono",
-  uuid: "font-mono text-muted-foreground",
+  default: "text-null italic",
+  empty: "text-null text-[10px] tracking-wide italic",
+  bool: "",
+  num: "",
+  json: "",
+  bytes: "text-muted-foreground",
+  other: "",
+  temporal: "",
+  uuid: "",
   text: "",
 };
 
@@ -39,25 +44,25 @@ export const GridCell = memo(function GridCell({
   rowStatus,
   changed,
 }: GridCellProps) {
-  const d = displayValue(value);
+  const d = cellDisplay(value);
   const hasFk = col.fk !== undefined && value.t !== "null";
   return (
     <div
       data-cell=""
       data-r={r}
       data-c={c}
-      title={d.text.length > 40 ? d.text.slice(0, 500) : undefined}
+      title={!d.placeholder && d.text.length > 40 ? d.text.slice(0, 500) : undefined}
       className={cn(
-        "border-gridline absolute top-0 flex h-full items-center overflow-hidden border-r border-b px-2 text-[12.5px] leading-7 whitespace-nowrap",
+        "border-gridline absolute top-0 flex h-full items-center overflow-hidden border-r border-b px-2 text-[12px] leading-4 whitespace-nowrap tabular-nums",
+        // Numbers (int, bigint, decimal, float) right-aligned, everything else left-aligned.
         col.align === "right" && "justify-end",
-        CLS[d.cls],
         changed && "bg-changed",
         rowStatus === "inserted" && "bg-inserted",
         rowStatus === "deleted" && "bg-deleted line-through opacity-70",
       )}
       style={{ left, width }}
     >
-      <span className="truncate">{d.text}</span>
+      <span className={cn("truncate", CLS[d.cls])}>{d.text}</span>
       {hasFk && (
         <button
           type="button"

@@ -71,9 +71,10 @@ export function InlineInput({
         spellCheck={false}
         autoComplete="off"
         className={cn(
-          "bg-surface h-full w-full border-2 px-1.5 text-[12.5px] outline-none",
-          col.align === "right" && "text-right font-mono tabular-nums",
-          calendar && "pr-6 font-mono",
+          // Same font and size as the cell it covers (one font, tabular digits).
+          "bg-surface h-full w-full border-2 px-1.5 text-[12px] tabular-nums outline-none",
+          col.align === "right" && "text-right",
+          calendar && "pr-6",
           error ? "border-error" : "border-brand",
         )}
       />

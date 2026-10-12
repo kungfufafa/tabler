@@ -148,6 +148,8 @@ describe("menuActionAllowed", () => {
       expect(menuActionAllowed(id, "dialog")).toBe(id === "tab.close");
     }
     expect(menuActionAllowed("view.refresh", "editor")).toBe(false);
+    expect(menuActionAllowed("view.structure", "grid-edit")).toBe(false);
+    expect(menuActionAllowed("view.refresh", "grid-edit")).toBe(true);
     expect(menuActionAllowed("query.open", "editor")).toBe(true);
     expect(menuActionAllowed("settings.open", "editor")).toBe(true);
   });

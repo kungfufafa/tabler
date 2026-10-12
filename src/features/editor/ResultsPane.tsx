@@ -1,25 +1,71 @@
-import { Loader2, Play, TriangleAlert } from "lucide-react";
-import type { KeyboardEvent, ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Loader2, Pin, Play, Rows3, Settings2, TriangleAlert } from "lucide-react";
+import { useCallback, useEffect, useMemo, type KeyboardEvent, type ReactNode } from "react";
 import { EmptyState } from "@/components/EmptyState";
-import { formatDuration } from "@/lib/format/time";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { openExport } from "@/features/export";
+import { resultTable } from "@/features/export/resultTable";
+import { useAction } from "@/features/palette/actions";
+import {
+  applyPreviewedResultEdits,
+  commitResultEdits,
+  discardResultChanges,
+  previewResultEdits,
+  redoResultEdit,
+  setResultRerun,
+} from "@/features/results/commit";
+import { appendedHeader, pinnedLabel, resultTabText } from "@/features/results/footer";
+import {
+  closeResultPreview,
+  dirtyResultOf,
+  installResultsLifecycle,
+  isPinId,
+  pendingForTab,
+  pinResult,
+  pinsOf,
+  stagingOf,
+  unpinResult,
+  useResultsStore,
+  type PinnedResult,
+} from "@/features/results/store";
+import { canRedo } from "@/features/staging/model";
+import { PreviewSqlSheet } from "@/features/table-tab/PreviewSqlSheet";
 import type { Dialect } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
-import {
-  updateQueryTab,
-  useQueryTabField,
-  type PlanState,
-  type ResultPane,
-} from "@/stores/queryTabs";
-import { useResultRowCount } from "@/stores/resultData";
-import { ElapsedTimer } from "./ElapsedTimer";
-import { resultTabLabel, runStatusText } from "./labels";
+import { setPref, usePrefs, type ResultViewMode } from "@/stores/prefs";
+import { getQueryTab, updateQueryTab, useQueryTabField, type ResultPane } from "@/stores/queryTabs";
+import { resultData, useResultRowCount } from "@/stores/resultData";
+import { useTabsStore } from "@/stores/tabs";
+import { exportQuery, runQuery } from "./controller";
+import { HISTORY_KEY } from "./historyGroups";
 import { MessagesView } from "./MessagesView";
+import { resolvePane } from "./panes";
 import { PlanView } from "./PlanView";
-import { ResultGrid } from "./ResultSetGrid";
+import { ResultFooter, ResultGrid } from "./ResultSetGrid";
 import { summarize, type ResultSetInfo, type RunState } from "./runModel";
 
+installResultsLifecycle();
+
+/** Row height of the grids (`ROW_H`) and the chrome around a stacked result set. */
+const STACK_ROW_H = 22;
+const STACK_CHROME_H = 24 + 28;
+/** Rows a stacked result set shows before it scrolls on its own. */
+const STACK_MAX_ROWS = 12;
+const STACK_MIN_ROWS = 3;
+
+/** One segment of the results strip. */
 function PaneTab({
   active,
   onSelect,
@@ -40,101 +86,49 @@ function PaneTab({
       title={title}
       onClick={onSelect}
       className={cn(
-        "border-border relative flex h-full shrink-0 items-center gap-1.5 border-r px-3 text-[11px] whitespace-nowrap outline-none",
-        "focus-visible:ring-brand/40 focus-visible:ring-1 focus-visible:ring-inset",
+        "flex h-full shrink-0 items-center gap-1.5 rounded-[4px] px-2 text-[11px] whitespace-nowrap transition-colors outline-none",
+        // Tailwind v4: `outline-none` sets --tw-outline-style:none, so the ring needs its style.
+        "focus-visible:outline-ring/70 focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-solid",
         active
-          ? "bg-surface text-foreground"
-          : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+          ? "bg-surface text-foreground ring-border-strong/70 dark:bg-accent shadow-xs ring-1"
+          : "text-muted-foreground hover:text-foreground",
       )}
     >
       {children}
-      {active && <span className="bg-brand absolute inset-x-0 bottom-0 h-0.5" aria-hidden />}
     </button>
   );
 }
 
 function ResultTab({
   info,
-  n,
+  label,
   active,
+  pinned = false,
   onSelect,
 }: {
   info: ResultSetInfo;
-  n: number;
+  label: string;
   active: boolean;
+  pinned?: boolean;
   onSelect: () => void;
 }) {
   const rows = useResultRowCount(info.id);
+  const pending = useResultsStore((s) => stagingOf(s, info.id).changes.size);
   return (
-    <PaneTab active={active} onSelect={onSelect}>
+    <PaneTab active={active} onSelect={onSelect} title={pinned ? "Pinned result" : undefined}>
+      {pinned && <Pin className="text-brand size-3" aria-label="Pinned" />}
       {!info.done && <Loader2 className="text-brand size-3 animate-spin" />}
-      <span className="tabular-nums">{resultTabLabel(n, rows, info.durationMs)}</span>
+      <span className="tabular-nums">{resultTabText(label, rows, info.durationMs)}</span>
       {info.truncated && <TriangleAlert className="text-warning size-3" aria-label="Truncated" />}
+      {pending > 0 && (
+        <span
+          aria-label={`${pending} pending`}
+          className="bg-brand size-1.5 shrink-0 rounded-full"
+          data-slot="result-pending"
+        />
+      )}
     </PaneTab>
   );
-}
-
-function RunStatus({
-  run,
-  plan,
-  showPlan,
-}: {
-  run: RunState | null;
-  plan: PlanState | null;
-  showPlan: boolean;
-}) {
-  if (run?.status === "running") {
-    const n = run.statements.length;
-    return (
-      <span className="flex items-center gap-1.5">
-        <Loader2 className="text-brand size-3 animate-spin" />
-        {run.cancelling ? "Stopping…" : n > 1 ? `Running statement ${n}…` : "Running…"}
-        <ElapsedTimer since={run.startedAt} />
-      </span>
-    );
-  }
-  if (plan?.status === "running") {
-    return (
-      <span className="flex items-center gap-1.5">
-        <Loader2 className="text-brand size-3 animate-spin" />
-        Explaining…
-      </span>
-    );
-  }
-  if (showPlan && plan) {
-    const title = plan.mode === "analyze" ? "Explain analyze" : "Explain";
-    if (plan.status === "error") return <span className="text-error">{title} failed</span>;
-    if (plan.status === "cancelled") return <span className="text-warning">{title} cancelled</span>;
-    return (
-      <span className="tabular-nums">
-        {title}
-        {plan.result ? ` · ${formatDuration(plan.result.durationMs)}` : ""}
-      </span>
-    );
-  }
-  if (!run) return null;
-  const s = summarize(run);
-  return (
-    <span
-      className={cn(
-        "tabular-nums",
-        s.errors > 0 && "text-error",
-        s.cancelled && s.errors === 0 && "text-warning",
-      )}
-    >
-      {runStatusText(s)}
-    </span>
-  );
-}
-
-function resolvePane(
-  pane: ResultPane,
-  results: readonly ResultSetInfo[],
-  plan: PlanState | null,
-): ResultPane {
-  if (pane === "plan") return plan ? "plan" : (results[0]?.id ?? "messages");
-  if (pane === "messages") return "messages";
-  return results.some((r) => r.id === pane) ? pane : (results[0]?.id ?? "messages");
 }
 
 function ResultsEmpty() {
@@ -143,33 +137,180 @@ function ResultsEmpty() {
     <EmptyState
       icon={Play}
       title="Run a query"
-      description={`${k("query.run")} runs the selection or the whole editor, ${k("query.run-current")} the statement under the cursor, ${k("query.explain")} explains it.`}
+      description={`${k("query.run-current")} runs the statement under the cursor (or the selection), ${k("query.run")} runs everything, ${k("query.explain")} explains it.`}
     />
   );
 }
 
-/** Result sets, messages and plan of the tab's latest run, as sub-tabs below the editor. */
+/** Results header ▸ Result View Mode, row numbers and Pin Result. */
+function ResultsMenu({
+  mode,
+  pinTarget,
+  onTogglePin,
+}: {
+  mode: ResultViewMode;
+  /** The result Pin Result acts on, and whether it is pinned. */
+  pinTarget: { pinned: boolean } | null;
+  onTogglePin: () => void;
+}) {
+  const rowNumbers = usePrefs((p) => p.resultRowNumbers);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label="Result options"
+        title="Result options"
+        className="text-muted-foreground hover:text-foreground hover:bg-muted focus-visible:ring-ring/50 ml-auto flex size-6 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2"
+      >
+        <Settings2 className="size-3.5" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-60">
+        <DropdownMenuLabel className="text-muted-foreground text-[11px]">
+          Result View Mode
+        </DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={mode}
+          onValueChange={(v) => setPref("resultViewMode", v as ResultViewMode)}
+        >
+          <DropdownMenuRadioItem value="tabs">Split Results into Tabs</DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="append">
+            Append All Results in One Tab
+          </DropdownMenuRadioItem>
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuCheckboxItem
+          checked={rowNumbers}
+          onCheckedChange={(checked) => setPref("resultRowNumbers", checked === true)}
+        >
+          Show Row Numbers
+        </DropdownMenuCheckboxItem>
+        <DropdownMenuItem disabled={!pinTarget} onSelect={onTogglePin}>
+          {pinTarget?.pinned ? "Unpin Result" : "Pin Result"}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** The Preview SQL sheet of a result commit (⇧⌘P, or ⌘S with "Confirm before commit"). */
+function ResultPreviewSheet({ tabId }: { tabId: string }) {
+  const preview = useResultsStore((s) => s.preview);
+  const open = preview.open && preview.tabId === tabId;
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        void applyPreviewedResultEdits();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open]);
+  return (
+    <PreviewSqlSheet
+      state={open ? preview : { ...preview, open: false }}
+      onOpenChange={(next) => {
+        if (!next) closeResultPreview();
+      }}
+      onApply={() => void applyPreviewedResultEdits()}
+    />
+  );
+}
+
+/** What a result shown in the pane is: a set of the current run, or a pinned copy. */
+interface Shown {
+  info: ResultSetInfo;
+  label: string;
+  /** Set when it is a pinned copy. */
+  pin: PinnedResult | null;
+  sql: string | null;
+}
+
+function statementSql(run: RunState | null, info: ResultSetInfo): string | null {
+  return run?.statements.find((s) => s.index === info.statementIndex)?.sql ?? null;
+}
+
+/**
+ * Result sets, messages and plan of the tab's latest run, below the editor bar: a compact
+ * segmented strip (pinned results, Result 1 / Result 2 or all of them in one "Results" tab,
+ * Messages, Plan) over the selected pane, which has TablePlus's footer: row count, time, Show
+ * Message, Pin Result, row numbers and Export…. Results whose columns come from one table with
+ * its primary key are editable; ⌘S commits their staged changes.
+ */
 export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialect }) {
+  const qc = useQueryClient();
   const run = useQueryTabField(tabId, "run");
   const plan = useQueryTabField(tabId, "plan");
   const pane = useQueryTabField(tabId, "pane");
-  if (!run && !plan) return <ResultsEmpty />;
+  const isActive = useTabsStore((s) => s.activeId === tabId);
+  const connectionId = useTabsStore((s) => {
+    const tab = s.tabs.find((t) => t.id === tabId);
+    return tab?.kind === "query" ? tab.connectionId : null;
+  });
+  const mode = usePrefs((p) => p.resultViewMode);
+  const pins = useResultsStore((s) => pinsOf(s, tabId));
+  const pending = useResultsStore((s) => pendingForTab(s, tabId));
+  const dirty = useResultsStore((s) => dirtyResultOf(s, tabId));
+  const redoable = useResultsStore((s) => (dirty ? canRedo(stagingOf(s, dirty)) : false));
 
-  const results = run?.results ?? [];
-  const active = resolvePane(pane, results, plan);
+  // "Re-run" after a commit runs the result's statement again in this tab.
+  useEffect(() => {
+    setResultRerun(
+      (id, sub) =>
+        void runQuery(id, sub, {
+          onHistoryChanged: () => void qc.invalidateQueries({ queryKey: HISTORY_KEY }),
+        }),
+    );
+  }, [qc]);
+
+  // Staged result edits answer the toolbar's action control and ⌘S / ⇧⌘P / ⇧⌘⌫ / ⇧⌘Z.
+  const commit = useCallback(() => void commitResultEdits(tabId), [tabId]);
+  const preview = useCallback(() => void previewResultEdits(tabId), [tabId]);
+  const discard = useCallback(() => discardResultChanges(tabId), [tabId]);
+  const redo = useCallback(() => {
+    if (dirty) redoResultEdit(tabId, dirty);
+  }, [tabId, dirty]);
+  useAction("grid.commit", isActive && pending > 0 ? commit : null);
+  useAction("grid.preview", isActive && pending > 0 ? preview : null);
+  useAction("grid.discard", isActive && pending > 0 ? discard : null);
+  useAction("grid.redo", isActive && redoable ? redo : null);
+
+  const pinnedSources = useMemo(() => new Set(pins.map((p) => p.sourceId)), [pins]);
+  const results = useMemo(
+    () => (run?.results ?? []).filter((r) => !pinnedSources.has(r.id)),
+    [run, pinnedSources],
+  );
+  if (!run && !plan && pins.length === 0) return <ResultsEmpty />;
+
+  const runIndex = (info: ResultSetInfo) => (run?.results.indexOf(info) ?? 0) + 1;
+  const shownOf = (id: string): Shown | null => {
+    const pin = pins.find((p) => p.id === id);
+    if (pin) return { info: pin.info, label: pinnedLabel(pin.label), pin, sql: pin.sql };
+    const info = results.find((r) => r.id === id);
+    return info
+      ? { info, label: `Result ${runIndex(info)}`, pin: null, sql: statementSql(run, info) }
+      : null;
+  };
+
+  let active: ResultPane =
+    isPinId(pane) && pins.some((p) => p.id === pane) ? pane : resolvePane(pane, results, plan);
+  if (active === "messages" && !run) active = pins[0]?.id ?? "messages";
+  const append = mode === "append" && results.length > 0;
+  const activeResult = results.find((r) => r.id === active);
+  /** The strip's tabs, in order (the stacked results are one tab: their first set's id). */
   const panes: ResultPane[] = [
-    ...results.map((r) => r.id),
+    ...pins.map((p) => p.id),
+    ...(append ? [results[0]!.id] : results.map((r) => r.id)),
     ...(run ? (["messages"] as const) : []),
     ...(plan ? (["plan"] as const) : []),
   ];
+  const activeTab: ResultPane = append && activeResult ? results[0]!.id : active;
   const select = (p: ResultPane) => updateQueryTab(tabId, { pane: p });
   const errors = run ? summarize(run).errors : 0;
-  const activeIndex = results.findIndex((r) => r.id === active);
-  const activeResult = activeIndex >= 0 ? results[activeIndex] : undefined;
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-    const i = panes.indexOf(active);
+    const i = panes.indexOf(activeTab);
     const next = panes[(i + (e.key === "ArrowRight" ? 1 : -1) + panes.length) % panes.length];
     if (next === undefined) return;
     e.preventDefault();
@@ -178,29 +319,107 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
     requestAnimationFrame(() => tabs[panes.indexOf(next)]?.focus());
   };
 
+  const togglePin = (shown: Shown) => {
+    if (shown.pin) {
+      unpinResult(tabId, shown.pin.id);
+      return;
+    }
+    const id = pinResult(tabId, shown.info, shown.label, shown.sql);
+    if (id && getQueryTab(tabId).pane === shown.info.id) select(id);
+  };
+  const exportShown = (shown: Shown) => {
+    if (!shown.pin) {
+      // The controller exports the result the pane shows (as ⇧⌘E does).
+      select(shown.info.id);
+      exportQuery(tabId);
+      return;
+    }
+    const buffer = resultData.get(shown.info.id);
+    if (!buffer || !connectionId) return;
+    const columns = buffer.columns.length > 0 ? buffer.columns : shown.info.columns;
+    openExport({
+      connectionId,
+      source: {
+        kind: "rows",
+        columns: columns.map((c) => ({ ...c })),
+        rows: buffer.rows.map((row) => [...row]),
+        label: shown.label,
+        table: resultTable(columns, shown.sql),
+        sql: shown.info.set === 0 ? shown.sql : null,
+        truncated: shown.info.truncated,
+        stopped: null,
+      },
+    });
+  };
+
+  const gridFor = (shown: Shown, gridActive: boolean, height?: number) => (
+    <ResultGrid
+      key={shown.info.id}
+      tabId={tabId}
+      connectionId={connectionId}
+      info={shown.info}
+      label={shown.label}
+      sql={shown.sql}
+      dialect={dialect}
+      active={gridActive}
+      height={height}
+      footer={
+        <FooterFor
+          shown={shown}
+          onShowMessage={run ? () => select("messages") : null}
+          onTogglePin={() => togglePin(shown)}
+          onExport={() => exportShown(shown)}
+        />
+      }
+    />
+  );
+
+  const activeShown = typeof active === "string" ? shownOf(active) : null;
+
   return (
     <div className="bg-surface flex h-full min-h-0 flex-col">
-      <div className="border-border bg-surface-2 flex h-8 shrink-0 items-stretch border-b">
+      <div className="border-border bg-surface flex h-8 shrink-0 items-center gap-1 border-b px-1.5">
         <div
           role="tablist"
           aria-label="Results"
-          className="flex min-w-0 flex-1 [scrollbar-width:none] items-stretch overflow-x-auto"
+          className="border-border bg-surface-2 dark:bg-background flex h-6.5 max-w-full min-w-0 [scrollbar-width:none] items-stretch gap-0.5 overflow-x-auto rounded-md border p-0.5"
           onKeyDown={onKeyDown}
         >
-          {results.map((r, i) => (
+          {pins.map((p) => (
             <ResultTab
-              key={r.id}
-              info={r}
-              n={i + 1}
-              active={active === r.id}
-              onSelect={() => select(r.id)}
+              key={p.id}
+              info={p.info}
+              label={p.label}
+              pinned
+              active={active === p.id}
+              onSelect={() => select(p.id)}
             />
           ))}
+          {append ? (
+            <PaneTab
+              active={!!activeResult}
+              onSelect={() => select(activeResult ? activeResult.id : results[0]!.id)}
+            >
+              <Rows3 className="size-3" />
+              Results
+              <span className="text-muted-foreground tabular-nums">{results.length}</span>
+            </PaneTab>
+          ) : (
+            results.map((r) => (
+              <ResultTab
+                key={r.id}
+                info={r}
+                label={`Result ${runIndex(r)}`}
+                active={active === r.id}
+                onSelect={() => select(r.id)}
+              />
+            ))
+          )}
           {run && (
             <PaneTab active={active === "messages"} onSelect={() => select("messages")}>
               Messages
               {errors > 0 && (
-                <span className="bg-error/15 text-error rounded-full px-1.5 text-[10px] font-medium tabular-nums">
+                <span className="bg-error/15 text-error rounded-full px-1.5 text-[10px] leading-4 font-medium tabular-nums">
                   {errors}
                 </span>
               )}
@@ -212,24 +431,103 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
             </PaneTab>
           )}
         </div>
-        <div className="text-muted-foreground flex shrink-0 items-center px-3 text-[11px]">
-          <RunStatus run={run} plan={plan} showPlan={active === "plan"} />
-        </div>
+        <ResultsMenu
+          mode={mode}
+          pinTarget={activeShown ? { pinned: activeShown.pin !== null } : null}
+          onTogglePin={() => activeShown && togglePin(activeShown)}
+        />
       </div>
       <div className="min-h-0 flex-1" role="tabpanel">
         {active === "plan" && plan ? (
           <PlanView tabId={tabId} plan={plan} dialect={dialect} />
-        ) : activeResult ? (
-          <ResultGrid
-            key={activeResult.id}
-            info={activeResult}
-            label={`Result ${activeIndex + 1}`}
-            dialect={dialect}
-          />
+        ) : append && activeResult ? (
+          <div className="h-full overflow-y-auto" data-slot="appended-results">
+            {results.map((r) => {
+              const shown = shownOf(r.id)!;
+              return (
+                <AppendedResult
+                  key={r.id}
+                  n={runIndex(r)}
+                  info={r}
+                  selected={r.id === active}
+                  onSelect={() => r.id !== getQueryTab(tabId).pane && select(r.id)}
+                >
+                  {(height) => gridFor(shown, isActive && r.id === active, height)}
+                </AppendedResult>
+              );
+            })}
+          </div>
+        ) : activeShown ? (
+          gridFor(activeShown, isActive)
         ) : run ? (
           <MessagesView tabId={tabId} run={run} />
         ) : null}
       </div>
+      <ResultPreviewSheet tabId={tabId} />
     </div>
+  );
+}
+
+/** One result set of "Append All Results in One Tab": a header, then its grid and footer. */
+function AppendedResult({
+  n,
+  info,
+  selected,
+  onSelect,
+  children,
+}: {
+  n: number;
+  info: ResultSetInfo;
+  selected: boolean;
+  onSelect: () => void;
+  children: (height: number) => ReactNode;
+}) {
+  const rows = useResultRowCount(info.id);
+  const pending = useResultsStore((s) => stagingOf(s, info.id).changes.size);
+  const shownRows = Math.min(STACK_MAX_ROWS, Math.max(STACK_MIN_ROWS, rows + pending));
+  return (
+    <section
+      aria-label={`Result ${n}`}
+      data-selected={selected || undefined}
+      className="border-border border-b last:border-b-0"
+      onPointerDownCapture={onSelect}
+      onFocusCapture={onSelect}
+    >
+      <header
+        className={cn(
+          "bg-surface-2 text-muted-foreground border-border flex h-6 items-center gap-1.5 border-b px-3 text-[11px] tabular-nums",
+          selected && "text-foreground",
+        )}
+      >
+        {!info.done && <Loader2 className="text-brand size-3 animate-spin" />}
+        {appendedHeader(n, rows, info.durationMs)}
+        {info.truncated && <TriangleAlert className="text-warning size-3" aria-label="Truncated" />}
+      </header>
+      {children(STACK_CHROME_H + (shownRows + 1) * STACK_ROW_H)}
+    </section>
+  );
+}
+
+function FooterFor({
+  shown,
+  onShowMessage,
+  onTogglePin,
+  onExport,
+}: {
+  shown: Shown;
+  onShowMessage: (() => void) | null;
+  onTogglePin: () => void;
+  onExport: () => void;
+}) {
+  const rows = useResultRowCount(shown.info.id);
+  return (
+    <ResultFooter
+      info={shown.info}
+      rows={rows}
+      pinned={shown.pin !== null}
+      onShowMessage={onShowMessage}
+      onTogglePin={onTogglePin}
+      onExport={onExport}
+    />
   );
 }

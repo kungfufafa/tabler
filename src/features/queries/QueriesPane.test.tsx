@@ -1,0 +1,289 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as controller from "@/features/editor/controller";
+import { getEditorState, seedEditor } from "@/features/editor/editorStates";
+import type { ConnectionInfo } from "@/lib/ipc";
+import { resetMockSavedQueries } from "@/lib/ipc/mock/queries";
+import type { OpenConnection } from "@/stores/connections";
+import { getPrefs, resetPrefsForTests, setPref } from "@/stores/prefs";
+import { useTabsStore } from "@/stores/tabs";
+import { closeSavedQueryDialog, openAddToQueries, useSavedQueryDialogStore } from "./dialogStore";
+import { COLLAPSED_FOLDERS_KEY, QueriesPane } from "./QueriesPane";
+import { QueriesHost } from "./QueriesHost";
+import { resetSavedQueriesStore, useSavedQueriesStore } from "./store";
+
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), message: vi.fn() }));
+vi.mock("sonner", () => ({ toast }));
+
+// The mock library (src/lib/ipc/mock/queries.ts), as Local Postgres sees it:
+//   Maintenance/  Active sessions            (Local Postgres only)
+//                 Table sizes (MySQL)        (Shop MySQL only: hidden here)
+//   Reports/      Posts per user  [ppu]      (Local Postgres only)
+//                 User by id      [uid]
+//   Recent users  [recent]
+function connection(): OpenConnection {
+  const info: ConnectionInfo = {
+    connectionId: "c1",
+    profileId: "p-local-pg",
+    name: "Local Postgres",
+    color: null,
+    driver: "postgres",
+    serverVersion: "17.6",
+    currentDatabase: "tabler_dev",
+    currentUser: "tabler",
+    tunnel: null,
+    readOnly: false,
+  };
+  return { info, status: "connected", message: null, currentSchema: "public" };
+}
+
+function setup() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={qc}>
+      <QueriesPane connection={connection()} />
+      <QueriesHost />
+    </QueryClientProvider>,
+  );
+  // The first render of a file pays for loading the menus and dialogs: allow it some time.
+  const row = async (name: string) => screen.findByRole("treeitem", { name }, { timeout: 5000 });
+  const names = () => screen.queryAllByRole("treeitem").map((r) => r.getAttribute("aria-label"));
+  return { row, names };
+}
+
+/** A DataTransfer stand-in (jsdom has none). */
+function dataTransfer() {
+  const data = new Map<string, string>();
+  return {
+    setData: (type: string, value: string) => void data.set(type, value),
+    getData: (type: string) => data.get(type) ?? "",
+    get types() {
+      return [...data.keys()];
+    },
+    dropEffect: "none",
+    effectAllowed: "all",
+  };
+}
+
+const tabs = () => useTabsStore.getState().tabs;
+
+beforeEach(() => {
+  closeSavedQueryDialog();
+  resetMockSavedQueries();
+  resetSavedQueriesStore();
+  resetPrefsForTests();
+  localStorage.removeItem(COLLAPSED_FOLDERS_KEY);
+  useTabsStore.setState({
+    tabs: [],
+    activeId: null,
+    closed: [],
+    closeRequest: null,
+    queryCounter: 0,
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  Object.values(toast).forEach((fn) => fn.mockReset());
+});
+
+describe("QueriesPane", () => {
+  it("lists folders, then queries, of this connection and of every connection", async () => {
+    const { row, names } = setup();
+    await row("Recent users");
+    expect(names()).toEqual([
+      "Maintenance",
+      "Active sessions",
+      "Reports",
+      "Posts per user",
+      "User by id",
+      "Recent users",
+    ]);
+    // Counts what the folder holds for this connection; keywords show next to the name.
+    expect(within(await row("Maintenance")).getByText("1")).toBeInTheDocument();
+    expect(within(await row("Recent users")).getByText("recent")).toBeInTheDocument();
+  });
+
+  it("collapses and expands folders, and remembers it", async () => {
+    const { row, names } = setup();
+    fireEvent.click(await row("Reports"));
+    expect(names()).not.toContain("Posts per user");
+    expect((await row("Reports")).getAttribute("aria-expanded")).toBe("false");
+    expect(JSON.parse(localStorage.getItem(COLLAPSED_FOLDERS_KEY)!)).toEqual(["f-reports"]);
+    fireEvent.keyDown(await row("Reports"), { key: "ArrowRight" });
+    expect(names()).toContain("Posts per user");
+  });
+
+  it("searches names, keywords and SQL, opening the folders of the matches", async () => {
+    const { row, names } = setup();
+    fireEvent.click(await row("Reports"));
+    fireEvent.change(screen.getByRole("textbox", { name: "Search queries" }), {
+      target: { value: "uid" },
+    });
+    expect(names()).toEqual(["Reports", "User by id"]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search queries" }), {
+      target: { value: "pg_stat" },
+    });
+    expect(names()).toEqual(["Maintenance", "Active sessions"]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search queries" }), {
+      target: { value: "nothing like it" },
+    });
+    expect(screen.getByText("No matches")).toBeInTheDocument();
+  });
+
+  it("runs a query in a new tab on double-click", async () => {
+    const run = vi.spyOn(controller, "runQuery").mockResolvedValue();
+    const { row } = setup();
+    fireEvent.doubleClick(await row("Recent users"));
+    expect(tabs()).toHaveLength(1);
+    const tab = tabs()[0]!;
+    expect(tab.title).toBe("Recent users");
+    expect(getEditorState(tab.id)?.doc.toString()).toContain("from users");
+    expect(run).toHaveBeenCalledWith(tab.id, "auto", expect.any(Object));
+  });
+
+  it("inserts into the SQL editor on double-click with “Double Click to Insert”", async () => {
+    const run = vi.spyOn(controller, "runQuery").mockResolvedValue();
+    const tabId = useTabsStore.getState().newQuery("c1");
+    seedEditor(tabId, "-- mine\n");
+    setPref("queriesDoubleClickInsert", true);
+    const { row } = setup();
+    fireEvent.doubleClick(await row("User by id"));
+    expect(tabs()).toHaveLength(1);
+    expect(getEditorState(tabId)?.doc.toString()).toContain("select * from users where id = :id;");
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("switches double-click to insert from the ⚙ menu", async () => {
+    setup();
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Queries options" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(
+      await screen.findByRole("menuitemcheckbox", { name: "Double Click to Insert" }),
+    );
+    expect(getPrefs().queriesDoubleClickInsert).toBe(true);
+  });
+
+  it("offers the item menu: open, insert, copy, edit", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText: write } });
+    const run = vi.spyOn(controller, "runQuery").mockResolvedValue();
+    const { row } = setup();
+
+    fireEvent.contextMenu(await row("Recent users"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open in New Tab" }));
+    expect(tabs().map((t) => t.title)).toEqual(["Recent users"]);
+    expect(run).not.toHaveBeenCalled();
+
+    fireEvent.contextMenu(await row("Recent users"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Run/ }));
+    expect(tabs()).toHaveLength(2);
+    expect(run).toHaveBeenCalledTimes(1);
+
+    fireEvent.contextMenu(await row("Recent users"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Copy/ }));
+    await waitFor(() => expect(write).toHaveBeenCalledWith(expect.stringContaining("from users")));
+
+    fireEvent.contextMenu(await row("User by id"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Query" });
+    expect(within(dialog).getByLabelText("Keyword")).toHaveValue("uid");
+  });
+
+  it("renames inline", async () => {
+    const { row } = setup();
+    fireEvent.contextMenu(await row("Recent users"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename…" }));
+    const input = await screen.findByRole("textbox", { name: "Name" });
+    fireEvent.change(input, { target: { value: "Newest users" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await row("Newest users");
+    await waitFor(() =>
+      expect(useSavedQueriesStore.getState().queries.map((q) => q.name)).toContain("Newest users"),
+    );
+  });
+
+  it("creates a folder and names it", async () => {
+    const { row } = setup();
+    await row("Recent users");
+    fireEvent.pointerDown(screen.getByRole("button", { name: "New" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Folder…" }));
+    const input = await screen.findByRole("textbox", { name: "Name" });
+    expect(input).toHaveValue("New Folder");
+    fireEvent.change(input, { target: { value: "Drafts" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await row("Drafts")).toBeInTheDocument();
+  });
+
+  it("moves a query into a folder by dragging it, or with Move to Folder", async () => {
+    const { row } = setup();
+    const dt = dataTransfer();
+    fireEvent.dragStart(await row("Recent users"), { dataTransfer: dt });
+    fireEvent.dragOver(await row("Maintenance"), { dataTransfer: dt });
+    fireEvent.drop(await row("Maintenance"), { dataTransfer: dt });
+    await waitFor(() =>
+      expect(
+        useSavedQueriesStore.getState().queries.find((q) => q.id === "q-recent-users")?.folderId,
+      ).toBe("f-maintenance"),
+    );
+
+    fireEvent.contextMenu(await row("Recent users"));
+    fireEvent.pointerMove(screen.getByRole("menuitem", { name: "Move to Folder" }));
+    fireEvent.keyDown(screen.getByRole("menuitem", { name: "Move to Folder" }), {
+      key: "ArrowRight",
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Top Level" }));
+    await waitFor(() =>
+      expect(
+        useSavedQueriesStore.getState().queries.find((q) => q.id === "q-recent-users")?.folderId,
+      ).toBeNull(),
+    );
+  });
+
+  it("deletes after asking", async () => {
+    const { row, names } = setup();
+    fireEvent.keyDown(await row("Reports"), { key: "Delete" });
+    const alert = await screen.findByRole("alertdialog");
+    expect(alert).toHaveTextContent("Delete the folder “Reports”?");
+    expect(alert).toHaveTextContent("The 2 queries inside it will be deleted too.");
+    fireEvent.click(within(alert).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(names()).not.toContain("Reports"));
+    expect(names()).not.toContain("User by id");
+  });
+});
+
+describe("Add to Queries popup", () => {
+  it("saves name, keyword and SQL with ⌘S, for this connection or all", async () => {
+    const { row } = setup();
+    await row("Recent users");
+    act(() =>
+      openAddToQueries({
+        sql: "select count(*) from posts;",
+        connection: { profileId: "p-local-pg", name: "Local Postgres" },
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Add to Queries" });
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("select count(*) from posts");
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Post count" } });
+    fireEvent.change(within(dialog).getByLabelText("Keyword"), { target: { value: "two words" } });
+    expect(dialog).toHaveTextContent("The keyword must be a single word.");
+    expect(within(dialog).getByRole("button", { name: /Save/ })).toBeDisabled();
+    fireEvent.change(within(dialog).getByLabelText("Keyword"), { target: { value: "pc" } });
+    fireEvent.keyDown(within(dialog).getByLabelText("SQL"), { key: "s", metaKey: true });
+    await waitFor(() => expect(useSavedQueryDialogStore.getState().request).toBeNull());
+    const saved = useSavedQueriesStore.getState().queries.find((q) => q.name === "Post count");
+    expect(saved).toMatchObject({
+      keyword: "pc",
+      sql: "select count(*) from posts;",
+      profileId: null,
+    });
+    expect(await row("Post count")).toBeInTheDocument();
+    expect(toast.success).toHaveBeenCalledWith("Added “Post count” to Queries");
+  });
+});

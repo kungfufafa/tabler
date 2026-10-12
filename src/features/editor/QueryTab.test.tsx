@@ -1,7 +1,8 @@
 import { undo } from "@codemirror/commands";
 import { forEachDiagnostic } from "@codemirror/lint";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { resetExportStore, useExportStore } from "@/features/export/store";
@@ -14,9 +15,10 @@ import { resetPrefsForTests } from "@/stores/prefs";
 import { getQueryTab, updateQueryTab, useQueryTabsStore } from "@/stores/queryTabs";
 import { flushResultVersions, resultData } from "@/stores/resultData";
 import { useTabsStore, type Tab } from "@/stores/tabs";
-import { explainQuery } from "./controller";
+import { explainQuery, NO_LIMIT_MAX_ROWS } from "./controller";
 import { getEditorState, getEditorView } from "./editorStates";
 import { QueryTab } from "./QueryTab";
+import { RUN_BUTTON_KEY, useRunButtonStore } from "./runButton";
 
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), message: vi.fn() }));
 vi.mock("sonner", () => ({ toast }));
@@ -27,6 +29,9 @@ beforeAll(() => {
   Range.prototype.getClientRects ??= rects;
   Range.prototype.getBoundingClientRect ??= () => new DOMRect();
   Element.prototype.getClientRects ??= rects;
+  // Radix Select (the row limit) needs these.
+  Element.prototype.hasPointerCapture ??= () => false;
+  Element.prototype.scrollIntoView ??= () => {};
 });
 
 let info: ConnectionInfo;
@@ -53,6 +58,8 @@ beforeEach(() => {
   });
   useQueryTabsStore.setState({ slices: {} });
   resetExportStore();
+  localStorage.removeItem(RUN_BUTTON_KEY);
+  useRunButtonStore.setState({ mode: "current" });
 });
 
 afterEach(() => {
@@ -114,7 +121,7 @@ describe("QueryTab", () => {
       "aria-selected",
       "true",
     );
-    expect(screen.getByText(/1 statement · \d+ ms/)).toBeInTheDocument();
+    expect(screen.getByText(/^1 statement · 5 rows · \d+ ms$/)).toBeInTheDocument();
   });
 
   it("does not start a run for comments only", async () => {
@@ -177,8 +184,12 @@ describe("QueryTab", () => {
     });
     await waitFor(() => expect(getQueryTab(id).run?.statements).toHaveLength(1));
     await waitFor(() => expect(actions.has("query.cancel")).toBe(true));
-    expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
-    await act(() => actions.run("query.cancel"));
+    // Cancel takes the Run button's place while the statement runs.
+    expect(screen.queryByRole("button", { name: "Run Current" })).toBeNull();
+    expect(
+      within(screen.getByRole("toolbar", { name: "Query" })).getByText("Running…"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await act(async () => {
       await done;
     });
@@ -186,6 +197,8 @@ describe("QueryTab", () => {
     expect(run.status).toBe("cancelled");
     expect(run.statements[0]?.status).toBe("cancelled");
     expect(screen.getByText(/^Cancelled · /)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Run Current" })).toBeEnabled();
     expect(screen.getByText("canceling statement due to user request")).toBeInTheDocument();
   });
 
@@ -214,6 +227,95 @@ describe("QueryTab", () => {
     expect(view().state.doc.toString()).toBe(
       "SELECT\n  id,\n  name\nFROM\n  users\nWHERE\n  id = 1",
     );
+  });
+
+  it("beautifies and uglifies the statement under the cursor, or the selection", async () => {
+    const { type, view } = setup();
+    const doc = () => view().state.doc.toString();
+    const sql = "select 1;\nselect id,name -- who\nfrom users where id=1;\nselect 3;";
+    type(sql, sql.indexOf("users"));
+    await act(() => actions.run("query.format"));
+    expect(doc()).toBe(
+      "select 1;\nSELECT\n  id,\n  name -- who\nFROM\n  users\nWHERE\n  id = 1;\nselect 3;",
+    );
+    // The cursor stays in the statement it formatted.
+    await act(() => actions.run("query.minify"));
+    expect(doc()).toBe("select 1;\nSELECT id, name FROM users WHERE id = 1;\nselect 3;");
+    // A selection is rewritten as it is, and stays selected.
+    act(() => view().dispatch({ selection: { anchor: 0, head: view().state.doc.length } }));
+    await act(() => actions.run("query.minify"));
+    expect(doc()).toBe("select 1; SELECT id, name FROM users WHERE id = 1; select 3;");
+    const sel = view().state.selection.main;
+    expect([sel.from, sel.to]).toEqual([0, doc().length]);
+  });
+
+  it("runs the current statement from the Run button, or everything once chosen", async () => {
+    const { id, type } = setup();
+    const sql = "select 1;\nselect * from tags;\nselect 3;";
+    type(sql, sql.indexOf("tags"));
+    fireEvent.click(screen.getByRole("button", { name: "Run Current" }));
+    await waitFor(() => expect(getQueryTab(id).run?.status).toBe("done"));
+    expect(getQueryTab(id).run?.sql).toBe("select * from tags");
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Run options" }), { key: "Enter" });
+    expect(await screen.findByRole("menuitem", { name: /Run Current/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "All statements" }));
+    await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+    expect(useRunButtonStore.getState().mode).toBe("all");
+    expect(localStorage.getItem(RUN_BUTTON_KEY)).toBe("all");
+
+    fireEvent.click(screen.getByRole("button", { name: "Run All" }));
+    await waitFor(() => expect(getQueryTab(id).run).toMatchObject({ sql, status: "done" }));
+    expect(getQueryTab(id).run?.statements).toHaveLength(3);
+  });
+
+  it("binds the query keys in CodeMirror too (⌘↩, ⇧⌘↩, ⌘I, ⇧⌘I, ⌃`)", async () => {
+    const { view } = setup();
+    await waitFor(() => expect(actions.has("query.minify")).toBe(true));
+    const ids = [
+      "query.run-current",
+      "query.run",
+      "query.format",
+      "query.minify",
+      "query.toggle-results",
+    ] as const;
+    const calls: string[] = [];
+    const off = ids.map((id) => actions.register(id, () => void calls.push(id)));
+    try {
+      const key = (init: KeyboardEventInit & { keyCode: number }) =>
+        fireEvent.keyDown(view().contentDOM, init);
+      // jsdom is not macOS: Mod is Ctrl.
+      key({ key: "Enter", code: "Enter", keyCode: 13, ctrlKey: true });
+      key({ key: "Enter", code: "Enter", keyCode: 13, ctrlKey: true, shiftKey: true });
+      key({ key: "i", code: "KeyI", keyCode: 73, ctrlKey: true });
+      key({ key: "I", code: "KeyI", keyCode: 73, ctrlKey: true, shiftKey: true });
+      key({ key: "`", code: "Backquote", keyCode: 192, ctrlKey: true });
+      await waitFor(() => expect(calls).toEqual(ids));
+      expect(view().state.doc.toString()).toBe("");
+    } finally {
+      off.forEach((dispose) => dispose());
+    }
+  });
+
+  it("collapses the result pane (⌃`) and shows it again for a new run", async () => {
+    const { id, type } = setup();
+    await waitFor(() => expect(actions.has("query.toggle-results")).toBe(true));
+    const pane = screen.getByTestId("results");
+    expect(pane).not.toHaveAttribute("inert");
+    await act(() => actions.run("query.toggle-results"));
+    expect(getQueryTab(id).resultsCollapsed).toBe(true);
+    expect(pane).toHaveAttribute("inert");
+
+    fireEvent.click(screen.getByRole("button", { name: "Show results" }));
+    expect(getQueryTab(id).resultsCollapsed).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Hide results" }));
+    expect(getQueryTab(id).resultsCollapsed).toBe(true);
+
+    type("select 1");
+    await act(() => actions.run("query.run"));
+    expect(getQueryTab(id).resultsCollapsed).toBe(false);
+    expect(pane).not.toHaveAttribute("inert");
+    expect(screen.getByRole("button", { name: "Hide results" })).toBeInTheDocument();
   });
 
   it("keeps the document and undo history across remounts", async () => {
@@ -401,9 +503,9 @@ describe("QueryTab", () => {
     expect(screen.getByText(new RegExp(`^${n} statements · `))).toBeInTheDocument();
   });
 
-  it("keeps ⌘R from reloading the page from the toolbar", () => {
+  it("keeps ⌘R from reloading the page from the editor bar", () => {
     setup({ keyboard: true });
-    const runButton = screen.getByRole("button", { name: "Run" });
+    const runButton = screen.getByRole("button", { name: "Run Current" });
     act(() => runButton.focus());
     expect(fireEvent.keyDown(runButton, { key: "r", code: "KeyR", ctrlKey: true })).toBe(false);
   });
@@ -417,7 +519,7 @@ describe("QueryTab", () => {
     expect(document.activeElement).toBe(grid);
     const save = vi.fn();
     const run = vi.fn();
-    const off = [actions.register("query.save", save), actions.register("query.run", run)];
+    const off = [actions.register("query.save", save), actions.register("query.run-current", run)];
     try {
       expect(fireEvent.keyDown(grid, { key: "s", code: "KeyS", ctrlKey: true })).toBe(false);
       expect(fireEvent.keyDown(grid, { key: "Enter", code: "Enter", ctrlKey: true })).toBe(false);
@@ -428,6 +530,108 @@ describe("QueryTab", () => {
     } finally {
       off.forEach((dispose) => dispose());
     }
+  });
+});
+
+describe("Editor bar", () => {
+  it("sits under the editor, with no toolbar above it", () => {
+    setup();
+    const bar = screen.getByRole("toolbar", { name: "Query" });
+    const editor = screen.getByTestId("sql-editor");
+    // The editor comes first in the document; the bar follows it.
+    expect(editor.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole("toolbar")).toHaveLength(1);
+  });
+
+  it("shows the cursor position, or how much is selected", () => {
+    const { view, type } = setup();
+    const position = screen.getByTestId("cursor-position");
+    expect(position).toHaveTextContent("Line 1, Column 1");
+    type("select 1;\nselect 22", 19);
+    expect(position).toHaveTextContent("Line 2, Column 10");
+    act(() => view().dispatch({ selection: { anchor: 0, head: 6 } }));
+    expect(position).toHaveTextContent("6 characters selected");
+    act(() => view().dispatch({ selection: { anchor: 3, head: 4 } }));
+    expect(position).toHaveTextContent("1 character selected");
+    act(() => view().dispatch({ selection: { anchor: 12 } }));
+    expect(position).toHaveTextContent("Line 2, Column 3");
+  });
+
+  it("summarizes rows changed and errors of the last run", async () => {
+    const { type } = setup();
+    type("update users set email = email where id = 1");
+    await act(() => actions.run("query.run"));
+    expect(screen.getByText(/^1 statement · \d+ rows? affected · \d+ ms$/)).toBeInTheDocument();
+
+    type("select 1;\nselect * from nope;");
+    await act(() => actions.run("query.run"));
+    const summary = screen.getByText(/^2 statements · 1 error · \d+ ms$/);
+    expect(summary).toHaveClass("text-error");
+  });
+
+  it("caps each run at the tab's row limit", async () => {
+    const user = userEvent.setup();
+    const { id, type } = setup();
+    const run = vi.spyOn(ipc.query, "run");
+    try {
+      const limit = screen.getByRole("combobox", { name: "Row limit" });
+      expect(limit).toHaveTextContent("Limit 10,000");
+      type("select * from events_big");
+      await act(() => actions.run("query.run"));
+      expect(run.mock.calls.at(-1)?.[3]).toEqual({ maxRows: 10_000, stopOnError: true });
+
+      act(() => limit.focus());
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(screen.getByRole("option", { name: "10,000" })).toHaveFocus());
+      await user.keyboard("{ArrowUp}{ArrowUp}{Enter}");
+      await waitFor(() => expect(getQueryTab(id).rowLimit).toBe(100));
+      expect(limit).toHaveTextContent("Limit 100");
+
+      await act(() => actions.run("query.run"));
+      act(() => flushResultVersions());
+      expect(run.mock.calls.at(-1)?.[3]).toEqual({ maxRows: 100, stopOnError: true });
+      expect(getQueryTab(id).run?.results[0]?.truncated).toBe(true);
+      expect(screen.getByText(/^1 statement · 100 rows · \d+ ms$/)).toBeInTheDocument();
+      expect(screen.getByText("limit reached")).toBeInTheDocument();
+
+      // "No limit" asks for the backend's highest cap (0 would mean its default).
+      act(() => updateQueryTab(id, { rowLimit: null }));
+      expect(limit).toHaveTextContent("No limit");
+      type("select 1");
+      await act(() => actions.run("query.run"));
+      expect(run.mock.calls.at(-1)?.[3]).toEqual({ maxRows: NO_LIMIT_MAX_ROWS, stopOnError: true });
+    } finally {
+      run.mockRestore();
+    }
+  });
+
+  it("keeps the row limit per query tab", () => {
+    const first = setup();
+    act(() => updateQueryTab(first.id, { rowLimit: 1_000 }));
+    first.unmount();
+    const second = setup();
+    expect(getQueryTab(second.id).rowLimit).toBe(10_000);
+    expect(screen.getByRole("combobox", { name: "Row limit" })).toHaveTextContent("Limit 10,000");
+    expect(getQueryTab(first.id).rowLimit).toBe(1_000);
+  });
+
+  it("shows the plan's outcome while the Plan pane is selected", async () => {
+    const { type } = setup();
+    type("select * from posts limit 5");
+    await act(() => actions.run("query.explain"));
+    expect(screen.getByText(/^Explain · \d+ ms$/)).toBeInTheDocument();
+  });
+
+  it("beautifies and uglifies from the Beautify button and its menu", async () => {
+    const { type, view } = setup();
+    type("select id,name from users");
+    fireEvent.click(screen.getByRole("button", { name: "Beautify" }));
+    await waitFor(() =>
+      expect(view().state.doc.toString()).toBe("SELECT\n  id,\n  name\nFROM\n  users"),
+    );
+    fireEvent.keyDown(screen.getByRole("button", { name: "Format options" }), { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Uglify SQL/ }));
+    await waitFor(() => expect(view().state.doc.toString()).toBe("SELECT id, name FROM users"));
   });
 });
 

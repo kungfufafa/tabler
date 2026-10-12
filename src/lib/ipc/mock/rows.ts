@@ -1,6 +1,7 @@
 import type { ColumnMeta } from "../bindings/ColumnMeta";
 import type { FilterGroup } from "../bindings/FilterGroup";
 import type { FilterNode } from "../bindings/FilterNode";
+import type { FilterOp } from "../bindings/FilterOp";
 import type { SortSpec } from "../bindings/SortSpec";
 import type { Value } from "../bindings/Value";
 
@@ -211,22 +212,48 @@ function compare(a: Value, b: Value): number {
   return (text(a) ?? "").localeCompare(text(b) ?? "");
 }
 
-function likeToRegex(pattern: string): RegExp {
-  const esc = pattern
-    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/%/g, ".*")
-    .replace(/_/g, ".");
-  return new RegExp(`^${esc}$`, "i");
+function likeToRegex(pattern: string, flags = "i", escape: string | null = null): RegExp {
+  let out = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]!;
+    if (escape !== null && ch === escape && i + 1 < pattern.length) {
+      out += pattern[++i]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    } else if (ch === "%") out += ".*";
+    else if (ch === "_") out += ".";
+    else out += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${out}$`, flags);
 }
 
-function matches(node: FilterNode, row: Value[], columns: ColumnMeta[]): boolean {
-  if (node.kind === "raw") return true;
-  if (node.kind === "group") return matchesGroup(node, row, columns);
-  const idx = columns.findIndex((c) => c.name === node.column);
-  if (idx < 0) return true;
-  const cell = row[idx] ?? { t: "null" };
-  const [v0, v1] = node.values;
-  switch (node.op) {
+/** Contains / prefix / suffix (and their case variants) on a cell's text. */
+function textTest(op: FilterOp, cell: string | null, value: string): boolean | null {
+  const shapes: Partial<Record<FilterOp, [string, boolean, boolean]>> = {
+    contains: ["c", false, false],
+    notContains: ["c", true, false],
+    containsCase: ["c", false, true],
+    notContainsCase: ["c", true, true],
+    hasPrefix: ["p", false, false],
+    hasSuffix: ["s", false, false],
+    hasPrefixCase: ["p", false, true],
+    hasSuffixCase: ["s", false, true],
+  };
+  const shape = shapes[op];
+  if (!shape) return null;
+  if (cell === null) return false;
+  const [kind, negated, variant] = shape;
+  // The mock plays PostgreSQL: the base operators are case-sensitive, the variants not.
+  const a = variant ? cell.toLowerCase() : cell;
+  const b = variant ? value.toLowerCase() : value;
+  const hit = kind === "c" ? a.includes(b) : kind === "p" ? a.startsWith(b) : a.endsWith(b);
+  return negated ? !hit : hit;
+}
+
+function test(op: FilterOp, cell: Value, values: Value[]): boolean {
+  const [v0, v1] = values;
+  const t = text(cell);
+  const pattern = textTest(op, t, v0 ? (text(v0) ?? "") : "");
+  if (pattern !== null) return pattern;
+  switch (op) {
     case "isNull":
       return cell.t === "null";
     case "isNotNull":
@@ -244,18 +271,76 @@ function matches(node: FilterNode, row: Value[], columns: ColumnMeta[]): boolean
     case "le":
       return v0 !== undefined && compare(cell, v0) <= 0;
     case "like":
-      return v0 !== undefined && likeToRegex(text(v0) ?? "").test(text(cell) ?? "");
+      return v0 !== undefined && likeToRegex(text(v0) ?? "", "").test(t ?? "");
     case "notLike":
-      return v0 !== undefined && !likeToRegex(text(v0) ?? "").test(text(cell) ?? "");
+      return v0 !== undefined && t !== null && !likeToRegex(text(v0) ?? "", "").test(t);
+    case "ilike":
+      return v0 !== undefined && likeToRegex(text(v0) ?? "").test(t ?? "");
     case "in":
-      return node.values.some((v) => compare(cell, v) === 0);
+      return values.some((v) => compare(cell, v) === 0);
     case "notIn":
-      return !node.values.some((v) => compare(cell, v) === 0);
+      return !values.some((v) => compare(cell, v) === 0);
     case "between":
       return (
         v0 !== undefined && v1 !== undefined && compare(cell, v0) >= 0 && compare(cell, v1) <= 0
       );
+    case "notBetween":
+      return (
+        v0 !== undefined && v1 !== undefined && (compare(cell, v0) < 0 || compare(cell, v1) > 0)
+      );
+    case "jsonContains":
+    case "jsonNotContains": {
+      // A shallow containment check is enough for the mock.
+      let hit: boolean;
+      try {
+        const doc = JSON.parse(t ?? "null") as unknown;
+        const want = JSON.parse(v0 ? (text(v0) ?? "null") : "null") as unknown;
+        hit =
+          want !== null && typeof want === "object" && doc !== null && typeof doc === "object"
+            ? Object.entries(want).every(
+                ([k, v]) =>
+                  JSON.stringify((doc as Record<string, unknown>)[k]) === JSON.stringify(v),
+              )
+            : JSON.stringify(doc) === JSON.stringify(want);
+      } catch {
+        hit = false;
+      }
+      return op === "jsonContains" ? hit : !hit;
+    }
+    default:
+      return true;
   }
+}
+
+/** Ops that "Any column" joins with AND (no column matches) instead of OR. */
+const NEGATED: ReadonlySet<FilterOp> = new Set<FilterOp>([
+  "ne",
+  "notLike",
+  "notIn",
+  "notBetween",
+  "notContains",
+  "notContainsCase",
+  "jsonNotContains",
+]);
+
+function matches(node: FilterNode, row: Value[], columns: ColumnMeta[]): boolean {
+  if (node.kind === "raw") return true;
+  if (node.kind === "group") return matchesGroup(node, row, columns);
+  if (node.kind === "anyColumn") {
+    const textual = (v: Value): Value => {
+      const t = text(v);
+      return t === null ? { t: "null" } : { t: "text", v: t };
+    };
+    const cells = columns
+      .map((c, i) => ({ c, v: row[i] ?? { t: "null" as const } }))
+      .filter(({ c }) => c.kind !== "bytes" && c.kind !== "geometry");
+    const values = node.values.map(textual);
+    const one = ({ v }: { v: Value }) => test(node.op, textual(v), values);
+    return NEGATED.has(node.op) ? cells.every(one) : cells.some(one);
+  }
+  const idx = columns.findIndex((c) => c.name === node.column);
+  if (idx < 0) return true;
+  return test(node.op, row[idx] ?? { t: "null" }, node.values);
 }
 
 export function matchesGroup(group: FilterGroup, row: Value[], columns: ColumnMeta[]): boolean {

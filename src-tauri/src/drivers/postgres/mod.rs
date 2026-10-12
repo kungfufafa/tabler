@@ -228,13 +228,25 @@ impl DbSession for PgSession {
         })
     }
 
+    /// Checks the pool, and keeps the editor connection alive when it is idle (no editor run
+    /// holds it; never waits behind one) with an empty query, which changes no session state
+    /// and is accepted even in an aborted transaction.
     async fn ping(&self) -> Result<(), AppError> {
         if self.editor_lost.load(Ordering::SeqCst) {
             return Err(AppError::NotConnected);
         }
         let client = self.client().await?;
         client.query_one("SELECT 1", &[]).await?;
-        Ok(())
+        let Ok(_run) = self.editor_runs.try_lock() else {
+            return Ok(());
+        };
+        let Ok(guard) = self.editor.try_lock() else {
+            return Ok(());
+        };
+        match guard.as_ref() {
+            Some(editor) if !self.editor_unusable(editor) => Ok(editor.batch_execute("").await?),
+            _ => Ok(()),
+        }
     }
 
     /// Closes the pool and the editor. A statement still running on the editor is cancelled
@@ -619,4 +631,123 @@ impl PgSession {
 
 pub async fn connect(target: ConnectTarget<'_>) -> Result<Arc<dyn DbSession>, AppError> {
     Ok(Arc::new(PgSession::open(target).await?))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::drivers::CollectSink;
+    use crate::types::profile::{ConnectionProfile, ProfileOptions};
+
+    /// A session on `TABLER_TEST_PG_URL` (`postgres://user[:pass]@host:port/db`); None (the test
+    /// passes) when it is unset.
+    async fn open() -> Option<PgSession> {
+        let Ok(url) = std::env::var("TABLER_TEST_PG_URL") else {
+            println!("skipped: TABLER_TEST_PG_URL unset");
+            return None;
+        };
+        let rest = url
+            .strip_prefix("postgres://")
+            .or_else(|| url.strip_prefix("postgresql://"))
+            .expect("a postgres:// URL");
+        let (creds, hostdb) = rest.rsplit_once('@').unwrap_or(("", rest));
+        let (user, password) = creds
+            .split_once(':')
+            .map_or((creds, None), |(u, p)| (u, Some(p.to_string())));
+        let (hostport, db) = hostdb.split_once('/').unwrap_or((hostdb, ""));
+        let db = db.split('?').next().unwrap_or("");
+        let (host, port) = hostport.rsplit_once(':').unwrap_or((hostport, "5432"));
+        let profile = ConnectionProfile {
+            id: uuid::Uuid::new_v4(),
+            name: "pg-keepalive".into(),
+            color: None,
+            group: None,
+            driver: Driver::Postgres,
+            host: Some(host.into()),
+            port: port.parse().ok(),
+            user: Some(user.into()).filter(|u: &String| !u.is_empty()),
+            database: Some(db.into()).filter(|d: &String| !d.is_empty()),
+            ssl: SslMode::Disable,
+            ssl_ca_path: None,
+            sqlite_path: None,
+            ssh: None,
+            options: ProfileOptions::default(),
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_connected_at: None,
+        };
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .ok();
+        let target = ConnectTarget {
+            profile: &profile,
+            password: password.as_deref(),
+            host_override: None,
+        };
+        Some(PgSession::open(target).await.expect("connect"))
+    }
+
+    /// Runs `sql` on the editor; the first value of its first row.
+    async fn on_editor(session: &PgSession, sql: &str) -> Result<Option<Value>, AppError> {
+        let mut sink = CollectSink::default();
+        session
+            .run_statement(sql, 10, &mut sink, CancelSlot::default())
+            .await?;
+        Ok(sink
+            .sets
+            .first()
+            .and_then(|s| s.rows.first())
+            .and_then(|r| r.first())
+            .cloned())
+    }
+
+    #[tokio::test]
+    async fn ping_touches_an_idle_editor_without_changing_its_transaction() {
+        let Some(session) = open().await else {
+            return;
+        };
+        let pid = on_editor(&session, "SELECT pg_backend_pid()")
+            .await
+            .unwrap();
+        on_editor(&session, "BEGIN").await.unwrap();
+        assert!(on_editor(&session, "SELECT 1/0").await.is_err());
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        session.ping().await.unwrap();
+        // The editor's backend just did something (its idle time restarted)…
+        let activity = session
+            .query(
+                "SELECT pid, clock_timestamp() - state_change < interval '500 milliseconds' \
+                 FROM pg_stat_activity",
+                &[],
+            )
+            .await
+            .unwrap();
+        let fresh = activity.rows.iter().find(|r| r.first() == pid.as_ref());
+        assert_eq!(fresh.and_then(|r| r.get(1)), Some(&Value::Bool(true)));
+        // …and its transaction is still the aborted one.
+        assert!(on_editor(&session, "SELECT 1").await.is_err());
+        on_editor(&session, "ROLLBACK").await.unwrap();
+        session.close().await;
+    }
+
+    #[tokio::test]
+    async fn ping_does_not_wait_for_a_running_editor_statement() {
+        let Some(session) = open().await else {
+            return;
+        };
+        let session = Arc::new(session);
+        let running = tokio::spawn({
+            let session = session.clone();
+            async move { on_editor(&session, "SELECT pg_sleep(2)").await }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let started = Instant::now();
+        session.ping().await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        running.await.unwrap().unwrap();
+        session.close().await;
+    }
 }

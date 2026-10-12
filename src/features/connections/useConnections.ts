@@ -8,6 +8,11 @@ import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
 import { closeConnectionTabs } from "./closeGuard";
+import {
+  askConnectionPassword,
+  isPromptCancelled,
+  takeHandedOverPassword,
+} from "./passwordPromptStore";
 
 export const profileKeys = {
   all: ["profiles"] as const,
@@ -31,6 +36,14 @@ export function useSaveProfile() {
   return useMutation({
     mutationFn: (input: ProfileInput) => ipc.profiles.save(input),
     onSuccess: (profile) => {
+      // Right away (a Connect follows at once and reads the password mode), then refetched.
+      qc.setQueryData<ConnectionProfile[]>(profileKeys.all, (list) =>
+        list
+          ? list.some((p) => p.id === profile.id)
+            ? list.map((p) => (p.id === profile.id ? profile : p))
+            : [...list, profile]
+          : list,
+      );
       void qc.invalidateQueries({ queryKey: profileKeys.all });
       void qc.invalidateQueries({ queryKey: profileKeys.secret(profile.id) });
     },
@@ -227,24 +240,40 @@ export function useTestConnection() {
   });
 }
 
-/** Opens a connection, registers it in the store and switches to the workspace. */
+/**
+ * Opens a connection, registers it in the store and switches to the workspace. An "Ask every
+ * time" profile asks for its password first (cancelling it rejects with `PasswordPromptCancelled`,
+ * reported nowhere); the backend keeps it in memory for reconnects while the profile is open.
+ */
 export function useConnect() {
   const qc = useQueryClient();
   const add = useConnectionsStore((s) => s.add);
   const setView = useUiStore((s) => s.setView);
   return useMutation({
-    mutationFn: (profileId: string) =>
-      withHostKeyTrust(profileId, "connect", profileName(qc, profileId), () =>
-        ipc.connections.connect(profileId),
-      ),
+    mutationFn: async (profileId: string) => {
+      const profile = qc
+        .getQueryData<ConnectionProfile[]>(profileKeys.all)
+        ?.find((p) => p.id === profileId);
+      const password =
+        profile?.options.passwordMode === "ask"
+          ? (takeHandedOverPassword(profileId) ??
+            (await askConnectionPassword(profile.name, "connect")))
+          : undefined;
+      return withHostKeyTrust(profileId, "connect", profileName(qc, profileId), () =>
+        password === undefined
+          ? ipc.connections.connect(profileId)
+          : ipc.connections.connect(profileId, password),
+      );
+    },
     onSuccess: (info) => {
       add(info);
       setView("workspace");
       void qc.invalidateQueries({ queryKey: profileKeys.all });
     },
     onError: (e, profileId) => {
-      // The host-key prompt already told the user why the connection was not opened.
-      if (hostKeyDeclined(e)) return;
+      // The host-key prompt already told the user why the connection was not opened; a
+      // cancelled password prompt needs no message.
+      if (hostKeyDeclined(e) || isPromptCancelled(e)) return;
       const name = profileName(qc, profileId);
       toast.error(`Could not connect${name ? ` to ${name}` : ""}`, { description: e.message });
     },

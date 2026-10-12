@@ -6,7 +6,9 @@
 //! column *names* for it. `prepare` (Parse + Describe, nothing executes) supplies the column
 //! types. Statements that cannot return rows skip the describe round trip.
 
+use std::collections::HashMap;
 use std::ops::ControlFlow;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::TryStreamExt as _;
@@ -19,7 +21,10 @@ use tokio_postgres::types::{Kind, Type};
 use tokio_postgres::{CancelToken, Client, Config, SimpleQueryMessage};
 
 use super::PgTls;
-use super::decode::{kind_from_type, text_to_value_with_elem};
+use super::decode::{
+    RelationCache, RelationNames, cache_relations, cached_relation, column_source, kind_from_type,
+    origins_from, text_to_value_with_elem,
+};
 use crate::drivers::{
     RowChunker, RowSink, StatementOutcome, cancel_safe_on_stop, cap_cancel_notice, contains_word,
     is_dml,
@@ -27,7 +32,7 @@ use crate::drivers::{
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::split::{code_only, leading_keywords};
-use crate::types::query::{ResultColumn, StatementKind};
+use crate::types::query::{ColumnOrigin, ResultColumn, StatementKind};
 use crate::types::schema::ValueKind;
 use crate::types::value::Value;
 
@@ -79,10 +84,84 @@ pub(crate) fn may_return_rows(sql: &str) -> bool {
 /// What `describe` learned about a statement's result columns.
 #[derive(Debug, Default)]
 pub(crate) struct Described {
-    /// Column types; `None`: every column is decoded as text.
-    pub types: Option<Vec<Type>>,
+    /// Column types and origins; `None`: every column is decoded as text.
+    pub types: Option<Box<DescribedColumns>>,
     /// Why the types are unknown, when that is worth telling the user.
     pub notice: Option<String>,
+}
+
+/// The described result columns: their types, and the base-table column each one reads.
+#[derive(Debug, Default)]
+pub(crate) struct DescribedColumns {
+    pub types: Vec<Type>,
+    pub origins: Vec<Option<ColumnOrigin>>,
+}
+
+/// Every non-dropped column of the relations `$1` (an `oid[]`): what result column origins are
+/// resolved with.
+const RELATION_NAMES_SQL: &str = "SELECT c.oid, n.nspname::text, c.relname::text, a.attnum, \
+    a.attname::text FROM pg_catalog.pg_class c \
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+    LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 \
+    AND NOT a.attisdropped WHERE c.oid = ANY($1)";
+
+/// Resolves the table OID / attribute number of each RowDescription field to schema, table and
+/// column names (`origins_from`). Relations already looked up in this run come from the run's
+/// cache; the rest is one catalog query. A failed lookup only costs the origins (the result is
+/// then read-only): it is logged, never reported.
+async fn column_origins(
+    client: &Client,
+    columns: &[tokio_postgres::Column],
+) -> Vec<Option<ColumnOrigin>> {
+    let sources: Vec<Option<(u32, i16)>> = columns.iter().map(column_source).collect();
+    let mut relations = RelationCache::new();
+    let mut missing: Vec<u32> = Vec::new();
+    for (oid, _) in sources.iter().flatten() {
+        if relations.contains_key(oid) || missing.contains(oid) {
+            continue;
+        }
+        match cached_relation(*oid) {
+            Some(names) => {
+                relations.insert(*oid, names);
+            }
+            None => missing.push(*oid),
+        }
+    }
+    if !missing.is_empty() {
+        match client.query(RELATION_NAMES_SQL, &[&missing]).await {
+            Ok(rows) => {
+                let mut found: HashMap<u32, RelationNames> = HashMap::new();
+                for row in rows {
+                    let (Ok(oid), Ok(schema), Ok(name)) = (
+                        row.try_get::<_, u32>(0),
+                        row.try_get::<_, String>(1),
+                        row.try_get::<_, String>(2),
+                    ) else {
+                        continue;
+                    };
+                    let rel = found.entry(oid).or_insert_with(|| RelationNames {
+                        schema,
+                        name,
+                        columns: HashMap::new(),
+                    });
+                    if let (Ok(Some(attnum)), Ok(Some(column))) = (
+                        row.try_get::<_, Option<i16>>(3),
+                        row.try_get::<_, Option<String>>(4),
+                    ) {
+                        rel.columns.insert(attnum, column);
+                    }
+                }
+                let looked_up: RelationCache = missing
+                    .iter()
+                    .map(|oid| (*oid, found.remove(oid).map(Arc::new)))
+                    .collect();
+                cache_relations(&looked_up);
+                relations.extend(looked_up);
+            }
+            Err(e) => log::debug!("postgres: looking up result column origins failed: {e}"),
+        }
+    }
+    origins_from(&sources, &relations)
 }
 
 fn types_unknown_notice(reason: &str) -> String {
@@ -108,8 +187,12 @@ pub(crate) async fn describe(
 ) -> Result<Described, AppError> {
     let e = match client.prepare(sql).await {
         Ok(stmt) => {
+            let origins = column_origins(client, stmt.columns()).await;
             return Ok(Described {
-                types: Some(stmt.columns().iter().map(|c| c.type_().clone()).collect()),
+                types: Some(Box::new(DescribedColumns {
+                    types: stmt.columns().iter().map(|c| c.type_().clone()).collect(),
+                    origins,
+                })),
                 notice: None,
             });
         }
@@ -246,12 +329,14 @@ fn base_type(ty: &Type) -> &Type {
 
 fn text_columns(
     names: &[tokio_postgres::SimpleColumn],
-    types: Option<&[Type]>,
+    described: Option<&DescribedColumns>,
 ) -> (Vec<TextColumn>, Vec<ResultColumn>) {
-    let types = types.filter(|t| t.len() == names.len());
+    let described = described.filter(|d| d.types.len() == names.len());
+    let types = described.map(|d| d.types.as_slice());
     let mut decoders = Vec::with_capacity(names.len());
     let mut columns = Vec::with_capacity(names.len());
     for (i, col) in names.iter().enumerate() {
+        let origin = described.and_then(|d| d.origins.get(i).cloned().flatten());
         let (kind, type_name, elem) = match types.map(|t| &t[i]) {
             Some(ty) => {
                 let elem = match base_type(ty).kind() {
@@ -267,7 +352,8 @@ fn text_columns(
             data_type: type_name.clone(),
             kind,
             nullable: None,
-            table: None,
+            table: origin.as_ref().map(|o| o.table.name.clone()),
+            origin,
         });
         decoders.push(TextColumn {
             kind,
@@ -340,7 +426,7 @@ pub(crate) struct Streamed {
 pub(crate) async fn stream_simple(
     client: &Client,
     sql: &str,
-    types: Option<&[Type]>,
+    types: Option<&DescribedColumns>,
     max_rows: Option<usize>,
     cancel_on_stop: Option<Canceller<'_>>,
     sink: &mut dyn RowSink,

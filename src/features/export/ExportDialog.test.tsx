@@ -20,6 +20,7 @@ import { EXPORT_OPTIONS_KEY } from "./options";
 import {
   closeExport,
   openExport,
+  openExportTables,
   resetExportStore,
   useExportStore,
   type ExportSourceSpec,
@@ -180,12 +181,16 @@ describe("ExportDialog", () => {
     const req = requestOf(run);
     expect(req.maxRows).toBe(20);
     expect(req.source.kind).toBe("table");
+    // Options stored by an earlier version keep their meaning.
     expect(req.format).toEqual({
       format: "csv",
       delimiter: "\t",
       header: true,
-      quoteAll: true,
+      quote: "double",
       nullAs: "NULL",
+      lineBreak: "\n",
+      decimal: ".",
+      lineBreakToSpace: false,
     });
     expect(toast.success.mock.calls[0]![0]).toBe("Exported 20 rows");
   });
@@ -236,7 +241,7 @@ describe("ExportDialog", () => {
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "an export runs a single statement, but the SQL contains 2",
     );
-    expect(requestOf(run).format).toEqual({
+    expect(requestOf(run).format).toMatchObject({
       format: "sqlInsert",
       tableName: "archive",
       batchSize: 100,
@@ -468,7 +473,7 @@ describe("ExportDialog", () => {
       );
       const req = requestOf(run);
       expect(req.source).toEqual({ kind: "rows", columns, rows, table: "users" });
-      expect(req.format).toEqual({ format: "sqlInsert", tableName: "", batchSize: 100 });
+      expect(req.format).toMatchObject({ format: "sqlInsert", tableName: "", batchSize: 100 });
       expect(req.maxRows).toBeNull();
       expect(toast.success).toHaveBeenCalledWith("Exported 2 rows", expect.anything());
     });
@@ -655,13 +660,65 @@ describe("ExportDialog", () => {
     });
   });
 
-  it("explains that a query tab exports from the SQL editor", async () => {
+  it("without a table tab, ⌘⇧E exports the current schema's tables", async () => {
+    const user = userEvent.setup();
     await setup();
     act(() => {
+      useConnectionsStore.getState().setActive(info.connectionId);
+      useConnectionsStore.getState().setCurrentSchema(info.connectionId, "public");
       useTabsStore.getState().newQuery(info.connectionId);
     });
-    await act(() => actions.run("export.open"));
-    expect(toast.message).toHaveBeenCalledWith("Nothing to export here", expect.anything());
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const dialog = await openFromShortcut();
+    const list = await within(dialog).findByRole("list", { name: "Tables" });
+    await within(list).findByText("users");
+    const boxes = within(list).getAllByRole("checkbox");
+    expect(boxes.length).toBeGreaterThan(2);
+    boxes.forEach((b) => expect(b).toHaveAttribute("aria-checked", "true"));
+    // Narrow to two tables: search, then pick them.
+    await user.click(within(dialog).getByRole("checkbox", { name: "Select all tables" }));
+    await user.type(within(dialog).getByRole("textbox", { name: "Search tables" }), "post");
+    const posts = within(list).getAllByRole("checkbox");
+    for (const b of posts) await user.click(b);
+    await user.click(within(dialog).getByRole("radio", { name: "SQL" }));
+    expect(within(dialog).getByRole("radio", { name: "One file" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    await user.click(within(dialog).getByRole("checkbox", { name: "Include table structure" }));
+    vi.spyOn(window, "prompt").mockReturnValue("/Users/me/Downloads/public.sql");
+    const run = vi.spyOn(ipc.exports, "runTables");
+    await user.click(exportButton(dialog));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+    const req = run.mock.calls[0]![1];
+    expect(req.layout).toBe("singleFile");
+    expect(req.target).toBe("/Users/me/Downloads/public.sql");
+    expect(req.tables.length).toBe(posts.length);
+    expect(req.tables.every((t) => t.name.includes("post"))).toBe(true);
+    expect(req.format).toMatchObject({ format: "sqlInsert", structure: true, content: true });
+    expect(toast.success.mock.calls[0]![0]).toBe(`Exported ${posts.length} tables`);
+  });
+
+  it("writes Excel files per table into a folder when asked", async () => {
+    const user = userEvent.setup();
+    await setup();
+    act(() => openExportTables(info.connectionId, [{ schema: "public", name: "users" }]));
+    const dialog = await screen.findByRole("dialog");
+    const list = await within(dialog).findByRole("list", { name: "Tables" });
+    await within(list).findByText("users");
+    // Only the table passed is checked.
+    expect(within(dialog).getByText(/· 1 of \d+ tables/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("radio", { name: "Excel" }));
+    await user.click(within(dialog).getByRole("radio", { name: "One file per table" }));
+    vi.spyOn(window, "prompt").mockReturnValue("/Users/me/Exports/");
+    const run = vi.spyOn(ipc.exports, "runTables");
+    await user.click(exportButton(dialog));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+    expect(window.prompt).toHaveBeenCalledWith("Export the tables into folder", expect.any(String));
+    expect(run.mock.calls[0]![1]).toMatchObject({
+      layout: "filePerTable",
+      target: "/Users/me/Exports",
+      tables: [{ schema: "public", name: "users" }],
+      format: { format: "xlsx", header: true },
+    });
   });
 });

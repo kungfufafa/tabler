@@ -8,6 +8,7 @@ import { JsonEditorDialog } from "./editors/JsonEditorDialog";
 import { MultilinePanel } from "./editors/MultilinePanel";
 import { editorFor, NULL_CHOICE, type EditorExit } from "./editors/registry";
 import type { CaretPlacement } from "./editors/useGrabFocus";
+import { emptyBecomesNull } from "./setValue";
 import type { GridColumn } from "./types";
 
 export type { EditorExit } from "./editors/registry";
@@ -98,6 +99,8 @@ export function CellEditor({
   };
   const commitText = (exit: EditorExit, t: string = text) => {
     if (done.current) return;
+    // "Auto convert empty Numeric, UUID, JSON or Array to NULL".
+    if (emptyBecomesNull(col, t)) return commitValue({ t: "null" }, exit);
     const result = parseEditText(col.kind, t, previous);
     if (!result.ok) {
       setError(result.error);

@@ -38,6 +38,10 @@ pub use params::bind;
 
 /// How long `close` waits for the server to acknowledge disconnects.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// `ping` keeps the editor connection alive once the server says it has been idle this long
+/// (seconds): `COM_PING` resets the `ROW_COUNT()` the user may read after a statement, so a
+/// recently used editor is left alone.
+const EDITOR_KEEPALIVE_IDLE_SECS: i64 = 60;
 
 pub struct MySession {
     pool: Pool,
@@ -57,6 +61,8 @@ pub struct MySession {
     closing: AtomicBool,
     /// Held by one editor run at a time (`lock_editor_runs`).
     editor_runs: Mutex<()>,
+    /// Idle seconds after which `ping` pings the editor ([`EDITOR_KEEPALIVE_IDLE_SECS`]).
+    editor_keepalive_idle_secs: i64,
 }
 
 impl MySession {
@@ -72,6 +78,7 @@ impl MySession {
             editor_lost: AtomicBool::new(false),
             closing: AtomicBool::new(false),
             editor_runs: Mutex::new(()),
+            editor_keepalive_idle_secs: EDITOR_KEEPALIVE_IDLE_SECS,
         })
     }
 
@@ -94,6 +101,43 @@ impl MySession {
 
     fn editor_unusable(&self) -> bool {
         self.closing.load(Ordering::SeqCst) || self.editor_lost.load(Ordering::SeqCst)
+    }
+
+    /// Pings the editor connection so `wait_timeout` does not end it, when it is idle: no
+    /// editor run holds it (never waits behind one) and the server reports it has slept for
+    /// [`EDITOR_KEEPALIVE_IDLE_SECS`] (or cannot say). A failed ping marks the editor lost.
+    async fn keep_editor_alive(&self, pooled: &mut Conn) -> Result<(), AppError> {
+        let Ok(_run) = self.editor_runs.try_lock() else {
+            return Ok(());
+        };
+        let Ok(mut guard) = self.editor.try_lock() else {
+            return Ok(());
+        };
+        if self.editor_unusable() {
+            return Ok(());
+        }
+        let Some(conn) = guard.as_mut() else {
+            return Ok(());
+        };
+        // No row: the server already ended the editor connection; the ping below finds out.
+        let idle: Result<Option<i64>, _> = pooled
+            .exec_first(
+                "SELECT TIME FROM information_schema.PROCESSLIST WHERE ID = ?",
+                (self.editor_conn_id,),
+            )
+            .await;
+        if let Ok(Some(secs)) = idle
+            && secs < self.editor_keepalive_idle_secs
+        {
+            return Ok(());
+        }
+        if let Err(e) = conn.ping().await {
+            log::warn!("mysql: the editor connection was lost: {e}");
+            guard.take();
+            self.editor_lost.store(true, Ordering::SeqCst);
+            return Err(AppError::NotConnected);
+        }
+        Ok(())
     }
 
     fn killer(&self, conn_id: u32) -> editor::Killer<'_> {
@@ -146,8 +190,9 @@ impl DbSession for MySession {
         })
     }
 
-    /// Checks the pool and the editor. The editor itself is not pinged (`COM_PING` resets the
-    /// `ROW_COUNT()` the user may read next): a broken editor connection is noticed by the
+    /// Checks the pool and the editor, and keeps an idle editor connection alive (see
+    /// `keep_editor_alive`: only after a minute of idling, since `COM_PING` resets the
+    /// `ROW_COUNT()` the user may read next). A broken editor connection is also noticed by the
     /// statement that hits it (`run_statement` sets `editor_lost`) and reported here.
     async fn ping(&self) -> Result<(), AppError> {
         if self.editor_lost.load(Ordering::SeqCst) {
@@ -155,7 +200,7 @@ impl DbSession for MySession {
         }
         let mut conn = self.conn().await?;
         conn.ping().await?;
-        Ok(())
+        self.keep_editor_alive(&mut conn).await
     }
 
     /// Closes the editor and the pool. A statement still running on the editor is ended first
@@ -355,5 +400,116 @@ impl DbSession for MySession {
 
     fn editor_run_lock(&self) -> Option<&Mutex<()>> {
         Some(&self.editor_runs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::drivers::CollectSink;
+    use crate::types::profile::{ConnectionProfile, ProfileOptions, SslMode};
+
+    /// A session on `TABLER_TEST_MYSQL_URL` (`mysql://user[:pass]@host:port/db`); None (the test
+    /// passes) when it is unset.
+    async fn open() -> Option<MySession> {
+        let Ok(url) = std::env::var("TABLER_TEST_MYSQL_URL") else {
+            println!("skipped: TABLER_TEST_MYSQL_URL unset");
+            return None;
+        };
+        let rest = url.strip_prefix("mysql://").expect("a mysql:// URL");
+        let (creds, hostdb) = rest.rsplit_once('@').unwrap_or(("", rest));
+        let (user, password) = creds
+            .split_once(':')
+            .map_or((creds, None), |(u, p)| (u, Some(p.to_string())));
+        let (hostport, db) = hostdb.split_once('/').unwrap_or((hostdb, ""));
+        let (host, port) = hostport.rsplit_once(':').unwrap_or((hostport, "3306"));
+        let profile = ConnectionProfile {
+            id: uuid::Uuid::new_v4(),
+            name: "mysql-keepalive".into(),
+            color: None,
+            group: None,
+            driver: Driver::Mysql,
+            host: Some(host.into()),
+            port: port.parse().ok(),
+            user: Some(user.into()).filter(|u: &String| !u.is_empty()),
+            database: Some(db.into()).filter(|d: &String| !d.is_empty()),
+            ssl: SslMode::Disable,
+            ssl_ca_path: None,
+            sqlite_path: None,
+            ssh: None,
+            options: ProfileOptions::default(),
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_connected_at: None,
+        };
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .ok();
+        let target = ConnectTarget {
+            profile: &profile,
+            password: password.as_deref(),
+            host_override: None,
+        };
+        Some(MySession::open(&target).await.expect("connect"))
+    }
+
+    /// Runs `sql` on the editor; the first value of its first row.
+    async fn on_editor(session: &MySession, sql: &str) -> Option<Value> {
+        let mut sink = CollectSink::default();
+        session
+            .run_statement(sql, 10, &mut sink, CancelSlot::default())
+            .await
+            .unwrap();
+        sink.sets.first()?.rows.first()?.first().cloned()
+    }
+
+    #[tokio::test]
+    async fn ping_keeps_the_row_count_of_a_recent_statement() {
+        let Some(session) = open().await else {
+            return;
+        };
+        on_editor(&session, "CREATE TEMPORARY TABLE fix_security_rc (a int)").await;
+        on_editor(&session, "INSERT INTO fix_security_rc VALUES (1), (2), (3)").await;
+        session.ping().await.unwrap();
+        let count = on_editor(&session, "SELECT ROW_COUNT()").await;
+        assert_eq!(count, Some(Value::Int(3)));
+        session.close().await;
+    }
+
+    #[tokio::test]
+    async fn ping_keeps_an_idle_editor_past_wait_timeout() {
+        let Some(mut session) = open().await else {
+            return;
+        };
+        session.editor_keepalive_idle_secs = 1;
+        on_editor(&session, "SET SESSION wait_timeout = 3").await;
+        // 6 s idle in all: the server would have ended the editor after 3 s.
+        for _ in 0..4 {
+            tokio::time::sleep(Duration::from_millis(1_500)).await;
+            session.ping().await.unwrap();
+        }
+        assert_eq!(on_editor(&session, "SELECT 1").await, Some(Value::Int(1)));
+        session.close().await;
+    }
+
+    #[tokio::test]
+    async fn ping_does_not_wait_for_a_running_editor_statement() {
+        let Some(session) = open().await else {
+            return;
+        };
+        let session = Arc::new(session);
+        let running = tokio::spawn({
+            let session = session.clone();
+            async move { on_editor(&session, "SELECT SLEEP(2)").await }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let started = Instant::now();
+        session.ping().await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        running.await.unwrap();
+        session.close().await;
     }
 }

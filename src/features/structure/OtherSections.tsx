@@ -1,22 +1,28 @@
-import { Check, ChevronRight, Plus, Trash2, Undo2 } from "lucide-react";
-import { Fragment, useState, type ReactNode } from "react";
+import { Pencil, Plus, Trash2, Undo2 } from "lucide-react";
+import type { ReactNode } from "react";
+import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
-import type { Dialect, TableRef, TriggerMeta } from "@/lib/ipc";
+import type { Dialect, IndexDef, TableRef } from "@/lib/ipc";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
-import type { FkRow, IndexRow, RowStatus } from "./model";
-import { HEAD_ROW, IconAction, SectionHeader } from "./parts";
-import { SqlBlock } from "./SqlBlock";
+import { ChoiceCell, ColumnsCell } from "./cells";
+import { rowDeleteKey } from "./dom";
+import type { CheckRow, FkRow, IndexRow, RowStatus, TriggerRow } from "./model";
+import { CellInput, HEAD_ROW, IconAction, SectionHeader } from "./parts";
+import { indexMethods, supportsIndexComment, supportsPartialIndex } from "./tableActions";
 
 function rowClass(status: RowStatus) {
   return cn(
     "group border-gridline h-7 border-b",
+    status === "existing" && "focus-within:bg-row-hover",
     status === "added" && "bg-inserted",
+    status === "changed" && "bg-changed",
     status === "dropped" && "bg-deleted text-muted-foreground line-through",
   );
 }
 
 function Th({ children, className }: { children?: ReactNode; className?: string }) {
-  return <th className={cn("truncate px-3 font-medium", className)}>{children}</th>;
+  return <th className={cn("truncate px-3 font-mono font-medium", className)}>{children}</th>;
 }
 
 function EmptyRow({ span, text }: { span: number; text: string }) {
@@ -35,30 +41,40 @@ function DropToggle({
   onDrop,
   onRestore,
   disabled,
+  children,
 }: {
   status: RowStatus;
   what: string;
   onDrop: () => void;
   onRestore: () => void;
   disabled?: boolean;
+  children?: ReactNode;
 }) {
   if (disabled) return null;
+  const reverting = status === "dropped" || status === "changed";
   return (
     <div
       className={cn(
-        "flex justify-end opacity-0 group-focus-within:opacity-100 group-hover:opacity-100",
-        status === "dropped" && "opacity-100",
+        "flex justify-end gap-0.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100",
+        reverting && "opacity-100",
       )}
     >
-      {status === "dropped" ? (
-        <IconAction label={`Restore ${what}`} onClick={onRestore}>
+      {children}
+      {reverting && (
+        <IconAction
+          label={status === "changed" ? `Revert ${what}` : `Restore ${what}`}
+          onClick={onRestore}
+          tabIndex={-1}
+        >
           <Undo2 />
         </IconAction>
-      ) : (
+      )}
+      {status !== "dropped" && (
         <IconAction
           label={status === "added" ? `Remove new ${what}` : `Drop ${what}`}
           onClick={onDrop}
           className="hover:text-error"
+          tabIndex={-1}
         >
           <Trash2 />
         </IconAction>
@@ -67,77 +83,166 @@ function DropToggle({
   );
 }
 
+const BOOL = [
+  { value: "TRUE", label: "TRUE" },
+  { value: "FALSE", label: "FALSE" },
+] as const;
+
+const DEFAULT_METHOD = "(default)";
+
+/**
+ * Indexes grid (TablePlus): index_name, index_algorithm, is_unique, column_name, condition (PG /
+ * SQLite partial index) and comment (MySQL / PG). Every attribute is edited inline; an existing
+ * index is dropped and created again with the change.
+ */
 export function IndexesSection({
   rows,
+  dialect,
   editable,
+  columns,
   onAdd,
+  onEdit,
   onDrop,
   onRestore,
 }: {
   rows: IndexRow[];
+  dialect: Dialect;
   editable: boolean;
+  /** Live column names (for column_name). */
+  columns: readonly string[];
   onAdd: () => void;
+  onEdit: (key: string, patch: Partial<IndexDef>) => void;
   onDrop: (key: string) => void;
   onRestore: (key: string) => void;
 }) {
+  const partial = supportsPartialIndex(dialect);
+  const comments = supportsIndexComment(dialect);
+  const methods = indexMethods(dialect);
+  const methodChoices = [
+    { value: DEFAULT_METHOD, label: DEFAULT_METHOD },
+    ...methods.map((m) => ({ value: m, label: m })),
+  ];
+  const span = 5 + (partial ? 1 : 0) + (comments ? 1 : 0);
+  const newKeys = shortcutFor("grid.new-row");
   return (
     <section aria-label="Indexes">
       <SectionHeader title="Indexes" count={rows.filter((r) => r.status !== "dropped").length}>
         {editable && (
           <Button variant="ghost" size="xs" onClick={onAdd}>
             <Plus /> Index
+            {newKeys && <Kbd combo={newKeys} className="ml-0.5" />}
           </Button>
         )}
       </SectionHeader>
-      <table className="w-full min-w-[640px] table-fixed border-collapse text-xs">
+      <table
+        data-grid="indexes"
+        className="w-full min-w-[640px] table-fixed border-collapse text-xs"
+      >
         <colgroup>
-          <col className="w-[26%]" />
-          <col className="w-[24%]" />
-          <col className="w-16" />
+          <col className="w-[22%]" />
+          {methods.length > 0 && <col className="w-28" />}
           <col className="w-20" />
-          <col />
-          <col className="w-12" />
+          <col className="w-[22%]" />
+          {partial && <col />}
+          {comments && <col className={partial ? "w-[16%]" : undefined} />}
+          <col className="w-16" />
         </colgroup>
         <thead>
           <tr className={HEAD_ROW}>
-            <Th>Name</Th>
-            <Th>Columns</Th>
-            <Th className="text-center">Unique</Th>
-            <Th>Method</Th>
-            <Th>Condition / definition</Th>
+            <Th>index_name</Th>
+            {methods.length > 0 && <Th>index_algorithm</Th>}
+            <Th>is_unique</Th>
+            <Th>column_name</Th>
+            {partial && <Th>condition</Th>}
+            {comments && <Th>comment</Th>}
             <th aria-label="Actions" />
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => {
-            const condition = r.predicate ? `WHERE ${r.predicate}` : (r.definition ?? "");
+          {rows.map((r, i) => {
+            const canEdit = editable && !r.primary && r.status !== "dropped";
+            const text = (field: "name" | "predicate" | "comment", mono = true) => (
+              <CellInput
+                value={(field === "name" ? r.name : r[field]) ?? ""}
+                onCommit={(raw) => {
+                  const v = raw.trim();
+                  if (field === "name") {
+                    if (v) onEdit(r.key, { name: v });
+                  } else onEdit(r.key, { [field]: v === "" ? null : raw.trim() });
+                }}
+                cell={`${i}|${field}`}
+                cellKey={`${r.key}:${field}`}
+                label={`${r.name} ${field === "predicate" ? "condition" : field}`}
+                readOnly={!canEdit}
+                className={cn(mono && "font-mono text-[11px]")}
+              />
+            );
             return (
-              <tr key={r.key} className={rowClass(r.status)} data-status={r.status}>
-                <td className="truncate px-3 font-mono text-[11px]" title={r.name}>
-                  {r.name}
-                  {r.primary && (
-                    <span className="bg-brand-soft text-brand ml-1.5 rounded px-1 py-px font-sans text-[9px] font-semibold tracking-wide no-underline">
-                      PRIMARY
-                    </span>
-                  )}
+              <tr
+                key={r.key}
+                className={rowClass(r.status)}
+                data-status={r.status}
+                data-row-kind="index"
+                data-row-key={r.key}
+                data-index-key={r.key}
+                onKeyDown={(e) => {
+                  if (editable && !r.primary)
+                    rowDeleteKey(e, () =>
+                      r.status === "dropped" ? onRestore(r.key) : onDrop(r.key),
+                    );
+                }}
+              >
+                <td className="px-1">
+                  <div className="flex items-center">
+                    {text("name")}
+                    {r.primary && (
+                      <span className="bg-brand-soft text-brand mr-1 rounded px-1 py-px font-sans text-[9px] font-semibold tracking-wide no-underline">
+                        PRIMARY
+                      </span>
+                    )}
+                  </div>
                 </td>
-                <td className="truncate px-3 font-mono text-[11px]" title={r.columns.join(", ")}>
-                  {r.columns.join(", ")}
+                {methods.length > 0 && (
+                  <td className="px-1">
+                    <ChoiceCell
+                      value={r.method ?? DEFAULT_METHOD}
+                      options={
+                        r.method && !methods.includes(r.method)
+                          ? [...methodChoices, { value: r.method, label: r.method }]
+                          : methodChoices
+                      }
+                      onChange={(v) => onEdit(r.key, { method: v === DEFAULT_METHOD ? null : v })}
+                      label={`${r.name} algorithm`}
+                      cellKey={`${r.key}:method`}
+                      disabled={!canEdit}
+                      className="font-mono text-[11px]"
+                    />
+                  </td>
+                )}
+                <td className="px-1">
+                  <ChoiceCell
+                    value={r.unique ? "TRUE" : "FALSE"}
+                    options={BOOL}
+                    keys={{ t: "TRUE", f: "FALSE", y: "TRUE", n: "FALSE" }}
+                    onChange={(v) => onEdit(r.key, { unique: v === "TRUE" })}
+                    label={`${r.name} unique`}
+                    cellKey={`${r.key}:unique`}
+                    disabled={!canEdit}
+                    className="font-mono text-[11px]"
+                  />
                 </td>
-                <td className="px-3 text-center">
-                  {r.unique && (
-                    <Check aria-label="Unique" className="text-muted-foreground mx-auto size-3.5" />
-                  )}
+                <td className="px-1">
+                  <ColumnsCell
+                    value={r.columns}
+                    options={[...new Set([...columns, ...r.columns])]}
+                    onChange={(next) => onEdit(r.key, { columns: next })}
+                    label={`${r.name} columns`}
+                    cellKey={`${r.key}:columns`}
+                    disabled={!canEdit}
+                  />
                 </td>
-                <td className="text-muted-foreground truncate px-3 font-mono text-[11px]">
-                  {r.method ?? ""}
-                </td>
-                <td
-                  className="text-muted-foreground selectable truncate px-3 font-mono text-[11px]"
-                  title={condition}
-                >
-                  {condition}
-                </td>
+                {partial && <td className="px-1">{text("predicate")}</td>}
+                {comments && <td className="px-1">{text("comment", false)}</td>}
                 <td className="px-1">
                   <DropToggle
                     status={r.status}
@@ -150,7 +255,120 @@ export function IndexesSection({
               </tr>
             );
           })}
-          {rows.length === 0 && <EmptyRow span={6} text="No indexes" />}
+          {rows.length === 0 && <EmptyRow span={span} text="No indexes" />}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+/** CHECK constraints (every check of the table, multi-column ones too). */
+export function ChecksSection({
+  rows,
+  editable,
+  onAdd,
+  onEdit,
+  onDrop,
+  onRestore,
+}: {
+  rows: CheckRow[];
+  editable: boolean;
+  onAdd: () => void;
+  onEdit: (key: string, patch: { name?: string | null; expression?: string }) => void;
+  onDrop: (key: string) => void;
+  onRestore: (key: string) => void;
+}) {
+  return (
+    <section aria-label="Checks">
+      <SectionHeader title="Checks" count={rows.filter((r) => r.status !== "dropped").length}>
+        {editable && (
+          <Button variant="ghost" size="xs" onClick={onAdd}>
+            <Plus /> Check
+          </Button>
+        )}
+      </SectionHeader>
+      <table
+        data-grid="checks"
+        className="w-full min-w-[640px] table-fixed border-collapse text-xs"
+      >
+        <colgroup>
+          <col className="w-[26%]" />
+          <col />
+          <col className="w-[20%]" />
+          <col className="w-16" />
+        </colgroup>
+        <thead>
+          <tr className={HEAD_ROW}>
+            <Th>constraint_name</Th>
+            <Th>check_clause</Th>
+            <Th>column_name</Th>
+            <th aria-label="Actions" />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const canEdit = editable && r.status !== "dropped";
+            return (
+              <tr
+                key={r.key}
+                className={rowClass(r.status)}
+                data-status={r.status}
+                data-row-kind="check"
+                data-row-key={r.key}
+                onKeyDown={(e) => {
+                  if (editable)
+                    rowDeleteKey(e, () =>
+                      r.status === "dropped" ? onRestore(r.key) : onDrop(r.key),
+                    );
+                }}
+              >
+                <td className="px-1">
+                  <CellInput
+                    value={r.name}
+                    onCommit={(raw) => onEdit(r.key, { name: raw.trim() || null })}
+                    cell={`${i}|name`}
+                    cellKey={`${r.key}:name`}
+                    label={`Check ${r.name || i + 1} name`}
+                    readOnly={!canEdit}
+                    placeholder="chosen by the database"
+                    className="font-mono text-[11px]"
+                  />
+                </td>
+                <td className="px-1">
+                  <CellInput
+                    value={r.expression}
+                    onCommit={(raw) => onEdit(r.key, { expression: raw })}
+                    // A new check left without an expression goes away again.
+                    onLeave={(raw) => {
+                      if (r.status === "added" && raw.trim() === "") onDrop(r.key);
+                    }}
+                    cell={`${i}|expression`}
+                    cellKey={`${r.key}:expression`}
+                    label={`Check ${r.name || i + 1} expression`}
+                    readOnly={!canEdit}
+                    placeholder="price > 0"
+                    className="font-mono text-[11px]"
+                  />
+                </td>
+                <td
+                  className="text-muted-foreground truncate px-3 font-mono text-[11px]"
+                  title={r.columns.join(", ")}
+                >
+                  {r.columns.join(", ")}
+                </td>
+                <td className="px-1">
+                  <DropToggle
+                    status={r.status}
+                    what="check"
+                    disabled={!editable}
+                    onDrop={() => onDrop(r.key)}
+                    onRestore={() => onRestore(r.key)}
+                  />
+                </td>
+              </tr>
+            );
+          })}
+          {rows.length === 0 && <EmptyRow span={4} text="No CHECK constraints" />}
         </tbody>
       </table>
     </section>
@@ -192,17 +410,30 @@ export function ForeignKeysSection({
         </colgroup>
         <thead>
           <tr className={HEAD_ROW}>
-            <Th>Name</Th>
-            <Th>Columns</Th>
-            <Th>References</Th>
-            <Th>On update</Th>
-            <Th>On delete</Th>
+            <Th>constraint_name</Th>
+            <Th>column_name</Th>
+            <Th>references</Th>
+            <Th>on_update</Th>
+            <Th>on_delete</Th>
             <th aria-label="Actions" />
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.key} className={rowClass(r.status)} data-status={r.status}>
+            <tr
+              key={r.key}
+              className={rowClass(r.status)}
+              data-status={r.status}
+              data-row-kind="fk"
+              data-row-key={r.key}
+              tabIndex={-1}
+              onKeyDown={(e) => {
+                if (editable && (r.status !== "existing" || r.name))
+                  rowDeleteKey(e, () =>
+                    r.status === "dropped" ? onRestore(r.key) : onDrop(r.key),
+                  );
+              }}
+            >
               <td className="truncate px-3 font-mono text-[11px]" title={r.name ?? undefined}>
                 {r.name ?? <span className="text-muted-foreground italic">auto</span>}
               </td>
@@ -242,84 +473,130 @@ export function ForeignKeysSection({
   );
 }
 
+/**
+ * Triggers grid (TablePlus "Triggers" view): name, timing, events, enabled and the statement.
+ * "+ Trigger" and Edit open the trigger's CREATE statement in an editor; Delete stages a drop.
+ */
 export function TriggersSection({
-  triggers,
+  rows,
   dialect,
+  editable,
+  onAdd,
+  onOpen,
+  onDrop,
+  onRestore,
 }: {
-  triggers: TriggerMeta[];
+  rows: TriggerRow[];
   dialect: Dialect;
+  editable: boolean;
+  onAdd: () => void;
+  onOpen: (key: string) => void;
+  onDrop: (key: string) => void;
+  onRestore: (key: string) => void;
 }) {
-  const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
-  const toggle = (name: string) =>
-    setOpen((s) => {
-      const next = new Set(s);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
+  const enabledColumn = dialect === "postgres";
   return (
     <section aria-label="Triggers" className="pb-6">
-      <SectionHeader title="Triggers" count={triggers.length} />
-      <table className="w-full min-w-[640px] table-fixed border-collapse text-xs">
+      <SectionHeader title="Triggers" count={rows.filter((r) => r.status !== "dropped").length}>
+        {editable && (
+          <Button variant="ghost" size="xs" onClick={onAdd}>
+            <Plus /> Trigger
+          </Button>
+        )}
+      </SectionHeader>
+      <table
+        data-grid="triggers"
+        className="w-full min-w-[640px] table-fixed border-collapse text-xs"
+      >
         <colgroup>
-          <col className="w-[34%]" />
+          <col className="w-[24%]" />
           <col className="w-24" />
+          <col className="w-[16%]" />
+          {enabledColumn && <col className="w-20" />}
           <col />
-          <col className="w-20" />
+          <col className="w-16" />
         </colgroup>
         <thead>
           <tr className={HEAD_ROW}>
-            <Th>Name</Th>
-            <Th>Timing</Th>
-            <Th>Events</Th>
-            <Th className="text-center">Enabled</Th>
+            <Th>trigger_name</Th>
+            <Th>action_timing</Th>
+            <Th>event</Th>
+            {enabledColumn && <Th className="text-center">enabled</Th>}
+            <Th>statement</Th>
+            <th aria-label="Actions" />
           </tr>
         </thead>
         <tbody>
-          {triggers.map((t) => {
-            const expanded = open.has(t.name);
+          {rows.map((r) => {
+            const statement = (r.sql ?? r.definition).replace(/\s+/g, " ").trim();
             return (
-              <Fragment key={t.name}>
-                <tr className="border-gridline hover:bg-row-hover h-7 border-b">
-                  <td className="px-1.5">
-                    <button
-                      type="button"
-                      aria-expanded={expanded}
-                      onClick={() => toggle(t.name)}
-                      className="focus-visible:ring-ring/50 flex w-full min-w-0 items-center gap-1 rounded-sm px-1 text-left font-mono text-[11px] outline-none focus-visible:ring-2"
-                    >
-                      <ChevronRight
-                        className={cn(
-                          "text-muted-foreground size-3 shrink-0 transition-transform",
-                          expanded && "rotate-90",
-                        )}
-                      />
-                      <span className="truncate">{t.name}</span>
-                    </button>
-                  </td>
-                  <td className="text-muted-foreground px-3 text-[11px]">{t.timing ?? ""}</td>
-                  <td className="truncate px-3 text-[11px]">{t.events.join(" OR ")}</td>
+              <tr
+                key={r.key}
+                className={rowClass(r.status)}
+                data-status={r.status}
+                data-row-kind="trigger"
+                data-row-key={r.key}
+                tabIndex={-1}
+                onDoubleClick={() => r.status !== "dropped" && onOpen(r.key)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && e.target === e.currentTarget && r.status !== "dropped")
+                    onOpen(r.key);
+                  else if (editable)
+                    rowDeleteKey(e, () =>
+                      r.status === "dropped" ? onRestore(r.key) : onDrop(r.key),
+                    );
+                }}
+              >
+                <td className="truncate px-3 font-mono text-[11px]" title={r.name}>
+                  {r.name}
+                </td>
+                <td className="text-muted-foreground truncate px-3 text-[11px]">
+                  {r.timing ?? ""}
+                </td>
+                <td className="truncate px-3 text-[11px]">{r.events.join(" OR ")}</td>
+                {enabledColumn && (
                   <td className="px-3 text-center">
                     <span
-                      aria-label={t.enabled ? "Enabled" : "Disabled"}
+                      aria-label={r.enabled ? "Enabled" : "Disabled"}
                       className={cn(
                         "inline-block size-2 rounded-full",
-                        t.enabled ? "bg-success" : "bg-muted-foreground/40",
+                        r.enabled ? "bg-success" : "bg-muted-foreground/40",
                       )}
                     />
                   </td>
-                </tr>
-                {expanded && (
-                  <tr className="border-gridline border-b">
-                    <td colSpan={4} className="bg-surface-2 px-4 py-2">
-                      <SqlBlock sql={t.definition} dialect={dialect} />
-                    </td>
-                  </tr>
                 )}
-              </Fragment>
+                <td
+                  className="text-muted-foreground selectable truncate px-3 font-mono text-[11px]"
+                  title={statement}
+                >
+                  {statement}
+                </td>
+                <td className="px-1">
+                  <DropToggle
+                    status={r.status}
+                    what="trigger"
+                    disabled={!editable}
+                    onDrop={() => onDrop(r.key)}
+                    onRestore={() => onRestore(r.key)}
+                  >
+                    {r.status !== "dropped" && (
+                      <IconAction label="Edit trigger" onClick={() => onOpen(r.key)} tabIndex={-1}>
+                        <Pencil />
+                      </IconAction>
+                    )}
+                  </DropToggle>
+                  {!editable && (
+                    <div className="flex justify-end">
+                      <IconAction label="Show trigger" onClick={() => onOpen(r.key)} tabIndex={-1}>
+                        <Pencil />
+                      </IconAction>
+                    </div>
+                  )}
+                </td>
+              </tr>
             );
           })}
-          {triggers.length === 0 && <EmptyRow span={4} text="No triggers" />}
+          {rows.length === 0 && <EmptyRow span={enabledColumn ? 6 : 5} text="No triggers" />}
         </tbody>
       </table>
     </section>

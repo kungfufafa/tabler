@@ -1,6 +1,9 @@
+import { useSyncExternalStore } from "react";
 import type { ActionId } from "@/features/palette/actions";
+import { getPrefs, usePrefsStore } from "@/stores/prefs";
+import { EMPTY_OVERRIDES, resolveKeymap, type KeymapOverrides } from "./overrides";
 
-export type Scope = "global" | "sidebar" | "grid" | "grid-edit" | "editor" | "dialog";
+export type Scope = "global" | "sidebar" | "grid" | "grid-edit" | "filter" | "editor" | "dialog";
 
 export interface ShortcutDef {
   id: ActionId;
@@ -11,9 +14,15 @@ export interface ShortcutDef {
   allowInEditor?: boolean;
   /** Global shortcuts are suppressed while a dialog is open unless this is set. */
   allowInDialog?: boolean;
+  /** Global shortcut that must not fire while a cell editor has focus (its edit is not staged yet). */
+  notWhileEditing?: boolean;
 }
 
-/** Single source of truth for keyboard shortcuts; the Settings → Shortcuts screen renders this list. */
+/**
+ * Single source of truth for keyboard shortcuts; the Settings → Shortcuts screen renders this list.
+ * The defaults follow TablePlus. When an action has several combos, the first one is its primary
+ * shortcut (shown in menus, tooltips and the palette); the others are kept as alternatives.
+ */
 export const KEYMAP: ShortcutDef[] = [
   {
     id: "tab.new-query",
@@ -22,6 +31,8 @@ export const KEYMAP: ShortcutDef[] = [
     label: "New query tab",
     allowInEditor: true,
   },
+  // Inside the editor ⌘E is Explain (editor scope wins).
+  { id: "tab.new-query", keys: "Mod+E", scope: "global", label: "Open SQL editor" },
   {
     id: "tab.close",
     keys: "Mod+W",
@@ -44,6 +55,8 @@ export const KEYMAP: ShortcutDef[] = [
     label: "Reopen closed tab",
     allowInEditor: true,
   },
+  { id: "tab.next", keys: "Mod+]", scope: "global", label: "Next tab", allowInEditor: true },
+  { id: "tab.prev", keys: "Mod+[", scope: "global", label: "Previous tab", allowInEditor: true },
   { id: "tab.next", keys: "Ctrl+Tab", scope: "global", label: "Next tab", allowInEditor: true },
   {
     id: "tab.prev",
@@ -69,13 +82,33 @@ export const KEYMAP: ShortcutDef[] = [
   })),
   {
     id: "palette.open",
-    keys: "Mod+K",
+    keys: "Mod+P",
     scope: "global",
-    label: "Command palette",
+    label: "Open anything",
     allowInEditor: true,
   },
-  { id: "palette.open", keys: "Mod+P", scope: "global", label: "Quick open", allowInEditor: true },
+  {
+    id: "palette.databases",
+    keys: "Mod+K",
+    scope: "global",
+    label: "Switch database",
+    allowInEditor: true,
+  },
+  {
+    id: "palette.connections",
+    keys: "Mod+Shift+K",
+    scope: "global",
+    label: "Switch connection",
+    allowInEditor: true,
+  },
   { id: "settings.open", keys: "Mod+,", scope: "global", label: "Settings", allowInEditor: true },
+  {
+    id: "ui.toggle-sidebar",
+    keys: "Mod+0",
+    scope: "global",
+    label: "Toggle sidebar",
+    allowInEditor: true,
+  },
   {
     id: "ui.toggle-sidebar",
     keys: "Mod+B",
@@ -87,7 +120,14 @@ export const KEYMAP: ShortcutDef[] = [
     id: "ui.toggle-inspector",
     keys: "Mod+Shift+I",
     scope: "global",
-    label: "Toggle inspector",
+    label: "Toggle row detail panel",
+    allowInEditor: true,
+  },
+  {
+    id: "ui.toggle-console",
+    keys: "Mod+Shift+C",
+    scope: "global",
+    label: "Toggle console log",
     allowInEditor: true,
   },
   {
@@ -99,35 +139,134 @@ export const KEYMAP: ShortcutDef[] = [
   },
   {
     id: "sidebar.focus-search",
+    keys: "Mod+Shift+F",
+    scope: "global",
+    label: "Search for item",
+    allowInEditor: true,
+  },
+  {
+    id: "sidebar.focus-search",
     keys: "Mod+L",
     scope: "global",
-    label: "Search tables",
+    label: "Search for item",
     allowInEditor: true,
   },
   { id: "view.refresh", keys: "Mod+R", scope: "global", label: "Refresh" },
-  { id: "grid.commit", keys: "Mod+S", scope: "grid", label: "Commit changes" },
-  { id: "grid.discard", keys: "Mod+Shift+Z", scope: "grid", label: "Discard all changes" },
+  { id: "view.refresh", keys: "Mod+Alt+R", scope: "global", label: "Reload current tab" },
+  // Switching the view unmounts an open cell editor before it could stage its value.
+  {
+    id: "view.data",
+    keys: "Mod+Ctrl+[",
+    scope: "global",
+    label: "Show data",
+    notWhileEditing: true,
+  },
+  {
+    id: "view.structure",
+    keys: "Mod+Ctrl+]",
+    scope: "global",
+    label: "Show structure",
+    notWhileEditing: true,
+  },
+  {
+    id: "connection.new",
+    keys: "Mod+N",
+    scope: "global",
+    label: "New connection",
+    allowInEditor: true,
+  },
+  {
+    id: "connection.reconnect",
+    keys: "Mod+Shift+R",
+    scope: "global",
+    label: "Reconnect",
+    allowInEditor: true,
+  },
+  // Inside the SQL editor ⌘. stays "Cancel running query" (editor scope wins); allowInEditor lets
+  // the Connection menu item still open the list while the editor has the focus. Elsewhere in a
+  // SQL tab that runs a query (its results grid…) the handler cancels the run instead (AdminHost).
+  {
+    id: "admin.process-list",
+    keys: "Mod+.",
+    scope: "global",
+    label: "Process list",
+    allowInEditor: true,
+  },
+  // Staging works from anywhere in the tab (toolbar, filter bar…), not only with the grid focused.
+  {
+    id: "grid.commit",
+    keys: "Mod+S",
+    scope: "global",
+    label: "Commit changes",
+    notWhileEditing: true,
+  },
+  {
+    id: "grid.preview",
+    keys: "Mod+Shift+P",
+    scope: "global",
+    label: "Preview SQL",
+    notWhileEditing: true,
+  },
+  {
+    id: "grid.discard",
+    keys: "Mod+Shift+Backspace",
+    scope: "global",
+    label: "Discard all changes",
+    notWhileEditing: true,
+  },
   { id: "grid.filter", keys: "Mod+F", scope: "grid", label: "Toggle filter bar" },
-  { id: "grid.new-row", keys: "Mod+N", scope: "grid", label: "New row" },
+  { id: "grid.columns", keys: "Mod+Alt+F", scope: "global", label: "Show / hide columns" },
+  { id: "grid.new-row", keys: "Mod+I", scope: "grid", label: "New row" },
   { id: "grid.delete-rows", keys: "Mod+Backspace", scope: "grid", label: "Delete selected rows" },
   { id: "grid.duplicate-row", keys: "Mod+D", scope: "grid", label: "Duplicate row" },
   { id: "grid.set-null", keys: "Mod+Shift+N", scope: "grid", label: "Set NULL" },
   { id: "grid.set-default", keys: "Mod+Shift+D", scope: "grid", label: "Set DEFAULT" },
-  { id: "grid.open-fk", keys: "Mod+Shift+F", scope: "grid", label: "Open referenced row" },
+  { id: "grid.open-fk", keys: "Mod+J", scope: "grid", label: "Open referenced row" },
   { id: "grid.undo", keys: "Mod+Z", scope: "grid", label: "Undo staged change" },
-  { id: "grid.copy", keys: "Mod+C", scope: "grid", label: "Copy" },
-  { id: "grid.copy-as", keys: "Mod+Shift+C", scope: "grid", label: "Copy as…" },
+  { id: "grid.redo", keys: "Mod+Shift+Z", scope: "grid", label: "Redo staged change" },
+  { id: "grid.toggle-detail", keys: "Space", scope: "grid", label: "Toggle row detail" },
+  { id: "grid.copy", keys: "Mod+C", scope: "grid", label: "Copy selected rows" },
+  { id: "grid.copy-as", keys: "Mod+Alt+C", scope: "grid", label: "Copy rows as…" },
   { id: "grid.paste", keys: "Mod+V", scope: "grid", label: "Paste" },
-  { id: "query.run", keys: "Mod+Enter", scope: "editor", label: "Run query / selection" },
+  // In a grid ⌘↩ is Quick Look (TablePlus); elsewhere it keeps its own meaning.
+  { id: "grid.quick-look", keys: "Mod+Enter", scope: "grid", label: "Quick Look editor" },
+  { id: "grid.set-value", keys: "Alt+Enter", scope: "grid", label: "Set value…" },
+  { id: "grid.prev-page", keys: "Mod+Left", scope: "grid", label: "Previous page" },
+  { id: "grid.next-page", keys: "Mod+Right", scope: "grid", label: "Next page" },
+  // The filter bar above the grid (TablePlus's keys); ↩ in a value applies too.
+  { id: "filter.apply", keys: "Mod+Enter", scope: "filter", label: "Apply all filters" },
+  { id: "filter.duplicate", keys: "Mod+I", scope: "filter", label: "Duplicate filter" },
+  { id: "filter.remove", keys: "Mod+Shift+I", scope: "filter", label: "Remove filter" },
+  {
+    id: "filter.apply-or",
+    keys: "Mod+Shift+Enter",
+    scope: "filter",
+    label: "Apply all filters with OR",
+  },
+  { id: "filter.prev", keys: "Mod+Up", scope: "filter", label: "Previous filter" },
+  { id: "filter.next", keys: "Mod+Down", scope: "filter", label: "Next filter" },
+  { id: "filter.toggle", keys: "Mod+B", scope: "filter", label: "Check / uncheck filter" },
+  { id: "filter.column", keys: "Mod+Left", scope: "filter", label: "Choose filter column" },
+  { id: "filter.operator", keys: "Mod+Right", scope: "filter", label: "Choose filter operator" },
   {
     id: "query.run-current",
-    keys: "Mod+Shift+Enter",
+    keys: "Mod+Enter",
     scope: "editor",
-    label: "Run statement under cursor",
+    label: "Run current statement",
   },
+  { id: "query.run", keys: "Mod+Shift+Enter", scope: "editor", label: "Run all" },
   { id: "query.cancel", keys: "Mod+.", scope: "editor", label: "Cancel running query" },
   { id: "query.explain", keys: "Mod+E", scope: "editor", label: "Explain" },
-  { id: "query.format", keys: "Alt+Shift+F", scope: "editor", label: "Format SQL" },
+  { id: "query.format", keys: "Mod+I", scope: "editor", label: "Beautify SQL" },
+  { id: "query.format", keys: "Alt+Shift+F", scope: "editor", label: "Beautify SQL" },
+  { id: "query.minify", keys: "Mod+Shift+I", scope: "editor", label: "Uglify SQL" },
+  {
+    id: "query.toggle-results",
+    keys: "Ctrl+`",
+    scope: "global",
+    label: "Toggle result pane",
+    allowInEditor: true,
+  },
   { id: "query.history", keys: "Mod+H", scope: "editor", label: "Query history" },
   { id: "query.save", keys: "Mod+S", scope: "editor", label: "Save query to file" },
   {
@@ -138,6 +277,47 @@ export const KEYMAP: ShortcutDef[] = [
     allowInEditor: true,
   },
   { id: "query.open", keys: "Mod+O", scope: "editor", label: "Open .sql file" },
+  { id: "query.add-to-queries", keys: "Mod+Alt+S", scope: "editor", label: "Add to Queries…" },
+  {
+    id: "query.save-selection",
+    keys: "Mod+Shift+S",
+    scope: "editor",
+    label: "Save selected SQL statements as…",
+  },
+  { id: "query.font-bigger", keys: "Mod+=", scope: "editor", label: "Increase font size" },
+  { id: "query.font-bigger", keys: "Mod+Shift+=", scope: "editor", label: "Increase font size" },
+  { id: "query.font-smaller", keys: "Mod+-", scope: "editor", label: "Decrease font size" },
+  { id: "query.split", keys: "Mod+Shift+D", scope: "editor", label: "Split pane horizontally" },
+  // Workspaces (TablePlus ⇧⌘\ and Keymap ▸ Navigate) and the tab bar's ‹ › history.
+  {
+    id: "workspace.show",
+    keys: "Mod+Shift+\\",
+    scope: "global",
+    label: "Show workspaces",
+    allowInEditor: true,
+  },
+  {
+    id: "workspace.next",
+    keys: "Mod+Ctrl+Right",
+    scope: "global",
+    label: "Select next workspace",
+    allowInEditor: true,
+  },
+  {
+    id: "workspace.prev",
+    keys: "Mod+Ctrl+Left",
+    scope: "global",
+    label: "Select previous workspace",
+    allowInEditor: true,
+  },
+  { id: "tab.back", keys: "Ctrl+-", scope: "global", label: "Go back", allowInEditor: true },
+  {
+    id: "tab.forward",
+    keys: "Ctrl+Shift+-",
+    scope: "global",
+    label: "Go forward",
+    allowInEditor: true,
+  },
 ];
 
 const SCOPE_CHAIN: Record<Scope, Scope[]> = {
@@ -145,6 +325,7 @@ const SCOPE_CHAIN: Record<Scope, Scope[]> = {
   sidebar: ["sidebar", "global"],
   grid: ["grid", "global"],
   "grid-edit": ["grid-edit", "global"],
+  filter: ["filter", "global"],
   editor: ["editor", "global"],
   dialog: ["dialog", "global"],
 };
@@ -159,11 +340,58 @@ export function findShortcut(
     if (!def) continue;
     if (s === "global" && scope === "editor" && !def.allowInEditor) return undefined;
     if (s === "global" && scope === "dialog" && !def.allowInDialog) return undefined;
+    if (s === "global" && scope === "grid-edit" && def.notWhileEditing) return undefined;
     return def;
   }
   return undefined;
 }
 
+/** The primary (first) combo of an action. */
 export function shortcutFor(id: ActionId): string | undefined {
   return KEYMAP.find((d) => d.id === id)?.keys;
 }
+
+// --- user overrides (Settings ▸ Shortcuts) ---------------------------------------------------
+
+/**
+ * KEYMAP as shipped. KEYMAP itself is the effective keymap: `applyKeymapOverrides` rewrites it in
+ * place, so every reader (the shortcut listener, menus, tooltips, the palette, the native menu
+ * guard) sees the user's bindings without knowing about them.
+ */
+export const DEFAULT_KEYMAP: readonly ShortcutDef[] = Object.freeze(
+  KEYMAP.map((d) => Object.freeze({ ...d })),
+);
+
+let appliedOverrides: KeymapOverrides = EMPTY_OVERRIDES;
+let keymapVersion = 0;
+const keymapListeners = new Set<() => void>();
+
+/** Rebuilds KEYMAP from the defaults plus `overrides` (no-op for the overrides already applied). */
+export function applyKeymapOverrides(overrides: KeymapOverrides): void {
+  if (overrides === appliedOverrides) return;
+  appliedOverrides = overrides;
+  KEYMAP.splice(0, KEYMAP.length, ...resolveKeymap(DEFAULT_KEYMAP, overrides));
+  keymapVersion++;
+  keymapListeners.forEach((fn) => fn());
+}
+
+/** Calls `fn` after every keymap change. */
+export function subscribeKeymap(fn: () => void): () => void {
+  keymapListeners.add(fn);
+  return () => void keymapListeners.delete(fn);
+}
+
+/** Bumped on every keymap change. */
+export function getKeymapVersion(): number {
+  return keymapVersion;
+}
+
+/** The keymap version, reactively: components that show shortcut labels re-render with it. */
+export function useKeymapVersion(): number {
+  return useSyncExternalStore(subscribeKeymap, getKeymapVersion);
+}
+
+// The preference is the source of truth; its localStorage mirror is read when prefs.ts loads, so
+// even labels computed at import time see the user's bindings.
+applyKeymapOverrides(getPrefs().keymapOverrides);
+usePrefsStore.subscribe((s) => applyKeymapOverrides(s.prefs.keymapOverrides));

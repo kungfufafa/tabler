@@ -1,9 +1,22 @@
 import type { ColumnMeta, ForeignKeyMeta, Value, ValueKind } from "@/lib/ipc";
 
-export const ROW_H = 28;
-export const HEADER_H = 28;
-export const GUTTER_W = 48;
+/**
+ * Row height (TablePlus-compact). The ONE place it is defined: virtualization, hit-testing, the
+ * selection overlay, the editor and "blank area below the rows" all derive from it.
+ */
+export const ROW_H = 22;
+export const HEADER_H = 24;
+/** Narrowest row-number gutter (enough for three digits). */
+export const MIN_GUTTER_W = 32;
+/** The gutter without row numbers: a slim strip for the staged / error tint and row selection. */
+export const SLIM_GUTTER_W = 8;
 export const MIN_COL_W = 48;
+
+/** Row-number gutter width: just wide enough for the largest row number (11px tabular digits). */
+export function gutterWidth(rowCount: number): number {
+  const digits = String(Math.max(1, Math.floor(rowCount))).length;
+  return Math.max(MIN_GUTTER_W, digits * 7 + 14);
+}
 export const MAX_COL_W = 1200;
 
 export interface FkRef {
@@ -25,6 +38,14 @@ export interface GridColumn {
   align: "left" | "right";
   fk?: FkRef;
   enumValues?: string[] | null;
+}
+
+/**
+ * Whether Set Value ▸ EMPTY ('') applies: plain string columns only (enum / set values, JSON, UUIDs
+ * and the other typed kinds have no meaningful empty string).
+ */
+export function acceptsEmpty(col: Pick<GridColumn, "kind">): boolean {
+  return col.kind === "text";
 }
 
 export type RowStatus = "updated" | "inserted" | "deleted";

@@ -131,6 +131,9 @@ pub struct IndexMeta {
     pub method: Option<String>,
     pub predicate: Option<String>,
     pub definition: Option<String>,
+    /// MySQL `INDEX_COMMENT`, PG `COMMENT ON INDEX`; `None` on SQLite.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -157,6 +160,35 @@ pub struct TriggerMeta {
     pub definition: String,
 }
 
+/// A CHECK constraint (table- or column-level).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CheckMeta {
+    /// Constraint name. SQLite does not report names of unnamed checks; they are addressed as
+    /// `ck_<table>_<n>` (n counts the table's unnamed checks from 1).
+    pub name: String,
+    /// The boolean expression, without the `CHECK (…)` around it.
+    pub expression: String,
+    /// Columns the expression uses (PG: from the catalog; MySQL / SQLite: column names found in
+    /// the expression; a SQLite column-level check names its column).
+    pub columns: Vec<String>,
+}
+
+/// MySQL table options. Every field is optional: as introspected, `None` means unknown; as the
+/// payload of `DdlOp::AlterTableOptions`, `None` means "leave unchanged".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TableOptions {
+    pub engine: Option<String>,
+    pub charset: Option<String>,
+    pub collation: Option<String>,
+    /// Next `AUTO_INCREMENT` value.
+    pub auto_increment: Option<u64>,
+    pub row_format: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -173,6 +205,44 @@ pub struct TableMeta {
     pub row_estimate: Option<i64>,
     /// `CREATE TABLE` text when the engine can provide it cheaply (MySQL, SQLite).
     pub ddl: Option<String>,
+    /// CHECK constraints.
+    #[serde(default)]
+    pub checks: Vec<CheckMeta>,
+    /// MySQL engine / charset / collation / AUTO_INCREMENT / row format; `None` elsewhere.
+    #[serde(default)]
+    pub options: Option<TableOptions>,
+}
+
+/// A user-defined type a column can use (PG enums, domains, ranges, composite types), spelled as
+/// a column type (`mood`, `"other schema".money_amount`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct UserTypeInfo {
+    pub name: String,
+    /// `enum`, `domain`, `range` or `composite`.
+    pub kind: String,
+}
+
+/// A MySQL character set with its collations (default first).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CharsetInfo {
+    pub name: String,
+    pub default_collation: Option<String>,
+    pub collations: Vec<String>,
+}
+
+/// What the structure editor's pickers offer for a connection: user-defined column types (PG),
+/// storage engines and character sets / collations (MySQL). Empty lists where not applicable.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct StructureChoices {
+    pub user_types: Vec<UserTypeInfo>,
+    pub engines: Vec<String>,
+    pub charsets: Vec<CharsetInfo>,
 }
 
 /// Compact schema → table → columns map for SQL editor autocompletion.

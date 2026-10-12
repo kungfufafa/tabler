@@ -15,22 +15,31 @@ import { closeConnectionTabs } from "@/features/connections/closeGuard";
 import { openConnectionDialog } from "@/features/connections/store";
 import { useConnect, useDisconnect } from "@/features/connections/useConnections";
 import { openSettings } from "@/features/settings/store";
+import { switchDatabase } from "@/features/sidebar/switchDatabase";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
 import { ipc, type ConnectionProfile, type TableRef } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
-import { useTabsStore, type Tab } from "@/stores/tabs";
+import { useTabsStore, type OpenTableOptions, type Tab } from "@/stores/tabs";
 import { useUiStore, type ThemePref } from "@/stores/ui";
 import { actions, type ActionId } from "./actions";
-import type { PaletteItem } from "./items";
+import { actionIcon, type PaletteItem } from "./items";
 import { usePaletteStore } from "./store";
 
 /** Side effects the palette items trigger. Built once by the always-mounted palette shell. */
 export interface PaletteCommands {
-  openTable: (connectionId: string, table: TableRef, kind: "table" | "structure") => void;
+  /** Shows the table's rows: in the connection's preview tab with `preview`, else a tab of its own. */
+  openTable: (connectionId: string, table: TableRef, options?: OpenTableOptions) => void;
   activateTab: (tab: Tab) => void;
   /** Resolves once the connect settled (the hook reports failures itself). */
   connect: (profile: ConnectionProfile) => Promise<void>;
   switchConnection: (connectionId: string) => void;
+  /** Shows another schema (PostgreSQL) / attached database (SQLite) in the sidebar. */
+  selectSchema: (connectionId: string, schema: string) => void;
+  /**
+   * Points the connection at another database (asks first when its tabs hold unsaved work).
+   * Resolves once the switch settled; failures are reported as a toast.
+   */
+  switchDatabase: (connectionId: string, database: string) => Promise<void>;
   /** Resolves true when the connection was disconnected, false when the user kept it. */
   disconnect: (connectionId: string) => Promise<boolean>;
   reloadSchema: (connectionId: string) => Promise<void>;
@@ -96,10 +105,10 @@ export function usePaletteCommands(): PaletteCommands {
   const { mutate: disconnect } = useDisconnect();
   return useMemo<PaletteCommands>(
     () => ({
-      openTable: (connectionId, table, kind) => {
+      openTable: (connectionId, table, options) => {
         useTabsStore
           .getState()
-          .openTable(connectionId, { schema: table.schema, name: table.name }, kind);
+          .openTable(connectionId, { schema: table.schema, name: table.name }, "table", options);
         showWorkspace();
       },
       activateTab: (tab) => {
@@ -127,6 +136,13 @@ export function usePaletteCommands(): PaletteCommands {
       switchConnection: (connectionId) => {
         useConnectionsStore.getState().setActive(connectionId);
         showWorkspace();
+      },
+      selectSchema: (connectionId, schema) => {
+        useConnectionsStore.getState().setCurrentSchema(connectionId, schema);
+        showWorkspace();
+      },
+      switchDatabase: async (connectionId, database) => {
+        if (await switchDatabase(qc, connectionId, database)) showWorkspace();
       },
       disconnect: (connectionId) => disconnectGuarded(connectionId, disconnect),
       reloadSchema: async (connectionId) => {
@@ -156,6 +172,45 @@ const THEMES: Array<{ pref: ThemePref; label: string; icon: LucideIcon }> = [
   { pref: "system", label: "Theme: System", icon: Monitor },
 ];
 
+/**
+ * Registered actions without a keyboard shortcut that the palette lists as commands (the
+ * Connection menu and the ⌘K database list's commands). Shown only while they have a handler,
+ * i.e. when the active connection's driver supports them.
+ */
+export const PALETTE_ONLY_ACTIONS = [
+  "admin.users",
+  "admin.new-database",
+  "admin.drop-database",
+  "admin.new-schema",
+  "admin.drop-schema",
+  "backup.open",
+  "restore.open",
+] as const satisfies readonly ActionId[];
+
+const ADMIN_COMMANDS: Record<
+  (typeof PALETTE_ONLY_ACTIONS)[number],
+  { label: string; keywords: string; noRecent?: boolean }
+> = {
+  "admin.users": {
+    label: "User Management…",
+    keywords: "users roles accounts privileges grants permissions password",
+  },
+  "admin.new-database": { label: "New Database…", keywords: "create add database" },
+  "admin.drop-database": {
+    label: "Drop Database…",
+    keywords: "delete remove database",
+    noRecent: true,
+  },
+  "admin.new-schema": { label: "New Schema…", keywords: "create add schema namespace" },
+  "admin.drop-schema": {
+    label: "Drop Schema…",
+    keywords: "delete remove schema namespace cascade",
+    noRecent: true,
+  },
+  "backup.open": { label: "Backup…", keywords: "dump pg_dump mysqldump export database file" },
+  "restore.open": { label: "Restore…", keywords: "load dump pg_restore psql mysql import file" },
+};
+
 /** Actions that only exist in the palette (no keyboard shortcut). */
 export function paletteCommandItems(ctx: {
   themePref: ThemePref;
@@ -164,7 +219,10 @@ export function paletteCommandItems(ctx: {
   commands: Pick<
     PaletteCommands,
     "setTheme" | "newConnection" | "openShortcuts" | "disconnect" | "reloadSchema"
-  >;
+  > &
+    Partial<Pick<PaletteCommands, "runAction">>;
+  /** Whether an action has a handler (lists `PALETTE_ONLY_ACTIONS`); none listed without it. */
+  has?: (id: ActionId) => boolean;
 }): PaletteItem[] {
   const { commands, active } = ctx;
   const items: PaletteItem[] = THEMES.map(({ pref, label, icon }) => ({
@@ -220,5 +278,22 @@ export function paletteCommandItems(ctx: {
       },
     );
   }
+  const run = commands.runAction;
+  if (ctx.has && run)
+    for (const id of PALETTE_ONLY_ACTIONS) {
+      if (!ctx.has(id)) continue;
+      const c = ADMIN_COMMANDS[id];
+      items.push({
+        key: `action:${id}`,
+        group: "actions",
+        label: c.label,
+        detail: active?.name,
+        keywords: [c.keywords],
+        icon: { type: "action", icon: actionIcon(id) },
+        run: () => run(id),
+        verb: "Run",
+        ...(c.noRecent ? { noRecent: true } : {}),
+      });
+    }
   return items;
 }

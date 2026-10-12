@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_PREFS, resetPrefsForTests } from "@/stores/prefs";
 import type { Value, ValueKind } from "@/lib/ipc";
 import { CellEditor } from "./CellEditor";
 import type { GridColumn } from "./types";
@@ -121,5 +122,36 @@ describe("CellEditor", () => {
         .getAllByRole("option")
         .map((o) => o.textContent),
     ).toEqual(["admin", "viewer"]);
+  });
+});
+
+describe("CellEditor ▸ Auto convert empty Numeric, UUID, JSON or Array to NULL", () => {
+  afterEach(() => resetPrefsForTests());
+
+  it("commits NULL for an emptied number in a nullable column", () => {
+    const { onCommit } = renderEditor(col("int"), { t: "int", v: 3 }, "");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit c" }), { key: "Enter" });
+    expect(onCommit).toHaveBeenCalledWith({ t: "null" }, "enter");
+  });
+
+  it("leaves NOT NULL columns and a disabled preference to the type's own check", () => {
+    const strict = renderEditor(col("uuid", { nullable: false }), { t: "null" }, "");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit c" }), { key: "Enter" });
+    expect(strict.onCommit).not.toHaveBeenCalled();
+    expect(screen.getByText("Enter a UUID")).toBeInTheDocument();
+  });
+
+  it("is off when the preference is", () => {
+    resetPrefsForTests({ ...DEFAULT_PREFS, gridAutoNullEmpty: false });
+    const { onCommit } = renderEditor(col("int"), { t: "int", v: 3 }, "");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit c" }), { key: "Enter" });
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(screen.getByText("Enter a whole number")).toBeInTheDocument();
+  });
+
+  it("stores the text NULL in a text column as text", () => {
+    const { onCommit } = renderEditor(col("text"), { t: "null" }, "NULL");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit c" }), { key: "Enter" });
+    expect(onCommit).toHaveBeenCalledWith({ t: "text", v: "NULL" }, "enter");
   });
 });

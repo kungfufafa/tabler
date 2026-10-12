@@ -1,8 +1,20 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { emptyStaging, insertRow } from "@/features/staging/model";
 import { useStructureStore } from "@/features/structure/store";
 import type { DdlOp } from "@/lib/ipc";
-import { pickNeighbour, useTabsStore, type Tab } from "./tabs";
+import {
+  canGoBack,
+  canGoForward,
+  dirtyTabs,
+  maxQueryNumber,
+  pickNeighbour,
+  registerUnsavedSource,
+  setWindowCloseHooks,
+  unsavedCount,
+  useTabsStore,
+  workspaceTabs,
+  type Tab,
+} from "./tabs";
 import { useTableTabsStore } from "./tableTabs";
 
 const users = { schema: "public", name: "users" };
@@ -11,8 +23,13 @@ const orders = { schema: "public", name: "orders" };
 
 const ids = () => useTabsStore.getState().tabs.map((t) => t.id);
 const state = () => useTabsStore.getState();
+const tabOf = (id: string) => state().tabs.find((t) => t.id === id)!;
+const previewOf = (id: string) => {
+  const tab = tabOf(id);
+  return tab.kind === "query" ? undefined : tab.preview;
+};
 
-/** Stages `n` DDL ops (table renames, enough for counting) on a structure tab. */
+/** Stages `n` DDL ops (table renames, enough for counting) on a table's tab. */
 function stageDdl(tabId: string, n: number) {
   for (let i = 0; i < n; i++)
     useStructureStore
@@ -38,22 +55,173 @@ describe("tabs store", () => {
       closed: [],
       queryCounter: 0,
       closeRequest: null,
+      history: [],
+      historyIndex: -1,
     });
     useTableTabsStore.setState({ slices: {} });
     useStructureStore.setState({ byTab: {} });
   });
 
-  it("dedupes table tabs per connection and kind", () => {
+  it("keeps one tab per table and connection, switching its view in place", () => {
     const s = state();
     const a = s.openTable("c1", users);
     const b = s.openTable("c1", users);
     const c = s.openTable("c1", users, "structure");
     const d = s.openTable("c2", users);
     expect(a).toBe(b);
-    expect(c).not.toBe(a);
+    expect(c).toBe(a);
+    expect(tabOf(a).kind).toBe("structure");
     expect(d).not.toBe(a);
-    expect(state().tabs).toHaveLength(3);
+    expect(state().tabs).toHaveLength(2);
     expect(state().activeId).toBe(d);
+    expect(s.openTable("c1", users)).toBe(a);
+    expect(tabOf(a).kind).toBe("table");
+    expect(state().activeId).toBe(a);
+  });
+
+  it("switches a table's tab between data and structure, keeping both views' work", () => {
+    const s = state();
+    const a = s.openTable("c1", users);
+    const q = s.newQuery("c1");
+    stage(a, 2);
+    s.setView(a, "structure");
+    expect(tabOf(a)).toMatchObject({ id: a, kind: "structure", title: "users" });
+    expect(ids()).toEqual([a, q]);
+    // Switching does not activate the tab.
+    expect(state().activeId).toBe(q);
+    stageDdl(a, 1);
+    s.setView(a, "table");
+    expect(tabOf(a).kind).toBe("table");
+    expect(useTableTabsStore.getState().slices[a]?.staging.changes.size).toBe(2);
+    expect(useStructureStore.getState().byTab[a]?.ops).toHaveLength(1);
+    // Same view, query tabs and unknown ids leave the state alone.
+    const before = state().tabs;
+    s.setView(a, "table");
+    s.setView(q, "structure");
+    s.setView("nope", "structure");
+    expect(state().tabs).toBe(before);
+    expect(tabOf(q).kind).toBe("query");
+  });
+
+  describe("preview tabs", () => {
+    it("replaces the connection's preview tab in place", () => {
+      const s = state();
+      const q = s.newQuery("c1");
+      const a = s.openTable("c1", users, "table", { preview: true });
+      const n = s.newQuery("c1");
+      expect(previewOf(a)).toBe(true);
+      const b = s.openTable("c1", posts, "table", { preview: true });
+      expect(b).not.toBe(a);
+      expect(ids()).toEqual([q, b, n]);
+      expect(tabOf(b)).toMatchObject({ kind: "table", title: "posts", preview: true });
+      expect(state().activeId).toBe(b);
+      // A replaced preview is not a closed tab (⌘⇧T does not bring it back).
+      expect(state().closed).toHaveLength(0);
+      // Another connection gets its own preview tab.
+      const c = s.openTable("c2", users, "table", { preview: true });
+      expect(ids()).toEqual([q, b, n, c]);
+    });
+
+    it("drops the replaced preview tab's per-tab state", () => {
+      const s = state();
+      const a = s.openTable("c1", users, "table", { preview: true });
+      useTableTabsStore.getState().update(a, { staging: emptyStaging() });
+      s.openTable("c1", posts, "table", { preview: true });
+      expect(useTableTabsStore.getState().slices[a]).toBeUndefined();
+    });
+
+    it("pins a preview tab that holds unsaved work instead of replacing it", () => {
+      const s = state();
+      const a = s.openTable("c1", users, "table", { preview: true });
+      stage(a, 1);
+      const b = s.openTable("c1", posts, "table", { preview: true });
+      expect(ids()).toEqual([a, b]);
+      expect(previewOf(a)).toBeUndefined();
+      expect(previewOf(b)).toBe(true);
+
+      // Staged DDL counts too.
+      stageDdl(b, 1);
+      const c = s.openTable("c1", orders, "table", { preview: true });
+      expect(ids()).toEqual([a, b, c]);
+      expect(previewOf(b)).toBeUndefined();
+    });
+
+    it("keeps a table's open tab: a preview open activates it, a regular open pins it", () => {
+      const s = state();
+      const a = s.openTable("c1", users);
+      const p = s.openTable("c1", posts, "table", { preview: true });
+      expect(s.openTable("c1", users, "table", { preview: true })).toBe(a);
+      expect(previewOf(a)).toBeUndefined();
+      expect(ids()).toEqual([a, p]);
+      // Clicking the preview's own table again keeps it a preview…
+      expect(s.openTable("c1", posts, "table", { preview: true })).toBe(p);
+      expect(previewOf(p)).toBe(true);
+      // …a double-click (regular open) or the structure view from the menu pins it.
+      expect(s.openTable("c1", posts, "structure")).toBe(p);
+      expect(tabOf(p)).toMatchObject({ kind: "structure" });
+      expect(previewOf(p)).toBeUndefined();
+    });
+
+    it("pin turns a preview tab into a regular one", () => {
+      const s = state();
+      const a = s.openTable("c1", users, "table", { preview: true });
+      const q = s.newQuery("c1");
+      s.pin(a);
+      expect(tabOf(a)).not.toHaveProperty("preview");
+      const b = s.openTable("c1", posts, "table", { preview: true });
+      expect(ids()).toEqual([a, q, b]);
+      // Pinning a regular or query tab changes nothing.
+      const before = state().tabs;
+      s.pin(a);
+      s.pin(q);
+      expect(state().tabs).toBe(before);
+    });
+
+    it("reopens a closed preview tab as a regular one", () => {
+      const s = state();
+      const a = s.openTable("c1", users, "table", { preview: true });
+      s.close(a);
+      expect(state().closed[0]?.id).toBe(a);
+      s.reopenClosed();
+      expect(ids()).toEqual([a]);
+      expect(tabOf(a)).not.toHaveProperty("preview");
+      // So the next preview open does not replace it.
+      const b = s.openTable("c1", posts, "table", { preview: true });
+      expect(ids()).toEqual([a, b]);
+    });
+  });
+
+  it("adds registered unsaved sources (e.g. staged result edits) to a tab's count", () => {
+    const s = state();
+    const q = s.newQuery("c1");
+    expect(unsavedCount(tabOf(q))).toBe(0);
+    const remove = registerUnsavedSource((tab) => (tab.id === q ? 3 : 0));
+    expect(unsavedCount(tabOf(q))).toBe(3);
+    expect(dirtyTabs(state().tabs)).toEqual([{ id: q, kind: "query", title: "Query 1", count: 3 }]);
+    remove();
+    expect(unsavedCount(tabOf(q))).toBe(0);
+  });
+
+  it("counts staged rows and staged DDL of a table's tab together, in either view", () => {
+    const s = state();
+    const a = s.openTable("c1", users);
+    const q = s.newQuery("c1");
+    stage(a, 2);
+    stageDdl(a, 3);
+    expect(unsavedCount(tabOf(a))).toBe(5);
+    s.setView(a, "structure");
+    expect(unsavedCount(tabOf(a))).toBe(5);
+    expect(unsavedCount(tabOf(q))).toBe(0);
+    s.setDirty(q, true);
+    expect(dirtyTabs(state().tabs)).toEqual([
+      { id: a, kind: "structure", title: "users", count: 5 },
+      { id: q, kind: "query", title: "Query 1", count: 1 },
+    ]);
+    s.closeAll();
+    expect(state().closeRequest?.total).toBe(6);
+    state().confirmClose();
+    expect(useTableTabsStore.getState().slices[a]).toBeUndefined();
+    expect(useStructureStore.getState().byTab[a]).toBeUndefined();
   });
 
   it("activates the right-hand neighbour when closing the active tab, else the left", () => {
@@ -238,46 +406,68 @@ describe("tabs store", () => {
       expect(state().activeId).toBe(b);
     });
 
-    it("Close Others shows the kept tab even when it belongs to another connection", () => {
+    it("Close Others closes only the kept tab's workspace and shows the kept tab", () => {
       const s = state();
       const a1 = s.openTable("A", users);
       const b1 = s.openTable("B", posts);
+      const b2 = s.newQuery("B");
       // Right-clicking b1 does not activate it.
       s.activate(a1);
       s.closeOthers(b1);
-      expect(ids()).toEqual([b1]);
+      expect(ids()).toEqual([a1, b1]);
+      expect(ids()).not.toContain(b2);
       expect(state().activeId).toBe(b1);
     });
 
-    it("Close Others shows the kept tab of another connection after the dialog too", () => {
+    it("Close Others asks about the workspace's unsaved tabs, then shows the kept tab", () => {
       const s = state();
       const a1 = s.openTable("A", users);
       const a2 = s.openTable("A", orders);
       const b1 = s.openTable("B", posts);
-      stage(a1, 1);
-      s.activate(a1);
-      s.closeOthers(b1);
-      expect(state().closeRequest).toMatchObject({ ids: [a1, a2], activateAfter: b1 });
-      expect(state().activeId).toBe(a1);
-      state().confirmClose();
-      expect(ids()).toEqual([b1]);
+      stage(a2, 1);
+      s.activate(b1);
+      s.closeOthers(a1);
+      expect(state().closeRequest).toMatchObject({ ids: [a2], activateAfter: a1 });
       expect(state().activeId).toBe(b1);
+      state().confirmClose();
+      expect(ids()).toEqual([a1, b1]);
+      expect(state().activeId).toBe(a1);
     });
 
     it("Close Others leaves the active tab alone when the dialog is cancelled", () => {
       const s = state();
       const a1 = s.openTable("A", users);
-      const b1 = s.openTable("B", posts);
-      stage(a1, 1);
-      s.activate(a1);
-      s.closeOthers(b1);
+      const a2 = s.openTable("A", orders);
+      stage(a2, 1);
+      s.activate(a2);
+      s.closeOthers(a1);
       state().cancelClose();
-      expect(ids()).toEqual([a1, b1]);
-      expect(state().activeId).toBe(a1);
+      expect(ids()).toEqual([a1, a2]);
+      expect(state().activeId).toBe(a2);
       // A later, unrelated close does not inherit the kept tab.
-      stage(a1, 0);
-      expect(state().requestClose([a1])).toBe(true);
-      expect(state().activeId).toBeNull();
+      stage(a2, 0);
+      expect(state().requestClose([a2])).toBe(true);
+      expect(state().activeId).toBe(a1);
+    });
+
+    it("keeps tab navigation and Close All inside one workspace", () => {
+      const s = state();
+      const a1 = s.openTable("A", users);
+      const a2 = s.openTable("A", orders);
+      const b1 = s.openTable("B", posts);
+      s.activate(a2);
+      state().next();
+      expect(state().activeId).toBe(a1);
+      state().prev();
+      expect(state().activeId).toBe(a2);
+      state().activateIndex(0, "B");
+      expect(state().activeId).toBe(b1);
+      state().activateIndex(8, "A");
+      expect(state().activeId).toBe(a2);
+      state().closeAll("A");
+      expect(ids()).toEqual([b1]);
+      // Without a workspace (nothing scoped) the tab actions see every tab.
+      expect(workspaceTabs(state().tabs, null).map((t) => t.id)).toEqual([b1]);
     });
 
     it("guards the window only when something is unsaved", () => {
@@ -359,7 +549,7 @@ describe("tabs store", () => {
     const b = s.openTable("c2", posts);
     const q = s.newQuery("c1");
     s.close(q);
-    const st = s.openTable("c1", users, "structure");
+    const st = s.openTable("c1", orders, "structure");
     stage(a, 1);
     stageDdl(st, 1);
     s.activate(a);
@@ -370,5 +560,157 @@ describe("tabs store", () => {
     expect(state().closed).toHaveLength(0);
     expect(useTableTabsStore.getState().slices[a]).toBeUndefined();
     expect(useStructureStore.getState().byTab[st]).toBeUndefined();
+  });
+
+  describe("back / forward history", () => {
+    it("walks back and forward through previously active tabs", () => {
+      const s = state();
+      const a = s.openTable("c1", users);
+      const b = s.openTable("c1", posts);
+      const q = s.newQuery("c1");
+      s.activate(a);
+      expect(state().history).toEqual([a, b, q, a]);
+      expect(canGoForward(state())).toBe(false);
+      s.back();
+      expect(state().activeId).toBe(q);
+      s.back();
+      expect(state().activeId).toBe(b);
+      expect(canGoForward(state())).toBe(true);
+      s.forward();
+      expect(state().activeId).toBe(q);
+      s.forward();
+      expect(state().activeId).toBe(a);
+      expect(canGoForward(state())).toBe(false);
+      // Nothing further either way is a no-op.
+      s.forward();
+      expect(state().activeId).toBe(a);
+    });
+
+    it("drops the forward entries on a new activation, like a browser", () => {
+      const s = state();
+      const a = s.openTable("c1", users);
+      const b = s.openTable("c1", posts);
+      const q = s.newQuery("c1");
+      s.back();
+      s.back();
+      expect(state().activeId).toBe(a);
+      s.activate(q);
+      expect(state().history).toEqual([a, q]);
+      expect(canGoForward(state())).toBe(false);
+      s.back();
+      expect(state().activeId).toBe(a);
+      expect(ids()).toContain(b);
+    });
+
+    it("records ⌘[ / ⌘] / ⌘1…9 and does not repeat the visible tab", () => {
+      const s = state();
+      const a = s.openTable("c1", users);
+      const b = s.openTable("c1", posts);
+      s.activate(b);
+      s.openTable("c1", posts);
+      expect(state().history).toEqual([a, b]);
+      s.prev();
+      s.activateIndex(1);
+      expect(state().history).toEqual([a, b, a, b]);
+    });
+
+    it("skips closed tabs and leaves no trace of them", () => {
+      const s = state();
+      const a = s.openTable("c1", users);
+      const b = s.openTable("c1", posts);
+      const q = s.newQuery("c1");
+      s.activate(a);
+      s.close(q);
+      expect(state().history).toEqual([a, b, a]);
+      s.back();
+      expect(state().activeId).toBe(b);
+      s.back();
+      expect(state().activeId).toBe(a);
+      expect(canGoBack(state())).toBe(false);
+    });
+
+    it("goes back to the last tab after its connection's last tab closed", () => {
+      const s = state();
+      const a = s.openTable("c1", users);
+      const b = s.openTable("c2", posts);
+      s.close(b);
+      expect(state().activeId).toBeNull();
+      expect(canGoBack(state())).toBe(true);
+      s.back();
+      expect(state().activeId).toBe(a);
+      expect(canGoBack(state())).toBe(false);
+    });
+
+    it("keeps at most 50 entries", () => {
+      const s = state();
+      const a = s.openTable("c1", users);
+      const b = s.openTable("c1", posts);
+      for (let i = 0; i < 40; i++) {
+        s.activate(a);
+        s.activate(b);
+      }
+      expect(state().history).toHaveLength(50);
+      expect(state().historyIndex).toBe(49);
+      expect(state().history.at(-1)).toBe(b);
+    });
+  });
+  describe("rename and restore", () => {
+    it("renames with a trimmed title and ignores blank names", () => {
+      const s = state();
+      const q = s.newQuery("c1");
+      s.rename(q, "  Daily report ");
+      expect(tabOf(q).title).toBe("Daily report");
+      s.rename(q, "   ");
+      expect(tabOf(q).title).toBe("Daily report");
+      const t = s.openTable("c1", users);
+      s.rename(t, "People");
+      expect(tabOf(t).title).toBe("People");
+    });
+
+    it("appends restored tabs without activating them and continues the query numbering", () => {
+      const s = state();
+      const a = s.openTable("c1", users);
+      s.restoreTabs([
+        { id: "r1", kind: "query", connectionId: "c2", title: "Query 12" },
+        { id: "r2", kind: "structure", connectionId: "c2", table: posts, title: "posts" },
+        { id: a, kind: "table", connectionId: "c1", table: users, title: "dup" },
+      ]);
+      expect(ids()).toEqual([a, "r1", "r2"]);
+      expect(state().activeId).toBe(a);
+      expect(tabOf(a).title).toBe("users");
+      s.newQuery("c2");
+      expect(state().tabs.at(-1)?.title).toBe("Query 13");
+      expect(
+        maxQueryNumber([
+          { kind: "query", title: "Query 4" },
+          { kind: "table", title: "Query 9" },
+        ]),
+      ).toBe(4);
+    });
+
+    it("lets the session keep auto-saved query tabs out of the window-close prompt", () => {
+      const s = state();
+      const q = s.newQuery("c1");
+      const f = s.newQuery("c1");
+      s.setDirty(q, true);
+      const save = vi.fn();
+      const closeAfterSave = vi.fn();
+      const uninstall = setWindowCloseHooks({
+        survivesClose: (tab) => tab.id === q,
+        save,
+        closeAfterSave,
+      });
+      expect(s.requestWindowClose()).toBe(false);
+      expect(closeAfterSave).toHaveBeenCalledTimes(1);
+      expect(state().closeRequest).toBeNull();
+      s.setDirty(f, true);
+      expect(s.requestWindowClose()).toBe(false);
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(state().closeRequest?.dirty.map((d) => d.id)).toEqual([f]);
+      s.cancelClose();
+      uninstall();
+      expect(s.requestWindowClose()).toBe(false);
+      expect(state().closeRequest?.dirty.map((d) => d.id)).toEqual([q, f]);
+    });
   });
 });

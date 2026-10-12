@@ -27,6 +27,27 @@ export async function pickExportPath(
   return picked ?? null;
 }
 
+/**
+ * Asks for the folder a multi-table export writes its files into: the native folder panel in
+ * Tauri, `window.prompt` in the browser mock. Null = cancelled.
+ */
+export async function pickExportFolder(lastDir: string | null): Promise<string | null> {
+  if (isMock) {
+    const answer = window.prompt("Export the tables into folder", lastDir ?? MOCK_EXPORT_DIR);
+    const path = answer?.trim().replace(/\/+$/, "");
+    return path ? path : null;
+  }
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    title: "Export Tables To",
+    directory: true,
+    multiple: false,
+    canCreateDirectories: true,
+    defaultPath: lastDir ?? undefined,
+  });
+  return typeof picked === "string" ? picked : null;
+}
+
 /** Shows the exported file in Finder (no-op in the browser mock). */
 export async function revealExport(path: string): Promise<void> {
   if (isMock) return;

@@ -33,7 +33,10 @@ export function newColumnDraft(
   };
 }
 
-/** Starting rows: an auto-incrementing `id` primary key. */
+/**
+ * Starting rows: an auto-incrementing `id` primary key (TablePlus: PostgreSQL `serial`, a
+ * sequence default; MySQL `int` AUTO_INCREMENT; SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`).
+ */
 export function initialColumns(dialect: Dialect): ColumnDraft[] {
   return [
     newColumnDraft(dialect, {
@@ -61,6 +64,7 @@ function toDef(dialect: Dialect, d: ColumnDraft): ColumnDef {
     comment: supportsComments(dialect) && comment !== "" ? comment : null,
     collation: null,
     unsigned: false,
+    onUpdate: null,
   };
 }
 

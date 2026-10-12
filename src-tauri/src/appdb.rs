@@ -10,6 +10,9 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::types::history::{HistoryEntry, HistoryFilter, NewHistoryEntry};
 use crate::types::profile::ConnectionProfile;
+use crate::types::saved_query::{
+    QueryFolder, QueryFolderInput, SavedQuery, SavedQueryInput, SavedQueryLibrary,
+};
 
 #[derive(Clone)]
 pub struct AppDb {
@@ -53,6 +56,24 @@ const MIGRATIONS: &[&str] = &[
         added_at TEXT NOT NULL,
         PRIMARY KEY (host, port, key_type)
     );",
+    // v2: saved queries (the sidebar's Queries pane) and their folders.
+    "CREATE TABLE query_folders (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        parent_id TEXT REFERENCES query_folders(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE saved_queries (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        keyword TEXT,
+        sql TEXT NOT NULL,
+        folder_id TEXT REFERENCES query_folders(id) ON DELETE CASCADE,
+        profile_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX saved_queries_folder ON saved_queries(folder_id);",
 ];
 
 /// History rows kept; older ones are pruned.
@@ -66,6 +87,90 @@ fn clamp_i64(n: u64) -> i64 {
 
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// Longest saved query / folder name accepted.
+const SAVED_NAME_MAX: usize = 200;
+/// Longest binding keyword accepted.
+const KEYWORD_MAX: usize = 64;
+
+/// A trimmed, non-empty name of at most `SAVED_NAME_MAX` characters.
+fn saved_name(name: &str, what: &str) -> Result<String, AppError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::InvalidInput(format!("{what} name is required")));
+    }
+    if name.chars().count() > SAVED_NAME_MAX {
+        return Err(AppError::InvalidInput(format!(
+            "{what} name is longer than {SAVED_NAME_MAX} characters"
+        )));
+    }
+    Ok(name.to_string())
+}
+
+/// The binding keyword: trimmed, `None` when blank, one word (no whitespace).
+fn saved_keyword(keyword: Option<&str>) -> Result<Option<String>, AppError> {
+    let Some(k) = keyword.map(str::trim).filter(|k| !k.is_empty()) else {
+        return Ok(None);
+    };
+    if k.chars().any(char::is_whitespace) {
+        return Err(AppError::InvalidInput(
+            "the keyword must be a single word".into(),
+        ));
+    }
+    if k.chars().count() > KEYWORD_MAX {
+        return Err(AppError::InvalidInput(format!(
+            "the keyword is longer than {KEYWORD_MAX} characters"
+        )));
+    }
+    Ok(Some(k.to_string()))
+}
+
+fn parse_uuid(s: Option<String>) -> Option<Uuid> {
+    s.and_then(|s| Uuid::parse_str(&s).ok())
+}
+
+fn saved_query_row(r: &rusqlite::Row<'_>) -> Result<SavedQuery, rusqlite::Error> {
+    let id: String = r.get(0)?;
+    Ok(SavedQuery {
+        id: Uuid::parse_str(&id).unwrap_or_default(),
+        name: r.get(1)?,
+        keyword: r.get(2)?,
+        sql: r.get(3)?,
+        folder_id: parse_uuid(r.get(4)?),
+        profile_id: parse_uuid(r.get(5)?),
+        created_at: r.get(6)?,
+        updated_at: r.get(7)?,
+    })
+}
+
+fn query_folder_row(r: &rusqlite::Row<'_>) -> Result<QueryFolder, rusqlite::Error> {
+    let id: String = r.get(0)?;
+    Ok(QueryFolder {
+        id: Uuid::parse_str(&id).unwrap_or_default(),
+        name: r.get(1)?,
+        parent_id: parse_uuid(r.get(2)?),
+        created_at: r.get(3)?,
+    })
+}
+
+const SAVED_QUERY_COLUMNS: &str =
+    "id, name, keyword, sql, folder_id, profile_id, created_at, updated_at";
+
+/// The folder subtree rooted at `?1` (the folder and every folder inside it).
+const FOLDER_SUBTREE: &str = "WITH RECURSIVE sub(id) AS (
+        SELECT ?1
+        UNION SELECT f.id FROM query_folders f JOIN sub ON f.parent_id = sub.id
+    )";
+
+fn folder_exists(conn: &Connection, id: Uuid) -> Result<bool, rusqlite::Error> {
+    conn.query_row(
+        "SELECT 1 FROM query_folders WHERE id = ?1",
+        params![id.to_string()],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|r| r.is_some())
 }
 
 impl AppDb {
@@ -205,6 +310,12 @@ impl AppDb {
                 params![id.to_string()],
             )
             .map_err(|e| AppError::AppDb(e.to_string()))?;
+        // Its saved queries are kept, for every connection.
+        conn.execute(
+            "UPDATE saved_queries SET profile_id = NULL WHERE profile_id = ?1",
+            params![id.to_string()],
+        )
+        .map_err(|e| AppError::AppDb(e.to_string()))?;
         Ok(n > 0)
     }
 
@@ -453,6 +564,152 @@ impl AppDb {
         Ok(n as u64)
     }
 
+    // ----- saved queries ----------------------------------------------------
+
+    /// Every folder and saved query, each sorted by name (case-insensitive).
+    pub fn list_saved_queries(&self) -> Result<SavedQueryLibrary, AppError> {
+        let conn = self.lock();
+        let db = |e: rusqlite::Error| AppError::AppDb(e.to_string());
+        let folders = conn
+            .prepare(
+                "SELECT id, name, parent_id, created_at FROM query_folders
+                 ORDER BY lower(name), created_at",
+            )
+            .map_err(db)?
+            .query_map([], query_folder_row)
+            .map_err(db)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db)?;
+        let queries = conn
+            .prepare(&format!(
+                "SELECT {SAVED_QUERY_COLUMNS} FROM saved_queries ORDER BY lower(name), created_at"
+            ))
+            .map_err(db)?
+            .query_map([], saved_query_row)
+            .map_err(db)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db)?;
+        Ok(SavedQueryLibrary { folders, queries })
+    }
+
+    /// Creates (`input.id` = `None`, or an id not stored yet) or replaces a saved query. The name
+    /// is required, the keyword is one word (blank = none) and the folder must exist.
+    pub fn save_saved_query(&self, input: &SavedQueryInput) -> Result<SavedQuery, AppError> {
+        let name = saved_name(&input.name, "Query")?;
+        let keyword = saved_keyword(input.keyword.as_deref())?;
+        let id = input.id.unwrap_or_else(Uuid::new_v4);
+        let now = now_rfc3339();
+        let conn = self.lock();
+        let db = |e: rusqlite::Error| AppError::AppDb(e.to_string());
+        if let Some(folder) = input.folder_id
+            && !folder_exists(&conn, folder).map_err(db)?
+        {
+            return Err(AppError::NotFound("the folder no longer exists".into()));
+        }
+        conn.execute(
+            "INSERT INTO saved_queries (id, name, keyword, sql, folder_id, profile_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, keyword = excluded.keyword,
+               sql = excluded.sql, folder_id = excluded.folder_id, profile_id = excluded.profile_id,
+               updated_at = excluded.updated_at",
+            params![
+                id.to_string(),
+                name,
+                keyword,
+                input.sql,
+                input.folder_id.map(|f| f.to_string()),
+                input.profile_id.map(|p| p.to_string()),
+                now,
+            ],
+        )
+        .map_err(db)?;
+        conn.query_row(
+            &format!("SELECT {SAVED_QUERY_COLUMNS} FROM saved_queries WHERE id = ?1"),
+            params![id.to_string()],
+            saved_query_row,
+        )
+        .map_err(db)
+    }
+
+    /// Deletes a saved query; false when it did not exist.
+    pub fn delete_saved_query(&self, id: Uuid) -> Result<bool, AppError> {
+        let conn = self.lock();
+        let n = conn
+            .execute(
+                "DELETE FROM saved_queries WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .map_err(|e| AppError::AppDb(e.to_string()))?;
+        Ok(n > 0)
+    }
+
+    /// Creates or renames / moves a folder. The parent must exist and must not be the folder
+    /// itself or one inside it.
+    pub fn save_query_folder(&self, input: &QueryFolderInput) -> Result<QueryFolder, AppError> {
+        let name = saved_name(&input.name, "Folder")?;
+        let id = input.id.unwrap_or_else(Uuid::new_v4);
+        let conn = self.lock();
+        let db = |e: rusqlite::Error| AppError::AppDb(e.to_string());
+        if let Some(parent) = input.parent_id {
+            if !folder_exists(&conn, parent).map_err(db)? {
+                return Err(AppError::NotFound(
+                    "the parent folder no longer exists".into(),
+                ));
+            }
+            let inside: bool = conn
+                .query_row(
+                    &format!("{FOLDER_SUBTREE} SELECT EXISTS (SELECT 1 FROM sub WHERE id = ?2)"),
+                    params![id.to_string(), parent.to_string()],
+                    |r| r.get(0),
+                )
+                .map_err(db)?;
+            if inside {
+                return Err(AppError::InvalidInput(
+                    "a folder cannot be moved into itself".into(),
+                ));
+            }
+        }
+        conn.execute(
+            "INSERT INTO query_folders (id, name, parent_id, created_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, parent_id = excluded.parent_id",
+            params![
+                id.to_string(),
+                name,
+                input.parent_id.map(|p| p.to_string()),
+                now_rfc3339()
+            ],
+        )
+        .map_err(db)?;
+        conn.query_row(
+            "SELECT id, name, parent_id, created_at FROM query_folders WHERE id = ?1",
+            params![id.to_string()],
+            query_folder_row,
+        )
+        .map_err(db)
+    }
+
+    /// Deletes a folder with the folders and queries inside it; returns how many queries went.
+    pub fn delete_query_folder(&self, id: Uuid) -> Result<u64, AppError> {
+        let mut conn = self.lock();
+        let db = |e: rusqlite::Error| AppError::AppDb(e.to_string());
+        let tx = conn.transaction().map_err(db)?;
+        let queries = tx
+            .execute(
+                &format!(
+                    "{FOLDER_SUBTREE} DELETE FROM saved_queries WHERE folder_id IN (SELECT id FROM sub)"
+                ),
+                params![id.to_string()],
+            )
+            .map_err(db)?;
+        tx.execute(
+            &format!("{FOLDER_SUBTREE} DELETE FROM query_folders WHERE id IN (SELECT id FROM sub)"),
+            params![id.to_string()],
+        )
+        .map_err(db)?;
+        tx.commit().map_err(db)?;
+        Ok(queries as u64)
+    }
+
     /// Runs an arbitrary closure with the raw connection (history, trusted hosts).
     pub fn with_conn<R>(
         &self,
@@ -632,6 +889,195 @@ mod tests {
                 .is_empty()
         );
         assert!(db.insert_history(&[]).unwrap().is_empty());
+    }
+
+    fn saved(name: &str, folder: Option<Uuid>, profile: Option<Uuid>) -> SavedQueryInput {
+        SavedQueryInput {
+            id: None,
+            name: name.into(),
+            keyword: None,
+            sql: format!("select '{name}'"),
+            folder_id: folder,
+            profile_id: profile,
+        }
+    }
+
+    fn folder(name: &str, parent: Option<Uuid>) -> QueryFolderInput {
+        QueryFolderInput {
+            id: None,
+            name: name.into(),
+            parent_id: parent,
+        }
+    }
+
+    #[test]
+    fn saved_queries_crud() {
+        let db = AppDb::open_in_memory().unwrap();
+        assert_eq!(
+            db.list_saved_queries().unwrap(),
+            SavedQueryLibrary::default()
+        );
+
+        let reports = db.save_query_folder(&folder("Reports", None)).unwrap();
+        let p = Uuid::new_v4();
+        let mut input = saved("  users by day ", Some(reports.id), Some(p));
+        input.keyword = Some(" ubd ".into());
+        let q = db.save_saved_query(&input).unwrap();
+        assert_eq!(q.name, "users by day");
+        assert_eq!(q.keyword.as_deref(), Some("ubd"));
+        assert_eq!(q.folder_id, Some(reports.id));
+        assert_eq!(q.profile_id, Some(p));
+        assert_eq!(q.created_at, q.updated_at);
+        let b = db
+            .save_saved_query(&saved("Active sessions", None, None))
+            .unwrap();
+        assert_eq!(b.keyword, None);
+
+        // Sorted by name, case-insensitively.
+        let lib = db.list_saved_queries().unwrap();
+        assert_eq!(lib.folders, vec![reports.clone()]);
+        assert_eq!(
+            lib.queries
+                .iter()
+                .map(|q| q.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Active sessions", "users by day"]
+        );
+
+        // Update in place: rename, re-key, move to the top level, all connections.
+        let updated = db
+            .save_saved_query(&SavedQueryInput {
+                id: Some(q.id),
+                name: "Signups".into(),
+                keyword: Some("".into()),
+                sql: "select 2".into(),
+                folder_id: None,
+                profile_id: None,
+            })
+            .unwrap();
+        assert_eq!(updated.id, q.id);
+        assert_eq!(updated.created_at, q.created_at);
+        assert_eq!(updated.keyword, None);
+        assert_eq!(updated.folder_id, None);
+        assert_eq!(updated.profile_id, None);
+        assert_eq!(db.list_saved_queries().unwrap().queries.len(), 2);
+
+        // A client-chosen id that is not stored yet creates the query.
+        let fresh = Uuid::new_v4();
+        let c = db
+            .save_saved_query(&SavedQueryInput {
+                id: Some(fresh),
+                ..saved("c", None, None)
+            })
+            .unwrap();
+        assert_eq!(c.id, fresh);
+
+        assert!(db.delete_saved_query(c.id).unwrap());
+        assert!(!db.delete_saved_query(c.id).unwrap());
+        assert_eq!(db.list_saved_queries().unwrap().queries.len(), 2);
+    }
+
+    #[test]
+    fn saved_queries_validate_input() {
+        let db = AppDb::open_in_memory().unwrap();
+        let invalid = |r: Result<SavedQuery, AppError>| {
+            assert!(matches!(r, Err(AppError::InvalidInput(_))), "{r:?}")
+        };
+        invalid(db.save_saved_query(&saved("   ", None, None)));
+        invalid(db.save_saved_query(&saved(&"x".repeat(201), None, None)));
+        let mut spaced = saved("a", None, None);
+        spaced.keyword = Some("two words".into());
+        invalid(db.save_saved_query(&spaced));
+        let mut long = saved("a", None, None);
+        long.keyword = Some("k".repeat(65));
+        invalid(db.save_saved_query(&long));
+        assert!(matches!(
+            db.save_saved_query(&saved("a", Some(Uuid::new_v4()), None)),
+            Err(AppError::NotFound(_))
+        ));
+        assert!(matches!(
+            db.save_query_folder(&folder(" ", None)),
+            Err(AppError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            db.save_query_folder(&folder("x", Some(Uuid::new_v4()))),
+            Err(AppError::NotFound(_))
+        ));
+        assert!(db.list_saved_queries().unwrap().queries.is_empty());
+    }
+
+    #[test]
+    fn query_folders_nest_move_and_cascade() {
+        let db = AppDb::open_in_memory().unwrap();
+        let a = db.save_query_folder(&folder("A", None)).unwrap();
+        let b = db.save_query_folder(&folder("B", Some(a.id))).unwrap();
+        let c = db.save_query_folder(&folder("C", Some(b.id))).unwrap();
+        let other = db.save_query_folder(&folder("Other", None)).unwrap();
+        assert_eq!(b.parent_id, Some(a.id));
+
+        // Not into itself, nor into a folder inside it.
+        for parent in [a.id, b.id, c.id] {
+            let r = db.save_query_folder(&QueryFolderInput {
+                id: Some(a.id),
+                name: "A".into(),
+                parent_id: Some(parent),
+            });
+            assert!(matches!(r, Err(AppError::InvalidInput(_))), "{parent}");
+        }
+        // Rename and move elsewhere.
+        let moved = db
+            .save_query_folder(&QueryFolderInput {
+                id: Some(c.id),
+                name: "C2".into(),
+                parent_id: Some(other.id),
+            })
+            .unwrap();
+        assert_eq!(moved.name, "C2");
+        assert_eq!(moved.parent_id, Some(other.id));
+        assert_eq!(moved.created_at, c.created_at);
+        let back = db
+            .save_query_folder(&QueryFolderInput {
+                id: Some(c.id),
+                name: "C".into(),
+                parent_id: Some(b.id),
+            })
+            .unwrap();
+        assert_eq!(back.parent_id, Some(b.id));
+
+        db.save_saved_query(&saved("in a", Some(a.id), None))
+            .unwrap();
+        db.save_saved_query(&saved("in c", Some(c.id), None))
+            .unwrap();
+        db.save_saved_query(&saved("in other", Some(other.id), None))
+            .unwrap();
+        db.save_saved_query(&saved("top", None, None)).unwrap();
+
+        // Deleting A takes B, C and the queries inside them.
+        assert_eq!(db.delete_query_folder(a.id).unwrap(), 2);
+        let lib = db.list_saved_queries().unwrap();
+        assert_eq!(lib.folders, vec![other.clone()]);
+        assert_eq!(
+            lib.queries
+                .iter()
+                .map(|q| q.name.as_str())
+                .collect::<Vec<_>>(),
+            ["in other", "top"]
+        );
+        assert_eq!(db.delete_query_folder(a.id).unwrap(), 0);
+    }
+
+    #[test]
+    fn deleting_a_profile_keeps_its_saved_queries() {
+        let db = AppDb::open_in_memory().unwrap();
+        let p = db.upsert_profile(&profile("local")).unwrap();
+        let q = db
+            .save_saved_query(&saved("mine", None, Some(p.id)))
+            .unwrap();
+        assert_eq!(q.profile_id, Some(p.id));
+        assert!(db.delete_profile(p.id).unwrap());
+        let lib = db.list_saved_queries().unwrap();
+        assert_eq!(lib.queries.len(), 1);
+        assert_eq!(lib.queries[0].profile_id, None);
     }
 
     #[test]

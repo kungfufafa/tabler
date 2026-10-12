@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fuzzyMatch, normalizeQuery } from "./fuzzy";
+import { fuzzyMatch, normalizeQuery, strictMatch } from "./fuzzy";
 
 function rank(query: string, texts: string[]): string[] {
   return texts
@@ -67,5 +67,67 @@ describe("fuzzyMatch", () => {
       "app_users",
     ]);
     expect(rank("use", ["user_sessions", "users"])).toEqual(["users", "user_sessions"]);
+  });
+});
+
+describe("strictMatch", () => {
+  const tier = (query: string, text: string) => strictMatch(query, text)?.tier ?? null;
+
+  it("matches everything with an empty query", () => {
+    expect(strictMatch("", "users")).toEqual({ tier: "prefix", ranges: [] });
+  });
+
+  it("matches prefixes and exact names", () => {
+    expect(strictMatch("po", "posts")).toEqual({ tier: "prefix", ranges: [[0, 2]] });
+    expect(strictMatch("POSTS", "posts")).toEqual({ tier: "exact", ranges: [[0, 5]] });
+    expect(tier("po", "post_tags")).toBe("prefix");
+    expect(tier("po", "postgres")).toBe("prefix");
+  });
+
+  it("matches runs that each start a word", () => {
+    expect(strictMatch("oi", "order_items")).toEqual({
+      tier: "wordStart",
+      ranges: [
+        [0, 1],
+        [6, 7],
+      ],
+    });
+    expect(strictMatch("ord", "customer_order")).toEqual({ tier: "wordStart", ranges: [[9, 12]] });
+    expect(tier("uid", "userId")).toBe("wordStart");
+    expect(tier("theme dark", "Theme: Dark")).toBe("wordStart");
+    expect(tier("tdark", "Theme: Dark")).toBe("wordStart");
+    expect(tier("t1", "table_10")).toBe("wordStart");
+  });
+
+  it("matches contiguous substrings anywhere", () => {
+    expect(strictMatch("ost", "posts")).toEqual({ tier: "substring", ranges: [[1, 4]] });
+    expect(tier("po", "repost_log")).toBe("substring");
+    expect(tier("po", "Export…")).toBe("substring");
+  });
+
+  it("rejects scattered characters", () => {
+    expect(strictMatch("po", "Duplicate row")).toBeNull();
+    expect(strictMatch("po", "Open referenced row")).toBeNull();
+    expect(strictMatch("usr", "users")).toBeNull();
+    expect(strictMatch("ord", "product_reviews_old")).toBeNull();
+    expect(strictMatch("xyz", "users")).toBeNull();
+    expect(strictMatch("userss", "users")).toBeNull();
+  });
+
+  it("finds a word-start alignment the first occurrences would miss", () => {
+    // Greedy would take the "a" of "data"; the run must start at "a" of "archive" instead.
+    expect(strictMatch("da", "data_archive")?.tier).toBe("prefix");
+    expect(strictMatch("dar", "data_archive")).toEqual({
+      tier: "wordStart",
+      ranges: [
+        [0, 1],
+        [5, 7],
+      ],
+    });
+    // Fewest runs: "log" as one run rather than l·o·g spread over words.
+    expect(strictMatch("log", "list_of_groups_log")).toEqual({
+      tier: "wordStart",
+      ranges: [[15, 18]],
+    });
   });
 });

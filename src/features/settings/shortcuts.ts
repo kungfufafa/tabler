@@ -1,5 +1,5 @@
 import { formatCombo, isMac } from "@/lib/keys/combo";
-import type { Scope, ShortcutDef } from "@/lib/keys/keymap";
+import { findShortcut, type Scope, type ShortcutDef } from "@/lib/keys/keymap";
 
 export interface ShortcutRow {
   /** The action id for keymap rows; `ref:<keys>` for reference rows (built-in keys). */
@@ -28,33 +28,31 @@ export interface ReferenceShortcut {
 
 /** Rows with the same label merge, so alternatives (Enter / F2) share one line. */
 export const REFERENCE_SHORTCUTS: ReadonlyArray<ReferenceShortcut> = [
-  // Table grid (DataGrid's keydown handler and header clicks).
-  { scope: "grid", keys: "Up", label: "Move the selection" },
-  { scope: "grid", keys: "Down", label: "Move the selection" },
-  { scope: "grid", keys: "Left", label: "Move the selection" },
-  { scope: "grid", keys: "Right", label: "Move the selection" },
-  { scope: "grid", keys: "Shift+Up", label: "Extend the selection" },
-  { scope: "grid", keys: "Shift+Down", label: "Extend the selection" },
-  { scope: "grid", keys: "Shift+Left", label: "Extend the selection" },
-  { scope: "grid", keys: "Shift+Right", label: "Extend the selection" },
-  { scope: "grid", keys: "Mod+Up", label: "Jump to the edge" },
-  { scope: "grid", keys: "Mod+Down", label: "Jump to the edge" },
-  { scope: "grid", keys: "Mod+Left", label: "Jump to the edge" },
-  { scope: "grid", keys: "Mod+Right", label: "Jump to the edge" },
-  { scope: "grid", keys: "Home", label: "First / last column" },
-  { scope: "grid", keys: "End", label: "First / last column" },
+  // Table grid (DataGrid's keydown handler and clicks). The grid selects rows (TablePlus).
+  { scope: "grid", keys: "Up", label: "Select the row above / below" },
+  { scope: "grid", keys: "Down", label: "Select the row above / below" },
+  { scope: "grid", keys: "Shift+Up", label: "Extend the row selection" },
+  { scope: "grid", keys: "Shift+Down", label: "Extend the row selection" },
+  { scope: "grid", keys: "Shift+Click", label: "Extend the row selection" },
+  { scope: "grid", keys: "Mod+Click", label: "Add / remove a row" },
+  { scope: "grid", keys: "Left", label: "Previous / next cell in the row" },
+  { scope: "grid", keys: "Right", label: "Previous / next cell in the row" },
+  { scope: "grid", keys: "Tab", label: "Previous / next cell in the row" },
+  { scope: "grid", keys: "Shift+Tab", label: "Previous / next cell in the row" },
+  { scope: "grid", keys: "Mod+Up", label: "First / last row" },
+  { scope: "grid", keys: "Mod+Down", label: "First / last row" },
   { scope: "grid", keys: "Mod+Home", label: "First / last row" },
   { scope: "grid", keys: "Mod+End", label: "First / last row" },
+  { scope: "grid", keys: "Home", label: "First / last column" },
+  { scope: "grid", keys: "End", label: "First / last column" },
   { scope: "grid", keys: "PageUp", label: "Page up / down" },
   { scope: "grid", keys: "PageDown", label: "Page up / down" },
-  { scope: "grid", keys: "Tab", label: "Next / previous cell" },
-  { scope: "grid", keys: "Shift+Tab", label: "Next / previous cell" },
-  { scope: "grid", keys: "Enter", label: "Edit cell" },
-  { scope: "grid", keys: "F2", label: "Edit cell" },
-  { scope: "grid", keys: "Backspace", label: "Clear and edit cell" },
-  { scope: "grid", keys: "Delete", label: "Clear and edit cell" },
-  { scope: "grid", keys: "Escape", label: "Collapse the selection" },
-  { scope: "grid", keys: "Mod+A", label: "Select all" },
+  { scope: "grid", keys: "Enter", label: "Edit cell (typing does not edit)" },
+  { scope: "grid", keys: "F2", label: "Edit cell (typing does not edit)" },
+  { scope: "grid", keys: "Backspace", label: "Delete selected rows" },
+  { scope: "grid", keys: "Delete", label: "Delete selected rows" },
+  { scope: "grid", keys: "Escape", label: "Select only the focused row" },
+  { scope: "grid", keys: "Mod+A", label: "Select all rows" },
   { scope: "grid", keys: "Alt+Click", label: "Select a column (on its header)" },
   // Cell editors (inline input, multi-line panel, JSON editor).
   { scope: "grid-edit", keys: "Enter", label: "Save and move down" },
@@ -75,6 +73,28 @@ export const REFERENCE_SHORTCUTS: ReadonlyArray<ReferenceShortcut> = [
   { scope: "editor", keys: "Alt+Up", label: "Move line up / down" },
   { scope: "editor", keys: "Alt+Down", label: "Move line up / down" },
   { scope: "editor", keys: "Ctrl+Space", label: "Show completions" },
+  // SQL editor: TablePlus's multiple carets and block comments (cmExtensions.multiCaretKeymap).
+  { scope: "editor", keys: "Mod+Alt+/", label: "Wrap in /* */, or unwrap" },
+  { scope: "editor", keys: "Mod+Click", label: "Add a caret" },
+  { scope: "editor", keys: "Ctrl+Shift+Up", label: "Add a caret above / below" },
+  { scope: "editor", keys: "Ctrl+Shift+Down", label: "Add a caret above / below" },
+  { scope: "editor", keys: "Mod+Ctrl+G", label: "Select all occurrences" },
+  { scope: "editor", keys: "Escape", label: "Back to a single caret" },
+  // Sidebar items tree (SchemaTree's keydown handler and clicks).
+  { scope: "sidebar", keys: "Mod+Click", label: "Add / remove an item" },
+  { scope: "sidebar", keys: "Shift+Click", label: "Select a range of items" },
+  { scope: "sidebar", keys: "Shift+Up", label: "Select a range of items" },
+  { scope: "sidebar", keys: "Shift+Down", label: "Select a range of items" },
+  { scope: "sidebar", keys: "Mod+A", label: "Select all items" },
+  { scope: "sidebar", keys: "Mod+C", label: "Copy the selected names" },
+  { scope: "sidebar", keys: "Backspace", label: "Delete the selected items" },
+  { scope: "sidebar", keys: "Alt+Backspace", label: "Truncate the selected tables" },
+  { scope: "sidebar", keys: "Shift+Backspace", label: "Delete with CASCADE (PostgreSQL)" },
+  {
+    scope: "sidebar",
+    keys: "Mod+Backspace",
+    label: "Delete ignoring foreign key checks (MySQL)",
+  },
 ];
 
 export const SCOPE_TITLES: Record<Scope, string> = {
@@ -82,16 +102,25 @@ export const SCOPE_TITLES: Record<Scope, string> = {
   sidebar: "Sidebar",
   grid: "Table grid",
   "grid-edit": "Cell editor",
+  filter: "Filter bar",
   editor: "SQL editor",
   dialog: "Dialogs",
 };
 
-const SCOPE_ORDER: Scope[] = ["global", "sidebar", "grid", "grid-edit", "editor", "dialog"];
+export const SCOPE_ORDER: Scope[] = [
+  "global",
+  "sidebar",
+  "grid",
+  "grid-edit",
+  "filter",
+  "editor",
+  "dialog",
+];
 
-const isReference = (row: ShortcutRow) => row.id.startsWith("ref:");
+export const isReference = (row: Pick<ShortcutRow, "id">) => row.id.startsWith("ref:");
 
 /** Lower-cased text a row can be found by: label, action id, scope and every spelling of its keys. */
-function haystack(row: ShortcutRow, scope: Scope, mac: boolean): string {
+export function haystack(row: ShortcutRow, scope: Scope, mac: boolean): string {
   const keys = row.keys.flatMap((k) => [
     k,
     k.replace(/\bMod\b/g, mac ? "Cmd" : "Ctrl"),
@@ -99,6 +128,11 @@ function haystack(row: ShortcutRow, scope: Scope, mac: boolean): string {
   ]);
   const id = isReference(row) ? [] : [row.id];
   return [row.label, ...id, SCOPE_TITLES[scope], ...keys].join(" ").toLowerCase();
+}
+
+/** The lower-cased, whitespace-separated terms of a search (every one must match). */
+export function queryTerms(query: string): string[] {
+  return query.toLowerCase().split(/\s+/).filter(Boolean);
 }
 
 /** One binding on its way into a row. */
@@ -116,8 +150,9 @@ interface Entry {
 /**
  * Turns the keymap plus the reference keys into the read-only Settings → Shortcuts table: grouped
  * by scope (fixed order, empty groups dropped), duplicate bindings removed (a reference key the
- * keymap also binds in that scope is left out), and alternative combos for the same action and
- * label merged into one row. Every whitespace-separated term of `query` must match.
+ * keymap takes in that scope, e.g. a global key allowed in the editor, is left out: it never
+ * reaches CodeMirror or the grid), and alternative combos for the same action and label merged
+ * into one row, primary combo first. Every whitespace-separated term of `query` must match.
  */
 export function groupShortcuts(
   defs: readonly ShortcutDef[],
@@ -125,7 +160,7 @@ export function groupShortcuts(
   mac: boolean = isMac,
   reference: readonly ReferenceShortcut[] = REFERENCE_SHORTCUTS,
 ): ShortcutGroup[] {
-  const bound = new Set(defs.map((d) => `${d.scope}\u0000${d.keys}`));
+  const defList = [...defs];
   const entries: Entry[] = [
     ...defs.map((d) => ({
       scope: d.scope,
@@ -136,7 +171,7 @@ export function groupShortcuts(
       rowKey: `${d.id}\u0000${d.label}`,
     })),
     ...reference
-      .filter((r) => !bound.has(`${r.scope}\u0000${r.keys}`))
+      .filter((r) => findShortcut(r.keys, r.scope, defList) === undefined)
       .map((r) => ({
         scope: r.scope,
         keys: r.keys,
@@ -162,7 +197,7 @@ export function groupShortcuts(
     else rows.set(e.rowKey, { id: e.id, label: e.label, keys: [e.keys] });
   }
 
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const terms = queryTerms(query);
   return SCOPE_ORDER.flatMap((scope) => {
     const all = [...(byScope.get(scope)?.values() ?? [])];
     const rows =

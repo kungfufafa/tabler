@@ -9,8 +9,12 @@ use uuid::Uuid;
 use crate::commands::browse::cached_meta;
 use crate::error::AppError;
 use crate::export::run_export;
+use crate::export::tables::run_export_tables;
 use crate::state::AppState;
-use crate::types::export::{ExportProgress, ExportRequest, ExportResult, ExportSource};
+use crate::types::export::{
+    ExportProgress, ExportRequest, ExportResult, ExportSource, ExportTablesProgress,
+    ExportTablesRequest, ExportTablesResult,
+};
 
 /// Keeps an export's token in `AppState::exports` while it runs.
 struct RunningExport<'a> {
@@ -85,6 +89,61 @@ pub async fn export_data(
         Ok(r) => log::info!(
             "export {} finished: {} rows, {} bytes in {} ms",
             req.export_id,
+            r.rows,
+            r.bytes,
+            r.duration_ms
+        ),
+        Err(e) => log::info!("export {} failed: {e}", req.export_id),
+    }
+    result
+}
+
+/// Exports several tables in full: one file per table into a folder, or every table into one
+/// SQL script / Excel workbook. Progress per table on `on_progress`; `cancel_export` stops it
+/// and no file is left behind.
+#[tauri::command]
+pub async fn export_tables(
+    state: State<'_, AppState>,
+    connection_id: Uuid,
+    req: ExportTablesRequest,
+    on_progress: Channel<ExportTablesProgress>,
+) -> Result<ExportTablesResult, AppError> {
+    if req.export_id.trim().is_empty() {
+        return Err(AppError::InvalidInput("exportId is required".into()));
+    }
+    let token = CancellationToken::new();
+    let _running = RunningExport::register(&state, &req.export_id, token.clone())?;
+    let conn = state.connection(connection_id).await?;
+    let session = conn.session().await;
+    let mut metas = Vec::with_capacity(req.tables.len());
+    for table in &req.tables {
+        if token.is_cancelled() {
+            return Err(AppError::Cancelled);
+        }
+        metas.push(cached_meta(&conn, table).await?);
+    }
+    log::info!(
+        "export {} started: {} tables",
+        req.export_id,
+        req.tables.len()
+    );
+    let result = run_export_tables(
+        session.as_ref(),
+        &req,
+        &metas,
+        move |p| {
+            if let Err(e) = on_progress.send(p) {
+                log::debug!("export progress not delivered: {e}");
+            }
+        },
+        token,
+    )
+    .await;
+    match &result {
+        Ok(r) => log::info!(
+            "export {} finished: {} tables, {} rows, {} bytes in {} ms",
+            req.export_id,
+            r.tables.len(),
             r.rows,
             r.bytes,
             r.duration_ms

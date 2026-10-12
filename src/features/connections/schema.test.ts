@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
 import {
+  connectionDetail,
   connectionFormSchema,
   DEFAULT_FORM,
   formToProfileInput,
   newProfileForm,
   profileToForm,
+  urlToForm,
 } from "./schema";
+import { parseConnectionUrl } from "./url";
 
 describe("connection form schema", () => {
   it("requires host and user for server drivers, a path for sqlite", () => {
@@ -98,5 +101,160 @@ describe("connection form schema", () => {
     expect(values).toMatchObject({ port: "5432", connectTimeoutSecs: "30" });
     const input = formToProfileInput({ ...values, name: "n", user: "u" }, null, "id-1");
     expect(input.profile.options.connectTimeoutSecs).toBe(30);
+  });
+
+  it("new connections are tagged local; old profiles keep no tag until edited", () => {
+    expect(newProfileForm(15).tag).toBe("local");
+    const old = SEED_PROFILES.find((p) => p.id === "p-rotated-ssh")!;
+    expect(old.options.tag).toBeNull();
+    expect(profileToForm(old).tag).toBeNull();
+    const kept = formToProfileInput(profileToForm(old), old, old.id);
+    expect(kept.profile.options.tag).toBeNull();
+    const tagged = formToProfileInput({ ...profileToForm(old), tag: "staging" }, old, old.id);
+    expect(tagged.profile.options.tag).toBe("staging");
+    expect(connectionFormSchema.safeParse({ ...DEFAULT_FORM, tag: "prod" }).success).toBe(false);
+  });
+
+  it("prefills a new connection from a URL, password included", () => {
+    const values = urlToForm(
+      parseConnectionUrl("mysql://root:pw@db.local:3307/shop?name=Shop"),
+      20,
+    );
+    expect(values).toMatchObject({
+      driver: "mysql",
+      name: "Shop",
+      host: "db.local",
+      port: "3307",
+      user: "root",
+      database: "shop",
+      password: "pw",
+      tag: "local",
+      connectTimeoutSecs: "20",
+    });
+    expect(connectionFormSchema.safeParse(values).success).toBe(true);
+    const sqlite = urlToForm(parseConnectionUrl("sqlite:///tmp/a.db"), 15);
+    expect(sqlite).toMatchObject({ driver: "sqlite", sqlitePath: "/tmp/a.db", password: "" });
+    expect(connectionFormSchema.safeParse(sqlite).success).toBe(true);
+  });
+});
+
+describe("connection form — TablePlus parity fields", () => {
+  const pgForm = { ...DEFAULT_FORM, name: "n", user: "u" };
+
+  it("round-trips password mode, SSL client files, safe mode and bootstrap commands", () => {
+    const input = formToProfileInput(
+      {
+        ...pgForm,
+        passwordMode: "ask",
+        password: "typed",
+        sslKeyPath: "/k.pem",
+        sslCertPath: "/c.pem",
+        sslCaPath: "/ca.pem",
+        safeMode: "safeNonSelect",
+        startupSql: "SET search_path = app;\n",
+      },
+      null,
+      "id-1",
+    );
+    // "Ask every time" never sends the typed password to be stored.
+    expect(input.password).toBeNull();
+    expect(input.clearPassword).toBe(false);
+    expect(input.profile.sslCaPath).toBe("/ca.pem");
+    expect(input.profile.options).toMatchObject({
+      passwordMode: "ask",
+      sslKeyPath: "/k.pem",
+      sslCertPath: "/c.pem",
+      safeMode: "safeNonSelect",
+      startupSql: "SET search_path = app;\n",
+    });
+    const back = profileToForm(input.profile);
+    expect(back).toMatchObject({
+      passwordMode: "ask",
+      sslKeyPath: "/k.pem",
+      sslCertPath: "/c.pem",
+      safeMode: "safeNonSelect",
+      startupSql: "SET search_path = app;\n",
+    });
+    // Blank bootstrap commands are stored as none; disabled SSL drops the client files.
+    const plain = formToProfileInput(
+      { ...pgForm, startupSql: "  \n", ssl: "disable", sslKeyPath: "/k.pem" },
+      null,
+      "id-2",
+    );
+    expect(plain.profile.options.startupSql).toBeNull();
+    expect(plain.profile.options.sslKeyPath).toBeNull();
+    // "No password" never stores or clears through the form either.
+    const none = formToProfileInput(
+      { ...pgForm, passwordMode: "none", password: "x", clearPassword: true },
+      null,
+      "id-3",
+    );
+    expect(none.password).toBeNull();
+    expect(none.clearPassword).toBe(false);
+  });
+
+  it("old profiles read as Keychain and Silent Mode; new ones start from the preferences", () => {
+    const old = SEED_PROFILES.find((p) => p.id === "p-local-pg")!;
+    expect(profileToForm(old)).toMatchObject({
+      passwordMode: "keychain",
+      safeMode: "silent",
+      sslKeyPath: "",
+      startupSql: "",
+    });
+    expect(newProfileForm(15, "alert").safeMode).toBe("alert");
+    expect(newProfileForm(15).safeMode).toBe("silent");
+  });
+
+  it("an SSL key needs its certificate and the other way round (unless SSL is disabled)", () => {
+    const paths = (v: typeof pgForm) => {
+      const r = connectionFormSchema.safeParse(v);
+      return r.success ? [] : r.error.issues.map((i) => i.path.join("."));
+    };
+    expect(paths({ ...pgForm, sslKeyPath: "/k.pem" })).toEqual(["sslCertPath"]);
+    expect(paths({ ...pgForm, sslCertPath: "/c.pem" })).toEqual(["sslKeyPath"]);
+    expect(paths({ ...pgForm, sslKeyPath: "/k.pem", sslCertPath: "/c.pem" })).toEqual([]);
+    expect(paths({ ...pgForm, ssl: "disable", sslKeyPath: "/k.pem" })).toEqual([]);
+  });
+
+  it("SSH: user, key and port may be left to ~/.ssh/config; local port and keep-alive round-trip", () => {
+    const ssh = {
+      ...pgForm,
+      sshEnabled: true,
+      sshHost: "bastion",
+      sshUser: "",
+      sshKeyPath: "",
+      sshPort: "",
+      sshLocalPort: "15432",
+      sshKeepaliveSecs: "20",
+    };
+    expect(connectionFormSchema.safeParse(ssh).success).toBe(true);
+    const input = formToProfileInput(ssh, null, "id-1");
+    expect(input.profile.ssh).toEqual({
+      host: "bastion",
+      port: 0,
+      user: "",
+      auth: "key",
+      keyPath: null,
+      localPort: 15432,
+      keepaliveSecs: 20,
+    });
+    expect(profileToForm(input.profile)).toMatchObject({
+      sshPort: "",
+      sshLocalPort: "15432",
+      sshKeepaliveSecs: "20",
+    });
+    expect(connectionFormSchema.safeParse({ ...ssh, sshLocalPort: "70000" }).success).toBe(false);
+    expect(connectionFormSchema.safeParse({ ...ssh, sshKeepaliveSecs: "x" }).success).toBe(false);
+    expect(connectionFormSchema.safeParse({ ...ssh, sshHost: "" }).success).toBe(false);
+  });
+});
+
+describe("connectionDetail", () => {
+  it("reads host : port : user : database, leaving out what is not set", () => {
+    const pg = SEED_PROFILES[0]!;
+    expect(connectionDetail(pg)).toBe("127.0.0.1 : 5432 : tabler : tabler_dev");
+    expect(connectionDetail({ ...pg, database: null, user: "" })).toBe("127.0.0.1 : 5432");
+    const sqlite = SEED_PROFILES.find((p) => p.driver === "sqlite")!;
+    expect(connectionDetail(sqlite)).toBe(sqlite.sqlitePath);
   });
 });

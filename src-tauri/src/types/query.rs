@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::schema::ValueKind;
+use super::schema::{TableRef, ValueKind};
 use super::value::Value;
 use crate::error::ErrorPayload;
 
@@ -14,8 +14,59 @@ pub struct ResultColumn {
     pub data_type: String,
     pub kind: ValueKind,
     pub nullable: Option<bool>,
-    /// Source table when the server reports it (used to detect editable results).
+    /// Source table when the server reports it (used to detect editable results). MySQL reports
+    /// the name as written in the query (an alias, a derived table's name); PostgreSQL and SQLite
+    /// the base table's name.
     pub table: Option<String>,
+    /// The base-table column this result column reads, when the server can tell (a plain column
+    /// reference, also through a join or an alias): PostgreSQL's RowDescription table OID and
+    /// attribute number resolved through the catalog, MySQL's `org_table` / `org_name`, SQLite's
+    /// `sqlite3_column_table_name` / `origin_name` (dropped for compound statements and
+    /// statements that read a view, where SQLite names another row's table). `None` for computed
+    /// columns.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub origin: Option<ColumnOrigin>,
+}
+
+/// Where a result column comes from: `column` of the base table `table`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ColumnOrigin {
+    /// Schema-qualified (the PostgreSQL schema, the MySQL database, the SQLite database name).
+    pub table: TableRef,
+    /// The column's name in that table (the result column may be aliased).
+    pub column: String,
+    /// Which reference to `table` in the query the column was read through, as the server names
+    /// it (MySQL: the alias, or the table name when it has none). The two sides of a self-join
+    /// (`employees e JOIN employees m`) differ here, so an edit never mixes them up. `None` when
+    /// the server does not tell (PostgreSQL, SQLite): the renderer then refuses to edit a table
+    /// the query names more than once.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub instance: Option<String>,
+}
+
+impl ColumnOrigin {
+    /// An origin from the names a server reports; `None` when the table or column is unknown
+    /// (empty), which is how servers describe computed columns.
+    pub fn from_names(schema: &str, table: &str, column: &str) -> Option<ColumnOrigin> {
+        if table.is_empty() || column.is_empty() {
+            return None;
+        }
+        Some(ColumnOrigin {
+            table: TableRef::new((!schema.is_empty()).then_some(schema), table),
+            column: column.to_string(),
+            instance: None,
+        })
+    }
+
+    /// The origin read through the table reference `instance` (ignored when empty).
+    pub fn with_instance(mut self, instance: &str) -> ColumnOrigin {
+        self.instance = (!instance.is_empty()).then(|| instance.to_string());
+        self
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
@@ -86,6 +137,9 @@ pub struct RunOptions {
     pub stop_on_error: bool,
     /// Wrap every statement in the dialect's EXPLAIN instead of running it.
     pub explain: Option<ExplainMode>,
+    /// Cancels a statement still running after this many seconds and reports it as timed out
+    /// (Preferences ▸ Connections ▸ Query time out); 0 = no limit.
+    pub timeout_secs: u32,
 }
 
 pub const DEFAULT_MAX_ROWS: u32 = 10_000;
@@ -96,6 +150,7 @@ impl Default for RunOptions {
             max_rows: DEFAULT_MAX_ROWS,
             stop_on_error: true,
             explain: None,
+            timeout_secs: 0,
         }
     }
 }
@@ -196,6 +251,51 @@ mod tests {
         assert_eq!(opts.max_rows, 5);
         assert!(!opts.stop_on_error);
         assert_eq!(opts.explain, Some(ExplainMode::Analyze));
+        assert_eq!(opts.timeout_secs, 0);
+        let opts: RunOptions = serde_json::from_str(r#"{"timeoutSecs":300}"#).unwrap();
+        assert_eq!(opts.timeout_secs, 300);
+    }
+
+    #[test]
+    fn column_origins() {
+        assert_eq!(ColumnOrigin::from_names("db", "", "id"), None);
+        assert_eq!(ColumnOrigin::from_names("db", "users", ""), None);
+        let o = ColumnOrigin::from_names("", "users", "id").unwrap();
+        assert_eq!(o.table, TableRef::new(None, "users"));
+        let o = ColumnOrigin::from_names("main", "users", "id").unwrap();
+        assert_eq!(o.table.schema.as_deref(), Some("main"));
+        assert_eq!(o.column, "id");
+        assert_eq!(o.instance, None);
+        assert_eq!(o.clone().with_instance("").instance, None);
+        assert_eq!(o.clone().with_instance("u").instance.as_deref(), Some("u"));
+
+        // Serialized for the renderer: `origin` is always present (null without one).
+        let col = ResultColumn {
+            name: "user_id".into(),
+            data_type: "int4".into(),
+            kind: ValueKind::Int,
+            nullable: None,
+            table: Some("users".into()),
+            origin: Some(o),
+        };
+        let json = serde_json::to_value(&col).unwrap();
+        assert_eq!(
+            json["origin"],
+            serde_json::json!({
+                "table": {"schema": "main", "name": "users"}, "column": "id", "instance": null
+            })
+        );
+        // Older payloads without an instance still read.
+        let back: ColumnOrigin = serde_json::from_value(serde_json::json!({
+            "table": {"schema": null, "name": "t"}, "column": "a"
+        }))
+        .unwrap();
+        assert_eq!(back.instance, None);
+        let back: ResultColumn = serde_json::from_value(serde_json::json!({
+            "name": "a", "dataType": "int", "kind": "int", "nullable": null, "table": null
+        }))
+        .unwrap();
+        assert_eq!(back.origin, None);
     }
 
     #[test]

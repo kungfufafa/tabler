@@ -1,9 +1,25 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { createElement } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { actions } from "@/features/palette/actions";
 import { TABLE_COLUMNS, tableMetaFor } from "@/lib/ipc/mock/fixtures";
+import { isMac } from "@/lib/keys/combo";
+import { KeyboardProvider } from "@/lib/keys/useShortcuts";
+import { getPrefs, resetPrefsForTests, setPref } from "@/stores/prefs";
 import { FilterBar } from "./FilterBar";
-import { parseFilterValue, RAW_SQL_COLUMN, splitList, toFilterGroup } from "./filters";
+import {
+  ANY_COLUMN,
+  defaultFilterRow,
+  isFilterOp,
+  joinList,
+  opLabel,
+  opsFor,
+  parseFilterValue,
+  RAW_SQL_COLUMN,
+  splitList,
+  toFilterGroup,
+  whereOfPageSql,
+} from "./filters";
 
 const users = tableMetaFor("postgres", "public", "users")!.columns;
 const row = (
@@ -28,6 +44,17 @@ describe("filters", () => {
   it("splits IN lists with quotes", () => {
     expect(splitList(`1, 2,"a, b", 'c'`)).toEqual(["1", "2", "a, b", "c"]);
     expect(splitList("")).toEqual([]);
+    expect(splitList(" a ,, b ,")).toEqual(["a", "b"]);
+    // Quoted values keep their spaces, may be empty, and double a quote to contain it.
+    expect(splitList(`" a ", "", "say ""hi""", 'it''s'`)).toEqual([" a ", "", 'say "hi"', "it's"]);
+  });
+  it("joins IN lists that split back into the same values", () => {
+    const values = ["1", "Smith, J", " padded ", "", 'say "hi"', "it's", "plain text"];
+    expect(joinList(["1", "two"])).toBe("1, two");
+    expect(joinList(values)).toBe(
+      '1, "Smith, J", " padded ", "", "say ""hi""", "it\'s", plain text',
+    );
+    expect(splitList(joinList(values))).toEqual(values);
   });
   it("builds a filter group and skips empty/disabled rows", () => {
     expect(Object.keys(TABLE_COLUMNS)).toContain("users");
@@ -126,5 +153,465 @@ describe("filters", () => {
     });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onApply).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the WHERE condition back from a page's SELECT", () => {
+    expect(
+      whereOfPageSql(
+        'SELECT "id"::text AS "id"\nFROM "public"."users"\nWHERE ("status" = \'a\' AND "age" >= 3) OR "name"::text LIKE \'%x%\' ORDER BY "name" DESC NULLS LAST, "id" ASC\nLIMIT 200 OFFSET 400',
+      ),
+    ).toBe(`("status" = 'a' AND "age" >= 3) OR "name"::text LIKE '%x%'`);
+    // MySQL's nulls flag, SQLite's rowid order, no ORDER BY at all.
+    expect(
+      whereOfPageSql(
+        "SELECT `id`\nFROM `users`\nWHERE `id` IN (1, 2) ORDER BY (`name` IS NULL) ASC, `name` ASC\nLIMIT 10 OFFSET 0",
+      ),
+    ).toBe("`id` IN (1, 2)");
+    expect(
+      whereOfPageSql('SELECT *\nFROM "t"\nWHERE (x = 1) ORDER BY rowid ASC\nLIMIT 1 OFFSET 0'),
+    ).toBe("(x = 1)");
+    expect(whereOfPageSql('SELECT *\nFROM "t"\nWHERE "a" = 1\nLIMIT 1 OFFSET 0')).toBe('"a" = 1');
+    // A raw condition that says ORDER BY keeps it (only the generated clause goes).
+    expect(
+      whereOfPageSql(
+        'SELECT *\nFROM "t"\nWHERE (id IN (SELECT id FROM u ORDER BY id LIMIT 3))\nLIMIT 1 OFFSET 0',
+      ),
+    ).toBe("(id IN (SELECT id FROM u ORDER BY id LIMIT 3))");
+    expect(whereOfPageSql('SELECT * FROM "t" ORDER BY "id" ASC LIMIT 1 OFFSET 0')).toBeNull();
+    expect(whereOfPageSql(null)).toBeNull();
+  });
+
+  describe("FilterBar layout", () => {
+    function mount(props: { dirty?: boolean; sql?: string } = {}) {
+      const handlers = { onChange: vi.fn(), onApply: vi.fn(), onClear: vi.fn(), onExport: vi.fn() };
+      const rows = [
+        { ...row("name", "eq", "Ann"), id: "r1" },
+        { ...row("nickname", "isNull"), id: "r2" },
+      ];
+      render(
+        createElement(FilterBar, {
+          columns: users,
+          rows,
+          conjunction: "and",
+          dirty: false,
+          ...handlers,
+          ...props,
+        }),
+      );
+      return { ...handlers, rows };
+    }
+
+    it("each row has Apply (applies all), − and +; the strip has Clear and Apply All", () => {
+      const { onApply, onChange, onClear, onExport, rows } = mount();
+      const applies = screen.getAllByRole("button", { name: "Apply" });
+      expect(applies).toHaveLength(2);
+      fireEvent.click(applies[1]!);
+      fireEvent.click(screen.getByRole("button", { name: "Apply All" }));
+      expect(onApply).toHaveBeenCalledTimes(2);
+
+      fireEvent.click(screen.getAllByRole("button", { name: "Remove filter" })[0]!);
+      expect(onChange).toHaveBeenLastCalledWith([rows[1]], "and");
+      // + adds a blank condition on the same column right under its row.
+      fireEvent.click(screen.getAllByRole("button", { name: "Add filter" })[0]!);
+      const [next] = onChange.mock.calls.at(-1)!;
+      expect(next).toHaveLength(3);
+      expect(next[1]).toMatchObject({ column: "name", op: "eq", value: "", enabled: true });
+      expect(next[2]).toBe(rows[1]);
+
+      // AND / OR joins the conditions (shown from the second one on).
+      fireEvent.click(screen.getByRole("button", { name: "AND" }));
+      expect(onChange).toHaveBeenLastCalledWith(rows, "or");
+
+      fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+      expect(onClear).toHaveBeenCalledOnce();
+      fireEvent.click(screen.getByRole("button", { name: "Export" }));
+      expect(onExport).toHaveBeenCalledOnce();
+    });
+
+    it("SQL shows the applied WHERE from the page's SELECT", async () => {
+      mount({
+        dirty: true,
+        sql: 'SELECT *\nFROM "public"."users"\nWHERE "name" = \'Ann\' ORDER BY "id" ASC\nLIMIT 200 OFFSET 0',
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Show the filter's SQL" }));
+      expect(await screen.findByTestId("filter-where")).toHaveTextContent(`WHERE "name" = 'Ann'`);
+      expect(screen.getByText(/not applied yet/)).toBeInTheDocument();
+    });
+
+    it("SQL says so when nothing is applied", async () => {
+      mount({ sql: 'SELECT * FROM "users" LIMIT 200 OFFSET 0' });
+      fireEvent.click(screen.getByRole("button", { name: "Show the filter's SQL" }));
+      expect(await screen.findByText("No filter is applied.")).toBeInTheDocument();
+    });
+  });
+
+  describe("FilterBar keys", () => {
+    const mod = { [isMac ? "metaKey" : "ctrlKey"]: true };
+    function mount() {
+      const props = { onApply: vi.fn(), onChange: vi.fn(), onClear: vi.fn(), onClose: vi.fn() };
+      const rows = [
+        { ...row("name", "eq", "Ann"), id: "r1" },
+        { ...row("id", "gt", "5"), id: "r2" },
+      ];
+      // The bar's ⌘↩ / ⌘I / ⇧⌘I are keymap shortcuts ("filter" scope), dispatched by the provider.
+      render(
+        createElement(
+          KeyboardProvider,
+          null,
+          createElement(FilterBar, {
+            columns: users,
+            rows,
+            conjunction: "and",
+            dirty: true,
+            ...props,
+          }),
+        ),
+      );
+      const values = screen.getAllByRole("textbox", { name: "Filter value" });
+      return { ...props, rows, values };
+    }
+
+    it("⌘↩ applies from any control, even a select that opens on ↩", () => {
+      const { onApply } = mount();
+      const select = screen.getAllByRole("combobox", { name: "Filter column" })[1]!;
+      act(() => select.focus());
+      fireEvent.keyDown(select, { key: "Enter", code: "Enter", ...mod });
+      expect(onApply).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    });
+
+    it("⌘I duplicates the focused row, ⇧⌘I removes it", () => {
+      const { onChange, rows, values } = mount();
+      act(() => values[0]!.focus());
+      fireEvent.keyDown(values[0]!, { key: "i", code: "KeyI", ...mod });
+      const [next] = onChange.mock.calls.at(-1)!;
+      expect(next).toHaveLength(3);
+      expect(next[1]).toEqual({ ...rows[0], id: expect.any(String) });
+      expect(next[1].id).not.toBe("r1");
+      act(() => values[1]!.focus());
+      fireEvent.keyDown(values[1]!, { key: "I", code: "KeyI", ...mod, shiftKey: true });
+      expect(onChange.mock.calls.at(-1)![0]).toEqual([rows[0]]);
+    });
+
+    it("handles its keys only while it has the focus, ahead of the global ⇧⌘I", async () => {
+      const { onChange, rows, values } = mount();
+      const toggle = vi.fn();
+      const unregister = actions.register("ui.toggle-inspector", toggle);
+      expect(actions.has("filter.remove")).toBe(false);
+      act(() => values[1]!.focus());
+      expect(actions.has("filter.remove")).toBe(true);
+      fireEvent.keyDown(values[1]!, { key: "I", code: "KeyI", ...mod, shiftKey: true });
+      expect(onChange.mock.calls.at(-1)![0]).toEqual([rows[0]]);
+      expect(toggle).not.toHaveBeenCalled();
+      act(() => values[1]!.blur());
+      expect(actions.has("filter.remove")).toBe(false);
+      unregister();
+    });
+
+    it("⎋ closes the bar unless something else handled it", () => {
+      const { onClose, values } = mount();
+      const event = new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      });
+      event.preventDefault();
+      values[0]!.dispatchEvent(event);
+      expect(onClose).not.toHaveBeenCalled();
+      fireEvent.keyDown(values[0]!, { key: "Escape" });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("operators", () => {
+    const labels = (ops: ReturnType<typeof opsFor>, d: Parameters<typeof opLabel>[1]) =>
+      ops.map((o) => opLabel(o.op, d));
+    it("lists TablePlus's operators in order, ILIKE and JSON ones on PostgreSQL only", () => {
+      expect(labels(opsFor("postgres", { kind: "text" }), "postgres")).toEqual([
+        "=",
+        "<>",
+        "<",
+        ">",
+        "<=",
+        ">=",
+        "IN",
+        "NOT IN",
+        "IS NULL",
+        "IS NOT NULL",
+        "BETWEEN",
+        "NOT BETWEEN",
+        "Contains",
+        "Not contains",
+        "Contains – Case insensitive",
+        "Not contains – Case insensitive",
+        "Has prefix",
+        "Has suffix",
+        "Has prefix – Case insensitive",
+        "Has suffix – Case insensitive",
+        "LIKE",
+        "NOT LIKE",
+        "ILIKE",
+      ]);
+      const json = labels(opsFor("postgres", { kind: "json" }), "postgres");
+      expect(json.slice(-2)).toEqual(["JSON contains", "JSON not contains"]);
+      expect(labels(opsFor("postgres", "any"), "postgres")).not.toContain("JSON contains");
+      const my = labels(opsFor("mysql", { kind: "json" }), "mysql");
+      expect(my).not.toContain("ILIKE");
+      expect(my).not.toContain("JSON contains");
+      expect(my).toContain("Contains – Case sensitive");
+      expect(my).toContain("Has suffix – Case sensitive");
+      expect(labels(opsFor("sqlite", { kind: "text" }), "sqlite")).toContain(
+        "Has prefix – Case insensitive",
+      );
+      expect(isFilterOp("hasSuffixCase")).toBe(true);
+      expect(isFilterOp("startsWith")).toBe(false);
+    });
+
+    it("sends pattern values as text and JSON values as JSON", () => {
+      const g = toFilterGroup(
+        [
+          row("id", "contains", "4"),
+          row("name", "hasPrefixCase", "an"),
+          row("id", "notBetween", "1", "9"),
+          row("name", "ilike", "a%"),
+          row("settings", "jsonContains", '{"a":1}'),
+        ],
+        users,
+        "and",
+      );
+      expect(g?.items).toEqual([
+        { kind: "condition", column: "id", op: "contains", values: [{ t: "text", v: "4" }] },
+        {
+          kind: "condition",
+          column: "name",
+          op: "hasPrefixCase",
+          values: [{ t: "text", v: "an" }],
+        },
+        {
+          kind: "condition",
+          column: "id",
+          op: "notBetween",
+          values: [
+            { t: "int", v: 1 },
+            { t: "int", v: 9 },
+          ],
+        },
+        { kind: "condition", column: "name", op: "ilike", values: [{ t: "text", v: "a%" }] },
+        ...(users.some((c) => c.name === "settings")
+          ? [
+              {
+                kind: "condition",
+                column: "settings",
+                op: "jsonContains",
+                values: [{ t: "json", v: '{"a":1}' }],
+              },
+            ]
+          : []),
+      ]);
+    });
+
+    it("turns Any column rows into anyColumn nodes with text values", () => {
+      const any = (op: Parameters<typeof row>[1], value = "", value2 = "") => ({
+        ...row(ANY_COLUMN, op, value, value2),
+        id: `any:${op}`,
+      });
+      expect(
+        toFilterGroup(
+          [any("eq", "42"), any("isNull"), any("in", "a, 2"), any("contains", "")],
+          [],
+          "or",
+        ),
+      ).toEqual({
+        conjunction: "or",
+        items: [
+          { kind: "anyColumn", op: "eq", values: [{ t: "text", v: "42" }] },
+          { kind: "anyColumn", op: "isNull", values: [] },
+          {
+            kind: "anyColumn",
+            op: "in",
+            values: [
+              { t: "text", v: "a" },
+              { t: "text", v: "2" },
+            ],
+          },
+        ],
+      });
+    });
+
+    it("starts new rows from the ⚙ defaults", () => {
+      const pk = users.find((c) => c.isPk)!.name;
+      expect(defaultFilterRow(users, { column: "primaryKey", operator: "eq" })).toMatchObject({
+        column: pk,
+        op: "eq",
+        value: "",
+        enabled: true,
+      });
+      expect(defaultFilterRow(users, { column: "anyColumn", operator: "contains" })).toMatchObject({
+        column: ANY_COLUMN,
+        op: "contains",
+      });
+      expect(defaultFilterRow(users, { column: "rawSql", operator: "eq" }).column).toBe(
+        RAW_SQL_COLUMN,
+      );
+      // No primary key: the first column.
+      const noPk = users.map((c) => ({ ...c, isPk: false }));
+      expect(defaultFilterRow(noPk, { column: "primaryKey", operator: "eq" }).column).toBe(
+        users[0]!.name,
+      );
+    });
+  });
+
+  describe("FilterBar Apply All, ⚙ and new keys", () => {
+    const mod = { [isMac ? "metaKey" : "ctrlKey"]: true };
+    beforeAll(() => {
+      // Radix Select scrolls the picked option into view; jsdom has no layout.
+      Element.prototype.scrollIntoView ??= () => {};
+      Element.prototype.hasPointerCapture ??= () => false;
+    });
+    function mount(props: { dialect?: "postgres" | "mysql" | "sqlite" } = {}) {
+      const handlers = { onApply: vi.fn(), onChange: vi.fn(), onClear: vi.fn(), onClose: vi.fn() };
+      const rows = [
+        { ...row("name", "eq", "Ann"), id: "r1" },
+        { ...row("id", "gt", "5"), id: "r2" },
+        { ...row("email", "contains", "x"), id: "r3" },
+      ];
+      render(
+        createElement(
+          KeyboardProvider,
+          null,
+          createElement(FilterBar, {
+            columns: users,
+            rows,
+            conjunction: "and",
+            dirty: true,
+            ...props,
+            ...handlers,
+          }),
+        ),
+      );
+      const values = screen.getAllByRole("textbox", { name: "Filter value" });
+      return { ...handlers, rows, values };
+    }
+
+    it("Apply All ▾ applies with AND (⌘↩) or OR (⇧⌘↩)", async () => {
+      const { onApply, values } = mount();
+      fireEvent.click(screen.getByRole("button", { name: "Apply All" }));
+      expect(onApply).toHaveBeenLastCalledWith("and");
+      fireEvent.pointerDown(screen.getByRole("button", { name: "Apply All options" }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      const menu = await screen.findByRole("menu");
+      fireEvent.click(
+        within(menu).getByRole("menuitem", { name: /Apply All Checked Filters with OR/ }),
+      );
+      expect(onApply).toHaveBeenLastCalledWith("or");
+      act(() => values[0]!.focus());
+      fireEvent.keyDown(values[0]!, { key: "Enter", code: "Enter", ...mod });
+      expect(onApply).toHaveBeenLastCalledWith("and");
+      fireEvent.keyDown(values[0]!, { key: "Enter", code: "Enter", ...mod, shiftKey: true });
+      expect(onApply).toHaveBeenLastCalledWith("or");
+      // ↩ in a value applies with the bar's own conjunction.
+      fireEvent.keyDown(values[0]!, { key: "Enter", code: "Enter" });
+      expect(onApply).toHaveBeenLastCalledWith();
+    });
+
+    it("⌘↑ / ⌘↓ move between rows, ⌘B checks / unchecks the focused one", () => {
+      const { onChange, rows, values } = mount();
+      act(() => values[0]!.focus());
+      fireEvent.keyDown(values[0]!, { key: "ArrowDown", code: "ArrowDown", ...mod });
+      expect(document.activeElement).toBe(values[1]);
+      fireEvent.keyDown(values[1]!, { key: "ArrowDown", code: "ArrowDown", ...mod });
+      expect(document.activeElement).toBe(values[2]);
+      // The last row stays put.
+      fireEvent.keyDown(values[2]!, { key: "ArrowDown", code: "ArrowDown", ...mod });
+      expect(document.activeElement).toBe(values[2]);
+      fireEvent.keyDown(values[2]!, { key: "ArrowUp", code: "ArrowUp", ...mod });
+      expect(document.activeElement).toBe(values[1]);
+      // From a column select, the next row's column select.
+      const columnsSel = screen.getAllByRole("combobox", { name: "Filter column" });
+      act(() => columnsSel[0]!.focus());
+      fireEvent.keyDown(columnsSel[0]!, { key: "ArrowDown", code: "ArrowDown", ...mod });
+      expect(document.activeElement).toBe(columnsSel[1]);
+      fireEvent.keyDown(columnsSel[1]!, { key: "b", code: "KeyB", ...mod });
+      expect(onChange).toHaveBeenLastCalledWith(
+        [rows[0], { ...rows[1], enabled: false }, rows[2]],
+        "and",
+      );
+    });
+
+    it("⌘← / ⌘→ open the focused row's column / operator list", async () => {
+      const { values } = mount();
+      act(() => values[1]!.focus());
+      fireEvent.keyDown(values[1]!, { key: "ArrowLeft", code: "ArrowLeft", ...mod });
+      const columns = await screen.findByRole("listbox");
+      expect(within(columns).getByRole("option", { name: /Any column/ })).toBeInTheDocument();
+      expect(within(columns).getByRole("option", { name: /Raw SQL/ })).toBeInTheDocument();
+      fireEvent.keyDown(columns, { key: "Escape" });
+      act(() => values[1]!.focus());
+      fireEvent.keyDown(values[1]!, { key: "ArrowRight", code: "ArrowRight", ...mod });
+      const ops = await screen.findByRole("listbox");
+      expect(within(ops).getByRole("option", { name: "NOT BETWEEN" })).toBeInTheDocument();
+      expect(within(ops).getByRole("option", { name: "ILIKE" })).toBeInTheDocument();
+    });
+
+    it("labels the case variants per driver", () => {
+      mount({ dialect: "mysql" });
+      const triggers = screen.getAllByRole("combobox", { name: "Filter operator" });
+      expect(triggers[2]).toHaveTextContent("Contains");
+    });
+
+    it("⚙ sets the defaults new rows start from", async () => {
+      resetPrefsForTests();
+      const { onChange } = mount();
+      fireEvent.pointerDown(screen.getByRole("button", { name: "Filter settings" }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      const menu = await screen.findByRole("menu");
+      expect(within(menu).getByText("Default filter column")).toBeInTheDocument();
+      expect(
+        within(menu).getByRole("menuitemradio", { name: "Primary key (if exist)" }),
+      ).toHaveAttribute("aria-checked", "true");
+      fireEvent.click(within(menu).getByRole("menuitemradio", { name: "Any column" }));
+      expect(getPrefs().filterDefaultColumn).toBe("anyColumn");
+      act(() => setPref("filterDefaultOperator", "contains"));
+      act(() => setPref("filterDefaultState", "hide"));
+      expect(getPrefs().filterDefaultState).toBe("hide");
+      fireEvent.click(screen.getAllByRole("button", { name: "Add filter" })[2]!);
+      // + keeps the row's column, with the default operator.
+      expect(onChange.mock.calls.at(-1)![0][3]).toMatchObject({ column: "email", op: "contains" });
+      resetPrefsForTests();
+    });
+
+    it("a column change resets an operator the new column does not offer", async () => {
+      const onChange = vi.fn();
+      const rows = [{ ...row("settings", "jsonContains", '{"a":1}'), id: "r1" }];
+      render(
+        createElement(
+          KeyboardProvider,
+          null,
+          createElement(FilterBar, {
+            columns: users,
+            rows,
+            conjunction: "and",
+            dirty: true,
+            dialect: "postgres",
+            onChange,
+            onApply: vi.fn(),
+            onClear: vi.fn(),
+          }),
+        ),
+      );
+      expect(screen.getByRole("combobox", { name: "Filter operator" })).toHaveTextContent(
+        "JSON contains",
+      );
+      const value = screen.getByRole("textbox", { name: "Filter value" });
+      act(() => value.focus());
+      fireEvent.keyDown(value, { key: "ArrowLeft", code: "ArrowLeft", ...mod });
+      const list = await screen.findByRole("listbox");
+      fireEvent.click(within(list).getByRole("option", { name: /^email/ }));
+      expect(onChange).toHaveBeenLastCalledWith([{ ...rows[0], column: "email", op: "eq" }], "and");
+    });
   });
 });

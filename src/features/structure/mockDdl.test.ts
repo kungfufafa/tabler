@@ -49,6 +49,7 @@ describe("mock preview_ddl", () => {
           comment: "url part",
           collation: null,
           unsigned: false,
+          onUpdate: null,
         },
         after: "email",
       },
@@ -68,7 +69,7 @@ describe("mock preview_ddl", () => {
       { op: "alterColumnType", table: t, name: "label", newType: "VARCHAR(40)", using: null },
     ]);
     expect(plan.transactional).toBe(false);
-    expect(plan.warnings[0]).toMatch(/rebuilt .* CHECK constraints/);
+    expect(plan.warnings[0]).toMatch(/rebuilt from introspected metadata/);
     expect(plan.statements[0]).toBe("PRAGMA foreign_keys = OFF");
     expect(plan.statements[1]).toBe("BEGIN");
     expect(plan.statements[2]).toContain('CREATE TABLE "main"."tags__tabler_rebuild"');
@@ -119,6 +120,7 @@ describe("mock apply_ddl", () => {
           comment: null,
           collation: null,
           unsigned: false,
+          onUpdate: null,
         },
         after: null,
       },
@@ -131,6 +133,7 @@ describe("mock apply_ddl", () => {
           unique: true,
           method: null,
           predicate: null,
+          comment: null,
         },
       },
     ]);
@@ -247,6 +250,7 @@ describe("mock apply_ddl", () => {
             comment: null,
             collation: null,
             unsigned: false,
+            onUpdate: null,
           },
         ],
         primaryKey: ["id"],
@@ -280,6 +284,7 @@ describe("mock apply_ddl", () => {
             comment: null,
             collation: null,
             unsigned: false,
+            onUpdate: null,
           },
         ],
         primaryKey: [],
@@ -356,5 +361,80 @@ describe("mock get_table_ddl", () => {
     const myDdl = await ipc.ddl.tableDdl(my, { schema: "tabler_dev", name: "tags" });
     expect(myDdl).toContain("CREATE TABLE `tabler_dev`.`tags`");
     expect(myDdl).toContain("ENGINE=InnoDB");
+  });
+});
+
+describe("mock checks, triggers, table options and choices", () => {
+  it("applies CHECK and trigger changes to the catalog", async () => {
+    const c = await connect("p-local-pg");
+    const before = await ipc.schema.table(c, PG_USERS);
+    expect(before.checks).toEqual([
+      { name: "users_balance_check", expression: "balance >= 0", columns: ["balance"] },
+    ]);
+    const ops: DdlOp[] = [
+      { op: "dropCheck", table: PG_USERS, name: "users_balance_check" },
+      { op: "addCheck", table: PG_USERS, check: { name: "score_ok", expression: "score < 10" } },
+      {
+        op: "createTrigger",
+        table: PG_USERS,
+        name: "users_audit",
+        sql: "CREATE TRIGGER users_audit AFTER DELETE ON users FOR EACH ROW EXECUTE FUNCTION audit();",
+      },
+    ];
+    const plan = await ipc.ddl.preview(c, PG_USERS, ops);
+    expect(plan.statements).toEqual([
+      'ALTER TABLE "public"."users" DROP CONSTRAINT "users_balance_check"',
+      'ALTER TABLE "public"."users" ADD CONSTRAINT "score_ok" CHECK (score < 10)',
+      "CREATE TRIGGER users_audit AFTER DELETE ON users FOR EACH ROW EXECUTE FUNCTION audit()",
+    ]);
+    expect((await ipc.ddl.apply(c, PG_USERS, ops)).error).toBeNull();
+    const after = await ipc.schema.table(c, PG_USERS);
+    expect(after.checks).toEqual([
+      { name: "score_ok", expression: "score < 10", columns: ["score"] },
+    ]);
+    expect(after.triggers.map((t) => [t.name, t.timing, t.events])).toEqual([
+      ["users_audit", "AFTER", ["DELETE"]],
+    ]);
+  });
+
+  it("MySQL: options and ON UPDATE; the pickers' choices per driver", async () => {
+    const c = await connect("p-shop-mysql");
+    const t = { schema: "tabler_dev", name: "users" };
+    const meta = await ipc.schema.table(c, t);
+    expect(meta.options).toMatchObject({ engine: "InnoDB", charset: "utf8mb4" });
+    const ops: DdlOp[] = [
+      {
+        op: "alterTableOptions",
+        table: t,
+        options: {
+          engine: null,
+          charset: "latin1",
+          collation: null,
+          autoIncrement: 500,
+          rowFormat: null,
+        },
+      },
+      { op: "alterColumnOnUpdate", table: t, name: "last_login", onUpdate: "CURRENT_TIMESTAMP" },
+    ];
+    const plan = await ipc.ddl.preview(c, t, ops);
+    expect(plan.statements[0]).toBe(
+      "ALTER TABLE `tabler_dev`.`users` CONVERT TO CHARACTER SET latin1, AUTO_INCREMENT = 500",
+    );
+    expect(plan.statements[1]).toMatch(
+      /MODIFY COLUMN `last_login` .* ON UPDATE CURRENT_TIMESTAMP$/,
+    );
+    await ipc.ddl.apply(c, t, ops);
+    const after = await ipc.schema.table(c, t);
+    expect(after.options).toMatchObject({ charset: "latin1", autoIncrement: 500 });
+    expect(after.columns.find((x) => x.name === "last_login")?.extra).toBe(
+      "on update CURRENT_TIMESTAMP",
+    );
+
+    expect((await ipc.schema.structureChoices(c)).engines).toContain("InnoDB");
+    const pg = await connect("p-local-pg");
+    expect((await ipc.schema.structureChoices(pg)).userTypes).toContainEqual({
+      name: "user_role",
+      kind: "enum",
+    });
   });
 });

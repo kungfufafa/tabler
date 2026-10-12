@@ -31,6 +31,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { guardExecution } from "@/features/safety/guard";
 import { ipc, type DdlOp, type Dialect, type TableRef, type TableSummary } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { useTabsStore } from "@/stores/tabs";
@@ -43,9 +44,9 @@ import {
   type ColumnDraft,
 } from "./createTable";
 import { invalidateSchema } from "./invalidate";
-import { sameRef } from "./model";
 import { Field, IconAction } from "./parts";
 import { errorInfo, payloadInfo, type DdlErrorInfo } from "./previewState";
+import { followRename, tabsOf } from "./rename";
 import { SqlBlock } from "./SqlBlock";
 import { useStructureStore } from "./store";
 import {
@@ -66,11 +67,19 @@ export type TableDialogState =
   | { kind: "truncate"; table: TableSummary }
   | { kind: "drop"; table: TableSummary };
 
-type RunResult = { ok: true; durationMs: number } | { ok: false; error: DdlErrorInfo };
+/** `error` null: the safe-mode check was declined (nothing ran). */
+type RunResult = { ok: true; durationMs: number } | { ok: false; error: DdlErrorInfo | null };
 
-/** Applies one op; the DDL result's error and a rejected call both come back as `error`. */
+/**
+ * Applies one op after the connection's safe-mode check (on the statements the op plans to);
+ * the DDL result's error and a rejected call both come back as `error`, a declined check as
+ * `cancelled`.
+ */
 async function runOne(connectionId: string, table: TableRef | null, op: DdlOp): Promise<RunResult> {
   try {
+    const plan = await ipc.ddl.preview(connectionId, table, [op]);
+    if (!(await guardExecution(connectionId, { kind: "commit", statements: plan.statements })))
+      return { ok: false, error: null };
     const r = await ipc.ddl.apply(connectionId, table, [op]);
     return r.error
       ? { ok: false, error: payloadInfo(r.error) }
@@ -78,16 +87,6 @@ async function runOne(connectionId: string, table: TableRef | null, op: DdlOp): 
   } catch (e) {
     return { ok: false, error: errorInfo(e) };
   }
-}
-
-/** Tabs (data and structure) showing `table` on `connectionId`. */
-function tabsOf(connectionId: string, table: TableRef): string[] {
-  return useTabsStore
-    .getState()
-    .tabs.filter(
-      (t) => t.kind !== "query" && t.connectionId === connectionId && sameRef(t.table, table),
-    )
-    .map((t) => t.id);
 }
 
 function qualified(t: TableRef): string {
@@ -545,16 +544,7 @@ export function RenameTableDialog({
       return;
     }
     // Open tabs follow the table to its new name, and so do their staged structure edits.
-    const ids = tabsOf(connectionId, ref);
-    const renamed: TableRef = { schema: ref.schema, name: newName };
-    useStructureStore.getState().retarget(ids, ref, renamed);
-    useTabsStore.setState((s) => ({
-      tabs: s.tabs.map((t) =>
-        ids.includes(t.id) && t.kind !== "query" ? { ...t, table: renamed, title: newName } : t,
-      ),
-    }));
-    qc.removeQueries({ queryKey: ["table", connectionId, ref.schema ?? "", ref.name] });
-    invalidateSchema(qc, connectionId, renamed);
+    followRename(qc, connectionId, ref, newName);
     toast.success(`Renamed ${table.name} to ${newName}`);
     onOpenChange(false);
   };

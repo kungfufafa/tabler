@@ -3,6 +3,9 @@ import { getQueryTab, updateQueryTab, useQueryTabsStore } from "@/stores/queryTa
 import { dropResults } from "@/stores/resultData";
 import { useTabsStore } from "@/stores/tabs";
 import { dropEditor, editorTabIds } from "./editorStates";
+import { dropRememberedParams } from "./paramsPrompt";
+import { baseTabId, dropSplit } from "./split";
+import { dropSubmissions } from "./submissions";
 
 /** Stops whatever the tab is executing (its tab went away). */
 function stopRunning(tabId: string, connectionId: string): void {
@@ -42,6 +45,16 @@ export function installQueryTabLifecycle(): void {
     for (const t of s.closed) if (t.kind === "query") keep.add(t.id);
     for (const id of Object.keys(useQueryTabsStore.getState().slices))
       if (!keep.has(id)) useQueryTabsStore.getState().remove(id);
-    for (const id of editorTabIds()) if (!keep.has(id)) dropEditor(id);
+    // A split pane (`tabId::split`) lives as long as its tab.
+    for (const key of editorTabIds()) {
+      const id = baseTabId(key);
+      if (keep.has(id)) continue;
+      dropEditor(key);
+      if (key === id) {
+        dropRememberedParams(id);
+        dropSplit(id);
+        dropSubmissions(id);
+      }
+    }
   });
 }

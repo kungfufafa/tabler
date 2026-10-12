@@ -7,9 +7,10 @@ use tokio_postgres::Client;
 
 use super::decode::{kind_from_pg_type, split_list};
 use crate::error::AppError;
+use crate::sqlgen::ddl::check_expression;
 use crate::types::schema::{
-    ColumnMeta, CompletionMetadata, DatabaseInfo, ForeignKeyMeta, IndexMeta, SchemaInfo, TableKind,
-    TableMeta, TableRef, TableSummary, TriggerMeta, ValueKind,
+    CheckMeta, ColumnMeta, CompletionMetadata, DatabaseInfo, ForeignKeyMeta, IndexMeta, SchemaInfo,
+    TableKind, TableMeta, TableRef, TableSummary, TriggerMeta, ValueKind,
 };
 
 const USER_SCHEMA_FILTER: &str = "n.nspname NOT IN ('pg_catalog','information_schema','pg_toast') \
@@ -376,7 +377,8 @@ pub async fn table_meta(client: &Client, table: &TableRef) -> Result<TableMeta, 
                         pg_get_expr(ix.indpred, ix.indrelid)::text, \
                         (SELECT string_agg(pg_get_indexdef(ix.indexrelid, k.ord::int, true), \
                                            E'\\x1f' ORDER BY k.ord) \
-                           FROM unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)) \
+                           FROM unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)), \
+                        obj_description(ix.indexrelid, 'pg_class')::text \
                  FROM pg_index ix \
                  JOIN pg_class i ON i.oid = ix.indexrelid \
                  JOIN pg_class t ON t.oid = ix.indrelid \
@@ -397,6 +399,7 @@ pub async fn table_meta(client: &Client, table: &TableRef) -> Result<TableMeta, 
                 method: row.try_get(3)?,
                 predicate: row.try_get(5)?,
                 definition: row.try_get(4)?,
+                comment: row.try_get(7)?,
             });
         }
     }
@@ -443,6 +446,34 @@ pub async fn table_meta(client: &Client, table: &TableRef) -> Result<TableMeta, 
         }
     }
 
+    // CHECK constraints
+    let mut checks = Vec::new();
+    if matches!(kind, TableKind::Table | TableKind::Partitioned) {
+        let rows = client
+            .query(
+                "SELECT con.conname::text, pg_get_constraintdef(con.oid)::text, \
+                        (SELECT string_agg(a.attname::text, E'\\x1f' ORDER BY k.ord) \
+                           FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
+                           JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum) \
+                 FROM pg_constraint con \
+                 JOIN pg_class c ON c.oid = con.conrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE con.contype = 'c' AND n.nspname = $1 AND c.relname = $2 \
+                 ORDER BY con.conname",
+                params,
+            )
+            .await?;
+        for row in rows {
+            let def: Option<String> = row.try_get(1)?;
+            let cols: Option<String> = row.try_get(2)?;
+            checks.push(CheckMeta {
+                name: row.try_get(0)?,
+                expression: check_expression(def.as_deref().unwrap_or("")),
+                columns: split_list(cols.as_deref()),
+            });
+        }
+    }
+
     // Triggers (views can have INSTEAD OF triggers, so always query)
     let mut triggers = Vec::new();
     {
@@ -481,6 +512,8 @@ pub async fn table_meta(client: &Client, table: &TableRef) -> Result<TableMeta, 
         comment,
         row_estimate,
         ddl: None,
+        checks,
+        options: None,
     })
 }
 

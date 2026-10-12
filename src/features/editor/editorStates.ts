@@ -7,15 +7,24 @@ import {
   type TransactionSpec,
 } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
+import { subscribeKeymap } from "@/lib/keys/keymap";
 import { getPrefs } from "@/stores/prefs";
 import { useTabsStore } from "@/stores/tabs";
-import { editorExtensions, type LanguageConfig } from "./cmExtensions";
+import {
+  actionKeymap,
+  actionKeymapConf,
+  editorExtensions,
+  editorPrefsOf,
+  type LanguageConfig,
+} from "./cmExtensions";
 import { dropAnchors, recordDocChanges } from "./docAnchors";
+import { isSplitKey } from "./split";
 
 /**
  * Each query tab keeps one CodeMirror `EditorState` for its whole life, so the document, the undo
  * history, the selection and folds survive tab switches (the view is destroyed when the tab is not
- * shown). While a tab is visible its live `EditorView` is the source of truth.
+ * shown). While a tab is visible its live `EditorView` is the source of truth. States are keyed by
+ * editor key: the tab id, or `splitKey(tabId)` for the second pane of a split editor.
  */
 
 interface Stored {
@@ -28,15 +37,49 @@ const stored = new Map<string, Stored>();
 const views = new Map<string, EditorView>();
 /** Text of the last save / open, to decide whether the tab is dirty. */
 const savedDocs = new Map<string, Text>();
+/** Who wants to hear about a tab's selection / document changes (the editor bar's position). */
+const listeners = new Map<string, Set<() => void>>();
 
-/** Recomputes the tab's dirty flag from its document. */
+/** Calls `fn` whenever the tab's selection or document changes (or its view mounts). */
+export function subscribeEditor(tabId: string, fn: () => void): () => void {
+  let set = listeners.get(tabId);
+  if (!set) listeners.set(tabId, (set = new Set()));
+  set.add(fn);
+  return () => {
+    set.delete(fn);
+    if (set.size === 0 && listeners.get(tabId) === set) listeners.delete(tabId);
+  };
+}
+
+function notify(tabId: string): void {
+  listeners.get(tabId)?.forEach((fn) => fn());
+}
+
+/**
+ * A remapped or removed shortcut (Settings ▸ Shortcuts) applies to the editors already open too:
+ * every live view and every stored state gets the query keymap rebuilt from KEYMAP.
+ */
+function refreshActionKeymaps(): void {
+  const effects = actionKeymapConf.reconfigure(actionKeymap());
+  for (const view of views.values()) view.dispatch({ effects });
+  for (const [key, entry] of stored)
+    if (!views.has(key)) entry.state = entry.state.update({ effects }).state;
+}
+subscribeKeymap(refreshActionKeymaps);
+
+/**
+ * Recomputes the tab's dirty flag from its document. A split pane (`splitKey`) is a scratch
+ * editor: it never makes the tab dirty.
+ */
 export function syncDirty(tabId: string, doc: Text): void {
+  if (isSplitKey(tabId)) return;
   const saved = savedDocs.get(tabId) ?? Text.empty;
   useTabsStore.getState().setDirty(tabId, !doc.eq(saved));
 }
 
 function onUpdate(tabId: string) {
   return (u: ViewUpdate) => {
+    if (u.docChanged || u.selectionSet) notify(tabId);
     if (!u.docChanged) return;
     recordDocChanges(tabId, u.changes.desc);
     syncDirty(tabId, u.state.doc);
@@ -61,7 +104,7 @@ export function createEditorState(
     selection: EditorSelection.cursor(0),
     extensions: editorExtensions({
       language: { upperCaseKeywords: p.editorUppercaseKeywords, ...language },
-      prefs: { fontSize: p.editorFontSize, tabSize: p.editorTabSize, lineWrap: p.editorLineWrap },
+      prefs: editorPrefsOf(p),
       onUpdate: onUpdate(tabId),
     }),
   });
@@ -88,6 +131,7 @@ export function stashEditorState(
 
 export function registerView(tabId: string, view: EditorView): () => void {
   views.set(tabId, view);
+  notify(tabId);
   return () => {
     if (views.get(tabId) === view) views.delete(tabId);
   };
@@ -126,6 +170,7 @@ export function applyToEditor(
   if (!spec) return false;
   const tr = entry.state.update(spec);
   entry.state = tr.state;
+  if (tr.docChanged || tr.selection) notify(tabId);
   if (tr.docChanged) {
     recordDocChanges(tabId, tr.changes.desc);
     syncDirty(tabId, tr.state.doc);
@@ -144,6 +189,7 @@ export function markSaved(tabId: string, text: string | Text): void {
 export function seedEditor(tabId: string, doc: string, language?: LanguageConfig): void {
   stored.set(tabId, { state: createEditorState(tabId, doc, language), scroll: null });
   markSaved(tabId, doc);
+  notify(tabId);
 }
 
 /** Forgets a tab's editor (it was closed for good). */

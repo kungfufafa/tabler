@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use mysql_async::prelude::Queryable;
 use mysql_async::{
-    Conn, DriverError, Error as MyError, IoError, Opts, OptsBuilder, Pool, PoolConstraints,
-    PoolOpts, Row, SslOpts,
+    ClientIdentity, Conn, DriverError, Error as MyError, IoError, Opts, OptsBuilder, Pool,
+    PoolConstraints, PoolOpts, Row, SslOpts,
 };
 
 use super::decode::text_of;
@@ -64,7 +64,44 @@ fn setup_statements(profile: &ConnectionProfile) -> Vec<String> {
     out
 }
 
-fn ssl_opts(target: &ConnectTarget<'_>) -> Option<SslOpts> {
+/// The profile's TLS client certificate (Key… / Cert…), read by the driver at connect. Both
+/// empty: none; only one of them: an error. The files must exist (PEM or DER, key unencrypted).
+fn client_identity(profile: &ConnectionProfile) -> Result<Option<ClientIdentity>, AppError> {
+    let path = |p: &Option<String>| {
+        p.as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(crate::tunnel::expand_tilde)
+    };
+    let (key, cert) = match (
+        path(&profile.options.ssl_key_path),
+        path(&profile.options.ssl_cert_path),
+    ) {
+        (None, None) => return Ok(None),
+        (Some(k), Some(c)) => (k, c),
+        (Some(_), None) => {
+            return Err(AppError::InvalidInput(
+                "SSL: choose the client certificate (Cert…) that goes with the key".into(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(AppError::InvalidInput(
+                "SSL: choose the private key (Key…) of the client certificate".into(),
+            ));
+        }
+    };
+    for file in [&key, &cert] {
+        if !file.is_file() {
+            return Err(AppError::Connect(format!(
+                "cannot read {}: no such file",
+                file.display()
+            )));
+        }
+    }
+    Ok(Some(ClientIdentity::new(cert.into(), key.into())))
+}
+
+fn ssl_opts(target: &ConnectTarget<'_>) -> Result<Option<SslOpts>, AppError> {
     let profile = target.profile;
     let roots: Vec<_> = profile
         .ssl_ca_path
@@ -72,26 +109,21 @@ fn ssl_opts(target: &ConnectTarget<'_>) -> Option<SslOpts> {
         .filter(|p| !p.trim().is_empty())
         .map(|p| PathBuf::from(p).into())
         .collect();
-    match profile.ssl {
-        SslMode::Disable => None,
+    let opts = match profile.ssl {
+        SslMode::Disable => return Ok(None),
         // Encrypt without authenticating the server (self-signed certs are common).
-        SslMode::Prefer | SslMode::Require => Some(
-            SslOpts::default()
-                .with_danger_accept_invalid_certs(true)
-                .with_danger_skip_domain_validation(true),
-        ),
-        SslMode::VerifyCa => Some(
-            SslOpts::default()
-                .with_root_certs(roots)
-                .with_danger_skip_domain_validation(true),
-        ),
+        SslMode::Prefer | SslMode::Require => SslOpts::default()
+            .with_danger_accept_invalid_certs(true)
+            .with_danger_skip_domain_validation(true),
+        SslMode::VerifyCa => SslOpts::default()
+            .with_root_certs(roots)
+            .with_danger_skip_domain_validation(true),
         // Through an SSH tunnel the TCP host is 127.0.0.1; verify against the profile host.
-        SslMode::VerifyFull => Some(
-            SslOpts::default()
-                .with_root_certs(roots)
-                .with_danger_tls_hostname_override(Some(target.tls_host())),
-        ),
-    }
+        SslMode::VerifyFull => SslOpts::default()
+            .with_root_certs(roots)
+            .with_danger_tls_hostname_override(Some(target.tls_host())),
+    };
+    Ok(Some(opts.with_client_identity(client_identity(profile)?)))
 }
 
 fn build_opts(target: &ConnectTarget<'_>, ssl: Option<SslOpts>, setup: Vec<String>) -> Opts {
@@ -160,7 +192,7 @@ pub(super) async fn open(target: &ConnectTarget<'_>) -> Result<Opened, AppError>
             .unwrap_or(DEFAULT_CONNECT_TIMEOUT_SECS),
     );
     let mut setup = setup_statements(profile);
-    let mut ssl = ssl_opts(target);
+    let mut ssl = ssl_opts(target)?;
 
     let mut editor =
         match connect_once(build_opts(target, ssl.clone(), setup.clone()), timeout).await? {
@@ -273,7 +305,7 @@ mod tests {
             password: Some("pw"),
             host_override: None,
         };
-        let opts = build_opts(&direct, ssl_opts(&direct), vec![]);
+        let opts = build_opts(&direct, ssl_opts(&direct).unwrap(), vec![]);
         assert_eq!(opts.ip_or_hostname(), "db.example.com");
         assert_eq!(opts.tcp_port(), 3307);
         assert_eq!(opts.user(), Some("u"));
@@ -305,6 +337,7 @@ mod tests {
                 password: None,
                 host_override: Some(("127.0.0.1".into(), 1)),
             })
+            .unwrap()
         };
         p.ssl = SslMode::Disable;
         assert!(target(&p).is_none());
@@ -322,5 +355,46 @@ mod tests {
         let s = target(&p).unwrap();
         assert!(!s.accept_invalid_certs() && !s.skip_domain_validation());
         assert_eq!(s.tls_hostname_override(), Some("db.example.com"));
+        assert!(s.client_identity().is_none());
+    }
+
+    #[test]
+    fn ssl_client_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("client-key.pem");
+        let cert = dir.path().join("client-cert.pem");
+        std::fs::write(&key, "key").unwrap();
+        std::fs::write(&cert, "cert").unwrap();
+        let mut p = profile();
+        p.ssl = SslMode::Require;
+        let opts = |p: &ConnectionProfile| {
+            ssl_opts(&ConnectTarget {
+                profile: p,
+                password: None,
+                host_override: None,
+            })
+        };
+        p.options.ssl_key_path = Some(key.to_string_lossy().into_owned());
+        let err = opts(&p).unwrap_err();
+        assert!(err.to_string().contains("Cert…"), "{err}");
+        p.options.ssl_cert_path = Some(cert.to_string_lossy().into_owned());
+        let s = opts(&p).unwrap().unwrap();
+        assert_eq!(
+            s.client_identity(),
+            Some(&ClientIdentity::new(
+                cert.clone().into(),
+                key.clone().into()
+            ))
+        );
+        // Missing files fail before connecting; disabled SSL ignores them.
+        p.options.ssl_cert_path = Some("/nonexistent/cert.pem".into());
+        assert!(
+            opts(&p)
+                .unwrap_err()
+                .to_string()
+                .contains("/nonexistent/cert.pem")
+        );
+        p.ssl = SslMode::Disable;
+        assert!(opts(&p).unwrap().is_none());
     }
 }

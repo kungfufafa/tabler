@@ -1,14 +1,27 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { actions } from "@/features/palette/actions";
 import { emptyStaging, insertRow } from "@/features/staging/model";
+import { useStructureStore } from "@/features/structure/store";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
 import { useTableTabsStore } from "@/stores/tableTabs";
 import { useUiStore } from "@/stores/ui";
-import { TabStrip } from "./TabStrip";
+import { TabStrip as Strip } from "./TabStrip";
+import { UnsavedChangesDialog } from "./UnsavedChangesDialog";
 import { wheelToScrollLeft } from "./wheel";
+
+/** The strip as the shell mounts it: the unsaved-changes dialog lives next to it. */
+function TabStrip() {
+  return (
+    <TooltipProvider>
+      <Strip />
+      <UnsavedChangesDialog />
+    </TooltipProvider>
+  );
+}
 
 const users = { schema: "public", name: "users" };
 const posts = { schema: "public", name: "posts" };
@@ -37,8 +50,11 @@ describe("TabStrip", () => {
       closed: [],
       queryCounter: 0,
       closeRequest: null,
+      history: [],
+      historyIndex: -1,
     });
     useTableTabsStore.setState({ slices: {} });
+    useStructureStore.setState({ byTab: {} });
     useConnectionsStore.setState({ byId: {}, order: [], activeId: "c1" });
     useUiStore.setState({ view: "workspace" });
     Element.prototype.scrollIntoView = scrollIntoView;
@@ -61,6 +77,49 @@ describe("TabStrip", () => {
     expect(tabEl(/^Query 1 \(Unsaved changes\)$/)).toBeInTheDocument();
     expect(tabEl(/^public\.posts$/)).toBeInTheDocument();
     expect(document.querySelectorAll("[data-slot=tab-dirty-dot]")).toHaveLength(2);
+  });
+
+  it("counts staged rows and staged DDL of a table's tab in either view", () => {
+    const s = useTabsStore.getState();
+    const a = s.openTable("c1", users);
+    stage(a, 2);
+    useStructureStore.getState().stage(a, () => [{ op: "rawSql", sql: "x" }]);
+    render(<TabStrip />);
+    expect(tabEl(/^public\.users \(3 pending changes\)$/)).toBeInTheDocument();
+    act(() => useTabsStore.getState().setView(a, "structure"));
+    expect(tabEl(/^public\.users \(3 pending changes\)$/)).toBeInTheDocument();
+    expect(document.querySelectorAll("[data-slot=tab-dirty-dot]")).toHaveLength(1);
+  });
+
+  it("shows a preview tab in italics and keeps it open on double-click", () => {
+    const s = useTabsStore.getState();
+    const a = s.openTable("c1", users, "table", { preview: true });
+    const b = s.openTable("c1", posts);
+    render(<TabStrip />);
+    const title = (el: HTMLElement) => within(el).getByText(/^(users|posts)$/);
+    expect(tabEl(/users/)).toHaveAttribute("data-preview", "true");
+    expect(title(tabEl(/users/))).toHaveClass("italic");
+    expect(title(tabEl(/posts/))).not.toHaveClass("italic");
+    // Double-clicking a regular tab changes nothing.
+    fireEvent.doubleClick(tabEl(/posts/));
+    expect(useTabsStore.getState().tabs.find((t) => t.id === b)).not.toHaveProperty("preview");
+    fireEvent.doubleClick(tabEl(/users/));
+    expect(useTabsStore.getState().tabs.find((t) => t.id === a)).not.toHaveProperty("preview");
+    expect(tabEl(/users/)).not.toHaveAttribute("data-preview");
+    expect(title(tabEl(/users/))).not.toHaveClass("italic");
+  });
+
+  it("offers Keep Open on preview tabs only", () => {
+    const s = useTabsStore.getState();
+    const a = s.openTable("c1", users, "table", { preview: true });
+    s.newQuery("c1");
+    render(<TabStrip />);
+    fireEvent.contextMenu(tabEl(/Query 1/));
+    expect(screen.queryByRole("menuitem", { name: "Keep Open" })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    fireEvent.contextMenu(tabEl(/users/));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Keep Open" }));
+    expect(useTabsStore.getState().tabs.find((t) => t.id === a)).not.toHaveProperty("preview");
   });
 
   it("scrolls the active tab into view when it changes", () => {
@@ -113,6 +172,32 @@ describe("TabStrip", () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
+  it("Review… shows the view that holds the work before previewing it", async () => {
+    const preview = vi.fn();
+    unregister.push(actions.register("grid.preview", preview));
+    const s = useTabsStore.getState();
+    // Staged structure changes, data view showing.
+    const a = s.openTable("c1", users);
+    useStructureStore.getState().stage(a, () => [{ op: "rawSql", sql: "x" }]);
+    // Staged rows, structure view showing.
+    const b = s.openTable("c1", posts, "structure");
+    stage(b, 1);
+    const view = (id: string) => useTabsStore.getState().tabs.find((t) => t.id === id)?.kind;
+    render(<TabStrip />);
+
+    act(() => useTabsStore.getState().closeAll());
+    fireEvent.click(screen.getByRole("button", { name: "Review…" }));
+    expect(useTabsStore.getState().activeId).toBe(a);
+    expect(view(a)).toBe("structure");
+
+    act(() => useTabsStore.getState().requestClose([b]));
+    fireEvent.click(screen.getByRole("button", { name: "Review…" }));
+    expect(useTabsStore.getState().activeId).toBe(b);
+    expect(view(b)).toBe("table");
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+    expect(preview).toHaveBeenCalledTimes(2);
+  });
+
   it("closes other tabs from the context menu", () => {
     const s = useTabsStore.getState();
     s.openTable("c1", users);
@@ -150,6 +235,24 @@ describe("TabStrip", () => {
     expect(newQuery).toHaveBeenCalledTimes(1);
   });
 
+  it("fills the bar with equal-width tabs; the empty filler shows only without tabs", () => {
+    const { unmount } = render(<TabStrip />);
+    expect(document.querySelector("[data-slot=tabstrip-filler]")).toBeInTheDocument();
+    unmount();
+
+    const s = useTabsStore.getState();
+    s.openTable("c1", users);
+    s.openTable("c1", posts);
+    render(<TabStrip />);
+    // Equal shares of the whole bar (flex: 1 1 0), down to 110px each, then the row scrolls.
+    for (const name of [/users/, /posts/]) {
+      expect(tabEl(name)).toHaveClass("flex-[1_1_0]", "min-w-[110px]");
+      expect(tabEl(name).className).not.toMatch(/max-w-/);
+    }
+    expect(document.querySelector("[data-slot=tabstrip-filler]")).toBeNull();
+    expect(screen.getByRole("tablist")).toHaveClass("overflow-x-auto");
+  });
+
   it("closes a tab on middle-click", () => {
     const s = useTabsStore.getState();
     s.openTable("c1", users);
@@ -172,11 +275,54 @@ describe("TabStrip", () => {
     );
     const user = userEvent.setup();
     screen.getByRole("button", { name: "Connections" }).focus();
+    // Back (Forward is disabled: nothing to go forward to), then New query, then out.
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Back" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "New query" })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole("button", { name: "Search" })).toHaveFocus();
-    await user.keyboard("{Enter}");
     expect(ids()).toContain(a);
     expect(screen.getByRole("button", { name: "Close users" })).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("walks the tab history with the back and forward buttons", () => {
+    const s = useTabsStore.getState();
+    const a = s.openTable("c1", users);
+    const b = s.openTable("c1", posts);
+    render(<TabStrip />);
+    const back = screen.getByRole("button", { name: "Back" });
+    const forward = screen.getByRole("button", { name: "Forward" });
+    expect(forward).toBeDisabled();
+    fireEvent.click(back);
+    expect(useTabsStore.getState().activeId).toBe(a);
+    expect(back).toBeDisabled();
+    expect(forward).toBeEnabled();
+    fireEvent.click(forward);
+    expect(useTabsStore.getState().activeId).toBe(b);
+    expect(tabEl(/posts/)).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("opens a new query from the + button, disabled without a connection", () => {
+    const newQuery = vi.fn();
+    unregister.push(actions.register("tab.new-query", newQuery));
+    const { unmount } = render(<TabStrip />);
+    fireEvent.click(screen.getByRole("button", { name: "New query" }));
+    expect(newQuery).toHaveBeenCalledTimes(1);
+    unmount();
+    useConnectionsStore.setState({ activeId: null });
+    render(<TabStrip />);
+    expect(screen.getByRole("button", { name: "New query" })).toBeDisabled();
+  });
+
+  it("puts the close button before the centred title", () => {
+    useTabsStore.getState().openTable("c1", users);
+    render(<TabStrip />);
+    const tab = tabEl(/users/);
+    const close = within(tab).getByRole("button", { name: "Close users" });
+    const title = within(tab).getByText("users");
+    expect(close.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(title.parentElement).toHaveClass("justify-center");
   });
 
   it("scrolls horizontally with a vertical mouse wheel", () => {

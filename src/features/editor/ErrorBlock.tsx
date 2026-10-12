@@ -1,13 +1,14 @@
 import { CircleX } from "lucide-react";
 import type { ErrorPayload } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
-import { toCurrentDoc, useDocVersion } from "./docAnchors";
+import { useDocVersion } from "./docAnchors";
 import { focusEditor, getEditorState } from "./editorStates";
 import type { DocRange } from "./errorPos";
+import { locateSubmitted, submissionEditor, useSubmissionsVersion } from "./submissions";
 
-/** 1-based line / column of a document offset in the tab's editor. */
-function docLocation(tabId: string, offset: number): { line: number; column: number } | null {
-  const state = getEditorState(tabId);
+/** 1-based line / column of a document offset in an editor. */
+function docLocation(key: string, offset: number): { line: number; column: number } | null {
+  const state = getEditorState(key);
   if (!state || offset > state.doc.length) return null;
   const line = state.doc.lineAt(offset);
   return { line: line.number, column: offset - line.from + 1 };
@@ -32,11 +33,14 @@ export function ErrorBlock({
   range: DocRange | null;
   className?: string;
 }) {
-  useDocVersion(tabId);
-  const range = submitted ? toCurrentDoc(tabId, submission, submitted) : null;
-  const loc = range ? docLocation(tabId, range.from) : null;
+  // The pane the SQL was run from (the editor may be split), followed through later edits.
+  useSubmissionsVersion();
+  const key = submissionEditor(tabId, submission);
+  useDocVersion(key);
+  const range = submitted ? (locateSubmitted(tabId, submission, submitted)?.range ?? null) : null;
+  const loc = range ? docLocation(key, range.from) : null;
   const go = () => {
-    if (range) focusEditor(tabId, range);
+    if (range) focusEditor(key, range);
   };
   const meta = [
     loc && `Line ${loc.line}, column ${loc.column}`,

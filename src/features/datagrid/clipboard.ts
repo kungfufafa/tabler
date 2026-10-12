@@ -1,10 +1,12 @@
 import type { Dialect, Value } from "@/lib/ipc";
 import { isTauri } from "@/lib/ipc/transport";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { literal, qualify, quoteIdent } from "@/lib/sql/quote";
 import { valueText } from "@/lib/values";
 import type { GridColumn } from "./types";
 
-export type CopyFormat = "tsv" | "csv" | "json" | "insert" | "markdown";
+export type CopyFormat = "tsv" | "csv" | "json" | "insert" | "markdown" | "html";
 
 export interface CopyContext {
   dialect: Dialect;
@@ -50,7 +52,36 @@ function jsonValue(v: Value): unknown {
   }
 }
 
-/** Serializes a rectangular block of cells. `rows` must be parallel to `columns`. */
+const HTML_ESCAPES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]!);
+
+/** Values written without quotes by "Copy All Column Values". */
+const UNQUOTED: ReadonlySet<Value["t"]> = new Set(["int", "bigInt", "float", "decimal", "bool"]);
+
+/**
+ * "Copy All Column Values": one column's values as a comma-separated list, strings single-quoted
+ * (a quote inside doubled) and numbers, booleans and NULL bare — ready for an `IN (…)` list.
+ */
+export function formatColumnValues(values: readonly Value[]): string {
+  return values
+    .map((v) => {
+      const text = valueText(v);
+      if (text === null) return v.t === "default" ? "DEFAULT" : "NULL";
+      return UNQUOTED.has(v.t) ? text : `'${text.replace(/'/g, "''")}'`;
+    })
+    .join(", ");
+}
+
+/**
+ * Serializes a rectangular block of cells. `rows` must be parallel to `columns`. `headers` adds
+ * the column names as a first line to TSV and CSV (the other formats always name them).
+ */
 export function formatCells(
   format: CopyFormat,
   columns: GridColumn[],
@@ -65,8 +96,15 @@ export function formatCells(
     }
     case "csv": {
       const lines = rows.map((r) => r.map((v) => csvCell(valueText(v))).join(","));
-      lines.unshift(columns.map((c) => csvCell(c.name)).join(","));
+      if (ctx?.headers) lines.unshift(columns.map((c) => csvCell(c.name)).join(","));
       return lines.join("\r\n");
+    }
+    case "html": {
+      const cell = (tag: "th" | "td", s: string | null) =>
+        `<${tag}>${s === null ? "" : escapeHtml(s).replace(/\r?\n/g, "<br>")}</${tag}>`;
+      const head = `<tr>${columns.map((c) => cell("th", c.name)).join("")}</tr>`;
+      const body = rows.map((r) => `<tr>${r.map((v) => cell("td", valueText(v))).join("")}</tr>`);
+      return `<table>\n<thead>\n${head}\n</thead>\n<tbody>\n${body.join("\n")}${body.length > 0 ? "\n" : ""}</tbody>\n</table>`;
     }
     case "json":
       return JSON.stringify(
@@ -184,7 +222,7 @@ export async function readClipboardText(): Promise<string> {
       return await viaBrowser();
     } catch {
       throw new Error(
-        "The browser blocked clipboard access. Allow clipboard permission, or paste with ⌘V while the grid is focused.",
+        `The browser blocked clipboard access. Allow clipboard permission, or paste with ${formatCombo(shortcutFor("grid.paste") ?? "Mod+V")} while the grid is focused.`,
       );
     }
   }

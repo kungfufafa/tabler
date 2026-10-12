@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ipc } from "@/lib/ipc";
 import { mockFingerprint, mockKnownHosts, resetMockHostKeys } from "@/lib/ipc/mock/export";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
@@ -43,6 +43,12 @@ function renderConnect({ withHost = true } = {}) {
   );
   return renderHook(() => useConnect(), { wrapper }).result;
 }
+
+beforeAll(async () => {
+  // The transport loads the mock backend on the first call; load it up front so the first
+  // prompt shows within the default wait.
+  await import("@/lib/ipc/mock");
+});
 
 beforeEach(() => {
   resetMockHostKeys();
@@ -209,7 +215,13 @@ describe("ConnectionDialog", () => {
       </QueryClientProvider>,
     );
     const form = await screen.findByRole("dialog");
-    expect(within(form).getByText("deploy@bastion.example.com:22")).toBeInTheDocument();
+    // The tunnel is part of the one-page form: Over SSH is on and its fields are shown inline.
+    expect(within(form).getByRole("button", { name: "Over SSH" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(within(form).getByLabelText("SSH host")).toHaveValue("bastion.example.com");
+    expect(within(form).getByLabelText("SSH user")).toHaveValue("deploy");
 
     await user.click(within(form).getByRole("button", { name: "Test" }));
     const prompt = await screen.findByRole("alertdialog");
@@ -239,7 +251,7 @@ describe("ConnectionDialog", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
-  it("shows the SSH tab hints", async () => {
+  it("shows the SSH block inline with its hints, and hides it when Over SSH is turned off", async () => {
     const user = userEvent.setup();
     render(
       <QueryClientProvider client={client()}>
@@ -248,10 +260,19 @@ describe("ConnectionDialog", () => {
       </QueryClientProvider>,
     );
     const form = await screen.findByRole("dialog");
-    // The summary line jumps to the SSH tab.
-    await user.click(within(form).getByTitle("Edit SSH tunnel"));
-    expect(within(form).getByRole("tab", { name: "SSH" })).toHaveAttribute("aria-selected", "true");
-    expect(within(form).getByText(/keepalive is/)).toBeInTheDocument();
-    expect(within(form).getByText("auto")).toBeInTheDocument();
+    const ssh = within(form).getByRole("region", { name: "SSH tunnel" });
+    expect(within(ssh).getByText(/host key is confirmed on first connect/)).toBeInTheDocument();
+    expect(within(ssh).getByLabelText("Local port")).toHaveAttribute("placeholder", "auto");
+    expect(within(ssh).getByLabelText("Keep-alive interval (s)")).toHaveAttribute(
+      "placeholder",
+      "30",
+    );
+    expect(within(ssh).getByLabelText("SSH user")).toHaveAttribute(
+      "placeholder",
+      "Leave empty to use ~/.ssh/config",
+    );
+    expect(within(ssh).getByText(/identities loaded in your SSH agent/)).toBeInTheDocument();
+    await user.click(within(form).getByRole("button", { name: "Over SSH" }));
+    expect(within(form).queryByRole("region", { name: "SSH tunnel" })).toBeNull();
   });
 });

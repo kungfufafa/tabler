@@ -98,6 +98,31 @@ export function displayValue(v: Value): DisplayValue {
   }
 }
 
+/** `DisplayClass` plus `empty`: an empty string, shown as a placeholder. */
+export type CellDisplayClass = DisplayClass | "empty";
+
+export interface CellDisplay {
+  text: string;
+  cls: CellDisplayClass;
+  /** The text is a placeholder (`NULL`, `DEFAULT`, `EMPTY`), not the value itself. */
+  placeholder: boolean;
+}
+
+/** Placeholder a grid cell shows for an empty string (TablePlus). */
+export const EMPTY_PLACEHOLDER = "EMPTY";
+
+/**
+ * What a grid cell shows: `displayValue`, except that an empty value (`''`) reads as a muted
+ * `EMPTY` instead of a blank cell. Display only: copy, export and editing keep using
+ * `valueText` / `editText`, where an empty string stays empty.
+ */
+export function cellDisplay(v: Value): CellDisplay {
+  const d = displayValue(v);
+  if (d.cls === "null" || d.cls === "default") return { ...d, placeholder: true };
+  if (d.text === "") return { text: EMPTY_PLACEHOLDER, cls: "empty", placeholder: true };
+  return { ...d, placeholder: false };
+}
+
 export function isNumericKind(kind: ValueKind): boolean {
   return kind === "int" || kind === "bigInt" || kind === "decimal" || kind === "float";
 }

@@ -110,7 +110,7 @@ describe("prefs store", () => {
 
   it("flushPrefs writes a pending save right away", async () => {
     const save = vi.spyOn(ipc.settings, "set");
-    setPref("confirmCommit", false);
+    setPref("confirmCommit", true);
     await flushPrefs();
     expect(save).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS * 2);

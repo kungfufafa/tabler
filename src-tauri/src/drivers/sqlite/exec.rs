@@ -91,7 +91,7 @@ pub(crate) fn execute_streaming(
     let changes_before = conn.total_changes();
 
     if stmt.column_count() > 0 {
-        let columns = columns_of(&stmt);
+        let columns = columns_of(conn, &stmt, sql);
         let kinds: Vec<ValueKind> = columns.iter().map(|c| c.kind).collect();
         let mut chunker = RowChunker::new(sink);
         let _ = chunker.begin_set(columns);

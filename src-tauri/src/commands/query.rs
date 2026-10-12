@@ -2,9 +2,10 @@
 //! explain a statement. The orchestration lives in `run_sql_inner` / `explain_inner`, which
 //! only need a `DbSession`, so they are tested without Tauri.
 
+use std::future::Future;
 use std::ops::ControlFlow;
 use std::sync::LazyLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use regex::Regex;
 use tauri::State;
@@ -380,10 +381,57 @@ async fn run_explain(
     result
 }
 
+/// Error code of a statement stopped by `RunOptions::timeout_secs`. Not `TIMEOUT`: the renderer
+/// takes that for a connection that stopped answering.
+pub const QUERY_TIMEOUT_CODE: &str = "QUERY_TIMEOUT";
+
+/// What a statement stopped by the query time out reports.
+pub fn timeout_payload(secs: u32, index: usize) -> ErrorPayload {
+    let mut payload = AppError::Timeout.to_payload();
+    payload.code = QUERY_TIMEOUT_CODE.to_string();
+    payload.message = format!("Query timed out after {secs} s");
+    payload.hint = Some(
+        "The statement was cancelled. The limit is Settings ▸ Connections ▸ Query time out \
+         (0 = no limit)."
+            .into(),
+    );
+    payload.statement_index = Some(index);
+    payload
+}
+
+/// Runs one statement under the run's time limit. When `limit` passes first, the statement is
+/// cancelled the way Stop cancels it (through the run's slot, so the rest of the run is not
+/// started either) and its end is still awaited. Returns whether the limit was hit.
+async fn with_timeout<T>(
+    session: &dyn DbSession,
+    cancel: &CancelSlot,
+    limit: Option<Duration>,
+    statement: impl Future<Output = Result<T, AppError>>,
+) -> (Result<T, AppError>, bool) {
+    let Some(limit) = limit else {
+        return (statement.await, false);
+    };
+    tokio::pin!(statement);
+    tokio::select! {
+        result = &mut statement => return (result, false),
+        () = tokio::time::sleep(limit) => {}
+    }
+    let cancel_now = async {
+        if let Some(handle) = request_cancel(cancel)
+            && let Err(e) = session.cancel(handle).await
+        {
+            log::warn!("query time out: cancelling the statement failed: {e}");
+        }
+    };
+    let (result, ()) = tokio::join!(statement, cancel_now);
+    (result, true)
+}
+
 /// Splits `sql` and runs each statement on the session's editor connection, emitting
 /// `started`, `columns`/`rows`, `finished`/`failed` per statement and `done` at the end.
 /// Stops at the first error when `stop_on_error` is set, and always after a cancellation
-/// (`cancel` is the slot `cancel_query` uses for this run).
+/// (`cancel` is the slot `cancel_query` uses for this run) or a statement that ran longer than
+/// `timeout_secs`, which is cancelled and reported as timed out.
 ///
 /// The run keeps the editor for all its statements (`lock_editor_runs`): a second run on the same
 /// connection (another tab) waits for it instead of slipping its statements in between, e.g.
@@ -395,7 +443,23 @@ pub async fn run_sql_inner(
     cancel: &CancelSlot,
     emit: &mut (dyn FnMut(QueryEvent) + Send),
 ) -> Vec<StatementResult> {
+    // PostgreSQL resolves result column origins through the catalog: once per table and run.
+    crate::drivers::postgres::decode::with_origin_cache(run_statements(
+        session, sql, options, cancel, emit,
+    ))
+    .await
+}
+
+async fn run_statements(
+    session: &dyn DbSession,
+    sql: &str,
+    options: &RunOptions,
+    cancel: &CancelSlot,
+    emit: &mut (dyn FnMut(QueryEvent) + Send),
+) -> Vec<StatementResult> {
     let run_started = Instant::now();
+    let time_limit =
+        (options.timeout_secs > 0).then(|| Duration::from_secs(options.timeout_secs.into()));
     let dialect = session.dialect();
     let mariadb = session.is_mariadb();
     let max_rows = effective_max_rows(options.max_rows);
@@ -432,6 +496,7 @@ pub async fn run_sql_inner(
             first_columns: None,
             emit: &mut *emit,
         };
+        let mut timed_out = false;
         let outcome = if is_meta_command(&st.sql) {
             Err(meta_command_error())
         } else if editor.is_err() {
@@ -440,16 +505,29 @@ pub async fn run_sql_inner(
             && let Err(e) = check_explainable(&st.sql, dialect)
         {
             Err(e)
-        } else if let Some(mode) = options.explain {
-            run_explain(
-                session, &st.sql, &exec_sql, mode, max_rows, &mut sink, cancel,
-            )
-            .await
         } else {
-            session
-                .run_statement(&exec_sql, max_rows, &mut sink, cancel.clone())
-                .await
+            let statement = async {
+                match options.explain {
+                    Some(mode) => {
+                        run_explain(
+                            session, &st.sql, &exec_sql, mode, max_rows, &mut sink, cancel,
+                        )
+                        .await
+                    }
+                    None => {
+                        session
+                            .run_statement(&exec_sql, max_rows, &mut sink, cancel.clone())
+                            .await
+                    }
+                }
+            };
+            let (outcome, expired) = with_timeout(session, cancel, time_limit, statement).await;
+            timed_out = expired;
+            outcome
         };
+        if changes_schema(&st.sql) {
+            crate::drivers::postgres::decode::clear_origin_cache();
+        }
         let (first_columns, sets, delivered) = (sink.first_columns, sink.sets, sink.rows);
 
         let mut result = StatementResult {
@@ -481,21 +559,33 @@ pub async fn run_sql_inner(
                 result.affected = outcome.affected;
                 result.last_insert_id = outcome.last_insert_id;
                 result.notices = outcome.notices;
+                if timed_out {
+                    result.notices.push(format!(
+                        "The query time out ({} s) passed, but the statement completed before it \
+                         could be cancelled; the rest of the run was not started.",
+                        options.timeout_secs
+                    ));
+                }
                 emit(QueryEvent::Finished {
                     index,
                     result: result.clone(),
                 });
-                false
+                timed_out
             }
             Err(err) => {
                 let cancelled = matches!(err, AppError::Cancelled);
-                let payload = statement_error(err, index, st, sql, &exec_sql, shift, dialect);
+                let payload = if timed_out && cancelled {
+                    timeout_payload(options.timeout_secs, index)
+                } else {
+                    statement_error(err, index, st, sql, &exec_sql, shift, dialect)
+                };
                 result.error = Some(payload.clone());
                 emit(QueryEvent::Failed {
                     index,
                     error: payload,
                 });
-                cancelled || options.stop_on_error
+                // A timed-out run is cancelled as a whole: nothing after it may start.
+                cancelled || timed_out || options.stop_on_error
             }
         };
         results.push(result);
@@ -686,6 +776,7 @@ pub async fn run_sql(
     let options = options.unwrap_or_default();
     let conn = state.connection(connection_id).await?;
     let session = conn.session().await;
+    crate::commands::safety::refuse_read_only_run(&conn, &sql, session.dialect(), options.explain)?;
     let slot = CancelSlot::default();
     let results = {
         let _active = ActiveQuery::register(&state, connection_id, query_id, slot.clone())?;
@@ -757,6 +848,7 @@ pub async fn explain(
 ) -> Result<ExplainResult, AppError> {
     let conn = state.connection(connection_id).await?;
     let session = conn.session().await;
+    crate::commands::safety::refuse_read_only_explain(&conn, &sql, session.dialect(), mode)?;
     let slot = CancelSlot::default();
     let started_at = now_rfc3339();
     let result = {
@@ -1327,6 +1419,7 @@ mod tests {
                             kind: crate::types::schema::ValueKind::Int,
                             nullable: None,
                             table: None,
+                            origin: None,
                         })
                         .collect(),
                 );
@@ -1339,6 +1432,7 @@ mod tests {
                     kind: crate::types::schema::ValueKind::Text,
                     nullable: None,
                     table: None,
+                    origin: None,
                 }]);
                 let _ = sink.rows(vec![vec![Value::Text("Delete on t".into())]]);
             }
@@ -1644,6 +1738,81 @@ mod tests {
         assert_eq!(mysql_error_offset(&msg, &sql), Some(9));
     }
 
+    #[tokio::test]
+    async fn results_query_time_out_cancels_the_statement() {
+        let (session, _dir) = sqlite_session().await;
+        let opts = RunOptions {
+            timeout_secs: 1,
+            ..RunOptions::default()
+        };
+        let endless = "with recursive c(x) as (select 1 union all select x + 1 from c \
+                       where x < 2000000000) select count(*) from c; select 2";
+        let started = Instant::now();
+        let (results, events) = run(&session, endless, opts).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "it was cancelled"
+        );
+        assert_eq!(
+            results.len(),
+            1,
+            "the run stops after a time out: {results:?}"
+        );
+        let err = results[0].error.as_ref().expect("timed out");
+        assert_eq!(err.code, QUERY_TIMEOUT_CODE);
+        assert_eq!(err.message, "Query timed out after 1 s");
+        assert_eq!(err.statement_index, Some(0));
+        assert_eq!(
+            event_names(&events),
+            ["started", "columns", "failed", "done"]
+        );
+        // The editor is usable again, and a statement within the limit just runs.
+        let opts = RunOptions {
+            timeout_secs: 5,
+            ..RunOptions::default()
+        };
+        let (results, _) = run(&session, "select 1", opts).await;
+        assert!(results[0].error.is_none(), "{results:?}");
+        assert_eq!(
+            timeout_payload(300, 2).message,
+            "Query timed out after 300 s"
+        );
+    }
+
+    #[tokio::test]
+    async fn results_columns_report_their_origin() {
+        let (session, _dir) = sqlite_session().await;
+        let (results, _) = run(
+            &session,
+            "create table users (id integer primary key, email text); \
+             insert into users (email) values ('a@x');",
+            RunOptions::default(),
+        )
+        .await;
+        assert!(results.iter().all(|r| r.error.is_none()), "{results:?}");
+        let (results, events) = run(
+            &session,
+            "select u.id as uid, email, 1 as one from users u",
+            RunOptions::default(),
+        )
+        .await;
+        let columns = match &events[1] {
+            QueryEvent::Columns { columns, .. } => columns.clone(),
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_eq!(columns, results[0].columns);
+        let origin = |i: usize| {
+            columns[i]
+                .origin
+                .as_ref()
+                .map(|o| (o.table.name.as_str(), o.column.as_str()))
+        };
+        assert_eq!(origin(0), Some(("users", "id")));
+        assert_eq!(columns[0].name, "uid");
+        assert_eq!(origin(1), Some(("users", "email")));
+        assert_eq!(origin(2), None);
+    }
+
     #[test]
     fn sqlite_plan_tree() {
         let col = |n: &str| ResultColumn {
@@ -1652,6 +1821,7 @@ mod tests {
             kind: crate::types::schema::ValueKind::Other,
             nullable: None,
             table: None,
+            origin: None,
         };
         let set = ResultSet {
             columns: vec![col("id"), col("parent"), col("notused"), col("detail")],

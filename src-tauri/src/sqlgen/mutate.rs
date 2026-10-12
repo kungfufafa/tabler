@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use crate::error::AppError;
 use crate::sqlgen::quote::Dialect;
-use crate::sqlgen::select::BuiltSql;
+use crate::sqlgen::select::{BuiltSql, pg_cast_type};
 use crate::types::browse::RowKey;
 use crate::types::mutate::StagedChange;
 use crate::types::schema::{ColumnMeta, TableRef};
@@ -30,11 +30,15 @@ impl TableSpec<'_> {
             .qualify(self.table.schema.as_deref(), &self.table.name)
     }
 
+    /// Pushes a value and returns its placeholder, on PostgreSQL cast to the base type of `cast`
+    /// (`pg_cast_type`): a value too long for the column fails instead of being cut by the cast.
     fn placeholder(&self, params: &mut Vec<Value>, value: Value, cast: Option<&str>) -> String {
         params.push(value);
         let ph = self.dialect.placeholder(params.len());
         match (self.dialect, cast) {
-            (Dialect::Postgres, Some(ty)) if !ty.is_empty() => format!("{ph}::{ty}"),
+            (Dialect::Postgres, Some(ty)) if !ty.is_empty() => {
+                format!("{ph}::{}", pg_cast_type(ty))
+            }
             _ => ph,
         }
     }
@@ -463,6 +467,41 @@ mod tests {
         assert_eq!(
             build_insert(&spec, &all_default, false).unwrap().sql,
             "INSERT INTO `main`.`users` () VALUES ()"
+        );
+    }
+
+    #[test]
+    fn postgres_values_are_cast_to_base_types() {
+        let c = vec![
+            col("code", "character(4)", ValueKind::Text, true),
+            col("name", "character varying(5)", ValueKind::Text, false),
+            col("amount", "numeric(10,2)", ValueKind::Decimal, false),
+        ];
+        let t = TableRef::new(None, "t");
+        let spec = TableSpec {
+            dialect: Dialect::Postgres,
+            table: &t,
+            columns: &c,
+        };
+        let key = RowKey::Pk(BTreeMap::from([(
+            "code".to_string(),
+            Value::Text("ab".into()),
+        )]));
+        let b = build_update(
+            &spec,
+            &key,
+            &BTreeMap::from([("name".to_string(), Value::Text("abcdefgh".into()))]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            b.sql,
+            "UPDATE \"t\" SET \"name\" = $1::character varying WHERE \"code\" = $2::bpchar"
+        );
+        let values = BTreeMap::from([("amount".to_string(), Value::Text("1.239".into()))]);
+        assert_eq!(
+            build_insert(&spec, &values, false).unwrap().sql,
+            "INSERT INTO \"t\" (\"amount\") VALUES ($1::numeric)"
         );
     }
 

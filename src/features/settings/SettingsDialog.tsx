@@ -1,13 +1,21 @@
-import { Keyboard, Plug, SlidersHorizontal, SquareCode, type LucideIcon } from "lucide-react";
+import {
+  Keyboard,
+  Plug,
+  ShieldCheck,
+  SlidersHorizontal,
+  SquareCode,
+  type LucideIcon,
+} from "lucide-react";
 import { Tabs as TabsPrimitive } from "radix-ui";
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent } from "react";
 import { flushSync } from "react-dom";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { useAction } from "@/features/palette/actions";
 import { comboFromEvent, formatCombo, isMac } from "@/lib/keys/combo";
+import { isCapturingShortcut } from "@/lib/keys/useShortcuts";
 import { flushPrefs, loadPrefs, usePrefs } from "@/stores/prefs";
 import { applyUiFontSize } from "./applyPrefs";
-import { ConnectionsSection, EditorSection, GeneralSection } from "./sections";
+import { ConnectionsSection, EditorSection, GeneralSection, SecuritySection } from "./sections";
 import { ShortcutsSection } from "./ShortcutsSection";
 import {
   closeSettings,
@@ -22,6 +30,7 @@ const SECTION_META: Record<SettingsSection, { label: string; icon: LucideIcon }>
   editor: { label: "Editor", icon: SquareCode },
   connections: { label: "Connections", icon: Plug },
   shortcuts: { label: "Shortcuts", icon: Keyboard },
+  security: { label: "Security", icon: ShieldCheck },
 };
 
 /** Loads preferences once per session, applies the interface text size and flushes saves on exit. */
@@ -92,6 +101,11 @@ export function SettingsDialog() {
           className="flex h-[520px] max-h-[calc(100vh-4rem)] w-[680px] max-w-[calc(100%-2rem)] gap-0 overflow-hidden p-0 sm:max-w-[680px]"
           onKeyDown={onKeyDown}
           onEscapeKeyDown={(e) => {
+            // Esc while a shortcut is being recorded only cancels the recording.
+            if (isCapturingShortcut()) {
+              e.preventDefault();
+              return;
+            }
             // Esc in a non-empty search clears it first, like a native search field.
             if (query && document.activeElement === searchRef.current) {
               e.preventDefault();
@@ -164,6 +178,13 @@ export function SettingsDialog() {
                 className="flex min-h-0 flex-1 flex-col outline-none"
               >
                 <ShortcutsSection query={query} onQueryChange={setQuery} searchRef={searchRef} />
+              </TabsPrimitive.Content>
+              <TabsPrimitive.Content
+                value="security"
+                tabIndex={-1}
+                className="flex min-h-0 flex-1 flex-col outline-none"
+              >
+                <SecuritySection />
               </TabsPrimitive.Content>
             </div>
           </TabsPrimitive.Root>

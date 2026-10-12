@@ -9,12 +9,15 @@ use regex::Regex;
 use tauri::State;
 use uuid::Uuid;
 
+use crate::admin::mysql_literal_mode;
 use crate::commands::browse::cached_meta;
 use crate::drivers::{DbSession, TxStatement};
 use crate::error::{AppError, ErrorPayload};
+use crate::export::structure::pg_table_context;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::ddl::{
-    PlanContext, create_table_sql, is_fk_check, is_fk_toggle, plan_ddl_with, session_toggle,
+    PlanContext, create_table_sql_with, is_fk_check, is_fk_toggle, pg_owned_sequences_sql,
+    plan_ddl_with, session_toggle,
 };
 use crate::state::{AppState, Connection};
 use crate::types::ddl::{DdlOp, DdlPlan, DdlResult};
@@ -57,20 +60,53 @@ async fn plan_for(
 }
 
 /// Plans `ops` against `meta`, after looking up on the server what `TableMeta` does not say
-/// (PG: which indexes back a constraint, see `PlanContext`).
+/// (PG: which indexes back a constraint, which sequences the columns own; MySQL: how the
+/// session reads backslashes in literals; see `PlanContext`).
 pub async fn plan_on(
     session: &dyn DbSession,
     meta: Option<&TableMeta>,
     ops: &[DdlOp],
 ) -> Result<DdlPlan, AppError> {
     let mut context = PlanContext::default();
+    if session.dialect() == Dialect::Mysql {
+        // comments and defaults are spelled for how this session reads backslashes
+        context.mysql_mode = mysql_literal_mode(session).await?;
+    }
     if session.dialect() == Dialect::Postgres
         && let Some(meta) = meta
-        && ops.iter().any(|op| matches!(op, DdlOp::DropIndex { .. }))
     {
-        context.constraint_indexes = pg_constraint_indexes(session, &meta.table).await?;
+        if ops.iter().any(|op| matches!(op, DdlOp::DropIndex { .. })) {
+            context.constraint_indexes = pg_constraint_indexes(session, &meta.table).await?;
+        }
+        if ops.iter().any(|op| {
+            matches!(
+                op,
+                DdlOp::AlterColumnAutoIncrement {
+                    auto_increment: true,
+                    ..
+                }
+            )
+        }) {
+            context.owned_sequences = pg_owned_sequences(session, &meta.table).await?;
+        }
     }
     plan_ddl_with(session.dialect(), meta, ops, &context)
+}
+
+/// PG: the sequences owned by a column of `table` besides its identity: `(column, sequence)`.
+async fn pg_owned_sequences(
+    session: &dyn DbSession,
+    table: &TableRef,
+) -> Result<Vec<(String, TableRef)>, AppError> {
+    let query = pg_owned_sequences_sql(table);
+    let rows = session.query(&query.sql, &query.params).await?.rows;
+    Ok(rows
+        .iter()
+        .filter_map(|row| {
+            let text = |i: usize| row.get(i).and_then(Value::as_text);
+            Some((text(0)?, TableRef::new(Some(&text(1)?), &text(2)?)))
+        })
+        .collect())
 }
 
 /// PG: the indexes of `table` that back a PRIMARY KEY, UNIQUE or EXCLUDE constraint.
@@ -200,7 +236,21 @@ pub async fn get_table_ddl(
                 dialect.qualify(meta.table.schema.as_deref(), &meta.table.name)
             ))
         }
-        _ => Ok(create_table_sql(dialect, &meta)),
+        _ => {
+            // PG: what the catalog adds (sequences, partitioning, cloned keys and triggers);
+            // a server that cannot answer gets the script `TableMeta` alone gives.
+            let context = if dialect == Dialect::Postgres {
+                pg_table_context(session.as_ref(), &meta.table, false)
+                    .await
+                    .unwrap_or_else(|e| {
+                        log::warn!("get_table_ddl: no catalog context: {e}");
+                        Default::default()
+                    })
+            } else {
+                Default::default()
+            };
+            Ok(create_table_sql_with(dialect, &meta, &context))
+        }
     }
 }
 
@@ -770,6 +820,7 @@ mod tests {
                     kind: ValueKind::Text,
                     nullable: None,
                     table: None,
+                    origin: None,
                 }],
                 rows: vec![vec![Value::Text("child".into())]],
                 truncated: false,
