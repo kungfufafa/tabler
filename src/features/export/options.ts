@@ -4,8 +4,10 @@ import type {
   ExportRequest,
   ExportSource,
   FilterGroup,
+  ResultColumn,
   SortSpec,
   TableRef,
+  Value,
 } from "@/lib/ipc";
 
 export type FormatKind = ExportFormat["format"];
@@ -62,8 +64,17 @@ export interface TableExportInput {
   page: { limit: number; offset: number; sql: string | null };
 }
 
+/** Rows the renderer holds (a SQL editor result), written as they are. */
+export interface RowsExportInput {
+  kind: "rows";
+  columns: ResultColumn[];
+  rows: Value[][];
+  /** Default INSERT target; null = the user must name one. */
+  table: string | null;
+}
+
 /** What is being exported, resolved from the dialog's source and the table tab's state. */
-export type ExportInput = { kind: "sql"; sql: string } | TableExportInput;
+export type ExportInput = { kind: "sql"; sql: string } | TableExportInput | RowsExportInput;
 
 export function toExportFormat(options: ExportOptions, tableName: string): ExportFormat {
   switch (options.format) {
@@ -143,7 +154,29 @@ function insertableColumns(input: TableExportInput): string[] | null {
 /** Pages after the first re-run the grid's browse statement instead of the table query. */
 const rerunsPage = (input: TableExportInput) => input.scope === "page" && input.page.offset > 0;
 
+/** A binary value cut to its preview (also inside arrays): the renderer never holds more. */
+function isCappedBytes(v: Value): boolean {
+  return (v.t === "bytes" && v.v.truncated) || (v.t === "array" && v.v.some(isCappedBytes));
+}
+
+/**
+ * Whether rows held by the renderer contain a binary value cut to its 64 KiB preview: written as
+ * they are, the file would hold the cut value, so the backend refuses them.
+ */
+export function hasCappedBytes(rows: readonly (readonly Value[])[]): boolean {
+  return rows.some((row) => row.some(isCappedBytes));
+}
+
 export function exportProblem(input: ExportInput, format: FormatKind): ExportProblem | null {
+  if (input.kind === "rows") {
+    return hasCappedBytes(input.rows)
+      ? {
+          field: "rows",
+          message: "A binary value in this result is cut to its 64 KiB preview.",
+          severity: "fix",
+        }
+      : null;
+  }
   if (input.kind !== "table") return null;
   if (rerunsPage(input)) {
     if (!canExportPage(input.page)) {
@@ -200,6 +233,9 @@ export function buildExportRequest(args: {
   let tableName = args.sqlTableName.trim();
   if (input.kind === "sql") {
     source = { kind: "sql", sql: input.sql };
+  } else if (input.kind === "rows") {
+    // Empty table name = the result's table (the backend's default INSERT target).
+    source = { kind: "rows", columns: input.columns, rows: input.rows, table: input.table };
   } else {
     source = {
       kind: "table",

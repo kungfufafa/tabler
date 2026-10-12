@@ -14,6 +14,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/features/settings/controls";
 import { toIpcError } from "@/lib/ipc";
+import { isReadOnlyStatement } from "@/lib/sql/statement";
+import { useConnectionsStore } from "@/stores/connections";
 import { cn } from "@/lib/utils";
 import { pickExportPath } from "./destination";
 import {
@@ -28,10 +30,12 @@ import {
   formatBytes,
   formatCount,
   formatElapsed,
+  hasCappedBytes,
   loadExportOptions,
   loadLastDir,
   saveExportOptions,
   saveLastDir,
+  type ExportInput,
   type ExportOptions,
   type ExportProblem,
   type FormatKind,
@@ -40,6 +44,7 @@ import {
 import {
   cancelExport,
   closeExport,
+  releaseExportTarget,
   runExport,
   setExportDraft,
   useExportStore,
@@ -169,9 +174,55 @@ function Progress({ run }: { run: ExportRun }) {
   );
 }
 
+/** A result shown in the SQL editor, as the dialog's source. */
+type HeldRows = Extract<OpenExportArgs["source"], { kind: "rows" }>;
+
+/**
+ * Hint under a shown result's "Rows" choice: what the choice writes, or why the rows shown are
+ * not the whole result (or can't be written).
+ */
+function heldRowsHint(
+  held: HeldRows,
+  rerun: boolean,
+  canRerun: boolean,
+  capped: boolean,
+  problem: ExportProblem | null,
+): ReactNode {
+  if (rerun)
+    return capped
+      ? "Runs the statement again; the file gets every row it returns, binary values in full."
+      : "Runs the statement again; the file gets every row it returns.";
+  if (problem?.field === "rows")
+    return (
+      <span className="text-warning">
+        {problem.message}{" "}
+        {canRerun ? "Export all rows to read it in full." : "Export its table instead."}
+      </span>
+    );
+  if (held.stopped === "cancelled")
+    return "The statement was cancelled: only the rows that arrived before it stopped are written.";
+  if (held.stopped === "error")
+    return "The statement failed partway: only the rows that arrived before the error are written.";
+  return "The result stopped at the row limit; only the rows shown are written.";
+}
+
 function ExportForm({ target }: { target: OpenExportArgs }) {
   const run = useExportStore((s) => s.run);
   const error = useExportStore((s) => s.error);
+  const driver = useConnectionsStore((s) => s.byId[target.connectionId]?.info.driver);
+  const isSql = target.source.kind === "sql";
+  const held = target.source.kind === "rows" ? target.source : null;
+  const capped = useMemo(() => (held ? hasCappedBytes(held.rows) : false), [held]);
+  // A shown result can also be exported by running its statement again: when the rows held are
+  // not the whole result (cut at the row limit, or the statement stopped early), and when a
+  // binary value was cut to its preview (a PostgreSQL query export reads bytea in full). Only a
+  // statement that just reads: running `DELETE … RETURNING` or `CALL` again would write again.
+  const rerunSql =
+    held?.sql &&
+    isReadOnlyStatement(held.sql) &&
+    (held.truncated || held.stopped !== null || (capped && driver === "postgres"))
+      ? held.sql
+      : null;
   // Reopening the dialog in the same session (e.g. on a running export) restores the form as it was.
   const [draft] = useState(() => useExportStore.getState().draft);
   const [options, setOptions] = useState<ExportOptions>(
@@ -180,15 +231,22 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
   const [scope, setScope] = useState<RowScope>(draft?.scope ?? "all");
   const [visibleOnly, setVisibleOnly] = useState(draft?.visibleOnly ?? true);
   const [tableName, setTableName] = useState(draft?.tableName ?? "");
+  // The rows shown by default, unless they can't be written as they are.
+  const [allRows, setAllRows] = useState(draft?.allRows ?? (capped && rerunSql !== null));
   const [batchText, setBatchText] = useState(
     () => draft?.batchText ?? String(options.sql.batchSize),
   );
   const [picking, setPicking] = useState(false);
   const src = useExportSource(target, scope, visibleOnly);
-  const isSql = target.source.kind === "sql";
+  const rerun = rerunSql !== null && allRows;
+  const input = useMemo<ExportInput | null>(
+    () => (rerun && rerunSql !== null ? { kind: "sql", sql: rerunSql } : src.input),
+    [rerun, rerunSql, src.input],
+  );
+  const statementText = target.source.kind === "sql" ? target.source.sql : (held?.sql ?? null);
   useEffect(
-    () => setExportDraft({ options, scope, visibleOnly, tableName, batchText }),
-    [options, scope, visibleOnly, tableName, batchText],
+    () => setExportDraft({ options, scope, visibleOnly, tableName, batchText, allRows }),
+    [options, scope, visibleOnly, tableName, batchText, allRows],
   );
 
   const fileName = useMemo(
@@ -199,15 +257,21 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
     setOptions((o) => ({ ...o, [key]: { ...(o[key] as object), ...patch } }));
 
   const running = run !== null;
-  const needsTableName = options.format === "sqlInsert" && isSql && tableName.trim() === "";
+  // Table and result sources name their INSERT target themselves (when the result's table is
+  // known); a query needs one.
+  const needsTableName =
+    options.format === "sqlInsert" && tableName.trim() === "" && !src.defaultTableName;
   const emptySql =
     isSql && (target.source.kind === "sql" ? target.source.sql.trim() === "" : false);
-  const problem = src.input ? exportProblem(src.input, options.format) : null;
+  const problem = useMemo(
+    () => (input ? exportProblem(input, options.format) : null),
+    [input, options.format],
+  );
   const canSubmit =
-    !running && !picking && src.input !== null && !needsTableName && !emptySql && !problem;
+    !running && !picking && input !== null && !needsTableName && !emptySql && !problem;
 
   const submit = async () => {
-    if (!canSubmit || !src.input) return;
+    if (!canSubmit || !input) return;
     const finalOptions: ExportOptions = {
       ...options,
       sql: { batchSize: clampBatchSize(Number.parseInt(batchText, 10)) },
@@ -232,18 +296,21 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
       req = buildExportRequest({
         exportId: crypto.randomUUID(),
         path,
-        input: src.input,
+        input,
         options: finalOptions,
-        sqlTableName: tableName,
+        // Running the statement again exports a query, which has no table of its own.
+        sqlTableName: tableName.trim() || (rerun ? (src.defaultTableName ?? "") : ""),
       });
     } catch (e) {
       useExportStore.setState({ error: toIpcError(e).message });
       return;
     }
     const expectedRows =
-      src.input.kind === "table" && src.input.scope === "page"
+      input.kind === "table" && input.scope === "page"
         ? (src.page?.rows ?? null)
-        : (src.count?.count ?? null);
+        : rerun
+          ? null
+          : (src.count?.count ?? null);
     void runExport(target.connectionId, req, { expectedRows });
   };
 
@@ -268,7 +335,10 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
           Export
         </DialogTitle>
         <DialogDescription className="flex min-w-0 items-center gap-1.5 text-xs">
-          <span className={cn("text-foreground truncate", !isSql && "font-mono")} title={src.title}>
+          <span
+            className={cn("text-foreground truncate", !isSql && !held && "font-mono")}
+            title={src.title}
+          >
             {src.title}
           </span>
           {src.details.map((d) => (
@@ -277,9 +347,9 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
             </span>
           ))}
         </DialogDescription>
-        {target.source.kind === "sql" && (
+        {statementText !== null && (
           <pre className="border-border bg-surface-2 text-muted-foreground mt-1 line-clamp-3 max-h-16 overflow-hidden rounded-md border px-2 py-1 font-mono text-[11px] leading-4 whitespace-pre-wrap">
-            {target.source.sql.trim() || "(empty query)"}
+            {statementText.trim() || "(empty query)"}
           </pre>
         )}
       </DialogHeader>
@@ -304,7 +374,42 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
             />
           </Row>
         )}
-        {!isSql && src.columns.visible < src.columns.total && (
+        {held &&
+          (rerunSql !== null ||
+            held.truncated ||
+            held.stopped !== null ||
+            problem?.field === "rows") && (
+            <Row
+              id="export-result-rows"
+              label="Rows"
+              hint={heldRowsHint(held, rerun, rerunSql !== null, capped, problem)}
+            >
+              {rerunSql !== null ? (
+                <Segmented<"shown" | "all">
+                  id="export-result-rows"
+                  value={allRows ? "all" : "shown"}
+                  onChange={(v) => setAllRows(v === "all")}
+                  options={[
+                    {
+                      value: "shown",
+                      label: `The ${formatCount(held.rows.length)} rows shown`,
+                      title: "Write the rows the result holds",
+                    },
+                    {
+                      value: "all",
+                      label: "All rows",
+                      title: "All rows — runs the statement again",
+                    },
+                  ]}
+                />
+              ) : (
+                <span id="export-result-rows" className="pt-1.5 text-xs leading-4">
+                  The {formatCount(held.rows.length)} rows shown
+                </span>
+              )}
+            </Row>
+          )}
+        {!isSql && !held && src.columns.visible < src.columns.total && (
           <Row
             id="export-columns"
             label="Columns"
@@ -404,7 +509,11 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
               label="Table name"
               hint={
                 needsTableName ? (
-                  <span className="text-warning">A query export needs a target table name</span>
+                  <span className="text-warning">
+                    {held && !rerun
+                      ? "The result's table is unknown: it needs a target table name"
+                      : "A query export needs a target table name"}
+                  </span>
                 ) : (
                   "Target of the INSERT statements"
                 )
@@ -499,7 +608,12 @@ export function ExportDialog() {
   const session = useExportStore((s) => s.session);
   return (
     <Dialog open={open} onOpenChange={(next) => !next && closeExport()}>
-      <DialogContent className="gap-0 p-0 sm:max-w-[480px]" showCloseButton>
+      <DialogContent
+        className="gap-0 p-0 sm:max-w-[480px]"
+        showCloseButton
+        // Closed and animated out: the source (a shown result's rows) is no longer needed.
+        onCloseAutoFocus={releaseExportTarget}
+      >
         {target && <ExportForm key={session} target={target} />}
       </DialogContent>
     </Dialog>

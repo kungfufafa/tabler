@@ -8,23 +8,39 @@ renderer.
 
 - **Connections** — saved profiles with colours and groups, SSL modes, read-only sessions, SSH
   tunnels (password, private key with passphrase, agent) with host-key verification. Passwords live
-  in the macOS Keychain, never in plain files.
-- **Browse** — schema/database pickers, searchable table list with row estimates, virtualized data
+  in the macOS Keychain, never in plain files. Opening a profile that is already open switches to
+  it instead of starting a second session. SQLite: **Choose…** an existing file or **New…** to
+  create one; Test / Connect never create a missing file (a moved or mistyped path is an error),
+  and foreign-key enforcement (`PRAGMA foreign_keys`) is a switch under Advanced.
+- **Browse** — schema/database pickers, searchable table list with row estimates and **pins**
+  ("Pin to Top" in a table's context menu; kept per connection and database), virtualized data
   grid (100k+ rows) with server-side sort, filters (`=`, `≠`, `<`…, `LIKE`, `IN`, `BETWEEN`,
-  `IS NULL`, AND/OR), paging, column resize/hide, inspector, foreign-key jump, copy as
-  TSV/CSV/JSON/INSERT/Markdown.
+  `IS NULL`, **Raw SQL** conditions, AND/OR), paging, column header menu, resize, hide and
+  drag-to-reorder, inspector (cell and row view, full blobs), foreign-key jump, copy as
+  TSV/CSV/JSON/INSERT/Markdown (⇧⌘C picker).
 - **Edit** — inline, type-aware cell editing with staged changes (edited, new and deleted rows are
-  highlighted), `Preview SQL` before commit, single-transaction apply with per-row errors, undo,
-  NULL/DEFAULT, duplicate/delete rows, tables without primary keys handled safely.
+  highlighted), ⌘V paste of cells and rows (from Numbers, Excel or TSV), ⌥↩ multi-line text and a
+  JSON editor with validation, `Preview SQL` before commit, single-transaction apply with per-row
+  errors, undo, NULL/DEFAULT, duplicate/delete rows, tables without primary keys handled safely.
 - **SQL editor** — CodeMirror with schema-aware autocomplete per dialect, run all / selection /
-  statement under the cursor, multiple result sets, streaming results, cancel, EXPLAIN, formatting,
-  error positions highlighted in the editor, query history, open/save `.sql` files.
-- **Structure** — columns, indexes, foreign keys and triggers; staged DDL edits with preview
-  (SQLite table rebuilds when `ALTER TABLE` cannot do it), create/rename/truncate/drop tables.
-- **Export** — streaming CSV, JSON / NDJSON and SQL `INSERT` export of tables or queries with
-  progress and cancel.
-- **Comfort** — command palette (⌘K), keyboard-first everything, light/dark themes that follow
-  macOS, tab management with unsaved-change guards, connection-loss banner with reconnect.
+  statement under the cursor, multiple result sets, streaming results, cancel, EXPLAIN (EXPLAIN
+  ANALYZE of `INSERT` / `UPDATE` / `DELETE` runs inside a transaction that is rolled back, so the
+  rows stay), formatting, error positions highlighted in the editor, query history, open/save
+  `.sql` files.
+- **Structure** — columns (with a primary-key toggle), indexes, foreign keys and triggers; staged
+  DDL edits with preview (SQLite table rebuilds when `ALTER TABLE` cannot do it),
+  create/rename/truncate/drop tables, **Open in SQL** (the table's `CREATE` statement in a new
+  query tab).
+- **Export** — streaming CSV, JSON / NDJSON and SQL `INSERT` export of tables or queries (⇧⌘E
+  exports the result on screen; a result cut at the row limit can export all its rows by running a
+  read-only statement again, never a `DELETE … RETURNING` or `CALL`) with progress and cancel;
+  partial files are removed on cancel and on quit.
+- **Comfort** — command palette (⌘K), keyboard-first everything, a native macOS menu bar (File /
+  Edit / View / Window) wired to the same actions, light/dark themes that follow macOS, tab
+  management with unsaved-change guards (closing a tab, the window, or quitting from the menu
+  bar, ⌘Q or the Dock asks first). The sidebar, status bar and accent always follow the visible
+  tab's connection. A dropped connection shows the reconnect banner at the first failing query,
+  grid commit or DDL apply.
 
 Values are lossless across the UI: 64-bit integers beyond 2⁵³ and decimals are kept as text,
 timestamps keep the server's textual form, binary data is shown as a size and previewed on demand.
@@ -79,23 +95,28 @@ tests) is in `dev/docker-compose.yml`; see `dev/README.md`.
 
 ## Keyboard shortcuts
 
-| Global   |                     | Data grid |                      | SQL editor |                         |
-| -------- | ------------------- | --------- | -------------------- | ---------- | ----------------------- |
-| ⌘K / ⌘P  | command palette     | ↩ / F2    | edit cell            | ⌘↩         | run all / selection     |
-| ⌘T       | new query tab       | ⌘S        | commit (Preview SQL) | ⇧⌘↩        | run statement at cursor |
-| ⌘W       | close tab           | ⇧⌘Z       | discard changes      | ⌘.         | cancel                  |
-| ⇧⌘T      | reopen closed tab   | ⌘Z        | undo staged change   | ⌘E         | explain                 |
-| ⌘1…9     | go to tab           | ⌘F        | filter bar           | ⌥⇧F        | format                  |
-| ⌃⇥ / ⌃⇧⇥ | next / previous tab | ⌘N        | new row              | ⌘H         | history                 |
-| ⌘B       | toggle sidebar      | ⌘D        | duplicate row        | ⌘S / ⌘O    | save / open `.sql`      |
-| ⇧⌘I      | toggle inspector    | ⌘⌫        | delete rows          | ⌘/         | toggle comment          |
-| ⌘L       | search tables       | ⇧⌘N / ⇧⌘D | set NULL / DEFAULT   |            |                         |
-| ⌘R       | refresh             | ⇧⌘F       | open referenced row  |            |                         |
-| ⇧⌘E      | export              | ⌘C / ⇧⌘C  | copy / copy as…      |            |                         |
-| ⇧⌘O      | connection manager  |           |                      |            |                         |
-| ⌘,       | settings            |           |                      |            |                         |
+| Global   |                        | Data grid |                          | SQL editor |                         |
+| -------- | ---------------------- | --------- | ------------------------ | ---------- | ----------------------- |
+| ⌘K / ⌘P  | command palette        | ↩ / F2    | edit cell                | ⌘↩         | run all / selection     |
+| ⌘T       | new query tab          | ⌥↩        | multi-line / JSON edit   | ⇧⌘↩        | run statement at cursor |
+| ⌘W       | close tab              | ⌘S        | commit (Preview SQL)     | ⌘.         | cancel                  |
+| ⇧⌘T      | reopen closed tab      | ⇧⌘Z       | discard changes          | ⌘E         | explain                 |
+| ⌘1…9     | go to tab              | ⌘Z        | undo staged change       | ⌥⇧F        | format                  |
+| ⌃⇥ / ⌃⇧⇥ | next / previous tab    | ⌘F        | filter bar               | ⌘H         | history                 |
+| ⌘B       | toggle sidebar         | ⌘N        | new row                  | ⌘S / ⌘O    | save / open `.sql`      |
+| ⇧⌘I      | toggle inspector       | ⌘D        | duplicate row            | ⌘/         | toggle comment          |
+| ⌘L       | search tables          | ⌘⌫        | delete rows              | ⇧⌘E        | export the result       |
+| ⌘R       | refresh                | ⇧⌘N / ⇧⌘D | set NULL / DEFAULT       |            |                         |
+| ⇧⌘E      | export                 | ⇧⌘F       | open referenced row      |            |                         |
+| ⇧⌘O      | connection manager     | ⌘C        | copy (TSV)               |            |                         |
+| ⌘,       | settings               | ⇧⌘C       | copy as… (format picker) |            |                         |
+| ⌘Q       | quit (asks if unsaved) | ⌘V        | paste cells / rows       |            |                         |
 
-The full, searchable list is in Settings → Shortcuts.
+The full, searchable list is in Settings → Shortcuts. The native menu bar offers the same
+commands (File: New Query Tab, Open SQL File…, Close Tab, Reopen Closed Tab, Export…, Connection
+Manager; View: Command Palette, Toggle Sidebar, Toggle Inspector, Refresh, Full Screen); its
+shortcuts only act when the focused part of the page does not handle the key itself, and Edit
+keeps the standard Undo / Cut / Copy / Paste / Select All for text fields.
 
 ## Architecture
 
@@ -129,9 +150,14 @@ pnpm tauri build                 # src-tauri/target/release/bundle/{macos/Tabler
 pnpm tauri build --bundles app   # skip the DMG
 ```
 
-Builds are ad-hoc signed. On another Mac, a downloaded unsigned build may be reported as damaged by
-Gatekeeper; remove the quarantine flag with `xattr -cr /Applications/Tabler.app` or open it via
-right-click → Open. Notarized releases need an Apple Developer ID.
+Builds are ad-hoc signed (`bundle.macOS.signingIdentity: "-"` in `src-tauri/tauri.conf.json`):
+the whole bundle is sealed under the identifier `id.co.oceanspace.tabler`, so
+`codesign --verify --deep --strict --verbose=2 Tabler.app` passes and `codesign -dv --verbose=2`
+shows `Identifier=id.co.oceanspace.tabler` and `Sealed Resources` (a merely linker-signed bundle
+fails that check and is reported as damaged on other Macs). Ad-hoc signing is not a Developer ID:
+a downloaded build is still quarantined by Gatekeeper; open it via right-click → Open, or remove the
+quarantine flag with `xattr -cr /Applications/Tabler.app`. Notarized releases need an Apple
+Developer ID.
 
 ## Troubleshooting
 

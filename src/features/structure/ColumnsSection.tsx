@@ -21,6 +21,7 @@ export function ColumnsSection({
   editable,
   fkColumns,
   onEdit,
+  onTogglePk,
   onDrop,
   onRestore,
   onAdd,
@@ -31,6 +32,8 @@ export function ColumnsSection({
   /** Current names of columns that take part in a foreign key. */
   fkColumns: ReadonlySet<string>;
   onEdit: (key: string, field: ColumnField, raw: string | boolean) => void;
+  /** Adds the column to the primary key (at its end) or takes it out. */
+  onTogglePk: (key: string) => void;
   onDrop: (key: string) => void;
   onRestore: (key: string) => void;
   onAdd: (after?: string | null) => void;
@@ -100,6 +103,7 @@ export function ColumnsSection({
               typesId={r.status === "added" ? newTypesId : typesId}
               isFk={fkColumns.has(r.name)}
               onEdit={onEdit}
+              onTogglePk={onTogglePk}
               onDrop={onDrop}
               onRestore={onRestore}
               onAdd={onAdd}
@@ -126,6 +130,7 @@ function ColumnRowView({
   typesId,
   isFk,
   onEdit,
+  onTogglePk,
   onDrop,
   onRestore,
   onAdd,
@@ -137,6 +142,7 @@ function ColumnRowView({
   typesId: string;
   isFk: boolean;
   onEdit: (key: string, field: ColumnField, raw: string | boolean) => void;
+  onTogglePk: (key: string) => void;
   onDrop: (key: string) => void;
   onRestore: (key: string) => void;
   onAdd: (after?: string | null) => void;
@@ -146,6 +152,7 @@ function ColumnRowView({
   const canEdit = editable && !dropped;
   const comments = supportsComments(dialect);
   const changed = (f: ColumnField) => r.changed.includes(f) && "bg-changed";
+  const pkChanged = r.meta !== null && r.isPk !== r.meta.isPk;
   const strike = dropped && "line-through";
   const text = (field: Exclude<ColumnField, "nullable" | "autoIncrement">, className?: string) => (
     <CellInput
@@ -200,8 +207,39 @@ function ColumnRowView({
       <td className={cn("px-1", changed("defaultExpr"))}>
         {text("defaultExpr", "font-mono text-[11px]")}
       </td>
-      <td className="px-1 text-center">
-        {r.isPk && <KeyRound aria-label="Primary key" className="text-warning mx-auto size-3.5" />}
+      <td className={cn("px-1 text-center", pkChanged && "bg-changed")}>
+        <button
+          type="button"
+          aria-pressed={r.isPk}
+          aria-label={`${r.name} primary key`}
+          title={
+            canEdit
+              ? r.isPk
+                ? "Remove from the primary key"
+                : "Add to the primary key"
+              : undefined
+          }
+          disabled={!canEdit}
+          onClick={() => onTogglePk(r.key)}
+          className={cn(
+            "mx-auto flex size-5 items-center justify-center rounded outline-none",
+            "focus-visible:outline-ring/70 focus-visible:outline-2 focus-visible:outline-solid",
+            canEdit && "hover:bg-accent",
+          )}
+        >
+          <KeyRound
+            aria-hidden
+            className={cn(
+              "size-3.5",
+              r.isPk
+                ? "text-warning"
+                : canEdit
+                  ? // Off: a muted outline while the row is hovered or focused, quiet otherwise.
+                    "text-muted-foreground/60 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100"
+                  : "hidden",
+            )}
+          />
+        </button>
       </td>
       <td className="px-1 text-center">
         {added && supportsAddAutoIncrement(dialect) ? (

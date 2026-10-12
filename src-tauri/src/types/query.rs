@@ -5,7 +5,7 @@ use super::schema::ValueKind;
 use super::value::Value;
 use crate::error::ErrorPayload;
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct ResultColumn {

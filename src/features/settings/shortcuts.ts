@@ -1,9 +1,9 @@
-import type { ActionId } from "@/features/palette/actions";
 import { formatCombo, isMac } from "@/lib/keys/combo";
 import type { Scope, ShortcutDef } from "@/lib/keys/keymap";
 
 export interface ShortcutRow {
-  id: ActionId;
+  /** The action id for keymap rows; `ref:<keys>` for reference rows (built-in keys). */
+  id: string;
   label: string;
   /** Every combo bound to this action+label in the scope, in keymap order. */
   keys: string[];
@@ -14,6 +14,68 @@ export interface ShortcutGroup {
   title: string;
   rows: ShortcutRow[];
 }
+
+/**
+ * A key the app handles itself rather than through KEYMAP and the action registry: grid
+ * navigation (DataGrid), the cell editors, CodeMirror's own keymaps. Listed so the shortcut sheet
+ * is complete; combos are spelled like KEYMAP's (`Up`, `PageDown`, `Mod+Alt+G`…).
+ */
+export interface ReferenceShortcut {
+  scope: Scope;
+  keys: string;
+  label: string;
+}
+
+/** Rows with the same label merge, so alternatives (Enter / F2) share one line. */
+export const REFERENCE_SHORTCUTS: ReadonlyArray<ReferenceShortcut> = [
+  // Table grid (DataGrid's keydown handler and header clicks).
+  { scope: "grid", keys: "Up", label: "Move the selection" },
+  { scope: "grid", keys: "Down", label: "Move the selection" },
+  { scope: "grid", keys: "Left", label: "Move the selection" },
+  { scope: "grid", keys: "Right", label: "Move the selection" },
+  { scope: "grid", keys: "Shift+Up", label: "Extend the selection" },
+  { scope: "grid", keys: "Shift+Down", label: "Extend the selection" },
+  { scope: "grid", keys: "Shift+Left", label: "Extend the selection" },
+  { scope: "grid", keys: "Shift+Right", label: "Extend the selection" },
+  { scope: "grid", keys: "Mod+Up", label: "Jump to the edge" },
+  { scope: "grid", keys: "Mod+Down", label: "Jump to the edge" },
+  { scope: "grid", keys: "Mod+Left", label: "Jump to the edge" },
+  { scope: "grid", keys: "Mod+Right", label: "Jump to the edge" },
+  { scope: "grid", keys: "Home", label: "First / last column" },
+  { scope: "grid", keys: "End", label: "First / last column" },
+  { scope: "grid", keys: "Mod+Home", label: "First / last row" },
+  { scope: "grid", keys: "Mod+End", label: "First / last row" },
+  { scope: "grid", keys: "PageUp", label: "Page up / down" },
+  { scope: "grid", keys: "PageDown", label: "Page up / down" },
+  { scope: "grid", keys: "Tab", label: "Next / previous cell" },
+  { scope: "grid", keys: "Shift+Tab", label: "Next / previous cell" },
+  { scope: "grid", keys: "Enter", label: "Edit cell" },
+  { scope: "grid", keys: "F2", label: "Edit cell" },
+  { scope: "grid", keys: "Backspace", label: "Clear and edit cell" },
+  { scope: "grid", keys: "Delete", label: "Clear and edit cell" },
+  { scope: "grid", keys: "Escape", label: "Collapse the selection" },
+  { scope: "grid", keys: "Mod+A", label: "Select all" },
+  { scope: "grid", keys: "Alt+Click", label: "Select a column (on its header)" },
+  // Cell editors (inline input, multi-line panel, JSON editor).
+  { scope: "grid-edit", keys: "Enter", label: "Save and move down" },
+  { scope: "grid-edit", keys: "Tab", label: "Save and move to the next / previous cell" },
+  { scope: "grid-edit", keys: "Shift+Tab", label: "Save and move to the next / previous cell" },
+  { scope: "grid-edit", keys: "Escape", label: "Cancel the edit" },
+  { scope: "grid-edit", keys: "Alt+Enter", label: "New line (opens the multi-line editor)" },
+  { scope: "grid-edit", keys: "Mod+Enter", label: "Save (JSON / multi-line editor)" },
+  // SQL editor (CodeMirror's default, search and completion keymaps).
+  { scope: "editor", keys: "Mod+/", label: "Toggle comment" },
+  { scope: "editor", keys: "Mod+F", label: "Find and replace" },
+  { scope: "editor", keys: "F3", label: "Find next" },
+  { scope: "editor", keys: "Mod+G", label: "Find next" },
+  { scope: "editor", keys: "Shift+F3", label: "Find previous" },
+  { scope: "editor", keys: "Mod+Shift+G", label: "Find previous" },
+  { scope: "editor", keys: "Mod+D", label: "Select next occurrence" },
+  { scope: "editor", keys: "Mod+Alt+G", label: "Go to line" },
+  { scope: "editor", keys: "Alt+Up", label: "Move line up / down" },
+  { scope: "editor", keys: "Alt+Down", label: "Move line up / down" },
+  { scope: "editor", keys: "Ctrl+Space", label: "Show completions" },
+];
 
 export const SCOPE_TITLES: Record<Scope, string> = {
   global: "Global",
@@ -26,6 +88,8 @@ export const SCOPE_TITLES: Record<Scope, string> = {
 
 const SCOPE_ORDER: Scope[] = ["global", "sidebar", "grid", "grid-edit", "editor", "dialog"];
 
+const isReference = (row: ShortcutRow) => row.id.startsWith("ref:");
+
 /** Lower-cased text a row can be found by: label, action id, scope and every spelling of its keys. */
 function haystack(row: ShortcutRow, scope: Scope, mac: boolean): string {
   const keys = row.keys.flatMap((k) => [
@@ -33,34 +97,69 @@ function haystack(row: ShortcutRow, scope: Scope, mac: boolean): string {
     k.replace(/\bMod\b/g, mac ? "Cmd" : "Ctrl"),
     formatCombo(k, mac),
   ]);
-  return [row.label, row.id, SCOPE_TITLES[scope], ...keys].join(" ").toLowerCase();
+  const id = isReference(row) ? [] : [row.id];
+  return [row.label, ...id, SCOPE_TITLES[scope], ...keys].join(" ").toLowerCase();
+}
+
+/** One binding on its way into a row. */
+interface Entry {
+  scope: Scope;
+  keys: string;
+  label: string;
+  id: string;
+  /** Bindings with the same key in a scope are listed once. */
+  bindingKey: string;
+  /** Bindings with the same key in a scope share a row. */
+  rowKey: string;
 }
 
 /**
- * Turns the keymap into the read-only Settings → Shortcuts table: grouped by scope (fixed order,
- * empty groups dropped), duplicate id+keys bindings removed, and alternative combos for the same
- * action and label merged into one row. Every whitespace-separated term of `query` must match.
+ * Turns the keymap plus the reference keys into the read-only Settings → Shortcuts table: grouped
+ * by scope (fixed order, empty groups dropped), duplicate bindings removed (a reference key the
+ * keymap also binds in that scope is left out), and alternative combos for the same action and
+ * label merged into one row. Every whitespace-separated term of `query` must match.
  */
 export function groupShortcuts(
   defs: readonly ShortcutDef[],
   query = "",
   mac: boolean = isMac,
+  reference: readonly ReferenceShortcut[] = REFERENCE_SHORTCUTS,
 ): ShortcutGroup[] {
+  const bound = new Set(defs.map((d) => `${d.scope}\u0000${d.keys}`));
+  const entries: Entry[] = [
+    ...defs.map((d) => ({
+      scope: d.scope,
+      keys: d.keys,
+      label: d.label,
+      id: d.id,
+      bindingKey: `${d.id}\u0000${d.keys}`,
+      rowKey: `${d.id}\u0000${d.label}`,
+    })),
+    ...reference
+      .filter((r) => !bound.has(`${r.scope}\u0000${r.keys}`))
+      .map((r) => ({
+        scope: r.scope,
+        keys: r.keys,
+        label: r.label,
+        id: `ref:${r.keys}`,
+        bindingKey: `ref\u0000${r.scope}\u0000${r.keys}`,
+        rowKey: `ref\u0000${r.label}`,
+      })),
+  ];
+
   const seen = new Set<string>();
   const byScope = new Map<Scope, Map<string, ShortcutRow>>();
-  for (const def of defs) {
-    const bindingKey = `${def.id}\u0000${def.keys}`;
-    if (seen.has(bindingKey)) continue;
-    seen.add(bindingKey);
-    let rows = byScope.get(def.scope);
+  for (const e of entries) {
+    if (seen.has(e.bindingKey)) continue;
+    seen.add(e.bindingKey);
+    let rows = byScope.get(e.scope);
     if (!rows) {
       rows = new Map();
-      byScope.set(def.scope, rows);
+      byScope.set(e.scope, rows);
     }
-    const rowKey = `${def.id}\u0000${def.label}`;
-    const row = rows.get(rowKey);
-    if (row) row.keys.push(def.keys);
-    else rows.set(rowKey, { id: def.id, label: def.label, keys: [def.keys] });
+    const row = rows.get(e.rowKey);
+    if (row) row.keys.push(e.keys);
+    else rows.set(e.rowKey, { id: e.id, label: e.label, keys: [e.keys] });
   }
 
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);

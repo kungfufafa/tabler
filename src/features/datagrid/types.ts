@@ -38,6 +38,7 @@ export interface ViewRow {
   error?: string;
 }
 
+/** A cell position. Whether `c` is a visual or a source column index depends on the API (see each use). */
 export interface CellPos {
   r: number;
   c: number;
@@ -111,20 +112,45 @@ export function buildGridColumns(
   });
 }
 
+/**
+ * The visible columns in display order (`cols`) plus, for each one, its index in the source column
+ * list (`src[i]` is the position of `cols[i]` in `columns`). Row cells, staged patches and grid
+ * actions all use SOURCE indexes; selection and rendering use VISUAL indexes (positions in `cols`).
+ */
+export interface ColumnLayout {
+  cols: GridColumn[];
+  src: number[];
+}
+
 /** Applies order/hidden to the column list. Unknown ids in `order` are ignored; new columns go last. */
-export function visibleColumns(columns: GridColumn[], state: ColumnState): GridColumn[] {
-  const byId = new Map(columns.map((c) => [c.id, c]));
+export function layoutColumns(columns: GridColumn[], state: ColumnState): ColumnLayout {
+  const indexById = new Map<string, number>();
+  columns.forEach((c, i) => {
+    if (!indexById.has(c.id)) indexById.set(c.id, i);
+  });
   const hidden = new Set(state.hidden);
-  const ordered: GridColumn[] = [];
+  const placed = new Set<number>();
+  const cols: GridColumn[] = [];
+  const src: number[] = [];
+  const place = (i: number) => {
+    const c = columns[i];
+    if (!c || placed.has(i)) return;
+    placed.add(i);
+    if (hidden.has(c.id)) return;
+    cols.push(c);
+    src.push(i);
+  };
   for (const id of state.order) {
-    const c = byId.get(id);
-    if (c && !hidden.has(id)) {
-      ordered.push(c);
-      byId.delete(id);
-    }
+    const i = indexById.get(id);
+    if (i !== undefined) place(i);
   }
-  for (const c of byId.values()) if (!hidden.has(c.id)) ordered.push(c);
-  return ordered;
+  for (let i = 0; i < columns.length; i++) place(i);
+  return { cols, src };
+}
+
+/** Visible columns in display order (see `layoutColumns` for the source-index mapping). */
+export function visibleColumns(columns: GridColumn[], state: ColumnState): GridColumn[] {
+  return layoutColumns(columns, state).cols;
 }
 
 export function columnWidth(col: GridColumn, state: ColumnState): number {

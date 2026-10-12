@@ -61,4 +61,36 @@ describe("toStagedChanges", () => {
       value: { id: { t: "int", v: 1 }, name: { t: "text", v: "a" } },
     });
   });
+
+  it("keyless rows skip blobs without shifting the other columns", () => {
+    const col = (name: string, kind: "int" | "bytes" | "text", ordinal: number) => ({
+      ...meta.columns[0]!,
+      name,
+      kind,
+      dataType: kind === "bytes" ? "bytea" : kind === "int" ? "integer" : "text",
+      ordinal,
+      isPk: false,
+      pkOrdinal: null,
+      isAutoIncrement: false,
+      defaultExpr: null,
+    });
+    const keyless: BrowsePage = {
+      ...page,
+      columns: [col("a", "int", 1), col("b", "bytes", 2), col("c", "text", 3), col("d", "int", 4)],
+      rows: [
+        [
+          { t: "int", v: 1 },
+          { t: "bytes", v: { base64: "AAE=", len: 2, truncated: false } },
+          { t: "text", v: "three" },
+          { t: "int", v: 4 },
+        ],
+      ],
+      pkColumns: [],
+      identity: "none",
+    };
+    expect(rowKeyFor(keyless, 0)).toEqual({
+      kind: "allColumns",
+      value: { a: { t: "int", v: 1 }, c: { t: "text", v: "three" }, d: { t: "int", v: 4 } },
+    });
+  });
 });

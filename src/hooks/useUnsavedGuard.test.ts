@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+import { useStructureStore } from "@/features/structure/store";
+import { hasUnsaved, useTabsStore } from "@/stores/tabs";
 import {
   attachBeforeUnload,
   attachQuitShortcut,
+  createUnsavedReporter,
   createWindowCloseGuard,
+  handleQuitRequest,
+  subscribeUnsaved,
   type GuardedWindow,
 } from "./useUnsavedGuard";
 
@@ -188,5 +193,89 @@ describe("attachQuitShortcut", () => {
     expect(press({ code: "KeyQ", key: "q", ctrlKey: true })).toBe(false);
     expect(opts.request).not.toHaveBeenCalled();
     detach();
+  });
+});
+
+describe("handleQuitRequest", () => {
+  it("acknowledges the request before deciding", () => {
+    const order: string[] = [];
+    const acknowledge = vi.fn(async () => void order.push("ack"));
+    const quit = vi.fn(async () => void order.push("quit"));
+    handleQuitRequest(
+      () => {
+        order.push("request");
+        return true;
+      },
+      quit,
+      acknowledge,
+    );
+    expect(order).toEqual(["ack", "request", "quit"]);
+  });
+
+  it("acknowledges even when the dialog has to ask", () => {
+    const acknowledge = vi.fn(async () => {});
+    const quit = vi.fn(async () => {});
+    handleQuitRequest(() => false, quit, acknowledge);
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(quit).not.toHaveBeenCalled();
+  });
+
+  it("survives a failing acknowledgement", async () => {
+    const quit = vi.fn(async () => {});
+    handleQuitRequest(
+      () => true,
+      quit,
+      () => Promise.reject(new Error("gone")),
+    );
+    await Promise.resolve();
+    expect(quit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("createUnsavedReporter", () => {
+  it("reports only changes of the unsaved state", () => {
+    let dirty = false;
+    const report = vi.fn(async (_unsaved: boolean) => {});
+    const sync = createUnsavedReporter(() => dirty, report);
+    sync();
+    sync();
+    dirty = true;
+    sync();
+    sync();
+    dirty = false;
+    sync();
+    expect(report.mock.calls.map(([u]) => u)).toEqual([false, true, false]);
+  });
+
+  it("reports again after a failed report", async () => {
+    const report = vi.fn(async (_unsaved: boolean) => {});
+    report.mockRejectedValueOnce(new Error("ipc down"));
+    const sync = createUnsavedReporter(() => true, report);
+    sync();
+    await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    sync();
+    expect(report).toHaveBeenCalledTimes(2);
+  });
+
+  it("follows staged DDL too (subscribeUnsaved covers every store hasUnsaved reads)", () => {
+    useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
+    useStructureStore.setState({ byTab: {} });
+    const id = useTabsStore
+      .getState()
+      .openTable("c1", { schema: "public", name: "t" }, "structure");
+    const report = vi.fn(async (_unsaved: boolean) => {});
+    const sync = createUnsavedReporter(hasUnsaved, report);
+    const unsubscribe = subscribeUnsaved(sync);
+    sync();
+    useStructureStore
+      .getState()
+      .stage(id, (ops) => [
+        ...ops,
+        { op: "renameTable", table: { schema: "public", name: "t" }, newName: "u" },
+      ]);
+    useStructureStore.getState().remove([id]);
+    unsubscribe();
+    expect(report.mock.calls.map(([u]) => u)).toEqual([false, true, false]);
   });
 });

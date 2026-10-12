@@ -512,3 +512,82 @@ async fn introspects_seeded_tables() {
 
     session.close().await;
 }
+
+/// The inspector's "Load full value" on a view: views have no primary key and no `ctid`, so the
+/// all-columns key must not go through a `ctid` subquery, and the blob must come back whole.
+#[tokio::test]
+async fn fetch_full_cell_from_a_keyless_view() {
+    use std::collections::BTreeMap;
+    use tabler_lib::commands::browse::fetch_cell_inner;
+    use tabler_lib::types::browse::RowKey;
+
+    let Some(session) = open().await else {
+        return;
+    };
+    let schema = format!("tabler_test_{}", uuid::Uuid::new_v4().simple());
+    let big: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
+
+    let result = async {
+        session
+            .execute(&format!("CREATE SCHEMA \"{schema}\""), &[])
+            .await?;
+        session
+            .execute(
+                &format!("CREATE TABLE \"{schema}\".files (id int, name text, data bytea)"),
+                &[],
+            )
+            .await?;
+        session
+            .execute(
+                &format!("CREATE VIEW \"{schema}\".files_v AS SELECT id, name, data FROM \"{schema}\".files"),
+                &[],
+            )
+            .await?;
+        session
+            .execute(
+                &format!(
+                    "INSERT INTO \"{schema}\".files VALUES (1, 'a', $1::bytea), (2, NULL, NULL)"
+                ),
+                &[Value::from_bytes_uncapped(&big)],
+            )
+            .await?;
+        let view = session
+            .table_meta(&TableRef::new(Some(&schema), "files_v"))
+            .await?;
+        assert_eq!(view.kind, TableKind::View);
+        assert!(view.primary_key.is_empty());
+        // The renderer's key for a keyless row: every non-blob column.
+        let key = |id: i64, name: Value| {
+            RowKey::AllColumns(BTreeMap::from([
+                ("id".to_string(), Value::Int(id)),
+                ("name".to_string(), name),
+            ]))
+        };
+        let full = fetch_cell_inner(
+            session.as_ref(),
+            &view,
+            "data",
+            &key(1, Value::Text("a".into())),
+        )
+        .await?;
+        assert_eq!(full, Value::from_bytes_uncapped(&big));
+        let name = fetch_cell_inner(
+            session.as_ref(),
+            &view,
+            "name",
+            &key(1, Value::Text("a".into())),
+        )
+        .await?;
+        assert_eq!(name, Value::Text("a".into()));
+        let null = fetch_cell_inner(session.as_ref(), &view, "data", &key(2, Value::Null)).await?;
+        assert_eq!(null, Value::Null);
+        Ok::<(), tabler_lib::error::AppError>(())
+    }
+    .await;
+
+    let _ = session
+        .execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"), &[])
+        .await;
+    session.close().await;
+    result.unwrap();
+}

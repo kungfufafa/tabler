@@ -56,7 +56,15 @@ function RowsGrid({
       onFocusCell={(cell) =>
         setInspector(
           cell
-            ? { column: cell.column, value: cell.value, rowIndex: cell.pos.r, source: label }
+            ? {
+                column: cell.column,
+                value: cell.value,
+                rowIndex: cell.pos.r,
+                source: label,
+                // Result rows cannot be refetched by key, so there is no `fetch`.
+                row: { columns, cells: cell.row.cells, focused: cell.sourceIndex },
+                fetch: null,
+              }
             : null,
         )
       }

@@ -34,6 +34,8 @@ export const connectionFormSchema = z
     sshPassword: z.string(),
     sshPassphrase: z.string(),
     readOnly: z.boolean(),
+    /** SQLite only: `PRAGMA foreign_keys` on every session connection. */
+    sqliteForeignKeys: z.boolean(),
     timezone: z.string().trim(),
     connectTimeoutSecs: z
       .string()
@@ -87,6 +89,7 @@ export const DEFAULT_FORM: ConnectionFormValues = {
   sshPassword: "",
   sshPassphrase: "",
   readOnly: false,
+  sqliteForeignKeys: true,
   timezone: "",
   connectTimeoutSecs: "",
 };
@@ -122,6 +125,7 @@ export function profileToForm(p: ConnectionProfile): ConnectionFormValues {
     sshAuth: p.ssh?.auth ?? "key",
     sshKeyPath: p.ssh?.keyPath ?? "",
     readOnly: p.options.readOnly,
+    sqliteForeignKeys: p.options.sqliteForeignKeys,
     timezone: p.options.timezone ?? "",
     connectTimeoutSecs: p.options.connectTimeoutSecs ? String(p.options.connectTimeoutSecs) : "",
   };
@@ -168,7 +172,7 @@ export function formToProfileInput(
       readOnly: v.readOnly,
       startupSql: existing?.options.startupSql ?? null,
       defaultRowLimit: existing?.options.defaultRowLimit ?? null,
-      sqliteForeignKeys: existing?.options.sqliteForeignKeys ?? true,
+      sqliteForeignKeys: v.sqliteForeignKeys,
     },
     sortOrder: existing?.sortOrder ?? 0,
     createdAt: existing?.createdAt ?? "",

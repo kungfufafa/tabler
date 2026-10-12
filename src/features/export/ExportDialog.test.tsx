@@ -9,13 +9,21 @@ import {
   type ExportProgress,
   type ExportRequest,
   type ExportResult,
+  type ResultColumn,
+  type Value,
 } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { newFilterRow, useTableTabsStore } from "@/stores/tableTabs";
 import { useTabsStore } from "@/stores/tabs";
 import { ExportHost } from "./ExportHost";
 import { EXPORT_OPTIONS_KEY } from "./options";
-import { closeExport, openExport, resetExportStore, useExportStore } from "./store";
+import {
+  closeExport,
+  openExport,
+  resetExportStore,
+  useExportStore,
+  type ExportSourceSpec,
+} from "./store";
 
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), message: vi.fn() }));
 vi.mock("sonner", () => ({ toast }));
@@ -408,6 +416,243 @@ describe("ExportDialog", () => {
     act(() => openExport({ connectionId: info.connectionId, source }));
     dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByLabelText("Table name")).toHaveValue("");
+  });
+
+  describe("a result shown in the SQL editor", () => {
+    const columns: ResultColumn[] = [
+      { name: "id", dataType: "int8", kind: "int", nullable: false, table: "users" },
+      { name: "email", dataType: "text", kind: "text", nullable: true, table: "users" },
+    ];
+    const rows: Value[][] = [
+      [
+        { t: "int", v: 1 },
+        { t: "text", v: "ana@example.com" },
+      ],
+      [{ t: "int", v: 2 }, { t: "null" }],
+    ];
+    const held = (patch: Partial<Extract<ExportSourceSpec, { kind: "rows" }>> = {}) =>
+      ({
+        kind: "rows",
+        columns,
+        rows,
+        label: "Result 2",
+        table: "users",
+        sql: "select id, email from users",
+        truncated: false,
+        stopped: null,
+        ...patch,
+      }) as const;
+
+    it("writes the rows as they are, with no row or column choices", async () => {
+      const user = userEvent.setup();
+      await setup();
+      act(() => openExport({ connectionId: info.connectionId, source: held() }));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText("Result 2")).toBeInTheDocument();
+      expect(within(dialog).getByText("· 2 rows")).toBeInTheDocument();
+      expect(within(dialog).getByText("select id, email from users")).toBeInTheDocument();
+      expect(within(dialog).queryByRole("radio", { name: "Current page" })).toBeNull();
+      expect(within(dialog).queryByRole("radio", { name: "All rows" })).toBeNull();
+      expect(within(dialog).queryByText(/Only visible columns/)).toBeNull();
+
+      // INSERTs go into the result's table unless another is named.
+      await user.click(within(dialog).getByRole("radio", { name: "SQL" }));
+      expect(within(dialog).getByLabelText("Table name")).toHaveAttribute("placeholder", "users");
+      expect(exportButton(dialog)).toBeEnabled();
+      const run = spyRun("/Users/me/Downloads/users.sql");
+      await user.click(exportButton(dialog));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+      expect(window.prompt).toHaveBeenCalledWith(
+        "Save export as",
+        expect.stringMatching(/\/users_\d{8}-\d{4}\.sql$/),
+      );
+      const req = requestOf(run);
+      expect(req.source).toEqual({ kind: "rows", columns, rows, table: "users" });
+      expect(req.format).toEqual({ format: "sqlInsert", tableName: "", batchSize: 100 });
+      expect(req.maxRows).toBeNull();
+      expect(toast.success).toHaveBeenCalledWith("Exported 2 rows", expect.anything());
+    });
+
+    it("needs a table name for INSERTs when the result's table is unknown", async () => {
+      const user = userEvent.setup();
+      await setup();
+      act(() =>
+        openExport({ connectionId: info.connectionId, source: held({ table: null, sql: null }) }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      await user.click(within(dialog).getByRole("radio", { name: "SQL" }));
+      expect(exportButton(dialog)).toBeDisabled();
+      expect(within(dialog).getByText(/needs a target table name/)).toBeInTheDocument();
+      await user.type(within(dialog).getByLabelText("Table name"), "archive");
+      expect(exportButton(dialog)).toBeEnabled();
+    });
+
+    it("offers all rows of a cut-off result by running its statement again", async () => {
+      const user = userEvent.setup();
+      await setup();
+      const source = held({ truncated: true, sql: "select * from events_big" });
+      act(() => openExport({ connectionId: info.connectionId, source }));
+      let dialog = await screen.findByRole("dialog");
+      const shown = within(dialog).getByRole("radio", { name: "The 2 rows shown" });
+      expect(shown).toHaveAttribute("aria-checked", "true");
+
+      // Default: the rows shown.
+      let run = spyRun("/Users/me/Downloads/shown.csv");
+      await user.click(exportButton(dialog));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+      expect(requestOf(run).source).toMatchObject({ kind: "rows", rows });
+      vi.restoreAllMocks();
+
+      act(() => openExport({ connectionId: info.connectionId, source }));
+      dialog = await screen.findByRole("dialog");
+      await user.click(within(dialog).getByRole("radio", { name: "All rows" }));
+      expect(within(dialog).getByText(/Runs the statement again/)).toBeInTheDocument();
+      run = spyRun("/Users/me/Downloads/all.csv");
+      await user.click(exportButton(dialog));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledTimes(2));
+      expect(requestOf(run).source).toEqual({ kind: "sql", sql: "select * from events_big" });
+    });
+
+    it("says when the statement stopped early, and offers to run it again", async () => {
+      const user = userEvent.setup();
+      await setup();
+      const source = held({ stopped: "cancelled", sql: "select * from events_big" });
+      act(() => openExport({ connectionId: info.connectionId, source }));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText("· 2 rows shown")).toBeInTheDocument();
+      expect(within(dialog).getByText("· cancelled")).toBeInTheDocument();
+      expect(within(dialog).getByText(/statement was cancelled/)).toBeInTheDocument();
+      // Default: the rows that arrived, as shown; "All rows" runs the statement again.
+      expect(within(dialog).getByRole("radio", { name: "The 2 rows shown" })).toHaveAttribute(
+        "aria-checked",
+        "true",
+      );
+      await user.click(within(dialog).getByRole("radio", { name: "All rows" }));
+      const run = spyRun("/Users/me/Downloads/all.csv");
+      await user.click(exportButton(dialog));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+      expect(requestOf(run).source).toEqual({ kind: "sql", sql: "select * from events_big" });
+    });
+
+    it("a result that failed partway says so too", async () => {
+      await setup();
+      act(() =>
+        openExport({ connectionId: info.connectionId, source: held({ stopped: "error" }) }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText("· failed partway")).toBeInTheDocument();
+      expect(within(dialog).getByText(/failed partway: only the rows/)).toBeInTheDocument();
+      expect(within(dialog).getByRole("radio", { name: "All rows" })).toBeInTheDocument();
+    });
+
+    it("never runs a writing statement again", async () => {
+      const user = userEvent.setup();
+      await setup();
+      const sql = "delete from users where id < 10 returning id, email";
+      act(() =>
+        openExport({ connectionId: info.connectionId, source: held({ truncated: true, sql }) }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText(sql)).toBeInTheDocument();
+      expect(within(dialog).queryByRole("radio", { name: "All rows" })).toBeNull();
+      expect(within(dialog).getByText(/only the rows shown are written/)).toBeInTheDocument();
+      const run = spyRun("/Users/me/Downloads/deleted.csv");
+      await user.click(exportButton(dialog));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+      expect(requestOf(run).source).toMatchObject({ kind: "rows", rows });
+    });
+
+    const capped: Value = { t: "bytes", v: { base64: "", len: 70_000, truncated: true } };
+
+    it("exports a result with a cut binary value by running its statement again", async () => {
+      const user = userEvent.setup();
+      await setup();
+      act(() =>
+        openExport({
+          connectionId: info.connectionId,
+          source: held({ rows: [[{ t: "int", v: 1 }, capped]] }),
+        }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      // Not cut at the row limit, yet the rows shown can't be written: "All rows" is the default.
+      expect(within(dialog).getByRole("radio", { name: "All rows" })).toHaveAttribute(
+        "aria-checked",
+        "true",
+      );
+      expect(within(dialog).getByText(/binary values in full/)).toBeInTheDocument();
+      const run = spyRun("/Users/me/Downloads/blob.csv");
+      await user.click(exportButton(dialog));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+      expect(requestOf(run).source).toEqual({ kind: "sql", sql: "select id, email from users" });
+      vi.restoreAllMocks();
+
+      // The rows shown can't be exported as they are.
+      act(() =>
+        openExport({
+          connectionId: info.connectionId,
+          source: held({ rows: [[{ t: "int", v: 1 }, capped]] }),
+        }),
+      );
+      const again = await screen.findByRole("dialog");
+      await user.click(within(again).getByRole("radio", { name: "The 1 rows shown" }));
+      expect(within(again).getByText(/cut to its 64 KiB preview/)).toBeInTheDocument();
+      expect(exportButton(again)).toBeDisabled();
+    });
+
+    it("points to the table when running the statement again can't help", async () => {
+      await setup();
+      // MySQL caps blobs in query exports too; and a later result set has no statement to rerun.
+      const mysql = await ipc.connections.connect("p-shop-mysql");
+      useConnectionsStore.getState().add(mysql);
+      act(() =>
+        openExport({
+          connectionId: mysql.connectionId,
+          source: held({ rows: [[{ t: "int", v: 1 }, capped]] }),
+        }),
+      );
+      let dialog = await screen.findByRole("dialog");
+      expect(within(dialog).queryByRole("radio", { name: "All rows" })).toBeNull();
+      expect(within(dialog).getByText(/Export its table instead/)).toBeInTheDocument();
+      expect(exportButton(dialog)).toBeDisabled();
+
+      act(() => closeExport());
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      act(() =>
+        openExport({
+          connectionId: info.connectionId,
+          source: held({ rows: [[{ t: "int", v: 1 }, capped]], sql: null }),
+        }),
+      );
+      dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText(/Export its table instead/)).toBeInTheDocument();
+      expect(exportButton(dialog)).toBeDisabled();
+      await ipc.connections.disconnect(mysql.connectionId);
+    });
+
+    it("lets go of the result's rows once the dialog has closed", async () => {
+      const user = userEvent.setup();
+      await setup();
+      act(() => openExport({ connectionId: info.connectionId, source: held() }));
+      let dialog = await screen.findByRole("dialog");
+      await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      await waitFor(() => expect(useExportStore.getState().target).toBeNull());
+
+      // Closed while the export runs: released when it ends.
+      act(() => openExport({ connectionId: info.connectionId, source: held() }));
+      dialog = await screen.findByRole("dialog");
+      const { ctl } = controlledRun("/Users/me/Downloads/r.csv");
+      await user.click(exportButton(dialog));
+      await waitFor(() => expect(useExportStore.getState().run).not.toBeNull());
+      act(() => closeExport());
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(useExportStore.getState().target).not.toBeNull();
+      act(() =>
+        ctl.finish({ path: "/Users/me/Downloads/r.csv", rows: 2, bytes: 40, durationMs: 2 }),
+      );
+      await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+      expect(useExportStore.getState().target).toBeNull();
+    });
   });
 
   it("explains that a query tab exports from the SQL editor", async () => {

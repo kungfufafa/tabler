@@ -3,6 +3,8 @@ import {
   Copy,
   Eraser,
   PencilLine,
+  Pin,
+  PinOff,
   SquarePlus,
   Table2,
   TableProperties,
@@ -23,9 +25,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TableDialogs, type TableDialogState } from "@/features/structure/TableDialogs";
 import { isAlterable, isViewKind } from "@/features/structure/tableActions";
 import { formatCount } from "@/lib/format/time";
-import type { TableSummary } from "@/lib/ipc";
+import { tableKey, type TableSummary } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
+import { EMPTY_PINS, togglePin } from "@/stores/pins";
 import { useTabsStore } from "@/stores/tabs";
 import { useCurrentSchema, type TreeRow } from "./useSchemaTree";
 
@@ -44,12 +47,18 @@ export function SchemaTree({
   loading,
   error,
   search,
+  pinScope = null,
+  pinned = EMPTY_PINS,
 }: {
   connectionId: string;
   rows: TreeRow[];
   loading: boolean;
   error: string | null;
   search: string;
+  /** Where "Pin to Top" stores pins (`pinScope`); null hides it. */
+  pinScope?: string | null;
+  /** Pinned `tableKey`s of `pinScope`. */
+  pinned?: ReadonlySet<string>;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const openTable = useTabsStore((s) => s.openTable);
@@ -148,6 +157,7 @@ export function SchemaTree({
             );
           }
           const t = row.table;
+          const isPinned = pinned.has(tableKey(t));
           const isActive =
             activeTab !== null &&
             activeTab.kind !== "query" &&
@@ -169,6 +179,12 @@ export function SchemaTree({
                 >
                   <TableIcon kind={t.kind} />
                   <span className="truncate">{t.name}</span>
+                  {isPinned && (
+                    <Pin
+                      aria-label="Pinned"
+                      className="text-muted-foreground/60 size-3 shrink-0 -rotate-45"
+                    />
+                  )}
                   {t.rowEstimate !== null && (
                     <span className="text-muted-foreground/70 ml-auto pl-2 font-mono text-[10px] tabular-nums">
                       {formatCount(t.rowEstimate, t.rowEstimate > 1000)}
@@ -199,6 +215,19 @@ export function SchemaTree({
                 >
                   <TableProperties /> Structure
                 </ContextMenuItem>
+                {pinScope !== null && (
+                  <ContextMenuItem onSelect={() => togglePin(pinScope, t)}>
+                    {isPinned ? (
+                      <>
+                        <PinOff /> Unpin
+                      </>
+                    ) : (
+                      <>
+                        <Pin /> Pin to Top
+                      </>
+                    )}
+                  </ContextMenuItem>
+                )}
                 <ContextMenuSeparator />
                 <ContextMenuItem
                   disabled={readOnly}

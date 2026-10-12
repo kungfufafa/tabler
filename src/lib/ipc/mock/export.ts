@@ -7,6 +7,7 @@ import type { ExportProgress } from "../bindings/ExportProgress";
 import type { ExportRequest } from "../bindings/ExportRequest";
 import type { ExportResult } from "../bindings/ExportResult";
 import type { SshConfig } from "../bindings/SshConfig";
+import type { Value } from "../bindings/Value";
 import { tableMetaFor } from "./fixtures";
 import { matchesGroup, rowsFor } from "./rows";
 import { mockError, mockInvoke, mockLatency, registerMock } from "./transport";
@@ -119,7 +120,35 @@ export function mockKnownHosts(): ReadonlyMap<string, string> {
 const running = new Set<string>();
 const cancelled = new Set<string>();
 
-function validateFormat(format: ExportFormat, isTable: boolean): void {
+/** A binary value cut to its preview (also inside arrays). */
+const capped = (v: Value): boolean =>
+  (v.t === "bytes" && v.v.truncated) || (v.t === "array" && v.v.some(capped));
+
+/** Rows held by the renderer: written as they are (what the backend checks first). */
+function heldRows(
+  driver: Driver,
+  source: Extract<ExportRequest["source"], { kind: "rows" }>,
+): number {
+  if (source.columns.length === 0)
+    mockError("INVALID_INPUT", "the result to export has no columns");
+  source.rows.forEach((row, i) => {
+    if (row.length !== source.columns.length)
+      mockError(
+        "INVALID_INPUT",
+        `row ${i + 1} of the result has ${row.length} values for ${source.columns.length} columns`,
+      );
+    // A PostgreSQL query export reads bytea in full; MySQL / SQLite only through the table.
+    if (row.some(capped))
+      mockError(
+        "INVALID_INPUT",
+        `a binary value in this result was truncated to 64 KiB; export ${driver === "postgres" ? "the query" : "its table"} instead`,
+      );
+  });
+  return source.rows.length;
+}
+
+/** `hasTable`: the source names a default INSERT target (a table, or a result's table). */
+function validateFormat(format: ExportFormat, hasTable: boolean): void {
   if (format.format === "csv") {
     const d = format.delimiter;
     if (d.length !== 1 || d.charCodeAt(0) > 127 || d === '"' || d === "\r" || d === "\n")
@@ -131,7 +160,7 @@ function validateFormat(format: ExportFormat, isTable: boolean): void {
   if (format.format === "sqlInsert") {
     if (format.batchSize < 1)
       mockError("INVALID_INPUT", "the INSERT batch size must be at least 1");
-    if (!isTable && format.tableName.trim() === "")
+    if (!hasTable && format.tableName.trim() === "")
       mockError("INVALID_INPUT", "a target table name is required for an INSERT export");
   }
 }
@@ -193,9 +222,16 @@ registerMock("export_data", async ({ connectionId, req, onProgress }) => {
   const conn =
     conns.find((c) => c.connectionId === connectionId) ??
     mockError("NOT_CONNECTED", "not connected");
-  validateFormat(r.format, r.source.kind === "table");
+  validateFormat(
+    r.format,
+    r.source.kind === "table" || (r.source.kind === "rows" && r.source.table !== null),
+  );
   let total =
-    r.source.kind === "table" ? tableRows(conn.driver, r) : sqlRows(conn.driver, r.source.sql);
+    r.source.kind === "table"
+      ? tableRows(conn.driver, r)
+      : r.source.kind === "rows"
+        ? heldRows(conn.driver, r.source)
+        : sqlRows(conn.driver, r.source.sql);
   if (r.maxRows !== null) total = Math.min(total, r.maxRows);
 
   const perRow = bytesPerRow(r.format);

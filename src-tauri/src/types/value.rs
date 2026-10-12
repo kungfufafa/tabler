@@ -102,6 +102,16 @@ impl Value {
         })
     }
 
+    /// A whole blob, never truncated (`fetch_cell`'s "load full value"; callers bound the size).
+    pub fn from_bytes_uncapped(bytes: &[u8]) -> Value {
+        use base64::Engine as _;
+        Value::Bytes(BytesValue {
+            base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            len: bytes.len() as u64,
+            truncated: false,
+        })
+    }
+
     pub fn other(ty: &str, text: impl Into<String>) -> Value {
         Value::Other(OtherValue {
             ty: ty.to_string(),
@@ -136,6 +146,25 @@ impl Value {
             Value::Other(o) => o.text.clone(),
         })
     }
+}
+
+/// Decodes hex text (`encode(x, 'hex')`, `HEX(x)`, `hex(x)`; either case). `None` when malformed.
+pub fn decode_hex(hex: &str) -> Option<Vec<u8>> {
+    let hex = hex.trim().as_bytes();
+    let (pairs, rest) = hex.as_chunks::<2>();
+    if !rest.is_empty() {
+        return None;
+    }
+    let nibble = |c: u8| match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    };
+    pairs
+        .iter()
+        .map(|[hi, lo]| Some((nibble(*hi)? << 4) | nibble(*lo)?))
+        .collect()
 }
 
 /// Renders a one-dimensional array as a PostgreSQL array literal: `{"a","b",NULL}`.
@@ -206,6 +235,31 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn uncapped_bytes_keep_everything() {
+        let big = vec![7u8; BYTES_PREVIEW_CAP + 10];
+        match Value::from_bytes_uncapped(&big) {
+            Value::Bytes(b) => {
+                assert!(!b.truncated);
+                assert_eq!(b.len, (BYTES_PREVIEW_CAP + 10) as u64);
+                use base64::Engine as _;
+                let back = base64::engine::general_purpose::STANDARD
+                    .decode(b.base64)
+                    .unwrap();
+                assert_eq!(back, big);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn hex_decoding() {
+        assert_eq!(decode_hex("00ff1A"), Some(vec![0, 255, 26]));
+        assert_eq!(decode_hex(""), Some(vec![]));
+        assert_eq!(decode_hex("abc"), None);
+        assert_eq!(decode_hex("zz"), None);
     }
 
     #[test]

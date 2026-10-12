@@ -97,6 +97,16 @@ export function splitList(text: string): string[] {
   return out.filter((s) => s !== "");
 }
 
+/**
+ * The filter-bar "column" of a raw SQL condition: its `value` is a WHERE fragment that the backend
+ * wraps in parentheses as is (`FilterNode` kind "raw"); the operator is ignored.
+ */
+export const RAW_SQL_COLUMN = "__raw_sql__";
+
+export function isRawSqlRow(row: Pick<FilterRowSpec, "column">): boolean {
+  return row.column === RAW_SQL_COLUMN;
+}
+
 export function toFilterGroup(
   rows: FilterRowSpec[],
   columns: ColumnMeta[],
@@ -105,6 +115,11 @@ export function toFilterGroup(
   const items: FilterNode[] = [];
   for (const row of rows) {
     if (!row.enabled) continue;
+    if (isRawSqlRow(row)) {
+      const sql = row.value.trim();
+      if (sql !== "") items.push({ kind: "raw", sql });
+      continue;
+    }
     const col = columns.find((c) => c.name === row.column);
     if (!col) continue;
     const def = opDef(row.op);

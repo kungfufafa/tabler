@@ -1123,3 +1123,139 @@ async fn keywords_in_literals_do_not_prevent_the_cap_cancel() {
         );
     }
 }
+
+async fn count_rows(session: &dyn DbSession, table: &str) -> i64 {
+    count_of(
+        &single(session, &format!("select count(*)::int from {table}"))
+            .await
+            .unwrap(),
+    )
+}
+
+/// EXPLAIN ANALYZE executes the statement: it must run in a transaction that is rolled back.
+#[tokio::test]
+async fn explain_analyze_never_keeps_changes() {
+    let Some(session) = open().await else {
+        return;
+    };
+    let s = session.as_ref();
+    let t = format!("tabler_xa_{}", suffix());
+    let (results, _) = run(
+        s,
+        &format!("create temp table {t} (a int); insert into {t} values (1), (2), (3);"),
+        RunOptions::default(),
+    )
+    .await;
+    assert!(results.iter().all(|r| r.error.is_none()), "{results:?}");
+    assert_eq!(s.in_transaction(), Some(false));
+
+    let plan = explain_inner(
+        s,
+        &format!("DELETE FROM {t}"),
+        ExplainMode::Analyze,
+        &CancelSlot::default(),
+    )
+    .await
+    .unwrap();
+    let text = plan.text.unwrap();
+    assert!(text.contains("actual time"), "{text}");
+    assert_eq!(count_rows(s, &t).await, 3);
+    assert_eq!(s.in_transaction(), Some(false));
+
+    // The run option wraps every statement, data-modifying CTEs included.
+    let options = RunOptions {
+        explain: Some(ExplainMode::Analyze),
+        stop_on_error: false,
+        ..RunOptions::default()
+    };
+    let (results, _) = run(
+        s,
+        &format!(
+            "delete from {t} where a = 1; update {t} set a = a + 10; \
+             with gone as (delete from {t} returning *) select count(*) from gone;"
+        ),
+        options,
+    )
+    .await;
+    assert!(results.iter().all(|r| r.error.is_none()), "{results:?}");
+    assert!(results.iter().all(|r| r.kind == StatementKind::Explain));
+    assert_eq!(count_rows(s, &t).await, 3);
+    let sum = single(s, &format!("select sum(a)::int from {t}"))
+        .await
+        .unwrap();
+    assert_eq!(count_of(&sum), 6);
+
+    // A statement that fails while it runs: still rolled back, the editor is usable.
+    let err = explain_inner(
+        s,
+        &format!("delete from {t} where a / 0 = 1"),
+        ExplainMode::Analyze,
+        &CancelSlot::default(),
+    )
+    .await
+    .unwrap_err();
+    match err {
+        AppError::Db { sqlstate, .. } => assert_eq!(sqlstate.as_deref(), Some("22012")),
+        other => panic!("unexpected {other:?}"),
+    }
+    assert_eq!(s.in_transaction(), Some(false));
+    assert_eq!(count_rows(s, &t).await, 3);
+    single(s, &format!("drop table {t}")).await.unwrap();
+}
+
+/// Inside the user's own transaction the analyze runs under a savepoint: the transaction stays
+/// open with its earlier work, and only the explained statement is undone.
+#[tokio::test]
+async fn explain_analyze_inside_a_transaction_keeps_it_open() {
+    let Some(session) = open().await else {
+        return;
+    };
+    let s = session.as_ref();
+    let t = format!("tabler_xt_{}", suffix());
+    single(s, &format!("create temp table {t} (a int)"))
+        .await
+        .unwrap();
+    single(s, &format!("insert into {t} values (1), (2), (3)"))
+        .await
+        .unwrap();
+    let (results, _) = run(
+        s,
+        &format!("BEGIN; INSERT INTO {t} VALUES (4);"),
+        RunOptions::default(),
+    )
+    .await;
+    assert!(results.iter().all(|r| r.error.is_none()), "{results:?}");
+    assert_eq!(s.in_transaction(), Some(true));
+
+    explain_inner(
+        s,
+        &format!("DELETE FROM {t}"),
+        ExplainMode::Analyze,
+        &CancelSlot::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(s.in_transaction(), Some(true));
+    assert_eq!(
+        count_rows(s, &t).await,
+        4,
+        "the INSERT is intact, the DELETE undone"
+    );
+
+    // A failing analyze does not abort the user's transaction either.
+    explain_inner(
+        s,
+        &format!("delete from {t} where a / 0 = 1"),
+        ExplainMode::Analyze,
+        &CancelSlot::default(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(s.in_transaction(), Some(true));
+    assert_eq!(count_rows(s, &t).await, 4);
+
+    single(s, "ROLLBACK").await.unwrap();
+    assert_eq!(s.in_transaction(), Some(false));
+    assert_eq!(count_rows(s, &t).await, 3, "ROLLBACK removed the INSERT");
+    single(s, &format!("drop table {t}")).await.unwrap();
+}

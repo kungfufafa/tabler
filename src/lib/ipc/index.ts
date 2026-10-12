@@ -32,9 +32,17 @@ import type { HistoryFilter } from "./bindings/HistoryFilter";
 import type { QueryEvent } from "./bindings/QueryEvent";
 import type { RunOptions } from "./bindings/RunOptions";
 import type { StatementResult } from "./bindings/StatementResult";
-import { invoke, makeChannel } from "./transport";
+import { invoke, makeChannel, reportConnectionFailure, type ErrorPayload } from "./transport";
 
-export { IpcError, isMock, isTauri, toIpcError } from "./transport";
+export {
+  IpcError,
+  isConnectionFailure,
+  isMock,
+  isTauri,
+  onConnectionFailure,
+  reportConnectionFailure,
+  toIpcError,
+} from "./transport";
 export type {
   ApplyRequest,
   ApplyResult,
@@ -104,9 +112,33 @@ export type {
   StatementResult,
 };
 
+/**
+ * Reports in-band errors of one command run (`reportConnectionFailure`), at most one per run: a
+ * `failed` event and the matching `StatementResult.error` carry the same error.
+ */
+function inBandFailureReporter(
+  cmd: string,
+  connectionId: string,
+): (error: ErrorPayload | null | undefined) => void {
+  let reported = false;
+  return (error) => {
+    if (!reported) reported = reportConnectionFailure(cmd, { connectionId }, error);
+  };
+}
+
 /** Typed facade over every Tauri command. The renderer never calls `invoke` directly. */
 export const ipc = {
   appInfo: () => invoke<AppInfo>("app_info"),
+
+  app: {
+    /** Quits for real (the renderer already handled unsaved work); skips the exit guard. */
+    quit: () => invoke<void>("quit_app"),
+    /**
+     * Tells the backend whether any tab holds unsaved work (a Dock / system quit is answered from
+     * this without waiting for the renderer); also acknowledges `app:quit-requested`.
+     */
+    setUnsaved: (unsaved: boolean) => invoke<void>("set_unsaved", { unsaved }),
+  },
 
   settings: {
     get: () => invoke<Record<string, unknown>>("get_settings"),
@@ -122,6 +154,8 @@ export const ipc = {
     reorder: (ids: string[]) => invoke<void>("reorder_profiles", { ids }),
     secretStatus: (id: string) => invoke<SecretStatus>("get_secret_status", { id }),
     test: (input: ProfileInput) => invoke<TestResult>("test_connection", { input }),
+    /** Creates an empty SQLite database at `path`; an existing file is left untouched. */
+    createSqliteFile: (path: string) => invoke<void>("create_sqlite_database", { path }),
   },
 
   connections: {
@@ -145,21 +179,32 @@ export const ipc = {
   },
 
   query: {
-    /** Runs one or more statements on the connection's editor session, streaming events. */
+    /**
+     * Runs one or more statements on the connection's editor session, streaming events. Statement
+     * errors come back in-band (`failed` events, `StatementResult.error`), so a dropped connection
+     * is reported from there (once per run) to `onConnectionFailure`.
+     */
     run: async (
       connectionId: string,
       queryId: string,
       sql: string,
       options: Partial<RunOptions>,
       onEvent: (e: QueryEvent) => void,
-    ) =>
-      invoke<StatementResult[]>("run_sql", {
+    ) => {
+      const report = inBandFailureReporter("run_sql", connectionId);
+      const results = await invoke<StatementResult[]>("run_sql", {
         connectionId,
         queryId,
         sql,
         options: { maxRows: 10_000, stopOnError: true, explain: null, ...options },
-        onEvent: await makeChannel<QueryEvent>(onEvent),
-      }),
+        onEvent: await makeChannel<QueryEvent>((e) => {
+          if (e.event === "failed") report(e.data.error);
+          onEvent(e);
+        }),
+      });
+      for (const r of results) report(r.error);
+      return results;
+    },
     cancel: (connectionId: string, queryId: string) =>
       invoke<void>("cancel_query", { connectionId, queryId }),
     explain: (connectionId: string, sql: string, mode: ExplainMode, queryId?: string) =>
@@ -178,8 +223,12 @@ export const ipc = {
   ddl: {
     preview: (connectionId: string, table: TableRef | null, ops: DdlOp[]) =>
       invoke<DdlPlan>("preview_ddl", { connectionId, table, ops }),
-    apply: (connectionId: string, table: TableRef | null, ops: DdlOp[]) =>
-      invoke<DdlResult>("apply_ddl", { connectionId, table, ops }),
+    /** A failure comes back in `DdlResult.error` (reported to `onConnectionFailure` if fatal). */
+    apply: async (connectionId: string, table: TableRef | null, ops: DdlOp[]) => {
+      const result = await invoke<DdlResult>("apply_ddl", { connectionId, table, ops });
+      reportConnectionFailure("apply_ddl", { connectionId }, result.error);
+      return result;
+    },
     tableDdl: (connectionId: string, table: TableRef) =>
       invoke<string>("get_table_ddl", { connectionId, table }),
   },
@@ -207,8 +256,12 @@ export const ipc = {
   mutate: {
     preview: (connectionId: string, req: ApplyRequest) =>
       invoke<string[]>("preview_changes", { connectionId, req }),
-    apply: (connectionId: string, req: ApplyRequest) =>
-      invoke<ApplyResult>("apply_changes", { connectionId, req }),
+    /** A failure comes back in `ApplyResult.error` (reported to `onConnectionFailure` if fatal). */
+    apply: async (connectionId: string, req: ApplyRequest) => {
+      const result = await invoke<ApplyResult>("apply_changes", { connectionId, req });
+      reportConnectionFailure("apply_changes", { connectionId }, result.error);
+      return result;
+    },
   },
 
   schema: {

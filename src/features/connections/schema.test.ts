@@ -76,6 +76,23 @@ describe("connection form schema", () => {
     });
   });
 
+  it("round-trips the SQLite foreign-keys switch (on by default)", () => {
+    expect(newProfileForm(15).sqliteForeignKeys).toBe(true);
+    const base = { ...DEFAULT_FORM, name: "s", driver: "sqlite" as const, sqlitePath: "/x.db" };
+    const on = formToProfileInput(base, null, "id-1");
+    expect(on.profile.options.sqliteForeignKeys).toBe(true);
+    const off = formToProfileInput({ ...base, sqliteForeignKeys: false }, null, "id-1");
+    expect(off.profile.options.sqliteForeignKeys).toBe(false);
+    expect(profileToForm(off.profile).sqliteForeignKeys).toBe(false);
+    expect(profileToForm(on.profile).sqliteForeignKeys).toBe(true);
+    // Editing keeps the stored choice unless the switch changes it.
+    const stored = formToProfileInput(profileToForm(off.profile), off.profile, "id-1");
+    expect(stored.profile.options.sqliteForeignKeys).toBe(false);
+    expect(connectionFormSchema.safeParse({ ...base, sqliteForeignKeys: false }).success).toBe(
+      true,
+    );
+  });
+
   it("starts new profiles with the connect-timeout preference", () => {
     const values = newProfileForm(30);
     expect(values).toMatchObject({ port: "5432", connectTimeoutSecs: "30" });

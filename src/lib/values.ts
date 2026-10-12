@@ -102,15 +102,14 @@ export function isNumericKind(kind: ValueKind): boolean {
   return kind === "int" || kind === "bigInt" || kind === "decimal" || kind === "float";
 }
 
-/** Full multi-line form for the inspector (pretty JSON, raw text). */
+/**
+ * Full multi-line form for the inspector: the raw text, with JSON exactly as stored. Never pretty-print
+ * JSON with a `JSON.parse` round trip — it rounds integers beyond 2^53, drops `1.10`'s trailing zero,
+ * collapses duplicate keys and rewrites `\u` escapes. Re-indent by whitespace only
+ * (`reformatJson` in features/datagrid/editors/json.ts) instead.
+ */
 export function inspectText(v: Value): string {
-  if (v.t === "json") {
-    try {
-      return JSON.stringify(JSON.parse(v.v), null, 2);
-    } catch {
-      return v.v;
-    }
-  }
+  if (v.t === "json") return v.v;
   if (v.t === "bytes")
     return `${formatBytes(v.v.len)}${v.v.truncated ? " (preview truncated)" : ""}\nbase64: ${v.v.base64.slice(0, 2000)}`;
   return displayValue(v).text === "NULL" && v.t === "null" ? "NULL" : (valueText(v) ?? "");
@@ -201,4 +200,27 @@ export function parseEditText(kind: ValueKind, text: string, previous?: Value): 
     default:
       return { ok: true, value: { t: "text", v: text } };
   }
+}
+
+/** True when the text spans several lines (needs the multi-line editor). */
+export function hasLineBreak(text: string): boolean {
+  return /[\r\n]/.test(text);
+}
+
+const DATE_PREFIX = /^(\d{4}-\d{2}-\d{2})([\s\S]*)$/;
+
+/**
+ * Splits a date/timestamp text into its leading `YYYY-MM-DD` part and the rest (time, offset…):
+ * `"2024-03-05 12:00:00+07"` → `{ date: "2024-03-05", rest: " 12:00:00+07" }`. `date` is null when
+ * the text does not start with a date.
+ */
+export function splitDatePart(text: string): { date: string | null; rest: string } {
+  const m = DATE_PREFIX.exec(text.trim());
+  return m ? { date: m[1]!, rest: m[2]! } : { date: null, rest: "" };
+}
+
+/** Replaces the date part of `text` with `date` (YYYY-MM-DD), keeping any time/offset part. */
+export function mergeDatePart(text: string, date: string): string {
+  const { date: old, rest } = splitDatePart(text);
+  return old === null ? date : `${date}${rest}`;
 }

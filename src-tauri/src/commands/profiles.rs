@@ -9,7 +9,9 @@ use crate::error::AppError;
 use crate::secrets::SecretKind;
 use crate::state::AppState;
 use crate::tunnel::{TunnelAuth, TunnelHandle};
-use crate::types::profile::{ConnectionProfile, ProfileInput, SecretStatus, SshAuth, TestResult};
+use crate::types::profile::{
+    ConnectionProfile, Driver, ProfileInput, SecretStatus, SshAuth, TestResult,
+};
 
 #[tauri::command]
 pub async fn list_profiles(state: State<'_, AppState>) -> Result<Vec<ConnectionProfile>, AppError> {
@@ -249,6 +251,10 @@ pub async fn run_connection_test(
     let timeout = connect_timeout(&input.profile);
     let started = Instant::now();
     let result = async {
+        if input.profile.driver == Driver::Sqlite {
+            // Probing would create a missing file and report success.
+            drivers::sqlite::check_database_file(&input.profile)?;
+        }
         let tunnel = open_test_tunnel(state, &input.profile, ssh_auth).await?;
         let host_override = tunnel.as_ref().map(TunnelHandle::connect_addr);
         let attempt = Instant::now();
@@ -290,6 +296,84 @@ pub async fn run_connection_test(
         }),
         Err(e @ AppError::HostKey { .. }) => Err(e),
         Err(AppError::Timeout) => Ok(failed(format!("Timed out after {}s", timeout.as_secs()))),
+        Err(AppError::NotFound(message)) => Ok(failed(message)),
         Err(e) => Ok(failed(e.to_string())),
+    }
+}
+
+/// "New…" in the connection dialog: creates an empty SQLite database at `path` (an existing file
+/// is left untouched). Connecting never creates files (see `check_database_file`).
+#[tauri::command]
+pub async fn create_sqlite_database(path: String) -> Result<(), AppError> {
+    drivers::sqlite::create_database_file(&path).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::appdb::AppDb;
+    use crate::secrets::{Backend, Secrets};
+    use crate::types::profile::{ProfileOptions, SslMode};
+
+    fn sqlite_input(path: &str) -> ProfileInput {
+        ProfileInput {
+            profile: ConnectionProfile {
+                id: Uuid::new_v4(),
+                name: "lite".into(),
+                color: None,
+                group: None,
+                driver: Driver::Sqlite,
+                host: None,
+                port: None,
+                user: None,
+                database: None,
+                ssl: SslMode::default(),
+                ssl_ca_path: None,
+                sqlite_path: Some(path.into()),
+                ssh: None,
+                options: ProfileOptions {
+                    sqlite_foreign_keys: true,
+                    ..ProfileOptions::default()
+                },
+                sort_order: 0,
+                created_at: String::new(),
+                updated_at: String::new(),
+                last_connected_at: None,
+            },
+            password: None,
+            ssh_password: None,
+            ssh_passphrase: None,
+            clear_password: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connection_never_creates_a_missing_sqlite_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let appdb = AppDb::open_in_memory().unwrap();
+        // Never the Keychain in unit tests.
+        let state = AppState::new(appdb.clone(), Secrets::new(Backend::File, appdb));
+        let path = dir.path().join("moved.sqlite");
+        let path_str = path.to_string_lossy().into_owned();
+
+        let result = run_connection_test(&state, sqlite_input(&path_str))
+            .await
+            .unwrap();
+        assert!(!result.ok);
+        assert!(
+            result.message.starts_with("SQLite database file not found"),
+            "{}",
+            result.message
+        );
+        assert!(!path.exists());
+
+        drivers::sqlite::create_database_file(&path_str)
+            .await
+            .unwrap();
+        let result = run_connection_test(&state, sqlite_input(&path_str))
+            .await
+            .unwrap();
+        assert!(result.ok, "{}", result.message);
+        assert!(result.server_version.unwrap().starts_with("SQLite"));
     }
 }

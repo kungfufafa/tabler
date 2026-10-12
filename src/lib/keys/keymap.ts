@@ -115,6 +115,9 @@ export const KEYMAP: ShortcutDef[] = [
   { id: "grid.set-default", keys: "Mod+Shift+D", scope: "grid", label: "Set DEFAULT" },
   { id: "grid.open-fk", keys: "Mod+Shift+F", scope: "grid", label: "Open referenced row" },
   { id: "grid.undo", keys: "Mod+Z", scope: "grid", label: "Undo staged change" },
+  { id: "grid.copy", keys: "Mod+C", scope: "grid", label: "Copy" },
+  { id: "grid.copy-as", keys: "Mod+Shift+C", scope: "grid", label: "Copy as…" },
+  { id: "grid.paste", keys: "Mod+V", scope: "grid", label: "Paste" },
   { id: "query.run", keys: "Mod+Enter", scope: "editor", label: "Run query / selection" },
   {
     id: "query.run-current",

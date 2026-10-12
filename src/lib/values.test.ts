@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { displayValue, pgArrayLiteral, valuesEqual, valueText } from "./values";
+import {
+  displayValue,
+  hasLineBreak,
+  mergeDatePart,
+  pgArrayLiteral,
+  splitDatePart,
+  valuesEqual,
+  valueText,
+} from "./values";
 
 describe("values", () => {
   it("renders every kind on one line", () => {
@@ -28,5 +36,21 @@ describe("values", () => {
         { t: "int", v: 2 },
       ]),
     ).toBe('{"a\\"b","2"}');
+  });
+  it("detects line breaks", () => {
+    expect(hasLineBreak("a\nb")).toBe(true);
+    expect(hasLineBreak("a\r")).toBe(true);
+    expect(hasLineBreak("a b")).toBe(false);
+  });
+  it("splits and merges the date part", () => {
+    expect(splitDatePart("2024-03-05 12:00:00+07")).toEqual({
+      date: "2024-03-05",
+      rest: " 12:00:00+07",
+    });
+    expect(splitDatePart("infinity")).toEqual({ date: null, rest: "" });
+    expect(mergeDatePart("2024-03-05T12:00:00Z", "2025-01-31")).toBe("2025-01-31T12:00:00Z");
+    expect(mergeDatePart("2024-03-05", "2025-01-31")).toBe("2025-01-31");
+    expect(mergeDatePart("", "2025-01-31")).toBe("2025-01-31");
+    expect(mergeDatePart("now", "2025-01-31")).toBe("2025-01-31");
   });
 });

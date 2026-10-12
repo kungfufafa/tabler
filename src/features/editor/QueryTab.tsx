@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, type KeyboardEvent } from "react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { actions, useAction } from "@/features/palette/actions";
+import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
 import { comboFromEvent } from "@/lib/keys/combo";
 import { KEYMAP } from "@/lib/keys/keymap";
 import { resolveScope } from "@/lib/keys/useShortcuts";
@@ -71,6 +72,9 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
   const handlers = useMemo(() => {
     const hooks: ControllerHooks = {
       onHistoryChanged: () => void qc.invalidateQueries({ queryKey: HISTORY_KEY }),
+      // DDL run here: the sidebar, open grids and completion refetch (the backend dropped its
+      // metadata cache too); grids holding staged row edits keep their page and say so.
+      onSchemaChanged: () => reportHeldTables(invalidateConnectionSchema(qc, tab.connectionId)),
     };
     return {
       run: () => runQuery(tabId, "auto", hooks),
@@ -87,7 +91,7 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
       insert: (sql: string) => insertSql(tabId, sql),
       runSql: (sql: string) => insertSql(tabId, sql, { ...hooks, run: true }),
     };
-  }, [tabId, qc]);
+  }, [tabId, qc, tab.connectionId]);
 
   // Shortcuts, the palette and the native menu reach the visible query tab only.
   useAction("query.run", isActive ? handlers.run : null);

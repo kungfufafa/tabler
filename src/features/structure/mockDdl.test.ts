@@ -162,6 +162,41 @@ describe("mock apply_ddl", () => {
     await expect(ipc.schema.table(c, t)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
+  it("replaces, drops and adds the primary key", async () => {
+    const c = await connect("p-local-pg");
+    const before = await ipc.schema.table(c, PG_USERS);
+    expect(before.primaryKey).toEqual(["id"]);
+    const plan = await ipc.ddl.preview(c, PG_USERS, [
+      { op: "dropPrimaryKey", table: PG_USERS },
+      { op: "addPrimaryKey", table: PG_USERS, columns: ["id", "email"] },
+    ]);
+    expect(plan.statements).toEqual([
+      'ALTER TABLE "public"."users" DROP CONSTRAINT "users_pkey"',
+      'ALTER TABLE "public"."users" ADD PRIMARY KEY ("id", "email")',
+    ]);
+    let result = await ipc.ddl.apply(c, PG_USERS, [
+      { op: "dropPrimaryKey", table: PG_USERS },
+      { op: "addPrimaryKey", table: PG_USERS, columns: ["id", "email"] },
+    ]);
+    expect(result.error).toBeNull();
+    let meta = await ipc.schema.table(c, PG_USERS);
+    expect(meta.primaryKey).toEqual(["id", "email"]);
+    expect(meta.columns.filter((x) => x.isPk).map((x) => x.name)).toEqual(["id", "email"]);
+
+    result = await ipc.ddl.apply(c, PG_USERS, [{ op: "dropPrimaryKey", table: PG_USERS }]);
+    expect(result.error).toBeNull();
+    meta = await ipc.schema.table(c, PG_USERS);
+    expect(meta.primaryKey).toEqual([]);
+    expect(meta.columns.some((x) => x.isPk)).toBe(false);
+
+    result = await ipc.ddl.apply(c, PG_USERS, [
+      { op: "addPrimaryKey", table: PG_USERS, columns: ["email"] },
+    ]);
+    expect(result.error).toBeNull();
+    meta = await ipc.schema.table(c, PG_USERS);
+    expect(meta.primaryKey).toEqual(["email"]);
+  });
+
   it("fails on an unknown type: PG rolls back everything", async () => {
     const c = await connect("p-local-pg");
     const result = await ipc.ddl.apply(c, PG_USERS, [

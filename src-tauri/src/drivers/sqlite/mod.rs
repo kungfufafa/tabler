@@ -6,6 +6,7 @@ mod decode;
 mod exec;
 mod introspect;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -25,6 +26,64 @@ use crate::types::schema::{
 use crate::types::value::Value;
 
 pub use actor::Actor;
+
+/// Refuses a SQLite profile whose database file does not exist. `LiteSession::open` creates
+/// missing files, so a mistyped or moved path would otherwise "connect" to a new, empty database;
+/// files are created explicitly with [`create_database_file`] ("New…" in the connection dialog).
+/// `:memory:` is refused too: each of a session's two connections would get its own database.
+pub fn check_database_file(profile: &ConnectionProfile) -> Result<(), AppError> {
+    let path = profile.sqlite_path.as_deref().unwrap_or("");
+    if path.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "SQLite file path is required".into(),
+        ));
+    }
+    if path != ":memory:" && Path::new(path).is_file() {
+        return Ok(());
+    }
+    Err(AppError::NotFound(format!(
+        "SQLite database file not found: {path}. Use “New…” to create one."
+    )))
+}
+
+/// Creates an empty SQLite database at `path` (with its header written, so other tools
+/// recognise it). An existing file is left untouched; anything else at `path` is an error.
+pub async fn create_database_file(path: &str) -> Result<(), AppError> {
+    if path.trim().is_empty() || path == ":memory:" {
+        return Err(AppError::InvalidInput(
+            "Choose where to create the SQLite file".into(),
+        ));
+    }
+    let path = path.to_string();
+    tokio::task::spawn_blocking(move || {
+        let target = Path::new(&path);
+        if target.is_file() {
+            return Ok(());
+        }
+        if target.exists() {
+            return Err(AppError::InvalidInput(format!("{path} is not a file")));
+        }
+        let cannot = |e: rusqlite::Error| AppError::Io(format!("cannot create {path}: {e}"));
+        let conn = rusqlite::Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(cannot)?;
+        // Reading opens the file; writing the (unchanged) user version writes the header page.
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(cannot)?;
+        conn.execute_batch(&format!("PRAGMA user_version = {version};"))
+            .map_err(cannot)?;
+        conn.close().map_err(|(_, e)| cannot(e))?;
+        log::info!("created SQLite database {path}");
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("create sqlite file: {e}")))?
+}
 
 pub struct LiteSession {
     pub(crate) path: String,
@@ -232,5 +291,128 @@ impl DbSession for LiteSession {
 
     fn editor_run_lock(&self) -> Option<&tokio::sync::Mutex<()>> {
         Some(&self.editor_runs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::profile::{ProfileOptions, SslMode};
+
+    fn profile(path: Option<&str>) -> ConnectionProfile {
+        ConnectionProfile {
+            id: uuid::Uuid::new_v4(),
+            name: "lite".into(),
+            color: None,
+            group: None,
+            driver: Driver::Sqlite,
+            host: None,
+            port: None,
+            user: None,
+            database: None,
+            ssl: SslMode::Disable,
+            ssl_ca_path: None,
+            sqlite_path: path.map(str::to_string),
+            ssh: None,
+            options: ProfileOptions {
+                timezone: None,
+                connect_timeout_secs: None,
+                read_only: false,
+                startup_sql: None,
+                default_row_limit: None,
+                sqlite_foreign_keys: true,
+            },
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_connected_at: None,
+        }
+    }
+
+    #[test]
+    fn refuses_missing_files_instead_of_creating_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("typo.sqlite");
+        let missing = missing.to_string_lossy();
+        let err = check_database_file(&profile(Some(&missing))).unwrap_err();
+        assert_eq!(err.code(), "NOT_FOUND");
+        assert!(err.to_string().contains("typo.sqlite"), "{err}");
+        assert!(err.to_string().contains("New…"), "{err}");
+        assert!(!dir.path().join("typo.sqlite").exists());
+
+        // A directory, `:memory:` and an empty path are refused too.
+        let dir_path = dir.path().to_string_lossy();
+        assert_eq!(
+            check_database_file(&profile(Some(&dir_path)))
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            check_database_file(&profile(Some(":memory:")))
+                .unwrap_err()
+                .code(),
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            check_database_file(&profile(None)).unwrap_err().code(),
+            "INVALID_INPUT"
+        );
+    }
+
+    #[tokio::test]
+    async fn creates_a_valid_database_and_never_touches_an_existing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.sqlite");
+        let path_str = path.to_string_lossy().into_owned();
+        create_database_file(&path_str).await.unwrap();
+        check_database_file(&profile(Some(&path_str))).unwrap();
+        let header = std::fs::read(&path).unwrap();
+        assert!(
+            header.starts_with(b"SQLite format 3\0"),
+            "no header written"
+        );
+
+        // The new file opens as a database (through the regular session) and takes writes.
+        let session = LiteSession::open(&profile(Some(&path_str))).await.unwrap();
+        session
+            .execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", &[])
+            .await
+            .unwrap();
+        session
+            .execute("INSERT INTO t (id) VALUES (1)", &[])
+            .await
+            .unwrap();
+        session.close().await;
+
+        // "New…" on an existing file keeps its data.
+        create_database_file(&path_str).await.unwrap();
+        let session = LiteSession::open(&profile(Some(&path_str))).await.unwrap();
+        let rows = session.query("SELECT count(*) FROM t", &[]).await.unwrap();
+        assert_eq!(rows.rows.len(), 1);
+        assert_eq!(rows.rows[0][0], Value::Int(1));
+        session.close().await;
+
+        // A non-database file is left alone as well.
+        let text = dir.path().join("notes.txt");
+        std::fs::write(&text, "hello").unwrap();
+        create_database_file(&text.to_string_lossy()).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&text).unwrap(), "hello");
+
+        // Directories, missing parents and empty paths are errors.
+        assert!(
+            create_database_file(&dir.path().to_string_lossy())
+                .await
+                .is_err()
+        );
+        let orphan = dir.path().join("no/such/dir/x.sqlite");
+        let err = create_database_file(&orphan.to_string_lossy())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "IO");
+        assert_eq!(
+            create_database_file("  ").await.unwrap_err().code(),
+            "INVALID_INPUT"
+        );
     }
 }

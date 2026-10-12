@@ -5,6 +5,7 @@ import { profileKeys } from "@/features/connections/useConnections";
 import {
   IpcError,
   ipc,
+  onConnectionFailure,
   toIpcError,
   type ConnStatus,
   type ConnectionInfo,
@@ -272,6 +273,54 @@ export function startKeepalive(opts: KeepaliveOptions): () => void {
   };
 }
 
+// ---- probing after a failed command ----------------------------------------------------------
+
+/** A connection is probed at most this often after failing commands. */
+export const FAILURE_PROBE_INTERVAL_MS = 5_000;
+
+export interface FailureProbeOptions {
+  ping: (connectionId: string) => Promise<ConnStatus>;
+  /** The connection's current status (undefined once it is no longer open). */
+  status: (connectionId: string) => ConnStatus | undefined;
+  onResult: (connectionId: string, status: ConnStatus | null, error?: unknown) => void;
+  intervalMs?: number;
+  timeoutMs?: number;
+  now?: () => number;
+}
+
+/**
+ * Pings a connection right after one of its commands failed like a dropped connection would
+ * (`onConnectionFailure`), so the "lost" banner shows at the first failing query instead of the
+ * next keepalive beat. Same ping as the keepalive (`pingWithDeadline`): the backend's failed ping
+ * emits `connection:status lost` itself. Only a connection still marked connected is probed, one
+ * probe in flight per connection and at most one per `intervalMs`. `NOT_CONNECTED` from the ping
+ * means the backend already forgot the connection (a disconnect raced the failure): ignored.
+ * Returns the probe function (true when a ping was sent).
+ */
+export function createFailureProbe(opts: FailureProbeOptions): (connectionId: string) => boolean {
+  const intervalMs = opts.intervalMs ?? FAILURE_PROBE_INTERVAL_MS;
+  const now = opts.now ?? Date.now;
+  const inFlight = new Set<string>();
+  const lastProbe = new Map<string, number>();
+  return (connectionId) => {
+    if (opts.status(connectionId) !== "connected" || inFlight.has(connectionId)) return false;
+    const at = now();
+    const last = lastProbe.get(connectionId);
+    if (last !== undefined && at - last < intervalMs) return false;
+    lastProbe.set(connectionId, at);
+    inFlight.add(connectionId);
+    pingWithDeadline(opts.ping(connectionId), opts.timeoutMs)
+      .then(
+        (status) => opts.onResult(connectionId, status),
+        (err: unknown) => {
+          if (toIpcError(err).code !== "NOT_CONNECTED") opts.onResult(connectionId, null, err);
+        },
+      )
+      .finally(() => inFlight.delete(connectionId));
+    return true;
+  };
+}
+
 // ---- connection-loss banner ------------------------------------------------------------------
 
 export interface BannerState {
@@ -301,21 +350,22 @@ export function bannerState(conn: OpenConnection | null, busy: boolean): BannerS
  * (and changes nothing) when the old connection is no longer open.
  */
 export function migrateConnection(oldId: string, info: ConnectionInfo, qc: QueryClient): boolean {
-  const before = useConnectionsStore.getState();
-  const old = before.byId[oldId];
+  const old = useConnectionsStore.getState().byId[oldId];
   if (!old) return false;
-  const position = before.order.indexOf(oldId);
-  const nextActive = before.activeId === oldId ? info.connectionId : before.activeId;
   const newId = info.connectionId;
 
-  before.add(info);
-  if (old.currentSchema) before.setCurrentSchema(newId, old.currentSchema);
+  // Tabs first, then one store update: the active-tab sync never sees the new connection active
+  // without its tabs (it would clear the visible tab) nor focus jumping through it.
   useTabsStore.getState().retargetConnection(oldId, newId);
-  useConnectionsStore.getState().remove(oldId);
   useConnectionsStore.setState((s) => {
+    const byId = { ...s.byId };
+    delete byId[oldId];
+    byId[newId] = { info, status: "connected", message: null, currentSchema: old.currentSchema };
     const order = s.order.filter((id) => id !== newId);
-    order.splice(position < 0 ? order.length : Math.min(position, order.length), 0, newId);
-    return { order, activeId: nextActive };
+    const position = order.indexOf(oldId);
+    if (position < 0) order.push(newId);
+    else order.splice(position, 1, newId);
+    return { byId, order, activeId: s.activeId === oldId ? newId : s.activeId };
   });
 
   qc.removeQueries({ predicate: (q) => q.queryKey.includes(oldId) });
@@ -481,4 +531,20 @@ export function useConnectionEvents(): void {
       }),
     [qc],
   );
+
+  useEffect(() => {
+    let stopped = false;
+    const probe = createFailureProbe({
+      ping: (id) => ipc.connections.ping(id),
+      status: (id) => useConnectionsStore.getState().byId[id]?.status,
+      onResult: (id, status, error) => {
+        if (!stopped) onPingResult(qc, id, status, error);
+      },
+    });
+    const unsubscribe = onConnectionFailure((id) => void probe(id));
+    return () => {
+      stopped = true;
+      unsubscribe();
+    };
+  }, [qc]);
 }

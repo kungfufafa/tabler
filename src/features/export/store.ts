@@ -1,6 +1,14 @@
 import { toast } from "sonner";
 import { create } from "zustand";
-import { ipc, toIpcError, type ExportRequest, type ExportResult, type TableRef } from "@/lib/ipc";
+import {
+  ipc,
+  toIpcError,
+  type ExportRequest,
+  type ExportResult,
+  type ResultColumn,
+  type TableRef,
+  type Value,
+} from "@/lib/ipc";
 import { useTabsStore } from "@/stores/tabs";
 import { revealExport } from "./destination";
 import {
@@ -12,7 +20,10 @@ import {
   type RowScope,
 } from "./options";
 
-/** What to export: a table (with the tab's filter / sort / page when `tabId` is given) or SQL. */
+/**
+ * What to export: a table (with the tab's filter / sort / page when `tabId` is given), SQL, or
+ * rows the renderer already holds (a result shown in the SQL editor).
+ */
 export type ExportSourceSpec =
   | {
       kind: "table";
@@ -20,7 +31,28 @@ export type ExportSourceSpec =
       /** Table tab whose filter, sort, visible columns and page apply; null = the whole table. */
       tabId?: string | null;
     }
-  | { kind: "sql"; sql: string };
+  | { kind: "sql"; sql: string }
+  | {
+      kind: "rows";
+      columns: ResultColumn[];
+      rows: Value[][];
+      /** Shown as the dialog's title, e.g. "Result 2". */
+      label: string;
+      /** Default INSERT target (the result's source table, when the server reported one). */
+      table: string | null;
+      /**
+       * The statement that produced the rows, to export all of them by running it again (when
+       * the rows held are not the whole result, or a binary value was cut to its preview).
+       */
+      sql: string | null;
+      /** The row cap cut the result: more rows exist than the ones held. */
+      truncated: boolean;
+      /**
+       * The statement did not finish: it was cancelled, or failed after some rows arrived. The
+       * rows held are only those that arrived before it stopped. Null when it completed.
+       */
+      stopped: "cancelled" | "error" | null;
+    };
 
 export interface OpenExportArgs {
   connectionId: string;
@@ -46,6 +78,8 @@ export interface ExportDraft {
   visibleOnly: boolean;
   tableName: string;
   batchText: string;
+  /** A cut-off editor result: export all its rows by running its statement again. */
+  allRows: boolean;
 }
 
 interface ExportState {
@@ -86,6 +120,17 @@ export function openExport(args: OpenExportArgs): void {
 /** Closes the dialog; a running export keeps going and reports through a toast. */
 export function closeExport(): void {
   useExportStore.setState({ open: false });
+}
+
+/**
+ * Lets go of the closed dialog's source once nothing shows it any more (after the exit
+ * animation, or when an export the closed dialog started ends): a shown result's rows are a
+ * copy of up to the editor's row cap, which would otherwise stay reachable until the next export.
+ */
+export function releaseExportTarget(): void {
+  useExportStore.setState((s) =>
+    s.open || s.run || !s.target ? s : { target: null, draft: null },
+  );
 }
 
 /**
@@ -150,7 +195,10 @@ export async function runExport(
         s.run?.exportId === req.exportId ? { run: { ...s.run, rows: p.rows, bytes: p.bytes } } : s,
       ),
     );
+    const wasOpen = useExportStore.getState().open;
     useExportStore.setState({ run: null, open: false });
+    // An open dialog lets go of its source once it has closed (`ExportDialog`); a closed one now.
+    if (!wasOpen) releaseExportTarget();
     toast.success(`Exported ${rowsLabel(result.rows)}`, {
       description: `${basename(result.path)} · ${formatBytes(result.bytes)} · ${formatDuration(result.durationMs)}`,
       action: {
@@ -166,6 +214,7 @@ export async function runExport(
     const e = toIpcError(err);
     const open = useExportStore.getState().open;
     useExportStore.setState({ run: null });
+    if (!open) releaseExportTarget();
     if (e.code === "CANCELLED") {
       toast.message("Export cancelled", { description: "No file was written." });
     } else if (open) {

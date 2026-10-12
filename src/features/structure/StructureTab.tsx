@@ -1,5 +1,14 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, FileCode2, Lock, RefreshCw, Table2, Undo2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  FileCode2,
+  Lock,
+  RefreshCw,
+  SquareTerminal,
+  Table2,
+  Undo2,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
@@ -8,17 +17,26 @@ import { TableIcon } from "@/components/TypeIcon";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { useAction } from "@/features/palette/actions";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
 import { formatCount, formatDuration } from "@/lib/format/time";
-import { ipc, tableKey, type DdlOp, type Dialect, type TableMeta, type TableRef } from "@/lib/ipc";
+import {
+  ipc,
+  tableKey,
+  toIpcError,
+  type DdlOp,
+  type Dialect,
+  type TableMeta,
+  type TableRef,
+} from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
-import { useTabsStore, type Tab } from "@/stores/tabs";
+import { sameTable, useTabsStore, type Tab } from "@/stores/tabs";
 import { columnEditError, parseColumnInput, type ColumnField } from "./columnEdits";
 import { ColumnsSection } from "./ColumnsSection";
 import { DdlPreviewSheet } from "./DdlPreviewSheet";
-import { invalidateSchema, ddlKey } from "./invalidate";
+import { ddlKey, invalidateSchema, reportHeldTables, tablesWithPendingEdits } from "./invalidate";
 import { AddForeignKeyDialog, AddIndexDialog } from "./KeyDialogs";
 import {
   addColumn,
@@ -33,6 +51,7 @@ import {
   restoreColumn,
   restoreForeignKey,
   restoreIndex,
+  togglePrimaryKey,
 } from "./model";
 import { ForeignKeysSection, IndexesSection, TriggersSection } from "./OtherSections";
 import {
@@ -246,8 +265,14 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
         void qc.invalidateQueries({ queryKey: metaKey });
       }
       invalidateSchema(qc, connectionId);
-      void qc.invalidateQueries({ queryKey: ["rows", connectionId, tableKey(table)] });
-      void qc.invalidateQueries({ queryKey: ["count", connectionId, tableKey(table)] });
+      // The table's data tab reloads too, unless it holds staged row edits: they point at columns
+      // by position, which the new structure may have moved.
+      if (tablesWithPendingEdits(connectionId).some((t) => sameTable(t, table))) {
+        reportHeldTables([table]);
+      } else {
+        void qc.invalidateQueries({ queryKey: ["rows", connectionId, tableKey(table)] });
+        void qc.invalidateQueries({ queryKey: ["count", connectionId, tableKey(table)] });
+      }
     },
     [connectionId, table, qc, metaKey, discardStaged, tab.id],
   );
@@ -320,6 +345,21 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
 
   // ---- dialogs ---------------------------------------------------------------
   const [showDdl, setShowDdl] = useState(false);
+
+  /** Opens the table's current CREATE statement in a new SQL editor tab. */
+  const openDdlInEditor = useCallback(async () => {
+    let sql: string;
+    try {
+      sql = await qc.fetchQuery({
+        queryKey: ddlKey(connectionId, table),
+        queryFn: () => ipc.ddl.tableDdl(connectionId, table),
+      });
+    } catch (e) {
+      toast.error("Could not load the CREATE statement", { description: toIpcError(e).message });
+      return;
+    }
+    openSqlInNewQueryTab(connectionId, sql, dialect, `${table.name}.sql`);
+  }, [qc, connectionId, table, dialect]);
   const [indexOpen, setIndexOpen] = useState(false);
   const [fkOpen, setFkOpen] = useState(false);
 
@@ -361,11 +401,14 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
     >
       <div className="border-border bg-surface-2 flex h-9 shrink-0 items-center gap-1.5 overflow-hidden border-b px-2">
         <TableIcon kind={m.kind} />
-        <span className="min-w-12 truncate font-mono text-xs" title={qualifiedName}>
+        {/* When squeezed, the schema prefix gives way first so the table name stays readable. */}
+        <span className="flex min-w-12 font-mono text-xs" title={qualifiedName}>
           {m.table.schema && (
-            <span className="text-muted-foreground @max-lg:hidden">{m.table.schema}.</span>
+            <span className="text-muted-foreground min-w-0 shrink-[1000] truncate @max-lg:hidden">
+              {m.table.schema}.
+            </span>
           )}
-          <span className="font-semibold">{m.table.name}</span>
+          <span className="min-w-0 truncate font-semibold">{m.table.name}</span>
         </span>
         <span className="border-border text-muted-foreground shrink-0 rounded border px-1 text-[10px] leading-4 @max-xl:hidden">
           {KIND_LABEL[m.kind]}
@@ -434,6 +477,25 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
           </TooltipTrigger>
           <TooltipContent>Show the CREATE statement</TooltipContent>
         </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label="Open in SQL"
+              onClick={() => void openDdlInEditor()}
+              // Its label goes before anything that names the table (wider with staged changes,
+              // whose badge and buttons take the room).
+              className={cn(hasOps ? "@max-4xl:px-2" : "@max-3xl:px-2")}
+            >
+              <SquareTerminal />
+              <span className={cn(hasOps ? "@max-4xl:hidden" : "@max-3xl:hidden")}>
+                Open in SQL
+              </span>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Open the CREATE statement in a new SQL editor tab</TooltipContent>
+        </Tooltip>
         <ToolButton
           label="Open data"
           onClick={() => openTable(connectionId, table, "table")}
@@ -484,6 +546,7 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
               editable={editable}
               fkColumns={fkColumns}
               onEdit={onEdit}
+              onTogglePk={(key) => apply((mm, current) => togglePrimaryKey(mm, current, key))}
               onDrop={(key) => apply((mm, current) => dropColumn(mm, current, key))}
               onRestore={(key) => apply((mm, current) => restoreColumn(mm, current, key))}
               onAdd={onAddColumn}

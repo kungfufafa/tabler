@@ -11,10 +11,18 @@ export interface RowChange {
   error?: string;
 }
 
+/** One undo step: the rows it touched, as they were before (several rows for batch edits). */
 export interface UndoEntry {
-  rowKey: string;
-  before: RowChange | undefined;
+  rows: Array<{ rowKey: string; before: RowChange | undefined }>;
   insertOrderBefore?: string[];
+}
+
+/** One cell of a batch edit (`setCells`); `col` is the source column index. */
+export interface CellEdit {
+  rowKey: string;
+  col: number;
+  value: Value;
+  original: Value[] | undefined;
 }
 
 export interface StagingState {

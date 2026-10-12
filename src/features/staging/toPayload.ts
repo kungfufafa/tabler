@@ -13,14 +13,13 @@ export function rowKeyFor(page: BrowsePage, index: number): RowKey {
       value: Object.fromEntries(page.pkColumns.map((c) => [c, row[colIndex(c)] ?? { t: "null" }])),
     };
   }
-  return {
-    kind: "allColumns",
-    value: Object.fromEntries(
-      page.columns
-        .filter((c) => c.kind !== "bytes")
-        .map((c, i) => [c.name, row[i] ?? { t: "null" }]),
-    ),
-  };
+  // Blobs arrive as capped previews, so they cannot be matched; skip them but keep each other
+  // column paired with ITS value (the index is the unfiltered column position).
+  const value: Record<string, Value> = {};
+  page.columns.forEach((c, i) => {
+    if (c.kind !== "bytes") value[c.name] = row[i] ?? { t: "null" };
+  });
+  return { kind: "allColumns", value };
 }
 
 /** Converts staged edits to the backend payload. Keys use ORIGINAL values, so edited PKs still match. */

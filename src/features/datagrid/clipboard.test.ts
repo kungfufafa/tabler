@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Value } from "@/lib/ipc";
-import { formatCells } from "./clipboard";
+import { formatCells, parseTsv } from "./clipboard";
 import type { GridColumn } from "./types";
 
 const col = (name: string, kind: GridColumn["kind"]): GridColumn => ({
@@ -58,5 +58,58 @@ describe("formatCells", () => {
   it("markdown escapes pipes", () => {
     const md = formatCells("markdown", [col("a", "text")], [[{ t: "text", v: "x|y" }]]);
     expect(md).toBe("| a |\n| --- |\n| x\\|y |");
+  });
+});
+
+describe("parseTsv", () => {
+  it("round-trips formatCells('tsv') with tabs, quotes and line breaks", () => {
+    const tricky: Value[][] = [
+      [
+        { t: "text", v: "a\tb" },
+        { t: "text", v: 'say "hi"' },
+        { t: "text", v: "line1\nline2\r\nline3" },
+        { t: "null" },
+      ],
+      [
+        { t: "text", v: '"quoted"' },
+        { t: "text", v: "" },
+        { t: "text", v: '"a\tb" and "c"' },
+        { t: "int", v: 3 },
+      ],
+    ];
+    const cols = ["a", "b", "c", "d"].map((n) => col(n, "text"));
+    const text = formatCells("tsv", cols, tricky);
+    expect(parseTsv(text)).toEqual([
+      ["a\tb", 'say "hi"', "line1\nline2\r\nline3", ""],
+      ['"quoted"', "", '"a\tb" and "c"', "3"],
+    ]);
+    const withHeader = formatCells("tsv", cols, tricky, { headers: true });
+    expect(parseTsv(withHeader)[0]).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("accepts CRLF and drops one trailing line break", () => {
+    expect(parseTsv("1\tx\r\n2\ty\r\n")).toEqual([
+      ["1", "x"],
+      ["2", "y"],
+    ]);
+    expect(parseTsv("a\nb\n")).toEqual([["a"], ["b"]]);
+    expect(parseTsv("a\n\n")).toEqual([["a"], [""]]);
+    expect(parseTsv("a\t")).toEqual([["a", ""]]);
+  });
+
+  it("reads a copied single NULL / empty cell back as one empty field", () => {
+    const cols = [col("a", "int")];
+    for (const v of [{ t: "null" }, { t: "text", v: "" }] as Value[]) {
+      const text = formatCells("tsv", cols, [[v]]);
+      expect(text).toBe("");
+      expect(parseTsv(text)).toEqual([[""]]);
+    }
+    expect(parseTsv("\n")).toEqual([[""]]);
+    expect(parseTsv("\r\n")).toEqual([[""]]);
+  });
+
+  it("keeps fields that only look quoted", () => {
+    expect(parseTsv('"a"b\t5" screen')).toEqual([['"a"b', '5" screen']]);
+    expect(parseTsv('"unterminated\tx')).toEqual([['"unterminated', "x"]]);
   });
 });

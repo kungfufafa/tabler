@@ -14,9 +14,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePaletteStore } from "@/features/palette/store";
 import type { ConnectionProfile } from "@/lib/ipc";
 import { useShallow } from "zustand/react/shallow";
 import { useConnectionsStore } from "@/stores/connections";
+import { useUiStore } from "@/stores/ui";
 import { ConnectionCard } from "./ConnectionCard";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { connectionSummary } from "./schema";
@@ -43,10 +45,23 @@ function groupProfiles(
   );
 }
 
+/** The newest open connection of a profile, if any. */
+function openConnectionOf(profileId: string): string | null {
+  const s = useConnectionsStore.getState();
+  for (let i = s.order.length - 1; i >= 0; i--) {
+    const id = s.order[i]!;
+    if (s.byId[id]?.info.profileId === profileId) return id;
+  }
+  return null;
+}
+
 /** Connection manager: the first screen, and reachable later with ⌘⇧O. */
 export function Launcher() {
   const profiles = useProfiles();
   const connect = useConnect();
+  const setView = useUiStore((s) => s.setView);
+  // Shared with the palette: one connect per profile at a time, whoever started it.
+  const connecting = usePaletteStore((s) => s.connecting);
   const remove = useDeleteProfile();
   const duplicate = useDuplicateProfile();
   const openIds = useConnectionsStore(
@@ -58,6 +73,26 @@ export function Launcher() {
   const setDialogOpen = useConnectionDialog((s) => s.setOpen);
   const [pendingDelete, setPendingDelete] = useState<ConnectionProfile | null>(null);
   const groups = useMemo(() => groupProfiles(profiles.data ?? [], query), [profiles.data, query]);
+
+  /**
+   * Opens a profile: switches to its open connection when there is one (no second session, pool
+   * and tunnel), otherwise connects, ignoring clicks while that connect is still in flight.
+   */
+  const openProfile = (p: ConnectionProfile) => {
+    const open = openConnectionOf(p.id);
+    if (open) {
+      useConnectionsStore.getState().setActive(open);
+      setView("workspace");
+      return;
+    }
+    const palette = usePaletteStore.getState();
+    if (!palette.beginConnect(p.id)) return;
+    connect
+      .mutateAsync(p.id)
+      .finally(() => usePaletteStore.getState().endConnect(p.id))
+      // useConnect's onError already told the user.
+      .catch(() => undefined);
+  };
 
   return (
     <main className="bg-background flex h-full flex-col">
@@ -119,9 +154,9 @@ export function Launcher() {
                   <ConnectionCard
                     key={p.id}
                     profile={p}
-                    connecting={connect.isPending && connect.variables === p.id}
+                    connecting={connecting.includes(p.id)}
                     connected={openIds.includes(p.id)}
-                    onConnect={() => connect.mutate(p.id)}
+                    onConnect={() => openProfile(p)}
                     onEdit={() => openConnectionDialog(p)}
                     onDuplicate={() => duplicate.mutate(p.id)}
                     onDelete={() => setPendingDelete(p)}

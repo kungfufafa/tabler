@@ -11,9 +11,10 @@ import { KeyboardProvider } from "@/lib/keys/useShortcuts";
 import { resetMockQueryState } from "@/lib/ipc/mock/query";
 import { useConnectionsStore } from "@/stores/connections";
 import { resetPrefsForTests } from "@/stores/prefs";
-import { getQueryTab, useQueryTabsStore } from "@/stores/queryTabs";
+import { getQueryTab, updateQueryTab, useQueryTabsStore } from "@/stores/queryTabs";
 import { flushResultVersions, resultData } from "@/stores/resultData";
 import { useTabsStore, type Tab } from "@/stores/tabs";
+import { explainQuery } from "./controller";
 import { getEditorState, getEditorView } from "./editorStates";
 import { QueryTab } from "./QueryTab";
 
@@ -280,6 +281,49 @@ describe("QueryTab", () => {
     expect(screen.getByText(/Seq Scan on posts/)).toBeInTheDocument();
   });
 
+  it("says that an Explain Analyze was rolled back", async () => {
+    const { id, type } = setup();
+    type("delete from posts where id = 1");
+    await act(() => explainQuery(id, "analyze"));
+    expect(getQueryTab(id).plan).toMatchObject({ status: "done", mode: "analyze" });
+    expect(screen.getByText("EXPLAIN ANALYZE")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Ran inside a transaction that was rolled back — no changes were kept/),
+    ).toBeInTheDocument();
+    // A plain EXPLAIN executes nothing: no note.
+    await act(() => explainQuery(id, "plan"));
+    expect(screen.queryByText(/Ran inside a transaction/)).toBeNull();
+  });
+
+  it("refreshes cached schema data after DDL runs in the editor", async () => {
+    const { qc, type } = setup();
+    // Queries nobody shows here (the sidebar's, a table tab's) stay marked stale.
+    const seeded = [
+      ["tables", info.connectionId, "public"],
+      ["table", info.connectionId, "public", "users"],
+      ["rows", info.connectionId, "public.users", {}, 0],
+    ];
+    const other = ["tables", "another-connection", "public"];
+    for (const key of [...seeded, other]) qc.setQueryData(key, { seeded: true });
+    const stale = (key: unknown[]) =>
+      qc.getQueryCache().find({ queryKey: key, exact: true })?.state.isInvalidated;
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    const completion = { queryKey: ["completion", info.connectionId] };
+
+    type("select * from users limit 1");
+    await act(() => actions.run("query.run"));
+    expect(seeded.map(stale)).toEqual([false, false, false]);
+    expect(invalidate).not.toHaveBeenCalledWith(completion);
+
+    type("-- tidy up\nALTER TABLE users DROP COLUMN bio;");
+    await act(() => actions.run("query.run"));
+    expect(seeded.map(stale)).toEqual([true, true, true]);
+    expect(stale(other)).toBe(false);
+    // The editor's own completion refetches.
+    expect(invalidate).toHaveBeenCalledWith(completion);
+    invalidate.mockRestore();
+  });
+
   it("inserts a history entry at the cursor from the history sheet", async () => {
     const { id, view } = setup();
     await act(() => actions.run("query.history"));
@@ -424,6 +468,83 @@ describe("Export results", () => {
     act(() => view().dispatch({ selection: { anchor: 10, head: view().state.doc.length } }));
     fireEvent.click(screen.getByRole("button", { name: "Export results…" }));
     expect(useExportStore.getState().target?.source).toEqual({ kind: "sql", sql: "select 2" });
+  });
+
+  it("exports the result the pane shows, as its rows (not the statement under the cursor)", async () => {
+    const { id, type, view } = setup();
+    type("select id, email from users limit 3;\nselect 1;");
+    await act(() => actions.run("query.run"));
+    act(() => flushResultVersions());
+    const run = getQueryTab(id).run!;
+    expect(run.results).toHaveLength(2);
+    // The cursor sits in the second statement; the first result is shown.
+    act(() => view().dispatch({ selection: { anchor: view().state.doc.length } }));
+    act(() => updateQueryTab(id, { pane: run.results[0]!.id }));
+    fireEvent.click(screen.getByRole("button", { name: "Export results…" }));
+    const source = useExportStore.getState().target?.source;
+    expect(source).toMatchObject({
+      kind: "rows",
+      label: "Result 1",
+      table: "users",
+      sql: "select id, email from users limit 3",
+      truncated: false,
+      stopped: null,
+    });
+    if (source?.kind !== "rows") throw new Error("not a rows source");
+    expect(source.columns.map((c) => c.name)).toEqual(["id", "email"]);
+    const buffer = resultData.get(run.results[0]!.id)!;
+    expect(source.rows).toEqual(buffer.rows);
+    // A copy: a later run cannot change what is being exported.
+    expect(source.rows).not.toBe(buffer.rows);
+    expect(source.rows[0]).not.toBe(buffer.rows[0]);
+
+    act(() => updateQueryTab(id, { pane: run.results[1]!.id }));
+    await act(() => actions.run("export.open"));
+    expect(useExportStore.getState().target?.source).toMatchObject({
+      kind: "rows",
+      label: "Result 2",
+      rows: [[{ t: "int", v: 1 }]],
+    });
+
+    // The messages pane shows no result: the statement under the cursor is exported.
+    act(() => updateQueryTab(id, { pane: "messages" }));
+    await act(() => actions.run("export.open"));
+    expect(useExportStore.getState().target?.source).toEqual({ kind: "sql", sql: "select 1" });
+  });
+
+  it("exports a cancelled result as incomplete, so the dialog can say so", async () => {
+    const { id, type } = setup();
+    type("select * from events_big");
+    let done: Promise<boolean> | undefined;
+    act(() => {
+      done = actions.run("query.run");
+    });
+    // Some rows arrived; then Stop.
+    await waitFor(() => {
+      const first = getQueryTab(id).run?.results[0];
+      expect(first && (resultData.get(first.id)?.rows.length ?? 0)).toBeGreaterThan(0);
+    });
+    await waitFor(() => expect(actions.has("query.cancel")).toBe(true));
+    await act(() => actions.run("query.cancel"));
+    await act(async () => {
+      await done;
+    });
+    act(() => flushResultVersions());
+    const run = getQueryTab(id).run!;
+    expect(run.status).toBe("cancelled");
+    act(() => updateQueryTab(id, { pane: run.results[0]!.id }));
+    await act(() => actions.run("export.open"));
+    const source = useExportStore.getState().target?.source;
+    expect(source).toMatchObject({
+      kind: "rows",
+      label: "Result 1",
+      sql: "select * from events_big",
+      truncated: false,
+      stopped: "cancelled",
+    });
+    if (source?.kind !== "rows") throw new Error("not a rows source");
+    expect(source.rows.length).toBe(resultData.get(run.results[0]!.id)!.rows.length);
+    expect(source.rows.length).toBeLessThan(10_000);
   });
 
   it("says so when there is nothing to export", () => {

@@ -8,6 +8,7 @@ import { useTableTabsStore } from "@/stores/tableTabs";
 import {
   canExportPage,
   currentPageSql,
+  formatCount,
   visibleColumnNames,
   type ExportInput,
   type RowScope,
@@ -17,7 +18,7 @@ import type { OpenExportArgs } from "./store";
 export interface ResolvedExportSource {
   /** Null while the table's metadata loads (or when it failed). */
   input: ExportInput | null;
-  /** `schema.table` or "Query result". */
+  /** `schema.table`, "Query result", or a shown result's label ("Result 2"). */
   title: string;
   /** Short facts about the rows: filters, sort. */
   details: string[];
@@ -25,7 +26,10 @@ export interface ResolvedExportSource {
   filtered: boolean;
   /** File name stem: the table name, or `query`. */
   fileBase: string;
-  /** INSERT target used when the "Table name" field is left empty (null for SQL sources). */
+  /**
+   * INSERT target used when the "Table name" field is left empty (null for SQL sources and for
+   * results without a known source table).
+   */
   defaultTableName: string | null;
   /** True when the export comes from a table tab (filter / sort / page apply). */
   fromTab: boolean;
@@ -38,6 +42,9 @@ export interface ResolvedExportSource {
   loading: boolean;
   error: string | null;
 }
+
+/** Why a shown result is incomplete (see `ExportSourceSpec`'s `stopped`). */
+const STOPPED_LABEL = { cancelled: "cancelled", error: "failed partway" } as const;
 
 function sortText(sort: SortSpec[]): string | null {
   if (sort.length === 0) return null;
@@ -60,8 +67,33 @@ export function useExportSource(
     staleTime: 5 * 60_000,
   });
   const sql = target.source.kind === "sql" ? target.source.sql : null;
+  const held = target.source.kind === "rows" ? target.source : null;
 
   return useMemo<ResolvedExportSource>(() => {
+    if (held) {
+      const n = held.columns.length;
+      return {
+        input: { kind: "rows", columns: held.columns, rows: held.rows, table: held.table },
+        title: held.label,
+        details: [
+          // A result cut at the row limit, or whose statement stopped early, holds only the first
+          // rows of the statement.
+          `${formatCount(held.rows.length)} row${held.rows.length === 1 ? "" : "s"}${held.truncated || held.stopped ? " shown" : ""}`,
+          `${n} column${n === 1 ? "" : "s"}`,
+          ...(held.stopped ? [STOPPED_LABEL[held.stopped]] : []),
+        ],
+        filtered: false,
+        fileBase: held.table ?? "query",
+        defaultTableName: held.table,
+        fromTab: false,
+        count: { count: held.rows.length, exact: true },
+        page: null,
+        pageExportable: false,
+        columns: { visible: n, total: n },
+        loading: false,
+        error: null,
+      };
+    }
     if (sql !== null || !table) {
       return {
         input: { kind: "sql", sql: sql ?? "" },
@@ -122,5 +154,16 @@ export function useExportSource(
       loading: meta.isPending && table !== null,
       error: meta.isError ? meta.error.message : null,
     };
-  }, [sql, table, slice, meta.data, meta.isPending, meta.isError, meta.error, scope, visibleOnly]);
+  }, [
+    held,
+    sql,
+    table,
+    slice,
+    meta.data,
+    meta.isPending,
+    meta.isError,
+    meta.error,
+    scope,
+    visibleOnly,
+  ]);
 }

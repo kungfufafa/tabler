@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
-import { ipc, type TableSummary } from "@/lib/ipc";
+import { ipc, tableKey, type TableSummary } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
+import { EMPTY_PINS } from "@/stores/pins";
 
 export const schemaKeys = {
   databases: (c: string) => ["databases", c] as const,
@@ -64,14 +65,29 @@ const GROUP_ORDER: Array<[TableSummary["kind"][], string]> = [
   [["materializedView"], "Materialized views"],
 ];
 
-/** Flattens tables into header+row entries for the virtualized tree, filtered by `search`. */
-export function buildTreeRows(tables: TableSummary[], search: string): TreeRow[] {
+/**
+ * Flattens tables into header+row entries for the virtualized tree, filtered by `search`. Pinned
+ * tables (`tableKey`s) that match come first under "Pinned" (rows keyed `p:`), and stay in their
+ * regular group too.
+ */
+export function buildTreeRows(
+  tables: TableSummary[],
+  search: string,
+  pinned: ReadonlySet<string> = EMPTY_PINS,
+): TreeRow[] {
   const q = search.trim().toLowerCase();
+  const matches = (t: TableSummary) => !q || t.name.toLowerCase().includes(q);
   const rows: TreeRow[] = [];
+  if (pinned.size > 0) {
+    const items = tables.filter((t) => pinned.has(tableKey(t)) && matches(t));
+    if (items.length > 0) {
+      rows.push({ type: "header", key: "h:Pinned", label: "Pinned", count: items.length });
+      for (const t of items)
+        rows.push({ type: "table", key: `p:${t.schema ?? ""}.${t.name}`, table: t });
+    }
+  }
   for (const [kinds, label] of GROUP_ORDER) {
-    const items = tables.filter(
-      (t) => kinds.includes(t.kind) && (!q || t.name.toLowerCase().includes(q)),
-    );
+    const items = tables.filter((t) => kinds.includes(t.kind) && matches(t));
     if (items.length === 0) continue;
     rows.push({ type: "header", key: `h:${label}`, label, count: items.length });
     for (const t of items)
@@ -80,6 +96,10 @@ export function buildTreeRows(tables: TableSummary[], search: string): TreeRow[]
   return rows;
 }
 
-export function useTreeRows(tables: TableSummary[] | undefined, search: string): TreeRow[] {
-  return useMemo(() => buildTreeRows(tables ?? [], search), [tables, search]);
+export function useTreeRows(
+  tables: TableSummary[] | undefined,
+  search: string,
+  pinned: ReadonlySet<string> = EMPTY_PINS,
+): TreeRow[] {
+  return useMemo(() => buildTreeRows(tables ?? [], search, pinned), [tables, search, pinned]);
 }

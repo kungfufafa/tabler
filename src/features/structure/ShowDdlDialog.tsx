@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { Copy } from "lucide-react";
+import { Copy, SquareTerminal } from "lucide-react";
+import { useRef } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,11 +13,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { ipc, type Dialect, type TableRef } from "@/lib/ipc";
 import { ddlKey } from "./invalidate";
 import { SqlBlock } from "./SqlBlock";
 
-/** Read-only CREATE statement of a table / view with a copy button. */
+/** Read-only CREATE statement of a table / view, to copy or open in a new SQL editor tab. */
 export function ShowDdlDialog({
   open,
   onOpenChange,
@@ -45,11 +47,24 @@ export function ShowDdlDialog({
       () => toast.error("Could not copy"),
     );
   };
+  // The new query tab takes focus: closing must not hand it back to the structure view.
+  const openedSql = useRef(false);
+  const openInEditor = () => {
+    if (!ddl.data) return;
+    openedSql.current = true;
+    onOpenChange(false);
+    openSqlInNewQueryTab(connectionId, ddl.data, dialect, `${table.name}.sql`);
+  };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="flex max-h-[80vh] flex-col gap-0 p-0 sm:max-w-3xl"
         onCloseAutoFocus={(e) => {
+          if (openedSql.current) {
+            openedSql.current = false;
+            e.preventDefault();
+            return;
+          }
           if (!returnFocus) return;
           e.preventDefault();
           returnFocus();
@@ -78,6 +93,9 @@ export function ShowDdlDialog({
           )}
         </div>
         <DialogFooter className="m-0 rounded-b-xl px-4 py-2.5">
+          <Button variant="outline" size="sm" onClick={openInEditor} disabled={!ddl.data}>
+            <SquareTerminal /> Open in SQL Editor
+          </Button>
           <Button variant="outline" size="sm" onClick={copy} disabled={!ddl.data}>
             <Copy /> Copy
           </Button>

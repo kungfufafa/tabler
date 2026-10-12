@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::browse::{FilterGroup, SortSpec};
+use super::query::ResultColumn;
 use super::schema::TableRef;
+use super::value::Value;
 
 /// Where the exported rows come from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -26,6 +28,13 @@ pub enum ExportSource {
     },
     /// One SQL statement that returns rows, run as written.
     Sql { sql: String },
+    /// Rows the renderer already holds (a result shown in the SQL editor), written as they are
+    /// without touching the database. `table` is the default INSERT target.
+    Rows {
+        columns: Vec<ResultColumn>,
+        rows: Vec<Vec<Value>>,
+        table: Option<String>,
+    },
 }
 
 /// Output file format.
@@ -154,6 +163,26 @@ mod tests {
         })
         .unwrap();
         assert_eq!(src, serde_json::json!({"kind": "sql", "sql": "select 1"}));
+        let rows: ExportSource = serde_json::from_value(serde_json::json!({
+            "kind": "rows",
+            "columns": [{"name": "id", "dataType": "int4", "kind": "int", "nullable": null, "table": "users"}],
+            "rows": [[{"t": "int", "v": 1}], [{"t": "null"}]],
+            "table": "users"
+        }))
+        .unwrap();
+        match &rows {
+            ExportSource::Rows {
+                columns,
+                rows,
+                table,
+            } => {
+                assert_eq!(columns[0].name, "id");
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[1][0], Value::Null);
+                assert_eq!(table.as_deref(), Some("users"));
+            }
+            other => panic!("unexpected source {other:?}"),
+        }
         let res = serde_json::to_value(ExportResult {
             path: "/x".into(),
             rows: 1,

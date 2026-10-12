@@ -38,6 +38,8 @@ export interface CloseRequest {
   dirty: DirtyTab[];
   /** Sum of `dirty[].count`. */
   total: number;
+  /** Tab to activate once the close went through ("Close Others" keeps and shows this one). */
+  activateAfter?: string;
 }
 
 interface TabsState {
@@ -59,8 +61,9 @@ interface TabsState {
   /**
    * Every user-initiated close goes through here. Closes immediately and returns true when none of
    * the tabs hold unsaved work; otherwise records a `closeRequest` for the dialog and returns false.
+   * `activateAfter`: a surviving tab to activate once the close went through.
    */
-  requestClose: (ids: string[]) => boolean;
+  requestClose: (ids: string[], activateAfter?: string) => boolean;
   /** Same check for the whole window. True when the window may close right away. */
   requestWindowClose: () => boolean;
   /** Discards the pending request's work; closes its tabs (kind "tabs") and returns the request. */
@@ -74,6 +77,8 @@ interface TabsState {
   retargetConnection: (oldId: string, newId: string) => void;
   setDirty: (id: string, dirty: boolean) => void;
   activate: (id: string) => void;
+  /** No tab active (the active connection has none open); the workspace shows its empty state. */
+  clearActive: () => void;
   activateIndex: (index: number) => void;
   next: () => void;
   prev: () => void;
@@ -124,7 +129,9 @@ export function hasUnsaved(): boolean {
 
 /**
  * The tab to activate after closing `closing`: the active tab if it survives, otherwise the
- * nearest surviving tab to its right, else to its left (TablePlus behaviour).
+ * nearest surviving tab of the same connection to its right, else to its left (TablePlus
+ * behaviour). Null when that connection has no tab left (or nothing was active): the workspace
+ * then shows the connection's empty state instead of jumping to another connection's tab.
  */
 export function pickNeighbour(
   tabs: readonly Tab[],
@@ -132,10 +139,12 @@ export function pickNeighbour(
   closing: ReadonlySet<string>,
 ): string | null {
   const index = tabs.findIndex((t) => t.id === activeId);
-  if (index >= 0 && !closing.has(activeId!)) return activeId;
-  if (index < 0) return tabs.filter((t) => !closing.has(t.id)).at(-1)?.id ?? null;
-  for (let i = index + 1; i < tabs.length; i++) if (!closing.has(tabs[i]!.id)) return tabs[i]!.id;
-  for (let i = index - 1; i >= 0; i--) if (!closing.has(tabs[i]!.id)) return tabs[i]!.id;
+  const active = tabs[index];
+  if (!active) return null;
+  if (!closing.has(active.id)) return active.id;
+  const survives = (t: Tab) => !closing.has(t.id) && t.connectionId === active.connectionId;
+  for (let i = index + 1; i < tabs.length; i++) if (survives(tabs[i]!)) return tabs[i]!.id;
+  for (let i = index - 1; i >= 0; i--) if (survives(tabs[i]!)) return tabs[i]!.id;
   return null;
 }
 
@@ -207,8 +216,13 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
   closeOthers: (id) => {
     const tabs = get().tabs;
     if (!tabs.some((t) => t.id === id)) return;
-    // The kept tab is the only survivor, so it becomes active once the others are gone.
-    get().requestClose(tabs.filter((t) => t.id !== id).map((t) => t.id));
+    // The kept tab is the only survivor, so it becomes active once the others are gone (now, or
+    // when the unsaved-changes dialog is confirmed). `pickNeighbour` alone would not pick it when
+    // it belongs to another connection than the closed active tab.
+    get().requestClose(
+      tabs.filter((t) => t.id !== id).map((t) => t.id),
+      id,
+    );
   },
 
   closeToRight: (id) => {
@@ -220,18 +234,20 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
 
   closeAll: () => void get().requestClose(get().tabs.map((t) => t.id)),
 
-  requestClose: (ids) => {
+  requestClose: (ids, activateAfter) => {
     const s = get();
     if (s.closeRequest) return false;
     const wanted = new Set(ids);
     const targets = s.tabs.filter((t) => wanted.has(t.id));
-    if (targets.length === 0) return true;
-    const request = buildRequest("tabs", targets);
-    if (request) {
-      set({ closeRequest: request });
-      return false;
+    if (targets.length > 0) {
+      const request = buildRequest("tabs", targets);
+      if (request) {
+        set({ closeRequest: activateAfter ? { ...request, activateAfter } : request });
+        return false;
+      }
+      get().forceClose(targets.map((t) => t.id));
     }
-    get().forceClose(targets.map((t) => t.id));
+    if (activateAfter) get().activate(activateAfter);
     return true;
   },
 
@@ -247,7 +263,10 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
     const request = get().closeRequest;
     if (!request) return null;
     set({ closeRequest: null });
-    if (request.kind === "tabs") get().forceClose(request.ids);
+    if (request.kind === "tabs") {
+      get().forceClose(request.ids);
+      if (request.activateAfter) get().activate(request.activateAfter);
+    }
     return request;
   },
 
@@ -299,6 +318,8 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
     }),
 
   activate: (id) => set((s) => (s.tabs.some((t) => t.id === id) ? { activeId: id } : s)),
+
+  clearActive: () => set((s) => (s.activeId === null ? s : { activeId: null })),
 
   activateIndex: (index) =>
     set((s) => {

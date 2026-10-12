@@ -282,6 +282,10 @@ pub async fn connect(
         .appdb
         .get_profile(profile_id)?
         .ok_or_else(|| AppError::NotFound(format!("profile {profile_id}")))?;
+    if profile.driver == Driver::Sqlite {
+        // Opening would create a missing file: a moved or mistyped path must not "connect".
+        drivers::sqlite::check_database_file(&profile)?;
+    }
     let tunnel = match tunnel_config(&profile) {
         Some(ssh) => {
             let auth = stored_tunnel_auth(&state, profile.id, ssh).await?;

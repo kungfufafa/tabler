@@ -12,13 +12,15 @@ use tauri::ipc::Channel;
 use uuid::Uuid;
 
 use crate::drivers::{
-    CancelSlot, CollectSink, DbSession, RowSink, lock_editor_runs, request_cancel,
+    CancelSlot, CollectSink, DbSession, RowSink, StatementOutcome, cancel_requested, contains_word,
+    is_dml, lock_editor_runs, request_cancel,
 };
 use crate::error::{AppError, ErrorPayload, ErrorPos};
 use crate::sqlgen::Dialect;
-use crate::sqlgen::explain::{explain_offset, wrap_explain};
+use crate::sqlgen::explain::{analyze_wrapper, explain_offset, wrap_explain};
 use crate::sqlgen::split::{
-    SplitStatement, is_meta_command, is_single_statement, split_statements,
+    SplitStatement, code_only, is_meta_command, is_single_statement, leading_keywords,
+    split_statements,
 };
 use crate::state::{AppState, Connection};
 use crate::types::history::NewHistoryEntry;
@@ -213,6 +215,171 @@ fn meta_command_error() -> AppError {
     )
 }
 
+/// Whether running `sql` changes data: DML, or a `WITH` whose code (not its strings, quoted
+/// identifiers or comments) holds a data-modifying `INSERT` / `UPDATE` / `DELETE` / `MERGE`.
+/// Deliberately coarse (`… FOR UPDATE` counts): it only decides whether an Explain Analyze may run
+/// when the transaction state is unknown.
+pub fn analyze_writes(sql: &str, dialect: Dialect) -> bool {
+    if is_dml(sql) {
+        return true;
+    }
+    if leading_keywords(sql, 1).first().map(String::as_str) != Some("WITH") {
+        return false;
+    }
+    let code = code_only(sql, dialect).to_uppercase();
+    ["INSERT", "UPDATE", "DELETE", "MERGE"]
+        .iter()
+        .any(|w| contains_word(&code, w))
+}
+
+/// Whether `sql` (one statement) can change the schema, so cached table metadata is stale after
+/// it ran: its first keyword is CREATE, ALTER, DROP, RENAME, TRUNCATE or COMMENT.
+pub fn changes_schema(sql: &str) -> bool {
+    matches!(
+        leading_keywords(sql, 1).first().map(String::as_str),
+        Some("CREATE" | "ALTER" | "DROP" | "RENAME" | "TRUNCATE" | "COMMENT")
+    )
+}
+
+/// Throws away whatever the Explain Analyze wrapper statements return.
+struct DiscardSink;
+
+impl RowSink for DiscardSink {
+    fn begin_set(&mut self, _columns: Vec<ResultColumn>) {}
+
+    fn rows(&mut self, _rows: Vec<Vec<Value>>) -> ControlFlow<()> {
+        ControlFlow::Continue(())
+    }
+}
+
+/// Opens what an executing EXPLAIN ANALYZE of `sql` runs in (`analyze_wrapper`: a transaction
+/// or a savepoint, rolled back afterwards) on the session's editor connection, and returns the
+/// statements that close it again. Nothing is left open when this fails.
+///
+/// The wrapper statements run with slots of their own: they are not the user's statement (and
+/// are quick), and the closing ones must run even after the user cancelled the EXPLAIN.
+async fn open_analyze(session: &dyn DbSession, sql: &str) -> Result<Vec<String>, AppError> {
+    let dialect = session.dialect();
+    let writes = analyze_writes(sql, dialect);
+    let in_tx = transaction_state(session).await;
+    let Some((open, close)) = analyze_wrapper(dialect, in_tx, writes)? else {
+        return Ok(Vec::new());
+    };
+    session
+        .run_statement(&open, 1, &mut DiscardSink, CancelSlot::default())
+        .await?;
+    Ok(close)
+}
+
+/// Whether the editor connection has a transaction open, for `analyze_wrapper`: the session's
+/// own tracking, checked against the server on MySQL / MariaDB. With `autocommit` switched off
+/// (`SET autocommit = 0`) a transaction is always open (started implicitly by the user's last
+/// statement), which the tracking does not see and `START TRANSACTION` would commit. MariaDB
+/// reports `@@in_transaction` as well, which also covers its `ANALYZE <statement>` (the tracking
+/// takes that for the implicitly committing `ANALYZE TABLE`). `None` when unknown.
+async fn transaction_state(session: &dyn DbSession) -> Option<bool> {
+    let tracked = session.in_transaction();
+    if session.dialect() != Dialect::Mysql {
+        return tracked;
+    }
+    let mariadb = session.is_mariadb();
+    if tracked == Some(true) && !mariadb {
+        return tracked;
+    }
+    let read = |sql: &'static str| async move {
+        let mut sink = CollectSink::default();
+        match session
+            .run_statement(sql, 1, &mut sink, CancelSlot::default())
+            .await
+        {
+            Ok(_) => sink
+                .sets
+                .into_iter()
+                .next()
+                .and_then(|set| set.rows.into_iter().next())
+                .map(|row| row.iter().map(flag).collect::<Vec<_>>()),
+            Err(e) => {
+                log::warn!("explain analyze: `{sql}` failed: {e}");
+                None
+            }
+        }
+    };
+    let flags = if mariadb {
+        match read("SELECT @@autocommit, @@in_transaction").await {
+            Some(flags) => Some(flags),
+            // An older server without the variable.
+            None => read("SELECT @@autocommit").await,
+        }
+    } else {
+        read("SELECT @@autocommit").await
+    };
+    let Some(flags) = flags else {
+        return if mariadb { None } else { tracked };
+    };
+    match (
+        flags.first().copied().flatten(),
+        flags.get(1).copied().flatten(),
+    ) {
+        (Some(false), _) => Some(true),
+        (Some(true), Some(open)) => Some(open),
+        (Some(true), None) if !mariadb => tracked,
+        _ => None,
+    }
+}
+
+/// A 0 / 1 server variable as a flag.
+fn flag(v: &Value) -> Option<bool> {
+    match v {
+        Value::Int(n) => Some(*n != 0),
+        Value::Text(t) | Value::Decimal(t) | Value::BigInt(t) => match t.trim() {
+            "0" => Some(false),
+            "1" => Some(true),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Runs the statements `open_analyze` returned, whatever happened to the EXPLAIN. A failure is
+/// logged (never reported in place of the EXPLAIN's own result) and stops the rest: releasing a
+/// savepoint that could not be rolled back to would keep the statement's changes.
+async fn close_analyze(session: &dyn DbSession, close: &[String]) {
+    for sql in close {
+        if let Err(e) = session
+            .run_statement(sql, 1, &mut DiscardSink, CancelSlot::default())
+            .await
+        {
+            log::warn!("explain analyze: `{sql}` failed: {e}");
+            return;
+        }
+    }
+}
+
+/// Runs the (already wrapped) EXPLAIN `exec_sql` of `statement`; an Analyze runs inside a
+/// rolled-back transaction or savepoint (`open_analyze`).
+async fn run_explain(
+    session: &dyn DbSession,
+    statement: &str,
+    exec_sql: &str,
+    mode: ExplainMode,
+    max_rows: usize,
+    sink: &mut dyn RowSink,
+    cancel: &CancelSlot,
+) -> Result<StatementOutcome, AppError> {
+    if cancel_requested(cancel) {
+        return Err(AppError::Cancelled);
+    }
+    let close = match mode {
+        ExplainMode::Analyze => open_analyze(session, statement).await?,
+        ExplainMode::Plan => Vec::new(),
+    };
+    let result = session
+        .run_statement(exec_sql, max_rows, sink, cancel.clone())
+        .await;
+    close_analyze(session, &close).await;
+    result
+}
+
 /// Splits `sql` and runs each statement on the session's editor connection, emitting
 /// `started`, `columns`/`rows`, `finished`/`failed` per statement and `done` at the end.
 /// Stops at the first error when `stop_on_error` is set, and always after a cancellation
@@ -273,6 +440,11 @@ pub async fn run_sql_inner(
             && let Err(e) = check_explainable(&st.sql, dialect)
         {
             Err(e)
+        } else if let Some(mode) = options.explain {
+            run_explain(
+                session, &st.sql, &exec_sql, mode, max_rows, &mut sink, cancel,
+            )
+            .await
         } else {
             session
                 .run_statement(&exec_sql, max_rows, &mut sink, cancel.clone())
@@ -397,10 +569,17 @@ pub async fn explain_inner(
     let mut sink = CollectSink::default();
     let _editor = lock_editor_runs(session, cancel).await?;
     let started = Instant::now();
-    session
-        .run_statement(&exec_sql, EXPLAIN_MAX_ROWS, &mut sink, cancel.clone())
-        .await
-        .map_err(|e| locate_error(e, st, sql, &exec_sql, shift, dialect).0)?;
+    run_explain(
+        session,
+        &st.sql,
+        &exec_sql,
+        mode,
+        EXPLAIN_MAX_ROWS,
+        &mut sink,
+        cancel,
+    )
+    .await
+    .map_err(|e| locate_error(e, st, sql, &exec_sql, shift, dialect).0)?;
     let set = sink.sets.into_iter().next().unwrap_or_default();
     let text = plan_text(dialect, &set);
     Ok(ExplainResult {
@@ -517,6 +696,11 @@ pub async fn run_sql(
         };
         run_sql_inner(session.as_ref(), &sql, &options, &slot, &mut emit).await
     };
+    // Browsing, counts and cell fetches read the cached metadata: DDL from the editor makes it
+    // stale (also when it failed partway; dropping the cache only costs a re-read).
+    if results.iter().any(|r| changes_schema(&r.sql)) {
+        conn.invalidate(None).await;
+    }
     let source = if options.explain.is_some() {
         "explain"
     } else {
@@ -616,6 +800,10 @@ mod tests {
     use super::*;
     use crate::drivers::sqlite::LiteSession;
     use crate::types::profile::{ConnectionProfile, Driver, ProfileOptions, SslMode};
+    use crate::types::query::ExecOutcome;
+    use crate::types::schema::{
+        CompletionMetadata, DatabaseInfo, SchemaInfo, TableMeta, TableRef, TableSummary,
+    };
 
     async fn sqlite_session() -> (LiteSession, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -919,6 +1107,490 @@ mod tests {
         assert!(a_still_running, "B waited for A instead of stopping");
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].error.as_ref().unwrap().code, "CANCELLED");
+    }
+
+    #[test]
+    fn analyze_write_detection() {
+        for d in [Dialect::Postgres, Dialect::Mysql, Dialect::Sqlite] {
+            // DML (also behind comments and parentheses).
+            assert!(analyze_writes("DELETE FROM users", d));
+            assert!(analyze_writes("  -- tidy up\n update t set a = 1", d));
+            assert!(analyze_writes("/* x */ INSERT INTO t VALUES (1)", d));
+            assert!(analyze_writes(
+                "merge into t using s on true when matched then delete",
+                d
+            ));
+            // Data-modifying CTEs.
+            assert!(analyze_writes(
+                "WITH gone AS (DELETE FROM t RETURNING *) SELECT count(*) FROM gone",
+                d
+            ));
+            assert!(analyze_writes(
+                "with x as (select 1) update t set a = (select * from x)",
+                d
+            ));
+            // Plain reads.
+            assert!(!analyze_writes("SELECT * FROM users", d));
+            assert!(!analyze_writes(
+                "WITH r AS (SELECT 1 AS n) SELECT n FROM r",
+                d
+            ));
+            assert!(!analyze_writes("select updated_at, deleted from t", d));
+            // Keywords in strings and comments are not code.
+            assert!(!analyze_writes(
+                "WITH r AS (SELECT 'DELETE' AS a) SELECT a FROM r -- update later",
+                d
+            ));
+            assert!(!analyze_writes(
+                "with r as (select 1 /* insert */) select * from r",
+                d
+            ));
+            assert!(!analyze_writes("-- DELETE FROM t\nSELECT 1", d));
+        }
+        // A quoted identifier is not code either.
+        assert!(!analyze_writes(
+            "WITH r AS (SELECT \"update\" FROM t) SELECT * FROM r",
+            Dialect::Postgres
+        ));
+        assert!(!analyze_writes(
+            "WITH r AS (SELECT `delete` FROM t) SELECT * FROM r",
+            Dialect::Mysql
+        ));
+    }
+
+    #[test]
+    fn schema_changing_statements() {
+        for sql in [
+            "CREATE TABLE t (a int)",
+            "  -- add it\n alter table users drop column bio",
+            "drop view v",
+            "RENAME TABLE a TO b",
+            "truncate t",
+            "COMMENT ON COLUMN t.a IS 'x'",
+            "/* c */ (CREATE INDEX i ON t (a))",
+        ] {
+            assert!(changes_schema(sql), "{sql}");
+        }
+        for sql in [
+            "select * from created",
+            "INSERT INTO t VALUES ('CREATE TABLE')",
+            "-- DROP TABLE t\nSELECT 1",
+            "update t set dropped = 1",
+            "",
+        ] {
+            assert!(!changes_schema(sql), "{sql}");
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_explain_analyze_shows_the_plan_without_a_transaction() {
+        let (session, _dir) = sqlite_session().await;
+        let (results, _) = run(
+            &session,
+            "create table e (a int); insert into e values (1), (2);",
+            RunOptions::default(),
+        )
+        .await;
+        assert!(results.iter().all(|r| r.error.is_none()), "{results:?}");
+        let slot = CancelSlot::default();
+        let plan = explain_inner(&session, "delete from e;", ExplainMode::Analyze, &slot)
+            .await
+            .unwrap();
+        assert!(plan.text.is_some());
+        let opts = RunOptions {
+            explain: Some(ExplainMode::Analyze),
+            ..RunOptions::default()
+        };
+        let (results, _) = run(&session, "select * from e where a = 1", opts).await;
+        assert!(results[0].error.is_none(), "{results:?}");
+        assert_eq!(results[0].kind, StatementKind::Explain);
+        // EXPLAIN QUERY PLAN never ran the DELETE, and no transaction was left open.
+        assert_eq!(session.in_transaction(), Some(false));
+        let (_, events) = run(&session, "select count(*) from e", RunOptions::default()).await;
+        match &events[2] {
+            QueryEvent::Rows { rows, .. } => assert_eq!(rows[0][0], Value::Int(2)),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// Records the statements run on the editor; `fail` makes statements containing it fail.
+    struct Recorder {
+        dialect: Dialect,
+        in_tx: Option<bool>,
+        fail: Option<&'static str>,
+        /// The user cancels while a statement containing this runs.
+        cancel_during: Option<&'static str>,
+        /// What `SELECT @@autocommit` returns.
+        autocommit: i64,
+        /// MariaDB, whose `@@in_transaction` reports this.
+        mariadb_in_tx: Option<i64>,
+        log: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Recorder {
+        fn new(dialect: Dialect, in_tx: Option<bool>) -> Recorder {
+            Recorder {
+                dialect,
+                in_tx,
+                fail: None,
+                cancel_during: None,
+                autocommit: 1,
+                mariadb_in_tx: None,
+                log: Default::default(),
+            }
+        }
+
+        fn log(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DbSession for Recorder {
+        fn driver(&self) -> crate::types::profile::Driver {
+            match self.dialect {
+                Dialect::Postgres => Driver::Postgres,
+                Dialect::Mysql => Driver::Mysql,
+                Dialect::Sqlite => Driver::Sqlite,
+            }
+        }
+        fn dialect(&self) -> Dialect {
+            self.dialect
+        }
+        async fn server_info(&self) -> Result<crate::drivers::ServerInfo, AppError> {
+            Ok(Default::default())
+        }
+        async fn ping(&self) -> Result<(), AppError> {
+            Ok(())
+        }
+        async fn close(&self) {}
+        async fn list_databases(&self) -> Result<Vec<DatabaseInfo>, AppError> {
+            Ok(Vec::new())
+        }
+        async fn list_schemas(&self) -> Result<Vec<SchemaInfo>, AppError> {
+            Ok(Vec::new())
+        }
+        async fn list_tables(&self, _schema: &str) -> Result<Vec<TableSummary>, AppError> {
+            Ok(Vec::new())
+        }
+        async fn table_meta(&self, table: &TableRef) -> Result<TableMeta, AppError> {
+            Err(AppError::NotFound(table.name.clone()))
+        }
+        async fn view_definition(&self, _table: &TableRef) -> Result<Option<String>, AppError> {
+            Ok(None)
+        }
+        async fn completion_metadata(&self) -> Result<CompletionMetadata, AppError> {
+            Err(AppError::Unsupported("recorder".into()))
+        }
+        async fn query(&self, sql: &str, _params: &[Value]) -> Result<ResultSet, AppError> {
+            panic!("the worker must not run {sql}")
+        }
+        async fn execute(&self, sql: &str, _params: &[Value]) -> Result<ExecOutcome, AppError> {
+            panic!("the worker must not run {sql}")
+        }
+        async fn transaction(
+            &self,
+            _statements: Vec<crate::drivers::TxStatement>,
+        ) -> Result<Vec<ExecOutcome>, AppError> {
+            panic!("the worker must not run a transaction")
+        }
+        async fn run_statement(
+            &self,
+            sql: &str,
+            _max_rows: usize,
+            sink: &mut dyn RowSink,
+            cancel: CancelSlot,
+        ) -> Result<StatementOutcome, AppError> {
+            self.log.lock().unwrap().push(sql.to_string());
+            let _armed =
+                crate::drivers::arm_cancel(&cancel, crate::drivers::CancelHandle::Requested)?;
+            if self.fail.is_some_and(|f| sql.contains(f)) {
+                return Err(AppError::InvalidInput(format!("{sql} failed")));
+            }
+            if self.cancel_during.is_some_and(|f| sql.contains(f)) {
+                request_cancel(&cancel);
+                return Err(AppError::Cancelled);
+            }
+            if let Some(vars) = sql.strip_prefix("SELECT @@") {
+                let row: Vec<Value> = vars
+                    .split(", @@")
+                    .map(|v| match v {
+                        "autocommit" => Value::Int(self.autocommit),
+                        _ => Value::Int(self.mariadb_in_tx.unwrap_or(0)),
+                    })
+                    .collect();
+                sink.begin_set(
+                    row.iter()
+                        .map(|_| ResultColumn {
+                            name: "flag".into(),
+                            data_type: "BIGINT".into(),
+                            kind: crate::types::schema::ValueKind::Int,
+                            nullable: None,
+                            table: None,
+                        })
+                        .collect(),
+                );
+                let _ = sink.rows(vec![row]);
+            }
+            if sql.starts_with("EXPLAIN") {
+                sink.begin_set(vec![ResultColumn {
+                    name: "QUERY PLAN".into(),
+                    data_type: "text".into(),
+                    kind: crate::types::schema::ValueKind::Text,
+                    nullable: None,
+                    table: None,
+                }]);
+                let _ = sink.rows(vec![vec![Value::Text("Delete on t".into())]]);
+            }
+            Ok(StatementOutcome::default())
+        }
+        async fn stream_query(
+            &self,
+            sql: &str,
+            _params: &[Value],
+            _sink: &mut dyn RowSink,
+            _cancel: CancelSlot,
+        ) -> Result<u64, AppError> {
+            panic!("the worker must not run {sql}")
+        }
+        async fn cancel(&self, _handle: crate::drivers::CancelHandle) -> Result<(), AppError> {
+            Ok(())
+        }
+        fn in_transaction(&self) -> Option<bool> {
+            self.in_tx
+        }
+        fn is_mariadb(&self) -> bool {
+            self.mariadb_in_tx.is_some()
+        }
+    }
+
+    const PG_ANALYZE: &str = "EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT TEXT) DELETE FROM t";
+
+    #[tokio::test]
+    async fn explain_analyze_runs_in_a_rolled_back_transaction() {
+        let slot = CancelSlot::default();
+        // No transaction open: one of its own on the editor, rolled back.
+        let pg = Recorder::new(Dialect::Postgres, Some(false));
+        let plan = explain_inner(&pg, "DELETE FROM t;", ExplainMode::Analyze, &slot)
+            .await
+            .unwrap();
+        assert_eq!(plan.text.as_deref(), Some("Delete on t"));
+        assert_eq!(pg.log(), ["BEGIN", PG_ANALYZE, "ROLLBACK"]);
+
+        let my = Recorder::new(Dialect::Mysql, Some(false));
+        explain_inner(&my, "DELETE FROM t", ExplainMode::Analyze, &slot)
+            .await
+            .unwrap();
+        assert_eq!(
+            my.log(),
+            [
+                "SELECT @@autocommit",
+                "START TRANSACTION",
+                "EXPLAIN ANALYZE DELETE FROM t",
+                "ROLLBACK"
+            ]
+        );
+
+        // MySQL with autocommit off always has a transaction open (START TRANSACTION would
+        // commit it): a savepoint, as inside an explicit one.
+        let mut my = Recorder::new(Dialect::Mysql, Some(false));
+        my.autocommit = 0;
+        explain_inner(&my, "DELETE FROM t", ExplainMode::Analyze, &slot)
+            .await
+            .unwrap();
+        assert_eq!(
+            my.log(),
+            [
+                "SELECT @@autocommit",
+                "SAVEPOINT tabler_explain",
+                "EXPLAIN ANALYZE DELETE FROM t",
+                "ROLLBACK TO SAVEPOINT tabler_explain",
+                "RELEASE SAVEPOINT tabler_explain"
+            ]
+        );
+
+        // MariaDB: the server says whether a transaction is open (its `ANALYZE …` throws the
+        // session's own tracking off).
+        let mut maria = Recorder::new(Dialect::Mysql, Some(false));
+        maria.mariadb_in_tx = Some(1);
+        explain_inner(&maria, "DELETE FROM t", ExplainMode::Analyze, &slot)
+            .await
+            .unwrap();
+        assert_eq!(
+            maria.log(),
+            [
+                "SELECT @@autocommit, @@in_transaction",
+                "SAVEPOINT tabler_explain",
+                "ANALYZE FORMAT=JSON DELETE FROM t",
+                "ROLLBACK TO SAVEPOINT tabler_explain",
+                "RELEASE SAVEPOINT tabler_explain"
+            ]
+        );
+        let mut maria = Recorder::new(Dialect::Mysql, Some(true));
+        maria.mariadb_in_tx = Some(0);
+        explain_inner(&maria, "DELETE FROM t", ExplainMode::Analyze, &slot)
+            .await
+            .unwrap();
+        assert_eq!(maria.log()[1], "START TRANSACTION");
+
+        // Inside the user's transaction: a savepoint keeps it open with its earlier work.
+        let my = Recorder::new(Dialect::Mysql, Some(true));
+        explain_inner(&my, "select * from t", ExplainMode::Analyze, &slot)
+            .await
+            .unwrap();
+        assert_eq!(
+            my.log(),
+            [
+                "SAVEPOINT tabler_explain",
+                "EXPLAIN ANALYZE select * from t",
+                "ROLLBACK TO SAVEPOINT tabler_explain",
+                "RELEASE SAVEPOINT tabler_explain"
+            ]
+        );
+
+        // A plain EXPLAIN runs nothing around it.
+        let pg = Recorder::new(Dialect::Postgres, Some(false));
+        explain_inner(&pg, "DELETE FROM t", ExplainMode::Plan, &slot)
+            .await
+            .unwrap();
+        assert_eq!(
+            pg.log(),
+            ["EXPLAIN (VERBOSE, COSTS, FORMAT TEXT) DELETE FROM t"]
+        );
+    }
+
+    #[tokio::test]
+    async fn explain_analyze_always_rolls_back() {
+        // The EXPLAIN fails: rolled back all the same, and its own error is reported.
+        let mut pg = Recorder::new(Dialect::Postgres, Some(false));
+        pg.fail = Some("EXPLAIN");
+        let err = explain_inner(
+            &pg,
+            "DELETE FROM t",
+            ExplainMode::Analyze,
+            &CancelSlot::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("EXPLAIN"), "{err}");
+        assert_eq!(pg.log(), ["BEGIN", PG_ANALYZE, "ROLLBACK"]);
+
+        // Cancelled while the EXPLAIN runs: the transaction is still rolled back.
+        let mut pg = Recorder::new(Dialect::Postgres, Some(false));
+        pg.cancel_during = Some("EXPLAIN");
+        let slot = CancelSlot::default();
+        let err = explain_inner(&pg, "DELETE FROM t", ExplainMode::Analyze, &slot)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Cancelled), "{err:?}");
+        assert!(cancel_requested(&slot));
+        assert_eq!(pg.log(), ["BEGIN", PG_ANALYZE, "ROLLBACK"]);
+
+        // Cancelled before it started: nothing runs at all.
+        let pg = Recorder::new(Dialect::Postgres, Some(false));
+        let slot = CancelSlot::default();
+        request_cancel(&slot);
+        let err = explain_inner(&pg, "DELETE FROM t", ExplainMode::Analyze, &slot)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Cancelled), "{err:?}");
+        assert!(pg.log().is_empty(), "{:?}", pg.log());
+
+        // A failed rollback to the savepoint is logged, and the savepoint is not released
+        // (that would keep the statement's changes); the plan is still shown.
+        let mut pg = Recorder::new(Dialect::Postgres, Some(true));
+        pg.fail = Some("ROLLBACK TO");
+        explain_inner(
+            &pg,
+            "DELETE FROM t",
+            ExplainMode::Analyze,
+            &CancelSlot::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            pg.log(),
+            [
+                "SAVEPOINT tabler_explain",
+                PG_ANALYZE,
+                "ROLLBACK TO SAVEPOINT tabler_explain"
+            ]
+        );
+
+        // The transaction could not be opened: nothing else runs.
+        let mut pg = Recorder::new(Dialect::Postgres, Some(false));
+        pg.fail = Some("BEGIN");
+        let err = explain_inner(
+            &pg,
+            "DELETE FROM t",
+            ExplainMode::Analyze,
+            &CancelSlot::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("BEGIN"), "{err}");
+        assert_eq!(pg.log(), ["BEGIN"]);
+    }
+
+    #[tokio::test]
+    async fn explain_analyze_refuses_writes_in_an_unknown_transaction_state() {
+        let slot = CancelSlot::default();
+        let pg = Recorder::new(Dialect::Postgres, None);
+        let err = explain_inner(&pg, "DELETE FROM t", ExplainMode::Analyze, &slot)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Unsupported(_)), "{err:?}");
+        assert!(pg.log().is_empty(), "{:?}", pg.log());
+        // A read still runs (there is nothing safe to wrap it in).
+        explain_inner(&pg, "SELECT 1", ExplainMode::Analyze, &slot)
+            .await
+            .unwrap();
+        assert_eq!(
+            pg.log(),
+            ["EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT TEXT) SELECT 1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn run_with_explain_analyze_wraps_every_statement() {
+        let my = Recorder::new(Dialect::Mysql, Some(false));
+        let opts = RunOptions {
+            explain: Some(ExplainMode::Analyze),
+            stop_on_error: false,
+            ..RunOptions::default()
+        };
+        let (results, _) = run(&my, "delete from a; update b set x = 1;", opts).await;
+        assert!(results.iter().all(|r| r.error.is_none()), "{results:?}");
+        assert!(results.iter().all(|r| r.kind == StatementKind::Explain));
+        assert_eq!(
+            my.log(),
+            [
+                "SELECT @@autocommit",
+                "START TRANSACTION",
+                "EXPLAIN ANALYZE delete from a",
+                "ROLLBACK",
+                "SELECT @@autocommit",
+                "START TRANSACTION",
+                "EXPLAIN ANALYZE update b set x = 1",
+                "ROLLBACK"
+            ]
+        );
+
+        // Unknown state: the write is refused as that statement's error, nothing runs.
+        let my = Recorder::new(Dialect::Mysql, None);
+        let opts = RunOptions {
+            explain: Some(ExplainMode::Analyze),
+            ..RunOptions::default()
+        };
+        let (results, _) = run(&my, "delete from a", opts.clone()).await;
+        assert_eq!(results[0].error.as_ref().unwrap().code, "UNSUPPORTED");
+        assert_eq!(my.log(), ["SELECT @@autocommit"]);
+        // …unless autocommit is off: then a transaction is open for sure.
+        let mut my = Recorder::new(Dialect::Mysql, None);
+        my.autocommit = 0;
+        let (results, _) = run(&my, "delete from a", opts).await;
+        assert!(results[0].error.is_none(), "{results:?}");
+        assert_eq!(my.log()[1], "SAVEPOINT tabler_explain");
     }
 
     #[test]

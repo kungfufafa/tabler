@@ -742,3 +742,86 @@ async fn caching_sha2_password_over_plain_tcp() {
     root.close().await;
     result.unwrap();
 }
+
+/// The inspector's "Load full value" on a table without a key: MySQL's all-columns WHERE already
+/// ends with `LIMIT 1`, and the blob must come back whole (beyond the 64 KiB grid preview).
+#[tokio::test]
+async fn fetch_full_cell_by_all_columns_key() {
+    use std::collections::BTreeMap;
+    use tabler_lib::sqlgen::mutate::TableSpec;
+    use tabler_lib::sqlgen::select::build_fetch_cell;
+    use tabler_lib::types::browse::RowKey;
+    use tabler_lib::types::value::decode_hex;
+
+    let Some((s, profile)) = session().await else {
+        return;
+    };
+    let db = db_of(&profile);
+    let table = format!("tabler_test_{}", uuid::Uuid::new_v4().simple());
+    let q = |sql: &str| sql.replace("{t}", &format!("`{table}`"));
+    let big: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
+
+    let result = async {
+        s.execute(
+            &q("CREATE TABLE {t} (a INT NULL, b LONGBLOB NULL, c VARCHAR(20) NULL)"),
+            &[],
+        )
+        .await?;
+        s.execute(
+            &q("INSERT INTO {t} (a, b, c) VALUES (?, ?, ?), (?, ?, ?)"),
+            &[
+                Value::Int(1),
+                Value::from_bytes_uncapped(&big),
+                Value::Text("x".into()),
+                Value::Int(2),
+                Value::Null,
+                Value::Null,
+            ],
+        )
+        .await?;
+        let meta = s.table_meta(&TableRef::new(Some(&db), &table)).await?;
+        let spec = TableSpec {
+            dialect: s.dialect(),
+            table: &meta.table,
+            columns: &meta.columns,
+        };
+        let blob = meta.columns.iter().find(|c| c.name == "b").unwrap();
+        assert_eq!(blob.kind, ValueKind::Bytes);
+
+        let key = RowKey::AllColumns(BTreeMap::from([
+            ("a".to_string(), Value::Int(1)),
+            ("c".to_string(), Value::Text("x".into())),
+        ]));
+        let (sql, params) = build_fetch_cell(&spec, blob, &key)?;
+        assert_eq!(sql.matches("LIMIT").count(), 1, "{sql}");
+        let rs = s.query(&sql, &params).await?;
+        let hex = match rs.rows[0][0].clone() {
+            Value::Text(t) => t,
+            Value::Bytes(b) => {
+                use base64::Engine as _;
+                let raw = base64::engine::general_purpose::STANDARD
+                    .decode(b.base64)
+                    .unwrap();
+                String::from_utf8(raw).unwrap()
+            }
+            other => panic!("expected hex text, got {other:?}"),
+        };
+        assert_eq!(decode_hex(&hex).unwrap(), big);
+
+        // NULL key values match too (`<=>`), and a NULL blob stays NULL.
+        let key = RowKey::AllColumns(BTreeMap::from([
+            ("a".to_string(), Value::Int(2)),
+            ("c".to_string(), Value::Null),
+        ]));
+        let (sql, params) = build_fetch_cell(&spec, blob, &key)?;
+        let rs = s.query(&sql, &params).await?;
+        assert_eq!(rs.rows.len(), 1);
+        assert_eq!(rs.rows[0][0], Value::Null);
+        Ok::<(), tabler_lib::error::AppError>(())
+    }
+    .await;
+
+    let _ = s.execute(&q("DROP TABLE IF EXISTS {t}"), &[]).await;
+    result.unwrap();
+    s.close().await;
+}

@@ -8,6 +8,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { closeConnectionTabs } from "@/features/connections/closeGuard";
+import { resetDatabaseCaches } from "@/features/structure/invalidate";
 import { ipc } from "@/lib/ipc";
 import { useConnectionsStore, type OpenConnection } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
@@ -29,9 +30,8 @@ export function DatabasePicker({ connection }: { connection: OpenConnection }) {
       setInfo(info);
       setCurrentSchema(id, null);
       closeForConnection(id);
-      void qc.invalidateQueries({ queryKey: ["schemas", id] });
-      void qc.invalidateQueries({ queryKey: ["tables", id] });
-      void qc.invalidateQueries({ queryKey: ["databases", id] });
+      // Same connection id, another database: nothing cached for the old one may show again.
+      resetDatabaseCaches(qc, id);
     },
     onError: (e) => toast.error("Could not switch database", { description: e.message }),
   });

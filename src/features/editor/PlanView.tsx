@@ -50,6 +50,14 @@ export function PlanView({
           </Button>
         )}
       </div>
+      {/* The backend wraps PostgreSQL / MySQL analyzes in a transaction (or savepoint) it rolls
+          back; SQLite's plan never executes anything. */}
+      {plan.mode === "analyze" && dialect !== "sqlite" && plan.status === "done" && (
+        <p className="border-gridline text-muted-foreground shrink-0 border-b px-3 py-1 text-[11px] leading-4">
+          Ran inside a transaction that was rolled back — no changes were kept (non-transactional
+          MySQL tables excepted).
+        </p>
+      )}
       <div className="min-h-0 flex-1">
         {plan.status === "running" ? (
           <div className="text-muted-foreground flex items-center gap-2 p-3 text-xs">

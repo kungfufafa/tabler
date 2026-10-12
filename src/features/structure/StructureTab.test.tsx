@@ -7,6 +7,7 @@ import { ipc, type DdlOp, type TableRef } from "@/lib/ipc";
 import { resetMockDdl } from "@/lib/ipc/mock/ddl";
 import { isMac } from "@/lib/keys/combo";
 import { KeyboardProvider } from "@/lib/keys/useShortcuts";
+import { getEditorState } from "@/features/editor/editorStates";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore, type Tab } from "@/stores/tabs";
 import { useStructureStore } from "./store";
@@ -265,10 +266,94 @@ describe("StructureTab", () => {
     expect(useStructureStore.getState().byTab.gone).toBeUndefined();
   });
 
+  it("opens the CREATE statement in a new SQL editor tab", async () => {
+    const { connectionId } = await setup();
+    const users = { schema: "public", name: "users" };
+    const ddl = await ipc.ddl.tableDdl(connectionId, users);
+    const activeTab = () => {
+      const { tabs, activeId } = useTabsStore.getState();
+      return tabs.find((t) => t.id === activeId);
+    };
+
+    fireEvent.click(screen.getByRole("button", { name: "Open in SQL" }));
+    await waitFor(() => expect(activeTab()?.kind).toBe("query"));
+    const first = activeTab()!;
+    expect(first).toMatchObject({ kind: "query", connectionId, title: "users.sql" });
+    expect(getEditorState(first.id)?.doc.toString()).toBe(ddl);
+
+    // The same from the DDL dialog, which closes on the way.
+    fireEvent.click(screen.getByRole("button", { name: "Show DDL" }));
+    const dialog = await screen.findByRole("dialog");
+    const open = within(dialog).getByRole("button", { name: "Open in SQL Editor" });
+    await waitFor(() => expect(open).toBeEnabled());
+    fireEvent.click(open);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const second = activeTab()!;
+    expect(second.id).not.toBe(first.id);
+    expect(second).toMatchObject({ kind: "query", title: "users.sql" });
+    expect(getEditorState(second.id)?.doc.toString()).toBe(ddl);
+  });
+
+  it("says so when the CREATE statement cannot be loaded", async () => {
+    await setup();
+    vi.spyOn(ipc.ddl, "tableDdl").mockRejectedValueOnce({
+      code: "DB_ERROR",
+      message: "permission denied for table users",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open in SQL" }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("Could not load the CREATE statement", {
+        description: "permission denied for table users",
+      }),
+    );
+    expect(useTabsStore.getState().tabs.some((t) => t.kind === "query")).toBe(false);
+    vi.restoreAllMocks();
+  });
+
+  it("toggles the primary key, reviews and applies it", async () => {
+    const { ops } = await setup();
+    const users = { schema: "public", name: "users" };
+    const pk = (name: string) => screen.getByRole("button", { name: `${name} primary key` });
+    expect(pk("id")).toHaveAttribute("aria-pressed", "true");
+    expect(pk("email")).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(pk("email"));
+    expect(ops()).toEqual([
+      { op: "dropPrimaryKey", table: users },
+      { op: "addPrimaryKey", table: users, columns: ["id", "email"] },
+    ]);
+    expect(pk("email")).toHaveAttribute("aria-pressed", "true");
+    expect(pk("email").closest("td")).toHaveClass("bg-changed");
+    // Key columns are NOT NULL: their nullable box is off and locked.
+    expect(screen.getByRole("checkbox", { name: "email nullable" })).toBeDisabled();
+
+    // ⌘Z takes the toggle back like any other staged edit.
+    await act(() => actions.run("grid.undo"));
+    expect(ops()).toEqual([]);
+    expect(pk("email")).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(pk("email"));
+
+    await act(() => actions.run("grid.commit"));
+    expect(await screen.findByTestId("ddl-statement-1")).toHaveTextContent(
+      'ALTER TABLE "public"."users" ADD PRIMARY KEY ("id", "email")',
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Apply/ }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    expect(ops()).toEqual([]);
+    await waitFor(() => expect(pk("email")).toHaveAttribute("aria-pressed", "true"));
+    expect(pk("email").closest("td")).not.toHaveClass("bg-changed");
+
+    // A dropped column's key cell is locked.
+    const row = cell("c:bio:name").closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Drop column" }));
+    expect(pk("bio")).toBeDisabled();
+  });
+
   it("views are read-only", async () => {
     await setup("p-local-pg", { schema: "public", name: "active_users" });
     expect(screen.getByText("Views are shown read-only.")).toBeInTheDocument();
     expect(cell("c:email:name")).toHaveAttribute("readonly");
+    expect(screen.getByRole("button", { name: "email primary key" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: /Column/ })).not.toBeInTheDocument();
     expect(actions.has("grid.commit")).toBe(false);
   });

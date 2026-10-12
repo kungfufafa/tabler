@@ -4,6 +4,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { useAction } from "@/features/palette/actions";
 import { useActiveConnection } from "@/stores/connections";
+import { pinScope, usePinned } from "@/stores/pins";
 import { useUiStore } from "@/stores/ui";
 import { ConnectionSwitcher } from "./ConnectionSwitcher";
 import { DatabasePicker } from "./DatabasePicker";
@@ -19,7 +20,10 @@ export function Sidebar() {
   const connectionId = active?.info.connectionId ?? null;
   const schema = useCurrentSchema(connectionId);
   const tables = useTables(connectionId, schema);
-  const rows = useTreeRows(tables.data, search);
+  // Pins follow the saved connection and its database, not the (per-session) connection id.
+  const scope = active ? pinScope(active.info.profileId, active.info.currentDatabase) : null;
+  const pinned = usePinned(scope);
+  const rows = useTreeRows(tables.data, search, pinned);
 
   useAction("sidebar.focus-search", () => {
     searchRef.current?.focus();
@@ -39,6 +43,8 @@ export function Sidebar() {
             loading={tables.isPending && schema !== null}
             error={tables.isError ? tables.error.message : null}
             search={search}
+            pinScope={scope}
+            pinned={pinned}
           />
         </>
       ) : (

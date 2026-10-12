@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ColumnMeta, FilterGroup } from "@/lib/ipc";
+import type { ColumnMeta, FilterGroup, Value } from "@/lib/ipc";
 import {
   browsePageOf,
   buildExportRequest,
@@ -11,6 +11,7 @@ import {
   fileFilter,
   formatBytes,
   formatElapsed,
+  hasCappedBytes,
   loadExportOptions,
   parseExportOptions,
   safeFileBase,
@@ -180,6 +181,60 @@ describe("buildExportRequest", () => {
     const req = build({ kind: "sql", sql: "SELECT 1" }, opts({ format: "json" }));
     expect(req.source).toEqual({ kind: "sql", sql: "SELECT 1" });
     expect(req.maxRows).toBeNull();
+  });
+
+  it("sends the rows of a result as they are, INSERTs defaulting to its table", () => {
+    const input: ExportInput = {
+      kind: "rows",
+      columns: [{ name: "n", dataType: "int4", kind: "int", nullable: null, table: "t" }],
+      rows: [[{ t: "int", v: 1 }], [{ t: "null" }]],
+      table: "t",
+    };
+    const req = build(input, opts({ format: "sqlInsert" }));
+    expect(req.source).toEqual({
+      kind: "rows",
+      columns: input.columns,
+      rows: input.rows,
+      table: "t",
+    });
+    expect(req.format).toEqual({ format: "sqlInsert", tableName: "", batchSize: 100 });
+    expect(req.maxRows).toBeNull();
+    expect(exportProblem(input, "sqlInsert")).toBeNull();
+    expect(build(input, opts({ format: "sqlInsert" }), " archive ").format).toMatchObject({
+      tableName: "archive",
+    });
+  });
+});
+
+describe("rows with cut binary values", () => {
+  const capped: Value = { t: "bytes", v: { base64: "AA==", len: 70_000, truncated: true } };
+  const full: Value = { t: "bytes", v: { base64: "AA==", len: 1, truncated: false } };
+
+  it("finds a binary value cut to its preview, also inside arrays", () => {
+    expect(hasCappedBytes([[{ t: "int", v: 1 }, full]])).toBe(false);
+    expect(hasCappedBytes([[{ t: "int", v: 1 }], [capped]])).toBe(true);
+    expect(hasCappedBytes([[{ t: "array", v: [full, capped] }]])).toBe(true);
+    expect(hasCappedBytes([])).toBe(false);
+  });
+
+  it("is a problem of the rows, not something to send to the backend", () => {
+    const input: ExportInput = {
+      kind: "rows",
+      columns: [{ name: "b", dataType: "bytea", kind: "bytes", nullable: true, table: null }],
+      rows: [[capped]],
+      table: null,
+    };
+    expect(exportProblem(input, "csv")).toMatchObject({ field: "rows", severity: "fix" });
+    expect(() =>
+      buildExportRequest({
+        exportId: "e",
+        path: "/tmp/x.csv",
+        input,
+        options: opts(),
+        sqlTableName: "",
+      }),
+    ).toThrow(/64 KiB/);
+    expect(exportProblem({ ...input, rows: [[full]] }, "csv")).toBeNull();
   });
 });
 

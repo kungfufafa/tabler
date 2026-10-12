@@ -84,6 +84,8 @@ export interface StructureView {
   columns: ColumnRow[];
   indexes: IndexRow[];
   foreignKeys: FkRow[];
+  /** Primary key columns (current names) in key order, once the staged ops are applied. */
+  primaryKey: string[];
 }
 
 type AddColumnOp = Extract<DdlOp, { op: "addColumn" }>;
@@ -256,6 +258,7 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
   let addedColumns = 0;
   let addedIndexes = 0;
   let addedFks = 0;
+  let primaryKey = [...meta.primaryKey];
   const live = (name: string) => columns.find((c) => c.status !== "dropped" && c.name === name);
 
   ops.forEach((op, i) => {
@@ -278,6 +281,8 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
           r.status = "dropped";
           r.opAt.drop = i;
         }
+        // As the backend models it: a dropped key column leaves the key.
+        primaryKey = primaryKey.filter((c) => c !== op.name);
         return;
       }
       case "renameColumn": {
@@ -286,6 +291,7 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
           r.name = op.newName;
           r.opAt.name = i;
         }
+        primaryKey = primaryKey.map((c) => (c === op.name ? op.newName : c));
         return;
       }
       case "alterColumnType": {
@@ -323,11 +329,17 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
       case "addPrimaryKey":
         for (const name of op.columns) {
           const r = live(name);
-          if (r) r.isPk = true;
+          if (r) {
+            r.isPk = true;
+            // Key columns become NOT NULL (every dialect, also in the SQLite rebuild).
+            r.nullable = false;
+          }
         }
+        primaryKey = [...op.columns];
         return;
       case "dropPrimaryKey":
         for (const c of columns) c.isPk = false;
+        primaryKey = [];
         return;
       case "addIndex": {
         const x = op.index;
@@ -402,7 +414,7 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
     for (const f of foreignKeys)
       if (f.status !== "added") f.columns = f.columns.map((c) => renamed.get(c) ?? c);
   }
-  return { columns, indexes, foreignKeys };
+  return { columns, indexes, foreignKeys, primaryKey };
 }
 
 // --- reducers ------------------------------------------------------------------------------
@@ -539,13 +551,14 @@ export function dropColumn(meta: TableMeta, ops: readonly DdlOp[], rowKey: strin
 
   if (row.status === "added") {
     const remove = new Set([row.opAt.add!, ...row.refs]);
-    return ops
+    const next = ops
       .filter((_, i) => !remove.has(i))
       .map((op) =>
         op.op === "addColumn" && targets(op, table) && op.after === row.name
           ? { ...op, after: row.after }
           : op,
       );
+    return withoutNoopKeyOps(meta, withoutKeyColumn(next, table, row.name));
   }
 
   const origName = row.origName!;
@@ -563,7 +576,97 @@ export function dropColumn(meta: TableMeta, ops: readonly DdlOp[], rowKey: strin
     );
   });
   next.push({ op: "dropColumn", table, name: origName });
-  return next;
+  // Staged key ops before the drop name the column by its database name again (see above).
+  return withoutNoopKeyOps(meta, withoutKeyColumn(next, table, origName));
+}
+
+/**
+ * `ops` with column `name` taken out of the staged `addPrimaryKey` ops of `table` (an op left
+ * without columns goes), so a staged key never names a column that is being dropped or was
+ * never created. A staged `dropPrimaryKey` stays: the key then goes, as it would with the column
+ * (unless what is left is the database's key again: see `withoutNoopKeyOps`).
+ */
+function withoutKeyColumn(ops: DdlOp[], table: TableRef, name: string): DdlOp[] {
+  if (!ops.some((op) => op.op === "addPrimaryKey" && targets(op, table))) return ops;
+  return ops.flatMap((op): DdlOp[] => {
+    if (op.op !== "addPrimaryKey" || !targets(op, table) || !op.columns.includes(name)) return [op];
+    const columns = op.columns.filter((c) => c !== name);
+    return columns.length > 0 ? [{ ...op, columns }] : [];
+  });
+}
+
+const isKeyOp = (op: DdlOp, table: TableRef) =>
+  (op.op === "addPrimaryKey" || op.op === "dropPrimaryKey") && targets(op, table);
+
+/**
+ * Whether `columns` (names in `view`, in key order) are the database's primary key: the same
+ * columns by database name, in the same order. A staged rename does not change which columns
+ * form the key; a staged new column is never part of it.
+ */
+function isDatabaseKey(meta: TableMeta, view: StructureView, columns: readonly string[]): boolean {
+  return (
+    columns.length === meta.primaryKey.length &&
+    columns.every((name, i) => {
+      const db = view.columns.find((c) => c.status !== "dropped" && c.name === name)?.origName;
+      return db !== null && db !== undefined && db === meta.primaryKey[i];
+    })
+  );
+}
+
+/**
+ * `ops` without the table's staged key ops when, applied, they leave the database's key as it
+ * was: e.g. a column toggled into the key and then dropped (or a staged new key column removed
+ * again) would otherwise keep a DROP + ADD PRIMARY KEY of the same key, which rebuilds it for
+ * nothing (MySQL) or fails when foreign keys reference it (PostgreSQL).
+ */
+function withoutNoopKeyOps(meta: TableMeta, ops: DdlOp[]): DdlOp[] {
+  const table = meta.table;
+  if (!ops.some((op) => isKeyOp(op, table))) return ops;
+  const view = foldStructure(meta, ops);
+  return isDatabaseKey(meta, view, view.primaryKey) ? ops.filter((op) => !isKeyOp(op, table)) : ops;
+}
+
+/**
+ * Stages "the primary key is `columns`" (current names, in key order). Earlier staged key ops of
+ * the table are replaced: nothing is staged when `columns` is the database's key (same order),
+ * `addPrimaryKey` when the table has none, else `dropPrimaryKey` followed by the new key (if
+ * any). The two stay adjacent at the end of the list, so MySQL replaces the key in one ALTER.
+ */
+export function setPrimaryKey(
+  meta: TableMeta,
+  ops: readonly DdlOp[],
+  columns: readonly string[],
+): DdlOp[] {
+  const table = meta.table;
+  const base = ops.filter((op) => !isKeyOp(op, table));
+  // Nothing staged and nothing to stage: keep the list (no undo step for a no-op).
+  if (isDatabaseKey(meta, foldStructure(meta, base), columns))
+    return base.length === ops.length ? (ops as DdlOp[]) : base;
+  const add: DdlOp[] =
+    columns.length > 0 ? [{ op: "addPrimaryKey", table, columns: [...columns] }] : [];
+  if (meta.primaryKey.length === 0) return add.length > 0 ? [...base, ...add] : base;
+  return [...base, { op: "dropPrimaryKey", table }, ...add];
+}
+
+/**
+ * Toggles column `rowKey` in the primary key: on appends it to the current key order, off takes
+ * it out. When that leaves exactly the database key's columns, they take the database's order
+ * again, so toggling a key column off and back on stages nothing (rather than a reordered key).
+ * Dropped columns are left alone.
+ */
+export function togglePrimaryKey(meta: TableMeta, ops: readonly DdlOp[], rowKey: string): DdlOp[] {
+  const view = foldStructure(meta, ops);
+  const row = view.columns.find((c) => c.key === rowKey);
+  if (!row || row.status === "dropped") return ops as DdlOp[];
+  const key = view.primaryKey;
+  const next = key.includes(row.name) ? key.filter((c) => c !== row.name) : [...key, row.name];
+  // The database key's columns under their current names (null when one was dropped).
+  const dbKey = meta.primaryKey.map(
+    (db) => view.columns.find((c) => c.status !== "dropped" && c.origName === db)?.name ?? null,
+  );
+  const sameColumns =
+    dbKey.length === next.length && dbKey.every((name) => name !== null && next.includes(name));
+  return setPrimaryKey(meta, ops, sameColumns ? (dbKey as string[]) : next);
 }
 
 /** Undoes a staged drop of an existing column. */

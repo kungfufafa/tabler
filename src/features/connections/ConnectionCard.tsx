@@ -36,10 +36,17 @@ export function ConnectionCard({
     <div
       role="button"
       tabIndex={0}
+      // One click (or ↩ / Space) opens; a double-click is just two clicks, which the launcher
+      // dedupes.
       onClick={onConnect}
-      onDoubleClick={onConnect}
       onKeyDown={(e) => {
-        if (e.key === "Enter") onConnect();
+        // Only keys aimed at the card itself: React bubbles keydown from the "…" button and from
+        // the portaled menu items (Edit…, Delete) up to here, and Radix only prevents its default.
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onConnect();
+        }
       }}
       className={cn(
         "group border-border bg-surface relative flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",

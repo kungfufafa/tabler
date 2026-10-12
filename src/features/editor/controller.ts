@@ -10,7 +10,8 @@ import {
   type QueryEvent,
   type StatementResult,
 } from "@/lib/ipc";
-import { openExport } from "@/features/export";
+import { openExport, type ExportSourceSpec } from "@/features/export";
+import { resultTable } from "@/features/export/resultTable";
 import { useConnectionsStore } from "@/stores/connections";
 import { getPrefs } from "@/stores/prefs";
 import {
@@ -36,6 +37,7 @@ import {
   type RunState,
 } from "./runModel";
 import { splitStatements, statementAt, type SqlDialect } from "./scanner";
+import { changesSchema } from "./schemaChange";
 
 /** Row cap per statement (matches the backend default). */
 export const MAX_ROWS = 10_000;
@@ -43,6 +45,11 @@ export const MAX_ROWS = 10_000;
 export interface ControllerHooks {
   /** A run / explain finished (the backend wrote history rows). */
   onHistoryChanged?: () => void;
+  /**
+   * A run included a statement that can change the schema (CREATE, ALTER, DROP…): cached table
+   * lists, metadata, rows and completion are stale.
+   */
+  onSchemaChanged?: () => void;
 }
 
 export function dialectOf(driver: Driver | undefined): SqlDialect {
@@ -164,6 +171,8 @@ export async function runQuery(
     updateLive(live, applyEvent(live.state, e, resultData), e.event === "done");
   };
 
+  // The statements that ran (or started): their DDL makes cached schema data stale.
+  let ran: readonly { sql: string }[];
   try {
     const results: StatementResult[] = await ipc.query.run(
       info.connectionId,
@@ -172,14 +181,17 @@ export async function runQuery(
       { maxRows: MAX_ROWS },
       onEvent,
     );
+    ran = results;
     // Channel messages can trail the command response in Tauri: give them a moment.
     if (!isMock && live.state.status === "running") await tick(80);
     if (alive()) updateLive(live, finalizeRun(live.state, results, resultData), true);
   } catch (e) {
+    ran = live.state.statements;
     if (alive()) updateLive(live, failRun(live.state, normalizeError(toIpcError(e).payload)), true);
   } finally {
     if (liveRuns.get(tabId) === live) liveRuns.delete(tabId);
   }
+  if (ran.some((r) => changesSchema(r.sql))) hooks.onSchemaChanged?.();
 
   flushResultVersions();
   if (alive()) {
@@ -348,7 +360,9 @@ export async function saveQuery(tabId: string, opts: { saveAs?: boolean } = {}):
   if (!info || !state) return false;
   let path = getQueryTab(tabId).filePath;
   if (!path || opts.saveAs) {
-    const suggested = path ? baseName(path) : `${info.tab.title.replace(/[^\w.-]+/g, "-")}.sql`;
+    // A title that already names a .sql file ("users.sql" from "Open in SQL") keeps its extension.
+    const title = info.tab.title.replace(/[^\w.-]+/g, "-");
+    const suggested = path ? baseName(path) : /\.sql$/i.test(title) ? title : `${title}.sql`;
     path = await pickSavePath(suggested);
   }
   if (!path) return false;
@@ -409,14 +423,51 @@ export async function openQueryFile(tabId: string): Promise<void> {
 }
 
 /**
- * "Export results…" (⌘⇧E in a query tab): opens the export dialog on the selection, or else the
- * statement under the cursor. An export streams exactly one statement that returns rows, so a
- * selection spanning several statements is refused here rather than by the backend.
+ * The finished result set the tab shows, as an export source of the rows it holds (copied, so
+ * a later run cannot change what is exported); null when the pane shows no finished result.
+ * A result whose statement was cancelled or failed after some rows arrived is marked `stopped`:
+ * those rows are not the whole result.
+ */
+export function shownResultSource(tabId: string): ExportSourceSpec | null {
+  const { run, pane } = getQueryTab(tabId);
+  const index = run ? run.results.findIndex((r) => r.id === pane) : -1;
+  const info = run?.results[index];
+  if (!run || !info?.done) return null;
+  const buffer = resultData.get(info.id);
+  if (!buffer) return null;
+  const columns = buffer.columns.length > 0 ? buffer.columns : info.columns;
+  const statement = run.statements.find((s) => s.index === info.statementIndex);
+  // Without its statement (the command itself failed), the run's outcome says how it ended.
+  const status = statement?.status ?? (run.status === "done" ? "ok" : run.status);
+  return {
+    kind: "rows",
+    columns: columns.map((c) => ({ ...c })),
+    rows: buffer.rows.map((row) => [...row]),
+    label: `Result ${index + 1}`,
+    table: resultTable(columns, statement?.sql ?? null),
+    // Running the statement again exports its first result set only.
+    sql: info.set === 0 ? (statement?.sql ?? null) : null,
+    truncated: info.truncated,
+    stopped: status === "ok" ? null : status === "cancelled" ? "cancelled" : "error",
+  };
+}
+
+/**
+ * "Export results…" (⌘⇧E in a query tab): exports the result set the results pane shows, as it
+ * is. Without one, opens the export dialog on the selection, or else the statement under the
+ * cursor. An export streams exactly one statement that returns rows, so a selection spanning
+ * several statements is refused here rather than by the backend.
  */
 export function exportQuery(tabId: string): void {
   const info = queryTab(tabId);
+  if (!info) return;
+  const shown = shownResultSource(tabId);
+  if (shown) {
+    openExport({ connectionId: info.connectionId, source: shown });
+    return;
+  }
   const state = getEditorState(tabId);
-  if (!info || !state) return;
+  if (!state) return;
   const sub = resolveTarget(state, "current", info.dialect);
   const statements = sub ? splitStatements(sub.sql, info.dialect) : [];
   const only = statements.length === 1 ? statements[0]! : null;

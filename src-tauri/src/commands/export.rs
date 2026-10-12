@@ -48,7 +48,8 @@ impl Drop for RunningExport<'_> {
     }
 }
 
-/// Streams a table or one SQL statement to `req.path`, reporting progress on `on_progress`.
+/// Streams a table, one SQL statement or rows the renderer holds to `req.path`, reporting
+/// progress on `on_progress`.
 #[tauri::command]
 pub async fn export_data(
     state: State<'_, AppState>,
@@ -65,7 +66,7 @@ pub async fn export_data(
     let session = conn.session().await;
     let meta = match &req.source {
         ExportSource::Table { table, .. } => Some(cached_meta(&conn, table).await?),
-        ExportSource::Sql { .. } => None,
+        ExportSource::Sql { .. } | ExportSource::Rows { .. } => None,
     };
     log::info!("export {} started", req.export_id);
     let result = run_export(

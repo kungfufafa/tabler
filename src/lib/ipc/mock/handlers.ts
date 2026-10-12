@@ -45,6 +45,29 @@ function conn(connectionId: string) {
 }
 
 registerMock("app_info", () => ({ version: "0.1.0", platform: "mock", debug: true }));
+// The browser has no app to quit; `beforeunload` guards the tab instead.
+registerMock("quit_app", () => undefined);
+registerMock("set_unsaved", () => undefined);
+
+/** SQLite files created with "New…" in this session (paths containing "missing" do not exist). */
+const createdSqliteFiles = new Set<string>();
+
+/**
+ * Mirrors the backend's `check_database_file` (never connect to, and so create, a missing file):
+ * the error message for a missing SQLite file, else null.
+ */
+function missingSqliteFile(p: ConnectionProfile): string | null {
+  if (p.driver !== "sqlite") return null;
+  const path = p.sqlitePath ?? "";
+  if (!path.includes("missing") || createdSqliteFiles.has(path)) return null;
+  return `SQLite database file not found: ${path}. Use “New…” to create one.`;
+}
+
+registerMock("create_sqlite_database", ({ path }) => {
+  if (typeof path !== "string" || path.trim() === "")
+    mockError("INVALID_INPUT", "SQLite file path is required");
+  createdSqliteFiles.add(path);
+});
 
 // --- profiles ---
 registerMock("list_profiles", () =>
@@ -104,10 +127,13 @@ registerMock("get_secret_status", ({ id }) => ({
 registerMock("test_connection", async ({ input }) => {
   const { profile } = input as ProfileInput;
   await new Promise((r) => setTimeout(r, 300));
+  const missing = missingSqliteFile(profile);
+  if (missing)
+    return { ok: false, serverVersion: null, latencyMs: 0, message: missing, tunnelUsed: false };
   // SSH profiles verify the server's host key first (unknown keys are parked under the profile id).
   const ssh = sshOf(profile);
   mockCheckHostKey(profile.id, ssh);
-  if ((profile.host ?? "").includes("bad") || (profile.sqlitePath ?? "").includes("missing")) {
+  if ((profile.host ?? "").includes("bad")) {
     return {
       ok: false,
       serverVersion: null,
@@ -129,6 +155,8 @@ registerMock("test_connection", async ({ input }) => {
 registerMock("connect", async ({ profileId }) => {
   const p = profiles.get(profileId as string) ?? mockError("NOT_FOUND", `profile ${profileId}`);
   await new Promise((r) => setTimeout(r, 250));
+  const missing = missingSqliteFile(p);
+  if (missing) mockError("NOT_FOUND", `not found: ${missing}`);
   const ssh = sshOf(p);
   mockCheckHostKey(p.id, ssh);
   if ((p.host ?? "").includes("bad"))

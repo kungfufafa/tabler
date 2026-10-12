@@ -1,5 +1,15 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowRight, Check, FolderOpen, Info, Loader2, Network, ShieldOff, X } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  FilePlus2,
+  FolderOpen,
+  Info,
+  Loader2,
+  Network,
+  ShieldOff,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Controller, useForm, type UseFormReturn } from "react-hook-form";
 import { toast } from "sonner";
@@ -24,7 +34,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { isMock, type ConnectionProfile, type Driver } from "@/lib/ipc";
+import { ipc, isMock, toIpcError, type ConnectionProfile, type Driver } from "@/lib/ipc";
 import { ACCENT_PRESETS } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { getPrefs } from "@/stores/prefs";
@@ -72,6 +82,8 @@ function Field({
   );
 }
 
+const SQLITE_FILTERS = [{ name: "SQLite", extensions: ["sqlite", "sqlite3", "db", "db3", "s3db"] }];
+
 async function pickSqliteFile(): Promise<string | null> {
   if (isMock) return window.prompt("Path to SQLite file", "/Users/me/data.sqlite");
   const { open } = await import("@tauri-apps/plugin-dialog");
@@ -79,9 +91,38 @@ async function pickSqliteFile(): Promise<string | null> {
     multiple: false,
     directory: false,
     title: "Open SQLite database",
-    filters: [{ name: "SQLite", extensions: ["sqlite", "sqlite3", "db", "db3", "s3db"] }],
+    filters: SQLITE_FILTERS,
   });
   return typeof picked === "string" ? picked : null;
+}
+
+/** Asks where to create a new SQLite database file (save panel). */
+async function pickNewSqliteFile(): Promise<string | null> {
+  if (isMock) return window.prompt("Create SQLite file at", "/Users/me/database.sqlite");
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const picked = await save({
+    title: "New SQLite database",
+    defaultPath: "database.sqlite",
+    filters: SQLITE_FILTERS,
+  });
+  return typeof picked === "string" ? picked : null;
+}
+
+/**
+ * "New…": creates the database file, then puts its path in the form. Connecting never creates
+ * files, so this is the only way to start from an empty database. An existing file chosen in the
+ * save panel is left as it is (never truncated).
+ */
+async function createSqliteFile(form: Form): Promise<void> {
+  const path = (await pickNewSqliteFile())?.trim();
+  if (!path) return;
+  try {
+    await ipc.profiles.createSqliteFile(path);
+  } catch (err) {
+    toast.error("Could not create the SQLite file", { description: toIpcError(err).message });
+    return;
+  }
+  form.setValue("sqlitePath", path, { shouldValidate: true, shouldDirty: true });
 }
 
 async function pickFile(title: string): Promise<string | null> {
@@ -206,12 +247,21 @@ function GeneralTab({
             <Button
               type="button"
               variant="outline"
+              title="Open an existing database file"
               onClick={async () => {
                 const p = await pickSqliteFile();
                 if (p) setValue("sqlitePath", p, { shouldValidate: true });
               }}
             >
-              <FolderOpen /> Browse
+              <FolderOpen /> Choose…
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              title="Create a new, empty database file"
+              onClick={() => void createSqliteFile(form)}
+            >
+              <FilePlus2 /> New…
             </Button>
           </div>
         </Field>
@@ -434,6 +484,28 @@ function AdvancedTab({ form }: { form: Form }) {
           render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />}
         />
       </label>
+      {driver === "sqlite" && (
+        <label className="border-border bg-surface-2 col-span-6 flex items-center justify-between rounded-md border px-3 py-2">
+          <div>
+            <div className="text-sm font-medium">
+              Enforce foreign keys{" "}
+              <span className="text-muted-foreground font-mono text-xs font-normal">
+                (PRAGMA foreign_keys)
+              </span>
+            </div>
+            <div className="text-muted-foreground text-xs">
+              Reject edits that break a foreign key. SQLite leaves this off unless asked.
+            </div>
+          </div>
+          <Controller
+            control={control}
+            name="sqliteForeignKeys"
+            render={({ field }) => (
+              <Switch checked={field.value} onCheckedChange={field.onChange} />
+            )}
+          />
+        </label>
+      )}
       {driver !== "sqlite" && (
         <Field
           label="Session time zone"

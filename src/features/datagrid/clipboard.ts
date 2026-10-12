@@ -1,4 +1,5 @@
 import type { Dialect, Value } from "@/lib/ipc";
+import { isTauri } from "@/lib/ipc/transport";
 import { literal, qualify, quoteIdent } from "@/lib/sql/quote";
 import { valueText } from "@/lib/values";
 import type { GridColumn } from "./types";
@@ -14,8 +15,9 @@ export interface CopyContext {
 const needsCsvQuote = (s: string) => /[",\r\n]/.test(s);
 const csvCell = (s: string | null) =>
   s === null ? "" : needsCsvQuote(s) ? `"${s.replace(/"/g, '""')}"` : s;
+/** Quotes fields with tabs/line breaks (and a leading quote, so `parseTsv` reads them back as-is). */
 const tsvCell = (s: string | null) =>
-  s === null ? "" : /[\t\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  s === null ? "" : /[\t\r\n]/.test(s) || s.startsWith('"') ? `"${s.replace(/"/g, '""')}"` : s;
 
 function jsonValue(v: Value): unknown {
   switch (v.t) {
@@ -95,10 +97,109 @@ export function formatCells(
   }
 }
 
+/**
+ * Parses tab-separated text (spreadsheet / grid copies) into rows of fields. Accepts CRLF or LF, drops
+ * one trailing line break, and reads `"..."` fields with `""` escapes (which may hold tabs and line
+ * breaks) — the inverse of the TSV `formatCells` writes. A field that only looks quoted (`"a"b`) is
+ * kept verbatim. An empty string is one empty field: it is what copying a single NULL or empty cell
+ * writes, so pasting it back must set that cell (NULL or '') rather than do nothing.
+ */
+export function parseTsv(text: string): string[][] {
+  let src = text;
+  if (src.endsWith("\r\n")) src = src.slice(0, -2);
+  else if (src.endsWith("\n")) src = src.slice(0, -1);
+  const rows: string[][] = [];
+  let row: string[] = [];
+  const n = src.length;
+  let i = 0;
+  for (;;) {
+    let field: string | null = null;
+    if (src[i] === '"') {
+      // Quoted field: valid only when the closing quote is followed by a delimiter or the end.
+      let j = i + 1;
+      let buf = "";
+      let closed = false;
+      while (j < n) {
+        const ch = src[j]!;
+        if (ch === '"') {
+          if (src[j + 1] === '"') {
+            buf += '"';
+            j += 2;
+            continue;
+          }
+          closed = true;
+          break;
+        }
+        buf += ch;
+        j++;
+      }
+      const next = src[j + 1];
+      if (closed && (next === undefined || next === "\t" || next === "\n" || next === "\r")) {
+        if (next !== "\r" || src[j + 2] === "\n") {
+          field = buf;
+          i = j + 1;
+        }
+      }
+    }
+    if (field === null) {
+      let j = i;
+      while (j < n) {
+        const ch = src[j];
+        if (ch === "\t" || ch === "\n" || (ch === "\r" && src[j + 1] === "\n")) break;
+        j++;
+      }
+      field = src.slice(i, j);
+      i = j;
+    }
+    row.push(field);
+    if (i >= n) break;
+    if (src[i] === "\t") {
+      i++;
+      if (i < n) continue;
+      row.push(""); // a trailing tab ends with an empty field
+      break;
+    }
+    // Line break.
+    i += src[i] === "\r" ? 2 : 1;
+    rows.push(row);
+    row = [];
+  }
+  rows.push(row);
+  return rows;
+}
+
+/**
+ * Reads plain text from the clipboard. Under Tauri the clipboard plugin is used first (it avoids
+ * WKWebView's paste permission prompt); the browser API is the fallback, and the default in the mock.
+ */
+export async function readClipboardText(): Promise<string> {
+  const viaBrowser = () => navigator.clipboard.readText();
+  const viaTauri = async () => {
+    const { readText } = await import("@tauri-apps/plugin-clipboard-manager");
+    return readText();
+  };
+  if (!isTauri()) {
+    // Plain browser (dev mock): only the async Clipboard API exists, and it may be denied.
+    try {
+      return await viaBrowser();
+    } catch {
+      throw new Error(
+        "The browser blocked clipboard access. Allow clipboard permission, or paste with ⌘V while the grid is focused.",
+      );
+    }
+  }
+  try {
+    return await viaTauri();
+  } catch {
+    return await viaBrowser();
+  }
+}
+
 export async function writeClipboard(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
-  } catch {
+  } catch (err) {
+    if (!isTauri()) throw err;
     const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
     await writeText(text);
   }

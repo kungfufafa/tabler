@@ -7,6 +7,14 @@ export type Unlisten = () => void;
 type EventMap = {
   "connection:status": ConnectionStatusEvent;
   "tunnel:status": TunnelStatusEvent;
+  /** A native menu item was chosen; the payload is its action id (see `useNativeMenu`). */
+  "menu:action": string;
+  /**
+   * Quit was asked for (the app menu's Quit item, Dock Quit / logout / shutdown with unsaved work,
+   * or an exit request while the window is open). The renderer acknowledges it
+   * (`ipc.app.setUnsaved`) and answers with `ipc.app.quit()` once nothing unsaved is left.
+   */
+  "app:quit-requested": null;
 };
 
 /** Subscribes to a global backend event (Tauri `listen`, or the mock emitter in the browser). */

@@ -115,6 +115,32 @@ describe("tabs store", () => {
       expect(pickNeighbour(tabs, "a", new Set(["b"]))).toBe("a");
       expect(pickNeighbour(tabs, "a", new Set(tabs.map((t) => t.id)))).toBeNull();
     });
+    it("returns null when nothing was active", () => {
+      expect(pickNeighbour(tabs, null, new Set(["b"]))).toBeNull();
+      expect(pickNeighbour(tabs, "gone", new Set(["b"]))).toBeNull();
+    });
+
+    describe("with several connections", () => {
+      const mixed = (
+        [
+          ["a1", "A"],
+          ["b1", "B"],
+          ["a2", "A"],
+          ["b2", "B"],
+          ["a3", "A"],
+        ] as const
+      ).map(([id, connectionId]): Tab => ({ id, kind: "query", connectionId, title: id }));
+      it("prefers a surviving tab of the same connection, right then left", () => {
+        expect(pickNeighbour(mixed, "a2", new Set(["a2"]))).toBe("a3");
+        expect(pickNeighbour(mixed, "a3", new Set(["a3"]))).toBe("a2");
+        expect(pickNeighbour(mixed, "a2", new Set(["a2", "a3"]))).toBe("a1");
+        expect(pickNeighbour(mixed, "b1", new Set(["b1"]))).toBe("b2");
+      });
+      it("never jumps to another connection's tab", () => {
+        expect(pickNeighbour(mixed, "a2", new Set(["a1", "a2", "a3"]))).toBeNull();
+        expect(pickNeighbour(mixed, "b2", new Set(["b1", "b2"]))).toBeNull();
+      });
+    });
   });
 
   describe("close guard", () => {
@@ -212,6 +238,48 @@ describe("tabs store", () => {
       expect(state().activeId).toBe(b);
     });
 
+    it("Close Others shows the kept tab even when it belongs to another connection", () => {
+      const s = state();
+      const a1 = s.openTable("A", users);
+      const b1 = s.openTable("B", posts);
+      // Right-clicking b1 does not activate it.
+      s.activate(a1);
+      s.closeOthers(b1);
+      expect(ids()).toEqual([b1]);
+      expect(state().activeId).toBe(b1);
+    });
+
+    it("Close Others shows the kept tab of another connection after the dialog too", () => {
+      const s = state();
+      const a1 = s.openTable("A", users);
+      const a2 = s.openTable("A", orders);
+      const b1 = s.openTable("B", posts);
+      stage(a1, 1);
+      s.activate(a1);
+      s.closeOthers(b1);
+      expect(state().closeRequest).toMatchObject({ ids: [a1, a2], activateAfter: b1 });
+      expect(state().activeId).toBe(a1);
+      state().confirmClose();
+      expect(ids()).toEqual([b1]);
+      expect(state().activeId).toBe(b1);
+    });
+
+    it("Close Others leaves the active tab alone when the dialog is cancelled", () => {
+      const s = state();
+      const a1 = s.openTable("A", users);
+      const b1 = s.openTable("B", posts);
+      stage(a1, 1);
+      s.activate(a1);
+      s.closeOthers(b1);
+      state().cancelClose();
+      expect(ids()).toEqual([a1, b1]);
+      expect(state().activeId).toBe(a1);
+      // A later, unrelated close does not inherit the kept tab.
+      stage(a1, 0);
+      expect(state().requestClose([a1])).toBe(true);
+      expect(state().activeId).toBeNull();
+    });
+
     it("guards the window only when something is unsaved", () => {
       const s = state();
       const a = s.openTable("c1", users);
@@ -223,6 +291,27 @@ describe("tabs store", () => {
       expect(state().confirmClose()?.kind).toBe("window");
       expect(ids()).toEqual([a]);
     });
+  });
+
+  it("closing the last tab of a connection leaves no tab active, even if others remain", () => {
+    const s = state();
+    const a = s.openTable("c1", users);
+    const b = s.openTable("c2", posts);
+    s.activate(a);
+    s.close(a);
+    expect(ids()).toEqual([b]);
+    expect(state().activeId).toBeNull();
+  });
+
+  it("clears the active tab", () => {
+    const s = state();
+    const a = s.openTable("c1", users);
+    s.clearActive();
+    expect(state().activeId).toBeNull();
+    expect(ids()).toEqual([a]);
+    const before = state();
+    s.clearActive();
+    expect(state()).toBe(before);
   });
 
   it("tracks the dirty flag on query tabs only", () => {
@@ -276,7 +365,8 @@ describe("tabs store", () => {
     s.activate(a);
     s.closeForConnection("c1");
     expect(ids()).toEqual([b]);
-    expect(state().activeId).toBe(b);
+    // c2's tab is not picked here: the connection switch (activeSync) restores c2's own last tab.
+    expect(state().activeId).toBeNull();
     expect(state().closed).toHaveLength(0);
     expect(useTableTabsStore.getState().slices[a]).toBeUndefined();
     expect(useStructureStore.getState().byTab[st]).toBeUndefined();

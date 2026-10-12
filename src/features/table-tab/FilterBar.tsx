@@ -6,13 +6,16 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import type { ColumnMeta, Conjunction, FilterOp } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { newFilterRow, type FilterRowSpec } from "@/stores/tableTabs";
-import { opDef, OPS } from "./filters";
+import { isRawSqlRow, opDef, OPS, RAW_SQL_COLUMN } from "./filters";
+
+const RAW_SQL_PLACEHOLDER = "e.g. age > 30 AND name LIKE 'A%'";
 
 export function FilterBar({
   columns,
@@ -55,6 +58,7 @@ export function FilterBar({
     >
       {rows.map((row, i) => {
         const def = opDef(row.op);
+        const raw = isRawSqlRow(row);
         return (
           <div key={row.id} className="flex items-center gap-1.5">
             <div className="w-12 shrink-0 text-right">
@@ -77,10 +81,19 @@ export function FilterBar({
               aria-label="Enable filter"
             />
             <Select value={row.column} onValueChange={(v) => update(row.id, { column: v })}>
-              <SelectTrigger size="sm" className="bg-surface h-7 w-44 font-mono text-xs">
+              <SelectTrigger
+                size="sm"
+                aria-label="Filter column"
+                className="bg-surface h-7 w-44 font-mono text-xs"
+              >
                 <SelectValue placeholder="Column" />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value={RAW_SQL_COLUMN} className="text-xs">
+                  Raw SQL
+                  <span className="text-muted-foreground ml-2 font-mono">WHERE …</span>
+                </SelectItem>
+                <SelectSeparator />
                 {columns.map((c) => (
                   <SelectItem key={c.name} value={c.name} className="font-mono text-xs">
                     {c.name}
@@ -89,19 +102,34 @@ export function FilterBar({
                 ))}
               </SelectContent>
             </Select>
-            <Select value={row.op} onValueChange={(v) => update(row.id, { op: v as FilterOp })}>
-              <SelectTrigger size="sm" className="bg-surface h-7 w-28 font-mono text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {OPS.map((o) => (
-                  <SelectItem key={o.op} value={o.op} className="font-mono text-xs">
-                    {o.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {def.arity !== 0 && (
+            {raw ? (
+              <Input
+                value={row.value}
+                onChange={(e) => update(row.id, { value: e.target.value })}
+                onKeyDown={onKey}
+                placeholder={RAW_SQL_PLACEHOLDER}
+                aria-label="Raw SQL condition"
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                className="bg-surface h-7 min-w-0 flex-1 font-mono text-xs"
+                autoFocus={i === rows.length - 1 && row.value === ""}
+              />
+            ) : (
+              <Select value={row.op} onValueChange={(v) => update(row.id, { op: v as FilterOp })}>
+                <SelectTrigger size="sm" className="bg-surface h-7 w-28 font-mono text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {OPS.map((o) => (
+                    <SelectItem key={o.op} value={o.op} className="font-mono text-xs">
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {!raw && def.arity !== 0 && (
               <Input
                 value={row.value}
                 onChange={(e) => update(row.id, { value: e.target.value })}
@@ -120,7 +148,7 @@ export function FilterBar({
                 autoFocus={i === rows.length - 1 && row.value === ""}
               />
             )}
-            {def.arity === 2 && (
+            {!raw && def.arity === 2 && (
               <>
                 <span className="text-muted-foreground text-[11px]">AND</span>
                 <Input

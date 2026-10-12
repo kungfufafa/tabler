@@ -1,23 +1,33 @@
 import type { Value } from "@/lib/ipc";
 import { valuesEqual } from "@/lib/values";
-import { MAX_UNDO, type RowChange, type StagingState, type UndoEntry } from "./types";
+import {
+  MAX_UNDO,
+  type CellEdit,
+  type RowChange,
+  type StagingState,
+  type UndoEntry,
+} from "./types";
 
 export function emptyStaging(): StagingState {
   return { changes: new Map(), insertOrder: [], undo: [], version: 0 };
 }
 
-function withChange(
+/** Commits a batch of row changes as ONE undo step (`next` maps row key → new change or removal). */
+function withChanges(
   s: StagingState,
-  rowKey: string,
-  change: RowChange | undefined,
+  next: ReadonlyMap<string, RowChange | undefined>,
   insertOrder = s.insertOrder,
 ): StagingState {
+  if (next.size === 0 && insertOrder === s.insertOrder) return s;
   const changes = new Map(s.changes);
-  if (change) changes.set(rowKey, change);
-  else changes.delete(rowKey);
+  const rows: UndoEntry["rows"] = [];
+  for (const [rowKey, change] of next) {
+    rows.push({ rowKey, before: s.changes.get(rowKey) });
+    if (change) changes.set(rowKey, change);
+    else changes.delete(rowKey);
+  }
   const entry: UndoEntry = {
-    rowKey,
-    before: s.changes.get(rowKey),
+    rows,
     insertOrderBefore: insertOrder === s.insertOrder ? undefined : s.insertOrder,
   };
   return {
@@ -28,6 +38,40 @@ function withChange(
   };
 }
 
+function withChange(
+  s: StagingState,
+  rowKey: string,
+  change: RowChange | undefined,
+  insertOrder = s.insertOrder,
+): StagingState {
+  return withChanges(s, new Map([[rowKey, change]]), insertOrder);
+}
+
+/**
+ * The change a cell edit produces from `cur` (`undefined` = row back to its original; `null` = the
+ * edit does not apply, e.g. the row is marked deleted or has no original snapshot).
+ */
+function editedRow(
+  cur: RowChange | undefined,
+  col: number,
+  value: Value,
+  original: Value[] | undefined,
+): RowChange | undefined | null {
+  if (cur?.status === "deleted") return null;
+  if (cur?.status === "inserted") {
+    const patch = new Map(cur.patch);
+    patch.set(col, value);
+    return { ...cur, patch, error: undefined };
+  }
+  const orig = cur?.original ?? original;
+  if (!orig) return null;
+  const patch = new Map(cur?.patch ?? []);
+  if (valuesEqual(value, orig[col] ?? { t: "null" })) patch.delete(col);
+  else patch.set(col, value);
+  if (patch.size === 0) return undefined;
+  return { status: "updated", original: orig, patch, error: undefined };
+}
+
 /** Stages a cell edit. Reverting to the original value removes the patch entry. */
 export function setCell(
   s: StagingState,
@@ -36,20 +80,30 @@ export function setCell(
   value: Value,
   original: Value[] | undefined,
 ): StagingState {
-  const cur = s.changes.get(rowKey);
-  if (cur?.status === "deleted") return s;
-  if (cur?.status === "inserted") {
-    const patch = new Map(cur.patch);
-    patch.set(col, value);
-    return withChange(s, rowKey, { ...cur, patch, error: undefined });
+  const next = editedRow(s.changes.get(rowKey), col, value, original);
+  if (next === null) return s;
+  return withChange(s, rowKey, next);
+}
+
+/**
+ * Stages many cell edits (paste, multi-cell Set NULL/DEFAULT) with `setCell` semantics, as ONE undo
+ * step. Returns `s` unchanged when no edit applies.
+ */
+export function setCells(s: StagingState, edits: readonly CellEdit[]): StagingState {
+  const next = new Map<string, RowChange | undefined>();
+  for (const { rowKey, col, value, original } of edits) {
+    const cur = next.has(rowKey) ? next.get(rowKey) : s.changes.get(rowKey);
+    const edited = editedRow(cur, col, value, original);
+    if (edited === null) continue;
+    next.set(rowKey, edited);
   }
-  const orig = cur?.original ?? original;
-  if (!orig) return s;
-  const patch = new Map(cur?.patch ?? []);
-  if (valuesEqual(value, orig[col] ?? { t: "null" })) patch.delete(col);
-  else patch.set(col, value);
-  if (patch.size === 0) return withChange(s, rowKey, undefined);
-  return withChange(s, rowKey, { status: "updated", original: orig, patch, error: undefined });
+  // Rows that ended up exactly as they were do not need an undo slot.
+  for (const [rowKey, change] of next) {
+    const before = s.changes.get(rowKey);
+    if (change === undefined && before === undefined) next.delete(rowKey);
+  }
+  if (next.size === 0) return s;
+  return withChanges(s, next);
 }
 
 /** Adds a new row whose cells start as `defaults` (DEFAULT/NULL/empty per column). */
@@ -59,32 +113,26 @@ export function insertRow(s: StagingState, rowKey: string, defaults: Value[]): S
   return withChange(s, rowKey, { status: "inserted", patch }, [...s.insertOrder, rowKey]);
 }
 
-/** Marks rows for deletion; inserted rows are simply dropped. */
+/** Marks rows for deletion (one undo step); inserted rows are simply dropped. */
 export function deleteRows(
   s: StagingState,
   rows: Array<{ rowKey: string; original: Value[] | undefined }>,
 ): StagingState {
-  let next = s;
+  const next = new Map<string, RowChange | undefined>();
+  let insertOrder = s.insertOrder;
   for (const { rowKey, original } of rows) {
-    const cur = next.changes.get(rowKey);
+    if (next.has(rowKey)) continue;
+    const cur = s.changes.get(rowKey);
     if (cur?.status === "inserted") {
-      next = withChange(
-        next,
-        rowKey,
-        undefined,
-        next.insertOrder.filter((k) => k !== rowKey),
-      );
+      next.set(rowKey, undefined);
+      insertOrder = insertOrder.filter((k) => k !== rowKey);
     } else if (cur?.status !== "deleted") {
       const orig = cur?.original ?? original;
       if (!orig) continue;
-      next = withChange(next, rowKey, {
-        status: "deleted",
-        original: orig,
-        patch: cur?.patch ?? new Map(),
-      });
+      next.set(rowKey, { status: "deleted", original: orig, patch: cur?.patch ?? new Map() });
     }
   }
-  return next;
+  return withChanges(s, next, insertOrder);
 }
 
 export function revertRow(s: StagingState, rowKey: string): StagingState {
@@ -124,12 +172,15 @@ export function discardAll(): StagingState {
   return emptyStaging();
 }
 
+/** Reverts the last undo step (every row it touched). */
 export function undo(s: StagingState): StagingState {
   const entry = s.undo[s.undo.length - 1];
   if (!entry) return s;
   const changes = new Map(s.changes);
-  if (entry.before) changes.set(entry.rowKey, entry.before);
-  else changes.delete(entry.rowKey);
+  for (const { rowKey, before } of entry.rows) {
+    if (before) changes.set(rowKey, before);
+    else changes.delete(rowKey);
+  }
   return {
     changes,
     insertOrder: entry.insertOrderBefore ?? s.insertOrder,

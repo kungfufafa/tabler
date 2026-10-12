@@ -1001,3 +1001,171 @@ async fn keywords_in_literals_do_not_prevent_the_cap_kill() {
         vec![vec![Value::Int(42)]]
     );
 }
+
+async fn count_rows(session: &dyn DbSession, table: &str) -> i64 {
+    count_of(
+        &single(session, &format!("select count(*) from {table}"))
+            .await
+            .unwrap(),
+    )
+}
+
+/// EXPLAIN ANALYZE executes the statement (a SELECT calling a function that writes commits
+/// that write under autocommit): it must run in a transaction that is rolled back.
+#[tokio::test]
+async fn explain_analyze_never_keeps_changes() {
+    let Some(session) = open().await else {
+        return;
+    };
+    let s = session.as_ref();
+    let x = suffix();
+    let (t, log, f) = (
+        format!("tabler_xa_{x}"),
+        format!("tabler_xa_log_{x}"),
+        format!("tabler_xa_f_{x}"),
+    );
+    let (results, _) = run(
+        s,
+        &format!(
+            "create temporary table {t} (a int) engine=InnoDB; \
+             insert into {t} values (1), (2), (3); \
+             create table {log} (a int) engine=InnoDB;"
+        ),
+        RunOptions::default(),
+    )
+    .await;
+    assert!(results.iter().all(|r| r.error.is_none()), "{results:?}");
+    // DETERMINISTIC: binary logging refuses a writing function without it.
+    let created = single(
+        s,
+        &format!(
+            "create function {f}() returns int deterministic modifies sql data \
+             begin insert into {log} values (1); return 1; end"
+        ),
+    )
+    .await;
+    assert_eq!(s.in_transaction(), Some(false));
+
+    explain_inner(
+        s,
+        &format!("DELETE FROM {t}"),
+        ExplainMode::Analyze,
+        &CancelSlot::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(count_rows(s, &t).await, 3);
+    assert_eq!(s.in_transaction(), Some(false));
+
+    let options = RunOptions {
+        explain: Some(ExplainMode::Analyze),
+        stop_on_error: false,
+        ..RunOptions::default()
+    };
+    let (results, _) = run(
+        s,
+        &format!("delete from {t} where a = 1; update {t} set a = a + 10;"),
+        options,
+    )
+    .await;
+    assert!(results.iter().all(|r| r.error.is_none()), "{results:?}");
+    assert_eq!(count_rows(s, &t).await, 3);
+    let sum = single(s, &format!("select cast(sum(a) as signed) from {t}"))
+        .await
+        .unwrap();
+    assert_eq!(count_of(&sum), 6);
+
+    // A read whose function writes: the write is rolled back too.
+    match created {
+        Ok(_) => {
+            explain_inner(
+                s,
+                &format!("select {f}()"),
+                ExplainMode::Analyze,
+                &CancelSlot::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(count_rows(s, &log).await, 0);
+            assert_eq!(s.in_transaction(), Some(false));
+            single(s, &format!("drop function {f}")).await.unwrap();
+        }
+        Err(e) => println!("writing function not created ({e}); that part is skipped"),
+    }
+    single(s, &format!("drop table {log}")).await.unwrap();
+    single(s, &format!("drop temporary table {t}"))
+        .await
+        .unwrap();
+}
+
+/// Inside the user's own transaction the analyze runs under a savepoint (never START
+/// TRANSACTION, which would commit the user's work): the transaction stays open with its INSERT.
+#[tokio::test]
+async fn explain_analyze_inside_a_transaction_keeps_it_open() {
+    let Some(session) = open().await else {
+        return;
+    };
+    let s = session.as_ref();
+    let t = format!("tabler_xt_{}", suffix());
+    single(
+        s,
+        &format!("create temporary table {t} (a int) engine=InnoDB"),
+    )
+    .await
+    .unwrap();
+    single(s, &format!("insert into {t} values (1), (2), (3)"))
+        .await
+        .unwrap();
+    let (results, _) = run(
+        s,
+        &format!("BEGIN; INSERT INTO {t} VALUES (4);"),
+        RunOptions::default(),
+    )
+    .await;
+    assert!(results.iter().all(|r| r.error.is_none()), "{results:?}");
+    assert_eq!(s.in_transaction(), Some(true));
+
+    explain_inner(
+        s,
+        &format!("DELETE FROM {t}"),
+        ExplainMode::Analyze,
+        &CancelSlot::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(s.in_transaction(), Some(true));
+    assert_eq!(
+        count_rows(s, &t).await,
+        4,
+        "the INSERT is intact, the DELETE undone"
+    );
+
+    single(s, "ROLLBACK").await.unwrap();
+    assert_eq!(s.in_transaction(), Some(false));
+    assert_eq!(count_rows(s, &t).await, 3, "ROLLBACK removed the INSERT");
+
+    // With autocommit off every statement runs in an implicit transaction (which START
+    // TRANSACTION would commit): the analyze keeps the user's pending INSERT pending.
+    let (results, _) = run(
+        s,
+        &format!("SET autocommit = 0; INSERT INTO {t} VALUES (5);"),
+        RunOptions::default(),
+    )
+    .await;
+    assert!(results.iter().all(|r| r.error.is_none()), "{results:?}");
+    explain_inner(
+        s,
+        &format!("DELETE FROM {t}"),
+        ExplainMode::Analyze,
+        &CancelSlot::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(count_rows(s, &t).await, 4);
+    single(s, "ROLLBACK").await.unwrap();
+    assert_eq!(count_rows(s, &t).await, 3, "the INSERT was still pending");
+    single(s, "SET autocommit = 1").await.unwrap();
+    single(s, &format!("drop temporary table {t}"))
+        .await
+        .unwrap();
+}

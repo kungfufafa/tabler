@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
 import {
@@ -25,9 +25,11 @@ import {
   revertCell,
   revertRow,
   setCell,
+  setCells,
   setRowError,
   undo,
 } from "@/features/staging/model";
+import type { CellEdit } from "@/features/staging/types";
 import { rowKeyFor, toStagedChanges } from "@/features/staging/toPayload";
 import {
   ipc,
@@ -86,10 +88,6 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   const meta = useTableMeta(connectionId, table);
   const editable =
     !!meta.data && meta.data.kind === "table" && !(connection?.info.readOnly ?? false);
-  const columns = useMemo(
-    () => (meta.data ? buildGridColumns(meta.data.columns, meta.data.foreignKeys, editable) : []),
-    [meta.data, editable],
-  );
 
   const [draft, setDraft] = useState<{
     rows: FilterRowSpec[];
@@ -138,6 +136,16 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   }, [count.data, tab.id, update]);
 
   const page = rows.data;
+  // Grid columns follow the PAGE's columns (row cells are in that order); the metadata may be newer
+  // or older for a moment around a refresh.
+  const pageColumns = page?.columns;
+  const columns = useMemo(
+    () =>
+      meta.data
+        ? buildGridColumns(pageColumns ?? meta.data.columns, meta.data.foreignKeys, editable)
+        : [],
+    [meta.data, pageColumns, editable],
+  );
   const keys = useMemo(() => (page ? page.rows.map((_, i) => rowKeyString(page, i)) : []), [page]);
   const backendKeys = useMemo(() => {
     const m = new Map<string, RowKey>();
@@ -172,11 +180,17 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       ),
     [draft, tab.id, update, guarded],
   );
+  /** ⌘R: drops the backend's cached metadata too, so schema changes (ALTER TABLE…) show up. */
   const refresh = useCallback(
     () =>
-      guarded(() => {
-        update(tab.id, (s) => ({ refreshToken: s.refreshToken + 1, staging: discardAll() }));
+      guarded(async () => {
+        try {
+          await ipc.schema.invalidate(connectionId, table);
+        } catch {
+          // The reload below still refetches rows; stale metadata is the worst case.
+        }
         void qc.invalidateQueries({ queryKey: rowKeys.meta(connectionId, table) });
+        update(tab.id, (s) => ({ refreshToken: s.refreshToken + 1, staging: discardAll() }));
       }),
     [tab.id, update, qc, connectionId, table, guarded],
   );
@@ -188,30 +202,50 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     if (!key) return;
     setStaging((s) => setCell(s, key, c, value, originalOf(r)));
   };
+  /** `GridAction` column indexes are SOURCE indexes: positions in `columns` / `page.columns`. */
   const onAction = (a: GridAction) => {
     if (!page) return;
     switch (a.type) {
       case "setNull":
-      case "setDefault":
-        setStaging((s) => {
-          let next = s;
-          for (const { r, c } of a.cells) {
-            const row = viewRows[r];
-            const col = columns[c];
-            if (!row || !col || !col.editable || row.status === "deleted") continue;
-            if (a.type === "setNull" && !col.nullable) continue;
-            if (a.type === "setDefault" && !col.hasDefault) continue;
-            next = setCell(
-              next,
-              row.key,
-              c,
-              a.type === "setNull" ? { t: "null" } : { t: "default" },
-              originalOf(r),
-            );
+      case "setDefault": {
+        const edits: CellEdit[] = [];
+        let sqliteDefaults = 0;
+        for (const { r, c } of a.cells) {
+          const row = viewRows[r];
+          const col = columns[c];
+          if (!row || !col || !col.editable || row.status === "deleted") continue;
+          if (a.type === "setNull" && !col.nullable) continue;
+          if (a.type === "setDefault" && !col.hasDefault) continue;
+          // SQLite has no `SET col = DEFAULT`; DEFAULT only works when inserting.
+          if (a.type === "setDefault" && driver === "sqlite" && row.status !== "inserted") {
+            sqliteDefaults++;
+            continue;
           }
-          return next;
-        });
+          edits.push({
+            rowKey: row.key,
+            col: c,
+            value: a.type === "setNull" ? { t: "null" } : { t: "default" },
+            original: originalOf(r),
+          });
+        }
+        if (sqliteDefaults > 0)
+          toast.message("SQLite can't set an existing value to DEFAULT", {
+            description: "DEFAULT works on new rows only.",
+          });
+        if (edits.length > 0) setStaging((s) => setCells(s, edits));
         return;
+      }
+      case "setValues": {
+        const edits: CellEdit[] = [];
+        for (const { r, c, value } of a.edits) {
+          const row = viewRows[r];
+          const col = columns[c];
+          if (!row || !col || !col.editable || row.status === "deleted") continue;
+          edits.push({ rowKey: row.key, col: c, value, original: originalOf(r) });
+        }
+        if (edits.length > 0) setStaging((s) => setCells(s, edits));
+        return;
+      }
       case "revertCells":
         setStaging((s) =>
           a.cells.reduce(
@@ -269,7 +303,10 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
 
   const openPreview = async () => {
     const req = buildRequest();
-    if (!req || req.changes.length === 0) return;
+    if (!req || req.changes.length === 0) {
+      afterApply.current = null;
+      return;
+    }
     setPreview({ ...PREVIEW_CLOSED, open: true, loading: true });
     try {
       const statements = await ipc.mutate.preview(connectionId, req);
@@ -278,6 +315,12 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       setPreview((p) => ({ ...p, loading: false, error: (e as Error).message }));
     }
   };
+
+  /**
+   * What the unsaved-changes dialog's "Commit…" interrupted (a page change, a reload…): it runs once
+   * after the next successful apply, and is dropped when the apply fails or the sheet is dismissed.
+   */
+  const afterApply = useRef<(() => void) | null>(null);
 
   /** Applies `req`; on success clears the staging and reloads, on failure marks the failed rows. */
   const apply = async (req: NonNullable<ReturnType<typeof buildRequest>>) => {
@@ -288,8 +331,12 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       toast.success(
         `Applied ${result.results.length} change${result.results.length === 1 ? "" : "s"} · ${result.durationMs} ms`,
       );
+      const next = afterApply.current;
+      afterApply.current = null;
+      next?.();
       return;
     }
+    afterApply.current = null;
     setStaging((s) =>
       result.results.reduce(
         (acc, r) => (r.error ? setRowError(acc, r.rowId, r.error.message) : acc),
@@ -316,20 +363,25 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     try {
       await apply(req);
     } catch (e) {
+      afterApply.current = null;
       setPreview((p) => ({ ...p, applying: false, error: (e as Error).message }));
     }
   };
 
-  /** ⌘S: opens the Preview SQL sheet, or applies right away when "Confirm before commit" is off. */
+  /**
+   * ⌘S: opens the Preview SQL sheet, or applies right away when "Confirm before commit" is off.
+   * Tables without a key always preview: their UPDATE/DELETE match rows by every original value.
+   */
   const [committing, setCommitting] = useState(false);
   const commit = async () => {
-    if (getPrefs().confirmCommit) return openPreview();
+    if (getPrefs().confirmCommit || page?.identity === "none") return openPreview();
     const req = buildRequest();
     if (!req || req.changes.length === 0 || committing) return;
     setCommitting(true);
     try {
       await apply(req);
     } catch (e) {
+      afterApply.current = null;
       toast.error("Could not apply changes", { description: (e as Error).message });
     } finally {
       setCommitting(false);
@@ -463,18 +515,24 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             onSortChange={onSortChange}
             columnState={state.columnState}
             onColumnStateChange={onColumnStateChange}
-            onFocusCell={(cell) =>
-              setInspector(
-                cell
-                  ? {
-                      column: cell.column,
-                      value: cell.value,
-                      rowIndex: cell.pos.r,
-                      source: table.name,
-                    }
-                  : null,
-              )
-            }
+            onFocusCell={(cell) => {
+              if (!cell) return setInspector(null);
+              const key =
+                cell.row.status === "inserted" ? undefined : backendKeys.get(cell.row.key);
+              setInspector({
+                column: cell.column,
+                value: cell.value,
+                rowIndex: cell.pos.r,
+                source: table.name,
+                row: {
+                  columns,
+                  cells: cell.row.cells,
+                  focused: cell.sourceIndex,
+                  hidden: state.columnState.hidden,
+                },
+                fetch: key ? { connectionId, table, key, column: cell.column.name } : null,
+              });
+            }}
             onOpenFk={openFk}
             copyContext={{
               dialect: DIALECT[driver] ?? "postgres",
@@ -482,6 +540,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
               table: meta.data.table.name,
             }}
             editable={editable && !!page}
+            readOnlyNotice={editable ? undefined : "This table is read-only"}
             active={isActive}
             onEditCommit={onEditCommit}
             onAction={onAction}
@@ -503,7 +562,15 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       />
       <PreviewSqlSheet
         state={preview}
-        onOpenChange={(open) => setPreview((p) => (open ? p : PREVIEW_CLOSED))}
+        warning={
+          noKey
+            ? "No primary key: each UPDATE/DELETE matches every original column value and must affect exactly one row."
+            : undefined
+        }
+        onOpenChange={(open) => {
+          if (!open) afterApply.current = null;
+          setPreview((p) => (open ? p : PREVIEW_CLOSED));
+        }}
         onApply={() => void applyPreview()}
       />
       <AlertDialog open={guard !== null} onOpenChange={(open) => !open && setGuard(null)}>
@@ -531,6 +598,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             </AlertDialogAction>
             <AlertDialogAction
               onClick={() => {
+                afterApply.current = guard?.run ?? null;
                 setGuard(null);
                 void openPreview();
               }}

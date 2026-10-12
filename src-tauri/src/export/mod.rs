@@ -16,6 +16,10 @@
 //!
 //! A query export only runs statements that return rows (`sql_query`): the worker connection
 //! it borrows goes back to the pool, so `BEGIN`, `SET`, `LOCK`… must never run there.
+//!
+//! A rows export (`ExportSource::Rows`: a result the SQL editor shows) runs nothing at all: the
+//! renderer's rows go through the same sink, in chunks, so progress, `max_rows`, cancellation
+//! and the temporary file behave exactly as for a query.
 
 pub mod file;
 pub mod writer;
@@ -386,6 +390,65 @@ fn check_returns_rows(sql: &str) -> Result<(), AppError> {
     )))
 }
 
+/// Checks the rows of a rows export before anything is written: every row has one value per
+/// column, and no binary value is a capped preview (the editor holds at most
+/// `BYTES_PREVIEW_CAP` bytes of each; writing that would silently cut the value). The error
+/// names what can export the value in full: a query export decodes PostgreSQL `bytea` in full,
+/// while MySQL and SQLite drivers cap blobs in queries too, so there only a table export can.
+fn check_rows(
+    columns: &[ResultColumn],
+    rows: &[Vec<Value>],
+    dialect: Dialect,
+) -> Result<(), AppError> {
+    if columns.is_empty() {
+        return Err(AppError::InvalidInput(
+            "the result to export has no columns".into(),
+        ));
+    }
+    for (i, row) in rows.iter().enumerate() {
+        if row.len() != columns.len() {
+            return Err(AppError::InvalidInput(format!(
+                "row {} of the result has {} values for {} columns",
+                i + 1,
+                row.len(),
+                columns.len()
+            )));
+        }
+        if row.iter().any(|v| truncated_len(v).is_some()) {
+            let instead = match dialect {
+                Dialect::Postgres => "the query",
+                Dialect::Mysql | Dialect::Sqlite => "its table",
+            };
+            return Err(AppError::InvalidInput(format!(
+                "a binary value in this result was truncated to {} KiB; export {instead} instead",
+                BYTES_PREVIEW_CAP / 1024
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Hands a rows export's rows to the sink in `PROGRESS_ROWS` chunks, as a stream would. Yields
+/// between chunks so a cancel request is seen; stops when the sink does.
+async fn feed_rows(sink: &mut dyn RowSink, columns: &[ResultColumn], rows: &[Vec<Value>]) {
+    sink.begin_set(columns.to_vec());
+    for chunk in rows.chunks(PROGRESS_ROWS as usize) {
+        if sink.rows(chunk.to_vec()).is_break() {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Where a planned export reads its rows from.
+enum Plan<'r> {
+    Query(ExportQuery),
+    Rows {
+        columns: &'r [ResultColumn],
+        rows: &'r [Vec<Value>],
+    },
+}
+
 fn full_bytes(bytes: &[u8]) -> Value {
     Value::Bytes(BytesValue {
         base64: base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -430,6 +493,9 @@ struct ExportSink<'a, W: Write> {
     /// MySQL: indexes of single-precision `FLOAT` columns (see `narrow_float`).
     mysql_floats: Vec<usize>,
     blob_hex: Vec<usize>,
+    /// PostgreSQL query and table exports deliver text cells, decoded here by column type; the
+    /// rows of a rows export are values already.
+    pg_text: bool,
     max_rows: Option<u64>,
     cancel: CancellationToken,
     progress: &'a mut (dyn FnMut(ExportProgress) + Send),
@@ -460,7 +526,7 @@ impl<W: Write> ExportSink<'_, W> {
                 }
             }
         }
-        if self.dialect == Dialect::Postgres {
+        if self.pg_text {
             // PostgreSQL table exports select text; decode it by the column's type.
             for (v, col) in row.iter_mut().zip(&self.columns) {
                 if col.kind == ValueKind::Text {
@@ -586,6 +652,37 @@ impl<W: Write + Send> RowSink for ExportSink<'_, W> {
     }
 }
 
+/// Streams an export's statement from a worker connection into `sink`. Once `cancel` fires, a
+/// statement that keeps running is cancelled on the server.
+async fn stream_export(
+    session: &dyn DbSession,
+    query: &ExportQuery,
+    sink: &mut dyn RowSink,
+    cancel: &CancellationToken,
+    req: &ExportRequest,
+) -> Result<u64, AppError> {
+    let slot = CancelSlot::default();
+    let stream = session.stream_query(&query.sql, &query.params, sink, slot.clone());
+    let watch = async {
+        cancel.cancelled().await;
+        // Usually the stream has ended by now: the sink stopped it and the driver cancelled a
+        // read-only statement itself. A statement that is still running (it delivers nothing,
+        // or the driver drains it because `cancel_safe_on_stop` refused it) is aborted on the
+        // server: the user asked to stop, as in the SQL editor.
+        tokio::time::sleep(CANCEL_GRACE).await;
+        if let Some(handle) = request_cancel(&slot)
+            && let Err(e) = session.cancel(handle).await
+        {
+            log::warn!("export {}: cancel failed: {e}", req.export_id);
+        }
+        std::future::pending::<std::convert::Infallible>().await
+    };
+    tokio::select! {
+        result = stream => result,
+        never = watch => match never {},
+    }
+}
+
 /// Runs one export on `session`: plans the statement, streams it into the chosen format on a
 /// temporary file, then moves the file into place. `meta` is the table's metadata for table
 /// exports (fetched when `None`). Cancelling `cancel` stops the export with
@@ -600,7 +697,7 @@ pub async fn run_export(
     let started = Instant::now();
     let dialect = session.dialect();
     let dest = validate_target(&req.path)?;
-    let (query, default_table) = match &req.source {
+    let (plan, default_table) = match &req.source {
         ExportSource::Table {
             table,
             filter,
@@ -624,27 +721,46 @@ pub async fn run_export(
                 req.max_rows,
                 matches!(req.format, ExportFormat::SqlInsert { .. }),
             )?;
-            (query, Some(table.name.as_str()))
+            (Plan::Query(query), Some(table.name.as_str()))
         }
-        ExportSource::Sql { sql } => (sql_query(sql, dialect)?, None),
+        ExportSource::Sql { sql } => (Plan::Query(sql_query(sql, dialect)?), None),
+        ExportSource::Rows {
+            columns,
+            rows,
+            table,
+        } => {
+            check_rows(columns, rows, dialect)?;
+            (Plan::Rows { columns, rows }, table.as_deref())
+        }
     };
     let mut spec = FormatSpec::from_request(&req.format, dialect, default_table)?;
-    if let FormatSpec::Insert {
-        overriding_system_value,
-        ..
-    } = &mut spec
+    if let (
+        FormatSpec::Insert {
+            overriding_system_value,
+            ..
+        },
+        Plan::Query(query),
+    ) = (&mut spec, &plan)
     {
         *overriding_system_value = query.identity_always;
     }
     if cancel.is_cancelled() {
         return Err(AppError::Cancelled);
     }
-    log::debug!(
-        "export {} to {}: {}",
-        req.export_id,
-        dest.display(),
-        query.sql
-    );
+    match &plan {
+        Plan::Query(query) => log::debug!(
+            "export {} to {}: {}",
+            req.export_id,
+            dest.display(),
+            query.sql
+        ),
+        Plan::Rows { rows, .. } => log::debug!(
+            "export {} to {}: {} rows held by the renderer",
+            req.export_id,
+            dest.display(),
+            rows.len()
+        ),
+    }
 
     // Resolving links, checking the old file and sweeping leftovers touch the disk too.
     let (target, file) = {
@@ -658,13 +774,18 @@ pub async fn run_export(
         BufWriter::with_capacity(FILE_BUFFER, BlockingWrite::new(file)),
         bytes.clone(),
     );
+    let (planned, blob_hex) = match &plan {
+        Plan::Query(query) => (query.columns.clone(), query.blob_hex.clone()),
+        Plan::Rows { .. } => (None, Vec::new()),
+    };
     let mut sink = ExportSink {
         writer: Some(RowWriter::new(spec, out)),
         dialect,
-        planned: query.columns.clone(),
+        planned,
         columns: Vec::new(),
         mysql_floats: Vec::new(),
-        blob_hex: query.blob_hex.clone(),
+        blob_hex,
+        pg_text: dialect == Dialect::Postgres && matches!(plan, Plan::Query(_)),
         max_rows: req.max_rows,
         cancel: cancel.clone(),
         progress: &mut progress,
@@ -678,27 +799,12 @@ pub async fn run_export(
         rows_at_emit: 0,
     };
 
-    let slot = CancelSlot::default();
-    let streamed = {
-        let stream = session.stream_query(&query.sql, &query.params, &mut sink, slot.clone());
-        let watch = async {
-            cancel.cancelled().await;
-            // Usually the stream has ended by now: the sink stopped it and the driver cancelled
-            // a read-only statement itself. A statement that is still running (it delivers
-            // nothing, or the driver drains it because `cancel_safe_on_stop` refused it) is
-            // aborted on the server: the user asked to stop, as in the SQL editor.
-            tokio::time::sleep(CANCEL_GRACE).await;
-            if let Some(handle) = request_cancel(&slot)
-                && let Err(e) = session.cancel(handle).await
-            {
-                log::warn!("export {}: cancel failed: {e}", req.export_id);
-            }
-            std::future::pending::<std::convert::Infallible>().await
-        };
-        tokio::select! {
-            result = stream => result,
-            never = watch => match never {},
+    let streamed = match &plan {
+        Plan::Rows { columns, rows } => {
+            feed_rows(&mut sink, columns, rows).await;
+            Ok(rows.len() as u64)
         }
+        Plan::Query(query) => stream_export(session, query, &mut sink, &cancel, req).await,
     };
 
     let rows = sink.rows;

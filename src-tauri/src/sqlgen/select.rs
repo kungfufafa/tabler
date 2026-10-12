@@ -2,11 +2,13 @@
 //! sort and filter, LIMIT/OFFSET paging.
 
 use crate::error::AppError;
+use crate::sqlgen::mutate::{TableSpec, row_key_where};
 use crate::sqlgen::quote::Dialect;
 use crate::types::browse::{
-    Conjunction, FilterGroup, FilterNode, FilterOp, NullsOrder, RowIdentity, SortDir, SortSpec,
+    Conjunction, FilterGroup, FilterNode, FilterOp, NullsOrder, RowIdentity, RowKey, SortDir,
+    SortSpec,
 };
-use crate::types::schema::{ColumnMeta, TableRef};
+use crate::types::schema::{ColumnMeta, TableRef, ValueKind};
 use crate::types::value::Value;
 
 /// SQL text plus its positional parameters.
@@ -292,6 +294,87 @@ pub fn build_count(
         sql.push_str(&w);
     }
     Ok(BuiltSql { sql, params })
+}
+
+/// `SELECT <column> FROM table WHERE <row key> LIMIT 1` for one full cell (the inspector's "load
+/// full value"), with exactly one `LIMIT 1`.
+///
+/// Result shape (the caller decodes it):
+/// - PostgreSQL / MySQL: one column. Bytes columns come back as hex text (`NULL` stays `NULL`); PG
+///   casts everything else to text like the browse query does.
+/// - SQLite: two columns, `<column>` itself and its hex when — and only when — the cell's storage
+///   class is blob. SQLite is dynamically typed, so a blob can sit in an untyped or TEXT column; the
+///   declared type cannot decide whether to hex-encode it.
+///
+/// A fetch is read-only, so an all-columns key (no primary key, e.g. a view) becomes a plain
+/// predicate list. `row_key_where`'s `ctid` / `rowid` subqueries exist to pin exactly one row for
+/// UPDATE/DELETE — and views have neither column.
+pub fn build_fetch_cell(
+    spec: &TableSpec<'_>,
+    column: &ColumnMeta,
+    key: &RowKey,
+) -> Result<(String, Vec<Value>), AppError> {
+    let d = spec.dialect;
+    let ident = d.quote_ident(&column.name);
+    let bytes = column.kind == ValueKind::Bytes;
+    let expr = match d {
+        Dialect::Postgres if bytes => format!("encode({ident}, 'hex')"),
+        Dialect::Postgres => format!("{ident}::text"),
+        Dialect::Mysql if bytes => format!("HEX({ident})"),
+        Dialect::Mysql => ident,
+        Dialect::Sqlite => {
+            format!("{ident}, CASE WHEN typeof({ident}) = 'blob' THEN hex({ident}) END")
+        }
+    };
+    let mut params = Vec::new();
+    let (condition, suffix) = match key {
+        RowKey::AllColumns(map) => (
+            all_columns_predicate(spec, map, &mut params)?,
+            String::new(),
+        ),
+        _ => {
+            let w = row_key_where(spec, key, &mut params)?;
+            (w.condition, w.suffix)
+        }
+    };
+    let limit = if suffix.is_empty() { " LIMIT 1" } else { "" };
+    let sql = format!(
+        "SELECT {expr} FROM {} WHERE {condition}{suffix}{limit}",
+        d.qualify(spec.table.schema.as_deref(), &spec.table.name),
+    );
+    Ok((sql, params))
+}
+
+/// `col1 <null-safe => ? AND …` for every key column — the same comparisons `row_key_where` uses
+/// for an all-columns key, without its single-row subquery.
+fn all_columns_predicate(
+    spec: &TableSpec<'_>,
+    map: &std::collections::BTreeMap<String, Value>,
+    params: &mut Vec<Value>,
+) -> Result<String, AppError> {
+    if map.is_empty() {
+        return Err(AppError::InvalidInput("row key is empty".into()));
+    }
+    let d = spec.dialect;
+    let mut sink = ParamSink { dialect: d, params };
+    let mut parts = Vec::with_capacity(map.len());
+    for (name, v) in map {
+        find_column(spec.columns, name)?;
+        let ident = d.quote_ident(name);
+        parts.push(match d {
+            // Compare textual forms: works for every type, including json and arrays.
+            Dialect::Postgres => {
+                let ph = sink.push(
+                    v.as_text().map(Value::Text).unwrap_or(Value::Null),
+                    Some("text"),
+                );
+                format!("{ident}::text IS NOT DISTINCT FROM {ph}")
+            }
+            Dialect::Mysql => format!("{ident} <=> {}", sink.push(v.clone(), None)),
+            Dialect::Sqlite => format!("{ident} IS {}", sink.push(v.clone(), None)),
+        });
+    }
+    Ok(parts.join(" AND "))
 }
 
 /// Renders a `Value` as a SQL literal for display (Preview SQL). Never used for execution.
@@ -669,5 +752,156 @@ mod tests {
             ),
             "a = 1 AND b = '?' AND c = 2"
         );
+    }
+
+    fn blob_table() -> Vec<ColumnMeta> {
+        vec![
+            col("id", "bigint", ValueKind::BigInt, true),
+            col("name", "text", ValueKind::Text, false),
+            col("data", "bytea", ValueKind::Bytes, false),
+        ]
+    }
+
+    fn keys() -> [RowKey; 3] {
+        use std::collections::BTreeMap;
+        [
+            RowKey::Pk(BTreeMap::from([("id".to_string(), Value::Int(7))])),
+            RowKey::Rowid(42),
+            RowKey::AllColumns(BTreeMap::from([
+                ("id".to_string(), Value::Int(7)),
+                ("name".to_string(), Value::Null),
+            ])),
+        ]
+    }
+
+    fn fetch_sql(dialect: Dialect, column: &str, key: &RowKey) -> (String, Vec<Value>) {
+        let cols = blob_table();
+        let table = TableRef::new(Some("app"), "files");
+        let spec = TableSpec {
+            dialect,
+            table: &table,
+            columns: &cols,
+        };
+        let col = cols.iter().find(|c| c.name == column).unwrap();
+        build_fetch_cell(&spec, col, key).unwrap()
+    }
+
+    #[test]
+    fn fetch_cell_postgres() {
+        let [pk, rowid, all] = keys();
+        let (sql, params) = fetch_sql(Dialect::Postgres, "data", &pk);
+        assert_eq!(
+            sql,
+            "SELECT encode(\"data\", 'hex') FROM \"app\".\"files\" WHERE \"id\" = $1::bigint LIMIT 1"
+        );
+        assert_eq!(params, vec![Value::Int(7)]);
+        let (sql, _) = fetch_sql(Dialect::Postgres, "name", &rowid);
+        assert_eq!(
+            sql,
+            "SELECT \"name\"::text FROM \"app\".\"files\" WHERE rowid = $1 LIMIT 1"
+        );
+        // No ctid subquery: a view (always keyed by all columns) has no ctid column.
+        let (sql, params) = fetch_sql(Dialect::Postgres, "name", &all);
+        assert_eq!(
+            sql,
+            "SELECT \"name\"::text FROM \"app\".\"files\" WHERE \"id\"::text IS NOT DISTINCT FROM $1::text AND \"name\"::text IS NOT DISTINCT FROM $2::text LIMIT 1"
+        );
+        assert_eq!(params, vec![Value::Text("7".into()), Value::Null]);
+        let (sql, _) = fetch_sql(Dialect::Postgres, "data", &all);
+        assert_eq!(
+            sql,
+            "SELECT encode(\"data\", 'hex') FROM \"app\".\"files\" WHERE \"id\"::text IS NOT DISTINCT FROM $1::text AND \"name\"::text IS NOT DISTINCT FROM $2::text LIMIT 1"
+        );
+    }
+
+    #[test]
+    fn fetch_cell_mysql_has_a_single_limit() {
+        let [pk, rowid, all] = keys();
+        let (sql, _) = fetch_sql(Dialect::Mysql, "data", &pk);
+        assert_eq!(
+            sql,
+            "SELECT HEX(`data`) FROM `app`.`files` WHERE `id` = ? LIMIT 1"
+        );
+        let (sql, _) = fetch_sql(Dialect::Mysql, "name", &rowid);
+        assert_eq!(
+            sql,
+            "SELECT `name` FROM `app`.`files` WHERE rowid = ? LIMIT 1"
+        );
+        let (sql, params) = fetch_sql(Dialect::Mysql, "data", &all);
+        assert_eq!(
+            sql,
+            "SELECT HEX(`data`) FROM `app`.`files` WHERE `id` <=> ? AND `name` <=> ? LIMIT 1"
+        );
+        assert_eq!(sql.matches("LIMIT 1").count(), 1);
+        assert_eq!(params, vec![Value::Int(7), Value::Null]);
+    }
+
+    #[test]
+    fn fetch_cell_sqlite() {
+        let [pk, rowid, all] = keys();
+        // The storage class decides, not the declared type: any column may hold a blob.
+        let (sql, _) = fetch_sql(Dialect::Sqlite, "data", &pk);
+        assert_eq!(
+            sql,
+            "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"files\" WHERE \"id\" = ?1 LIMIT 1"
+        );
+        let (sql, params) = fetch_sql(Dialect::Sqlite, "name", &rowid);
+        assert_eq!(
+            sql,
+            "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"files\" WHERE rowid = ?1 LIMIT 1"
+        );
+        assert_eq!(params, vec![Value::Int(42)]);
+        // No rowid subquery: a view (always keyed by all columns) has no rowid.
+        let (sql, params) = fetch_sql(Dialect::Sqlite, "data", &all);
+        assert_eq!(
+            sql,
+            "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"files\" WHERE \"id\" IS ?1 AND \"name\" IS ?2 LIMIT 1"
+        );
+        assert_eq!(params, vec![Value::Int(7), Value::Null]);
+    }
+
+    #[test]
+    fn fetch_cell_view_keys_never_use_ctid_or_rowid() {
+        let [_, _, all] = keys();
+        for d in [Dialect::Postgres, Dialect::Mysql, Dialect::Sqlite] {
+            for column in ["id", "name", "data"] {
+                let (sql, _) = fetch_sql(d, column, &all);
+                assert!(!sql.contains("ctid") && !sql.contains("rowid"), "{sql}");
+                assert_eq!(sql.matches("LIMIT 1").count(), 1, "{sql}");
+                assert!(!sql.contains("(SELECT"), "{sql}");
+            }
+        }
+    }
+
+    #[test]
+    fn fetch_cell_rejects_empty_or_unknown_all_columns_keys() {
+        use std::collections::BTreeMap;
+        let cols = blob_table();
+        let table = TableRef::new(None, "v");
+        for dialect in [Dialect::Postgres, Dialect::Mysql, Dialect::Sqlite] {
+            let spec = TableSpec {
+                dialect,
+                table: &table,
+                columns: &cols,
+            };
+            let empty = RowKey::AllColumns(BTreeMap::new());
+            assert!(build_fetch_cell(&spec, &cols[2], &empty).is_err());
+            let unknown = RowKey::AllColumns(BTreeMap::from([("nope".to_string(), Value::Int(1))]));
+            assert!(build_fetch_cell(&spec, &cols[2], &unknown).is_err());
+        }
+    }
+
+    #[test]
+    fn fetch_cell_rejects_unknown_key_columns() {
+        use std::collections::BTreeMap;
+        let cols = blob_table();
+        let table = TableRef::new(None, "files");
+        let spec = TableSpec {
+            dialect: Dialect::Postgres,
+            table: &table,
+            columns: &cols,
+        };
+        let key = RowKey::Pk(BTreeMap::from([("nope".to_string(), Value::Int(1))]));
+        assert!(build_fetch_cell(&spec, &cols[1], &key).is_err());
     }
 }

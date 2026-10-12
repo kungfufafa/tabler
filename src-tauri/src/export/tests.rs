@@ -1122,3 +1122,225 @@ async fn insert_export_of_a_table_skips_generated_columns() {
          INSERT INTO \"items\" (\"id\", \"name\") VALUES\n(3, 'c');\n"
     );
 }
+
+fn rows_source(set: Set, table: Option<&str>) -> ExportSource {
+    ExportSource::Rows {
+        columns: set.0,
+        rows: set.1,
+        table: table.map(str::to_string),
+    }
+}
+
+#[tokio::test]
+async fn rows_export_writes_the_given_rows_without_running_anything() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeSession::new(Dialect::Sqlite, vec![]);
+
+    // CSV.
+    let dest = dir.path().join("result.csv");
+    let req = request(
+        rows_source(id_name_set(3), Some("t")),
+        csv_format(),
+        &dest,
+        None,
+    );
+    let mut reports = Vec::new();
+    let result = run_export(
+        &fake,
+        &req,
+        None,
+        |p| reports.push(p),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let text = std::fs::read_to_string(&dest).unwrap();
+    assert_eq!(text, "id,name\r\n0,row 0\r\n1,row 1\r\n2,row 2\r\n");
+    assert_eq!(result.rows, 3);
+    assert_eq!(
+        reports.last(),
+        Some(&ExportProgress {
+            rows: 3,
+            bytes: text.len() as u64
+        })
+    );
+
+    // JSON, with NULLs and a row cap.
+    let dest = dir.path().join("result.json");
+    let mut set = id_name_set(3);
+    set.1[1][1] = Value::Null;
+    let req = request(rows_source(set, None), json_format(), &dest, Some(2));
+    let result = run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(result.rows, 2);
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dest).unwrap()).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!([{"id": 0, "name": "row 0"}, {"id": 1, "name": null}])
+    );
+
+    // INSERT statements into the result's table by default…
+    let dest = dir.path().join("result.sql");
+    let insert = |table_name: &str| ExportFormat::SqlInsert {
+        table_name: table_name.into(),
+        batch_size: 2,
+    };
+    let req = request(
+        rows_source(id_name_set(3), Some("users")),
+        insert(""),
+        &dest,
+        None,
+    );
+    run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&dest).unwrap(),
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES\n(0, 'row 0'),\n(1, 'row 1');\n\
+         INSERT INTO \"users\" (\"id\", \"name\") VALUES\n(2, 'row 2');\n"
+    );
+    // …or the one the user named; without either there is no target.
+    let req = request(
+        rows_source(id_name_set(1), Some("users")),
+        insert("archive"),
+        &dest,
+        None,
+    );
+    run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(&dest)
+            .unwrap()
+            .starts_with("INSERT INTO \"archive\" ")
+    );
+    let req = request(rows_source(id_name_set(1), None), insert(""), &dest, None);
+    let err = run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(_)), "{err:?}");
+
+    // The database was never asked for anything; no temporary file is left behind.
+    assert!(fake.seen.lock().unwrap().is_empty());
+    assert_eq!(
+        files_in(dir.path()),
+        ["result.csv", "result.json", "result.sql"]
+    );
+}
+
+#[tokio::test]
+async fn rows_export_keeps_postgres_values_as_they_are() {
+    // A PostgreSQL query export decodes text cells by type; the editor's rows are values
+    // already (a text value in an int column stays text).
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("out.json");
+    let fake = FakeSession::new(Dialect::Postgres, vec![]);
+    let set = (
+        vec![
+            rcol("n", ValueKind::Int, "int4"),
+            rcol("d", ValueKind::Decimal, "numeric"),
+        ],
+        vec![vec![
+            Value::Text("7".into()),
+            Value::Decimal("12.50".into()),
+        ]],
+    );
+    let req = request(rows_source(set, None), json_format(), &dest, None);
+    run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dest).unwrap()).unwrap();
+    assert_eq!(json, serde_json::json!([{"n": "7", "d": "12.50"}]));
+}
+
+#[tokio::test]
+async fn rows_export_refuses_truncated_binary_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("out.csv");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![]);
+    let capped = Value::Bytes(BytesValue {
+        base64: String::new(),
+        len: (BYTES_PREVIEW_CAP + 1) as u64,
+        truncated: true,
+    });
+    let set = (
+        vec![
+            rcol("id", ValueKind::Int, "INTEGER"),
+            rcol("data", ValueKind::Bytes, "BLOB"),
+        ],
+        vec![
+            vec![Value::Int(1), Value::Null],
+            vec![Value::Int(2), capped],
+        ],
+    );
+    let req = request(rows_source(set, None), csv_format(), &dest, None);
+    let err = run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap_err();
+    // SQLite (and MySQL) cap blobs in query exports too: only a table export reads them in full.
+    match err {
+        AppError::InvalidInput(msg) => assert_eq!(
+            msg,
+            "a binary value in this result was truncated to 64 KiB; export its table instead"
+        ),
+        other => panic!("unexpected {other:?}"),
+    }
+    // A PostgreSQL query export decodes bytea in full.
+    let pg = FakeSession::new(Dialect::Postgres, vec![]);
+    let err = run_export(&pg, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap_err();
+    match err {
+        AppError::InvalidInput(msg) => assert_eq!(
+            msg,
+            "a binary value in this result was truncated to 64 KiB; export the query instead"
+        ),
+        other => panic!("unexpected {other:?}"),
+    }
+    // A ragged row is refused too; neither leaves a file.
+    let set = (
+        vec![rcol("id", ValueKind::Int, "INTEGER")],
+        vec![vec![Value::Int(1), Value::Int(2)]],
+    );
+    let req = request(rows_source(set, None), csv_format(), &dest, None);
+    let err = run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(_)), "{err:?}");
+    assert!(files_in(dir.path()).is_empty());
+}
+
+#[tokio::test]
+async fn rows_export_can_be_cancelled() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("out.csv");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![]);
+    let token = CancellationToken::new();
+    let req = request(
+        rows_source(id_name_set(20_000), None),
+        csv_format(),
+        &dest,
+        None,
+    );
+    let mut reports = 0;
+    let cancel = token.clone();
+    let err = run_export(
+        &fake,
+        &req,
+        None,
+        |_| {
+            // Cancel once the first chunk has been written.
+            reports += 1;
+            cancel.cancel();
+        },
+        token,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AppError::Cancelled), "{err:?}");
+    assert!(reports >= 1);
+    assert!(files_in(dir.path()).is_empty());
+}

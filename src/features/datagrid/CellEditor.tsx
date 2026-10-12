@@ -1,15 +1,26 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { Value } from "@/lib/ipc";
-import { cn } from "@/lib/utils";
 import { parseEditText } from "@/lib/values";
+import { ChoiceSelect } from "./editors/ChoiceSelect";
+import { InlineInput } from "./editors/InlineInput";
+import { reformatJson } from "./editors/json";
+import { JsonEditorDialog } from "./editors/JsonEditorDialog";
+import { MultilinePanel } from "./editors/MultilinePanel";
+import { editorFor, NULL_CHOICE, type EditorExit } from "./editors/registry";
+import type { CaretPlacement } from "./editors/useGrabFocus";
 import type { GridColumn } from "./types";
 
-export type EditorExit = "enter" | "tab" | "shiftTab" | "blur";
+export type { EditorExit } from "./editors/registry";
 
 export interface CellEditorProps {
   col: GridColumn;
   initialText: string;
   previous: Value;
+  /**
+   * The editor was opened by typing (`initialText` is the typed character, or "" for ⌫): JSON then
+   * starts inline instead of in the dialog, and the caret goes to the end instead of selecting all.
+   */
+  typed?: boolean;
   left: number;
   top: number;
   width: number;
@@ -18,11 +29,45 @@ export interface CellEditorProps {
   onCancel: () => void;
 }
 
-/** Inline editor mounted over the focused cell. Validates per column kind; Enter commits, Esc cancels. */
+type Mode = "text" | "multiline" | "json" | "choice" | "date";
+
+/** Kinds whose values may span lines (⌥↩ in the inline input switches to the multi-line editor). */
+const MULTILINE_KINDS: ReadonlySet<GridColumn["kind"]> = new Set([
+  "text",
+  "enum",
+  "set",
+  "array",
+  "other",
+  "geometry",
+]);
+
+function initialMode(col: GridColumn, previous: Value, text: string, typed: boolean): Mode {
+  const kind = editorFor(col, previous, text);
+  if (kind === null) return "text";
+  if (kind === "json" && typed) return "text";
+  return kind;
+}
+
+/** Pretty JSON for the dialog when it opens on a stored value (whitespace only; numbers stay exact). */
+function jsonDialogText(text: string): string {
+  try {
+    JSON.parse(text);
+    return reformatJson(text, 2);
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * Inline editor mounted over the focused cell. Picks an editor per column kind (see `editorFor`):
+ * single-line input, multi-line panel, JSON dialog, bool/enum picker, or date input with a calendar.
+ * ↩ commits and moves down, ⇥/⇧⇥ commit and move sideways, ⎋ cancels, blur commits.
+ */
 export function CellEditor({
   col,
   initialText,
   previous,
+  typed = false,
   left,
   top,
   width,
@@ -30,108 +75,130 @@ export function CellEditor({
   onCommit,
   onCancel,
 }: CellEditorProps) {
-  const [text, setText] = useState(initialText);
+  const [mode, setMode] = useState<Mode>(() => initialMode(col, previous, initialText, typed));
+  const [text, setText] = useState(() =>
+    mode === "json" && previous.t === "json" ? jsonDialogText(initialText) : initialText,
+  );
+  // The dialog's opening text: saving it unchanged keeps the stored value byte-for-byte.
+  const [jsonBase, setJsonBase] = useState<string | null>(() => (mode === "json" ? text : null));
+  const [caret, setCaret] = useState<CaretPlacement>(typed ? "end" : "all");
   const [error, setError] = useState<string | null>(null);
-  const ref = useRef<HTMLInputElement>(null);
-  const committed = useRef(false);
+  const done = useRef(false);
+  const anchorRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const el = ref.current;
-    const grab = () => {
-      if (!el || document.activeElement === el) return;
-      el.focus({ preventScroll: true });
-      if ("select" in el && typeof el.select === "function") el.select();
-    };
-    grab();
-    // A double-click's trailing click can refocus the grid after we mount; grab focus again next frame.
-    const id = requestAnimationFrame(grab);
-    const id2 = window.setTimeout(grab, 50);
-    return () => {
-      cancelAnimationFrame(id);
-      window.clearTimeout(id2);
-    };
-  }, []);
-
-  const commit = (exit: EditorExit) => {
-    if (committed.current) return;
-    const result = parseEditText(col.kind, text, previous);
+  const commitValue = (value: Value, exit: EditorExit) => {
+    if (done.current) return;
+    done.current = true;
+    onCommit(value, exit);
+  };
+  const cancel = () => {
+    if (done.current) return;
+    done.current = true;
+    onCancel();
+  };
+  const commitText = (exit: EditorExit, t: string = text) => {
+    if (done.current) return;
+    const result = parseEditText(col.kind, t, previous);
     if (!result.ok) {
       setError(result.error);
-      if (exit === "blur") onCancel();
+      if (exit === "blur") cancel();
       return;
     }
-    committed.current = true;
-    onCommit(result.value, exit);
+    commitValue(result.value, exit);
+  };
+  const changeText = (t: string) => {
+    setText(t);
+    setError(null);
   };
 
-  const isBool = col.kind === "bool";
-  const isEnum = col.kind === "enum" && (col.enumValues?.length ?? 0) > 0;
-  const options = isBool ? ["true", "false"] : (col.enumValues ?? []);
+  let body: React.ReactNode;
+  switch (mode) {
+    case "choice":
+      body = (
+        <ChoiceSelect
+          col={col}
+          previous={previous}
+          typed={typed ? initialText : undefined}
+          onCancel={cancel}
+          onPick={(key, exit) =>
+            key === NULL_CHOICE ? commitValue({ t: "null" }, exit) : commitText(exit, key)
+          }
+        />
+      );
+      break;
+    case "multiline":
+      body = (
+        <>
+          <div className="ring-brand bg-brand-soft h-full w-full ring-2 ring-inset" />
+          <MultilinePanel
+            anchorRef={anchorRef}
+            label={`Edit ${col.name}`}
+            text={text}
+            caret={caret === "all" ? "end" : caret}
+            mono={col.align === "right"}
+            error={error}
+            onTextChange={changeText}
+            onCommit={(exit) => commitText(exit)}
+            onCancel={cancel}
+          />
+        </>
+      );
+      break;
+    case "json":
+      body = (
+        <>
+          <div className="ring-brand bg-brand-soft h-full w-full ring-2 ring-inset" />
+          <JsonEditorDialog
+            col={col}
+            initialText={text}
+            onCancel={cancel}
+            onSetNull={col.nullable ? () => commitValue({ t: "null" }, "enter") : undefined}
+            onSave={(t) =>
+              t === jsonBase && previous.t === "json"
+                ? commitValue(previous, "enter")
+                : commitText("enter", t)
+            }
+          />
+        </>
+      );
+      break;
+    default:
+      body = (
+        <InlineInput
+          col={col}
+          text={text}
+          error={error}
+          caret={caret}
+          calendar={mode === "date"}
+          onTextChange={changeText}
+          onCommit={(exit) => commitText(exit)}
+          onCancel={cancel}
+          onAltEnter={(start, end) => {
+            if (col.kind === "json") {
+              setJsonBase(null);
+              setMode("json");
+            } else if (mode === "text" && MULTILINE_KINDS.has(col.kind)) {
+              setText(`${text.slice(0, start)}\n${text.slice(end)}`);
+              setCaret(start + 1);
+              setMode("multiline");
+            }
+          }}
+        />
+      );
+  }
 
   return (
     <div
+      ref={anchorRef}
       data-scope="grid-edit"
       className="absolute z-[6]"
       style={{ left, top, width: Math.max(width, 120), height }}
       onPointerDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.stopPropagation()}
     >
-      {isBool || isEnum ? (
-        <select
-          ref={ref as unknown as React.RefObject<HTMLSelectElement>}
-          value={text}
-          onChange={(e) => {
-            setText(e.target.value);
-            const result = parseEditText(col.kind, e.target.value, previous);
-            if (result.ok) {
-              committed.current = true;
-              onCommit(result.value, "enter");
-            }
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") onCancel();
-          }}
-          onBlur={onCancel}
-          className="border-brand bg-surface h-full w-full border-2 px-1.5 font-mono text-[12.5px] outline-none"
-        >
-          {!options.includes(text) && <option value={text}>{text || "—"}</option>}
-          {options.map((o) => (
-            <option key={o} value={o}>
-              {o}
-            </option>
-          ))}
-        </select>
-      ) : (
-        <input
-          ref={ref}
-          value={text}
-          title={error ?? undefined}
-          onChange={(e) => {
-            setText(e.target.value);
-            setError(null);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              commit("enter");
-            } else if (e.key === "Tab") {
-              e.preventDefault();
-              commit(e.shiftKey ? "shiftTab" : "tab");
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              onCancel();
-            }
-            e.stopPropagation();
-          }}
-          onBlur={() => commit("blur")}
-          spellCheck={false}
-          className={cn(
-            "bg-surface h-full w-full border-2 px-1.5 text-[12.5px] outline-none",
-            col.align === "right" ? "text-right font-mono" : "",
-            error ? "border-error" : "border-brand",
-          )}
-        />
-      )}
-      {error && (
+      {body}
+      {error && mode !== "multiline" && mode !== "json" && (
         <div className="bg-error absolute top-full left-0 z-10 mt-0.5 rounded px-1.5 py-0.5 text-[11px] whitespace-nowrap text-white shadow">
           {error}
         </div>

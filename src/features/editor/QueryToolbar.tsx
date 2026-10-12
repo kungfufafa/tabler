@@ -167,7 +167,10 @@ export function QueryToolbar({
       />
       <Divider />
       <div className="flex items-center">
-        <Tip label="Explain (⇧-click: Explain Analyze)" action="query.explain">
+        <Tip
+          label="Explain (⇧-click: Explain Analyze, which runs in a rolled-back transaction)"
+          action="query.explain"
+        >
           <Button
             variant="ghost"
             size="sm"
@@ -192,15 +195,20 @@ export function QueryToolbar({
               <ChevronDown className="size-3" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-52">
+          <DropdownMenuContent align="start" className="w-64">
             <DropdownMenuItem onSelect={handlers.explain}>
               Explain
               <DropdownMenuShortcut>
                 {formatCombo(shortcutFor("query.explain") ?? "")}
               </DropdownMenuShortcut>
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={handlers.analyze}>
-              Explain Analyze
+            <DropdownMenuItem onSelect={handlers.analyze} className="items-start">
+              <span className="flex min-w-0 flex-col">
+                Explain Analyze
+                <span className="text-muted-foreground text-[11px] leading-4">
+                  Runs in a rolled-back transaction
+                </span>
+              </span>
               <DropdownMenuShortcut>⇧ click</DropdownMenuShortcut>
             </DropdownMenuItem>
           </DropdownMenuContent>
