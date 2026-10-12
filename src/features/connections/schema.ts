@@ -10,10 +10,21 @@ const port = z
     "Port must be 1–65535",
   );
 
+/** TablePlus's environment tags, in its order. */
+export const CONNECTION_TAGS = [
+  "local",
+  "testing",
+  "development",
+  "staging",
+  "production",
+] as const;
+
 export const connectionFormSchema = z
   .object({
     name: z.string().trim().min(1, "Name is required").max(80),
     color: z.enum(ACCENT_PRESETS),
+    /** Null only for profiles saved before tags existed (until they are edited). */
+    tag: z.enum(CONNECTION_TAGS).nullable(),
     group: z.string().trim().max(60),
     driver: z.enum(["postgres", "mysql", "sqlite"]),
     host: z.string().trim(),
@@ -69,6 +80,7 @@ export type ConnectionFormValues = z.infer<typeof connectionFormSchema>;
 export const DEFAULT_FORM: ConnectionFormValues = {
   name: "",
   color: "blue",
+  tag: "local",
   group: "",
   driver: "postgres",
   host: "127.0.0.1",
@@ -109,6 +121,7 @@ export function profileToForm(p: ConnectionProfile): ConnectionFormValues {
     color: (ACCENT_PRESETS as readonly string[]).includes(p.color ?? "")
       ? (p.color as ConnectionFormValues["color"])
       : "blue",
+    tag: p.options.tag,
     group: p.group ?? "",
     driver: p.driver,
     host: p.host ?? "",
@@ -167,6 +180,7 @@ export function formToProfileInput(
           }
         : null,
     options: {
+      tag: v.tag,
       timezone: orNull(v.timezone),
       connectTimeoutSecs: numOrNull(v.connectTimeoutSecs),
       readOnly: v.readOnly,
@@ -186,6 +200,29 @@ export function formToProfileInput(
     sshPassphrase: v.sshPassphrase === "" ? null : v.sshPassphrase,
     clearPassword: v.clearPassword,
   };
+}
+
+/**
+ * A new connection's form prefilled from a parsed connection URL ("New connection from URL…"):
+ * the URL's fields over the defaults, its password in the password field.
+ */
+export function urlToForm(
+  parsed: { values: Partial<ConnectionFormValues>; password: string | null },
+  connectTimeout: number,
+): ConnectionFormValues {
+  const base = newProfileForm(connectTimeout);
+  return { ...base, ...parsed.values, password: parsed.password ?? "" };
+}
+
+/**
+ * The launcher row's second line, TablePlus style: `host : port : user : database` (empty parts
+ * left out), or the SQLite file path.
+ */
+export function connectionDetail(p: ConnectionProfile): string {
+  if (p.driver === "sqlite") return p.sqlitePath ?? "";
+  return [p.host, p.port === null ? null : String(p.port), p.user, p.database]
+    .filter((s): s is string => s !== null && s !== "")
+    .join(" : ");
 }
 
 /** One-line summary for cards: `user@host:port/db` or the SQLite path. */

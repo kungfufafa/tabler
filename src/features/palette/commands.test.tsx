@@ -274,6 +274,54 @@ describe("palette navigation commands", () => {
     expect(useConnectionDialog.getState()).toMatchObject({ open: true, profile: null });
   });
 
+  it("opens tables in the preview tab or in a tab of their own", () => {
+    useConnectionsStore.getState().add(info("c1", p1));
+    const { commands } = renderCommands();
+    const table = { schema: "public", name: "orders" };
+    act(() => commands().openTable("c1", table, { preview: true }));
+    act(() => commands().openTable("c1", { schema: "public", name: "users" }, { preview: true }));
+    act(() => commands().openTable("c1", { schema: "public", name: "items" }));
+    expect(
+      useTabsStore
+        .getState()
+        .tabs.map((t) => [t.title, t.kind, t.kind !== "query" && t.preview === true]),
+    ).toEqual([
+      ["users", "table", true],
+      ["items", "table", false],
+    ]);
+    expect(useUiStore.getState().view).toBe("workspace");
+  });
+
+  it("selects a schema and switches databases", async () => {
+    useConnectionsStore.getState().add(info("c1", p1));
+    const spy = vi
+      .spyOn(ipc.connections, "switchDatabase")
+      .mockResolvedValue({ ...info("c1", p1), currentDatabase: "shop" });
+    const { commands } = renderCommands();
+    act(() => commands().selectSchema("c1", "inventory"));
+    expect(useConnectionsStore.getState().byId.c1!.currentSchema).toBe("inventory");
+    expect(useUiStore.getState().view).toBe("workspace");
+
+    useUiStore.setState({ view: "launcher" });
+    await act(() => commands().switchDatabase("c1", "shop"));
+    expect(spy).toHaveBeenCalledWith("c1", "shop");
+    const conn = useConnectionsStore.getState().byId.c1!;
+    expect(conn.info.currentDatabase).toBe("shop");
+    expect(conn.currentSchema).toBeNull();
+    expect(useUiStore.getState().view).toBe("workspace");
+  });
+
+  it("stays put when a database switch fails", async () => {
+    useConnectionsStore.getState().add(info("c1", p1));
+    vi.spyOn(ipc.connections, "switchDatabase").mockRejectedValue(new Error("denied"));
+    const { commands } = renderCommands();
+    await act(() => commands().switchDatabase("c1", "shop"));
+    expect(toast.error).toHaveBeenCalledWith("Could not switch database", {
+      description: "denied",
+    });
+    expect(useUiStore.getState().view).toBe("launcher");
+  });
+
   it("opens Settings on the Shortcuts section", () => {
     useSettingsDialog.setState({ open: false, section: "general" });
     const { commands } = renderCommands();

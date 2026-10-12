@@ -42,20 +42,27 @@ pub mod shell {
     /// Menu items that run a renderer action: (action id = menu item id, label, accelerator).
     const MENU_ACTIONS: &[(&str, &str, &str)] = &[
         ("settings.open", "Settings…", "CmdOrCtrl+,"),
+        ("connection.new", "New Connection…", "CmdOrCtrl+N"),
         ("tab.new-query", "New Query Tab", "CmdOrCtrl+T"),
         ("query.open", "Open SQL File…", "CmdOrCtrl+O"),
         ("tab.close", "Close Tab", "CmdOrCtrl+W"),
         ("tab.reopen", "Reopen Closed Tab", "CmdOrCtrl+Shift+T"),
         ("export.open", "Export…", "CmdOrCtrl+Shift+E"),
         ("ui.launcher", "Connection Manager", "CmdOrCtrl+Shift+O"),
-        ("palette.open", "Command Palette", "CmdOrCtrl+K"),
-        ("ui.toggle-sidebar", "Toggle Sidebar", "CmdOrCtrl+B"),
+        ("palette.open", "Open Anything…", "CmdOrCtrl+P"),
+        ("palette.databases", "Switch Database…", "CmdOrCtrl+K"),
+        ("palette.connections", "Switch Connection…", "CmdOrCtrl+Shift+K"),
+        ("view.data", "Data", "CmdOrCtrl+Ctrl+["),
+        ("view.structure", "Structure", "CmdOrCtrl+Ctrl+]"),
+        ("ui.toggle-sidebar", "Toggle Sidebar", "CmdOrCtrl+0"),
         (
             "ui.toggle-inspector",
-            "Toggle Inspector",
+            "Toggle Row Detail",
             "CmdOrCtrl+Shift+I",
         ),
+        ("ui.toggle-console", "Toggle Console Log", "CmdOrCtrl+Shift+C"),
         ("view.refresh", "Refresh", "CmdOrCtrl+R"),
+        ("connection.reconnect", "Reconnect", "CmdOrCtrl+Shift+R"),
     ];
 
     /// The renderer action a menu item id stands for; `None` for predefined items and Quit.
@@ -102,6 +109,7 @@ pub mod shell {
             .item(&quit)
             .build()?;
         let file = SubmenuBuilder::new(app, "File")
+            .item(&action_item(app, "connection.new")?)
             .item(&action_item(app, "tab.new-query")?)
             .item(&action_item(app, "query.open")?)
             .item(&action_item(app, "tab.close")?)
@@ -121,10 +129,18 @@ pub mod shell {
             .build()?;
         let view = SubmenuBuilder::new(app, "View")
             .item(&action_item(app, "palette.open")?)
+            .item(&action_item(app, "palette.databases")?)
+            .item(&action_item(app, "palette.connections")?)
+            .separator()
+            .item(&action_item(app, "view.data")?)
+            .item(&action_item(app, "view.structure")?)
+            .separator()
             .item(&action_item(app, "ui.toggle-sidebar")?)
             .item(&action_item(app, "ui.toggle-inspector")?)
+            .item(&action_item(app, "ui.toggle-console")?)
             .separator()
             .item(&action_item(app, "view.refresh")?)
+            .item(&action_item(app, "connection.reconnect")?)
             .separator()
             .item(&PredefinedMenuItem::fullscreen(app, None)?)
             .build()?;

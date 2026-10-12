@@ -1,10 +1,14 @@
 /**
- * Subsequence fuzzy matcher for the command palette.
+ * Matchers for the command palette.
  *
- * Every query character must appear in the text in order (case-insensitive; whitespace in the
- * query is ignored). Among all possible alignments the best-scoring one is chosen with a small
- * dynamic program, so "ord" against "customer_order" highlights the `ord` in `order` rather than
- * the scattered first occurrences.
+ * `fuzzyMatch` (the narrowed ⌘K / ⇧⌘K lists): every query character must appear in the text in
+ * order (case-insensitive; whitespace in the query is ignored). Among all possible alignments the
+ * best-scoring one is chosen with a small dynamic program, so "ord" against "customer_order"
+ * highlights the `ord` in `order` rather than the scattered first occurrences.
+ *
+ * `strictMatch` (Open Anything, ⌘P): the query must be a prefix of the text, a contiguous
+ * substring of it, or a sequence of runs that each start a word ("po" finds `posts` but not
+ * "Duplicate row"; "oi" finds `order_items`).
  */
 
 /** Half-open `[start, end)` range of matched characters in the original text. */
@@ -91,6 +95,24 @@ function isPrefix(t: ArrayLike<string>, q: string): boolean {
 }
 
 /**
+ * Lower-cased characters of `text`, index-aligned with it. toLowerCase can change the length for
+ * a few exotic code points; fall back per character so indices keep pointing into the original.
+ */
+function lowerChars(text: string): ArrayLike<string> {
+  const lower = text.toLowerCase();
+  return lower.length === text.length
+    ? lower
+    : Array.from({ length: text.length }, (_, i) => text[i]!.toLowerCase());
+}
+
+/** Cheap rejection: is `q` a subsequence of `t` at all? */
+function isSubsequence(t: ArrayLike<string>, q: string): boolean {
+  let k = 0;
+  for (let j = 0; j < t.length && k < q.length; j++) if (t[j] === q[k]) k++;
+  return k === q.length;
+}
+
+/**
  * Scores `text` against `query`. Returns `null` when the query is not a subsequence of the text.
  * An empty query matches everything with score 0 and no highlights.
  */
@@ -100,16 +122,8 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch | null {
   if (n === 0) return { score: 0, ranges: [] };
   const m = text.length;
   if (n > m) return null;
-  const lower = text.toLowerCase();
-  // toLowerCase can change the length for a few exotic code points; fall back per character so
-  // indices keep pointing into the original text.
-  const t: ArrayLike<string> =
-    lower.length === m ? lower : Array.from({ length: m }, (_, i) => text[i]!.toLowerCase());
-
-  // Cheap rejection before the DP: is q a subsequence at all?
-  let k = 0;
-  for (let j = 0; j < m && k < n; j++) if (t[j] === q[k]) k++;
-  if (k < n) return null;
+  const t = lowerChars(text);
+  if (!isSubsequence(t, q)) return null;
 
   const lengthPenalty = (m - n) * PENALTY_LENGTH;
   if (isPrefix(t, q)) {
@@ -184,4 +198,111 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch | null {
   }
 
   return { score: bestScore - lengthPenalty, ranges: toRanges(positions) };
+}
+
+/** How a strict match lines up with the text, best first. */
+export type StrictTier = "exact" | "prefix" | "wordStart" | "substring";
+
+export interface StrictMatch {
+  tier: StrictTier;
+  ranges: MatchRange[];
+}
+
+/** Larger is better; for sorting strict matches. */
+export const STRICT_TIER_RANK: Record<StrictTier, number> = {
+  exact: 4,
+  prefix: 3,
+  wordStart: 2,
+  substring: 1,
+};
+
+const NO_RUNS = 0x3fffffff;
+
+/**
+ * Aligns `q` with `text` so that every run of consecutive matched characters starts a word,
+ * using as few runs as possible (ties: the earliest alignment). Returns the matched positions.
+ */
+function wordStartPositions(text: string, t: ArrayLike<string>, q: string): number[] | null {
+  const n = q.length;
+  const m = t.length;
+  // runs[i*m + j]: fewest runs that still have to start to match q[i+1..] once q[i] sits at j.
+  const runs = new Int32Array(n * m).fill(NO_RUNS);
+  const next = new Int32Array(n * m).fill(-1);
+  for (let j = 0; j < m; j++) if (t[j] === q[n - 1]) runs[(n - 1) * m + j] = 0;
+  // Best word start at or after k for the following row: its run count and position.
+  const sufRuns = new Int32Array(m + 1);
+  const sufPos = new Int32Array(m + 1);
+  for (let i = n - 2; i >= 0; i--) {
+    const row = i * m;
+    const nextRow = (i + 1) * m;
+    sufRuns[m] = NO_RUNS;
+    sufPos[m] = -1;
+    for (let k = m - 1; k >= 0; k--) {
+      const r = runs[nextRow + k]!;
+      if (r <= sufRuns[k + 1]! && r < NO_RUNS && isWordStart(text, k)) {
+        sufRuns[k] = r;
+        sufPos[k] = k;
+      } else {
+        sufRuns[k] = sufRuns[k + 1]!;
+        sufPos[k] = sufPos[k + 1]!;
+      }
+    }
+    for (let j = i; j < m; j++) {
+      if (t[j] !== q[i]) continue;
+      // Continue the current run: no new run.
+      let best = j + 1 < m ? runs[nextRow + j + 1]! : NO_RUNS;
+      let bestNext = best < NO_RUNS ? j + 1 : -1;
+      // Or skip ahead and start a new run at a word start.
+      if (j + 2 <= m && sufRuns[j + 2]! < NO_RUNS && sufRuns[j + 2]! + 1 < best) {
+        best = sufRuns[j + 2]! + 1;
+        bestNext = sufPos[j + 2]!;
+      }
+      runs[row + j] = best;
+      next[row + j] = bestNext;
+    }
+  }
+  let start = -1;
+  for (let j = 0; j < m; j++) {
+    if (t[j] !== q[0] || !isWordStart(text, j) || runs[j]! >= NO_RUNS) continue;
+    if (start < 0 || runs[j]! < runs[start]!) start = j;
+  }
+  if (start < 0) return null;
+  const positions = new Array<number>(n);
+  for (let i = 0, j = start; i < n; i++) {
+    positions[i] = j;
+    j = next[i * m + j]!;
+  }
+  return positions;
+}
+
+function indexOfChars(t: ArrayLike<string>, q: string): number {
+  outer: for (let j = 0; j + q.length <= t.length; j++) {
+    for (let i = 0; i < q.length; i++) if (t[j + i] !== q[i]) continue outer;
+    return j;
+  }
+  return -1;
+}
+
+/**
+ * Strict matcher for Open Anything (⌘P). `text` matches when the query (case-insensitive,
+ * whitespace ignored) is
+ * - a prefix of it (`exact` when it is the whole text): "po" → `posts`;
+ * - a sequence of runs that each start a word: "oi" → `order_items`, "pc" → `post_counts`;
+ * - or a contiguous substring of it: "ost" → `posts`.
+ * Anything else is no match, so "po" does not find "Duplicate row". An empty query matches
+ * everything as a prefix with no highlights.
+ */
+export function strictMatch(query: string, text: string): StrictMatch | null {
+  const q = normalizeQuery(query);
+  const n = q.length;
+  if (n === 0) return { tier: "prefix", ranges: [] };
+  const m = text.length;
+  if (n > m) return null;
+  const t = lowerChars(text);
+  if (isPrefix(t, q)) return { tier: m === n ? "exact" : "prefix", ranges: [[0, n]] };
+  if (!isSubsequence(t, q)) return null;
+  const positions = wordStartPositions(text, t, q);
+  if (positions) return { tier: "wordStart", ranges: toRanges(positions) };
+  const at = indexOfChars(t, q);
+  return at >= 0 ? { tier: "substring", ranges: [[at, at + n]] } : null;
 }

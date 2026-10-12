@@ -1,5 +1,7 @@
 import type { Dialect, Value } from "@/lib/ipc";
 import { isTauri } from "@/lib/ipc/transport";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { literal, qualify, quoteIdent } from "@/lib/sql/quote";
 import { valueText } from "@/lib/values";
 import type { GridColumn } from "./types";
@@ -184,7 +186,7 @@ export async function readClipboardText(): Promise<string> {
       return await viaBrowser();
     } catch {
       throw new Error(
-        "The browser blocked clipboard access. Allow clipboard permission, or paste with ⌘V while the grid is focused.",
+        `The browser blocked clipboard access. Allow clipboard permission, or paste with ${formatCombo(shortcutFor("grid.paste") ?? "Mod+V")} while the grid is focused.`,
       );
     }
   }

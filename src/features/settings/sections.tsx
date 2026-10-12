@@ -107,7 +107,8 @@ export function GeneralSection() {
               </>
             ) : (
               <>
-                <InlineKbd combo={commitCombo} /> applies staged changes immediately.
+                <InlineKbd combo={commitCombo} /> applies staged changes immediately;{" "}
+                <InlineKbd combo={shortcutFor("grid.preview") ?? ""} /> previews the SQL first.
               </>
             )
           }
@@ -162,7 +163,7 @@ export function EditorSection() {
   const tabSize = usePrefs((p) => p.editorTabSize);
   const wrap = usePrefs((p) => p.editorLineWrap);
   const upper = usePrefs((p) => p.editorUppercaseKeywords);
-  const formatShortcut = shortcutFor("query.format") ?? "Alt+Shift+F";
+  const formatShortcut = shortcutFor("query.format") ?? "Mod+I";
   return (
     <SectionShell title="Editor">
       <SettingGroup title="SQL editor">
@@ -214,7 +215,7 @@ export function EditorSection() {
           label="Uppercase keywords"
           description={
             <>
-              Format SQL <InlineKbd combo={formatShortcut} /> writes SELECT, FROM, WHERE in
+              Beautify SQL <InlineKbd combo={formatShortcut} /> writes SELECT, FROM, WHERE in
               capitals.
             </>
           }

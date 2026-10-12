@@ -1,26 +1,21 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  AlertTriangle,
-  FileCode2,
-  Lock,
-  RefreshCw,
-  SquareTerminal,
-  Table2,
-  Undo2,
-  X,
-} from "lucide-react";
+import { AlertTriangle, FileCode2, Lock, RefreshCw, SquareTerminal, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
-import { Kbd } from "@/components/Kbd";
-import { TableIcon } from "@/components/TypeIcon";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { useAction } from "@/features/palette/actions";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
-import { formatCount, formatDuration } from "@/lib/format/time";
+import {
+  BarIconButton,
+  BarSeparator,
+  BarTooltip,
+  BottomBarFrame,
+} from "@/features/table-tab/BarParts";
+import { ViewSwitch } from "@/features/tabs/ViewSwitch";
+import { formatDuration } from "@/lib/format/time";
 import {
   ipc,
   tableKey,
@@ -67,46 +62,25 @@ import { isAlterable, KIND_LABEL } from "./tableActions";
 
 type Reducer = (meta: TableMeta, ops: DdlOp[]) => DdlOp[];
 
-function ToolButton({
-  label,
-  combo,
-  onClick,
-  disabled,
-  className,
-  children,
-}: {
-  label: string;
-  combo?: string;
-  onClick: () => void;
-  disabled?: boolean;
-  className?: string;
-  children: ReactNode;
-}) {
+/**
+ * The bottom bar of the structure view: the same strip as the data view's, with the Data |
+ * Structure switch on the left and the structure's own actions after it.
+ */
+function BottomBar({ tabId, children }: { tabId: string; children?: ReactNode }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={label}
-          onClick={onClick}
-          disabled={disabled}
-          className={className}
-        >
-          {children}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent className="flex items-center gap-1.5">
-        {label}
-        {combo && <Kbd combo={combo} className="border-border/40 bg-transparent text-inherit" />}
-      </TooltipContent>
-    </Tooltip>
+    <BottomBarFrame aria-label="Table structure">
+      <ViewSwitch tabId={tabId} view="structure" />
+      {children}
+    </BottomBarFrame>
   );
 }
 
+const plural = (n: number, word: string, many = `${word}s`) =>
+  `${n.toLocaleString()} ${n === 1 ? word : many}`;
+
 /**
- * Table structure editor (TablePlus "Structure" view): columns, indexes, foreign keys and
- * triggers. Edits are staged as DDL ops per tab; ⌘S reviews and applies them.
+ * Table structure editor (TablePlus "Structure" view of a table's tab): columns, indexes, foreign
+ * keys and triggers. Edits are staged as DDL ops per tab; ⌘S reviews and applies them.
  */
 export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }> }) {
   const { connectionId, table } = tab;
@@ -119,6 +93,8 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
   );
   const isActive = useTabsStore((s) => s.activeId === tab.id);
   const openTable = useTabsStore((s) => s.openTable);
+  const setView = useTabsStore((s) => s.setView);
+  const pin = useTabsStore((s) => s.pin);
   const stage = useStructureStore((s) => s.stage);
   const undoStaged = useStructureStore((s) => s.undo);
   const discardStaged = useStructureStore((s) => s.discard);
@@ -334,7 +310,14 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
 
   const undo = useCallback(() => undoStaged(tab.id), [undoStaged, tab.id]);
   const newColumn = useCallback(() => onAddColumn(), [onAddColumn]);
+  const showData = useCallback(() => setView(tab.id, "table"), [setView, tab.id]);
   const hasOps = ops.length > 0;
+  // Editing pins a preview tab (TablePlus), so the next table opened from the sidebar gets a tab of
+  // its own instead of replacing this one.
+  const isPreview = tab.preview === true;
+  useEffect(() => {
+    if (hasOps && isPreview) pin(tab.id);
+  }, [hasOps, isPreview, pin, tab.id]);
   useAction("grid.commit", isActive && editable ? openPreview : null);
   useAction("grid.preview", isActive && editable ? openPreview : null);
   useAction("grid.discard", isActive && hasOps ? discard : null);
@@ -342,6 +325,7 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
   useAction("grid.new-row", isActive && editable ? newColumn : null);
   useAction("grid.delete-rows", isActive && editable ? dropFocusedColumn : null);
   useAction("view.refresh", isActive ? refresh : null);
+  useAction("view.data", isActive ? showData : null);
 
   // ---- dialogs ---------------------------------------------------------------
   const [showDdl, setShowDdl] = useState(false);
@@ -376,142 +360,47 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
   );
   const openStructure = (ref: TableRef) => openTable(connectionId, ref, "structure");
 
+  // The view switch stays reachable while the metadata loads or failed to.
   if (meta.isPending) {
     return (
-      <div className="flex flex-col gap-2 p-4">
-        <Skeleton className="h-5 w-48" />
-        <Skeleton className="h-64 w-full" />
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col gap-2 p-4">
+          <Skeleton className="h-5 w-48" />
+          <Skeleton className="h-64 w-full" />
+        </div>
+        <BottomBar tabId={tab.id} />
       </div>
     );
   }
-  if (meta.isError)
-    return <EmptyState title="Could not load table" description={meta.error.message} />;
+  if (meta.isError) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="min-h-0 flex-1">
+          <EmptyState title="Could not load table" description={meta.error.message} />
+        </div>
+        <BottomBar tabId={tab.id} />
+      </div>
+    );
+  }
   const m = meta.data;
 
   const qualifiedName = m.table.schema ? `${m.table.schema}.${m.table.name}` : m.table.name;
+  const live = <T extends { status: string }>(rows: T[]) =>
+    rows.filter((r) => r.status !== "dropped").length;
+  const summary = [
+    ...(m.kind === "table" ? [] : [KIND_LABEL[m.kind]]),
+    plural(live(view!.columns), "column"),
+    plural(live(view!.indexes), "index", "indexes"),
+    ...(view!.foreignKeys.length > 0 ? [plural(live(view!.foreignKeys), "foreign key")] : []),
+  ].join(" · ");
 
-  // The root is a size container: the header drops labels and secondary buttons as the tab gets
-  // narrow (inspector open, wide sidebar) so the table name and "Review" always stay visible.
   return (
     <div
       ref={rootRef}
       tabIndex={-1}
       data-scope="grid"
-      className="@container flex h-full min-h-0 flex-col outline-none"
+      className="flex h-full min-h-0 flex-col outline-none"
     >
-      <div className="border-border bg-surface-2 flex h-9 shrink-0 items-center gap-1.5 overflow-hidden border-b px-2">
-        <TableIcon kind={m.kind} />
-        {/* When squeezed, the schema prefix gives way first so the table name stays readable. */}
-        <span className="flex min-w-12 font-mono text-xs" title={qualifiedName}>
-          {m.table.schema && (
-            <span className="text-muted-foreground min-w-0 shrink-[1000] truncate @max-lg:hidden">
-              {m.table.schema}.
-            </span>
-          )}
-          <span className="min-w-0 truncate font-semibold">{m.table.name}</span>
-        </span>
-        <span className="border-border text-muted-foreground shrink-0 rounded border px-1 text-[10px] leading-4 @max-xl:hidden">
-          {KIND_LABEL[m.kind]}
-        </span>
-        {m.rowEstimate !== null && (
-          <span className="text-muted-foreground shrink-0 text-[11px] tabular-nums @max-2xl:hidden">
-            {formatCount(m.rowEstimate, m.rowEstimate > 1000)} rows
-          </span>
-        )}
-        {m.comment && (
-          <span className="text-muted-foreground min-w-0 truncate text-[11px] italic @max-2xl:hidden">
-            {m.comment}
-          </span>
-        )}
-        <span className="flex-1" />
-        {hasOps && (
-          <>
-            <span
-              className="bg-brand-soft text-brand shrink-0 rounded px-1.5 text-[11px] leading-5 font-medium tabular-nums"
-              title={`${ops.length} staged change${ops.length === 1 ? "" : "s"}`}
-            >
-              <span className="@max-lg:hidden">
-                {ops.length} change{ops.length === 1 ? "" : "s"}
-              </span>
-              <span className="@lg:hidden">{ops.length}</span>
-            </span>
-            <ToolButton
-              label="Undo last change"
-              combo="Mod+Z"
-              onClick={undo}
-              disabled={!canUndo}
-              className="@max-sm:hidden"
-            >
-              <Undo2 />
-            </ToolButton>
-            <ToolButton label="Discard all changes" combo="Mod+Shift+Z" onClick={discard}>
-              <X />
-            </ToolButton>
-            <Button
-              size="sm"
-              onClick={() => void openPreview()}
-              aria-label="Review & apply"
-              className="h-6 shrink-0 px-2 text-xs"
-            >
-              Review<span className="@max-lg:hidden">&amp; apply</span>
-              <Kbd
-                combo="Mod+S"
-                className="border-primary-foreground/30 ml-0.5 bg-transparent text-inherit @max-2xl:hidden"
-              />
-            </Button>
-            <span className="bg-border mx-0.5 h-4 w-px shrink-0 @max-sm:hidden" />
-          </>
-        )}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label="Show DDL"
-              onClick={() => setShowDdl(true)}
-              className="@max-xl:px-2"
-            >
-              <FileCode2 />
-              <span className="@max-xl:hidden">DDL</span>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Show the CREATE statement</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label="Open in SQL"
-              onClick={() => void openDdlInEditor()}
-              // Its label goes before anything that names the table (wider with staged changes,
-              // whose badge and buttons take the room).
-              className={cn(hasOps ? "@max-4xl:px-2" : "@max-3xl:px-2")}
-            >
-              <SquareTerminal />
-              <span className={cn(hasOps ? "@max-4xl:hidden" : "@max-3xl:hidden")}>
-                Open in SQL
-              </span>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Open the CREATE statement in a new SQL editor tab</TooltipContent>
-        </Tooltip>
-        <ToolButton
-          label="Open data"
-          onClick={() => openTable(connectionId, table, "table")}
-          className="@max-sm:hidden"
-        >
-          <Table2 />
-        </ToolButton>
-        <ToolButton
-          label="Refresh"
-          combo="Mod+R"
-          onClick={() => void refresh()}
-          disabled={meta.isFetching}
-        >
-          <RefreshCw className={cn(meta.isFetching && "animate-spin")} />
-        </ToolButton>
-      </div>
       {!editable && (
         <div className="border-border text-muted-foreground flex shrink-0 items-center gap-1.5 border-b px-3 py-1 text-[11px]">
           <Lock className="size-3" />
@@ -570,6 +459,70 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
           </div>
         </div>
       </div>
+      <BottomBar tabId={tab.id}>
+        <div className="flex min-w-0 flex-1 justify-center px-1">
+          <span
+            className="text-foreground/80 min-w-0 truncate whitespace-nowrap tabular-nums"
+            title={m.comment ? `${qualifiedName} — ${m.comment}` : qualifiedName}
+          >
+            {summary}
+          </span>
+        </div>
+        {hasOps && (
+          <>
+            <span
+              className="bg-brand-soft text-brand shrink-0 rounded px-1.5 text-[11px] leading-5 font-medium whitespace-nowrap tabular-nums"
+              title={`${plural(ops.length, "staged change")}`}
+            >
+              {plural(ops.length, "change")}
+            </span>
+            <BarIconButton
+              label="Undo last change"
+              action="grid.undo"
+              onClick={undo}
+              disabled={!canUndo}
+            >
+              <Undo2 />
+            </BarIconButton>
+            <BarIconButton label="Discard all changes" action="grid.discard" onClick={discard}>
+              <X />
+            </BarIconButton>
+            <BarTooltip label="Review and apply the changes" action="grid.commit">
+              <Button
+                size="xs"
+                onClick={() => void openPreview()}
+                aria-label="Review & apply"
+                className="h-6 shrink-0 px-2"
+              >
+                Review
+              </Button>
+            </BarTooltip>
+            <BarSeparator />
+          </>
+        )}
+        <BarIconButton
+          label="Show DDL"
+          tooltip="Show the CREATE statement"
+          onClick={() => setShowDdl(true)}
+        >
+          <FileCode2 />
+        </BarIconButton>
+        <BarIconButton
+          label="Open in SQL"
+          tooltip="Open the CREATE statement in a new SQL editor tab"
+          onClick={() => void openDdlInEditor()}
+        >
+          <SquareTerminal />
+        </BarIconButton>
+        <BarIconButton
+          label="Refresh"
+          action="view.refresh"
+          onClick={() => void refresh()}
+          disabled={meta.isFetching}
+        >
+          <RefreshCw className={cn(meta.isFetching && "animate-spin")} />
+        </BarIconButton>
+      </BottomBar>
 
       <DdlPreviewSheet
         state={preview}

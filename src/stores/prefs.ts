@@ -17,7 +17,7 @@ export const SAVE_DEBOUNCE_MS = 300;
 export const UI_FONT_SIZES = { small: 12, default: 13, large: 14 } as const;
 export type UiFontSize = keyof typeof UI_FONT_SIZES;
 
-export const PAGE_SIZES = [100, 200, 500, 1000] as const;
+export const PAGE_SIZES = [100, 200, 300, 500, 1000] as const;
 export type PageSize = (typeof PAGE_SIZES)[number];
 
 export const TAB_SIZES = [2, 4] as const;
@@ -31,7 +31,10 @@ export interface Prefs {
   uiFontSize: UiFontSize;
   /** Rows per page for newly opened table tabs. */
   pageSize: PageSize;
-  /** Show the Preview SQL sheet on ⌘S; when false, staged changes are applied immediately. */
+  /**
+   * Show the Preview SQL sheet on ⌘S; when false (the default, as in TablePlus) staged changes are
+   * applied immediately and ⇧⌘P previews them.
+   */
   confirmCommit: boolean;
   /** SQL editor font size in px (11–18). */
   editorFontSize: number;
@@ -45,8 +48,8 @@ export interface Prefs {
 
 export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
   uiFontSize: "default",
-  pageSize: 200,
-  confirmCommit: true,
+  pageSize: 300,
+  confirmCommit: false,
   editorFontSize: 13,
   editorTabSize: 2,
   editorLineWrap: false,

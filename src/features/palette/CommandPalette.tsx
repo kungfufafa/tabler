@@ -3,6 +3,7 @@ import {
   Check,
   Database,
   FileCode2,
+  Layers,
   LoaderCircle,
   Search,
   Table2,
@@ -29,11 +30,15 @@ import { comboFromEvent, isMac } from "@/lib/keys/combo";
 import { KEYMAP } from "@/lib/keys/keymap";
 import { accentColor } from "@/lib/theme";
 import { cn } from "@/lib/utils";
+import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
+import type { ActionId } from "./actions";
 import { usePaletteCommands, type PaletteCommands } from "./commands";
 import type { MatchRange } from "./fuzzy";
 import {
+  COMMAND_PREFIX,
+  completionOf,
   flattenSections,
   type PaletteIcon,
   type PaletteItem,
@@ -42,7 +47,7 @@ import {
 } from "./items";
 import { focusTabSurface } from "./focus";
 import { recordMru } from "./mru";
-import { usePaletteStore } from "./store";
+import { usePaletteStore, type PaletteMode } from "./store";
 import { usePaletteItems } from "./usePaletteItems";
 
 type PaletteRun = () => unknown;
@@ -69,16 +74,59 @@ function execute(fn: PaletteRun) {
   Promise.resolve(result).catch(reportFailure);
 }
 
+/** The palette each opener shows. */
+const OPENER_MODES: Partial<Record<ActionId, PaletteMode>> = {
+  "palette.open": "all",
+  "palette.databases": "databases",
+  "palette.connections": "connections",
+};
+
 /**
- * ⌘K / ⌘P inside the palette. Global shortcuts are suppressed while a dialog has focus, so the
- * palette handles its own toggle combos.
+ * ⌘P / ⌘K / ⇧⌘K inside the palette. Global shortcuts are suppressed while a dialog has focus, so
+ * the palette handles its openers itself: the combo of the open mode closes it, another one
+ * switches the mode.
  */
-const TOGGLE_COMBOS = new Set(KEYMAP.filter((d) => d.id === "palette.open").map((d) => d.keys));
+const TOGGLE_COMBOS: ReadonlyMap<string, PaletteMode> = new Map(
+  KEYMAP.flatMap((d) => {
+    const mode = OPENER_MODES[d.id];
+    return mode ? [[d.keys, mode] as const] : [];
+  }),
+);
+
+const MODE_TEXT: Record<
+  PaletteMode,
+  { title: string; description: string; placeholder: string; verb: string; empty: string }
+> = {
+  all: {
+    title: "Open anything",
+    description:
+      "Search tables, views, schemas, databases, open tabs and connections. Type > for commands.",
+    placeholder: "Search tables, views, databases and connections…",
+    verb: "Open",
+    empty: "Nothing to show",
+  },
+  databases: {
+    title: "Switch database",
+    description: "Switch the active connection to another database or schema.",
+    placeholder: "Switch database…",
+    verb: "Switch",
+    empty: "No other databases on this connection",
+  },
+  connections: {
+    title: "Switch connection",
+    description: "Switch to an open connection or connect a saved one.",
+    placeholder: "Switch connection…",
+    verb: "Switch",
+    empty: "No saved connections",
+  },
+};
+
 const TAB_ICONS = { table: Table2, structure: TableProperties, query: FileCode2 } as const;
 
-/** Command palette / quick open (⌘K, ⌘P). */
+/** Open Anything (⌘P), Switch database (⌘K), Switch connection (⇧⌘K). */
 export function CommandPalette() {
   const open = usePaletteStore((s) => s.open);
+  const mode = usePaletteStore((s) => s.mode);
   const session = usePaletteStore((s) => s.session);
   const setOpen = usePaletteStore((s) => s.setOpen);
   const toggle = usePaletteStore((s) => s.toggle);
@@ -94,7 +142,7 @@ export function CommandPalette() {
         if (!s.open || prev.open) return;
         const fn = pending.current;
         if (fn) {
-          // Reopened (⌘K) before the previous choice ran, i.e. during the close animation, when
+          // Reopened (⌘P…) before the previous choice ran, i.e. during the close animation, when
           // the dialog never unmounts and its close-focus callback never fires. Run the choice now,
           // from where focus was, rather than behind the reopened palette or not at all.
           pending.current = null;
@@ -129,6 +177,15 @@ export function CommandPalette() {
     [flush, setOpen],
   );
 
+  const toggleMode = useCallback(
+    (next: PaletteMode) => {
+      // Same fallback as the global ⌘K: without a connection there are no databases to list.
+      const connected = useConnectionsStore.getState().activeId !== null;
+      toggle(next === "databases" && !connected ? "connections" : next);
+    },
+    [toggle],
+  );
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
@@ -149,29 +206,36 @@ export function CommandPalette() {
         }}
         className="bg-popover ring-foreground/10 top-[14vh] max-w-[calc(100%-2rem)] translate-y-0 gap-0 overflow-hidden rounded-xl p-0 shadow-2xl sm:max-w-[620px] dark:ring-white/10"
       >
-        <DialogTitle className="sr-only">Command palette</DialogTitle>
-        <DialogDescription className="sr-only">
-          Search tables, open tabs, connections and actions.
-        </DialogDescription>
-        <PaletteBody key={session} commands={commands} onRun={runAfterClose} onToggle={toggle} />
+        <DialogTitle className="sr-only">{MODE_TEXT[mode].title}</DialogTitle>
+        <DialogDescription className="sr-only">{MODE_TEXT[mode].description}</DialogDescription>
+        <PaletteBody
+          key={session}
+          mode={mode}
+          commands={commands}
+          onRun={runAfterClose}
+          onToggle={toggleMode}
+        />
       </DialogContent>
     </Dialog>
   );
 }
 
 function PaletteBody({
+  mode,
   commands,
   onRun,
   onToggle,
 }: {
+  mode: PaletteMode;
   commands: PaletteCommands;
   onRun: (fn: PaletteRun) => void;
-  onToggle: () => void;
+  onToggle: (mode: PaletteMode) => void;
 }) {
   // Not deferred on purpose: ↩ right after typing must act on the results for what was typed.
   // Ranking is cheap (a few ms for thousands of tables) and at most TABLE_LIMIT rows render.
   const [query, setQuery] = useState("");
-  const data = usePaletteItems(query, commands);
+  const data = usePaletteItems(query, commands, mode);
+  const text = MODE_TEXT[mode];
   const flat = useMemo(() => flattenSections(data.sections), [data.sections]);
 
   // Selection belongs to a query: a new query selects its best match.
@@ -183,6 +247,9 @@ function PaletteBody({
   const selected = flat.find((i) => i.key === selectedKey) ?? null;
   const modClick = useRef(false);
   const listRef = useRef<HTMLDivElement>(null);
+  const objects = mode === "all" && !data.commandMode;
+  // Inline completion (TablePlus): the rest of the selected object's name after what was typed.
+  const ghost = objects && selected ? completionOf(query, selected.label) : "";
 
   // A new query selects its best match, the first row. cmdk does not scroll to it because the
   // selected value is controlled (it never sees the selection change), so reset the scroll here.
@@ -201,39 +268,24 @@ function PaletteBody({
     modClick.current = false;
     if (e.nativeEvent.isComposing) return;
     const combo = comboFromEvent(e.nativeEvent);
-    if (TOGGLE_COMBOS.has(combo)) {
-      // Toggle rather than close: while the dialog is still animating out, ⌘K reopens it.
+    const toggleTo = TOGGLE_COMBOS.get(combo);
+    if (toggleTo) {
+      // Toggle rather than close: while the dialog is still animating out, ⌘P reopens it.
       e.preventDefault();
-      onToggle();
+      onToggle(toggleTo);
     } else if (combo === "Mod+Enter" && selected) {
       e.preventDefault();
       choose(selected, true);
+    } else if (ghost && selected && (combo === "Tab" || (combo === "Right" && caretAtEnd(e)))) {
+      // Accept the completion.
+      e.preventDefault();
+      setQuery(selected.label);
     }
   };
 
-  // While tables load, a placeholder takes the Tables group's place (after "Recent").
-  const nodes: ReactNode[] = [];
-  let loadingPlaced = !data.tablesLoading || data.sections.some((s) => s.id === "tables");
-  for (const section of data.sections) {
-    if (!loadingPlaced && section.id !== "recent") {
-      nodes.push(<TablesLoading key="tables-loading" />);
-      loadingPlaced = true;
-    }
-    nodes.push(
-      <Section
-        key={section.id}
-        section={section}
-        schema={data.schema}
-        onChoose={choose}
-        modClick={modClick}
-      />,
-    );
-  }
-  if (!loadingPlaced) nodes.push(<TablesLoading key="tables-loading" />);
-
   return (
     <CommandPrimitive
-      label="Command palette"
+      label={text.title}
       shouldFilter={false}
       loop
       value={selectedKey}
@@ -243,17 +295,32 @@ function PaletteBody({
     >
       <div className="border-border flex h-11 items-center gap-2.5 border-b px-3.5">
         <Search className="text-muted-foreground size-4 shrink-0" />
-        <CommandPrimitive.Input
-          autoFocus
-          value={query}
-          onValueChange={setQuery}
-          placeholder="Search tables, tabs, connections and actions…"
-          className="placeholder:text-muted-foreground/80 h-full min-w-0 flex-1 bg-transparent text-base outline-none"
-        />
+        <div className="relative h-full min-w-0 flex-1">
+          {ghost && (
+            <div
+              aria-hidden
+              data-testid="palette-completion"
+              className="pointer-events-none absolute inset-0 flex items-center overflow-hidden text-base whitespace-pre"
+            >
+              <span className="invisible">{query}</span>
+              <span className="text-muted-foreground/60">{ghost}</span>
+            </div>
+          )}
+          <CommandPrimitive.Input
+            autoFocus
+            value={query}
+            onValueChange={setQuery}
+            placeholder={text.placeholder}
+            className="placeholder:text-muted-foreground/80 relative h-full w-full bg-transparent text-base outline-none"
+          />
+        </div>
         {data.connection && (
           <span className="text-muted-foreground flex max-w-[40%] shrink-0 items-center gap-1.5 text-[11px]">
             <ColorDot color={data.connection.color} size={6} />
-            <span className="truncate">{data.connection.name}</span>
+            <span className="truncate">
+              {data.connection.name}
+              {objects && data.schema && <span className="opacity-70"> · {data.schema}</span>}
+            </span>
           </span>
         )}
       </div>
@@ -265,56 +332,57 @@ function PaletteBody({
           "**:[[cmdk-group-heading]]:text-muted-foreground **:[[cmdk-group-heading]]:flex **:[[cmdk-group-heading]]:h-7 **:[[cmdk-group-heading]]:items-end **:[[cmdk-group-heading]]:px-2 **:[[cmdk-group-heading]]:pb-1 **:[[cmdk-group-heading]]:text-[11px] **:[[cmdk-group-heading]]:font-medium",
         )}
       >
-        {data.sections.length === 0 && !data.tablesLoading && (
+        {data.sections.length === 0 && (
           <div className="text-muted-foreground py-10 text-center text-xs">
-            No results for “{query.trim()}”
+            {query.trim() ? `No results for “${query.trim()}”` : text.empty}
           </div>
         )}
-        {nodes}
+        {data.sections.map((section) => (
+          <Section key={section.id} section={section} onChoose={choose} modClick={modClick} />
+        ))}
       </CommandPrimitive.List>
 
-      <Footer selected={selected} />
+      <Footer selected={selected} verb={text.verb} hint={objects} />
     </CommandPrimitive>
   );
 }
 
-function TablesLoading() {
+function caretAtEnd(e: ReactKeyboardEvent): boolean {
+  const input = e.target;
   return (
-    <CommandPrimitive.Group heading="Tables">
-      <div className="text-muted-foreground flex h-7 items-center gap-2 px-2 text-xs">
-        <LoaderCircle className="size-3.5 animate-spin" />
-        Loading tables…
-      </div>
-    </CommandPrimitive.Group>
+    input instanceof HTMLInputElement &&
+    input.selectionStart === input.value.length &&
+    input.selectionEnd === input.value.length
   );
 }
 
+/** Stands in for items that are still loading (tables, databases…). */
+function LoadingRow({ what }: { what: string }) {
+  return (
+    <div className="text-muted-foreground flex h-7 items-center gap-2 px-2 text-xs">
+      <LoaderCircle className="size-3.5 animate-spin" />
+      Loading {what}…
+    </div>
+  );
+}
+
+/** A headed group (⌘K, ⇧⌘K), or Open Anything's flat list without a heading. */
 function Section({
   section,
-  schema,
   onChoose,
   modClick,
 }: {
   section: PaletteSection;
-  schema: string | null;
   onChoose: (item: PaletteItem, alt: boolean) => void;
   modClick: RefObject<boolean>;
 }) {
-  const heading: ReactNode =
-    section.id === "tables" && schema ? (
-      <>
-        {section.heading}
-        <span className="ml-1 font-normal opacity-70">· {schema}</span>
-      </>
-    ) : (
-      section.heading
-    );
-  return (
-    <CommandPrimitive.Group heading={heading}>
+  const body = (
+    <>
       {section.items.map((ranked) => (
         <PaletteRow
           key={ranked.item.key}
           ranked={ranked}
+          showKind={section.showKind ?? false}
           onPointerDown={(e) => {
             modClick.current = isMac ? e.metaKey : e.ctrlKey;
           }}
@@ -325,21 +393,27 @@ function Section({
           }}
         />
       ))}
+      {section.loading !== undefined && <LoadingRow what={section.loading} />}
       {section.more > 0 && (
         <div className="text-muted-foreground px-2 py-1 text-[11px]">
           …{section.more.toLocaleString()} more — keep typing to narrow down
         </div>
       )}
-    </CommandPrimitive.Group>
+    </>
   );
+  if (section.heading === undefined) return <div className="pt-1.5">{body}</div>;
+  return <CommandPrimitive.Group heading={section.heading}>{body}</CommandPrimitive.Group>;
 }
 
 function PaletteRow({
   ranked: { item, ranges },
+  showKind,
   onSelect,
   onPointerDown,
 }: {
   ranked: RankedItem;
+  /** Open Anything's objects: the kind on the right instead of the detail after the label. */
+  showKind: boolean;
   onSelect: () => void;
   onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
@@ -354,7 +428,7 @@ function PaletteRow({
       <span className="min-w-0 truncate">
         <Highlight text={item.label} ranges={ranges} />
       </span>
-      {item.detail && (
+      {item.detail && !showKind && (
         <span className="text-muted-foreground min-w-0 shrink-[3] truncate text-xs">
           {item.detail}
         </span>
@@ -374,6 +448,9 @@ function PaletteRow({
         )}
         {item.current && <Check className="text-brand size-3.5" aria-label="Current" />}
         {item.combo && <Kbd combo={item.combo} />}
+        {showKind && item.kind && (
+          <span className="text-muted-foreground text-[11px]">{item.kind}</span>
+        )}
       </span>
     </CommandPrimitive.Item>
   );
@@ -389,6 +466,10 @@ function ItemIcon({ icon }: { icon: PaletteIcon }) {
     }
     case "connection":
       return <Database className="size-3.5 shrink-0" style={{ color: accentColor(icon.color) }} />;
+    case "database":
+      return <Database className="text-muted-foreground size-3.5 shrink-0" />;
+    case "schema":
+      return <Layers className="text-muted-foreground size-3.5 shrink-0" />;
     case "action": {
       const Icon = icon.icon;
       return <Icon className="text-muted-foreground size-3.5 shrink-0" />;
@@ -422,7 +503,16 @@ function Highlight({ text, ranges }: { text: string; ranges: readonly MatchRange
   return <>{parts}</>;
 }
 
-function Footer({ selected }: { selected: PaletteItem | null }) {
+function Footer({
+  selected,
+  verb,
+  hint,
+}: {
+  selected: PaletteItem | null;
+  verb: string;
+  /** Shows "Type > for commands" (Open Anything's object list). */
+  hint: boolean;
+}) {
   return (
     <div className="border-border bg-surface-2 text-muted-foreground flex h-7 shrink-0 items-center gap-3 border-t px-3 text-[11px]">
       <span className="flex items-center gap-1">
@@ -432,7 +522,7 @@ function Footer({ selected }: { selected: PaletteItem | null }) {
       </span>
       <span className="flex items-center gap-1">
         <Kbd combo="Enter" />
-        {selected?.verb ?? "Open"}
+        {selected?.verb ?? verb}
       </span>
       {selected?.runAlt && (
         <span className="flex items-center gap-1">
@@ -440,7 +530,12 @@ function Footer({ selected }: { selected: PaletteItem | null }) {
           {selected.altLabel ?? "Alternate"}
         </span>
       )}
-      <span className="ml-auto flex items-center gap-1">
+      {hint && (
+        <span className="ml-auto" data-testid="palette-command-hint">
+          Type <kbd className="font-mono">{COMMAND_PREFIX}</kbd> for commands
+        </span>
+      )}
+      <span className={cn("flex items-center gap-1", !hint && "ml-auto")}>
         <Kbd combo="Escape" />
         Close
       </span>

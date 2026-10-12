@@ -3,7 +3,9 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { emptyStaging, insertRow } from "@/features/staging/model";
-import type { ConnectionInfo, TableSummary } from "@/lib/ipc";
+import { useStructureStore } from "@/features/structure/store";
+import { useDatabaseSwitchStore } from "@/features/sidebar/switchDatabase";
+import { ipc, type ConnectionInfo, type DatabaseInfo, type TableSummary } from "@/lib/ipc";
 import { profile } from "@/lib/ipc/mock/fixtures";
 import { isMac } from "@/lib/keys/combo";
 import { useConnectionsStore } from "@/stores/connections";
@@ -13,7 +15,7 @@ import { useUiStore } from "@/stores/ui";
 import { actions } from "./actions";
 import { CommandPalette } from "./CommandPalette";
 import { MRU_STORAGE_KEY } from "./mru";
-import { usePaletteStore } from "./store";
+import { usePaletteStore, type PaletteMode } from "./store";
 
 const mod = isMac ? { metaKey: true } : { ctrlKey: true };
 
@@ -39,7 +41,17 @@ const tables: TableSummary[] = ["users", "orders", "order_items", "audit_log"].m
   comment: null,
 }));
 
-function renderPalette(extra?: ReactNode) {
+const databases: DatabaseInfo[] = ["app", "shop"].map((name) => ({
+  name,
+  owner: null,
+  encoding: "UTF8",
+  isCurrent: name === "app",
+}));
+
+function renderPalette(
+  extra?: ReactNode,
+  { mode = "all", setup }: { mode?: PaletteMode; setup?: (qc: QueryClient) => void } = {},
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   qc.setQueryData(
     ["profiles"],
@@ -50,15 +62,31 @@ function renderPalette(extra?: ReactNode) {
   );
   qc.setQueryData(["schemas", "c1"], [{ name: "public", isDefault: true }]);
   qc.setQueryData(["tables", "c1", "public"], tables);
+  setup?.(qc);
   render(
     <QueryClientProvider client={qc}>
       {extra}
       <CommandPalette />
     </QueryClientProvider>,
   );
-  act(() => usePaletteStore.getState().setOpen(true));
+  act(() => usePaletteStore.getState().toggle(mode));
   return screen.getByRole("combobox");
 }
+
+/** Two databases ("app" is current) and two schemas on the active connection. */
+function withDatabases(qc: QueryClient) {
+  qc.setQueryData(["databases", "c1"], databases);
+  qc.setQueryData(
+    ["schemas", "c1"],
+    [
+      { name: "public", isDefault: true },
+      { name: "inventory", isDefault: false },
+    ],
+  );
+}
+
+const press = (el: HTMLElement, key: string, shift = false) =>
+  fireEvent.keyDown(el, { key, code: `Key${key.toUpperCase()}`, ...mod, shiftKey: shift });
 
 function groupLabels(): string[] {
   return Array.from(document.querySelectorAll("[cmdk-group-heading]")).map(
@@ -67,6 +95,18 @@ function groupLabels(): string[] {
 }
 
 const optionTexts = () => screen.getAllByRole("option").map((o) => o.textContent ?? "");
+
+/** The option labelled `label` whose kind (shown last) is `kind`. */
+function option(label: string, kind: string): HTMLElement {
+  const found = screen
+    .getAllByRole("option")
+    .find((o) => o.textContent?.startsWith(label) && o.textContent.endsWith(kind));
+  if (!found) throw new Error(`No ${kind} option "${label}" in ${JSON.stringify(optionTexts())}`);
+  return found;
+}
+
+const type = (value: string) =>
+  fireEvent.change(screen.getByRole("combobox"), { target: { value } });
 
 beforeAll(() => {
   // jsdom has no layout; cmdk scrolls the selected item into view.
@@ -79,7 +119,9 @@ const cleanups: Array<() => void> = [];
 
 beforeEach(() => {
   localStorage.removeItem(MRU_STORAGE_KEY);
-  usePaletteStore.setState({ open: false, session: 0 });
+  usePaletteStore.setState({ open: false, mode: "all", session: 0 });
+  useStructureStore.setState({ byTab: {} });
+  useDatabaseSwitchStore.setState({ pending: {} });
   useTabsStore.setState({
     tabs: [],
     activeId: null,
@@ -146,35 +188,148 @@ function stageEdits(tabId: string, n: number) {
 }
 
 describe("CommandPalette", () => {
-  it("lists tables, open tabs, connections and actions in that order", () => {
+  it("lists only the schema's tables for an empty query: flat, alphabetical, with their kind", () => {
     useTabsStore.getState().newQuery("c1");
     cleanups.push(actions.register("ui.toggle-sidebar", () => {}));
-    renderPalette();
-    expect(groupLabels()).toEqual(["Tables· public", "Open tabs", "Connections", "Actions"]);
-    const texts = optionTexts();
-    expect(texts.some((t) => t.startsWith("users"))).toBe(true);
-    expect(texts.some((t) => t.startsWith("Query 1"))).toBe(true);
-    expect(texts.some((t) => t.startsWith("Staging MySQL"))).toBe(true);
-    // Shortcut is rendered next to actions that have a handler…
-    const toggle = screen.getByRole("option", { name: /Toggle sidebar/ });
-    expect(within(toggle).getByText(isMac ? "⌘B" : "Ctrl+B")).toBeInTheDocument();
-    // …and actions without one are hidden.
-    expect(screen.queryByRole("option", { name: /Commit changes/ })).toBeNull();
-    expect(screen.queryByRole("option", { name: /Command palette/ })).toBeNull();
+    const input = renderPalette(undefined, { setup: withDatabases });
+    expect(input).toHaveAttribute(
+      "placeholder",
+      "Search tables, views, databases and connections…",
+    );
+    expect(groupLabels()).toEqual([]);
+    expect(optionTexts()).toEqual([
+      expect.stringMatching(/^audit_log.*table$/),
+      expect.stringMatching(/^order_items.*table$/),
+      expect.stringMatching(/^orders.*table$/),
+      expect.stringMatching(/^users.*table$/),
+    ]);
+    // The row estimate stays, muted.
+    expect(within(option("users", "table")).getByText("10")).toBeInTheDocument();
+    expect(screen.getByTestId("palette-command-hint")).toHaveTextContent("Type > for commands");
+    // The header tells whose tables these are.
+    expect(screen.getByText("· public")).toBeInTheDocument();
   });
 
-  it("filters fuzzily and highlights matched characters", () => {
+  it("ranks tables, tabs, schemas, databases and connections in one flat list", () => {
+    useTabsStore.getState().newQuery("c1");
+    cleanups.push(actions.register("ui.toggle-sidebar", () => {}));
+    renderPalette(undefined, { setup: withDatabases });
+    type("app");
+    expect(groupLabels()).toEqual([]);
+    expect(optionTexts()).toEqual([expect.stringMatching(/^app.*database$/)]);
+    expect(within(option("app", "database")).getByLabelText("Current")).toBeInTheDocument();
+    type("inv");
+    expect(optionTexts()).toEqual([expect.stringMatching(/^inventory.*schema$/)]);
+    type("query");
+    expect(optionTexts()).toEqual([expect.stringMatching(/^Query 1.*tab$/)]);
+    // Prefix hits first, then contiguous ones; ties alphabetically whatever their kind.
+    type("o");
+    expect(optionTexts()).toEqual([
+      expect.stringMatching(/^order_items.*table$/),
+      expect.stringMatching(/^orders.*table$/),
+      expect.stringMatching(/^audit_log.*table$/),
+      expect.stringMatching(/^inventory.*schema$/),
+      expect.stringMatching(/^Local PG.*connection$/),
+      expect.stringMatching(/^shop.*database$/),
+    ]);
+    type("sm");
+    expect(optionTexts()).toEqual([expect.stringMatching(/^Staging MySQL.*connection$/)]);
+    // Actions only after ">".
+    type("sidebar");
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+  });
+
+  it("lists actions with their shortcut only after >", () => {
+    cleanups.push(
+      actions.register("ui.toggle-sidebar", () => {}),
+      actions.register("grid.duplicate-row", () => {}),
+    );
+    renderPalette();
+    type("du");
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    type("> du");
+    expect(optionTexts()).toEqual([expect.stringMatching(/^Duplicate row/)]);
+    // No kinds, no "Type >" hint among commands.
+    expect(screen.queryByTestId("palette-command-hint")).toBeNull();
+    type(">");
+    const toggle = screen.getByRole("option", { name: /Toggle sidebar/ });
+    expect(within(toggle).getByText(isMac ? "⌘0" : "Ctrl+0")).toBeInTheDocument();
+    // …and actions without a handler are hidden.
+    expect(screen.queryByRole("option", { name: /Commit changes/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /Open anything/ })).toBeNull();
+    expect(screen.getByRole("option", { name: /Theme: Dark/ })).toBeInTheDocument();
+  });
+
+  it("matches strictly and highlights matched characters", () => {
     const input = renderPalette();
     fireEvent.change(input, { target: { value: "ord" } });
-    expect(groupLabels()).toEqual(["Tables· public"]);
-    expect(optionTexts()[0]).toMatch(/^orders/);
+    expect(groupLabels()).toEqual([]);
+    expect(optionTexts()).toEqual([
+      expect.stringMatching(/^order_items/),
+      expect.stringMatching(/^orders/),
+    ]);
     const first = screen.getAllByRole("option")[0]!;
     expect(first).toHaveAttribute("aria-selected", "true");
     expect(first.querySelector("mark")?.textContent).toBe("ord");
+    // Scattered characters do not match ("ua" is in "users" and "audit_log" only as a subsequence).
+    fireEvent.change(input, { target: { value: "ua" } });
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
 
     fireEvent.change(input, { target: { value: "qqqq" } });
     expect(screen.queryAllByRole("option")).toHaveLength(0);
     expect(screen.getByText(/No results for/)).toBeInTheDocument();
+  });
+
+  it("completes the selected name inline and accepts it with Tab or →", () => {
+    const input = renderPalette();
+    type("aud");
+    expect(screen.getByTestId("palette-completion")).toHaveTextContent("audit_log");
+    expect(screen.getByTestId("palette-completion").lastChild).toHaveTextContent(/^it_log$/);
+    fireEvent.keyDown(input, { key: "Tab", code: "Tab" });
+    expect(input).toHaveValue("audit_log");
+    expect(screen.queryByTestId("palette-completion")).toBeNull();
+
+    type("us");
+    (input as HTMLInputElement).setSelectionRange(2, 2);
+    fireEvent.keyDown(input, { key: "ArrowRight", code: "ArrowRight" });
+    expect(input).toHaveValue("users");
+    // Only prefixes complete; commands never do.
+    type("dit");
+    expect(screen.queryByTestId("palette-completion")).toBeNull();
+    type(">");
+    expect(screen.queryByTestId("palette-completion")).toBeNull();
+  });
+
+  it("lists the saved connections when no connection is open", () => {
+    useConnectionsStore.getState().remove("c1");
+    renderPalette();
+    expect(optionTexts()).toEqual([
+      expect.stringMatching(/^Local PG.*connection$/),
+      expect.stringMatching(/^Staging MySQL.*connection$/),
+    ]);
+  });
+
+  it("shows the loading placeholder inline while the tables load", () => {
+    vi.spyOn(ipc.schema, "tables").mockReturnValue(new Promise(() => {}));
+    renderPalette(undefined, {
+      setup: (qc) => qc.removeQueries({ queryKey: ["tables", "c1", "public"] }),
+    });
+    expect(groupLabels()).toEqual([]);
+    expect(screen.getByText("Loading tables…")).toBeInTheDocument();
+    type("stag");
+    expect(optionTexts()).toEqual([expect.stringMatching(/^Staging MySQL/)]);
+    expect(screen.getByText("Loading tables…")).toBeInTheDocument();
+  });
+
+  it("opens a table in a new tab on ⌘-click", async () => {
+    renderPalette();
+    type("orders");
+    const row = option("orders", "table");
+    fireEvent.pointerDown(row, mod);
+    fireEvent.click(row, mod);
+    await waitFor(() => expect(useTabsStore.getState().tabs).toHaveLength(1));
+    expect(useTabsStore.getState().tabs[0]).toMatchObject({ title: "orders" });
+    expect(useTabsStore.getState().tabs[0]).not.toHaveProperty("preview");
   });
 
   it("opens the data tab on Enter after closing, and records it as recent", async () => {
@@ -191,44 +346,72 @@ describe("CommandPalette", () => {
     expect(JSON.parse(localStorage.getItem(MRU_STORAGE_KEY)!)).toEqual(["table:p1:public:orders"]);
   });
 
-  it("opens the structure tab on ⌘Enter", async () => {
-    const input = renderPalette();
-    fireEvent.change(input, { target: { value: "users" } });
-    fireEvent.keyDown(input, { key: "Enter", code: "Enter", ...mod });
-    await waitFor(() => expect(useTabsStore.getState().tabs).toHaveLength(1));
-    expect(useTabsStore.getState().tabs[0]).toMatchObject({
-      kind: "structure",
-      table: { name: "users" },
-    });
+  it("opens tables in the preview tab on Enter, and in a new tab on ⌘Enter", async () => {
+    const pick = async (name: string, alt = false) => {
+      act(() => usePaletteStore.getState().setOpen(true));
+      const input = screen.getByRole("combobox");
+      fireEvent.change(input, { target: { value: name } });
+      fireEvent.keyDown(input, { key: "Enter", code: "Enter", ...(alt ? mod : {}) });
+      await waitFor(() => expect(usePaletteStore.getState().open).toBe(false));
+      await waitFor(() =>
+        expect(useTabsStore.getState().tabs.some((t) => t.title === name)).toBe(true),
+      );
+    };
+    renderPalette();
+    act(() => usePaletteStore.getState().setOpen(false));
+    const titles = () =>
+      useTabsStore.getState().tabs.map((t) => [t.title, t.kind !== "query" && t.preview === true]);
+
+    await pick("orders");
+    expect(titles()).toEqual([["orders", true]]);
+    // The next one replaces the preview tab.
+    await pick("users");
+    expect(titles()).toEqual([["users", true]]);
+    await pick("audit_log", true);
+    expect(titles()).toEqual([
+      ["users", true],
+      ["audit_log", false],
+    ]);
+    expect(useTabsStore.getState().tabs.every((t) => t.kind === "table")).toBe(true);
   });
 
-  it("shows recently used items first when the query is empty", () => {
+  it("lists recently opened tables first when the query is empty, and nothing else", () => {
     localStorage.setItem(
       MRU_STORAGE_KEY,
-      JSON.stringify(["cmd:theme.dark", "table:p1:public:audit_log"]),
+      JSON.stringify([
+        "cmd:theme.dark",
+        "table:p1:public:users",
+        "conn:p2",
+        "table:p1:public:orders",
+      ]),
     );
     renderPalette();
-    expect(groupLabels()[0]).toBe("Recent");
-    expect(optionTexts().slice(0, 2)).toEqual([
-      expect.stringMatching(/^Theme: Dark/),
+    expect(groupLabels()).toEqual([]);
+    expect(optionTexts()).toEqual([
+      expect.stringMatching(/^users/),
+      expect.stringMatching(/^orders/),
       expect.stringMatching(/^audit_log/),
+      expect.stringMatching(/^order_items/),
     ]);
+    // Recently used commands lead the > list.
+    type(">");
+    expect(optionTexts()[0]).toMatch(/^Theme: Dark/);
   });
 
   it("runs actions once the dialog has closed", async () => {
     let ran = 0;
     cleanups.push(actions.register("ui.toggle-inspector", () => void ran++));
     const input = renderPalette();
-    fireEvent.change(input, { target: { value: "inspector" } });
+    fireEvent.change(input, { target: { value: "> inspector" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
     expect(ran).toBe(0);
     await waitFor(() => expect(ran).toBe(1));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("closes on ⌘K and on Escape", () => {
+  it("closes on ⌘P and on Escape", () => {
     const input = renderPalette();
-    fireEvent.keyDown(input, { key: "k", code: "KeyK", ...mod });
+    press(input, "p");
     expect(usePaletteStore.getState().open).toBe(false);
 
     act(() => usePaletteStore.getState().setOpen(true));
@@ -261,14 +444,14 @@ describe("CommandPalette", () => {
     );
     act(() => usePaletteStore.getState().setOpen(true));
     const again = screen.getByRole("combobox");
-    fireEvent.change(again, { target: { value: "inspector" } });
+    fireEvent.change(again, { target: { value: "> inspector" } });
     fireEvent.keyDown(again, { key: "Enter", code: "Enter" });
     await waitFor(() => expect(focusedWhenRun).toBe(grid));
   });
 
   it("switches theme from the palette", async () => {
     const input = renderPalette();
-    fireEvent.change(input, { target: { value: "theme dark" } });
+    fireEvent.change(input, { target: { value: "> theme dark" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
     await waitFor(() => expect(useUiStore.getState().themePref).toBe("dark"));
   });
@@ -292,8 +475,33 @@ describe("CommandPalette", () => {
     const id = useTabsStore.getState().newQuery("c1");
     useTabsStore.getState().setDirty(id, true);
     renderPalette();
-    const row = screen.getByRole("option", { name: /Query 1/ });
+    type("query");
+    const row = option("Query 1", "tab");
     expect(within(row).getByLabelText("Unsaved changes")).toBeInTheDocument();
+  });
+
+  it("marks table tabs dirty for staged rows and for staged structure changes alike", () => {
+    const tabs = useTabsStore.getState();
+    const orders = tabs.openTable("c1", { schema: "public", name: "orders" });
+    const users = tabs.openTable("c1", { schema: "public", name: "users" }, "structure");
+    tabs.openTable("c1", { schema: "public", name: "audit_log" });
+    // The table tab shows its rows, but holds staged DDL from its structure view.
+    useStructureStore
+      .getState()
+      .stage(orders, () => [
+        { op: "dropColumn", table: { schema: "public", name: "orders" }, name: "note" },
+      ]);
+    stageEdits(users, 1);
+    renderPalette();
+    const dirty = (name: string) => {
+      type(name);
+      return within(option(name, "tab")).queryByLabelText("Unsaved changes") !== null;
+    };
+    expect(dirty("orders")).toBe(true);
+    expect(dirty("audit_log")).toBe(false);
+    expect(dirty("users")).toBe(true);
+    // The table rows themselves carry no dirty marker.
+    expect(within(option("users", "table")).queryByLabelText("Unsaved changes")).toBeNull();
   });
 
   it("highlights matches with a colour that stays legible on every accent and theme", () => {
@@ -308,7 +516,7 @@ describe("CommandPalette", () => {
     const tab = useTabsStore.getState().openTable("c1", { schema: "public", name: "orders" });
     stageEdits(tab, 2);
     const input = renderPalette();
-    fireEvent.change(input, { target: { value: "disconnect" } });
+    fireEvent.change(input, { target: { value: "> disconnect" } });
     expect(screen.getAllByRole("option")[0]).toHaveTextContent(/^Disconnect/);
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
     await waitFor(() => expect(useTabsStore.getState().closeRequest).not.toBeNull());
@@ -320,14 +528,14 @@ describe("CommandPalette", () => {
 
     act(() => useTabsStore.getState().cancelClose());
     act(() => usePaletteStore.getState().setOpen(true));
-    expect(groupLabels()[0]).not.toBe("Recent");
+    type(">");
     expect(screen.getAllByRole("option")[0]).not.toHaveTextContent(/^Disconnect/);
   });
 
   it("disconnects straight away when nothing is unsaved", async () => {
     useTabsStore.getState().openTable("c1", { schema: "public", name: "orders" });
     const input = renderPalette();
-    fireEvent.change(input, { target: { value: "disconnect" } });
+    fireEvent.change(input, { target: { value: "> disconnect" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
     await waitFor(() => expect(useConnectionsStore.getState().byId.c1).toBeUndefined());
     expect(useTabsStore.getState().tabs).toEqual([]);
@@ -352,6 +560,99 @@ describe("CommandPalette", () => {
     await waitFor(() => expect(screen.getByTestId(`grid-${users}`)).toHaveFocus());
   });
 
+  describe("modes", () => {
+    it("⌘K lists only the databases and schemas of the active connection", () => {
+      useTabsStore.getState().newQuery("c1");
+      const input = renderPalette(undefined, { mode: "databases", setup: withDatabases });
+      expect(input).toHaveAttribute("placeholder", "Switch database…");
+      expect(groupLabels()).toEqual(["Databases", "Schemas"]);
+      expect(optionTexts()).toEqual([
+        expect.stringMatching(/^app/),
+        expect.stringMatching(/^shop/),
+        expect.stringMatching(/^public.*default/),
+        expect.stringMatching(/^inventory/),
+      ]);
+      expect(screen.getByText("Switch")).toBeInTheDocument();
+      fireEvent.change(input, { target: { value: "inv" } });
+      expect(optionTexts()).toEqual([expect.stringMatching(/^inventory/)]);
+    });
+
+    it("switches the database of the active connection", async () => {
+      const tab = useTabsStore.getState().openTable("c1", { schema: "public", name: "orders" });
+      const spy = vi
+        .spyOn(ipc.connections, "switchDatabase")
+        .mockResolvedValue({ ...info, currentDatabase: "shop" });
+      const input = renderPalette(undefined, { mode: "databases", setup: withDatabases });
+      fireEvent.change(input, { target: { value: "shop" } });
+      fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+      await waitFor(() =>
+        expect(useConnectionsStore.getState().byId.c1!.info.currentDatabase).toBe("shop"),
+      );
+      expect(spy).toHaveBeenCalledWith("c1", "shop");
+      expect(useTabsStore.getState().tabs.some((t) => t.id === tab)).toBe(false);
+      // Switching closes every tab: it never becomes a Recent default.
+      expect(localStorage.getItem(MRU_STORAGE_KEY)).toBeNull();
+    });
+
+    it("shows another schema in the sidebar", async () => {
+      const input = renderPalette(undefined, { mode: "databases", setup: withDatabases });
+      fireEvent.change(input, { target: { value: "inventory" } });
+      fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+      await waitFor(() =>
+        expect(useConnectionsStore.getState().byId.c1!.currentSchema).toBe("inventory"),
+      );
+    });
+
+    it("⇧⌘K lists only the connections", () => {
+      useTabsStore.getState().newQuery("c1");
+      const input = renderPalette(undefined, { mode: "connections", setup: withDatabases });
+      expect(input).toHaveAttribute("placeholder", "Switch connection…");
+      expect(groupLabels()).toEqual(["Connections"]);
+      expect(optionTexts()).toEqual([
+        expect.stringMatching(/^Local PG/),
+        expect.stringMatching(/^Staging MySQL/),
+      ]);
+    });
+
+    it("leaves Recent out of the narrowed lists", () => {
+      localStorage.setItem(MRU_STORAGE_KEY, JSON.stringify(["conn:p2", "schema:p1:app:inventory"]));
+      renderPalette(undefined, { mode: "connections", setup: withDatabases });
+      expect(groupLabels()).toEqual(["Connections"]);
+      act(() => usePaletteStore.getState().toggle("databases"));
+      expect(groupLabels()).toEqual(["Databases", "Schemas"]);
+    });
+
+    it("switches modes with ⌘P / ⌘K / ⇧⌘K inside the palette and closes on the same combo", () => {
+      const input = renderPalette(undefined, { setup: withDatabases });
+      press(input, "k");
+      expect(usePaletteStore.getState()).toMatchObject({ open: true, mode: "databases" });
+      expect(screen.getByRole("combobox")).toHaveAttribute("placeholder", "Switch database…");
+      press(screen.getByRole("combobox"), "k", true);
+      expect(usePaletteStore.getState()).toMatchObject({ open: true, mode: "connections" });
+      expect(groupLabels()).toEqual(["Connections"]);
+      press(screen.getByRole("combobox"), "p");
+      expect(usePaletteStore.getState()).toMatchObject({ open: true, mode: "all" });
+      expect(groupLabels()).toEqual([]);
+      expect(optionTexts()[0]).toMatch(/^audit_log.*table$/);
+      press(screen.getByRole("combobox"), "p");
+      expect(usePaletteStore.getState().open).toBe(false);
+    });
+
+    it("lists the connections on ⌘K without a connection", () => {
+      const input = renderPalette();
+      act(() => useConnectionsStore.getState().remove("c1"));
+      press(input, "k");
+      expect(usePaletteStore.getState()).toMatchObject({ open: true, mode: "connections" });
+    });
+
+    it("shows a placeholder while the databases load", () => {
+      vi.spyOn(ipc.schema, "databases").mockReturnValue(new Promise(() => {}));
+      renderPalette(undefined, { mode: "databases" });
+      expect(groupLabels()).toEqual(["Databases"]);
+      expect(screen.getByText("Loading databases…")).toBeInTheDocument();
+    });
+  });
+
   describe("reopened during the close animation", () => {
     it("runs the earlier choice at once instead of behind the reopened palette", async () => {
       const endAnimations = simulateDialogAnimations();
@@ -365,7 +666,7 @@ describe("CommandPalette", () => {
         actions.register("ui.toggle-inspector", () => void ran.push(document.activeElement)),
       );
       const input = renderPalette();
-      fireEvent.change(input, { target: { value: "inspector" } });
+      fireEvent.change(input, { target: { value: "> inspector" } });
       fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
       expect(usePaletteStore.getState().open).toBe(false);
       // Still animating out: the content is mounted and keeps focus.
@@ -373,7 +674,7 @@ describe("CommandPalette", () => {
         "data-state",
         "closed",
       );
-      fireEvent.keyDown(input, { key: "k", code: "KeyK", ...mod });
+      press(input, "p");
       expect(usePaletteStore.getState().open).toBe(true);
       // Ran right away, from where focus was before the palette opened.
       expect(ran).toEqual([grid]);
@@ -391,11 +692,11 @@ describe("CommandPalette", () => {
         actions.register("ui.toggle-sidebar", () => void ran.push("sidebar")),
       );
       const input = renderPalette();
-      fireEvent.change(input, { target: { value: "inspector" } });
+      fireEvent.change(input, { target: { value: "> inspector" } });
       fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
-      fireEvent.keyDown(input, { key: "k", code: "KeyK", ...mod });
+      press(input, "p");
       const again = screen.getByRole("combobox");
-      fireEvent.change(again, { target: { value: "sidebar" } });
+      fireEvent.change(again, { target: { value: "> sidebar" } });
       fireEvent.keyDown(again, { key: "Enter", code: "Enter" });
       endAnimations();
       await waitFor(() => expect(ran).toEqual(["inspector", "sidebar"]));

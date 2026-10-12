@@ -76,7 +76,7 @@ export function ChoiceSelect({
         }
       }}
       onBlur={onCancel}
-      className="border-brand bg-surface h-full w-full border-2 px-1.5 font-mono text-[12.5px] outline-none"
+      className="border-brand bg-surface h-full w-full border-2 px-1.5 text-[12px] outline-none"
     >
       {initial === null && (
         <option value="" disabled>

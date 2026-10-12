@@ -1,8 +1,10 @@
 import type { Query, QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
+import { pendingCount } from "@/features/staging/model";
 import { tableKey, type TableRef } from "@/lib/ipc";
-import { unsavedCount, useTabsStore } from "@/stores/tabs";
+import { useTableTabsStore } from "@/stores/tableTabs";
+import { useTabsStore } from "@/stores/tabs";
 
 export const ddlKey = (connectionId: string, table: TableRef) =>
   ["tableDdl", connectionId, table.schema ?? "", table.name] as const;
@@ -22,15 +24,20 @@ export function invalidateSchema(qc: QueryClient, connectionId: string, table?: 
 }
 
 /**
- * Tables of the connection whose table tab holds staged (uncommitted) row edits. Staged edits
- * name their columns by position in the page they were made on: reloading that page after a
- * schema change (a dropped or added column) would move them onto other columns, so these pages
- * are left as they are until the user commits or discards the edits (then reloads with ⌘R).
+ * Tables of the connection whose tab holds staged (uncommitted) row edits, whichever view (data or
+ * structure) the tab shows: the row staging stays while the structure view is up. Staged DDL does
+ * not count here. Staged edits name their columns by position in the page they were made on:
+ * reloading that page after a schema change (a dropped or added column) would move them onto
+ * other columns, so these pages are left as they are until the user commits or discards the edits
+ * (then reloads with ⌘R).
  */
 export function tablesWithPendingEdits(connectionId: string): TableRef[] {
   const out: TableRef[] = [];
+  const slices = useTableTabsStore.getState().slices;
   for (const t of useTabsStore.getState().tabs) {
-    if (t.kind !== "table" || t.connectionId !== connectionId || unsavedCount(t) === 0) continue;
+    if (t.kind === "query" || t.connectionId !== connectionId) continue;
+    const slice = slices[t.id];
+    if (!slice || pendingCount(slice.staging) === 0) continue;
     if (!out.some((r) => tableKey(r) === tableKey(t.table))) out.push(t.table);
   }
   return out;

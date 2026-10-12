@@ -51,3 +51,17 @@ export function runStatusText(s: RunSummary): string {
   if (s.totalMs !== null) parts.push(formatDuration(s.totalMs));
   return parts.join(" · ");
 }
+
+/**
+ * The editor bar's run summary: "3 statements · 200 rows · 45 ms", "1 statement · 3 rows affected
+ * · 4 ms", "2 statements · 1 error · 9 ms". `rows` is the row count of the result set the results
+ * pane shows (null when it shows none: then the rows the run changed, if any).
+ */
+export function runSummaryText(s: RunSummary, rows: number | null): string {
+  const parts = [s.cancelled ? "Cancelled" : plural(s.statements, "statement")];
+  if (rows !== null) parts.push(rowsLabel(rows));
+  else if (s.affected > 0) parts.push(`${plural(s.affected, "row")} affected`);
+  if (s.errors > 0) parts.push(plural(s.errors, "error"));
+  if (s.totalMs !== null) parts.push(formatDuration(s.totalMs));
+  return parts.join(" · ");
+}

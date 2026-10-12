@@ -70,6 +70,42 @@ describe("buildTreeRows", () => {
     ]);
   });
 
+  it("lists recently opened tables first, most recent first, above the pinned ones", () => {
+    const pinned = new Set(["public.posts"]);
+    const recent = ["public.user_stats", "x.gone", "public.posts"];
+    const rows = buildTreeRows(tables, "", pinned, recent);
+    expect(keys(rows)).toEqual([
+      "h:Recent",
+      "r:public.user_stats",
+      "r:public.posts",
+      "h:Pinned",
+      "p:public.posts",
+      "h:Tables",
+      "t:public.users",
+      "t:public.posts",
+      "t:inventory.orders",
+      "h:Views",
+      "t:public.user_stats",
+    ]);
+    expect(rows[0]).toMatchObject({ type: "header", label: "Recent", count: 2 });
+    expect(new Set(keys(rows)).size).toBe(rows.length);
+  });
+
+  it("hides the recent section while searching or when none of its tables are listed", () => {
+    const recent = ["public.users"];
+    expect(keys(buildTreeRows(tables, "user", undefined, recent))).toEqual([
+      "h:Tables",
+      "t:public.users",
+      "h:Views",
+      "t:public.user_stats",
+    ]);
+    expect(keys(buildTreeRows(tables, "  ", undefined, recent)).slice(0, 2)).toEqual([
+      "h:Recent",
+      "r:public.users",
+    ]);
+    expect(keys(buildTreeRows(tables, "", undefined, ["x.gone"]))[0]).toBe("h:Tables");
+  });
+
   it("keeps the pinned section apart from same-named tables of another schema", () => {
     const rows = buildTreeRows(
       [table("t", "table", "a"), table("t", "table", "b")],
@@ -77,5 +113,28 @@ describe("buildTreeRows", () => {
       new Set(["b.t"]),
     );
     expect(keys(rows)).toEqual(["h:Pinned", "p:b.t", "h:Tables", "t:a.t", "t:b.t"]);
+  });
+
+  it("keeps a collapsed section's header and count but leaves its rows out", () => {
+    const pinned = new Set(["public.posts"]);
+    const recent = ["public.users"];
+    const rows = buildTreeRows(tables, "", pinned, recent, new Set(["Recent", "Tables"]));
+    expect(keys(rows)).toEqual([
+      "h:Recent",
+      "h:Pinned",
+      "p:public.posts",
+      "h:Tables",
+      "h:Views",
+      "t:public.user_stats",
+    ]);
+    expect(rows[0]).toMatchObject({ label: "Recent", count: 1, collapsed: true });
+    expect(rows[1]).toMatchObject({ label: "Pinned", count: 1, collapsed: false });
+    expect(rows[3]).toMatchObject({ label: "Tables", count: 3, collapsed: true });
+    // The search still counts the matches of a collapsed section.
+    expect(buildTreeRows(tables, "user", undefined, undefined, new Set(["Views"]))).toEqual([
+      { type: "header", key: "h:Tables", label: "Tables", count: 1, collapsed: false },
+      { type: "table", key: "t:public.users", table: tables[0] },
+      { type: "header", key: "h:Views", label: "Views", count: 1, collapsed: true },
+    ]);
   });
 });

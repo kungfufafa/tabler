@@ -28,6 +28,23 @@ const stored = new Map<string, Stored>();
 const views = new Map<string, EditorView>();
 /** Text of the last save / open, to decide whether the tab is dirty. */
 const savedDocs = new Map<string, Text>();
+/** Who wants to hear about a tab's selection / document changes (the editor bar's position). */
+const listeners = new Map<string, Set<() => void>>();
+
+/** Calls `fn` whenever the tab's selection or document changes (or its view mounts). */
+export function subscribeEditor(tabId: string, fn: () => void): () => void {
+  let set = listeners.get(tabId);
+  if (!set) listeners.set(tabId, (set = new Set()));
+  set.add(fn);
+  return () => {
+    set.delete(fn);
+    if (set.size === 0 && listeners.get(tabId) === set) listeners.delete(tabId);
+  };
+}
+
+function notify(tabId: string): void {
+  listeners.get(tabId)?.forEach((fn) => fn());
+}
 
 /** Recomputes the tab's dirty flag from its document. */
 export function syncDirty(tabId: string, doc: Text): void {
@@ -37,6 +54,7 @@ export function syncDirty(tabId: string, doc: Text): void {
 
 function onUpdate(tabId: string) {
   return (u: ViewUpdate) => {
+    if (u.docChanged || u.selectionSet) notify(tabId);
     if (!u.docChanged) return;
     recordDocChanges(tabId, u.changes.desc);
     syncDirty(tabId, u.state.doc);
@@ -88,6 +106,7 @@ export function stashEditorState(
 
 export function registerView(tabId: string, view: EditorView): () => void {
   views.set(tabId, view);
+  notify(tabId);
   return () => {
     if (views.get(tabId) === view) views.delete(tabId);
   };
@@ -126,6 +145,7 @@ export function applyToEditor(
   if (!spec) return false;
   const tr = entry.state.update(spec);
   entry.state = tr.state;
+  if (tr.docChanged || tr.selection) notify(tabId);
   if (tr.docChanged) {
     recordDocChanges(tabId, tr.changes.desc);
     syncDirty(tabId, tr.state.doc);
@@ -144,6 +164,7 @@ export function markSaved(tabId: string, text: string | Text): void {
 export function seedEditor(tabId: string, doc: string, language?: LanguageConfig): void {
   stored.set(tabId, { state: createEditorState(tabId, doc, language), scroll: null });
   markSaved(tabId, doc);
+  notify(tabId);
 }
 
 /** Forgets a tab's editor (it was closed for good). */

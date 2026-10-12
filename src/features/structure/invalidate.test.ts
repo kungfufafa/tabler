@@ -3,13 +3,25 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { schemaKeys, useCurrentSchema, useTables } from "@/features/sidebar/useSchemaTree";
+import { emptyStaging, insertRow } from "@/features/staging/model";
 import { rowKeys } from "@/features/table-tab/useTableRows";
 import { ipc, type SchemaInfo, type TableRef, type TableSummary } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
-import { ddlKey, invalidateConnectionSchema, resetDatabaseCaches } from "./invalidate";
+import { useTableTabsStore } from "@/stores/tableTabs";
+import { useTabsStore } from "@/stores/tabs";
+import {
+  ddlKey,
+  invalidateConnectionSchema,
+  resetDatabaseCaches,
+  tablesWithPendingEdits,
+} from "./invalidate";
+import { useStructureStore } from "./store";
 
 afterEach(() => {
   vi.restoreAllMocks();
+  useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
+  useTableTabsStore.setState({ slices: {} });
+  useStructureStore.setState({ byTab: {} });
 });
 
 const users: TableRef = { schema: "public", name: "users" };
@@ -37,6 +49,43 @@ function seeded() {
     qc.getQueryCache().find({ queryKey: key, exact: true });
   return { qc, keys, other, state };
 }
+
+/** Stages one inserted row on a table's tab. */
+function stageRow(tabId: string) {
+  useTableTabsStore.getState().update(tabId, { staging: insertRow(emptyStaging(), "new:0", []) });
+}
+
+describe("tablesWithPendingEdits", () => {
+  const posts: TableRef = { schema: "public", name: "posts" };
+  const tags: TableRef = { schema: "public", name: "tags" };
+
+  it("lists tables whose tab holds staged rows, in either view, but not staged DDL alone", () => {
+    const s = useTabsStore.getState();
+    const a = s.openTable("c1", users);
+    const b = s.openTable("c1", posts);
+    const c = s.openTable("c1", tags);
+    const other = s.openTable("c2", users);
+    stageRow(a);
+    stageRow(b);
+    stageRow(other);
+    // The structure view keeps the rows staged in the data view.
+    s.setView(b, "structure");
+    // Staged DDL does not hold the table's rows.
+    useStructureStore.getState().stage(c, () => [{ op: "rawSql", sql: "x" }]);
+    expect(tablesWithPendingEdits("c1")).toEqual([users, posts]);
+    expect(tablesWithPendingEdits("c2")).toEqual([users]);
+  });
+
+  it("keeps the held table's rows when invalidating the connection's schema", () => {
+    const { qc, keys, state } = seeded();
+    const a = useTabsStore.getState().openTable("c1", users, "structure");
+    stageRow(a);
+    expect(invalidateConnectionSchema(qc, "c1")).toEqual([users]);
+    expect(state(keys.rows)?.state.isInvalidated).toBe(false);
+    expect(state(keys.meta)?.state.isInvalidated).toBe(false);
+    expect(state(keys.tables)?.state.isInvalidated).toBe(true);
+  });
+});
 
 describe("invalidateConnectionSchema", () => {
   it("marks every schema-derived query of the connection stale, and only those", () => {

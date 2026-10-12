@@ -9,6 +9,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { formatCombo } from "@/lib/keys/combo";
 import { cn } from "@/lib/utils";
 import type { PreviewState } from "./previewState";
 
@@ -104,7 +105,7 @@ export function PreviewSqlSheet({
           >
             {state.applying && <Loader2 className="animate-spin" />}
             Apply
-            <kbd className="ml-1 text-[10px] opacity-70">⌘↩</kbd>
+            <kbd className="ml-1 text-[10px] opacity-70">{formatCombo("Mod+Enter")}</kbd>
           </Button>
         </SheetFooter>
       </SheetContent>

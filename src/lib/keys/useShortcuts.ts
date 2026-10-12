@@ -13,13 +13,23 @@ export function resolveScope(target: Element | null): Scope {
   return scope ?? "global";
 }
 
+/** Text fields, selects and contenteditable regions: where a plain key types instead. */
+function isTextEntry(el: Element | null): boolean {
+  if (!el) return false;
+  if (el instanceof HTMLElement && el.isContentEditable) return true;
+  return el.matches("input, textarea, select");
+}
+
 /** One capture-phase keydown listener for the whole app; dispatches into the action registry. */
 export function KeyboardProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       const combo = comboFromEvent(e);
-      const scope = resolveScope(e.target instanceof Element ? e.target : document.activeElement);
+      const target = e.target instanceof Element ? e.target : document.activeElement;
+      // Shortcuts without a modifier (Space for the row detail…) never steal typing.
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && isTextEntry(target)) return;
+      const scope = resolveScope(target);
       const def = findShortcut(combo, scope);
       if (!def) return;
       if (!actions.has(def.id)) {

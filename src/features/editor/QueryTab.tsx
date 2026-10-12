@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
+import { useGroupRef, usePanelRef, type Layout } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { actions, useAction } from "@/features/palette/actions";
 import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
@@ -7,7 +8,7 @@ import { comboFromEvent } from "@/lib/keys/combo";
 import { KEYMAP } from "@/lib/keys/keymap";
 import { resolveScope } from "@/lib/keys/useShortcuts";
 import { useConnectionsStore } from "@/stores/connections";
-import { updateQueryTab, useQueryTabBusy, useQueryTabField } from "@/stores/queryTabs";
+import { getQueryTab, updateQueryTab, useQueryTabBusy, useQueryTabField } from "@/stores/queryTabs";
 import { useTabsStore, type Tab } from "@/stores/tabs";
 import {
   cancelQuery,
@@ -16,17 +17,19 @@ import {
   exportQuery,
   formatQuery,
   insertSql,
+  minifyQuery,
   openQueryFile,
   runQuery,
   saveQuery,
   toggleHistory,
+  toggleResults,
   type ControllerHooks,
 } from "./controller";
-import { getEditorState, syncDirty } from "./editorStates";
+import { focusEditor, getEditorState, syncDirty } from "./editorStates";
 import { HISTORY_KEY } from "./historyGroups";
+import { EditorBar } from "./EditorBar";
 import { HistorySheet } from "./HistorySheet";
 import { installQueryTabLifecycle } from "./lifecycle";
-import { QueryToolbar, type ToolbarHandlers } from "./QueryToolbar";
 import { ResultsPane } from "./ResultsPane";
 import { SqlEditor } from "./SqlEditor";
 
@@ -35,7 +38,7 @@ installQueryTabLifecycle();
 /**
  * Keys the app-wide shortcut listener leaves alone inside a query tab (it runs first, in the window
  * capture phase, and stops every event it handles, so nothing here dispatches twice):
- * - ⌘R. `view.refresh` is not an editor shortcut, so on the toolbar, the result tabs or the
+ * - ⌘R. `view.refresh` is not an editor shortcut, so on the editor bar, the result tabs or the
  *   history sheet nothing would stop the webview from reloading and losing every buffer.
  * - The query shortcuts while the result grid has focus: its "grid" scope has no query bindings,
  *   yet ⌘↩ / ⌘. / ⌘S… should keep working for the tab the grid belongs to.
@@ -55,7 +58,17 @@ function onQueryTabKeyDownCapture(e: KeyboardEvent<HTMLElement>): void {
   void actions.run(def.id);
 }
 
-/** The SQL editor tab: toolbar, CodeMirror editor, results / messages / plan, history. */
+/** Editor / results split (percentages) until the user drags it. */
+const DEFAULT_LAYOUT: Layout = { editor: 55, results: 45 };
+const COLLAPSED_LAYOUT: Layout = { editor: 100, results: 0 };
+
+const isCollapsedLayout = (layout: Layout) => (layout.results ?? 100) < 0.01;
+
+/**
+ * The SQL editor tab, laid out like TablePlus: the CodeMirror editor right under the tab bar, the
+ * editor bar under it (cursor position, run summary, row limit, Beautify, Explain, Run), then the
+ * results / messages / plan, which collapse (⌃`) to leave the editor and its bar.
+ */
 export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
   const tabId = tab.id;
   const qc = useQueryClient();
@@ -68,6 +81,10 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
   const busy = useQueryTabBusy(tabId);
   const historyOpen = useQueryTabField(tabId, "historyOpen");
   const layout = useQueryTabField(tabId, "layout");
+  const resultsCollapsed = useQueryTabField(tabId, "resultsCollapsed");
+  const groupRef = useGroupRef();
+  const resultsRef = usePanelRef();
+  const resultsElement = useRef<HTMLDivElement>(null);
 
   const handlers = useMemo(() => {
     const hooks: ControllerHooks = {
@@ -83,6 +100,8 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
       explain: () => explainQuery(tabId, "plan", hooks),
       analyze: () => explainQuery(tabId, "analyze", hooks),
       format: () => formatQuery(tabId),
+      minify: () => minifyQuery(tabId),
+      toggleResults: () => toggleResults(tabId),
       history: () => toggleHistory(tabId),
       open: () => openQueryFile(tabId),
       save: () => void saveQuery(tabId),
@@ -99,6 +118,8 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
   useAction("query.cancel", isActive && busy ? handlers.cancel : null);
   useAction("query.explain", isActive ? handlers.explain : null);
   useAction("query.format", isActive ? handlers.format : null);
+  useAction("query.minify", isActive ? handlers.minify : null);
+  useAction("query.toggle-results", isActive ? handlers.toggleResults : null);
   useAction("query.history", isActive ? handlers.history : null);
   useAction("query.save", isActive ? handlers.save : null);
   useAction("query.open", isActive ? handlers.open : null);
@@ -111,7 +132,22 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
     if (state) syncDirty(tabId, state.doc);
   }, [tabId]);
 
-  const toolbar: ToolbarHandlers = handlers;
+  // The store says whether the results show (⌃`, the toolbar, a new run); the panel follows. The
+  // split it reopens to is the last one with the results showing.
+  useEffect(() => {
+    const panel = resultsRef.current;
+    if (!panel) return;
+    try {
+      if (resultsCollapsed) {
+        if (resultsElement.current?.contains(document.activeElement)) focusEditor(tabId);
+        panel.collapse();
+      } else if (panel.isCollapsed()) {
+        groupRef.current?.setLayout(getQueryTab(tabId).layout ?? DEFAULT_LAYOUT);
+      }
+    } catch {
+      // Not laid out yet (no size): the group starts from `defaultLayout`, which already agrees.
+    }
+  }, [tabId, resultsCollapsed, groupRef, resultsRef]);
 
   return (
     <div
@@ -119,23 +155,46 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
       className="bg-surface flex h-full min-h-0 flex-col"
       onKeyDownCapture={onQueryTabKeyDownCapture}
     >
-      <QueryToolbar tabId={tabId} connectionId={tab.connectionId} handlers={toolbar} />
       <ResizablePanelGroup
         orientation="vertical"
         className="min-h-0 flex-1"
-        defaultLayout={layout ?? undefined}
-        onLayoutChanged={(next) => updateQueryTab(tabId, { layout: next })}
+        groupRef={groupRef}
+        defaultLayout={resultsCollapsed ? COLLAPSED_LAYOUT : (layout ?? undefined)}
+        onLayoutChanged={(next) =>
+          // Collapsed (⌃`, or dragged shut): keep the split to reopen to.
+          updateQueryTab(
+            tabId,
+            isCollapsedLayout(next)
+              ? { resultsCollapsed: true }
+              : { layout: next, resultsCollapsed: false },
+          )
+        }
       >
-        <ResizablePanel id="editor" defaultSize="55%" minSize={64}>
-          <SqlEditor
-            tabId={tabId}
-            connectionId={tab.connectionId}
-            dialect={dialect}
-            currentDatabase={currentDatabase}
-          />
+        <ResizablePanel id="editor" defaultSize={`${DEFAULT_LAYOUT.editor}%`} minSize={96}>
+          {/* The bar stays with the editor: it ends up at the bottom when the results collapse. */}
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="min-h-0 flex-1">
+              <SqlEditor
+                tabId={tabId}
+                connectionId={tab.connectionId}
+                dialect={dialect}
+                currentDatabase={currentDatabase}
+              />
+            </div>
+            <EditorBar tabId={tabId} handlers={handlers} />
+          </div>
         </ResizablePanel>
         <ResizableHandle />
-        <ResizablePanel id="results" defaultSize="45%" minSize={64}>
+        <ResizablePanel
+          id="results"
+          defaultSize={`${DEFAULT_LAYOUT.results}%`}
+          minSize={64}
+          collapsible
+          panelRef={resultsRef}
+          elementRef={resultsElement}
+          // A collapsed pane keeps its results, out of the tab order.
+          inert={resultsCollapsed}
+        >
           <ResultsPane tabId={tabId} dialect={dialect} />
         </ResizablePanel>
       </ResizablePanelGroup>

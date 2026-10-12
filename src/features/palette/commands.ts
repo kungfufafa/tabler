@@ -15,10 +15,11 @@ import { closeConnectionTabs } from "@/features/connections/closeGuard";
 import { openConnectionDialog } from "@/features/connections/store";
 import { useConnect, useDisconnect } from "@/features/connections/useConnections";
 import { openSettings } from "@/features/settings/store";
+import { switchDatabase } from "@/features/sidebar/switchDatabase";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
 import { ipc, type ConnectionProfile, type TableRef } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
-import { useTabsStore, type Tab } from "@/stores/tabs";
+import { useTabsStore, type OpenTableOptions, type Tab } from "@/stores/tabs";
 import { useUiStore, type ThemePref } from "@/stores/ui";
 import { actions, type ActionId } from "./actions";
 import type { PaletteItem } from "./items";
@@ -26,11 +27,19 @@ import { usePaletteStore } from "./store";
 
 /** Side effects the palette items trigger. Built once by the always-mounted palette shell. */
 export interface PaletteCommands {
-  openTable: (connectionId: string, table: TableRef, kind: "table" | "structure") => void;
+  /** Shows the table's rows: in the connection's preview tab with `preview`, else a tab of its own. */
+  openTable: (connectionId: string, table: TableRef, options?: OpenTableOptions) => void;
   activateTab: (tab: Tab) => void;
   /** Resolves once the connect settled (the hook reports failures itself). */
   connect: (profile: ConnectionProfile) => Promise<void>;
   switchConnection: (connectionId: string) => void;
+  /** Shows another schema (PostgreSQL) / attached database (SQLite) in the sidebar. */
+  selectSchema: (connectionId: string, schema: string) => void;
+  /**
+   * Points the connection at another database (asks first when its tabs hold unsaved work).
+   * Resolves once the switch settled; failures are reported as a toast.
+   */
+  switchDatabase: (connectionId: string, database: string) => Promise<void>;
   /** Resolves true when the connection was disconnected, false when the user kept it. */
   disconnect: (connectionId: string) => Promise<boolean>;
   reloadSchema: (connectionId: string) => Promise<void>;
@@ -96,10 +105,10 @@ export function usePaletteCommands(): PaletteCommands {
   const { mutate: disconnect } = useDisconnect();
   return useMemo<PaletteCommands>(
     () => ({
-      openTable: (connectionId, table, kind) => {
+      openTable: (connectionId, table, options) => {
         useTabsStore
           .getState()
-          .openTable(connectionId, { schema: table.schema, name: table.name }, kind);
+          .openTable(connectionId, { schema: table.schema, name: table.name }, "table", options);
         showWorkspace();
       },
       activateTab: (tab) => {
@@ -127,6 +136,13 @@ export function usePaletteCommands(): PaletteCommands {
       switchConnection: (connectionId) => {
         useConnectionsStore.getState().setActive(connectionId);
         showWorkspace();
+      },
+      selectSchema: (connectionId, schema) => {
+        useConnectionsStore.getState().setCurrentSchema(connectionId, schema);
+        showWorkspace();
+      },
+      switchDatabase: async (connectionId, database) => {
+        if (await switchDatabase(qc, connectionId, database)) showWorkspace();
       },
       disconnect: (connectionId) => disconnectGuarded(connectionId, disconnect),
       reloadSchema: async (connectionId) => {

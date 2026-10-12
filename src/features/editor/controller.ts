@@ -15,6 +15,7 @@ import { resultTable } from "@/features/export/resultTable";
 import { useConnectionsStore } from "@/stores/connections";
 import { getPrefs } from "@/stores/prefs";
 import {
+  DEFAULT_ROW_LIMIT,
   getQueryTab,
   isBusy,
   updateQueryTab,
@@ -36,11 +37,25 @@ import {
   normalizeError,
   type RunState,
 } from "./runModel";
-import { splitStatements, statementAt, type SqlDialect } from "./scanner";
+import { minifySql, splitStatements, statementAt, type SqlDialect } from "./scanner";
 import { changesSchema } from "./schemaChange";
 
 /** Row cap per statement (matches the backend default). */
-export const MAX_ROWS = 10_000;
+export const MAX_ROWS = DEFAULT_ROW_LIMIT;
+
+/**
+ * The cap sent for "No limit": the backend clamps `maxRows` to this (`MAX_ROWS_LIMIT` in
+ * `commands/query.rs`), and 0 would mean its default (10,000), not "unlimited".
+ */
+export const NO_LIMIT_MAX_ROWS = 1_000_000;
+
+/** The row limits the editor bar offers (null = no limit). */
+export const ROW_LIMITS: readonly (number | null)[] = [null, 100, 1_000, 10_000];
+
+/** `maxRows` of a run for the tab's row limit. */
+export function maxRowsFor(limit: number | null): number {
+  return limit === null ? NO_LIMIT_MAX_ROWS : Math.max(1, Math.min(limit, NO_LIMIT_MAX_ROWS));
+}
 
 export interface ControllerHooks {
   /** A run / explain finished (the backend wrote history rows). */
@@ -162,7 +177,8 @@ export async function runQuery(
     scheduled: false,
   };
   liveRuns.set(tabId, live);
-  updateQueryTab(tabId, { run: live.state, pane: "messages" });
+  // A collapsed result pane (⌃`) opens again for the new run.
+  updateQueryTab(tabId, { run: live.state, pane: "messages", resultsCollapsed: false });
 
   const alive = () => getQueryTab(tabId).run?.id === queryId;
   const onEvent = (e: QueryEvent) => {
@@ -178,7 +194,7 @@ export async function runQuery(
       info.connectionId,
       queryId,
       sub.sql,
-      { maxRows: MAX_ROWS },
+      { maxRows: maxRowsFor(before.rowLimit) },
       onEvent,
     );
     ran = results;
@@ -249,6 +265,7 @@ export async function explainQuery(
   const startedAt = Date.now();
   updateQueryTab(tabId, {
     pane: "plan",
+    resultsCollapsed: false,
     plan: {
       id,
       mode,
@@ -285,41 +302,67 @@ export async function explainQuery(
 
 const FORMAT_LANGUAGE = { postgres: "postgresql", mysql: "mysql", sqlite: "sqlite" } as const;
 
-/** Formats the selection (or the whole document) with sql-formatter. */
-export async function formatQuery(tabId: string): Promise<void> {
+/** Where the cursor lands when `from..to` is replaced by `length` characters. */
+function cursorAfterReplace(head: number, from: number, to: number, length: number): number {
+  if (head <= from) return head;
+  if (head >= to) return head + length - (to - from);
+  return from + Math.min(head - from, length);
+}
+
+/**
+ * Beautify / Uglify: rewrites the selection, or else the statement under the cursor (terminator
+ * excluded), like TablePlus. Nothing happens when the document changed while `rewrite` ran.
+ */
+async function rewriteQuery(
+  tabId: string,
+  rewrite: (sql: string, dialect: SqlDialect) => string | Promise<string>,
+): Promise<void> {
   const info = queryTab(tabId);
   const state = getEditorState(tabId);
   if (!info || !state) return;
-  const sel = state.selection.main;
-  const from = sel.empty ? 0 : sel.from;
-  const to = sel.empty ? state.doc.length : sel.to;
-  const text = state.sliceDoc(from, to);
-  if (text.trim() === "") return;
+  const sub = resolveTarget(state, "current", info.dialect);
+  if (!sub || sub.sql.trim() === "") return;
+  const out = await rewrite(sub.sql, info.dialect);
+  if (out === sub.sql) return;
+  const from = sub.baseOffset;
+  const to = from + sub.sql.length;
+  const applied = applyToEditor(tabId, (s) => {
+    if (s.doc !== state.doc) return null;
+    const sel = s.selection.main;
+    return {
+      changes: { from, to, insert: out },
+      selection: sel.empty
+        ? EditorSelection.cursor(cursorAfterReplace(sel.head, from, to, out.length))
+        : EditorSelection.range(from, from + out.length),
+      scrollIntoView: true,
+      userEvent: "input.format",
+    };
+  });
+  if (applied) focusEditor(tabId);
+}
+
+/** "Beautify SQL": formats the selection (or the statement under the cursor) with sql-formatter. */
+export async function formatQuery(tabId: string): Promise<void> {
   const prefs = getPrefs();
-  let out: string;
   try {
-    const { format } = await import("sql-formatter");
-    out = format(text, {
-      language: FORMAT_LANGUAGE[info.dialect],
-      keywordCase: prefs.editorUppercaseKeywords ? "upper" : "lower",
-      tabWidth: prefs.editorTabSize,
+    await rewriteQuery(tabId, async (sql, dialect) => {
+      const { format } = await import("sql-formatter");
+      return format(sql, {
+        language: FORMAT_LANGUAGE[dialect],
+        keywordCase: prefs.editorUppercaseKeywords ? "upper" : "lower",
+        tabWidth: prefs.editorTabSize,
+      });
     });
   } catch (e) {
     toast.error("Could not format SQL", {
       description: e instanceof Error ? e.message.split("\n")[0] : String(e),
     });
-    return;
   }
-  if (out === text) return;
-  applyToEditor(tabId, () => ({
-    changes: { from, to, insert: out },
-    selection: sel.empty
-      ? EditorSelection.cursor(Math.min(sel.head, out.length))
-      : EditorSelection.range(from, from + out.length),
-    scrollIntoView: true,
-    userEvent: "input.format",
-  }));
-  focusEditor(tabId);
+}
+
+/** "Uglify SQL": puts the selection (or the statement under the cursor) on one line. */
+export function minifyQuery(tabId: string): Promise<void> {
+  return rewriteQuery(tabId, minifySql);
 }
 
 /** Inserts `sql` at the cursor on its own line; with `run`, selects it and runs it. */
@@ -487,6 +530,13 @@ export function exportQuery(tabId: string): void {
     connectionId: info.connectionId,
     source: { kind: "sql", sql: sub.sql.slice(only.start, only.end) },
   });
+}
+
+/** Collapses / expands the result pane below the editor (⌃`); `show` forces one way. */
+export function toggleResults(tabId: string, show?: boolean): void {
+  updateQueryTab(tabId, (s) => ({
+    resultsCollapsed: show === undefined ? !s.resultsCollapsed : !show,
+  }));
 }
 
 /** Opens / closes the history sheet. */

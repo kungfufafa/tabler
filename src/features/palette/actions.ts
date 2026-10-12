@@ -10,33 +10,57 @@ export type ActionId =
   | "tab.next"
   | "tab.prev"
   | TabGoto
+  /** Open Anything (⌘P): tables, tabs, schemas, databases, connections and actions. */
   | "palette.open"
+  /** The palette narrowed to the databases (and schemas) of the active connection (⌘K). */
+  | "palette.databases"
+  /** The palette narrowed to the saved connections (⇧⌘K). */
+  | "palette.connections"
   | "settings.open"
   | "ui.toggle-sidebar"
   | "ui.toggle-inspector"
+  | "ui.toggle-console"
   | "ui.launcher"
   | "sidebar.focus-search"
   | "view.refresh"
+  /** Table tabs: show the rows (⌃⌘[) or the structure (⌃⌘]) in the same tab. */
+  | "view.data"
+  | "view.structure"
+  | "connection.reconnect"
+  /** Shows the welcome screen with the new-connection form (⌘N). */
+  | "connection.new"
   | "grid.commit"
-  /** Always opens the Preview SQL sheet, whatever "Confirm before commit" says (not in KEYMAP). */
+  /** Always opens the Preview SQL sheet, whatever "Confirm before commit" says. */
   | "grid.preview"
   | "grid.discard"
   | "grid.filter"
+  /** Opens the toolbar's column visibility menu. */
+  | "grid.columns"
   | "grid.new-row"
   | "grid.delete-rows"
   | "grid.duplicate-row"
   | "grid.set-null"
+  | "grid.set-empty"
   | "grid.set-default"
   | "grid.open-fk"
   | "grid.undo"
+  | "grid.redo"
+  /** Shows / hides the row detail panel (the inspector on its Row view). */
+  | "grid.toggle-detail"
   | "grid.copy"
   | "grid.copy-as"
   | "grid.paste"
+  /** Filter bar: apply every checked filter, duplicate / remove the focused one. */
+  | "filter.apply"
+  | "filter.duplicate"
+  | "filter.remove"
   | "query.run"
   | "query.run-current"
   | "query.cancel"
   | "query.explain"
   | "query.format"
+  | "query.minify"
+  | "query.toggle-results"
   | "query.history"
   | "query.save"
   | "query.open"

@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { effectiveOrder, fitWidth, hideColumn, idAfter, moveColumn, showAll } from "./columnState";
 import {
   EMPTY_COLUMN_STATE,
+  gutterWidth,
   layoutColumns,
   MAX_COL_W,
   MIN_COL_W,
+  MIN_GUTTER_W,
   visibleColumns,
   type ColumnState,
   type GridColumn,
@@ -88,5 +90,13 @@ describe("column state helpers", () => {
     expect(fitWidth({ name: "id" }, ["x".repeat(20)])).toBe(20 * 7.5 + 24);
     expect(fitWidth({ name: "" }, [])).toBe(MIN_COL_W);
     expect(fitWidth({ name: "n" }, ["x".repeat(10_000)])).toBe(MAX_COL_W);
+  });
+
+  it("gutterWidth fits the largest row number, never narrower than three digits", () => {
+    expect(gutterWidth(0)).toBe(MIN_GUTTER_W);
+    expect(gutterWidth(99)).toBe(MIN_GUTTER_W);
+    expect(gutterWidth(999)).toBe(35);
+    expect(gutterWidth(1000)).toBe(42);
+    expect(gutterWidth(123_456)).toBe(56);
   });
 });

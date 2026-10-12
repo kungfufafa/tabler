@@ -18,11 +18,19 @@ export function useTableMeta(connectionId: string, table: TableRef) {
   });
 }
 
+/**
+ * One page of rows. `hold`: the page carries staged edits, which name their columns by position in
+ * it; it is then never refetched behind the user's back (remounting after switching to the
+ * structure view, window focus, reconnect) nor garbage-collected, so a schema change cannot move
+ * the edits onto other columns. Changing the request (paging, sorting, filtering, ⌘R) still goes
+ * through the pending-edits guard.
+ */
 export function useTableRows(
   connectionId: string,
   table: TableRef,
   req: Omit<BrowseRequest, "table"> | null,
   token: number,
+  hold = false,
 ) {
   return useQuery({
     queryKey: rowKeys.page(
@@ -34,7 +42,11 @@ export function useTableRows(
     queryFn: () => ipc.browse.rows(connectionId, { table, ...req! }),
     enabled: req !== null,
     placeholderData: keepPreviousData,
-    staleTime: 15_000,
+    staleTime: hold ? Infinity : 15_000,
+    gcTime: hold ? Infinity : 5 * 60_000,
+    refetchOnMount: !hold,
+    refetchOnWindowFocus: !hold,
+    refetchOnReconnect: !hold,
   });
 }
 

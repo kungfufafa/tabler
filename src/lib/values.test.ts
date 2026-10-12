@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  cellDisplay,
   displayValue,
+  EMPTY_PLACEHOLDER,
   hasLineBreak,
   mergeDatePart,
   pgArrayLiteral,
@@ -21,6 +23,31 @@ describe("values", () => {
     expect(displayValue({ t: "array", v: [{ t: "text", v: "x y" }, { t: "null" }] }).text).toBe(
       '{"x y",NULL}',
     );
+  });
+  it("shows an empty value as an EMPTY placeholder in grid cells only", () => {
+    expect(cellDisplay({ t: "text", v: "" })).toEqual({
+      text: EMPTY_PLACEHOLDER,
+      cls: "empty",
+      placeholder: true,
+    });
+    expect(cellDisplay({ t: "enum", v: "" }).cls).toBe("empty");
+    expect(cellDisplay({ t: "other", v: { ty: "bit", text: "" } }).cls).toBe("empty");
+    expect(cellDisplay({ t: "null" })).toEqual({ text: "NULL", cls: "null", placeholder: true });
+    expect(cellDisplay({ t: "default" })).toEqual({
+      text: "DEFAULT",
+      cls: "default",
+      placeholder: true,
+    });
+    // Whitespace is a value, not an empty string.
+    expect(cellDisplay({ t: "text", v: " " })).toEqual({
+      text: " ",
+      cls: "text",
+      placeholder: false,
+    });
+    expect(cellDisplay({ t: "int", v: 0 })).toEqual({ text: "0", cls: "num", placeholder: false });
+    // The underlying helpers keep the empty string.
+    expect(displayValue({ t: "text", v: "" })).toEqual({ text: "", cls: "text" });
+    expect(valueText({ t: "text", v: "" })).toBe("");
   });
   it("compares structurally", () => {
     expect(valuesEqual({ t: "int", v: 1 }, { t: "int", v: 1 })).toBe(true);

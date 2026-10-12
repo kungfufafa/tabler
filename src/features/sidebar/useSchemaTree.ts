@@ -3,6 +3,8 @@ import { useEffect, useMemo } from "react";
 import { ipc, tableKey, type TableSummary } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { EMPTY_PINS } from "@/stores/pins";
+import { EMPTY_RECENT } from "@/stores/recent";
+import { EMPTY_COLLAPSED, type SidebarSection } from "./sidebarPrefs";
 
 export const schemaKeys = {
   databases: (c: string) => ["databases", c] as const,
@@ -14,7 +16,15 @@ export const schemaKeys = {
 };
 
 export type TreeRow =
-  | { type: "header"; key: string; label: string; count: number }
+  | {
+      type: "header";
+      key: string;
+      label: SidebarSection;
+      /** Tables in the section (matching the search), shown or not. */
+      count: number;
+      /** The section's rows are left out of the list. */
+      collapsed: boolean;
+    }
   | { type: "table"; key: string; table: TableSummary };
 
 export function useDatabases(connectionId: string | null) {
@@ -59,40 +69,63 @@ export function useTables(connectionId: string | null, schema: string | null) {
   });
 }
 
-const GROUP_ORDER: Array<[TableSummary["kind"][], string]> = [
+const GROUP_ORDER: Array<[TableSummary["kind"][], SidebarSection]> = [
   [["table", "partitioned", "foreignTable"], "Tables"],
   [["view", "systemView"], "Views"],
   [["materializedView"], "Materialized views"],
 ];
 
 /**
- * Flattens tables into header+row entries for the virtualized tree, filtered by `search`. Pinned
- * tables (`tableKey`s) that match come first under "Pinned" (rows keyed `p:`), and stay in their
- * regular group too.
+ * Flattens tables into header+row entries for the virtualized tree, filtered by `search`. With an
+ * empty search, recently opened tables (`tableKey`s, most recent first) come first under "Recent"
+ * (rows keyed `r:`). Pinned tables that match come next under "Pinned" (rows keyed `p:`). Both
+ * stay in their regular group too. A `collapsed` section keeps its header (with its count) but
+ * leaves its rows out, so ↑/↓ skip them.
  */
 export function buildTreeRows(
   tables: TableSummary[],
   search: string,
   pinned: ReadonlySet<string> = EMPTY_PINS,
+  recent: readonly string[] = EMPTY_RECENT,
+  collapsed: ReadonlySet<SidebarSection> = EMPTY_COLLAPSED,
 ): TreeRow[] {
   const q = search.trim().toLowerCase();
   const matches = (t: TableSummary) => !q || t.name.toLowerCase().includes(q);
   const rows: TreeRow[] = [];
-  if (pinned.size > 0) {
-    const items = tables.filter((t) => pinned.has(tableKey(t)) && matches(t));
-    if (items.length > 0) {
-      rows.push({ type: "header", key: "h:Pinned", label: "Pinned", count: items.length });
-      for (const t of items)
-        rows.push({ type: "table", key: `p:${t.schema ?? ""}.${t.name}`, table: t });
-    }
-  }
-  for (const [kinds, label] of GROUP_ORDER) {
-    const items = tables.filter((t) => kinds.includes(t.kind) && matches(t));
-    if (items.length === 0) continue;
-    rows.push({ type: "header", key: `h:${label}`, label, count: items.length });
+  const section = (label: SidebarSection, prefix: string, items: TableSummary[]) => {
+    if (items.length === 0) return;
+    const isCollapsed = collapsed.has(label);
+    rows.push({
+      type: "header",
+      key: `h:${label}`,
+      label,
+      count: items.length,
+      collapsed: isCollapsed,
+    });
+    if (isCollapsed) return;
     for (const t of items)
-      rows.push({ type: "table", key: `t:${t.schema ?? ""}.${t.name}`, table: t });
+      rows.push({ type: "table", key: `${prefix}:${t.schema ?? ""}.${t.name}`, table: t });
+  };
+  if (!q && recent.length > 0) {
+    const byKey = new Map(tables.map((t) => [tableKey(t), t]));
+    section(
+      "Recent",
+      "r",
+      recent.flatMap((k) => byKey.get(k) ?? []),
+    );
   }
+  if (pinned.size > 0)
+    section(
+      "Pinned",
+      "p",
+      tables.filter((t) => pinned.has(tableKey(t)) && matches(t)),
+    );
+  for (const [kinds, label] of GROUP_ORDER)
+    section(
+      label,
+      "t",
+      tables.filter((t) => kinds.includes(t.kind) && matches(t)),
+    );
   return rows;
 }
 
@@ -100,6 +133,11 @@ export function useTreeRows(
   tables: TableSummary[] | undefined,
   search: string,
   pinned: ReadonlySet<string> = EMPTY_PINS,
+  recent: readonly string[] = EMPTY_RECENT,
+  collapsed: ReadonlySet<SidebarSection> = EMPTY_COLLAPSED,
 ): TreeRow[] {
-  return useMemo(() => buildTreeRows(tables ?? [], search, pinned), [tables, search, pinned]);
+  return useMemo(
+    () => buildTreeRows(tables ?? [], search, pinned, recent, collapsed),
+    [tables, search, pinned, recent, collapsed],
+  );
 }

@@ -11,7 +11,10 @@ export interface RowChange {
   error?: string;
 }
 
-/** One undo step: the rows it touched, as they were before (several rows for batch edits). */
+/**
+ * One undo (or redo) step: the rows it touched, as they were before (several rows for batch edits).
+ * Undoing a step pushes its inverse onto `redo`, and redoing pushes the inverse back onto `undo`.
+ */
 export interface UndoEntry {
   rows: Array<{ rowKey: string; before: RowChange | undefined }>;
   insertOrderBefore?: string[];
@@ -30,6 +33,8 @@ export interface StagingState {
   /** Display order of inserted rows (appended after the fetched page). */
   insertOrder: string[];
   undo: UndoEntry[];
+  /** Steps undone since the last edit (most recent last); any new edit clears it. */
+  redo: UndoEntry[];
   version: number;
 }
 

@@ -1,25 +1,20 @@
 import { Loader2, Play, TriangleAlert } from "lucide-react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { EmptyState } from "@/components/EmptyState";
-import { formatDuration } from "@/lib/format/time";
 import type { Dialect } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
-import {
-  updateQueryTab,
-  useQueryTabField,
-  type PlanState,
-  type ResultPane,
-} from "@/stores/queryTabs";
+import { updateQueryTab, useQueryTabField, type ResultPane } from "@/stores/queryTabs";
 import { useResultRowCount } from "@/stores/resultData";
-import { ElapsedTimer } from "./ElapsedTimer";
-import { resultTabLabel, runStatusText } from "./labels";
+import { resultTabLabel } from "./labels";
 import { MessagesView } from "./MessagesView";
+import { resolvePane } from "./panes";
 import { PlanView } from "./PlanView";
 import { ResultGrid } from "./ResultSetGrid";
-import { summarize, type ResultSetInfo, type RunState } from "./runModel";
+import { summarize, type ResultSetInfo } from "./runModel";
 
+/** One segment of the results strip. */
 function PaneTab({
   active,
   onSelect,
@@ -40,15 +35,15 @@ function PaneTab({
       title={title}
       onClick={onSelect}
       className={cn(
-        "border-border relative flex h-full shrink-0 items-center gap-1.5 border-r px-3 text-[11px] whitespace-nowrap outline-none",
-        "focus-visible:ring-brand/40 focus-visible:ring-1 focus-visible:ring-inset",
+        "flex h-full shrink-0 items-center gap-1.5 rounded-[4px] px-2 text-[11px] whitespace-nowrap transition-colors outline-none",
+        // Tailwind v4: `outline-none` sets --tw-outline-style:none, so the ring needs its style.
+        "focus-visible:outline-ring/70 focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-solid",
         active
-          ? "bg-surface text-foreground"
-          : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+          ? "bg-surface text-foreground ring-border-strong/70 dark:bg-accent shadow-xs ring-1"
+          : "text-muted-foreground hover:text-foreground",
       )}
     >
       {children}
-      {active && <span className="bg-brand absolute inset-x-0 bottom-0 h-0.5" aria-hidden />}
     </button>
   );
 }
@@ -74,81 +69,22 @@ function ResultTab({
   );
 }
 
-function RunStatus({
-  run,
-  plan,
-  showPlan,
-}: {
-  run: RunState | null;
-  plan: PlanState | null;
-  showPlan: boolean;
-}) {
-  if (run?.status === "running") {
-    const n = run.statements.length;
-    return (
-      <span className="flex items-center gap-1.5">
-        <Loader2 className="text-brand size-3 animate-spin" />
-        {run.cancelling ? "Stopping…" : n > 1 ? `Running statement ${n}…` : "Running…"}
-        <ElapsedTimer since={run.startedAt} />
-      </span>
-    );
-  }
-  if (plan?.status === "running") {
-    return (
-      <span className="flex items-center gap-1.5">
-        <Loader2 className="text-brand size-3 animate-spin" />
-        Explaining…
-      </span>
-    );
-  }
-  if (showPlan && plan) {
-    const title = plan.mode === "analyze" ? "Explain analyze" : "Explain";
-    if (plan.status === "error") return <span className="text-error">{title} failed</span>;
-    if (plan.status === "cancelled") return <span className="text-warning">{title} cancelled</span>;
-    return (
-      <span className="tabular-nums">
-        {title}
-        {plan.result ? ` · ${formatDuration(plan.result.durationMs)}` : ""}
-      </span>
-    );
-  }
-  if (!run) return null;
-  const s = summarize(run);
-  return (
-    <span
-      className={cn(
-        "tabular-nums",
-        s.errors > 0 && "text-error",
-        s.cancelled && s.errors === 0 && "text-warning",
-      )}
-    >
-      {runStatusText(s)}
-    </span>
-  );
-}
-
-function resolvePane(
-  pane: ResultPane,
-  results: readonly ResultSetInfo[],
-  plan: PlanState | null,
-): ResultPane {
-  if (pane === "plan") return plan ? "plan" : (results[0]?.id ?? "messages");
-  if (pane === "messages") return "messages";
-  return results.some((r) => r.id === pane) ? pane : (results[0]?.id ?? "messages");
-}
-
 function ResultsEmpty() {
   const k = (id: Parameters<typeof shortcutFor>[0]) => formatCombo(shortcutFor(id) ?? "");
   return (
     <EmptyState
       icon={Play}
       title="Run a query"
-      description={`${k("query.run")} runs the selection or the whole editor, ${k("query.run-current")} the statement under the cursor, ${k("query.explain")} explains it.`}
+      description={`${k("query.run-current")} runs the statement under the cursor (or the selection), ${k("query.run")} runs everything, ${k("query.explain")} explains it.`}
     />
   );
 }
 
-/** Result sets, messages and plan of the tab's latest run, as sub-tabs below the editor. */
+/**
+ * Result sets, messages and plan of the tab's latest run, below the editor bar: a compact
+ * segmented strip (Result 1 / Result 2 / Messages / Plan) over the selected pane. The run's
+ * outcome and timer show in the editor bar.
+ */
 export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialect }) {
   const run = useQueryTabField(tabId, "run");
   const plan = useQueryTabField(tabId, "plan");
@@ -180,11 +116,11 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
 
   return (
     <div className="bg-surface flex h-full min-h-0 flex-col">
-      <div className="border-border bg-surface-2 flex h-8 shrink-0 items-stretch border-b">
+      <div className="border-border bg-surface flex h-8 shrink-0 items-center border-b px-1.5">
         <div
           role="tablist"
           aria-label="Results"
-          className="flex min-w-0 flex-1 [scrollbar-width:none] items-stretch overflow-x-auto"
+          className="border-border bg-surface-2 dark:bg-background flex h-6.5 max-w-full min-w-0 [scrollbar-width:none] items-stretch gap-0.5 overflow-x-auto rounded-md border p-0.5"
           onKeyDown={onKeyDown}
         >
           {results.map((r, i) => (
@@ -200,7 +136,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
             <PaneTab active={active === "messages"} onSelect={() => select("messages")}>
               Messages
               {errors > 0 && (
-                <span className="bg-error/15 text-error rounded-full px-1.5 text-[10px] font-medium tabular-nums">
+                <span className="bg-error/15 text-error rounded-full px-1.5 text-[10px] leading-4 font-medium tabular-nums">
                   {errors}
                 </span>
               )}
@@ -211,9 +147,6 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
               Plan
             </PaneTab>
           )}
-        </div>
-        <div className="text-muted-foreground flex shrink-0 items-center px-3 text-[11px]">
-          <RunStatus run={run} plan={plan} showPlan={active === "plan"} />
         </div>
       </div>
       <div className="min-h-0 flex-1" role="tabpanel">

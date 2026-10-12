@@ -4,6 +4,7 @@ import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { Dialect } from "@/lib/ipc";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import {
   supportsAddAutoIncrement,
@@ -42,13 +43,14 @@ export function ColumnsSection({
   const newTypesId = useId();
   const comments = supportsComments(dialect);
   const live = rows.filter((r) => r.status !== "dropped").length;
+  const newKeys = shortcutFor("grid.new-row");
   return (
     <section aria-label="Columns">
       <SectionHeader title="Columns" count={live}>
         {editable && (
           <Button variant="ghost" size="xs" onClick={() => onAdd()}>
             <Plus /> Column
-            <Kbd combo="Mod+N" className="ml-0.5" />
+            {newKeys && <Kbd combo={newKeys} className="ml-0.5" />}
           </Button>
         )}
       </SectionHeader>

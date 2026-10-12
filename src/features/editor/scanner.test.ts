@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { charToUtf16, lineColumnAt, utf16ToChar } from "./offsets";
-import { splitStatements, statementAt, statementTexts, type SqlDialect } from "./scanner";
+import {
+  minifySql,
+  splitStatements,
+  statementAt,
+  statementTexts,
+  type SqlDialect,
+} from "./scanner";
 
 const ALL: SqlDialect[] = ["postgres", "mysql", "sqlite"];
 
@@ -266,6 +272,81 @@ describe("statementAt", () => {
 
   it("statementTexts is a convenience over splitStatements", () => {
     expect(statementTexts("a; b", "sqlite")).toEqual(["a", "b"]);
+  });
+});
+
+describe("minifySql", () => {
+  it("collapses whitespace runs to one space and trims", () => {
+    for (const d of ALL) {
+      expect(minifySql("  select\n\tid,\r\n   name\n  from users\n where id = 1 ;\n\n", d)).toBe(
+        "select id, name from users where id = 1 ;",
+      );
+      expect(minifySql("", d)).toBe("");
+      expect(minifySql(" \n\t ", d)).toBe("");
+    }
+  });
+
+  it("drops comments but never glues tokens together", () => {
+    for (const d of ALL) {
+      expect(minifySql("-- head\nselect 1 -- one\n, 2 /* two */\nfrom t; -- tail", d)).toBe(
+        "select 1 , 2 from t;",
+      );
+      expect(minifySql("select a/* x */b", d)).toBe("select a b");
+      expect(minifySql("/* only a comment */", d)).toBe("");
+    }
+    // MySQL needs whitespace after `--`; `#` starts a comment there only.
+    expect(minifySql("select 1--2\nfrom t", "mysql")).toBe("select 1--2 from t");
+    expect(minifySql("select 1 # note\nfrom t", "mysql")).toBe("select 1 from t");
+    expect(minifySql("select 1 # x", "postgres")).toBe("select 1 # x");
+    // PostgreSQL block comments nest.
+    expect(minifySql("select /* a /* b */ c */ 1", "postgres")).toBe("select 1");
+  });
+
+  it("keeps strings, quoted identifiers and dollar quotes exactly", () => {
+    for (const d of ALL) {
+      expect(minifySql("select 'a  --  b\n  c',  \"x  /* y */\"", d)).toBe(
+        "select 'a  --  b\n  c', \"x  /* y */\"",
+      );
+      expect(minifySql("select 'it''s   ok'  ,  1", d)).toBe("select 'it''s   ok' , 1");
+    }
+    expect(minifySql("select `a   b` ,\n 'x\\'  y'", "mysql")).toBe("select `a   b` , 'x\\'  y'");
+    expect(minifySql("select [a   b]\n", "sqlite")).toBe("select [a   b]");
+    expect(minifySql("select E'a\\'  --  b'  ,  1", "postgres")).toBe("select E'a\\'  --  b' , 1");
+    const fn =
+      "create function f() returns int as $body$\n  select 1; -- keep\n$body$ language sql;";
+    expect(minifySql(fn, "postgres")).toBe(
+      "create function f() returns int as $body$\n  select 1; -- keep\n$body$ language sql;",
+    );
+    expect(minifySql("select $1  ,  a$b", "postgres")).toBe("select $1 , a$b");
+  });
+
+  it("keeps the line break that joins PostgreSQL string constants", () => {
+    // 'a'\n'b' is one constant ('ab') in PostgreSQL; 'a' 'b' on one line is a syntax error.
+    expect(minifySql("select 'foo'\n  'bar' ,  1", "postgres")).toBe("select 'foo'\n'bar' , 1");
+    expect(minifySql("select 'a' -- note\n E'b'", "postgres")).toBe("select 'a'\nE'b'");
+    // Only between two string constants, and only when the original had a line break.
+    expect(minifySql("select 'a'  'b'", "postgres")).toBe("select 'a' 'b'");
+    expect(minifySql("select 'a'\n  \"b\"", "postgres")).toBe("select 'a' \"b\"");
+    expect(minifySql("select 'a'\n'b'", "mysql")).toBe("select 'a' 'b'");
+  });
+
+  it("keeps MySQL executable comments and optimizer hints", () => {
+    expect(minifySql("/*!40101 SET  NAMES utf8 */ ;\nselect /*+ BKA(t) */  1", "mysql")).toBe(
+      "/*!40101 SET  NAMES utf8 */ ; select /*+ BKA(t) */ 1",
+    );
+  });
+
+  it("keeps client directives on their own line", () => {
+    expect(minifySql("select 1;\n\\connect other\nselect\n  2;", "postgres")).toBe(
+      "select 1;\n\\connect other\nselect 2;",
+    );
+    const script =
+      "DELIMITER $$\ncreate procedure p()\nbegin\n  select 1;\nend$$\nDELIMITER ;\ncall p();";
+    expect(minifySql(script, "mysql")).toBe(
+      "DELIMITER $$\ncreate procedure p() begin select 1; end$$\nDELIMITER ;\ncall p();",
+    );
+    // The result still splits like the original.
+    expect(statementTexts(minifySql(script, "mysql"), "mysql")).toHaveLength(2);
   });
 });
 

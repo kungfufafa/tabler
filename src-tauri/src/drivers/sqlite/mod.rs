@@ -315,12 +315,8 @@ mod tests {
             sqlite_path: path.map(str::to_string),
             ssh: None,
             options: ProfileOptions {
-                timezone: None,
-                connect_timeout_secs: None,
-                read_only: false,
-                startup_sql: None,
-                default_row_limit: None,
                 sqlite_foreign_keys: true,
+                ..ProfileOptions::default()
             },
             sort_order: 0,
             created_at: String::new(),

@@ -38,3 +38,4 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
 - [x] M5 structure + DDL (staged column/index/FK edits, preview/apply, create/rename/truncate/drop)
 - [x] M6 tunnel + export + palette + settings + polish
 - [x] M7 packaging + docs (icon, production CSP, `pnpm tauri build` → Tabler.app + DMG, README, docs/qa-macos.md)
+- [ ] M8 TablePlus parity — roadmap and status in `docs/tableplus-parity.md` (B1 muscle memory/layout, B2 safety/connections/session, B3 SQL workflow, B4 data transfer/admin). Copy TablePlus's _behaviour_ from its public docs; never inspect the TablePlus app (EULA).

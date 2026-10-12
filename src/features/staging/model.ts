@@ -9,10 +9,13 @@ import {
 } from "./types";
 
 export function emptyStaging(): StagingState {
-  return { changes: new Map(), insertOrder: [], undo: [], version: 0 };
+  return { changes: new Map(), insertOrder: [], undo: [], redo: [], version: 0 };
 }
 
-/** Commits a batch of row changes as ONE undo step (`next` maps row key → new change or removal). */
+/**
+ * Commits a batch of row changes as ONE undo step (`next` maps row key → new change or removal). A
+ * new edit forks the history: whatever was undone before it can no longer be redone.
+ */
 function withChanges(
   s: StagingState,
   next: ReadonlyMap<string, RowChange | undefined>,
@@ -34,6 +37,7 @@ function withChanges(
     changes,
     insertOrder,
     undo: [...s.undo.slice(-(MAX_UNDO - 1)), entry],
+    redo: [],
     version: s.version + 1,
   };
 }
@@ -113,6 +117,21 @@ export function insertRow(s: StagingState, rowKey: string, defaults: Value[]): S
   return withChange(s, rowKey, { status: "inserted", patch }, [...s.insertOrder, rowKey]);
 }
 
+/** Adds several new rows (paste, duplicate) as ONE undo step, in the given order. */
+export function insertRows(
+  s: StagingState,
+  rows: ReadonlyArray<{ rowKey: string; values: Value[] }>,
+): StagingState {
+  if (rows.length === 0) return s;
+  const next = new Map<string, RowChange | undefined>();
+  for (const { rowKey, values } of rows) {
+    const patch = new Map<number, Value>();
+    values.forEach((v, i) => patch.set(i, v));
+    next.set(rowKey, { status: "inserted", patch });
+  }
+  return withChanges(s, next, [...s.insertOrder, ...rows.map((r) => r.rowKey)]);
+}
+
 /** Marks rows for deletion (one undo step); inserted rows are simply dropped. */
 export function deleteRows(
   s: StagingState,
@@ -172,21 +191,61 @@ export function discardAll(): StagingState {
   return emptyStaging();
 }
 
-/** Reverts the last undo step (every row it touched). */
-export function undo(s: StagingState): StagingState {
-  const entry = s.undo[s.undo.length - 1];
-  if (!entry) return s;
+/**
+ * Puts back every row `entry` touched; returns the new changes / insert order plus the inverse entry
+ * (the rows as they are now), which undoes this restore.
+ */
+function restore(
+  s: StagingState,
+  entry: UndoEntry,
+): { changes: Map<string, RowChange>; insertOrder: string[]; inverse: UndoEntry } {
   const changes = new Map(s.changes);
+  const rows: UndoEntry["rows"] = [];
   for (const { rowKey, before } of entry.rows) {
+    rows.push({ rowKey, before: s.changes.get(rowKey) });
     if (before) changes.set(rowKey, before);
     else changes.delete(rowKey);
   }
   return {
     changes,
     insertOrder: entry.insertOrderBefore ?? s.insertOrder,
+    inverse: {
+      rows,
+      insertOrderBefore: entry.insertOrderBefore === undefined ? undefined : s.insertOrder,
+    },
+  };
+}
+
+/** Reverts the last undo step (every row it touched); it can be redone until the next edit. */
+export function undo(s: StagingState): StagingState {
+  const entry = s.undo[s.undo.length - 1];
+  if (!entry) return s;
+  const { changes, insertOrder, inverse } = restore(s, entry);
+  return {
+    changes,
+    insertOrder,
     undo: s.undo.slice(0, -1),
+    redo: [...s.redo.slice(-(MAX_UNDO - 1)), inverse],
     version: s.version + 1,
   };
+}
+
+/** Re-applies the last undone step. */
+export function redo(s: StagingState): StagingState {
+  const entry = s.redo[s.redo.length - 1];
+  if (!entry) return s;
+  const { changes, insertOrder, inverse } = restore(s, entry);
+  return {
+    changes,
+    insertOrder,
+    undo: [...s.undo.slice(-(MAX_UNDO - 1)), inverse],
+    redo: s.redo.slice(0, -1),
+    version: s.version + 1,
+  };
+}
+
+export function canRedo(s: StagingState): boolean {
+  return s.redo.length > 0;
 }
 
 export function pendingCount(s: StagingState): number {

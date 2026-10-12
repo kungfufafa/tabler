@@ -44,6 +44,38 @@ describe("findShortcut", () => {
     expect(findShortcut("Mod+T", "dialog")).toBeUndefined();
     expect(findShortcut("Mod+Shift+Enter", "grid")).toBeUndefined();
   });
+
+  it("follows TablePlus's defaults", () => {
+    expect(findShortcut("Mod+P", "global")?.id).toBe("palette.open");
+    expect(findShortcut("Mod+K", "grid")?.id).toBe("palette.databases");
+    expect(findShortcut("Mod+Shift+K", "editor")?.id).toBe("palette.connections");
+    expect(findShortcut("Mod+Enter", "editor")?.id).toBe("query.run-current");
+    expect(findShortcut("Mod+Shift+Enter", "editor")?.id).toBe("query.run");
+    expect(findShortcut("Mod+Ctrl+]", "grid")?.id).toBe("view.structure");
+    expect(findShortcut("Mod+Shift+Z", "grid")?.id).toBe("grid.redo");
+    expect(findShortcut("Mod+Shift+Backspace", "grid")?.id).toBe("grid.discard");
+    expect(findShortcut("Space", "grid")?.id).toBe("grid.toggle-detail");
+    expect(findShortcut("Space", "global")).toBeUndefined();
+  });
+
+  it("resolves ⌘E and ⌘I by scope", () => {
+    expect(findShortcut("Mod+E", "grid")?.id).toBe("tab.new-query");
+    expect(findShortcut("Mod+E", "editor")?.id).toBe("query.explain");
+    expect(findShortcut("Mod+I", "grid")?.id).toBe("grid.new-row");
+    expect(findShortcut("Mod+I", "editor")?.id).toBe("query.format");
+    expect(findShortcut("Mod+Shift+I", "editor")?.id).toBe("query.minify");
+    expect(findShortcut("Mod+Shift+I", "grid")?.id).toBe("ui.toggle-inspector");
+  });
+
+  it("keeps staging shortcuts away from an open cell editor", () => {
+    expect(findShortcut("Mod+S", "global")?.id).toBe("grid.commit");
+    expect(findShortcut("Mod+S", "grid-edit")).toBeUndefined();
+    expect(findShortcut("Mod+Shift+P", "grid-edit")).toBeUndefined();
+    expect(findShortcut("Mod+W", "grid-edit")?.id).toBe("tab.close");
+    // Switching the view would unmount the editor before its value is staged.
+    expect(findShortcut("Mod+Ctrl+]", "grid-edit")).toBeUndefined();
+    expect(findShortcut("Mod+Ctrl+[", "grid-edit")).toBeUndefined();
+  });
 });
 
 describe("formatCombo", () => {

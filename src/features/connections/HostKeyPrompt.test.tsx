@@ -209,7 +209,13 @@ describe("ConnectionDialog", () => {
       </QueryClientProvider>,
     );
     const form = await screen.findByRole("dialog");
-    expect(within(form).getByText("deploy@bastion.example.com:22")).toBeInTheDocument();
+    // The tunnel is part of the one-page form: Over SSH is on and its fields are shown inline.
+    expect(within(form).getByRole("button", { name: "Over SSH" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(within(form).getByLabelText("SSH host")).toHaveValue("bastion.example.com");
+    expect(within(form).getByLabelText("SSH user")).toHaveValue("deploy");
 
     await user.click(within(form).getByRole("button", { name: "Test" }));
     const prompt = await screen.findByRole("alertdialog");
@@ -239,7 +245,7 @@ describe("ConnectionDialog", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
-  it("shows the SSH tab hints", async () => {
+  it("shows the SSH block inline with its hints, and hides it when Over SSH is turned off", async () => {
     const user = userEvent.setup();
     render(
       <QueryClientProvider client={client()}>
@@ -248,10 +254,11 @@ describe("ConnectionDialog", () => {
       </QueryClientProvider>,
     );
     const form = await screen.findByRole("dialog");
-    // The summary line jumps to the SSH tab.
-    await user.click(within(form).getByTitle("Edit SSH tunnel"));
-    expect(within(form).getByRole("tab", { name: "SSH" })).toHaveAttribute("aria-selected", "true");
-    expect(within(form).getByText(/keepalive is/)).toBeInTheDocument();
-    expect(within(form).getByText("auto")).toBeInTheDocument();
+    const ssh = within(form).getByRole("region", { name: "SSH tunnel" });
+    expect(within(ssh).getByText(/keepalive is/)).toBeInTheDocument();
+    expect(within(ssh).getByText("auto")).toBeInTheDocument();
+    expect(within(ssh).getByText(/identities loaded in your SSH agent/)).toBeInTheDocument();
+    await user.click(within(form).getByRole("button", { name: "Over SSH" }));
+    expect(within(form).queryByRole("region", { name: "SSH tunnel" })).toBeNull();
   });
 });

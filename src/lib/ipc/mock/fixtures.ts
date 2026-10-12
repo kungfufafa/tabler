@@ -1,5 +1,6 @@
 import type { ColumnMeta } from "../bindings/ColumnMeta";
 import type { ConnectionProfile } from "../bindings/ConnectionProfile";
+import type { ConnectionTag } from "../bindings/ConnectionTag";
 import type { Driver } from "../bindings/Driver";
 import type { TableMeta } from "../bindings/TableMeta";
 import type { TableSummary } from "../bindings/TableSummary";
@@ -7,8 +8,9 @@ import type { ValueKind } from "../bindings/ValueKind";
 
 export function profile(
   p: Partial<ConnectionProfile> & { id: string; name: string; driver: Driver },
+  tag: ConnectionTag | null = null,
 ): ConnectionProfile {
-  return {
+  const built: ConnectionProfile = {
     color: "blue",
     group: null,
     host: p.driver === "sqlite" ? null : "127.0.0.1",
@@ -20,6 +22,7 @@ export function profile(
     sqlitePath: p.driver === "sqlite" ? "/Users/me/dev/fixtures/sample.sqlite" : null,
     ssh: null,
     options: {
+      tag: null,
       timezone: null,
       connectTimeoutSecs: null,
       readOnly: false,
@@ -33,35 +36,45 @@ export function profile(
     lastConnectedAt: null,
     ...p,
   };
+  return tag ? { ...built, options: { ...built.options, tag } } : built;
 }
 
 export const SEED_PROFILES: ConnectionProfile[] = [
-  profile({
-    id: "p-local-pg",
-    name: "Local Postgres",
-    driver: "postgres",
-    color: "blue",
-    group: "Local",
-    sortOrder: 1,
-    lastConnectedAt: "2026-10-10T14:00:00.000Z",
-  }),
-  profile({
-    id: "p-shop-mysql",
-    name: "Shop MySQL",
-    driver: "mysql",
-    color: "orange",
-    group: "Local",
-    sortOrder: 2,
-    user: "root",
-  }),
-  profile({
-    id: "p-sample-sqlite",
-    name: "sample.sqlite",
-    driver: "sqlite",
-    color: "green",
-    group: null,
-    sortOrder: 3,
-  }),
+  profile(
+    {
+      id: "p-local-pg",
+      name: "Local Postgres",
+      driver: "postgres",
+      color: "blue",
+      group: "Local",
+      sortOrder: 1,
+      lastConnectedAt: "2026-10-10T14:00:00.000Z",
+    },
+    "local",
+  ),
+  profile(
+    {
+      id: "p-shop-mysql",
+      name: "Shop MySQL",
+      driver: "mysql",
+      color: "orange",
+      group: "Local",
+      sortOrder: 2,
+      user: "root",
+    },
+    "development",
+  ),
+  profile(
+    {
+      id: "p-sample-sqlite",
+      name: "sample.sqlite",
+      driver: "sqlite",
+      color: "green",
+      group: null,
+      sortOrder: 3,
+    },
+    "local",
+  ),
   profile({
     id: "p-prod-pg",
     name: "Production (read-only)",
@@ -71,6 +84,7 @@ export const SEED_PROFILES: ConnectionProfile[] = [
     sortOrder: 4,
     host: "db.internal.example.com",
     options: {
+      tag: "production",
       timezone: null,
       connectTimeoutSecs: null,
       readOnly: true,
@@ -81,26 +95,29 @@ export const SEED_PROFILES: ConnectionProfile[] = [
   }),
   // SSH host-key flow (see mock/export.ts): the first connect / test asks to trust the bastion's
   // key, later ones succeed; "Rotated host" always presents a key that differs from the trusted one.
-  profile({
-    id: "p-staging-ssh",
-    name: "Staging via SSH",
-    driver: "postgres",
-    color: "purple",
-    group: "Staging",
-    sortOrder: 5,
-    host: "10.0.1.20",
-    user: "app",
-    database: "app_staging",
-    ssh: {
-      host: "bastion.example.com",
-      port: 22,
-      user: "deploy",
-      auth: "agent",
-      keyPath: null,
-      localPort: null,
-      keepaliveSecs: null,
+  profile(
+    {
+      id: "p-staging-ssh",
+      name: "Staging via SSH",
+      driver: "postgres",
+      color: "purple",
+      group: "Staging",
+      sortOrder: 5,
+      host: "10.0.1.20",
+      user: "app",
+      database: "app_staging",
+      ssh: {
+        host: "bastion.example.com",
+        port: 22,
+        user: "deploy",
+        auth: "agent",
+        keyPath: null,
+        localPort: null,
+        keepaliveSecs: null,
+      },
     },
-  }),
+    "staging",
+  ),
   profile({
     id: "p-rotated-ssh",
     name: "Rotated host",

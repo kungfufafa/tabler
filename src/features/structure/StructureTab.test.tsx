@@ -19,11 +19,11 @@ vi.mock("sonner", () => ({ toast }));
 async function setup(
   profileId = "p-local-pg",
   table: TableRef = { schema: "public", name: "users" },
-  { keyboard = false }: { keyboard?: boolean } = {},
+  { keyboard = false, preview = false }: { keyboard?: boolean; preview?: boolean } = {},
 ) {
   const info = await ipc.connections.connect(profileId);
   useConnectionsStore.getState().add(info);
-  const id = useTabsStore.getState().openTable(info.connectionId, table, "structure");
+  const id = useTabsStore.getState().openTable(info.connectionId, table, "structure", { preview });
   const tab = useTabsStore.getState().tabs.find((t) => t.id === id) as Extract<
     Tab,
     { kind: "structure" }
@@ -44,7 +44,8 @@ async function setup(
   screen.getByRole("button", { name: "sidebar row" }).focus();
   await screen.findByRole("region", { name: "Columns" });
   const ops = () => useStructureStore.getState().byTab[id]?.ops ?? [];
-  return { id, ops, connectionId: info.connectionId };
+  const current = () => useTabsStore.getState().tabs.find((t) => t.id === id)!;
+  return { id, ops, current, connectionId: info.connectionId };
 }
 
 const cell = (key: string) => {
@@ -177,7 +178,7 @@ describe("StructureTab", () => {
     expect(screen.getByText(/run one by one/)).toBeInTheDocument();
   });
 
-  it("takes keyboard focus once uncached metadata loads, so ⌘N reaches the grid", async () => {
+  it("takes keyboard focus once uncached metadata loads, so ⌘I reaches the grid", async () => {
     const { ops } = await setup(
       "p-local-pg",
       { schema: "public", name: "users" },
@@ -185,14 +186,68 @@ describe("StructureTab", () => {
     );
     const root = document.querySelector<HTMLElement>("[data-scope='grid']");
     await waitFor(() => expect(document.activeElement).toBe(root));
-    await act(async () => {
-      fireEvent.keyDown(document.activeElement!, {
-        key: "n",
-        code: "KeyN",
-        [isMac ? "metaKey" : "ctrlKey"]: true,
+    // ⌘I twice (⌘N is "New connection", as in TablePlus).
+    for (const key of ["i", "i"]) {
+      // The added column's name input takes focus (grid-edit scope: no new column from there).
+      root!.focus();
+      await act(async () => {
+        fireEvent.keyDown(document.activeElement!, {
+          key,
+          code: `Key${key.toUpperCase()}`,
+          [isMac ? "metaKey" : "ctrlKey"]: true,
+        });
       });
-    });
-    expect(ops().map((o) => o.op)).toEqual(["addColumn"]);
+    }
+    expect(ops().map((o) => o.op)).toEqual(["addColumn", "addColumn"]);
+  });
+
+  it("switches the tab to its data view (bottom switch, ⌃⌘[)", async () => {
+    const { current } = await setup();
+    const bar = screen.getByRole("toolbar", { name: "Table structure" });
+    const switcher = within(bar).getByRole("radiogroup", { name: "Table view" });
+    expect(within(switcher).getByRole("radio", { name: "Structure" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    fireEvent.click(within(switcher).getByRole("radio", { name: "Data" }));
+    expect(current().kind).toBe("table");
+
+    act(() => useTabsStore.getState().setView(current().id, "structure"));
+    await act(() => actions.run("view.data"));
+    expect(current().kind).toBe("table");
+  });
+
+  it("has no header row: the bottom bar holds the summary, the staged changes and the actions", async () => {
+    const { ops } = await setup("p-local-pg", { schema: "public", name: "posts" });
+    const bar = screen.getByRole("toolbar", { name: "Table structure" });
+    expect(bar).toHaveTextContent("9 columns · 1 index · 1 foreign key");
+    for (const name of ["Show DDL", "Open in SQL", "Refresh"])
+      expect(within(bar).getByRole("button", { name })).toBeInTheDocument();
+    expect(within(bar).queryByRole("button", { name: "Review & apply" })).toBeNull();
+
+    type(cell("c:title:name"), "headline");
+    expect(within(bar).getByText("1 change")).toBeInTheDocument();
+    expect(within(bar).getByRole("button", { name: "Undo last change" })).toBeEnabled();
+    fireEvent.click(within(bar).getByRole("button", { name: "Review & apply" }));
+    expect(await screen.findByTestId("ddl-statement-0")).toHaveTextContent(/RENAME COLUMN/);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByTestId("ddl-statement-0")).toBeNull());
+    fireEvent.click(within(bar).getByRole("button", { name: "Discard all changes" }));
+    expect(ops()).toEqual([]);
+    expect(within(bar).queryByText("1 change")).toBeNull();
+  });
+
+  it("pins a preview tab once a change is staged", async () => {
+    const { current } = await setup(
+      "p-local-pg",
+      { schema: "public", name: "users" },
+      {
+        preview: true,
+      },
+    );
+    expect(current()).toMatchObject({ preview: true });
+    type(cell("c:nickname:name"), "nick");
+    await waitFor(() => expect(current()).not.toHaveProperty("preview"));
   });
 
   it("↑/↓ commits a cell once (one toast for an invalid name)", async () => {

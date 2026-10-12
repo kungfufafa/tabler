@@ -6,6 +6,12 @@ renderer.
 
 ## Features
 
+- **TablePlus layout** — a toolbar with Discard / Preview / Commit, a status pill tinted with the
+  connection colour (`LOCAL │ PostgreSQL 17.6 : name : database : schema.table`) and panel toggles;
+  a rail of open connections, each its own workspace of tabs; a sidebar with Items | History; the
+  table's bottom bar (`Data | Structure`, `+ Row`, Filters, Columns, paging); an editable row-details
+  sidebar; a welcome screen listing connections with their environment tag (Local, Testing,
+  Development, Staging, Production). ⌘S commits straight away (⇧⌘P previews first).
 - **Connections** — saved profiles with colours and groups, SSL modes, read-only sessions, SSH
   tunnels (password, private key with passphrase, agent) with host-key verification. Passwords live
   in the macOS Keychain, never in plain files. Opening a profile that is already open switches to
@@ -16,14 +22,19 @@ renderer.
   ("Pin to Top" in a table's context menu; kept per connection and database), virtualized data
   grid (100k+ rows) with server-side sort, filters (`=`, `≠`, `<`…, `LIKE`, `IN`, `BETWEEN`,
   `IS NULL`, **Raw SQL** conditions, AND/OR), paging, column header menu, resize, hide and
-  drag-to-reorder, inspector (cell and row view, full blobs), foreign-key jump, copy as
-  TSV/CSV/JSON/INSERT/Markdown (⇧⌘C picker).
+  drag-to-reorder, an editable row-details sidebar (␣ toggles it; full blobs in its Cell view), foreign-key
+  jump, quick filters from a cell, copy as TSV/CSV/JSON/INSERT/Markdown (⌥⌘C picker). Like
+  TablePlus, a single click opens a table in a replaceable _preview_ tab (italic) and the sidebar
+  keeps the last five tables under "Recent"; Data and Structure are two views of the same tab
+  (⌃⌘[ / ⌃⌘]).
 - **Edit** — inline, type-aware cell editing with staged changes (edited, new and deleted rows are
   highlighted), ⌘V paste of cells and rows (from Numbers, Excel or TSV), ⌥↩ multi-line text and a
   JSON editor with validation, `Preview SQL` before commit, single-transaction apply with per-row
-  errors, undo, NULL/DEFAULT, duplicate/delete rows, tables without primary keys handled safely.
-- **SQL editor** — CodeMirror with schema-aware autocomplete per dialect, run all / selection /
-  statement under the cursor, multiple result sets, streaming results, cancel, EXPLAIN (EXPLAIN
+  errors, undo / redo, Set Value ▸ NULL / EMPTY / DEFAULT (also ⌥-click), duplicate/delete rows,
+  double-click below the last row for a new one, tables without primary keys handled safely.
+- **SQL editor** — CodeMirror with schema-aware autocomplete per dialect, run the current
+  statement (⌘↩) / all (⇧⌘↩) / the selection, multiple result sets, streaming results, cancel,
+  beautify / uglify the current statement, a collapsible result pane, EXPLAIN (EXPLAIN
   ANALYZE of `INSERT` / `UPDATE` / `DELETE` runs inside a transaction that is rolled back, so the
   rows stay), formatting, error positions highlighted in the editor, query history, open/save
   `.sql` files.
@@ -35,10 +46,11 @@ renderer.
   exports the result on screen; a result cut at the row limit can export all its rows by running a
   read-only statement again, never a `DELETE … RETURNING` or `CALL`) with progress and cancel;
   partial files are removed on cancel and on quit.
-- **Comfort** — command palette (⌘K), keyboard-first everything, a native macOS menu bar (File /
-  Edit / View / Window) wired to the same actions, light/dark themes that follow macOS, tab
-  management with unsaved-change guards (closing a tab, the window, or quitting from the menu
-  bar, ⌘Q or the Dock asks first). The sidebar, status bar and accent always follow the visible
+- **Comfort** — TablePlus keys by default: Open Anything (⌘P), database switcher (⌘K), connection
+  switcher (⇧⌘K), a console log of every statement the app runs (⇧⌘C), keyboard-first everything,
+  a native macOS menu bar (File / Edit / View / Window) wired to the same actions, light/dark
+  themes that follow macOS, tab management with unsaved-change guards (closing a tab, the window,
+  or quitting from the menu bar, ⌘Q or the Dock asks first). The sidebar, status pill and accent always follow the visible
   tab's connection. A dropped connection shows the reconnect banner at the first failing query,
   grid commit or DDL apply.
 
@@ -95,28 +107,38 @@ tests) is in `dev/docker-compose.yml`; see `dev/README.md`.
 
 ## Keyboard shortcuts
 
-| Global   |                        | Data grid |                          | SQL editor |                         |
-| -------- | ---------------------- | --------- | ------------------------ | ---------- | ----------------------- |
-| ⌘K / ⌘P  | command palette        | ↩ / F2    | edit cell                | ⌘↩         | run all / selection     |
-| ⌘T       | new query tab          | ⌥↩        | multi-line / JSON edit   | ⇧⌘↩        | run statement at cursor |
-| ⌘W       | close tab              | ⌘S        | commit (Preview SQL)     | ⌘.         | cancel                  |
-| ⇧⌘T      | reopen closed tab      | ⇧⌘Z       | discard changes          | ⌘E         | explain                 |
-| ⌘1…9     | go to tab              | ⌘Z        | undo staged change       | ⌥⇧F        | format                  |
-| ⌃⇥ / ⌃⇧⇥ | next / previous tab    | ⌘F        | filter bar               | ⌘H         | history                 |
-| ⌘B       | toggle sidebar         | ⌘N        | new row                  | ⌘S / ⌘O    | save / open `.sql`      |
-| ⇧⌘I      | toggle inspector       | ⌘D        | duplicate row            | ⌘/         | toggle comment          |
-| ⌘L       | search tables          | ⌘⌫        | delete rows              | ⇧⌘E        | export the result       |
-| ⌘R       | refresh                | ⇧⌘N / ⇧⌘D | set NULL / DEFAULT       |            |                         |
-| ⇧⌘E      | export                 | ⇧⌘F       | open referenced row      |            |                         |
-| ⇧⌘O      | connection manager     | ⌘C        | copy (TSV)               |            |                         |
-| ⌘,       | settings               | ⇧⌘C       | copy as… (format picker) |            |                         |
-| ⌘Q       | quit (asks if unsaved) | ⌘V        | paste cells / rows       |            |                         |
+The defaults follow TablePlus, so its muscle memory carries over (older Tabler keys such as ⌘B,
+⌘L, ⌘N and ⌥⇧F still work as alternatives).
+
+| Global    |                        | Data grid |                           | SQL editor |                         |
+| --------- | ---------------------- | --------- | ------------------------- | ---------- | ----------------------- |
+| ⌘P        | open anything          | ↩ / F2    | edit cell                 | ⌘↩         | run current / selection |
+| ⌘K        | switch database        | ⌥↩        | multi-line / JSON edit    | ⇧⌘↩        | run all                 |
+| ⇧⌘K       | switch connection      | ⌘S        | commit                    | ⌘.         | cancel                  |
+| ⌘T / ⌘E   | new query tab          | ⇧⌘P       | preview SQL               | ⌘E         | explain                 |
+| ⌘W        | close tab              | ⇧⌘⌫       | discard changes           | ⌘I / ⇧⌘I   | beautify / uglify       |
+| ⇧⌘T       | reopen closed tab      | ⌘Z / ⇧⌘Z  | undo / redo staged change | ⌃\`        | toggle result pane      |
+| ⌘[ / ⌘]   | previous / next tab    | ⌘F        | filter bar                | ⌘H         | history                 |
+| ⌘1…9      | go to tab              | ⌥⌘F       | show / hide columns       | ⌘S / ⌘O    | save / open `.sql`      |
+| ⌃⌘[ / ⌃⌘] | data / structure view  | ⌘I        | new row                   | ⌘/         | toggle comment          |
+| ⌘0        | toggle sidebar         | ⌘D        | duplicate row             | ⇧⌘E        | export the result       |
+| ⇧⌘I       | toggle row detail      | ⌫ / ⌘⌫    | delete rows               |            |                         |
+| ⇧⌘C       | console log            | ⇧⌘N / ⇧⌘D | set NULL / DEFAULT        |            |                         |
+| ⇧⌘F       | search tables          | ␣ (Space) | row detail                |            |                         |
+| ⌘R / ⌥⌘R  | refresh                | ⌘J        | open referenced row       |            |                         |
+| ⇧⌘R       | reconnect              | ⌘C / ⌥⌘C  | copy rows / copy as…      |            |                         |
+| ⇧⌘E       | export                 | ⌘V        | paste cells / rows        |            |                         |
+| ⌘N        | new connection         |           |                           |            |                         |
+| ⇧⌘O       | connection manager     |           |                           |            |                         |
+| ⌘,        | settings               |           |                           |            |                         |
+| ⌘Q        | quit (asks if unsaved) |           |                           |            |                         |
 
 The full, searchable list is in Settings → Shortcuts. The native menu bar offers the same
 commands (File: New Query Tab, Open SQL File…, Close Tab, Reopen Closed Tab, Export…, Connection
-Manager; View: Command Palette, Toggle Sidebar, Toggle Inspector, Refresh, Full Screen); its
-shortcuts only act when the focused part of the page does not handle the key itself, and Edit
-keeps the standard Undo / Cut / Copy / Paste / Select All for text fields.
+Manager; View: Open Anything, Switch Database, Switch Connection, Data, Structure, Toggle Sidebar,
+Toggle Row Detail, Toggle Console Log, Refresh, Reconnect, Full Screen); its shortcuts only act
+when the focused part of the page does not handle the key itself, and Edit keeps the standard
+Undo / Cut / Copy / Paste / Select All for text fields.
 
 ## Architecture
 
@@ -134,7 +156,7 @@ src-tauri/src/
   secrets.rs  Keychain (keyring) with a dev-only file backend
 src/
   features/   connections, sidebar, tabs, datagrid, table-tab, staging, editor, structure,
-              export, palette, settings, inspector, statusbar
+              export, palette, settings, inspector, console
   lib/ipc/    typed facade over every command + generated bindings + browser mock
   stores/     zustand stores (tabs, per-tab state, connections, prefs, ui)
 ```

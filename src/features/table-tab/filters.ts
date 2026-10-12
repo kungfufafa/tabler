@@ -78,23 +78,51 @@ export function parseFilterValue(kind: ValueKind, text: string): Value {
   }
 }
 
-/** Splits an IN list: commas, with quotes honoured. */
+/**
+ * Splits an IN list on commas. A value in quotes (`"…"` or `'…'`) may contain commas and keeps its
+ * spaces; a doubled quote inside it stands for the quote itself (`"say ""hi"""`).
+ */
 export function splitList(text: string): string[] {
   const out: string[] = [];
   let cur = "";
+  /** The current item has a quoted part: kept verbatim, even when empty. */
+  let quoted = false;
   let quote: string | null = null;
-  for (const ch of text) {
+  const finish = () => {
+    const item = quoted ? cur : cur.trim();
+    if (quoted || item !== "") out.push(item);
+    cur = "";
+    quoted = false;
+  };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
     if (quote) {
-      if (ch === quote) quote = null;
-      else cur += ch;
-    } else if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === ",") {
-      out.push(cur.trim());
-      cur = "";
-    } else cur += ch;
+      if (ch !== quote) cur += ch;
+      else if (text[i + 1] === quote) {
+        cur += ch;
+        i++;
+      } else quote = null;
+    } else if (ch === '"' || ch === "'") {
+      if (!quoted) cur = cur.trim();
+      quote = ch;
+      quoted = true;
+    } else if (ch === ",") finish();
+    // Spaces around a quoted value are not part of it.
+    else if (!quoted || ch.trim() !== "") cur += ch;
   }
-  if (cur.trim() !== "" || out.length > 0) out.push(cur.trim());
-  return out.filter((s) => s !== "");
+  finish();
+  return out;
+}
+
+/** The IN-list text `splitList` reads back as `items` (quoting the values that need it). */
+export function joinList(items: readonly string[]): string {
+  return items
+    .map((item) =>
+      item !== "" && item === item.trim() && !/[,"']/.test(item)
+        ? item
+        : `"${item.replaceAll('"', '""')}"`,
+    )
+    .join(", ");
 }
 
 /**
@@ -151,4 +179,26 @@ export function toFilterGroup(
     items.push({ kind: "condition", column: col.name, op: row.op, values: [value] });
   }
   return items.length === 0 ? null : { conjunction, items };
+}
+
+// A generated ORDER BY term: a quoted column (or SQLite's rowid), MySQL's `(col IS NULL)` nulls
+// flag, then the direction and the optional NULLS FIRST / LAST.
+const ORDER_IDENT = '(?:"(?:[^"]|"")*"|`(?:[^`]|``)*`|rowid)';
+const ORDER_TERM = `(?:${ORDER_IDENT}|\\(${ORDER_IDENT} IS NULL\\)) (?:ASC|DESC)(?: NULLS (?:FIRST|LAST))?`;
+const ORDER_TAIL = new RegExp(` ORDER BY ${ORDER_TERM}(?:, ${ORDER_TERM})*$`);
+
+/**
+ * The condition of a browse page's SELECT (`BrowsePage.sql`, values inlined for display), without
+ * the WHERE keyword: what the filter bar's "SQL" button shows. Null when the page is unfiltered.
+ */
+export function whereOfPageSql(sql: string | null | undefined): string | null {
+  if (!sql) return null;
+  const match = /\nWHERE /.exec(sql) ?? / WHERE /.exec(sql);
+  if (!match) return null;
+  const start = match.index + match[0].length;
+  let end = sql.lastIndexOf("\nLIMIT ");
+  if (end < start) end = sql.lastIndexOf(" LIMIT ");
+  if (end < start) end = sql.length;
+  const body = sql.slice(start, end).replace(ORDER_TAIL, "").trim();
+  return body === "" ? null : body;
 }

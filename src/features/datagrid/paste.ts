@@ -1,5 +1,7 @@
+import type { Value } from "@/lib/ipc";
+import { parseEditText } from "@/lib/values";
 import type { Rect } from "./selection";
-import type { CellPos } from "./types";
+import type { CellPos, GridColumn } from "./types";
 
 export interface PasteTarget {
   r: number;
@@ -69,4 +71,56 @@ export function planPaste(
   });
   const clippedCols = Math.max(0, widest - Math.max(0, colCount - anchor.c));
   return { targets, clippedRows, clippedCols };
+}
+
+/**
+ * Whether the clipboard holds whole rows (TablePlus): every line has one field per visible column,
+ * so ⌘V adds them as new rows. A one-column grid cannot tell a row from a value: it never does.
+ */
+export function holdsWholeRows(block: readonly (readonly string[])[], colCount: number): boolean {
+  return colCount > 1 && block.length > 0 && block.every((fields) => fields.length === colCount);
+}
+
+const NULL: Value = { t: "null" };
+const TEXT_LIKE: ReadonlySet<GridColumn["kind"]> = new Set(["text", "enum", "set"]);
+
+/**
+ * Typed value for pasted text, or null when it does not fit the column. An empty field is NULL in
+ * a nullable non-text column (what copying a NULL writes) and '' in a text column.
+ */
+export function pastedValue(col: GridColumn, text: string, previous: Value = NULL): Value | null {
+  if (text === "" && col.nullable && !TEXT_LIKE.has(col.kind)) return NULL;
+  if (col.kind === "enum" && (col.enumValues?.length ?? 0) > 0 && !col.enumValues!.includes(text))
+    return null;
+  const parsed = parseEditText(col.kind, text, previous);
+  return parsed.ok ? parsed.value : null;
+}
+
+/** One pasted row: the cells it sets, by SOURCE column index (the others keep their defaults). */
+export type PastedRow = Array<{ c: number; value: Value }>;
+
+/**
+ * Whole pasted rows (`holdsWholeRows`) typed per visible column. `src[i]` is the source index of
+ * visible column `cols[i]`. Read-only, binary and auto-increment columns are left to their
+ * defaults (like Duplicate: a copied id would clash); values that do not fit are skipped.
+ */
+export function pastedRows(
+  block: readonly (readonly string[])[],
+  cols: readonly GridColumn[],
+  src: readonly number[],
+): { rows: PastedRow[]; skipped: number } {
+  let skipped = 0;
+  const rows = block.map((fields) => {
+    const cells: PastedRow = [];
+    fields.forEach((text, i) => {
+      const col = cols[i];
+      const c = src[i];
+      if (!col || c === undefined || !col.editable || col.kind === "bytes" || col.isAutoInc) return;
+      const value = pastedValue(col, text);
+      if (value) cells.push({ c, value });
+      else skipped++;
+    });
+    return cells;
+  });
+  return { rows, skipped };
 }

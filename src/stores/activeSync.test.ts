@@ -53,8 +53,10 @@ describe("installActiveSync", () => {
     expect(conns().activeId).toBe("B");
     tabs().activate(a);
     expect(conns().activeId).toBe("A");
+    // ⌃⇥ / ⌘] stay inside the workspace (A has one tab).
     tabs().next();
-    expect(tabs().activeId).toBe(b);
+    expect(tabs().activeId).toBe(a);
+    tabs().activate(b);
     expect(conns().activeId).toBe("B");
   });
 
@@ -103,14 +105,16 @@ describe("installActiveSync", () => {
     expect(conns().activeId).toBe("A");
   });
 
-  it("Close Others on another connection's tab shows it and switches to its connection", () => {
+  it("Close Others on another connection's tab keeps the other workspace and switches to it", () => {
     conns().setActive("A");
     const a = tabs().openTable("A", users);
     const b = tabs().openTable("B", posts);
+    const b2 = tabs().newQuery("B");
     tabs().activate(a);
     expect(conns().activeId).toBe("A");
     tabs().closeOthers(b);
-    expect(tabs().tabs.map((t) => t.id)).toEqual([b]);
+    expect(tabs().tabs.map((t) => t.id)).toEqual([a, b]);
+    expect(tabs().tabs.some((t) => t.id === b2)).toBe(false);
     expect(tabs().activeId).toBe(b);
     expect(conns().activeId).toBe("B");
   });

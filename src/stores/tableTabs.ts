@@ -28,12 +28,18 @@ export interface TableTabState {
   limit: number;
   offset: number;
   columnState: ColumnState;
-  /** Set after a page loads; shown in the status bar. */
+  /** Set after a page loads (its rows, query time and SELECT show in the bottom bar). */
   page: PageInfo | null;
   count: RowCount | null;
   /** Bumped by "Refresh" to refetch without changing the request. */
   refreshToken: number;
   staging: StagingState;
+  /**
+   * The page's column names (in order) when the first pending edit was staged; null without
+   * pending edits. Staged edits address columns by position, so a commit against a page whose
+   * columns differ (the structure changed meanwhile) is refused.
+   */
+  stagedOn: string | null;
 }
 
 /** Built-in page size; new tabs use the "default page size" preference (`getPrefs().pageSize`). */
@@ -56,6 +62,7 @@ function initial(init?: Partial<TableTabState>): TableTabState {
     count: null,
     refreshToken: 0,
     staging: emptyStaging(),
+    stagedOn: null,
     ...init,
   };
 }

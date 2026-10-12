@@ -65,11 +65,11 @@ describe("SettingsDialog", () => {
     const pageSize = within(dialog).getByRole("radiogroup", { name: "Default page size" });
     await user.click(within(pageSize).getByRole("radio", { name: "200" }));
     await user.keyboard("{ArrowRight}");
-    expect(getPrefs().pageSize).toBe(500);
-    expect(within(pageSize).getByRole("radio", { name: "500" })).toHaveFocus();
+    expect(getPrefs().pageSize).toBe(300);
+    expect(within(pageSize).getByRole("radio", { name: "300" })).toHaveFocus();
 
     await user.click(within(dialog).getByRole("switch", { name: "Confirm before commit" }));
-    expect(getPrefs().confirmCommit).toBe(false);
+    expect(getPrefs().confirmCommit).toBe(true);
   });
 
   it("switches sections with Mod+digit and commits the connect timeout", async () => {
@@ -101,8 +101,11 @@ describe("SettingsDialog", () => {
     expect(within(dialog).getByText("SQL editor")).toBeInTheDocument();
     expect(within(dialog).getByText("Settings", { selector: "span" })).toBeInTheDocument();
 
-    await user.type(within(dialog).getByRole("searchbox", { name: "Search shortcuts" }), "commit");
-    expect(within(dialog).getByText("Commit changes")).toBeInTheDocument();
+    await user.type(
+      within(dialog).getByRole("searchbox", { name: "Search shortcuts" }),
+      "duplicate",
+    );
+    expect(within(dialog).getByText("Duplicate row")).toBeInTheDocument();
     expect(within(dialog).queryByText("New query tab")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("Global")).not.toBeInTheDocument();
 

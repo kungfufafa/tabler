@@ -56,10 +56,24 @@ pub struct SshConfig {
     pub keepalive_secs: Option<u32>,
 }
 
+/// TablePlus-style environment tag of a connection; the workspace's status bar shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum ConnectionTag {
+    Local,
+    Testing,
+    Development,
+    Staging,
+    Production,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", default)]
 #[ts(export)]
 pub struct ProfileOptions {
+    /// Environment tag (Local, Testing, …); None for profiles saved before tags existed.
+    pub tag: Option<ConnectionTag>,
     pub timezone: Option<String>,
     pub connect_timeout_secs: Option<u32>,
     pub read_only: bool,

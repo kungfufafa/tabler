@@ -27,9 +27,19 @@ export interface QueryTabState {
   /** File the buffer was opened from / saved to; the tab is titled after it. */
   filePath: string | null;
   historyOpen: boolean;
-  /** Editor / results split (panel id → percentage), remembered across tab switches. */
+  /**
+   * Editor / results split (panel id → percentage), remembered across tab switches. The last
+   * split with the results showing: collapsing the pane does not overwrite it.
+   */
   layout: Record<string, number> | null;
+  /** The result pane is collapsed (⌃`); a new run or explain shows it again. */
+  resultsCollapsed: boolean;
+  /** Rows read per statement (the editor bar's limit select); null = no limit. */
+  rowLimit: number | null;
 }
+
+/** Row limit of a new query tab (the backend's default cap). */
+export const DEFAULT_ROW_LIMIT = 10_000;
 
 export const EMPTY_QUERY_TAB: Readonly<QueryTabState> = Object.freeze({
   run: null,
@@ -38,6 +48,8 @@ export const EMPTY_QUERY_TAB: Readonly<QueryTabState> = Object.freeze({
   filePath: null,
   historyOpen: false,
   layout: null,
+  resultsCollapsed: false,
+  rowLimit: DEFAULT_ROW_LIMIT,
 });
 
 type Patch = Partial<QueryTabState> | ((s: QueryTabState) => Partial<QueryTabState>);

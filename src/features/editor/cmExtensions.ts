@@ -175,6 +175,8 @@ const EDITOR_ACTIONS: ReadonlySet<ActionId> = new Set<ActionId>([
   "query.cancel",
   "query.explain",
   "query.format",
+  "query.minify",
+  "query.toggle-results",
   "query.history",
   "query.save",
   "query.open",
@@ -188,13 +190,17 @@ export function toCmKey(combo: string): string {
 }
 
 /**
- * The query shortcuts, derived from KEYMAP. Normally the app's capture-phase listener handles them
- * first (and stops the event), so these only fire when it did not, e.g. no handler registered yet
- * or the editor used outside the KeyboardProvider; they never double-dispatch.
+ * The query shortcuts, derived from KEYMAP (editor bindings, and global ones allowed in the
+ * editor). Normally the app's capture-phase listener handles them first (and stops the event), so
+ * these only fire when it did not, e.g. no handler registered yet or the editor used outside the
+ * KeyboardProvider; they never double-dispatch. They also win over CodeMirror's own keymaps (⌘I
+ * is Beautify here, not "select parent syntax"; ⌘↩ runs instead of inserting a blank line).
  */
 function actionKeymap(): Extension {
   const bindings: KeyBinding[] = KEYMAP.filter(
-    (d) => d.scope === "editor" && EDITOR_ACTIONS.has(d.id),
+    (d) =>
+      EDITOR_ACTIONS.has(d.id) &&
+      (d.scope === "editor" || (d.scope === "global" && d.allowInEditor === true)),
   ).map((d) => ({
     key: toCmKey(d.keys),
     preventDefault: true,

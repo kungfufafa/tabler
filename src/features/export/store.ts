@@ -9,6 +9,7 @@ import {
   type TableRef,
   type Value,
 } from "@/lib/ipc";
+import { useTableTabsStore } from "@/stores/tableTabs";
 import { useTabsStore } from "@/stores/tabs";
 import { revealExport } from "./destination";
 import {
@@ -141,9 +142,11 @@ export function openExportForActiveTab(): boolean {
   const { tabs, activeId } = useTabsStore.getState();
   const tab = tabs.find((t) => t.id === activeId);
   if (tab && (tab.kind === "table" || tab.kind === "structure")) {
+    // The tab's filter, sort and page apply in both views, once its data view has been shown.
+    const hasRows = useTableTabsStore.getState().slices[tab.id] !== undefined;
     openExport({
       connectionId: tab.connectionId,
-      source: { kind: "table", table: tab.table, tabId: tab.kind === "table" ? tab.id : null },
+      source: { kind: "table", table: tab.table, tabId: hasRows ? tab.id : null },
     });
     return true;
   }
