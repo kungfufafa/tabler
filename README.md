@@ -151,9 +151,9 @@ pnpm tauri build --bundles app   # skip the DMG
 ```
 
 Builds are ad-hoc signed (`bundle.macOS.signingIdentity: "-"` in `src-tauri/tauri.conf.json`):
-the whole bundle is sealed under the identifier `id.co.oceanspace.tabler`, so
+the whole bundle is sealed under the identifier `com.mekayastudio.tabler`, so
 `codesign --verify --deep --strict --verbose=2 Tabler.app` passes and `codesign -dv --verbose=2`
-shows `Identifier=id.co.oceanspace.tabler` and `Sealed Resources` (a merely linker-signed bundle
+shows `Identifier=com.mekayastudio.tabler` and `Sealed Resources` (a merely linker-signed bundle
 fails that check and is reported as damaged on other Macs). Ad-hoc signing is not a Developer ID:
 a downloaded build is still quarantined by Gatekeeper; open it via right-click → Open, or remove the
 quarantine flag with `xattr -cr /Applications/Tabler.app`. Notarized releases need an Apple

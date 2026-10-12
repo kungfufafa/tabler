@@ -30,7 +30,7 @@ Prepare: `cp .env.example .env`, `pnpm dev:db:seed`, `pnpm dev:sqlite:build`, `p
 
 - [ ] Create PostgreSQL (`127.0.0.1:5432`, user `apriansyahrs`, db `tabler_dev`), MySQL (`root@127.0.0.1:3306/tabler_dev`) and SQLite (`dev/fixtures/sample.sqlite`) connections; "Test" succeeds for each.
 - [ ] Wrong password shows a readable error; MySQL 9 connects without error 2061 (caching_sha2_password).
-- [ ] Passwords never appear in `~/Library/Application Support/id.co.oceanspace.tabler/tabler.sqlite` when `TABLER_SECRETS_BACKEND=keychain`; `security find-generic-password -s tabler` finds the entry.
+- [ ] Passwords never appear in `~/Library/Application Support/com.mekayastudio.tabler/tabler.sqlite` when `TABLER_SECRETS_BACKEND=keychain`; `security find-generic-password -s tabler` finds the entry.
 - [ ] Edit, duplicate (password copied) and delete a connection; groups and colours render in the launcher.
 - [ ] SSH: a profile with an SSH tunnel prompts for an unknown host key fingerprint, connects after "Trust", and reports a changed key as an error.
 - [ ] Launcher: double-clicking a connection opens exactly one session (one tab strip workspace, `list_connections` / server process list shows one); clicking a profile that is already open switches to it.
@@ -95,5 +95,5 @@ Prepare: `cp .env.example .env`, `pnpm dev:db:seed`, `pnpm dev:sqlite:build`, `p
 ## Packaging
 
 - [ ] `pnpm tauri build` produces `Tabler.app` and a `.dmg`; the app launches from /Applications; icon looks right in Dock and Finder (light and dark).
-- [ ] Ad-hoc signature (`signingIdentity: "-"`): `codesign -dv --verbose=2 src-tauri/target/release/bundle/macos/Tabler.app` shows `Identifier=id.co.oceanspace.tabler`, `Signature=adhoc` and `Sealed Resources`; `codesign --verify --deep --strict --verbose=2 …/Tabler.app` passes (prints "valid on disk" and "satisfies its Designated Requirement").
+- [ ] Ad-hoc signature (`signingIdentity: "-"`): `codesign -dv --verbose=2 src-tauri/target/release/bundle/macos/Tabler.app` shows `Identifier=com.mekayastudio.tabler`, `Signature=adhoc` and `Sealed Resources`; `codesign --verify --deep --strict --verbose=2 …/Tabler.app` passes (prints "valid on disk" and "satisfies its Designated Requirement").
 - [ ] The DMG copied to another Mac opens after right-click → Open (not "damaged").
