@@ -89,6 +89,9 @@ pub enum SafeModeLevel {
 /// - `keychain`: stored in the macOS Keychain (the default).
 /// - `ask`: asked on every connect; kept in memory for that app session's reconnects only.
 /// - `none`: the server needs no password; never asked, nothing stored.
+/// - `command`: "Command Line (IAM authentication)": the output of `options.password_command`,
+///   run through the login shell on every connect (e.g. `aws rds generate-db-auth-token …`);
+///   the output is never stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -97,6 +100,7 @@ pub enum PasswordMode {
     Keychain,
     Ask,
     None,
+    Command,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
@@ -122,11 +126,30 @@ pub struct ProfileOptions {
     pub ssl_key_path: Option<String>,
     #[ts(optional = nullable)]
     pub ssl_cert_path: Option<String>,
+    /// The shell command of the `command` password mode. Stored with the profile (what it prints
+    /// is never stored); treated like a secret by connection exports, which only write it when
+    /// database passwords are included, and dropped on import unless the user keeps it.
+    #[ts(optional = nullable)]
+    pub password_command: Option<String>,
+    /// MySQL "Use socket": connect through a Unix socket instead of host and port.
+    #[ts(optional = nullable)]
+    pub use_socket: Option<bool>,
+    /// The socket file of "Use socket"; empty: the first of the usual paths that exists.
+    #[ts(optional = nullable)]
+    pub socket_path: Option<String>,
 }
 
 impl ProfileOptions {
     pub fn password_mode(&self) -> PasswordMode {
         self.password_mode.unwrap_or_default()
+    }
+
+    /// The trimmed password command, if one is set.
+    pub fn password_command(&self) -> Option<&str> {
+        self.password_command
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
     }
 }
 
@@ -158,6 +181,13 @@ pub struct ConnectionProfile {
     #[serde(default)]
     pub updated_at: String,
     pub last_connected_at: Option<String>,
+}
+
+impl ConnectionProfile {
+    /// A MySQL profile that connects through a Unix socket ("Use socket").
+    pub fn uses_socket(&self) -> bool {
+        self.driver == Driver::Mysql && self.options.use_socket == Some(true)
+    }
 }
 
 /// Payload of `save_profile` / `test_connection`: the profile plus any secrets being set.

@@ -27,6 +27,9 @@ pub struct AppState {
     /// reconnects (and database switches) while a connection of the profile is open; forgotten
     /// when its last one disconnects. Keyed by profile id.
     pub session_passwords: std::sync::Mutex<HashMap<Uuid, String>>,
+    /// SSH keyboard-interactive (2FA) questions waiting for the user's answer
+    /// (`answer_ssh_prompt`), by request id.
+    pub ssh_prompts: Arc<crate::tunnel::PendingPrompts>,
 }
 
 /// One open connection: the driver session plus caches and status.
@@ -71,6 +74,7 @@ impl AppState {
             exports: std::sync::Mutex::new(HashMap::new()),
             pending_host_keys: std::sync::Mutex::new(HashMap::new()),
             session_passwords: std::sync::Mutex::new(HashMap::new()),
+            ssh_prompts: Arc::new(crate::tunnel::PendingPrompts::default()),
         }
     }
 

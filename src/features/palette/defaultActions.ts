@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { openConnectionDialog } from "@/features/connections/store";
+import { cyclePane } from "@/features/navigate/panes";
 import { cycleWorkspace } from "@/features/tabs/workspaces";
 import { resolveScope } from "@/lib/keys/useShortcuts";
 import { useConnectionsStore } from "@/stores/connections";
@@ -45,6 +46,8 @@ export function useDefaultActions(): void {
       actions.register("ui.toggle-sidebar", () => ui().toggleSidebar()),
       actions.register("ui.toggle-inspector", () => ui().toggleInspector()),
       actions.register("ui.toggle-console", () => ui().toggleConsole()),
+      actions.register("ui.next-pane", () => void cyclePane(1)),
+      actions.register("ui.prev-pane", () => void cyclePane(-1)),
       actions.register("palette.open", () => usePaletteStore.getState().toggle("all")),
       actions.register("palette.databases", () => {
         // The database list belongs to a connection; without one, list the connections.

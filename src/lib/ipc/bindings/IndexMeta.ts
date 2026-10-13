@@ -4,4 +4,10 @@ export type IndexMeta = { name: string, columns: Array<string>, unique: boolean,
 /**
  * MySQL `INDEX_COMMENT`, PG `COMMENT ON INDEX`; `None` on SQLite.
  */
-comment: string | null, };
+comment: string | null, 
+/**
+ * PG `INCLUDE (…)` columns (non-key columns stored in the index); `columns` holds the key
+ * columns only. Empty elsewhere. (Optional in TS so renderer literals may leave it out;
+ * the backend always sends it.)
+ */
+include?: Array<string>, };

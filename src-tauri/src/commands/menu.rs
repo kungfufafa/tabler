@@ -32,19 +32,26 @@ pub fn accelerator_ok(accelerator: &str) -> bool {
     key_ok && parts.iter().all(|m| MODIFIERS.contains(m))
 }
 
-/// The menu item with this id, in any submenu.
-fn find_item(menu: &Menu<tauri::Wry>, id: &str) -> Option<MenuItem<tauri::Wry>> {
-    for entry in menu.items().ok()? {
-        let found = match &entry {
-            MenuItemKind::Submenu(sub) => sub.get(id),
-            MenuItemKind::MenuItem(item) if item.id() == id => Some(entry.clone()),
-            _ => None,
-        };
-        if let Some(MenuItemKind::MenuItem(item)) = found {
-            return Some(item);
+/// The menu item with this id among `items`, nested submenus included (Edit ▸ Set Value ▸ NULL,
+/// Navigate ▸ Go to Tab ▸ Tab 1).
+fn find_in(items: Vec<MenuItemKind<tauri::Wry>>, id: &str) -> Option<MenuItem<tauri::Wry>> {
+    for entry in items {
+        match entry {
+            MenuItemKind::MenuItem(item) if item.id() == id => return Some(item),
+            MenuItemKind::Submenu(sub) => {
+                if let Some(item) = find_in(sub.items().unwrap_or_default(), id) {
+                    return Some(item);
+                }
+            }
+            _ => {}
         }
     }
     None
+}
+
+/// The menu item with this id, in any submenu.
+fn find_item(menu: &Menu<tauri::Wry>, id: &str) -> Option<MenuItem<tauri::Wry>> {
+    find_in(menu.items().ok()?, id)
 }
 
 /// Rebinds the accelerators of the menu items that run renderer actions: action id (= menu item

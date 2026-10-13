@@ -6,6 +6,7 @@ import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { openExportTables } from "@/features/export/store";
 import { openImport, type ImportKind } from "@/features/import/store";
 import { actions } from "@/features/palette/actions";
+import { openGroupDialog } from "@/features/sidebar/groups";
 import {
   ipc,
   toIpcError,
@@ -19,6 +20,7 @@ import {
 import { isPinned, togglePin } from "@/stores/pins";
 import { useTabsStore } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
+import { laravelMigrations } from "./laravel";
 import type { NewTarget } from "./menu";
 import { openObjectDialog, routineRef } from "./store";
 import { newObjectTemplate, type NewObjectKind } from "./templates";
@@ -112,7 +114,8 @@ export function openNewObject(ctx: ObjectContext, kind: NewObjectKind): string {
 
 /**
  * New ▸ … and the "+" menu: Table… opens the create-table dialog (`createTable`, or the host's),
- * View… / Function… … a SQL tab with a template, Schema… the admin dialog, New Query a query tab.
+ * View… / Function… … a SQL tab with a template, Schema… the admin dialog, Group… the sidebar
+ * group dialog, New Query a query tab.
  */
 export function runNew(ctx: ObjectContext, what: NewTarget, createTable?: () => void): void {
   switch (what) {
@@ -130,6 +133,9 @@ export function runNew(ctx: ObjectContext, what: NewTarget, createTable?: () => 
       return;
     case "query":
       void actions.run("tab.new-query");
+      return;
+    case "group":
+      if (ctx.pinScope !== null) openGroupDialog({ scope: ctx.pinScope });
       return;
     default:
       openNewObject(ctx, what);
@@ -191,6 +197,28 @@ export async function copyTableScript(
           ignoreForeignKeys: false,
         };
   await copyPlan(ctx, op, kind === "drop" ? "DROP" : "TRUNCATE");
+}
+
+/**
+ * Copy Script As ▸ Laravel Migration: one migration per table (from its metadata), separated by
+ * `// ----- <table> -----` lines.
+ */
+export async function copyLaravelMigrations(
+  ctx: ObjectContext,
+  tables: readonly TableSummary[],
+): Promise<void> {
+  if (tables.length === 0) return;
+  try {
+    const metas = await Promise.all(
+      tables.map((t) => ipc.schema.table(ctx.connectionId, refOf(t))),
+    );
+    copyText(
+      laravelMigrations(metas, ctx.driver),
+      tables.length > 1 ? `Copied ${tables.length} Laravel migrations` : "Copied Laravel migration",
+    );
+  } catch (e) {
+    failed("Could not build the Laravel migration", e);
+  }
 }
 
 export async function copyRoutineScript(

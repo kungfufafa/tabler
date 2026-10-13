@@ -1,12 +1,15 @@
-import { MENU_ACTIONS } from "@/hooks/useNativeMenu";
+import { MENU_ACTIONS, MENU_UNBOUND_ACTIONS } from "@/hooks/useNativeMenu";
 import { ipc } from "@/lib/ipc";
 import { getPrefs } from "@/stores/prefs";
 import { DEFAULT_KEYMAP, KEYMAP, subscribeKeymap } from "./keymap";
 import { menuAccelerators } from "./overrides";
 
-/** Menu items with a keymap binding: their accelerator follows the user's keymap. */
-const SYNCED_IDS: readonly string[] = MENU_ACTIONS.filter((id) =>
-  DEFAULT_KEYMAP.some((d) => d.id === id),
+/**
+ * Menu items with a keymap binding: their accelerator follows the user's keymap. The ones shown
+ * without keys (`MENU_UNBOUND_ACTIONS`, context-dependent shortcuts) never get one.
+ */
+export const SYNCED_IDS: readonly string[] = MENU_ACTIONS.filter(
+  (id) => DEFAULT_KEYMAP.some((d) => d.id === id) && !MENU_UNBOUND_ACTIONS.includes(id),
 );
 
 /**

@@ -6,15 +6,23 @@ export interface ExportScope {
   /** Dialog title, e.g. "Export all connections" or "Export “Staging”". */
   title: string;
   profileIds: string[];
-  /** Group names written to the file (empty groups included). */
+  /** Group paths written to the file (empty groups and subgroups included). */
   groups: string[];
   /** Suggested file name, without the extension. */
   fileName: string;
 }
 
+/** "New Group…" / "New Subgroup…", "Rename Group…" or "Change Icon…" (`group`: a path). */
 export type GroupDialogRequest =
-  | { kind: "new"; /** Profiles to move into the new group once created. */ moveIds: string[] }
-  | { kind: "rename"; group: string };
+  | {
+      kind: "new";
+      /** The group the new one goes into ("" = top level). */
+      parent: string;
+      /** Profiles to move into the new group once created. */
+      moveIds: string[];
+    }
+  | { kind: "rename"; group: string }
+  | { kind: "icon"; group: string };
 
 interface ConnectionsIoState {
   exportScope: ExportScope | null;

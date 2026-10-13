@@ -1,0 +1,29 @@
+/*
+ * Result chart colors (see svg.ts FILE_COLORS for the same values in exported files). The eight
+ * categorical slots are assigned in this order, never cycled; the order keeps neighbouring series
+ * apart for color-vision deficiencies on the app's light and dark surfaces. "Other" (a folded pie
+ * slice) is a neutral gray.
+ */
+.tabler-chart {
+  --chart-series-1: #2a78d6;
+  --chart-series-2: #eb6834;
+  --chart-series-3: #1baf7a;
+  --chart-series-4: #eda100;
+  --chart-series-5: #e87ba4;
+  --chart-series-6: #008300;
+  --chart-series-7: #4a3aa7;
+  --chart-series-8: #e34948;
+  --chart-other: #b4b3ad;
+}
+
+.dark .tabler-chart {
+  --chart-series-1: #3987e5;
+  --chart-series-2: #d95926;
+  --chart-series-3: #199e70;
+  --chart-series-4: #c98500;
+  --chart-series-5: #d55181;
+  --chart-series-6: #008300;
+  --chart-series-7: #9085e9;
+  --chart-series-8: #e66767;
+  --chart-other: #6b6a66;
+}

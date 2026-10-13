@@ -16,7 +16,9 @@ import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
-import { useAction } from "@/features/palette/actions";
+import { reportTabCommit } from "@/features/objects/commitChain";
+import { commitObjectOpsInstead, previewObjectOpsInstead } from "@/features/objects/pendingActions";
+import { actions, useAction } from "@/features/palette/actions";
 import { guardExecution } from "@/features/safety/guard";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
 import {
@@ -81,6 +83,7 @@ import {
   setTableComment,
   setTableName,
   setTableOption,
+  setTriggerEnabled,
   stagedRename,
   suggestCheckName,
   suggestTriggerName,
@@ -394,6 +397,7 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
       method: null,
       predicate: null,
       comment: null,
+      include: [],
     };
     stage(tab.id, (current) => {
       const next = withRenameLast(addIndex(m, current, index), m.table);
@@ -556,10 +560,14 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
     if (current.length === 0 || preview.applying) return;
     // Safe mode: the generated SQL is what the connection's level asks about.
     const statements = preview.plan?.statements ?? [];
-    if (!(await guardExecution(connectionId, { kind: "commit", statements }))) return;
+    if (!(await guardExecution(connectionId, { kind: "commit", statements }))) {
+      reportTabCommit(tab.id, "cancelled");
+      return;
+    }
     setPreview((p) => ({ ...p, applying: true, error: null, failedIndex: null, executed: null }));
     try {
       const result = await ipc.ddl.apply(connectionId, table, current);
+      reportTabCommit(tab.id, result.error ? "failed" : "committed");
       if (!result.error) {
         setPreview(PREVIEW_CLOSED);
         const n = result.executed.length;
@@ -586,6 +594,7 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
       const ran = result.executed.filter(changesSchema).length;
       if (ran > 0) useStructureStore.getState().markPartial(tab.id, ran);
     } catch (e) {
+      reportTabCommit(tab.id, "failed");
       setPreview((p) => ({ ...p, applying: false, error: errorInfo(e) }));
     }
   }, [preview.ops, preview.applying, preview.plan, connectionId, table, reload, tab.id, qc]);
@@ -653,8 +662,19 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
   useEffect(() => {
     if (hasOps && isPreview) pin(tab.id);
   }, [hasOps, isPreview, pin, tab.id]);
-  useAction("grid.commit", isActive && canStage ? openPreview : null);
-  useAction("grid.preview", isActive && canStage ? openPreview : null);
+  // With nothing staged here, ⌘S / ⇧⌘P act on the connection's pending item operations (sidebar
+  // Truncate… / Delete…). Registered while the view can stage, not only once it has staged: a
+  // cell's ⌘S stages its edit and dispatches in the same tick, before any re-render.
+  const commitStaged = useCallback(() => {
+    if (stagedOps(tab.id).length === 0 && commitObjectOpsInstead(qc, connectionId)) return;
+    return openPreview();
+  }, [tab.id, qc, connectionId, openPreview]);
+  const previewStaged = useCallback(() => {
+    if (stagedOps(tab.id).length === 0 && previewObjectOpsInstead(connectionId)) return;
+    return openPreview();
+  }, [tab.id, connectionId, openPreview]);
+  useAction("grid.commit", isActive && canStage ? commitStaged : null);
+  useAction("grid.preview", isActive && canStage ? previewStaged : null);
   useAction("grid.discard", isActive && hasOps ? discard : null);
   useAction("grid.undo", isActive && canUndo ? undo : null);
   useAction("grid.redo", isActive && canRedo ? redo : null);
@@ -827,6 +847,9 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
                   onOpen={onOpenTrigger}
                   onDrop={(key) => apply((mm, current) => dropTrigger(mm, current, key))}
                   onRestore={(key) => apply((mm, current) => restoreTrigger(mm, current, key))}
+                  onSetEnabled={(key, enabled) =>
+                    apply((mm, current) => setTriggerEnabled(mm, current, key, enabled))
+                  }
                 />
               ) : (
                 <>
@@ -964,7 +987,12 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
             </BarIconButton>
             {hasOps && (
               <>
-                <BarIconButton label="Discard all changes" action="grid.discard" onClick={discard}>
+                <BarIconButton
+                  label="Discard all changes"
+                  action="grid.discard"
+                  // Same as ⇧⌘⌫ (what the tooltip shows): its observers see the discard too.
+                  onClick={() => void actions.run("grid.discard")}
+                >
                   <X />
                 </BarIconButton>
                 <BarTooltip label="Review and apply the changes" action="grid.commit">
@@ -1005,6 +1033,7 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
         table={m.table}
         onOpenChange={(open) => {
           if (open || preview.applying) return;
+          reportTabCommit(tab.id, "cancelled");
           setPreview(PREVIEW_CLOSED);
         }}
         onApply={() => void applyPreview()}

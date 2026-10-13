@@ -11,7 +11,7 @@ use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::split::leading_keywords;
 use crate::types::profile::{ConnectionProfile, Driver};
-use crate::types::query::{ExecOutcome, ResultColumn, ResultSet, StatementKind};
+use crate::types::query::{ExecOutcome, ResultColumn, ResultSet, ServerNotice, StatementKind};
 use crate::types::schema::{
     CompletionMetadata, DatabaseInfo, SchemaInfo, TableMeta, TableRef, TableSummary,
 };
@@ -26,6 +26,14 @@ pub mod sqlite;
 pub trait RowSink: Send {
     fn begin_set(&mut self, columns: Vec<ResultColumn>);
     fn rows(&mut self, rows: Vec<Vec<Value>>) -> ControlFlow<()>;
+
+    /// A server notice (PostgreSQL `RAISE NOTICE`…) raised while the statement ran (`during`),
+    /// or before it started (`!during`: bootstrap SQL, an earlier session's activity). Returns
+    /// whether the sink took it; otherwise the driver keeps it as text in
+    /// `StatementOutcome::notices` (or logs it).
+    fn notice(&mut self, _notice: &ServerNotice, _during: bool) -> bool {
+        false
+    }
 }
 
 /// A handle that can abort the statement currently running on a specific connection.
@@ -320,6 +328,11 @@ impl<'s> RowChunker<'s> {
         }
         let chunk = std::mem::take(&mut self.buf);
         self.sink.rows(chunk)
+    }
+
+    /// Hands a server notice to the sink (`RowSink::notice`).
+    pub fn notice(&mut self, notice: &ServerNotice, during: bool) -> bool {
+        self.sink.notice(notice, during)
     }
 }
 

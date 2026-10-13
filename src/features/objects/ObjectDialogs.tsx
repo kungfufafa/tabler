@@ -1,9 +1,4 @@
-import {
-  keepPreviousData,
-  useQuery,
-  useQueryClient,
-  type QueryClient,
-} from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { toast } from "sonner";
@@ -19,16 +14,17 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { invalidateSchema } from "@/features/structure/invalidate";
-import { sameRef } from "@/features/structure/model";
 import { Field } from "@/features/structure/parts";
 import type { DdlErrorInfo } from "@/features/structure/previewState";
 import { SqlBlock } from "@/features/structure/SqlBlock";
-import { useStructureStore } from "@/features/structure/store";
 import { KIND_LABEL } from "@/features/structure/tableActions";
 import { ipc, type DdlPlan, type Dialect, type ObjectOp, type TableRef } from "@/lib/ipc";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
-import { useTabsStore } from "@/stores/tabs";
+import { useConnectionsStore } from "@/stores/connections";
 import { guardedApply, objectPreviewKey } from "./apply";
+import { stageObjectOp, type StagedObjectOp } from "./pendingOps";
 import type { ObjectDialog } from "./store";
 
 function ErrorLine({ error }: { error: DdlErrorInfo | null }) {
@@ -51,7 +47,8 @@ interface OptionDef {
 
 /**
  * Confirmation of an object operation: what it acts on, its options, and the SQL it will run
- * (previewed by the backend). The confirm button asks the safe mode, then applies.
+ * (previewed by the backend). The confirm button asks the safe mode, then applies; with `stage`
+ * it hands the previewed plan over instead (a pending change, committed later with ⌘S).
  */
 function OpDialog({
   connectionId,
@@ -64,6 +61,7 @@ function OpDialog({
   confirmLabel,
   destructive = true,
   children,
+  stage,
   onDone,
   onClose,
 }: {
@@ -79,6 +77,8 @@ function OpDialog({
   confirmLabel: string;
   destructive?: boolean;
   children?: ReactNode;
+  /** Stages the op (its previewed plan) instead of running it; `onDone` is not called. */
+  stage?: (plan: DdlPlan) => void;
   /** After a successful run (also called, with `null`, after a failure that may have changed
    * something, so caches refresh). */
   onDone: (plan: DdlPlan | null) => void;
@@ -95,9 +95,19 @@ function OpDialog({
     staleTime: Infinity,
     retry: false,
   });
+  // Shown while the plan of the options just changed loads: not what the confirm button runs.
+  const stale = preview.isPlaceholderData || preview.isFetching;
 
   const run = async () => {
-    if (!op || busy) return;
+    if (!op || busy || stale) return;
+    if (stage) {
+      // The plan of exactly these options (never the previous options' placeholder).
+      const plan = qc.getQueryData<DdlPlan>(objectPreviewKey(connectionId, op));
+      if (!plan) return;
+      stage(plan);
+      onClose();
+      return;
+    }
     setBusy(true);
     setError(null);
     const outcome = await guardedApply(qc, connectionId, op);
@@ -153,7 +163,9 @@ function OpDialog({
           ) : preview.isError ? (
             <p className="text-error text-xs">{preview.error.message}</p>
           ) : preview.data ? (
-            <SqlBlock sql={sql} dialect={dialect} />
+            <div aria-busy={stale} className={cn(stale && "opacity-50")}>
+              <SqlBlock sql={sql} dialect={dialect} />
+            </div>
           ) : (
             <Loader2 className="text-muted-foreground size-3.5 animate-spin" />
           )}
@@ -172,7 +184,7 @@ function OpDialog({
             size="sm"
             variant={destructive ? "destructive" : "default"}
             onClick={() => void run()}
-            disabled={busy || op === null || preview.isError || !preview.data}
+            disabled={busy || op === null || preview.isError || !preview.data || stale}
           >
             {busy && <Loader2 className="animate-spin" />}
             {confirmLabel}
@@ -187,23 +199,18 @@ function qualified(t: TableRef): string {
   return t.schema ? `${t.schema}.${t.name}` : t.name;
 }
 
-/** Closes the tabs of dropped tables and forgets their cached metadata. */
-function forgetTables(qc: QueryClient, connectionId: string, tables: readonly TableRef[]): void {
-  const ids = useTabsStore
-    .getState()
-    .tabs.filter(
-      (t) =>
-        t.kind !== "query" &&
-        t.connectionId === connectionId &&
-        tables.some((x) => sameRef(t.table, x)),
-    )
-    .map((t) => t.id);
-  if (ids.length > 0) {
-    useStructureStore.getState().remove(ids);
-    useTabsStore.getState().forceClose(ids);
-  }
-  for (const t of tables)
-    qc.removeQueries({ queryKey: ["table", connectionId, t.schema ?? "", t.name] });
+/** "… is pending: ⌘S commits it" (TablePlus stages truncate / drop, spec §2.4). */
+function stagedToast(what: string): void {
+  const combo = shortcutFor("grid.commit");
+  toast.message(`${what} is pending`, {
+    description: `Commit it with ${combo ? formatCombo(combo) : "Commit"}, or discard it.`,
+  });
+}
+
+/** Stages `op` on the connection (on the database it is on now). */
+function stageOp(connectionId: string, op: StagedObjectOp, plan: DdlPlan): void {
+  const database = useConnectionsStore.getState().byId[connectionId]?.info.currentDatabase ?? null;
+  stageObjectOp(connectionId, op, plan.statements, database);
 }
 
 function DropTablesDialog({
@@ -217,7 +224,6 @@ function DropTablesDialog({
   dialog: Extract<ObjectDialog, { kind: "dropTables" }>;
   onClose: () => void;
 }) {
-  const qc = useQueryClient();
   const [cascade, setCascade] = useState(dialog.cascade ?? false);
   const [ignoreFk, setIgnoreFk] = useState(dialog.ignoreForeignKeys ?? false);
   const { tables } = dialog;
@@ -242,6 +248,12 @@ function DropTablesDialog({
       checked: ignoreFk,
       onChange: setIgnoreFk,
     });
+  const op: StagedObjectOp = {
+    op: "dropTables",
+    tables,
+    cascade: dialect === "postgres" && cascade,
+    ignoreForeignKeys: dialect === "mysql" && ignoreFk,
+  };
   return (
     <OpDialog
       connectionId={connectionId}
@@ -251,37 +263,26 @@ function DropTablesDialog({
         tables.length === 1 && first ? (
           <>
             <span className="font-mono">{qualified(first.table)}</span>
-            {views ? " is removed." : " and all of its rows are permanently deleted."} This cannot
-            be undone.
+            {views ? " is removed" : " and all of its rows are permanently deleted"} when you
+            commit. This cannot be undone.
           </>
         ) : (
-          "They are permanently deleted, with all of their rows. This cannot be undone."
+          "They are permanently deleted, with all of their rows, when you commit. This cannot be undone."
         )
       }
       names={tables.map((t) => t.table.name)}
       options={options}
-      op={{
-        op: "dropTables",
-        tables,
-        cascade: dialect === "postgres" && cascade,
-        ignoreForeignKeys: dialect === "mysql" && ignoreFk,
-      }}
+      op={op}
       confirmLabel="Delete"
-      onDone={(plan) => {
-        if (plan) {
-          forgetTables(
-            qc,
-            connectionId,
-            tables.map((t) => t.table),
-          );
-          toast.success(
-            tables.length === 1 && first
-              ? `Deleted ${first.table.name}`
-              : `Deleted ${tables.length} items`,
-          );
-        }
-        invalidateSchema(qc, connectionId);
+      stage={(plan) => {
+        stageOp(connectionId, op, plan);
+        stagedToast(
+          tables.length === 1 && first
+            ? `Delete ${first.table.name}`
+            : `Delete ${tables.length} items`,
+        );
       }}
+      onDone={() => undefined}
       onClose={onClose}
     />
   );
@@ -298,7 +299,6 @@ function TruncateTablesDialog({
   tables: TableRef[];
   onClose: () => void;
 }) {
-  const qc = useQueryClient();
   const [cascade, setCascade] = useState(false);
   const [restart, setRestart] = useState(false);
   const [ignoreFk, setIgnoreFk] = useState(false);
@@ -326,6 +326,13 @@ function TruncateTablesDialog({
       checked: ignoreFk,
       onChange: setIgnoreFk,
     });
+  const op: StagedObjectOp = {
+    op: "truncateTables",
+    tables,
+    cascade: dialect === "postgres" && cascade,
+    restartIdentity: dialect === "postgres" && restart,
+    ignoreForeignKeys: dialect === "mysql" && ignoreFk,
+  };
   return (
     <OpDialog
       connectionId={connectionId}
@@ -338,32 +345,26 @@ function TruncateTablesDialog({
       description={
         tables.length === 1 && first ? (
           <>
-            Every row of <span className="font-mono">{qualified(first)}</span> is deleted. This
-            cannot be undone.
+            Every row of <span className="font-mono">{qualified(first)}</span> is deleted when you
+            commit. This cannot be undone.
           </>
         ) : (
-          "Every row of these tables is deleted. This cannot be undone."
+          "Every row of these tables is deleted when you commit. This cannot be undone."
         )
       }
       names={tables.map((t) => t.name)}
       options={options}
-      op={{
-        op: "truncateTables",
-        tables,
-        cascade: dialect === "postgres" && cascade,
-        restartIdentity: dialect === "postgres" && restart,
-        ignoreForeignKeys: dialect === "mysql" && ignoreFk,
-      }}
+      op={op}
       confirmLabel="Truncate"
-      onDone={(plan) => {
-        for (const t of tables) invalidateSchema(qc, connectionId, t);
-        if (plan)
-          toast.success(
-            tables.length === 1 && first
-              ? `Truncated ${first.name}`
-              : `Truncated ${tables.length} tables`,
-          );
+      stage={(plan) => {
+        stageOp(connectionId, op, plan);
+        stagedToast(
+          tables.length === 1 && first
+            ? `Truncate ${first.name}`
+            : `Truncate ${tables.length} tables`,
+        );
       }}
+      onDone={() => undefined}
       onClose={onClose}
     />
   );

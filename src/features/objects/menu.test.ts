@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  groupEntries,
+  groupHeaderMenu,
   headerMenu,
   objectMenu,
   plusMenu,
@@ -56,6 +58,7 @@ function tableHandlers(): TableMenuHandlers {
     truncate: vi.fn(),
     drop: vi.fn(),
     copyScript: vi.fn(),
+    generateDiagram: vi.fn(),
   };
 }
 
@@ -90,7 +93,8 @@ describe("sidebar menus", () => {
       "Truncate…",
       "Delete…",
       "—",
-      { "Copy Script As": ["CREATION", "DROP", "TRUNCATE"] },
+      { "Copy Script As": ["CREATION", "DROP", "TRUNCATE", "Laravel Migration"] },
+      "Generate Diagram…",
     ]);
   });
 
@@ -111,6 +115,12 @@ describe("sidebar menus", () => {
     const script = find(m, "script-truncate");
     if (script?.kind === "item") script.onSelect();
     expect(on.copyScript).toHaveBeenCalledWith("truncate");
+    const laravel = find(m, "script-laravel");
+    if (laravel?.kind === "item") laravel.onSelect();
+    expect(on.copyScript).toHaveBeenCalledWith("laravel");
+    const diagram = find(m, "generate-diagram");
+    if (diagram?.kind === "item") diagram.onSelect();
+    expect(on.generateDiagram).toHaveBeenCalledOnce();
   });
 
   it("keeps views and read-only connections from changing data", () => {
@@ -123,6 +133,7 @@ describe("sidebar menus", () => {
     expect(disabled(view, "truncate")).toBe(true);
     expect(disabled(view, "import-csv")).toBe(true);
     expect(disabled(view, "script-truncate")).toBe(true);
+    expect(disabled(view, "script-laravel")).toBe(true);
     expect(disabled(view, "delete")).toBe(false);
 
     const ro = tableMenu({ ...TABLE, readOnly: true }, tableHandlers());
@@ -162,6 +173,69 @@ describe("sidebar menus", () => {
       { newItem: vi.fn(), itemOverview: vi.fn() },
     );
     expect(labels(h)).toEqual(["Item Overview", "—", { New: ["Table…", "View…"] }]);
+    const generateDiagram = vi.fn();
+    const tables = headerMenu(
+      { driver: "sqlite", readOnly: false, overview: true, diagram: true },
+      { newItem: vi.fn(), itemOverview: vi.fn(), generateDiagram },
+    );
+    expect(labels(tables)).toEqual([
+      "Item Overview",
+      "Generate Diagram…",
+      "—",
+      { New: ["Table…", "View…"] },
+    ]);
+    const entry = find(tables, "generate-diagram");
+    if (entry?.kind === "item") entry.onSelect();
+    expect(generateDiagram).toHaveBeenCalledOnce();
+  });
+
+  it("puts the group entries after Pin / Copy Name and lists the manual groups", () => {
+    const on = { addToGroup: vi.fn(), removeFromGroup: vi.fn(), newGroup: vi.fn() };
+    const items = groupEntries(
+      {
+        manual: [
+          { id: "g1", name: "Archive" },
+          { id: "g2", name: "Logs" },
+        ],
+        current: { id: "g2", name: "Logs" },
+      },
+      on,
+    );
+    expect(labels(items)).toEqual([
+      { "Add to Group": ["Archive", "—", "New Group…"] },
+      "Remove from Logs",
+    ]);
+    const add = find(items, "group-g1");
+    if (add?.kind === "item") add.onSelect();
+    expect(on.addToGroup).toHaveBeenCalledWith("g1");
+    const remove = find(items, "remove-from-group");
+    if (remove?.kind === "item") remove.onSelect();
+    expect(on.removeFromGroup).toHaveBeenCalledOnce();
+
+    const none = groupEntries({ manual: [], current: null }, on);
+    expect(labels(none)).toEqual([{ "Add to Group": ["New Group…"] }]);
+
+    const table = labels(tableMenu(TABLE, tableHandlers(), none));
+    expect(table.slice(4, 7)).toEqual(["Pin to Top", { "Add to Group": ["New Group…"] }, "—"]);
+    const routine = labels(
+      objectMenu(
+        { driver: "postgres", readOnly: false, count: 1 },
+        { newItem: vi.fn(), open: vi.fn(), copyName: vi.fn(), copyScript: vi.fn(), drop: vi.fn() },
+        none,
+      ),
+    );
+    expect(routine.slice(0, 3)).toEqual([
+      "Open in New Tab",
+      "Copy Name",
+      { "Add to Group": ["New Group…"] },
+    ]);
+
+    const header = { edit: vi.fn(), remove: vi.fn() };
+    const h = groupHeaderMenu(header);
+    expect(labels(h)).toEqual(["Edit Group…", "Delete Group"]);
+    const del = find(h, "group-delete");
+    if (del?.kind === "item") del.onSelect();
+    expect(header.remove).toHaveBeenCalledOnce();
   });
 
   it("builds the + menu with New… items, New Query and Settings", () => {
@@ -173,16 +247,20 @@ describe("sidebar menus", () => {
         showSequences: false,
         showSystemSchemas: false,
         showRowCounts: true,
+        showColumns: false,
       },
       vi.fn(),
     );
-    expect(labels(plusMenu("postgres", false, settings, { newItem: vi.fn() }, "Mod+T"))).toEqual([
+    const newItem = vi.fn();
+    const plus = plusMenu("postgres", false, settings, { newItem }, "Mod+T");
+    expect(labels(plus)).toEqual([
       "New Table…",
       "New View…",
       "New Materialized View…",
       "New Function…",
       "New Procedure…",
       "New Schema…",
+      "New Group…",
       "New Query",
       "—",
       {
@@ -192,9 +270,13 @@ describe("sidebar menus", () => {
           "Show Sequences",
           "Show System Schemas",
           "Show row counts",
+          "Show Columns",
         ],
       },
     ]);
+    const group = find(plus, "new-group");
+    if (group?.kind === "item") group.onSelect();
+    expect(newItem).toHaveBeenCalledWith("group");
     const mysql = settingsEntries(
       "mysql",
       {
@@ -203,13 +285,20 @@ describe("sidebar menus", () => {
         showSequences: true,
         showSystemSchemas: true,
         showRowCounts: false,
+        showColumns: true,
       },
       vi.fn(),
     );
-    expect(labels(mysql)).toEqual(["Show Recent", "Show Function Section", "Show row counts"]);
+    expect(labels(mysql)).toEqual([
+      "Show Recent",
+      "Show Function Section",
+      "Show row counts",
+      "Show Columns",
+    ]);
     expect(labels(settingsEntries("sqlite", {} as never, vi.fn()))).toEqual([
       "Show Recent",
       "Show row counts",
+      "Show Columns",
     ]);
   });
 });

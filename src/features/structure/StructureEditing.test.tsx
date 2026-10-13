@@ -241,6 +241,34 @@ describe("columns grid", () => {
     expect(ops()).toHaveLength(2);
   });
 
+  it("MySQL: right-click a column row to insert a column after it", async () => {
+    const { ops } = await setup("p-shop-mysql", MY_USERS);
+    const row = screen.getByRole("button", { name: "Select column email" }).closest("tr")!;
+    fireEvent.contextMenu(row);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Insert Column After" }));
+    expect(ops()).toEqual([
+      expect.objectContaining({ op: "addColumn", table: MY_USERS, after: "email" }),
+    ]);
+    const names = within(screen.getByRole("region", { name: "Columns" }))
+      .getAllByRole("button", { name: /^Select column / })
+      .map((b) => b.getAttribute("aria-label"));
+    const at = names.indexOf("Select column email");
+    expect(names[at + 1]).toBe("Select column column_1");
+    // Delete from the same menu
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Select column bio" }).closest("tr")!);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete Column" }));
+    expect(ops().at(-1)).toEqual({ op: "dropColumn", table: MY_USERS, name: "bio" });
+  });
+
+  it("PostgreSQL: the row menu has no column position", async () => {
+    await setup();
+    fireEvent.contextMenu(
+      screen.getByRole("button", { name: "Select column email" }).closest("tr")!,
+    );
+    expect(screen.queryByRole("menuitem", { name: "Insert Column After" })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Add Column" })).toBeInTheDocument();
+  });
+
   it("PostgreSQL: a Constant default is quoted; the check cell adds, replaces and drops", async () => {
     const { ops } = await setup();
     await pick(screen.getByRole("button", { name: "nickname default presets" }), /^Constant/);
@@ -352,6 +380,7 @@ describe("indexes and checks", () => {
           method: null,
           predicate: null,
           comment: null,
+          include: [],
         },
       },
     ]);
@@ -364,6 +393,44 @@ describe("indexes and checks", () => {
 
     fireEvent.keyDown(cell("i:users_pkey:unique"), { key: "f" });
     expect(ops()).toHaveLength(1); // the primary key is changed in the header
+  });
+
+  it("PostgreSQL indexes show INCLUDE columns, set on new indexes", async () => {
+    const { ops } = await setup();
+    const indexes = screen.getByRole("region", { name: "Indexes" });
+    const heads = within(indexes)
+      .getAllByRole("columnheader")
+      .map((h) => h.textContent);
+    expect(heads).toContain("include");
+    expect(heads.indexOf("include")).toBe(heads.indexOf("column_name") + 1);
+    // existing indexes keep theirs
+    expect(cell("i:users_pkey:include")).toBeDisabled();
+    const handle = screen.getByRole("button", { name: "Select column email" });
+    handle.focus();
+    fireEvent.click(screen.getAllByRole("button", { name: "Index" })[0]!);
+    const include = cell("ni:0:include");
+    expect(include).toBeEnabled();
+    expect(include).toHaveTextContent("none");
+    fireEvent.click(include);
+    const group = await screen.findByRole("group", { name: "users_email_idx include" });
+    fireEvent.click(within(group).getByRole("button", { name: "name" }));
+    fireEvent.keyDown(group, { key: "Escape" });
+    await waitFor(() =>
+      expect(ops()[0]).toMatchObject({ op: "addIndex", index: { include: ["name"] } }),
+    );
+    expect(cell("ni:0:include")).toHaveTextContent("name");
+    await act(() => actions.run("grid.commit"));
+    expect(await screen.findByTestId("ddl-statement-0")).toHaveTextContent(
+      'CREATE INDEX "users_email_idx" ON "public"."users" ("email") INCLUDE ("name")',
+    );
+  });
+
+  it("MySQL indexes have no include column", async () => {
+    await setup("p-shop-mysql", MY_USERS);
+    const heads = within(screen.getByRole("region", { name: "Indexes" }))
+      .getAllByRole("columnheader")
+      .map((h) => h.textContent);
+    expect(heads).not.toContain("include");
   });
 
   it("+ Check adds a check; an empty one goes away again", async () => {
@@ -389,6 +456,40 @@ describe("indexes and checks", () => {
 });
 
 describe("triggers", () => {
+  it("PostgreSQL: the enabled cell stages DISABLE / ENABLE TRIGGER; a disabled row is muted", async () => {
+    const { ops } = await setup("p-local-pg", { schema: "public", name: "posts" });
+    const posts = { schema: "public", name: "posts" };
+    fireEvent.click(screen.getByRole("button", { name: "Triggers" }));
+    const region = screen.getByRole("region", { name: "Triggers" });
+    const row = within(region).getByText("posts_set_updated_at").closest("tr")!;
+    expect(row).toHaveAttribute("data-enabled", "true");
+    const enabled = cell("t:posts_set_updated_at:enabled");
+    expect(enabled).toHaveTextContent("TRUE");
+    fireEvent.keyDown(enabled, { key: "f" });
+    expect(ops()).toEqual([{ op: "disableTrigger", table: posts, name: "posts_set_updated_at" }]);
+    expect(row).toHaveAttribute("data-enabled", "false");
+    expect(row).toHaveClass("text-muted-foreground");
+    expect(cell("t:posts_set_updated_at:enabled")).toHaveTextContent("FALSE");
+    // back on: nothing left to stage
+    fireEvent.keyDown(enabled, { key: "t" });
+    expect(ops()).toEqual([]);
+    expect(row).not.toHaveClass("text-muted-foreground");
+    await pick(enabled, "FALSE");
+    await act(() => actions.run("grid.commit"));
+    expect(await screen.findByTestId("ddl-statement-0")).toHaveTextContent(
+      'ALTER TABLE "public"."posts" DISABLE TRIGGER "posts_set_updated_at"',
+    );
+  });
+
+  it("MySQL triggers have no enabled column", async () => {
+    await setup("p-shop-mysql", { schema: "tabler_dev", name: "posts" });
+    fireEvent.click(screen.getByRole("button", { name: "Triggers" }));
+    const region = screen.getByRole("region", { name: "Triggers" });
+    expect(within(region).getByText("posts_set_updated_at")).toBeInTheDocument();
+    expect(within(region).queryByText("enabled")).toBeNull();
+    expect(document.querySelector("[data-cell-key='t:posts_set_updated_at:enabled']")).toBeNull();
+  });
+
   it("+ Trigger opens a template; editing stages DROP + CREATE; Delete drops", async () => {
     const { ops } = await setup("p-local-pg", { schema: "public", name: "posts" });
     const posts = { schema: "public", name: "posts" };

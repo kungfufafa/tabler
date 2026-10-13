@@ -1,9 +1,13 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { ArrowUpFromLine, CircleX, Eye, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { openPendingSheet, runObjectCommit } from "@/features/objects/pendingActions";
+import { useObjectOpsCommitting } from "@/features/objects/pendingOps";
 import { actions, type ActionId } from "@/features/palette/actions";
 import { cn } from "@/lib/utils";
+import { useConnectionsStore } from "@/stores/connections";
 import { ToolbarTip } from "./ToolbarButton";
-import { useActivePendingCount } from "./useActivePendingCount";
+import { useActiveObjectOpCount, useActiveTabPendingCount } from "./useActivePendingCount";
 
 function Segment({
   label,
@@ -12,6 +16,7 @@ function Segment({
   disabled,
   className,
   children,
+  onClick,
 }: {
   label: string;
   action: ActionId;
@@ -19,13 +24,15 @@ function Segment({
   disabled: boolean;
   className?: string;
   children?: ReactNode;
+  /** Instead of running `action`. */
+  onClick?: () => void;
 }) {
   const button = (
     <button
       type="button"
       aria-label={label}
       disabled={disabled}
-      onClick={() => void actions.run(action)}
+      onClick={onClick ?? (() => void actions.run(action))}
       className={cn(
         "text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-ring/50 flex h-full min-w-7 items-center justify-center gap-1 px-1.5 outline-none focus-visible:ring-2 focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-40",
         className,
@@ -46,11 +53,20 @@ function Segment({
 
 /**
  * TablePlus's action control: Discard / Preview SQL / Commit of the visible tab's staged work (a
- * table's rows or structure, or the edits in a query tab's results), in one segmented group.
- * Disabled while nothing is staged; Commit shows the pending count.
+ * table's rows or structure, or the edits in a query tab's results) and of the active
+ * connection's pending item operations (sidebar Truncate… / Delete…), in one segmented group.
+ * Commit runs the tab's commit, then the operations (the operations alone when the tab has
+ * nothing staged); Discard drops both; Preview shows both (in the operations' sheet when there are
+ * any). Disabled while nothing is staged, and Discard / Commit while the operations are being
+ * committed; Commit shows the pending count.
  */
 export function ActionControl() {
-  const pending = useActivePendingCount();
+  const qc = useQueryClient();
+  const tabPending = useActiveTabPendingCount();
+  const objectOps = useActiveObjectOpCount();
+  const pending = tabPending + objectOps;
+  const connectionId = useConnectionsStore((s) => s.activeId);
+  const committing = useObjectOpsCommitting(connectionId);
   const none = pending === 0;
   const changes = `${pending} change${pending === 1 ? "" : "s"}`;
   return (
@@ -60,14 +76,32 @@ export function ActionControl() {
       data-slot="action-control"
       className="border-border bg-surface divide-border flex h-6 shrink-0 items-stretch divide-x overflow-hidden rounded-md border"
     >
-      <Segment label="Discard changes" action="grid.discard" icon={CircleX} disabled={none} />
-      <Segment label="Preview SQL" action="grid.preview" icon={Eye} disabled={none} />
+      <Segment
+        label="Discard changes"
+        action="grid.discard"
+        icon={CircleX}
+        disabled={none || committing}
+      />
+      <Segment
+        label="Preview SQL"
+        action="grid.preview"
+        icon={Eye}
+        disabled={none}
+        onClick={
+          objectOps > 0 && connectionId !== null ? () => openPendingSheet(connectionId) : undefined
+        }
+      />
       <Segment
         label={none ? "Commit changes" : `Commit ${changes}`}
         action="grid.commit"
         icon={ArrowUpFromLine}
-        disabled={none}
+        disabled={none || committing}
         className={cn(!none && "text-brand hover:text-brand")}
+        onClick={
+          tabPending === 0 && objectOps > 0 && connectionId !== null
+            ? () => void runObjectCommit(qc, connectionId)
+            : undefined
+        }
       >
         {!none && (
           <span

@@ -30,6 +30,7 @@ import {
 } from "@/features/datagrid/types";
 import { openExportForActiveTab } from "@/features/export/store";
 import { openImport } from "@/features/import/store";
+import { reportTabCommit } from "@/features/objects/commitChain";
 import { actions, useAction } from "@/features/palette/actions";
 import { guardExecution } from "@/features/safety/guard";
 import { defaultsFor, mergeRows } from "@/features/staging/merge";
@@ -77,7 +78,7 @@ import { BottomBarFrame } from "./BarParts";
 import { TableBottomBar } from "./BottomBar";
 import { FilterBar } from "./FilterBar";
 import { filterMemoryKey, initialFilterState, rememberFilters } from "./filterMemory";
-import { defaultFilterRow, isFilterOp, joinList, toFilterGroup } from "./filters";
+import { defaultFilterRow, isFilterOp, joinList, lastAppliedRowId, toFilterGroup } from "./filters";
 import {
   openExportCurrentPage,
   pickBinaryFile,
@@ -679,6 +680,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     const req = buildRequest();
     if (!req || req.changes.length === 0) {
       afterApply.current = null;
+      reportTabCommit(tab.id, "cancelled");
       return;
     }
     setPreview({ ...PREVIEW_CLOSED, open: true, loading: true });
@@ -702,6 +704,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     const statements = await ipc.mutate.preview(connectionId, req);
     if (!(await guardExecution(connectionId, { kind: "commit", statements }))) {
       afterApply.current = null;
+      reportTabCommit(tab.id, "cancelled");
       setPreview((p) => (p.open ? { ...p, applying: false } : p));
       return;
     }
@@ -709,6 +712,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     if (result.success) {
       setPreview(PREVIEW_CLOSED);
       update(tab.id, (s) => ({ staging: discardAll(), refreshToken: s.refreshToken + 1 }));
+      reportTabCommit(tab.id, "committed");
       toast.success(
         `Applied ${result.results.length} change${result.results.length === 1 ? "" : "s"} · ${result.durationMs} ms`,
       );
@@ -718,6 +722,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       return;
     }
     afterApply.current = null;
+    reportTabCommit(tab.id, "failed");
     setStaging((s) =>
       result.results.reduce(
         (acc, r) => (r.error ? setRowError(acc, r.rowId, r.error.message) : acc),
@@ -739,12 +744,13 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
 
   const applyPreview = async () => {
     const req = buildRequest();
-    if (!req) return;
+    if (!req) return reportTabCommit(tab.id, "cancelled");
     setPreview((p) => ({ ...p, applying: true, error: null, failedIndex: null }));
     try {
       await apply(req);
     } catch (e) {
       afterApply.current = null;
+      reportTabCommit(tab.id, "failed");
       setPreview((p) => ({ ...p, applying: false, error: (e as Error).message }));
     }
   };
@@ -756,13 +762,15 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   const [committing, setCommitting] = useState(false);
   const commit = async () => {
     if (getPrefs().confirmCommit || page?.identity === "none") return openPreview();
+    if (committing) return;
     const req = buildRequest();
-    if (!req || req.changes.length === 0 || committing) return;
+    if (!req || req.changes.length === 0) return reportTabCommit(tab.id, "cancelled");
     setCommitting(true);
     try {
       await apply(req);
     } catch (e) {
       afterApply.current = null;
+      reportTabCommit(tab.id, "failed");
       toast.error("Could not apply changes", { description: (e as Error).message });
     } finally {
       setCommitting(false);
@@ -776,9 +784,21 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   };
 
   useAction("view.refresh", isActive ? refresh : null);
+  // ⌘F (View ▸ Filters): opens the bar, or keeps it open, on the last applied filter's value
+  // (TablePlus b190); Esc in the bar closes it.
+  const [filterFocus, setFilterFocus] = useState(0);
+  const lastApplied = useMemo(
+    () => (meta.data ? lastAppliedRowId(state.filters, meta.data.columns) : null),
+    [meta.data, state.filters],
+  );
   useAction(
     "grid.filter",
-    isActive ? () => update(tab.id, (s) => ({ filtersVisible: !s.filtersVisible })) : null,
+    isActive
+      ? () => {
+          update(tab.id, { filtersVisible: true });
+          setFilterFocus((n) => n + 1);
+        }
+      : null,
   );
   useAction("grid.commit", isActive && pending > 0 ? () => void commit() : null);
   useAction("grid.preview", isActive && pending > 0 ? () => void openPreview() : null);
@@ -895,7 +915,10 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     if (actions.has("grid.new-row")) void actions.run("grid.new-row");
     else onAction({ type: "newRow" });
   };
-  const toggleFilters = () => update(tab.id, (s) => ({ filtersVisible: !s.filtersVisible }));
+  const toggleFilters = () => {
+    if (!state.filtersVisible) setFilterFocus((n) => n + 1);
+    update(tab.id, (s) => ({ filtersVisible: !s.filtersVisible }));
+  };
   const onToggleColumn = (name: string, visible: boolean) =>
     update(tab.id, (s) => ({
       columnState: {
@@ -954,6 +977,8 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             focusGrid();
           }}
           onExport={() => void openExportForActiveTab()}
+          focusRequest={filterFocus}
+          focusRowId={lastApplied}
         />
       )}
       {noKey && editable && (
@@ -1041,7 +1066,10 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             : undefined
         }
         onOpenChange={(open) => {
-          if (!open) afterApply.current = null;
+          if (!open) {
+            afterApply.current = null;
+            reportTabCommit(tab.id, "cancelled");
+          }
           setPreview((p) => (open ? p : PREVIEW_CLOSED));
         }}
         onApply={() => void applyPreview()}

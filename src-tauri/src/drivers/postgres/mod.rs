@@ -25,6 +25,7 @@ use crate::drivers::{
     cancel_safe_on_stop, check_affected, settle_cancels, tx_effect,
 };
 use crate::error::AppError;
+use crate::secrets::CommandPassword;
 use crate::sqlgen::Dialect;
 use crate::types::profile::{Driver, SslMode};
 use crate::types::query::{ExecOutcome, ResultSet};
@@ -54,9 +55,14 @@ pub struct PgSession {
     notices: connect::NoticeBuffer,
     /// Editor transaction state, tracked from the statements it runs (heuristic).
     tx_state: TxState,
-    /// TLS connector and transport config, for cancel requests.
+    /// TLS connector and transport config, for cancel requests. `config` is the editor's
+    /// (pinned to the address it reached the server at), `pool_config` the pool's (the host
+    /// name, resolved per connection).
     tls: PgTls,
     config: Config,
+    pool_config: Config,
+    /// Where pool connections get their password from when the profile's comes from a command.
+    token: Option<Arc<CommandPassword>>,
     /// Held by one editor run at a time (`lock_editor_runs`).
     editor_runs: Mutex<()>,
     /// tokio-postgres's prepared type-lookup statements on the editor, as `PREPARE` statements,
@@ -69,18 +75,20 @@ impl PgSession {
     pub async fn open(target: ConnectTarget<'_>) -> Result<PgSession, AppError> {
         let profile = target.profile;
         let tls = connect::make_tls(&target)?;
-        let config = connect::make_config(&target);
+        let profile_config = connect::make_config(&target);
         let init_sql = connect::session_init_sql(&profile.options);
         let timeout = connect::connect_timeout(&profile.options);
         let (config, editor, editor_lost, editor_task, notices) = connect::open_editor(
-            config,
+            profile_config.clone(),
             &tls,
             &init_sql,
             timeout,
             profile.ssl == SslMode::Prefer,
         )
         .await?;
-        let pool = connect::build_pool(config.clone(), tls.clone(), init_sql)?;
+        let pool_config = connect::pool_config(&profile_config, &config);
+        let token = CommandPassword::for_profile(profile, target.password);
+        let pool = connect::build_pool(pool_config.clone(), tls.clone(), init_sql, token.clone())?;
         Ok(PgSession {
             pool,
             editor_token: editor.cancel_token(),
@@ -92,14 +100,24 @@ impl PgSession {
             tx_state: TxState::default(),
             tls,
             config,
+            pool_config,
+            token,
             editor_runs: Mutex::new(()),
             kept_statements: std::sync::Mutex::new(Vec::new()),
         })
     }
 
     /// A worker client from the pool (session init already applied by the `post_create` hook).
+    /// When a new connection could not be opened after the password command failed, that failure
+    /// is what is reported.
     async fn client(&self) -> Result<Object, AppError> {
-        self.pool.get().await.map_err(connect::pool_error)
+        self.pool
+            .get()
+            .await
+            .map_err(|e| match self.token.as_ref().and_then(|t| t.failure()) {
+                Some(failure) => failure,
+                None => connect::pool_error(e),
+            })
     }
 
     /// Runs `f` with the editor client, or `NotConnected` when it is gone.
@@ -123,7 +141,7 @@ impl PgSession {
     }
 
     fn take_notices(&self) -> Vec<String> {
-        std::mem::take(&mut *self.notices.lock().unwrap_or_else(|p| p.into_inner()))
+        self.notices.take_text()
     }
 
     /// The editor's prepared statements that must survive `DEALLOCATE` / `DISCARD ALL`.
@@ -142,11 +160,13 @@ impl PgSession {
         keep
     }
 
-    fn canceller(&self, client: &Client) -> editor::Canceller<'_> {
+    /// Cancels what runs on `client`, which connected with `config` (the editor's or the
+    /// pool's).
+    fn canceller<'a>(&'a self, client: &Client, config: &'a Config) -> editor::Canceller<'a> {
         editor::Canceller {
             token: client.cancel_token(),
             tls: &self.tls,
-            config: &self.config,
+            config,
         }
     }
 }
@@ -364,7 +384,7 @@ impl DbSession for PgSession {
             return Err(AppError::NotConnected);
         }
         let armed = arm_cancel(&cancel, CancelHandle::Postgres(client.cancel_token()))?;
-        self.take_notices();
+        self.notices.hand_over_earlier(sink);
         // tokio-postgres keeps its type-lookup queries prepared on the connection for good: put
         // back any that the statement drops, or describing would fail from then on.
         let prepared = if editor::drops_prepared_statements(sql) {
@@ -432,6 +452,8 @@ impl DbSession for PgSession {
         result
     }
 
+    /// The handle may be the editor's or a pool connection's: the request goes to the editor's
+    /// address (`cancel_and_wait` falls back to the host name when that address is gone).
     async fn cancel(&self, handle: CancelHandle) -> Result<(), AppError> {
         let (handle, _ticket) = handle.into_parts();
         match handle {
@@ -560,13 +582,14 @@ impl PgSession {
             run.result = Err(AppError::Cancelled);
             return run;
         }
-        let canceller = (!in_tx || run.savepoint).then(|| self.canceller(client));
+        let canceller = (!in_tx || run.savepoint).then(|| self.canceller(client, &self.config));
         run.result = editor::stream_simple(
             client,
             sql,
             described.types.as_deref(),
             Some(max_rows),
             canceller,
+            Some(&self.notices),
             sink,
         )
         .await
@@ -596,7 +619,8 @@ impl PgSession {
                 sql,
                 described.types.as_deref(),
                 None,
-                Some(self.canceller(client)),
+                Some(self.canceller(client, &self.pool_config)),
+                None,
                 sink,
             )
             .await?;
@@ -621,7 +645,7 @@ impl PgSession {
         if stopped {
             // Only a read-only query may be cut short on the server (see `cancel_safe_on_stop`).
             if cancel_safe_on_stop(sql, Dialect::Postgres) {
-                self.canceller(client).cancel_now().await;
+                self.canceller(client, &self.pool_config).cancel_now().await;
             }
             editor::drain_rows(stream.as_mut()).await?;
         }

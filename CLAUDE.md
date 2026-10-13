@@ -10,6 +10,7 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
 - `pnpm check` — typecheck + lint + format check + vitest + clippy + cargo test.
 - `pnpm test` / `pnpm test:rs` — frontend / Rust unit tests. `pnpm test:rs:int` — Rust integration tests against the DBs in `.env`.
 - `pnpm dev:db:seed` — (re)create `tabler_dev` on the local Homebrew PostgreSQL/MySQL from `dev/seed`. `pnpm dev:sqlite:build` — build `dev/fixtures/sample.sqlite`.
+- Disk: macOS keeps every build's `*.rcgu.o` in `src-tauri/target/debug/deps` (split debuginfo); they pile up to tens of GB. Stale ones are safe to delete: `find src-tauri/target/debug/deps -name '*.rcgu.o' -mmin +180 -delete`.
 - `rtk`: the user's global instructions ask to prefix shell commands with `rtk`, but the `rtk` binary is NOT on PATH in this environment. Use plain commands until it is installed.
 
 ## Conventions
@@ -38,5 +39,5 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
 - [x] M5 structure + DDL (staged column/index/FK edits, preview/apply, create/rename/truncate/drop)
 - [x] M6 tunnel + export + palette + settings + polish
 - [x] M7 packaging + docs (icon, production CSP, `pnpm tauri build` → Tabler.app + DMG, README, docs/qa-macos.md)
-- [ ] M8 TablePlus parity — roadmap and status in `docs/tableplus-parity.md` (B1 muscle memory/layout ✅, UX pass ✅, B2 safety/connections/session ✅, B3 SQL workflow/objects ✅, B4 data transfer/admin ✅; "Still open" lists the rest). The behaviour checklist is `docs/research/tableplus-functional-spec.md` (public sources only). Copy TablePlus's _behaviour_ from its public docs; never inspect or reverse-engineer the TablePlus app (EULA) — not even with tools like rea.
+- [ ] M8 TablePlus parity — roadmap and status in `docs/tableplus-parity.md` (B1 muscle memory/layout ✅, UX pass ✅, B2 safety/connections/session ✅, B3 SQL workflow/objects ✅, B4 data transfer/admin ✅, wave 2 ✅; "Still open" lists the rest; real-server checks in `docs/verify-servers.md`). The behaviour checklist is `docs/research/tableplus-functional-spec.md` (public sources only). Copy TablePlus's _behaviour_ from its public docs; never inspect or reverse-engineer the TablePlus app (EULA) — not even with tools like rea.
 - Cross-feature contracts: `guardExecution` (src/features/safety/guard.ts) must be awaited before every IPC call that sends user SQL or changes the server; dialogs of other features open through their stores (`openImport`, `openExportTables`, `openBackup`, `openAdmin…`).

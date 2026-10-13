@@ -6,6 +6,7 @@ pub mod backup;
 pub mod browse;
 pub mod connections;
 pub mod ddl;
+pub mod diagram;
 pub mod export;
 pub mod files;
 pub mod history;

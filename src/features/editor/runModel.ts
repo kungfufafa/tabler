@@ -16,6 +16,9 @@ import type {
 
 export type StatementStatus = "running" | "ok" | "error" | "cancelled";
 
+/** A server notice (PostgreSQL `RAISE NOTICE` / `WARNING`…), as `QueryEvent::Notice` sends it. */
+export type RunNotice = Omit<Extract<QueryEvent, { event: "notice" }>["data"], "index">;
+
 export interface StatementRun {
   index: number;
   sql: string;
@@ -24,6 +27,8 @@ export interface StatementRun {
   status: StatementStatus;
   result: StatementResult | null;
   error: ErrorPayload | null;
+  /** Notices the statement raised, in arrival order (streamed while it runs). */
+  notices?: RunNotice[];
 }
 
 export interface ResultSetInfo {
@@ -62,6 +67,11 @@ export interface RunState {
    * Stop can arrive after the last statement already finished.
    */
   cancelling: boolean;
+  /**
+   * Notices raised outside the run's statements (bootstrap SQL, the session's activity between
+   * runs), handed over when the run started. They go to the console log.
+   */
+  outsideNotices?: RunNotice[];
 }
 
 export interface ResultSink {
@@ -138,6 +148,26 @@ function upsertStatement(
   return out;
 }
 
+/** The notices of a statement being replaced, for its replacement. */
+const keptNotices = (prev: StatementRun | undefined): Pick<StatementRun, "notices"> =>
+  prev?.notices ? { notices: prev.notices } : {};
+
+/** Appends a notice to statement `index` (a placeholder when it has not started yet). */
+function addNotice(run: RunState, index: number, notice: RunNotice): RunState {
+  return {
+    ...run,
+    statements: upsertStatement(run.statements, index, (prev) => ({
+      index,
+      sql: prev?.sql ?? "",
+      span: prev?.span ?? { start: 0, end: 0, line: 1 },
+      status: prev?.status ?? "running",
+      result: prev?.result ?? null,
+      error: prev?.error ?? null,
+      notices: [...(prev?.notices ?? []), notice],
+    })),
+  };
+}
+
 function newSet(id: string, index: number, set: number, columns: ResultColumn[]): ResultSetInfo {
   return {
     id,
@@ -160,6 +190,7 @@ function finishStatement(run: RunState, result: StatementResult, sink: ResultSin
     status: failed ? (isCancelled(result.error) ? "cancelled" : "error") : "ok",
     result,
     error: result.error,
+    ...keptNotices(prev),
   }));
   let results = run.results;
   let own = results.filter((r) => r.statementIndex === index);
@@ -199,13 +230,14 @@ export function applyEvent(
       const { index, sql, span } = e.data;
       return {
         ...run,
-        statements: upsertStatement(run.statements, index, () => ({
+        statements: upsertStatement(run.statements, index, (prev) => ({
           index,
           sql,
           span,
           status: "running",
           result: null,
           error: null,
+          ...keptNotices(prev),
         })),
       };
     }
@@ -241,9 +273,16 @@ export function applyEvent(
           status: isCancelled(error) ? "cancelled" : "error",
           result: prev?.result ?? null,
           error,
+          ...keptNotices(prev),
         })),
         results: run.results.map((r) => (r.statementIndex === index ? { ...r, done: true } : r)),
       };
+    }
+    case "notice": {
+      const { index, ...notice } = e.data;
+      if (index === null)
+        return { ...run, outsideNotices: [...(run.outsideNotices ?? []), notice] };
+      return addNotice(run, index, notice);
     }
     case "done": {
       // A statement still "running" here never reported back; after Stop, it was the one stopped.

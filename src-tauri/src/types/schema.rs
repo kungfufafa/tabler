@@ -118,6 +118,21 @@ pub struct ColumnMeta {
     pub array_elem_type: Option<String>,
     /// Driver-specific extra info (MySQL `EXTRA`, PG identity kind…).
     pub extra: Option<String>,
+    /// PG: for a column whose type is a domain (or an array of one), the type the domain is
+    /// over, resolved through nested domains and without its modifier (`character varying`,
+    /// `numeric[]`); `None` otherwise and on the other drivers. See `ColumnMeta::cast_type`.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub base_type: Option<String>,
+}
+
+impl ColumnMeta {
+    /// The type a PostgreSQL bind parameter for this column is cast to (after `pg_cast_type`):
+    /// a domain column's base type, so the domain's modifier is applied when the value is
+    /// stored (an error when it does not fit) instead of cutting the value in the explicit cast.
+    pub fn cast_type(&self) -> &str {
+        self.base_type.as_deref().unwrap_or(&self.data_type)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -134,6 +149,12 @@ pub struct IndexMeta {
     /// MySQL `INDEX_COMMENT`, PG `COMMENT ON INDEX`; `None` on SQLite.
     #[serde(default)]
     pub comment: Option<String>,
+    /// PG `INCLUDE (…)` columns (non-key columns stored in the index); `columns` holds the key
+    /// columns only. Empty elsewhere. (Optional in TS so renderer literals may leave it out;
+    /// the backend always sends it.)
+    #[serde(default)]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub include: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -252,4 +273,23 @@ pub struct StructureChoices {
 pub struct CompletionMetadata {
     pub default_schema: Option<String>,
     pub schemas: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cast_type_prefers_the_domain_base_type() {
+        let mut col: ColumnMeta = serde_json::from_value(serde_json::json!({
+            "name": "code", "ordinal": 1, "dataType": "short_code", "kind": "text",
+            "nullable": true, "isPk": false, "isAutoIncrement": false, "isGenerated": false,
+            "isUnsigned": false
+        }))
+        .unwrap();
+        assert_eq!(col.base_type, None);
+        assert_eq!(col.cast_type(), "short_code");
+        col.base_type = Some("character varying".into());
+        assert_eq!(col.cast_type(), "character varying");
+    }
 }

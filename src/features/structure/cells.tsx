@@ -231,6 +231,9 @@ export function ColumnsCell({
   label,
   disabled,
   cellKey,
+  allowEmpty = false,
+  placeholder = "pick columns",
+  hint = "Columns, in index order",
 }: {
   value: readonly string[];
   options: readonly string[];
@@ -238,6 +241,10 @@ export function ColumnsCell({
   label: string;
   disabled?: boolean;
   cellKey?: string;
+  /** An empty pick is a value too (INCLUDE columns); otherwise it is ignored. */
+  allowEmpty?: boolean;
+  placeholder?: string;
+  hint?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<string[]>([...value]);
@@ -247,7 +254,8 @@ export function ColumnsCell({
       open={open}
       onOpenChange={(o) => {
         if (o) setDraft([...value]);
-        else if (draft.length > 0 && draft.join("\u0000") !== value.join("\u0000")) onChange(draft);
+        else if ((allowEmpty || draft.length > 0) && draft.join("\u0000") !== value.join("\u0000"))
+          onChange(draft);
         setOpen(o);
       }}
     >
@@ -259,13 +267,13 @@ export function ColumnsCell({
           className={cn(CELL_BUTTON, "font-mono text-[11px]")}
         >
           <span className={cn("truncate", !text && "text-muted-foreground/60 italic")} title={text}>
-            {text || "pick columns"}
+            {text || placeholder}
           </span>
           <Chevron />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-80 gap-2 p-2.5">
-        <p className="text-muted-foreground text-[11px]">Columns, in index order</p>
+        <p className="text-muted-foreground text-[11px]">{hint}</p>
         <OrderedPicker label={label} options={options} value={draft} onChange={setDraft} />
       </PopoverContent>
     </Popover>

@@ -6,6 +6,7 @@ mod decode;
 mod exec;
 mod introspect;
 
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -39,10 +40,42 @@ pub fn check_database_file(profile: &ConnectionProfile) -> Result<(), AppError> 
         ));
     }
     if path != ":memory:" && Path::new(path).is_file() {
-        return Ok(());
+        return match header_error(path) {
+            Some(e) => Err(e),
+            None => Ok(()),
+        };
     }
     Err(AppError::NotFound(format!(
         "SQLite database file not found: {path}. Use “New…” to create one."
+    )))
+}
+
+/// The first 16 bytes of every SQLite database file.
+const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
+/// Shown for an encrypted database (SQLCipher, b100 / #347 in the spec): opening needs its key.
+pub const ENCRYPTED_DATABASE: &str = "This database is encrypted (SQLCipher is not supported yet)";
+
+/// Why the file at `path` cannot be opened as a database, read from its header (SQLite itself
+/// only notices at the first query, with "file is not a database"). SQLCipher encrypts the whole
+/// file, header included, so an encrypted database is whole pages of random-looking bytes.
+/// `None` for a SQLite file, an empty file (an empty database) or one that cannot be read here.
+pub fn header_error(path: &str) -> Option<AppError> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    if len == 0 {
+        return None;
+    }
+    let mut header = [0u8; 16];
+    let read = file.read_exact(&mut header);
+    if read.is_ok() && &header == SQLITE_HEADER {
+        return None;
+    }
+    // Page sizes are powers of two from 512 to 65536.
+    if read.is_ok() && len >= 1024 && len % 512 == 0 {
+        return Some(AppError::Connect(ENCRYPTED_DATABASE.into()));
+    }
+    Some(AppError::Connect(format!(
+        "{path} is not a SQLite database"
     )))
 }
 
@@ -102,6 +135,9 @@ impl LiteSession {
             .clone()
             .filter(|p| !p.is_empty())
             .ok_or_else(|| AppError::InvalidInput("SQLite profile has no file path".into()))?;
+        if let Some(e) = header_error(&path) {
+            return Err(e);
+        }
         let read_only = profile.options.read_only;
         let foreign_keys = profile.options.sqlite_foreign_keys;
         let flags = if read_only {
@@ -410,6 +446,46 @@ mod tests {
             check_database_file(&profile(None)).unwrap_err().code(),
             "INVALID_INPUT"
         );
+    }
+
+    #[tokio::test]
+    async fn encrypted_and_foreign_files_get_a_clear_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // SQLCipher: whole pages of random bytes, no plain header.
+        let encrypted = dir.path().join("secret.db");
+        let bytes: Vec<u8> = (0..4096u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        std::fs::write(&encrypted, &bytes).unwrap();
+        let encrypted = encrypted.to_string_lossy().into_owned();
+        let err = check_database_file(&profile(Some(&encrypted))).unwrap_err();
+        assert_eq!(err.to_string(), ENCRYPTED_DATABASE);
+        let err = LiteSession::open(&profile(Some(&encrypted)))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(err.to_string(), ENCRYPTED_DATABASE);
+
+        // Something else entirely.
+        let text = dir.path().join("notes.txt");
+        std::fs::write(&text, "hello").unwrap();
+        let err = check_database_file(&profile(Some(&text.to_string_lossy()))).unwrap_err();
+        assert!(
+            err.to_string().contains("is not a SQLite database"),
+            "{err}"
+        );
+
+        // Real and empty databases open.
+        let real = dir
+            .path()
+            .join("real.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        create_database_file(&real).await.unwrap();
+        check_database_file(&profile(Some(&real))).unwrap();
+        let empty = dir.path().join("empty.sqlite");
+        std::fs::write(&empty, "").unwrap();
+        check_database_file(&profile(Some(&empty.to_string_lossy()))).unwrap();
     }
 
     #[tokio::test]

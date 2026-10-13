@@ -210,6 +210,7 @@ fn mcol(name: &str, data_type: &str, kind: ValueKind, pk: bool) -> ColumnMeta {
         collation: None,
         array_elem_type: None,
         extra: None,
+        base_type: None,
     }
 }
 
@@ -1808,6 +1809,7 @@ fn script_layout_orders_like_pg_dump_and_loads_partitions_once() {
         parent: TableRef::new(Some("public"), parent),
         bound: bound.into(),
         key: key.map(str::to_string),
+        objects: Vec::new(),
     };
     let events_context = PgTableContext {
         partition_key: Some("RANGE (ts)".into()),
@@ -1902,6 +1904,294 @@ fn script_layout_orders_like_pg_dump_and_loads_partitions_once() {
         layout.closing[0]
             .starts_with("ALTER TABLE \"public\".\"audit\" ADD CONSTRAINT \"audit_event_fk\"")
     );
+}
+
+#[test]
+fn script_layout_recreates_the_own_indexes_and_triggers_of_partitions() {
+    use crate::export::structure::{ScriptTable, script_layout};
+    use crate::sqlgen::ddl::{
+        PgPartition, PgPartitionObject, PgPartitionObjectKind, PgTableContext,
+    };
+
+    let col = |name: &str| mcol(name, "integer", ValueKind::Int, false);
+    let object = |kind, name: &str, definition: &str, disabled| PgPartitionObject {
+        kind,
+        name: name.into(),
+        definition: definition.into(),
+        disabled,
+    };
+    // `events` (exported) has the partitioned index `events_ts_idx`. Its partitions are
+    // recreated with it: `events_2025` with an index, a UNIQUE constraint and a disabled trigger
+    // of its own; the sub-partitioned `events_eu` with an index of its own (which reaches
+    // `events_eu_1`) and `events_eu_1` with another one. `events_2024` is exported on its own.
+    let mut events = table_meta("public", "events", vec![col("id"), col("ts")]);
+    events.kind = TableKind::Partitioned;
+    events.indexes = vec![crate::types::schema::IndexMeta {
+        name: "events_ts_idx".into(),
+        columns: vec!["ts".into()],
+        unique: false,
+        primary: false,
+        method: Some("btree".into()),
+        predicate: None,
+        definition: Some(
+            "CREATE INDEX events_ts_idx ON ONLY public.events USING btree (ts)".into(),
+        ),
+        comment: None,
+        include: vec![],
+    }];
+    events.triggers = vec![TriggerMeta {
+        name: "events_audit".into(),
+        timing: Some("AFTER".into()),
+        events: vec!["INSERT".into()],
+        enabled: true,
+        definition: "CREATE TRIGGER events_audit AFTER INSERT ON public.events FOR EACH ROW EXECUTE FUNCTION audit()".into(),
+    }];
+    let events_2024 = table_meta("public", "events_2024", vec![col("id"), col("ts")]);
+    let partition =
+        |name: &str, parent: &str, bound: &str, key: Option<&str>, objects| PgPartition {
+            table: TableRef::new(Some("public"), name),
+            parent: TableRef::new(Some("public"), parent),
+            bound: bound.into(),
+            key: key.map(str::to_string),
+            objects,
+        };
+    let events_context = PgTableContext {
+        partition_key: Some("RANGE (ts)".into()),
+        partitions: vec![
+            partition(
+                "events_2024",
+                "events",
+                "FOR VALUES FROM (0) TO (10)",
+                None,
+                vec![object(
+                    PgPartitionObjectKind::Index,
+                    "events_2024_held",
+                    "CREATE INDEX events_2024_held ON public.events_2024 USING btree (id)",
+                    false,
+                )],
+            ),
+            partition(
+                "events_2025",
+                "events",
+                "FOR VALUES FROM (10) TO (20)",
+                None,
+                vec![
+                    object(
+                        PgPartitionObjectKind::Constraint,
+                        "events_2025_id_key",
+                        "UNIQUE (id)",
+                        false,
+                    ),
+                    object(
+                        PgPartitionObjectKind::Index,
+                        "events_2025_local",
+                        "CREATE INDEX events_2025_local ON public.events_2025 USING btree (id) INCLUDE (ts)",
+                        false,
+                    ),
+                    object(
+                        PgPartitionObjectKind::Trigger,
+                        "events_2025_touch",
+                        "CREATE TRIGGER events_2025_touch BEFORE UPDATE ON public.events_2025 FOR EACH ROW EXECUTE FUNCTION touch()",
+                        true,
+                    ),
+                ],
+            ),
+            partition(
+                "events_eu",
+                "events",
+                "FOR VALUES FROM (20) TO (30)",
+                Some("LIST (id)"),
+                vec![object(
+                    PgPartitionObjectKind::Index,
+                    "events_eu_id_idx",
+                    "CREATE INDEX events_eu_id_idx ON ONLY public.events_eu USING btree (id)",
+                    false,
+                )],
+            ),
+            partition(
+                "events_eu_1",
+                "events_eu",
+                "FOR VALUES IN (1)",
+                None,
+                vec![object(
+                    PgPartitionObjectKind::Index,
+                    "events_eu_1_ts",
+                    "CREATE INDEX events_eu_1_ts ON public.events_eu_1 USING btree (ts)",
+                    false,
+                )],
+            ),
+        ],
+        ..PgTableContext::default()
+    };
+    let child_context = PgTableContext {
+        partition_bound: Some("FOR VALUES FROM (0) TO (10)".into()),
+        ancestors: vec![TableRef::new(Some("public"), "events")],
+        ..PgTableContext::default()
+    };
+    let tables = [
+        ScriptTable {
+            meta: &events,
+            context: events_context,
+        },
+        ScriptTable {
+            meta: &events_2024,
+            context: child_context,
+        },
+    ];
+    let layout = script_layout(
+        Dialect::Postgres,
+        &tables,
+        SqlScript {
+            drop_table: false,
+            structure: true,
+            content: true,
+            gzip: false,
+        },
+        true,
+    );
+    let text = &layout.opening;
+    let at = |needle: &str| {
+        text.find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing in\n{text}"))
+    };
+    // the parent's index, every partition, then the partitions' own indexes (parents first)
+    assert!(at("CREATE INDEX events_ts_idx ON ONLY public.events") < at("PARTITION OF"));
+    let last_partition = at("\"events_eu_1\" PARTITION OF \"public\".\"events_eu\"");
+    let unique = at(
+        "ALTER TABLE \"public\".\"events_2025\" ADD CONSTRAINT \"events_2025_id_key\" UNIQUE (id);",
+    );
+    let local =
+        at("CREATE INDEX events_2025_local ON public.events_2025 USING btree (id) INCLUDE (ts);");
+    // `ON ONLY` would leave the index of a partitioned partition invalid, without its partitions
+    let eu = at("CREATE INDEX events_eu_id_idx ON public.events_eu USING btree (id);");
+    let eu_1 = at("CREATE INDEX events_eu_1_ts ON public.events_eu_1 USING btree (ts);");
+    assert!(last_partition < unique && unique < local && local < eu && eu < eu_1);
+    assert!(!text.contains("ON ONLY public.events_eu "), "{text}");
+    // the partition exported on its own brings its own indexes
+    assert!(!text.contains("events_2024_held"), "{text}");
+    assert!(!text.contains("CREATE TRIGGER"), "{text}");
+    // triggers after the rows: the parent's, then the partition's own, disabled again
+    let triggers = layout.closing.last().unwrap();
+    let parent = triggers.find("CREATE TRIGGER events_audit").unwrap();
+    let own = triggers.find("CREATE TRIGGER events_2025_touch").unwrap();
+    let disable = triggers
+        .find("ALTER TABLE \"public\".\"events_2025\" DISABLE TRIGGER \"events_2025_touch\";")
+        .unwrap();
+    assert!(parent < own && own < disable, "{triggers}");
+}
+
+#[test]
+fn script_layout_creates_and_resets_a_shared_sequence_once() {
+    use crate::export::structure::{ScriptTable, script_layout};
+    use crate::sqlgen::ddl::{PgSequence, PgTableContext};
+
+    let serial = |name: &str, seq: &str| {
+        let mut c = mcol(name, "integer", ValueKind::Int, true);
+        c.default_expr = Some(format!("nextval('{seq}'::regclass)"));
+        c.is_auto_increment = true;
+        c
+    };
+    let sequence = |column: &str, name: &str, owned: bool| PgSequence {
+        column: column.into(),
+        schema: "public".into(),
+        name: name.into(),
+        owned,
+        data_type: Some("integer".into()),
+        start: Some(1),
+        increment: Some(1),
+        min: Some(1),
+        max: Some(i32::MAX.into()),
+        cache: Some(1),
+        cycle: false,
+    };
+    // `orders` owns `doc_seq`; `invoices` draws from it too; `notes` has a serial of its own.
+    // Requested: invoices first.
+    let invoices = table_meta("public", "invoices", vec![serial("id", "doc_seq")]);
+    let orders = table_meta("public", "orders", vec![serial("id", "doc_seq")]);
+    let notes = table_meta("public", "notes", vec![serial("id", "notes_id_seq")]);
+    let tables = [
+        ScriptTable {
+            meta: &invoices,
+            context: PgTableContext {
+                sequences: vec![sequence("id", "doc_seq", false)],
+                ..PgTableContext::default()
+            },
+        },
+        ScriptTable {
+            meta: &orders,
+            context: PgTableContext {
+                sequences: vec![sequence("id", "doc_seq", true)],
+                ..PgTableContext::default()
+            },
+        },
+        ScriptTable {
+            meta: &notes,
+            context: PgTableContext {
+                sequences: vec![sequence("id", "notes_id_seq", true)],
+                ..PgTableContext::default()
+            },
+        },
+    ];
+    let layout = script_layout(
+        Dialect::Postgres,
+        &tables,
+        SqlScript {
+            drop_table: true,
+            structure: true,
+            content: true,
+            gzip: false,
+        },
+        true,
+    );
+    // the owner first (created first, dropped last)
+    assert_eq!(layout.order, [1, 0, 2]);
+    let text = &layout.opening;
+    let at = |needle: &str| {
+        text.find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing in\n{text}"))
+    };
+    assert!(
+        at("DROP TABLE IF EXISTS \"public\".\"invoices\"")
+            < at("DROP TABLE IF EXISTS \"public\".\"orders\"")
+    );
+    assert_eq!(
+        text.matches("CREATE SEQUENCE IF NOT EXISTS \"public\".\"doc_seq\"")
+            .count(),
+        1,
+        "{text}"
+    );
+    assert!(
+        at("CREATE SEQUENCE IF NOT EXISTS \"public\".\"doc_seq\"")
+            < at("CREATE TABLE \"public\".\"orders\"")
+    );
+    assert!(
+        text.contains(
+            "ALTER SEQUENCE \"public\".\"doc_seq\" OWNED BY \"public\".\"orders\".\"id\";"
+        )
+    );
+    // one reset per sequence, the shared one over both tables
+    let resets = &layout.closing[0];
+    assert_eq!(resets.matches("setval").count(), 2, "{resets}");
+    assert!(resets.contains(
+        "SELECT setval(pg_get_serial_sequence('\"public\".\"notes\"', 'id'), GREATEST(MAX(\"id\"), 1)) FROM \"public\".\"notes\" HAVING MAX(\"id\") IS NOT NULL;"
+    ));
+    assert!(resets.contains(
+        "SELECT setval('\"public\".\"doc_seq\"', GREATEST(v, 1)) FROM (SELECT GREATEST((SELECT MAX(\"id\") FROM \"public\".\"invoices\"), (SELECT MAX(\"id\") FROM \"public\".\"orders\")) AS v) AS s WHERE v IS NOT NULL;"
+    ), "{resets}");
+
+    // Structure only: no resets at all.
+    let layout = script_layout(
+        Dialect::Postgres,
+        &tables,
+        SqlScript {
+            drop_table: false,
+            structure: true,
+            content: false,
+            gzip: false,
+        },
+        true,
+    );
+    assert!(layout.closing.iter().all(|s| !s.contains("setval")));
 }
 
 #[tokio::test]

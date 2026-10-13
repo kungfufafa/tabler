@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { RoutineSummary, SequenceSummary, TableSummary } from "@/lib/ipc";
-import { buildTreeRows, mergeObjectRows } from "./useSchemaTree";
+import type { RoutineSummary, SequenceSummary, TableMeta, TableSummary } from "@/lib/ipc";
+import type { SidebarGroup } from "./groups";
+import {
+  buildTreeRows,
+  groupIdOfRow,
+  isItemRow,
+  mergeObjectRows,
+  pruneEmptyGroups,
+  withColumnRows,
+  type ColumnState,
+} from "./useSchemaTree";
 
 function table(
   name: string,
@@ -234,5 +243,152 @@ describe("mergeObjectRows", () => {
       "h:Functions",
       "f:public.archive_posts()",
     ]);
+  });
+});
+
+describe("sidebar groups in the tree", () => {
+  const views: SidebarGroup = {
+    id: "v",
+    name: "Views",
+    rules: [{ field: "kind", value: "view" }],
+    members: [],
+    collapsed: false,
+  };
+  const manual: SidebarGroup = {
+    id: "m",
+    name: "Mine",
+    rules: null,
+    members: ["t:public.posts", "f:public.slugify(value text)"],
+    collapsed: false,
+  };
+  const empty: SidebarGroup = { ...manual, id: "e", name: "Empty", members: [] };
+  const fn = (name: string, args = ""): RoutineSummary => ({
+    schema: "public",
+    name,
+    kind: "function",
+    arguments: args,
+    identityArguments: args,
+    returnType: "text",
+    language: "sql",
+    comment: null,
+  });
+
+  it("lists groups (even empty ones) above Tables; grouped items leave their section", () => {
+    const rows = buildTreeRows(tables, "", undefined, undefined, undefined, [views, manual, empty]);
+    expect(keys(rows)).toEqual([
+      "g:v",
+      "g:v:t:public.user_stats",
+      "g:m",
+      "g:m:t:public.posts",
+      "g:e",
+      "h:Tables",
+      "t:public.users",
+      "t:inventory.orders",
+    ]);
+    expect(
+      rows.filter((r) => r.type === "groupHeader").map((r) => r.type === "groupHeader" && r.count),
+    ).toEqual([1, 1, 0]);
+    expect(rows.filter(isItemRow).map((r) => r.key)).not.toContain("g:v");
+    expect(groupIdOfRow("g:m:t:public.posts")).toBe("m");
+    expect(groupIdOfRow("t:public.posts")).toBeNull();
+    // Collapsed: the header (and its count) stays.
+    const collapsed = buildTreeRows(tables, "", undefined, undefined, undefined, [
+      { ...views, collapsed: true },
+    ]);
+    expect(keys(collapsed).slice(0, 2)).toEqual(["g:v", "h:Tables"]);
+  });
+
+  it("puts a group's routines after its tables and drops empty groups while searching", () => {
+    const routines = [fn("slugify", "value text"), fn("add")];
+    const rows = mergeObjectRows(
+      buildTreeRows(tables, "", undefined, undefined, undefined, [manual, empty]),
+      routines,
+      undefined,
+      "",
+      undefined,
+      [manual, empty],
+    );
+    expect(keys(rows)).toEqual([
+      "g:m",
+      "g:m:t:public.posts",
+      "g:m:f:public.slugify(value text)",
+      "g:e",
+      "h:Functions",
+      "f:public.add()",
+      "h:Tables",
+      "t:public.users",
+      "t:inventory.orders",
+      "h:Views",
+      "t:public.user_stats",
+    ]);
+    expect(rows[0]).toMatchObject({ type: "groupHeader", count: 2 });
+
+    const searched = pruneEmptyGroups(
+      mergeObjectRows(
+        buildTreeRows(tables, "slug", undefined, undefined, undefined, [manual, empty]),
+        routines,
+        undefined,
+        "slug",
+        undefined,
+        [manual, empty],
+      ),
+      "slug",
+    );
+    expect(keys(searched)).toEqual(["g:m", "g:m:f:public.slugify(value text)"]);
+    expect(pruneEmptyGroups(rows, "")).toBe(rows);
+  });
+});
+
+describe("withColumnRows", () => {
+  const meta = {
+    table: { schema: "public", name: "posts" },
+    kind: "table",
+    columns: [
+      { name: "title", ordinal: 3, dataType: "text", isPk: false },
+      { name: "id", ordinal: 1, dataType: "bigint", isPk: true },
+      { name: "user_id", ordinal: 2, dataType: "bigint", isPk: false },
+    ],
+    primaryKey: ["id"],
+    foreignKeys: [{ columns: ["user_id"] }],
+  } as unknown as TableMeta;
+
+  it("lists the columns of expanded table rows only", () => {
+    const rows = buildTreeRows(tables, "");
+    const states: Record<string, ColumnState> = {
+      posts: { status: "ready", meta },
+      users: { status: "loading" },
+      orders: { status: "error", message: "no access" },
+    };
+    const out = withColumnRows(
+      rows,
+      new Set(["t:public.posts", "t:public.users", "t:inventory.orders"]),
+      (t) => states[t.name]!,
+    );
+    expect(keys(out)).toEqual([
+      "h:Tables",
+      "t:public.users",
+      "t:public.users#status",
+      "t:public.posts",
+      "t:public.posts#c:id",
+      "t:public.posts#c:user_id",
+      "t:public.posts#c:title",
+      "t:inventory.orders",
+      "t:inventory.orders#status",
+      "h:Views",
+      "t:public.user_stats",
+    ]);
+    const cols = out.filter((r) => r.type === "column");
+    expect(cols.map((c) => c.type === "column" && [c.name, c.dataType, c.pk, c.fk])).toEqual([
+      ["id", "bigint", true, false],
+      ["user_id", "bigint", false, true],
+      ["title", "text", false, false],
+    ]);
+    expect(out.find((r) => r.key === "t:inventory.orders#status")).toMatchObject({
+      status: "error",
+      message: "no access",
+    });
+    // Columns are not items: ↑/↓ and the selection skip them.
+    expect(out.filter(isItemRow)).toHaveLength(4);
+    expect(withColumnRows(rows, new Set(), () => ({ status: "loading" }))).toBe(rows);
   });
 });

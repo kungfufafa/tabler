@@ -182,9 +182,39 @@ pub struct StatementResult {
     pub notices: Vec<String>,
 }
 
+/// A message the server sent the editor session besides results (PostgreSQL `RAISE NOTICE`,
+/// `RAISE WARNING`, "table … does not exist, skipping"…).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ServerNotice {
+    /// As the server names it: `NOTICE`, `WARNING`, `INFO`, `LOG`, `DEBUG`.
+    pub severity: String,
+    pub message: String,
+    pub detail: Option<String>,
+    pub hint: Option<String>,
+    /// Where it was raised (PostgreSQL's `CONTEXT`, e.g. "PL/pgSQL function … line 3 at RAISE").
+    pub context: Option<String>,
+}
+
+impl ServerNotice {
+    /// The notice as psql prints it: `NOTICE: …`, then `DETAIL: …` and `HINT: …` lines.
+    pub fn to_text(&self) -> String {
+        let mut text = format!("{}: {}", self.severity, self.message);
+        if let Some(detail) = &self.detail {
+            text.push_str("\nDETAIL: ");
+            text.push_str(detail);
+        }
+        if let Some(hint) = &self.hint {
+            text.push_str("\nHINT: ");
+            text.push_str(hint);
+        }
+        text
+    }
+}
+
 /// Streamed to the renderer while `run_sql` executes, in this order per statement:
 /// `started`, then (`columns`, `rows`*)* per result set, then `finished` or `failed`; `done`
-/// closes the run.
+/// closes the run. `notice` events arrive between `started` and `finished` / `failed`, as the
+/// server sends them.
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(
     tag = "event",
@@ -217,9 +247,34 @@ pub enum QueryEvent {
         index: usize,
         error: ErrorPayload,
     },
+    /// A server notice (`ServerNotice`). `index` is the statement that raised it; `None` for one
+    /// raised outside the run's statements (bootstrap SQL, an earlier session's activity), which
+    /// only arrives with the next run.
+    Notice {
+        index: Option<usize>,
+        severity: String,
+        message: String,
+        detail: Option<String>,
+        hint: Option<String>,
+        context: Option<String>,
+    },
     Done {
         total_ms: u64,
     },
+}
+
+impl QueryEvent {
+    /// The `notice` event of `notice`, raised by statement `index` (`None`: outside the run).
+    pub fn notice(index: Option<usize>, notice: &ServerNotice) -> QueryEvent {
+        QueryEvent::Notice {
+            index,
+            severity: notice.severity.clone(),
+            message: notice.message.clone(),
+            detail: notice.detail.clone(),
+            hint: notice.hint.clone(),
+            context: notice.context.clone(),
+        }
+    }
 }
 
 /// Result of the `explain` command.
@@ -371,5 +426,42 @@ mod tests {
         .unwrap();
         assert_eq!(json["event"], "failed");
         assert_eq!(json["data"]["error"]["code"], "CANCELLED");
+    }
+
+    #[test]
+    fn notice_events_and_text() {
+        let notice = ServerNotice {
+            severity: "WARNING".into(),
+            message: "careful".into(),
+            detail: Some("d".into()),
+            hint: Some("h".into()),
+            context: Some("PL/pgSQL function inline_code_block line 1 at RAISE".into()),
+        };
+        assert_eq!(notice.to_text(), "WARNING: careful\nDETAIL: d\nHINT: h");
+        let plain = ServerNotice {
+            severity: "NOTICE".into(),
+            message: "hi".into(),
+            ..ServerNotice::default()
+        };
+        assert_eq!(plain.to_text(), "NOTICE: hi");
+
+        let json = serde_json::to_value(QueryEvent::notice(Some(2), &notice)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "event": "notice",
+                "data": {
+                    "index": 2,
+                    "severity": "WARNING",
+                    "message": "careful",
+                    "detail": "d",
+                    "hint": "h",
+                    "context": "PL/pgSQL function inline_code_block line 1 at RAISE"
+                }
+            })
+        );
+        let json = serde_json::to_value(QueryEvent::notice(None, &plain)).unwrap();
+        assert_eq!(json["data"]["index"], serde_json::Value::Null);
+        assert_eq!(json["data"]["detail"], serde_json::Value::Null);
     }
 }

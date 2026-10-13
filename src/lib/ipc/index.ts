@@ -26,6 +26,7 @@ import type { TestResult } from "./bindings/TestResult";
 import type { DdlOp } from "./bindings/DdlOp";
 import type { DdlPlan } from "./bindings/DdlPlan";
 import type { DdlResult } from "./bindings/DdlResult";
+import type { DiagramSchema } from "./bindings/DiagramSchema";
 import type { ExplainMode } from "./bindings/ExplainMode";
 import type { ExplainResult } from "./bindings/ExplainResult";
 import type { ExportProgress } from "./bindings/ExportProgress";
@@ -157,6 +158,9 @@ export type { VersionFlavor } from "./bindings/VersionFlavor";
 export type { RowResult } from "./bindings/RowResult";
 export type { ConnectionStatusEvent } from "./bindings/ConnectionStatusEvent";
 export type { TunnelStatusEvent } from "./bindings/TunnelStatusEvent";
+export type { SshPromptDone } from "./bindings/SshPromptDone";
+export type { SshPromptField } from "./bindings/SshPromptField";
+export type { SshPromptRequest } from "./bindings/SshPromptRequest";
 export type { ErrorPayload } from "./bindings/ErrorPayload";
 export type { ResultColumn } from "./bindings/ResultColumn";
 export type { ColumnOrigin } from "./bindings/ColumnOrigin";
@@ -173,6 +177,10 @@ export type { TableOptions } from "./bindings/TableOptions";
 export type { CharsetInfo } from "./bindings/CharsetInfo";
 export type { UserTypeInfo } from "./bindings/UserTypeInfo";
 export type { StructureChoices } from "./bindings/StructureChoices";
+export type { DiagramSchema };
+export type { DiagramTable } from "./bindings/DiagramTable";
+export type { DiagramColumn } from "./bindings/DiagramColumn";
+export type { DiagramRelation } from "./bindings/DiagramRelation";
 export type { ObjectOp, OverviewItem, RoutineRef, RoutineSummary, SequenceSummary };
 export type { ObjectTarget } from "./bindings/ObjectTarget";
 export type { RoutineKind } from "./bindings/RoutineKind";
@@ -523,9 +531,22 @@ export const ipc = {
     /** Reads a connections file for the import preview (`needsPassword` when it is encrypted). */
     inspectConnectionsFile: (path: string, password: string | null = null) =>
       invoke<ConnectionsFilePreview>("inspect_connections_file", { path, password }),
-    /** Imports the chosen connections (ids as in the file) as new profiles. */
-    importConnections: (path: string, password: string | null, ids: string[]) =>
-      invoke<ConnectionProfile[]>("import_connections", { path, password, ids }),
+    /**
+     * Imports the chosen connections (ids as in the file) as new profiles. Password commands come
+     * in only for `keepPasswordCommands` (ids as in the file); the others ask for the password.
+     */
+    importConnections: (
+      path: string,
+      password: string | null,
+      ids: string[],
+      keepPasswordCommands: string[] = [],
+    ) =>
+      invoke<ConnectionProfile[]>("import_connections", {
+        path,
+        password,
+        ids,
+        keepPasswordCommands,
+      }),
   },
 
   connections: {
@@ -539,6 +560,12 @@ export const ipc = {
       invoke<void>("accept_host_key", { profileId, fingerprint, persistToKnownHosts }),
     switchDatabase: (connectionId: string, database: string) =>
       invoke<ConnectionInfo>("switch_database", { connectionId, database }),
+    /**
+     * Answers an SSH server's keyboard-interactive (2FA) question (`ssh:prompt`): one answer per
+     * prompt, or null to cancel the connect / test waiting for it.
+     */
+    answerSshPrompt: (requestId: string, answers: string[] | null) =>
+      invoke<void>("answer_ssh_prompt", { requestId, answers }),
   },
 
   browse: {
@@ -814,6 +841,20 @@ export const ipc = {
       invoke<void>("write_text_file", { path, content }),
     /** A whole file as a bytes value (Set Value ▸ Add a File…); at most 64 MB. */
     readBinary: (path: string) => invoke<Value>("read_binary_file", { path }),
+  },
+
+  diagram: {
+    /** Generate Diagram…: a schema's tables, columns and foreign keys, in one round trip. */
+    schemaRelations: (connectionId: string, schema: string) =>
+      logged(
+        connectionId,
+        "structure",
+        () => described(`load the diagram of ${schema}`),
+        () => invoke<DiagramSchema>("schema_relations", { connectionId, schema }),
+      ),
+    /** Writes base64-encoded bytes to `path` (the diagram's Export ▸ PNG…). */
+    writeBinaryFile: (path: string, base64: string) =>
+      invoke<void>("write_binary_file", { path, base64 }),
   },
 
   mutate: {

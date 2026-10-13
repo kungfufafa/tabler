@@ -27,7 +27,7 @@ use crate::state::{AppState, Connection};
 use crate::types::history::NewHistoryEntry;
 use crate::types::query::{
     DEFAULT_MAX_ROWS, ExplainMode, ExplainResult, QueryEvent, ResultColumn, ResultSet, RunOptions,
-    StatementKind, StatementResult, StatementSpan,
+    ServerNotice, StatementKind, StatementResult, StatementSpan,
 };
 use crate::types::value::Value;
 
@@ -79,6 +79,12 @@ impl RowSink for EventSink<'_> {
             rows,
         });
         ControlFlow::Continue(())
+    }
+
+    /// Notices go to the renderer as they arrive (`QueryEvent::Notice`), not in the summary.
+    fn notice(&mut self, notice: &ServerNotice, during: bool) -> bool {
+        (self.emit)(QueryEvent::notice(during.then_some(self.index), notice));
+        true
     }
 }
 
@@ -1199,6 +1205,49 @@ mod tests {
         assert!(a_still_running, "B waited for A instead of stopping");
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].error.as_ref().unwrap().code, "CANCELLED");
+    }
+
+    #[test]
+    fn event_sink_sends_notices_as_events() {
+        let mut events = Vec::new();
+        {
+            let mut emit = |e: QueryEvent| events.push(e);
+            let mut sink = EventSink {
+                index: 3,
+                sets: 0,
+                rows: 0,
+                first_columns: None,
+                emit: &mut emit,
+            };
+            let notice = ServerNotice {
+                severity: "WARNING".into(),
+                message: "careful".into(),
+                hint: Some("h".into()),
+                ..ServerNotice::default()
+            };
+            assert!(sink.notice(&notice, true));
+            assert!(sink.notice(&notice, false));
+        }
+        let shapes: Vec<_> = events
+            .iter()
+            .map(|e| match e {
+                QueryEvent::Notice {
+                    index,
+                    severity,
+                    message,
+                    hint,
+                    ..
+                } => (*index, severity.as_str(), message.as_str(), hint.as_deref()),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            shapes,
+            [
+                (Some(3), "WARNING", "careful", Some("h")),
+                (None, "WARNING", "careful", Some("h"))
+            ]
+        );
     }
 
     #[test]

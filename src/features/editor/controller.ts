@@ -1,3 +1,4 @@
+import { toggleLineComment } from "@codemirror/commands";
 import { diagnosticCount, setDiagnostics } from "@codemirror/lint";
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import { toast } from "sonner";
@@ -13,6 +14,8 @@ import {
 import { openExport, type ExportSourceSpec } from "@/features/export";
 import { resultTable } from "@/features/export/resultTable";
 import { commitResultEdits, hasPendingResultEdits } from "@/features/results/commit";
+import { confirmRerunDiscard } from "@/features/results/rerunConfirm";
+import { discardRunEdits, pendingForRun, useResultsStore } from "@/features/results/store";
 import { guardExecution } from "@/features/safety/guard";
 import { useConnectionsStore } from "@/stores/connections";
 import { getPrefs } from "@/stores/prefs";
@@ -27,7 +30,15 @@ import {
 import { dropResults, flushResultVersions, resultData } from "@/stores/resultData";
 import { useTabsStore } from "@/stores/tabs";
 import { anchorSubmission, toCurrentDoc } from "./docAnchors";
-import { applyToEditor, focusEditor, getEditorState, markSaved, seedEditor } from "./editorStates";
+import { toggleBlockCommentSmart } from "./cmExtensions";
+import {
+  applyToEditor,
+  focusEditor,
+  getEditorState,
+  getEditorView,
+  markSaved,
+  seedEditor,
+} from "./editorStates";
 import {
   clampRange,
   diagnostic,
@@ -219,6 +230,17 @@ export async function runQuery(
     toast.message(target === "current" ? "No statement under the cursor" : "Nothing to run");
     return;
   }
+  // The results this run replaces hold staged edits: ask before they go. A run started by
+  // something else (the Re-run button after a commit) drops them with a toast instead.
+  const replaced = getQueryTab(tabId).run?.id ?? null;
+  let discardAgreed = false;
+  if (replaced !== null && typeof target !== "object") {
+    const lost = pendingForRun(useResultsStore.getState(), tabId, replaced);
+    if (lost > 0) {
+      if (!(await confirmRerunDiscard(tabId, lost))) return;
+      discardAgreed = true;
+    }
+  }
   const sub = await prepareSql(tabId, target0, info.dialect);
   if (!sub) return;
   // The connection's safe mode may ask first; declining is not an error.
@@ -229,6 +251,8 @@ export async function runQuery(
   if (isBusy(before)) return busyNotice();
 
   clearDiagnostics(tabId);
+  // Agreed to above: dropped silently (the results lifecycle would toast about them).
+  if (discardAgreed && replaced !== null) discardRunEdits(replaced);
   const previous = before.run;
   if (previous) dropResults((id) => id.startsWith(`${previous.id}:`));
   const queryId = crypto.randomUUID();
@@ -378,6 +402,26 @@ export async function explainQuery(
       );
   }
   hooks.onHistoryChanged?.();
+}
+
+/**
+ * Edit ▸ Toggle Line Comment (⌘/) / Toggle Block Comment (⌥⌘/) on the tab's focused editor pane:
+ * the native menu's items (the keys themselves are the editor's own keymap).
+ */
+export function toggleComment(tabId: string, kind: "line" | "block"): boolean {
+  const key = activeEditorKey(tabId);
+  const view = getEditorView(key);
+  if (!view) return false;
+  const done = kind === "line" ? toggleLineComment(view) : toggleBlockCommentSmart(view);
+  focusEditor(key);
+  return done;
+}
+
+/** `toggleComment` on the active tab, when it is a query tab. */
+export function toggleCommentInActiveTab(kind: "line" | "block"): boolean {
+  const { tabs, activeId } = useTabsStore.getState();
+  const tab = tabs.find((t) => t.id === activeId);
+  return tab?.kind === "query" ? toggleComment(tab.id, kind) : false;
 }
 
 const FORMAT_LANGUAGE = { postgres: "postgresql", mysql: "mysql", sqlite: "sqlite" } as const;

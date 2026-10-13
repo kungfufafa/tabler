@@ -73,6 +73,20 @@ export const ESTIMATE_COUNT_RANGE = { min: 1_000, max: 1_000_000_000 } as const;
 export const AUTO_SAVE_QUERY_TABS = ["none", "first", "all"] as const;
 export type AutoSaveQueryTabs = (typeof AUTO_SAVE_QUERY_TABS)[number];
 
+/**
+ * General ▸ CSV default options (TablePlus): Copy Rows As ▸ CSV, the export dialog's CSV defaults
+ * and the CSV import's fallback when its detection is not sure. Quote: `"` / `'` quote every value,
+ * "ifNeeded" only the values that need it.
+ */
+export const CSV_DELIMITER_PREFS = [",", "\t", ";"] as const;
+export type CsvDelimiterPref = (typeof CSV_DELIMITER_PREFS)[number];
+export const CSV_QUOTE_PREFS = ["double", "single", "ifNeeded"] as const;
+export type CsvQuotePref = (typeof CSV_QUOTE_PREFS)[number];
+export const CSV_LINE_BREAK_PREFS = ["\n", "\r\n", "\r"] as const;
+export type CsvLineBreakPref = (typeof CSV_LINE_BREAK_PREFS)[number];
+export const CSV_DECIMAL_PREFS = [".", ","] as const;
+export type CsvDecimalPref = (typeof CSV_DECIMAL_PREFS)[number];
+
 export interface Prefs {
   /** Interface text size (Small 12px / Default 13px / Large 14px). */
   uiFontSize: UiFontSize;
@@ -116,6 +130,8 @@ export interface Prefs {
   editorQueryParamsInQuotes: boolean;
   /** "Return on Error": a multi-statement run stops at the first error. */
   editorStopOnError: boolean;
+  /** "Enable Raise Notice Notifications": PostgreSQL notices raised by a run show as toasts. */
+  editorRaiseNotices: boolean;
   /** Queries pane: a double-click inserts the query into the SQL editor instead of running it. */
   queriesDoubleClickInsert: boolean;
   /** Filter bar: the column a new filter row starts on. */
@@ -138,6 +154,11 @@ export interface Prefs {
   autoSaveQueryTabs: AutoSaveQueryTabs;
   /** Settings ▸ Shortcuts: remapped bindings (see `KeymapOverrides`). */
   keymapOverrides: KeymapOverrides;
+  /** General ▸ CSV default options (see `CSV_DELIMITER_PREFS`). */
+  csvDelimiter: CsvDelimiterPref;
+  csvQuote: CsvQuotePref;
+  csvLineBreak: CsvLineBreakPref;
+  csvDecimal: CsvDecimalPref;
 }
 
 export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
@@ -162,6 +183,7 @@ export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
   editorQueryParamsRegex: ":[\\w.]+",
   editorQueryParamsInQuotes: false,
   editorStopOnError: true,
+  editorRaiseNotices: true,
   queriesDoubleClickInsert: false,
   filterDefaultColumn: "primaryKey",
   filterDefaultOperator: "eq",
@@ -174,6 +196,10 @@ export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
   reopenWorkspaces: true,
   autoSaveQueryTabs: "all",
   keymapOverrides: EMPTY_OVERRIDES,
+  csvDelimiter: ",",
+  csvQuote: "ifNeeded",
+  csvLineBreak: "\n",
+  csvDecimal: ".",
 });
 
 const PREF_KEYS = Object.keys(DEFAULT_PREFS) as (keyof Prefs)[];
@@ -210,6 +236,7 @@ const VALID: { [K in keyof Prefs]: (v: unknown) => boolean } = {
   editorQueryParamsRegex: oneOf(QUERY_PARAM_SYNTAXES),
   editorQueryParamsInQuotes: isBool,
   editorStopOnError: isBool,
+  editorRaiseNotices: isBool,
   queriesDoubleClickInsert: isBool,
   filterDefaultColumn: oneOf(FILTER_DEFAULT_COLUMNS),
   filterDefaultOperator: oneOf(FILTER_DEFAULT_OPERATORS),
@@ -222,6 +249,10 @@ const VALID: { [K in keyof Prefs]: (v: unknown) => boolean } = {
   reopenWorkspaces: isBool,
   autoSaveQueryTabs: oneOf(AUTO_SAVE_QUERY_TABS),
   keymapOverrides: isKeymapOverrides,
+  csvDelimiter: oneOf(CSV_DELIMITER_PREFS),
+  csvQuote: oneOf(CSV_QUOTE_PREFS),
+  csvLineBreak: oneOf(CSV_LINE_BREAK_PREFS),
+  csvDecimal: oneOf(CSV_DECIMAL_PREFS),
 };
 
 function assign<K extends keyof Prefs>(target: Prefs, key: K, value: unknown): void {

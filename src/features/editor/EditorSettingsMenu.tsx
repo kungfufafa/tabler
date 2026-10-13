@@ -54,7 +54,8 @@ function Shortcut({ action }: { action: Parameters<typeof shortcutFor>[0] }) {
 /**
  * The ⚙ menu of the editor bar (TablePlus's SQL editor settings): font size, line wrapping, the
  * current-query highlight, invisible characters, autocomplete and query params options, Return
- * on Error. Every item is a preference shared by all query tabs (also in Settings ▸ Editor).
+ * on Error, Raise Notice notifications (PostgreSQL). Every item is a preference shared by all
+ * query tabs (also in Settings ▸ Editor).
  */
 export function EditorSettingsMenu() {
   const fontSize = usePrefs((p) => p.editorFontSize);
@@ -166,6 +167,7 @@ export function EditorSettingsMenu() {
         </DropdownMenuSub>
         <DropdownMenuSeparator />
         <Check pref="editorStopOnError" label="Return on Error" />
+        <Check pref="editorRaiseNotices" label="Enable Raise Notice Notifications" />
       </DropdownMenuContent>
     </DropdownMenu>
   );

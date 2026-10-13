@@ -667,6 +667,57 @@ function planLines(
   return lines;
 }
 
+/** `RAISE level 'format', args… USING HINT = '…', DETAIL = '…'` in a PL/pgSQL body. */
+const RAISE =
+  /\braise\s+(?:(notice|warning|info|log|debug|exception)\s+)?'((?:[^']|'')*)'([^;]*)/gi;
+
+const unquoteLiteral = (s: string) =>
+  s
+    .trim()
+    .replace(/^'([\s\S]*)'$/, "$1")
+    .replace(/''/g, "'");
+
+/**
+ * PostgreSQL `RAISE` statements of a `DO` block, in order: a notice event for each (as the
+ * backend streams `QueryEvent::Notice`), and an error for `RAISE EXCEPTION` (the default level).
+ */
+function raiseNotices(ctx: Ctx, sql: string, index: number): void {
+  if (ctx.driver !== "postgres" || !/^\s*do\b/i.test(sql)) return;
+  for (const m of sql.matchAll(RAISE)) {
+    const level = (m[1] ?? "exception").toUpperCase();
+    const [argText = "", using = ""] = (m[3] ?? "").split(/\busing\b/i);
+    const args = splitList(argText.replace(/^\s*,/, "")).map(unquoteLiteral);
+    let i = 0;
+    const message = (m[2] ?? "").replace(/''/g, "'").replace(/%/g, () => args[i++] ?? "%");
+    const option = (name: string) => {
+      const hit = new RegExp(`\\b${name}\\s*=\\s*('(?:[^']|'')*')`, "i").exec(using);
+      return hit ? unquoteLiteral(hit[1]!) : null;
+    };
+    if (level === "EXCEPTION")
+      throw new SqlError(
+        payload({
+          code: "DB_ERROR",
+          message,
+          detail: option("detail"),
+          hint: option("hint"),
+          sqlstate: "P0001",
+          statementIndex: index,
+        }),
+      );
+    ctx.send({
+      event: "notice",
+      data: {
+        index,
+        severity: level,
+        message,
+        detail: option("detail"),
+        hint: option("hint"),
+        context: "PL/pgSQL function inline_code_block line 1 at RAISE",
+      },
+    });
+  }
+}
+
 async function execute(
   ctx: Ctx,
   sql: string,
@@ -691,6 +742,7 @@ async function execute(
   if (!KNOWN.has(keyword)) throw syntaxError(ctx.driver, ctx.text, start + leadAt, index);
 
   await sleep(2);
+  raiseNotices(ctx, sql, index);
 
   // EXPLAIN (statement prefix or RunOptions.explain)
   const explainPrefix = /^explain(\s+analyze)?\s+/i.exec(sql);

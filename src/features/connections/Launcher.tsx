@@ -3,6 +3,7 @@ import {
   DragOverlay,
   PointerSensor,
   pointerWithin,
+  useDraggable,
   useDroppable,
   useSensor,
   useSensors,
@@ -17,8 +18,10 @@ import {
   Copy,
   Database,
   DatabaseBackup,
+  Folder,
   FolderInput,
   FolderPlus,
+  FolderUp,
   Import,
   Link2,
   MoreHorizontal,
@@ -26,11 +29,12 @@ import {
   Plug,
   Plus,
   Search,
+  Shapes,
   Share,
   Trash2,
   type LucideIcon,
 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { EmptyState } from "@/components/EmptyState";
@@ -62,24 +66,47 @@ import { comboFromEvent } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
-import { DriverBadge } from "./badges";
-import { ConnectionRow } from "./ConnectionRow";
-import { idsInGroup, knownGroups, useGroupActions, useStoredGroups } from "./groups";
+import { DriverBadge, GroupIcon } from "./badges";
+import { ConnectionRow, INDENT_PX } from "./ConnectionRow";
+import {
+  childPath,
+  GROUP_ICONS,
+  iconOf,
+  idsInSubtree,
+  isWithin,
+  knownGroups,
+  leafName,
+  moveGroupError,
+  parentPath,
+  pathDepth,
+  useGroupActions,
+  useStoredGroups,
+  type GroupIconId,
+} from "./groups";
 import { openExportConnections, openGroupDialog, startImportConnections } from "./ioStore";
 import {
+  buildConnectionTree,
   CONNECTION_SORT_LABEL,
   CONNECTION_SORTS,
   connectionRowId,
+  draggedGroup,
+  groupDragId,
   groupDropId,
   groupOfDropTarget,
-  groupProfiles,
-  isGroupCollapsed,
+  groupPathOf,
+  searchProfiles,
   visibleProfiles,
   type ConnectionSort,
+  type GroupNode,
 } from "./list";
 import { ContextMenuEntries, DropdownMenuEntries, type MenuEntry } from "./menuModel";
 import { useOpenProfile } from "./openProfile";
-import { openConnectionDialog, useConnectionDialog, useLauncherPrefs } from "./store";
+import {
+  openConnectionDialog,
+  openNewConnectionInGroup,
+  useConnectionDialog,
+  useLauncherPrefs,
+} from "./store";
 import { profileToUrl } from "./url";
 import { useDeleteProfile, useDuplicateProfile, useProfiles } from "./useConnections";
 
@@ -114,58 +141,76 @@ function WelcomeAction({
   );
 }
 
+/**
+ * A group's header: chevron, icon, name and the number of connections in it and its subgroups
+ * (indented by its level). A click collapses it. Connections dragged onto it move into the group;
+ * another group's header dragged onto it nests that group here. The header itself can be dragged
+ * onto another group (or the top-level strip).
+ */
 function GroupHeader({
-  name,
-  count,
+  node,
+  icon,
   collapsed,
-  disabled,
+  dropDisabled,
   menu,
   onToggle,
 }: {
-  name: string;
-  count: number;
+  node: GroupNode;
+  icon: GroupIconId | null;
   collapsed: boolean;
-  /** While searching every group is shown expanded. */
-  disabled: boolean;
+  /** While this group, or one enclosing it, is dragged (it cannot go into itself). */
+  dropDisabled: boolean;
   menu: readonly MenuEntry[];
   onToggle: () => void;
 }) {
-  // Connections dragged onto the header move into the group.
-  const drop = useDroppable({ id: groupDropId(name) });
+  const drop = useDroppable({ id: groupDropId(node.path), disabled: dropDisabled });
+  const drag = useDraggable({ id: groupDragId(node.path), data: { group: node.path } });
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <button
-          ref={drop.setNodeRef}
+          ref={(el) => {
+            drop.setNodeRef(el);
+            drag.setNodeRef(el);
+          }}
           type="button"
           tabIndex={-1}
           aria-expanded={!collapsed}
           data-drop-over={drop.isOver || undefined}
-          disabled={disabled}
+          data-dragging={drag.isDragging || undefined}
           // Keep the focus on the list (its keyboard handling) when clicked.
           onMouseDown={(e) => e.preventDefault()}
+          onPointerDown={
+            drag.listeners?.onPointerDown as React.PointerEventHandler<HTMLElement> | undefined
+          }
           onClick={onToggle}
+          style={{ paddingLeft: 6 + node.depth * INDENT_PX }}
           className={cn(
-            "text-muted-foreground hover:text-foreground mx-1.5 flex h-7 w-[calc(100%-0.75rem)] items-center gap-1 rounded-md px-1.5 pt-1 text-left text-[11px] font-semibold disabled:pointer-events-none",
+            "text-muted-foreground hover:text-foreground mx-1.5 flex h-7 w-[calc(100%-0.75rem)] items-center gap-1 rounded-md pt-1 pr-1.5 text-left text-[11px] font-semibold",
             drop.isOver && "bg-brand-soft text-brand ring-brand/50 ring-1",
+            drag.isDragging && "opacity-50",
           )}
         >
           <ChevronRight
             className={cn("size-3 shrink-0 transition-transform", !collapsed && "rotate-90")}
           />
-          <span className="truncate tracking-wide uppercase">{name}</span>
-          <span className="font-normal tabular-nums">{count}</span>
+          <GroupIcon icon={icon} className="size-3" />
+          <span className="truncate tracking-wide uppercase">{node.name}</span>
+          <span className="font-normal tabular-nums">{node.count}</span>
         </button>
       </ContextMenuTrigger>
-      <ContextMenuContent className="w-48">
+      <ContextMenuContent className="w-52">
         <ContextMenuEntries entries={menu} />
       </ContextMenuContent>
     </ContextMenu>
   );
 }
 
-/** While a grouped connection is dragged: drop it here to take it out of its group. */
-function NoGroupDropZone({ group }: { group: string }) {
+/**
+ * While a grouped connection or a nested group is dragged: drop it here to take it out of its
+ * group (to the top level).
+ */
+function TopLevelDropZone({ label }: { label: string }) {
   const drop = useDroppable({ id: groupDropId("") });
   return (
     <div
@@ -176,10 +221,18 @@ function NoGroupDropZone({ group }: { group: string }) {
         drop.isOver && "border-brand bg-brand-soft text-brand",
       )}
     >
-      Drop here to take it out of “{group}”
+      {label}
     </div>
   );
 }
+
+/** What is being dragged in the list: a connection row or a group header. */
+type Dragging =
+  { kind: "connection"; profile: ConnectionProfile } | { kind: "group"; path: string };
+
+/** A group's icon as a menu icon (the plain folder when it has none). */
+const menuIconOf = (icon: GroupIconId | null): LucideIcon =>
+  icon ? GROUP_ICONS[icon].icon : Folder;
 
 const separator: MenuEntry = { kind: "separator" };
 
@@ -189,11 +242,13 @@ const fileNameOf = (s: string) => s.replace(/[/\\:*?"<>|]+/g, "-").trim() || "Co
  * The welcome screen and connection manager: the first screen, and reachable later with ⌘⇧O.
  * Drawn as a compact centred window (like TablePlus's welcome window) on the window background.
  * Left: app name, version and the "new connection" actions, Backup… / Restore… at the bottom.
- * Right: the saved connections, the ungrouped ones first without a header, then the groups (empty
- * ones too); click selects, double-click / ↩ connects, ↑/↓ move, ⌫ deletes, ⌘F searches, ⌘N
- * creates. Rows can be dragged onto a group header. Right-click (or "…") offers New ▸, Sort by ▸,
- * Import / Export Connections, Move to Group ▸ and the group actions. Nothing is selected on load:
- * the list only rings its keyboard target (the first row) while it has the focus.
+ * Right: the saved connections, the ungrouped ones first without a header, then the group tree
+ * (nested, collapsible headers; empty groups too); click selects, double-click / ↩ connects,
+ * ↑/↓ move, ⌫ deletes, ⌘F searches (matches listed flat, with their group path), ⌘N creates.
+ * Rows can be dragged onto a group header, headers onto another header (nesting) or the
+ * top-level strip. Right-click (or "…") offers New ▸, Sort by ▸, Import / Export Connections,
+ * Move to Group ▸ and the group actions. Nothing is selected on load: the list only rings its
+ * keyboard target (the first row) while it has the focus.
  */
 export function Launcher() {
   const profiles = useProfiles();
@@ -222,26 +277,30 @@ export function Launcher() {
     if (savedId) setSelectedId(savedId);
   }, [savedId]);
   const [pendingDelete, setPendingDelete] = useState<ConnectionProfile | null>(null);
-  const [dragging, setDragging] = useState<ConnectionProfile | null>(null);
+  const [dragging, setDragging] = useState<Dragging | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   const all = useMemo(() => profiles.data ?? [], [profiles.data]);
-  const allGroups = useMemo(
-    () => knownGroups(storedGroups.data ?? [], all),
-    [storedGroups.data, all],
-  );
+  const records = useMemo(() => storedGroups.data ?? [], [storedGroups.data]);
+  /** Every group path, in tree order. */
+  const allGroups = useMemo(() => knownGroups(records, all), [records, all]);
   const searching = query.trim() !== "";
-  const groups = useMemo(
-    () => groupProfiles(all, query, { groups: allGroups, sort: sortBy }),
-    [all, query, allGroups, sortBy],
+  const tree = useMemo(
+    () => buildConnectionTree(all, { groups: allGroups, sort: sortBy }),
+    [all, allGroups, sortBy],
+  );
+  /** Search matches, flat in list order (shown with their group path). */
+  const results = useMemo(
+    () => (searching ? searchProfiles(all, query, sortBy) : []),
+    [all, query, searching, sortBy],
   );
   /** Rows on screen, in order (collapsed groups left out; searching shows every match). */
   const visible = useMemo(
-    () => visibleProfiles(groups, collapsed, searching),
-    [groups, collapsed, searching],
+    () => (searching ? results : visibleProfiles(tree, collapsed)),
+    [searching, results, tree, collapsed],
   );
   /**
    * The row drawn as selected: the user's pick (click, ↑/↓…) while it is on screen; while
@@ -251,7 +310,9 @@ export function Launcher() {
     visible.find((p) => p.id === selectedId) ?? (searching ? (visible[0] ?? null) : null);
   /** Where ↑/↓/↩ start from: the selection, else the first row on screen (ringed, not filled). */
   const current = selected ?? visible[0] ?? null;
-  const hasList = groups.length > 0;
+  const hasList = searching
+    ? results.length > 0
+    : tree.ungrouped.length > 0 || tree.groups.length > 0;
 
   // ⌘N new connection, ⌘F search — while the launcher (or nothing) has the focus.
   useEffect(() => {
@@ -362,21 +423,22 @@ export function Launcher() {
       groups: allGroups,
       fileName: "Connections",
     });
+  /** A group with its subgroups (empty ones too) and every connection in them. */
   const exportGroup = (group: string) =>
     openExportConnections({
       title: `Export “${group}”`,
-      profileIds: idsInGroup(all, group),
-      groups: [group],
+      profileIds: idsInSubtree(all, group),
+      groups: allGroups.filter((g) => isWithin(g, group)),
       fileName: fileNameOf(group),
     });
   const exportOne = (p: ConnectionProfile) =>
     openExportConnections({
       title: `Export “${p.name}”`,
       profileIds: [p.id],
-      groups: p.group ? [p.group] : [],
+      groups: groupOf(p) ? [groupPathOf(p)] : [],
       fileName: fileNameOf(p.name),
     });
-  const groupOf = (p: ConnectionProfile | null) => p?.group?.trim() || null;
+  const groupOf = (p: ConnectionProfile | null) => (p ? groupPathOf(p) || null : null);
 
   const exportMenu = (p: ConnectionProfile | null, group: string | null): MenuEntry => ({
     kind: "sub",
@@ -388,7 +450,7 @@ export function Launcher() {
         kind: "item",
         label: "Export this group…",
         run: () => group && exportGroup(group),
-        disabled: !group || idsInGroup(all, group).length === 0,
+        disabled: !group || idsInSubtree(all, group).length === 0,
       },
       {
         kind: "item",
@@ -410,17 +472,18 @@ export function Launcher() {
     { kind: "item", label: "Backup…", icon: DatabaseBackup, run: () => backup("backup") },
     { kind: "item", label: "Restore…", icon: ArchiveRestore, run: () => backup("restore") },
   ];
+  const newGroupItem: MenuEntry = {
+    kind: "item",
+    label: "Group…",
+    run: () => openGroupDialog({ kind: "new", parent: "", moveIds: [] }),
+  };
   const newMenu: MenuEntry = {
     kind: "sub",
     label: "New",
     icon: Plus,
     items: [
       { kind: "item", label: "Connection…", run: () => openConnectionDialog() },
-      {
-        kind: "item",
-        label: "Group…",
-        run: () => openGroupDialog({ kind: "new", moveIds: [] }),
-      },
+      newGroupItem,
     ],
   };
   const sortMenu: MenuEntry = {
@@ -447,6 +510,20 @@ export function Launcher() {
     ...backupItems,
   ];
 
+  /** The group tree as menu items (indented by level, each with its icon). */
+  const groupTreeItems = (
+    run: (group: string) => void,
+    disabled: (group: string) => boolean,
+  ): MenuEntry[] =>
+    allGroups.map((g) => ({
+      kind: "item",
+      label: leafName(g),
+      icon: menuIconOf(iconOf(records, g)),
+      indent: pathDepth(g),
+      run: () => run(g),
+      disabled: disabled(g),
+    }));
+
   const moveMenu = (p: ConnectionProfile): MenuEntry => {
     const own = groupOf(p);
     return {
@@ -454,18 +531,16 @@ export function Launcher() {
       label: "Move to Group",
       icon: FolderInput,
       items: [
-        ...allGroups.map((g): MenuEntry => ({
-          kind: "item",
-          label: g,
-          run: () => void groupActions.moveTo([p.id], g),
-          disabled: g === own,
-        })),
+        ...groupTreeItems(
+          (g) => void groupActions.moveTo([p.id], g),
+          (g) => g === own,
+        ),
         separator,
         {
           kind: "item",
           label: "New Group…",
           icon: FolderPlus,
-          run: () => openGroupDialog({ kind: "new", moveIds: [p.id] }),
+          run: () => openGroupDialog({ kind: "new", parent: "", moveIds: [p.id] }),
         },
         {
           kind: "item",
@@ -502,7 +577,42 @@ export function Launcher() {
     },
   ];
 
+  /** Moves the group `path` into `newParent` ("" = top level), refusing impossible moves. */
+  const moveGroup = (path: string, newParent: string) => {
+    if (parentPath(path) === newParent) return;
+    const problem = moveGroupError(path, newParent, allGroups);
+    if (problem) {
+      toast.error("Could not move the group", { description: problem });
+      return;
+    }
+    const to = childPath(newParent, leafName(path));
+    void groupActions.move(path, newParent).then((ok) => {
+      if (ok) useLauncherPrefs.getState().renameCollapsed(path, to);
+    });
+  };
+
   const groupMenu = (group: string): MenuEntry[] => [
+    {
+      kind: "sub",
+      label: "New",
+      icon: Plus,
+      items: [
+        {
+          kind: "item",
+          label: "Connection in this group…",
+          run: () => openNewConnectionInGroup(group),
+        },
+        { kind: "item", label: "Connection…", run: () => openConnectionDialog() },
+        newGroupItem,
+      ],
+    },
+    {
+      kind: "item",
+      label: "New Subgroup…",
+      icon: FolderPlus,
+      run: () => openGroupDialog({ kind: "new", parent: group, moveIds: [] }),
+    },
+    separator,
     {
       kind: "item",
       label: "Rename Group…",
@@ -511,38 +621,119 @@ export function Launcher() {
     },
     {
       kind: "item",
+      label: "Change Icon…",
+      icon: Shapes,
+      run: () => openGroupDialog({ kind: "icon", group }),
+    },
+    {
+      kind: "sub",
+      label: "Move to Group",
+      icon: FolderInput,
+      items: [
+        ...groupTreeItems(
+          (g) => moveGroup(group, g),
+          (g) => isWithin(g, group) || g === parentPath(group),
+        ),
+        separator,
+        {
+          kind: "item",
+          label: "Top Level",
+          icon: FolderUp,
+          run: () => moveGroup(group, ""),
+          disabled: parentPath(group) === "",
+        },
+      ],
+    },
+    separator,
+    exportMenu(null, group),
+    importItem,
+    separator,
+    {
+      kind: "item",
       label: "Delete Group",
       icon: Trash2,
+      destructive: true,
       run: () =>
         void groupActions.remove(group).then((ok) => {
           if (ok) useLauncherPrefs.getState().renameCollapsed(group, null);
         }),
     },
-    separator,
-    {
-      kind: "item",
-      label: "Export this group…",
-      icon: Share,
-      run: () => exportGroup(group),
-      disabled: idsInGroup(all, group).length === 0,
-    },
-    importItem,
-    separator,
-    newMenu,
   ];
 
   // ---- drag and drop -----------------------------------------------------------------------
 
   const onDragStart = (e: DragStartEvent) => {
+    const group = draggedGroup(e.active.id);
+    if (group !== undefined) {
+      setDragging({ kind: "group", path: group });
+      return;
+    }
     const p = all.find((x) => x.id === e.active.id);
-    setDragging(p ?? null);
+    setDragging(p ? { kind: "connection", profile: p } : null);
   };
   const onDragEnd = (e: DragEndEvent) => {
     setDragging(null);
     const target = groupOfDropTarget(e.over?.id);
+    if (target === undefined) return;
+    const group = draggedGroup(e.active.id);
+    if (group !== undefined) {
+      moveGroup(group, target ?? "");
+      return;
+    }
     const p = all.find((x) => x.id === e.active.id);
-    if (target === undefined || !p || groupOf(p) === target) return;
+    if (!p || groupOf(p) === target) return;
     void groupActions.moveTo([p.id], target);
+  };
+  const draggingGroup = dragging?.kind === "group" ? dragging.path : undefined;
+  /** The top-level strip, while something nested is dragged. */
+  const topLevelLabel =
+    dragging?.kind === "connection"
+      ? groupOf(dragging.profile) && `Drop here to take it out of “${groupOf(dragging.profile)}”`
+      : dragging?.kind === "group" && pathDepth(dragging.path) > 0
+        ? `Drop here to move “${leafName(dragging.path)}” to the top level`
+        : null;
+
+  // ---- rendering -------------------------------------------------------------------------
+
+  const renderRow = (p: ConnectionProfile, indent: number, breadcrumb?: string) => (
+    <ConnectionRow
+      key={p.id}
+      profile={p}
+      selected={selected?.id === p.id}
+      current={current?.id === p.id}
+      connecting={connecting.includes(p.id)}
+      connected={openIds.includes(p.id)}
+      menu={rowMenu(p)}
+      indent={indent}
+      breadcrumb={breadcrumb}
+      onSelect={() => setSelectedId(p.id)}
+      onConnect={() => openProfile(p.id)}
+    />
+  );
+  /** A group: its header, then (unless collapsed) its connections and its subgroups. */
+  const renderGroup = (node: GroupNode): ReactNode => {
+    const isCollapsed = collapsed.includes(node.path);
+    return (
+      <div key={node.path} role="group" aria-label={node.path}>
+        <GroupHeader
+          node={node}
+          icon={iconOf(records, node.path)}
+          collapsed={isCollapsed}
+          dropDisabled={draggingGroup !== undefined && isWithin(node.path, draggingGroup)}
+          menu={groupMenu(node.path)}
+          onToggle={() => {
+            toggleGroup(node.path);
+            listRef.current?.focus({ preventScroll: true });
+          }}
+        />
+        {!isCollapsed && (
+          <>
+            {node.profiles.map((p) => renderRow(p, node.depth))}
+            {node.children.map(renderGroup)}
+          </>
+        )}
+      </div>
+    );
   };
 
   const version = appInfo.data?.version;
@@ -685,9 +876,7 @@ export function Launcher() {
                     onDragEnd={onDragEnd}
                     onDragCancel={() => setDragging(null)}
                   >
-                    {dragging && groupOf(dragging) && (
-                      <NoGroupDropZone group={groupOf(dragging) ?? ""} />
-                    )}
+                    {topLevelLabel && <TopLevelDropZone label={topLevelLabel} />}
                     <div
                       ref={listRef}
                       role="listbox"
@@ -697,49 +886,30 @@ export function Launcher() {
                       onKeyDown={onListKeyDown}
                       className="group/list flex flex-col outline-none"
                     >
-                      {groups.map(([group, items]) => {
-                        const isCollapsed = isGroupCollapsed(group, collapsed, searching);
-                        const rows = isCollapsed
-                          ? null
-                          : items.map((p) => (
-                              <ConnectionRow
-                                key={p.id}
-                                profile={p}
-                                selected={selected?.id === p.id}
-                                current={current?.id === p.id}
-                                connecting={connecting.includes(p.id)}
-                                connected={openIds.includes(p.id)}
-                                menu={rowMenu(p)}
-                                onSelect={() => setSelectedId(p.id)}
-                                onConnect={() => openProfile(p.id)}
-                              />
-                            ));
-                        // Connections without a group come first, without a header.
-                        if (group === "") return <Fragment key="">{rows}</Fragment>;
-                        return (
-                          <div key={group} role="group" aria-label={group}>
-                            <GroupHeader
-                              name={group}
-                              count={items.length}
-                              collapsed={isCollapsed}
-                              disabled={searching}
-                              menu={groupMenu(group)}
-                              onToggle={() => {
-                                toggleGroup(group);
-                                listRef.current?.focus({ preventScroll: true });
-                              }}
-                            />
-                            {rows}
-                          </div>
-                        );
-                      })}
+                      {searching
+                        ? results.map((p) => renderRow(p, 0, groupPathOf(p) || undefined))
+                        : [
+                            // Connections without a group come first, without a header.
+                            ...tree.ungrouped.map((p) => renderRow(p, 0)),
+                            ...tree.groups.map(renderGroup),
+                          ]}
                     </div>
                     <DragOverlay dropAnimation={null}>
-                      {dragging ? (
+                      {dragging?.kind === "connection" ? (
                         <div className="bg-popover border-border flex h-9 w-56 items-center gap-2 rounded-md border px-2 shadow-md">
-                          <DriverBadge driver={dragging.driver} color={dragging.color} />
+                          <DriverBadge
+                            driver={dragging.profile.driver}
+                            color={dragging.profile.color}
+                          />
                           <span className="truncate text-[13px] font-semibold">
-                            {dragging.name}
+                            {dragging.profile.name}
+                          </span>
+                        </div>
+                      ) : dragging?.kind === "group" ? (
+                        <div className="bg-popover border-border flex h-8 w-56 items-center gap-1.5 rounded-md border px-2 shadow-md">
+                          <GroupIcon icon={iconOf(records, dragging.path)} fallback />
+                          <span className="truncate text-[11px] font-semibold tracking-wide uppercase">
+                            {leafName(dragging.path)}
                           </span>
                         </div>
                       ) : null}

@@ -6,6 +6,9 @@ import {
   Eraser,
   Eye,
   FileCode2,
+  Folder,
+  FolderMinus,
+  FolderPen,
   FolderPlus,
   Info,
   Layers,
@@ -20,6 +23,7 @@ import {
   TableProperties,
   Trash2,
   Upload,
+  Waypoints,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -56,7 +60,7 @@ export type MenuEntry =
 const sep = (id: string): MenuEntry => ({ kind: "separator", id });
 
 /** What the "New ▸" submenu (and the "+" menu) can create. */
-export type NewTarget = "table" | NewObjectKind | "schema" | "query";
+export type NewTarget = "table" | NewObjectKind | "schema" | "query" | "group";
 
 export interface NewMenuHandlers {
   newItem: (what: NewTarget) => void;
@@ -149,13 +153,22 @@ export interface TableMenuHandlers extends NewMenuHandlers {
   rename: () => void;
   truncate: () => void;
   drop: () => void;
-  copyScript: (kind: "creation" | "drop" | "truncate") => void;
+  copyScript: (kind: "creation" | "drop" | "truncate" | "laravel") => void;
+  /** Generate Diagram… of the targets. */
+  generateDiagram: () => void;
 }
 
 const many = (n: number) => (n > 1 ? ` ${n} Items` : "");
 
-/** The table / view context menu, in TablePlus's order (spec §2.4). */
-export function tableMenu(o: TableMenuOptions, on: TableMenuHandlers): MenuEntry[] {
+/**
+ * The table / view context menu, in TablePlus's order (spec §2.4). `groupItems` (sidebar groups,
+ * `groupEntries`) follow the pin entry.
+ */
+export function tableMenu(
+  o: TableMenuOptions,
+  on: TableMenuHandlers,
+  groupItems: readonly MenuEntry[] = [],
+): MenuEntry[] {
   const entries: MenuEntry[] = [
     {
       kind: "item",
@@ -194,6 +207,7 @@ export function tableMenu(o: TableMenuOptions, on: TableMenuHandlers): MenuEntry
       icon: o.allPinned ? PinOff : Pin,
       onSelect: on.togglePin,
     });
+  entries.push(...groupItems);
   entries.push(
     sep("s1"),
     {
@@ -288,10 +302,86 @@ export function tableMenu(o: TableMenuOptions, on: TableMenuHandlers): MenuEntry
           disabled: !o.isTable,
           onSelect: () => on.copyScript("truncate"),
         },
+        {
+          kind: "item",
+          id: "script-laravel",
+          label: "Laravel Migration",
+          disabled: o.truncatable === 0,
+          onSelect: () => on.copyScript("laravel"),
+        },
       ],
+    },
+    {
+      kind: "item",
+      id: "generate-diagram",
+      label: "Generate Diagram…",
+      icon: Waypoints,
+      onSelect: on.generateDiagram,
     },
   );
   return entries;
+}
+
+// --- sidebar groups ------------------------------------------------------------------------------
+
+export interface GroupMenuOptions {
+  /** The manual groups (no filter rules) items can be added to. */
+  manual: ReadonlyArray<{ id: string; name: string }>;
+  /** The manual group the clicked row is listed in, if any. */
+  current: { id: string; name: string } | null;
+}
+
+export interface GroupMenuHandlers {
+  addToGroup: (groupId: string) => void;
+  removeFromGroup: () => void;
+  newGroup: () => void;
+}
+
+/** "Add to Group ▸ <groups> / New Group…" and "Remove from Group" of an item row. */
+export function groupEntries(o: GroupMenuOptions, on: GroupMenuHandlers): MenuEntry[] {
+  const targets = o.manual.filter((g) => g.id !== o.current?.id);
+  const items: MenuEntry[] = targets.map((g) => ({
+    kind: "item",
+    id: `group-${g.id}`,
+    label: g.name,
+    icon: Folder,
+    onSelect: () => on.addToGroup(g.id),
+  }));
+  if (items.length > 0) items.push(sep("group-sep"));
+  items.push({
+    kind: "item",
+    id: "group-new",
+    label: "New Group…",
+    icon: FolderPlus,
+    onSelect: on.newGroup,
+  });
+  const out: MenuEntry[] = [
+    { kind: "sub", id: "add-to-group", label: "Add to Group", icon: Folder, items },
+  ];
+  if (o.current)
+    out.push({
+      kind: "item",
+      id: "remove-from-group",
+      label: `Remove from ${o.current.name}`,
+      icon: FolderMinus,
+      onSelect: on.removeFromGroup,
+    });
+  return out;
+}
+
+/** Right-click on a group's header: Edit Group…, Delete Group. */
+export function groupHeaderMenu(on: { edit: () => void; remove: () => void }): MenuEntry[] {
+  return [
+    { kind: "item", id: "group-edit", label: "Edit Group…", icon: FolderPen, onSelect: on.edit },
+    {
+      kind: "item",
+      id: "group-delete",
+      label: "Delete Group",
+      icon: Trash2,
+      destructive: true,
+      onSelect: on.remove,
+    },
+  ];
 }
 
 // --- routines / sequences ------------------------------------------------------------------------
@@ -309,8 +399,15 @@ export interface ObjectMenuHandlers extends NewMenuHandlers {
   drop: () => void;
 }
 
-/** Functions / procedures and sequences: open, copy, scripts, delete (spec §2.4 last item). */
-export function objectMenu(o: ObjectMenuOptions, on: ObjectMenuHandlers): MenuEntry[] {
+/**
+ * Functions / procedures and sequences: open, copy, scripts, delete (spec §2.4 last item).
+ * `groupItems` (sidebar groups, `groupEntries`) follow Copy Name.
+ */
+export function objectMenu(
+  o: ObjectMenuOptions,
+  on: ObjectMenuHandlers,
+  groupItems: readonly MenuEntry[] = [],
+): MenuEntry[] {
   return [
     { kind: "item", id: "open-new-tab", label: "Open in New Tab", icon: Code, onSelect: on.open },
     {
@@ -320,6 +417,7 @@ export function objectMenu(o: ObjectMenuOptions, on: ObjectMenuHandlers): MenuEn
       icon: Copy,
       onSelect: on.copyName,
     },
+    ...groupItems,
     {
       kind: "sub",
       id: "copy-script",
@@ -355,23 +453,32 @@ export function objectMenu(o: ObjectMenuOptions, on: ObjectMenuHandlers): MenuEn
   ];
 }
 
-/** Right-click on a section header: Item Overview (Tables header) and New ▸. */
+/**
+ * Right-click on a section header: Item Overview and Generate Diagram… (the Tables header) and
+ * New ▸.
+ */
 export function headerMenu(
-  o: { driver: Driver; readOnly: boolean; overview: boolean },
-  on: NewMenuHandlers & { itemOverview: () => void },
+  o: { driver: Driver; readOnly: boolean; overview: boolean; diagram?: boolean },
+  on: NewMenuHandlers & { itemOverview: () => void; generateDiagram?: () => void },
 ): MenuEntry[] {
   const entries: MenuEntry[] = [];
   if (o.overview)
-    entries.push(
-      {
-        kind: "item",
-        id: "item-overview",
-        label: "Item Overview",
-        icon: Info,
-        onSelect: on.itemOverview,
-      },
-      sep("s1"),
-    );
+    entries.push({
+      kind: "item",
+      id: "item-overview",
+      label: "Item Overview",
+      icon: Info,
+      onSelect: on.itemOverview,
+    });
+  if (o.diagram && on.generateDiagram)
+    entries.push({
+      kind: "item",
+      id: "generate-diagram",
+      label: "Generate Diagram…",
+      icon: Waypoints,
+      onSelect: on.generateDiagram,
+    });
+  if (entries.length > 0) entries.push(sep("s1"));
   entries.push(newSubmenu(o.driver, o.readOnly, on));
   return entries;
 }
@@ -384,6 +491,8 @@ export interface SidebarSettings {
   showSequences: boolean;
   showSystemSchemas: boolean;
   showRowCounts: boolean;
+  /** Each table / view row expands to its columns. */
+  showColumns: boolean;
 }
 
 /** Sidebar Settings ▸ checkboxes (sequences and system schemas are PostgreSQL's). */
@@ -406,11 +515,11 @@ export function settingsEntries(
       check("showSequences", "Show Sequences"),
       check("showSystemSchemas", "Show System Schemas"),
     );
-  out.push(check("showRowCounts", "Show row counts"));
+  out.push(check("showRowCounts", "Show row counts"), check("showColumns", "Show Columns"));
   return out;
 }
 
-/** The sidebar "+" menu: New Table… … New Schema…, New Query, Settings ▸. */
+/** The sidebar "+" menu: New Table… … New Schema…, New Group…, New Query, Settings ▸. */
 export function plusMenu(
   driver: Driver,
   readOnly: boolean,
@@ -423,6 +532,13 @@ export function plusMenu(
   );
   return [
     ...items,
+    {
+      kind: "item",
+      id: "new-group",
+      label: "New Group…",
+      icon: Folder,
+      onSelect: () => on.newItem("group"),
+    },
     {
       kind: "item",
       id: "new-query",

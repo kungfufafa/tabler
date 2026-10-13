@@ -67,6 +67,8 @@ export interface IndexRow {
   key: string;
   name: string;
   columns: string[];
+  /** PostgreSQL `INCLUDE (…)` columns. */
+  include: string[];
   unique: boolean;
   primary: boolean;
   method: string | null;
@@ -108,6 +110,8 @@ export interface TriggerRow {
   status: RowStatus;
   opIndex: number | null;
   addAt: number | null;
+  /** Position of the staged `enableTrigger` / `disableTrigger` op that sets `enabled`. */
+  enabledAt: number | null;
   original: TriggerMeta | null;
 }
 
@@ -315,6 +319,15 @@ export function checkColumns(expression: string, columns: readonly string[]): st
   return columns.filter((c) => words.has(c.toLowerCase()));
 }
 
+/**
+ * The name trigger row `r` has once the ops before it ran: an existing trigger edited into one
+ * of another name (drop + create) goes by the created one.
+ */
+export function liveTriggerName(r: TriggerRow, ops: readonly DdlOp[]): string {
+  const create = r.addAt !== null ? ops[r.addAt] : undefined;
+  return create?.op === "createTrigger" ? create.name : r.name;
+}
+
 /** Trigger name, timing and events of a `CREATE TRIGGER` statement (best effort). */
 export function parseTriggerSql(sql: string): {
   name: string | null;
@@ -358,6 +371,7 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
     key: `i:${i.name}`,
     name: i.name,
     columns: i.columns,
+    include: i.include ?? [],
     unique: i.unique,
     primary: i.primary,
     method: i.method,
@@ -401,6 +415,7 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
     status: "existing",
     opIndex: null,
     addAt: null,
+    enabledAt: null,
     original: t,
   }));
   const info: TableInfo = {
@@ -543,6 +558,7 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
           Object.assign(changed, {
             name: x.name,
             columns: x.columns,
+            include: x.include,
             unique: x.unique,
             method: x.method,
             predicate: x.predicate,
@@ -555,6 +571,7 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
             key: `ni:${addedIndexes++}`,
             name: x.name,
             columns: x.columns,
+            include: x.include,
             unique: x.unique,
             primary: false,
             method: x.method,
@@ -568,6 +585,7 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
           });
         }
         for (const entry of x.columns) live(entryBase(entry))?.refs.push(i);
+        for (const name of x.include) live(name)?.refs.push(i);
         return;
       }
       case "dropIndex": {
@@ -649,7 +667,8 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
           sql: op.sql,
           definition: op.sql,
         };
-        if (changed) Object.assign(changed, fields, { addAt: i });
+        // A trigger is created enabled (an earlier staged disable of the old one is moot).
+        if (changed) Object.assign(changed, fields, { addAt: i, enabled: true, enabledAt: null });
         else
           triggers.push({
             key: `nt:${addedTriggers++}`,
@@ -659,8 +678,20 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
             status: "added",
             opIndex: i,
             addAt: null,
+            enabledAt: null,
             original: null,
           });
+        return;
+      }
+      case "enableTrigger":
+      case "disableTrigger": {
+        const r = triggers.find(
+          (x) => x.status !== "dropped" && liveTriggerName(x, ops) === op.name,
+        );
+        if (r) {
+          r.enabled = op.op === "enableTrigger";
+          r.enabledAt = i;
+        }
         return;
       }
       case "dropTrigger": {
@@ -718,12 +749,14 @@ export function foldStructure(meta: TableMeta, ops: readonly DdlOp[]): Structure
   }
   if (renamed.size > 0) {
     for (const x of indexes)
-      if (x.status !== "added" && x.addAt === null)
+      if (x.status !== "added" && x.addAt === null) {
         x.columns = x.columns.map((e) => {
           const base = entryBase(e);
           const to = renamed.get(base);
           return to ? renameEntry(e, base, to) : e;
         });
+        x.include = x.include.map((c) => renamed.get(c) ?? c);
+      }
     for (const f of foreignKeys)
       if (f.status !== "added") f.columns = f.columns.map((c) => renamed.get(c) ?? c);
     for (const k of checks)
@@ -998,7 +1031,10 @@ export function addIndex(meta: TableMeta, ops: readonly DdlOp[], index: IndexDef
 
 /** The index definition of a row (what `addIndex` would recreate it with). */
 export function indexDefOf(
-  row: Pick<IndexRow, "name" | "columns" | "unique" | "method" | "predicate" | "comment">,
+  row: Pick<
+    IndexRow,
+    "name" | "columns" | "include" | "unique" | "method" | "predicate" | "comment"
+  >,
 ): IndexDef {
   return {
     name: row.name,
@@ -1007,8 +1043,12 @@ export function indexDefOf(
     method: row.method,
     predicate: row.predicate,
     comment: row.comment,
+    include: [...row.include],
   };
 }
+
+const sameList = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((c, i) => c === b[i]);
 
 const sameIndexDef = (a: IndexDef, b: IndexDef) =>
   a.name === b.name &&
@@ -1016,8 +1056,8 @@ const sameIndexDef = (a: IndexDef, b: IndexDef) =>
   (a.method ?? "") === (b.method ?? "") &&
   (a.predicate ?? "") === (b.predicate ?? "") &&
   (a.comment ?? "") === (b.comment ?? "") &&
-  a.columns.length === b.columns.length &&
-  a.columns.every((c, i) => c === b.columns[i]);
+  sameList(a.columns, b.columns) &&
+  sameList(a.include, b.include);
 
 /**
  * Stages an edit of index `key`: a staged new index changes in place; an existing one is dropped
@@ -1038,7 +1078,7 @@ export function editIndex(
   const table = meta.table;
   if (row.status === "added")
     return replaceAt(ops, row.opIndex!, { op: "addIndex", table, index: next });
-  const original = indexDefOf(row.original!);
+  const original = indexDefOf({ ...row.original!, include: row.original!.include ?? [] });
   if (row.status === "changed") {
     if (sameIndexDef(next, original))
       return ops.filter((_, i) => i !== row.opIndex && i !== row.addAt);

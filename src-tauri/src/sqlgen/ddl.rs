@@ -291,6 +291,32 @@ pub struct PgPartition {
     pub bound: String,
     /// The partition is partitioned itself: its key (`LIST (region)`).
     pub key: Option<String>,
+    /// The indexes and triggers the partition has of its own (not the copies PostgreSQL keeps of
+    /// its parent's), in catalog order (`pg_context_partition_objects_sql`).
+    pub objects: Vec<PgPartitionObject>,
+}
+
+/// What an object of a partition is (`PgPartitionObject`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PgPartitionObjectKind {
+    /// An index (`pg_get_indexdef`).
+    Index,
+    /// The index of a PRIMARY KEY / UNIQUE / EXCLUDE constraint (`pg_get_constraintdef`).
+    Constraint,
+    /// A trigger (`pg_get_triggerdef`).
+    Trigger,
+}
+
+/// An index or trigger a partition has of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PgPartitionObject {
+    pub kind: PgPartitionObjectKind,
+    /// Index, constraint or trigger name.
+    pub name: String,
+    /// The catalog's definition of it (see `PgPartitionObjectKind`).
+    pub definition: String,
+    /// A trigger that is disabled.
+    pub disabled: bool,
 }
 
 /// What the PostgreSQL catalog says about a table beyond its `TableMeta`, for a script that
@@ -444,6 +470,52 @@ pub fn pg_context_clones_sql(table: &TableRef) -> BuiltSql {
     )
 }
 
+/// The indexes and triggers the partitions below a partitioned table have of their own, parents
+/// first: partition schema, partition name, kind (`i` index, `c` constraint, `t` trigger), name,
+/// definition, disabled (text). Indexes that are partitions of a partitioned index (PostgreSQL
+/// creates them with the partition) and triggers cloned from a parent are left out.
+pub fn pg_context_partition_objects_sql(table: &TableRef) -> BuiltSql {
+    pg_catalog_query(
+        table,
+        "WITH RECURSIVE down(oid, depth) AS ( \
+           SELECT i.inhrelid, 1 FROM pg_catalog.pg_inherits i \
+             JOIN pg_catalog.pg_class c ON c.oid = i.inhparent \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+            WHERE c.relname = $1 AND n.nspname = {schema} AND c.relkind = 'p' \
+           UNION ALL \
+           SELECT i.inhrelid, down.depth + 1 FROM down \
+             JOIN pg_catalog.pg_inherits i ON i.inhparent = down.oid) \
+         SELECT cn.nspname::text, c.relname::text, o.kind, o.name, o.definition, o.disabled::text \
+         FROM down \
+           JOIN pg_catalog.pg_class c \
+             ON c.oid = down.oid AND c.relispartition AND c.relkind IN ('r', 'p') \
+           JOIN pg_catalog.pg_namespace cn ON cn.oid = c.relnamespace \
+           CROSS JOIN LATERAL ( \
+             SELECT CASE WHEN con.oid IS NULL THEN 'i' ELSE 'c' END AS kind, \
+                    COALESCE(con.conname, x.relname)::text AS name, \
+                    CASE WHEN con.oid IS NULL THEN pg_catalog.pg_get_indexdef(ix.indexrelid) \
+                         ELSE pg_catalog.pg_get_constraintdef(con.oid) END AS definition, \
+                    false AS disabled \
+               FROM pg_catalog.pg_index ix \
+               JOIN pg_catalog.pg_class x ON x.oid = ix.indexrelid \
+               LEFT JOIN pg_catalog.pg_constraint con \
+                 ON con.conindid = ix.indexrelid AND con.conrelid = c.oid \
+                AND con.contype IN ('p', 'u', 'x') \
+              WHERE ix.indrelid = c.oid \
+                AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h \
+                                 WHERE h.inhrelid = ix.indexrelid) \
+             UNION ALL \
+             SELECT 't', t.tgname::text, pg_catalog.pg_get_triggerdef(t.oid), t.tgenabled = 'D' \
+               FROM pg_catalog.pg_trigger t \
+              WHERE t.tgrelid = c.oid AND NOT t.tgisinternal \
+                AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h \
+                                  JOIN pg_catalog.pg_trigger p \
+                                    ON p.tgrelid = h.inhparent AND p.tgname = t.tgname \
+                                 WHERE h.inhrelid = t.tgrelid)) o \
+         ORDER BY down.depth, cn.nspname, c.relname, o.kind, o.name",
+    )
+}
+
 /// Sequences owned by a column of the table that are not its identity sequence: column,
 /// sequence schema, sequence name (see `PlanContext::owned_sequences`).
 pub fn pg_owned_sequences_sql(table: &TableRef) -> BuiltSql {
@@ -479,6 +551,98 @@ pub fn partition_of_sql(partition: &PgPartition) -> String {
     )
 }
 
+/// The statements of the indexes and triggers a partition has of its own (`PgPartition::objects`):
+/// `(indexes, triggers)`, every one terminated. A script runs the indexes once the partition and
+/// its own partitions exist (an index of a partitioned partition then reaches them: `ON ONLY`
+/// is dropped), and the triggers after the rows. A disabled trigger is disabled again.
+pub fn partition_objects_sql(partition: &PgPartition) -> (Vec<String>, Vec<String>) {
+    let d = Dialect::Postgres;
+    let qt = d.qualify(partition.table.schema.as_deref(), &partition.table.name);
+    let (mut indexes, mut triggers) = (Vec::new(), Vec::new());
+    for o in &partition.objects {
+        match o.kind {
+            PgPartitionObjectKind::Index => {
+                indexes.push(terminated(&without_only(&o.definition)));
+            }
+            PgPartitionObjectKind::Constraint => indexes.push(format!(
+                "ALTER TABLE {qt} ADD CONSTRAINT {} {};",
+                d.quote_ident(&o.name),
+                o.definition.trim().trim_end_matches(';')
+            )),
+            PgPartitionObjectKind::Trigger => {
+                triggers.push(terminated(&o.definition));
+                if o.disabled {
+                    triggers.push(format!(
+                        "{};",
+                        trigger_state_sql(&partition.table, &o.name, false)
+                    ));
+                }
+            }
+        }
+    }
+    (indexes, triggers)
+}
+
+/// A `pg_get_indexdef` text without the `ONLY` of `… ON ONLY <table>` (outside quoted names):
+/// the index of a partitioned table then also reaches the partitions it has.
+fn without_only(def: &str) -> String {
+    const ON_ONLY: &str = " ON ONLY ";
+    let mut quoted = false;
+    for (i, ch) in def.char_indices() {
+        if ch == '"' {
+            quoted = !quoted;
+        } else if !quoted
+            && def[i..]
+                .get(..ON_ONLY.len())
+                .is_some_and(|s| s.eq_ignore_ascii_case(ON_ONLY))
+        {
+            return format!("{} ON {}", &def[..i], &def[i + ON_ONLY.len()..]);
+        }
+    }
+    def.to_string()
+}
+
+/// PG, after the rows of a script: moves a sequence that several of the script's tables draw
+/// from past the rows of all of them, in one `setval` (`TableParts::sequence_resets` does this
+/// for one table): the largest value of `columns` (the smallest for a descending sequence), never
+/// beyond the sequence's MINVALUE (MAXVALUE). Nothing changes when every column is empty.
+pub fn shared_sequence_reset_sql(sequence: &PgSequence, columns: &[(TableRef, String)]) -> String {
+    let d = Dialect::Postgres;
+    let increment = sequence.increment.unwrap_or(1);
+    let (min, max) = sequence_bounds(sequence);
+    let (agg, clamp, limit) = if increment < 0 {
+        ("MIN", "LEAST", max)
+    } else {
+        ("MAX", "GREATEST", min)
+    };
+    let values = columns
+        .iter()
+        .map(|(t, c)| {
+            format!(
+                "(SELECT {agg}({}) FROM {})",
+                d.quote_ident(c),
+                d.qualify(t.schema.as_deref(), &t.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SELECT setval({}, {clamp}(v, {limit})) FROM (SELECT {clamp}({values}) AS v) AS s WHERE v IS NOT NULL;",
+        d.quote_literal(&d.qualify(Some(&sequence.schema), &sequence.name))
+    )
+}
+
+/// PG `ALTER TABLE <table> ENABLE | DISABLE TRIGGER <name>` (unterminated).
+pub fn trigger_state_sql(table: &TableRef, name: &str, enabled: bool) -> String {
+    let d = Dialect::Postgres;
+    format!(
+        "ALTER TABLE {} {} TRIGGER {}",
+        d.qualify(table.schema.as_deref(), &table.name),
+        if enabled { "ENABLE" } else { "DISABLE" },
+        d.quote_ident(name)
+    )
+}
+
 /// The statements that recreate a table (`table_parts`), every one terminated. A script loads
 /// them in this order: `sequences`, `table`, `indexes`, `attach`, `comments`, then the rows,
 /// then `sequence_resets`, `foreign_keys` and `triggers` (as pg_dump does: keys that rows of a
@@ -498,12 +662,19 @@ pub struct TableParts {
     pub comments: Vec<String>,
     /// PG, after the rows: moves the sequence of each serial / identity column past them.
     pub sequence_resets: Vec<String>,
+    /// The column each of `sequence_resets` is for (same order).
+    pub reset_columns: Vec<String>,
 }
 
 impl TableParts {
     /// The parts that come before the rows, as sections (lines joined), in load order;
-    /// `partitions` (`partition_of_sql`) go after the indexes and before the attach.
-    pub fn create_sections(&self, partitions: &[String]) -> Vec<String> {
+    /// `partitions` (`partition_of_sql`) go after the indexes and before the attach, and the
+    /// partitions' own indexes (`partition_objects_sql`) after the attach.
+    pub fn create_sections(
+        &self,
+        partitions: &[String],
+        partition_indexes: &[String],
+    ) -> Vec<String> {
         let attach: Vec<String> = self.attach.iter().cloned().collect();
         [
             &self.sequences[..],
@@ -511,6 +682,7 @@ impl TableParts {
             &self.indexes,
             partitions,
             &attach,
+            partition_indexes,
             &self.comments,
         ]
         .into_iter()
@@ -912,6 +1084,7 @@ impl Model {
             .columns
             .iter()
             .any(|e| e == name || entry_base(e) == name)
+            || index.include.iter().any(|c| c == name)
         {
             return true;
         }
@@ -1039,6 +1212,7 @@ impl Model {
             for entry in &mut i.columns {
                 *entry = rename_index_entry(entry, old, new);
             }
+            rename_in(&mut i.include, old, new);
         }
         for f in &mut self.fks {
             rename_in(&mut f.columns, old, new);
@@ -1184,6 +1358,8 @@ fn op_table(op: &DdlOp) -> Option<&TableRef> {
         | DdlOp::DropCheck { table, .. }
         | DdlOp::CreateTrigger { table, .. }
         | DdlOp::DropTrigger { table, .. }
+        | DdlOp::EnableTrigger { table, .. }
+        | DdlOp::DisableTrigger { table, .. }
         | DdlOp::SetTableComment { table, .. }
         | DdlOp::AddIndex { table, .. }
         | DdlOp::DropIndex { table, .. }
@@ -1216,6 +1392,8 @@ fn op_table_mut(op: &mut DdlOp) -> Option<&mut TableRef> {
         | DdlOp::DropCheck { table, .. }
         | DdlOp::CreateTrigger { table, .. }
         | DdlOp::DropTrigger { table, .. }
+        | DdlOp::EnableTrigger { table, .. }
+        | DdlOp::DisableTrigger { table, .. }
         | DdlOp::SetTableComment { table, .. }
         | DdlOp::AddIndex { table, .. }
         | DdlOp::DropIndex { table, .. }
@@ -1238,6 +1416,8 @@ fn foldable(op: &DdlOp) -> bool {
             | DdlOp::AlterTableOptions { .. }
             | DdlOp::CreateTrigger { .. }
             | DdlOp::DropTrigger { .. }
+            | DdlOp::EnableTrigger { .. }
+            | DdlOp::DisableTrigger { .. }
             | DdlOp::RawSql { .. }
     )
 }
@@ -1403,7 +1583,9 @@ fn validate(dialect: Dialect, op: &DdlOp) -> Result<(), AppError> {
             require(name, "trigger name")?;
             require(sql, "trigger SQL")?;
         }
-        DdlOp::DropTrigger { name, .. } => require(name, "trigger name")?,
+        DdlOp::DropTrigger { name, .. }
+        | DdlOp::EnableTrigger { name, .. }
+        | DdlOp::DisableTrigger { name, .. } => require(name, "trigger name")?,
         DdlOp::RenameColumn { name, new_name, .. } => {
             require(name, "column name")?;
             require(new_name, "new column name")?;
@@ -1420,7 +1602,7 @@ fn validate(dialect: Dialect, op: &DdlOp) -> Result<(), AppError> {
                     index.name
                 )));
             }
-            for c in &index.columns {
+            for c in index.columns.iter().chain(&index.include) {
                 require(c, "index column")?;
             }
             if let Some(m) = index.method.as_deref().map(str::trim)
@@ -2375,6 +2557,19 @@ impl Planner {
                 m.triggers.retain(|t| &t.name != name);
                 m.stale_triggers.retain(|(t, _)| t != name);
             }
+            DdlOp::EnableTrigger { name, .. } | DdlOp::DisableTrigger { name, .. } => {
+                let enabled = matches!(op, DdlOp::EnableTrigger { .. });
+                match m.triggers.iter_mut().find(|t| &t.name == name) {
+                    Some(t) => t.enabled = enabled,
+                    None if strict => {
+                        return Err(invalid(format!(
+                            "trigger \"{name}\" does not exist on \"{}\"",
+                            m.table.name
+                        )));
+                    }
+                    None => {}
+                }
+            }
             DdlOp::AddIndex { index, .. } => {
                 if m.indexes.iter().any(|i| i.name == index.name) {
                     if strict {
@@ -2391,6 +2586,7 @@ impl Planner {
                     predicate: index.predicate.clone(),
                     definition: index_def,
                     comment: non_empty(index.comment.as_deref()),
+                    include: index.include.clone(),
                 });
                 if !physical && dialect == Dialect::Sqlite {
                     m.fresh_indexes.push(index.name.clone());
@@ -2734,6 +2930,25 @@ impl Planner {
                     }
                 };
                 self.dropped_triggers.push(name.clone());
+                self.push(sql);
+            }
+            DdlOp::EnableTrigger { table, name } | DdlOp::DisableTrigger { table, name } => {
+                if d != Dialect::Postgres {
+                    return Err(AppError::Unsupported(format!(
+                        "{} triggers cannot be disabled: drop the trigger instead",
+                        if d == Dialect::Mysql {
+                            "MySQL"
+                        } else {
+                            "SQLite"
+                        }
+                    )));
+                }
+                let action = if matches!(op, DdlOp::EnableTrigger { .. }) {
+                    "ENABLE"
+                } else {
+                    "DISABLE"
+                };
+                let sql = trigger_state_sql(table, name, action == "ENABLE");
                 self.push(sql);
             }
             DdlOp::SetTableComment { table, comment } => match d {
@@ -3347,6 +3562,12 @@ impl Planner {
             )),
             _ => {}
         }
+        if self.dialect != Dialect::Postgres && index.include.iter().any(|c| !c.trim().is_empty()) {
+            self.warn(format!(
+                "INCLUDE columns are PostgreSQL-only; those of \"{}\" are ignored",
+                index.name
+            ));
+        }
         if self.dialect == Dialect::Sqlite && non_empty(index.comment.as_deref()).is_some() {
             self.warn(format!(
                 "SQLite does not store index comments; the comment of \"{}\" is ignored",
@@ -3375,12 +3596,26 @@ impl Planner {
             .map(|p| format!(" WHERE {p}"))
             .unwrap_or_default();
         match d {
-            Dialect::Postgres => format!(
-                "CREATE {unique}INDEX {} ON {}{} ({parts}){predicate}",
-                self.q(&index.name),
-                self.qt(table),
-                method.map(|m| format!(" USING {m}")).unwrap_or_default()
-            ),
+            Dialect::Postgres => {
+                let include: Vec<String> = index
+                    .include
+                    .iter()
+                    .map(|c| c.trim())
+                    .filter(|c| !c.is_empty())
+                    .map(|c| self.q(c))
+                    .collect();
+                let include = if include.is_empty() {
+                    String::new()
+                } else {
+                    format!(" INCLUDE ({})", include.join(", "))
+                };
+                format!(
+                    "CREATE {unique}INDEX {} ON {}{} ({parts}){include}{predicate}",
+                    self.q(&index.name),
+                    self.qt(table),
+                    method.map(|m| format!(" USING {m}")).unwrap_or_default()
+                )
+            }
             Dialect::Mysql => {
                 let (kind, tail) = self.mysql_index_kind_and_options(index);
                 format!(
@@ -3575,6 +3810,7 @@ impl Planner {
                         method,
                         predicate: None,
                         comment: i.comment.clone(),
+                        include: i.include.clone(),
                     };
                     indexes.push(terminated(&self.index_sql(&m.table, &def)));
                 }
@@ -3631,6 +3867,10 @@ impl Planner {
                 }
                 _ => triggers.push(terminated(&t.definition)),
             }
+            // PG keeps a disabled trigger disabled (pg_get_triggerdef does not say it).
+            if pg && !t.enabled {
+                triggers.push(format!("{};", trigger_state_sql(&m.table, &t.name, false)));
+            }
         }
 
         let mut comments = Vec::new();
@@ -3660,6 +3900,7 @@ impl Planner {
 
         // PG: rows loaded with their own key values leave the sequences where they started.
         let mut sequence_resets = Vec::new();
+        let mut reset_columns = Vec::new();
         if pg {
             for c in columns.iter().filter(|c| !c.generated) {
                 let bounds = if c.identity.is_some() {
@@ -3675,6 +3916,7 @@ impl Planner {
                 if let Some((increment, limit)) = bounds {
                     sequence_resets
                         .push(self.sequence_reset_sql(&m.table, &c.name, increment, limit));
+                    reset_columns.push(c.name.clone());
                 }
             }
         }
@@ -3688,6 +3930,7 @@ impl Planner {
             triggers,
             comments,
             sequence_resets,
+            reset_columns,
         }
     }
 
@@ -4965,6 +5208,7 @@ mod tests {
             collation: None,
             array_elem_type: None,
             extra: None,
+            base_type: None,
         }
     }
 
@@ -5001,6 +5245,7 @@ mod tests {
             predicate: None,
             definition: def.map(str::to_string),
             comment: None,
+            include: Vec::new(),
         }
     }
 
@@ -5198,6 +5443,7 @@ mod tests {
                         method: Some("btree".into()),
                         predicate: Some("deleted_at IS NULL".into()),
                         comment: None,
+                        include: vec![],
                     },
                 },
                 DdlOp::DropIndex {
@@ -5400,6 +5646,7 @@ mod tests {
                 method: Some("btree; drop".into()),
                 predicate: None,
                 comment: None,
+                include: vec![],
             },
         };
         assert!(invalid_input(Dialect::Postgres, None, vec![idx]).contains("index method"));
@@ -5694,6 +5941,7 @@ mod tests {
                         method: Some("btree".into()),
                         predicate: Some("x > 1".into()),
                         comment: None,
+                        include: vec![],
                     },
                 },
                 DdlOp::AddIndex {
@@ -5705,6 +5953,7 @@ mod tests {
                         method: Some("fulltext".into()),
                         predicate: None,
                         comment: None,
+                        include: vec![],
                     },
                 },
                 DdlOp::DropIndex {
@@ -6111,6 +6360,7 @@ mod tests {
                         method: None,
                         predicate: Some("qty > 0".into()),
                         comment: None,
+                        include: vec![],
                     },
                 },
                 DdlOp::DropIndex {
@@ -6253,6 +6503,7 @@ mod tests {
                         method: None,
                         predicate: None,
                         comment: None,
+                        include: vec![],
                     },
                 },
                 // a different table ends the fold
@@ -6745,6 +6996,7 @@ mod tests {
                         method: None,
                         predicate: Some("a IS NOT NULL".into()),
                         comment: None,
+                        include: vec![],
                     },
                 },
             ],
@@ -7539,6 +7791,7 @@ mod tests {
                         method: None,
                         predicate: None,
                         comment: Some("for search".into()),
+                        include: vec![],
                     },
                 },
             ],
@@ -7566,6 +7819,299 @@ mod tests {
             }],
         );
         assert!(msg.contains("CHECK expression"), "{msg}");
+    }
+
+    #[test]
+    fn pg_trigger_enable_disable_and_index_include() {
+        let mut users = pg_users();
+        let trigger = |name: &str, enabled: bool| TriggerMeta {
+            name: name.into(),
+            timing: Some("BEFORE".into()),
+            events: vec!["UPDATE".into()],
+            enabled,
+            definition: format!(
+                "CREATE TRIGGER {name} BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION touch()"
+            ),
+        };
+        users.triggers = vec![trigger("users_touch", true), trigger("users_audit", false)];
+        let tbl = t(None, "users");
+        let cover = IndexDef {
+            name: "users_name_cover".into(),
+            columns: vec!["name".into()],
+            unique: true,
+            method: Some("btree".into()),
+            predicate: Some("name IS NOT NULL".into()),
+            comment: None,
+            include: vec!["email".into(), " created_at ".into()],
+        };
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![
+                DdlOp::DisableTrigger {
+                    table: tbl.clone(),
+                    name: "users_touch".into(),
+                },
+                DdlOp::EnableTrigger {
+                    table: tbl.clone(),
+                    name: "users_audit".into(),
+                },
+                DdlOp::AddIndex {
+                    table: tbl.clone(),
+                    index: cover.clone(),
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."users" DISABLE TRIGGER "users_touch""#,
+                r#"ALTER TABLE "public"."users" ENABLE TRIGGER "users_audit""#,
+                r#"CREATE UNIQUE INDEX "users_name_cover" ON "public"."users" USING btree ("name") INCLUDE ("email", "created_at") WHERE name IS NOT NULL"#,
+            ]
+        );
+        assert!(p.transactional);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        // without metadata too
+        let p = plan(
+            Dialect::Postgres,
+            None,
+            vec![DdlOp::DisableTrigger {
+                table: t(Some("app"), "orders"),
+                name: "Audit".into(),
+            }],
+        );
+        assert_eq!(
+            p.statements,
+            [r#"ALTER TABLE "app"."orders" DISABLE TRIGGER "Audit""#]
+        );
+        let msg = invalid_input(
+            Dialect::Postgres,
+            Some(&users),
+            vec![DdlOp::EnableTrigger {
+                table: tbl.clone(),
+                name: " ".into(),
+            }],
+        );
+        assert!(msg.contains("trigger name"), "{msg}");
+        let msg = invalid_input(
+            Dialect::Postgres,
+            Some(&users),
+            vec![DdlOp::AddIndex {
+                table: tbl.clone(),
+                index: IndexDef {
+                    include: vec!["".into()],
+                    ..cover.clone()
+                },
+            }],
+        );
+        assert!(msg.contains("index column"), "{msg}");
+
+        // The table's DDL keeps a disabled trigger disabled.
+        let parts = table_parts(Dialect::Postgres, &users, &PgTableContext::default());
+        assert_eq!(
+            parts.triggers,
+            [
+                "CREATE TRIGGER users_touch BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION touch();",
+                "CREATE TRIGGER users_audit BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION touch();",
+                r#"ALTER TABLE "public"."users" DISABLE TRIGGER "users_audit";"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn trigger_states_and_include_columns_elsewhere() {
+        // MySQL and SQLite have no disabled triggers: refused.
+        for (d, meta) in [
+            (Dialect::Mysql, Some(my_items())),
+            (Dialect::Mysql, None),
+            (Dialect::Sqlite, Some(lite_items())),
+        ] {
+            let table = meta
+                .as_ref()
+                .map_or_else(|| t(None, "items"), |m| m.table.clone());
+            for op in [
+                DdlOp::DisableTrigger {
+                    table: table.clone(),
+                    name: "items_touch".into(),
+                },
+                DdlOp::EnableTrigger {
+                    table: table.clone(),
+                    name: "items_touch".into(),
+                },
+            ] {
+                let err = plan_ddl(d, meta.as_ref(), &[op]).unwrap_err();
+                assert!(matches!(err, AppError::Unsupported(_)), "{d:?}: {err:?}");
+            }
+        }
+        // INCLUDE is PostgreSQL-only: ignored with a warning.
+        let index = IndexDef {
+            name: "items_name_idx".into(),
+            columns: vec!["name".into()],
+            unique: false,
+            method: None,
+            predicate: None,
+            comment: None,
+            include: vec!["qty".into()],
+        };
+        for (d, expected) in [
+            (
+                Dialect::Mysql,
+                "CREATE INDEX `items_name_idx` ON `items` (`name`)",
+            ),
+            (
+                Dialect::Sqlite,
+                r#"CREATE INDEX "items_name_idx" ON "items" ("name")"#,
+            ),
+        ] {
+            let p = plan(
+                d,
+                None,
+                vec![DdlOp::AddIndex {
+                    table: t(None, "items"),
+                    index: index.clone(),
+                }],
+            );
+            assert_eq!(p.statements, [expected], "{d:?}");
+            assert!(
+                p.warnings.iter().any(|w| w.contains("INCLUDE")),
+                "{d:?}: {:?}",
+                p.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn pg_include_columns_are_quoted_once() {
+        // Introspection reports INCLUDE columns by name (`Email`, `first name`), never quoted.
+        let mut people = meta(
+            t(Some("public"), "People"),
+            vec![
+                cm("id", "bigint", false),
+                cm("Email", "text", true),
+                cm("first name", "text", true),
+            ],
+            &["id"],
+        );
+        let mut cover = index("People_cover", &["id"], true, false, None);
+        cover.include = vec!["Email".into(), "first name".into()];
+        people.indexes = vec![cover];
+        let table = people.table.clone();
+        let edited = IndexDef {
+            name: "People_cover".into(),
+            columns: vec!["id".into()],
+            unique: false,
+            method: None,
+            predicate: None,
+            comment: None,
+            include: vec!["Email".into(), "first name".into()],
+        };
+        // Editing the covering index: drop, then create it again with its INCLUDE columns.
+        let p = plan(
+            Dialect::Postgres,
+            Some(&people),
+            vec![
+                DdlOp::DropIndex {
+                    table: table.clone(),
+                    name: "People_cover".into(),
+                },
+                DdlOp::AddIndex {
+                    table: table.clone(),
+                    index: edited,
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                r#"DROP INDEX "public"."People_cover""#,
+                r#"CREATE INDEX "People_cover" ON "public"."People" ("id") INCLUDE ("Email", "first name")"#,
+            ]
+        );
+        // The table's DDL renders an index without a stored definition the same way.
+        let parts = table_parts(Dialect::Postgres, &people, &PgTableContext::default());
+        assert_eq!(
+            parts.indexes,
+            [
+                r#"CREATE UNIQUE INDEX "People_cover" ON "public"."People" ("id") INCLUDE ("Email", "first name");"#
+            ]
+        );
+    }
+
+    #[test]
+    fn partition_objects_and_shared_sequence_resets() {
+        let partition = PgPartition {
+            table: t(Some("public"), "m_eu"),
+            parent: t(Some("public"), "m"),
+            bound: "FOR VALUES IN ('eu')".into(),
+            key: Some("RANGE (ts)".into()),
+            objects: vec![
+                PgPartitionObject {
+                    kind: PgPartitionObjectKind::Index,
+                    name: "m_eu_ts".into(),
+                    definition: r#"CREATE INDEX "x ON ONLY y" ON ONLY public.m_eu USING btree (ts)"#
+                        .into(),
+                    disabled: false,
+                },
+                PgPartitionObject {
+                    kind: PgPartitionObjectKind::Constraint,
+                    name: "m_eu_pk".into(),
+                    definition: "PRIMARY KEY (id, ts)".into(),
+                    disabled: false,
+                },
+                PgPartitionObject {
+                    kind: PgPartitionObjectKind::Trigger,
+                    name: "m_eu_trg".into(),
+                    definition:
+                        "CREATE TRIGGER m_eu_trg AFTER INSERT ON public.m_eu FOR EACH ROW EXECUTE FUNCTION f()"
+                            .into(),
+                    disabled: true,
+                },
+                PgPartitionObject {
+                    kind: PgPartitionObjectKind::Trigger,
+                    name: "m_eu_on".into(),
+                    definition:
+                        "CREATE TRIGGER m_eu_on AFTER DELETE ON public.m_eu FOR EACH ROW EXECUTE FUNCTION f();"
+                            .into(),
+                    disabled: false,
+                },
+            ],
+        };
+        let (indexes, triggers) = partition_objects_sql(&partition);
+        assert_eq!(
+            indexes,
+            [
+                r#"CREATE INDEX "x ON ONLY y" ON public.m_eu USING btree (ts);"#,
+                r#"ALTER TABLE "public"."m_eu" ADD CONSTRAINT "m_eu_pk" PRIMARY KEY (id, ts);"#,
+            ]
+        );
+        assert_eq!(
+            triggers,
+            [
+                "CREATE TRIGGER m_eu_trg AFTER INSERT ON public.m_eu FOR EACH ROW EXECUTE FUNCTION f();",
+                r#"ALTER TABLE "public"."m_eu" DISABLE TRIGGER "m_eu_trg";"#,
+                "CREATE TRIGGER m_eu_on AFTER DELETE ON public.m_eu FOR EACH ROW EXECUTE FUNCTION f();",
+            ]
+        );
+
+        let descending = PgSequence {
+            column: "id".into(),
+            schema: "public".into(),
+            name: "down_seq".into(),
+            increment: Some(-1),
+            data_type: Some("bigint".into()),
+            ..PgSequence::default()
+        };
+        assert_eq!(
+            shared_sequence_reset_sql(
+                &descending,
+                &[
+                    (t(Some("public"), "a"), "id".into()),
+                    (t(Some("s"), "b"), "Key".into())
+                ]
+            ),
+            r#"SELECT setval('"public"."down_seq"', LEAST(v, -1)) FROM (SELECT LEAST((SELECT MIN("id") FROM "public"."a"), (SELECT MIN("Key") FROM "s"."b")) AS v) AS s WHERE v IS NOT NULL;"#
+        );
     }
 
     #[test]
@@ -7916,6 +8462,7 @@ mod tests {
                     method: Some("BTREE".into()),
                     predicate: None,
                     comment: Some("by name".into()),
+                    include: vec![],
                 },
             }],
         );
@@ -8469,13 +9016,17 @@ mod tests {
         assert!(parts.foreign_keys[0].contains("users_2024_own_fk"));
         assert_eq!(parts.triggers.len(), 1);
         assert!(parts.triggers[0].contains("own_trigger"));
-        let sections = parts.create_sections(&["CREATE TABLE p PARTITION OF x DEFAULT;".into()]);
+        let sections = parts.create_sections(
+            &["CREATE TABLE p PARTITION OF x DEFAULT;".into()],
+            &["CREATE INDEX p_local ON p (id);".into()],
+        );
         let joined = sections.join("\n\n");
         let index_at = joined.find("CREATE UNIQUE INDEX users_email_key").unwrap();
         let partition_at = joined.find("PARTITION OF x").unwrap();
         let attach_at = joined.find("ATTACH PARTITION").unwrap();
+        let local_at = joined.find("CREATE INDEX p_local").unwrap();
         assert!(
-            index_at < partition_at && partition_at < attach_at,
+            index_at < partition_at && partition_at < attach_at && attach_at < local_at,
             "{joined}"
         );
         assert!(!joined.contains("FOREIGN KEY") && !joined.contains("CREATE TRIGGER"));
@@ -8486,6 +9037,7 @@ mod tests {
                 parent: t(Some("public"), "m"),
                 bound: "FOR VALUES IN ('eu')".into(),
                 key: Some("RANGE (ts)".into()),
+                objects: Vec::new(),
             }),
             r#"CREATE TABLE "public"."m_2025" PARTITION OF "public"."m" FOR VALUES IN ('eu') PARTITION BY RANGE (ts);"#
         );
@@ -8547,6 +9099,7 @@ mod tests {
                         method: Some("btree".into()),
                         predicate: None,
                         comment: Some("it's".into()),
+                        include: vec![],
                     },
                 },
                 DdlOp::DropCheck {
@@ -8587,6 +9140,7 @@ mod tests {
                         method: Some("FULLTEXT".into()),
                         predicate: None,
                         comment: None,
+                        include: vec![],
                     },
                 },
                 DdlOp::DropIndex {
@@ -8616,6 +9170,7 @@ mod tests {
                     method: None,
                     predicate: None,
                     comment: None,
+                    include: vec![],
                 },
             }],
         );
@@ -8638,6 +9193,7 @@ mod tests {
                         method: None,
                         predicate: None,
                         comment: None,
+                        include: vec![],
                     },
                 },
             ],

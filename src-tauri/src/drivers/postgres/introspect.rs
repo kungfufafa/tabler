@@ -253,7 +253,15 @@ pub async fn table_meta(client: &Client, table: &TableRef) -> Result<TableMeta, 
                        FROM pg_enum e WHERE e.enumtypid = t.typelem), \
                     CASE WHEN a.attcollation <> 0 AND a.attcollation <> t.typcollation \
                          THEN co.collname::text END, \
-                    a.atttypmod::int, COALESCE(bt.typtypmod, -1)::int \
+                    a.atttypmod::int, COALESCE(bt.typtypmod, -1)::int, \
+                    (WITH RECURSIVE dom(base, depth) AS ( \
+                       SELECT CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE et.typbasetype END, 1 \
+                        WHERE t.typtype = 'd' OR et.typtype = 'd' \
+                       UNION ALL \
+                       SELECT d.typbasetype, dom.depth + 1 FROM dom \
+                         JOIN pg_type d ON d.oid = dom.base AND d.typtype = 'd') \
+                     SELECT format_type(dom.base, NULL) || CASE WHEN t.typtype = 'd' THEN '' ELSE '[]' END \
+                       FROM dom ORDER BY dom.depth DESC LIMIT 1) \
              FROM pg_attribute a \
              JOIN pg_class c ON c.oid = a.attrelid \
              JOIN pg_namespace n ON n.oid = c.relnamespace \
@@ -289,6 +297,8 @@ pub async fn table_meta(client: &Client, table: &TableRef) -> Result<TableMeta, 
         let collation: Option<String> = row.try_get(17)?;
         let atttypmod: i32 = row.try_get(18)?;
         let domain_typmod: i32 = row.try_get(19)?;
+        // A domain (or an array of one): the type it is over, through nested domains.
+        let base_type: Option<String> = row.try_get(20)?;
 
         // Domains are classified by their base type.
         let (eff_name, eff_type, eff_cat) = match base_typname.as_deref() {
@@ -361,6 +371,7 @@ pub async fn table_meta(client: &Client, table: &TableRef) -> Result<TableMeta, 
                 None
             },
             extra,
+            base_type,
         });
     }
 
@@ -377,8 +388,13 @@ pub async fn table_meta(client: &Client, table: &TableRef) -> Result<TableMeta, 
                         pg_get_expr(ix.indpred, ix.indrelid)::text, \
                         (SELECT string_agg(pg_get_indexdef(ix.indexrelid, k.ord::int, true), \
                                            E'\\x1f' ORDER BY k.ord) \
-                           FROM unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)), \
-                        obj_description(ix.indexrelid, 'pg_class')::text \
+                           FROM unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) \
+                          WHERE k.ord <= ix.indnkeyatts), \
+                        obj_description(ix.indexrelid, 'pg_class')::text, \
+                        (SELECT string_agg(a.attname::text, E'\\x1f' ORDER BY k.ord) \
+                           FROM unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) \
+                           JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum \
+                          WHERE k.ord > ix.indnkeyatts) \
                  FROM pg_index ix \
                  JOIN pg_class i ON i.oid = ix.indexrelid \
                  JOIN pg_class t ON t.oid = ix.indrelid \
@@ -391,6 +407,7 @@ pub async fn table_meta(client: &Client, table: &TableRef) -> Result<TableMeta, 
             .await?;
         for row in rows {
             let cols: Option<String> = row.try_get(6)?;
+            let include: Option<String> = row.try_get(8)?;
             indexes.push(IndexMeta {
                 name: row.try_get(0)?,
                 columns: split_list(cols.as_deref()),
@@ -400,6 +417,7 @@ pub async fn table_meta(client: &Client, table: &TableRef) -> Result<TableMeta, 
                 predicate: row.try_get(5)?,
                 definition: row.try_get(4)?,
                 comment: row.try_get(7)?,
+                include: split_list(include.as_deref()),
             });
         }
     }

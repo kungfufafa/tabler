@@ -7,17 +7,24 @@
 //! every row is in (also a table referencing itself), and no trigger fires on the loaded rows.
 //!
 //! PostgreSQL partitions: a partitioned table is created with its `PARTITION BY` key, together
-//! with the partitions the script does not hold on their own (`CREATE TABLE … PARTITION OF`);
-//! a partition the script holds is created as a table of its own (with its indexes) and then
-//! attached. Rows are read once, from the topmost partitioned table in the script, never from
-//! one of its partitions as well.
+//! with the partitions the script does not hold on their own (`CREATE TABLE … PARTITION OF`,
+//! then the indexes those partitions have of their own; their own triggers come with the other
+//! triggers); a partition the script holds is created as a table of its own (with its indexes)
+//! and then attached. Rows are read once, from the topmost partitioned table in the script,
+//! never from one of its partitions as well.
+//!
+//! PostgreSQL sequences: a sequence several tables of the script draw from is created once
+//! (before the first of them) and moved past the rows of all of them once (one `setval`); a table
+//! drawing from a sequence another table of the script owns comes after it (and is dropped
+//! before it, so the owner's DROP does not fail on the dependent default).
 
 use crate::drivers::DbSession;
 use crate::error::AppError;
 use crate::sqlgen::ddl::{
-    PgPartition, PgSequence, PgTableContext, partition_of_sql, pg_context_ancestors_sql,
-    pg_context_clones_sql, pg_context_partitions_sql, pg_context_relation_sql,
-    pg_context_sequences_sql, table_parts,
+    PgPartition, PgPartitionObject, PgPartitionObjectKind, PgSequence, PgTableContext,
+    partition_objects_sql, partition_of_sql, pg_context_ancestors_sql, pg_context_clones_sql,
+    pg_context_partition_objects_sql, pg_context_partitions_sql, pg_context_relation_sql,
+    pg_context_sequences_sql, shared_sequence_reset_sql, table_parts,
 };
 use crate::sqlgen::transfer::{
     drop_table_if_exists, script_footer, script_header, table_structure,
@@ -87,9 +94,11 @@ pub fn script_layout(
     with_header: bool,
 ) -> ScriptLayout {
     let position = |t: &TableRef| tables.iter().position(|s| same_table(&s.meta.table, t));
+    let sequences = shared_sequences(tables);
     let parents: Vec<Vec<usize>> = tables
         .iter()
-        .map(|t| {
+        .enumerate()
+        .map(|(i, t)| {
             let mut ps: Vec<usize> = t
                 .meta
                 .foreign_keys
@@ -98,6 +107,13 @@ pub fn script_layout(
                 .chain(&t.context.ancestors)
                 .filter_map(&position)
                 .collect();
+            // the owner of a sequence this table draws from
+            ps.extend(
+                sequences
+                    .iter()
+                    .filter(|s| s.users.iter().any(|&(u, _)| u == i))
+                    .flat_map(|s| s.owners.iter().copied()),
+            );
             ps.sort_unstable();
             ps.dedup();
             ps
@@ -124,21 +140,60 @@ pub fn script_layout(
     let mut creates = Vec::new();
     let (mut resets, mut foreign_keys, mut triggers) = (Vec::new(), Vec::new(), Vec::new());
     if script.structure {
+        let mut created_sequences: Vec<String> = Vec::new();
+        // per shared sequence: whether one of its tables resets it (it owns it)
+        let mut shared_reset = vec![false; sequences.len()];
         for &i in &structured {
             let t = &tables[i];
             if dialect == Dialect::Postgres {
-                let parts = table_parts(dialect, t.meta, &t.context);
+                let mut parts = table_parts(dialect, t.meta, &t.context);
+                parts.sequences.retain(|s| !created_sequences.contains(s));
+                created_sequences.extend(parts.sequences.iter().cloned());
                 let partitions = own_partitions(tables, i);
-                creates.push(parts.create_sections(&partitions).join("\n\n"));
+                let partition_of: Vec<String> =
+                    partitions.iter().map(|p| partition_of_sql(p)).collect();
+                let mut partition_indexes = Vec::new();
+                let mut partition_triggers = Vec::new();
+                for p in &partitions {
+                    let (indexes, triggers) = partition_objects_sql(p);
+                    partition_indexes.extend(indexes);
+                    partition_triggers.extend(triggers);
+                }
+                creates.push(
+                    parts
+                        .create_sections(&partition_of, &partition_indexes)
+                        .join("\n\n"),
+                );
                 if script.content {
-                    resets.extend(parts.sequence_resets);
+                    for (reset, column) in
+                        parts.sequence_resets.into_iter().zip(&parts.reset_columns)
+                    {
+                        let shared = sequences
+                            .iter()
+                            .position(|s| s.users.iter().any(|(u, c)| *u == i && c == column));
+                        match shared {
+                            Some(k) => shared_reset[k] = true,
+                            None => resets.push(reset),
+                        }
+                    }
                 }
                 foreign_keys.extend(parts.foreign_keys);
                 triggers.extend(parts.triggers);
+                triggers.extend(partition_triggers);
             } else {
                 // The server's own DDL (foreign keys inline: MySQL loads with its checks off,
                 // SQLite checks them on the rows only).
                 creates.push(table_structure(dialect, t.meta));
+            }
+        }
+        for (s, reset) in sequences.iter().zip(shared_reset) {
+            if reset {
+                let columns: Vec<(TableRef, String)> = s
+                    .users
+                    .iter()
+                    .map(|(u, c)| (tables[*u].meta.table.clone(), c.clone()))
+                    .collect();
+                resets.push(shared_sequence_reset_sql(s.sequence, &columns));
             }
         }
     }
@@ -194,10 +249,57 @@ pub fn closing_text(sections: &[String], blank_before: bool) -> String {
     }
 }
 
+/// A PostgreSQL sequence that several tables of a script draw from (column defaults).
+struct SharedSequence<'a> {
+    sequence: &'a PgSequence,
+    /// The tables (indexes into the script's tables) and columns that draw from it.
+    users: Vec<(usize, String)>,
+    /// The tables of the script whose column owns it.
+    owners: Vec<usize>,
+}
+
+/// The sequences that more than one table of the script draws from (views left out).
+fn shared_sequences<'a>(tables: &'a [ScriptTable<'_>]) -> Vec<SharedSequence<'a>> {
+    let mut all: Vec<SharedSequence<'a>> = Vec::new();
+    for (i, t) in tables.iter().enumerate() {
+        if is_view(t.meta.kind) {
+            continue;
+        }
+        for s in &t.context.sequences {
+            let k = match all
+                .iter()
+                .position(|x| x.sequence.schema == s.schema && x.sequence.name == s.name)
+            {
+                Some(k) => k,
+                None => {
+                    all.push(SharedSequence {
+                        sequence: s,
+                        users: Vec::new(),
+                        owners: Vec::new(),
+                    });
+                    all.len() - 1
+                }
+            };
+            let entry = &mut all[k];
+            if !entry.users.iter().any(|(u, c)| *u == i && c == &s.column) {
+                entry.users.push((i, s.column.clone()));
+            }
+            if s.owned && !entry.owners.contains(&i) {
+                entry.owners.push(i);
+            }
+        }
+    }
+    all.retain(|s| {
+        let first = s.users.first().map(|(u, _)| *u);
+        s.users.iter().any(|(u, _)| Some(*u) != first)
+    });
+    all
+}
+
 /// The partitions table `i` recreates with itself: those below it that the script does not hold,
 /// and that hang from it through tables the script does not hold either (a partition in the
 /// script recreates its own).
-fn own_partitions(tables: &[ScriptTable<'_>], i: usize) -> Vec<String> {
+fn own_partitions<'a>(tables: &'a [ScriptTable<'_>], i: usize) -> Vec<&'a PgPartition> {
     let me = &tables[i].meta.table;
     let partitions = &tables[i].context.partitions;
     let held = |t: &TableRef| tables.iter().any(|s| same_table(&s.meta.table, t));
@@ -228,7 +330,6 @@ fn own_partitions(tables: &[ScriptTable<'_>], i: usize) -> Vec<String> {
             }
             false
         })
-        .map(partition_of_sql)
         .collect()
 }
 
@@ -291,9 +392,39 @@ pub async fn pg_table_context(
                     parent: TableRef::new(Some(&text(r, 2)?), &text(r, 3)?),
                     bound: text(r, 4)?,
                     key: text(r, 5),
+                    objects: Vec::new(),
                 })
             })
             .collect();
+        if !context.partitions.is_empty() {
+            for r in rows(session, pg_context_partition_objects_sql(table)).await? {
+                let (Some(schema), Some(name)) = (text(&r, 0), text(&r, 1)) else {
+                    continue;
+                };
+                let kind = match text(&r, 2).as_deref() {
+                    Some("i") => PgPartitionObjectKind::Index,
+                    Some("c") => PgPartitionObjectKind::Constraint,
+                    Some("t") => PgPartitionObjectKind::Trigger,
+                    _ => continue,
+                };
+                let (Some(object), Some(definition)) = (text(&r, 3), text(&r, 4)) else {
+                    continue;
+                };
+                let partition = TableRef::new(Some(&schema), &name);
+                if let Some(p) = context
+                    .partitions
+                    .iter_mut()
+                    .find(|p| same_table(&p.table, &partition))
+                {
+                    p.objects.push(PgPartitionObject {
+                        kind,
+                        name: object,
+                        definition,
+                        disabled: text(&r, 5).as_deref() == Some("true"),
+                    });
+                }
+            }
+        }
     }
     context.sequences = rows(session, pg_context_sequences_sql(table))
         .await?

@@ -30,6 +30,8 @@ export type MenuEntry =
       run: () => void;
       disabled?: boolean;
       destructive?: boolean;
+      /** Nesting level (a group tree drawn in a menu): indents the item. */
+      indent?: number;
     }
   | { kind: "sub"; label: string; icon?: LucideIcon; items: MenuEntry[]; disabled?: boolean }
   | {
@@ -50,6 +52,10 @@ function tidy(entries: readonly MenuEntry[]): MenuEntry[] {
   while (out.at(-1)?.kind === "separator") out.pop();
   return out;
 }
+
+/** The item's left padding for its nesting level (the menus' items start at 8px). */
+const indentStyle = (indent: number | undefined) =>
+  indent ? { paddingLeft: 8 + indent * 14 } : undefined;
 
 export function ContextMenuEntries({ entries }: { entries: readonly MenuEntry[] }) {
   return tidy(entries).map((e, i) => {
@@ -84,6 +90,7 @@ export function ContextMenuEntries({ entries }: { entries: readonly MenuEntry[] 
             variant={e.destructive ? "destructive" : "default"}
             disabled={e.disabled}
             onSelect={e.run}
+            style={indentStyle(e.indent)}
           >
             {e.icon && <e.icon />} {e.label}
           </ContextMenuItem>
@@ -125,6 +132,7 @@ export function DropdownMenuEntries({ entries }: { entries: readonly MenuEntry[]
             variant={e.destructive ? "destructive" : "default"}
             disabled={e.disabled}
             onSelect={e.run}
+            style={indentStyle(e.indent)}
           >
             {e.icon && <e.icon />} {e.label}
           </DropdownMenuItem>

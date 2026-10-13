@@ -63,6 +63,8 @@ fn conn(driver: Driver, url: &Url, database: &str) -> ConnParams {
         ssl_ca: None,
         connect_timeout_secs: 10,
         system_ca: None,
+        socket: None,
+        cleartext_password: false,
     }
 }
 

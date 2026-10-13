@@ -180,6 +180,56 @@ describe("an editor inside a dialog", () => {
   });
 });
 
+describe("a grid key the grid does not handle", () => {
+  /** A focused grid in a query tab that forwards editor keys from it (as QueryTab does). */
+  function setup() {
+    const forwarded: string[] = [];
+    render(
+      <KeyboardProvider>
+        <div
+          onKeyDownCapture={(e) => {
+            if (!e.defaultPrevented) forwarded.push(e.key);
+          }}
+        >
+          <div data-scope="grid" tabIndex={0} data-testid="grid" />
+        </div>
+      </KeyboardProvider>,
+    );
+    const grid = document.querySelector<HTMLElement>("[data-testid=grid]")!;
+    act(() => grid.focus());
+    return { grid, forwarded };
+  }
+
+  it("is spent in a read-only grid: no Beautify / Split Pane from the menu or the tab", () => {
+    const { grid, forwarded } = setup();
+    // ⌘I New Row and ⇧⌘D Set DEFAULT have no handler in a read-only result grid.
+    expect(press(grid, "i", "KeyI").defaultPrevented).toBe(true);
+    expect(press(grid, "D", "KeyD", { shiftKey: true }).defaultPrevented).toBe(true);
+    expect(forwarded).toEqual([]);
+    // ⌘↩ stays with the query tab (Run Current) while the grid does not bind Quick Look.
+    expect(press(grid, "Enter", "Enter").defaultPrevented).toBe(false);
+    expect(forwarded).toEqual(["Enter"]);
+  });
+
+  it("runs the grid's handler when there is one", () => {
+    const newRow = register("grid.new-row");
+    const { grid, forwarded } = setup();
+    expect(press(grid, "i", "KeyI").defaultPrevented).toBe(true);
+    expect(newRow).toHaveBeenCalledTimes(1);
+    expect(forwarded).toEqual([]);
+  });
+
+  it("is left alone outside a grid", () => {
+    render(
+      <KeyboardProvider>
+        <button type="button" data-testid="plain" />
+      </KeyboardProvider>,
+    );
+    const plain = document.querySelector<HTMLElement>("[data-testid=plain]")!;
+    expect(press(plain, "i", "KeyI").defaultPrevented).toBe(false);
+  });
+});
+
 describe("runShortcut", () => {
   it("tells the handler it runs from its key, and nothing else does", async () => {
     const seen: boolean[] = [];

@@ -263,6 +263,7 @@ async fn steps(session: Arc<dyn DbSession>, schema: String) {
                 method: Some("btree".into()),
                 predicate: Some("qty > 0".into()),
                 comment: None,
+                include: vec![],
             },
         }],
     )

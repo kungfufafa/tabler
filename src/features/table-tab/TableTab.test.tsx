@@ -663,6 +663,38 @@ describe("TableTab bottom bar", () => {
     expect(slice().filtersVisible).toBe(false);
   });
 
+  it("⌘F opens the bar on the last applied filter's value, and keeps it open", async () => {
+    const { id, slice } = await setup({ stage: false });
+    // Applied: name = Ann and email = x; the unchecked and the blank rows are not applied.
+    const skipped = { ...newFilterRow("role", "eq", "admin"), enabled: false };
+    act(() =>
+      useTableTabsStore.getState().update(id, {
+        filters: [
+          newFilterRow("name", "eq", "Ann"),
+          newFilterRow("email", "eq", "x"),
+          skipped,
+          newFilterRow("name", "eq", ""),
+        ],
+      }),
+    );
+    await waitFor(() => expect(actions.has("grid.filter")).toBe(true));
+    await act(() => actions.run("grid.filter"));
+    expect(slice().filtersVisible).toBe(true);
+    const values = await screen.findAllByRole("textbox", { name: "Filter value" });
+    await waitFor(() => expect(document.activeElement).toBe(values[1]));
+    expect(values[1]).toHaveValue("x");
+    // Already open: ⌘F does not close it, it goes back to that value.
+    act(() => values[0]!.focus());
+    await act(() => actions.run("grid.filter"));
+    expect(slice().filtersVisible).toBe(true);
+    expect(document.activeElement).toBe(values[1]);
+    // Nothing applied: the last row.
+    act(() => useTableTabsStore.getState().update(id, { filters: [skipped] }));
+    await act(() => actions.run("grid.filter"));
+    const [only] = screen.getAllByRole("textbox", { name: "Filter value" });
+    expect(document.activeElement).toBe(only);
+  });
+
   it("the ⚙ popover goes to an offset, to the last page, and counts exactly", async () => {
     // An estimated count (as for a big table), exact on request.
     const count = vi

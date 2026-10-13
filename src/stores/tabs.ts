@@ -229,6 +229,18 @@ export function registerUnsavedSource(count: (tab: Tab) => number): () => void {
   };
 }
 
+/** Told about every close the user confirmed (Discard), before its tabs go. */
+const confirmedCloseHooks: ((request: CloseRequest) => void)[] = [];
+
+/** Adds a hook to `confirmClose` (drops work kept outside the tabs); returns its removal. */
+export function onConfirmedClose(hook: (request: CloseRequest) => void): () => void {
+  confirmedCloseHooks.push(hook);
+  return () => {
+    const i = confirmedCloseHooks.indexOf(hook);
+    if (i >= 0) confirmedCloseHooks.splice(i, 1);
+  };
+}
+
 /** Drops the per-tab state (staged rows, staged DDL) of tabs that are going away. */
 function dropTabState(ids: readonly string[]): void {
   if (ids.length === 0) return;
@@ -531,6 +543,7 @@ export const useTabsStore = create<TabsState>()(
       const request = get().closeRequest;
       if (!request) return null;
       set({ closeRequest: null });
+      for (const hook of [...confirmedCloseHooks]) hook(request);
       if (request.kind === "tabs") {
         get().forceClose(request.ids);
         if (request.activateAfter) get().activate(request.activateAfter);

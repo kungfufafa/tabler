@@ -381,6 +381,7 @@ export function tableMetaFor(driver: Driver, schema: string, name: string): Tabl
               predicate: null,
               definition: null,
               comment: null,
+              include: [],
             },
           ]
         : [],

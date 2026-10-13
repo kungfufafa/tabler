@@ -132,6 +132,7 @@ describe("table actions", () => {
         method: "gin",
         predicate: "a > 1",
         comment: null,
+        include: [],
       },
     });
     const mysql = validateIndex(

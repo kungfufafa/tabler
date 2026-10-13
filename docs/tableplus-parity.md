@@ -128,20 +128,38 @@ found ~45 issues; all were fixed with regression tests. Notable behaviour that c
 - MySQL literals follow the session's `NO_BACKSLASH_ESCAPES`; database GRANTs escape `_` / `%`;
   PG role passwords are sent as SCRAM-SHA-256 verifiers.
 
+## Wave 2 — the "Still open" list ✅
+
+| TablePlus behaviour (spec §)                                                              | Tabler                                                                                           | Status |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------ |
+| Password storage "Command Line (IAM authentication)" (§1.2, §1.3)                         | login-shell command; token cached 10 min and refreshed for new pool connections; MySQL needs TLS | ✅     |
+| MySQL "Use socket" (§1.4)                                                                 | auto-detects the usual socket paths; backups use the socket too                                  | ✅     |
+| SSH keyboard-interactive / 2FA prompts (§1.7)                                             | the server's questions in a dialog; works without a saved SSH password                           | ✅     |
+| SQLCipher (§1.5)                                                                          | a clear "encrypted database" error (no SQLCipher build yet)                                      | 🟡     |
+| Nested connection groups with icons; drag groups; export / import groups (§1.8)           | `A / B / C` paths, 24 icons, `.tablerconnections` v2                                             | ✅     |
+| Sidebar groups with filter rules, per-table column list (§2.3)                            | rules (prefix / suffix / contains / regex / kind / schema) or manual folders; Show Columns       | ✅     |
+| Staged truncate / drop from the sidebar, committed with ⌘S (§2.4, §9)                     | pending ops in the action control, preview sheet, discard; separate transaction from tab edits   | ✅     |
+| Copy Script As ▸ Laravel Migration; ER diagram (§2.4, §11.4, §11.5)                       | migration classes; a native diagram with crow's-foot relations, auto layout, SVG / PNG export    | ✅     |
+| Native menus incl. Navigate, ⌘F to the last filter, CSV default options (§0, §3.8, §10.1) | Edit / View / Navigate menus, Select Next / Previous Pane (⇧⌘] / ⇧⌘[)                            | ✅     |
+| Search and replace in results, RAISE NOTICE, comment-driven charts (§3.9, §5.1, §5.3)     | find bar (⌘F in results), notice toasts + Messages, Bar / Line / Pie charts                      | ✅     |
+| Re-run with staged result edits asks first (§5.4)                                         | "Discard N uncommitted result changes and run?"                                                  | ✅     |
+| PG trigger enable / disable, index INCLUDE columns (§4.4, §4.5)                           | staged; INCLUDE editable for new indexes                                                         | ✅     |
+| Export: partitions with their own indexes / triggers, shared sequences (§6.1)             | pg_dump-like script                                                                              | ✅     |
+
+Real-server checks (`docs/verify-servers.md`, compose services `pg-ssl` / `mysql-ssl`): client-certificate
+SSL works with PEM keys (PKCS#8 / PKCS#1 / SEC1, leaf first); MySQL VERIFY-CA cannot skip the host-name
+check (mysql_async limitation — use VERIFY-IDENTITY or REQUIRED); MySQL / MariaDB warnings-as-errors on
+CSV import and the dump import over SSH work. A second review pass fixed 23 more issues (MySQL IAM
+needing the cleartext plugin, IAM tokens in pools, password commands in imported files, diagram
+partitions, INCLUDE quoting, the staged-ops commit chain, chart tick hangs, find in hidden columns…).
+
 ### Still open
 
-- Command Line (IAM) password mode, SQLCipher, MySQL socket / driver-version picker, SSH keyboard-interactive prompts.
-- Nested connection groups with icons; groups with filter rules in the sidebar; per-table column list in the sidebar.
-- Staged (⌘S) truncate / drop from the sidebar; Laravel migration / diagram scripts.
-- Native-menu entries for the newer editor and grid actions; ⌘F jumping to the last applied filter; the CSV
-  delimiter preference for Copy; ~250 KB chunks for copied INSERTs.
-- Re-running a query with staged result edits discards them with a toast instead of asking.
-- Search and replace inside results; Raise Notice notifications; comment-driven charts.
-- Column reordering in the structure editor; PG trigger enable / disable; PG index INCLUDE columns.
-- PG partitions recreated with their parent come without their own local indexes / triggers; a sequence
-  shared by several tables is created but not reset by exports.
-- PG domains over sized types still cut values on import (the cast keeps the domain).
-- Not yet tried against real servers: client-certificate SSL, MySQL warnings-as-errors on MariaDB, the
-  dedicated dump connection over SSH.
+- SQLCipher databases (needs an OpenSSL-backed SQLite build).
+- Staged ops created while the connection has no tab open are dropped on quit / disconnect without
+  asking; dropping functions / sequences from the sidebar still runs immediately.
+- Pinned results and Item Overview are dialogs or tabs of their own rather than TablePlus's exact
+  placement; group images (TablePlus) are icons here.
+- Not yet tried against real servers: SSH 2FA against a real PAM / OTP bastion, IAM against RDS.
 
 Out of scope for now: metrics board, plugins, the LLM chat panel, MCP server, Touch ID unlock, passcode, iCloud sync.

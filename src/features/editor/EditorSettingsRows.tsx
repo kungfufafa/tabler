@@ -122,6 +122,11 @@ export function EditorWorkflowSettings() {
           label="Return on error"
           description="A run of several statements stops at the first error."
         />
+        <SwitchRow
+          pref="editorRaiseNotices"
+          label="Raise notice notifications"
+          description="PostgreSQL: RAISE NOTICE / WARNING of a running query show as notifications (Messages lists them either way)."
+        />
       </SettingGroup>
     </>
   );

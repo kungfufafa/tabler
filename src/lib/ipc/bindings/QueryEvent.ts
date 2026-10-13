@@ -8,6 +8,7 @@ import type { Value } from "./Value";
 /**
  * Streamed to the renderer while `run_sql` executes, in this order per statement:
  * `started`, then (`columns`, `rows`*)* per result set, then `finished` or `failed`; `done`
- * closes the run.
+ * closes the run. `notice` events arrive between `started` and `finished` / `failed`, as the
+ * server sends them.
  */
-export type QueryEvent = { "event": "started", "data": { index: number, sql: string, span: StatementSpan, } } | { "event": "columns", "data": { index: number, set: number, columns: Array<ResultColumn>, } } | { "event": "rows", "data": { index: number, set: number, rows: Array<Array<Value>>, } } | { "event": "finished", "data": { index: number, result: StatementResult, } } | { "event": "failed", "data": { index: number, error: ErrorPayload, } } | { "event": "done", "data": { totalMs: number, } };
+export type QueryEvent = { "event": "started", "data": { index: number, sql: string, span: StatementSpan, } } | { "event": "columns", "data": { index: number, set: number, columns: Array<ResultColumn>, } } | { "event": "rows", "data": { index: number, set: number, rows: Array<Array<Value>>, } } | { "event": "finished", "data": { index: number, result: StatementResult, } } | { "event": "failed", "data": { index: number, error: ErrorPayload, } } | { "event": "notice", "data": { index: number | null, severity: string, message: string, detail: string | null, hint: string | null, context: string | null, } } | { "event": "done", "data": { totalMs: number, } };

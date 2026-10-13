@@ -15,6 +15,7 @@
 //! listens on the wildcard address of that port.
 
 mod hostkeys;
+pub mod prompts;
 pub mod ssh_config;
 
 use std::fmt::Display;
@@ -40,6 +41,11 @@ pub use hostkeys::{
     accept_pending_host_key, append_known_host, check_known_hosts_file, default_known_hosts_path,
     fingerprint, key_type, lookup_trusted_host, normalize_host, trust_host_key, verify_host_key,
 };
+pub use prompts::{
+    ClockedPrompts, ForwardedPrompts, KeyboardInteractive, PendingPrompts, PromptClock,
+    PromptEvent, PromptRound, SshPromptDone, SshPromptField, SshPromptPurpose, SshPromptRequest,
+    timeout_excluding_prompts,
+};
 
 use crate::error::AppError;
 use crate::types::profile::{SshAuth, SshConfig};
@@ -54,13 +60,17 @@ const PORT_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 /// only mean "the connection closed" (see [`session_end`]).
 const SESSION_END_GRACE: Duration = Duration::from_millis(500);
 
-/// SSH secrets for one tunnel: the password (password auth) or the key passphrase (key auth).
+/// SSH secrets for one tunnel: the password (password auth) or the key passphrase (key auth),
+/// and who answers the server's keyboard-interactive (2FA) questions.
 #[derive(Clone, Default)]
 pub struct TunnelAuth {
     pub password: Option<String>,
     pub passphrase: Option<String>,
     /// SSH agent socket for agent auth; `None` uses `SSH_AUTH_SOCK`.
     pub agent_socket: Option<PathBuf>,
+    /// Answers keyboard-interactive questions (the user, through the renderer). `None`: only a
+    /// password question can be answered (with `password`).
+    pub prompts: Option<Arc<dyn KeyboardInteractive>>,
 }
 
 impl std::fmt::Debug for TunnelAuth {
@@ -69,6 +79,7 @@ impl std::fmt::Debug for TunnelAuth {
             .field("password", &self.password.as_ref().map(|_| "***"))
             .field("passphrase", &self.passphrase.as_ref().map(|_| "***"))
             .field("agent_socket", &self.agent_socket)
+            .field("prompts", &self.prompts.is_some())
             .finish()
     }
 }
@@ -331,9 +342,12 @@ pub async fn open_tunnel(
 
     // Local problems (missing key, wrong passphrase, port in use) fail before any network I/O.
     let credential = match cfg.auth {
-        SshAuth::Password => Credential::Password(auth.password.clone().ok_or_else(|| {
-            AppError::Auth("ssh: no SSH password is saved for this connection".into())
-        })?),
+        SshAuth::Password => match auth.password.clone() {
+            Some(password) => Credential::Password(password),
+            // Nothing saved: the server's own questions (its password prompt) go to the user.
+            None if auth.prompts.is_some() => Credential::Prompted,
+            None => return Err(no_saved_password()),
+        },
         SshAuth::Key => Credential::Key(load_private_key(
             key_path.as_deref(),
             auth.passphrase.as_deref(),
@@ -367,7 +381,13 @@ pub async fn open_tunnel(
     // dropped (the caller's connect timeout) or returns an error.
     let (mut session, abort) =
         handshake(config, &ssh_host, ssh_port, handler, check_rx, trust).await?;
-    if let Err(e) = authenticate(&mut session, &user, credential, &state).await {
+    let sign_in = SignIn {
+        user: &user,
+        host: &ssh_host,
+        port: ssh_port,
+        prompts: auth.prompts.as_deref(),
+    };
+    if let Err(e) = authenticate(&mut session, &sign_in, credential, &state).await {
         let _ = session
             .disconnect(Disconnect::ByApplication, "authentication failed", "en")
             .await;
@@ -666,9 +686,18 @@ async fn handshake(
 
 enum Credential {
     Password(String),
+    /// Password authentication without a saved password: keyboard-interactive only, the user
+    /// answering the server's questions (see `prompted_password`).
+    Prompted,
     Key(Arc<PrivateKey>),
     /// Agent socket override (`None`: `SSH_AUTH_SOCK`).
     Agent(Option<PathBuf>),
+}
+
+const NO_SAVED_PASSWORD: &str = "ssh: no SSH password is saved for this connection";
+
+fn no_saved_password() -> AppError {
+    AppError::Auth(NO_SAVED_PASSWORD.into())
 }
 
 fn ssh_err(e: russh::Error) -> AppError {
@@ -730,15 +759,36 @@ async fn session_end(
     }
 }
 
+/// Who signs in where, and who answers the server's keyboard-interactive questions.
+struct SignIn<'a> {
+    user: &'a str,
+    host: &'a str,
+    port: u16,
+    prompts: Option<&'a dyn KeyboardInteractive>,
+}
+
+/// Rounds of keyboard-interactive questions answered before giving up.
+const MAX_PROMPT_ROUNDS: usize = 10;
+
+/// Signs in with the profile's credential (key, agent or password), then, when the server asks
+/// for keyboard-interactive (a 2FA code after a partial success, or instead of a method it does
+/// not accept), answers its questions: TablePlus's order key → password → keyboard-interactive.
 async fn authenticate(
     session: &mut client::Handle<Client>,
-    user: &str,
+    sign_in: &SignIn<'_>,
     credential: Credential,
     state: &watch::Sender<TunnelState>,
 ) -> Result<(), AppError> {
+    let user = sign_in.user;
+    let mut password = None;
     let (method, result) = match credential {
-        Credential::Password(password) => {
-            ("password", password_auth(session, user, &password).await?)
+        Credential::Password(pw) => {
+            let result = session
+                .authenticate_password(user, pw.as_str())
+                .await
+                .map_err(ssh_err)?;
+            password = Some(pw);
+            ("password", result)
         }
         Credential::Key(key) => {
             let hash = rsa_hash(session, &key.public_key().clone()).await?;
@@ -749,27 +799,189 @@ async fn authenticate(
             ("public key", result)
         }
         Credential::Agent(socket) => ("ssh-agent", agent_auth(session, user, socket, state).await?),
+        Credential::Prompted => return prompted_password(session, sign_in, state).await,
     };
-    match result {
-        AuthResult::Success => Ok(()),
-        AuthResult::Failure {
-            remaining_methods,
-            partial_success,
-        } => {
-            if !partial_success
-                && method_names(&remaining_methods).is_empty()
-                && let Some(reason) = session_end(session, state).await
-            {
-                return Err(ended_during_auth(method, &reason));
-            }
-            Err(auth_failure(
-                method,
-                user,
-                &remaining_methods,
-                partial_success,
-            ))
-        }
+    let AuthResult::Failure {
+        remaining_methods,
+        partial_success,
+    } = result
+    else {
+        return Ok(());
+    };
+    if !partial_success
+        && method_names(&remaining_methods).is_empty()
+        && let Some(reason) = session_end(session, state).await
+    {
+        return Err(ended_during_auth(method, &reason));
     }
+    // The password answers the server's password question only when the server never took it as
+    // `password` (it does password authentication through keyboard-interactive / PAM). After a
+    // partial success the password was *accepted* and the next question wants a second factor:
+    // sending the password there would hand it to the 2FA backend and burn an attempt.
+    let password =
+        password.filter(|_| !partial_success && !remaining_methods.contains(&MethodKind::Password));
+    if remaining_methods.contains(&MethodKind::KeyboardInteractive)
+        && (sign_in.prompts.is_some() || password.is_some())
+        && let Some((asked, result)) =
+            keyboard_interactive(session, sign_in, password.as_deref()).await?
+    {
+        let method = if asked {
+            "keyboard-interactive"
+        } else {
+            method
+        };
+        return match result {
+            AuthResult::Success => Ok(()),
+            AuthResult::Failure {
+                remaining_methods,
+                partial_success,
+            } => {
+                if !partial_success
+                    && method_names(&remaining_methods).is_empty()
+                    && let Some(reason) = session_end(session, state).await
+                {
+                    return Err(ended_during_auth(method, &reason));
+                }
+                Err(auth_failure(
+                    method,
+                    user,
+                    &remaining_methods,
+                    partial_success,
+                ))
+            }
+        };
+    }
+    Err(auth_failure(
+        method,
+        user,
+        &remaining_methods,
+        partial_success,
+    ))
+}
+
+/// Password authentication without a saved password: straight to keyboard-interactive, whose
+/// questions (the server's password prompt, then any second factor in the same exchange) the user
+/// answers. A server that takes the password only as such (the `password` method, no
+/// keyboard-interactive) needs it saved.
+async fn prompted_password(
+    session: &mut client::Handle<Client>,
+    sign_in: &SignIn<'_>,
+    state: &watch::Sender<TunnelState>,
+) -> Result<(), AppError> {
+    let Some((asked, result)) = keyboard_interactive(session, sign_in, None).await? else {
+        return Err(no_saved_password());
+    };
+    let AuthResult::Failure {
+        remaining_methods,
+        partial_success,
+    } = result
+    else {
+        return Ok(());
+    };
+    if !partial_success
+        && method_names(&remaining_methods).is_empty()
+        && let Some(reason) = session_end(session, state).await
+    {
+        return Err(ended_during_auth("keyboard-interactive", &reason));
+    }
+    if !asked && !partial_success {
+        // No question came: the server does not do keyboard-interactive.
+        let accepted = method_names(&remaining_methods);
+        return Err(AppError::Auth(if accepted.is_empty() {
+            NO_SAVED_PASSWORD.to_string()
+        } else {
+            format!("{NO_SAVED_PASSWORD}; the server accepts: {accepted}")
+        }));
+    }
+    Err(auth_failure(
+        "keyboard-interactive",
+        sign_in.user,
+        &remaining_methods,
+        partial_success,
+    ))
+}
+
+/// A round that is the server's password question: one hidden prompt that mentions the password
+/// (any hidden prompt when nobody else could answer it).
+fn is_password_question(prompts: &[client::Prompt], only_answerer: bool) -> bool {
+    matches!(prompts, [p] if !p.echo
+        && (only_answerer || p.prompt.to_ascii_lowercase().contains("password")))
+}
+
+/// Keyboard-interactive authentication. Each round is answered with `password` when it is the
+/// server's (first) password question, else by the user through `sign_in.prompts`; a round
+/// without questions (instructions only) gets an empty answer. Returns whether the user answered
+/// any round, with the server's verdict, or `None` when a round could not be answered (nobody to
+/// ask). A cancelled question is `AppError::Cancelled`.
+async fn keyboard_interactive(
+    session: &mut client::Handle<Client>,
+    sign_in: &SignIn<'_>,
+    password: Option<&str>,
+) -> Result<Option<(bool, AuthResult)>, AppError> {
+    let mut password = password;
+    let mut asked = false;
+    let mut reply = session
+        .authenticate_keyboard_interactive_start(sign_in.user, None)
+        .await
+        .map_err(ssh_err)?;
+    for _ in 0..MAX_PROMPT_ROUNDS {
+        let (name, instructions, prompts) = match reply {
+            client::KeyboardInteractiveAuthResponse::Success => {
+                return Ok(Some((asked, AuthResult::Success)));
+            }
+            client::KeyboardInteractiveAuthResponse::Failure {
+                remaining_methods,
+                partial_success,
+            } => {
+                return Ok(Some((
+                    asked,
+                    AuthResult::Failure {
+                        remaining_methods,
+                        partial_success,
+                    },
+                )));
+            }
+            client::KeyboardInteractiveAuthResponse::InfoRequest {
+                name,
+                instructions,
+                prompts,
+            } => (name, instructions, prompts),
+        };
+        let answers = if prompts.is_empty() {
+            Vec::new()
+        } else if let Some(pw) =
+            password.filter(|_| is_password_question(&prompts, sign_in.prompts.is_none()))
+        {
+            password = None;
+            vec![pw.to_string()]
+        } else if let Some(user) = sign_in.prompts {
+            asked = true;
+            user.answer(PromptRound {
+                user: sign_in.user.to_string(),
+                host: sign_in.host.to_string(),
+                port: sign_in.port,
+                name,
+                instructions,
+                prompts: prompts
+                    .into_iter()
+                    .map(|p| SshPromptField {
+                        prompt: p.prompt,
+                        echo: p.echo,
+                    })
+                    .collect(),
+            })
+            .await?
+        } else {
+            return Ok(None);
+        };
+        reply = session
+            .authenticate_keyboard_interactive_respond(answers)
+            .await
+            .map_err(ssh_err)?;
+    }
+    Err(AppError::Auth(format!(
+        "ssh: the SSH server kept asking questions ({MAX_PROMPT_ROUNDS} rounds); giving up"
+    )))
 }
 
 /// RSA keys need the signature hash the server supports; other key types ignore it.
@@ -785,71 +997,6 @@ async fn rsa_hash(
         .await
         .map_err(ssh_err)?
         .flatten())
-}
-
-/// Password auth; servers that only offer keyboard-interactive get the password as the answer
-/// to their prompts.
-async fn password_auth(
-    session: &mut client::Handle<Client>,
-    user: &str,
-    password: &str,
-) -> Result<AuthResult, AppError> {
-    let result = session
-        .authenticate_password(user, password)
-        .await
-        .map_err(ssh_err)?;
-    let AuthResult::Failure {
-        remaining_methods,
-        partial_success,
-    } = &result
-    else {
-        return Ok(result);
-    };
-    // After a partial success the password was *accepted* and keyboard-interactive is a second
-    // factor (`AuthenticationMethods password,keyboard-interactive`): its prompt wants a one-time
-    // code, and answering with the password would hand it to the second-factor backend and burn
-    // an attempt there. Only a server that never offered `password` gets the fallback.
-    if *partial_success
-        || remaining_methods.contains(&MethodKind::Password)
-        || !remaining_methods.contains(&MethodKind::KeyboardInteractive)
-    {
-        return Ok(result);
-    }
-    let mut reply = session
-        .authenticate_keyboard_interactive_start(user, None)
-        .await
-        .map_err(ssh_err)?;
-    for _ in 0..5 {
-        match reply {
-            client::KeyboardInteractiveAuthResponse::Success => return Ok(AuthResult::Success),
-            client::KeyboardInteractiveAuthResponse::Failure {
-                remaining_methods,
-                partial_success,
-            } => {
-                return Ok(AuthResult::Failure {
-                    remaining_methods,
-                    partial_success,
-                });
-            }
-            client::KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
-                let answers = prompts
-                    .iter()
-                    .map(|p| {
-                        if p.echo {
-                            String::new()
-                        } else {
-                            password.to_string()
-                        }
-                    })
-                    .collect();
-                reply = session
-                    .authenticate_keyboard_interactive_respond(answers)
-                    .await
-                    .map_err(ssh_err)?;
-            }
-        }
-    }
-    Ok(result)
 }
 
 /// The agent did not produce a signature (refused, e.g. a dismissed confirmation prompt with

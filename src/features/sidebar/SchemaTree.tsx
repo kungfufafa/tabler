@@ -1,20 +1,28 @@
+import { useQueries, type UseQueryResult } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  ArrowUpRight,
   ChevronRight,
+  Folder,
+  KeyRound,
   ListOrdered,
+  Loader2,
   Pin,
   Sigma,
   SquareFunction,
   Table2,
+  TriangleAlert,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
   useState,
+  type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
   type Ref,
@@ -23,7 +31,9 @@ import { EmptyState } from "@/components/EmptyState";
 import { TableIcon } from "@/components/TypeIcon";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { openDiagram } from "@/features/diagram/store";
 import {
+  copyLaravelMigrations,
   copyNames,
   copyRoutineScript,
   copySequenceScript,
@@ -37,8 +47,16 @@ import {
   togglePins,
   type ObjectContext,
 } from "@/features/objects/actions";
-import { headerMenu, objectMenu, tableMenu, type MenuEntry } from "@/features/objects/menu";
+import {
+  groupEntries,
+  groupHeaderMenu,
+  headerMenu,
+  objectMenu,
+  tableMenu,
+  type MenuEntry,
+} from "@/features/objects/menu";
 import { ContextMenuEntries } from "@/features/objects/MenuEntries";
+import { usePendingMarks } from "@/features/objects/pendingOps";
 import { useRoutines, useSequences, useSidebarReload } from "@/features/objects/queries";
 import {
   clickSelection,
@@ -60,10 +78,13 @@ import { isAlterable } from "@/features/structure/tableActions";
 import { formatCount } from "@/lib/format/time";
 import { comboFromEvent, isMac } from "@/lib/keys/combo";
 import {
+  ipc,
   tableKey,
+  toIpcError,
   type RoutineKind,
   type RoutineSummary,
   type SequenceSummary,
+  type TableMeta,
   type TableRef,
   type TableSummary,
 } from "@/lib/ipc";
@@ -73,18 +94,57 @@ import { EMPTY_PINS } from "@/stores/pins";
 import { recordRecent } from "@/stores/recent";
 import { useTabsStore } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
+import {
+  addToGroup,
+  deleteGroup,
+  EMPTY_GROUPS,
+  NAME_OPS,
+  GROUP_KINDS,
+  groupWarning,
+  openGroupDialog,
+  removeFromGroup,
+  routineItemKey,
+  setGroupCollapsed,
+  tableItemKey,
+  type SidebarGroup,
+} from "./groups";
 import { setSectionCollapsed, toggleSection, useSidebarPrefs } from "./sidebarPrefs";
 import {
+  groupIdOfRow,
   isItemRow,
   itemName,
   mergeObjectRows,
+  pruneEmptyGroups,
+  schemaKeys,
   useCurrentSchema,
+  withColumnRows,
+  type ColumnState,
   type ItemRow,
   type TreeRow,
 } from "./useSchemaTree";
 
 type HeaderRow = Extract<TreeRow, { type: "header" }>;
+type GroupHeaderRow = Extract<TreeRow, { type: "groupHeader" }>;
 type TableRow = Extract<TreeRow, { type: "table" }>;
+
+/** What a sidebar row carries while it is dragged onto a group (item keys, `groups.ts`). */
+export const DRAG_MIME = "application/x-tabler-sidebar-items";
+
+const NO_KEYS: ReadonlySet<string> = new Set();
+
+/** "name has prefix log_ and kind is view", for a rule group's tooltip. */
+function rulesSummary(g: SidebarGroup): string {
+  if (g.rules === null) return "Drag items here to add them";
+  return g.rules
+    .map((r) =>
+      r.field === "name"
+        ? `name ${NAME_OPS.find(([op]) => op === r.op)?.[1] ?? r.op} ${r.value}`
+        : r.field === "kind"
+          ? `kind is ${GROUP_KINDS.find(([k]) => k === r.value)?.[1] ?? r.value}`
+          : `schema is ${r.value}`,
+    )
+    .join(" and ");
+}
 
 /** Row height of the tree (headers and items). */
 export const ROW_H = 22;
@@ -174,9 +234,13 @@ function sequencesOf(rows: readonly ItemRow[]): SequenceSummary[] {
   return rows.flatMap((r) => (r.type === "sequence" ? [r.sequence] : []));
 }
 
-/** Table rows of the tree have keys `<section>:<tableKey>` (`t:`, `p:`, `r:`). */
+/**
+ * Table rows of the tree have keys `<section>:<tableKey>` (`t:`, `p:`, `r:`), in a group
+ * `g:<id>:t:<tableKey>`.
+ */
 function tableKeyOfRow(key: string): string | null {
-  return /^[tpr]:/.test(key) ? key.slice(2) : null;
+  const m = /^(?:g:[^:]+:)?[tpr]:(.*)$/s.exec(key);
+  return m ? m[1]! : null;
 }
 
 function routineTitle(r: RoutineSummary): string {
@@ -196,6 +260,7 @@ export function SchemaTree({
   pinScope = null,
   pinned = EMPTY_PINS,
   showRowCounts = false,
+  groups = EMPTY_GROUPS,
   ref,
 }: {
   connectionId: string;
@@ -213,6 +278,8 @@ export function SchemaTree({
   pinned?: ReadonlySet<string>;
   /** Show the estimated row count on the right of each table row. */
   showRowCounts?: boolean;
+  /** The sidebar groups of `pinScope` (`groups.ts`); `rows` were built with them. */
+  groups?: readonly SidebarGroup[];
   ref?: Ref<SchemaTreeHandle>;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
@@ -227,17 +294,89 @@ export function SchemaTree({
   const routines = useRoutines(connectionId, currentSchema, showFunctions);
   const sequences = useSequences(connectionId, currentSchema, showSequences);
   useSidebarReload(connectionId, currentSchema);
+  const baseRows = useMemo(
+    () =>
+      pruneEmptyGroups(
+        mergeObjectRows(
+          tableRows,
+          showFunctions ? routines.data : undefined,
+          showSequences ? sequences.data : undefined,
+          search,
+          collapsed,
+          groups,
+        ),
+        search,
+      ),
+    [
+      tableRows,
+      showFunctions,
+      routines.data,
+      showSequences,
+      sequences.data,
+      search,
+      collapsed,
+      groups,
+    ],
+  );
+  // "Show Columns": expanded table rows (by row key) list their columns, loaded on expand.
+  const showColumns = useSidebarPrefs((s) => s.options.showColumns);
+  const [rawExpanded, setExpanded] = useState<ReadonlySet<string>>(NO_KEYS);
+  const expanded = showColumns ? rawExpanded : NO_KEYS;
+  const expandedTables = useMemo(() => {
+    const byKey = new Map<string, TableSummary>();
+    for (const r of baseRows)
+      if (r.type === "table" && expanded.has(r.key)) byKey.set(tableKey(r.table), r.table);
+    return [...byKey.values()];
+  }, [baseRows, expanded]);
+  const combineColumns = useCallback(
+    (results: UseQueryResult<TableMeta, Error>[]) => {
+      const states = new Map<string, ColumnState>();
+      results.forEach((q, i) => {
+        const t = expandedTables[i];
+        if (!t) return;
+        states.set(
+          tableKey(t),
+          q.data
+            ? { status: "ready", meta: q.data }
+            : q.isError
+              ? { status: "error", message: toIpcError(q.error).message }
+              : { status: "loading" },
+        );
+      });
+      return states;
+    },
+    [expandedTables],
+  );
+  const columnStates = useQueries({
+    queries: expandedTables.map((t) => ({
+      queryKey: schemaKeys.table(connectionId, t.schema, t.name),
+      queryFn: () => ipc.schema.table(connectionId, { schema: t.schema, name: t.name }),
+      staleTime: 5 * 60_000,
+      retry: false,
+    })),
+    combine: combineColumns,
+  });
   const rows = useMemo(
     () =>
-      mergeObjectRows(
-        tableRows,
-        showFunctions ? routines.data : undefined,
-        showSequences ? sequences.data : undefined,
-        search,
-        collapsed,
+      withColumnRows(
+        baseRows,
+        expanded,
+        (t) => columnStates.get(tableKey(t)) ?? { status: "loading" },
       ),
-    [tableRows, showFunctions, routines.data, showSequences, sequences.data, search, collapsed],
+    [baseRows, expanded, columnStates],
   );
+  const toggleExpanded = (key: string, open?: boolean) =>
+    setExpanded((prev) => {
+      const isOpen = prev.has(key);
+      if (open === isOpen) return prev;
+      const next = new Set(prev);
+      if (isOpen) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  const marks = usePendingMarks(connectionId);
+  // The manual group a dragged item hovers.
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const order = useMemo(() => rows.filter(isItemRow).map((r) => r.key), [rows]);
   const [rawSelection, setRawSelection] = useState<TreeSelection>(EMPTY_SELECTION);
   // Rows a search or a refresh took away are no longer selected.
@@ -371,11 +510,14 @@ export function SchemaTree({
     return rows.filter((r): r is ItemRow => isItemRow(r) && keys.has(r.key));
   };
 
+  /** Tables with a pending drop are not dropped (nor truncated) a second time. */
+  const canDrop = (t: TableSummary) => t.kind !== "systemView" && marks.get(tableKey(t)) !== "drop";
+  const canTruncate = (t: TableSummary) => isAlterable(t.kind) && !marks.has(tableKey(t));
   const dropTables = (
     tables: TableSummary[],
     preset: { cascade?: boolean; ignoreFk?: boolean },
   ) => {
-    const droppable = tables.filter((t) => t.kind !== "systemView");
+    const droppable = tables.filter(canDrop);
     if (readOnly || droppable.length === 0) return;
     dialog({
       kind: "dropTables",
@@ -385,7 +527,7 @@ export function SchemaTree({
     });
   };
   const truncateTables = (tables: TableSummary[]) => {
-    const truncatable = tables.filter((t) => isAlterable(t.kind));
+    const truncatable = tables.filter(canTruncate);
     if (readOnly || truncatable.length === 0) return;
     dialog({ kind: "truncateTables", tables: truncatable.map(refOf) });
   };
@@ -408,6 +550,41 @@ export function SchemaTree({
     }
   };
 
+  /** The item keys (`groups.ts`) a group action moves: the targets' tables and routines. */
+  const groupKeysOf = (row: ItemRow): string[] => [
+    ...new Set(
+      targetsOf(row.key).flatMap((r) =>
+        r.type === "table"
+          ? [tableItemKey(r.table)]
+          : r.type === "routine"
+            ? [routineItemKey(r.routine)]
+            : [],
+      ),
+    ),
+  ];
+  /** Add to Group ▸ / Remove from <group> of a table or routine row. */
+  const groupItemsOf = (row: ItemRow): MenuEntry[] => {
+    if (pinScope === null || row.type === "sequence") return [];
+    const scope = pinScope;
+    const keys = groupKeysOf(row);
+    const manual = groups.filter((g) => g.rules === null);
+    const inGroup = groupIdOfRow(row.key);
+    const current = manual.find((g) => g.id === inGroup) ?? null;
+    return groupEntries(
+      {
+        manual: manual.map((g) => ({ id: g.id, name: g.name })),
+        current: current && { id: current.id, name: current.name },
+      },
+      {
+        addToGroup: (id) => addToGroup(scope, id, keys),
+        removeFromGroup: () => {
+          if (current) removeFromGroup(scope, current.id, keys);
+        },
+        newGroup: () => openGroupDialog({ scope, members: keys }),
+      },
+    );
+  };
+
   const tableEntries = (row: TableRow): MenuEntry[] => {
     const t = row.table;
     const tables = tablesOf(targetsOf(row.key));
@@ -416,8 +593,8 @@ export function SchemaTree({
         driver,
         readOnly,
         count: tables.length,
-        truncatable: tables.filter((x) => isAlterable(x.kind)).length,
-        droppable: tables.filter((x) => x.kind !== "systemView").length,
+        truncatable: tables.filter(canTruncate).length,
+        droppable: tables.filter(canDrop).length,
         isTable: isAlterable(t.kind),
         renamable: isAlterable(t.kind),
         allPinned: pinScope === null ? null : tables.every((x) => pinned.has(tableKey(x))),
@@ -445,8 +622,21 @@ export function SchemaTree({
         rename: () => dialog({ kind: "renameTable", table: t }),
         truncate: () => truncateTables(tables),
         drop: () => dropTables(tables, {}),
-        copyScript: (kind) => void copyTableScript(ctx, t, kind),
+        copyScript: (kind) =>
+          kind === "laravel"
+            ? void copyLaravelMigrations(
+                ctx,
+                tables.filter((x) => isAlterable(x.kind)),
+              )
+            : void copyTableScript(ctx, t, kind),
+        generateDiagram: () =>
+          openDiagram({
+            connectionId,
+            schema: t.schema ?? currentSchema,
+            tables: tables.map(refOf),
+          }),
       },
+      groupItemsOf(row),
     );
   };
 
@@ -464,6 +654,7 @@ export function SchemaTree({
             : void copySequenceScript(ctx, row.sequence, kind),
         drop: () => deleteTargets(row),
       },
+      groupItemsOf(row),
     );
   };
 
@@ -523,6 +714,13 @@ export function SchemaTree({
         handled();
         if (row.type === "table") truncateTables(tablesOf(targetsOf(row.key)));
         return;
+      case "ArrowRight":
+      case "ArrowLeft":
+        // "Show Columns": → lists the table's columns, ← hides them.
+        if (!showColumns || row.type !== "table") return;
+        handled();
+        toggleExpanded(row.key, combo === "ArrowRight");
+        return;
       case "Mod+A":
         handled();
         select(selectAll(order));
@@ -544,6 +742,28 @@ export function SchemaTree({
     }
     onArrow(e, index);
   };
+
+  /** ←/→ on a group header collapse / expand it; ↑/↓ move to the items around it. */
+  const onGroupHeaderKeyDown = (e: KeyboardEvent, index: number, row: GroupHeaderRow) => {
+    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      if (pinScope !== null) setGroupCollapsed(pinScope, row.group.id, e.key === "ArrowLeft");
+      return;
+    }
+    onArrow(e, index);
+  };
+
+  /** The item keys a drag onto a group carries (empty when the drag is something else). */
+  const draggedKeys = (e: DragEvent): string[] => {
+    try {
+      const value: unknown = JSON.parse(e.dataTransfer.getData(DRAG_MIME) || "[]");
+      return Array.isArray(value) ? value.filter((k): k is string => typeof k === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+  const carriesItems = (e: DragEvent) => [...e.dataTransfer.types].includes(DRAG_MIME);
 
   /** ⌘-click toggles, ⇧-click extends; returns true when the click only changed the selection. */
   const modifierClick = (e: MouseEvent, key: string): boolean => {
@@ -605,12 +825,165 @@ export function SchemaTree({
                 <ContextMenuContent>
                   <ContextMenuEntries
                     entries={headerMenu(
-                      { driver, readOnly, overview: OVERVIEW_HEADERS.has(row.label) },
-                      { ...newHandlers, itemOverview: () => overviewOf(null) },
+                      {
+                        driver,
+                        readOnly,
+                        overview: OVERVIEW_HEADERS.has(row.label),
+                        diagram: row.label === "Tables",
+                      },
+                      {
+                        ...newHandlers,
+                        itemOverview: () => overviewOf(null),
+                        generateDiagram: () =>
+                          openDiagram({ connectionId, schema: currentSchema, tables: null }),
+                      },
                     )}
                   />
                 </ContextMenuContent>
               </ContextMenu>
+            );
+          }
+          if (row.type === "groupHeader") {
+            const g = row.group;
+            const manual = g.rules === null;
+            const dropping = dropTarget === g.id;
+            // A stored rule that is unsafe to run switches the group off; say why on its header.
+            const warning = groupWarning(g);
+            return (
+              <ContextMenu key={row.key}>
+                <ContextMenuTrigger asChild>
+                  <button
+                    type="button"
+                    style={style}
+                    data-row-index={v.index}
+                    data-group={g.id}
+                    data-drop-target={dropping || undefined}
+                    aria-expanded={!row.collapsed}
+                    title={warning ?? rulesSummary(g)}
+                    onClick={() => {
+                      if (pinScope !== null) setGroupCollapsed(pinScope, g.id, !row.collapsed);
+                    }}
+                    onKeyDown={(e) => onGroupHeaderKeyDown(e, v.index, row)}
+                    onDragOver={(e) => {
+                      if (!manual || !carriesItems(e)) return;
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      if (!dropping) setDropTarget(g.id);
+                    }}
+                    onDragLeave={() => {
+                      if (dropping) setDropTarget(null);
+                    }}
+                    onDrop={(e) => {
+                      if (!manual) return;
+                      e.preventDefault();
+                      setDropTarget(null);
+                      const keys = draggedKeys(e);
+                      if (pinScope !== null && keys.length > 0) addToGroup(pinScope, g.id, keys);
+                    }}
+                    className={cn(
+                      "text-muted-foreground hover:text-foreground flex items-center gap-1 pr-3 pl-1.5 text-left text-[11px] font-semibold",
+                      FOCUS_RING,
+                      "data-[state=open]:ring-sidebar-ring/70 data-[state=open]:ring-1",
+                      dropping &&
+                        "bg-sidebar-accent/60 text-foreground ring-sidebar-ring/70 ring-1",
+                    )}
+                  >
+                    <ChevronRight
+                      aria-hidden
+                      className={cn(
+                        "size-3 shrink-0 transition-transform duration-100",
+                        !row.collapsed && "rotate-90",
+                      )}
+                    />
+                    <Folder aria-hidden className="size-3 shrink-0" />
+                    <span className="truncate">{g.name}</span>
+                    {warning && (
+                      <TriangleAlert
+                        aria-label={warning}
+                        className="text-warning size-3 shrink-0"
+                      />
+                    )}
+                    <span className="text-muted-foreground/70 ml-auto pl-2 font-normal tabular-nums">
+                      {row.count}
+                    </span>
+                  </button>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  <ContextMenuEntries
+                    entries={groupHeaderMenu({
+                      edit: () => {
+                        if (pinScope !== null) openGroupDialog({ scope: pinScope, group: g });
+                      },
+                      remove: () => {
+                        if (pinScope !== null) deleteGroup(pinScope, g.id);
+                      },
+                    })}
+                  />
+                </ContextMenuContent>
+              </ContextMenu>
+            );
+          }
+          if (row.type === "column") {
+            return (
+              <button
+                key={row.key}
+                type="button"
+                style={style}
+                data-row-index={v.index}
+                data-column={row.name}
+                title={`${row.name} · ${row.dataType}`}
+                onClick={(e) => {
+                  // DataGrid has no column focus to hand over: the table opens.
+                  preview(row.table);
+                  remember(row.table, e.detail > 0);
+                }}
+                onDoubleClick={() => {
+                  openPinned(row.table);
+                  remember(row.table, true);
+                }}
+                className={cn(
+                  "flex items-center gap-1.5 pr-3 pl-10 text-left text-[11px] select-none",
+                  FOCUS_RING,
+                  "hover:bg-black/[0.035] dark:hover:bg-white/[0.05]",
+                )}
+              >
+                {row.pk ? (
+                  <KeyRound aria-label="Primary key" className="text-warning size-3 shrink-0" />
+                ) : row.fk ? (
+                  <ArrowUpRight
+                    aria-label="Foreign key"
+                    className="text-brand/80 size-3 shrink-0"
+                  />
+                ) : (
+                  <span aria-hidden className="size-3 shrink-0" />
+                )}
+                <span className="truncate">{row.name}</span>
+                <span className="text-muted-foreground/70 ml-auto truncate pl-2 font-mono text-[10px]">
+                  {row.dataType}
+                </span>
+              </button>
+            );
+          }
+          if (row.type === "columnStatus") {
+            return (
+              <div
+                key={row.key}
+                style={style}
+                data-row-index={v.index}
+                role="status"
+                className="text-muted-foreground flex items-center gap-1.5 pr-3 pl-10 text-[11px]"
+              >
+                {row.status === "loading" ? (
+                  <>
+                    <Loader2 aria-hidden className="size-3 shrink-0 animate-spin" />
+                    Loading columns…
+                  </>
+                ) : (
+                  <span className="text-error truncate" title={row.message ?? undefined}>
+                    {row.message ?? "Could not load the columns"}
+                  </span>
+                )}
+              </div>
             );
           }
           const selected = selection.keys.has(row.key);
@@ -644,12 +1017,21 @@ export function SchemaTree({
               // Middle-click must not start autoscroll.
               if (e.button === 1) e.preventDefault();
             },
+            // Tables, views and routines can be dragged onto a manual group.
+            draggable: pinScope !== null && row.type !== "sequence",
+            onDragStart: (e: DragEvent) => {
+              e.dataTransfer.setData(DRAG_MIME, JSON.stringify(groupKeysOf(row)));
+              e.dataTransfer.effectAllowed = "move";
+            },
+            onDragEnd: () => setDropTarget(null),
           };
           let button;
           let entries: () => MenuEntry[];
           if (row.type === "table") {
             const t = row.table;
             const isPinned = pinned.has(tableKey(t));
+            const mark = marks.get(tableKey(t));
+            const open = expanded.has(row.key);
             entries = () => tableEntries(row);
             button = (
               <button
@@ -673,12 +1055,56 @@ export function SchemaTree({
                   openPinned(t);
                   remember(t, true);
                 }}
-                title={t.comment ?? undefined}
+                title={
+                  mark === "drop"
+                    ? "Delete pending: commit to drop it"
+                    : mark === "truncate"
+                      ? "Truncate pending: commit to empty it"
+                      : (t.comment ?? undefined)
+                }
                 data-active={isActive || undefined}
+                data-pending={mark}
+                aria-expanded={showColumns ? open : undefined}
                 className={rowClass}
               >
+                {showColumns && (
+                  <span
+                    aria-hidden
+                    data-slot="disclosure"
+                    onClick={(e) => {
+                      // The row's own click previews the table; the chevron only expands it.
+                      e.stopPropagation();
+                      toggleExpanded(row.key);
+                    }}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                    className="text-muted-foreground hover:text-foreground absolute top-1/2 left-1 flex size-3.5 -translate-y-1/2 items-center justify-center"
+                  >
+                    <ChevronRight
+                      className={cn(
+                        "size-3 transition-transform duration-100",
+                        open && "rotate-90",
+                      )}
+                    />
+                  </span>
+                )}
                 <TableIcon kind={t.kind} />
-                <span className="truncate">{t.name}</span>
+                <span
+                  className={cn(
+                    "truncate",
+                    mark === "drop" && "text-muted-foreground line-through",
+                  )}
+                >
+                  {t.name}
+                </span>
+                {mark === "truncate" && (
+                  <span
+                    aria-hidden
+                    data-slot="pending-truncate"
+                    className="border-warning/50 text-warning shrink-0 rounded-sm border px-1 text-[9px] leading-3 font-medium"
+                  >
+                    Truncate
+                  </span>
+                )}
                 {isPinned && (
                   <Pin
                     aria-label="Pinned"

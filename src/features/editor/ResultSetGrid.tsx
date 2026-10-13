@@ -13,7 +13,14 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { DataGrid, type FocusedCell, type GridAction } from "@/features/datagrid/DataGrid";
-import { acceptsEmpty, type ViewRow } from "@/features/datagrid/types";
+import {
+  acceptsEmpty,
+  EMPTY_COLUMN_STATE,
+  layoutColumns,
+  type CellPos,
+  type ColumnState,
+  type ViewRow,
+} from "@/features/datagrid/types";
 import {
   bufferIndex,
   duplicateCells,
@@ -73,6 +80,9 @@ import { resultData, useResultRowCount } from "@/stores/resultData";
 import { rowsLabel } from "./labels";
 import { resultGridColumns as readOnlyGridColumns, sortedOrder } from "./resultColumns";
 import type { ResultSetInfo } from "./runModel";
+import { FindBar } from "./search/FindBar";
+import type { ReplaceEdit } from "./search/model";
+import { useFind } from "./search/store";
 
 const NULL: Value = { t: "null" };
 const NO_ROWS: Value[][] = [];
@@ -180,6 +190,7 @@ export function ResultGrid({
   const rowNumbers = usePrefs((p) => p.resultRowNumbers);
   const columns = useMemo(() => resultGridColumns(info.columns, target), [info.columns, target]);
   const [sort, setSort] = useState<SortSpec[]>([]);
+  const [columnState, setColumnState] = useState<ColumnState>(EMPTY_COLUMN_STATE);
   // Client-side sort; recomputed as rows stream in or a commit changes them.
   const order = useMemo(
     () => (sort.length > 0 && rowCount > 0 ? sortedOrder(rows, sort) : null),
@@ -203,11 +214,15 @@ export function ResultGrid({
   );
   /**
    * Stages `fn` unless another result of the tab already holds changes (one at a time), or the
-   * result's changes were staged against another edit target than the current one.
+   * result's changes were staged against another edit target than the current one. Returns
+   * whether it staged (a refusal says why in a toast).
    */
   const stage = useCallback(
-    (fn: (s: StagingState) => StagingState) => {
-      if (!editable || !target) return notifyReadOnly(editability);
+    (fn: (s: StagingState) => StagingState): boolean => {
+      if (!editable || !target) {
+        notifyReadOnly(editability);
+        return false;
+      }
       const st = useResultsStore.getState();
       const other = dirtyResultOf(st, tabId);
       if (other && other !== info.id) {
@@ -215,13 +230,14 @@ export function ResultGrid({
           id: "result-edits-elsewhere",
           description: "Only one result at a time can hold uncommitted changes.",
         });
-        return;
+        return false;
       }
       if (!canStageAgainst(st, info.id, target)) {
         toast.error(TARGET_CHANGED, { id: "result-target-changed" });
-        return;
+        return false;
       }
       setResultStaging(tabId, info.id, fn, target);
+      return true;
     },
     [editable, editability, target, tabId, info.id],
   );
@@ -255,6 +271,17 @@ export function ResultGrid({
     },
     [columns, driver, stage, originalOf],
   );
+
+  /** Stages cell values (Set Value, Find's Replace) as one undo step; false when none was. */
+  const stageValues = (values: readonly ReplaceEdit[]): boolean => {
+    const edits: CellEdit[] = [];
+    for (const { r, c, value } of values) {
+      const row = getRow(r);
+      if (!row || !columns[c]?.editable || row.status === "deleted") continue;
+      edits.push({ rowKey: row.key, col: c, value, original: originalOf(row.key) });
+    }
+    return edits.length > 0 && stage((s) => setCells(s, edits));
+  };
 
   const onAction = (a: GridAction) => {
     if (!target) return notifyReadOnly(editability);
@@ -296,16 +323,9 @@ export function ResultGrid({
         if (edits.length > 0) stage((s) => setCells(s, edits));
         return;
       }
-      case "setValues": {
-        const edits: CellEdit[] = [];
-        for (const { r, c, value } of a.edits) {
-          const row = getRow(r);
-          if (!row || !columns[c]?.editable || row.status === "deleted") continue;
-          edits.push({ rowKey: row.key, col: c, value, original: originalOf(row.key) });
-        }
-        if (edits.length > 0) stage((s) => setCells(s, edits));
+      case "setValues":
+        stageValues(a.edits);
         return;
-      }
       case "revertRows": {
         const keys = a.rows.flatMap((r) => getRow(r)?.key ?? []);
         stage((s) => keys.reduce((acc, k) => revertRow(acc, k), s));
@@ -398,6 +418,29 @@ export function ResultGrid({
     });
   };
 
+  // ---- find & replace (⌘F) -----------------------------------------------------------------
+  const find = useFind(tabId);
+  const showFind = active && find.open && info.columns.length > 0;
+  const [reveal, setReveal] = useState<CellPos | null>(null);
+  const onReveal = useCallback((cell: CellPos) => setReveal({ r: cell.r, c: cell.c }), []);
+  const gridBox = useRef<HTMLDivElement>(null);
+  const readOnlyReason = editable
+    ? null
+    : !info.done
+      ? "The query is still running."
+      : editability.kind === "readOnly"
+        ? editability.reason || READ_ONLY_RESULT
+        : READ_ONLY_RESULT;
+  // The columns the grid shows (Hide Column), in display order: Find searches those only.
+  const visibleColumns = useMemo(
+    () => layoutColumns(columns, columnState).src,
+    [columns, columnState],
+  );
+  const focusGrid = () =>
+    gridBox.current
+      ?.querySelector<HTMLElement>("[data-scope='grid']")
+      ?.focus({ preventScroll: true });
+
   // An edit attempt on a read-only result says why (the grid itself ignores it).
   const onDoubleClick = (e: MouseEvent<HTMLDivElement>) => {
     if (editable || editability.kind !== "readOnly") return;
@@ -415,7 +458,25 @@ export function ResultGrid({
       className="flex min-h-0 flex-col"
       style={height === undefined ? { height: "100%" } : { height }}
     >
-      <div className="min-h-0 flex-1" onDoubleClick={onDoubleClick} onKeyDown={onKeyDown}>
+      {showFind && (
+        <FindBar
+          tabId={tabId}
+          rowCount={rowCount + inserted.length}
+          getRow={getRow}
+          columns={columns}
+          visibleColumns={visibleColumns}
+          readOnlyReason={readOnlyReason}
+          onReveal={onReveal}
+          onReplace={stageValues}
+          onClose={focusGrid}
+        />
+      )}
+      <div
+        ref={gridBox}
+        className="min-h-0 flex-1"
+        onDoubleClick={onDoubleClick}
+        onKeyDown={onKeyDown}
+      >
         <DataGrid
           columns={columns}
           rowCount={rowCount + inserted.length}
@@ -424,6 +485,8 @@ export function ResultGrid({
           emptyText={info.columns.length === 0 ? "No columns" : "No rows"}
           sort={sort}
           onSortChange={setSort}
+          columnState={columnState}
+          onColumnStateChange={setColumnState}
           copyContext={{
             dialect,
             schema: target?.table.schema ?? null,
@@ -436,6 +499,7 @@ export function ResultGrid({
           onEditCommit={onEditCommit}
           onAction={onAction}
           onFocusCell={onFocusCell}
+          revealCell={showFind ? reveal : null}
         />
       </div>
       {footer}

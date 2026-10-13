@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Ban, CircleCheck, CircleX, Info, Loader2 } from "lucide-react";
+import { Ban, CircleCheck, CircleX, Info, Loader2, TriangleAlert } from "lucide-react";
 import { memo, useState } from "react";
 import { formatDuration } from "@/lib/format/time";
 import { cn } from "@/lib/utils";
@@ -8,7 +8,8 @@ import { focusEditor } from "./editorStates";
 import { ErrorBlock } from "./ErrorBlock";
 import { errorRange, spanRange } from "./errorPos";
 import { firstLine, statementOutcome } from "./labels";
-import type { RunState, StatementRun, StatementStatus } from "./runModel";
+import { isWarning, noticeDetails, noticeText } from "./notices";
+import type { RunNotice, RunState, StatementRun, StatementStatus } from "./runModel";
 
 /** From this many statements on, only the visible rows are rendered. */
 export const VIRTUALIZE_FROM = 200;
@@ -26,6 +27,27 @@ function StatusIcon({ status }: { status: StatementStatus }) {
     case "cancelled":
       return <Ban className="text-warning size-3.5 shrink-0" aria-label="Cancelled" />;
   }
+}
+
+/** A server notice under its statement: `NOTICE: …`, then its DETAIL / HINT lines. */
+function NoticeLine({ notice }: { notice: RunNotice }) {
+  const warning = isWarning(notice);
+  const Icon = warning ? TriangleAlert : Info;
+  return (
+    <div
+      className={cn(
+        "mt-0.5 ml-[46px] flex items-start gap-1.5 text-[11px]",
+        warning ? "text-warning" : "text-muted-foreground",
+      )}
+      title={notice.context ? `CONTEXT: ${notice.context}` : undefined}
+      data-slot="notice"
+    >
+      <Icon className="mt-0.5 size-3 shrink-0" />
+      <span className="selectable break-words whitespace-pre-wrap">
+        {[noticeText(notice), ...noticeDetails(notice)].join("\n")}
+      </span>
+    </div>
+  );
 }
 
 interface RowProps {
@@ -101,6 +123,9 @@ const StatementRow = memo(function StatementRow({ tabId, runId, sql, baseOffset,
           Last insert id: <span className="selectable font-mono">{st.result.lastInsertId}</span>
         </div>
       )}
+      {st.notices?.map((n, i) => (
+        <NoticeLine key={`live-${i}`} notice={n} />
+      ))}
       {notices.map((n, i) => (
         <div
           key={i}
@@ -175,7 +200,10 @@ function VirtualList({
   );
 }
 
-/** Per-statement log of a run: outcome, rows / affected, duration, notices and errors. */
+/**
+ * Per-statement log of a run: outcome, rows / affected, duration, notices (the server's, streamed
+ * while it runs, then the run's own) and errors.
+ */
 export function MessagesView({ tabId, run }: { tabId: string; run: RunState }) {
   // State, not a ref: the virtualizer needs the element on the render after it is attached.
   const [scroller, setScroller] = useState<HTMLDivElement | null>(null);

@@ -525,7 +525,9 @@ describe("Launcher", () => {
       await user.type(name, "Archive{Enter}");
       const header = await within(list()).findByRole("button", { name: /Archive\s*0/ });
       expect(header).toBeInTheDocument();
-      expect((await ipc.settings.get()).connectionGroups).toEqual(["Archive"]);
+      expect((await ipc.settings.get()).connectionGroups).toEqual([
+        { path: "Archive", icon: null },
+      ]);
     });
 
     it("a row's Move to Group ▸ moves it; No Group takes it out", async () => {
@@ -558,11 +560,14 @@ describe("Launcher", () => {
       fireEvent.contextMenu(within(list()).getByRole("button", { name: /Staging\s*2/ }));
       const menu = await screen.findByRole("menu");
       expect(menuItems(menu)).toEqual([
-        "Rename Group…",
-        "Delete Group",
-        "Export this group…",
-        "Import Connections…",
         "New",
+        "New Subgroup…",
+        "Rename Group…",
+        "Change Icon…",
+        "Move to Group",
+        "Export Connections",
+        "Import Connections…",
+        "Delete Group",
       ]);
       await user.click(within(menu).getByRole("menuitem", { name: "Rename Group…" }));
       const dialog = await screen.findByRole("dialog", { name: "Rename Group" });
@@ -574,7 +579,9 @@ describe("Launcher", () => {
         expect(move).toHaveBeenCalledWith(["p-staging-ssh", "p-rotated-ssh"], "Pre-prod"),
       );
       const header = await within(list()).findByRole("button", { name: /Pre-prod\s*2/ });
-      expect((await ipc.settings.get()).connectionGroups).toEqual(["Pre-prod"]);
+      expect((await ipc.settings.get()).connectionGroups).toEqual([
+        { path: "Pre-prod", icon: null },
+      ]);
 
       fireEvent.contextMenu(header);
       await user.click(await screen.findByRole("menuitem", { name: "Delete Group" }));
@@ -589,6 +596,197 @@ describe("Launcher", () => {
       expect((await ipc.settings.get()).connectionGroups).toEqual([]);
       // Put the seed data back for the other tests.
       await ipc.profiles.moveToGroup(["p-staging-ssh", "p-rotated-ssh"], "Staging");
+    });
+
+    describe("nested groups", () => {
+      /** The header button of the group `path` (its own name and count). */
+      const header = (path: string) =>
+        within(screen.getByRole("group", { name: path }))
+          .getAllByRole("button")
+          .find((b) => b.hasAttribute("aria-expanded"))!;
+      const restoreSeedGroups = async () => {
+        for (const p of SEED_PROFILES) await ipc.profiles.moveToGroup([p.id], p.group);
+      };
+      afterEach(restoreSeedGroups);
+
+      it("New Subgroup… nests a group with an icon; counts include the subgroups", async () => {
+        const user = userEvent.setup();
+        renderLauncher();
+        await row("Rotated host");
+        fireEvent.contextMenu(header("Staging"));
+        await user.click(await screen.findByRole("menuitem", { name: "New Subgroup…" }));
+        const dialog = await screen.findByRole("dialog", { name: "New Subgroup" });
+        expect(dialog).toHaveTextContent("Inside “Staging”.");
+        const name = within(dialog).getByRole("textbox", { name: "Group name" });
+        await user.type(name, "EU / West");
+        await user.click(within(dialog).getByRole("radio", { name: "Server" }));
+        await user.click(within(dialog).getByRole("button", { name: "Create" }));
+        expect(within(dialog).getByRole("alert")).toHaveTextContent("use New Subgroup…");
+        await user.clear(name);
+        await user.type(name, "EU{Enter}");
+        await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+        expect((await ipc.settings.get()).connectionGroups).toEqual([
+          { path: "Staging / EU", icon: "server" },
+        ]);
+        const eu = await within(list()).findByRole("group", { name: "Staging / EU" });
+        expect(eu.closest("[role='group'][aria-label='Staging']")).not.toBeNull();
+        expect(header("Staging / EU")).toHaveTextContent(/EU\s*0/);
+        expect(header("Staging / EU").querySelector(".lucide-server")).not.toBeNull();
+
+        // The row menu lists the tree, indented; moving a connection in updates both counts.
+        fireEvent.contextMenu(await row("Rotated host"));
+        await openSub(user, "Move to Group");
+        const sub = (await screen.findAllByRole("menu")).at(-1)!;
+        expect(menuItems(sub)).toEqual([
+          "Local",
+          "Production",
+          "Staging",
+          "EU",
+          "New Group…",
+          "No Group",
+        ]);
+        expect(within(sub).getByRole("menuitem", { name: "EU" })).toHaveStyle({
+          paddingLeft: "22px",
+        });
+        await user.click(within(sub).getByRole("menuitem", { name: "EU" }));
+        await vi.waitFor(() => expect(within(eu).getByText("Rotated host")).toBeInTheDocument());
+        expect(header("Staging")).toHaveTextContent(/Staging\s*2/);
+        expect(header("Staging / EU")).toHaveTextContent(/EU\s*1/);
+        // Collapsing the parent hides the subgroup and its rows.
+        await user.click(header("Staging"));
+        expect(screen.queryByText("Rotated host")).toBeNull();
+        expect(within(list()).queryByRole("group", { name: "Staging / EU" })).toBeNull();
+        expect(useLauncherPrefs.getState().collapsedGroups).toEqual(["Staging"]);
+      });
+
+      it("Move to Group ▸ nests a group (never into itself) and Top Level un-nests it", async () => {
+        const move = vi.spyOn(ipc.profiles, "moveToGroup");
+        const user = userEvent.setup();
+        useLauncherPrefs.setState({ collapsedGroups: ["Production"] });
+        renderLauncher();
+        await row("Rotated host");
+        fireEvent.contextMenu(header("Production"));
+        await openSub(user, "Move to Group");
+        let sub = (await screen.findAllByRole("menu")).at(-1)!;
+        expect(menuItems(sub)).toEqual(["Local", "Production", "Staging", "Top Level"]);
+        expect(within(sub).getByRole("menuitem", { name: "Production" })).toHaveAttribute(
+          "data-disabled",
+        );
+        expect(within(sub).getByRole("menuitem", { name: "Top Level" })).toHaveAttribute(
+          "data-disabled",
+        );
+        await user.click(within(sub).getByRole("menuitem", { name: "Staging" }));
+        await vi.waitFor(() =>
+          expect(move).toHaveBeenCalledWith(["p-prod-pg"], "Staging / Production"),
+        );
+        await within(list()).findByRole("group", { name: "Staging / Production" });
+        expect(header("Staging")).toHaveTextContent(/Staging\s*3/);
+        // Its collapsed state followed it.
+        expect(useLauncherPrefs.getState().collapsedGroups).toEqual(["Staging / Production"]);
+
+        // Staging cannot go into its own subgroup.
+        fireEvent.contextMenu(header("Staging"));
+        await openSub(user, "Move to Group");
+        sub = (await screen.findAllByRole("menu")).at(-1)!;
+        expect(within(sub).getByRole("menuitem", { name: "Production" })).toHaveAttribute(
+          "data-disabled",
+        );
+        await user.keyboard("{Escape}{Escape}");
+
+        fireEvent.contextMenu(header("Staging / Production"));
+        await openSub(user, "Move to Group");
+        await user.click(await screen.findByRole("menuitem", { name: "Top Level" }));
+        await vi.waitFor(() => expect(move).toHaveBeenLastCalledWith(["p-prod-pg"], "Production"));
+        await within(list()).findByRole("group", { name: "Production" });
+        expect(useLauncherPrefs.getState().collapsedGroups).toEqual(["Production"]);
+      });
+
+      it("Delete Group moves its connections and subgroups up one level", async () => {
+        const user = userEvent.setup();
+        await ipc.settings.set("connectionGroups", [
+          { path: "Staging / EU", icon: "cloud" },
+          { path: "Staging / EU / Old", icon: null },
+        ]);
+        await ipc.profiles.moveToGroup(["p-rotated-ssh"], "Staging / EU");
+        renderLauncher();
+        await row("Rotated host");
+        expect(header("Staging")).toHaveTextContent(/Staging\s*2/);
+        fireEvent.contextMenu(header("Staging"));
+        await user.click(await screen.findByRole("menuitem", { name: "Delete Group" }));
+        await within(list()).findByRole("group", { name: "EU" });
+        expect(within(list()).queryByRole("group", { name: "Staging" })).toBeNull();
+        expect(within(screen.getByRole("group", { name: "EU" })).getByText("Rotated host"));
+        // Staging's own connection is now without a group.
+        expect((await row("Staging via SSH")).closest("[role='group']")).toBeNull();
+        expect((await ipc.settings.get()).connectionGroups).toEqual([
+          { path: "EU", icon: "cloud" },
+          { path: "EU / Old", icon: null },
+        ]);
+      });
+
+      it("Change Icon… sets the icon shown on the header", async () => {
+        const user = userEvent.setup();
+        renderLauncher();
+        await row("Local Postgres");
+        expect(header("Local").querySelector("svg.lucide-house")).toBeNull();
+        fireEvent.contextMenu(header("Local"));
+        await user.click(await screen.findByRole("menuitem", { name: "Change Icon…" }));
+        const dialog = await screen.findByRole("dialog", { name: "Change Icon" });
+        expect(within(dialog).queryByRole("textbox")).toBeNull();
+        expect(within(dialog).getByRole("radio", { name: "None" })).toBeChecked();
+        await user.click(within(dialog).getByRole("radio", { name: "Home" }));
+        await user.click(within(dialog).getByRole("button", { name: "Save" }));
+        await vi.waitFor(() =>
+          expect(header("Local").querySelector("svg.lucide-house")).not.toBeNull(),
+        );
+        expect((await ipc.settings.get()).connectionGroups).toEqual([
+          { path: "Local", icon: "home" },
+        ]);
+      });
+
+      it("New ▸ Connection in this group… opens the form with the group filled in", async () => {
+        const user = userEvent.setup();
+        renderLauncher();
+        await row("Rotated host");
+        fireEvent.contextMenu(header("Staging"));
+        await openSub(user, "New");
+        await user.click(
+          await screen.findByRole("menuitem", { name: "Connection in this group…" }),
+        );
+        // Like New ▸ Connection…, it starts at the driver picker and keeps the group for the form.
+        const picker = await screen.findByRole("dialog");
+        await user.click(within(picker).getByRole("button", { name: "Create" }));
+        const form = await screen.findByRole("dialog", { name: /New PostgreSQL connection/ });
+        expect(within(form).getByLabelText("Group")).toHaveValue("Staging");
+      });
+
+      it("search lists matches flat, with their group path as a breadcrumb", async () => {
+        const user = userEvent.setup();
+        await ipc.profiles.moveToGroup(["p-rotated-ssh"], "Staging / EU");
+        renderLauncher();
+        await row("Rotated host");
+        await user.type(screen.getByRole("textbox", { name: "Search connections" }), "eu");
+        const match = await row("Rotated host");
+        expect(within(list()).queryAllByRole("group")).toEqual([]);
+        expect(within(match).getByLabelText("Group Staging / EU")).toHaveTextContent("StagingEU");
+      });
+
+      it("Export this group… takes the subgroups and their connections along", async () => {
+        const user = userEvent.setup();
+        await ipc.settings.set("connectionGroups", [{ path: "Staging / Empty", icon: null }]);
+        await ipc.profiles.moveToGroup(["p-rotated-ssh"], "Staging / EU");
+        renderLauncher();
+        await row("Rotated host");
+        fireEvent.contextMenu(header("Staging"));
+        await openSub(user, "Export Connections");
+        await user.click(await screen.findByRole("menuitem", { name: "Export this group…" }));
+        expect(useConnectionsIo.getState().exportScope).toEqual({
+          title: "Export “Staging”",
+          profileIds: ["p-staging-ssh", "p-rotated-ssh"],
+          groups: ["Staging", "Staging / Empty", "Staging / EU"],
+          fileName: "Staging",
+        });
+      });
     });
 
     it("Export Connections ▸ Export this group… opens the export dialog for the group", async () => {

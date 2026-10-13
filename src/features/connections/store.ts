@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { ConnectionProfile } from "@/lib/ipc";
+import { liftPath, normalizePath, rebasePath } from "./groups";
 import { CONNECTION_SORTS, type ConnectionSort } from "./list";
 import type { ParsedConnectionUrl } from "./url";
 
@@ -44,6 +45,14 @@ export function openConnectionDialog(
   useConnectionDialog.setState({ open: true, profile, prefill: profile ? null : prefill });
 }
 
+/**
+ * "New ▸ Connection in this group…" on a group header: a new connection with its Group field
+ * set to `group` (a path). It starts on the form (PostgreSQL), like any prefilled connection.
+ */
+export function openNewConnectionInGroup(group: string): void {
+  openConnectionDialog(null, { values: { group: normalizePath(group) }, password: null });
+}
+
 /** Opens "New connection from URL…". */
 export function openConnectionUrlDialog(): void {
   useConnectionDialog.setState({ urlOpen: true });
@@ -51,16 +60,33 @@ export function openConnectionUrlDialog(): void {
 
 interface LauncherPrefsState {
   /**
-   * Connection groups collapsed in the launcher list. Never "": the connections without a group
-   * have no header and are always shown.
+   * Paths of the connection groups collapsed in the launcher list. Never "": the connections
+   * without a group have no header and are always shown.
    */
   collapsedGroups: readonly string[];
   toggleGroup: (group: string) => void;
   /** "Sort by ▸" of the welcome screen (inside each group). */
   sortBy: ConnectionSort;
   setSortBy: (sort: ConnectionSort) => void;
-  /** Follows a renamed group's collapsed state; forgets a deleted one. */
+  /**
+   * Follows a renamed or moved group (`to`: its new path), subgroups included; for a deleted one
+   * (`to` null) forgets it and moves its subgroups' state up one level.
+   */
   renameCollapsed: (from: string, to: string | null) => void;
+}
+
+/** The collapsed paths after the group `from` became `to` (null: was deleted). */
+export function remapCollapsed(
+  collapsed: readonly string[],
+  from: string,
+  to: string | null,
+): string[] {
+  const out: string[] = [];
+  for (const path of collapsed) {
+    const next = to === null ? liftPath(path, from) : rebasePath(path, from, to);
+    if (next && !out.includes(next)) out.push(next);
+  }
+  return out;
 }
 
 const isSort = (v: unknown): v is ConnectionSort =>
@@ -82,16 +108,13 @@ export const useLauncherPrefs = create<LauncherPrefsState>()(
       sortBy: "manual",
       setSortBy: (sortBy) => set({ sortBy }),
       renameCollapsed: (from, to) =>
-        set((s) =>
-          s.collapsedGroups.includes(from)
-            ? {
-                collapsedGroups: [
-                  ...s.collapsedGroups.filter((g) => g !== from && g !== to),
-                  ...(to ? [to] : []),
-                ],
-              }
-            : s,
-        ),
+        set((s) => {
+          const next = remapCollapsed(s.collapsedGroups, from, to);
+          const changed =
+            next.length !== s.collapsedGroups.length ||
+            next.some((g, i) => g !== s.collapsedGroups[i]);
+          return changed ? { collapsedGroups: next } : s;
+        }),
     }),
     {
       name: "tabler.launcher",

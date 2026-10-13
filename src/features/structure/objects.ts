@@ -1,6 +1,13 @@
 import type { CheckDef, DdlOp, Dialect, TableMeta, TableOptions, TableRef } from "@/lib/ipc";
 import { qualify, quoteIdent } from "@/lib/sql/quote";
-import { checkColumns, foldStructure, parseTriggerSql, targets, type StructureView } from "./model";
+import {
+  checkColumns,
+  foldStructure,
+  liveTriggerName,
+  parseTriggerSql,
+  targets,
+  type StructureView,
+} from "./model";
 
 /**
  * Staged edits of the table itself (name, comment, MySQL options) and of its CHECK constraints
@@ -345,12 +352,45 @@ export function editTrigger(
   };
 }
 
+const isToggle = (op: DdlOp, table: TableRef, name: string) =>
+  (op.op === "enableTrigger" || op.op === "disableTrigger") &&
+  targets(op, table) &&
+  op.name === name;
+
 export function dropTrigger(meta: TableMeta, ops: readonly DdlOp[], key: string): DdlOp[] {
+  const found = foldStructure(meta, ops).triggers.find((x) => x.key === key);
+  if (!found || found.status === "dropped") return ops as DdlOp[];
+  // Staged enable / disable of the trigger go with it (they would fail on a dropped trigger).
+  const names = new Set([found.name, liveTriggerName(found, ops)]);
+  const base = ops.filter((op) => ![...names].some((n) => isToggle(op, meta.table, n)));
+  const row = foldStructure(meta, base).triggers.find((x) => x.key === key)!;
+  if (row.status === "added") return without(base, row.opIndex);
+  if (row.status === "changed") return without(base, row.addAt);
+  return [...base, { op: "dropTrigger", table: meta.table, name: row.name }];
+}
+
+/**
+ * Stages enabling or disabling trigger `key` (PostgreSQL `ALTER TABLE … ENABLE | DISABLE
+ * TRIGGER`). A second toggle replaces the staged op; toggling back to the state the trigger has
+ * without it removes the op.
+ */
+export function setTriggerEnabled(
+  meta: TableMeta,
+  ops: readonly DdlOp[],
+  key: string,
+  enabled: boolean,
+): DdlOp[] {
   const row = foldStructure(meta, ops).triggers.find((x) => x.key === key);
-  if (!row || row.status === "dropped") return ops as DdlOp[];
-  if (row.status === "added") return without(ops, row.opIndex);
-  if (row.status === "changed") return without(ops, row.addAt);
-  return [...ops, { op: "dropTrigger", table: meta.table, name: row.name }];
+  if (!row || row.status === "dropped" || row.enabled === enabled) return ops as DdlOp[];
+  const op: DdlOp = {
+    op: enabled ? "enableTrigger" : "disableTrigger",
+    table: meta.table,
+    name: liveTriggerName(row, ops),
+  };
+  if (row.enabledAt === null) return [...ops, op];
+  const rest = without(ops, row.enabledAt);
+  const before = foldStructure(meta, rest).triggers.find((x) => x.key === key);
+  return before?.enabled === enabled ? rest : replaceAt(ops, row.enabledAt, op);
 }
 
 export function restoreTrigger(meta: TableMeta, ops: readonly DdlOp[], key: string): DdlOp[] {

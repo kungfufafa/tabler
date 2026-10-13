@@ -8,10 +8,12 @@ use uuid::Uuid;
 
 use crate::drivers::{self, ConnectTarget};
 use crate::error::AppError;
-use crate::secrets::SecretKind;
+use crate::secrets::{self, SecretKind};
 use crate::state::{AppState, Connection};
 use crate::tunnel::{
-    self, AppHostKeys, TunnelAuth, TunnelHandle, TunnelState, TunnelStatus, TunnelStatusEvent,
+    self, AppHostKeys, ClockedPrompts, ForwardedPrompts, KeyboardInteractive, PromptClock,
+    PromptEvent, SshPromptPurpose, TunnelAuth, TunnelHandle, TunnelState, TunnelStatus,
+    TunnelStatusEvent,
 };
 use crate::types::profile::{
     ConnStatus, ConnectionInfo, ConnectionProfile, ConnectionStatusEvent, Driver, PasswordMode,
@@ -20,6 +22,10 @@ use crate::types::profile::{
 
 pub const EVENT_CONNECTION_STATUS: &str = "connection:status";
 pub const EVENT_TUNNEL_STATUS: &str = "tunnel:status";
+/// An SSH server asks a keyboard-interactive (2FA) question (`SshPromptRequest`).
+pub const EVENT_SSH_PROMPT: &str = "ssh:prompt";
+/// The backend stopped waiting for the answer to a question (`SshPromptDone`).
+pub const EVENT_SSH_PROMPT_DONE: &str = "ssh:prompt-done";
 
 pub fn emit_status(
     app: &AppHandle,
@@ -95,13 +101,49 @@ pub async fn stored_tunnel_auth(
     Ok(auth)
 }
 
+/// MySQL "Use socket" connects to a local socket file: it cannot go through an SSH tunnel (yet).
+pub fn check_socket(profile: &ConnectionProfile) -> Result<(), AppError> {
+    if profile.uses_socket() && profile.ssh.is_some() {
+        return Err(AppError::InvalidInput(
+            "A MySQL socket connection cannot go through an SSH tunnel yet: turn off \u{201c}Use \
+             socket\u{201d} or \u{201c}Over SSH\u{201d}"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Forwards the keyboard-interactive (2FA) questions of `profile`'s SSH server to the renderer
+/// (`ssh:prompt`); its dialog answers with `answer_ssh_prompt`.
+pub fn renderer_prompts(
+    app: &AppHandle,
+    state: &AppState,
+    profile: &ConnectionProfile,
+    purpose: SshPromptPurpose,
+) -> Arc<dyn KeyboardInteractive> {
+    let app = app.clone();
+    Arc::new(ForwardedPrompts::new(
+        state.ssh_prompts.clone(),
+        move |event| {
+            let _ = match event {
+                PromptEvent::Ask(request) => app.emit(EVENT_SSH_PROMPT, request),
+                PromptEvent::Done(done) => app.emit(EVENT_SSH_PROMPT_DONE, done),
+            };
+        },
+        profile.id,
+        profile.name.clone(),
+        purpose,
+    ))
+}
+
 /// Opens the profile's SSH tunnel towards its database host and port, bounded by the profile's
-/// connect timeout. `Ok(None)` when the profile does not use SSH. Unknown host keys are parked in
+/// connect timeout (the time the user spends answering the server's questions left out).
+/// `Ok(None)` when the profile does not use SSH. Unknown host keys are parked in
 /// `state.pending_host_keys` under the profile id and returned as `AppError::HostKey`.
 pub async fn open_profile_tunnel(
     state: &AppState,
     profile: &ConnectionProfile,
-    auth: TunnelAuth,
+    mut auth: TunnelAuth,
 ) -> Result<Option<TunnelHandle>, AppError> {
     let Some(ssh) = tunnel_config(profile) else {
         return Ok(None);
@@ -119,12 +161,17 @@ pub async fn open_profile_tunnel(
         .unwrap_or(0);
     let trust = AppHostKeys::for_state(state, profile.id);
     let timeout = connect_timeout(profile);
-    let opened = tokio::time::timeout(
+    let clock = Arc::new(PromptClock::default());
+    if let Some(prompts) = auth.prompts.take() {
+        auth.prompts = Some(Arc::new(ClockedPrompts::new(prompts, clock.clone())));
+    }
+    let opened = tunnel::timeout_excluding_prompts(
         timeout,
+        &clock,
         tunnel::open_tunnel(ssh, auth, target_host, target_port, &trust),
     )
     .await
-    .map_err(|_| {
+    .ok_or_else(|| {
         AppError::Tunnel(format!(
             "timed out after {}s connecting to the SSH server {}:{}",
             timeout.as_secs(),
@@ -140,6 +187,8 @@ pub async fn open_profile_tunnel(
 /// - Ask every time: the one passed in, else the one typed earlier this app session (reconnects,
 ///   database switches); without either the connect is refused so the renderer asks.
 /// - No password: none, whatever is passed in or stored.
+/// - Command Line (IAM authentication): the output of the profile's command, run now (tokens
+///   expire, so every connect, test and reconnect runs it again).
 pub async fn connect_password(
     state: &AppState,
     profile: &ConnectionProfile,
@@ -147,6 +196,7 @@ pub async fn connect_password(
 ) -> Result<Option<String>, AppError> {
     match profile.options.password_mode() {
         PasswordMode::None => Ok(None),
+        PasswordMode::Command => command_password(profile).await.map(Some),
         PasswordMode::Ask => match typed {
             Some(p) => Ok(Some(p)),
             None => state.session_password(profile.id).map(Some).ok_or_else(|| {
@@ -161,6 +211,18 @@ pub async fn connect_password(
             None => state.secrets.get(profile.id, SecretKind::DbPassword).await,
         },
     }
+}
+
+/// Runs the password command of a "Command Line (IAM authentication)" profile.
+pub async fn command_password(profile: &ConnectionProfile) -> Result<String, AppError> {
+    let command = profile.options.password_command().ok_or_else(|| {
+        AppError::InvalidInput(format!(
+            "\u{201c}{}\u{201d} gets its password from a command: enter it in the connection's \
+             settings",
+            profile.name
+        ))
+    })?;
+    secrets::run_password_command(command, secrets::PASSWORD_COMMAND_TIMEOUT).await
 }
 
 async fn open_session(
@@ -313,11 +375,18 @@ pub async fn connect(
         // Opening would create a missing file: a moved or mistyped path must not "connect".
         drivers::sqlite::check_database_file(&profile)?;
     }
+    check_socket(&profile)?;
     let typed = password.clone();
     let password = connect_password(&state, &profile, password).await?;
     let tunnel = match tunnel_config(&profile) {
         Some(ssh) => {
-            let auth = stored_tunnel_auth(&state, profile.id, ssh).await?;
+            let mut auth = stored_tunnel_auth(&state, profile.id, ssh).await?;
+            auth.prompts = Some(renderer_prompts(
+                &app,
+                &state,
+                &profile,
+                SshPromptPurpose::Connect,
+            ));
             if let Some(port) = ssh.local_port {
                 release_pinned_port(&state, profile.id, port).await;
             }
@@ -481,6 +550,21 @@ pub async fn switch_database(
     info.current_database = server.current_database;
     info.current_user = server.current_user;
     Ok(info.clone())
+}
+
+/// Answers an SSH server's keyboard-interactive question (`ssh:prompt`): one answer per prompt,
+/// or `None` to cancel (the connect or test waiting for it is given up). Answers that arrive after
+/// the backend stopped waiting are ignored.
+#[tauri::command]
+pub async fn answer_ssh_prompt(
+    state: State<'_, AppState>,
+    request_id: String,
+    answers: Option<Vec<String>>,
+) -> Result<(), AppError> {
+    if !state.ssh_prompts.answer(&request_id, answers) {
+        log::debug!("ssh prompt {request_id} is no longer waiting for an answer");
+    }
+    Ok(())
 }
 
 /// Trusts the pending host key of a profile (after the user confirmed its fingerprint). With

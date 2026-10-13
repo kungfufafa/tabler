@@ -1,24 +1,28 @@
-import { pendingForTab, useResultsStore } from "@/features/results/store";
-import { pendingCount } from "@/features/staging/model";
-import { useStructureStore } from "@/features/structure/store";
+import { usePendingObjectOps, countOf } from "@/features/objects/pendingOps";
+import { useTabPendingCount } from "@/features/objects/tabPending";
+import { useConnectionsStore } from "@/stores/connections";
 import { useActiveTab } from "@/stores/tabs";
-import { useTableTabsStore } from "@/stores/tableTabs";
 
 /**
- * What ⌘S / discard act on in the visible tab: its staged row edits in the data view, its staged
- * DDL in the structure view (the other view's work stays staged meanwhile), the staged edits of
- * its editable results in a query tab.
+ * What ⌘S / discard act on: the visible tab's staged work (its row edits in the data view, its
+ * staged DDL in the structure view — the other view's work stays staged meanwhile —, the staged
+ * edits of its editable results in a query tab) plus the active connection's pending item
+ * operations (sidebar Truncate… / Delete…, one change per table).
  */
 export function useActivePendingCount(): number {
   const tab = useActiveTab();
-  const rows = useTableTabsStore((s) => {
-    if (tab?.kind !== "table") return 0;
-    const slice = s.slices[tab.id];
-    return slice ? pendingCount(slice.staging) : 0;
-  });
-  const ddl = useStructureStore((s) =>
-    tab?.kind === "structure" ? (s.byTab[tab.id]?.ops.length ?? 0) : 0,
-  );
-  const results = useResultsStore((s) => (tab?.kind === "query" ? pendingForTab(s, tab.id) : 0));
-  return rows + ddl + results;
+  const connectionId = useConnectionsStore((s) => s.activeId);
+  const ops = usePendingObjectOps(connectionId);
+  return useTabPendingCount(tab) + countOf(ops);
+}
+
+/** The active connection's pending item operations (one change per table). */
+export function useActiveObjectOpCount(): number {
+  const connectionId = useConnectionsStore((s) => s.activeId);
+  return countOf(usePendingObjectOps(connectionId));
+}
+
+/** The visible tab's own staged work (without the connection's pending item operations). */
+export function useActiveTabPendingCount(): number {
+  return useTabPendingCount(useActiveTab());
 }

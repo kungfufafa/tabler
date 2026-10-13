@@ -1960,3 +1960,243 @@ async fn postgres_through_tunnel() {
 async fn mysql_through_tunnel() {
     select_one_through_tunnel(Driver::Mysql, "TABLER_TEST_MYSQL_URL", "SELECT 1 AS one").await;
 }
+
+// ----- keyboard-interactive (2FA) questions -----------------------------------------------------
+
+/// The user at the 2FA dialog: answers every question with `code` (`None`: cancels), and
+/// remembers what was asked.
+struct TypingUser {
+    code: Option<&'static str>,
+    asked: Mutex<Vec<tabler_lib::tunnel::PromptRound>>,
+}
+
+impl TypingUser {
+    fn new(code: Option<&'static str>) -> Arc<TypingUser> {
+        Arc::new(TypingUser {
+            code,
+            asked: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl tabler_lib::tunnel::KeyboardInteractive for TypingUser {
+    async fn answer(
+        &self,
+        round: tabler_lib::tunnel::PromptRound,
+    ) -> Result<Vec<String>, AppError> {
+        let n = round.prompts.len();
+        self.asked.lock().unwrap().push(round);
+        match self.code {
+            Some(code) => Ok(vec![code.to_string(); n]),
+            None => Err(AppError::Cancelled),
+        }
+    }
+}
+
+fn with_user(auth: TunnelAuth, user: &Arc<TypingUser>) -> TunnelAuth {
+    TunnelAuth {
+        prompts: Some(user.clone()),
+        ..auth
+    }
+}
+
+/// `AuthenticationMethods password,keyboard-interactive`: the saved password is the first factor,
+/// the one-time code is asked from the user (never answered with the password).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn second_factor_code_is_asked_from_the_user() {
+    let echo = start_echo().await;
+    let server =
+        SshServer::start_with(random_key().public_key().clone(), AuthMode::PasswordThenOtp).await;
+    let trust = trusting(&server);
+    let cfg = ssh_cfg(server.port(), SshAuth::Password, None);
+
+    let user = TypingUser::new(Some(OTP));
+    let tunnel = open(&cfg, with_user(password(PASSWORD), &user), echo, &trust)
+        .await
+        .unwrap();
+    round_trip(tunnel.local_port(), 32).await;
+    tunnel.close().await;
+    assert_eq!(server.answers(), [OTP]);
+    {
+        let asked = user.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        let round = &asked[0];
+        assert_eq!(
+            (round.user.as_str(), round.host.as_str(), round.port),
+            (USER, LOCALHOST, server.port())
+        );
+        assert_eq!(round.prompts.len(), 1);
+        assert_eq!(round.prompts[0].prompt, "Verification code: ");
+        assert!(!round.prompts[0].echo);
+    }
+
+    // A wrong code is a keyboard-interactive failure.
+    let wrong = TypingUser::new(Some("000000"));
+    let err = open(&cfg, with_user(password(PASSWORD), &wrong), echo, &trust)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Auth(m) if m.contains("keyboard-interactive authentication failed")),
+        "{err:?}"
+    );
+
+    // Cancelling the question gives the connect up.
+    let cancel = TypingUser::new(None);
+    let err = open(&cfg, with_user(password(PASSWORD), &cancel), echo, &trust)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Cancelled), "{err:?}");
+
+    // A wrong password never reaches the second factor.
+    let never = TypingUser::new(Some(OTP));
+    let err = open(&cfg, with_user(password("wrong"), &never), echo, &trust)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Auth(m) if m.starts_with("ssh: password authentication failed")),
+        "{err:?}"
+    );
+    assert!(never.asked.lock().unwrap().is_empty());
+}
+
+/// A keyboard-interactive-only server still gets the saved password for its password question
+/// without bothering the user.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn password_question_is_answered_without_asking_the_user() {
+    let echo = start_echo().await;
+    let server = SshServer::start_with(
+        random_key().public_key().clone(),
+        AuthMode::KeyboardInteractiveOnly,
+    )
+    .await;
+    let trust = trusting(&server);
+    let cfg = ssh_cfg(server.port(), SshAuth::Password, None);
+    let user = TypingUser::new(Some("not-asked"));
+    let tunnel = open(&cfg, with_user(password(PASSWORD), &user), echo, &trust)
+        .await
+        .unwrap();
+    tunnel.close().await;
+    assert_eq!(server.answers(), [PASSWORD]);
+    assert!(user.asked.lock().unwrap().is_empty());
+}
+
+/// Regression: Password authentication without a saved password failed up front ("no SSH
+/// password is saved") although a keyboard-interactive server asks for the password itself: its
+/// question now goes to the user.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_a_saved_password_the_user_answers_the_password_question() {
+    let echo = start_echo().await;
+    let server = SshServer::start_with(
+        random_key().public_key().clone(),
+        AuthMode::KeyboardInteractiveOnly,
+    )
+    .await;
+    let trust = trusting(&server);
+    let cfg = ssh_cfg(server.port(), SshAuth::Password, None);
+    let user = TypingUser::new(Some(PASSWORD));
+    let tunnel = open(&cfg, with_user(TunnelAuth::default(), &user), echo, &trust)
+        .await
+        .unwrap();
+    round_trip(tunnel.local_port(), 32).await;
+    tunnel.close().await;
+    assert_eq!(server.answers(), [PASSWORD]);
+    assert_eq!(user.asked.lock().unwrap().len(), 1);
+
+    // A wrong answer is reported as such.
+    let wrong = TypingUser::new(Some("nope"));
+    let err = open(&cfg, with_user(TunnelAuth::default(), &wrong), echo, &trust)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Auth(m) if m.contains("keyboard-interactive authentication failed")),
+        "{err:?}"
+    );
+
+    // Nobody to ask (a backup's tunnel): refused up front, as before.
+    let err = open(&cfg, TunnelAuth::default(), echo, &trust)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Auth(m) if m.contains("no SSH password is saved")),
+        "{err:?}"
+    );
+
+    // A server that takes the password only as such needs it saved; nobody is asked.
+    let plain = SshServer::start(random_key().public_key().clone()).await;
+    let trust = trusting(&plain);
+    let cfg = ssh_cfg(plain.port(), SshAuth::Password, None);
+    let never = TypingUser::new(Some(PASSWORD));
+    let err = open(&cfg, with_user(TunnelAuth::default(), &never), echo, &trust)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Auth(m) if m.contains("no SSH password is saved") && m.contains("accepts: password")),
+        "{err:?}"
+    );
+    assert!(never.asked.lock().unwrap().is_empty());
+}
+
+/// The app path: the question goes out as an event, the answer comes back through the state's
+/// registry (`answer_ssh_prompt`), and the time spent answering does not count against the
+/// profile's connect timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn answering_through_the_registry_pauses_the_connect_timeout() {
+    use tabler_lib::tunnel::{ForwardedPrompts, PromptEvent, SshPromptPurpose};
+
+    let server =
+        SshServer::start_with(random_key().public_key().clone(), AuthMode::PasswordThenOtp).await;
+    let state = test_state();
+    trust_in_appdb(&state, &server);
+    let mut profile = tunneled_profile(
+        profile(
+            Driver::Postgres,
+            LOCALHOST.into(),
+            Some(5432),
+            Some("tabler".into()),
+            None,
+        ),
+        &server,
+        0,
+    );
+    if let Some(ssh) = profile.ssh.as_mut() {
+        ssh.local_port = None;
+    }
+    profile.options.connect_timeout_secs = Some(1);
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let pending = state.ssh_prompts.clone();
+    let log = events.clone();
+    let prompts = ForwardedPrompts::new(
+        state.ssh_prompts.clone(),
+        move |event| match event {
+            PromptEvent::Ask(req) => {
+                log.lock()
+                    .unwrap()
+                    .push(format!("ask {}", req.prompts[0].prompt));
+                let pending = pending.clone();
+                // The user takes longer than the whole connect timeout to type the code.
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    assert!(pending.answer(&req.request_id, Some(vec![OTP.into()])));
+                });
+            }
+            PromptEvent::Done(_) => log.lock().unwrap().push("done".into()),
+        },
+        profile.id,
+        profile.name.clone(),
+        SshPromptPurpose::Connect,
+    );
+    let auth = TunnelAuth {
+        prompts: Some(Arc::new(prompts)),
+        ..password(PASSWORD)
+    };
+    let tunnel = open_profile_tunnel(&state, &profile, auth)
+        .await
+        .unwrap()
+        .unwrap();
+    tunnel.close().await;
+    assert_eq!(server.answers(), [OTP]);
+    assert_eq!(*events.lock().unwrap(), ["ask Verification code: ", "done"]);
+    assert!(state.ssh_prompts.is_empty());
+}

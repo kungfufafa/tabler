@@ -6,11 +6,13 @@ import {
   tableKey,
   type RoutineSummary,
   type SequenceSummary,
+  type TableMeta,
   type TableSummary,
 } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { EMPTY_PINS } from "@/stores/pins";
 import { EMPTY_RECENT } from "@/stores/recent";
+import { EMPTY_GROUPS, groupOf, routineItem, tableItem, type SidebarGroup } from "./groups";
 import { EMPTY_COLLAPSED, type SidebarSection } from "./sidebarPrefs";
 
 export const schemaKeys = {
@@ -32,15 +34,52 @@ export type TreeRow =
       /** The section's rows are left out of the list. */
       collapsed: boolean;
     }
+  | {
+      /** A sidebar group's header (`groups.ts`); its items follow, keyed `g:<id>:…`. */
+      type: "groupHeader";
+      key: string;
+      group: SidebarGroup;
+      /** Items in the group (matching the search), shown or not. */
+      count: number;
+      collapsed: boolean;
+    }
   | { type: "table"; key: string; table: TableSummary }
   | { type: "routine"; key: string; routine: RoutineSummary }
-  | { type: "sequence"; key: string; sequence: SequenceSummary };
+  | { type: "sequence"; key: string; sequence: SequenceSummary }
+  | {
+      /** One column of an expanded table row ("Show Columns"). */
+      type: "column";
+      key: string;
+      /** The table row it belongs to. */
+      parentKey: string;
+      table: TableSummary;
+      name: string;
+      dataType: string;
+      pk: boolean;
+      fk: boolean;
+    }
+  | {
+      /** An expanded table row whose columns are loading or failed to load. */
+      type: "columnStatus";
+      key: string;
+      parentKey: string;
+      status: "loading" | "error";
+      message: string | null;
+    };
 
-/** A row that stands for a database object (not a section header). */
-export type ItemRow = Exclude<TreeRow, { type: "header" }>;
+/** A row that stands for a database object (not a header nor a column). */
+export type ItemRow = Extract<TreeRow, { type: "table" | "routine" | "sequence" }>;
 
 export function isItemRow(row: TreeRow | undefined): row is ItemRow {
-  return row !== undefined && row.type !== "header";
+  return (
+    row !== undefined && (row.type === "table" || row.type === "routine" || row.type === "sequence")
+  );
+}
+
+/** Rows of a group section are keyed `g:<group id>:<item row key>`. */
+export function groupIdOfRow(key: string): string | null {
+  const m = /^g:([^:]+):/.exec(key);
+  return m ? m[1]! : null;
 }
 
 /** The name an item row shows (and that Copy Name copies). */
@@ -113,8 +152,10 @@ const GROUP_ORDER: Array<[TableSummary["kind"][], SidebarSection]> = [
  * `compileSearch`: fuzzy terms, `^name$` anchors, `|` / `,` alternatives, "exact" quotes). With an
  * empty search, recently opened tables (`tableKey`s, most recent first) come first under "Recent"
  * (rows keyed `r:`). Pinned tables that match come next under "Pinned" (rows keyed `p:`). Both
- * stay in their regular group too. A `collapsed` section keeps its header (with its count) but
- * leaves its rows out, so ↑/↓ skip them.
+ * stay in their regular group too. Then every sidebar group (`groups`, in their order, even an
+ * empty one: items are dragged into it) with the tables it holds (rows keyed `g:<id>:t:`); those
+ * leave Tables / Views / Materialized views. A `collapsed` section (or group) keeps its header
+ * (with its count) but leaves its rows out, so ↑/↓ skip them.
  */
 export function buildTreeRows(
   tables: TableSummary[],
@@ -122,6 +163,7 @@ export function buildTreeRows(
   pinned: ReadonlySet<string> = EMPTY_PINS,
   recent: readonly string[] = EMPTY_RECENT,
   collapsed: ReadonlySet<SidebarSection> = EMPTY_COLLAPSED,
+  groups: readonly SidebarGroup[] = EMPTY_GROUPS,
 ): TreeRow[] {
   const matchName = compileSearch(search);
   const matches = (t: TableSummary) => matchName(t.name);
@@ -154,11 +196,34 @@ export function buildTreeRows(
       "p",
       tables.filter((t) => pinned.has(tableKey(t)) && matches(t)),
     );
+  let ungrouped = tables;
+  if (groups.length > 0) {
+    const byGroup = new Map<string, TableSummary[]>();
+    ungrouped = [];
+    for (const t of tables) {
+      const g = groupOf(groups, tableItem(t));
+      if (!g) ungrouped.push(t);
+      else if (matches(t)) byGroup.set(g.id, [...(byGroup.get(g.id) ?? []), t]);
+    }
+    for (const g of groups) {
+      const items = byGroup.get(g.id) ?? [];
+      rows.push({
+        type: "groupHeader",
+        key: `g:${g.id}`,
+        group: g,
+        count: items.length,
+        collapsed: g.collapsed,
+      });
+      if (!g.collapsed)
+        for (const t of items)
+          rows.push({ type: "table", key: `g:${g.id}:t:${t.schema ?? ""}.${t.name}`, table: t });
+    }
+  }
   for (const [kinds, label] of GROUP_ORDER)
     section(
       label,
       "t",
-      tables.filter((t) => kinds.includes(t.kind) && matches(t)),
+      ungrouped.filter((t) => kinds.includes(t.kind) && matches(t)),
     );
   return rows;
 }
@@ -169,20 +234,45 @@ export function useTreeRows(
   pinned: ReadonlySet<string> = EMPTY_PINS,
   recent: readonly string[] = EMPTY_RECENT,
   collapsed: ReadonlySet<SidebarSection> = EMPTY_COLLAPSED,
+  groups: readonly SidebarGroup[] = EMPTY_GROUPS,
 ): TreeRow[] {
   return useMemo(
-    () => buildTreeRows(tables ?? [], search, pinned, recent, collapsed),
-    [tables, search, pinned, recent, collapsed],
+    () => buildTreeRows(tables ?? [], search, pinned, recent, collapsed, groups),
+    [tables, search, pinned, recent, collapsed, groups],
   );
 }
 
 /** Where the Functions section goes: before the first of Tables / Views / Materialized views. */
 const AFTER_FUNCTIONS = new Set<SidebarSection>(["Tables", "Views", "Materialized views"]);
 
+/** Adds each group's routines after its tables (and to its count). */
+function addGroupRoutines(
+  rows: readonly TreeRow[],
+  byGroup: ReadonlyMap<string, RoutineSummary[]>,
+): TreeRow[] {
+  const out: TreeRow[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]!;
+    const extra = r.type === "groupHeader" ? byGroup.get(r.group.id) : undefined;
+    if (r.type !== "groupHeader" || !extra) {
+      out.push(r);
+      continue;
+    }
+    out.push({ ...r, count: r.count + extra.length });
+    const prefix = `g:${r.group.id}:`;
+    while (i + 1 < rows.length && rows[i + 1]!.key.startsWith(prefix)) out.push(rows[++i]!);
+    if (!r.collapsed)
+      for (const routine of extra)
+        out.push({ type: "routine", key: `${prefix}f:${routineKey(routine)}`, routine });
+  }
+  return out;
+}
+
 /**
  * Adds the "Functions" (functions and procedures, before the tables) and "Sequences" (last)
- * sections to the table rows of `buildTreeRows`, filtered by the same `search`. `undefined`
- * lists (section turned off, or not loaded) add nothing.
+ * sections to the table rows of `buildTreeRows`, filtered by the same `search`. Routines a group
+ * holds (`groups`) are listed in that group instead. `undefined` lists (section turned off, or not
+ * loaded) add nothing.
  */
 export function mergeObjectRows(
   rows: readonly TreeRow[],
@@ -190,8 +280,18 @@ export function mergeObjectRows(
   sequences: readonly SequenceSummary[] | undefined,
   search: string,
   collapsed: ReadonlySet<SidebarSection> = EMPTY_COLLAPSED,
+  groups: readonly SidebarGroup[] = EMPTY_GROUPS,
 ): TreeRow[] {
   const matches = compileSearch(search);
+  const byGroup = new Map<string, RoutineSummary[]>();
+  const free: RoutineSummary[] = [];
+  for (const r of routines ?? []) {
+    if (!matches(r.name)) continue;
+    const g = groups.length > 0 ? groupOf(groups, routineItem(r)) : undefined;
+    if (g) byGroup.set(g.id, [...(byGroup.get(g.id) ?? []), r]);
+    else free.push(r);
+  }
+  if (byGroup.size > 0) rows = addGroupRoutines(rows, byGroup);
   const section = (label: SidebarSection, items: ItemRow[]): TreeRow[] => {
     if (items.length === 0) return [];
     const isCollapsed = collapsed.has(label);
@@ -206,9 +306,7 @@ export function mergeObjectRows(
   };
   const functions = section(
     "Functions",
-    (routines ?? [])
-      .filter((r) => matches(r.name))
-      .map((routine) => ({ type: "routine", key: `f:${routineKey(routine)}`, routine })),
+    free.map((routine) => ({ type: "routine", key: `f:${routineKey(routine)}`, routine })),
   );
   const seqs = section(
     "Sequences",
@@ -224,4 +322,59 @@ export function mergeObjectRows(
   let at = rows.findIndex((r) => r.type === "header" && AFTER_FUNCTIONS.has(r.label));
   if (at < 0) at = rows.length;
   return [...rows.slice(0, at), ...functions, ...rows.slice(at), ...seqs];
+}
+
+/** While searching, groups with no match leave the list (empty groups show otherwise). */
+export function pruneEmptyGroups(rows: TreeRow[], search: string): TreeRow[] {
+  if (!isSearching(search) || !rows.some((r) => r.type === "groupHeader" && r.count === 0))
+    return rows;
+  return rows.filter((r) => r.type !== "groupHeader" || r.count > 0);
+}
+
+/** What an expanded table row lists under it. */
+export type ColumnState =
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ready"; meta: TableMeta };
+
+/**
+ * Inserts the columns of every `expanded` table row (by row key) after it ("Show Columns"): name,
+ * type, primary / foreign key marks; or one loading / error row while `stateOf` has no metadata.
+ */
+export function withColumnRows(
+  rows: TreeRow[],
+  expanded: ReadonlySet<string>,
+  stateOf: (table: TableSummary) => ColumnState,
+): TreeRow[] {
+  if (expanded.size === 0) return rows;
+  const out: TreeRow[] = [];
+  for (const r of rows) {
+    out.push(r);
+    if (r.type !== "table" || !expanded.has(r.key)) continue;
+    const state = stateOf(r.table);
+    if (state.status !== "ready") {
+      out.push({
+        type: "columnStatus",
+        key: `${r.key}#status`,
+        parentKey: r.key,
+        status: state.status,
+        message: state.status === "error" ? state.message : null,
+      });
+      continue;
+    }
+    const { meta } = state;
+    const fks = new Set(meta.foreignKeys.flatMap((fk) => fk.columns));
+    for (const c of [...meta.columns].sort((a, b) => a.ordinal - b.ordinal))
+      out.push({
+        type: "column",
+        key: `${r.key}#c:${c.name}`,
+        parentKey: r.key,
+        table: r.table,
+        name: c.name,
+        dataType: c.dataType,
+        pk: c.isPk || meta.primaryKey.includes(c.name),
+        fk: fks.has(c.name),
+      });
+  }
+  return out;
 }

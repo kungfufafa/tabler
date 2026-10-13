@@ -185,6 +185,9 @@ export const PALETTE_ONLY_ACTIONS = [
   "admin.drop-schema",
   "backup.open",
   "restore.open",
+  "diagram.open",
+  "import.csv",
+  "import.sql",
 ] as const satisfies readonly ActionId[];
 
 const ADMIN_COMMANDS: Record<
@@ -209,6 +212,12 @@ const ADMIN_COMMANDS: Record<
   },
   "backup.open": { label: "Backup…", keywords: "dump pg_dump mysqldump export database file" },
   "restore.open": { label: "Restore…", keywords: "load dump pg_restore psql mysql import file" },
+  "diagram.open": {
+    label: "Generate Diagram…",
+    keywords: "er erd diagram entity relationship foreign keys relations schema plugin",
+  },
+  "import.csv": { label: "Import from CSV…", keywords: "import csv load file wizard rows" },
+  "import.sql": { label: "Import from SQL Dump…", keywords: "import sql dump load file script" },
 };
 
 /** Actions that only exist in the palette (no keyboard shortcut). */

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ConnectionProfile, PasswordMode, ProfileInput, SafeModeLevel } from "@/lib/ipc";
 import { ACCENT_PRESETS } from "@/lib/theme";
+import { normalizePath } from "./groups";
 
 const port = z
   .string()
@@ -20,12 +21,17 @@ export const PASSWORD_MODES = [
   "keychain",
   "ask",
   "none",
+  "command",
 ] as const satisfies readonly PasswordMode[];
 export const PASSWORD_MODE_LABEL: Record<PasswordMode, string> = {
   keychain: "Store in keychain",
   ask: "Ask every time",
   none: "No password",
+  command: "Command Line (IAM authentication)",
 };
+
+/** Where MySQL's "Use socket" looks when the socket path is left empty (the backend's order). */
+export const MYSQL_SOCKET_PLACEHOLDER = "/tmp/mysql.sock";
 
 /** TablePlus's safe-mode levels, in its order, with its exact labels. */
 export const SAFE_MODES = [
@@ -43,6 +49,9 @@ export const SAFE_MODE_LABEL: Record<SafeModeLevel, string> = {
   safeNonSelect: "Safe Mode 2",
 };
 
+/** Longest group path (`Clients / Acme / Prod`) the Group field takes. */
+export const GROUP_PATH_MAX = 200;
+
 /** TablePlus's environment tags, in its order. */
 export const CONNECTION_TAGS = [
   "local",
@@ -58,7 +67,14 @@ export const connectionFormSchema = z
     color: z.enum(ACCENT_PRESETS),
     /** Null only for profiles saved before tags existed (until they are edited). */
     tag: z.enum(CONNECTION_TAGS).nullable(),
-    group: z.string().trim().max(60),
+    /** A group path, levels separated by " / " (nested groups). */
+    group: z
+      .string()
+      .trim()
+      .refine(
+        (g) => normalizePath(g).length <= GROUP_PATH_MAX,
+        `Use at most ${GROUP_PATH_MAX} characters for the group path`,
+      ),
     driver: z.enum(["postgres", "mysql", "sqlite"]),
     host: z.string().trim(),
     port,
@@ -72,7 +88,13 @@ export const connectionFormSchema = z
     sqlitePath: z.string().trim(),
     password: z.string(),
     passwordMode: z.enum(PASSWORD_MODES),
+    /** "Command Line (IAM authentication)": the shell command that prints the password. */
+    passwordCommand: z.string(),
     clearPassword: z.boolean(),
+    /** MySQL "Use socket": connect through a Unix socket (host and port are not used). */
+    useSocket: z.boolean(),
+    /** Empty: auto-detected (/tmp/mysql.sock, /var/run/mysqld/mysqld.sock, Homebrew's). */
+    socketPath: z.string().trim(),
     sshEnabled: z.boolean(),
     sshHost: z.string().trim(),
     /** Empty: the `Port` of ~/.ssh/config, else 22. */
@@ -103,8 +125,22 @@ export const connectionFormSchema = z
         ctx.addIssue({ code: "custom", path: ["sqlitePath"], message: "Choose a database file" });
       return;
     }
-    if (!v.host) ctx.addIssue({ code: "custom", path: ["host"], message: "Host is required" });
+    const socket = v.driver === "mysql" && v.useSocket;
+    if (!v.host && !socket)
+      ctx.addIssue({ code: "custom", path: ["host"], message: "Host is required" });
     if (!v.user) ctx.addIssue({ code: "custom", path: ["user"], message: "User is required" });
+    if (socket && v.sshEnabled)
+      ctx.addIssue({
+        code: "custom",
+        path: ["socketPath"],
+        message: "A socket connection cannot go over SSH yet: turn off Over SSH or Use socket",
+      });
+    if (v.passwordMode === "command" && v.passwordCommand.trim() === "")
+      ctx.addIssue({
+        code: "custom",
+        path: ["passwordCommand"],
+        message: "Enter the command that prints the password",
+      });
     if (v.ssl !== "disable") {
       if (v.sslKeyPath && !v.sslCertPath)
         ctx.addIssue({
@@ -142,7 +178,10 @@ export const DEFAULT_FORM: ConnectionFormValues = {
   sqlitePath: "",
   password: "",
   passwordMode: "keychain",
+  passwordCommand: "",
   clearPassword: false,
+  useSocket: false,
+  socketPath: "",
   sshEnabled: false,
   sshHost: "",
   sshPort: "22",
@@ -192,6 +231,9 @@ export function profileToForm(p: ConnectionProfile): ConnectionFormValues {
     sslCertPath: p.options.sslCertPath ?? "",
     sqlitePath: p.sqlitePath ?? "",
     passwordMode: p.options.passwordMode ?? "keychain",
+    passwordCommand: p.options.passwordCommand ?? "",
+    useSocket: p.driver === "mysql" && p.options.useSocket === true,
+    socketPath: p.options.socketPath ?? "",
     sshEnabled: p.ssh !== null,
     sshHost: p.ssh?.host ?? "",
     sshPort: p.ssh ? (p.ssh.port ? String(p.ssh.port) : "") : "22",
@@ -225,11 +267,12 @@ export function formToProfileInput(
   const sqlite = v.driver === "sqlite";
   const keychain = v.passwordMode === "keychain";
   const sslFiles = !sqlite && v.ssl !== "disable";
+  const socket = v.driver === "mysql" && v.useSocket;
   const profile: ConnectionProfile = {
     id,
     name: v.name,
     color: v.color,
-    group: orNull(v.group),
+    group: orNull(normalizePath(v.group)),
     driver: v.driver,
     host: sqlite ? null : orNull(v.host),
     port: sqlite ? null : numOrNull(v.port),
@@ -263,6 +306,10 @@ export function formToProfileInput(
       passwordMode: v.passwordMode,
       sslKeyPath: sslFiles ? orNull(v.sslKeyPath) : null,
       sslCertPath: sslFiles ? orNull(v.sslCertPath) : null,
+      passwordCommand:
+        !sqlite && v.passwordMode === "command" ? orNull(v.passwordCommand.trim()) : null,
+      useSocket: socket ? true : null,
+      socketPath: socket ? orNull(v.socketPath) : null,
     },
     sortOrder: existing?.sortOrder ?? 0,
     createdAt: existing?.createdAt ?? "",
@@ -297,7 +344,10 @@ export function urlToForm(
  */
 export function connectionDetail(p: ConnectionProfile): string {
   if (p.driver === "sqlite") return p.sqlitePath ?? "";
-  return [p.host, p.port === null ? null : String(p.port), p.user, p.database]
+  const where = usesSocket(p)
+    ? [p.options.socketPath || "socket"]
+    : [p.host, p.port === null ? null : String(p.port)];
+  return [...where, p.user, p.database]
     .filter((s): s is string => s !== null && s !== "")
     .join(" : ");
 }
@@ -305,7 +355,14 @@ export function connectionDetail(p: ConnectionProfile): string {
 /** One-line summary for cards: `user@host:port/db` or the SQLite path. */
 export function connectionSummary(p: ConnectionProfile): string {
   if (p.driver === "sqlite") return p.sqlitePath ?? "";
-  const hostPort = `${p.host ?? ""}${p.port ? `:${p.port}` : ""}`;
+  const hostPort = usesSocket(p)
+    ? (p.options.socketPath ?? "") || "socket"
+    : `${p.host ?? ""}${p.port ? `:${p.port}` : ""}`;
   const db = p.database ? `/${p.database}` : "";
   return `${p.user ? `${p.user}@` : ""}${hostPort}${db}`;
+}
+
+/** A MySQL profile that connects through a Unix socket ("Use socket"). */
+export function usesSocket(p: Pick<ConnectionProfile, "driver" | "options">): boolean {
+  return p.driver === "mysql" && p.options.useSocket === true;
 }

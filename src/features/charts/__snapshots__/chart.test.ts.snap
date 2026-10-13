@@ -1,0 +1,76 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`chart scenes > draws a grouped bar chart 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="480" height="260" viewBox="0 0 480 260" font-family="-apple-system, BlinkMacSystemFont, &apos;Segoe UI&apos;, system-ui, sans-serif" role="img" aria-label="revenue, cost by month">
+  <title>revenue, cost by month</title>
+  <rect width="480" height="260" fill="#ffffff"/>
+  <text x="12" y="26.2" fill="#181b1f" font-size="12" font-weight="600">revenue, cost by month</text>
+  <rect x="12" y="36" width="10" height="10" rx="2" fill="#2a78d6"/>
+  <text x="28" y="44.85" fill="#181b1f" font-size="11">revenue</text>
+  <rect x="88.2" y="36" width="10" height="10" rx="2" fill="#eb6834"/>
+  <text x="104.2" y="44.85" fill="#181b1f" font-size="11">cost</text>
+  <line x1="39.8" y1="228" x2="468" y2="228" stroke="#cbcac8" stroke-width="1" shape-rendering="crispEdges"/>
+  <text x="33.8" y="231.85" fill="#6e7278" font-size="11" text-anchor="end">0</text>
+  <line x1="39.8" y1="171.33" x2="468" y2="171.33" stroke="#e8e8e6" stroke-width="1" shape-rendering="crispEdges"/>
+  <text x="33.8" y="175.18" fill="#6e7278" font-size="11" text-anchor="end">50</text>
+  <line x1="39.8" y1="114.67" x2="468" y2="114.67" stroke="#e8e8e6" stroke-width="1" shape-rendering="crispEdges"/>
+  <text x="33.8" y="118.52" fill="#6e7278" font-size="11" text-anchor="end">100</text>
+  <line x1="39.8" y1="58" x2="468" y2="58" stroke="#e8e8e6" stroke-width="1" shape-rendering="crispEdges"/>
+  <text x="33.8" y="61.85" fill="#6e7278" font-size="11" text-anchor="end">150</text>
+  <text x="93.32" y="243.85" fill="#6e7278" font-size="11" text-anchor="middle">Jan</text>
+  <text x="200.38" y="243.85" fill="#6e7278" font-size="11" text-anchor="middle">Feb</text>
+  <text x="307.43" y="243.85" fill="#6e7278" font-size="11" text-anchor="middle">Mar</text>
+  <text x="414.48" y="243.85" fill="#6e7278" font-size="11" text-anchor="middle">Apr</text>
+  <path d="M68.32 228V96A4 4 0 0 1 72.32 92H88.32A4 4 0 0 1 92.32 96V228Z" fill="#2a78d6"/>
+  <path d="M175.38 228V130A4 4 0 0 1 179.38 126H195.38A4 4 0 0 1 199.38 130V228Z" fill="#2a78d6"/>
+  <path d="M389.48 228V62A4 4 0 0 1 393.48 58H409.48A4 4 0 0 1 413.48 62V228Z" fill="#2a78d6"/>
+  <path d="M94.32 228V140.77A4 4 0 0 1 98.32 136.77H114.32A4 4 0 0 1 118.32 140.77V228Z" fill="#eb6834"/>
+  <path d="M201.38 228V124.33A4 4 0 0 1 205.38 120.33H221.38A4 4 0 0 1 225.38 124.33V228Z" fill="#eb6834"/>
+  <path d="M308.43 228V164A4 4 0 0 1 312.43 160H328.43A4 4 0 0 1 332.43 164V228Z" fill="#eb6834"/>
+  <path d="M415.48 228V152.38A4 4 0 0 1 419.48 148.38H435.48A4 4 0 0 1 439.48 152.38V228Z" fill="#eb6834"/>
+</svg>"
+`;
+
+exports[`chart scenes > draws a line chart in dark colors 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="220" viewBox="0 0 400 220" font-family="-apple-system, BlinkMacSystemFont, &apos;Segoe UI&apos;, system-ui, sans-serif" role="img" aria-label="revenue by month">
+  <title>revenue by month</title>
+  <rect width="400" height="220" fill="#1f2022"/>
+  <text x="12" y="26.2" fill="#e6e4e1" font-size="12" font-weight="600">revenue by month</text>
+  <line x1="39.8" y1="188" x2="388" y2="188" stroke="#292a2c" stroke-width="1" shape-rendering="crispEdges"/>
+  <text x="33.8" y="191.85" fill="#94928d" font-size="11" text-anchor="end">50</text>
+  <line x1="39.8" y1="112" x2="388" y2="112" stroke="#292a2c" stroke-width="1" shape-rendering="crispEdges"/>
+  <text x="33.8" y="115.85" fill="#94928d" font-size="11" text-anchor="end">100</text>
+  <line x1="39.8" y1="36" x2="388" y2="36" stroke="#292a2c" stroke-width="1" shape-rendering="crispEdges"/>
+  <text x="33.8" y="39.85" fill="#94928d" font-size="11" text-anchor="end">150</text>
+  <text x="39.8" y="203.85" fill="#94928d" font-size="11">Jan</text>
+  <text x="155.87" y="203.85" fill="#94928d" font-size="11" text-anchor="middle">Feb</text>
+  <text x="271.93" y="203.85" fill="#94928d" font-size="11" text-anchor="middle">Mar</text>
+  <text x="388" y="203.85" fill="#94928d" font-size="11" text-anchor="end">Apr</text>
+  <path d="M39.8 81.6L155.87 127.2M388 36" fill="none" stroke="#3987e5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="388" cy="36" r="4" fill="#3987e5" stroke="#1f2022" stroke-width="2"/>
+</svg>"
+`;
+
+exports[`chart scenes > draws a pie chart with its legend 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="420" height="240" viewBox="0 0 420 240" font-family="-apple-system, BlinkMacSystemFont, &apos;Segoe UI&apos;, system-ui, sans-serif" role="img" aria-label="cost by month">
+  <title>cost by month</title>
+  <rect width="420" height="240" fill="#ffffff"/>
+  <text x="12" y="26.2" fill="#181b1f" font-size="12" font-weight="600">cost by month</text>
+  <path d="M118.84 132L118.84 40A92 92 0 0 1 204.23 166.25Z" fill="#2a78d6" stroke="#ffffff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M118.84 132L204.23 166.25A92 92 0 0 1 77.59 214.23Z" fill="#eb6834" stroke="#ffffff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M118.84 132L77.59 214.23A92 92 0 0 1 32.04 101.51Z" fill="#1baf7a" stroke="#ffffff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M118.84 132L32.04 101.51A92 92 0 0 1 118.84 40Z" fill="#eda100" stroke="#ffffff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <rect x="241.68" y="100" width="10" height="10" rx="2" fill="#2a78d6"/>
+  <text x="257.68" y="108.85" fill="#181b1f" font-size="11">Feb</text>
+  <text x="408" y="108.85" fill="#6e7278" font-size="11" text-anchor="end">31.1%</text>
+  <rect x="241.68" y="118" width="10" height="10" rx="2" fill="#eb6834"/>
+  <text x="257.68" y="126.85" fill="#181b1f" font-size="11">Jan</text>
+  <text x="408" y="126.85" fill="#6e7278" font-size="11" text-anchor="end">26.3%</text>
+  <rect x="241.68" y="136" width="10" height="10" rx="2" fill="#1baf7a"/>
+  <text x="257.68" y="144.85" fill="#181b1f" font-size="11">Apr</text>
+  <text x="408" y="144.85" fill="#6e7278" font-size="11" text-anchor="end">23.0%</text>
+  <rect x="241.68" y="154" width="10" height="10" rx="2" fill="#eda100"/>
+  <text x="257.68" y="162.85" fill="#181b1f" font-size="11">Mar</text>
+  <text x="408" y="162.85" fill="#6e7278" font-size="11" text-anchor="end">19.6%</text>
+</svg>"
+`;

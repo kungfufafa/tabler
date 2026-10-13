@@ -85,6 +85,7 @@ function useSidebarSettings(): SidebarSettings {
     showSequences: options.showSequences,
     showSystemSchemas: options.showSystemSchemas,
     showRowCounts: options.showRowCounts,
+    showColumns: options.showColumns,
   };
 }
 

@@ -119,6 +119,89 @@ services:
       retries: 12
       start_period: 5s
 
+  # --- TLS client-certificate servers (profile "ssl"), see docs/verify-servers.md -------------
+  # Generate the certificates first:  sh dev/scripts/gen-certs.sh   (writes dev/certs/, gitignored)
+  #   docker compose -f dev/docker-compose.yml --profile ssl up -d --wait pg-ssl mysql-ssl
+  # The servers need their key owned by the server user with mode 0600, so the entrypoint copies
+  # the mounted files into the container before starting the image's own entrypoint.
+  pg-ssl:
+    image: postgres:17
+    profiles: ["ssl"]
+    ports:
+      - "127.0.0.1:54339:5432"
+    environment:
+      POSTGRES_USER: tabler
+      POSTGRES_PASSWORD: tabler
+      POSTGRES_DB: tabler_dev
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        mkdir -p /etc/tabler-ssl
+        cp /certs/ca.crt /certs/server.crt /certs/server.key /ssl-conf/pg_hba.conf /etc/tabler-ssl/
+        chown -R postgres:postgres /etc/tabler-ssl
+        chmod 600 /etc/tabler-ssl/server.key
+        exec docker-entrypoint.sh "$$@"
+      - pg-ssl
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/tabler-ssl/server.crt
+      - -c
+      - ssl_key_file=/etc/tabler-ssl/server.key
+      - -c
+      - ssl_ca_file=/etc/tabler-ssl/ca.crt
+      - -c
+      - hba_file=/etc/tabler-ssl/pg_hba.conf
+    volumes:
+      - ./certs:/certs:ro
+      - ./ssl/postgres/pg_hba.conf:/ssl-conf/pg_hba.conf:ro
+      - ./ssl/postgres/001_roles.sql:/docker-entrypoint-initdb.d/001_roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tabler -d tabler_dev"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  mysql-ssl:
+    image: mysql:9.7
+    profiles: ["ssl"]
+    ports:
+      - "127.0.0.1:33089:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: tabler
+      MYSQL_DATABASE: tabler_dev
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        mkdir -p /etc/tabler-ssl
+        cp /certs/ca.crt /certs/server.crt /certs/server.key /etc/tabler-ssl/
+        chown -R mysql:mysql /etc/tabler-ssl
+        chmod 600 /etc/tabler-ssl/server.key
+        exec docker-entrypoint.sh "$$@"
+      - mysql-ssl
+    command:
+      - mysqld
+      - --ssl-ca=/etc/tabler-ssl/ca.crt
+      - --ssl-cert=/etc/tabler-ssl/server.crt
+      - --ssl-key=/etc/tabler-ssl/server.key
+      - --require-secure-transport=ON
+    volumes:
+      - ./certs:/certs:ro
+      - ./ssl/mysql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-ptabler", "--silent"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 15s
+
 volumes:
   postgres_data:
   mysql_data:

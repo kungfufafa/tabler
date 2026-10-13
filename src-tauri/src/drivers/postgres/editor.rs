@@ -6,7 +6,7 @@
 //! column *names* for it. `prepare` (Parse + Describe, nothing executes) supplies the column
 //! types. Statements that cannot return rows skip the describe round trip.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,13 +32,142 @@ use crate::drivers::{
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::split::{code_only, leading_keywords};
-use crate::types::query::{ColumnOrigin, ResultColumn, StatementKind};
+use crate::types::query::{ColumnOrigin, ResultColumn, ServerNotice, StatementKind};
 use crate::types::schema::ValueKind;
 use crate::types::value::Value;
 
 const CANCEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long to wait for the server to confirm (by closing the socket) that it delivered a cancel.
 const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Notices the hub keeps until they are taken; older ones are dropped.
+const MAX_QUEUED_NOTICES: usize = 1000;
+/// Notices one statement hands to its sink as they arrive; later ones are counted, not sent.
+const MAX_LIVE_NOTICES: usize = 1000;
+
+/// A notice as the server sent it (`RAISE NOTICE`, warnings…).
+pub(crate) fn notice_from(n: &tokio_postgres::error::DbError) -> ServerNotice {
+    ServerNotice {
+        severity: n.severity().to_string(),
+        message: n.message().to_string(),
+        detail: n.detail().map(str::to_string),
+        hint: n.hint().map(str::to_string),
+        context: n.where_().map(str::to_string),
+    }
+}
+
+/// Server notices received on the editor connection, oldest first. The connection task `push`es
+/// them as they arrive; the statement being streamed hands them to its sink right away
+/// (`stream_simple`), and the rest is taken before (`hand_over_earlier`) or after a statement.
+#[derive(Debug, Default)]
+pub(crate) struct NoticeHub {
+    queue: std::sync::Mutex<VecDeque<ServerNotice>>,
+    /// Signalled on every push (a permit is stored when nobody waits).
+    arrived: tokio::sync::Notify,
+}
+
+impl NoticeHub {
+    fn queue(&self) -> std::sync::MutexGuard<'_, VecDeque<ServerNotice>> {
+        self.queue.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Called by the connection task for every `NoticeResponse`.
+    pub(crate) fn push(&self, notice: &tokio_postgres::error::DbError) {
+        self.push_notice(notice_from(notice));
+    }
+
+    pub(crate) fn push_notice(&self, notice: ServerNotice) {
+        {
+            let mut queue = self.queue();
+            if queue.len() >= MAX_QUEUED_NOTICES {
+                queue.pop_front();
+            }
+            queue.push_back(notice);
+        }
+        self.arrived.notify_one();
+    }
+
+    /// Every queued notice, oldest first.
+    pub(crate) fn take(&self) -> Vec<ServerNotice> {
+        self.queue().drain(..).collect()
+    }
+
+    /// `take`, as text (`ServerNotice::to_text`).
+    pub(crate) fn take_text(&self) -> Vec<String> {
+        self.take().iter().map(ServerNotice::to_text).collect()
+    }
+
+    /// Before a statement: hands the notices raised since the last one (bootstrap SQL, the
+    /// session's activity between runs) to `sink` as raised outside it; a sink that does not
+    /// take them gets them logged.
+    pub(crate) fn hand_over_earlier(&self, sink: &mut dyn RowSink) {
+        for notice in self.take() {
+            if !sink.notice(&notice, false) {
+                log::info!("postgres notice outside a statement: {}", notice.to_text());
+            }
+        }
+    }
+}
+
+/// Hands a statement's notices to its sink as they arrive, up to `MAX_LIVE_NOTICES`. Notices the
+/// sink does not take stay in the outcome as text.
+struct NoticeForwarder<'h> {
+    hub: Option<&'h NoticeHub>,
+    sent: usize,
+    dropped: usize,
+}
+
+impl NoticeForwarder<'_> {
+    fn forward(&mut self, chunker: &mut RowChunker<'_>, outcome: &mut StatementOutcome) {
+        let Some(hub) = self.hub else {
+            return;
+        };
+        for notice in hub.take() {
+            if self.sent >= MAX_LIVE_NOTICES {
+                self.dropped += 1;
+            } else if chunker.notice(&notice, true) {
+                self.sent += 1;
+            } else {
+                outcome.notices.push(notice.to_text());
+            }
+        }
+    }
+
+    /// The last notices, and a note on how many were not sent.
+    fn finish(mut self, chunker: &mut RowChunker<'_>, outcome: &mut StatementOutcome) {
+        self.forward(chunker, outcome);
+        if self.dropped > 0 {
+            outcome.notices.push(format!(
+                "{} more notices were raised and not shown (only the first {MAX_LIVE_NOTICES} \
+                 are).",
+                self.dropped
+            ));
+        }
+    }
+}
+
+/// The next message of a simple-query response; meanwhile, notices that arrive go to the sink.
+async fn next_message<S>(
+    stream: &mut std::pin::Pin<&mut S>,
+    notices: &mut NoticeForwarder<'_>,
+    chunker: &mut RowChunker<'_>,
+    outcome: &mut StatementOutcome,
+) -> Result<Option<SimpleQueryMessage>, tokio_postgres::Error>
+where
+    S: futures::Stream<Item = Result<SimpleQueryMessage, tokio_postgres::Error>>,
+{
+    let Some(hub) = notices.hub else {
+        return stream.try_next().await;
+    };
+    loop {
+        tokio::select! {
+            // A notice is sent before the messages that follow it: hand it over first.
+            biased;
+            () = hub.arrived.notified() => notices.forward(chunker, outcome),
+            msg = stream.try_next() => return msg,
+        }
+    }
+}
 
 /// Upper-cased code of `sql` (literals, quoted identifiers and comments removed) for word checks.
 fn code_upper(sql: &str) -> String {
@@ -423,12 +552,16 @@ pub(crate) struct Streamed {
 /// surplus rows discarded, so a `CALL`, `FETCH` or `… RETURNING` still does all its work and
 /// reports its real outcome (including a late error). A sink that returns `Break` (exports)
 /// stops reading the same way, without the notice.
+///
+/// `notices`: the editor connection's notices, handed to `sink` while the statement runs
+/// (`RowSink::notice`).
 pub(crate) async fn stream_simple(
     client: &Client,
     sql: &str,
     types: Option<&DescribedColumns>,
     max_rows: Option<usize>,
     cancel_on_stop: Option<Canceller<'_>>,
+    notices: Option<&NoticeHub>,
     sink: &mut dyn RowSink,
 ) -> Result<Streamed, AppError> {
     let stream = client.simple_query_raw(sql).await?;
@@ -439,6 +572,11 @@ pub(crate) async fn stream_simple(
         || *safe_to_cancel.get_or_insert_with(|| cancel_safe_on_stop(sql, Dialect::Postgres));
     let mut chunker = RowChunker::new(sink);
     let mut outcome = StatementOutcome::default();
+    let mut forwarder = NoticeForwarder {
+        hub: notices,
+        sent: 0,
+        dropped: 0,
+    };
     let mut decoders: Vec<TextColumn> = Vec::new();
     let mut command_has_rows = false;
     let mut affected: Option<u64> = None;
@@ -449,11 +587,14 @@ pub(crate) async fn stream_simple(
     let mut stopped: Option<bool> = None;
 
     loop {
-        let msg = match stream.try_next().await {
+        let msg = match next_message(&mut stream, &mut forwarder, &mut chunker, &mut outcome).await
+        {
             Ok(Some(msg)) => msg,
             Ok(None) => break,
             Err(e) => {
                 let _ = chunker.flush();
+                // Notices raised before the error (`RAISE NOTICE` … `RAISE EXCEPTION`).
+                forwarder.forward(&mut chunker, &mut outcome);
                 return Err(e.into());
             }
         };
@@ -527,11 +668,15 @@ pub(crate) async fn stream_simple(
                 }
             }
             // The statement failed on its own while we were no longer reading its rows.
-            Some(e) if at_cap => return Err(e.into()),
+            Some(e) if at_cap => {
+                forwarder.forward(&mut chunker, &mut outcome);
+                return Err(e.into());
+            }
             // The caller stopped reading (export done or cancelled): only the rows matter.
             Some(e) => log::debug!("postgres: error after the reader stopped: {e}"),
         }
     }
+    forwarder.finish(&mut chunker, &mut outcome);
 
     match outcome.kind {
         StatementKind::Rows => {
@@ -615,6 +760,10 @@ pub(crate) async fn drain_rows(
 /// server closes the cancel connection only after delivering the signal, so this routes the
 /// request through an in-memory pipe and waits for that close. Falls back to the plain request
 /// for non-TCP (Unix socket) hosts.
+///
+/// The request goes to the address `config` is pinned to (`hostaddr`: the one the editor
+/// connected to, so a host name with several servers behind it reaches the right one), else, or
+/// when that address cannot be reached, to the host name.
 pub(crate) async fn cancel_and_wait(
     token: &CancelToken,
     tls: &PgTls,
@@ -631,13 +780,24 @@ pub(crate) async fn cancel_and_wait(
             .map_err(AppError::from);
     };
 
-    let tcp = tokio::time::timeout(
-        CANCEL_CONNECT_TIMEOUT,
-        TcpStream::connect((host.as_str(), port)),
-    )
-    .await
-    .map_err(|_| AppError::Timeout)?
-    .map_err(|e| AppError::Connect(format!("cancel request: {e}")))?;
+    let dial = async |addr: (&str, u16)| {
+        tokio::time::timeout(CANCEL_CONNECT_TIMEOUT, TcpStream::connect(addr))
+            .await
+            .map_err(|_| AppError::Timeout)?
+            .map_err(|e| AppError::Connect(format!("cancel request: {e}")))
+    };
+    let pinned = config.get_hostaddrs().first().map(ToString::to_string);
+    let tcp = match pinned {
+        Some(ip) => match dial((ip.as_str(), port)).await {
+            Ok(tcp) => tcp,
+            // Nothing was sent: the host name may lead to the server now.
+            Err(e) => {
+                log::debug!("postgres: cancel request to {ip}: {e}; trying {host}");
+                dial((host.as_str(), port)).await?
+            }
+        },
+        None => dial((host.as_str(), port)).await?,
+    };
     let (mut tcp_r, mut tcp_w) = tcp.into_split();
     let (client_side, proxy) = tokio::io::duplex(16 * 1024);
     let (mut proxy_r, mut proxy_w) = tokio::io::split(proxy);
@@ -704,6 +864,137 @@ mod tests {
         assert!(reject_unsupported("copy t from '/tmp/x.csv'").is_ok());
         assert!(reject_unsupported("select 'copy from stdin'").is_ok());
         assert!(reject_unsupported("copy stdin_log from '/tmp/x'").is_ok());
+    }
+
+    fn notice(message: &str) -> ServerNotice {
+        ServerNotice {
+            severity: "NOTICE".into(),
+            message: message.into(),
+            ..ServerNotice::default()
+        }
+    }
+
+    /// Keeps notices when `accept` is set (as the editor's event sink does).
+    #[derive(Default)]
+    struct NoticeSink {
+        accept: bool,
+        got: Vec<(String, bool)>,
+    }
+
+    impl RowSink for NoticeSink {
+        fn begin_set(&mut self, _columns: Vec<ResultColumn>) {}
+        fn rows(&mut self, _rows: Vec<Vec<Value>>) -> ControlFlow<()> {
+            ControlFlow::Continue(())
+        }
+        fn notice(&mut self, notice: &ServerNotice, during: bool) -> bool {
+            if self.accept {
+                self.got.push((notice.message.clone(), during));
+            }
+            self.accept
+        }
+    }
+
+    #[test]
+    fn notice_hub_queues_and_caps() {
+        let hub = NoticeHub::default();
+        for i in 0..=MAX_QUEUED_NOTICES {
+            hub.push_notice(notice(&i.to_string()));
+        }
+        let all = hub.take();
+        assert_eq!(all.len(), MAX_QUEUED_NOTICES);
+        assert_eq!(all[0].message, "1", "the oldest one is dropped");
+        assert!(hub.take().is_empty());
+        hub.push_notice(ServerNotice {
+            hint: Some("h".into()),
+            ..notice("x")
+        });
+        assert_eq!(hub.take_text(), ["NOTICE: x\nHINT: h"]);
+    }
+
+    #[test]
+    fn earlier_notices_are_handed_over_as_outside_the_statement() {
+        let hub = NoticeHub::default();
+        hub.push_notice(notice("bootstrap"));
+        let mut sink = NoticeSink {
+            accept: true,
+            ..NoticeSink::default()
+        };
+        hub.hand_over_earlier(&mut sink);
+        assert_eq!(sink.got, [("bootstrap".to_string(), false)]);
+        // A sink that does not take them: they are logged, and gone either way.
+        hub.push_notice(notice("again"));
+        hub.hand_over_earlier(&mut NoticeSink::default());
+        assert!(hub.take().is_empty());
+    }
+
+    #[test]
+    fn forwarder_sends_live_or_keeps_text() {
+        let hub = NoticeHub::default();
+        let mut sink = NoticeSink {
+            accept: true,
+            ..NoticeSink::default()
+        };
+        let mut outcome = StatementOutcome::default();
+        {
+            let mut chunker = RowChunker::new(&mut sink);
+            let fwd = NoticeForwarder {
+                hub: Some(&hub),
+                sent: MAX_LIVE_NOTICES - 1,
+                dropped: 0,
+            };
+            hub.push_notice(notice("a"));
+            hub.push_notice(notice("b"));
+            hub.push_notice(notice("c"));
+            fwd.finish(&mut chunker, &mut outcome);
+        }
+        assert_eq!(sink.got, [("a".to_string(), true)]);
+        assert_eq!(outcome.notices.len(), 1);
+        assert!(outcome.notices[0].starts_with("2 more notices"));
+
+        // Sinks that take no notices (CollectSink, exports) keep them in the outcome.
+        let mut plain = NoticeSink::default();
+        let mut outcome = StatementOutcome::default();
+        let mut chunker = RowChunker::new(&mut plain);
+        let fwd = NoticeForwarder {
+            hub: Some(&hub),
+            sent: 0,
+            dropped: 0,
+        };
+        hub.push_notice(notice("kept"));
+        fwd.finish(&mut chunker, &mut outcome);
+        assert_eq!(outcome.notices, ["NOTICE: kept"]);
+    }
+
+    #[tokio::test]
+    async fn notices_are_handed_over_before_the_next_message() {
+        let hub = NoticeHub::default();
+        let mut sink = NoticeSink {
+            accept: true,
+            ..NoticeSink::default()
+        };
+        let mut outcome = StatementOutcome::default();
+        let mut chunker = RowChunker::new(&mut sink);
+        let mut fwd = NoticeForwarder {
+            hub: Some(&hub),
+            sent: 0,
+            dropped: 0,
+        };
+        hub.push_notice(notice("first"));
+        let stream = futures::stream::iter(vec![Ok::<_, tokio_postgres::Error>(
+            SimpleQueryMessage::CommandComplete(0),
+        )]);
+        futures::pin_mut!(stream);
+        let msg = next_message(&mut stream, &mut fwd, &mut chunker, &mut outcome)
+            .await
+            .unwrap();
+        assert!(matches!(msg, Some(SimpleQueryMessage::CommandComplete(0))));
+        assert_eq!(fwd.sent, 1);
+        let end = next_message(&mut stream, &mut fwd, &mut chunker, &mut outcome)
+            .await
+            .unwrap();
+        assert!(end.is_none());
+        drop(chunker);
+        assert_eq!(sink.got, [("first".to_string(), true)]);
     }
 
     #[test]

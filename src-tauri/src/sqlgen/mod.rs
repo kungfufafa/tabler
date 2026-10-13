@@ -4,6 +4,7 @@ pub mod admin;
 pub mod backup;
 pub mod classify;
 pub mod ddl;
+pub mod diagram;
 pub mod explain;
 pub mod mutate;
 pub mod objects;

@@ -97,6 +97,16 @@ export function supportsPartialIndex(dialect: Dialect): boolean {
   return dialect !== "mysql";
 }
 
+/** `INCLUDE (…)` (non-key) index columns: PostgreSQL. */
+export function supportsIncludeColumns(dialect: Dialect): boolean {
+  return dialect === "postgres";
+}
+
+/** Enabling / disabling a trigger without dropping it: PostgreSQL. */
+export function supportsTriggerToggle(dialect: Dialect): boolean {
+  return dialect === "postgres";
+}
+
 /** Index comments: MySQL (`COMMENT '…'`) and PostgreSQL (`COMMENT ON INDEX`). */
 export function supportsIndexComment(dialect: Dialect): boolean {
   return dialect !== "sqlite";
@@ -133,6 +143,7 @@ export function validateIndex(
       method,
       predicate,
       comment: null,
+      include: [],
     },
   };
 }

@@ -47,6 +47,10 @@ pub struct IndexDef {
     /// MySQL `COMMENT '…'` index option, PG `COMMENT ON INDEX`; ignored on SQLite with a warning.
     #[serde(default)]
     pub comment: Option<String>,
+    /// PG `INCLUDE (…)`: non-key columns stored in the index (names, quoted by the generator);
+    /// ignored on MySQL and SQLite with a warning.
+    #[serde(default)]
+    pub include: Vec<String>,
 }
 
 /// A CHECK constraint to add. `expression` is the user's SQL, inserted verbatim inside
@@ -207,6 +211,17 @@ pub enum DdlOp {
         sql: String,
     },
     DropTrigger {
+        table: TableRef,
+        name: String,
+    },
+    /// PG `ALTER TABLE … ENABLE TRIGGER name`; refused on MySQL and SQLite (no disabled
+    /// triggers there).
+    EnableTrigger {
+        table: TableRef,
+        name: String,
+    },
+    /// PG `ALTER TABLE … DISABLE TRIGGER name`; refused on MySQL and SQLite.
+    DisableTrigger {
         table: TableRef,
         name: String,
     },

@@ -65,12 +65,19 @@ export const KEYMAP: ShortcutDef[] = [
     label: "Previous tab",
     allowInEditor: true,
   },
-  { id: "tab.next", keys: "Mod+Shift+]", scope: "global", label: "Next tab", allowInEditor: true },
+  // TablePlus: ⇧⌘] / ⇧⌘[ select the next / previous pane (Keymap ▸ Navigate).
   {
-    id: "tab.prev",
+    id: "ui.next-pane",
+    keys: "Mod+Shift+]",
+    scope: "global",
+    label: "Select next pane",
+    allowInEditor: true,
+  },
+  {
+    id: "ui.prev-pane",
     keys: "Mod+Shift+[",
     scope: "global",
-    label: "Previous tab",
+    label: "Select previous pane",
     allowInEditor: true,
   },
   ...([1, 2, 3, 4, 5, 6, 7, 8, 9] as const).map((n): ShortcutDef => ({
@@ -214,7 +221,8 @@ export const KEYMAP: ShortcutDef[] = [
     label: "Discard all changes",
     notWhileEditing: true,
   },
-  { id: "grid.filter", keys: "Mod+F", scope: "grid", label: "Toggle filter bar" },
+  // Opens the filter bar (Esc closes it) on the last applied filter's value.
+  { id: "grid.filter", keys: "Mod+F", scope: "grid", label: "Filter rows" },
   { id: "grid.columns", keys: "Mod+Alt+F", scope: "global", label: "Show / hide columns" },
   { id: "grid.new-row", keys: "Mod+I", scope: "grid", label: "New row" },
   { id: "grid.delete-rows", keys: "Mod+Backspace", scope: "grid", label: "Delete selected rows" },
