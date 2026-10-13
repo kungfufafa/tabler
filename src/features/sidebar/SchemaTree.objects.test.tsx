@@ -118,7 +118,16 @@ function planOf(op: ObjectOp): DdlPlan {
       ? op.tables.map((t) => `DROP TABLE "public"."${t.table.name}"${op.cascade ? " CASCADE" : ""}`)
       : op.op === "truncateTables"
         ? op.tables.map((t) => `TRUNCATE TABLE "public"."${t.name}"`)
-        : [`-- ${op.op}`];
+        : op.op === "dropRoutines"
+          ? op.routines.map(
+              (r) =>
+                `DROP ${r.kind === "procedure" ? "PROCEDURE" : "FUNCTION"} "public"."${r.name}"(${r.identityArguments})${op.cascade ? " CASCADE" : ""}`,
+            )
+          : op.op === "dropSequences"
+            ? op.sequences.map(
+                (s) => `DROP SEQUENCE "public"."${s.name}"${op.cascade ? " CASCADE" : ""}`,
+              )
+            : [`-- ${op.op}`];
   return { statements, warnings: [], transactional: true };
 }
 
@@ -356,6 +365,82 @@ describe("SchemaTree objects", () => {
     expect(ops).toHaveTextContent('Truncate usersTRUNCATE TABLE "public"."users";');
     fireEvent.click(within(sheet).getByRole("button", { name: "Remove delete of tags" }));
     expect(pendingObjectOps("c1").map((o) => o.kind)).toEqual(["truncate"]);
+  });
+
+  it("⌫ on functions and sequences stages their drop: struck through until ⌘S", async () => {
+    const apply = vi.spyOn(ipc.objects, "apply").mockResolvedValue({
+      executed: [],
+      failedIndex: null,
+      error: null,
+      durationMs: 1,
+    });
+    vi.mocked(ipc.objects.sequences).mockResolvedValue([
+      {
+        schema: "public",
+        name: "posts_id_seq",
+        dataType: "bigint",
+        ownedBy: "posts.id",
+        comment: null,
+      },
+    ]);
+    setSidebarOption("showSequences", true);
+    renderTree();
+    await screen.findByRole("button", { name: /^Sequences/ });
+    expect(ipc.objects.routines).toHaveBeenCalledTimes(1);
+
+    // Both routines (⌫ acts on the selection), with CASCADE.
+    fireEvent.keyDown(row("slugify"), { key: "a", ...MOD });
+    fireEvent.keyDown(row("slugify"), { key: "Backspace" });
+    let dialog = await screen.findByRole("dialog", { name: "Delete 2 routines?" });
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /CASCADE/ }));
+    await waitFor(() =>
+      expect(sqlPreview(dialog)).toHaveTextContent(
+        'DROP PROCEDURE "public"."archive_posts"(value text) CASCADE;',
+      ),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // The sequence from its menu.
+    fireEvent.contextMenu(row("posts_id_seq"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Delete…/ }));
+    dialog = await screen.findByRole("dialog", { name: "Delete sequence posts_id_seq?" });
+    await waitFor(() => expect(sqlPreview(dialog)).toHaveTextContent("DROP SEQUENCE"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // Staged, not run: struck through like a table pending a drop.
+    expect(apply).not.toHaveBeenCalled();
+    expect(pendingObjectOps("c1").map((o) => o.op.op)).toEqual(["dropRoutines", "dropSequences"]);
+    for (const name of ["slugify", "archive_posts", "posts_id_seq"]) {
+      expect(row(name)).toHaveAttribute("data-pending", "drop");
+      expect(within(row(name)).getByText(name)).toHaveClass("line-through");
+    }
+    expect(row("users")).not.toHaveAttribute("data-pending");
+    // Not offered a second time: neither the menu nor ⌫ opens another dialog.
+    fireEvent.contextMenu(row("posts_id_seq"));
+    expect(screen.getByRole("menuitem", { name: /^Delete…/ })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.keyDown(row("slugify"), { key: "Backspace" });
+    expect(useObjectsStore.getState().dialog).toBeNull();
+
+    // ⌘S runs them after the safe mode, then refetches the routine list.
+    await actions.run("grid.commit");
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(guardExecution).mock.calls[0]![1]).toEqual({
+      kind: "commit",
+      statements: [
+        'DROP PROCEDURE "public"."archive_posts"(value text) CASCADE',
+        'DROP FUNCTION "public"."slugify"(value text) CASCADE',
+        'DROP SEQUENCE "public"."posts_id_seq"',
+      ],
+    });
+    await waitFor(() => expect(pendingObjectOps("c1")).toEqual([]));
+    await waitFor(() => expect(ipc.objects.routines).toHaveBeenCalledTimes(2));
+    expect(row("slugify")).not.toHaveAttribute("data-pending");
   });
 
   it("lists a table's columns when Show Columns is on and the row is expanded", async () => {

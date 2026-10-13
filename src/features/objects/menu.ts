@@ -390,6 +390,8 @@ export interface ObjectMenuOptions {
   driver: Driver;
   readOnly: boolean;
   count: number;
+  /** How many of them Delete… acts on (not already pending a drop); `count` when left out. */
+  droppable?: number;
 }
 
 export interface ObjectMenuHandlers extends NewMenuHandlers {
@@ -443,11 +445,11 @@ export function objectMenu(
     {
       kind: "item",
       id: "delete",
-      label: `Delete${many(o.count)}…`,
+      label: `Delete${many(o.droppable ?? o.count)}…`,
       icon: Trash2,
       shortcut: "Backspace",
       destructive: true,
-      disabled: o.readOnly,
+      disabled: o.readOnly || o.droppable === 0,
       onSelect: on.drop,
     },
   ];

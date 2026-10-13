@@ -8,21 +8,23 @@ import { sameRef } from "@/features/structure/model";
 import { useStructureStore } from "@/features/structure/store";
 import type { TableRef } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
-import { onConfirmedClose, registerUnsavedSource, useTabsStore } from "@/stores/tabs";
+import { onConfirmedClose, registerConnectionWork, useTabsStore } from "@/stores/tabs";
 import { armCommitChain } from "./commitChain";
 import {
   commitObjectOps,
   countOf,
   discardObjectOps,
-  hostTabId,
   isCommittingObjectOps,
   opTables,
+  opTargets,
   pendingObjectCount,
   pendingObjectOps,
   retargetObjectOps,
   usePendingObjectOps,
   usePendingOpsStore,
+  type OpTarget,
   type PendingObjectOp,
+  type PendingOpKind,
 } from "./pendingOps";
 import { activeTab, subscribeTabPending, tabPendingCount } from "./tabPending";
 
@@ -69,12 +71,18 @@ export function forgetTables(
     qc.removeQueries({ queryKey: ["table", connectionId, t.schema ?? "", t.name] });
 }
 
+/** "Deleted users", "Deleted 2 routines, truncated tags", "Deleted 3 items". */
 function summary(ops: readonly PendingObjectOp[]): string {
-  const dropped = ops.filter((o) => o.kind === "drop").flatMap((o) => opTables(o.op));
-  const truncated = ops.filter((o) => o.kind === "truncate").flatMap((o) => opTables(o.op));
+  const of = (kind: PendingOpKind) =>
+    ops.filter((o) => o.kind === kind).flatMap((o) => opTargets(o.op));
+  const dropped = of("drop");
+  const truncated = of("truncate");
   const parts: string[] = [];
-  const names = (list: TableRef[]) =>
-    list.length === 1 ? list[0]!.name : plural(list.length, "table");
+  const names = (list: OpTarget[]) => {
+    if (list.length === 1) return list[0]!.name;
+    const types = new Set(list.map((t) => t.type));
+    return plural(list.length, types.size === 1 ? [...types][0]! : "item");
+  };
   if (dropped.length > 0) parts.push(`deleted ${names(dropped)}`);
   if (truncated.length > 0) parts.push(`truncated ${names(truncated)}`);
   const text = parts.join(", ");
@@ -87,9 +95,11 @@ export async function runObjectCommit(qc: QueryClient, connectionId: string): Pr
   const committed =
     outcome.status === "done" || outcome.status === "failed" ? outcome.committed : [];
   for (const o of committed) {
-    const tables = opTables(o.op);
-    if (o.kind === "drop") forgetTables(qc, connectionId, tables);
-    else for (const t of tables) invalidateSchema(qc, connectionId, t);
+    if (o.op.op === "dropTables") forgetTables(qc, connectionId, opTables(o.op));
+    else if (o.op.op === "truncateTables")
+      for (const t of o.op.tables) invalidateSchema(qc, connectionId, t);
+    // Dropped routines and sequences have no tabs to close: their sidebar lists (`objectKeys`,
+    // under the table list's `["tables", c]` prefix) refetch with the schema below.
   }
   if (committed.length > 0 || outcome.status === "failed") invalidateSchema(qc, connectionId);
   if (outcome.status === "done") {
@@ -98,7 +108,7 @@ export async function runObjectCommit(qc: QueryClient, connectionId: string): Pr
     if (usePendingSheetStore.getState().connectionId === connectionId) closePendingSheet();
   } else if (outcome.status === "failed") {
     toast.error(
-      `Could not commit: ${opTables(outcome.failed.op)
+      `Could not commit: ${opTargets(outcome.failed.op)
         .map((t) => t.name)
         .join(", ")}`,
       {
@@ -231,32 +241,30 @@ export function usePendingOpActions(qc: QueryClient): void {
 let installed = false;
 
 /**
- * Once per app: counts the pending ops in the unsaved-changes guard (on one tab of their
- * connection, `hostTabId`), drops them when that tab is closed with Discard (the dialog said they
- * would be lost), keeps them with a reconnected connection, and drops them when their connection
- * closes or switches database (a toast says so).
+ * Once per app: counts the pending ops as their CONNECTION's unsaved work (closing tabs keeps
+ * them; disconnect, a database switch and quit ask first, also with no tab open), drops them when
+ * such a close is confirmed with Discard, keeps them with a reconnected connection, and drops
+ * them when their connection closes or switches database otherwise (a toast says so).
  */
 export function installPendingOps(): void {
   if (installed) return;
   installed = true;
-  registerUnsavedSource((tab) => {
-    const n = pendingObjectCount(tab.connectionId);
-    if (n === 0) return 0;
-    const s = useTabsStore.getState();
-    return hostTabId(s.tabs, s.activeId, tab.connectionId) === tab.id ? n : 0;
+  registerConnectionWork(() => {
+    const byId = useConnectionsStore.getState().byId;
+    return Object.keys(usePendingOpsStore.getState().byConnection).map((connectionId) => ({
+      connectionId,
+      title: `Pending item operations on ${byId[connectionId]?.info.name ?? "the connection"}`,
+      count: pendingObjectCount(connectionId),
+    }));
   });
   onConfirmedClose((request) => {
-    if (request.kind !== "tabs") return;
-    const s = useTabsStore.getState();
-    for (const id of Object.keys(usePendingOpsStore.getState().byConnection)) {
-      const host = hostTabId(s.tabs, s.activeId, id);
-      if (host === null || !request.ids.includes(host)) continue;
+    for (const entry of request.dirty) {
+      if (entry.connectionId === undefined) continue;
       // Even mid-commit: the ops not run yet are skipped.
-      const n = discardObjectOps(id);
-      const title = s.tabs.find((t) => t.id === host)?.title ?? "Their tab";
-      if (n > 0)
+      const n = discardObjectOps(entry.connectionId);
+      if (n > 0 && request.kind === "tabs")
         toast.message(`Discarded ${plural(n, "pending item operation")}`, {
-          description: `“${title}” was closed with Discard.`,
+          description: "The connection's tabs were closed with Discard.",
         });
     }
   });

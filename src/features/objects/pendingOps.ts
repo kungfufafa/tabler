@@ -1,18 +1,30 @@
 import { useMemo } from "react";
 import { create } from "zustand";
 import { guardExecution } from "@/features/safety/guard";
-import { ipc, tableKey, toIpcError, type ObjectOp, type TableRef } from "@/lib/ipc";
-import type { Tab } from "@/stores/tabs";
+import { routineItemKey, sequenceItemKey, tableItemKey } from "@/features/sidebar/groups";
+import { ipc, toIpcError, type ObjectOp, type RoutineRef, type TableRef } from "@/lib/ipc";
 
 /**
- * Sidebar Truncate… / Delete… are staged like every other GUI change (TablePlus, spec §2.4 / §9):
- * they wait here, per connection, until ⌘S commits them (after the active tab's own changes),
- * ⇧⌘⌫ discards them, the tab that carries them in the unsaved-changes guard is closed with
- * Discard, or the connection goes away.
+ * Sidebar Truncate… / Delete… (of tables and views, functions / procedures, sequences) are staged
+ * like every other GUI change (TablePlus, spec §2.4 / §9): they wait here, per connection, until
+ * ⌘S commits them (after the active tab's own changes), ⇧⌘⌫ discards them, the tab that carries
+ * them in the unsaved-changes guard is closed with Discard, or the connection goes away.
  */
 export type PendingOpKind = "drop" | "truncate";
 
-export type StagedObjectOp = Extract<ObjectOp, { op: "dropTables" } | { op: "truncateTables" }>;
+export type StagedObjectOp = Extract<
+  ObjectOp,
+  { op: "dropTables" | "truncateTables" | "dropRoutines" | "dropSequences" }
+>;
+
+/** One object a staged op acts on. */
+export interface OpTarget {
+  type: "table" | "routine" | "sequence";
+  /** Its sidebar item key (`groups.ts`): `t:` tables and views, `f:` routines, `s:` sequences. */
+  key: string;
+  /** How the sheet and the toasts name it (a routine with its argument types). */
+  name: string;
+}
 
 export interface PendingObjectOp {
   id: string;
@@ -40,11 +52,71 @@ export const usePendingOpsStore = create<PendingOpsState>()(() => ({
 }));
 
 export function kindOf(op: StagedObjectOp): PendingOpKind {
-  return op.op === "dropTables" ? "drop" : "truncate";
+  return op.op === "truncateTables" ? "truncate" : "drop";
 }
 
+/** `slugify(value text)`; a routine without arguments by its name alone. */
+export function routineName(r: RoutineRef): string {
+  return r.identityArguments ? `${r.name}(${r.identityArguments})` : r.name;
+}
+
+/** What `op` acts on: one target per table / view, routine (overload) or sequence. */
+export function opTargets(op: StagedObjectOp): OpTarget[] {
+  switch (op.op) {
+    case "dropTables":
+      return op.tables.map((t) => ({
+        type: "table",
+        key: tableItemKey(t.table),
+        name: t.table.name,
+      }));
+    case "truncateTables":
+      return op.tables.map((t) => ({ type: "table", key: tableItemKey(t), name: t.name }));
+    case "dropRoutines":
+      return op.routines.map((r) => ({
+        type: "routine",
+        key: routineItemKey(r),
+        name: routineName(r),
+      }));
+    case "dropSequences":
+      return op.sequences.map((s) => ({ type: "sequence", key: sequenceItemKey(s), name: s.name }));
+  }
+}
+
+/**
+ * How the sheet names `op`: "Delete users, posts", "Truncate tags", "Drop function
+ * slugify(value text)", "Drop sequences a, b".
+ */
+export function describeOp(op: StagedObjectOp): { verb: string; what: string } {
+  const names = opTargets(op)
+    .map((t) => t.name)
+    .join(", ");
+  switch (op.op) {
+    case "dropTables":
+      return { verb: "Delete", what: names };
+    case "truncateTables":
+      return { verb: "Truncate", what: names };
+    case "dropRoutines": {
+      const kinds = new Set(
+        op.routines.map((r) => (r.kind === "procedure" ? "procedure" : "function")),
+      );
+      const noun = kinds.size === 1 ? [...kinds][0]! : "routine";
+      return { verb: "Drop", what: `${op.routines.length === 1 ? noun : `${noun}s`} ${names}` };
+    }
+    case "dropSequences":
+      return { verb: "Drop", what: `sequence${op.sequences.length === 1 ? "" : "s"} ${names}` };
+  }
+}
+
+/** The tables and views of `op` (none for a drop of routines or sequences). */
 export function opTables(op: StagedObjectOp): TableRef[] {
-  return op.op === "dropTables" ? op.tables.map((t) => t.table) : op.tables;
+  switch (op.op) {
+    case "dropTables":
+      return op.tables.map((t) => t.table);
+    case "truncateTables":
+      return op.tables;
+    default:
+      return [];
+  }
 }
 
 export function pendingObjectOps(connectionId: string | null): readonly PendingObjectOp[] {
@@ -52,9 +124,12 @@ export function pendingObjectOps(connectionId: string | null): readonly PendingO
   return usePendingOpsStore.getState().byConnection[connectionId] ?? EMPTY_OPS;
 }
 
-/** One change per table, like the statements (one per table) TablePlus generates. */
+/**
+ * One change per table, routine or sequence, like the statements (one per object) TablePlus
+ * generates.
+ */
 export function countOf(ops: readonly PendingObjectOp[]): number {
-  return ops.reduce((n, o) => n + opTables(o.op).length, 0);
+  return ops.reduce((n, o) => n + opTargets(o.op).length, 0);
 }
 
 export function pendingObjectCount(connectionId: string | null): number {
@@ -125,11 +200,18 @@ export function discardObjectOps(connectionId: string): number {
   return n;
 }
 
-/** `op` restricted to the tables `keep` accepts (same options). */
-export function withTables(op: StagedObjectOp, keep: (t: TableRef) => boolean): StagedObjectOp {
-  return op.op === "dropTables"
-    ? { ...op, tables: op.tables.filter((t) => keep(t.table)) }
-    : { ...op, tables: op.tables.filter(keep) };
+/** `op` restricted to the targets whose key (`OpTarget.key`) `keep` accepts (same options). */
+export function withTargets(op: StagedObjectOp, keep: (key: string) => boolean): StagedObjectOp {
+  switch (op.op) {
+    case "dropTables":
+      return { ...op, tables: op.tables.filter((t) => keep(tableItemKey(t.table))) };
+    case "truncateTables":
+      return { ...op, tables: op.tables.filter((t) => keep(tableItemKey(t))) };
+    case "dropRoutines":
+      return { ...op, routines: op.routines.filter((r) => keep(routineItemKey(r))) };
+    case "dropSequences":
+      return { ...op, sequences: op.sequences.filter((s) => keep(sequenceItemKey(s))) };
+  }
 }
 
 /** Moves the pending ops of a dead connection to the one a reconnect opened in its place. */
@@ -152,12 +234,14 @@ export function usePendingObjectOps(connectionId: string | null): readonly Pendi
   );
 }
 
-/** `tableKey` → what is pending for it; a pending drop wins over a truncate. */
+/**
+ * Sidebar item key (`tableItemKey`, `routineItemKey`, `sequenceItemKey`) → what is pending for
+ * that object; a pending drop wins over a truncate.
+ */
 export function pendingMarks(ops: readonly PendingObjectOp[]): ReadonlyMap<string, PendingOpKind> {
   const marks = new Map<string, PendingOpKind>();
   for (const o of ops)
-    for (const t of opTables(o.op))
-      if (marks.get(tableKey(t)) !== "drop") marks.set(tableKey(t), o.kind);
+    for (const { key } of opTargets(o.op)) if (marks.get(key) !== "drop") marks.set(key, o.kind);
   return marks;
 }
 
@@ -189,26 +273,34 @@ function isStaged(connectionId: string, id: string): boolean {
 
 /**
  * The parts of `op` whose statements each run on their own: one per table for a truncate, one per
- * kind of object for a drop (`DROP VIEW a, b` / `DROP TABLE c, d`). Without the foreign-key
- * wrapper, so their plans hold just those statements.
+ * kind of object for a drop of tables (`DROP VIEW a, b` / `DROP TABLE c, d`), one per routine or
+ * sequence. Without the foreign-key wrapper, so their plans hold just those statements.
  */
 function partsOf(op: StagedObjectOp): StagedObjectOp[] {
-  if (op.op === "truncateTables")
-    return op.tables.map((t) => ({ ...op, tables: [t], ignoreForeignKeys: false }));
-  const kinds = [...new Set(op.tables.map((t) => t.kind))];
-  return kinds.map((k) => ({
-    ...op,
-    tables: op.tables.filter((t) => t.kind === k),
-    ignoreForeignKeys: false,
-  }));
+  switch (op.op) {
+    case "truncateTables":
+      return op.tables.map((t) => ({ ...op, tables: [t], ignoreForeignKeys: false }));
+    case "dropTables": {
+      const kinds = [...new Set(op.tables.map((t) => t.kind))];
+      return kinds.map((k) => ({
+        ...op,
+        tables: op.tables.filter((t) => t.kind === k),
+        ignoreForeignKeys: false,
+      }));
+    }
+    case "dropRoutines":
+      return op.routines.map((r) => ({ ...op, routines: [r] }));
+    case "dropSequences":
+      return op.sequences.map((s) => ({ ...op, sequences: [s] }));
+  }
 }
 
 /**
- * The tables an op that failed partway is done with: a plan that is not transactional (MySQL DDL
- * commits statement by statement) keeps the statements that ran before the failing one. A part
- * whose own statements all ran is done; anything unknown stays pending.
+ * The targets (`OpTarget.key`) an op that failed partway is done with: a plan that is not
+ * transactional (MySQL DDL commits statement by statement) keeps the statements that ran before
+ * the failing one. A part whose own statements all ran is done; anything unknown stays pending.
  */
-async function doneTables(
+async function doneTargets(
   connectionId: string,
   op: StagedObjectOp,
   executed: readonly string[],
@@ -220,7 +312,7 @@ async function doneTables(
     try {
       const { statements } = await ipc.objects.preview(connectionId, part);
       if (statements.length > 0 && statements.every((s) => ran.has(s)))
-        for (const t of opTables(part)) done.add(tableKey(t));
+        for (const { key } of opTargets(part)) done.add(key);
     } catch {
       // Not known to have run: stays pending.
     }
@@ -232,7 +324,7 @@ async function doneTables(
  * Commits the connection's pending ops in order: plans them again (the SQL the safe mode is
  * shown), asks the safe mode once for all of them (`guardExecution` kind "commit"), then runs one
  * backend call per op that is still staged when its turn comes (one removed or discarded meanwhile
- * is skipped). The first failure stops the run: that op (marked with the error, minus the tables
+ * is skipped). The first failure stops the run: that op (marked with the error, minus the objects
  * a non-transactional plan already dropped or truncated) and the ones after it stay pending; what
  * ran leaves the list.
  */
@@ -271,7 +363,7 @@ export async function commitObjectOps(connectionId: string): Promise<CommitOutco
         unstageObjectOp(connectionId, o.id);
         continue;
       }
-      const done = await doneTables(connectionId, o.op, executed);
+      const done = await doneTargets(connectionId, o.op, executed);
       if (done.size === 0) {
         markFailed(connectionId, o.id, error);
         return { status: "failed", committed, failed: { ...o, error }, error };
@@ -279,11 +371,11 @@ export async function commitObjectOps(connectionId: string): Promise<CommitOutco
       // Partly applied: what ran is committed; the rest stays pending with the error.
       committed.push({
         ...o,
-        op: withTables(o.op, (t) => done.has(tableKey(t))),
+        op: withTargets(o.op, (key) => done.has(key)),
         statements: executed,
       });
-      const rest = withTables(o.op, (t) => !done.has(tableKey(t)));
-      if (opTables(rest).length === 0) {
+      const rest = withTargets(o.op, (key) => !done.has(key));
+      if (opTargets(rest).length === 0) {
         unstageObjectOp(connectionId, o.id);
         continue;
       }
@@ -301,32 +393,6 @@ export async function commitObjectOps(connectionId: string): Promise<CommitOutco
   } finally {
     setCommitting(connectionId, false);
   }
-}
-
-// --- the unsaved-changes guard ---------------------------------------------------------------------
-
-/**
- * The tab of `connectionId` that carries its pending ops in `unsavedCount` (so disconnect and quit
- * ask first): a regular table tab, else a preview tab, else a query tab (an auto-saved query tab
- * is skipped by the quit guard); the active one among equals, else the first. A preview tab that
- * held the count would no longer be replaced by the next single click, hence the order.
- */
-export function hostTabId(
-  tabs: readonly Tab[],
-  activeId: string | null,
-  connectionId: string,
-): string | null {
-  let best: Tab | null = null;
-  let bestRank = Infinity;
-  for (const t of tabs) {
-    if (t.connectionId !== connectionId) continue;
-    const rank = (t.kind === "query" ? 2 : t.preview ? 1 : 0) * 2 + (t.id === activeId ? 0 : 1);
-    if (rank < bestRank) {
-      best = t;
-      bestRank = rank;
-    }
-  }
-  return best?.id ?? null;
 }
 
 /** Test helper: forget every pending op. */

@@ -45,6 +45,20 @@ const truncate = (name: string): StagedObjectOp => ({
   ignoreForeignKeys: false,
 });
 
+const dropSlugify: StagedObjectOp = {
+  op: "dropRoutines",
+  routines: [
+    { schema: "public", name: "slugify", kind: "function", identityArguments: "value text" },
+  ],
+  cascade: false,
+};
+
+const dropSeq: StagedObjectOp = {
+  op: "dropSequences",
+  sequences: [{ schema: "public", name: "posts_id_seq" }],
+  cascade: true,
+};
+
 /** The real structure view of `tabId` (while the tab is open and shows its structure). */
 function StructureHost({ tabId }: { tabId: string }) {
   const tab = useTabsStore((s) => s.tabs.find((t) => t.id === tabId));
@@ -126,6 +140,72 @@ describe("pending item operations", () => {
     });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(within(control()).getByRole("button", { name: "Commit changes" })).toBeDisabled();
+  });
+
+  it("lists routine and sequence drops in the sheet; × takes one out, Commit runs the rest", async () => {
+    const apply = vi.spyOn(ipc.objects, "apply").mockResolvedValue(ok);
+    renderHost();
+    const c = info.connectionId;
+    act(() => {
+      stageObjectOp(c, dropSlugify, ['DROP FUNCTION "public"."slugify"(value text)'], null);
+      stageObjectOp(c, dropSeq, ['DROP SEQUENCE "public"."posts_id_seq" CASCADE'], null);
+    });
+    expect(within(control()).getByRole("button", { name: "Commit 2 changes" })).toBeEnabled();
+
+    fireEvent.click(within(control()).getByRole("button", { name: "Preview SQL" }));
+    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const list = within(sheet).getByRole("region", { name: "Item operations" });
+    expect(list).toHaveTextContent(
+      'Drop function slugify(value text)DROP FUNCTION "public"."slugify"(value text);',
+    );
+    expect(list).toHaveTextContent(
+      'Drop sequence posts_id_seqDROP SEQUENCE "public"."posts_id_seq" CASCADE;',
+    );
+    fireEvent.click(
+      within(sheet).getByRole("button", { name: "Remove drop of function slugify(value text)" }),
+    );
+    expect(pendingObjectOps(c).map((o) => o.op)).toEqual([dropSeq]);
+
+    fireEvent.click(within(sheet).getByRole("button", { name: /^Commit/ }));
+    await waitFor(() => expect(apply).toHaveBeenCalledOnce());
+    expect(apply).toHaveBeenCalledWith(c, dropSeq);
+    expect(guardExecution).toHaveBeenCalledWith(c, {
+      kind: "commit",
+      statements: ['DROP SEQUENCE "public"."posts_id_seq" CASCADE'],
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(toast.success).toHaveBeenCalledWith("Deleted posts_id_seq");
+    expect(pendingObjectCount(c)).toBe(0);
+  });
+
+  it("routine and sequence drops are the connection's work like the others", () => {
+    renderHost();
+    const c = info.connectionId;
+    act(() => {
+      stageObjectOp(c, dropSlugify, [], info.currentDatabase);
+      stageObjectOp(c, dropSeq, [], info.currentDatabase);
+    });
+    expect(useTabsStore.getState().requestCloseConnection(c)).toBe(false);
+    expect(useTabsStore.getState().closeRequest?.dirty).toMatchObject([{ count: 2 }]);
+    act(() => useTabsStore.getState().cancelClose());
+
+    // A reconnect keeps them; a database switch drops them.
+    const next: ConnectionInfo = { ...info, connectionId: "reconnected" };
+    act(() => {
+      useConnectionsStore.setState((s) => {
+        const byId = { ...s.byId };
+        const old = byId[c]!;
+        delete byId[c];
+        byId[next.connectionId] = { ...old, info: next };
+        return { byId, order: [next.connectionId], activeId: next.connectionId };
+      });
+    });
+    expect(pendingObjectOps("reconnected").map((o) => o.op)).toEqual([dropSlugify, dropSeq]);
+    act(() => useConnectionsStore.getState().setInfo({ ...next, currentDatabase: "other" }));
+    expect(pendingObjectCount("reconnected")).toBe(0);
+    expect(toast.message).toHaveBeenCalledWith("Discarded 2 pending item operations", {
+      description: `${info.name} switched to another database.`,
+    });
   });
 
   it("⌘S commits the active tab's changes first, then the operations", async () => {
@@ -268,14 +348,15 @@ describe("pending item operations", () => {
       limit: 10,
       offset: 0,
     });
-    // The structure tab is closed with Discard: its changes and the operations it carried go.
+    // The structure tab is closed with Discard: its changes go; the operations, which belong to
+    // the connection, stay pending — and nothing runs.
     expect(useTabsStore.getState().requestClose([tabId])).toBe(false);
     act(() => {
       useTabsStore.getState().confirmClose();
     });
     await new Promise((r) => setTimeout(r, 20));
     expect(apply).not.toHaveBeenCalled();
-    expect(pendingObjectCount(c)).toBe(0);
+    expect(pendingObjectCount(c)).toBe(1);
   });
 
   it("a failed structure apply drops them from ⌘S, even when retried from its sheet", async () => {
@@ -327,43 +408,60 @@ describe("pending item operations", () => {
     await waitFor(() => expect(pendingObjectCount(c)).toBe(0));
   });
 
-  it("closing the tab that carries them with Discard drops them; Cancel keeps them", () => {
+  it("belong to the connection: closing its tabs keeps them without asking", () => {
     renderHost();
     const c = info.connectionId;
-    const tabId = useTabsStore.getState().openTable(c, users);
+    const table = useTabsStore.getState().openTable(c, users);
+    const query = useTabsStore.getState().newQuery(c);
     act(() => {
       stageObjectOp(c, truncate("posts"), [], info.currentDatabase);
     });
-    expect(useTabsStore.getState().requestClose([tabId])).toBe(false);
+    expect(useTabsStore.getState().requestClose([query])).toBe(true);
+    expect(useTabsStore.getState().requestClose([table])).toBe(true);
+    expect(useTabsStore.getState().tabs).toEqual([]);
+    expect(pendingObjectCount(c)).toBe(1);
+    // Still unsaved work: quit asks.
+    expect(hasUnsaved()).toBe(true);
+  });
+
+  it("disconnect asks even with no tab open; Cancel keeps them, Discard drops them", () => {
+    renderHost();
+    const c = info.connectionId;
+    act(() => {
+      stageObjectOp(c, truncate("posts"), [], info.currentDatabase);
+    });
+    expect(useTabsStore.getState().requestCloseConnection(c)).toBe(false);
+    expect(useTabsStore.getState().closeRequest?.dirty).toEqual([
+      {
+        id: `connection:${c}`,
+        kind: "structure",
+        title: `Pending item operations on ${info.name}`,
+        count: 1,
+        connectionId: c,
+      },
+    ]);
     act(() => useTabsStore.getState().cancelClose());
     expect(pendingObjectCount(c)).toBe(1);
 
-    expect(useTabsStore.getState().requestClose([tabId])).toBe(false);
-    expect(useTabsStore.getState().closeRequest?.dirty).toEqual([
-      { id: tabId, kind: "table", title: "users", count: 1 },
-    ]);
+    expect(useTabsStore.getState().requestCloseConnection(c)).toBe(false);
     act(() => {
       useTabsStore.getState().confirmClose();
     });
     expect(pendingObjectCount(c)).toBe(0);
     expect(hasUnsaved()).toBe(false);
     expect(toast.message).toHaveBeenCalledWith("Discarded 1 pending item operation", {
-      description: "“users” was closed with Discard.",
+      description: "The connection's tabs were closed with Discard.",
     });
   });
 
-  it("closing another tab keeps them on the tab that carries them", () => {
+  it("closing the window asks for them too", () => {
     renderHost();
     const c = info.connectionId;
-    const host = useTabsStore.getState().openTable(c, users);
-    const other = useTabsStore.getState().newQuery(c);
     act(() => {
       stageObjectOp(c, truncate("posts"), [], info.currentDatabase);
     });
-    // The query tab carries nothing: it closes without asking.
-    expect(useTabsStore.getState().requestClose([other])).toBe(true);
-    expect(pendingObjectCount(c)).toBe(1);
-    expect(useTabsStore.getState().requestClose([host])).toBe(false);
+    expect(useTabsStore.getState().requestWindowClose()).toBe(false);
+    expect(useTabsStore.getState().closeRequest).toMatchObject({ kind: "window", total: 1 });
     act(() => useTabsStore.getState().cancelClose());
   });
 
@@ -375,7 +473,7 @@ describe("pending item operations", () => {
       stageObjectOp(c, truncate("posts"), [], info.currentDatabase);
     });
     expect(hasUnsaved()).toBe(true);
-    expect(useTabsStore.getState().requestClose([useTabsStore.getState().activeId!])).toBe(false);
+    expect(useTabsStore.getState().requestCloseConnection(c)).toBe(false);
     expect(useTabsStore.getState().closeRequest?.total).toBe(1);
     useTabsStore.getState().cancelClose();
 

@@ -18,13 +18,20 @@ import { Field } from "@/features/structure/parts";
 import type { DdlErrorInfo } from "@/features/structure/previewState";
 import { SqlBlock } from "@/features/structure/SqlBlock";
 import { KIND_LABEL } from "@/features/structure/tableActions";
-import { ipc, type DdlPlan, type Dialect, type ObjectOp, type TableRef } from "@/lib/ipc";
+import {
+  ipc,
+  type DdlPlan,
+  type Dialect,
+  type ObjectOp,
+  type RoutineRef,
+  type TableRef,
+} from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
 import { guardedApply, objectPreviewKey } from "./apply";
-import { stageObjectOp, type StagedObjectOp } from "./pendingOps";
+import { routineName, stageObjectOp, type StagedObjectOp } from "./pendingOps";
 import type { ObjectDialog } from "./store";
 
 function ErrorLine({ error }: { error: DdlErrorInfo | null }) {
@@ -370,6 +377,10 @@ function TruncateTablesDialog({
   );
 }
 
+function qualifiedRoutine(r: RoutineRef): string {
+  return r.schema ? `${r.schema}.${routineName(r)}` : routineName(r);
+}
+
 function DropRoutinesDialog({
   connectionId,
   dialect,
@@ -381,12 +392,16 @@ function DropRoutinesDialog({
   dialog: Extract<ObjectDialog, { kind: "dropRoutines" }>;
   onClose: () => void;
 }) {
-  const qc = useQueryClient();
   const [cascade, setCascade] = useState(false);
   const { routines, names } = dialog;
   const first = routines[0];
   const what = (k: (typeof routines)[number]["kind"]) =>
     k === "procedure" ? "procedure" : "function";
+  const op: StagedObjectOp = {
+    op: "dropRoutines",
+    routines,
+    cascade: dialect === "postgres" && cascade,
+  };
   return (
     <OpDialog
       connectionId={connectionId}
@@ -396,7 +411,16 @@ function DropRoutinesDialog({
           ? `Delete ${what(first.kind)} ${first.name}?`
           : `Delete ${routines.length} routines?`
       }
-      description="This cannot be undone."
+      description={
+        routines.length === 1 && first ? (
+          <>
+            <span className="font-mono">{qualifiedRoutine(first)}</span> is dropped when you commit.
+            This cannot be undone.
+          </>
+        ) : (
+          "They are dropped when you commit. This cannot be undone."
+        )
+      }
       names={names}
       options={
         dialect === "postgres"
@@ -410,17 +434,17 @@ function DropRoutinesDialog({
             ]
           : []
       }
-      op={{ op: "dropRoutines", routines, cascade: dialect === "postgres" && cascade }}
+      op={op}
       confirmLabel="Delete"
-      onDone={(plan) => {
-        void qc.invalidateQueries({ queryKey: ["tables", connectionId] });
-        if (plan)
-          toast.success(
-            routines.length === 1 && first
-              ? `Deleted ${first.name}`
-              : `Deleted ${routines.length} routines`,
-          );
+      stage={(plan) => {
+        stageOp(connectionId, op, plan);
+        stagedToast(
+          routines.length === 1 && first
+            ? `Delete ${first.name}`
+            : `Delete ${routines.length} routines`,
+        );
       }}
+      onDone={() => undefined}
       onClose={onClose}
     />
   );
@@ -437,9 +461,9 @@ function DropSequencesDialog({
   sequences: TableRef[];
   onClose: () => void;
 }) {
-  const qc = useQueryClient();
   const [cascade, setCascade] = useState(false);
   const first = sequences[0];
+  const op: StagedObjectOp = { op: "dropSequences", sequences, cascade };
   return (
     <OpDialog
       connectionId={connectionId}
@@ -449,7 +473,16 @@ function DropSequencesDialog({
           ? `Delete sequence ${first.name}?`
           : `Delete ${sequences.length} sequences?`
       }
-      description="This cannot be undone."
+      description={
+        sequences.length === 1 && first ? (
+          <>
+            <span className="font-mono">{qualified(first)}</span> is dropped when you commit. This
+            cannot be undone.
+          </>
+        ) : (
+          "They are dropped when you commit. This cannot be undone."
+        )
+      }
       names={sequences.map((s) => s.name)}
       options={[
         {
@@ -459,15 +492,17 @@ function DropSequencesDialog({
           onChange: setCascade,
         },
       ]}
-      op={{ op: "dropSequences", sequences, cascade }}
+      op={op}
       confirmLabel="Delete"
-      onDone={(plan) => {
-        invalidateSchema(qc, connectionId);
-        if (plan)
-          toast.success(
-            `Deleted ${sequences.length === 1 && first ? first.name : `${sequences.length} sequences`}`,
-          );
+      stage={(plan) => {
+        stageOp(connectionId, op, plan);
+        stagedToast(
+          sequences.length === 1 && first
+            ? `Delete ${first.name}`
+            : `Delete ${sequences.length} sequences`,
+        );
       }}
+      onDone={() => undefined}
       onClose={onClose}
     />
   );

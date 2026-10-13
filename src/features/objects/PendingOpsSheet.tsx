@@ -20,7 +20,7 @@ import { useConnectionsStore } from "@/stores/connections";
 import { useActiveTab, type Tab } from "@/stores/tabs";
 import { closePendingSheet, runObjectCommit, usePendingSheetStore } from "./pendingActions";
 import {
-  opTables,
+  describeOp,
   unstageObjectOp,
   useObjectOpsCommitting,
   usePendingObjectOps,
@@ -97,7 +97,7 @@ function OpItem({
   disabled: boolean;
   onRemove: () => void;
 }) {
-  const names = opTables(op.op).map((t) => t.name);
+  const { verb, what } = describeOp(op.op);
   const Icon = op.kind === "drop" ? Trash2 : Eraser;
   return (
     <li
@@ -107,11 +107,11 @@ function OpItem({
       <div className="flex items-center gap-1.5 text-[11px] font-medium">
         <Icon className="text-muted-foreground size-3.5 shrink-0" />
         <span className="truncate">
-          {op.kind === "drop" ? "Delete" : "Truncate"} {names.join(", ")}
+          {verb} {what}
         </span>
         <button
           type="button"
-          aria-label={`Remove ${op.kind === "drop" ? "delete" : "truncate"} of ${names.join(", ")}`}
+          aria-label={`Remove ${verb.toLowerCase()} of ${what}`}
           onClick={onRemove}
           disabled={disabled}
           className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 ml-auto rounded-sm outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-40"
@@ -136,7 +136,7 @@ function OpItem({
 /**
  * Preview SQL of everything the action control would commit: the active tab's staged changes (its
  * structure SQL, or a link to its own sheet) and the pending item operations (sidebar Truncate… /
- * Delete…), each removable. Commit runs the tab's commit, then the operations.
+ * Delete… of tables, routines and sequences), each removable. Commit runs the tab's commit, then the operations.
  */
 export function PendingOpsSheet() {
   const connectionId = usePendingSheetStore((s) => s.connectionId);

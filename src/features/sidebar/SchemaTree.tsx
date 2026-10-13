@@ -56,7 +56,7 @@ import {
   type MenuEntry,
 } from "@/features/objects/menu";
 import { ContextMenuEntries } from "@/features/objects/MenuEntries";
-import { usePendingMarks } from "@/features/objects/pendingOps";
+import { routineName, usePendingMarks } from "@/features/objects/pendingOps";
 import { useRoutines, useSequences, useSidebarReload } from "@/features/objects/queries";
 import {
   clickSelection,
@@ -104,6 +104,7 @@ import {
   openGroupDialog,
   removeFromGroup,
   routineItemKey,
+  sequenceItemKey,
   setGroupCollapsed,
   tableItemKey,
   type SidebarGroup,
@@ -510,9 +511,22 @@ export function SchemaTree({
     return rows.filter((r): r is ItemRow => isItemRow(r) && keys.has(r.key));
   };
 
-  /** Tables with a pending drop are not dropped (nor truncated) a second time. */
-  const canDrop = (t: TableSummary) => t.kind !== "systemView" && marks.get(tableKey(t)) !== "drop";
-  const canTruncate = (t: TableSummary) => isAlterable(t.kind) && !marks.has(tableKey(t));
+  /** What is pending for the row's object (`pendingMarks`, by sidebar item key). */
+  const markOf = (row: ItemRow) =>
+    marks.get(
+      row.type === "table"
+        ? tableItemKey(row.table)
+        : row.type === "routine"
+          ? routineItemKey(row.routine)
+          : sequenceItemKey(row.sequence),
+    );
+  /** Items with a pending drop are not dropped (nor truncated) a second time. */
+  const canDrop = (t: TableSummary) =>
+    t.kind !== "systemView" && marks.get(tableItemKey(t)) !== "drop";
+  const canTruncate = (t: TableSummary) => isAlterable(t.kind) && !marks.has(tableItemKey(t));
+  /** The routine / sequence rows of `targets` of the same type as `row`, not pending a drop. */
+  const droppableObjects = (row: Exclude<ItemRow, TableRow>, targets: readonly ItemRow[]) =>
+    targets.filter((r) => r.type === row.type && markOf(r) !== "drop");
   const dropTables = (
     tables: TableSummary[],
     preset: { cascade?: boolean; ignoreFk?: boolean },
@@ -535,18 +549,13 @@ export function SchemaTree({
   const deleteTargets = (row: ItemRow, preset: { cascade?: boolean; ignoreFk?: boolean } = {}) => {
     const targets = targetsOf(row.key);
     if (row.type === "table") return dropTables(tablesOf(targets), preset);
-    if (readOnly) return;
+    const droppable = droppableObjects(row, targets);
+    if (readOnly || droppable.length === 0) return;
     if (row.type === "routine") {
-      const list = routinesOf(targets);
-      dialog({
-        kind: "dropRoutines",
-        routines: list.map(routineRef),
-        names: list.map((r) =>
-          r.identityArguments ? `${r.name}(${r.identityArguments})` : r.name,
-        ),
-      });
+      const list = routinesOf(droppable).map(routineRef);
+      dialog({ kind: "dropRoutines", routines: list, names: list.map(routineName) });
     } else {
-      dialog({ kind: "dropSequences", sequences: sequencesOf(targets).map(refOf) });
+      dialog({ kind: "dropSequences", sequences: sequencesOf(droppable).map(refOf) });
     }
   };
 
@@ -643,7 +652,12 @@ export function SchemaTree({
   const objectEntries = (row: Exclude<ItemRow, TableRow>): MenuEntry[] => {
     const targets = targetsOf(row.key).filter((r) => r.type === row.type);
     return objectMenu(
-      { driver, readOnly, count: targets.length },
+      {
+        driver,
+        readOnly,
+        count: targets.length,
+        droppable: droppableObjects(row, targets).length,
+      },
       {
         ...newHandlers,
         open: () => openObject(row),
@@ -1030,7 +1044,7 @@ export function SchemaTree({
           if (row.type === "table") {
             const t = row.table;
             const isPinned = pinned.has(tableKey(t));
-            const mark = marks.get(tableKey(t));
+            const mark = markOf(row);
             const open = expanded.has(row.key);
             entries = () => tableEntries(row);
             button = (
@@ -1123,6 +1137,7 @@ export function SchemaTree({
             const overloaded =
               row.type === "routine" &&
               (routines.data ?? []).filter((r) => r.name === row.routine.name).length > 1;
+            const dropping = markOf(row) === "drop";
             entries = () => objectEntries(row);
             button = (
               <button
@@ -1135,16 +1150,19 @@ export function SchemaTree({
                   if (e.detail <= 1) openObject(row);
                 }}
                 title={
-                  row.type === "routine"
-                    ? routineTitle(row.routine)
-                    : [
-                        `Sequence ${row.sequence.name}`,
-                        row.sequence.dataType,
-                        row.sequence.ownedBy && `owned by ${row.sequence.ownedBy}`,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")
+                  dropping
+                    ? "Delete pending: commit to drop it"
+                    : row.type === "routine"
+                      ? routineTitle(row.routine)
+                      : [
+                          `Sequence ${row.sequence.name}`,
+                          row.sequence.dataType,
+                          row.sequence.ownedBy && `owned by ${row.sequence.ownedBy}`,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")
                 }
+                data-pending={dropping ? "drop" : undefined}
                 className={rowClass}
               >
                 <Icon
@@ -1154,7 +1172,9 @@ export function SchemaTree({
                     row.type === "routine" ? "text-brand/80" : "text-muted-foreground",
                   )}
                 />
-                <span className="truncate">{itemName(row)}</span>
+                <span className={cn("truncate", dropping && "text-muted-foreground line-through")}>
+                  {itemName(row)}
+                </span>
                 {overloaded && (
                   // Overloads share a name: their argument types tell them apart.
                   <span className="text-muted-foreground/70 truncate font-mono text-[10px]">

@@ -70,10 +70,15 @@ export function kindOfTable(kind: TableKind): GroupKind {
   }
 }
 
-/** Item keys: `t:<schema>.<name>` for tables and views, `f:<schema>.<name>(<args>)` routines. */
+/**
+ * Item keys: `t:<schema>.<name>` for tables and views, `f:<schema>.<name>(<args>)` routines,
+ * `s:<schema>.<name>` sequences (not groupable; the key of their sidebar row).
+ */
 export const tableItemKey = (t: TableRef): string => `t:${tableKey(t)}`;
-export const routineItemKey = (r: RoutineSummary): string =>
-  `f:${r.schema ?? ""}.${r.name}(${r.identityArguments})`;
+export const routineItemKey = (
+  r: Pick<RoutineSummary, "schema" | "name" | "identityArguments">,
+): string => `f:${r.schema ?? ""}.${r.name}(${r.identityArguments})`;
+export const sequenceItemKey = (s: TableRef): string => `s:${tableKey(s)}`;
 
 export function tableItem(t: TableRef & { kind: TableKind }): GroupItem {
   return { key: tableItemKey(t), name: t.name, schema: t.schema, kind: kindOfTable(t.kind) };
