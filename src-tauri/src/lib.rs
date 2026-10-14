@@ -522,6 +522,15 @@ pub mod shell {
         }
     }
 
+    /// Runs `fut` on Tauri's runtime from a thread outside it (the main thread in `RunEvent::Exit`)
+    /// and gives up after `limit` (`None`). The timer is created inside `block_on`:
+    /// `tokio::time::timeout` needs a runtime when it is *created*, so
+    /// `block_on(tokio::time::timeout(..))` panics on the main thread, and the release profile
+    /// (`panic = "abort"`) turns that into a crash on every quit.
+    pub fn block_on_for<F: std::future::Future>(limit: Duration, fut: F) -> Option<F::Output> {
+        tauri::async_runtime::block_on(async move { tokio::time::timeout(limit, fut).await.ok() })
+    }
+
     /// macOS: NSApp `terminate:` (Dock → Quit, Quit from the Dock menu, logout and shutdown, which
     /// all arrive as the quit Apple event) asks the app delegate's `applicationShouldTerminate:`.
     /// tao 0.37 does not implement it, so Cocoa would go straight to `applicationWillTerminate:` →
@@ -650,6 +659,14 @@ pub mod shell {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn bounded_block_on_runs_from_a_thread_outside_the_runtime() {
+            // A plain #[test] thread is outside any runtime, like the main thread at exit.
+            assert_eq!(block_on_for(Duration::from_secs(1), async { 7 }), Some(7));
+            let never = std::future::pending::<()>();
+            assert_eq!(block_on_for(Duration::from_millis(20), never), None);
+        }
 
         #[test]
         fn maps_menu_items_to_renderer_actions() {
@@ -1060,16 +1077,14 @@ pub fn run() {
             // Every open session is closed (`app.exit()` runs no window handlers): a SQLite file
             // in WAL mode is checkpointed and loses its -wal / -shm files. Before the SQLite over
             // SSH uploads below, which send the main file of the local copy.
-            if let Some(state) = app.try_state::<state::AppState>() {
-                let closing = state.close_all_sessions();
-                if tauri::async_runtime::block_on(tokio::time::timeout(
+            if let Some(state) = app.try_state::<state::AppState>()
+                && shell::block_on_for(
                     std::time::Duration::from_secs(3),
-                    closing,
-                ))
-                .is_err()
-                {
-                    log::warn!("closing the open sessions at exit timed out");
-                }
+                    state.close_all_sessions(),
+                )
+                .is_none()
+            {
+                log::warn!("closing the open sessions at exit timed out");
             }
             // SQLite over SSH: the last changes go back to the server.
             commands::sqlite_ssh::shutdown();
