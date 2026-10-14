@@ -497,6 +497,7 @@ async fn mysql_index_and_check_edits_keep_the_original_and_scripts_reload() {
                     method: None,
                     predicate: None,
                     comment: None,
+                    include: vec![],
                 },
             },
         ];
@@ -551,6 +552,7 @@ async fn mysql_index_and_check_edits_keep_the_original_and_scripts_reload() {
                     method: None,
                     predicate: None,
                     comment: None,
+                    include: vec![],
                 },
             },
         ];

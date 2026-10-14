@@ -23,4 +23,18 @@ passwordMode?: PasswordMode | null,
 /**
  * TLS client authentication: private key (PEM) and its certificate (chain, PEM).
  */
-sslKeyPath?: string | null, sslCertPath?: string | null, };
+sslKeyPath?: string | null, sslCertPath?: string | null, 
+/**
+ * The shell command of the `command` password mode. Stored with the profile (what it prints
+ * is never stored); treated like a secret by connection exports, which only write it when
+ * database passwords are included, and dropped on import unless the user keeps it.
+ */
+passwordCommand?: string | null, 
+/**
+ * MySQL "Use socket": connect through a Unix socket instead of host and port.
+ */
+useSocket?: boolean | null, 
+/**
+ * The socket file of "Use socket"; empty: the first of the usual paths that exists.
+ */
+socketPath?: string | null, };

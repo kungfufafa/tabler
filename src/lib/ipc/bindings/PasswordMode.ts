@@ -5,5 +5,8 @@
  * - `keychain`: stored in the macOS Keychain (the default).
  * - `ask`: asked on every connect; kept in memory for that app session's reconnects only.
  * - `none`: the server needs no password; never asked, nothing stored.
+ * - `command`: "Command Line (IAM authentication)": the output of `options.password_command`,
+ *   run through the login shell on every connect (e.g. `aws rds generate-db-auth-token …`);
+ *   the output is never stored.
  */
-export type PasswordMode = "keychain" | "ask" | "none";
+export type PasswordMode = "keychain" | "ask" | "none" | "command";

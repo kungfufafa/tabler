@@ -137,3 +137,52 @@ describe("profileToUrl", () => {
     );
   });
 });
+
+describe("MySQL socket URLs", () => {
+  it("reads ?socket= (with or without a host) and writes it back", () => {
+    const r = parseConnectionUrl("mysql://root@localhost/shop?socket=%2Ftmp%2Fmysql.sock");
+    expect(r.values).toMatchObject({
+      driver: "mysql",
+      host: "localhost",
+      user: "root",
+      database: "shop",
+      useSocket: true,
+      socketPath: "/tmp/mysql.sock",
+    });
+    const hostless = parseConnectionUrl("mysql://root:pw@/shop?socket=/var/run/mysqld/mysqld.sock");
+    expect(hostless.values).toMatchObject({
+      host: "localhost",
+      useSocket: true,
+      socketPath: "/var/run/mysqld/mysqld.sock",
+    });
+    expect(hostless.password).toBe("pw");
+    // An empty socket: detected when connecting.
+    expect(parseConnectionUrl("mysql://root@localhost/shop?socket=").values).toMatchObject({
+      useSocket: true,
+      socketPath: "",
+    });
+    // Without the parameter (and for PostgreSQL) nothing changes.
+    expect(parseConnectionUrl("mysql://root@db/shop").values.useSocket).toBeUndefined();
+    expect(
+      parseConnectionUrl("postgres://u@db/x?socket=/tmp/.s.PGSQL.5432").values.useSocket,
+    ).toBeUndefined();
+    expect(() => parseConnectionUrl("mysql://root@/shop")).toThrow();
+
+    const p: ConnectionProfile = {
+      ...base,
+      driver: "mysql",
+      host: "localhost",
+      port: 3306,
+      options: { ...base.options, useSocket: true, socketPath: "/tmp/mysql.sock" },
+    };
+    const url = profileToUrl(p);
+    expect(new URL(url).searchParams.get("socket")).toBe("/tmp/mysql.sock");
+    expect(parseConnectionUrl(url).values).toMatchObject({
+      useSocket: true,
+      socketPath: "/tmp/mysql.sock",
+    });
+    expect(profileToUrl({ ...p, options: { ...p.options, useSocket: null } })).not.toContain(
+      "socket",
+    );
+  });
+});

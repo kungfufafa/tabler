@@ -115,7 +115,7 @@ describe("ShortcutsSection (keymap editor)", { timeout: 20_000 }, () => {
     expect(Object.keys(getPrefs().keymapOverrides)).toEqual(["tab.new-query", "tab.next"]);
     fireEvent.click(screen.getByLabelText("Reset New query tab"));
     expect(getPrefs().keymapOverrides).toEqual({
-      "tab.next": ["Mod+Alt+J", "Ctrl+Tab", "Mod+Shift+]"],
+      "tab.next": ["Mod+Alt+J", "Ctrl+Tab"],
     });
     fireEvent.click(screen.getByText("Reset All"));
     expect(getPrefs().keymapOverrides).toEqual({});

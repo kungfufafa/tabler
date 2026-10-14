@@ -492,6 +492,7 @@ mod tests {
             collation: None,
             array_elem_type: None,
             extra: None,
+            base_type: None,
         }
     }
 

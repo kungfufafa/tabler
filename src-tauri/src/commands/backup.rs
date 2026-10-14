@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::backup::args::{self, ConnParams, Endpoint, ToolInfo};
 use crate::backup::{discover, run, version};
 use crate::commands::connections::{
-    connect_password, connect_timeout, open_profile_tunnel, release_pinned_port,
+    check_socket, connect_password, connect_timeout, open_profile_tunnel, release_pinned_port,
     stored_tunnel_auth, tunnel_config,
 };
 use crate::commands::safety::READ_ONLY_MESSAGE;
@@ -24,7 +24,7 @@ use crate::types::backup::{
     BackupEvent, BackupJobKind, BackupJobRequest, BackupJobResult, BackupTarget, DumpBinary,
     RestoreFileInfo,
 };
-use crate::types::profile::{ConnStatus, ConnectionProfile, Driver, ProfileOptions};
+use crate::types::profile::{ConnStatus, ConnectionProfile, Driver, ProfileOptions, SslMode};
 
 /// Bound on closing a temporary session (MySQL waits for its pooled connections).
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -39,7 +39,24 @@ fn load_profile(state: &AppState, profile_id: Uuid) -> Result<ConnectionProfile,
             "SQLite databases are backed up by copying the database file".into(),
         ));
     }
+    check_socket(&profile)?;
     Ok(profile)
+}
+
+/// How the dump / restore binary reaches a MySQL profile beyond host and port: its "Use socket"
+/// file, and whether the password may go in clear text (an IAM authentication token over TLS or
+/// the socket, as for the connection itself).
+fn mysql_transport(profile: &ConnectionProfile) -> Result<(Option<String>, bool), AppError> {
+    if profile.driver != Driver::Mysql {
+        return Ok((None, false));
+    }
+    let socket = drivers::mysql::resolve_socket(profile)?;
+    let cleartext = drivers::mysql::cleartext_password_allowed(
+        profile,
+        profile.ssl != SslMode::Disable,
+        socket.is_some(),
+    );
+    Ok((socket, cleartext))
 }
 
 /// An open connection of the profile whose session is up.
@@ -318,6 +335,7 @@ pub async fn backup_run(
             (None, Some(info))
         }
     };
+    let (socket, cleartext_password) = mysql_transport(&profile)?;
     let password = connect_password(&state, &profile, None).await?;
     let route = route(&state, &profile).await?;
     let conn = ConnParams {
@@ -331,6 +349,8 @@ pub async fn backup_run(
         ssl_ca: profile.ssl_ca_path.clone(),
         connect_timeout_secs: profile.options.connect_timeout_secs.unwrap_or(15),
         system_ca: args::system_ca_bundle(),
+        socket,
+        cleartext_password,
     };
     let built = match &restore_file {
         None => args::build_backup(&tool, &conn, &req.flags, req.gzip),
@@ -438,6 +458,54 @@ mod tests {
         assert!(refuse_read_only_restore(BackupJobKind::Backup, &read_only).is_ok());
         let writable = ProfileOptions::default();
         assert!(refuse_read_only_restore(BackupJobKind::Restore, &writable).is_ok());
+    }
+
+    #[test]
+    fn mysql_jobs_follow_the_profiles_transport() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("mysql.sock");
+        std::fs::write(&sock, "").unwrap();
+        let mut profile = ConnectionProfile {
+            id: Uuid::new_v4(),
+            name: "my".into(),
+            color: None,
+            group: None,
+            driver: Driver::Mysql,
+            host: Some("db.example.com".into()),
+            port: Some(3306),
+            user: Some("app".into()),
+            database: None,
+            ssl: SslMode::Disable,
+            ssl_ca_path: None,
+            sqlite_path: None,
+            ssh: None,
+            options: ProfileOptions::default(),
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_connected_at: None,
+        };
+        assert_eq!(mysql_transport(&profile).unwrap(), (None, false));
+        profile.options.use_socket = Some(true);
+        profile.options.socket_path = Some(sock.to_string_lossy().into_owned());
+        assert_eq!(
+            mysql_transport(&profile).unwrap(),
+            (Some(sock.to_string_lossy().into_owned()), false)
+        );
+        // IAM tokens: over the socket, or over TLS.
+        profile.options.password_mode = Some(crate::types::profile::PasswordMode::Command);
+        assert!(mysql_transport(&profile).unwrap().1);
+        profile.options.use_socket = None;
+        assert!(!mysql_transport(&profile).unwrap().1);
+        profile.ssl = SslMode::Require;
+        assert!(mysql_transport(&profile).unwrap().1);
+        // A missing socket file fails before the binary runs.
+        profile.options.use_socket = Some(true);
+        profile.options.socket_path = Some(dir.path().join("gone.sock").to_string_lossy().into());
+        assert!(mysql_transport(&profile).is_err());
+        // PostgreSQL has neither.
+        profile.driver = Driver::Postgres;
+        assert_eq!(mysql_transport(&profile).unwrap(), (None, false));
     }
 
     #[tokio::test]

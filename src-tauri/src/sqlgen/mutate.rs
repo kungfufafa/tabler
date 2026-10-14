@@ -76,7 +76,7 @@ pub fn row_key_where(
                 if v.is_null() {
                     parts.push(format!("{ident} IS NULL"));
                 } else {
-                    let ph = spec.placeholder(params, v.clone(), Some(&col.data_type));
+                    let ph = spec.placeholder(params, v.clone(), Some(col.cast_type()));
                     parts.push(format!("{ident} = {ph}"));
                 }
             }
@@ -181,7 +181,7 @@ pub fn build_update(
             }
             sets.push(format!("{ident} = DEFAULT"));
         } else {
-            let ph = spec.placeholder(&mut params, v.clone(), Some(&col.data_type));
+            let ph = spec.placeholder(&mut params, v.clone(), Some(col.cast_type()));
             sets.push(format!("{ident} = {ph}"));
         }
     }
@@ -214,7 +214,7 @@ pub fn build_insert(
             continue; // omitted columns take their default on every engine
         }
         names.push(d.quote_ident(name));
-        exprs.push(spec.placeholder(&mut params, v.clone(), Some(&col.data_type)));
+        exprs.push(spec.placeholder(&mut params, v.clone(), Some(col.cast_type())));
     }
     let mut sql = if names.is_empty() {
         match d {
@@ -312,6 +312,7 @@ mod tests {
             collation: None,
             array_elem_type: None,
             extra: None,
+            base_type: None,
         }
     }
 

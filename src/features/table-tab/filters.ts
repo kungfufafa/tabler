@@ -275,6 +275,15 @@ export function toFilterGroup(
   return items.length === 0 ? null : { conjunction, items };
 }
 
+/** The last row the applied filter holds (checked and complete): where ⌘F puts the focus. */
+export function lastAppliedRowId(rows: FilterRowSpec[], columns: ColumnMeta[]): string | null {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i]!;
+    if (toFilterGroup([row], columns, "and") !== null) return row.id;
+  }
+  return null;
+}
+
 /**
  * A new filter row as the filter bar's ⚙ settings ask: on the primary key (its first column, else
  * the first column), on "Any column" or on Raw SQL, with `=` or Contains.

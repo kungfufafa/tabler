@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ColumnMeta, DdlOp, TableMeta } from "@/lib/ipc";
 import {
+  addColumn,
+  addIndex,
   checkColumns,
+  dropColumn,
   editColumn,
   editIndex,
   foldStructure,
@@ -24,6 +27,7 @@ import {
   setTableComment,
   setTableName,
   setTableOption,
+  setTriggerEnabled,
   stagedRename,
   triggerSource,
   triggerTemplate,
@@ -79,6 +83,7 @@ const META: TableMeta = {
       predicate: null,
       definition: null,
       comment: null,
+      include: [],
     },
     {
       name: "items_qty_idx",
@@ -89,6 +94,7 @@ const META: TableMeta = {
       predicate: null,
       definition: null,
       comment: null,
+      include: [],
     },
   ],
   foreignKeys: [
@@ -196,6 +202,7 @@ describe("indexes", () => {
           method: "btree",
           predicate: null,
           comment: null,
+          include: [],
         },
       },
     ]);
@@ -226,6 +233,7 @@ describe("indexes", () => {
           method: null,
           predicate: null,
           comment: null,
+          include: [],
         },
       },
     ];
@@ -376,6 +384,106 @@ describe("triggers", () => {
       { op: "dropTrigger", table: T, name: "items_touch" },
     ]);
     expect(dropTrigger(META, added.ok ? added.ops : [], "nt:0")).toEqual([]);
+  });
+});
+
+describe("trigger enable / disable", () => {
+  const disabledMeta: TableMeta = {
+    ...META,
+    triggers: [{ ...META.triggers[0]!, enabled: false }],
+  };
+
+  it("stages DISABLE / ENABLE TRIGGER; toggling back unstages it", () => {
+    const ops = setTriggerEnabled(META, [], "t:items_touch", false);
+    expect(ops).toEqual([{ op: "disableTrigger", table: T, name: "items_touch" }]);
+    const row = foldStructure(META, ops).triggers[0]!;
+    expect(row).toMatchObject({ enabled: false, enabledAt: 0, status: "existing" });
+    // the same state again: nothing changes; back on: the op goes
+    expect(setTriggerEnabled(META, ops, "t:items_touch", false)).toBe(ops);
+    expect(setTriggerEnabled(META, ops, "t:items_touch", true)).toEqual([]);
+    // a disabled trigger is enabled
+    expect(setTriggerEnabled(disabledMeta, [], "t:items_touch", true)).toEqual([
+      { op: "enableTrigger", table: T, name: "items_touch" },
+    ]);
+    expect(foldStructure(disabledMeta, []).triggers[0]!.enabled).toBe(false);
+  });
+
+  it("a staged new trigger can be disabled; dropping a trigger drops its toggle", () => {
+    const sql =
+      "CREATE TRIGGER items_audit AFTER DELETE ON items FOR EACH ROW EXECUTE FUNCTION audit()";
+    const added = addTrigger(META, [], sql);
+    if (!added.ok) throw new Error(added.error);
+    let ops = setTriggerEnabled(META, added.ops, "nt:0", false);
+    expect(ops.map((o) => o.op)).toEqual(["createTrigger", "disableTrigger"]);
+    expect(foldStructure(META, ops).triggers[1]).toMatchObject({ enabled: false, enabledAt: 1 });
+    expect(dropTrigger(META, ops, "nt:0")).toEqual([]);
+
+    ops = setTriggerEnabled(META, [], "t:items_touch", false);
+    expect(dropTrigger(META, ops, "t:items_touch")).toEqual([
+      { op: "dropTrigger", table: T, name: "items_touch" },
+    ]);
+  });
+
+  it("an edited trigger is created enabled; a later toggle follows the new statement", () => {
+    const original = META.triggers[0]!.definition;
+    let ops = setTriggerEnabled(META, [], "t:items_touch", false);
+    const r = editTrigger(
+      META,
+      ops,
+      "postgres",
+      "t:items_touch",
+      original.replace("BEFORE", "AFTER"),
+    );
+    if (!r.ok) throw new Error(r.error);
+    ops = r.ops;
+    expect(ops.map((o) => o.op)).toEqual(["disableTrigger", "dropTrigger", "createTrigger"]);
+    const row = foldStructure(META, ops).triggers[0]!;
+    expect(row).toMatchObject({ status: "changed", enabled: true, enabledAt: null });
+    ops = setTriggerEnabled(META, ops, "t:items_touch", false);
+    expect(ops.at(-1)).toEqual({ op: "disableTrigger", table: T, name: "items_touch" });
+    expect(foldStructure(META, ops).triggers[0]).toMatchObject({ enabled: false, enabledAt: 3 });
+    // dropping the edited trigger takes its toggles along
+    expect(dropTrigger(META, ops, "t:items_touch")).toEqual([
+      { op: "dropTrigger", table: T, name: "items_touch" },
+    ]);
+  });
+});
+
+describe("index INCLUDE columns", () => {
+  const index = {
+    name: "items_price_idx",
+    columns: ["price"],
+    unique: false,
+    method: null,
+    predicate: null,
+    comment: null,
+    include: ["qty"],
+  };
+
+  it("folds INCLUDE columns of staged and existing indexes and follows renames", () => {
+    const meta: TableMeta = {
+      ...META,
+      indexes: [META.indexes[0]!, { ...META.indexes[1]!, columns: ["price"], include: ["qty"] }],
+    };
+    let ops = addIndex(meta, [], index);
+    let rows = foldStructure(meta, ops).indexes;
+    expect(rows.find((x) => x.key === "ni:0")).toMatchObject({ include: ["qty"] });
+    // the include list is part of the definition: editing it changes the staged op
+    ops = editIndex(meta, ops, "ni:0", { include: [] });
+    expect(ops).toEqual([{ op: "addIndex", table: T, index: { ...index, include: [] } }]);
+    ops = editColumn(meta, ops, "postgres", "c:qty", "name", "amount");
+    rows = foldStructure(meta, ops).indexes;
+    expect(rows.find((x) => x.key === "i:items_qty_idx")).toMatchObject({ include: ["amount"] });
+    // an index from metadata without the field (older backends) has none
+    const bare = { ...meta, indexes: [{ ...META.indexes[1]!, include: undefined }] };
+    expect(foldStructure(bare, []).indexes[0]!.include).toEqual([]);
+  });
+
+  it("dropping a staged new column removes the staged index that includes it", () => {
+    const added = addColumn(META, [], "postgres");
+    let ops = addIndex(META, added.ops, { ...index, include: ["column_1"] });
+    ops = dropColumn(META, ops, added.key);
+    expect(ops).toEqual([]);
   });
 });
 

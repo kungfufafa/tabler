@@ -1,12 +1,13 @@
 import type { ConnectionProfile, ConnectionTag, Driver, SafeModeLevel, SslMode } from "@/lib/ipc";
 import { ACCENT_PRESETS } from "@/lib/theme";
-import { CONNECTION_TAGS, type ConnectionFormValues } from "./schema";
+import { CONNECTION_TAGS, usesSocket, type ConnectionFormValues } from "./schema";
 
 /**
  * Connection URLs, as TablePlus reads and writes them ("New connection from URL…", "Copy as
  * URL"): `postgres://user:password@host:port/database?name=…&sslmode=…`, `mysql://…`,
  * `mariadb://…`, `sqlite:///absolute/path.sqlite`. User, password and database are
- * percent-decoded.
+ * percent-decoded. MySQL's "Use socket" is `?socket=/tmp/mysql.sock` (empty: auto-detect); such a
+ * URL may leave the host out (`mysql://root@/db?socket=…`).
  */
 
 const SCHEMES: Record<string, Driver> = {
@@ -101,15 +102,21 @@ export function parseConnectionUrl(input: string): ParsedConnectionUrl {
     return { values: { driver, sqlitePath: path, name }, password: null };
   }
 
+  // `user@` without a host is no URL to the parser; a socket URL needs no host.
+  const parseable =
+    driver === "mysql" && /[?&]socket=/.test(text)
+      ? text.replace(/^([a-z][a-z0-9+.-]*:\/\/[^/?#]*@)(?=[/?#]|$)/i, "$1localhost")
+      : text;
   let url: URL;
   try {
-    url = new URL(text);
+    url = new URL(parseable);
   } catch {
     throw new Error("This is not a valid connection URL.");
   }
-  const host = url.hostname.replace(/^\[(.*)\]$/, "$1");
-  if (host === "") throw new Error("The URL has no host.");
   const params = url.searchParams;
+  const socket = driver === "mysql" ? params.get("socket") : null;
+  const host = url.hostname.replace(/^\[(.*)\]$/, "$1") || (socket !== null ? "localhost" : "");
+  if (host === "") throw new Error("The URL has no host.");
   const database = decode(url.pathname.replace(/^\//, ""));
   const values: Partial<ConnectionFormValues> = {
     driver,
@@ -118,6 +125,10 @@ export function parseConnectionUrl(input: string): ParsedConnectionUrl {
     user: decode(url.username),
     database,
   };
+  if (socket !== null) {
+    values.useSocket = true;
+    values.socketPath = socket.trim();
+  }
   const name = params.get("name");
   values.name = name?.trim() || `${values.user ? `${values.user}@` : ""}${host}`;
   const ssl = params.get("sslmode") ?? params.get("ssl-mode") ?? params.get("ssl_mode");
@@ -153,6 +164,7 @@ export function profileToUrl(p: ConnectionProfile, password: string | null = nul
   const port = p.port ? `:${p.port}` : "";
   const db = p.database ? `/${enc(p.database)}` : "";
   const query = new URLSearchParams({ name: p.name });
+  if (usesSocket(p)) query.set("socket", p.options.socketPath ?? "");
   if (p.ssl !== "prefer") query.set("sslmode", p.ssl);
   if (p.options.tag) query.set("env", p.options.tag);
   if (p.options.safeMode && p.options.safeMode !== "silent") {

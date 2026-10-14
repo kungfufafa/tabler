@@ -76,6 +76,20 @@ export function pendingForTab(s: ResultsState, tabId: string): number {
   return n;
 }
 
+/** Buffer ids of a run's result sets start with the run id (pinned copies do not). */
+const ofRun = (resultId: string, runId: string) => resultId.startsWith(`${runId}:`);
+
+/**
+ * Staged changes in the result sets of run `runId` of the tab: what running the tab again would
+ * discard (pinned results keep theirs).
+ */
+export function pendingForRun(s: ResultsState, tabId: string, runId: string): number {
+  let n = 0;
+  for (const [id, e] of Object.entries(s.edits))
+    if (e.tabId === tabId && ofRun(id, runId)) n += pendingCount(e.staging);
+  return n;
+}
+
 /** The result of the tab that holds staged edits (one at a time), if any. */
 export function dirtyResultOf(s: ResultsState, tabId: string): string | null {
   for (const [id, e] of Object.entries(s.edits))
@@ -172,6 +186,14 @@ export function discardResultEdits(resultId: string): void {
 }
 
 /**
+ * Forgets the staged edits of every result set of run `runId` (the user agreed to discard them
+ * before running again). Returns how many changes were dropped.
+ */
+export function discardRunEdits(runId: string): number {
+  return dropKeys((id) => ofRun(id, runId));
+}
+
+/**
  * Pins a result of the tab's run: its rows are copied to a buffer of its own, which a re-run
  * leaves alone. Staged edits move along. Returns the pinned result's id.
  */
@@ -219,7 +241,9 @@ let installed = false;
 
 /**
  * Keeps the per-result state in step with the tabs: a new run drops the staged edits of the
- * results it replaced (saying so when some were pending), a closed query tab its pins and edits.
+ * results it replaced, a closed query tab its pins and edits. Runs from the editor ask first
+ * (`confirmRerunDiscard`) and discard the edits themselves, so the toast here is only the safety
+ * net for runs started elsewhere (the Re-run button after a commit…).
  */
 export function installResultsLifecycle(): void {
   if (installed) return;

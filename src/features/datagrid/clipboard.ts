@@ -4,6 +4,7 @@ import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { literal, qualify, quoteIdent } from "@/lib/sql/quote";
 import { valueText } from "@/lib/values";
+import { DEFAULT_CSV_OPTIONS, formatCsv, type CsvOptions } from "./csv";
 import type { GridColumn } from "./types";
 
 export type CopyFormat = "tsv" | "csv" | "json" | "insert" | "markdown" | "html";
@@ -14,9 +15,47 @@ export interface CopyContext {
   table: string;
 }
 
-const needsCsvQuote = (s: string) => /[",\r\n]/.test(s);
-const csvCell = (s: string | null) =>
-  s === null ? "" : needsCsvQuote(s) ? `"${s.replace(/"/g, '""')}"` : s;
+/**
+ * Copy Rows As ▸ SQL Insert statement: rows go into multi-row INSERTs that each stay under this
+ * many bytes (TablePlus splits them into ~250 KB chunks); a single larger row gets its own.
+ */
+export const INSERT_CHUNK_BYTES = 250_000;
+
+/** UTF-8 length of `s` without encoding it. */
+function utf8Length(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+      n += 4;
+      i++;
+    } else n += 3;
+  }
+  return n;
+}
+
+/** `head` + the tuples as multi-row statements of at most `limit` bytes each. */
+function chunkInserts(head: string, tuples: readonly string[], limit: number): string[] {
+  const statements: string[] = [];
+  const headBytes = utf8Length(head);
+  let chunk: string[] = [];
+  let bytes = headBytes;
+  for (const tuple of tuples) {
+    const size = utf8Length(tuple);
+    // ",\n" goes before every tuple but the first, ";" after the last.
+    if (chunk.length > 0 && bytes + 2 + size + 1 > limit) {
+      statements.push(`${head}${chunk.join(",\n")};`);
+      chunk = [];
+      bytes = headBytes;
+    }
+    bytes += size + (chunk.length > 0 ? 2 : 0);
+    chunk.push(tuple);
+  }
+  if (chunk.length > 0) statements.push(`${head}${chunk.join(",\n")};`);
+  return statements;
+}
 /** Quotes fields with tabs/line breaks (and a leading quote, so `parseTsv` reads them back as-is). */
 const tsvCell = (s: string | null) =>
   s === null ? "" : /[\t\r\n]/.test(s) || s.startsWith('"') ? `"${s.replace(/"/g, '""')}"` : s;
@@ -80,13 +119,15 @@ export function formatColumnValues(values: readonly Value[]): string {
 
 /**
  * Serializes a rectangular block of cells. `rows` must be parallel to `columns`. `headers` adds
- * the column names as a first line to TSV and CSV (the other formats always name them).
+ * the column names as a first line to TSV and CSV (the other formats always name them). `csv`:
+ * the CSV options (Settings ▸ General ▸ CSV default options; the defaults when not given).
+ * `insertChunkBytes`: the size cap of one INSERT statement (`INSERT_CHUNK_BYTES`).
  */
 export function formatCells(
   format: CopyFormat,
   columns: GridColumn[],
   rows: Value[][],
-  ctx?: Partial<CopyContext> & { headers?: boolean },
+  ctx?: Partial<CopyContext> & { headers?: boolean; csv?: CsvOptions; insertChunkBytes?: number },
 ): string {
   switch (format) {
     case "tsv": {
@@ -94,11 +135,12 @@ export function formatCells(
       if (ctx?.headers) lines.unshift(columns.map((c) => c.name).join("\t"));
       return lines.join("\n");
     }
-    case "csv": {
-      const lines = rows.map((r) => r.map((v) => csvCell(valueText(v))).join(","));
-      if (ctx?.headers) lines.unshift(columns.map((c) => csvCell(c.name)).join(","));
-      return lines.join("\r\n");
-    }
+    case "csv":
+      return formatCsv(
+        ctx?.headers ? columns.map((c) => c.name) : null,
+        rows,
+        ctx?.csv ?? DEFAULT_CSV_OPTIONS,
+      );
     case "html": {
       const cell = (tag: "th" | "td", s: string | null) =>
         `<${tag}>${s === null ? "" : escapeHtml(s).replace(/\r?\n/g, "<br>")}</${tag}>`;
@@ -118,12 +160,9 @@ export function formatCells(
       const dialect = ctx?.dialect ?? "postgres";
       const target = qualify(dialect, ctx?.schema ?? null, ctx?.table ?? "table");
       const cols = columns.map((c) => quoteIdent(dialect, c.name)).join(", ");
-      return rows
-        .map(
-          (r) =>
-            `INSERT INTO ${target} (${cols}) VALUES (${r.map((v) => literal(dialect, v)).join(", ")});`,
-        )
-        .join("\n");
+      const tuples = rows.map((r) => `(${r.map((v) => literal(dialect, v)).join(", ")})`);
+      const head = `INSERT INTO ${target} (${cols}) VALUES\n`;
+      return chunkInserts(head, tuples, ctx?.insertChunkBytes ?? INSERT_CHUNK_BYTES).join("\n");
     }
     case "markdown": {
       const esc = (s: string | null) => (s ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");

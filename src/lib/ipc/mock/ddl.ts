@@ -52,6 +52,8 @@ interface Overlay {
   droppedChecks: string[];
   triggers: TriggerMeta[];
   droppedTriggers: string[];
+  /** PostgreSQL `ENABLE` / `DISABLE TRIGGER` of fixture triggers (name → enabled). */
+  triggerStates?: Record<string, boolean>;
   options?: TableOptions;
 }
 
@@ -186,7 +188,12 @@ function metaOf(d: Driver, t: TableRef): TableMeta | null {
     indexes: [...meta.indexes.filter((i) => !o.droppedIndexes.includes(i.name)), ...o.indexes],
     foreignKeys: [...meta.foreignKeys.filter((f) => !o.droppedFks.includes(f.name)), ...o.fks],
     checks: [...meta.checks.filter((c) => !o.droppedChecks.includes(c.name)), ...o.checks],
-    triggers: [...meta.triggers.filter((x) => !o.droppedTriggers.includes(x.name)), ...o.triggers],
+    triggers: [
+      ...meta.triggers.filter((x) => !o.droppedTriggers.includes(x.name)),
+      ...o.triggers,
+    ].map((x) =>
+      o.triggerStates?.[x.name] !== undefined ? { ...x, enabled: o.triggerStates[x.name]! } : x,
+    ),
     comment: o.comment !== undefined ? o.comment : meta.comment,
     options: o.options ?? meta.options,
   };
@@ -288,6 +295,9 @@ function fkSql(
 
 function indexSql(d: Driver, t: TableRef, index: IndexDef, warn: (w: string) => void): string {
   const entries = index.columns.map((e) => indexEntry(d, e)).join(", ");
+  const include = index.include.map((c) => c.trim()).filter((c) => c !== "");
+  if (d !== "postgres" && include.length > 0)
+    warn(`INCLUDE columns are PostgreSQL-only; those of "${index.name}" are ignored`);
   if (d === "mysql") {
     const kind = index.method?.toUpperCase();
     const special = kind === "FULLTEXT" || kind === "SPATIAL" ? `${kind} ` : "";
@@ -301,7 +311,8 @@ function indexSql(d: Driver, t: TableRef, index: IndexDef, warn: (w: string) => 
     const name = t.schema ? `${q(d, t.schema)}.${q(d, index.name)}` : q(d, index.name);
     return `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${name} ON ${q(d, t.name)} (${entries})${index.predicate ? ` WHERE ${index.predicate}` : ""}`;
   }
-  return `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${q(d, index.name)} ON ${qt(d, t)}${index.method ? ` USING ${index.method}` : ""} (${entries})${index.predicate ? ` WHERE ${index.predicate}` : ""}`;
+  const covering = include.length > 0 ? ` INCLUDE (${include.map((c) => q(d, c)).join(", ")})` : "";
+  return `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${q(d, index.name)} ON ${qt(d, t)}${index.method ? ` USING ${index.method}` : ""} (${entries})${covering}${index.predicate ? ` WHERE ${index.predicate}` : ""}`;
 }
 
 // --- planning ----------------------------------------------------------------------------------
@@ -397,6 +408,8 @@ const TABLE_LEVEL = new Set<DdlOp["op"]>([
   "alterTableOptions",
   "createTrigger",
   "dropTrigger",
+  "enableTrigger",
+  "disableTrigger",
 ]);
 
 interface Planned extends DdlPlan {
@@ -700,6 +713,7 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
           predicate: op.index.predicate,
           definition: sql,
           comment: op.index.comment,
+          include: d === "postgres" ? op.index.include : [],
         });
         break;
       }
@@ -883,6 +897,19 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         );
         break;
       }
+      case "enableTrigger":
+      case "disableTrigger": {
+        requireName(op.name, "trigger name");
+        if (d !== "postgres")
+          mockError(
+            "UNSUPPORTED",
+            `unsupported: ${d === "mysql" ? "MySQL" : "SQLite"} triggers cannot be disabled: drop the trigger instead`,
+          );
+        statements.push(
+          `ALTER TABLE ${qt(d, op.table)} ${op.op === "enableTrigger" ? "ENABLE" : "DISABLE"} TRIGGER ${q(d, op.name)}`,
+        );
+        break;
+      }
     }
     ranges.push([start, statements.length]);
   }
@@ -964,6 +991,7 @@ function rebuildStatements(d: Driver, w: Work): string[] {
             method: null,
             predicate: idx.predicate,
             comment: null,
+            include: [],
           },
           () => {},
         ),
@@ -1265,6 +1293,7 @@ function applyToCatalog(d: Driver, table: TableRef | null, ops: DdlOp[]) {
           predicate: op.index.predicate,
           definition: indexSql(d, t, op.index, () => {}),
           comment: d === "sqlite" ? null : op.index.comment,
+          include: d === "postgres" ? op.index.include : [],
         });
         break;
       case "alterColumnAutoIncrement":
@@ -1372,6 +1401,13 @@ function applyToCatalog(d: Driver, table: TableRef | null, ops: DdlOp[]) {
         const i = o.triggers.findIndex((x) => x.name === op.name);
         if (i >= 0) o.triggers.splice(i, 1);
         else o.droppedTriggers.push(op.name);
+        if (o.triggerStates) delete o.triggerStates[op.name];
+        break;
+      }
+      case "enableTrigger":
+      case "disableTrigger": {
+        const o = overlayOf(d, t);
+        o.triggerStates = { ...o.triggerStates, [op.name]: op.op === "enableTrigger" };
         break;
       }
       case "dropIndex": {
@@ -1524,6 +1560,7 @@ function createTableText(d: Driver, meta: TableMeta): string {
               method: idx.method,
               predicate: idx.predicate,
               comment: idx.comment,
+              include: idx.include ?? [],
             },
             () => {},
           ),

@@ -10,17 +10,21 @@ import {
 import { relativeTime } from "@/lib/format/time";
 import type { ConnectionProfile } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
-import { DriverBadge, TagPill } from "./badges";
+import { DriverBadge, GroupBreadcrumb, TagPill } from "./badges";
 import { connectionRowId } from "./list";
 import { ContextMenuEntries, DropdownMenuEntries, type MenuEntry } from "./menuModel";
 import { connectionDetail } from "./schema";
+
+/** Indent per group level of the launcher list (headers and rows). */
+export const INDENT_PX = 14;
 
 /**
  * One saved connection in the launcher list (44px): driver badge tinted with the connection
  * colour, name + tag + read-only, `host : port : user : database` below, last connect on the right.
  * Selection and keyboard handling live in the list (`Launcher`); a click selects, a double-click
  * connects, right-click or "…" opens the actions (`menu`). The row can be dragged onto a group
- * header to move it there.
+ * header to move it there. Inside nested groups it is indented by its group's level; search
+ * results show the group path as a breadcrumb instead.
  *
  * Two marks: `selected` is a real selection (a click, ↑/↓…), filled with the accent while the
  * connection pane has the focus and grey otherwise; `current` is only the keyboard target before
@@ -33,6 +37,8 @@ export function ConnectionRow({
   connecting,
   connected,
   menu,
+  indent = 0,
+  breadcrumb,
   onSelect,
   onConnect,
 }: {
@@ -43,6 +49,10 @@ export function ConnectionRow({
   connecting: boolean;
   connected: boolean;
   menu: readonly MenuEntry[];
+  /** Nesting level of its group (0: top level or no group). */
+  indent?: number;
+  /** The group path to show (search results). */
+  breadcrumb?: string;
   onSelect: () => void;
   onConnect: () => void;
 }) {
@@ -64,6 +74,7 @@ export function ConnectionRow({
           onPointerDown={
             drag.listeners?.onPointerDown as React.PointerEventHandler<HTMLElement> | undefined
           }
+          style={indent > 0 ? { marginLeft: 6 + indent * INDENT_PX } : undefined}
           className={cn(
             "group/row relative mx-1.5 flex h-11 items-center gap-2.5 rounded-md pr-1.5 pl-2.5",
             selected ? "bg-accent group-focus-within/pane:bg-brand-soft" : "hover:bg-row-hover",
@@ -90,6 +101,9 @@ export function ConnectionRow({
                   aria-label="open"
                   role="img"
                 />
+              )}
+              {breadcrumb && (
+                <GroupBreadcrumb path={breadcrumb} className="ml-auto max-w-[45%] text-[11px]" />
               )}
             </div>
             <div className="text-muted-foreground mt-0.5 flex min-w-0 items-center gap-1 font-mono text-[11px] leading-3.5">

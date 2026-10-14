@@ -242,6 +242,7 @@ async fn plans_and_applies_ddl_with_rebuilds() {
                     method: None,
                     predicate: Some("qty >= 0".into()),
                     comment: None,
+                    include: vec![],
                 },
             },
             DdlOp::RawSql {

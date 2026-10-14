@@ -64,6 +64,7 @@ const META: TableMeta = {
       predicate: null,
       definition: null,
       comment: null,
+      include: [],
     },
     {
       name: "users_email_idx",
@@ -74,6 +75,7 @@ const META: TableMeta = {
       predicate: null,
       definition: null,
       comment: null,
+      include: [],
     },
   ],
   foreignKeys: [],
@@ -216,6 +218,7 @@ describe("addColumn / dropColumn", () => {
       method: null,
       predicate: null,
       comment: null,
+      include: [],
     });
     ops = edit(ops, "c:email", "nullable", true);
     expect(dropColumn(META, ops, "n:0")).toEqual([ops[2]]);
@@ -230,6 +233,7 @@ describe("addColumn / dropColumn", () => {
       method: null,
       predicate: null,
       comment: null,
+      include: [],
     });
     ops = edit(ops, "n:0", "name", "slug");
     expect(ops[1]).toMatchObject({ index: { columns: ["slug DESC"] } });
@@ -262,6 +266,7 @@ describe("indexes", () => {
       method: null,
       predicate: null,
       comment: null,
+      include: [],
     });
     expect(dropIndex(META, ops, "ni:0")).toEqual([]);
   });

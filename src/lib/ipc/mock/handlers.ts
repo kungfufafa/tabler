@@ -14,6 +14,7 @@ import type { StagedChange } from "../bindings/StagedChange";
 import type { TableRef } from "../bindings/TableRef";
 import type { Value } from "../bindings/Value";
 import { mockAdminDatabases, mockAdminSchemas } from "./admin";
+import { mockPasswordCommand, mockSocketCheck, mockSshPrompt } from "./connect_extras";
 import { mockCheckHostKey } from "./export";
 import { SEED_PROFILES, tableMetaFor, tablesFor } from "./fixtures";
 import { matchesGroup, rowsFor, sortRows } from "./rows";
@@ -138,9 +139,13 @@ registerMock("test_connection", async ({ input }) => {
   const missing = missingSqliteFile(profile);
   if (missing)
     return { ok: false, serverVersion: null, latencyMs: 0, message: missing, tunnelUsed: false };
-  // SSH profiles verify the server's host key first (unknown keys are parked under the profile id).
+  mockSocketCheck(profile);
+  mockPasswordCommand(profile);
+  // SSH profiles verify the server's host key first (unknown keys are parked under the profile id),
+  // then answer the server's 2FA question, if it asks one.
   const ssh = sshOf(profile);
   mockCheckHostKey(profile.id, ssh);
+  await mockSshPrompt(profile, "test");
   if ((profile.host ?? "").includes("bad")) {
     return {
       ok: false,
@@ -172,8 +177,11 @@ registerMock("connect", async ({ profileId, password }) => {
   }
   const missing = missingSqliteFile(p);
   if (missing) mockError("NOT_FOUND", `not found: ${missing}`);
+  mockSocketCheck(p);
+  mockPasswordCommand(p);
   const ssh = sshOf(p);
   mockCheckHostKey(p.id, ssh);
+  await mockSshPrompt(p, "connect");
   if ((p.host ?? "").includes("bad"))
     mockError("CONNECT_FAILED", `could not connect to ${p.host}:${p.port}: connection refused`);
   const info: ConnectionInfo = {

@@ -883,6 +883,7 @@ mod tests {
                     predicate: None,
                     definition: None,
                     comment: None,
+                    include: vec![],
                 },
                 IndexMeta {
                     name: "t_b".into(),
@@ -893,6 +894,7 @@ mod tests {
                     predicate: None,
                     definition: Some("CREATE INDEX t_b ON t (b)".into()),
                     comment: None,
+                    include: vec![],
                 },
             ],
             foreign_keys: vec![],

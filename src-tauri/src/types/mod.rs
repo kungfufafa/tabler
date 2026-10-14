@@ -6,6 +6,7 @@ pub mod app;
 pub mod backup;
 pub mod browse;
 pub mod ddl;
+pub mod diagram;
 pub mod export;
 pub mod history;
 pub mod import;

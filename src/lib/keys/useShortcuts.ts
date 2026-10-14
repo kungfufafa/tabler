@@ -1,7 +1,7 @@
 import { useEffect, type ReactNode } from "react";
 import { actions, type ActionId } from "@/features/palette/actions";
 import { comboFromEvent } from "./combo";
-import { findShortcut, type Scope } from "./keymap";
+import { findShortcut, type Scope, type ShortcutDef } from "./keymap";
 
 const DIALOGS = "[role='dialog'], [role='alertdialog']";
 
@@ -53,6 +53,17 @@ export function isCapturingShortcut(): boolean {
   return capturing > 0;
 }
 
+/**
+ * Grid keys that stay with the grid's container when the grid has no handler: ⌘↩ in a SQL tab's
+ * results is Run Current unless the grid binds Quick Look to it (`DataGrid` `quickLookKey`).
+ */
+const GRID_PASSTHROUGH: ReadonlySet<ActionId> = new Set(["grid.quick-look"]);
+
+/** Whether an unhandled shortcut is still kept from the menu bar and the page (see the listener). */
+export function blocksUnhandled(def: ShortcutDef, scope: Scope): boolean {
+  return scope === "grid" && def.scope === "grid" && !GRID_PASSTHROUGH.has(def.id);
+}
+
 let dispatching = 0;
 
 /**
@@ -89,6 +100,10 @@ export function KeyboardProvider({ children }: { children: ReactNode }) {
       if (!actions.has(def.id)) {
         // Nothing handles it yet; still stop the webview from doing something odd (⌘R reload, ⌘P print).
         if (def.id === "view.refresh" || def.id === "palette.open") e.preventDefault();
+        // A grid key the focused grid refuses (⌘I New Row, ⇧⌘D Set DEFAULT in a read-only result)
+        // is spent: neither the menu's key equivalent (Beautify, Split Pane) nor the query tab's
+        // forwarding of editor keys may run it in the editor behind the grid.
+        if (blocksUnhandled(def, scope)) e.preventDefault();
         actions.notify(def.id);
         return;
       }

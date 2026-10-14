@@ -8,6 +8,7 @@ pub mod admin;
 pub mod appdb;
 pub mod backup;
 pub mod commands;
+pub mod diagram;
 pub mod drivers;
 pub mod error;
 pub mod export;
@@ -17,6 +18,7 @@ pub mod profiles_io;
 pub mod secrets;
 pub mod sqlgen;
 pub mod state;
+pub mod tls_files;
 pub mod tunnel;
 pub mod types;
 
@@ -89,9 +91,53 @@ pub mod shell {
             "Select Previous Workspace",
             "CmdOrCtrl+Ctrl+Left",
         ),
+        // File: the SQL editor's save items.
+        (
+            "query.save-selection",
+            "Save Selected SQL Statements As…",
+            "CmdOrCtrl+Shift+S",
+        ),
+        ("query.add-to-queries", "Add to Queries…", "CmdOrCtrl+Alt+S"),
+        // Edit: the SQL editor's items.
+        ("query.format", "Beautify", "CmdOrCtrl+I"),
+        ("query.minify", "Uglify", "CmdOrCtrl+Shift+I"),
+        ("query.comment-line", "Toggle Line Comment", "CmdOrCtrl+/"),
+        (
+            "query.comment-block",
+            "Toggle Block Comment",
+            "CmdOrCtrl+Alt+/",
+        ),
+        ("query.split", "Split Pane", "CmdOrCtrl+Shift+D"),
+        // Edit: the data grid's items with keys of their own.
+        ("grid.delete-rows", "Delete Rows", "CmdOrCtrl+Backspace"),
+        ("grid.set-null", "NULL", "CmdOrCtrl+Shift+N"),
+        ("grid.copy-as", "Copy Rows As…", "CmdOrCtrl+Alt+C"),
+        ("grid.quick-look", "Quick Look", "CmdOrCtrl+Enter"),
+        // View.
+        ("grid.columns", "Columns", "CmdOrCtrl+Alt+F"),
+        ("grid.filter", "Filters", "CmdOrCtrl+F"),
+        // Navigate.
+        ("tab.back", "Back", "Ctrl+-"),
+        ("tab.forward", "Forward", "Ctrl+Shift+-"),
+        ("tab.next", "Select Next Tab", "CmdOrCtrl+]"),
+        ("tab.prev", "Select Previous Tab", "CmdOrCtrl+["),
+        ("tab.goto-1", "Tab 1", "CmdOrCtrl+1"),
+        ("tab.goto-2", "Tab 2", "CmdOrCtrl+2"),
+        ("tab.goto-3", "Tab 3", "CmdOrCtrl+3"),
+        ("tab.goto-4", "Tab 4", "CmdOrCtrl+4"),
+        ("tab.goto-5", "Tab 5", "CmdOrCtrl+5"),
+        ("tab.goto-6", "Tab 6", "CmdOrCtrl+6"),
+        ("tab.goto-7", "Tab 7", "CmdOrCtrl+7"),
+        ("tab.goto-8", "Tab 8", "CmdOrCtrl+8"),
+        ("tab.goto-9", "Last Tab", "CmdOrCtrl+9"),
+        ("ui.next-pane", "Select Next Pane", "CmdOrCtrl+Shift+]"),
+        ("ui.prev-pane", "Select Previous Pane", "CmdOrCtrl+Shift+["),
     ];
 
     /// Menu items without a keyboard shortcut (TablePlus gives them none): (action id, label).
+    /// Also the grid items whose keys are context-dependent and belong to another menu item here
+    /// (⌘I Beautify / Insert Row, ⇧⌘D Split Pane / Set DEFAULT, ⌘D the editor's next occurrence):
+    /// the page resolves those keys by focus (`MENU_UNBOUND_ACTIONS` in useNativeMenu.ts).
     const PLAIN_MENU_ACTIONS: &[(&str, &str)] = &[
         ("backup.open", "Backup…"),
         ("restore.open", "Restore…"),
@@ -99,6 +145,12 @@ pub mod shell {
         ("connection.disconnect", "Disconnect"),
         ("import.csv", "From CSV…"),
         ("import.sql", "From SQL Dump…"),
+        ("query.save-as", "Save SQL As…"),
+        ("grid.new-row", "Insert Row"),
+        ("grid.duplicate-row", "Duplicate Row"),
+        ("grid.set-empty", "EMPTY"),
+        ("grid.set-default", "DEFAULT"),
+        ("grid.set-now", "Now (local time)"),
     ];
 
     /// The renderer action a menu item id stands for; `None` for predefined items and Quit.
@@ -133,8 +185,8 @@ pub mod shell {
             .build(app)
     }
 
-    /// App / File / Edit / View / Connection / Window. Edit keeps the predefined items: they are
-    /// what makes ⌘C / ⌘V / ⌘Z work in text fields on macOS.
+    /// App / File / Edit / View / Connection / Navigate / Window, TablePlus's menu bar. Edit keeps
+    /// the predefined items: they are what makes ⌘C / ⌘V / ⌘Z work in text fields on macOS.
     pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         let name = app.package_info().name.clone();
         let quit = MenuItemBuilder::with_id(QUIT_ITEM_ID, format!("Quit {name}"))
@@ -157,6 +209,11 @@ pub mod shell {
             .item(&action_item(app, "connection.new")?)
             .item(&action_item(app, "tab.new-query")?)
             .item(&action_item(app, "query.open")?)
+            .separator()
+            .item(&action_item(app, "query.save-as")?)
+            .item(&action_item(app, "query.save-selection")?)
+            .item(&action_item(app, "query.add-to-queries")?)
+            .separator()
             .item(&action_item(app, "tab.close")?)
             .item(&action_item(app, "tab.close-all")?)
             .item(&action_item(app, "tab.reopen")?)
@@ -172,6 +229,8 @@ pub mod shell {
             )
             .item(&action_item(app, "ui.launcher")?)
             .build()?;
+        // The SQL editor's items, then the data grid's (TablePlus resolves the shared keys by
+        // focus; so does the page, see `PLAIN_MENU_ACTIONS`).
         let edit = SubmenuBuilder::new(app, "Edit")
             .undo()
             .redo()
@@ -180,6 +239,26 @@ pub mod shell {
             .copy()
             .paste()
             .select_all()
+            .separator()
+            .item(&action_item(app, "query.format")?)
+            .item(&action_item(app, "query.minify")?)
+            .item(&action_item(app, "query.comment-line")?)
+            .item(&action_item(app, "query.comment-block")?)
+            .item(&action_item(app, "query.split")?)
+            .separator()
+            .item(&action_item(app, "grid.new-row")?)
+            .item(&action_item(app, "grid.duplicate-row")?)
+            .item(&action_item(app, "grid.delete-rows")?)
+            .item(
+                &SubmenuBuilder::new(app, "Set Value")
+                    .item(&action_item(app, "grid.set-null")?)
+                    .item(&action_item(app, "grid.set-empty")?)
+                    .item(&action_item(app, "grid.set-default")?)
+                    .item(&action_item(app, "grid.set-now")?)
+                    .build()?,
+            )
+            .item(&action_item(app, "grid.copy-as")?)
+            .item(&action_item(app, "grid.quick-look")?)
             .build()?;
         let view = SubmenuBuilder::new(app, "View")
             .item(&action_item(app, "palette.open")?)
@@ -189,9 +268,13 @@ pub mod shell {
             .item(&action_item(app, "view.data")?)
             .item(&action_item(app, "view.structure")?)
             .separator()
+            .item(&action_item(app, "grid.columns")?)
+            .item(&action_item(app, "grid.filter")?)
+            .separator()
             .item(&action_item(app, "ui.toggle-sidebar")?)
             .item(&action_item(app, "ui.toggle-inspector")?)
             .item(&action_item(app, "ui.toggle-console")?)
+            .item(&action_item(app, "workspace.show")?)
             .separator()
             .item(&action_item(app, "view.refresh")?)
             .separator()
@@ -205,16 +288,39 @@ pub mod shell {
             .item(&action_item(app, "connection.reconnect")?)
             .item(&action_item(app, "connection.disconnect")?)
             .build()?;
+        let mut go_to_tab = SubmenuBuilder::new(app, "Go to Tab");
+        for n in 1..=9 {
+            go_to_tab = go_to_tab.item(&action_item(app, &format!("tab.goto-{n}"))?);
+        }
+        // TablePlus's Navigate menu (and Keymap ▸ Navigate).
+        let navigate = SubmenuBuilder::new(app, "Navigate")
+            .item(&action_item(app, "tab.back")?)
+            .item(&action_item(app, "tab.forward")?)
+            .separator()
+            .item(&action_item(app, "tab.next")?)
+            .item(&action_item(app, "tab.prev")?)
+            .item(&go_to_tab.build()?)
+            .separator()
+            .item(&action_item(app, "workspace.next")?)
+            .item(&action_item(app, "workspace.prev")?)
+            .separator()
+            .item(&action_item(app, "ui.next-pane")?)
+            .item(&action_item(app, "ui.prev-pane")?)
+            .build()?;
         let window = SubmenuBuilder::new(app, "Window")
             .minimize()
             .item(&PredefinedMenuItem::maximize(app, None)?)
-            .separator()
-            .item(&action_item(app, "workspace.show")?)
-            .item(&action_item(app, "workspace.next")?)
-            .item(&action_item(app, "workspace.prev")?)
             .build()?;
         MenuBuilder::new(app)
-            .items(&[&app_menu, &file, &edit, &view, &connection, &window])
+            .items(&[
+                &app_menu,
+                &file,
+                &edit,
+                &view,
+                &connection,
+                &navigate,
+                &window,
+            ])
             .build()
     }
 
@@ -497,12 +603,62 @@ pub mod shell {
             assert_eq!(menu_action(""), None);
             // Every entry has a label and an accelerator, and ids are unique.
             for (i, (id, label, accel)) in MENU_ACTIONS.iter().enumerate() {
-                assert!(!label.is_empty() && accel.starts_with("CmdOrCtrl+"), "{id}");
+                assert!(
+                    !label.is_empty() && crate::commands::menu::accelerator_ok(accel),
+                    "{id}"
+                );
                 assert!(
                     MENU_ACTIONS[i + 1..]
                         .iter()
                         .all(|(other, _, _)| other != id),
                     "duplicate {id}"
+                );
+                assert!(
+                    PLAIN_MENU_ACTIONS.iter().all(|(other, _)| other != id),
+                    "{id} is listed twice"
+                );
+            }
+            for (i, (id, label)) in PLAIN_MENU_ACTIONS.iter().enumerate() {
+                assert!(!label.is_empty(), "{id}");
+                assert!(
+                    PLAIN_MENU_ACTIONS[i + 1..]
+                        .iter()
+                        .all(|(other, _)| other != id),
+                    "duplicate {id}"
+                );
+            }
+        }
+
+        /// The renderer's whitelist (`MENU_ACTIONS` in src/hooks/useNativeMenu.ts) lists exactly
+        /// the actions this menu can send, and the items it shows without keys are the plain ones.
+        #[test]
+        fn menu_actions_match_the_renderer_whitelist() {
+            let ts = include_str!("../../src/hooks/useNativeMenu.ts");
+            let list = |name: &str| -> Vec<String> {
+                let start = ts.find(name).expect("the list exists");
+                let body = &ts[start..];
+                let body = &body[body.find("= [").expect("list start") + 3..];
+                let body = &body[..body.find(']').expect("list end")];
+                body.lines()
+                    .map(str::trim)
+                    .filter(|l| l.starts_with('"'))
+                    .map(|l| l.trim_end_matches(',').trim_matches('"').to_string())
+                    .collect()
+            };
+            let mut renderer = list("export const MENU_ACTIONS");
+            let mut rust: Vec<String> = MENU_ACTIONS
+                .iter()
+                .map(|(id, _, _)| *id)
+                .chain(PLAIN_MENU_ACTIONS.iter().map(|(id, _)| *id))
+                .map(String::from)
+                .collect();
+            renderer.sort();
+            rust.sort();
+            assert_eq!(renderer, rust);
+            for id in list("export const MENU_UNBOUND_ACTIONS") {
+                assert!(
+                    PLAIN_MENU_ACTIONS.iter().any(|(plain, _)| *plain == id),
+                    "{id} must have no accelerator"
                 );
             }
         }
@@ -690,6 +846,8 @@ pub fn run() {
             commands::files::read_text_file,
             commands::files::write_text_file,
             commands::files::read_binary_file,
+            commands::diagram::schema_relations,
+            commands::diagram::write_binary_file,
             commands::settings::get_settings,
             commands::settings::set_setting,
             commands::menu::set_menu_accelerators,
@@ -708,6 +866,7 @@ pub fn run() {
             commands::backup::backup_cancel,
             commands::backup::backup_copy_sqlite,
             commands::connections::accept_host_key,
+            commands::connections::answer_ssh_prompt,
             commands::admin::admin_database_options,
             commands::admin::admin_preview_ddl,
             commands::admin::admin_apply_ddl,

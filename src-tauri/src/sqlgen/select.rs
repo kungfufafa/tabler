@@ -49,8 +49,8 @@ pub struct SelectSpec<'a> {
 /// - array suffixes stay: `character varying(5)[]` becomes `character varying[]`;
 /// - parentheses inside double-quoted names are kept.
 ///
-/// Domains over a sized type still cut on the explicit cast (their base type is not visible
-/// here).
+/// A domain column passes its base type (`ColumnMeta::cast_type`): cast to the domain itself, a
+/// domain over a sized type would still cut the value.
 pub fn pg_cast_type(data_type: &str) -> String {
     let mut base = data_type.trim();
     let mut dims = 0;
@@ -240,7 +240,7 @@ impl Target {
             raw: ident.clone(),
             cmp: ident,
             text,
-            cast: Some(col.data_type.clone()),
+            cast: Some(col.cast_type().to_string()),
             json: col.kind == ValueKind::Json,
         }
     }
@@ -863,6 +863,7 @@ mod tests {
             collation: None,
             array_elem_type: None,
             extra: None,
+            base_type: None,
         }
     }
 

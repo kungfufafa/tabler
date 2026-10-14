@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { csvDefaults, importDelimiter, importQuote } from "@/features/datagrid/csv";
 import { formatBytes, formatCount } from "@/features/export/options";
 import { guardExecution } from "@/features/safety/guard";
 import { useCurrentSchema, useTables } from "@/features/sidebar/useSchemaTree";
@@ -177,9 +178,12 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
   const schema = request.table?.schema ?? current;
   const tables = useTables(connectionId, schema);
   const [prefs] = useState(loadCsvPrefs);
+  // Settings ▸ General ▸ CSV default options: the starting quote, and the delimiter when the
+  // detection is not sure.
+  const [csvPrefs] = useState(() => csvDefaults());
   const [format, setFormat] = useState<CsvFormat>({
     delimiter: null,
-    quote: prefs.quote,
+    quote: importQuote(prefs.quote, csvPrefs.quote),
     encoding: null,
     header: prefs.header,
   });
@@ -213,17 +217,21 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
   const data: CsvPreview | undefined = preview.data;
 
   // The first preview detects the delimiter and encoding: show them as chosen (and reuse the
-  // preview for the resolved options instead of reading the file again).
+  // preview for the resolved options instead of reading the file again). A detection that found
+  // a single column is not sure of the delimiter: the CSV default option's one is tried instead.
   useEffect(() => {
     if (!data || (format.delimiter !== null && format.encoding !== null)) return;
     const resolved: CsvFormat = {
       ...format,
-      delimiter: format.delimiter ?? data.delimiter,
+      delimiter:
+        format.delimiter ??
+        importDelimiter(data.delimiter, data.columns.length, csvPrefs.delimiter),
       encoding: format.encoding ?? data.encoding,
     };
-    qc.setQueryData(["csvPreview", path, resolved], data);
+    if (resolved.delimiter === data.delimiter)
+      qc.setQueryData(["csvPreview", path, resolved], data);
     setFormat(resolved);
-  }, [data, format, path, qc]);
+  }, [data, format, path, qc, csvPrefs]);
 
   // Table list: tables only (not views); the request's table first selected.
   const tableList = useMemo(

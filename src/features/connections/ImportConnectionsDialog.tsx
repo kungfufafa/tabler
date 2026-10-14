@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Loader2, Lock, ShieldCheck, TriangleAlert } from "lucide-react";
+import { KeyRound, Loader2, Lock, ShieldCheck, SquareTerminal, TriangleAlert } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { effectiveLevel, SAFE_MODE_LABEL } from "@/features/safety/levels";
 import { ipc, toIpcError, type ConnectionProfile, type ConnectionsFilePreview } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
-import { DriverBadge, TagPill } from "./badges";
+import { DriverBadge, GroupBreadcrumb, TagPill } from "./badges";
 import { groupKeys } from "./groups";
 import { connectionDetail } from "./schema";
 import { profileKeys } from "./useConnections";
@@ -62,6 +62,47 @@ function ImportedBehaviour({ profile }: { profile: ConnectionProfile }) {
     </>
   );
 }
+/**
+ * A connection that gets its password from a shell command ("Command Line (IAM
+ * authentication)"): the command runs on every connect, so it is shown in full and comes in only
+ * when the user ticks "Keep this password command" (off by default; without it the password is
+ * asked on every connect).
+ */
+function ImportedPasswordCommand({
+  profile,
+  keep,
+  onKeepChange,
+}: {
+  profile: ConnectionProfile;
+  keep: boolean;
+  onKeepChange: (keep: boolean) => void;
+}) {
+  const command = profile.options.passwordCommand?.trim() ?? "";
+  if (!command) return null;
+  return (
+    <div
+      role="group"
+      aria-label={`Password command of ${profile.name}`}
+      className="border-warning/40 bg-warning/5 mt-1 rounded border px-1.5 py-1 text-[11px]"
+    >
+      <div className="text-warning flex items-center gap-1 font-medium">
+        <SquareTerminal className="size-3 shrink-0" aria-hidden />
+        Runs this shell command to get its password
+      </div>
+      <pre className="mt-0.5 max-h-24 overflow-auto font-mono whitespace-pre-wrap">{command}</pre>
+      <label className="mt-1 flex items-center gap-1.5">
+        <Checkbox checked={keep} onCheckedChange={(v) => onKeepChange(v === true)} />
+        Keep this password command
+      </label>
+      {!keep && (
+        <div className="text-muted-foreground mt-0.5">
+          Without it, the password is asked on every connect.
+        </div>
+      )}
+    </div>
+  );
+}
+
 const fileName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 
 type Phase =
@@ -72,9 +113,11 @@ type Phase =
 
 /**
  * "Import Connections…": reads the picked file, asks for its password when it is encrypted, then
- * lists its connections (all ticked; names already in use are pointed out; each one's safe-mode
- * level, Read-only and startup SQL shown) and imports the ticked ones as new connections. Their
- * passwords go to the Keychain.
+ * lists its connections (all ticked; names already in use are pointed out; each one's group path,
+ * safe-mode level, Read-only, startup SQL and password command shown) and imports the ticked ones
+ * as new connections. Their passwords go to the Keychain; a password command only when its "Keep
+ * this password command" box is ticked; their groups (nested, with their icons) merge into the
+ * saved groups by path.
  */
 export function ImportConnectionsDialog({
   path,
@@ -90,10 +133,13 @@ export function ImportConnectionsDialog({
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const [password, setPassword] = useState("");
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  /** Connections (ids as in the file) whose password command the user chose to keep. */
+  const [keepCommands, setKeepCommands] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
 
   const showPreview = (preview: ConnectionsFilePreview) => {
     setSelected(new Set(preview.connections.map((c) => c.profile.id)));
+    setKeepCommands(new Set());
     setPhase({ kind: "preview", preview });
   };
 
@@ -137,12 +183,14 @@ export function ImportConnectionsDialog({
     const ids = phase.preview.connections
       .map((c) => c.profile.id)
       .filter((pid) => selected.has(pid));
+    const keep = ids.filter((pid) => keepCommands.has(pid));
     setBusy(true);
     try {
       const imported = await ipc.profiles.importConnections(
         path,
         phase.preview.encrypted ? password : null,
         ids,
+        keep,
       );
       void qc.invalidateQueries({ queryKey: profileKeys.all });
       void qc.invalidateQueries({ queryKey: groupKeys.all });
@@ -161,13 +209,17 @@ export function ImportConnectionsDialog({
   const items = phase.kind === "preview" ? phase.preview.connections : [];
   const allChecked = items.length > 0 && items.every((c) => selected.has(c.profile.id));
   const someChecked = items.some((c) => selected.has(c.profile.id));
-  const toggle = (pid: string, on: boolean) =>
-    setSelected((s) => {
-      const next = new Set(s);
-      if (on) next.add(pid);
-      else next.delete(pid);
-      return next;
-    });
+  const toggleIn =
+    (set: typeof setSelected) =>
+    (pid: string, on: boolean): void =>
+      set((s) => {
+        const next = new Set(s);
+        if (on) next.add(pid);
+        else next.delete(pid);
+        return next;
+      });
+  const toggle = toggleIn(setSelected);
+  const toggleKeep = toggleIn(setKeepCommands);
 
   return (
     <Dialog open={path !== null} onOpenChange={(open) => !open && onClose()}>
@@ -265,10 +317,21 @@ export function ImportConnectionsDialog({
                           />
                         )}
                       </div>
-                      <div className="text-muted-foreground truncate font-mono text-[11px]">
-                        {[c.profile.group, connectionDetail(c.profile)].filter(Boolean).join(" · ")}
+                      <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-[11px]">
+                        {c.profile.group && (
+                          <GroupBreadcrumb
+                            path={c.profile.group}
+                            className="max-w-[55%] shrink-0"
+                          />
+                        )}
+                        <span className="truncate font-mono">{connectionDetail(c.profile)}</span>
                       </div>
                       <ImportedBehaviour profile={c.profile} />
+                      <ImportedPasswordCommand
+                        profile={c.profile}
+                        keep={keepCommands.has(c.profile.id)}
+                        onKeepChange={(on) => toggleKeep(c.profile.id, on)}
+                      />
                       {c.duplicateName && (
                         <div className={cn("text-warning mt-0.5 text-[11px]")}>
                           A connection named “{c.profile.name}” already exists; this one is added

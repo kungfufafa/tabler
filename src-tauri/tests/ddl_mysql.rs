@@ -270,6 +270,7 @@ async fn steps(session: Arc<dyn DbSession>, prefix: String) {
                 method: None,
                 predicate: None,
                 comment: None,
+                include: vec![],
             },
         }],
     )

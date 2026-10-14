@@ -7,6 +7,7 @@ import {
   currentPageSql,
   DEFAULT_EXPORT_OPTIONS,
   defaultFileName,
+  EXPORT_OPTIONS_KEY,
   buildExportTablesRequest,
   exportProblem,
   fileFilter,
@@ -410,6 +411,7 @@ describe("file names", () => {
 });
 
 describe("persistence", () => {
+  const DEFAULT_CSV = { delimiter: ",", quote: "ifNeeded", lineBreak: "\n", decimal: "." } as const;
   function memory(): Pick<Storage, "getItem" | "setItem"> & { data: Map<string, string> } {
     const data = new Map<string, string>();
     return {
@@ -443,6 +445,26 @@ describe("persistence", () => {
     expect(old.csv).toMatchObject({ delimiter: ";", quote: "double", nullToEmpty: false });
     expect(old.sql).toEqual({ ...DEFAULT_EXPORT_OPTIONS.sql, batchSize: 50 });
     expect(parseExportOptions({ csv: { delimiter: "|" } }).csv.delimiter).toBe(",");
+  });
+
+  it("starts CSV from Settings ▸ CSV default options; remembered choices win until they change", () => {
+    const storage = memory();
+    const semi = { delimiter: ";", quote: "double", lineBreak: "\r\n", decimal: "," } as const;
+    // First export: the preferences seed the four CSV fields.
+    expect(loadExportOptions(storage, semi).csv).toMatchObject(semi);
+    // The user picks other values in the dialog: they are remembered under the same preferences.
+    const tab = opts({ csv: { ...DEFAULT_EXPORT_OPTIONS.csv, ...semi, delimiter: "\t" } });
+    saveExportOptions(tab, storage, semi);
+    expect(loadExportOptions(storage, semi)).toEqual(tab);
+    // Changing the preference shows on the next export.
+    const comma = { ...semi, delimiter: ",", decimal: "." } as const;
+    expect(loadExportOptions(storage, comma).csv).toMatchObject(comma);
+    // Options saved before the preference existed count as saved under the defaults.
+    storage.data.set(EXPORT_OPTIONS_KEY, JSON.stringify({ csv: { delimiter: ";" } }));
+    expect(loadExportOptions(storage, DEFAULT_CSV).csv.delimiter).toBe(";");
+    expect(loadExportOptions(storage, { ...DEFAULT_CSV, delimiter: "\t" }).csv.delimiter).toBe(
+      "\t",
+    );
   });
 
   it("survives storage that throws", () => {

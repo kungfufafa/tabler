@@ -9,7 +9,13 @@ import { ChoiceCell, ColumnsCell } from "./cells";
 import { rowDeleteKey } from "./dom";
 import type { CheckRow, FkRow, IndexRow, RowStatus, TriggerRow } from "./model";
 import { CellInput, HEAD_ROW, IconAction, SectionHeader } from "./parts";
-import { indexMethods, supportsIndexComment, supportsPartialIndex } from "./tableActions";
+import {
+  indexMethods,
+  supportsIncludeColumns,
+  supportsIndexComment,
+  supportsPartialIndex,
+  supportsTriggerToggle,
+} from "./tableActions";
 
 function rowClass(status: RowStatus) {
   return cn(
@@ -91,9 +97,10 @@ const BOOL = [
 const DEFAULT_METHOD = "(default)";
 
 /**
- * Indexes grid (TablePlus): index_name, index_algorithm, is_unique, column_name, condition (PG /
- * SQLite partial index) and comment (MySQL / PG). Every attribute is edited inline; an existing
- * index is dropped and created again with the change.
+ * Indexes grid (TablePlus): index_name, index_algorithm, is_unique, column_name, include (PG
+ * `INCLUDE` columns, set on new indexes), condition (PG / SQLite partial index) and comment
+ * (MySQL / PG). Every other attribute is edited inline; an existing index is dropped and created
+ * again with the change.
  */
 export function IndexesSection({
   rows,
@@ -117,12 +124,13 @@ export function IndexesSection({
 }) {
   const partial = supportsPartialIndex(dialect);
   const comments = supportsIndexComment(dialect);
+  const include = supportsIncludeColumns(dialect);
   const methods = indexMethods(dialect);
   const methodChoices = [
     { value: DEFAULT_METHOD, label: DEFAULT_METHOD },
     ...methods.map((m) => ({ value: m, label: m })),
   ];
-  const span = 5 + (partial ? 1 : 0) + (comments ? 1 : 0);
+  const span = 5 + (include ? 1 : 0) + (partial ? 1 : 0) + (comments ? 1 : 0);
   const newKeys = shortcutFor("grid.new-row");
   return (
     <section aria-label="Indexes">
@@ -143,6 +151,7 @@ export function IndexesSection({
           {methods.length > 0 && <col className="w-28" />}
           <col className="w-20" />
           <col className="w-[22%]" />
+          {include && <col className="w-[14%]" />}
           {partial && <col />}
           {comments && <col className={partial ? "w-[16%]" : undefined} />}
           <col className="w-16" />
@@ -153,6 +162,7 @@ export function IndexesSection({
             {methods.length > 0 && <Th>index_algorithm</Th>}
             <Th>is_unique</Th>
             <Th>column_name</Th>
+            {include && <Th>include</Th>}
             {partial && <Th>condition</Th>}
             {comments && <Th>comment</Th>}
             <th aria-label="Actions" />
@@ -241,6 +251,22 @@ export function IndexesSection({
                     disabled={!canEdit}
                   />
                 </td>
+                {include && (
+                  <td className="px-1">
+                    <ColumnsCell
+                      value={r.include}
+                      options={[...new Set([...columns, ...r.include])]}
+                      onChange={(next) => onEdit(r.key, { include: next })}
+                      label={`${r.name} include`}
+                      cellKey={`${r.key}:include`}
+                      // Set on a new index; an existing one keeps its INCLUDE columns.
+                      disabled={!canEdit || r.status !== "added"}
+                      allowEmpty
+                      placeholder={r.status === "added" && canEdit ? "none" : ""}
+                      hint="INCLUDE columns (stored, not searched), in order"
+                    />
+                  </td>
+                )}
                 {partial && <td className="px-1">{text("predicate")}</td>}
                 {comments && <td className="px-1">{text("comment", false)}</td>}
                 <td className="px-1">
@@ -474,8 +500,10 @@ export function ForeignKeysSection({
 }
 
 /**
- * Triggers grid (TablePlus "Triggers" view): name, timing, events, enabled and the statement.
- * "+ Trigger" and Edit open the trigger's CREATE statement in an editor; Delete stages a drop.
+ * Triggers grid (TablePlus "Triggers" view): name, timing, events, enabled (PostgreSQL: staged
+ * `ENABLE` / `DISABLE TRIGGER`, `t` / `f` keys; a disabled trigger's row is muted) and the
+ * statement. "+ Trigger" and Edit open the trigger's CREATE statement in an editor; Delete stages
+ * a drop.
  */
 export function TriggersSection({
   rows,
@@ -485,6 +513,7 @@ export function TriggersSection({
   onOpen,
   onDrop,
   onRestore,
+  onSetEnabled,
 }: {
   rows: TriggerRow[];
   dialect: Dialect;
@@ -493,8 +522,9 @@ export function TriggersSection({
   onOpen: (key: string) => void;
   onDrop: (key: string) => void;
   onRestore: (key: string) => void;
+  onSetEnabled?: (key: string, enabled: boolean) => void;
 }) {
-  const enabledColumn = dialect === "postgres";
+  const enabledColumn = supportsTriggerToggle(dialect);
   return (
     <section aria-label="Triggers" className="pb-6">
       <SectionHeader title="Triggers" count={rows.filter((r) => r.status !== "dropped").length}>
@@ -529,11 +559,13 @@ export function TriggersSection({
         <tbody>
           {rows.map((r) => {
             const statement = (r.sql ?? r.definition).replace(/\s+/g, " ").trim();
+            const disabled = enabledColumn && !r.enabled && r.status !== "dropped";
             return (
               <tr
                 key={r.key}
-                className={rowClass(r.status)}
+                className={cn(rowClass(r.status), disabled && "text-muted-foreground")}
                 data-status={r.status}
+                data-enabled={enabledColumn ? String(r.enabled) : undefined}
                 data-row-kind="trigger"
                 data-row-key={r.key}
                 tabIndex={-1}
@@ -547,7 +579,10 @@ export function TriggersSection({
                     );
                 }}
               >
-                <td className="truncate px-3 font-mono text-[11px]" title={r.name}>
+                <td
+                  className={cn("truncate px-3 font-mono text-[11px]", disabled && "italic")}
+                  title={disabled ? `${r.name} (disabled)` : r.name}
+                >
                   {r.name}
                 </td>
                 <td className="text-muted-foreground truncate px-3 text-[11px]">
@@ -555,13 +590,23 @@ export function TriggersSection({
                 </td>
                 <td className="truncate px-3 text-[11px]">{r.events.join(" OR ")}</td>
                 {enabledColumn && (
-                  <td className="px-3 text-center">
-                    <span
-                      aria-label={r.enabled ? "Enabled" : "Disabled"}
-                      className={cn(
-                        "inline-block size-2 rounded-full",
-                        r.enabled ? "bg-success" : "bg-muted-foreground/40",
-                      )}
+                  <td
+                    className={cn(
+                      "px-1",
+                      r.enabledAt !== null && r.status === "existing" && "bg-changed",
+                    )}
+                    // the cell's own clicks do not open the trigger's statement
+                    onDoubleClick={(e) => e.stopPropagation()}
+                  >
+                    <ChoiceCell
+                      value={r.enabled ? "TRUE" : "FALSE"}
+                      options={BOOL}
+                      keys={{ t: "TRUE", f: "FALSE", y: "TRUE", n: "FALSE" }}
+                      onChange={(v) => onSetEnabled?.(r.key, v === "TRUE")}
+                      label={`${r.name} enabled`}
+                      cellKey={`${r.key}:enabled`}
+                      disabled={!editable || !onSetEnabled || r.status === "dropped"}
+                      className="justify-center font-mono text-[11px]"
                     />
                   </td>
                 )}

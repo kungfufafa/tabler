@@ -1,0 +1,57 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # The toolchain targets aarch64-apple-darwin and Tauri needs no extra system packages here.
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # rustup picks the channel, components and target from rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Renderer — typecheck, lint, format, tests
+        run: |
+          pnpm typecheck
+          pnpm lint
+          pnpm format:check
+          pnpm test
+
+      - name: Rust — fmt, clippy, tests
+        # Integration tests self-skip while the TABLER_TEST_* URLs are unset.
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          pnpm clippy
+          pnpm test:rs
+
+      - name: Generated TypeScript bindings are committed
+        # `cargo test` rewrote src/lib/ipc/bindings; a diff means a ts-rs type changed without
+        # its binding being committed.
+        run: git diff --exit-code -- src/lib/ipc/bindings

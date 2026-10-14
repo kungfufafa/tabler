@@ -18,4 +18,9 @@ predicate: string | null,
 /**
  * MySQL `COMMENT '…'` index option, PG `COMMENT ON INDEX`; ignored on SQLite with a warning.
  */
-comment: string | null, };
+comment: string | null, 
+/**
+ * PG `INCLUDE (…)`: non-key columns stored in the index (names, quoted by the generator);
+ * ignored on MySQL and SQLite with a warning.
+ */
+include: Array<string>, };

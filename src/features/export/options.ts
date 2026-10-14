@@ -12,6 +12,7 @@ import type {
   TableRef,
   Value,
 } from "@/lib/ipc";
+import { csvDefaults as csvDefaultsOfPrefs } from "@/features/datagrid/csv";
 
 export type FormatKind = ExportFormat["format"];
 export type CsvDelimiter = "," | "\t" | ";";
@@ -518,6 +519,9 @@ export function formatDuration(ms: number): string {
 
 // ---- persistence ------------------------------------------------------------------------------
 
+/** Settings ▸ General ▸ CSV default options. */
+const csvPrefs = (): CsvDefaults => csvDefaultsOfPrefs();
+
 export const EXPORT_OPTIONS_KEY = "tabler.export.options";
 export const EXPORT_DIR_KEY = "tabler.export.lastDir";
 
@@ -540,13 +544,45 @@ function oneOf<T>(options: ReadonlyArray<{ value: T }>, v: unknown, d: T): T {
   return options.some((o) => o.value === v) ? (v as T) : d;
 }
 
+/** The CSV fields Settings ▸ General ▸ CSV default options decides. */
+export type CsvDefaults = Pick<
+  ExportOptions["csv"],
+  "delimiter" | "quote" | "lineBreak" | "decimal"
+>;
+
+const DEFAULT_CSV_FIELDS: CsvDefaults = {
+  delimiter: DEFAULTS.csv.delimiter,
+  quote: DEFAULTS.csv.quote,
+  lineBreak: DEFAULTS.csv.lineBreak,
+  decimal: DEFAULTS.csv.decimal,
+};
+
+const sameCsvDefaults = (a: Record<string, unknown>, b: CsvDefaults) =>
+  a.delimiter === b.delimiter &&
+  a.quote === b.quote &&
+  a.lineBreak === b.lineBreak &&
+  a.decimal === b.decimal;
+
 /**
  * Validates stored options field by field; anything unknown falls back to the default. Options
  * stored by earlier versions (`quoteAll`, `nullAs`) keep their meaning.
+ *
+ * `csvDefaults` (the CSV default options of the preferences) seed the delimiter, quote, line
+ * break and decimal: the remembered ones win only while the preferences still say what they said
+ * when those were saved (`csvDefaults` stored next to them; options saved before it existed count
+ * as saved under the defaults), so changing the preference shows on the next export.
  */
-export function parseExportOptions(raw: unknown): ExportOptions {
+export function parseExportOptions(
+  raw: unknown,
+  csvDefaults: CsvDefaults = DEFAULT_CSV_FIELDS,
+): ExportOptions {
   const d = DEFAULT_EXPORT_OPTIONS;
   const r = isObj(raw) ? raw : {};
+  const remembered = sameCsvDefaults(
+    isObj(r.csvDefaults) ? r.csvDefaults : DEFAULT_CSV_FIELDS,
+    csvDefaults,
+  );
+  const c = csvDefaults;
   const csv = isObj(r.csv) ? r.csv : {};
   const json = isObj(r.json) ? r.json : {};
   const sql = isObj(r.sql) ? r.sql : {};
@@ -558,13 +594,13 @@ export function parseExportOptions(raw: unknown): ExportOptions {
   return {
     format: formats.includes(r.format as FormatKind) ? (r.format as FormatKind) : d.format,
     csv: {
-      delimiter: oneOf(CSV_DELIMITERS, csv.delimiter, d.csv.delimiter),
+      delimiter: remembered ? oneOf(CSV_DELIMITERS, csv.delimiter, c.delimiter) : c.delimiter,
       header: bool(csv.header, d.csv.header),
-      quote: oneOf(CSV_QUOTES, csv.quote ?? legacyQuote, d.csv.quote),
+      quote: remembered ? oneOf(CSV_QUOTES, csv.quote ?? legacyQuote, c.quote) : c.quote,
       nullToEmpty: bool(csv.nullToEmpty ?? legacyNull, d.csv.nullToEmpty),
       lineBreakToSpace: bool(csv.lineBreakToSpace, d.csv.lineBreakToSpace),
-      lineBreak: oneOf(CSV_LINE_BREAKS, csv.lineBreak, d.csv.lineBreak),
-      decimal: oneOf(CSV_DECIMALS, csv.decimal, d.csv.decimal),
+      lineBreak: remembered ? oneOf(CSV_LINE_BREAKS, csv.lineBreak, c.lineBreak) : c.lineBreak,
+      decimal: remembered ? oneOf(CSV_DECIMALS, csv.decimal, c.decimal) : c.decimal,
     },
     json: { ndjson: bool(json.ndjson, d.json.ndjson), pretty: bool(json.pretty, d.json.pretty) },
     sql: {
@@ -583,21 +619,27 @@ export function parseExportOptions(raw: unknown): ExportOptions {
   };
 }
 
-export function loadExportOptions(storage: StorageLike | null = defaultStorage()): ExportOptions {
+/** The last export's options, seeded by the preferences' CSV default options. */
+export function loadExportOptions(
+  storage: StorageLike | null = defaultStorage(),
+  csvDefaults: CsvDefaults = csvPrefs(),
+): ExportOptions {
   try {
     const raw = storage?.getItem(EXPORT_OPTIONS_KEY);
-    return parseExportOptions(raw ? JSON.parse(raw) : null);
+    return parseExportOptions(raw ? JSON.parse(raw) : null, csvDefaults);
   } catch {
-    return parseExportOptions(null);
+    return parseExportOptions(null, csvDefaults);
   }
 }
 
+/** Remembers the options, and the CSV default options they were chosen under. */
 export function saveExportOptions(
   options: ExportOptions,
   storage: StorageLike | null = defaultStorage(),
+  csvDefaults: CsvDefaults = csvPrefs(),
 ): void {
   try {
-    storage?.setItem(EXPORT_OPTIONS_KEY, JSON.stringify(options));
+    storage?.setItem(EXPORT_OPTIONS_KEY, JSON.stringify({ ...options, csvDefaults }));
   } catch {
     // Quota exceeded / storage disabled: the next export starts from the defaults.
   }

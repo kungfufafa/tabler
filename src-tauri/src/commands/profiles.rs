@@ -1,15 +1,19 @@
+use std::sync::Arc;
 use std::time::Instant;
 
-use tauri::State;
+use tauri::{AppHandle, State};
 use uuid::Uuid;
 
-use crate::commands::connections::{connect_timeout, open_profile_tunnel, tunnel_config};
+use crate::commands::connections::{
+    check_socket, command_password, connect_timeout, open_profile_tunnel, renderer_prompts,
+    tunnel_config,
+};
 use crate::drivers::{self, ConnectTarget, ServerInfo};
 use crate::error::AppError;
 use crate::profiles_io::{self, ExportedConnection, ExportedSecrets, Payload, ReadOutcome};
 use crate::secrets::SecretKind;
 use crate::state::AppState;
-use crate::tunnel::{TunnelAuth, TunnelHandle};
+use crate::tunnel::{KeyboardInteractive, SshPromptPurpose, TunnelAuth, TunnelHandle};
 use crate::types::profile::{
     ConnectionProfile, ConnectionsFilePreview, Driver, ExportConnectionsRequest, PasswordMode,
     ProfileInput, SecretStatus, SshAuth, TestResult,
@@ -54,11 +58,20 @@ fn validate(profile: &ConnectionProfile) -> Result<(), AppError> {
             }
         }
         _ => {
-            if profile.host.as_deref().unwrap_or("").trim().is_empty() {
+            // "Use socket" (MySQL) needs no host.
+            if !profile.uses_socket() && profile.host.as_deref().unwrap_or("").trim().is_empty() {
                 return Err(AppError::InvalidInput("Host is required".into()));
             }
             if profile.user.as_deref().unwrap_or("").trim().is_empty() {
                 return Err(AppError::InvalidInput("User is required".into()));
+            }
+            check_socket(profile)?;
+            if profile.options.password_mode() == PasswordMode::Command
+                && profile.options.password_command().is_none()
+            {
+                return Err(AppError::InvalidInput(
+                    "Enter the command that prints the password (Command Line mode)".into(),
+                ));
             }
         }
     }
@@ -162,13 +175,14 @@ pub async fn get_secret_status(
 
 /// Resolves the password a test uses, by the dialog's password mode: Keychain — the one typed
 /// in the dialog, else the stored one; Ask every time — the one typed in the prompt, else the
-/// one remembered this session; No password — none.
+/// one remembered this session; No password — none; Command Line — the command's output.
 pub async fn resolve_password(
     state: &AppState,
     input: &ProfileInput,
 ) -> Result<Option<String>, AppError> {
     match input.profile.options.password_mode() {
         PasswordMode::None => return Ok(None),
+        PasswordMode::Command => return command_password(&input.profile).await.map(Some),
         PasswordMode::Ask => {
             return Ok(input
                 .password
@@ -250,19 +264,31 @@ pub async fn open_test_tunnel(
 /// Tries the dialog's settings (through a temporary SSH tunnel when configured). Failures come
 /// back as `ok: false`, except an unknown or changed SSH host key: that is returned as the
 /// `HostKey` error so the renderer can show the fingerprint prompt, then call `accept_host_key`
-/// with `input.profile.id` and test again.
+/// with `input.profile.id` and test again. The SSH server's 2FA questions are forwarded to the
+/// renderer (`ssh:prompt`); cancelling one returns `AppError::Cancelled`.
 #[tauri::command]
 pub async fn test_connection(
+    app: AppHandle,
     state: State<'_, AppState>,
     input: ProfileInput,
 ) -> Result<TestResult, AppError> {
-    run_connection_test(&state, input).await
+    let prompts = renderer_prompts(&app, &state, &input.profile, SshPromptPurpose::Test);
+    run_connection_test_with(&state, input, Some(prompts)).await
 }
 
-/// The body of [`test_connection`], callable without a Tauri runtime.
+/// The body of [`test_connection`], callable without a Tauri runtime (no 2FA questions).
 pub async fn run_connection_test(
     state: &AppState,
     input: ProfileInput,
+) -> Result<TestResult, AppError> {
+    run_connection_test_with(state, input, None).await
+}
+
+/// [`run_connection_test`] whose SSH server's keyboard-interactive questions go to `prompts`.
+pub async fn run_connection_test_with(
+    state: &AppState,
+    input: ProfileInput,
+    prompts: Option<Arc<dyn KeyboardInteractive>>,
 ) -> Result<TestResult, AppError> {
     validate(&input.profile)?;
     log::info!(
@@ -271,7 +297,8 @@ pub async fn run_connection_test(
         input.profile.driver
     );
     let password = resolve_password(state, &input).await?;
-    let ssh_auth = resolve_tunnel_auth(state, &input).await?;
+    let mut ssh_auth = resolve_tunnel_auth(state, &input).await?;
+    ssh_auth.prompts = prompts;
     let tunnel_used = tunnel_config(&input.profile).is_some();
     let timeout = connect_timeout(&input.profile);
     let started = Instant::now();
@@ -319,7 +346,7 @@ pub async fn run_connection_test(
             },
             tunnel_used,
         }),
-        Err(e @ AppError::HostKey { .. }) => Err(e),
+        Err(e @ (AppError::HostKey { .. } | AppError::Cancelled)) => Err(e),
         Err(AppError::Timeout) => Ok(failed(format!("Timed out after {}s", timeout.as_secs()))),
         Err(AppError::NotFound(message)) => Ok(failed(message)),
         Err(e) => Ok(failed(e.to_string())),
@@ -335,12 +362,21 @@ pub async fn create_sqlite_database(path: String) -> Result<(), AppError> {
 
 // ----- groups -----------------------------------------------------------------------------------
 
-/// The group names saved in the settings (`GROUPS_SETTING`).
+/// The group paths saved in the settings (`GROUPS_SETTING`).
 pub fn stored_groups(state: &AppState) -> Result<Vec<String>, AppError> {
+    Ok(stored_group_records(state)?
+        .into_iter()
+        .map(|g| g.path)
+        .collect())
+}
+
+/// The groups saved in the settings, with their icons (`{ path, icon }` records; plain names
+/// from older versions read as groups without an icon).
+pub fn stored_group_records(state: &AppState) -> Result<Vec<profiles_io::GroupRecord>, AppError> {
     Ok(state
         .appdb
         .get_setting(GROUPS_SETTING)?
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+        .map(|v| profiles_io::parse_groups(&v))
         .unwrap_or_default())
 }
 
@@ -411,9 +447,15 @@ pub async fn run_export(state: &AppState, req: ExportConnectionsRequest) -> Resu
             continue;
         }
         let id = profile.id;
+        let mut profile = profile;
         let mut secrets = ExportedSecrets::default();
         if req.include_passwords && profile.options.password_mode() == PasswordMode::Keychain {
             secrets.password = state.secrets.get(id, SecretKind::DbPassword).await?;
+        }
+        // The password command is treated like a password: only in files that carry those
+        // (which are encrypted).
+        if !req.include_passwords {
+            profiles_io::drop_password_command(&mut profile);
         }
         if req.include_ssh_secrets && profile.ssh.is_some() {
             secrets.ssh_password = state.secrets.get(id, SecretKind::SshPassword).await?;
@@ -429,7 +471,7 @@ pub async fn run_export(state: &AppState, req: ExportConnectionsRequest) -> Resu
         .filter_map(|c| c.profile.group.clone())
         .collect();
     let payload = Payload {
-        groups: profiles_io::merge_groups(&req.groups, &used),
+        groups: profiles_io::export_groups(&stored_group_records(state)?, &req.groups, &used),
         connections,
     };
     let count = payload.connections.len();
@@ -487,21 +529,25 @@ pub async fn inspect_file(
             encrypted,
             needs_password: false,
             connections: profiles_io::preview(&payload, &state.appdb.list_profiles()?),
-            groups: payload.groups,
+            groups: payload.group_paths(),
         },
     })
 }
 
 /// "Import Connections…", step 2: adds the chosen connections (`ids` as in the file) as new
-/// profiles, their secrets to the Keychain and their groups to the group list.
+/// profiles, their secrets to the Keychain and their groups to the group list. Password commands
+/// come in only for `keep_password_commands` (ids as in the file; the user saw each command in
+/// the preview and ticked "Keep this password command"); the others ask for their password.
 #[tauri::command]
 pub async fn import_connections(
     state: State<'_, AppState>,
     path: String,
     password: Option<String>,
     ids: Vec<Uuid>,
+    keep_password_commands: Option<Vec<Uuid>>,
 ) -> Result<Vec<ConnectionProfile>, AppError> {
-    run_import(&state, &path, password.as_deref(), &ids).await
+    let keep = keep_password_commands.unwrap_or_default();
+    run_import(&state, &path, password.as_deref(), &ids, &keep).await
 }
 
 pub async fn run_import(
@@ -509,6 +555,7 @@ pub async fn run_import(
     path: &str,
     password: Option<&str>,
     ids: &[Uuid],
+    keep_password_commands: &[Uuid],
 ) -> Result<Vec<ConnectionProfile>, AppError> {
     let ReadOutcome::Opened { payload, .. } = read_connections_file(path, password).await? else {
         return Err(AppError::InvalidInput(
@@ -516,7 +563,7 @@ pub async fn run_import(
         ));
     };
     let mut imported = Vec::new();
-    for (profile, secrets) in profiles_io::plan_import(&payload, ids) {
+    for (profile, secrets) in profiles_io::plan_import(&payload, ids, keep_password_commands) {
         let stored = state.appdb.upsert_profile(&profile)?;
         let id = stored.id;
         if stored.options.password_mode() == PasswordMode::Keychain
@@ -534,13 +581,12 @@ pub async fn run_import(
         }
         imported.push(stored);
     }
-    // The imported connections' groups, plus the file's empty groups when importing everything.
-    let mut extra: Vec<String> = imported.iter().filter_map(|p| p.group.clone()).collect();
-    if imported.len() == payload.connections.len() {
-        extra.extend(payload.groups.iter().cloned());
-    }
-    let known = stored_groups(state)?;
-    let merged = profiles_io::merge_groups(&known, &extra);
+    // The imported connections' groups, plus the file's empty groups when importing everything,
+    // merged by path with their icons.
+    let used: Vec<String> = imported.iter().filter_map(|p| p.group.clone()).collect();
+    let everything = imported.len() == payload.connections.len();
+    let known = stored_group_records(state)?;
+    let merged = profiles_io::merge_imported_groups(&known, &payload.groups, &used, everything);
     if merged != known {
         state
             .appdb
@@ -716,7 +762,7 @@ mod tests {
         assert!(preview.connections[0].duplicate_name);
         assert!(preview.connections[0].has_password);
 
-        let imported = run_import(&target, &path, Some("pw"), &[a.id, b.id])
+        let imported = run_import(&target, &path, Some("pw"), &[a.id, b.id], &[])
             .await
             .unwrap();
         assert_eq!(imported.len(), 2);
@@ -740,8 +786,73 @@ mod tests {
         run_export(&source, request(false, None)).await.unwrap();
         let plain = inspect_file(&target, &path, None).await.unwrap();
         assert!(!plain.encrypted && !plain.connections[0].has_password);
-        let only_beta = run_import(&target, &path, None, &[b.id]).await.unwrap();
+        let only_beta = run_import(&target, &path, None, &[b.id], &[])
+            .await
+            .unwrap();
         assert_eq!(only_beta.len(), 1);
+    }
+
+    /// Regression: password commands (run through the shell on every connect) were exported in
+    /// the clear and imported without the user seeing them.
+    #[tokio::test]
+    async fn password_commands_travel_like_passwords() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("iam.tablerconnections");
+        let path = path.to_string_lossy().into_owned();
+        let source = state();
+        let mut iam = pg_profile("IAM", None);
+        iam.options.password_mode = Some(PasswordMode::Command);
+        iam.options.password_command = Some("aws rds generate-db-auth-token --x".into());
+        let iam = source.appdb.upsert_profile(&iam).unwrap();
+        let request = |include: bool, password: Option<&str>| ExportConnectionsRequest {
+            profile_ids: vec![iam.id],
+            groups: vec![],
+            include_passwords: include,
+            include_ssh_secrets: false,
+            file_password: password.map(str::to_string),
+            path: path.clone(),
+        };
+        // Without the passwords: no command in the file, and the password is asked.
+        run_export(&source, request(false, None)).await.unwrap();
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("generate-db-auth-token")
+        );
+        let target = state();
+        let preview = inspect_file(&target, &path, None).await.unwrap();
+        let options = &preview.connections[0].profile.options;
+        assert_eq!(options.password_command, None);
+        assert_eq!(options.password_mode, Some(PasswordMode::Ask));
+
+        // With them: encrypted, and shown in the preview…
+        run_export(&source, request(true, Some("pw")))
+            .await
+            .unwrap();
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("generate-db-auth-token")
+        );
+        let preview = inspect_file(&target, &path, Some("pw")).await.unwrap();
+        assert_eq!(
+            preview.connections[0].profile.options.password_command(),
+            Some("aws rds generate-db-auth-token --x")
+        );
+        // …but imported only when kept.
+        let dropped = run_import(&target, &path, Some("pw"), &[iam.id], &[])
+            .await
+            .unwrap();
+        assert_eq!(dropped[0].options.password_command, None);
+        assert_eq!(dropped[0].options.password_mode(), PasswordMode::Ask);
+        let kept = run_import(&target, &path, Some("pw"), &[iam.id], &[iam.id])
+            .await
+            .unwrap();
+        assert_eq!(
+            kept[0].options.password_command(),
+            Some("aws rds generate-db-auth-token --x")
+        );
+        assert_eq!(kept[0].options.password_mode(), PasswordMode::Command);
     }
 
     #[tokio::test]

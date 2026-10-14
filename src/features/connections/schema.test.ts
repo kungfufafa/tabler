@@ -258,3 +258,65 @@ describe("connectionDetail", () => {
     expect(connectionDetail(sqlite)).toBe(sqlite.sqlitePath);
   });
 });
+
+describe("Command Line (IAM authentication) and MySQL Use socket", () => {
+  const pg = SEED_PROFILES.find((p) => p.driver === "postgres")!;
+  const my = SEED_PROFILES.find((p) => p.driver === "mysql" && p.ssh === null)!;
+  const IAM = "aws rds generate-db-auth-token --hostname db --port 5432 --username app";
+
+  it("round-trips the password command; it is required, and never a stored password", () => {
+    const values = { ...profileToForm(pg), passwordMode: "command" as const, password: "typed" };
+    const missing = connectionFormSchema.safeParse(values);
+    expect(missing.success).toBe(false);
+    expect(missing.success ? [] : missing.error.issues.map((i) => i.path.join("."))).toEqual([
+      "passwordCommand",
+    ]);
+    const filled = { ...values, passwordCommand: `  ${IAM}\n` };
+    expect(connectionFormSchema.safeParse(filled).success).toBe(true);
+    const input = formToProfileInput(filled, pg, pg.id);
+    expect(input.profile.options.passwordMode).toBe("command");
+    expect(input.profile.options.passwordCommand).toBe(IAM);
+    expect(input.password).toBeNull();
+    expect(input.clearPassword).toBe(false);
+    const back = profileToForm(input.profile);
+    expect(back.passwordMode).toBe("command");
+    expect(back.passwordCommand).toBe(IAM);
+    // Another mode drops the command.
+    const keychain = formToProfileInput({ ...filled, passwordMode: "keychain" }, pg, pg.id);
+    expect(keychain.profile.options.passwordCommand).toBeNull();
+  });
+
+  it("round-trips Use socket: no host needed, no SSH, path optional", () => {
+    const values = { ...profileToForm(my), useSocket: true, host: "", socketPath: "" };
+    expect(connectionFormSchema.safeParse(values).success).toBe(true);
+    const input = formToProfileInput({ ...values, socketPath: "/tmp/mysql.sock" }, my, my.id);
+    expect(input.profile.options.useSocket).toBe(true);
+    expect(input.profile.options.socketPath).toBe("/tmp/mysql.sock");
+    const back = profileToForm(input.profile);
+    expect(back.useSocket).toBe(true);
+    expect(back.socketPath).toBe("/tmp/mysql.sock");
+    expect(connectionDetail(input.profile)).toBe(
+      ["/tmp/mysql.sock", my.user, my.database].filter(Boolean).join(" : "),
+    );
+    // Empty path: auto-detected by the backend.
+    const detect = formToProfileInput(values, my, my.id);
+    expect(detect.profile.options.socketPath).toBeNull();
+    expect(connectionDetail(detect.profile).startsWith("socket")).toBe(true);
+
+    const ssh = connectionFormSchema.safeParse({ ...values, sshEnabled: true, sshHost: "b" });
+    expect(ssh.success).toBe(false);
+    expect(ssh.success ? [] : ssh.error.issues.map((i) => i.path.join("."))).toEqual([
+      "socketPath",
+    ]);
+    // Only MySQL has it: a PostgreSQL form ignores the flag.
+    const onPg = formToProfileInput({ ...profileToForm(pg), useSocket: true }, pg, pg.id);
+    expect(onPg.profile.options.useSocket).toBeNull();
+    expect(profileToForm({ ...pg, options: { ...pg.options, useSocket: true } }).useSocket).toBe(
+      false,
+    );
+    // Off again: TCP, the socket settings are dropped.
+    const off = formToProfileInput({ ...values, host: "db", useSocket: false }, my, my.id);
+    expect(off.profile.options.useSocket).toBeNull();
+    expect(off.profile.options.socketPath).toBeNull();
+  });
+});

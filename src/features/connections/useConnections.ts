@@ -272,8 +272,8 @@ export function useConnect() {
     },
     onError: (e, profileId) => {
       // The host-key prompt already told the user why the connection was not opened; a
-      // cancelled password prompt needs no message.
-      if (hostKeyDeclined(e) || isPromptCancelled(e)) return;
+      // cancelled password prompt or SSH question (2FA code) needs no message.
+      if (hostKeyDeclined(e) || isPromptCancelled(e) || toIpcError(e).code === "CANCELLED") return;
       const name = profileName(qc, profileId);
       toast.error(`Could not connect${name ? ` to ${name}` : ""}`, { description: e.message });
     },

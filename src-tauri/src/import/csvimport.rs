@@ -294,7 +294,7 @@ fn plan(
                     .filter(|c| !c.is_generated)
                     .map(|c| TargetColumn {
                         name: c.name.clone(),
-                        pg_type: c.data_type.clone(),
+                        pg_type: c.cast_type().to_string(),
                         boolean: c.kind == ValueKind::Bool,
                         created: None,
                     })
@@ -1003,6 +1003,37 @@ mod tests {
             empty_as_null: true,
             mode: InsertMode::StopOnError,
         }
+    }
+
+    #[test]
+    fn plans_cast_domain_columns_to_their_base_type() {
+        // `code` is a domain over varchar(3): cast to the domain, 'abcdef' would be cut to
+        // 'abc'; cast to its base type, storing it fails with "value too long".
+        let meta: TableMeta = serde_json::from_value(serde_json::json!({
+            "table": { "schema": "public", "name": "t" },
+            "kind": "table",
+            "columns": [
+                { "name": "code", "ordinal": 1, "dataType": "short_code", "kind": "text",
+                  "nullable": true, "isPk": false, "isAutoIncrement": false,
+                  "isGenerated": false, "isUnsigned": false,
+                  "baseType": "character varying" },
+                { "name": "n", "ordinal": 2, "dataType": "numeric(10,2)", "kind": "decimal",
+                  "nullable": true, "isPk": false, "isAutoIncrement": false,
+                  "isGenerated": false, "isUnsigned": false }
+            ],
+            "primaryKey": [], "indexes": [], "foreignKeys": [], "triggers": []
+        }))
+        .unwrap();
+        let req = request(
+            "/x.csv",
+            ImportTarget::Existing {
+                table: meta.table.clone(),
+            },
+            &[Some("code"), Some("n")],
+        );
+        let p = plan(Dialect::Postgres, &req, Some(&meta)).unwrap();
+        assert_eq!(p.columns[0].pg_type, "character varying");
+        assert_eq!(p.columns[1].pg_type, "numeric(10,2)");
     }
 
     #[test]

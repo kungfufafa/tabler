@@ -93,16 +93,22 @@ export function ExportConnectionsDialog({
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-2.5">
-            <label className="flex items-center gap-2 text-[13px]">
-              <Checkbox
-                checked={passwords}
-                onCheckedChange={(v) => {
-                  setPasswords(v === true);
-                  setError(null);
-                }}
-              />
-              Include database passwords
-            </label>
+            <div className="flex flex-col gap-0.5">
+              <label className="flex items-center gap-2 text-[13px]">
+                <Checkbox
+                  checked={passwords}
+                  aria-describedby={`${id}-passwords-hint`}
+                  onCheckedChange={(v) => {
+                    setPasswords(v === true);
+                    setError(null);
+                  }}
+                />
+                Include database passwords
+              </label>
+              <p id={`${id}-passwords-hint`} className="text-muted-foreground pl-6 text-[11px]">
+                Also includes IAM password commands.
+              </p>
+            </div>
             <label className="flex items-center gap-2 text-[13px]">
               <Checkbox
                 checked={sshSecrets}

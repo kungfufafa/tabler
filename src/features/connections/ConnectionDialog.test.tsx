@@ -517,3 +517,142 @@ describe("ConnectionDialog — TablePlus parity", () => {
     expect(save.mock.calls[0]![0].profile.options.safeMode).toBe("safe");
   });
 });
+
+describe("ConnectionDialog — IAM command and MySQL socket", () => {
+  const PG = SEED_PROFILES[0]!;
+  const SHOP = SEED_PROFILES.find((p) => p.id === "p-shop-mysql")!;
+  const IAM = "aws rds generate-db-auth-token --hostname db --port 5432 --username app";
+
+  it("Command Line (IAM authentication) asks for the command instead of a password", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const test = vi.spyOn(ipc.profiles, "test");
+    const user = userEvent.setup();
+    renderDialog({ profile: PG });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    expect(within(form).queryByLabelText("Command")).toBeNull();
+    await choose(user, form, "Password storage", "Command Line (IAM authentication)");
+    expect(within(form).getByLabelText("Password")).toBeDisabled();
+    expect(within(form).getByLabelText("Password")).toHaveAttribute(
+      "placeholder",
+      "From the command",
+    );
+    const command = within(form).getByLabelText("Command");
+    expect(command).toHaveAttribute(
+      "placeholder",
+      expect.stringContaining("aws rds generate-db-auth-token"),
+    );
+    await user.click(within(form).getByRole("button", { name: "Test" }));
+    expect(
+      await within(form).findByText("Enter the command that prints the password"),
+    ).toBeInTheDocument();
+    expect(save).not.toHaveBeenCalled();
+
+    await user.type(command, IAM);
+    await user.click(within(form).getByRole("button", { name: "Test" }));
+    expect(await within(form).findByRole("status")).toHaveTextContent(/PostgreSQL/);
+    const input = save.mock.calls[0]![0];
+    expect(input.profile.options).toMatchObject({ passwordMode: "command", passwordCommand: IAM });
+    expect(input.password).toBeNull();
+    // The test needs no typed password: the backend runs the command.
+    expect(test.mock.calls[0]![0].password).toBeNull();
+  });
+
+  it("MySQL Use socket swaps Host / Port for the socket path and cannot go over SSH", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog({ profile: SHOP });
+    const form = await screen.findByRole("dialog", { name: "Edit Shop MySQL" });
+    expect(within(form).getByLabelText("Host")).toBeInTheDocument();
+    await user.click(within(form).getByRole("checkbox", { name: "Use socket" }));
+    expect(within(form).queryByLabelText("Host")).toBeNull();
+    expect(within(form).queryByLabelText("Port")).toBeNull();
+    const socket = within(form).getByLabelText("Socket");
+    expect(socket).toHaveAttribute("placeholder", "/tmp/mysql.sock");
+
+    await user.click(within(form).getByRole("button", { name: "Over SSH" }));
+    await user.type(within(form).getByLabelText("SSH host"), "bastion");
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    expect(await within(form).findByText(/cannot go over SSH yet/)).toBeInTheDocument();
+    expect(save).not.toHaveBeenCalled();
+
+    await user.click(within(form).getByRole("button", { name: "Over SSH" }));
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile).toMatchObject({
+      ssh: null,
+      options: { useSocket: true, socketPath: null },
+    });
+  });
+
+  it("only MySQL offers Use socket", async () => {
+    renderDialog({ profile: PG });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    expect(within(form).queryByRole("checkbox", { name: "Use socket" })).toBeNull();
+  });
+});
+
+describe("ConnectionDialog — groups", () => {
+  it("a prefill without a driver (New ▸ Connection in this group…) starts at the driver picker", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog({ prefill: { values: { group: "Clients / Acme" }, password: null } });
+    const picker = await screen.findByRole("dialog", { name: "New connection" });
+    await user.click(within(picker).getByRole("radio", { name: /MySQL/ }));
+    await user.click(within(picker).getByRole("button", { name: "Create" }));
+    const form = await screen.findByRole("dialog", { name: "New MySQL / MariaDB connection" });
+    expect(within(form).getByLabelText("Group")).toHaveValue("Clients / Acme");
+    expect(within(form).getByLabelText("Port")).toHaveValue("3306");
+    await user.type(within(form).getByLabelText("Name"), "Acme");
+    await user.type(within(form).getByLabelText("User"), "root");
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile).toMatchObject({
+      driver: "mysql",
+      group: "Clients / Acme",
+    });
+  });
+
+  it("the Group field suggests existing group paths and still takes free text", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog({ profile: SEED_PROFILES[0]! });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    const group = within(form).getByRole("combobox", { name: "Group" });
+    await user.clear(group);
+    const list = await screen.findByRole("listbox", { name: "Groups" });
+    const all = within(list)
+      .getAllByRole("option")
+      .map((o) => o.getAttribute("title"));
+    expect(all).toEqual(expect.arrayContaining(["Local", "Staging"]));
+
+    // Typing filters; ↓ ↩ picks (without submitting the form).
+    await user.type(group, "stag");
+    const filtered = within(await screen.findByRole("listbox", { name: "Groups" }))
+      .getAllByRole("option")
+      .map((o) => o.getAttribute("title"));
+    expect(filtered).toEqual(["Staging"]);
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(group).toHaveValue("Staging");
+    expect(screen.queryByRole("listbox", { name: "Groups" })).toBeNull();
+    expect(save).not.toHaveBeenCalled();
+
+    // Esc closes the list, not the dialog.
+    await user.clear(group);
+    expect(await screen.findByRole("listbox", { name: "Groups" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox", { name: "Groups" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Edit Local Postgres" })).toBeInTheDocument();
+
+    // A new nested path, normalised on save; longer than 200 characters is refused.
+    await user.type(group, `${"x".repeat(201)}`);
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    expect(
+      await within(form).findByText("Use at most 200 characters for the group path"),
+    ).toBeInTheDocument();
+    await user.clear(group);
+    await user.type(group, "Clients/ Acme /Prod");
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile.group).toBe("Clients / Acme / Prod");
+  });
+});

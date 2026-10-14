@@ -13,4 +13,10 @@ arrayElemType: string | null,
 /**
  * Driver-specific extra info (MySQL `EXTRA`, PG identity kind…).
  */
-extra: string | null, };
+extra: string | null, 
+/**
+ * PG: for a column whose type is a domain (or an array of one), the type the domain is
+ * over, resolved through nested domains and without its modifier (`character varying`,
+ * `numeric[]`); `None` otherwise and on the other drivers. See `ColumnMeta::cast_type`.
+ */
+baseType?: string | null, };

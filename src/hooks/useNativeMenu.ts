@@ -38,7 +38,58 @@ export const MENU_ACTIONS = [
   "connection.disconnect",
   "import.csv",
   "import.sql",
+  // File: the SQL editor's save items.
+  "query.save-as",
+  "query.save-selection",
+  "query.add-to-queries",
+  // Edit: the SQL editor's items, then the data grid's.
+  "query.format",
+  "query.minify",
+  "query.comment-line",
+  "query.comment-block",
+  "query.split",
+  "grid.new-row",
+  "grid.duplicate-row",
+  "grid.delete-rows",
+  "grid.set-null",
+  "grid.set-empty",
+  "grid.set-default",
+  "grid.set-now",
+  "grid.copy-as",
+  "grid.quick-look",
+  // View.
+  "grid.columns",
+  "grid.filter",
+  // Navigate.
+  "tab.back",
+  "tab.forward",
+  "tab.prev",
+  "tab.next",
+  "tab.goto-1",
+  "tab.goto-2",
+  "tab.goto-3",
+  "tab.goto-4",
+  "tab.goto-5",
+  "tab.goto-6",
+  "tab.goto-7",
+  "tab.goto-8",
+  "tab.goto-9",
+  "ui.prev-pane",
+  "ui.next-pane",
 ] as const satisfies readonly ActionId[];
+
+/**
+ * Menu items shown without their keys: their shortcut is context-dependent and the same keys run
+ * another menu item (⌘I Beautify / Insert Row, ⌘D duplicate row / the editor's next occurrence,
+ * ⇧⌘D Split Pane / Set DEFAULT). The key goes through the page's scope resolution instead (the
+ * grid's keymap scope wins while the grid has the focus); the menu item only answers clicks. Their
+ * accelerators are never synced (`installMenuAcceleratorSync`). Mirrors `PLAIN_MENU_ACTIONS`.
+ */
+export const MENU_UNBOUND_ACTIONS: readonly MenuActionId[] = [
+  "grid.new-row",
+  "grid.duplicate-row",
+  "grid.set-default",
+];
 
 export type MenuActionId = (typeof MENU_ACTIONS)[number];
 
@@ -73,6 +124,15 @@ function whenRegistered(id: ActionId, attempts = 30): Promise<boolean> {
  */
 export function menuActionAllowed(id: MenuActionId, scope: Scope): boolean {
   const defs = KEYMAP.filter((d) => d.id === id);
+  // The grid's items (Delete Rows ⌘⌫, Set Value ▸ …) act on its selection, like TablePlus's menu
+  // on the focused view: not while a cell editor, the filter bar, the sidebar or the SQL editor
+  // has the focus, where their keys edit text or mean something else (⌘⌫ drops sidebar tables).
+  const gridOnly = id.startsWith("grid.") && defs.every((d) => d.scope === "grid");
+  if (gridOnly && NOT_FOR_GRID_ITEMS.has(scope)) return false;
+  // The Edit menu's SQL editor items (Beautify ⌘I, Split Pane ⇧⌘D…) change the editor: not from
+  // a grid, the filter bar, the sidebar or a dialog, where their keys mean something else (⌘I
+  // New Row, ⇧⌘D Set DEFAULT) and reach the menu only when the focused view refused them.
+  if (EDITOR_EDIT_ITEMS.has(id) && NOT_FOR_EDITOR_ITEMS.has(scope)) return false;
   // Menu-only items (User Management…, Disconnect) have no key the page could have suppressed.
   if (defs.length === 0) return scope !== "dialog";
   if (scope === "dialog") return defs.some((d) => d.allowInDialog);
@@ -80,6 +140,30 @@ export function menuActionAllowed(id: MenuActionId, scope: Scope): boolean {
   if (scope === "grid-edit") return !defs.every((d) => d.notWhileEditing);
   return true;
 }
+
+const NOT_FOR_GRID_ITEMS: ReadonlySet<Scope> = new Set([
+  "grid-edit",
+  "filter",
+  "sidebar",
+  "editor",
+]);
+
+/** Edit menu items that edit the SQL editor's text or layout (File ▸ Open / Save… do not). */
+const EDITOR_EDIT_ITEMS: ReadonlySet<MenuActionId> = new Set([
+  "query.format",
+  "query.minify",
+  "query.comment-line",
+  "query.comment-block",
+  "query.split",
+]);
+
+const NOT_FOR_EDITOR_ITEMS: ReadonlySet<Scope> = new Set([
+  "grid",
+  "grid-edit",
+  "filter",
+  "sidebar",
+  "dialog",
+]);
 
 /**
  * Runs the action a menu item stands for, unless the focused dialog or editor suppresses it
@@ -97,12 +181,26 @@ export async function dispatchMenuAction(id: unknown): Promise<boolean> {
 }
 
 /**
- * Routes the native menu bar (File / View / App items with their accelerators) into the action
- * registry. A menu accelerator only reaches here when the page did not handle the key itself
- * (WKWebView offers key equivalents to the page first), which includes keys the page suppresses
- * in dialogs and editors, so `dispatchMenuAction` applies those rules again. Mount once.
+ * Routes the native menu bar (App / File / Edit / View / Connection / Navigate / Window items with
+ * their accelerators) into the action registry. A menu accelerator only reaches here when the
+ * page did not handle the key itself (WKWebView offers key equivalents to the page first), which
+ * includes keys the page suppresses in dialogs and editors, so `dispatchMenuAction` applies those
+ * rules again. Mount once.
  */
 export function useNativeMenu(): void {
+  // Edit ▸ Toggle Line / Block Comment: their keys are the SQL editor's own keymap, so only the
+  // menu items need a handler (loaded on first use: the editor controller is heavy).
+  useEffect(() => {
+    const comment = (kind: "line" | "block") => async () => {
+      const { toggleCommentInActiveTab } = await import("@/features/editor/controller");
+      toggleCommentInActiveTab(kind);
+    };
+    const off = [
+      actions.register("query.comment-line", comment("line")),
+      actions.register("query.comment-block", comment("block")),
+    ];
+    return () => off.forEach((u) => u());
+  }, []);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;

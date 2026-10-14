@@ -50,6 +50,11 @@ export interface DirtyTab {
   title: string;
   /** Staged row changes for table tabs; 1 for a dirty query tab. */
   count: number;
+  /**
+   * Set for work that belongs to a connection rather than to a tab (staged sidebar drops and
+   * truncates): it survives closing tabs and is lost only on disconnect or quit.
+   */
+  connectionId?: string;
 }
 
 /**
@@ -111,6 +116,11 @@ interface TabsState {
    * `activateAfter`: a surviving tab to activate once the close went through.
    */
   requestClose: (ids: string[], activateAfter?: string) => boolean;
+  /**
+   * Closes every tab of a connection before it disconnects or switches database: also asks for the
+   * connection's own unsaved work (see `registerConnectionWork`), even when it has no tab open.
+   */
+  requestCloseConnection: (connectionId: string) => boolean;
   /** Same check for the whole window. True when the window may close right away. */
   requestWindowClose: () => boolean;
   /** Discards the pending request's work; closes its tabs (kind "tabs") and returns the request. */
@@ -229,6 +239,54 @@ export function registerUnsavedSource(count: (tab: Tab) => number): () => void {
   };
 }
 
+/** One connection's unsaved work kept outside its tabs. */
+export interface ConnectionWork {
+  connectionId: string;
+  title: string;
+  count: number;
+}
+
+/** Lists of connection-level unsaved work (staged sidebar operations). */
+const connectionWorkSources: (() => ConnectionWork[])[] = [];
+
+/** Adds a source of connection-level unsaved work; returns its removal. */
+export function registerConnectionWork(list: () => ConnectionWork[]): () => void {
+  connectionWorkSources.push(list);
+  return () => {
+    const i = connectionWorkSources.indexOf(list);
+    if (i >= 0) connectionWorkSources.splice(i, 1);
+  };
+}
+
+/** Connection-level unsaved work as close-dialog entries (all connections when `only` is null). */
+export function connectionWork(only: ReadonlySet<string> | null = null): DirtyTab[] {
+  const out: DirtyTab[] = [];
+  for (const list of connectionWorkSources)
+    for (const w of list()) {
+      if (w.count <= 0 || (only !== null && !only.has(w.connectionId))) continue;
+      out.push({
+        id: `connection:${w.connectionId}`,
+        kind: "structure",
+        title: w.title,
+        count: w.count,
+        connectionId: w.connectionId,
+      });
+    }
+  return out;
+}
+
+/** Told about every close the user confirmed (Discard), before its tabs go. */
+const confirmedCloseHooks: ((request: CloseRequest) => void)[] = [];
+
+/** Adds a hook to `confirmClose` (drops work kept outside the tabs); returns its removal. */
+export function onConfirmedClose(hook: (request: CloseRequest) => void): () => void {
+  confirmedCloseHooks.push(hook);
+  return () => {
+    const i = confirmedCloseHooks.indexOf(hook);
+    if (i >= 0) confirmedCloseHooks.splice(i, 1);
+  };
+}
+
 /** Drops the per-tab state (staged rows, staged DDL) of tabs that are going away. */
 function dropTabState(ids: readonly string[]): void {
   if (ids.length === 0) return;
@@ -246,9 +304,11 @@ export function dirtyTabs(tabs: readonly Tab[]): DirtyTab[] {
   return out;
 }
 
-/** True when any open tab holds unsaved work (used by the window-close guard). */
+/** True when any open tab, or any connection, holds unsaved work (the window-close guard). */
 export function hasUnsaved(): boolean {
-  return useTabsStore.getState().tabs.some((t) => unsavedCount(t) > 0);
+  return (
+    useTabsStore.getState().tabs.some((t) => unsavedCount(t) > 0) || connectionWork().length > 0
+  );
 }
 
 /**
@@ -272,8 +332,12 @@ export function pickNeighbour(
   return null;
 }
 
-function buildRequest(kind: CloseRequest["kind"], targets: readonly Tab[]): CloseRequest | null {
-  const dirty = dirtyTabs(targets);
+function buildRequest(
+  kind: CloseRequest["kind"],
+  targets: readonly Tab[],
+  extra: readonly DirtyTab[] = [],
+): CloseRequest | null {
+  const dirty = [...dirtyTabs(targets), ...extra];
   if (dirty.length === 0) return null;
   return {
     kind,
@@ -509,11 +573,24 @@ export const useTabsStore = create<TabsState>()(
       return true;
     },
 
+    requestCloseConnection: (connectionId) => {
+      const s = get();
+      if (s.closeRequest) return false;
+      const targets = s.tabs.filter((t) => t.connectionId === connectionId);
+      const request = buildRequest("tabs", targets, connectionWork(new Set([connectionId])));
+      if (request) {
+        set({ closeRequest: request });
+        return false;
+      }
+      if (targets.length > 0) get().forceClose(targets.map((t) => t.id));
+      return true;
+    },
+
     requestWindowClose: () => {
       const s = get();
       const hooks = windowCloseHooks;
       const guarded = hooks ? s.tabs.filter((t) => !hooks.survivesClose(t, s.tabs)) : s.tabs;
-      const request = buildRequest("window", guarded);
+      const request = buildRequest("window", guarded, connectionWork());
       if (!request) {
         // Only auto-saved query text is unsaved: write the session first, then close.
         if (hooks && guarded.length < s.tabs.length && dirtyTabs(s.tabs).length > 0) {
@@ -531,6 +608,7 @@ export const useTabsStore = create<TabsState>()(
       const request = get().closeRequest;
       if (!request) return null;
       set({ closeRequest: null });
+      for (const hook of [...confirmedCloseHooks]) hook(request);
       if (request.kind === "tabs") {
         get().forceClose(request.ids);
         if (request.activateAfter) get().activate(request.activateAfter);

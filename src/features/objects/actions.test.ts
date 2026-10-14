@@ -1,9 +1,19 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEditorState } from "@/features/editor/editorStates";
 import { useImportStore } from "@/features/import/store";
+import { useGroupDialogStore } from "@/features/sidebar/groups";
+import { ipc, type TableMeta } from "@/lib/ipc";
 import { usePinsStore, resetPins } from "@/stores/pins";
 import { useTabsStore } from "@/stores/tabs";
-import { importInto, openNewObject, scriptOf, togglePins, type ObjectContext } from "./actions";
+import {
+  copyLaravelMigrations,
+  importInto,
+  openNewObject,
+  runNew,
+  scriptOf,
+  togglePins,
+  type ObjectContext,
+} from "./actions";
 
 const CTX: ObjectContext = {
   connectionId: "c1",
@@ -20,6 +30,46 @@ describe("object actions", () => {
   beforeEach(() => {
     useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
     resetPins();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("opens New Group… for the sidebar's scope", () => {
+    useGroupDialogStore.setState({ request: null });
+    runNew({ ...CTX, pinScope: null }, "group");
+    expect(useGroupDialogStore.getState().request).toBeNull();
+    runNew(CTX, "group");
+    expect(useGroupDialogStore.getState().request).toEqual({ scope: "p1|db" });
+  });
+
+  it("copies one Laravel migration per table, from its metadata", async () => {
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const meta = (name: string) =>
+      ({
+        table: { schema: "public", name },
+        kind: "table",
+        columns: [],
+        primaryKey: [],
+        indexes: [],
+        foreignKeys: [],
+        comment: null,
+      }) as unknown as TableMeta;
+    const table = vi.spyOn(ipc.schema, "table").mockImplementation(async (_c, t) => meta(t.name));
+    const summary = (name: string) => ({
+      schema: "public",
+      name,
+      kind: "table" as const,
+      rowEstimate: null,
+      sizeBytes: null,
+      comment: null,
+    });
+    await copyLaravelMigrations(CTX, [summary("users"), summary("posts")]);
+    expect(table).toHaveBeenCalledTimes(2);
+    const text = (writeText.mock.calls[0] as unknown as [string])[0];
+    expect(text).toMatch(/^\/\/ ----- users -----\n<\?php/);
+    expect(text).toContain("// ----- posts -----");
+    expect(text).toContain("Schema::create('posts'");
+    vi.unstubAllGlobals();
   });
 
   it("opens New View… in a SQL tab with the placeholder name selected", () => {

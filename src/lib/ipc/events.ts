@@ -1,4 +1,6 @@
 import type { ConnectionStatusEvent } from "./bindings/ConnectionStatusEvent";
+import type { SshPromptDone } from "./bindings/SshPromptDone";
+import type { SshPromptRequest } from "./bindings/SshPromptRequest";
 import type { TunnelStatusEvent } from "./bindings/TunnelStatusEvent";
 import { isMock } from "./transport";
 
@@ -7,6 +9,10 @@ export type Unlisten = () => void;
 type EventMap = {
   "connection:status": ConnectionStatusEvent;
   "tunnel:status": TunnelStatusEvent;
+  /** An SSH server asks a keyboard-interactive (2FA) question; answer with `answerSshPrompt`. */
+  "ssh:prompt": SshPromptRequest;
+  /** The backend no longer waits for the answer to that question (drop its dialog). */
+  "ssh:prompt-done": SshPromptDone;
   /** A native menu item was chosen; the payload is its action id (see `useNativeMenu`). */
   "menu:action": string;
   /**

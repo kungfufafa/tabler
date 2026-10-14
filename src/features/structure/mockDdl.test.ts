@@ -134,6 +134,7 @@ describe("mock apply_ddl", () => {
           method: null,
           predicate: null,
           comment: null,
+          include: [],
         },
       },
     ]);
@@ -395,6 +396,57 @@ describe("mock checks, triggers, table options and choices", () => {
     expect(after.triggers.map((t) => [t.name, t.timing, t.events])).toEqual([
       ["users_audit", "AFTER", ["DELETE"]],
     ]);
+  });
+
+  it("enables / disables PostgreSQL triggers and refuses elsewhere", async () => {
+    const c = await connect("p-local-pg");
+    const posts = { schema: "public", name: "posts" };
+    const disable: DdlOp[] = [{ op: "disableTrigger", table: posts, name: "posts_set_updated_at" }];
+    expect((await ipc.ddl.preview(c, posts, disable)).statements).toEqual([
+      'ALTER TABLE "public"."posts" DISABLE TRIGGER "posts_set_updated_at"',
+    ]);
+    expect((await ipc.ddl.apply(c, posts, disable)).error).toBeNull();
+    expect((await ipc.schema.table(c, posts)).triggers[0]).toMatchObject({ enabled: false });
+    await ipc.ddl.apply(c, posts, [
+      { op: "enableTrigger", table: posts, name: "posts_set_updated_at" },
+    ]);
+    expect((await ipc.schema.table(c, posts)).triggers[0]).toMatchObject({ enabled: true });
+
+    const my = await connect("p-shop-mysql");
+    const myPosts = { schema: "tabler_dev", name: "posts" };
+    await expect(
+      ipc.ddl.preview(my, myPosts, [
+        { op: "disableTrigger", table: myPosts, name: "posts_set_updated_at" },
+      ]),
+    ).rejects.toMatchObject({ code: "UNSUPPORTED" });
+  });
+
+  it("PostgreSQL INCLUDE columns; ignored with a warning elsewhere", async () => {
+    const c = await connect("p-local-pg");
+    const index = {
+      name: "users_email_cover",
+      columns: ["email"],
+      unique: true,
+      method: null,
+      predicate: null,
+      comment: null,
+      include: ["name"],
+    };
+    const ops: DdlOp[] = [{ op: "addIndex", table: PG_USERS, index }];
+    expect((await ipc.ddl.preview(c, PG_USERS, ops)).statements).toEqual([
+      'CREATE UNIQUE INDEX "users_email_cover" ON "public"."users" ("email") INCLUDE ("name")',
+    ]);
+    await ipc.ddl.apply(c, PG_USERS, ops);
+    const meta = await ipc.schema.table(c, PG_USERS);
+    expect(meta.indexes.find((i) => i.name === "users_email_cover")?.include).toEqual(["name"]);
+
+    const my = await connect("p-shop-mysql");
+    const t = { schema: "tabler_dev", name: "users" };
+    const plan = await ipc.ddl.preview(my, t, [{ op: "addIndex", table: t, index }]);
+    expect(plan.statements[0]).not.toContain("INCLUDE");
+    expect(plan.warnings).toContain(
+      'INCLUDE columns are PostgreSQL-only; those of "users_email_cover" are ignored',
+    );
   });
 
   it("MySQL: options and ON UPDATE; the pickers' choices per driver", async () => {

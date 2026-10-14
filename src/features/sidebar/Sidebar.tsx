@@ -14,6 +14,8 @@ import { useActiveConnection, type OpenConnection } from "@/stores/connections";
 import { pinScope, usePinned } from "@/stores/pins";
 import { EMPTY_RECENT, useRecent } from "@/stores/recent";
 import { useUiStore } from "@/stores/ui";
+import { GroupDialogHost } from "./GroupDialog";
+import { useGroups } from "./groups";
 import { HistoryPane } from "./HistoryPane";
 import { SchemaTree, type SchemaTreeHandle } from "./SchemaTree";
 import { SidebarFooter } from "./SidebarFooter";
@@ -84,12 +86,14 @@ function ItemsPane({
   const scope = pinScope(connection.info.profileId, connection.info.currentDatabase);
   const pinned = usePinned(scope);
   const recent = useRecent(scope);
+  const groups = useGroups(scope);
   const rows = useTreeRows(
     tables.data,
     search,
     pinned,
     showRecent ? recent : EMPTY_RECENT,
     collapsed,
+    groups,
   );
 
   // Only a bump after mounting focuses: a remount (another connection) must not take focus.
@@ -121,6 +125,7 @@ function ItemsPane({
         pinScope={scope}
         pinned={pinned}
         showRowCounts={showRowCounts}
+        groups={groups}
       />
     </div>
   );
@@ -155,6 +160,8 @@ export function Sidebar() {
           {pane === "queries" && <QueriesPane connection={active} />}
           {pane === "history" && <HistoryPane connection={active} />}
           <SidebarFooter connection={active} />
+          {/* New Group… / Edit Group…. */}
+          <GroupDialogHost />
         </>
       ) : (
         <EmptyState

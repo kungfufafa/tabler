@@ -238,6 +238,8 @@ export function FilterBar({
   onClear,
   onClose,
   onExport,
+  focusRequest = 0,
+  focusRowId = null,
 }: {
   columns: ColumnMeta[];
   rows: FilterRowSpec[];
@@ -256,6 +258,12 @@ export function FilterBar({
   onClose?: () => void;
   /** Exports the rows the applied filters select. */
   onExport?: () => void;
+  /**
+   * Bumped by ⌘F (and the Filters button): the value field of `focusRowId` (the last applied
+   * filter) takes the focus, else the last row's. 0 = no request yet.
+   */
+  focusRequest?: number;
+  focusRowId?: string | null;
 }) {
   const barRef = useRef<HTMLDivElement>(null);
   const defaultColumn = usePrefs((p) => p.filterDefaultColumn);
@@ -280,6 +288,16 @@ export function FilterBar({
     focusAfter.current = null;
     focusRow(f.index, f.part);
   }, [rows]);
+  // ⌘F jumps to the last applied filter (TablePlus b190), its text selected to type over.
+  useEffect(() => {
+    if (focusRequest === 0) return;
+    const at = focusRowId === null ? -1 : rows.findIndex((r) => r.id === focusRowId);
+    focusRow(at >= 0 ? at : rows.length - 1, "value");
+    const el = document.activeElement;
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) el.select();
+    // Only a new request moves the focus, not edits to the rows.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusRequest]);
   const [popup, setPopup] = useState<Popup | null>(null);
 
   const update = (id: string, patch: Partial<FilterRowSpec>) =>

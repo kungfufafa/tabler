@@ -1,12 +1,17 @@
 import { renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { actions, type ActionId } from "@/features/palette/actions";
+import { DEFAULT_KEYMAP } from "@/lib/keys/keymap";
+import { SYNCED_IDS } from "@/lib/keys/menuSync";
+import { comboToAccelerator } from "@/lib/keys/overrides";
 import {
   dispatchMenuAction,
   isMenuAction,
   MENU_ACTIONS,
+  MENU_UNBOUND_ACTIONS,
   menuActionAllowed,
   useNativeMenu,
+  type MenuActionId,
 } from "./useNativeMenu";
 import { handleQuitRequest } from "./useUnsavedGuard";
 
@@ -43,6 +48,26 @@ describe("useNativeMenu", () => {
 
   it("knows exactly the menu's action ids", () => {
     expect(MENU_ACTIONS).toContain("tab.new-query");
+    // TablePlus's newer items: File / Edit / View / Navigate.
+    for (const id of [
+      "query.save-as",
+      "query.save-selection",
+      "query.add-to-queries",
+      "query.format",
+      "query.comment-line",
+      "query.split",
+      "grid.delete-rows",
+      "grid.set-now",
+      "grid.copy-as",
+      "grid.filter",
+      "grid.columns",
+      "tab.back",
+      "tab.goto-9",
+      "ui.next-pane",
+      "ui.prev-pane",
+    ])
+      expect(isMenuAction(id), id).toBe(true);
+    expect(new Set(MENU_ACTIONS).size).toBe(MENU_ACTIONS.length);
     expect(isMenuAction("ui.toggle-sidebar")).toBe(true);
     expect(isMenuAction("grid.commit")).toBe(false);
     expect(isMenuAction("app.quit")).toBe(false);
@@ -140,11 +165,49 @@ describe("useNativeMenu", () => {
   });
 });
 
+describe("menu accelerators", () => {
+  it("syncs every keyed item's keymap combo, never the context-dependent grid ones", () => {
+    expect(MENU_UNBOUND_ACTIONS).toEqual([
+      "grid.new-row",
+      "grid.duplicate-row",
+      "grid.set-default",
+    ]);
+    for (const id of MENU_UNBOUND_ACTIONS) expect(SYNCED_IDS).not.toContain(id);
+    // Their keys are the editor items' (⌘I Beautify, ⇧⌘D Split Pane): the page decides by focus.
+    expect(SYNCED_IDS).toEqual(expect.arrayContaining(["query.format", "query.split"]));
+    const modifiers = new Set(["CmdOrCtrl", "Ctrl", "Alt", "Shift"]);
+    for (const id of SYNCED_IDS) {
+      const combo = DEFAULT_KEYMAP.find((d) => d.id === id)!.keys;
+      const parts = comboToAccelerator(combo).split("+");
+      expect(
+        parts.slice(0, -1).every((p) => modifiers.has(p)),
+        `${id}: ${combo}`,
+      ).toBe(true);
+    }
+  });
+
+  it("gives the pane keys (⇧⌘] / ⇧⌘[) to Select Next / Previous Pane", () => {
+    const keys = (id: string) => DEFAULT_KEYMAP.filter((d) => d.id === id).map((d) => d.keys);
+    expect(keys("ui.next-pane")).toEqual(["Mod+Shift+]"]);
+    expect(keys("ui.prev-pane")).toEqual(["Mod+Shift+["]);
+    expect(keys("tab.next")).not.toContain("Mod+Shift+]");
+  });
+});
+
+/** The Edit menu's SQL editor items. */
+const EDITOR_EDIT_ITEMS: readonly string[] = [
+  "query.format",
+  "query.minify",
+  "query.comment-line",
+  "query.comment-block",
+  "query.split",
+];
+
 describe("menuActionAllowed", () => {
   it("mirrors findShortcut's scope rules for every menu action", () => {
     for (const id of MENU_ACTIONS) {
       expect(menuActionAllowed(id, "global")).toBe(true);
-      expect(menuActionAllowed(id, "grid")).toBe(true);
+      expect(menuActionAllowed(id, "grid"), id).toBe(!EDITOR_EDIT_ITEMS.includes(id));
       expect(menuActionAllowed(id, "dialog")).toBe(id === "tab.close");
     }
     expect(menuActionAllowed("view.refresh", "editor")).toBe(false);
@@ -152,6 +215,67 @@ describe("menuActionAllowed", () => {
     expect(menuActionAllowed("view.refresh", "grid-edit")).toBe(true);
     expect(menuActionAllowed("query.open", "editor")).toBe(true);
     expect(menuActionAllowed("settings.open", "editor")).toBe(true);
+  });
+
+  it("keeps the grid's items away from a cell editor, the filter bar, the sidebar and the editor", () => {
+    for (const scope of ["grid-edit", "filter", "editor", "sidebar"] as const) {
+      expect(menuActionAllowed("grid.delete-rows", scope), scope).toBe(false);
+      expect(menuActionAllowed("grid.set-null", scope), scope).toBe(false);
+    }
+    expect(menuActionAllowed("grid.delete-rows", "grid")).toBe(true);
+    expect(menuActionAllowed("grid.delete-rows", "global")).toBe(true);
+    // So are the grid's menu-only items; its global ones (⌥⌘F Columns) still work there.
+    expect(menuActionAllowed("grid.set-now", "filter")).toBe(false);
+    expect(menuActionAllowed("grid.set-now", "grid")).toBe(true);
+    expect(menuActionAllowed("grid.columns", "filter")).toBe(true);
+    expect(menuActionAllowed("query.comment-line", "editor")).toBe(true);
+    expect(menuActionAllowed("ui.next-pane", "editor")).toBe(true);
+    expect(menuActionAllowed("query.format", "editor")).toBe(true);
+  });
+
+  it("keeps the editor's Edit items (Beautify ⌘I, Split Pane ⇧⌘D…) away from grids and panels", () => {
+    for (const id of EDITOR_EDIT_ITEMS as MenuActionId[]) {
+      for (const scope of ["grid", "grid-edit", "filter", "sidebar", "dialog"] as const)
+        expect(menuActionAllowed(id, scope), `${id} in ${scope}`).toBe(false);
+      expect(menuActionAllowed(id, "editor"), id).toBe(true);
+      expect(menuActionAllowed(id, "global"), id).toBe(true);
+    }
+    // The File menu's editor items act on the tab: Open SQL File… works from anywhere but dialogs.
+    expect(menuActionAllowed("query.open", "sidebar")).toBe(true);
+    expect(menuActionAllowed("query.open", "grid")).toBe(true);
+    expect(menuActionAllowed("query.save-as", "grid")).toBe(true);
+  });
+
+  it("does not beautify or split the editor when ⌘I / ⇧⌘D reach the menu from a grid", async () => {
+    const format = vi.fn();
+    const split = vi.fn();
+    const off = [actions.register("query.format", format), actions.register("query.split", split)];
+    const host = document.createElement("div");
+    host.innerHTML = `<div data-scope="grid" tabindex="0"></div>`;
+    document.body.appendChild(host);
+    host.querySelector<HTMLElement>("[data-scope]")!.focus();
+    await expect(dispatchMenuAction("query.format")).resolves.toBe(false);
+    await expect(dispatchMenuAction("query.split")).resolves.toBe(false);
+    expect(format).not.toHaveBeenCalled();
+    expect(split).not.toHaveBeenCalled();
+    host.remove();
+    await expect(dispatchMenuAction("query.format")).resolves.toBe(true);
+    expect(format).toHaveBeenCalledTimes(1);
+    off.forEach((u) => u());
+  });
+});
+
+describe("Edit ▸ Toggle Line / Block Comment", () => {
+  it("is handled while the menu is mounted (on the active query tab's editor)", async () => {
+    const controller = await import("@/features/editor/controller");
+    const toggle = vi.spyOn(controller, "toggleCommentInActiveTab").mockReturnValue(true);
+    const { unmount } = renderHook(() => useNativeMenu());
+    await expect(dispatchMenuAction("query.comment-line")).resolves.toBe(true);
+    await expect(dispatchMenuAction("query.comment-block")).resolves.toBe(true);
+    expect(toggle.mock.calls).toEqual([["line"], ["block"]]);
+    unmount();
+    expect(actions.has("query.comment-line")).toBe(false);
+    toggle.mockRestore();
   });
 });
 

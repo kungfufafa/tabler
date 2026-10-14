@@ -2,6 +2,13 @@ import { KeyRound, ListPlus, Plus, SlidersHorizontal, Trash2, Undo2 } from "luci
 import { useId, useState, type ReactNode } from "react";
 import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import type { Dialect, FkDef, TableRef } from "@/lib/ipc";
@@ -361,7 +368,7 @@ function ColumnRowView({
     }
   };
 
-  return (
+  const rowEl = (
     <tr
       data-column-key={r.key}
       data-row-kind="column"
@@ -422,6 +429,34 @@ function ColumnRowView({
         )}
       </td>
     </tr>
+  );
+  if (!editable) return rowEl;
+  // Right-click menu of the row: MySQL places a new column after this one (`AFTER`).
+  const item = "py-0.5 text-xs";
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{rowEl}</ContextMenuTrigger>
+      <ContextMenuContent className="min-w-44" aria-label={`Column ${r.name}`}>
+        {supportsColumnPosition(dialect) && !dropped && (
+          <ContextMenuItem className={item} onSelect={() => onAdd(r.name)}>
+            Insert Column After
+          </ContextMenuItem>
+        )}
+        <ContextMenuItem className={item} onSelect={() => onAdd()}>
+          Add Column
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        {dropped ? (
+          <ContextMenuItem className={item} onSelect={() => onRestore(r.key)}>
+            Restore Column
+          </ContextMenuItem>
+        ) : (
+          <ContextMenuItem className={item} onSelect={() => onDrop(r.key)}>
+            {added ? "Remove New Column" : "Delete Column"}
+          </ContextMenuItem>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 

@@ -1,6 +1,18 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pin, Play, Rows3, Settings2, TriangleAlert } from "lucide-react";
-import { useCallback, useEffect, useMemo, type KeyboardEvent, type ReactNode } from "react";
+import {
+  ChartColumn,
+  ChartLine,
+  ChartPie,
+  Loader2,
+  Pin,
+  Play,
+  Rows3,
+  Search,
+  Settings2,
+  Table2,
+  TriangleAlert,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import {
   DropdownMenu,
@@ -13,12 +25,18 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ChartView } from "@/features/charts/ChartView";
+import type { ChartDirective, ChartKind } from "@/features/charts/directive";
+import { directiveFor, setResultView, useResultView } from "@/features/charts/store";
 import { openExport } from "@/features/export";
 import { resultTable } from "@/features/export/resultTable";
+import { reportTabCommit } from "@/features/objects/commitChain";
+import {
+  applyPreviewedResultEditsReported,
+  commitResultEditsReported,
+} from "@/features/objects/resultCommits";
 import { useAction } from "@/features/palette/actions";
 import {
-  applyPreviewedResultEdits,
-  commitResultEdits,
   discardResultChanges,
   previewResultEdits,
   redoResultEdit,
@@ -51,12 +69,16 @@ import { useTabsStore } from "@/stores/tabs";
 import { exportQuery, runQuery } from "./controller";
 import { HISTORY_KEY } from "./historyGroups";
 import { MessagesView } from "./MessagesView";
+import { installNoticeNotifications } from "./notices";
 import { resolvePane } from "./panes";
 import { PlanView } from "./PlanView";
 import { ResultFooter, ResultGrid } from "./ResultSetGrid";
 import { summarize, type ResultSetInfo, type RunState } from "./runModel";
+import { closeFind, installFindLifecycle, openFind, useFind } from "./search/store";
 
 installResultsLifecycle();
+installNoticeNotifications();
+installFindLifecycle();
 
 /** Row height of the grids (`ROW_H`) and the chrome around a stacked result set. */
 const STACK_ROW_H = 22;
@@ -65,24 +87,27 @@ const STACK_CHROME_H = 24 + 28;
 const STACK_MAX_ROWS = 12;
 const STACK_MIN_ROWS = 3;
 
-/** One segment of the results strip. */
+/** One segment of the results strip (or of the Chart | Grid switch: `role` radio). */
 function PaneTab({
   active,
   onSelect,
   children,
   title,
+  role = "tab",
 }: {
   active: boolean;
   onSelect: () => void;
   children: ReactNode;
   title?: string;
+  role?: "tab" | "radio";
 }) {
   return (
     <button
       type="button"
-      role="tab"
-      aria-selected={active}
-      tabIndex={active ? 0 : -1}
+      role={role}
+      aria-selected={role === "tab" ? active : undefined}
+      aria-checked={role === "radio" ? active : undefined}
+      tabIndex={active || role === "radio" ? 0 : -1}
       title={title}
       onClick={onSelect}
       className={cn(
@@ -200,19 +225,21 @@ function ResultPreviewSheet({ tabId }: { tabId: string }) {
     const handler = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        void applyPreviewedResultEdits();
+        void applyPreviewedResultEditsReported(tabId);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [open]);
+  }, [open, tabId]);
   return (
     <PreviewSqlSheet
       state={open ? preview : { ...preview, open: false }}
       onOpenChange={(next) => {
-        if (!next) closeResultPreview();
+        if (next) return;
+        closeResultPreview();
+        reportTabCommit(tabId, "cancelled");
       }}
-      onApply={() => void applyPreviewedResultEdits()}
+      onApply={() => void applyPreviewedResultEditsReported(tabId)}
     />
   );
 }
@@ -224,6 +251,89 @@ interface Shown {
   /** Set when it is a pinned copy. */
   pin: PinnedResult | null;
   sql: string | null;
+  /** The chart its statement's comment asks for (`-- TablePlus BarChart x: …, y: …`). */
+  directive: ChartDirective | null;
+}
+
+const CHART_ICONS: Record<ChartKind, typeof ChartColumn> = {
+  bar: ChartColumn,
+  line: ChartLine,
+  pie: ChartPie,
+};
+
+/** The results header's Chart | Grid switch of a result with a chart directive. */
+function ViewSwitch({ resultId, kind }: { resultId: string; kind: ChartKind }) {
+  const view = useResultView(resultId, true);
+  const ChartIcon = CHART_ICONS[kind];
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Result view"
+      className="border-border bg-surface-2 dark:bg-background flex h-6.5 shrink-0 items-stretch gap-0.5 rounded-md border p-0.5"
+    >
+      <PaneTab
+        role="radio"
+        active={view === "chart"}
+        onSelect={() => setResultView(resultId, "chart")}
+      >
+        <ChartIcon className="size-3" />
+        Chart
+      </PaneTab>
+      <PaneTab
+        role="radio"
+        active={view === "grid"}
+        onSelect={() => setResultView(resultId, "grid")}
+      >
+        <Table2 className="size-3" />
+        Grid
+      </PaneTab>
+    </div>
+  );
+}
+
+/** A result's body: its chart (when its comment asks for one and the switch says so) or grid. */
+function ResultBody({
+  shown,
+  height,
+  footer,
+  ...grid
+}: {
+  shown: Shown;
+  tabId: string;
+  connectionId: string | null;
+  dialect: Dialect;
+  active: boolean;
+  height?: number;
+  footer: ReactNode;
+}) {
+  const view = useResultView(shown.info.id, shown.directive !== null);
+  if (view === "chart" && shown.directive)
+    return (
+      <div
+        className="flex min-h-0 flex-col"
+        style={height === undefined ? { height: "100%" } : { height }}
+      >
+        <div className="min-h-0 flex-1">
+          <ChartView
+            resultId={shown.info.id}
+            columns={shown.info.columns}
+            directive={shown.directive}
+            done={shown.info.done}
+          />
+        </div>
+        {footer}
+      </div>
+    );
+  return (
+    <ResultGrid
+      {...grid}
+      info={shown.info}
+      label={shown.label}
+      sql={shown.sql}
+      height={height}
+      footer={footer}
+    />
+  );
 }
 
 function statementSql(run: RunState | null, info: ResultSetInfo): string | null {
@@ -252,6 +362,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
   const pending = useResultsStore((s) => pendingForTab(s, tabId));
   const dirty = useResultsStore((s) => dirtyResultOf(s, tabId));
   const redoable = useResultsStore((s) => (dirty ? canRedo(stagingOf(s, dirty)) : false));
+  const findOpen = useFind(tabId).open;
 
   // "Re-run" after a commit runs the result's statement again in this tab.
   useEffect(() => {
@@ -264,7 +375,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
   }, [qc]);
 
   // Staged result edits answer the toolbar's action control and ⌘S / ⇧⌘P / ⇧⌘⌫ / ⇧⌘Z.
-  const commit = useCallback(() => void commitResultEdits(tabId), [tabId]);
+  const commit = useCallback(() => void commitResultEditsReported(tabId), [tabId]);
   const preview = useCallback(() => void previewResultEdits(tabId), [tabId]);
   const discard = useCallback(() => discardResultChanges(tabId), [tabId]);
   const redo = useCallback(() => {
@@ -274,6 +385,16 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
   useAction("grid.preview", isActive && pending > 0 ? preview : null);
   useAction("grid.discard", isActive && pending > 0 ? discard : null);
   useAction("grid.redo", isActive && redoable ? redo : null);
+
+  // ⌘F in a result grid (or the header's search icon): find & replace in the shown result.
+  const findTarget = useRef<Shown | null>(null);
+  const openFindHere = useCallback(() => {
+    const target = findTarget.current;
+    if (!target) return;
+    if (target.directive) setResultView(target.info.id, "grid");
+    openFind(tabId);
+  }, [tabId]);
+  useAction("grid.filter", isActive ? openFindHere : null);
 
   const pinnedSources = useMemo(() => new Set(pins.map((p) => p.sourceId)), [pins]);
   const results = useMemo(
@@ -285,10 +406,23 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
   const runIndex = (info: ResultSetInfo) => (run?.results.indexOf(info) ?? 0) + 1;
   const shownOf = (id: string): Shown | null => {
     const pin = pins.find((p) => p.id === id);
-    if (pin) return { info: pin.info, label: pinnedLabel(pin.label), pin, sql: pin.sql };
+    if (pin)
+      return {
+        info: pin.info,
+        label: pinnedLabel(pin.label),
+        pin,
+        sql: pin.sql,
+        directive: directiveFor(pin.id, { pinnedFrom: pin.sourceId }),
+      };
     const info = results.find((r) => r.id === id);
-    return info
-      ? { info, label: `Result ${runIndex(info)}`, pin: null, sql: statementSql(run, info) }
+    return info && run
+      ? {
+          info,
+          label: `Result ${runIndex(info)}`,
+          pin: null,
+          sql: statementSql(run, info),
+          directive: directiveFor(info.id, { tabId, run, statementIndex: info.statementIndex }),
+        }
       : null;
   };
 
@@ -353,13 +487,11 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
   };
 
   const gridFor = (shown: Shown, gridActive: boolean, height?: number) => (
-    <ResultGrid
+    <ResultBody
       key={shown.info.id}
+      shown={shown}
       tabId={tabId}
       connectionId={connectionId}
-      info={shown.info}
-      label={shown.label}
-      sql={shown.sql}
       dialect={dialect}
       active={gridActive}
       height={height}
@@ -375,6 +507,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
   );
 
   const activeShown = typeof active === "string" ? shownOf(active) : null;
+  findTarget.current = activeShown;
 
   return (
     <div className="bg-surface flex h-full min-h-0 flex-col">
@@ -430,6 +563,25 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
               Plan
             </PaneTab>
           )}
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {activeShown?.directive && (
+            <ViewSwitch resultId={activeShown.info.id} kind={activeShown.directive.kind} />
+          )}
+          <button
+            type="button"
+            aria-label="Find in Result"
+            title="Find in Result (⌘F)"
+            aria-pressed={findOpen}
+            disabled={!activeShown}
+            onClick={() => (findOpen ? closeFind(tabId) : openFindHere())}
+            className={cn(
+              "text-muted-foreground hover:text-foreground hover:bg-muted focus-visible:ring-ring/50 flex size-6 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-40",
+              findOpen && "bg-muted text-foreground",
+            )}
+          >
+            <Search className="size-3.5" />
+          </button>
         </div>
         <ResultsMenu
           mode={mode}

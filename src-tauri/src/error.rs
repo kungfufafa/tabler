@@ -305,8 +305,27 @@ impl From<tokio_postgres::Error> for AppError {
         if text.contains("timed out") || text.contains("timeout") {
             return AppError::Timeout;
         }
-        AppError::Connect(text)
+        // tokio-postgres' text is only the kind ("error performing TLS handshake"): the cause
+        // ("certificate not valid for name …", "Connection refused") is in its source chain.
+        AppError::Connect(error_chain(&e))
     }
+}
+
+/// `err`'s message followed by its `source()` chain (`a: b: c`), leaving out causes whose text
+/// the message already contains (many errors repeat their cause).
+pub fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut text = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        let part = cause.to_string();
+        let part = part.trim();
+        if !part.is_empty() && !text.contains(part) {
+            text.push_str(": ");
+            text.push_str(part);
+        }
+        source = cause.source();
+    }
+    text
 }
 
 impl From<mysql_async::Error> for AppError {
@@ -346,6 +365,41 @@ impl From<mysql_async::Error> for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct Layer(&'static str, Option<Box<Layer>>);
+
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1.as_deref().map(|l| l as _)
+        }
+    }
+
+    #[test]
+    fn error_chain_appends_causes_once() {
+        let err = Layer(
+            "error performing TLS handshake",
+            Some(Box::new(Layer(
+                "invalid peer certificate: certificate not valid for name \"127.0.0.1\"",
+                Some(Box::new(Layer(
+                    "certificate not valid for name \"127.0.0.1\"",
+                    None,
+                ))),
+            ))),
+        );
+        assert_eq!(
+            error_chain(&err),
+            "error performing TLS handshake: invalid peer certificate: certificate not valid \
+             for name \"127.0.0.1\""
+        );
+        assert_eq!(error_chain(&Layer("plain", None)), "plain");
+    }
 
     #[test]
     fn computes_line_and_column_from_offset() {

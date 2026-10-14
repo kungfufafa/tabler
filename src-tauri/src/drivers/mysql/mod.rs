@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use mysql_async::prelude::Queryable;
-use mysql_async::{Conn, Opts, Pool, Row, TxOpts};
+use mysql_async::{Conn, Opts, OptsBuilder, Pool, Row, TxOpts};
 use tokio::sync::Mutex;
 
 use crate::drivers::{
@@ -24,6 +24,7 @@ use crate::drivers::{
     cancel_safe_on_stop, check_affected, settle_cancels, tx_effect,
 };
 use crate::error::AppError;
+use crate::secrets::CommandPassword;
 use crate::sqlgen::Dialect;
 use crate::types::profile::Driver;
 use crate::types::query::{ExecOutcome, ResultSet, StatementKind};
@@ -32,21 +33,47 @@ use crate::types::schema::{
 };
 use crate::types::value::Value;
 
+pub use connect::{cleartext_password_allowed, resolve_socket};
 pub use decode::{kind_from_column, value_from_mysql};
 pub use introspect::{kind_from_data_type, parse_enum_values};
 pub use params::bind;
 
 /// How long `close` waits for the server to acknowledge disconnects.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a pool replaced by a renewed one may take to wind down (its connections still in use
+/// finish first).
+const RETIRE_TIMEOUT: Duration = Duration::from_secs(120);
 /// `ping` keeps the editor connection alive once the server says it has been idle this long
 /// (seconds): `COM_PING` resets the `ROW_COUNT()` the user may read after a statement, so a
 /// recently used editor is left alone.
 const EDITOR_KEEPALIVE_IDLE_SECS: i64 = 60;
 
-pub struct MySession {
+/// The worker pool with the options it connects with (also used for side connections when the
+/// pool is exhausted). Replaced as a whole when the password of a "Command Line (IAM
+/// authentication)" profile is renewed (`MySession::renew_after`); `generation` counts that.
+#[derive(Clone)]
+struct Workers {
     pool: Pool,
-    /// The pool's connect options, for side connections when the pool is exhausted.
-    pool_opts: Opts,
+    opts: Opts,
+    generation: u64,
+}
+
+impl Workers {
+    fn killer(&self, conn_id: u32) -> editor::Killer<'_> {
+        editor::Killer {
+            pool: &self.pool,
+            opts: &self.opts,
+            conn_id,
+        }
+    }
+}
+
+pub struct MySession {
+    workers: std::sync::Mutex<Workers>,
+    /// Held while the workers are renewed, so one renewal serves everyone waiting.
+    renewing: Mutex<()>,
+    /// Where new connections get their password when the profile's comes from a command.
+    token: Option<Arc<CommandPassword>>,
     /// Dedicated SQL-editor connection; `None` once closed.
     editor: Mutex<Option<Conn>>,
     /// Server-side id of the editor connection, for `KILL QUERY <id>` from a pooled connection.
@@ -69,8 +96,13 @@ impl MySession {
     pub async fn open(target: &ConnectTarget<'_>) -> Result<MySession, AppError> {
         let opened = connect::open(target).await?;
         Ok(MySession {
-            pool: opened.pool,
-            pool_opts: opened.pool_opts,
+            workers: std::sync::Mutex::new(Workers {
+                pool: opened.pool,
+                opts: opened.pool_opts,
+                generation: 0,
+            }),
+            renewing: Mutex::new(()),
+            token: CommandPassword::for_profile(target.profile, target.password),
             editor_conn_id: opened.editor.id(),
             editor: Mutex::new(Some(opened.editor)),
             is_mariadb: opened.is_mariadb,
@@ -95,8 +127,72 @@ impl MySession {
         self.is_mariadb
     }
 
+    fn workers(&self) -> Workers {
+        self.workers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// A worker connection. When the pool cannot log in a new one because the password command's
+    /// token expired, the token is renewed (`renew_after`) and the connection retried once.
     async fn conn(&self) -> Result<Conn, AppError> {
-        Ok(self.pool.get_conn().await?)
+        let workers = self.workers();
+        let error = match workers.pool.get_conn().await {
+            Ok(conn) => return Ok(conn),
+            Err(e) => AppError::from(e),
+        };
+        match self.renew_after(&workers, &error).await? {
+            Some(renewed) => Ok(renewed.pool.get_conn().await?),
+            None => Err(error),
+        }
+    }
+
+    /// After `failed` could not log in a new connection (`error`): when the profile's password
+    /// comes from a command whose last output is older than the TTL (an expired IAM token),
+    /// runs the command again and replaces the pool and the side-connection options with ones
+    /// that use its new output (mysql_async cannot change a pool's password). The old pool winds
+    /// down in the background; connections already open (the editor's too) stay as they are.
+    /// Returns the workers to retry with, or `None` when renewing cannot help (any other error, a
+    /// password that is not from a command, or one that is still fresh and was refused anyway).
+    async fn renew_after(
+        &self,
+        failed: &Workers,
+        error: &AppError,
+    ) -> Result<Option<Workers>, AppError> {
+        let Some(token) = &self.token else {
+            return Ok(None);
+        };
+        if !matches!(error, AppError::Auth(_)) || self.closing.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let _one = self.renewing.lock().await;
+        let current = self.workers();
+        if current.generation != failed.generation {
+            // Renewed while this caller waited.
+            return Ok(Some(current));
+        }
+        if !token.is_stale().await {
+            return Ok(None);
+        }
+        let password = token.password().await?;
+        let opts: Opts = OptsBuilder::from_opts(current.opts.clone())
+            .pass(Some(password))
+            .into();
+        let renewed = Workers {
+            pool: Pool::new(opts.clone()),
+            opts,
+            generation: current.generation + 1,
+        };
+        let retired = std::mem::replace(
+            &mut *self.workers.lock().unwrap_or_else(|p| p.into_inner()),
+            renewed.clone(),
+        );
+        log::info!("mysql: renewed the password command's token for new connections");
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(RETIRE_TIMEOUT, retired.pool.disconnect()).await;
+        });
+        Ok(Some(renewed))
     }
 
     fn editor_unusable(&self) -> bool {
@@ -138,14 +234,6 @@ impl MySession {
             return Err(AppError::NotConnected);
         }
         Ok(())
-    }
-
-    fn killer(&self, conn_id: u32) -> editor::Killer<'_> {
-        editor::Killer {
-            pool: &self.pool,
-            opts: &self.pool_opts,
-            conn_id,
-        }
     }
 }
 
@@ -210,8 +298,9 @@ impl DbSession for MySession {
         let editor = match self.editor.try_lock() {
             Ok(mut guard) => guard.take(),
             Err(_) => {
+                let workers = self.workers();
                 if let Err(e) =
-                    editor::kill_connection(&self.pool, &self.pool_opts, self.editor_conn_id).await
+                    editor::kill_connection(&workers.pool, &workers.opts, self.editor_conn_id).await
                 {
                     log::warn!("mysql: ending the editor statement on close failed: {e}");
                 }
@@ -227,7 +316,7 @@ impl DbSession for MySession {
         if let Some(conn) = editor {
             let _ = tokio::time::timeout(CLOSE_TIMEOUT, conn.disconnect()).await;
         }
-        let _ = tokio::time::timeout(CLOSE_TIMEOUT, self.pool.clone().disconnect()).await;
+        let _ = tokio::time::timeout(CLOSE_TIMEOUT, self.workers().pool.disconnect()).await;
     }
 
     async fn list_databases(&self) -> Result<Vec<DatabaseInfo>, AppError> {
@@ -309,7 +398,8 @@ impl DbSession for MySession {
             return Err(AppError::NotConnected);
         }
         let conn = guard.as_mut().ok_or(AppError::NotConnected)?;
-        let killer = self.killer(self.editor_conn_id);
+        let workers = self.workers();
+        let killer = workers.killer(self.editor_conn_id);
         let result = {
             let _armed = arm_cancel(
                 &cancel,
@@ -366,7 +456,8 @@ impl DbSession for MySession {
     ) -> Result<u64, AppError> {
         let mut conn = self.conn().await?;
         let conn_id = conn.id();
-        let killer = self.killer(conn_id);
+        let workers = self.workers();
+        let killer = workers.killer(conn_id);
         let result = {
             let _armed = arm_cancel(&cancel, CancelHandle::Mysql { conn_id })?;
             editor::run(&mut conn, sql, params, None, sink, &killer, false).await
@@ -384,7 +475,15 @@ impl DbSession for MySession {
         let (handle, _ticket) = handle.into_parts();
         match handle {
             CancelHandle::Mysql { conn_id } => {
-                editor::kill_query(&self.pool, &self.pool_opts, conn_id).await
+                let workers = self.workers();
+                let Err(error) = workers.killer(conn_id).kill().await else {
+                    return Ok(());
+                };
+                // A side connection may need a renewed password-command token.
+                match self.renew_after(&workers, &error).await? {
+                    Some(renewed) => renewed.killer(conn_id).kill().await,
+                    None => Err(error),
+                }
             }
             _ => Ok(()),
         }
@@ -411,9 +510,9 @@ mod tests {
     use crate::drivers::CollectSink;
     use crate::types::profile::{ConnectionProfile, ProfileOptions, SslMode};
 
-    /// A session on `TABLER_TEST_MYSQL_URL` (`mysql://user[:pass]@host:port/db`); None (the test
-    /// passes) when it is unset.
-    async fn open() -> Option<MySession> {
+    /// The profile and password of `TABLER_TEST_MYSQL_URL` (`mysql://user[:pass]@host:port/db`);
+    /// None (the test passes) when it is unset.
+    fn url_profile() -> Option<(ConnectionProfile, Option<String>)> {
         let Ok(url) = std::env::var("TABLER_TEST_MYSQL_URL") else {
             println!("skipped: TABLER_TEST_MYSQL_URL unset");
             return None;
@@ -448,12 +547,82 @@ mod tests {
         rustls::crypto::aws_lc_rs::default_provider()
             .install_default()
             .ok();
+        Some((profile, password))
+    }
+
+    /// A session on `TABLER_TEST_MYSQL_URL`; None (the test passes) when it is unset.
+    async fn open() -> Option<MySession> {
+        let (profile, password) = url_profile()?;
         let target = ConnectTarget {
             profile: &profile,
             password: password.as_deref(),
             host_override: None,
         };
         Some(MySession::open(&target).await.expect("connect"))
+    }
+
+    /// Regression: the password of a "Command Line (IAM authentication)" profile was frozen into
+    /// the pool, so pool connections opened after the token expired failed to log in. A refused
+    /// token older than the TTL is renewed (the command runs again) and the pool rebuilt.
+    #[tokio::test]
+    async fn an_expired_command_token_is_renewed_for_new_pool_connections() {
+        let Some(admin) = open().await else {
+            return;
+        };
+        let (mut profile, _) = url_profile().unwrap();
+        let user = "fx_conn_iam";
+        let create = format!("CREATE USER IF NOT EXISTS '{user}'@'%' IDENTIFIED BY 'tok-a'");
+        if let Err(e) = admin.execute(&create, &[]).await {
+            println!("skipped: cannot create a test user ({e})");
+            admin.close().await;
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        std::fs::write(&file, "tok-a\n").unwrap();
+        profile.user = Some(user.into());
+        profile.database = None;
+        profile.options.password_mode = Some(crate::types::profile::PasswordMode::Command);
+        let command = format!("cat '{}'", file.display());
+        profile.options.password_command = Some(command.clone());
+        let target = ConnectTarget {
+            profile: &profile,
+            password: Some("tok-a"),
+            host_override: None,
+        };
+        let outcome = async {
+            let mut session = MySession::open(&target).await?;
+            // A TTL short enough for the test.
+            session.token = Some(Arc::new(
+                CommandPassword::new(&command, Duration::from_millis(300)).seeded(Some("tok-a")),
+            ));
+            admin
+                .execute(
+                    &format!("ALTER USER '{user}'@'%' IDENTIFIED BY 'tok-b'"),
+                    &[],
+                )
+                .await?;
+            // A fresh token that is refused is not renewed (the password is wrong, not old).
+            let err = session.list_databases().await.unwrap_err();
+            assert!(matches!(err, AppError::Auth(_)), "{err:?}");
+            assert_eq!(session.workers().generation, 0);
+            // Once it is old, the command runs again and the pool is rebuilt with its output.
+            std::fs::write(&file, "tok-b\n").unwrap();
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            session.list_databases().await?;
+            assert_eq!(session.workers().generation, 1);
+            assert_eq!(session.workers().opts.pass(), Some("tok-b"));
+            // The editor connection, open since the connect, still works.
+            assert_eq!(on_editor(&session, "SELECT 1").await, Some(Value::Int(1)));
+            session.close().await;
+            Ok::<_, AppError>(())
+        }
+        .await;
+        let _ = admin
+            .execute(&format!("DROP USER IF EXISTS '{user}'@'%'"), &[])
+            .await;
+        admin.close().await;
+        outcome.unwrap();
     }
 
     /// Runs `sql` on the editor; the first value of its first row.

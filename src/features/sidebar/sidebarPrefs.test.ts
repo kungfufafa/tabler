@@ -35,7 +35,7 @@ describe("sidebar preferences", () => {
     expect(state().options).toEqual(DEFAULT_SIDEBAR_OPTIONS);
   });
 
-  it("leaves Recent and the row counts off by default (TablePlus lists names only)", () => {
+  it("leaves Recent, the row counts and the columns off by default (TablePlus lists names only)", () => {
     expect(DEFAULT_SIDEBAR_OPTIONS).toEqual({
       showRecent: false,
       showRowCounts: false,
@@ -43,6 +43,7 @@ describe("sidebar preferences", () => {
       showSequences: false,
       showSystemSchemas: false,
       historyAllConnections: false,
+      showColumns: false,
     });
   });
 

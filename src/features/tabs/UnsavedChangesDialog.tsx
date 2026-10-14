@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { openPendingSheet } from "@/features/objects/pendingActions";
 import { actions } from "@/features/palette/actions";
 import { pendingCount } from "@/features/staging/model";
 import { structurePendingCount } from "@/features/structure/store";
@@ -57,7 +58,13 @@ export function UnsavedChangesDialog() {
   if (live && live !== last) setLast(live);
   const request = live ?? last;
   // Table and structure tabs both answer `grid.preview` with their Preview SQL sheet.
-  const reviewTarget = request?.dirty.find((d) => d.kind !== "query") ?? null;
+  const reviewTarget =
+    request?.dirty.find((d) => d.kind !== "query" && d.connectionId === undefined) ?? null;
+  // A connection's staged sidebar operations have no tab: Review shows their own sheet.
+  const reviewConnection =
+    reviewTarget === null
+      ? (request?.dirty.find((d) => d.connectionId !== undefined)?.connectionId ?? null)
+      : null;
 
   const discard = () => {
     const req = useTabsStore.getState().confirmClose();
@@ -65,6 +72,12 @@ export function UnsavedChangesDialog() {
   };
 
   const review = () => {
+    if (reviewConnection !== null) {
+      useTabsStore.getState().cancelClose();
+      useUiStore.getState().setView("workspace");
+      openPendingSheet(reviewConnection);
+      return;
+    }
     if (!reviewTarget) return;
     const tabs = useTabsStore.getState();
     tabs.cancelClose();
@@ -116,7 +129,7 @@ export function UnsavedChangesDialog() {
           </ul>
         )}
         <AlertDialogFooter className="items-center px-4 py-3 sm:justify-between">
-          {reviewTarget ? (
+          {reviewTarget || reviewConnection !== null ? (
             <Button variant="ghost" size="sm" onClick={review} className="sm:mr-auto">
               Review…
             </Button>

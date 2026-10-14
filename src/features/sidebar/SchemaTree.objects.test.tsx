@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useDiagramStore } from "@/features/diagram/store";
 import { ObjectsHost } from "@/features/objects/ObjectsHost";
+import { pendingObjectOps, resetPendingObjectOps } from "@/features/objects/pendingOps";
 import { closeItemOverview, closeObjectDialog, useObjectsStore } from "@/features/objects/store";
 import { actions } from "@/features/palette/actions";
 import { guardExecution } from "@/features/safety/guard";
@@ -17,9 +19,10 @@ import {
 import { isMac } from "@/lib/keys/combo";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
+import { createGroup, reloadGroups, useGroups } from "./groups";
 import { SchemaTree } from "./SchemaTree";
-import { reloadSidebarPrefs } from "./sidebarPrefs";
-import { buildTreeRows } from "./useSchemaTree";
+import { reloadSidebarPrefs, setSidebarOption } from "./sidebarPrefs";
+import { buildTreeRows, useTreeRows } from "./useSchemaTree";
 
 vi.mock("@/features/safety/guard", () => ({ guardExecution: vi.fn(async () => true) }));
 
@@ -64,18 +67,41 @@ function connect(driver: Driver = "postgres") {
   });
 }
 
-function renderTree() {
+const SCOPE = "p1|tabler_dev";
+
+/** The tree as the sidebar builds it, with the groups of `SCOPE`. */
+function GroupedTree() {
+  const groups = useGroups(SCOPE);
+  const rows = useTreeRows(TABLES, "", undefined, undefined, undefined, groups);
+  return (
+    <SchemaTree
+      connectionId="c1"
+      rows={rows}
+      loading={false}
+      error={null}
+      search=""
+      pinScope={SCOPE}
+      groups={groups}
+    />
+  );
+}
+
+function renderTree({ grouped = false }: { grouped?: boolean } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <SchemaTree
-        connectionId="c1"
-        rows={buildTreeRows(TABLES, "")}
-        loading={false}
-        error={null}
-        search=""
-        pinScope="p1|tabler_dev"
-      />
+      {grouped ? (
+        <GroupedTree />
+      ) : (
+        <SchemaTree
+          connectionId="c1"
+          rows={buildTreeRows(TABLES, "")}
+          loading={false}
+          error={null}
+          search=""
+          pinScope={SCOPE}
+        />
+      )}
       <ObjectsHost />
     </QueryClientProvider>,
   );
@@ -92,7 +118,16 @@ function planOf(op: ObjectOp): DdlPlan {
       ? op.tables.map((t) => `DROP TABLE "public"."${t.table.name}"${op.cascade ? " CASCADE" : ""}`)
       : op.op === "truncateTables"
         ? op.tables.map((t) => `TRUNCATE TABLE "public"."${t.name}"`)
-        : [`-- ${op.op}`];
+        : op.op === "dropRoutines"
+          ? op.routines.map(
+              (r) =>
+                `DROP ${r.kind === "procedure" ? "PROCEDURE" : "FUNCTION"} "public"."${r.name}"(${r.identityArguments})${op.cascade ? " CASCADE" : ""}`,
+            )
+          : op.op === "dropSequences"
+            ? op.sequences.map(
+                (s) => `DROP SEQUENCE "public"."${s.name}"${op.cascade ? " CASCADE" : ""}`,
+              )
+            : [`-- ${op.op}`];
   return { statements, warnings: [], transactional: true };
 }
 
@@ -105,6 +140,9 @@ describe("SchemaTree objects", () => {
     useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
     closeObjectDialog();
     closeItemOverview();
+    resetPendingObjectOps();
+    reloadGroups();
+    useDiagramStore.setState({ request: null });
     connect();
     vi.spyOn(ipc.schema, "schemas").mockResolvedValue([{ name: "public", isDefault: true }]);
     // In the server's (name) order.
@@ -182,7 +220,7 @@ describe("SchemaTree objects", () => {
     expect(screen.getByRole("menuitem", { name: /^Truncate 3 Items…/ })).toBeInTheDocument();
   });
 
-  it("⌫ confirms dropping every selected table, one statement each, after the safe mode", async () => {
+  it("⌫ stages dropping every selected table; ⌘S commits it after the safe mode", async () => {
     const apply = vi.spyOn(ipc.objects, "apply").mockResolvedValue({
       executed: [],
       failedIndex: null,
@@ -201,6 +239,23 @@ describe("SchemaTree objects", () => {
     );
     expect(within(dialog).getByRole("checkbox")).not.toBeChecked();
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // Staged, not run: the rows are struck through until the commit.
+    expect(apply).not.toHaveBeenCalled();
+    expect(guardExecution).not.toHaveBeenCalled();
+    expect(pendingObjectOps("c1")).toHaveLength(1);
+    expect(row("posts")).toHaveAttribute("data-pending", "drop");
+    expect(row("tags")).toHaveAttribute("data-pending", "drop");
+    // A table already pending a drop is not offered again.
+    fireEvent.contextMenu(row("posts"));
+    expect(screen.getByRole("menuitem", { name: /^Delete…/ })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+
+    // ⌘S (no tab has staged changes): the operations alone, after the safe mode.
+    await actions.run("grid.commit");
     await waitFor(() => expect(apply).toHaveBeenCalledOnce());
     expect(guardExecution).toHaveBeenCalledWith("c1", {
       kind: "commit",
@@ -215,10 +270,10 @@ describe("SchemaTree objects", () => {
       cascade: false,
       ignoreForeignKeys: false,
     });
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(pendingObjectOps("c1")).toHaveLength(0));
   });
 
-  it("⇧⌫ presets CASCADE, ⌥⌫ truncates, and a declined safe mode sends nothing", async () => {
+  it("⇧⌫ presets CASCADE, ⌥⌫ truncates, and a declined safe mode keeps them pending", async () => {
     const apply = vi.spyOn(ipc.objects, "apply");
     vi.mocked(guardExecution).mockResolvedValue(false);
     renderTree();
@@ -228,9 +283,6 @@ describe("SchemaTree objects", () => {
     expect(within(dialog).getByRole("checkbox", { name: /CASCADE/ })).toBeChecked();
     await waitFor(() => expect(sqlPreview(dialog)).toHaveTextContent("CASCADE;"));
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(guardExecution).toHaveBeenCalled());
-    expect(apply).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
     // Views cannot be truncated: ⌥⌫ on one does nothing.
@@ -241,6 +293,297 @@ describe("SchemaTree objects", () => {
     await waitFor(() =>
       expect(sqlPreview(dialog)).toHaveTextContent('TRUNCATE TABLE "public"."tags";'),
     );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Truncate" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(row("tags")).toHaveAttribute("data-pending", "truncate");
+    expect(within(row("tags")).getByText("Truncate")).toBeInTheDocument();
+
+    await actions.run("grid.commit");
+    await waitFor(() => expect(guardExecution).toHaveBeenCalledOnce());
+    expect(vi.mocked(guardExecution).mock.calls[0]![1]).toEqual({
+      kind: "commit",
+      statements: ['DROP TABLE "public"."users" CASCADE', 'TRUNCATE TABLE "public"."tags"'],
+    });
+    expect(apply).not.toHaveBeenCalled();
+    expect(pendingObjectOps("c1").map((o) => o.kind)).toEqual(["drop", "truncate"]);
+
+    // ⇧⌘⌫ (Discard) drops them.
+    await actions.run("grid.discard");
+    expect(pendingObjectOps("c1")).toEqual([]);
+    expect(row("tags")).not.toHaveAttribute("data-pending");
+  });
+
+  it("stops at the first failing operation and keeps it and the rest pending", async () => {
+    const apply = vi
+      .spyOn(ipc.objects, "apply")
+      .mockResolvedValueOnce({ executed: ["x"], failedIndex: null, error: null, durationMs: 1 })
+      .mockResolvedValueOnce({
+        executed: [],
+        failedIndex: 0,
+        error: { code: "DB", message: "permission denied", detail: null, hint: null },
+        durationMs: 1,
+      } as never);
+    renderTree();
+    await screen.findByRole("button", { name: /^Functions/ });
+    for (const name of ["users", "posts", "tags"]) {
+      fireEvent.click(row(name));
+      fireEvent.keyDown(row(name), { key: "Backspace", altKey: true });
+      const dialog = await screen.findByRole("dialog", { name: `Truncate ${name}?` });
+      await waitFor(() => expect(sqlPreview(dialog)).toHaveTextContent("TRUNCATE"));
+      fireEvent.click(within(dialog).getByRole("button", { name: "Truncate" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    }
+    await actions.run("grid.commit");
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(2));
+    const left = pendingObjectOps("c1");
+    expect(left.map((o) => o.op.op === "truncateTables" && o.op.tables[0]!.name)).toEqual([
+      "posts",
+      "tags",
+    ]);
+    expect(left[0]!.error).toBe("permission denied");
+    expect(left[1]!.error).toBeNull();
+  });
+
+  it("previews the pending operations in a sheet, where one can be taken out", async () => {
+    renderTree();
+    await screen.findByRole("button", { name: /^Functions/ });
+    fireEvent.keyDown(row("tags"), { key: "Backspace" });
+    let dialog = await screen.findByRole("dialog", { name: "Delete table tags?" });
+    await waitFor(() => expect(sqlPreview(dialog)).toHaveTextContent("DROP TABLE"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.keyDown(row("users"), { key: "Backspace", altKey: true });
+    dialog = await screen.findByRole("dialog", { name: "Truncate users?" });
+    await waitFor(() => expect(sqlPreview(dialog)).toHaveTextContent("TRUNCATE"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Truncate" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    await actions.run("grid.preview");
+    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const ops = within(sheet).getByRole("region", { name: "Item operations" });
+    expect(ops).toHaveTextContent('Delete tagsDROP TABLE "public"."tags";');
+    expect(ops).toHaveTextContent('Truncate usersTRUNCATE TABLE "public"."users";');
+    fireEvent.click(within(sheet).getByRole("button", { name: "Remove delete of tags" }));
+    expect(pendingObjectOps("c1").map((o) => o.kind)).toEqual(["truncate"]);
+  });
+
+  it("⌫ on functions and sequences stages their drop: struck through until ⌘S", async () => {
+    const apply = vi.spyOn(ipc.objects, "apply").mockResolvedValue({
+      executed: [],
+      failedIndex: null,
+      error: null,
+      durationMs: 1,
+    });
+    vi.mocked(ipc.objects.sequences).mockResolvedValue([
+      {
+        schema: "public",
+        name: "posts_id_seq",
+        dataType: "bigint",
+        ownedBy: "posts.id",
+        comment: null,
+      },
+    ]);
+    setSidebarOption("showSequences", true);
+    renderTree();
+    await screen.findByRole("button", { name: /^Sequences/ });
+    expect(ipc.objects.routines).toHaveBeenCalledTimes(1);
+
+    // Both routines (⌫ acts on the selection), with CASCADE.
+    fireEvent.keyDown(row("slugify"), { key: "a", ...MOD });
+    fireEvent.keyDown(row("slugify"), { key: "Backspace" });
+    let dialog = await screen.findByRole("dialog", { name: "Delete 2 routines?" });
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /CASCADE/ }));
+    await waitFor(() =>
+      expect(sqlPreview(dialog)).toHaveTextContent(
+        'DROP PROCEDURE "public"."archive_posts"(value text) CASCADE;',
+      ),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // The sequence from its menu.
+    fireEvent.contextMenu(row("posts_id_seq"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Delete…/ }));
+    dialog = await screen.findByRole("dialog", { name: "Delete sequence posts_id_seq?" });
+    await waitFor(() => expect(sqlPreview(dialog)).toHaveTextContent("DROP SEQUENCE"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // Staged, not run: struck through like a table pending a drop.
+    expect(apply).not.toHaveBeenCalled();
+    expect(pendingObjectOps("c1").map((o) => o.op.op)).toEqual(["dropRoutines", "dropSequences"]);
+    for (const name of ["slugify", "archive_posts", "posts_id_seq"]) {
+      expect(row(name)).toHaveAttribute("data-pending", "drop");
+      expect(within(row(name)).getByText(name)).toHaveClass("line-through");
+    }
+    expect(row("users")).not.toHaveAttribute("data-pending");
+    // Not offered a second time: neither the menu nor ⌫ opens another dialog.
+    fireEvent.contextMenu(row("posts_id_seq"));
+    expect(screen.getByRole("menuitem", { name: /^Delete…/ })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.keyDown(row("slugify"), { key: "Backspace" });
+    expect(useObjectsStore.getState().dialog).toBeNull();
+
+    // ⌘S runs them after the safe mode, then refetches the routine list.
+    await actions.run("grid.commit");
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(guardExecution).mock.calls[0]![1]).toEqual({
+      kind: "commit",
+      statements: [
+        'DROP PROCEDURE "public"."archive_posts"(value text) CASCADE',
+        'DROP FUNCTION "public"."slugify"(value text) CASCADE',
+        'DROP SEQUENCE "public"."posts_id_seq"',
+      ],
+    });
+    await waitFor(() => expect(pendingObjectOps("c1")).toEqual([]));
+    await waitFor(() => expect(ipc.objects.routines).toHaveBeenCalledTimes(2));
+    expect(row("slugify")).not.toHaveAttribute("data-pending");
+  });
+
+  it("lists a table's columns when Show Columns is on and the row is expanded", async () => {
+    setSidebarOption("showColumns", true);
+    const meta = vi.spyOn(ipc.schema, "table").mockResolvedValue({
+      table: { schema: "public", name: "posts" },
+      kind: "table",
+      columns: [
+        { name: "id", ordinal: 1, dataType: "bigint", isPk: true },
+        { name: "user_id", ordinal: 2, dataType: "bigint", isPk: false },
+        { name: "title", ordinal: 3, dataType: "text", isPk: false },
+      ],
+      primaryKey: ["id"],
+      foreignKeys: [{ columns: ["user_id"] }],
+    } as never);
+    renderTree();
+    await screen.findByRole("button", { name: /^Functions/ });
+    expect(row("posts")).toHaveAttribute("aria-expanded", "false");
+    expect(meta).not.toHaveBeenCalled();
+    // → expands, the chevron toggles.
+    fireEvent.keyDown(row("posts"), { key: "ArrowRight" });
+    expect(row("posts")).toHaveAttribute("aria-expanded", "true");
+    const title = await screen.findByRole("button", { name: "titletext" });
+    expect(meta).toHaveBeenCalledWith("c1", { schema: "public", name: "posts" });
+    expect(screen.getByRole("button", { name: "Primary keyidbigint" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Foreign keyuser_idbigint" })).toBeInTheDocument();
+    // Clicking a column opens its table.
+    fireEvent.click(title);
+    expect(useTabsStore.getState().tabs).toEqual([
+      expect.objectContaining({ title: "posts", preview: true }),
+    ]);
+    fireEvent.keyDown(row("posts"), { key: "ArrowLeft" });
+    expect(screen.queryByRole("button", { name: "titletext" })).toBeNull();
+    const chevron = row("posts").querySelector<HTMLElement>("[data-slot=disclosure]")!;
+    fireEvent.click(chevron);
+    expect(await screen.findByRole("button", { name: "titletext" })).toBeInTheDocument();
+    // Turned off: no chevrons, no columns.
+    act(() => setSidebarOption("showColumns", false));
+    expect(screen.queryByRole("button", { name: "titletext" })).toBeNull();
+    expect(row("posts")).not.toHaveAttribute("aria-expanded");
+  });
+
+  it("shows groups above Tables; their items leave the regular sections", async () => {
+    createGroup(SCOPE, "Tagging", [{ field: "name", op: "prefix", value: "tag" }]);
+    const manual = createGroup(SCOPE, "Archive", null, ["t:public.posts"]);
+    renderTree({ grouped: true });
+    await screen.findByRole("button", { name: /^Functions/ });
+    const labels = screen
+      .getAllByRole("button")
+      .filter((b) => b.dataset.rowIndex !== undefined)
+      .map((b) => b.textContent);
+    expect(labels).toEqual([
+      "Tagging1",
+      "tags",
+      "Archive1",
+      "posts",
+      "Functions2",
+      "archive_posts",
+      "slugify",
+      "Tables1",
+      "users",
+      "Views1",
+      "user_stats",
+    ]);
+    // Add to Group from the menu moves the item into the manual group.
+    fireEvent.contextMenu(row("users"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add to Group" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Archive" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Archive/ })).toHaveTextContent("Archive2"),
+    );
+    expect(screen.queryByRole("button", { name: /^Tables/ })).toBeNull();
+    // The group header collapses on click and offers Edit / Delete.
+    fireEvent.click(screen.getByRole("button", { name: /^Archive/ }));
+    expect(screen.queryByRole("button", { name: "posts" })).toBeNull();
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Archive/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete Group" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "posts" })).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /^Archive/ })).toBeNull();
+    expect(manual.id).toBeTruthy();
+  });
+
+  it("marks a group whose stored regex is unsafe, and keeps it empty", async () => {
+    // Saved before the regex check existed: kept, but switched off and flagged on its header.
+    createGroup(SCOPE, "Risky", [{ field: "name", op: "regex", value: "(\\w+)+x$" }]);
+    renderTree({ grouped: true });
+    await screen.findByRole("button", { name: /^Functions/ });
+    const header = screen
+      .getAllByRole("button")
+      .find((b) => b.dataset.group !== undefined && b.textContent?.startsWith("Risky"));
+    expect(header).toBeDefined();
+    expect(header).toHaveTextContent("Risky0");
+    expect(within(header!).getByLabelText(/This group is off/)).toBeInTheDocument();
+    expect(header).toHaveAttribute("title", expect.stringMatching(/This group is off/));
+  });
+
+  it("drops dragged rows into a manual group", async () => {
+    createGroup(SCOPE, "Archive", null);
+    renderTree({ grouped: true });
+    await screen.findByRole("button", { name: /^Functions/ });
+    const data = new Map<string, string>();
+    const dataTransfer = {
+      setData: (k: string, v: string) => data.set(k, v),
+      getData: (k: string) => data.get(k) ?? "",
+      get types() {
+        return [...data.keys()];
+      },
+      effectAllowed: "",
+      dropEffect: "",
+    };
+    fireEvent.click(row("users"));
+    fireEvent.click(row("slugify"), MOD);
+    fireEvent.dragStart(row("slugify"), { dataTransfer });
+    const header = screen.getByRole("button", { name: /^Archive/ });
+    fireEvent.dragOver(header, { dataTransfer });
+    expect(header).toHaveAttribute("data-drop-target");
+    fireEvent.drop(header, { dataTransfer });
+    await waitFor(() => expect(header).toHaveTextContent("Archive2"));
+    expect(header).not.toHaveAttribute("data-drop-target");
+  });
+
+  it("generates a diagram of the selected tables, or of the whole schema", async () => {
+    renderTree();
+    await screen.findByRole("button", { name: /^Functions/ });
+    fireEvent.click(row("users"));
+    fireEvent.click(row("tags"), MOD);
+    fireEvent.contextMenu(row("tags"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Generate Diagram…" }));
+    expect(useDiagramStore.getState().request).toEqual({
+      connectionId: "c1",
+      schema: "public",
+      tables: [
+        { schema: "public", name: "users" },
+        { schema: "public", name: "tags" },
+      ],
+    });
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Tables/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Generate Diagram…" }));
+    expect(useDiagramStore.getState().request).toEqual({
+      connectionId: "c1",
+      schema: "public",
+      tables: null,
+    });
   });
 
   it("opens the Item Overview from the Tables header", async () => {

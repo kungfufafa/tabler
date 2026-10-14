@@ -66,6 +66,7 @@ import {
   type CopyContext,
   type CopyFormat,
 } from "./clipboard";
+import { csvDefaults } from "./csv";
 import {
   fitWidth,
   hiddenCount,
@@ -196,6 +197,11 @@ export interface DataGridProps {
   onLoadReferenced?: (column: GridColumn, value: Value) => Promise<ReferencedRows>;
   /** Quick Look on a blob cut to its preview: the whole value (`c` is a SOURCE index). */
   onLoadFullValue?: (r: number, c: number) => Promise<Value>;
+  /**
+   * Selects (as a click would) and scrolls to this cell (`c` a SOURCE index) each time a new
+   * object is passed: the SQL editor's find in results steps through its matches with it.
+   */
+  revealCell?: CellPos | null;
   className?: string;
 }
 
@@ -400,6 +406,7 @@ export function DataGrid({
   quickLookKey = false,
   onLoadReferenced,
   onLoadFullValue,
+  revealCell,
   className,
 }: DataGridProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -494,6 +501,16 @@ export function DataGrid({
       onFocusCell?.({ pos: f, sourceIndex, column, value: valueAt(row, f.c), row });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusKey, getRow, cols, src]);
+
+  useEffect(() => {
+    const c = revealCell ? src.indexOf(revealCell.c) : -1;
+    if (!revealCell || c < 0 || revealCell.r >= rowCount) return;
+    dispatch({ type: "set", pos: { r: revealCell.r, c } });
+    // Also when the cell was selected already but scrolled away.
+    rowVirtualizer.scrollToIndex(revealCell.r, { align: "auto" });
+    colVirtualizer.scrollToIndex(c, { align: "auto" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealCell]);
 
   const selectedCount = selectedRowCount(selection);
   useEffect(() => {
@@ -636,6 +653,8 @@ export function DataGrid({
   useAction("grid.set-null", enabled ? setNull : null);
   useAction("grid.set-empty", enabled ? setEmpty : null);
   useAction("grid.set-default", enabled ? setDefault : null);
+  // Edit ▸ Set Value ▸ Now (local time) in the native menu.
+  useAction("grid.set-now", enabled ? setNow : null);
   /** ⌥↩: the Set Value menu under the focused cell (like an ⌥-click on it). */
   const openSetValueMenu = useCallback(() => {
     const f = selectionRef.current.focus;
@@ -730,6 +749,8 @@ export function DataGrid({
           formatCells(choice.format, block.columns, block.rows, {
             ...copyContext,
             headers: choice.headers ?? false,
+            // Settings ▸ General ▸ CSV default options (a Tab delimiter gives TSV, as in TablePlus).
+            csv: csvDefaults(),
           }),
         );
       } catch (e) {

@@ -156,6 +156,7 @@ pub fn table_meta(conn: &mut Connection, table: &TableRef) -> Result<TableMeta, 
                     3 => Some("STORED".into()),
                     _ => None,
                 },
+                base_type: None,
             });
         }
     }
@@ -249,6 +250,7 @@ pub fn table_meta(conn: &mut Connection, table: &TableRef) -> Result<TableMeta, 
                 predicate,
                 definition,
                 comment: None,
+                include: Vec::new(),
             });
         }
     }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Value } from "@/lib/ipc";
-import { formatCells, formatColumnValues, parseTsv } from "./clipboard";
+import { formatCells, formatColumnValues, INSERT_CHUNK_BYTES, parseTsv } from "./clipboard";
+import { DEFAULT_CSV_OPTIONS, type CsvOptions } from "./csv";
 import type { GridColumn } from "./types";
 
 const col = (name: string, kind: GridColumn["kind"]): GridColumn => ({
@@ -33,10 +34,35 @@ describe("formatCells", () => {
     );
   });
   it("csv names the columns only with a header", () => {
-    expect(formatCells("csv", columns, rows, { headers: true }).split("\r\n")[0]).toBe(
+    expect(formatCells("csv", columns, rows, { headers: true }).split("\n")[0]).toBe(
       "id,name,big,j",
     );
-    expect(formatCells("csv", columns, rows)).toBe('1,a\tb,9007199254740993,"{""x"":1}"\r\n2,,5,');
+    expect(formatCells("csv", columns, rows)).toBe('1,a\tb,9007199254740993,"{""x"":1}"\n2,,5,');
+  });
+  it("csv follows the CSV default options (delimiter, quotes, line break, decimal)", () => {
+    const money = [col("id", "int"), col("price", "decimal"), col("note", "text")];
+    const data: Value[][] = [
+      [
+        { t: "int", v: 1 },
+        { t: "decimal", v: "12.50" },
+        { t: "text", v: "it's; fine" },
+      ],
+      [{ t: "int", v: 2 }, { t: "null" }, { t: "text", v: "plain" }],
+    ];
+    const csv = (o: Partial<CsvOptions>) =>
+      formatCells("csv", money, data, { headers: true, csv: { ...DEFAULT_CSV_OPTIONS, ...o } });
+    expect(csv({ delimiter: ";", decimal: ",", lineBreak: "\r\n" })).toBe(
+      'id;price;note\r\n1;12,50;"it\'s; fine"\r\n2;;plain',
+    );
+    // Every value quoted (NULL stays empty), with the chosen quote doubled inside.
+    expect(csv({ quote: "single" })).toBe(
+      "'id','price','note'\n'1','12.50','it''s; fine'\n'2',,'plain'",
+    );
+    expect(csv({ quote: "double", delimiter: "\t", lineBreak: "\r" })).toBe(
+      '"id"\t"price"\t"note"\r"1"\t"12.50"\t"it\'s; fine"\r"2"\t\t"plain"',
+    );
+    // A decimal comma under a comma delimiter needs quotes.
+    expect(csv({ decimal: "," }).split("\n")[1]).toBe('1,"12,50",it\'s; fine');
   });
   it("tsv adds a header line on request (plain text has none)", () => {
     expect(formatCells("tsv", columns, rows, { headers: true }).split("\n")[0]).toBe(
@@ -70,19 +96,43 @@ describe("formatCells", () => {
     expect(parsed[1]?.big).toBe(5);
     expect(parsed[1]?.name).toBeNull();
   });
-  it("insert quotes per dialect", () => {
+  it("insert quotes per dialect, in one multi-row statement", () => {
     const pg = formatCells("insert", columns, rows, {
       dialect: "postgres",
       schema: "public",
       table: "t",
     });
-    expect(pg.split("\n")[0]).toBe(
-      `INSERT INTO "public"."t" ("id", "name", "big", "j") VALUES (1, 'a\tb', 9007199254740993, '{"x":1}');`,
+    expect(pg).toBe(
+      `INSERT INTO "public"."t" ("id", "name", "big", "j") VALUES\n` +
+        `(1, 'a\tb', 9007199254740993, '{"x":1}'),\n(2, NULL, 5, NULL);`,
     );
     const my = formatCells("insert", columns, rows, { dialect: "mysql", schema: null, table: "t" });
-    expect(my.split("\n")[1]).toBe(
-      "INSERT INTO `t` (`id`, `name`, `big`, `j`) VALUES (2, NULL, 5, NULL);",
-    );
+    expect(my.split("\n")[0]).toBe("INSERT INTO `t` (`id`, `name`, `big`, `j`) VALUES");
+    expect(my.split("\n")[2]).toBe("(2, NULL, 5, NULL);");
+    expect(formatCells("insert", columns, [])).toBe("");
+  });
+  it("insert splits the rows into statements under the size cap (~250 KB)", () => {
+    const one = [col("s", "text")];
+    const many: Value[][] = Array.from({ length: 10 }, (_, i) => [{ t: "text", v: `v${i}` }]);
+    const ctx = { dialect: "sqlite" as const, schema: null, table: "t" };
+    // Head `INSERT INTO "t" ("s") VALUES\n` is 29 bytes, each tuple ('vN') 6 plus ",\n".
+    const out = formatCells("insert", one, many, { ...ctx, insertChunkBytes: 60 });
+    const statements = out.split(";\n").map((st) => (st.endsWith(";") ? st : `${st};`));
+    expect(statements).toHaveLength(3);
+    for (const st of statements)
+      expect(new TextEncoder().encode(st).length).toBeLessThanOrEqual(60);
+    expect(statements[0]).toBe(`INSERT INTO "t" ("s") VALUES\n('v0'),\n('v1'),\n('v2'),\n('v3');`);
+    expect(out.match(/\('v\d'\)/g)).toHaveLength(10);
+    // A row larger than the cap still gets a statement of its own.
+    const big: Value[][] = [[{ t: "text", v: "é".repeat(40) }], [{ t: "text", v: "x" }]];
+    expect(
+      formatCells("insert", one, big, { ...ctx, insertChunkBytes: 60 }).split(";\n"),
+    ).toHaveLength(2);
+    // The default cap keeps every statement under 250 KB.
+    const wide: Value[][] = Array.from({ length: 3000 }, () => [{ t: "text", v: "x".repeat(200) }]);
+    const chunks = formatCells("insert", one, wide, ctx).split(";\n");
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const st of chunks) expect(st.length).toBeLessThanOrEqual(INSERT_CHUNK_BYTES);
   });
   it("markdown escapes pipes", () => {
     const md = formatCells("markdown", [col("a", "text")], [[{ t: "text", v: "x|y" }]]);

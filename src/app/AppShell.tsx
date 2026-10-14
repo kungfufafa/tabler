@@ -6,13 +6,16 @@ import { ConnectionDialogHost } from "@/features/connections/ConnectionDialogHos
 import { HostKeyPromptHost } from "@/features/connections/HostKeyPrompt";
 import { useKeepAlive } from "@/features/connections/keepAlive";
 import { Launcher } from "@/features/connections/Launcher";
+import { SshPromptHost } from "@/features/connections/SshPrompt";
 import { ConsolePanel } from "@/features/console/ConsolePanel";
+import { DiagramHost } from "@/features/diagram/DiagramHost";
 import { ExportHost } from "@/features/export";
 import { ImportHost } from "@/features/import";
 import { InspectorPanel } from "@/features/inspector/InspectorPanel";
 import { ObjectsHost } from "@/features/objects/ObjectsHost";
 import { CommandPalette } from "@/features/palette/CommandPalette";
 import { QueriesHost } from "@/features/queries/QueriesHost";
+import { RerunConfirmDialog } from "@/features/results/RerunConfirmDialog";
 import { SafetyHost } from "@/features/safety/SafetyHost";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { Sidebar } from "@/features/sidebar/Sidebar";
@@ -119,17 +122,23 @@ export function AppShell() {
       {/* File ▸ Backup… / Restore… (pg_dump, mysqldump…). */}
       <BackupHost />
       <HostKeyPromptHost />
+      {/* SSH keyboard-interactive (2FA) questions during connects and tests. */}
+      <SshPromptHost />
       <ConnectionDialogHost />
       {/* Process List…, User Management…, the database / schema dialogs. */}
       <AdminHost />
       <QueriesHost />
       {/* Sidebar object dialogs (delete / truncate / clone…) and the Item Overview. */}
       <ObjectsHost />
+      {/* Generate Diagram… (sidebar menus, the palette). */}
+      <DiagramHost />
       {/* Safe-mode alerts and password prompts (guardExecution). */}
       <SafetyHost />
       {/* Session restore / auto-save, and Show Workspaces (⇧⌘\). */}
       <SessionHost />
       <WorkspaceSwitcherHost />
+      {/* "Discard N uncommitted result changes and run?" before a SQL editor run. */}
+      <RerunConfirmDialog />
     </div>
   );
 }

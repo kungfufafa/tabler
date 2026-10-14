@@ -116,7 +116,17 @@ export type ActionId =
   | "export.open"
   /** File ▸ Import ▸ From CSV… / From SQL Dump… into the active connection. */
   | "import.csv"
-  | "import.sql";
+  | "import.sql"
+  /** Generate Diagram…: the ER diagram of the active connection's current schema. */
+  | "diagram.open"
+  /** Edit ▸ Set Value ▸ Now (local time) on the selected cells. */
+  | "grid.set-now"
+  /** Edit ▸ Toggle Line Comment (⌘/) / Toggle Block Comment (⌥⌘/) in the SQL editor. */
+  | "query.comment-line"
+  | "query.comment-block"
+  /** Navigate ▸ Select Next / Previous Pane (⇧⌘] / ⇧⌘[): sidebar → tab → row detail → console. */
+  | "ui.next-pane"
+  | "ui.prev-pane";
 
 export type ActionHandler = () => void | Promise<void>;
 
@@ -156,6 +166,23 @@ class ActionRegistry {
       const current = this.handlers.get(id);
       if (!current) return;
       const i = current.lastIndexOf(handler);
+      if (i >= 0) current.splice(i, 1);
+      if (current.length === 0) this.handlers.delete(id);
+    };
+  }
+
+  /**
+   * Registers `handler` under every handler of `id`: a default that any other handler (the
+   * focused tab's) overrides, whenever that one was registered.
+   */
+  registerFallback(id: ActionId, handler: ActionHandler): () => void {
+    const list = this.handlers.get(id) ?? [];
+    list.unshift(handler);
+    this.handlers.set(id, list);
+    return () => {
+      const current = this.handlers.get(id);
+      if (!current) return;
+      const i = current.indexOf(handler);
       if (i >= 0) current.splice(i, 1);
       if (current.length === 0) this.handlers.delete(id);
     };

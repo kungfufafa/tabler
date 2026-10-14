@@ -324,6 +324,7 @@ async fn columns(conn: &mut Conn, schema: &str, name: &str) -> Result<Vec<Column
             array_elem_type: None,
             extra: non_empty(Some(extra)),
             data_type: column_type,
+            base_type: None,
         });
     }
     Ok(out)
@@ -397,6 +398,7 @@ fn group_indexes(rows: Vec<IndexRow>) -> Vec<IndexMeta> {
                 predicate: None,
                 definition: None,
                 comment: r.comment,
+                include: Vec::new(),
             }),
         }
     }

@@ -33,6 +33,8 @@ export interface SidebarOptions {
   showSystemSchemas: boolean;
   /** The history pane lists every connection's statements, not just the active one's. */
   historyAllConnections: boolean;
+  /** Table / view rows expand to list their columns (TablePlus b670, off by default). */
+  showColumns: boolean;
 }
 
 export const DEFAULT_SIDEBAR_OPTIONS: SidebarOptions = {
@@ -43,6 +45,7 @@ export const DEFAULT_SIDEBAR_OPTIONS: SidebarOptions = {
   showSequences: false,
   showSystemSchemas: false,
   historyAllConnections: false,
+  showColumns: false,
 };
 
 const SECTIONS: readonly SidebarSection[] = [

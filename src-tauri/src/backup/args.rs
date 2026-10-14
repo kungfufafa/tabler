@@ -64,6 +64,11 @@ pub struct ConnParams {
     /// The system CA bundle (`/etc/ssl/cert.pem`), used to verify server certificates when the
     /// profile names no CA file.
     pub system_ca: Option<PathBuf>,
+    /// MySQL "Use socket": the socket file to connect through (the endpoint is then unused).
+    pub socket: Option<String>,
+    /// MySQL: the password may be sent in clear text (an IAM authentication token over TLS or a
+    /// socket, see `drivers::mysql::cleartext_password_allowed`).
+    pub cleartext_password: bool,
 }
 
 /// The binary to run: its path, tool and version (`--version`).
@@ -422,20 +427,36 @@ fn mysql_connection(
     let (defaults, rest): (Vec<String>, Vec<String>) =
         user.into_iter().partition(|w| is_defaults_option(w));
     let mut args = defaults;
-    args.push(format!("--host={}", conn.endpoint.host));
-    args.push(format!("--port={}", conn.endpoint.port));
-    // `localhost` would mean the Unix socket; the profile (and a tunnel) is TCP.
-    args.push("--protocol=TCP".into());
+    let socket = nonempty(&conn.socket);
+    match socket {
+        // "Use socket", as the connection itself does.
+        Some(path) => {
+            args.push(format!("--socket={path}"));
+            args.push("--protocol=SOCKET".into());
+        }
+        None => {
+            args.push(format!("--host={}", conn.endpoint.host));
+            args.push(format!("--port={}", conn.endpoint.port));
+            // `localhost` would mean the Unix socket; the profile (and a tunnel) is TCP.
+            args.push("--protocol=TCP".into());
+        }
+    }
     if let Some(u) = nonempty(&conn.user) {
         args.push(format!("--user={u}"));
     }
     if let Some(pw) = conn.password.as_deref().filter(|p| !p.is_empty()) {
         env.push(("MYSQL_PWD".into(), pw.to_string()));
     }
+    // IAM authentication (`mysql_clear_password`): MySQL's clients refuse to send the token
+    // unless asked to; MariaDB's send it on their own (and do not know the option).
+    if conn.cleartext_password && !tool.mariadb() {
+        args.push("--enable-cleartext-plugin".into());
+    }
     let user_ssl = rest
         .iter()
         .any(|w| w.starts_with("--ssl") || w.starts_with("--skip-ssl"));
-    if !user_ssl {
+    // A local socket is not encrypted (as for the connection itself).
+    if !user_ssl && socket.is_none() {
         let mut mode = conn.ssl;
         if mode == SslMode::VerifyFull && conn.endpoint.via_tunnel {
             mode = SslMode::VerifyCa;
@@ -693,6 +714,8 @@ mod tests {
             ssl_ca: None,
             connect_timeout_secs: 15,
             system_ca: None,
+            socket: None,
+            cleartext_password: false,
         }
     }
 
@@ -970,6 +993,79 @@ mod tests {
         assert!(
             inv.args
                 .contains(&"--skip-ssl-verify-server-cert".to_string())
+        );
+    }
+
+    /// Regression: "Use socket" profiles were backed up and restored over TCP.
+    #[test]
+    fn mysql_socket_profiles_use_their_socket() {
+        let mut c = conn(Driver::Mysql);
+        c.socket = Some("/tmp/mysql.sock".into());
+        for inv in [
+            build_backup(
+                &my_tool(DumpTool::Mysqldump, VersionFlavor::Mysql),
+                &c,
+                &[],
+                false,
+            )
+            .unwrap(),
+            build_restore(
+                &my_tool(DumpTool::Mysql, VersionFlavor::Mysql),
+                &c,
+                &[],
+                &file(RestoreFileKind::Sql, false),
+            )
+            .unwrap(),
+        ] {
+            assert_eq!(inv.args[0], "--socket=/tmp/mysql.sock");
+            assert_eq!(inv.args[1], "--protocol=SOCKET");
+            assert!(
+                !inv.args
+                    .iter()
+                    .any(|a| a.starts_with("--host") || a.starts_with("--port")),
+                "{:?}",
+                inv.args
+            );
+            assert!(!inv.args.contains(&"--protocol=TCP".to_string()));
+            assert!(!inv.args.iter().any(|a| a.starts_with("--ssl")));
+            assert_no_password(&inv);
+        }
+        // The socket stays Tabler's to set.
+        assert!(user_args(DumpTool::Mysqldump, &s(&["--socket=/x.sock"])).is_err());
+    }
+
+    /// Regression: IAM authentication tokens (`mysql_clear_password`) were refused by MySQL's
+    /// clients, so backups of "Command Line (IAM authentication)" profiles could not log in.
+    #[test]
+    fn iam_tokens_enable_the_cleartext_plugin() {
+        let mut c = conn(Driver::Mysql);
+        let flag = "--enable-cleartext-plugin".to_string();
+        let mysql = my_tool(DumpTool::Mysqldump, VersionFlavor::Mysql);
+        assert!(
+            !build_backup(&mysql, &c, &[], false)
+                .unwrap()
+                .args
+                .contains(&flag)
+        );
+        c.cleartext_password = true;
+        let inv = build_backup(&mysql, &c, &[], false).unwrap();
+        assert!(inv.args.contains(&flag));
+        assert_no_password(&inv);
+        let restore = build_restore(
+            &my_tool(DumpTool::Mysql, VersionFlavor::Mysql),
+            &c,
+            &[],
+            &file(RestoreFileKind::Sql, false),
+        )
+        .unwrap();
+        assert!(restore.args.contains(&flag));
+        // MariaDB's clients send it without being asked (and do not know the option).
+        let maria = my_tool(DumpTool::Mysqldump, VersionFlavor::Mariadb);
+        assert!(
+            !build_backup(&maria, &c, &[], false)
+                .unwrap()
+                .args
+                .contains(&flag)
         );
     }
 

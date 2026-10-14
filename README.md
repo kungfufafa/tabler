@@ -83,6 +83,13 @@ renderer.
 - **Server admin** — create / rename (PostgreSQL) / drop databases and schemas from ⌘K, Running
   Queries (⌘.) with Kill Query / Kill Connection, User Management (roles, global and database
   privileges, MySQL resource limits; passwords never logged).
+- **Wave 2** — IAM ("Command Line") passwords with token refresh, MySQL sockets, SSH
+  keyboard-interactive / 2FA prompts, nested connection groups with icons, sidebar groups with filter
+  rules and a per-table column list, staged sidebar truncate / drop (⌘S), Copy Script As ▸ Laravel
+  Migration, an ER diagram (⌘P ▸ Generate Diagram…, SVG / PNG export), find and replace in results
+  (⌘F), PostgreSQL RAISE NOTICE messages, comment-driven charts (`-- TablePlus BarChart x: a, y: b`),
+  CSV default options, PostgreSQL trigger enable / disable and index INCLUDE columns, and a Navigate
+  menu with Select Next / Previous Pane (⇧⌘] / ⇧⌘[).
 - **Comfort** — TablePlus keys by default: Open Anything (⌘P), database switcher (⌘K), connection
   switcher (⇧⌘K), a console log of every statement the app runs (⇧⌘C), keyboard-first everything,
   a native macOS menu bar (File / Edit / View / Window) wired to the same actions, light/dark

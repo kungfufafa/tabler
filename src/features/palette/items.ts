@@ -3,7 +3,9 @@ import {
   AArrowUp,
   Activity,
   ArrowLeft,
+  ArrowLeftToLine,
   ArrowRight,
+  ArrowRightToLine,
   ArrowUpRight,
   BookmarkPlus,
   Cable,
@@ -23,16 +25,20 @@ import {
   Columns3Cog,
   Copy,
   CopyPlus,
+  ArchiveRestore,
   Database,
+  DatabaseBackup,
   DatabaseZap,
   Eraser,
   Eye,
   FileCode,
   FileDown,
+  FileUp,
   FileSearch,
   FoldVertical,
   FolderOpen,
   Funnel,
+  Network,
   History,
   LayoutGrid,
   ListTree,
@@ -865,6 +871,13 @@ const ACTION_ICONS: Partial<Record<ActionId, LucideIcon>> = {
   "workspace.prev": SquareArrowLeft,
   "tab.back": ArrowLeft,
   "tab.forward": ArrowRight,
+  "ui.next-pane": ArrowRightToLine,
+  "ui.prev-pane": ArrowLeftToLine,
+  "backup.open": DatabaseBackup,
+  "restore.open": ArchiveRestore,
+  "diagram.open": Network,
+  "import.csv": FileUp,
+  "import.sql": FileCode,
 };
 
 export function actionIcon(id: ActionId): LucideIcon {
@@ -894,10 +907,13 @@ export function actionApplies(id: ActionId, ctx: ActionContext): boolean {
   switch (id) {
     case "tab.new-query":
       return ctx.hasConnection;
-    // Without a tab, export.open only reports "Nothing to export here".
+    // Without a table or result tab, ⇧⌘E exports several tables of the current schema.
+    case "export.open":
+    case "import.csv":
+    case "import.sql":
+      return ctx.hasConnection;
     case "tab.close":
     case "tab.close-all":
-    case "export.open":
       return ctx.tabCount > 0;
     case "tab.next":
     case "tab.prev":

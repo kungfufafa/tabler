@@ -1304,6 +1304,24 @@ describe("DataGrid M8 grid features", () => {
     expect(toast.success).toHaveBeenLastCalledWith("Copied 1 row as HTML");
   });
 
+  it("Copy Rows As ▸ CSV follows Settings ▸ CSV default options", async () => {
+    resetPrefsForTests({ ...DEFAULT_PREFS, csvDelimiter: ";", csvQuote: "double" });
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText, readText: vi.fn() },
+    });
+    const { grid, click } = setup(state, { active: false });
+    click(0, 1);
+    fireEvent.keyDown(grid, { key: "ç", code: "KeyC", ...mod, altKey: true });
+    // 6 is CSV with header.
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "6" });
+    });
+    expect(writeText).toHaveBeenLastCalledWith('"id";"name";"email"\n"1";"Ann";"ann@x.io"');
+    resetPrefsForTests();
+  });
+
   it("orders the header menu like TablePlus and resets positions and widths", () => {
     const onColumnStateChange = vi.fn();
     const onSortChange = vi.fn();

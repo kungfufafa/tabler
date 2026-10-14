@@ -34,6 +34,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { rememberSafeModeLevel } from "@/features/safety/guard";
 import { confirmProtectedChange, protectedChanges } from "@/features/safety/setLevel";
 import {
@@ -55,6 +56,7 @@ import { getPrefs } from "@/stores/prefs";
 import { DriverBadge } from "./badges";
 import { BootstrapCommandsDialog } from "./BootstrapCommandsDialog";
 import { accentColor, DRIVER_LABEL, DRIVER_TINT, DRIVERS, TAG_COLOR, TAG_LABEL } from "./colors";
+import { GroupCombobox } from "./GroupCombobox";
 import { knownGroups, useStoredGroups } from "./groups";
 import { openConnectionOf, useOpenProfile } from "./openProfile";
 import { askConnectionPassword, handOverPassword, isPromptCancelled } from "./passwordPromptStore";
@@ -63,6 +65,7 @@ import {
   connectionFormSchema,
   DEFAULT_FORM,
   formToProfileInput,
+  MYSQL_SOCKET_PLACEHOLDER,
   newProfileForm,
   PASSWORD_MODE_LABEL,
   PASSWORD_MODES,
@@ -114,6 +117,20 @@ const SAFE_MODE_HINT: Record<SafeModeLevel, string> = {
 const PASSWORD_HINT: Record<Exclude<PasswordMode, "keychain">, string> = {
   ask: "Asked on every connect; kept in memory while connected",
   none: "Connects without a password",
+  command: "The output of the command below, run on every connect; never stored",
+};
+
+const PASSWORD_PLACEHOLDER: Record<Exclude<PasswordMode, "keychain">, string> = {
+  ask: "Asked when connecting",
+  none: "No password",
+  command: "From the command",
+};
+
+const IAM_COMMAND_EXAMPLE: Record<Exclude<Driver, "sqlite">, string> = {
+  postgres:
+    "aws rds generate-db-auth-token --hostname mydb.abc.us-east-1.rds.amazonaws.com --port 5432 --username app",
+  mysql:
+    "aws rds generate-db-auth-token --hostname mydb.abc.us-east-1.rds.amazonaws.com --port 3306 --username app",
 };
 
 const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
@@ -387,6 +404,24 @@ function GeneralFields({
   const ssl = watch("ssl");
   const sqlite = driver === "sqlite";
   const keychain = passwordMode === "keychain";
+  const socket = driver === "mysql" && watch("useSocket");
+  /** MySQL "Use socket": swaps Host / Port for the socket path. */
+  const socketToggle = driver === "mysql" && (
+    <label className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs whitespace-nowrap">
+      <Controller
+        control={control}
+        name="useSocket"
+        render={({ field }) => (
+          <Checkbox
+            checked={field.value}
+            onCheckedChange={(v) => field.onChange(v === true)}
+            aria-label="Use socket"
+          />
+        )}
+      />
+      Use socket
+    </label>
+  );
   const sslKeys =
     ssl !== "disable" ||
     [watch("sslKeyPath"), watch("sslCertPath"), watch("sslCaPath")].some((p) => p.trim() !== "");
@@ -461,19 +496,22 @@ function GeneralFields({
           />
         </div>
       </Row>
-      <Row label="Group" htmlFor={`${uid}-group`}>
-        <Input
-          id={`${uid}-group`}
-          {...register("group")}
-          placeholder="Optional, groups connections in the list"
-          list={`${uid}-groups`}
-          autoComplete="off"
+      <Row label="Group" htmlFor={`${uid}-group`} error={errors.group?.message}>
+        <Controller
+          control={control}
+          name="group"
+          render={({ field }) => (
+            <GroupCombobox
+              id={`${uid}-group`}
+              value={field.value}
+              onChange={field.onChange}
+              onBlur={field.onBlur}
+              groups={groups}
+              placeholder="Optional, e.g. Clients / Acme"
+              invalid={errors.group !== undefined}
+            />
+          )}
         />
-        <datalist id={`${uid}-groups`}>
-          {groups.map((g) => (
-            <option key={g} value={g} />
-          ))}
-        </datalist>
       </Row>
       <Row label="Driver" htmlFor={`${uid}-driver`}>
         <Controller
@@ -542,35 +580,56 @@ function GeneralFields({
         <BootstrapRow form={form} onOpen={onBootstrap} />
       ) : (
         <>
-          <Row
-            label="Host"
-            htmlFor={`${uid}-host`}
-            error={errors.host?.message ?? errors.port?.message}
-          >
-            <div className="flex items-center gap-2">
-              <Input
-                id={`${uid}-host`}
-                {...register("host")}
-                placeholder="127.0.0.1"
-                className="font-mono"
-                aria-invalid={errors.host ? true : undefined}
-              />
-              <Label
-                htmlFor={`${uid}-port`}
-                className="text-muted-foreground shrink-0 text-xs font-normal"
-              >
-                Port
-              </Label>
-              <Input
-                id={`${uid}-port`}
-                {...register("port")}
-                placeholder={DEFAULT_PORT[driver]}
-                className="w-20 shrink-0 font-mono"
-                inputMode="numeric"
-                aria-invalid={errors.port ? true : undefined}
-              />
-            </div>
-          </Row>
+          {socket ? (
+            <Row
+              label="Socket"
+              htmlFor={`${uid}-socket`}
+              error={errors.socketPath?.message}
+              hint="Leave empty to detect it (/tmp/mysql.sock, /var/run/mysqld/mysqld.sock, Homebrew's)"
+            >
+              <div className="flex items-center gap-2">
+                <Input
+                  id={`${uid}-socket`}
+                  {...register("socketPath")}
+                  placeholder={MYSQL_SOCKET_PLACEHOLDER}
+                  className="font-mono"
+                  aria-invalid={errors.socketPath ? true : undefined}
+                />
+                {socketToggle}
+              </div>
+            </Row>
+          ) : (
+            <Row
+              label="Host"
+              htmlFor={`${uid}-host`}
+              error={errors.host?.message ?? errors.port?.message}
+            >
+              <div className="flex items-center gap-2">
+                <Input
+                  id={`${uid}-host`}
+                  {...register("host")}
+                  placeholder="127.0.0.1"
+                  className="font-mono"
+                  aria-invalid={errors.host ? true : undefined}
+                />
+                <Label
+                  htmlFor={`${uid}-port`}
+                  className="text-muted-foreground shrink-0 text-xs font-normal"
+                >
+                  Port
+                </Label>
+                <Input
+                  id={`${uid}-port`}
+                  {...register("port")}
+                  placeholder={DEFAULT_PORT[driver]}
+                  className="w-20 shrink-0 font-mono"
+                  inputMode="numeric"
+                  aria-invalid={errors.port ? true : undefined}
+                />
+                {socketToggle}
+              </div>
+            </Row>
+          )}
           <Row label="User" htmlFor={`${uid}-user`} error={errors.user?.message}>
             <Input
               id={`${uid}-user`}
@@ -600,13 +659,11 @@ function GeneralFields({
                 {...register("password")}
                 type="password"
                 placeholder={
-                  passwordMode === "ask"
-                    ? "Asked when connecting"
-                    : passwordMode === "none"
-                      ? "No password"
-                      : hasStoredPassword && !clearPassword
-                        ? "••••••••"
-                        : ""
+                  !keychain
+                    ? PASSWORD_PLACEHOLDER[passwordMode]
+                    : hasStoredPassword && !clearPassword
+                      ? "••••••••"
+                      : ""
                 }
                 className="font-mono"
                 autoComplete="new-password"
@@ -657,6 +714,30 @@ function GeneralFields({
               )}
             </div>
           </Row>
+          {passwordMode === "command" && (
+            <Row
+              label="Command"
+              htmlFor={`${uid}-command`}
+              error={errors.passwordCommand?.message}
+              hint={
+                <>
+                  Runs in your login shell (<span className="font-mono">$SHELL -lc</span>, 30 s
+                  limit); its output is the password
+                </>
+              }
+            >
+              <Textarea
+                id={`${uid}-command`}
+                {...register("passwordCommand")}
+                placeholder={IAM_COMMAND_EXAMPLE[driver]}
+                rows={2}
+                spellCheck={false}
+                autoComplete="off"
+                className="min-h-0 resize-none font-mono text-xs"
+                aria-invalid={errors.passwordCommand ? true : undefined}
+              />
+            </Row>
+          )}
           <Row
             label="Database"
             htmlFor={`${uid}-database`}
@@ -665,7 +746,15 @@ function GeneralFields({
             <Input id={`${uid}-database`} {...register("database")} className="font-mono" />
           </Row>
           <BootstrapRow form={form} onOpen={onBootstrap} />
-          <Row label="SSL mode" htmlFor={`${uid}-ssl`}>
+          <Row
+            label="SSL mode"
+            htmlFor={`${uid}-ssl`}
+            hint={
+              driver === "mysql" && ssl === "verify-ca"
+                ? "The MySQL driver also checks the host name here: use a name the certificate lists"
+                : undefined
+            }
+          >
             <Controller
               control={control}
               name="ssl"
@@ -689,7 +778,7 @@ function GeneralFields({
             <Row
               label="SSL keys"
               error={errors.sslKeyPath?.message ?? errors.sslCertPath?.message}
-              hint="Client key and certificate (PEM) for servers that check them; the CA certificate for verify-ca / verify-full"
+              hint="PEM files: an unencrypted key (PKCS#8, PKCS#1 or SEC1) and the client certificate followed by its intermediates (one file with both works for Key… and Cert…); the CA certificate for verify-ca / verify-full"
             >
               <div
                 role="group"
@@ -984,7 +1073,10 @@ export function ConnectionDialog({
   open: boolean;
   /** Existing profile to edit, or null to create. */
   profile: ConnectionProfile | null;
-  /** A new connection's starting values (from a connection URL); skips the driver picker. */
+  /**
+   * A new connection's starting values (a connection URL, or the group of "New ▸ Connection in
+   * this group…"); skips the driver picker when it sets the driver.
+   */
   prefill?: ParsedConnectionUrl | null;
   onOpenChange: (open: boolean) => void;
   onSaved?: (profile: ConnectionProfile) => void;
@@ -1032,7 +1124,8 @@ export function ConnectionDialog({
           : newProfileForm(timeout, defaultSafeMode),
     );
     test.reset();
-    setStep(profile || prefill ? "form" : "driver");
+    // A prefill without a driver ("New ▸ Connection in this group…") still picks one first.
+    setStep(profile || prefill?.values.driver !== undefined ? "form" : "driver");
     setPickedDriver("postgres");
     setAdvancedOpen(false);
     setBootstrapOpen(false);
@@ -1319,7 +1412,8 @@ function TestStatus({
       </span>
     );
   if (error) {
-    const declined = hostKeyDeclined(error);
+    // The SSH 2FA question was cancelled: nothing went wrong.
+    const declined = hostKeyDeclined(error) || toIpcError(error).code === "CANCELLED";
     return (
       <span
         role="status"
@@ -1334,7 +1428,13 @@ function TestStatus({
         ) : (
           <X className="size-3.5 shrink-0" />
         )}
-        <span className="truncate">{declined ? "Host key not trusted" : error.message}</span>
+        <span className="truncate">
+          {!declined
+            ? error.message
+            : hostKeyDeclined(error)
+              ? "Host key not trusted"
+              : "Cancelled"}
+        </span>
       </span>
     );
   }

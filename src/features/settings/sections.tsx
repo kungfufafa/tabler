@@ -11,6 +11,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { EditorWorkflowSettings } from "@/features/editor/EditorSettingsRows";
 import { SAFE_MODE_OPTIONS } from "@/features/safety/levels";
+import { CsvDefaultSettings } from "@/features/table-tab/CsvDefaultSettings";
 import { TableDataSettings } from "@/features/table-tab/TableDataSettings";
 import { shortcutFor } from "@/lib/keys/keymap";
 import {
@@ -132,6 +133,7 @@ export function GeneralSection() {
         </SettingRow>
       </SettingGroup>
       <TableDataSettings />
+      <CsvDefaultSettings />
     </SectionShell>
   );
 }
