@@ -1,35 +1,33 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResultSetInfo, RunState } from "@/features/editor/runModel";
-import { setCell, undo } from "@/features/staging/model";
+import { emptyStaging, insertRow, setCell, undo } from "@/features/staging/model";
 import {
-  ipc,
-  type ApplyResult,
   type ColumnMeta,
   type ConnectionInfo,
   type ResultColumn,
+  type RowResult,
   type TableMeta,
   type TableRef,
   type Value,
 } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
-import { resetPrefsForTests, setPref } from "@/stores/prefs";
+import { resetPrefsForTests } from "@/stores/prefs";
 import { updateQueryTab, useQueryTabsStore } from "@/stores/queryTabs";
 import { dropResults, resultData } from "@/stores/resultData";
+import { useTableTabsStore } from "@/stores/tableTabs";
 import { useTabsStore } from "@/stores/tabs";
 import { bufferKey } from "./changes";
 import {
-  applyPreviewedResultEdits,
-  commitResultEdits,
-  discardResultChanges,
+  failResultCommit,
+  finishResultCommit,
   hasPendingResultEdits,
   isReadOnlyQuery,
-  previewResultEdits,
+  planResultCommit,
   rerunOf,
   setResultRerun,
 } from "./commit";
 import type { ResultEditTarget } from "./editability";
 import {
-  CLOSED_PREVIEW,
   canStageAgainst,
   installResultsLifecycle,
   pendingForTab,
@@ -45,8 +43,6 @@ import {
 
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), message: vi.fn() }));
 vi.mock("sonner", () => ({ toast }));
-const guard = vi.hoisted(() => ({ guardExecution: vi.fn(async () => true) }));
-vi.mock("@/features/safety/guard", () => guard);
 
 const USERS: TableRef = { schema: "public", name: "users" };
 const TAB = "q1";
@@ -113,29 +109,21 @@ function runState(sql = "select id, email from users"): RunState {
   };
 }
 
-function applied(patch: Partial<ApplyResult> = {}): ApplyResult {
-  return {
-    success: true,
-    results: [
-      {
-        rowId: "r1",
-        op: "update",
-        affected: 1,
-        returned: { id: int(2), email: text("BO@Y") },
-        error: null,
-      },
-    ],
-    sql: ["UPDATE users SET email = 'bo@y' WHERE id = 2"],
+/** The row the server returned for the staged edit (its stored form). */
+const stored: RowResult[] = [
+  {
+    rowId: "r1",
+    op: "update",
+    affected: 1,
+    returned: { id: int(2), email: text("BO@Y") },
     error: null,
-    durationMs: 3,
-    ...patch,
-  };
-}
+  },
+];
 
 beforeEach(() => {
   installResultsLifecycle();
   resetPrefsForTests();
-  useResultsStore.setState({ edits: {}, editability: {}, pins: {}, preview: CLOSED_PREVIEW });
+  useResultsStore.setState({ edits: {}, editability: {}, pins: {} });
   useConnectionsStore.setState({
     byId: { [CONN]: { info: { connectionId: CONN, driver: "postgres" } as ConnectionInfo } },
   } as never);
@@ -144,6 +132,7 @@ beforeEach(() => {
     activeId: TAB,
   });
   useQueryTabsStore.setState({ slices: {} });
+  useTableTabsStore.setState({ slices: {} });
   updateQueryTab(TAB, { run: runState(), pane: RESULT });
   dropResults(() => true);
   resultData.setColumns(RESULT, columns);
@@ -158,31 +147,23 @@ beforeEach(() => {
     (s) => setCell(s, bufferKey(1), 1, text("bo@y"), resultData.get(RESULT)!.rows[1]),
     target,
   );
-  vi.spyOn(ipc.mutate, "preview").mockResolvedValue(["UPDATE users SET email = 'bo@y'"]);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   Object.values(toast).forEach((fn) => fn.mockReset());
-  guard.guardExecution.mockReset();
-  guard.guardExecution.mockResolvedValue(true);
   setResultRerun(null);
 });
 
-describe("committing result edits", () => {
-  it("applies them after the safe-mode check and updates the rows in place", async () => {
-    const apply = vi.spyOn(ipc.mutate, "apply").mockResolvedValue(applied());
-    const rerun = vi.fn();
-    setResultRerun(rerun);
+describe("planning and settling a result commit (part of the workspace commit)", () => {
+  it("plans the staged edits against the target they were made on", () => {
     expect(hasPendingResultEdits(TAB)).toBe(true);
     expect(pendingForTab(useResultsStore.getState(), TAB)).toBe(1);
-
-    await expect(commitResultEdits(TAB)).resolves.toBe(true);
-    expect(guard.guardExecution).toHaveBeenCalledWith(CONN, {
-      kind: "commit",
-      statements: ["UPDATE users SET email = 'bo@y'"],
-    });
-    expect(apply).toHaveBeenCalledWith(CONN, {
+    const plan = planResultCommit(TAB);
+    expect(plan).toMatchObject({ ok: true });
+    if (!plan?.ok) throw new Error("not planned");
+    expect(plan.planned).toMatchObject({ tabId: TAB, resultId: RESULT, connectionId: CONN });
+    expect(plan.planned.req).toEqual({
       table: USERS,
       changes: [
         {
@@ -194,43 +175,60 @@ describe("committing result edits", () => {
       ],
       returning: true,
     });
+  });
+
+  it("has nothing to plan without staged edits", () => {
+    setResultStaging(TAB, RESULT, (s) => undo(s));
+    expect(planResultCommit(TAB)).toBeNull();
+  });
+
+  it("updates the rows in place once committed, clears the edits, and offers a re-run", () => {
+    const rerun = vi.fn();
+    setResultRerun(rerun);
+    const plan = planResultCommit(TAB);
+    if (!plan?.ok) throw new Error("not planned");
+    finishResultCommit(plan.planned, stored);
     // The stored row (as the server returned it) replaces the edited one.
     expect(resultData.get(RESULT)!.rows[1]).toEqual([int(2), text("BO@Y")]);
     expect(hasPendingResultEdits(TAB)).toBe(false);
-    const [message, opts] = toast.success.mock.calls[0]!;
-    expect(message).toBe("Applied 1 change · 3 ms");
+    const [message, opts] = toast.message.mock.calls[0]!;
+    expect(message).toBe("The result's rows were updated in place");
     // The statement is a plain read: re-running it is offered.
     opts.action.onClick();
     expect(rerun).toHaveBeenCalledWith(TAB, { sql: "select id, email from users", baseOffset: 3 });
   });
 
-  it("sends nothing when the safe-mode check is declined", async () => {
-    const apply = vi.spyOn(ipc.mutate, "apply");
-    guard.guardExecution.mockResolvedValue(false);
-    await expect(commitResultEdits(TAB)).resolves.toBe(false);
-    expect(apply).not.toHaveBeenCalled();
-    expect(hasPendingResultEdits(TAB)).toBe(true);
-  });
-
-  it("previews first with Confirm before commit, then applies from the sheet", async () => {
-    setPref("confirmCommit", true);
-    const apply = vi.spyOn(ipc.mutate, "apply").mockResolvedValue(applied());
-    await commitResultEdits(TAB);
-    expect(apply).not.toHaveBeenCalled();
-    expect(useResultsStore.getState().preview).toMatchObject({
-      open: true,
-      tabId: TAB,
-      resultId: RESULT,
-      statements: ["UPDATE users SET email = 'bo@y'"],
-      loading: false,
+  it("reloads the open table tabs of the written table, and only those", () => {
+    // A table tab of `users` (shown elsewhere), one of another table, one of another connection.
+    const open = (id: string, table: TableRef, connectionId = CONN) => {
+      useTabsStore.getState().open({ id, kind: "table", connectionId, table, title: table.name });
+      useTableTabsStore.getState().ensure(id);
+    };
+    open("users-tab", USERS);
+    open("posts-tab", { schema: "public", name: "posts" });
+    open("foreign-users", USERS, "c2");
+    // One holding edits of its own keeps its page.
+    open("held-users", USERS);
+    useTableTabsStore.getState().update("held-users", {
+      staging: insertRow(emptyStaging(), "new:1", []),
     });
-    await applyPreviewedResultEdits();
-    expect(guard.guardExecution).toHaveBeenCalled();
-    expect(apply).toHaveBeenCalledTimes(1);
-    expect(useResultsStore.getState().preview.open).toBe(false);
+    const token = (id: string) => useTableTabsStore.getState().slices[id]!.refreshToken;
+    const before = ["users-tab", "posts-tab", "foreign-users", "held-users"].map(token);
+
+    const plan = planResultCommit(TAB);
+    if (!plan?.ok) throw new Error("not planned");
+    finishResultCommit(plan.planned, stored);
+    expect(["users-tab", "posts-tab", "foreign-users", "held-users"].map(token)).toEqual([
+      before[0]! + 1,
+      before[1]!,
+      before[2]!,
+      before[3]!,
+    ]);
   });
 
-  it("keeps the edits and marks the failed row when the commit fails", async () => {
+  it("marks the failed row and keeps the edits and the rows as they were", () => {
+    const plan = planResultCommit(TAB);
+    if (!plan?.ok) throw new Error("not planned");
     const error = {
       code: "DB_ERROR",
       message: "duplicate key value",
@@ -242,35 +240,22 @@ describe("committing result edits", () => {
       statementIndex: 0,
       data: null,
     };
-    vi.spyOn(ipc.mutate, "apply").mockResolvedValue(
-      applied({
-        success: false,
-        error,
-        results: [{ rowId: "r1", op: "update", affected: 0, returned: null, error }],
-      }),
-    );
-    await expect(commitResultEdits(TAB)).resolves.toBe(false);
+    failResultCommit(plan.planned, [
+      { rowId: "r1", op: "update", affected: 0, returned: null, error },
+    ]);
     const staging = stagingOf(useResultsStore.getState(), RESULT);
     expect(staging.changes.get("r1")?.error).toBe("duplicate key value");
-    expect(useResultsStore.getState().preview).toMatchObject({
-      open: true,
-      error: "duplicate key value",
-      failedIndex: 0,
-    });
+    expect(hasPendingResultEdits(TAB)).toBe(true);
     expect(resultData.get(RESULT)!.rows[1]).toEqual([int(2), text("bo@x")]);
   });
 
-  it("refuses edits whose source table is no longer known", async () => {
+  it("refuses edits whose source table is no longer known", () => {
     setResultEditability(RESULT, { kind: "readOnly", reason: "gone" });
-    const apply = vi.spyOn(ipc.mutate, "apply");
-    await commitResultEdits(TAB);
-    expect(apply).not.toHaveBeenCalled();
-    expect(toast.error).toHaveBeenCalled();
+    const plan = planResultCommit(TAB);
+    expect(plan).toMatchObject({ ok: false, problem: "These changes can't be committed" });
   });
 
-  it("refuses edits staged against another target than the result has now", async () => {
-    const apply = vi.spyOn(ipc.mutate, "apply");
-    const preview = vi.mocked(ipc.mutate.preview);
+  it("refuses edits staged against another target than the result has now", () => {
     // The table's key changed (or its reload failed and another table took over): the staged
     // row keys name rows of the old target, so nothing is sent.
     const posts: ResultEditTarget = {
@@ -279,32 +264,21 @@ describe("committing result edits", () => {
       meta: { ...target.meta, table: { schema: "public", name: "posts" } },
     };
     setResultEditability(RESULT, { kind: "editable", target: posts });
-    await expect(commitResultEdits(TAB)).resolves.toBe(false);
-    await previewResultEdits(TAB);
-    expect(preview).not.toHaveBeenCalled();
-    expect(apply).not.toHaveBeenCalled();
-    expect(toast.error).toHaveBeenCalledWith(
-      "The result's source table changed; discard the edits and re-run",
-      expect.anything(),
-    );
+    expect(planResultCommit(TAB)).toMatchObject({
+      ok: false,
+      problem: "The result's source table changed; discard the edits and re-run",
+    });
     expect(hasPendingResultEdits(TAB)).toBe(true);
-    // Back to the target the edits were made against: they commit.
+    // Back to the target the edits were made against: they plan again.
     expect(stagedTargetOf(useResultsStore.getState(), RESULT)).toBe(target);
     expect(canStageAgainst(useResultsStore.getState(), RESULT, posts)).toBe(false);
     setResultEditability(RESULT, { kind: "editable", target: { ...target } });
-    apply.mockResolvedValue(applied());
-    await expect(commitResultEdits(TAB)).resolves.toBe(true);
+    const plan = planResultCommit(TAB);
+    if (!plan?.ok) throw new Error("not planned");
     // Committed: the next edit may record another target.
+    finishResultCommit(plan.planned, stored);
     expect(stagedTargetOf(useResultsStore.getState(), RESULT)).toBeNull();
     expect(canStageAgainst(useResultsStore.getState(), RESULT, posts)).toBe(true);
-  });
-
-  it("previews (⇧⌘P) and discards (⇧⌘⌫)", async () => {
-    await previewResultEdits(TAB);
-    expect(useResultsStore.getState().preview.statements).toHaveLength(1);
-    discardResultChanges(TAB);
-    expect(hasPendingResultEdits(TAB)).toBe(false);
-    expect(toast.message).toHaveBeenCalledWith("Changes discarded");
   });
 });
 

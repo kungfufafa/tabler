@@ -5,4 +5,8 @@ export type ExportTablesResult = { tables: Array<ExportedTable>,
 /**
  * Every file written, in order.
  */
-paths: Array<string>, rows: number, bytes: number, durationMs: number, };
+paths: Array<string>, rows: number, bytes: number, durationMs: number, 
+/**
+ * Characters the encoding could not represent (written as `?`); absent when none.
+ */
+replaced?: number, };

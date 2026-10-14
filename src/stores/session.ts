@@ -1,5 +1,7 @@
-import type { TableRef } from "@/lib/ipc";
+import { isFilterOp } from "@/features/table-tab/filters";
+import type { Conjunction, TableRef } from "@/lib/ipc";
 import type { AutoSaveQueryTabs } from "./prefs";
+import type { FilterRowSpec } from "./tableTabs";
 import type { Tab, TableView } from "./tabs";
 
 /**
@@ -20,6 +22,14 @@ export interface SessionTableTab {
   table: TableRef;
   view: TableView;
   title: string;
+  /**
+   * The tab's filter bar, for a tab that travels to another window (a link's `windowMode=isolated`
+   * with a row filter, Move Tab to New Window): the new window shows the table with these rows.
+   * The saved session itself never carries it (`serializeWorkspace` leaves it out).
+   */
+  filters?: FilterRowSpec[];
+  filtersVisible?: boolean;
+  conjunction?: Conjunction;
 }
 
 export interface SessionQueryTab {
@@ -35,7 +45,16 @@ export interface SessionQueryTab {
   cursor: number;
 }
 
-export type SessionTab = SessionTableTab | SessionQueryTab;
+/** A tool tab whose tool keeps it in the session (`persist` in `registerToolTab`). */
+export interface SessionToolTab {
+  kind: "tool";
+  tool: string;
+  title: string;
+  /** The tool's params (JSON); checked by the tool when restored. */
+  params: unknown;
+}
+
+export type SessionTab = SessionTableTab | SessionQueryTab | SessionToolTab;
 
 export interface SessionWorkspace {
   profileId: string;
@@ -53,10 +72,20 @@ export interface SessionWorkspace {
 
 export interface Session {
   version: typeof SESSION_VERSION;
-  /** Rail order: the open workspaces first. */
+  /**
+   * Rail order: the open workspaces first. A profile can have several workspaces, one per
+   * database (TablePlus opens another database in a new workspace).
+   */
   workspaces: SessionWorkspace[];
   /** Profile of the workspace that was on screen. */
   activeProfileId: string | null;
+  /** Its database (which of the profile's workspaces). */
+  activeDatabase?: string | null;
+}
+
+/** What tells a profile's workspaces apart: the profile and the database. */
+export function workspaceKey(ws: Pick<SessionWorkspace, "profileId" | "database">): string {
+  return `${ws.profileId}\u0000${ws.database ?? ""}`;
 }
 
 export const EMPTY_SESSION: Readonly<Session> = Object.freeze({
@@ -83,6 +112,8 @@ export interface LiveWorkspace {
   /** The tab it shows (or showed last). */
   activeTabId: string | null;
   query: (tabId: string) => LiveQueryTab;
+  /** Whether a tool tab is saved (its tool's `persist`, asked with the tab's params); none are without it. */
+  keepsTool?: (tool: string, params: unknown) => boolean;
 }
 
 /** Whether the auto-save setting keeps the text of the `index`-th query tab of a workspace. */
@@ -119,9 +150,14 @@ export function applyAutoSave(
 
 /** One live workspace as saved. Preview tabs are saved as regular ones. */
 export function serializeWorkspace(ws: LiveWorkspace, mode: AutoSaveQueryTabs): SessionWorkspace {
+  const live = ws.tabs.filter(
+    (t) => t.kind !== "tool" || (ws.keepsTool?.(t.tool, t.params ?? null) ?? false),
+  );
   let active: number | null = null;
-  const tabs = ws.tabs.map((tab, i): SessionTab => {
+  const tabs = live.map((tab, i): SessionTab => {
     if (tab.id === ws.activeTabId) active = i;
+    if (tab.kind === "tool")
+      return { kind: "tool", tool: tab.tool, title: tab.title, params: tab.params ?? null };
     if (tab.kind !== "query")
       return { kind: "table", table: { ...tab.table }, view: tab.kind, title: tab.title };
     const q = ws.query(tab.id);
@@ -146,30 +182,36 @@ export function serializeWorkspace(ws: LiveWorkspace, mode: AutoSaveQueryTabs): 
 }
 
 /**
- * The session to write: the live workspaces (rail order), then the remembered closed ones whose
- * profile has no live workspace (each profile once).
+ * The session to write: the live workspaces (rail order), then the remembered closed ones that
+ * are not live (each profile and database once).
  */
 export function buildSession(
   live: readonly SessionWorkspace[],
   remembered: readonly SessionWorkspace[],
   activeProfileId: string | null,
+  activeDatabase: string | null = null,
 ): Session {
   const seen = new Set<string>();
+  const profiles = new Set<string>();
   const workspaces: SessionWorkspace[] = [];
   for (const ws of live) {
-    if (seen.has(ws.profileId)) continue;
-    seen.add(ws.profileId);
+    if (seen.has(workspaceKey(ws))) continue;
+    seen.add(workspaceKey(ws));
+    profiles.add(ws.profileId);
     workspaces.push(ws);
   }
   for (const ws of remembered) {
-    if (seen.has(ws.profileId)) continue;
-    seen.add(ws.profileId);
+    if (seen.has(workspaceKey(ws))) continue;
+    seen.add(workspaceKey(ws));
+    profiles.add(ws.profileId);
     workspaces.push({ ...ws, open: false });
   }
+  const active = activeProfileId !== null && profiles.has(activeProfileId);
   return {
     version: SESSION_VERSION,
     workspaces,
-    activeProfileId: activeProfileId !== null && seen.has(activeProfileId) ? activeProfileId : null,
+    activeProfileId: active ? activeProfileId : null,
+    ...(active && activeDatabase !== null ? { activeDatabase } : {}),
   };
 }
 
@@ -182,19 +224,66 @@ const isObject = (v: unknown): v is Json =>
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 const nonEmpty = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
 
-function parseTab(raw: unknown): SessionTab | null {
+/** Most filter rows a handed-over tab may carry. */
+const MAX_HANDOFF_FILTERS = 50;
+
+/**
+ * The filter rows of a handed-over tab, checked: a row needs string id / column / op / value /
+ * value2 and a boolean enabled; one with an operator Tabler does not know is dropped, and a
+ * repeated id gets a new one.
+ */
+function parseFilterRows(raw: unknown): FilterRowSpec[] {
+  if (!Array.isArray(raw)) return [];
+  const rows: FilterRowSpec[] = [];
+  const ids = new Set<string>();
+  for (const r of raw) {
+    if (rows.length >= MAX_HANDOFF_FILTERS) break;
+    if (!isObject(r)) continue;
+    const { id, column, op, value, value2, enabled } = r;
+    if (
+      typeof id !== "string" ||
+      typeof column !== "string" ||
+      typeof op !== "string" ||
+      typeof value !== "string" ||
+      typeof value2 !== "string" ||
+      typeof enabled !== "boolean" ||
+      !isFilterOp(op)
+    )
+      continue;
+    const unique = id !== "" && !ids.has(id) ? id : crypto.randomUUID();
+    ids.add(unique);
+    rows.push({ id: unique, column, op, value, value2, enabled });
+  }
+  return rows;
+}
+
+/** One saved tab (also the tab format of a window handoff); null when it cannot be read. */
+export function parseTab(raw: unknown): SessionTab | null {
   if (!isObject(raw)) return null;
+  if (raw.kind === "tool") {
+    const tool = nonEmpty(raw.tool);
+    if (!tool) return null;
+    return { kind: "tool", tool, title: nonEmpty(raw.title) ?? tool, params: raw.params ?? null };
+  }
   if (raw.kind === "table") {
     const table = raw.table;
     if (!isObject(table)) return null;
     const name = nonEmpty(table.name);
     if (!name) return null;
     const view: TableView = raw.view === "structure" ? "structure" : "table";
+    const filters = parseFilterRows(raw.filters);
     return {
       kind: "table",
       table: { schema: str(table.schema), name },
       view,
       title: nonEmpty(raw.title) ?? name,
+      ...(filters.length > 0
+        ? {
+            filters,
+            filtersVisible: typeof raw.filtersVisible === "boolean" ? raw.filtersVisible : true,
+            ...(raw.conjunction === "or" ? { conjunction: "or" as const } : {}),
+          }
+        : {}),
     };
   }
   if (raw.kind === "query") {
@@ -242,17 +331,22 @@ export function parseSession(raw: unknown): Session {
     return { ...EMPTY_SESSION, workspaces: [] };
   const workspaces: SessionWorkspace[] = [];
   const seen = new Set<string>();
+  const profiles = new Set<string>();
   for (const w of raw.workspaces) {
     const ws = parseWorkspace(w);
-    if (!ws || seen.has(ws.profileId)) continue;
-    seen.add(ws.profileId);
+    if (!ws || seen.has(workspaceKey(ws))) continue;
+    seen.add(workspaceKey(ws));
+    profiles.add(ws.profileId);
     workspaces.push(ws);
   }
   const active = nonEmpty(raw.activeProfileId);
+  const known = active !== null && profiles.has(active);
+  const database = str(raw.activeDatabase);
   return {
     version: SESSION_VERSION,
     workspaces,
-    activeProfileId: active && seen.has(active) ? active : null,
+    activeProfileId: known ? active : null,
+    ...(known && database !== null ? { activeDatabase: database } : {}),
   };
 }
 

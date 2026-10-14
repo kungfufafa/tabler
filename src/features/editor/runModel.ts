@@ -72,6 +72,37 @@ export interface RunState {
    * runs), handed over when the run started. They go to the console log.
    */
   outsideNotices?: RunNotice[];
+  /**
+   * Result sets past the first `MAX_RESULT_TABS` (TablePlus: very large result counts fall back
+   * to plain text). Their rows are buffered like the others; Messages lists them as text.
+   */
+  overflow?: ResultSetInfo[];
+}
+
+/** Result sets that get a result tab / grid; the rest are listed as text in Messages. */
+export const MAX_RESULT_TABS = 100;
+
+/** Adds a result set: a grid while there is room, else to the plain-text overflow. */
+function withSet(run: RunState, set: ResultSetInfo): RunState {
+  if (run.results.length < MAX_RESULT_TABS) return { ...run, results: [...run.results, set] };
+  return { ...run, overflow: [...(run.overflow ?? []), set] };
+}
+
+/** Maps the result sets matching `pick` (grids and overflow alike). */
+function mapSets(
+  run: RunState,
+  pick: (r: ResultSetInfo) => boolean,
+  f: (r: ResultSetInfo) => ResultSetInfo,
+): Pick<RunState, "results" | "overflow"> {
+  const map = (list: ResultSetInfo[]) => list.map((r) => (pick(r) ? f(r) : r));
+  return run.overflow
+    ? { results: map(run.results), overflow: map(run.overflow) }
+    : { results: map(run.results) };
+}
+
+/** Every result set of the run: grids first, then the overflow. */
+export function allResultSets(run: RunState): ResultSetInfo[] {
+  return run.overflow ? [...run.results, ...run.overflow] : run.results;
 }
 
 export interface ResultSink {
@@ -192,30 +223,32 @@ function finishStatement(run: RunState, result: StatementResult, sink: ResultSin
     error: result.error,
     ...keptNotices(prev),
   }));
-  let results = run.results;
-  let own = results.filter((r) => r.statementIndex === index);
+  let next: RunState = { ...run, statements };
+  let own = allResultSets(next).filter((r) => r.statementIndex === index);
   if (own.length === 0 && !failed && (result.kind === "rows" || result.kind === "explain")) {
     // A statement that produced no row events (e.g. zero rows) still gets an (empty) result tab.
     const id = resultId(run.id, index, 0);
     sink.setColumns(id, result.columns);
     const set = newSet(id, index, 0, result.columns);
-    results = [...results, set];
+    next = withSet(next, set);
     own = [set];
   }
-  // Statements without result sets (DML, DDL) leave the list untouched.
-  if (own.length === 0) return { ...run, statements };
+  // Statements without result sets (DML, DDL) leave the lists untouched.
+  if (own.length === 0) return next;
   const last = Math.max(...own.map((r) => r.set));
-  results = results.map((r) =>
-    r.statementIndex === index
-      ? {
-          ...r,
-          done: true,
-          durationMs: result.durationMs,
-          truncated: r.truncated || (result.truncated && r.set === last),
-        }
-      : r,
-  );
-  return { ...run, statements, results };
+  return {
+    ...next,
+    ...mapSets(
+      next,
+      (r) => r.statementIndex === index,
+      (r) => ({
+        ...r,
+        done: true,
+        durationMs: result.durationMs,
+        truncated: r.truncated || (result.truncated && r.set === last),
+      }),
+    ),
+  };
 }
 
 /** Folds one streamed event into the run. Returns `run` itself when nothing structural changed. */
@@ -245,20 +278,24 @@ export function applyEvent(
       const { index, set, columns } = e.data;
       const id = resultId(run.id, index, set);
       sink.setColumns(id, columns);
-      const existing = run.results.some((r) => r.id === id);
-      return {
-        ...run,
-        results: existing
-          ? run.results.map((r) => (r.id === id ? { ...r, columns } : r))
-          : [...run.results, newSet(id, index, set, columns)],
-      };
+      const existing = allResultSets(run).some((r) => r.id === id);
+      return existing
+        ? {
+            ...run,
+            ...mapSets(
+              run,
+              (r) => r.id === id,
+              (r) => ({ ...r, columns }),
+            ),
+          }
+        : withSet(run, newSet(id, index, set, columns));
     }
     case "rows": {
       const { index, set, rows } = e.data;
       const id = resultId(run.id, index, set);
       sink.append(id, rows);
-      if (run.results.some((r) => r.id === id)) return run;
-      return { ...run, results: [...run.results, newSet(id, index, set, [])] };
+      if (allResultSets(run).some((r) => r.id === id)) return run;
+      return withSet(run, newSet(id, index, set, []));
     }
     case "finished":
       return finishStatement(run, e.data.result, sink);
@@ -275,7 +312,11 @@ export function applyEvent(
           error,
           ...keptNotices(prev),
         })),
-        results: run.results.map((r) => (r.statementIndex === index ? { ...r, done: true } : r)),
+        ...mapSets(
+          run,
+          (r) => r.statementIndex === index,
+          (r) => ({ ...r, done: true }),
+        ),
       };
     }
     case "notice": {
@@ -294,7 +335,11 @@ export function applyEvent(
       return {
         ...run,
         statements,
-        results: run.results.map((r) => (r.done ? r : { ...r, done: true })),
+        ...mapSets(
+          run,
+          (r) => !r.done,
+          (r) => ({ ...r, done: true }),
+        ),
         status: cancelled ? "cancelled" : "done",
         totalMs: e.data.totalMs,
         finishedAt: now,
@@ -315,7 +360,11 @@ export function failRun(run: RunState, error: ErrorPayload, now = Date.now()): R
         ? { ...s, status: cancelled ? "cancelled" : "error", error: s.error ?? error }
         : s,
     ),
-    results: run.results.map((r) => (r.done ? r : { ...r, done: true })),
+    ...mapSets(
+      run,
+      (r) => !r.done,
+      (r) => ({ ...r, done: true }),
+    ),
     status: cancelled ? "cancelled" : "error",
     // A statement already reported this error: do not show it twice.
     error: run.statements.some((s) => s.error?.message === error.message) ? null : error,

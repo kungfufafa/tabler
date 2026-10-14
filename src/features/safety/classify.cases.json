@@ -148,5 +148,47 @@
     "dialect": "postgres",
     "class": "write",
     "note": "standard_conforming_strings = off reading"
+  },
+  {
+    "sql": "SELECT 1 --x\r; DELETE FROM t",
+    "dialect": "postgres",
+    "class": "write",
+    "note": "PostgreSQL ends a -- comment at a lone CR"
+  },
+  {
+    "sql": "WITH x AS (-- c\r DELETE FROM t RETURNING 1) SELECT count(*) FROM x",
+    "dialect": "postgres",
+    "class": "write",
+    "note": "PostgreSQL ends a -- comment at a lone CR"
+  },
+  {
+    "sql": "SELECT 1 -- x\r; DELETE FROM t",
+    "dialect": "mysql",
+    "class": "read",
+    "note": "MySQL reads a -- comment to the LF"
+  },
+  {
+    "sql": "SELECT 1 -- x\r; DELETE FROM t",
+    "dialect": "sqlite",
+    "class": "read",
+    "note": "SQLite reads a -- comment to the LF"
+  },
+  {
+    "sql": "SELECT 1 AS €$$; DELETE FROM users; SELECT 3 AS a$$",
+    "dialect": "postgres",
+    "class": "write",
+    "note": "a non-ASCII character is part of a PostgreSQL name: €$$ opens no dollar quote"
+  },
+  {
+    "sql": "SELECT $$; DELETE FROM t; $$",
+    "dialect": "postgres",
+    "class": "read",
+    "note": "a real dollar-quoted string hides what it quotes"
+  },
+  {
+    "sql": "SELECT €e'\\'; DELETE FROM t; --'",
+    "dialect": "postgres",
+    "class": "write",
+    "note": "€e is a name followed by a plain string, not an escape string"
   }
 ]

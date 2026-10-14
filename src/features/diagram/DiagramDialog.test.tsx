@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { actions } from "@/features/palette/actions";
 import { ipc, type ConnectionInfo } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
-import { useTabsStore } from "@/stores/tabs";
+import { isTableTab, useTabsStore } from "@/stores/tabs";
 import { DiagramHost } from "./DiagramHost";
 import { closeDiagram, openDiagram, useDiagramStore } from "./store";
 import { positionsKey } from "./viewport";
@@ -141,7 +141,7 @@ describe("Diagram", () => {
     fireEvent.click(name);
     fireEvent.doubleClick(name);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    tab = useTabsStore.getState().tabs.find((t) => t.kind !== "query" && t.table.name === "tags");
+    tab = useTabsStore.getState().tabs.find((t) => isTableTab(t) && t.table.name === "tags");
     expect(tab).toMatchObject({ kind: "structure" });
     // The pending single click never fires.
     await new Promise((r) => setTimeout(r, 300));

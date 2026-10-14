@@ -1,4 +1,6 @@
 import { getEditorState, subscribeEditor } from "@/features/editor/editorStates";
+import { persistsToolTab } from "@/features/tabs/toolTabs";
+import { railOrder } from "@/features/tabs/workspaces";
 import { closeWindowNow } from "@/hooks/useUnsavedGuard";
 import { ipc, isMock } from "@/lib/ipc";
 import { lastShownTab } from "./activeSync";
@@ -11,6 +13,7 @@ import {
   parseSession,
   serializeWorkspace,
   SESSION_KEY,
+  workspaceKey,
   type LiveQueryTab,
   type Session,
   type SessionWorkspace,
@@ -31,8 +34,18 @@ export const MOCK_SESSION_LOCAL_KEY = "tabler.mock.session";
 
 /** Workspaces from the stored session that are not live (not reconnected yet, or failed). */
 let remembered: SessionWorkspace[] = [];
-/** Profiles whose saved workspace is being restored: their saved entry stands in until done. */
-const restoring = new Set<string>();
+
+/**
+ * A saved workspace being restored: until it is done, its saved entry stands in for the live
+ * workspace being rebuilt (`connectionId` once known, else a connection of the profile that was
+ * not open when the restore began).
+ */
+export interface RestoreToken {
+  readonly ws: SessionWorkspace;
+  readonly known: ReadonlySet<string>;
+  connectionId: string | null;
+}
+const restoring: RestoreToken[] = [];
 let lastWritten: string | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let teardown: (() => void) | null = null;
@@ -66,9 +79,24 @@ export async function loadSession(): Promise<Session> {
   return parseSession(raw);
 }
 
-/** The remembered (not live) workspace of a profile. */
-export function rememberedWorkspace(profileId: string): SessionWorkspace | null {
-  return remembered.find((w) => w.profileId === profileId) ?? null;
+/**
+ * The remembered (not live) workspace of a profile: the one on `database` when there is one (a
+ * profile can have a workspace per database), else its first. With `exact` only the one on
+ * `database` counts, never another database's: a profile's first connection may land on another
+ * database than the saved one and take its tabs, but a further workspace of an already open
+ * profile must not consume (and so lose) a workspace of a database it is not on.
+ */
+export function rememberedWorkspace(
+  profileId: string,
+  database?: string | null,
+  opts: { exact?: boolean } = {},
+): SessionWorkspace | null {
+  const own = remembered.filter((w) => w.profileId === profileId);
+  if (database !== undefined) {
+    const same = own.find((w) => workspaceKey(w) === workspaceKey({ profileId, database }));
+    if (same) return same;
+  }
+  return opts.exact ? null : (own[0] ?? null);
 }
 
 /** Replaces the remembered workspaces (startup). */
@@ -83,24 +111,49 @@ export function closeRemembered(): void {
   scheduleSave();
 }
 
-/** Its saved workspace is being restored: keep writing that, not the half-built live one. */
-export function beginRestoring(profileId: string): void {
-  restoring.add(profileId);
+/** A saved workspace is being restored: keep writing that, not the half-built live one. */
+export function beginRestoring(ws: SessionWorkspace): RestoreToken {
+  const connections = useConnectionsStore.getState();
+  const known = new Set(
+    connections.order.filter((id) => connections.byId[id]?.info.profileId === ws.profileId),
+  );
+  const token: RestoreToken = { ws, known, connectionId: null };
+  restoring.push(token);
+  return token;
+}
+
+/** The connection the restored workspace lives in, once it is open. */
+export function bindRestoring(token: RestoreToken, connectionId: string): void {
+  token.connectionId = connectionId;
 }
 
 export function isRestoring(profileId: string): boolean {
-  return restoring.has(profileId);
+  return restoring.some((t) => t.ws.profileId === profileId);
 }
 
 /**
  * Restoring is over. `consumed`: the live workspace now stands for the saved one (it is forgotten);
  * otherwise (the connect failed) it stays remembered, closed.
  */
-export function endRestoring(profileId: string, consumed: boolean): void {
-  restoring.delete(profileId);
-  if (consumed) remembered = remembered.filter((w) => w.profileId !== profileId);
-  else remembered = remembered.map((w) => (w.profileId === profileId ? { ...w, open: false } : w));
+export function endRestoring(token: RestoreToken, consumed: boolean): void {
+  const i = restoring.indexOf(token);
+  if (i >= 0) restoring.splice(i, 1);
+  const key = workspaceKey(token.ws);
+  if (consumed) remembered = remembered.filter((w) => workspaceKey(w) !== key);
+  else remembered = remembered.map((w) => (workspaceKey(w) === key ? { ...w, open: false } : w));
   scheduleSave();
+}
+
+/** The restore a live connection is being rebuilt by, if any. */
+function restoreOf(connectionId: string, profileId: string): RestoreToken | null {
+  return (
+    restoring.find(
+      (t) =>
+        t.ws.profileId === profileId &&
+        (t.connectionId === connectionId ||
+          (t.connectionId === null && !t.known.has(connectionId))),
+    ) ?? null
+  );
 }
 
 function liveQuery(tabId: string): LiveQueryTab {
@@ -118,13 +171,16 @@ export function currentSession(): Session {
   const { tabs } = useTabsStore.getState();
   const mode = getPrefs().autoSaveQueryTabs;
   const live: SessionWorkspace[] = [];
-  for (const id of connections.order) {
+  const standIns = new Set<RestoreToken>();
+  // Rail order (the user may have dragged it).
+  for (const id of railOrder()) {
     const conn = connections.byId[id];
     if (!conn) continue;
     const { profileId, currentDatabase } = conn.info;
-    const saved = restoring.has(profileId) ? rememberedWorkspace(profileId) : null;
-    if (saved) {
-      live.push({ ...saved, open: true });
+    const token = restoreOf(id, profileId);
+    if (token) {
+      if (!standIns.has(token)) live.push({ ...token.ws, open: true });
+      standIns.add(token);
       continue;
     }
     live.push(
@@ -136,13 +192,19 @@ export function currentSession(): Session {
           tabs: workspaceTabs(tabs, id),
           activeTabId: lastShownTab(id),
           query: liveQuery,
+          keepsTool: persistsToolTab,
         },
         mode,
       ),
     );
   }
   const active = connections.activeId ? connections.byId[connections.activeId] : undefined;
-  return buildSession(live, remembered, active?.info.profileId ?? null);
+  return buildSession(
+    live,
+    remembered,
+    active?.info.profileId ?? null,
+    active?.info.currentDatabase ?? null,
+  );
 }
 
 async function writeNow(): Promise<void> {
@@ -279,6 +341,6 @@ export function resetSessionForTests(): void {
   teardown?.();
   teardown = null;
   remembered = [];
-  restoring.clear();
+  restoring.splice(0);
   lastWritten = null;
 }

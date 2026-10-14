@@ -51,6 +51,85 @@ export function formatBytes(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+const hex2 = (b: number) => b.toString(16).padStart(2, "0");
+
+/** A blob's bytes as hex (`48656c6c6f`), what the inline editor and Quick Look edit. */
+export function bytesHex(base64: string, group = false): string {
+  const bin = atob(base64);
+  let out = "";
+  for (let i = 0; i < bin.length; i++) {
+    if (group && i > 0) out += i % 16 === 0 ? "\n" : " ";
+    out += hex2(bin.charCodeAt(i));
+  }
+  return out;
+}
+
+/** Whether `text` holds a control character other than tab, line feed and carriage return. */
+function hasControlChar(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (
+      c <= 0x08 ||
+      c === 0x0b ||
+      c === 0x0c ||
+      (c >= 0x0e && c <= 0x1f) ||
+      (c >= 0x7f && c <= 0x9f)
+    )
+      return true;
+  }
+  return false;
+}
+
+/** Where the last COMPLETE UTF-8 character of `bytes` ends (a cut-off tail is not complete). */
+function completeUtf8End(bytes: Uint8Array): number {
+  const n = bytes.length;
+  for (let back = 1; back <= Math.min(3, n); back++) {
+    const b = bytes[n - back]!;
+    if ((b & 0xc0) === 0x80) continue; // a continuation byte: look further back for its lead
+    if (b >= 0xf5 || b === 0xc0 || b === 0xc1) return n; // never a lead byte: the decoder rejects it
+    const need = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1;
+    return back >= need ? n : n - back;
+  }
+  return n;
+}
+
+/**
+ * A blob's bytes as text, or null when they are not text: strict UTF-8 (no invalid sequences), no
+ * NUL and no control characters other than tab, line feed and carriage return (a binary id, an
+ * image or a compressed payload never passes). `maxBytes` decodes only the start of a longer
+ * blob; `partial` says `base64` already is only the start of a longer value (a cut-off preview).
+ * Either way a character cut in two at the end is dropped, not an error. The empty blob is "".
+ */
+export function decodeBytesText(base64: string, maxBytes?: number, partial = false): string | null {
+  let bin: string;
+  try {
+    bin = atob(base64);
+  } catch {
+    return null;
+  }
+  let n = bin.length;
+  let cut = partial;
+  if (maxBytes !== undefined && n > maxBytes) {
+    n = Math.max(0, maxBytes);
+    cut = true;
+  }
+  const bytes = new Uint8Array(n);
+  for (let i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);
+  const end = cut ? completeUtf8End(bytes) : n;
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end));
+  } catch {
+    return null;
+  }
+  return hasControlChar(text) ? null : text;
+}
+
+/** The longest whole blob a grid cell shows as its text (when the bytes are text). */
+export const BYTES_TEXT_CELL_LIMIT = 256;
+/** The longest whole blob a grid cell shows as hex (`0x…`); anything larger reads `<blob N B>`. */
+export const BYTES_HEX_CELL_LIMIT = 32;
+
 export type DisplayClass =
   "null" | "default" | "bool" | "num" | "text" | "json" | "bytes" | "other" | "temporal" | "uuid";
 
@@ -60,6 +139,29 @@ export interface DisplayValue {
 }
 
 const WS = /\s+/g;
+
+/**
+ * A blob in a grid cell: a short one that is text reads as that text, a short one that is not as
+ * hex (`0x…`: BINARY(16) keys and ids stay readable from row to row), the rest as its size. A
+ * cut-off preview is never read as the value (it would show only part of it).
+ */
+function bytesDisplay(b: { base64: string; len: number; truncated: boolean }): DisplayValue {
+  if (!b.truncated && b.len > 0 && b.len <= BYTES_TEXT_CELL_LIMIT) {
+    const text = decodeBytesText(b.base64);
+    if (text !== null) {
+      const line = text.replace(WS, " ");
+      if (line.trim() !== "") return { text: line, cls: "bytes" };
+    }
+    if (b.len <= BYTES_HEX_CELL_LIMIT) {
+      try {
+        return { text: `0x${bytesHex(b.base64)}`, cls: "bytes" };
+      } catch {
+        // Not base64: fall back to the size below.
+      }
+    }
+  }
+  return { text: `<blob ${formatBytes(b.len)}>`, cls: "bytes" };
+}
 
 /** Single-line display form for a grid cell. */
 export function displayValue(v: Value): DisplayValue {
@@ -77,7 +179,7 @@ export function displayValue(v: Value): DisplayValue {
     case "decimal":
       return { text: v.v, cls: "num" };
     case "bytes":
-      return { text: `<blob ${formatBytes(v.v.len)}>`, cls: "bytes" };
+      return bytesDisplay(v.v);
     case "json":
       return { text: v.v.replace(WS, " "), cls: "json" };
     case "array":

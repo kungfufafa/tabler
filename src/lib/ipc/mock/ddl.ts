@@ -236,6 +236,24 @@ function indexEntry(d: Driver, entry: string): string {
   return m ? `${q(d, m[1]!)}${m[2] ?? ""}${m[3] ?? ""}` : entry;
 }
 
+/**
+ * `CURRENT_TIMESTAMP` (or `LOCALTIME`, `NOW()`) with the fractional-seconds precision of the MySQL
+ * `datetime(n)` / `timestamp(n)` column it belongs to: the server refuses a `DEFAULT` or
+ * `ON UPDATE` whose precision differs from the column's (`sqlgen::ddl::mysql_now_with_fsp`).
+ */
+function fitNow(expr: string, dataType: string): string {
+  const type = /^\s*(?:datetime|timestamp)\s*(?:\(\s*(\d+)\s*\))?(?:\s|$)/i.exec(dataType);
+  const call = /^(current_timestamp|localtime|localtimestamp|now)(\s*\(\s*\d*\s*\))?$/i.exec(
+    expr.trim(),
+  );
+  if (!type || !call) return expr;
+  const name = call[1]!;
+  const isNow = name.toLowerCase() === "now";
+  if (isNow && !call[2]) return expr;
+  const fsp = Number(type[1] ?? 0);
+  return fsp > 0 ? `${name}(${fsp})` : isNow ? `${name}()` : name;
+}
+
 /** Column definition text (for CREATE TABLE / ADD COLUMN / MODIFY). */
 function columnSql(
   d: Driver,
@@ -262,8 +280,9 @@ function columnSql(
   if (d === "mysql") sql += c.nullable ? " NULL" : " NOT NULL";
   else if (!c.nullable) sql += " NOT NULL";
   if (inlinePk) sql += " PRIMARY KEY" + (c.autoIncrement ? " AUTOINCREMENT" : "");
-  if (c.defaultExpr !== null) sql += ` DEFAULT ${c.defaultExpr}`;
-  if (d === "mysql" && c.onUpdate) sql += ` ON UPDATE ${c.onUpdate}`;
+  if (c.defaultExpr !== null)
+    sql += ` DEFAULT ${d === "mysql" ? fitNow(c.defaultExpr, c.dataType) : c.defaultExpr}`;
+  if (d === "mysql" && c.onUpdate) sql += ` ON UPDATE ${fitNow(c.onUpdate, c.dataType)}`;
   if (d === "mysql" && c.autoIncrement) sql += " AUTO_INCREMENT";
   if (d === "mysql" && c.comment) sql += ` COMMENT ${lit(d, c.comment)}`;
   return sql;
@@ -412,14 +431,36 @@ const TABLE_LEVEL = new Set<DdlOp["op"]>([
   "disableTrigger",
 ]);
 
+/** Ops that plan as clauses of an `ALTER TABLE` (see `plan`). */
+const ALTER_OPS = new Set<DdlOp["op"]>([
+  "addColumn",
+  "dropColumn",
+  "alterColumnType",
+  "alterColumnNullable",
+  "alterColumnDefault",
+  "setColumnComment",
+  "alterColumnAutoIncrement",
+  "alterColumnOnUpdate",
+  "alterColumnCollation",
+  "addIndex",
+  "dropIndex",
+  "addForeignKey",
+  "dropForeignKey",
+  "addPrimaryKey",
+  "dropPrimaryKey",
+  "addCheck",
+  "dropCheck",
+]);
+
 interface Planned extends DdlPlan {
   /** For each op: [first, end) statement range. */
   ranges: Array<[number, number]>;
   rebuild: boolean;
 }
 
-function mysqlModify(d: Driver, t: TableRef, c: ColumnMeta): string {
-  return `ALTER TABLE ${qt(d, t)} MODIFY COLUMN ${columnSql(d, {
+/** The clause `MODIFY COLUMN <whole definition>` of a MySQL `ALTER TABLE`. */
+function mysqlModify(d: Driver, c: ColumnMeta): string {
+  return `MODIFY COLUMN ${columnSql(d, {
     name: c.name,
     dataType: c.dataType,
     nullable: c.nullable,
@@ -429,6 +470,84 @@ function mysqlModify(d: Driver, t: TableRef, c: ColumnMeta): string {
     onUpdate: onUpdateOf(c.extra),
     collation: c.collation,
   })}`;
+}
+
+// --- grouped ALTER TABLE ------------------------------------------------------------------------
+// MySQL and PostgreSQL run the column / key / constraint ops of one table as one
+// `ALTER TABLE t a, b, c` (all or nothing), as `sqlgen/ddl.rs` does (`Planner::alter`).
+
+/** Whether the SQL expression may name the column: the name as a whole word, in any case. */
+const mentionsName = (expr: string, name: string): boolean => {
+  const e = expr.toLowerCase();
+  const n = name.toLowerCase();
+  if (!n) return false;
+  const word = /[\p{L}\p{N}_$]/u;
+  for (let i = e.indexOf(n); i >= 0; i = e.indexOf(n, i + 1)) {
+    const before = e[i - 1];
+    const after = e[i + n.length];
+    if (!(before && word.test(before)) && !(after && word.test(after))) return true;
+  }
+  return false;
+};
+
+/** What a clause does to a column; decides which clauses may share a statement. */
+type Touch = "added" | "dropped" | "modified" | "retyped" | "notNull" | "defaulted" | "referenced";
+
+/** `existing>next` pairs that may share one `ALTER TABLE` (see `touches_compatible` in ddl.rs). */
+const TOUCHES_OK = new Set([
+  "dropped>added",
+  "added>referenced",
+  "modified>referenced",
+  "notNull>referenced",
+  "defaulted>referenced",
+  "referenced>referenced",
+  "referenced>modified",
+  "referenced>notNull",
+  "referenced>defaulted",
+  "notNull>defaulted",
+  "defaulted>notNull",
+]);
+
+interface Clause {
+  sql: string;
+  /** The statement the clause is when it ends up alone (MySQL `ADD INDEX` → `CREATE INDEX`). */
+  alone?: string;
+  cols?: Array<[string, Touch]>;
+  /** Index / constraint names added (true) or dropped (false). */
+  names?: Array<[string, boolean]>;
+  check?: boolean;
+  /** The expression of the CHECK being added, to tell which dropped columns it names. */
+  checkExpr?: string;
+  using?: boolean;
+  /** MySQL `MODIFY COLUMN <name>`: replaces an earlier MODIFY / SET DEFAULT of the column. */
+  replaces?: string;
+  /**
+   * MySQL `DROP COLUMN` of a column a key still covers: the same statement cannot add the name
+   * again (the server answers 1089 / 1171 / 1283), two statements can.
+   */
+  keyedDrop?: boolean;
+  /** A foreign key clause: MySQL refuses to drop and add one name in one statement (1826). */
+  fk?: boolean;
+}
+
+interface AlterGroup {
+  table: TableRef;
+  /** Where its statement sits in the plan. */
+  at: number;
+  clauses: Clause[];
+}
+
+const sameSpelling = (a: TableRef, b: TableRef) =>
+  a.name === b.name && (a.schema || null) === (b.schema || null);
+
+/** MySQL `ADD [UNIQUE|FULLTEXT|SPATIAL] INDEX name (…)` clause. */
+function mysqlAddIndexClause(d: Driver, index: IndexDef): string {
+  const kind = index.method?.toUpperCase();
+  const special = kind === "FULLTEXT" || kind === "SPATIAL" ? `${kind} ` : "";
+  const using = kind === "BTREE" || kind === "HASH" ? ` USING ${kind}` : "";
+  const comment = index.comment ? ` COMMENT ${lit(d, index.comment)}` : "";
+  const entries = index.columns.map((e) => indexEntry(d, e)).join(", ");
+  return `ADD ${index.unique ? "UNIQUE " : special}INDEX ${q(d, index.name)} (${entries})${using}${comment}`;
 }
 
 /** MySQL EXTRA with auto_increment / on update set as given (other words kept). */
@@ -492,12 +611,116 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
     return mockError("NOT_FOUND", `table "${t.name}" not found`);
   };
 
+  // The `ALTER TABLE` being collected (MySQL / PostgreSQL), and where the current op joined it.
+  let group: AlterGroup | null = null;
+  const joined: { at: number | null } = { at: null };
+  const sameCol = (a: string, b: string) =>
+    d === "postgres" ? a === b : a.toLowerCase() === b.toLowerCase();
+  const sameName = sameCol;
+  const render = (g: AlterGroup) =>
+    g.clauses.length === 1 && g.clauses[0]!.alone !== undefined
+      ? g.clauses[0]!.alone
+      : `ALTER TABLE ${qt(d, g.table)} ${g.clauses.map((c) => c.sql).join(", ")}`;
+  const conflicts = (g: AlterGroup, c: Clause, replace: number): boolean => {
+    for (const [col, next] of c.cols ?? [])
+      for (const [i, other] of g.clauses.entries())
+        for (const [col2, existing] of other.cols ?? [])
+          if (sameCol(col, col2) && i !== replace && !TOUCHES_OK.has(`${existing}>${next}`))
+            return true;
+    for (const [name, added] of c.names ?? [])
+      for (const other of g.clauses)
+        for (const [name2, wasAdded] of other.names ?? [])
+          if (sameName(name, name2) && !(added && !wasAdded)) return true;
+    if (d === "mysql") {
+      for (const [col, next] of c.cols ?? [])
+        if (
+          next === "added" &&
+          g.clauses.some(
+            (o) =>
+              o.keyedDrop && (o.cols ?? []).some(([c2, t]) => t === "dropped" && sameCol(col, c2)),
+          )
+        )
+          return true;
+      if (c.fk)
+        for (const [name, added] of c.names ?? [])
+          if (
+            added &&
+            g.clauses.some(
+              (o) =>
+                o.fk && (o.names ?? []).some(([n, wasAdded]) => !wasAdded && sameName(name, n)),
+            )
+          )
+            return true;
+    }
+    const retypes = (x: Clause) => (x.cols ?? []).some(([, t]) => t === "retyped");
+    const reshapes = (x: Clause) =>
+      (x.cols ?? []).some(([, t]) => t === "added" || t === "dropped");
+    // A CHECK that is added may name a column that a DROP COLUMN of the same statement removes:
+    // both servers refuse `ADD CONSTRAINT ck CHECK (b > 0), DROP COLUMN b`.
+    const dropsNamedColumn = (chk: Clause, other: Clause) =>
+      chk.checkExpr !== undefined &&
+      (other.cols ?? []).some(([col, t]) => t === "dropped" && mentionsName(chk.checkExpr!, col));
+    return (
+      (!!c.check && g.clauses.some(retypes)) ||
+      (retypes(c) && g.clauses.some((o) => o.check)) ||
+      (!!c.using && g.clauses.some(reshapes)) ||
+      (reshapes(c) && g.clauses.some((o) => o.using)) ||
+      g.clauses.some((o) => dropsNamedColumn(c, o) || dropsNamedColumn(o, c))
+    );
+  };
+
   for (const op of ops) {
     const start = statements.length;
     const folded = rebuild && onPlanned(op) && !TABLE_LEVEL.has(op.op);
+    // Only ALTER TABLE clauses join a group; any other op ends it.
+    if (!ALTER_OPS.has(op.op)) group = null;
+    joined.at = null;
     const push = (sql: string) => {
+      group = null;
       if (!folded) statements.push(sql);
     };
+    /** Adds a clause to the table's `ALTER TABLE` (SQLite: one statement per clause). */
+    const alter = (table: TableRef, clause: Clause) => {
+      if (folded) return;
+      if (d === "sqlite") {
+        statements.push(`ALTER TABLE ${qt(d, table)} ${clause.sql}`);
+        return;
+      }
+      let replace = -1;
+      if (group) {
+        const name = clause.replaces;
+        if (name !== undefined)
+          replace = group.clauses.findIndex(
+            (o) =>
+              o.cols?.length === 1 && o.cols[0]![1] === "modified" && sameCol(o.cols[0]![0], name),
+          );
+        if (!sameSpelling(group.table, table) || conflicts(group, clause, replace)) {
+          group = null;
+          replace = -1;
+        }
+      }
+      if (group) {
+        if (replace >= 0) group.clauses[replace] = clause;
+        else group.clauses.push(clause);
+        statements[group.at] = render(group);
+      } else {
+        group = { table, at: statements.length, clauses: [clause] };
+        statements.push(render(group));
+      }
+      joined.at = group.at;
+    };
+    /** Whether the group already changes (MODIFY / SET DEFAULT) column `name` of `table`. */
+    const alters = (table: TableRef, name: string) =>
+      group !== null &&
+      sameSpelling(group.table, table) &&
+      group.clauses.some((c) => c.cols?.some(([n, t]) => t === "modified" && sameCol(n, name)));
+    /** MySQL `MODIFY COLUMN` of `c` (as it is now); replaces an earlier change of the column. */
+    const alterModify = (table: TableRef, c: ColumnMeta) =>
+      alter(table, {
+        sql: mysqlModify(d, c),
+        cols: [[c.name, "modified"]],
+        replaces: c.name,
+      });
     switch (op.op) {
       case "rawSql": {
         requireName(op.sql, "SQL");
@@ -575,10 +798,13 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         if (op.after) findCol(w, op.after);
         if (d === "sqlite" && op.column.comment) warn(SQLITE_NO_COMMENTS);
         if (d !== "mysql" && op.column.unsigned) warn("UNSIGNED is MySQL-only; ignored");
-        let sql = `ALTER TABLE ${qt(d, op.table)} ADD COLUMN ${columnSql(d, op.column)}`;
-        if (d === "mysql" && op.after !== null)
+        let sql = `ADD COLUMN ${columnSql(d, op.column)}`;
+        const touched: Array<[string, Touch]> = [[op.column.name, "added"]];
+        if (d === "mysql" && op.after !== null) {
           sql += op.after === "" ? " FIRST" : ` AFTER ${q(d, op.after)}`;
-        push(sql);
+          if (op.after !== "") touched.push([op.after, "referenced"]);
+        }
+        alter(op.table, { sql, cols: touched });
         if (d === "postgres" && op.column.comment)
           push(
             `COMMENT ON COLUMN ${qt(d, op.table)}.${q(d, op.column.name)} IS ${lit(d, op.column.comment)}`,
@@ -598,7 +824,16 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         const w = needWork(op.table);
         const c = findCol(w, op.name);
         if (w.meta.columns.length === 1) invalid(`"${op.table.name}" would have no columns left`);
-        push(`ALTER TABLE ${qt(d, op.table)} DROP COLUMN ${q(d, op.name)}`);
+        alter(op.table, {
+          sql: `DROP COLUMN ${q(d, op.name)}`,
+          cols: [[op.name, "dropped"]],
+          // (the work model still has the keys of the column here)
+          keyedDrop:
+            d === "mysql" &&
+            (w.meta.primaryKey.includes(op.name) ||
+              w.meta.indexes.some((x) => x.columns.some((e) => indexColumn(e) === op.name)) ||
+              w.meta.foreignKeys.some((f) => f.columns.includes(op.name))),
+        });
         const i = w.meta.columns.indexOf(c);
         w.meta.columns.splice(i, 1);
         w.sources.splice(i, 1);
@@ -629,12 +864,14 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         const c = findCol(w, op.name);
         c.dataType = op.newType;
         if (d === "postgres")
-          push(
-            `ALTER TABLE ${qt(d, op.table)} ALTER COLUMN ${q(d, op.name)} TYPE ${op.newType}${op.using ? ` USING ${op.using}` : ""}`,
-          );
+          alter(op.table, {
+            sql: `ALTER COLUMN ${q(d, op.name)} TYPE ${op.newType}${op.using ? ` USING ${op.using}` : ""}`,
+            cols: [[op.name, "retyped"]],
+            using: !!op.using,
+          });
         else {
           if (op.using) warn("USING is PostgreSQL-only; ignored");
-          if (d === "mysql") push(mysqlModify(d, op.table, c));
+          if (d === "mysql") alterModify(op.table, c);
         }
         break;
       }
@@ -643,20 +880,25 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         const c = findCol(w, op.name);
         c.nullable = op.nullable;
         if (d === "postgres")
-          push(
-            `ALTER TABLE ${qt(d, op.table)} ALTER COLUMN ${q(d, op.name)} ${op.nullable ? "DROP NOT NULL" : "SET NOT NULL"}`,
-          );
-        else if (d === "mysql") push(mysqlModify(d, op.table, c));
+          alter(op.table, {
+            sql: `ALTER COLUMN ${q(d, op.name)} ${op.nullable ? "DROP NOT NULL" : "SET NOT NULL"}`,
+            cols: [[op.name, "notNull"]],
+          });
+        else if (d === "mysql") alterModify(op.table, c);
         break;
       }
       case "alterColumnDefault": {
         const w = needWork(op.table);
         const c = findCol(w, op.name);
         c.defaultExpr = op.defaultExpr;
-        if (d !== "sqlite")
-          push(
-            `ALTER TABLE ${qt(d, op.table)} ALTER COLUMN ${q(d, op.name)} ${op.defaultExpr === null ? "DROP DEFAULT" : `SET DEFAULT ${op.defaultExpr}`}`,
-          );
+        // MySQL takes one change of a column per statement: a column the statement already
+        // changes gets its new default in that change (it restates the whole column)
+        if (d === "mysql" && alters(op.table, op.name)) alterModify(op.table, c);
+        else if (d !== "sqlite")
+          alter(op.table, {
+            sql: `ALTER COLUMN ${q(d, op.name)} ${op.defaultExpr === null ? "DROP DEFAULT" : `SET DEFAULT ${op.defaultExpr}`}`,
+            cols: [[op.name, d === "mysql" ? "modified" : "defaulted"]],
+          });
         break;
       }
       case "setColumnComment": {
@@ -667,11 +909,11 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
           break;
         }
         c.comment = op.comment;
-        push(
-          d === "postgres"
-            ? `COMMENT ON COLUMN ${qt(d, op.table)}.${q(d, op.name)} IS ${op.comment === null ? "NULL" : lit(d, op.comment)}`
-            : mysqlModify(d, op.table, c),
-        );
+        if (d === "postgres")
+          push(
+            `COMMENT ON COLUMN ${qt(d, op.table)}.${q(d, op.name)} IS ${op.comment === null ? "NULL" : lit(d, op.comment)}`,
+          );
+        else alterModify(op.table, c);
         break;
       }
       case "setTableComment": {
@@ -694,8 +936,31 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         if (op.index.columns.length === 0) invalid("an index needs at least one column");
         if (w.meta.indexes.some((x) => x.name === op.index.name))
           invalid(`index "${op.index.name}" already exists on "${op.table.name}"`);
+        // MySQL cannot index a TEXT / BLOB column in full (1170): the plan is refused
+        if (d === "mysql" && !/^(fulltext|spatial)$/i.test(op.index.method ?? ""))
+          for (const entry of op.index.columns) {
+            const base = indexColumn(entry);
+            const c = w.meta.columns.find((x) => x.name === base);
+            if (
+              c &&
+              !entry.trim().slice(base.length).trimStart().startsWith("(") &&
+              /^(tiny|medium|long)?(text|blob)\b/i.test(c.dataType)
+            )
+              invalid(
+                `index "${op.index.name}" covers the ${c.dataType} column "${base}" in full: MySQL needs a prefix length for it, as in ${base}(10)`,
+              );
+          }
         const sql = indexSql(d, op.table, op.index, warn);
-        push(sql);
+        if (d === "mysql")
+          alter(op.table, {
+            sql: mysqlAddIndexClause(d, op.index),
+            alone: sql,
+            cols: op.index.columns
+              .filter((e) => !e.trim().startsWith("("))
+              .map((e): [string, Touch] => [indexColumn(e), "referenced"]),
+            names: [[op.index.name, true]],
+          });
+        else push(sql);
         if (d === "postgres" && op.index.comment)
           push(
             `COMMENT ON INDEX ${op.table.schema ? `${q(d, op.table.schema)}.` : ""}${q(d, op.index.name)} IS ${lit(d, op.index.comment)}`,
@@ -723,17 +988,18 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
           w.meta.indexes.find((x) => x.name === op.name) ??
           invalid(`index "${op.name}" does not exist on "${op.table.name}"`);
         if (idx.primary)
-          push(
-            d === "mysql"
-              ? `ALTER TABLE ${qt(d, op.table)} DROP PRIMARY KEY`
-              : `ALTER TABLE ${qt(d, op.table)} DROP CONSTRAINT ${q(d, op.name)}`,
-          );
+          alter(op.table, {
+            sql: d === "mysql" ? "DROP PRIMARY KEY" : `DROP CONSTRAINT ${q(d, op.name)}`,
+            names: [[d === "mysql" ? "PRIMARY" : op.name, false]],
+          });
+        else if (d === "mysql")
+          alter(op.table, {
+            sql: `DROP INDEX ${q(d, op.name)}`,
+            alone: `DROP INDEX ${q(d, op.name)} ON ${qt(d, op.table)}`,
+            names: [[op.name, false]],
+          });
         else
-          push(
-            d === "mysql"
-              ? `DROP INDEX ${q(d, op.name)} ON ${qt(d, op.table)}`
-              : `DROP INDEX ${op.table.schema ? `${q(d, op.table.schema)}.` : ""}${q(d, op.name)}`,
-          );
+          push(`DROP INDEX ${op.table.schema ? `${q(d, op.table.schema)}.` : ""}${q(d, op.name)}`);
         w.meta.indexes = w.meta.indexes.filter((x) => x !== idx);
         break;
       }
@@ -743,7 +1009,12 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         if (op.fk.columns.length !== op.fk.refColumns.length)
           invalid("a foreign key needs as many referenced columns as columns");
         for (const c of op.fk.columns) findCol(w, c);
-        push(`ALTER TABLE ${qt(d, op.table)} ADD ${fkSql(d, op.fk)}`);
+        alter(op.table, {
+          sql: `ADD ${fkSql(d, op.fk)}`,
+          cols: op.fk.columns.map((c): [string, Touch] => [c, "referenced"]),
+          names: op.fk.name ? [[op.fk.name, true]] : [],
+          fk: true,
+        });
         w.meta.foreignKeys = [
           ...w.meta.foreignKeys,
           {
@@ -762,29 +1033,41 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         const w = needWork(op.table);
         if (!w.meta.foreignKeys.some((f) => f.name === op.name))
           invalid(`foreign key "${op.name}" does not exist on "${op.table.name}"`);
-        push(
-          d === "mysql"
-            ? `ALTER TABLE ${qt(d, op.table)} DROP FOREIGN KEY ${q(d, op.name)}`
-            : `ALTER TABLE ${qt(d, op.table)} DROP CONSTRAINT ${q(d, op.name)}`,
-        );
+        alter(op.table, {
+          sql:
+            d === "mysql"
+              ? `DROP FOREIGN KEY ${q(d, op.name)}`
+              : `DROP CONSTRAINT ${q(d, op.name)}`,
+          names: [[op.name, false]],
+          fk: true,
+        });
         w.meta.foreignKeys = w.meta.foreignKeys.filter((f) => f.name !== op.name);
         break;
       }
       case "addPrimaryKey": {
         const w = needWork(op.table);
         for (const c of op.columns) findCol(w, c).isPk = true;
-        push(`ALTER TABLE ${qt(d, op.table)} ADD PRIMARY KEY (${cols(d, op.columns)})`);
+        alter(op.table, {
+          sql: `ADD PRIMARY KEY (${cols(d, op.columns)})`,
+          cols: op.columns.map((c): [string, Touch] => [c, "referenced"]),
+          names:
+            d === "mysql"
+              ? [["PRIMARY", true]]
+              : d === "postgres"
+                ? [[`${op.table.name}_pkey`, true]]
+                : [],
+        });
         w.meta.primaryKey = op.columns;
         break;
       }
       case "dropPrimaryKey": {
         const w = needWork(op.table);
         for (const c of w.meta.columns) c.isPk = false;
-        push(
-          d === "mysql"
-            ? `ALTER TABLE ${qt(d, op.table)} DROP PRIMARY KEY`
-            : `ALTER TABLE ${qt(d, op.table)} DROP CONSTRAINT ${q(d, `${op.table.name}_pkey`)}`,
-        );
+        alter(op.table, {
+          sql:
+            d === "mysql" ? "DROP PRIMARY KEY" : `DROP CONSTRAINT ${q(d, `${op.table.name}_pkey`)}`,
+          names: [[d === "mysql" ? "PRIMARY" : `${op.table.name}_pkey`, false]],
+        });
         w.meta.primaryKey = [];
         break;
       }
@@ -812,7 +1095,7 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
           if (d === "mysql") {
             if (op.autoIncrement) c.defaultExpr = null;
             c.extra = withExtra(c.extra, op.autoIncrement, onUpdateOf(c.extra));
-            push(mysqlModify(d, op.table, c));
+            alterModify(op.table, c);
           }
         }
         break;
@@ -822,7 +1105,7 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         const w = needWork(op.table);
         const c = findCol(w, op.name);
         c.extra = withExtra(c.extra, c.isAutoIncrement, op.onUpdate);
-        push(mysqlModify(d, op.table, c));
+        alterModify(op.table, c);
         break;
       }
       case "alterColumnCollation": {
@@ -830,10 +1113,11 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         const c = findCol(w, op.name);
         c.collation = op.collation;
         if (d === "postgres")
-          push(
-            `ALTER TABLE ${qt(d, op.table)} ALTER COLUMN ${q(d, op.name)} TYPE ${c.dataType} COLLATE ${op.collation ? q(d, op.collation) : '"default"'}`,
-          );
-        else if (d === "mysql") push(mysqlModify(d, op.table, c));
+          alter(op.table, {
+            sql: `ALTER COLUMN ${q(d, op.name)} TYPE ${c.dataType} COLLATE ${op.collation ? q(d, op.collation) : '"default"'}`,
+            cols: [[op.name, "retyped"]],
+          });
+        else if (d === "mysql") alterModify(op.table, c);
         break;
       }
       case "alterTableOptions": {
@@ -854,7 +1138,12 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         const name = op.check.name;
         if (name && w.meta.checks.some((k) => k.name.toLowerCase() === name.toLowerCase()))
           invalid(`CHECK constraint "${name}" already exists on "${op.table.name}"`);
-        push(`ALTER TABLE ${qt(d, op.table)} ADD ${checkSql(d, name, op.check.expression)}`);
+        alter(op.table, {
+          sql: `ADD ${checkSql(d, name, op.check.expression)}`,
+          check: true,
+          checkExpr: op.check.expression,
+          names: name ? [[name, true]] : [],
+        });
         const columns = w.meta.columns
           .map((c) => c.name)
           .filter((c) =>
@@ -874,7 +1163,7 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         const w = needWork(op.table);
         if (!w.meta.checks.some((k) => k.name === op.name))
           invalid(`CHECK constraint "${op.name}" does not exist on "${op.table.name}"`);
-        push(`ALTER TABLE ${qt(d, op.table)} DROP CONSTRAINT ${q(d, op.name)}`);
+        alter(op.table, { sql: `DROP CONSTRAINT ${q(d, op.name)}`, names: [[op.name, false]] });
         w.meta.checks = w.meta.checks.filter((k) => k.name !== op.name);
         break;
       }
@@ -911,9 +1200,12 @@ function plan(d: Driver, table: TableRef | null, ops: DdlOp[]): Planned {
         break;
       }
     }
-    ranges.push([start, statements.length]);
+    // an op that joined an earlier statement owns it (the statements of the whole group fail
+    // together)
+    ranges.push([joined.at !== null ? Math.min(start, joined.at) : start, statements.length]);
   }
 
+  if (d === "mysql") transactional = statements.length === 1;
   if (rebuild && work && table) {
     const start = statements.length;
     statements.push(...rebuildStatements(d, work));

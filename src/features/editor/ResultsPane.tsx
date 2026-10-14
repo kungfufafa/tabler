@@ -28,27 +28,16 @@ import {
 import { ChartView } from "@/features/charts/ChartView";
 import type { ChartDirective, ChartKind } from "@/features/charts/directive";
 import { directiveFor, setResultView, useResultView } from "@/features/charts/store";
+import { ROW_H } from "@/features/datagrid/types";
 import { openExport } from "@/features/export";
 import { resultTable } from "@/features/export/resultTable";
-import { reportTabCommit } from "@/features/objects/commitChain";
-import {
-  applyPreviewedResultEditsReported,
-  commitResultEditsReported,
-} from "@/features/objects/resultCommits";
 import { useAction } from "@/features/palette/actions";
-import {
-  discardResultChanges,
-  previewResultEdits,
-  redoResultEdit,
-  setResultRerun,
-} from "@/features/results/commit";
+import { redoResultEdit, setResultRerun } from "@/features/results/commit";
 import { appendedHeader, pinnedLabel, resultTabText } from "@/features/results/footer";
 import {
-  closeResultPreview,
   dirtyResultOf,
   installResultsLifecycle,
   isPinId,
-  pendingForTab,
   pinResult,
   pinsOf,
   stagingOf,
@@ -57,7 +46,6 @@ import {
   type PinnedResult,
 } from "@/features/results/store";
 import { canRedo } from "@/features/staging/model";
-import { PreviewSqlSheet } from "@/features/table-tab/PreviewSqlSheet";
 import type { Dialect } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
@@ -80,8 +68,7 @@ installResultsLifecycle();
 installNoticeNotifications();
 installFindLifecycle();
 
-/** Row height of the grids (`ROW_H`) and the chrome around a stacked result set. */
-const STACK_ROW_H = 22;
+/** The chrome around a stacked result set (the rows are `ROW_H` high: a live value, Appearance). */
 const STACK_CHROME_H = 24 + 28;
 /** Rows a stacked result set shows before it scrolls on its own. */
 const STACK_MAX_ROWS = 12;
@@ -216,34 +203,6 @@ function ResultsMenu({
   );
 }
 
-/** The Preview SQL sheet of a result commit (⇧⌘P, or ⌘S with "Confirm before commit"). */
-function ResultPreviewSheet({ tabId }: { tabId: string }) {
-  const preview = useResultsStore((s) => s.preview);
-  const open = preview.open && preview.tabId === tabId;
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        void applyPreviewedResultEditsReported(tabId);
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [open, tabId]);
-  return (
-    <PreviewSqlSheet
-      state={open ? preview : { ...preview, open: false }}
-      onOpenChange={(next) => {
-        if (next) return;
-        closeResultPreview();
-        reportTabCommit(tabId, "cancelled");
-      }}
-      onApply={() => void applyPreviewedResultEditsReported(tabId)}
-    />
-  );
-}
-
 /** What a result shown in the pane is: a set of the current run, or a pinned copy. */
 interface Shown {
   info: ResultSetInfo;
@@ -305,6 +264,8 @@ function ResultBody({
   active: boolean;
   height?: number;
   footer: ReactNode;
+  /** The grid menu's Export Result…. */
+  onExport: () => void;
 }) {
   const view = useResultView(shown.info.id, shown.directive !== null);
   if (view === "chart" && shown.directive)
@@ -359,7 +320,6 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
   });
   const mode = usePrefs((p) => p.resultViewMode);
   const pins = useResultsStore((s) => pinsOf(s, tabId));
-  const pending = useResultsStore((s) => pendingForTab(s, tabId));
   const dirty = useResultsStore((s) => dirtyResultOf(s, tabId));
   const redoable = useResultsStore((s) => (dirty ? canRedo(stagingOf(s, dirty)) : false));
   const findOpen = useFind(tabId).open;
@@ -374,16 +334,11 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
     );
   }, [qc]);
 
-  // Staged result edits answer the toolbar's action control and ⌘S / ⇧⌘P / ⇧⌘⌫ / ⇧⌘Z.
-  const commit = useCallback(() => void commitResultEditsReported(tabId), [tabId]);
-  const preview = useCallback(() => void previewResultEdits(tabId), [tabId]);
-  const discard = useCallback(() => discardResultChanges(tabId), [tabId]);
+  // Staged result edits are part of the workspace commit (⌘S / ⇧⌘P / ⇧⌘⌫ commit, preview and
+  // discard every pending change of the connection, `features/commit`); ⇧⌘Z redoes here.
   const redo = useCallback(() => {
     if (dirty) redoResultEdit(tabId, dirty);
   }, [tabId, dirty]);
-  useAction("grid.commit", isActive && pending > 0 ? commit : null);
-  useAction("grid.preview", isActive && pending > 0 ? preview : null);
-  useAction("grid.discard", isActive && pending > 0 ? discard : null);
   useAction("grid.redo", isActive && redoable ? redo : null);
 
   // ⌘F in a result grid (or the header's search icon): find & replace in the shown result.
@@ -495,6 +450,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
       dialect={dialect}
       active={gridActive}
       height={height}
+      onExport={() => exportShown(shown)}
       footer={
         <FooterFor
           shown={shown}
@@ -615,7 +571,6 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
           <MessagesView tabId={tabId} run={run} />
         ) : null}
       </div>
-      <ResultPreviewSheet tabId={tabId} />
     </div>
   );
 }
@@ -655,7 +610,7 @@ function AppendedResult({
         {appendedHeader(n, rows, info.durationMs)}
         {info.truncated && <TriangleAlert className="text-warning size-3" aria-label="Truncated" />}
       </header>
-      {children(STACK_CHROME_H + (shownRows + 1) * STACK_ROW_H)}
+      {children(STACK_CHROME_H + (shownRows + 1) * ROW_H)}
     </section>
   );
 }

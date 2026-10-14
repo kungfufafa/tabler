@@ -47,6 +47,20 @@ pub struct PromptRound {
     pub name: String,
     pub instructions: String,
     pub prompts: Vec<SshPromptField>,
+    /// `None`: the server's own questions.
+    pub kind: Option<SshPromptKind>,
+}
+
+/// A question the app asks itself rather than the SSH server's keyboard-interactive round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum SshPromptKind {
+    /// "Ask every time": the SSH password (one hidden field).
+    Password,
+    /// A yes / no question with no field (e.g. downloading a large SQLite file over SSH); the
+    /// answer is an empty list, cancelling says no.
+    Confirm,
 }
 
 /// Answers keyboard-interactive questions.
@@ -85,6 +99,11 @@ pub struct SshPromptRequest {
     /// The server's instruction text (often empty).
     pub instructions: String,
     pub prompts: Vec<SshPromptField>,
+    /// Set for the app's own questions (the SSH password, a confirmation); absent for the
+    /// server's keyboard-interactive rounds.
+    #[serde(default)]
+    #[ts(optional)]
+    pub kind: Option<SshPromptKind>,
 }
 
 /// Payload of the global `ssh:prompt-done` event: the backend no longer waits for this answer.
@@ -212,6 +231,7 @@ impl KeyboardInteractive for ForwardedPrompts {
             name: round.name,
             instructions: round.instructions,
             prompts: round.prompts,
+            kind: round.kind,
         }));
         match tokio::time::timeout(self.timeout, answer).await {
             Ok(Ok(Some(answers))) if answers.len() == expected => Ok(answers),
@@ -350,6 +370,7 @@ mod tests {
                     echo: *echo,
                 })
                 .collect(),
+            kind: None,
         }
     }
 

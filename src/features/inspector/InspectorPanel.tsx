@@ -1,6 +1,10 @@
 import { X } from "lucide-react";
 import { useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
+import { AssistantPanel } from "@/features/assistant/AssistantPanel";
+import { hideAssistant, showAssistant, useAssistantStore } from "@/features/assistant/store";
+import { ColumnsPane } from "@/features/structure/ColumnsPane";
+import { useColumnSelectionStore } from "@/features/structure/columnSelection";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
@@ -10,14 +14,20 @@ import {
   type InspectedCell,
   type InspectorMode,
 } from "@/stores/inspector";
+import { usePrefs } from "@/stores/prefs";
 import { useUiStore } from "@/stores/ui";
 import { CellView } from "./CellView";
 import { DetailsView } from "./DetailsView";
 
-const MODES: Array<{ mode: InspectorMode; label: string }> = [
+/** Details | Cell, plus the AI Assistant tab (Settings ▸ AI Assistant). */
+type SidebarView = InspectorMode | "assistant";
+
+const MODES: Array<{ mode: SidebarView; label: string }> = [
   { mode: "row", label: "Details" },
   { mode: "cell", label: "Cell" },
+  { mode: "assistant", label: "Assistant" },
 ];
+const ROW_MODES = MODES.slice(0, 2);
 
 /**
  * The right sidebar (⇧⌘I, Space in a grid), TablePlus's row detail: a Details | Cell switch and a
@@ -34,9 +44,14 @@ export function InspectorPanel() {
   const [cellCol, setCellCol] = useState<{ of: InspectedCell; col: number } | null>(null);
   const shown = cell && cellCol?.of === cell ? cellAtColumn(cell, cellCol.col) : cell;
   const closeKeys = shortcutFor("ui.toggle-inspector");
+  const columns = useColumnSelectionStore((s) => s.selection);
+  const assistantEnabled = usePrefs((p) => p.assistantEnabled);
+  const assistantActive = useAssistantStore((s) => s.active) && assistantEnabled;
 
-  const switchMode = (next: InspectorMode) => {
+  const switchMode = (next: SidebarView) => {
     setCellCol(null);
+    if (next === "assistant") return showAssistant();
+    hideAssistant();
     setMode(next);
   };
 
@@ -46,7 +61,11 @@ export function InspectorPanel() {
       className="border-border bg-sidebar text-sidebar-foreground flex h-full min-w-0 flex-col border-l"
     >
       <div className="border-border flex h-7 shrink-0 items-center gap-1 border-b pr-1 pl-2">
-        <ModeSwitch mode={mode} onChange={switchMode} />
+        <ModeSwitch
+          mode={assistantActive ? "assistant" : mode}
+          modes={assistantEnabled ? MODES : ROW_MODES}
+          onChange={switchMode}
+        />
         <Button
           variant="ghost"
           size="icon-xs"
@@ -58,7 +77,12 @@ export function InspectorPanel() {
           <X />
         </Button>
       </div>
-      {!cell || !shown ? (
+      {assistantActive ? (
+        <AssistantPanel />
+      ) : columns ? (
+        // Columns selected in a structure view: their attributes, edited together.
+        <ColumnsPane selection={columns} />
+      ) : !cell || !shown ? (
         <div className="text-muted-foreground flex flex-1 items-center justify-center p-6 text-xs">
           No row selected
         </div>
@@ -77,19 +101,21 @@ export function InspectorPanel() {
   );
 }
 
-/** Compact segmented Details | Cell control; ←/→ switch. */
+/** Compact segmented Details | Cell (| Assistant) control; ←/→ switch. */
 function ModeSwitch({
   mode,
+  modes,
   onChange,
 }: {
-  mode: InspectorMode;
-  onChange: (mode: InspectorMode) => void;
+  mode: SidebarView;
+  modes: typeof MODES;
+  onChange: (mode: SidebarView) => void;
 }) {
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
     e.preventDefault();
-    const i = MODES.findIndex((m) => m.mode === mode);
-    const next = MODES[(i + (e.key === "ArrowRight" ? 1 : MODES.length - 1)) % MODES.length]!;
+    const i = modes.findIndex((m) => m.mode === mode);
+    const next = modes[(i + (e.key === "ArrowRight" ? 1 : modes.length - 1)) % modes.length]!;
     onChange(next.mode);
     e.currentTarget.parentElement
       ?.querySelector<HTMLButtonElement>(`[data-mode="${next.mode}"]`)
@@ -101,7 +127,7 @@ function ModeSwitch({
       aria-label="Sidebar view"
       className="border-border bg-surface-2 dark:bg-background/40 flex h-5.5 min-w-0 flex-1 items-center rounded-md border p-px"
     >
-      {MODES.map((m) => {
+      {modes.map((m) => {
         const checked = m.mode === mode;
         return (
           <button

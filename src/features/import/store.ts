@@ -1,12 +1,13 @@
 import { create } from "zustand";
 import type { TableRef } from "@/lib/ipc";
 
-export type ImportKind = "csv" | "sql";
+/** CSV and JSON go through the import wizard; SQL dumps through their preview. */
+export type ImportKind = "csv" | "json" | "sql";
 
 export interface ImportRequest {
   connectionId: string;
   kind: ImportKind;
-  /** Target table for a CSV import; null = chosen (or created) in the wizard. */
+  /** Target table for a CSV / JSON import; null = chosen (or created) in the wizard. */
   table: TableRef | null;
 }
 

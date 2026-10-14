@@ -1,4 +1,12 @@
-import { useMemo, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { toast } from "sonner";
 import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
@@ -20,6 +28,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { toIpcError } from "@/lib/ipc";
+import { usePrefs } from "@/stores/prefs";
 import {
   closeSavedQueryDialog,
   keywordProblem,
@@ -32,6 +41,15 @@ import { folderOptions } from "./tree";
 
 const ALL = "__all__";
 const TOP = "__top__";
+/** "Auto Save Favorite": quiet time after the last edit before it is saved. */
+export const FAVORITE_AUTOSAVE_MS = 600;
+
+const sameDraft = (a: SavedQueryDraft, b: SavedQueryDraft) =>
+  a.name === b.name &&
+  a.keyword === b.keyword &&
+  a.sql === b.sql &&
+  a.folderId === b.folderId &&
+  a.profileId === b.profileId;
 
 function Field({
   id,
@@ -83,6 +101,38 @@ function SavedQueryForm({ request }: { request: SavedQueryDialogRequest }) {
       )
     : undefined;
   const canSave = draft.name.trim() !== "" && keywordError === null && !saving;
+
+  // "Auto Save Favorite": an existing query saves shortly after each edit (⌘S still closes).
+  const autoSave = usePrefs((p) => p.queriesAutoSave) && !isNew;
+  const lastSaved = useRef(request.draft);
+  const [autoStatus, setAutoStatus] = useState<"saved" | "saving" | null>(null);
+  useEffect(() => {
+    if (!autoSave || sameDraft(draft, lastSaved.current)) return;
+    if (draft.name.trim() === "" || keywordProblem(draft.keyword) !== null) return;
+    const timer = setTimeout(() => {
+      const snapshot = draft;
+      setAutoStatus("saving");
+      void putSavedQuery({
+        id: snapshot.id,
+        name: snapshot.name.trim(),
+        keyword: snapshot.keyword.trim() || null,
+        sql: snapshot.sql,
+        folderId: snapshot.folderId,
+        profileId: snapshot.profileId,
+      }).then(
+        (saved) => {
+          lastSaved.current = snapshot;
+          setAutoStatus("saved");
+          request.onSaved?.(saved);
+        },
+        (err: unknown) => {
+          setAutoStatus(null);
+          setError(toIpcError(err).message);
+        },
+      );
+    }, FAVORITE_AUTOSAVE_MS);
+    return () => clearTimeout(timer);
+  }, [autoSave, draft, request]);
 
   const save = async (e?: FormEvent) => {
     e?.preventDefault();
@@ -220,9 +270,18 @@ function SavedQueryForm({ request }: { request: SavedQueryDialogRequest }) {
         {/* ↩ in a single-line field saves. */}
         <button type="submit" hidden aria-hidden tabIndex={-1} />
       </form>
-      <DialogFooter className="py-3">
+      <DialogFooter className="items-center py-3">
+        {autoSave && (
+          <span className="text-muted-foreground mr-auto text-[11px]" role="status">
+            {autoStatus === "saving"
+              ? "Saving…"
+              : autoStatus === "saved"
+                ? "Saved automatically"
+                : "Changes save automatically"}
+          </span>
+        )}
         <Button size="sm" variant="outline" onClick={closeSavedQueryDialog}>
-          Cancel
+          {autoSave && autoStatus === "saved" ? "Close" : "Cancel"}
         </Button>
         <Button size="sm" onClick={() => void save()} disabled={!canSave}>
           Save

@@ -11,7 +11,9 @@ export interface Span {
 
 /**
  * The grid selects ROWS (TablePlus): a click selects the row and focuses the clicked cell, ⇧ / ⌘ /
- * a drag extend or toggle rows. ⌥-clicking a header selects whole columns instead.
+ * a drag extend or toggle rows. ⌥-clicking a header selects whole columns instead. A drag across
+ * columns, or ⇧← / ⇧→, selects a rectangle of cells (TablePlus's "Copy Selected Cells" range):
+ * `anchor` is its fixed corner and `focus` the moving one, and `rows` holds its rows.
  */
 export interface SelectionState {
   /** Selected rows, as runs in the order they were made (⌘-click adds or removes a row). */
@@ -20,6 +22,10 @@ export interface SelectionState {
   cols: Span[];
   /** The focused cell (VISUAL position): what ↩ edits and the row details show. */
   focus: CellPos | null;
+  /** The fixed corner of a cell range; null outside a range. */
+  anchor?: CellPos | null;
+  /** The moving corner of the cell range (where the focus went when it last grew). */
+  end?: CellPos | null;
 }
 
 export interface Bounds {
@@ -34,13 +40,17 @@ export interface Rect {
   c1: number;
 }
 
-export const EMPTY_SELECTION: SelectionState = { rows: [], cols: [], focus: null };
+export const EMPTY_SELECTION: SelectionState = { rows: [], cols: [], focus: null, anchor: null };
 
 export type SelectionAction =
   /** A press on a cell: selects its row (⇧ extends the last run, ⌘ toggles the row) and focuses it. */
   | { type: "click"; pos: CellPos; shift: boolean; meta: boolean }
-  /** A drag from a press: extends the last run to the row under the pointer. */
-  | { type: "dragTo"; pos: CellPos }
+  /**
+   * A drag from a press: extends the last run to the row under the pointer, or, once it moves
+   * into another column, selects the cell range from the press (`rowsOnly`: a drag down the row
+   * numbers, which stays a row selection).
+   */
+  | { type: "dragTo"; pos: CellPos; rowsOnly?: boolean }
   /** ↑↓ move (⇧ extend) the row selection; ←→ move the focused cell within its row. */
   | { type: "move"; dr: number; dc: number; shift: boolean; jump: boolean }
   | { type: "selectAll" }
@@ -69,7 +79,25 @@ function clampPos(pos: CellPos, b: Bounds): CellPos {
 }
 
 function single(pos: CellPos): SelectionState {
-  return { rows: [{ anchor: pos.r, focus: pos.r }], cols: [], focus: pos };
+  return { rows: [{ anchor: pos.r, focus: pos.r }], cols: [], focus: pos, anchor: null };
+}
+
+/** A cell range from `anchor` to `focus`: its rows are the selected rows. */
+function range(anchor: CellPos, focus: CellPos): SelectionState {
+  return { rows: [{ anchor: anchor.r, focus: focus.r }], cols: [], focus, anchor, end: focus };
+}
+
+/** The selected cell range, normalized (VISUAL indexes); null without one. */
+export function selectionRect(s: SelectionState): Rect | null {
+  const a = s.anchor;
+  const f = s.end ?? s.focus;
+  if (!a || !f) return null;
+  return {
+    r0: Math.min(a.r, f.r),
+    r1: Math.max(a.r, f.r),
+    c0: Math.min(a.c, f.c),
+    c1: Math.max(a.c, f.c),
+  };
 }
 
 const inSpans = (spans: readonly Span[], i: number) => spans.some((s) => i >= lo(s) && i <= hi(s));
@@ -120,8 +148,13 @@ export function isColumnSelected(s: SelectionState, c: number): boolean {
   return inSpans(s.cols, c);
 }
 
-/** Whether the cell is part of the selection (its row, or its column while columns are selected). */
+/**
+ * Whether the cell is part of the selection: inside the cell range, else its row (or its column
+ * while columns are selected).
+ */
 export function isCellSelected(s: SelectionState, r: number, c: number): boolean {
+  const rect = selectionRect(s);
+  if (rect) return r >= rect.r0 && r <= rect.r1 && c >= rect.c0 && c <= rect.c1;
   return s.cols.length > 0 ? isColumnSelected(s, c) : isRowSelected(s, r);
 }
 
@@ -166,16 +199,28 @@ export function selectionReducer(s: SelectionState, a: SelectionAction, b: Bound
       );
     case "click": {
       const pos = clampPos(a.pos, b);
+      // ⇧ inside a cell range extends the range.
+      if (a.shift && s.anchor) return range(s.anchor, pos);
       if (a.shift && s.focus) {
         // Extends the last run (earlier ⌘-clicked rows stay selected, as in Finder).
         const anchor = s.rows[s.rows.length - 1]?.anchor ?? s.focus.r;
-        return { rows: [...s.rows.slice(0, -1), { anchor, focus: pos.r }], cols: [], focus: pos };
+        return {
+          rows: [...s.rows.slice(0, -1), { anchor, focus: pos.r }],
+          cols: [],
+          focus: pos,
+          anchor: null,
+        };
       }
       if (a.meta) {
-        if (s.cols.length === 0 && isRowSelected(s, pos.r))
-          return { rows: withoutIndex(s.rows, pos.r), cols: [], focus: pos };
+        if (s.cols.length === 0 && !s.anchor && isRowSelected(s, pos.r))
+          return { rows: withoutIndex(s.rows, pos.r), cols: [], focus: pos, anchor: null };
         const rows = s.cols.length === 0 ? s.rows : [];
-        return { rows: [...rows, { anchor: pos.r, focus: pos.r }], cols: [], focus: pos };
+        return {
+          rows: [...rows, { anchor: pos.r, focus: pos.r }],
+          cols: [],
+          focus: pos,
+          anchor: null,
+        };
       }
       return single(pos);
     }
@@ -183,11 +228,15 @@ export function selectionReducer(s: SelectionState, a: SelectionAction, b: Bound
       const pos = clampPos(a.pos, b);
       const last = s.rows[s.rows.length - 1];
       if (!last) return single(pos);
-      if (last.focus === pos.r && s.focus?.r === pos.r && s.focus.c === pos.c) return s;
+      if (s.focus?.r === pos.r && s.focus.c === pos.c) return s;
+      // Into another column: the drag becomes a cell range from where it started.
+      if (s.anchor || (s.focus && pos.c !== s.focus.c && !a.rowsOnly))
+        return range(s.anchor ?? { r: last.anchor, c: s.focus!.c }, pos);
       return {
         rows: [...s.rows.slice(0, -1), { anchor: last.anchor, focus: pos.r }],
         cols: [],
         focus: pos,
+        anchor: null,
       };
     }
     case "move": {
@@ -199,39 +248,65 @@ export function selectionReducer(s: SelectionState, a: SelectionAction, b: Bound
           }
         : { r: from.r + a.dr, c: from.c + a.dc };
       const pos = clampPos(target, b);
+      // ⇧← / ⇧→ start (or grow) a cell range from the selected rows' first row; ⇧↑ / ⇧↓ grow one.
+      if (a.shift && s.focus && (s.anchor || (a.dr === 0 && s.cols.length === 0))) {
+        const anchor = s.anchor ?? { r: s.rows[s.rows.length - 1]?.anchor ?? from.r, c: from.c };
+        if (s.focus.r === pos.r && s.focus.c === pos.c) return s;
+        return range(anchor, pos);
+      }
       // ←→ / ⇥ move the focused cell within its row; the selected rows stay.
-      if (a.dr === 0 && s.rows.length > 0) {
+      if (a.dr === 0 && s.rows.length > 0 && !s.anchor) {
         if (s.focus && s.focus.r === pos.r && s.focus.c === pos.c) return s;
         return { ...s, focus: pos };
       }
       if (a.shift && s.focus) {
         const anchor = s.rows[s.rows.length - 1]?.anchor ?? from.r;
-        return { rows: [...s.rows.slice(0, -1), { anchor, focus: pos.r }], cols: [], focus: pos };
+        return {
+          rows: [...s.rows.slice(0, -1), { anchor, focus: pos.r }],
+          cols: [],
+          focus: pos,
+          anchor: null,
+        };
       }
       return single(pos);
     }
     case "selectAll": {
       const focus = s.focus ? clampPos(s.focus, b) : { r: 0, c: 0 };
-      return { rows: [{ anchor: 0, focus: b.rows - 1 }], cols: [], focus };
+      return { rows: [{ anchor: 0, focus: b.rows - 1 }], cols: [], focus, anchor: null };
     }
     case "selectRows": {
       const r0 = clampIndex(a.r0, b.rows);
       const r1 = clampIndex(a.r1, b.rows);
-      return { rows: [{ anchor: r0, focus: r1 }], cols: [], focus: clampPos(a.focus, b) };
+      return {
+        rows: [{ anchor: r0, focus: r1 }],
+        cols: [],
+        focus: clampPos(a.focus, b),
+        anchor: null,
+      };
     }
     case "selectColumn": {
       const c = clampIndex(a.c, b.cols);
       const r = s.focus ? clampIndex(s.focus.r, b.rows) : 0;
       if (a.shift && s.focus) {
         const anchor = s.cols[s.cols.length - 1]?.anchor ?? s.focus.c;
-        return { rows: [], cols: [...s.cols.slice(0, -1), { anchor, focus: c }], focus: { r, c } };
+        return {
+          rows: [],
+          cols: [...s.cols.slice(0, -1), { anchor, focus: c }],
+          focus: { r, c },
+          anchor: null,
+        };
       }
       if (a.meta) {
         if (isColumnSelected(s, c))
-          return { rows: [], cols: withoutIndex(s.cols, c), focus: { r, c } };
-        return { rows: [], cols: [...s.cols, { anchor: c, focus: c }], focus: { r, c } };
+          return { rows: [], cols: withoutIndex(s.cols, c), focus: { r, c }, anchor: null };
+        return {
+          rows: [],
+          cols: [...s.cols, { anchor: c, focus: c }],
+          focus: { r, c },
+          anchor: null,
+        };
       }
-      return { rows: [], cols: [{ anchor: c, focus: c }], focus: { r, c } };
+      return { rows: [], cols: [{ anchor: c, focus: c }], focus: { r, c }, anchor: null };
     }
     case "collapse":
       return s.focus ? single(s.focus) : EMPTY_SELECTION;
@@ -242,17 +317,23 @@ export function selectionReducer(s: SelectionState, a: SelectionAction, b: Bound
       let rows = clampSpans(s.rows, b.rows);
       const cols = clampSpans(s.cols, b.cols);
       const focus = s.focus ? clampPos(s.focus, b) : null;
+      const anchor = s.anchor && focus ? clampPos(s.anchor, b) : null;
+      const end = anchor ? clampPos(s.end ?? focus!, b) : null;
       // Every selected row is gone (a shorter page): the focused row is the selection.
       if (s.rows.length > 0 && rows.length === 0 && focus)
         rows = [{ anchor: focus.r, focus: focus.r }];
+      if (anchor && end) rows = [{ anchor: anchor.r, focus: end.r }];
       if (
         sameSpans(rows, s.rows) &&
         sameSpans(cols, s.cols) &&
         focus?.r === s.focus?.r &&
-        focus?.c === s.focus?.c
+        focus?.c === s.focus?.c &&
+        anchor?.r === s.anchor?.r &&
+        anchor?.c === s.anchor?.c &&
+        (!anchor || (end?.r === s.end?.r && end?.c === s.end?.c))
       )
         return s;
-      return { rows, cols, focus };
+      return { rows, cols, focus, anchor, end };
     }
   }
 }

@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { OrderedPicker } from "./parts";
+import { OrderedPicker, type PrefixLengths } from "./parts";
 
 /**
  * A grid cell that is a button: looks like plain text, shows a chevron while hovered or focused,
@@ -234,6 +234,7 @@ export function ColumnsCell({
   allowEmpty = false,
   placeholder = "pick columns",
   hint = "Columns, in index order",
+  lengths,
 }: {
   value: readonly string[];
   options: readonly string[];
@@ -245,6 +246,8 @@ export function ColumnsCell({
   allowEmpty?: boolean;
   placeholder?: string;
   hint?: string;
+  /** MySQL index columns: a prefix length next to every char / text / blob column. */
+  lengths?: PrefixLengths;
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<string[]>([...value]);
@@ -274,7 +277,13 @@ export function ColumnsCell({
       </PopoverTrigger>
       <PopoverContent align="start" className="w-80 gap-2 p-2.5">
         <p className="text-muted-foreground text-[11px]">{hint}</p>
-        <OrderedPicker label={label} options={options} value={draft} onChange={setDraft} />
+        <OrderedPicker
+          label={label}
+          options={options}
+          value={draft}
+          onChange={setDraft}
+          lengths={lengths}
+        />
       </PopoverContent>
     </Popover>
   );

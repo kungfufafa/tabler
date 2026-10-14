@@ -1,6 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Ban, CircleCheck, CircleX, Info, Loader2, TriangleAlert } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { formatDuration } from "@/lib/format/time";
 import { cn } from "@/lib/utils";
 import { locateSubmitted } from "./submissions";
@@ -9,7 +9,16 @@ import { ErrorBlock } from "./ErrorBlock";
 import { errorRange, spanRange } from "./errorPos";
 import { firstLine, statementOutcome } from "./labels";
 import { isWarning, noticeDetails, noticeText } from "./notices";
-import type { RunNotice, RunState, StatementRun, StatementStatus } from "./runModel";
+import { formatPlainResult } from "./plainResult";
+import {
+  MAX_RESULT_TABS,
+  type ResultSetInfo,
+  type RunNotice,
+  type RunState,
+  type StatementRun,
+  type StatementStatus,
+} from "./runModel";
+import { resultData } from "@/stores/resultData";
 
 /** From this many statements on, only the visible rows are rendered. */
 export const VIRTUALIZE_FROM = 200;
@@ -50,6 +59,28 @@ function NoticeLine({ notice }: { notice: RunNotice }) {
   );
 }
 
+/**
+ * A result set past the first `MAX_RESULT_TABS`, as text under its statement (TablePlus: very
+ * large result counts fall back to plain text).
+ */
+function PlainResult({ set }: { set: ResultSetInfo }) {
+  const buffer = resultData.get(set.id);
+  const columns = (buffer && buffer.columns.length > 0 ? buffer.columns : set.columns).map(
+    (c) => c.name,
+  );
+  const text = set.done
+    ? formatPlainResult(columns, buffer?.rows ?? [], { truncated: set.truncated })
+    : "…";
+  return (
+    <pre
+      className="selectable bg-muted/40 text-foreground/90 mt-1 ml-[46px] max-h-64 overflow-auto rounded px-2 py-1 font-mono text-[11px] leading-4"
+      data-slot="plain-result"
+    >
+      {text}
+    </pre>
+  );
+}
+
 interface RowProps {
   tabId: string;
   /** The run's queryId (its document anchor). */
@@ -58,13 +89,22 @@ interface RowProps {
   sql: string;
   baseOffset: number;
   st: StatementRun;
+  /** The statement's result sets past the result tabs, shown as text. */
+  overflow?: readonly ResultSetInfo[];
 }
 
 /**
  * One statement of the log. Memoized on primitive props plus the statement object, which the run
  * model only replaces when that statement changes: a new event re-renders one row, not all of them.
  */
-const StatementRow = memo(function StatementRow({ tabId, runId, sql, baseOffset, st }: RowProps) {
+const StatementRow = memo(function StatementRow({
+  tabId,
+  runId,
+  sql,
+  baseOffset,
+  st,
+  overflow,
+}: RowProps) {
   const sub = { sql, baseOffset };
   const outcome =
     st.status === "running"
@@ -135,20 +175,59 @@ const StatementRow = memo(function StatementRow({ tabId, runId, sql, baseOffset,
           <span className="selectable break-words whitespace-pre-wrap">{n}</span>
         </div>
       ))}
+      {overflow?.map((set) => (
+        <PlainResult key={set.id} set={set} />
+      ))}
     </>
   );
 });
 
-function rowProps(tabId: string, run: RunState, st: StatementRun): RowProps {
-  return { tabId, runId: run.id, sql: run.sql, baseOffset: run.baseOffset, st };
+type OverflowByStatement = ReadonlyMap<number, readonly ResultSetInfo[]>;
+
+/** The overflow result sets of each statement (the same arrays while the overflow is unchanged). */
+function useOverflow(run: RunState): OverflowByStatement {
+  const overflow = run.overflow;
+  return useMemo(() => {
+    const map = new Map<number, ResultSetInfo[]>();
+    for (const set of overflow ?? []) {
+      const list = map.get(set.statementIndex);
+      if (list) list.push(set);
+      else map.set(set.statementIndex, [set]);
+    }
+    return map;
+  }, [overflow]);
 }
 
-function PlainList({ tabId, run }: { tabId: string; run: RunState }) {
+function rowProps(
+  tabId: string,
+  run: RunState,
+  st: StatementRun,
+  overflow: OverflowByStatement,
+): RowProps {
+  return {
+    tabId,
+    runId: run.id,
+    sql: run.sql,
+    baseOffset: run.baseOffset,
+    st,
+    overflow: overflow.get(st.index),
+  };
+}
+
+function PlainList({
+  tabId,
+  run,
+  overflow,
+}: {
+  tabId: string;
+  run: RunState;
+  overflow: OverflowByStatement;
+}) {
   return (
     <ol className="py-1">
       {run.statements.map((st) => (
         <li key={st.index} className={cn(ROW_CLASS, "last:border-b-0")}>
-          <StatementRow {...rowProps(tabId, run, st)} />
+          <StatementRow {...rowProps(tabId, run, st, overflow)} />
         </li>
       ))}
     </ol>
@@ -160,10 +239,12 @@ function VirtualList({
   tabId,
   run,
   scroller,
+  overflow,
 }: {
   tabId: string;
   run: RunState;
   scroller: HTMLDivElement | null;
+  overflow: OverflowByStatement;
 }) {
   const statements = run.statements;
   const virtualizer = useVirtualizer({
@@ -192,7 +273,7 @@ function VirtualList({
             )}
             style={{ transform: `translateY(${item.start}px)` }}
           >
-            <StatementRow {...rowProps(tabId, run, st)} />
+            <StatementRow {...rowProps(tabId, run, st, overflow)} />
           </li>
         );
       })}
@@ -208,6 +289,8 @@ export function MessagesView({ tabId, run }: { tabId: string; run: RunState }) {
   // State, not a ref: the virtualizer needs the element on the render after it is attached.
   const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
   const waiting = run.statements.length === 0 && run.status === "running";
+  const overflow = useOverflow(run);
+  const extra = run.overflow?.length ?? 0;
   return (
     <div className="flex h-full min-h-0 flex-col text-xs" role="log" aria-label="Messages">
       {run.error && (
@@ -229,11 +312,20 @@ export function MessagesView({ tabId, run }: { tabId: string; run: RunState }) {
           <Loader2 className="size-3.5 animate-spin" /> Waiting for the server…
         </div>
       )}
+      {extra > 0 && (
+        <div
+          className="border-gridline text-muted-foreground flex shrink-0 items-center gap-1.5 border-b px-3 py-1.5 text-[11px]"
+          data-slot="overflow-note"
+        >
+          <Info className="size-3 shrink-0" />
+          {`${MAX_RESULT_TABS} result sets have tabs; the other ${extra.toLocaleString()} are listed here as text.`}
+        </div>
+      )}
       <div ref={setScroller} className="min-h-0 flex-1 overflow-auto">
         {run.statements.length >= VIRTUALIZE_FROM ? (
-          <VirtualList tabId={tabId} run={run} scroller={scroller} />
+          <VirtualList tabId={tabId} run={run} scroller={scroller} overflow={overflow} />
         ) : (
-          <PlainList tabId={tabId} run={run} />
+          <PlainList tabId={tabId} run={run} overflow={overflow} />
         )}
       </div>
     </div>

@@ -1,8 +1,12 @@
 import { formatCount, formatDuration } from "@/lib/format/time";
 
-/** The footer's row count when the row limit cut the result: "auto limited to 1,000 rows". */
+/**
+ * The footer's row count when the row limit cut the result, as TablePlus words it:
+ * "1,000 rows (auto limited 1,000 rows)". The plain count stays in it.
+ */
 export function autoLimitLabel(rows: number): string {
-  return `auto limited to ${formatCount(rows)} row${rows === 1 ? "" : "s"}`;
+  const n = `${formatCount(rows)} row${rows === 1 ? "" : "s"}`;
+  return `${n} (auto limited ${n})`;
 }
 
 /** Execution time of the statement ("6 ms", "1.20 s"); empty while it runs. */

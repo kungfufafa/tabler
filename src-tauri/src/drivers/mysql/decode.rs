@@ -188,11 +188,22 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
+/// A spatial value (MySQL's internal format: SRID + WKB): EWKT while the "convert to WKT"
+/// preference is on (`SRID=4326;POINT(1 2)`), its hex otherwise or when it does not parse.
+fn geometry_value(bytes: &[u8], wkt: bool) -> Value {
+    match wkt.then(|| crate::geometry::mysql_to_ewkt(bytes)).flatten() {
+        Some(ewkt) => Value::other("geometry", ewkt),
+        None => Value::other("geometry", hex(bytes)),
+    }
+}
+
 /// Decodes a text-protocol cell (raw bytes) according to the column kind.
 fn value_from_text(kind: ValueKind, bytes: Vec<u8>) -> Value {
     match kind {
         ValueKind::Bytes => return Value::from_bytes(&bytes),
-        ValueKind::Geometry => return Value::other("geometry", hex(&bytes)),
+        ValueKind::Geometry => {
+            return geometry_value(&bytes, crate::geometry::convert_to_wkt());
+        }
         ValueKind::Bit => return Value::other("bit", bit_literal(&bytes)),
         _ => {}
     }
@@ -503,6 +514,22 @@ mod tests {
         assert_eq!(
             value_from_mysql(ValueKind::Geometry, &c, M::Bytes(vec![0x00, 0xAB])),
             Value::other("geometry", "00AB")
+        );
+        // SRID 4326 (little-endian), then WKB POINT(1 2).
+        let point = [
+            0xE6, 0x10, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xF0, 0x3F, 0, 0, 0, 0, 0, 0, 0,
+            0x40,
+        ];
+        assert_eq!(
+            geometry_value(&point, true),
+            Value::other("geometry", "SRID=4326;POINT(1 2)")
+        );
+        assert_eq!(
+            geometry_value(&point, false),
+            Value::other(
+                "geometry",
+                "E61000000101000000000000000000F03F0000000000000040"
+            )
         );
         // Unparseable numbers fall back to text instead of panicking.
         let c = col(MYSQL_TYPE_LONG, f, 63);

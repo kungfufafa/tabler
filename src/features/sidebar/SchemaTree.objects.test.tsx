@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useDiagramStore } from "@/features/diagram/store";
+import { closeImport, useImportStore } from "@/features/import/store";
 import { ObjectsHost } from "@/features/objects/ObjectsHost";
 import { pendingObjectOps, resetPendingObjectOps } from "@/features/objects/pendingOps";
 import { closeItemOverview, closeObjectDialog, useObjectsStore } from "@/features/objects/store";
@@ -15,13 +17,15 @@ import {
   type ObjectOp,
   type RoutineSummary,
   type TableSummary,
+  type WorkspaceGroup,
+  type WorkspaceResult,
 } from "@/lib/ipc";
 import { isMac } from "@/lib/keys/combo";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
-import { createGroup, reloadGroups, useGroups } from "./groups";
+import { createGroup, reloadGroups, useGroupDialogStore, useGroups } from "./groups";
 import { SchemaTree } from "./SchemaTree";
-import { reloadSidebarPrefs, setSidebarOption } from "./sidebarPrefs";
+import { reloadSidebarPrefs, setSidebarOption, useSidebarPrefs } from "./sidebarPrefs";
 import { buildTreeRows, useTreeRows } from "./useSchemaTree";
 
 vi.mock("@/features/safety/guard", () => ({ guardExecution: vi.fn(async () => true) }));
@@ -131,6 +135,45 @@ function planOf(op: ObjectOp): DdlPlan {
   return { statements, warnings: [], transactional: true };
 }
 
+/**
+ * The workspace commit (⌘S): previews every object group with `planOf`; `apply` runs them all
+ * (`results` per group, in request order, when the test says how each went).
+ */
+function stubWorkspace(results?: (groups: WorkspaceGroup[]) => WorkspaceResult) {
+  vi.spyOn(ipc.workspace, "preview").mockImplementation(async (_c, groups) => ({
+    groups: groups.map((g) => ({
+      ...(g.kind === "object"
+        ? planOf(g.op)
+        : { statements: [], warnings: [], transactional: true }),
+      error: null,
+    })),
+    atomic: true,
+  }));
+  return vi.spyOn(ipc.workspace, "apply").mockImplementation(async (_c, groups) =>
+    results
+      ? results(groups)
+      : {
+          success: true,
+          atomic: true,
+          groups: groups.map((g) => {
+            const sql = g.kind === "object" ? planOf(g.op).statements : [];
+            return {
+              status: "applied" as const,
+              sql,
+              executed: sql,
+              failedIndex: null,
+              rows: [],
+              routine: null,
+              error: null,
+            };
+          }),
+          failedGroup: null,
+          error: null,
+          durationMs: 4,
+        },
+  );
+}
+
 describe("SchemaTree objects", () => {
   beforeEach(() => {
     vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(600);
@@ -143,6 +186,7 @@ describe("SchemaTree objects", () => {
     resetPendingObjectOps();
     reloadGroups();
     useDiagramStore.setState({ request: null });
+    closeImport();
     connect();
     vi.spyOn(ipc.schema, "schemas").mockResolvedValue([{ name: "public", isDefault: true }]);
     // In the server's (name) order.
@@ -221,12 +265,7 @@ describe("SchemaTree objects", () => {
   });
 
   it("⌫ stages dropping every selected table; ⌘S commits it after the safe mode", async () => {
-    const apply = vi.spyOn(ipc.objects, "apply").mockResolvedValue({
-      executed: [],
-      failedIndex: null,
-      error: null,
-      durationMs: 4,
-    });
+    const apply = stubWorkspace();
     renderTree();
     await screen.findByRole("button", { name: /^Functions/ });
     fireEvent.click(row("posts"));
@@ -261,41 +300,46 @@ describe("SchemaTree objects", () => {
       kind: "commit",
       statements: ['DROP TABLE "public"."posts"', 'DROP TABLE "public"."tags"'],
     });
-    expect(apply.mock.calls[0]![1]).toEqual({
-      op: "dropTables",
-      tables: [
-        { table: { schema: "public", name: "posts" }, kind: "table" },
-        { table: { schema: "public", name: "tags" }, kind: "table" },
-      ],
-      cascade: false,
-      ignoreForeignKeys: false,
-    });
+    expect(apply.mock.calls[0]![1]).toEqual([
+      {
+        kind: "object",
+        op: {
+          op: "dropTables",
+          tables: [
+            { table: { schema: "public", name: "posts" }, kind: "table" },
+            { table: { schema: "public", name: "tags" }, kind: "table" },
+          ],
+          cascade: false,
+          ignoreForeignKeys: false,
+        },
+      },
+    ]);
     await waitFor(() => expect(pendingObjectOps("c1")).toHaveLength(0));
   });
 
-  it("⇧⌫ presets CASCADE, ⌥⌫ truncates, and a declined safe mode keeps them pending", async () => {
-    const apply = vi.spyOn(ipc.objects, "apply");
+  it("⇧⌫ stages a CASCADE drop and ⌥⌫ a truncate without a dialog; a declined safe mode keeps them pending", async () => {
+    const apply = stubWorkspace();
+    const message = vi.spyOn(toast, "message");
     vi.mocked(guardExecution).mockResolvedValue(false);
     renderTree();
     await screen.findByRole("button", { name: /^Functions/ });
     fireEvent.keyDown(row("users"), { key: "Backspace", shiftKey: true });
-    let dialog = await screen.findByRole("dialog", { name: "Delete table users?" });
-    expect(within(dialog).getByRole("checkbox", { name: /CASCADE/ })).toBeChecked();
-    await waitFor(() => expect(sqlPreview(dialog)).toHaveTextContent("CASCADE;"));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // TablePlus: the shortcut skips the dialog.
+    await waitFor(() => expect(row("users")).toHaveAttribute("data-pending", "drop"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(useObjectsStore.getState().dialog).toBeNull();
+    expect(message).toHaveBeenCalledWith(
+      "Staged: drop table users CASCADE",
+      expect.objectContaining({ description: expect.stringMatching(/to commit, .* to discard/) }),
+    );
 
     // Views cannot be truncated: ⌥⌫ on one does nothing.
     fireEvent.keyDown(row("user_stats"), { key: "Backspace", altKey: true });
     expect(useObjectsStore.getState().dialog).toBeNull();
     fireEvent.keyDown(row("tags"), { key: "Backspace", altKey: true });
-    dialog = await screen.findByRole("dialog", { name: "Truncate tags?" });
-    await waitFor(() =>
-      expect(sqlPreview(dialog)).toHaveTextContent('TRUNCATE TABLE "public"."tags";'),
-    );
-    fireEvent.click(within(dialog).getByRole("button", { name: "Truncate" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(row("tags")).toHaveAttribute("data-pending", "truncate");
+    await waitFor(() => expect(row("tags")).toHaveAttribute("data-pending", "truncate"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(pendingObjectOps("c1")).toHaveLength(2);
     expect(within(row("tags")).getByText("Truncate")).toBeInTheDocument();
 
     await actions.run("grid.commit");
@@ -314,27 +358,69 @@ describe("SchemaTree objects", () => {
   });
 
   it("stops at the first failing operation and keeps it and the rest pending", async () => {
-    const apply = vi
-      .spyOn(ipc.objects, "apply")
-      .mockResolvedValueOnce({ executed: ["x"], failedIndex: null, error: null, durationMs: 1 })
-      .mockResolvedValueOnce({
-        executed: [],
-        failedIndex: 0,
-        error: { code: "DB", message: "permission denied", detail: null, hint: null },
+    const error = {
+      code: "DB",
+      message: "permission denied",
+      detail: null,
+      hint: null,
+      sqlstate: null,
+      vendorCode: null,
+      position: null,
+      statementIndex: 0,
+      data: null,
+    };
+    // A database that commits DDL statement by statement (MySQL): the first op ran, the second
+    // failed, the third never started.
+    const apply = stubWorkspace((groups) => {
+      const sql = (i: number) =>
+        groups[i]!.kind === "object" ? planOf(groups[i]!.op).statements : [];
+      return {
+        success: false,
+        atomic: false,
+        groups: [
+          {
+            status: "applied",
+            sql: sql(0),
+            executed: sql(0),
+            failedIndex: null,
+            rows: [],
+            routine: null,
+            error: null,
+          },
+          {
+            status: "failed",
+            sql: sql(1),
+            executed: [],
+            failedIndex: 0,
+            rows: [],
+            routine: null,
+            error,
+          },
+          {
+            status: "notRun",
+            sql: sql(2),
+            executed: [],
+            failedIndex: null,
+            rows: [],
+            routine: null,
+            error: null,
+          },
+        ],
+        failedGroup: 1,
+        error,
         durationMs: 1,
-      } as never);
+      } as WorkspaceResult;
+    });
     renderTree();
     await screen.findByRole("button", { name: /^Functions/ });
     for (const name of ["users", "posts", "tags"]) {
       fireEvent.click(row(name));
       fireEvent.keyDown(row(name), { key: "Backspace", altKey: true });
-      const dialog = await screen.findByRole("dialog", { name: `Truncate ${name}?` });
-      await waitFor(() => expect(sqlPreview(dialog)).toHaveTextContent("TRUNCATE"));
-      fireEvent.click(within(dialog).getByRole("button", { name: "Truncate" }));
-      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await waitFor(() => expect(row(name)).toHaveAttribute("data-pending", "truncate"));
     }
     await actions.run("grid.commit");
-    await waitFor(() => expect(apply).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(apply).toHaveBeenCalledOnce());
+    await waitFor(() => expect(pendingObjectOps("c1")).toHaveLength(2));
     const left = pendingObjectOps("c1");
     expect(left.map((o) => o.op.op === "truncateTables" && o.op.tables[0]!.name)).toEqual([
       "posts",
@@ -348,32 +434,25 @@ describe("SchemaTree objects", () => {
     renderTree();
     await screen.findByRole("button", { name: /^Functions/ });
     fireEvent.keyDown(row("tags"), { key: "Backspace" });
-    let dialog = await screen.findByRole("dialog", { name: "Delete table tags?" });
+    const dialog = await screen.findByRole("dialog", { name: "Delete table tags?" });
     await waitFor(() => expect(sqlPreview(dialog)).toHaveTextContent("DROP TABLE"));
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     fireEvent.keyDown(row("users"), { key: "Backspace", altKey: true });
-    dialog = await screen.findByRole("dialog", { name: "Truncate users?" });
-    await waitFor(() => expect(sqlPreview(dialog)).toHaveTextContent("TRUNCATE"));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Truncate" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(row("users")).toHaveAttribute("data-pending", "truncate"));
 
+    stubWorkspace();
     await actions.run("grid.preview");
     const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
-    const ops = within(sheet).getByRole("region", { name: "Item operations" });
-    expect(ops).toHaveTextContent('Delete tagsDROP TABLE "public"."tags";');
+    const ops = within(sheet).getByRole("region", { name: "Sidebar Item operations" });
+    await waitFor(() => expect(ops).toHaveTextContent('Delete tagsDROP TABLE "public"."tags";'));
     expect(ops).toHaveTextContent('Truncate usersTRUNCATE TABLE "public"."users";');
     fireEvent.click(within(sheet).getByRole("button", { name: "Remove delete of tags" }));
     expect(pendingObjectOps("c1").map((o) => o.kind)).toEqual(["truncate"]);
   });
 
   it("⌫ on functions and sequences stages their drop: struck through until ⌘S", async () => {
-    const apply = vi.spyOn(ipc.objects, "apply").mockResolvedValue({
-      executed: [],
-      failedIndex: null,
-      error: null,
-      durationMs: 1,
-    });
+    const apply = stubWorkspace();
     vi.mocked(ipc.objects.sequences).mockResolvedValue([
       {
         schema: "public",
@@ -429,7 +508,8 @@ describe("SchemaTree objects", () => {
 
     // ⌘S runs them after the safe mode, then refetches the routine list.
     await actions.run("grid.commit");
-    await waitFor(() => expect(apply).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(apply).toHaveBeenCalledOnce());
+    expect(apply.mock.calls[0]![1].map((g) => g.kind)).toEqual(["object", "object"]);
     expect(vi.mocked(guardExecution).mock.calls[0]![1]).toEqual({
       kind: "commit",
       statements: [
@@ -606,11 +686,14 @@ describe("SchemaTree objects", () => {
     renderTree();
     fireEvent.contextMenu(await screen.findByRole("button", { name: /^Tables/ }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Item Overview" }));
-    const dialog = await screen.findByRole("dialog", { name: "Item Overview" });
-    await within(dialog).findByText("Registered accounts");
-    expect(within(dialog).getByText("64 KB")).toBeInTheDocument();
-    expect(within(dialog).getByText("tabler")).toBeInTheDocument();
-    expect(ipc.objects.overview).toHaveBeenCalledWith("c1", "public");
+    // It opens as a tab of the workspace (ItemOverview.test.tsx renders its content).
+    const { tabs, activeId } = useTabsStore.getState();
+    expect(tabs.find((t) => t.id === activeId)).toMatchObject({
+      kind: "tool",
+      connectionId: "c1",
+      tool: "overview",
+      params: { schema: "public" },
+    });
   });
 
   it("refetches the routines (and tables) whenever view.refresh is dispatched", async () => {
@@ -623,6 +706,103 @@ describe("SchemaTree objects", () => {
     await waitFor(() => expect(ipc.objects.routines).toHaveBeenCalledTimes(2));
     await actions.run("tab.new-query");
     expect(ipc.objects.routines).toHaveBeenCalledTimes(2);
+  });
+
+  it("⌘⌫ on MySQL stages a drop without foreign key checks; the toast's Undo takes it out", async () => {
+    connect("mysql");
+    const message = vi.spyOn(toast, "message");
+    renderTree();
+    await screen.findByRole("button", { name: /^Tables/ });
+    fireEvent.click(row("posts"));
+    fireEvent.click(row("tags"), MOD);
+    fireEvent.keyDown(row("tags"), { key: "Backspace", ...MOD });
+    await waitFor(() => expect(pendingObjectOps("c1")).toHaveLength(1));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(pendingObjectOps("c1")[0]!.op).toEqual({
+      op: "dropTables",
+      tables: [
+        { table: { schema: "public", name: "posts" }, kind: "table" },
+        { table: { schema: "public", name: "tags" }, kind: "table" },
+      ],
+      cascade: false,
+      ignoreForeignKeys: true,
+    });
+    const [title, options] = message.mock.calls.at(-1)!;
+    expect(title).toBe("Staged: drop 2 tables without foreign key checks");
+    const undo = (options as { action: { label: string; onClick: () => void } }).action;
+    expect(undo.label).toBe("Undo");
+    act(() => undo.onClick());
+    expect(pendingObjectOps("c1")).toEqual([]);
+    expect(row("posts")).not.toHaveAttribute("data-pending");
+  });
+
+  it("⇧⌫ on a function stages its CASCADE drop right away; plain ⌫ still asks", async () => {
+    renderTree();
+    await screen.findByRole("button", { name: /^Functions/ });
+    fireEvent.keyDown(row("slugify"), { key: "Backspace", shiftKey: true });
+    await waitFor(() => expect(row("slugify")).toHaveAttribute("data-pending", "drop"));
+    expect(pendingObjectOps("c1")[0]!.op).toMatchObject({ op: "dropRoutines", cascade: true });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.keyDown(row("archive_posts"), { key: "Backspace" });
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    act(() => closeObjectDialog());
+    // Read-only connections stage nothing.
+    resetPendingObjectOps();
+    act(() =>
+      useConnectionsStore.setState((st) => ({
+        byId: { c1: { ...st.byId.c1!, info: { ...st.byId.c1!.info, readOnly: true } } },
+      })),
+    );
+    fireEvent.keyDown(row("users"), { key: "Backspace", altKey: true });
+    await act(async () => {});
+    expect(pendingObjectOps("c1")).toEqual([]);
+  });
+
+  it("a click on the Tables label opens the Item Overview; its arrow collapses the section", async () => {
+    renderTree();
+    const header = await screen.findByRole("button", { name: /^Tables/ });
+    fireEvent.click(within(header).getByText("Tables"), { detail: 1 });
+    const { tabs, activeId } = useTabsStore.getState();
+    expect(tabs.find((t) => t.id === activeId)).toMatchObject({
+      kind: "tool",
+      tool: "overview",
+      params: { schema: "public" },
+    });
+    expect(header).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(header.querySelector('[data-slot="disclosure"]')!, { detail: 1 });
+    // (These rows are built once, without the collapsed sections: check the preference.)
+    expect(useSidebarPrefs.getState().collapsed.has("Tables")).toBe(true);
+    expect(useTabsStore.getState().tabs).toHaveLength(1);
+    // Other headers (Functions) collapse on a click.
+    const functions = screen.getByRole("button", { name: /^Functions/ });
+    fireEvent.click(within(functions).getByText("Functions"), { detail: 1 });
+    expect(screen.getByRole("button", { name: /^Functions/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(useTabsStore.getState().tabs).toHaveLength(1);
+  });
+
+  it("imports into a table From JSON… (Import ▸)", async () => {
+    renderTree();
+    await screen.findByRole("button", { name: /^Tables/ });
+    fireEvent.contextMenu(row("users"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Import/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "From JSON…" }));
+    expect(useImportStore.getState().request).toEqual({
+      connectionId: "c1",
+      kind: "json",
+      table: { schema: "public", name: "users" },
+    });
+  });
+
+  it("offers New ▸ Group… in the item menu", async () => {
+    renderTree();
+    await screen.findByRole("button", { name: /^Tables/ });
+    fireEvent.contextMenu(row("users"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^New/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Group…" }));
+    expect(useGroupDialogStore.getState().request).toMatchObject({ scope: SCOPE });
   });
 
   it("hides the Functions section when it is turned off, and on SQLite", async () => {

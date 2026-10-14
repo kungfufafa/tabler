@@ -20,19 +20,24 @@ import {
   type QuickFilter,
 } from "@/features/datagrid/DataGrid";
 import type { ReferencedRows } from "@/features/datagrid/quicklook/QuickLook";
-import { NOW_KINDS, nowValue } from "@/features/datagrid/setValue";
+import { mysqlLongLat } from "@/features/datagrid/clipboard";
+import { nowValue } from "@/features/datagrid/setValue";
 import {
   acceptsEmpty,
   buildGridColumns,
+  fkPairs,
+  fksOf,
   type ColumnState,
+  type FkRef,
   type GridColumn,
   type ViewRow,
 } from "@/features/datagrid/types";
+import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { openExportForActiveTab } from "@/features/export/store";
 import { openImport } from "@/features/import/store";
-import { reportTabCommit } from "@/features/objects/commitChain";
+import { setRowContext } from "@/features/commit/rowContext";
+import { openWorkspaceSheet, useCommitGeneration } from "@/features/commit/store";
 import { actions, useAction } from "@/features/palette/actions";
-import { guardExecution } from "@/features/safety/guard";
 import { defaultsFor, mergeRows } from "@/features/staging/merge";
 import {
   canRedo,
@@ -45,11 +50,10 @@ import {
   revertRow,
   setCell,
   setCells,
-  setRowError,
   undo,
 } from "@/features/staging/model";
 import type { CellEdit } from "@/features/staging/types";
-import { rowKeyFor, toStagedChanges } from "@/features/staging/toPayload";
+import { rowKeyFor } from "@/features/staging/toPayload";
 import { ViewSwitch } from "@/features/tabs/ViewSwitch";
 import {
   ipc,
@@ -60,8 +64,7 @@ import {
   type SortSpec,
   type Value,
 } from "@/lib/ipc";
-import { formatCombo } from "@/lib/keys/combo";
-import { shortcutFor } from "@/lib/keys/keymap";
+import { errorWithHint } from "@/lib/errorText";
 import { valueText } from "@/lib/values";
 import { useConnectionsStore } from "@/stores/connections";
 import { useInspectorStore } from "@/stores/inspector";
@@ -77,17 +80,24 @@ import {
 import { BottomBarFrame } from "./BarParts";
 import { TableBottomBar } from "./BottomBar";
 import { FilterBar } from "./FilterBar";
+import { focusFilterRow } from "./filterFocus";
 import { filterMemoryKey, initialFilterState, rememberFilters } from "./filterMemory";
+import { joinSql } from "./joinSql";
 import { defaultFilterRow, isFilterOp, joinList, lastAppliedRowId, toFilterGroup } from "./filters";
 import {
+  fkFilterText,
   openExportCurrentPage,
   pickBinaryFile,
   qualifiedName,
   referencedColumns,
   referencedFilter,
 } from "./gridActions";
-import { PREVIEW_CLOSED, type PreviewState } from "./previewState";
-import { PreviewSqlSheet } from "./PreviewSqlSheet";
+import {
+  defaultOrderSort,
+  recallColumnLayout,
+  rememberColumnLayout,
+  useDefaultOrder,
+} from "./tableViewMemory";
 import { rowKeys, useRowCount, useTableMeta, useTableRows } from "./useTableRows";
 
 const DIALECT: Record<string, Dialect> = { postgres: "postgres", mysql: "mysql", sqlite: "sqlite" };
@@ -131,9 +141,22 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     [profileId, database, table],
   );
   useEffect(() => {
-    ensure(tab.id, initialFilterState(memoryKey, getPrefs().filterDefaultState, isFilterOp));
+    // grid3: the table's remembered column layout (positions, widths, hidden) too.
+    const columnState = recallColumnLayout(memoryKey);
+    ensure(tab.id, {
+      ...initialFilterState(memoryKey, getPrefs().filterDefaultState, isFilterOp),
+      ...(columnState ? { columnState } : {}),
+    });
   }, [tab.id, ensure, memoryKey]);
   const state = useTableTab(tab.id);
+  // grid3: column layout remembered per table (every tab of it, and the next session).
+  useEffect(() => {
+    if (!memoryKey) return;
+    const slice = useTableTabsStore.getState().slices[tab.id];
+    if (slice) rememberColumnLayout(memoryKey, slice.columnState);
+  }, [memoryKey, tab.id, state.columnState]);
+  // grid3: the table's "Default content order" (⚙ in the bottom bar), used while nothing is sorted.
+  const [defaultOrder, setDefaultOrder] = useDefaultOrder(memoryKey);
   useEffect(() => {
     if (!memoryKey) return;
     // The slice itself (not the placeholder shown before it exists).
@@ -153,6 +176,8 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     rootRef.current
       ?.querySelector<HTMLElement>('[data-scope="grid"]')
       ?.focus({ preventScroll: true });
+  /** ⌘↑ on the grid's first row: the filter bar's last row, its value ready to type. */
+  const focusFilters = () => focusFilterRow(rootRef.current, "last");
 
   // A preview tab (italic, replaced by the next single click in the sidebar) is kept once it holds
   // work: staged edits or an applied filter.
@@ -193,12 +218,20 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         ? {
             columns: null,
             filter: filterGroup,
-            sort: state.sort,
+            sort:
+              state.sort.length > 0
+                ? state.sort
+                : defaultOrderSort(defaultOrder, meta.data.primaryKey),
             limit: state.limit,
             offset: state.offset,
           }
         : null,
-    [meta.data, filterGroup, state.sort, state.limit, state.offset],
+    [meta.data, filterGroup, state.sort, state.limit, state.offset, defaultOrder],
+  );
+  // grid3: a new page (or another sort / filter) starts at the grid's top.
+  const pageKey = useMemo(
+    () => ({ offset: state.offset, sort: state.sort, filters: state.filters }),
+    [state.offset, state.sort, state.filters],
   );
   const rows = useTableRows(connectionId, table, request, state.refreshToken, pending > 0);
   const rowNumbers = usePrefs((p) => p.gridRowNumbers);
@@ -278,6 +311,18 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     [pending],
   );
 
+  /** A row's Apply (TablePlus): that filter alone; the other rows stay in the bar, unchecked. */
+  const applyFilterRow = useCallback(
+    (id: string) =>
+      guarded(() =>
+        update(tab.id, {
+          filters: draft.rows.map((r) => ({ ...r, enabled: r.id === id })),
+          conjunction: draft.conjunction,
+          offset: 0,
+        }),
+      ),
+    [draft, tab.id, update, guarded],
+  );
   /** Applies the bar's checked rows, joined with `conjunction` (Apply All ▾ AND / OR). */
   const applyFilters = useCallback(
     (conjunction?: Conjunction) =>
@@ -558,13 +603,12 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         return;
       }
       case "setNow": {
-        // NOW() as the current local date / time in the column's own form.
-        const at = new Date();
+        // The server's NOW(): staged as the expression, sent unquoted (never a client-side time).
         const edits: CellEdit[] = [];
         for (const { r, c } of a.cells) {
           const row = viewRows[r];
           const col = columns[c];
-          const value = col && NOW_KINDS.has(col.kind) ? nowValue(col.kind, at) : null;
+          const value = col ? nowValue(col.kind) : null;
           if (!row || !col || !value || !col.editable || row.status === "deleted") continue;
           edits.push({ rowKey: row.key, col: c, value, original: originalOf(r) });
         }
@@ -658,130 +702,22 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   };
 
   // ---- commit / discard ----------------------------------------------------
-  const [preview, setPreview] = useState<PreviewState>(PREVIEW_CLOSED);
-  const buildRequest = () => {
-    if (!page) return null;
-    if (stagedOn !== null && stagedOn !== columnSignature) {
-      // The page was reloaded with other columns since the edits were staged: committing would
-      // write values into the wrong columns.
-      toast.error("The table's columns changed since these edits were made", {
-        description: `Discard the pending changes (${formatCombo(shortcutFor("grid.discard") ?? "")}), then edit the rows again.`,
-      });
-      return null;
-    }
-    return {
+  // ⌘S / ⇧⌘P / ⇧⌘⌫ commit, preview and discard every pending change of the workspace, this
+  // tab's rows with the other tabs' (`features/commit/workspace.ts`); the host answers them. The
+  // workspace commit builds this tab's request from what its rows were staged against, which
+  // is recorded whenever its page changes (it may be another tab that is shown at commit time).
+  useEffect(() => {
+    if (!page || columnSignature === null) return;
+    setRowContext(tab.id, {
       table,
-      changes: toStagedChanges(staging, page.columns, (k) => backendKeys.get(k) ?? null),
-      returning: true,
-    };
-  };
-
-  const openPreview = async () => {
-    const req = buildRequest();
-    if (!req || req.changes.length === 0) {
-      afterApply.current = null;
-      reportTabCommit(tab.id, "cancelled");
-      return;
-    }
-    setPreview({ ...PREVIEW_CLOSED, open: true, loading: true });
-    try {
-      const statements = await ipc.mutate.preview(connectionId, req);
-      setPreview((p) => ({ ...p, statements, loading: false }));
-    } catch (e) {
-      setPreview((p) => ({ ...p, loading: false, error: (e as Error).message }));
-    }
-  };
-
-  /**
-   * What the unsaved-changes dialog's "Commit…" interrupted (a page change, a reload…): it runs once
-   * after the next successful apply, and is dropped when the apply fails or the sheet is dismissed.
-   */
-  const afterApply = useRef<(() => void) | null>(null);
-
-  /** Applies `req`; on success clears the staging and reloads, on failure marks the failed rows. */
-  const apply = async (req: NonNullable<ReturnType<typeof buildRequest>>) => {
-    // The connection's safe mode sees the statements about to run (and may say no).
-    const statements = await ipc.mutate.preview(connectionId, req);
-    if (!(await guardExecution(connectionId, { kind: "commit", statements }))) {
-      afterApply.current = null;
-      reportTabCommit(tab.id, "cancelled");
-      setPreview((p) => (p.open ? { ...p, applying: false } : p));
-      return;
-    }
-    const result = await ipc.mutate.apply(connectionId, req);
-    if (result.success) {
-      setPreview(PREVIEW_CLOSED);
-      update(tab.id, (s) => ({ staging: discardAll(), refreshToken: s.refreshToken + 1 }));
-      reportTabCommit(tab.id, "committed");
-      toast.success(
-        `Applied ${result.results.length} change${result.results.length === 1 ? "" : "s"} · ${result.durationMs} ms`,
-      );
-      const next = afterApply.current;
-      afterApply.current = null;
-      next?.();
-      return;
-    }
-    afterApply.current = null;
-    reportTabCommit(tab.id, "failed");
-    setStaging((s) =>
-      result.results.reduce(
-        (acc, r) => (r.error ? setRowError(acc, r.rowId, r.error.message) : acc),
-        s,
-      ),
-    );
-    const failed = result.results.findIndex((r) => r.error);
-    // Show what failed in the Preview SQL sheet (opened here when ⌘S skipped it).
-    setPreview((p) => ({
-      ...p,
-      open: true,
-      statements: p.statements.length > 0 ? p.statements : result.sql,
-      loading: false,
-      applying: false,
-      error: result.error?.message ?? "Failed",
-      failedIndex: failed >= 0 ? failed : null,
-    }));
-  };
-
-  const applyPreview = async () => {
-    const req = buildRequest();
-    if (!req) return reportTabCommit(tab.id, "cancelled");
-    setPreview((p) => ({ ...p, applying: true, error: null, failedIndex: null }));
-    try {
-      await apply(req);
-    } catch (e) {
-      afterApply.current = null;
-      reportTabCommit(tab.id, "failed");
-      setPreview((p) => ({ ...p, applying: false, error: (e as Error).message }));
-    }
-  };
-
-  /**
-   * ⌘S: opens the Preview SQL sheet, or applies right away when "Confirm before commit" is off.
-   * Tables without a key always preview: their UPDATE/DELETE match rows by every original value.
-   */
-  const [committing, setCommitting] = useState(false);
-  const commit = async () => {
-    if (getPrefs().confirmCommit || page?.identity === "none") return openPreview();
-    if (committing) return;
-    const req = buildRequest();
-    if (!req || req.changes.length === 0) return reportTabCommit(tab.id, "cancelled");
-    setCommitting(true);
-    try {
-      await apply(req);
-    } catch (e) {
-      afterApply.current = null;
-      reportTabCommit(tab.id, "failed");
-      toast.error("Could not apply changes", { description: (e as Error).message });
-    } finally {
-      setCommitting(false);
-    }
-  };
-
-  const discard = () => {
-    if (pending === 0) return;
-    setStaging(() => discardAll());
-    toast.message("Changes discarded");
-  };
+      columns: page.columns,
+      signature: columnSignature,
+      identity: page.identity,
+      keys: backendKeys,
+    });
+  }, [tab.id, table, page, columnSignature, backendKeys]);
+  // A commit of this tab's rows clears the selection of the edited rows (TablePlus #2979).
+  const committedGeneration = useCommitGeneration(tab.id);
 
   useAction("view.refresh", isActive ? refresh : null);
   // ⌘F (View ▸ Filters): opens the bar, or keeps it open, on the last applied filter's value
@@ -800,24 +736,13 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         }
       : null,
   );
-  useAction("grid.commit", isActive && pending > 0 ? () => void commit() : null);
-  useAction("grid.preview", isActive && pending > 0 ? () => void openPreview() : null);
-  useAction("grid.discard", isActive && pending > 0 ? discard : null);
   useAction("grid.redo", isActive && canRedo(staging) ? () => setStaging((s) => redo(s)) : null);
   useAction("view.structure", isActive ? () => setView(tab.id, "structure") : null);
   const [columnsOpen, setColumnsOpen] = useState(false);
   /** Rows selected in the grid (the bottom bar's "N of M rows selected"). */
   const [selectedRows, setSelectedRows] = useState(0);
   useAction("grid.columns", isActive ? () => setColumnsOpen((open) => !open) : null);
-  useAction(
-    "grid.open-fk",
-    isActive
-      ? () => {
-          const cell = useInspectorStore.getState().cell;
-          if (cell?.column.fk && cell.value.t !== "null") openFk(cell.column, cell.value);
-        }
-      : null,
-  );
+  // ⌘J (the foreign key of the focused cell) is the grid's own: with several keys it asks which.
   /** ⌘← / ⌘→ in the grid: the previous / next page (like the bottom bar's ‹ ›). */
   const turnPage = (dir: -1 | 1) => {
     const { offset, limit } = state;
@@ -828,19 +753,6 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   };
   useAction("grid.prev-page", isActive ? () => turnPage(-1) : null);
   useAction("grid.next-page", isActive ? () => turnPage(1) : null);
-  useEffect(() => {
-    if (!preview.open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !preview.applying && !preview.loading) {
-        e.preventDefault();
-        void applyPreview();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preview.open, preview.applying, preview.loading, staging]);
-
   /** Quick Look's foreign-key viewer: the referenced row(s), by an `=` filter. */
   const loadReferenced = async (column: GridColumn, value: Value): Promise<ReferencedRows> => {
     const fk = column.fk;
@@ -870,13 +782,67 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     return ipc.browse.cell(connectionId, table, key, column.name);
   };
 
-  const openFk = (column: GridColumn, value: Value) => {
-    const fk = column.fk!;
+  /**
+   * FK cell menu ▸ Generate JOIN: `SELECT * FROM this JOIN referenced ON …` in a new SQL tab, over
+   * the key the grid picked (`chosen`; the column's own single-column key, `column.fk`, otherwise).
+   */
+  const generateJoin = (column: GridColumn, chosen?: FkRef) => {
+    const fk = chosen ?? column.fk ?? fksOf(column)[0];
+    if (!fk) return;
+    const pairs = fkPairs(fk, column.name);
+    const sql = joinSql(DIALECT[driver] ?? "postgres", {
+      table,
+      column: pairs[0]?.local ?? column.name,
+      references: {
+        schema: fk.schema ?? table.schema,
+        name: fk.table,
+        column: pairs[0]?.ref ?? fk.column,
+      },
+      pairs:
+        pairs.length > 1 ? pairs.map((p) => ({ column: p.local, reference: p.ref })) : undefined,
+    });
+    openSqlInNewQueryTab(connectionId, sql, driver, `${table.name} JOIN ${fk.table}`);
+  };
+
+  /**
+   * An FK arrow, ⌘J, the cell menu's Open or Quick Look's Open: the referenced table in a tab of
+   * its own, filtered to the key (`=` on each of its columns, AND-ed: a composite key reads its
+   * other columns from the row, `rowCells` in SOURCE order, else the grid's focused row). Without
+   * a `chosen` key it is the column's own `fk` (what Quick Look shows), never a composite one that
+   * merely sorts first. A blob key is typed as hex.
+   */
+  const openFk = (
+    column: GridColumn,
+    value: Value,
+    chosen?: FkRef,
+    rowCells?: readonly Value[],
+  ) => {
+    const fk = chosen ?? column.fk ?? fksOf(column)[0];
+    if (!fk) return;
+    const { viewRows, columns } = live.current;
+    const focusedKey = focusedRow.current?.key;
+    const cells = rowCells ?? viewRows.find((v) => v.key === focusedKey)?.cells;
+    const filters: FilterRowSpec[] = [];
+    for (const { local, ref } of fkPairs(fk, column.name)) {
+      const part =
+        local === column.name ? value : cells?.[columns.findIndex((c) => c.name === local)];
+      // A NULL part matches nothing: the other parts still find the rows it would sit among.
+      if (!part || part.t === "null" || part.t === "default") continue;
+      const text = fkFilterText(part);
+      if (text === null) {
+        toast.message("Only a preview of this value is loaded", {
+          description: "Open it in Quick Look to load it in full.",
+        });
+        return;
+      }
+      filters.push(newFilterRow(ref, "eq", text));
+    }
+    if (filters.length === 0) return;
     const target = { schema: fk.schema ?? table.schema, name: fk.table };
     const id = openTable(connectionId, target, "table");
     useTableTabsStore.getState().ensure(id);
     useTableTabsStore.getState().update(id, {
-      filters: [newFilterRow(fk.column, "eq", valueText(value) ?? "")],
+      filters,
       conjunction: "and",
       filtersVisible: true,
       offset: 0,
@@ -899,15 +865,21 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     update(tab.id, { filtersVisible: true });
   };
 
-  /** Replaces the (estimated) row count with an exact one (`count.data`, then the tab's slice). */
+  /**
+   * Replaces the (estimated) row count with an exact one (`count.data`, then the tab's slice): it
+   * goes under the key the shown count was fetched with, estimate setting included.
+   */
   const countExactly = () =>
     void ipc.browse
       .count(connectionId, table, filterGroup, true)
       .then((c) =>
-        qc.setQueryData(rowKeys.count(connectionId, table, filterGroup, state.refreshToken), c),
+        qc.setQueryData(
+          rowKeys.count(connectionId, table, filterGroup, state.refreshToken, estimate),
+          c,
+        ),
       )
       .catch((e: unknown) =>
-        toast.error("Could not count the rows", { description: (e as Error).message }),
+        toast.error("Could not count the rows", { description: errorWithHint(e) }),
       );
   /** `[+ Row]`: the grid's own "new row" (it focuses the row once it shows up). */
   const addRow = () => {
@@ -943,7 +915,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
               <Skeleton className="h-64 w-full" />
             </div>
           ) : (
-            <EmptyState title="Could not load table" description={meta.error.message} />
+            <EmptyState title="Could not load table" description={errorWithHint(meta.error)} />
           )}
         </div>
         <BottomBarFrame aria-label="Table data">
@@ -968,6 +940,9 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
           sql={page?.sql ?? null}
           onChange={(r, c) => setDraft({ rows: r, conjunction: c })}
           onApply={applyFilters}
+          onApplyRow={applyFilterRow}
+          appliedRows={state.filters}
+          table={table.name}
           onClear={() => {
             setDraft({ rows: [], conjunction: "and" });
             guarded(() => update(tab.id, { filters: [], offset: 0 }));
@@ -979,6 +954,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
           onExport={() => void openExportForActiveTab()}
           focusRequest={filterFocus}
           focusRowId={lastApplied}
+          onFocusData={focusGrid}
         />
       )}
       {noKey && editable && (
@@ -989,7 +965,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       )}
       <div className="min-h-0 flex-1">
         {rows.isError ? (
-          <EmptyState title="Query failed" description={rows.error.message} />
+          <EmptyState title="Query failed" description={errorWithHint(rows.error)} />
         ) : (
           <DataGrid
             columns={columns}
@@ -1004,10 +980,15 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             onFocusCell={onFocusCell}
             onSelectionChange={setSelectedRows}
             onOpenFk={openFk}
+            onFocusFilters={state.filtersVisible ? focusFilters : undefined}
             copyContext={{
               dialect: DIALECT[driver] ?? "postgres",
               schema: meta.data.table.schema,
               table: meta.data.table.name,
+              mysqlLongLat: mysqlLongLat(
+                DIALECT[driver] ?? "postgres",
+                connection?.info.serverVersion ?? "",
+              ),
             }}
             editable={editable && !!page}
             readOnlyNotice={editable ? undefined : "This table is read-only"}
@@ -1019,13 +1000,14 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             onSelectedRowsChange={setSelectedIdx}
             rowNumbers={rowNumbers}
             onRefresh={refresh}
-            onImportCsv={
-              editable ? () => openImport({ connectionId, kind: "csv", table }) : undefined
-            }
+            onGenerateJoin={generateJoin}
+            onImport={editable ? (kind) => openImport({ connectionId, kind, table }) : undefined}
             onExportPage={() => openExportCurrentPage(connectionId, table, tab.id)}
             quickLookKey
             onLoadReferenced={loadReferenced}
             onLoadFullValue={loadFullValue}
+            scrollResetKey={pageKey}
+            deselectKey={committedGeneration}
           />
         )}
       </div>
@@ -1057,22 +1039,9 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
           update(tab.id, (s) => ({ columnState: { ...s.columnState, hidden: [] } }))
         }
         onExport={() => void openExportForActiveTab()}
-      />
-      <PreviewSqlSheet
-        state={preview}
-        warning={
-          noKey
-            ? "No primary key: each UPDATE/DELETE matches every original column value and must affect exactly one row."
-            : undefined
-        }
-        onOpenChange={(open) => {
-          if (!open) {
-            afterApply.current = null;
-            reportTabCommit(tab.id, "cancelled");
-          }
-          setPreview((p) => (open ? p : PREVIEW_CLOSED));
-        }}
-        onApply={() => void applyPreview()}
+        defaultOrder={defaultOrder}
+        onDefaultOrderChange={memoryKey ? setDefaultOrder : undefined}
+        hasPrimaryKey={meta.data.primaryKey.length > 0}
       />
       <AlertDialog open={guard !== null} onOpenChange={(open) => !open && setGuard(null)}>
         <AlertDialogContent>
@@ -1099,9 +1068,11 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             </AlertDialogAction>
             <AlertDialogAction
               onClick={() => {
-                afterApply.current = guard?.run ?? null;
+                // The Preview SQL sheet of the workspace commit; the interrupted change runs
+                // once it went through (and is dropped when the sheet is dismissed).
+                const run = guard?.run ?? null;
                 setGuard(null);
-                void openPreview();
+                openWorkspaceSheet(connectionId, run);
               }}
             >
               Commit…

@@ -31,3 +31,14 @@ pub async fn clear_history(
     state.appdb.clear_history(profile_id)?;
     Ok(())
 }
+
+/// Deletes the history older than `before` (RFC 3339), of one profile or of all ("Clear History
+/// Older Than…", and the "Keep history for" pruning at startup). Returns how many rows went.
+#[tauri::command]
+pub async fn clear_history_before(
+    state: State<'_, AppState>,
+    before: String,
+    profile_id: Option<Uuid>,
+) -> Result<u64, AppError> {
+    state.appdb.clear_history_before(&before, profile_id)
+}

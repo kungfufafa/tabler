@@ -79,7 +79,8 @@ Drag-to-reorder, middle-click close, context menu, dirty dot — keep everything
   table icon + name; the row estimate shows muted on the right.
 - **History**: the query history list (today in the SQL editor's ⌘H sheet) as a sidebar list:
   search, newest first, each entry = first line of SQL (monospace, truncated) + relative time;
-  click opens it in the current/new SQL tab, double-click runs it. ⌘H still opens the sheet.
+  a click only selects the entry, a double-click (or ↩) opens it in a new SQL tab and never runs
+  it (running is Run in New Tab in the menu or ⌘↩ on the selected row). ⌘H still opens the sheet.
 - **Bottom bar** (32px, same height as the main bottom bar): a settings (⚙) menu button (show
   Recent / show row counts toggles), a `+` menu (New Table…, New Query), and the **schema picker**
   (PostgreSQL schemas / SQLite attached DBs) as a compact dropdown. The database is switched with
@@ -91,14 +92,18 @@ Drag-to-reorder, middle-click close, context menu, dirty dot — keep everything
 
 - No header/toolbar row above the grid any more (the tab title + pill say where you are).
 - Filter bar (⌘F) at the top, TablePlus style: each row `[✓] [column ⌄] [operator ⌄] [value…]
-[Apply] [−] [+]`; under the rows a strip: `Export` `SQL` … hints … `Clear` `Apply All`.
+[Apply] [−] [+]`; under the rows a strip: `Export` `SQL` … hints … `Clear` `Apply All`. `SQL` shows
+  the whole generated query (highlighted, with Copy; "WHERE only" narrows it); ⌘I and `+` add a
+  blank filter on the same column and operator; ⌘↑ / ⌘↓ link the bar and the grid.
 - Grid (see §3).
 - **Bottom bar** (32px): `[Data | Structure]` segmented · `[+ Row]` button · centre: the row
-  summary — "1–200 of 1,000 rows" or, when rows are selected, "3 of 200 rows selected" — plus the
-  query time muted ("4 ms") · right: `[Filters]` toggle (highlighted when the bar is open or
-  filters are applied, shows the count), `[Columns]` (the visibility menu), Export (icon), and the
-  pagination `‹  ⚙  ›` where ⚙ opens a popover with **Limit** (page size) and **Offset** fields and
-  a "Go" button, plus First/Last page and the exact-count action.
+  summary — "1–200 of 1,000 rows" or, when rows are selected, "3 of 1,000 rows selected" (the
+  table's row count, with TablePlus's "~" when it is an estimate: "15 of ~999,985 rows selected";
+  the rows of the page while the count is pending) — plus the query time muted ("4 ms") · right:
+  `[Filters]` toggle (highlighted when the bar is open or filters are applied, shows the count),
+  `[Columns]` (the visibility menu), Export (icon; this table's filtered rows), and the pagination
+  `‹  ⚙  ›` where ⚙ opens a popover with **Limit** (page size) and **Offset** fields and a "Go"
+  button, plus First/Last page and the exact-count action.
 - Structure view: same bottom bar with `[Data | Structure]` on the left and its own actions.
 
 ### Right sidebar — row details (⇧⌘I, Space)
@@ -139,8 +144,8 @@ The console log panel (⇧⌘C) docks under the main area across main + right si
 4. **Browse → edit → commit**: single click = preview tab; edits colour the cells; the toolbar
    action control lights up with the count; **⌘S commits straight away** (Confirm before commit is
    now off by default; ⇧⌘P previews); ⇧⌘⌫ discards.
-5. **Query**: the SQL tab's own toolbar moves **below the editor**: left "line 4, column 13";
-   right: row limit select ("No limit / 1,000 / 10,000"), **Beautify ⌘I**, **Run Current ⌘↩ ⌄**
+5. **Query**: the SQL tab's own toolbar moves **below the editor**: left "Line 4, Column 13, Location 40";
+   right: row limit select ("No limit / 100 / 300 / 500 / 1,000 / 10,000"), **Beautify ⌘I**, **Run Current ⌘↩ ⌄**
    (the existing split button). Results under it.
 
 ## 3. Grid look
@@ -184,9 +189,12 @@ audit" pass; the TablePlus behaviour is the target.
 10. **Recent is off by default** (it grew on every open and pushed the list under the pointer, so
     the second click of a double-click hit another table). It stays available in ⚙.
 11. **Row counts are off by default** in the sidebar (TablePlus shows names only); ⚙ turns them on.
-12. **Open Anything (⌘P)** lists database objects only — tables, views, schemas, databases,
-    connections — as one flat ranked list `name — kind`; app actions only after typing `>`.
-    Matching is stricter (word starts / contiguous), so `po` no longer finds "Duplicate row".
+12. **Open Anything (⌘P)** lists database objects first — tables, views, schemas, databases,
+    connections — as one flat ranked list `name — kind`. Since TablePlus b676 it also searches the
+    app's features: from two typed characters on, up to five matching commands follow the objects
+    under a "Commands" heading, each with its shortcut; `>` still lists every command. Matching is
+    strict (word starts / contiguous), so `po` does not find "Duplicate row". A single click only
+    selects a row; ↩ or a double-click opens it, ⌘↩ / ⌘-click opens a table in a new tab.
 13. **The workspace rail is always shown** while connected, so the connection list (+) is always
     one click away, even with a single connection.
 14. **The lock button is not a dead button:** it opens a small popover with the connection's mode

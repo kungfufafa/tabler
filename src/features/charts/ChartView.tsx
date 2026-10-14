@@ -30,7 +30,7 @@ import { paintVar } from "./svg";
 const MIN_W = 200;
 const MIN_H = 140;
 
-function NodeEl({ n }: { n: SceneNode }) {
+export function NodeEl({ n }: { n: SceneNode }) {
   switch (n.t) {
     case "rect":
       return <rect x={n.x} y={n.y} width={n.w} height={n.h} rx={n.rx} fill={paintVar(n.fill)} />;
@@ -93,7 +93,17 @@ function Key({ paint, mark }: { paint: Paint; mark: "rect" | "line" }) {
   );
 }
 
-function Tooltip({ data, x, y, flip }: { data: TooltipData; x: number; y: number; flip: boolean }) {
+export function Tooltip({
+  data,
+  x,
+  y,
+  flip,
+}: {
+  data: TooltipData;
+  x: number;
+  y: number;
+  flip: boolean;
+}) {
   return (
     <div
       role="tooltip"
@@ -113,7 +123,7 @@ function Tooltip({ data, x, y, flip }: { data: TooltipData; x: number; y: number
 }
 
 /** The hover layer of a bar / line chart at point `i`: band, crosshair and points. */
-function XYHover({ scene, i, bar }: { scene: Scene; i: number; bar: boolean }): ReactNode {
+export function XYHover({ scene, i, bar }: { scene: Scene; i: number; bar: boolean }): ReactNode {
   const x = scene.xs[i];
   if (x === undefined) return null;
   const { plot } = scene;

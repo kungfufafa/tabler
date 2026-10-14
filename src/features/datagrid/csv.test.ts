@@ -4,6 +4,7 @@ import {
   csvDefaults,
   csvField,
   csvText,
+  decimalClashes,
   DEFAULT_CSV_OPTIONS,
   formatCsv,
   importDelimiter,
@@ -45,6 +46,49 @@ describe("CSV default options", () => {
     expect(csvField("it's", { ...o, quote: "single" })).toBe("'it''s'");
   });
 
+  it("copies with the Space quote: every value between spaces, a space inside doubled", () => {
+    const space = { ...o, quote: "space" } as const;
+    expect(csvField("ab", space)).toBe(" ab ");
+    expect(csvField("a b", space)).toBe(" a  b ");
+    expect(csvField("", space)).toBe("  ");
+    expect(csvField(null, space)).toBe("");
+    // Quotes and delimiters inside are plain text; only spaces are doubled.
+    expect(csvField('say "hi", ok', space)).toBe(' say  "hi",  ok ');
+    const rows = [[{ t: "int", v: 1 } as const, { t: "text", v: "a b" } as const]];
+    expect(formatCsv(["id", "name"], rows, space)).toBe(" id , name \n 1 , a  b ");
+    expect(formatCsv(null, rows, space)).toBe(" 1 , a  b ");
+  });
+
+  it("writes a custom decimal separator, replacing the first point of numbers only", () => {
+    const hash = { ...o, delimiter: ";", decimal: "#" } as const;
+    expect(csvText({ t: "decimal", v: "12.50" }, hash)).toBe("12#50");
+    expect(csvText({ t: "float", v: 3.25 }, hash)).toBe("3#25");
+    expect(csvText({ t: "float", v: 1.5e-7 }, hash)).toBe("1#5e-7");
+    expect(csvText({ t: "text", v: "1.5" }, hash)).toBe("1.5");
+    // `$` is a character like another one, not a replacement pattern.
+    expect(csvText({ t: "decimal", v: "1.5" }, { ...hash, decimal: "$" })).toBe("1$5");
+    expect(csvText({ t: "decimal", v: "1.5" }, { ...hash, decimal: "&" })).toBe("1&5");
+  });
+
+  it("reads a custom decimal separator from the preferences, unless it is the delimiter", () => {
+    resetPrefsForTests({ ...DEFAULT_PREFS, csvDelimiter: ";", csvDecimal: "#", csvQuote: "space" });
+    expect(csvDefaults()).toEqual({
+      delimiter: ";",
+      quote: "space",
+      lineBreak: "\n",
+      decimal: "#",
+    });
+    // The same character as the delimiter cannot be told apart: points stay.
+    resetPrefsForTests({ ...DEFAULT_PREFS, csvDelimiter: ";", csvDecimal: ";" });
+    expect(csvDefaults().decimal).toBe(".");
+    // `,` with a comma delimiter is the classic European choice: numbers get quoted.
+    resetPrefsForTests({ ...DEFAULT_PREFS, csvDelimiter: ",", csvDecimal: "," });
+    expect(csvDefaults().decimal).toBe(",");
+    expect(decimalClashes(";", ";")).toBe(true);
+    expect(decimalClashes(",", ",")).toBe(false);
+    expect(decimalClashes("#", ";")).toBe(false);
+  });
+
   it("writes decimals with the chosen separator, other values as they are", () => {
     const comma = { ...o, decimal: "," } as const;
     expect(csvText({ t: "decimal", v: "12.50" }, comma)).toBe("12,50");
@@ -71,5 +115,9 @@ describe("CSV default options", () => {
     expect(importQuote('"', "double")).toBe('"');
     expect(importQuote('"', "single")).toBe("'");
     expect(importQuote("'", "ifNeeded")).toBe("'");
+    // The Space quote of the CSV default options (and of the last import) starts the wizard too.
+    expect(importQuote('"', "space")).toBe(" ");
+    expect(importQuote(" ", "ifNeeded")).toBe(" ");
+    expect(importQuote("'", "space")).toBe("'");
   });
 });

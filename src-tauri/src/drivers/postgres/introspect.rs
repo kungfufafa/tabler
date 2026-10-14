@@ -2,16 +2,158 @@
 //! tokio-postgres type features are needed; list-valued columns are joined with `LIST_SEP`.
 
 use std::collections::BTreeMap;
+use std::ops::Deref;
+use std::time::Instant;
 
-use tokio_postgres::Client;
+use tokio_postgres::types::ToSql;
+use tokio_postgres::{Client, Row};
 
 use super::decode::{kind_from_pg_type, split_list};
+use crate::drivers::{SqlTrace, trace_text};
 use crate::error::AppError;
+use crate::sqlgen::Dialect;
 use crate::sqlgen::ddl::check_expression;
+use crate::types::browse::{TraceCategory, TracedSql};
 use crate::types::schema::{
     CheckMeta, ColumnMeta, CompletionMetadata, DatabaseInfo, ForeignKeyMeta, IndexMeta, SchemaInfo,
     TableKind, TableMeta, TableRef, TableSummary, TriggerMeta, ValueKind,
 };
+use crate::types::value::Value;
+
+/// A worker client whose catalog queries are recorded in the session's trace as structure
+/// queries (the console log shows the `pg_catalog` SELECTs the app really ran). Stands in for the
+/// `Client` in this module (`query`, `query_one` and `query_opt` are the recording versions; every
+/// other method is the client's).
+pub struct Traced<'a> {
+    client: &'a Client,
+    trace: &'a SqlTrace,
+}
+
+impl<'a> Traced<'a> {
+    pub fn new(client: &'a Client, trace: &'a SqlTrace) -> Traced<'a> {
+        Traced { client, trace }
+    }
+
+    fn note(
+        &self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+        started: Instant,
+        rows: Option<usize>,
+        error: Option<&tokio_postgres::Error>,
+    ) {
+        let shown: Vec<Value> = params.iter().map(|p| debug_param(*p)).collect();
+        self.trace.record(TracedSql {
+            sql: trace_text(Dialect::Postgres, sql, &shown),
+            category: TraceCategory::Structure,
+            duration_ms: started.elapsed().as_millis() as u64,
+            rows: rows.map(|n| n as u64),
+            affected: None,
+            error: error.map(ToString::to_string),
+        });
+    }
+
+    pub async fn query(
+        &self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Vec<Row>, tokio_postgres::Error> {
+        let started = Instant::now();
+        let result = self.client.query(sql, params).await;
+        self.note(
+            sql,
+            params,
+            started,
+            result.as_ref().ok().map(Vec::len),
+            result.as_ref().err(),
+        );
+        result
+    }
+
+    pub async fn query_one(
+        &self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Row, tokio_postgres::Error> {
+        let started = Instant::now();
+        let result = self.client.query_one(sql, params).await;
+        self.note(
+            sql,
+            params,
+            started,
+            result.as_ref().ok().map(|_| 1),
+            result.as_ref().err(),
+        );
+        result
+    }
+
+    pub async fn query_opt(
+        &self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Option<Row>, tokio_postgres::Error> {
+        let started = Instant::now();
+        let result = self.client.query_opt(sql, params).await;
+        self.note(
+            sql,
+            params,
+            started,
+            result.as_ref().ok().map(|r| usize::from(r.is_some())),
+            result.as_ref().err(),
+        );
+        result
+    }
+}
+
+impl Deref for Traced<'_> {
+    type Target = Client;
+
+    fn deref(&self) -> &Client {
+        self.client
+    }
+}
+
+/// A bound parameter as the value it shows in the trace (read from its `Debug` form: the bound
+/// types of this module are strings, numbers and booleans).
+fn debug_param(param: &(dyn ToSql + Sync)) -> Value {
+    let text = format!("{param:?}");
+    value_of_debug(&text)
+}
+
+fn value_of_debug(text: &str) -> Value {
+    if text == "None" {
+        return Value::Null;
+    }
+    if let Some(inner) = text.strip_prefix("Some(").and_then(|t| t.strip_suffix(')')) {
+        return value_of_debug(inner);
+    }
+    if let Some(quoted) = text.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
+        let mut out = String::with_capacity(quoted.len());
+        let mut chars = quoted.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some(other) => out.push(other),
+                None => out.push('\\'),
+            }
+        }
+        return Value::Text(out);
+    }
+    match text {
+        "true" => Value::Bool(true),
+        "false" => Value::Bool(false),
+        _ => text
+            .parse::<i64>()
+            .map(Value::Int)
+            .unwrap_or_else(|_| Value::Text(text.to_string())),
+    }
+}
 
 const USER_SCHEMA_FILTER: &str = "n.nspname NOT IN ('pg_catalog','information_schema','pg_toast') \
      AND n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast\\_temp\\_%'";
@@ -32,14 +174,14 @@ fn first_char(s: Option<&str>) -> Option<char> {
 
 /// First entry of `current_schemas(false)`, i.e. where unqualified names resolve (usually
 /// `public`).
-pub async fn default_schema(client: &Client) -> Result<Option<String>, AppError> {
+pub async fn default_schema(client: &Traced<'_>) -> Result<Option<String>, AppError> {
     let row = client
         .query_one("SELECT (current_schemas(false))[1]::text", &[])
         .await?;
     Ok(row.try_get::<_, Option<String>>(0)?)
 }
 
-async fn schema_of(client: &Client, table: &TableRef) -> Result<String, AppError> {
+async fn schema_of(client: &Traced<'_>, table: &TableRef) -> Result<String, AppError> {
     match table.schema.as_deref().filter(|s| !s.is_empty()) {
         Some(s) => Ok(s.to_string()),
         None => Ok(default_schema(client)
@@ -48,7 +190,7 @@ async fn schema_of(client: &Client, table: &TableRef) -> Result<String, AppError
     }
 }
 
-pub async fn list_databases(client: &Client) -> Result<Vec<DatabaseInfo>, AppError> {
+pub async fn list_databases(client: &Traced<'_>) -> Result<Vec<DatabaseInfo>, AppError> {
     let rows = client
         .query(
             "SELECT d.datname::text, pg_get_userbyid(d.datdba)::text AS owner, \
@@ -70,7 +212,7 @@ pub async fn list_databases(client: &Client) -> Result<Vec<DatabaseInfo>, AppErr
     Ok(out)
 }
 
-pub async fn list_schemas(client: &Client) -> Result<Vec<SchemaInfo>, AppError> {
+pub async fn list_schemas(client: &Traced<'_>) -> Result<Vec<SchemaInfo>, AppError> {
     let sql = format!(
         "SELECT n.nspname::text, \
                 COALESCE(n.nspname = (current_schemas(false))[1], false) AS is_default \
@@ -87,7 +229,7 @@ pub async fn list_schemas(client: &Client) -> Result<Vec<SchemaInfo>, AppError> 
     Ok(out)
 }
 
-pub async fn list_tables(client: &Client, schema: &str) -> Result<Vec<TableSummary>, AppError> {
+pub async fn list_tables(client: &Traced<'_>, schema: &str) -> Result<Vec<TableSummary>, AppError> {
     let rows = client
         .query(
             "SELECT c.relname::text, c.relkind::text, obj_description(c.oid, 'pg_class')::text, \
@@ -114,7 +256,7 @@ pub async fn list_tables(client: &Client, schema: &str) -> Result<Vec<TableSumma
 }
 
 pub async fn view_definition(
-    client: &Client,
+    client: &Traced<'_>,
     table: &TableRef,
 ) -> Result<Option<String>, AppError> {
     let schema = schema_of(client, table).await?;
@@ -193,7 +335,7 @@ fn fk_action(code: &str) -> String {
     .to_string()
 }
 
-pub async fn table_meta(client: &Client, table: &TableRef) -> Result<TableMeta, AppError> {
+pub async fn table_meta(client: &Traced<'_>, table: &TableRef) -> Result<TableMeta, AppError> {
     let schema = schema_of(client, table).await?;
     let name = table.name.as_str();
     let params: &[&(dyn tokio_postgres::types::ToSql + Sync)] = &[&schema, &name];
@@ -535,7 +677,7 @@ pub async fn table_meta(client: &Client, table: &TableRef) -> Result<TableMeta, 
     })
 }
 
-pub async fn completion_metadata(client: &Client) -> Result<CompletionMetadata, AppError> {
+pub async fn completion_metadata(client: &Traced<'_>) -> Result<CompletionMetadata, AppError> {
     let mut meta = CompletionMetadata::default();
     for schema in list_schemas(client).await? {
         if schema.is_default {

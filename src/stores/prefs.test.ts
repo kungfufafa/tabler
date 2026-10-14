@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ipc } from "@/lib/ipc";
+import { RENDERER_ID } from "@/lib/ipc/events";
 import { resetMockSettings } from "@/lib/ipc/mock/settings";
+import { mockListen } from "@/lib/ipc/mock/transport";
 import {
+  applyPrefsFromOtherWindow,
+  changedPrefs,
   DEFAULT_PREFS,
   flushPrefs,
   getPrefs,
@@ -98,6 +102,48 @@ describe("prefs store", () => {
     expect((await ipc.settings.get())[PREFS_KEY]).toMatchObject({ pageSize: 500 });
   });
 
+  it("tells the other windows which keys a save changed (and nothing when it changed none)", async () => {
+    const heard: unknown[] = [];
+    const off = mockListen("prefs:changed", (p) => heard.push(p));
+    setPref("pageSize", 500);
+    setPref("editorLineWrap", true);
+    await flushPrefs();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(heard).toEqual([
+      { from: RENDERER_ID, changed: { pageSize: 500, editorLineWrap: true } },
+    ]);
+    // Only what changed since the last save.
+    setPref("confirmCommit", true);
+    await flushPrefs();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(heard[1]).toEqual({ from: RENDERER_ID, changed: { confirmCommit: true } });
+    await flushPrefs();
+    expect(heard).toHaveLength(2);
+    off();
+  });
+
+  it("applies another window's changed keys without saving them again", async () => {
+    const save = vi.spyOn(ipc.settings, "set");
+    setPref("pageSize", 500);
+    applyPrefsFromOtherWindow({ editorFontSize: 16, keymapOverrides: {}, pageSize: 7, bogus: 1 });
+    // Valid keys apply (an invalid value keeps this window's), the local mirror follows.
+    expect(getPrefs()).toMatchObject({ editorFontSize: 16, pageSize: 500 });
+    expect(JSON.parse(localStorage.getItem(PREFS_LOCAL_KEY) ?? "{}")).toMatchObject({
+      editorFontSize: 16,
+    });
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    // Only this window's own edit is saved; the applied key is not announced back.
+    expect(save).toHaveBeenCalledTimes(1);
+    applyPrefsFromOtherWindow("nonsense");
+    expect(getPrefs().editorFontSize).toBe(16);
+  });
+
+  it("lists the keys that differ", () => {
+    const after = { ...DEFAULT_PREFS, pageSize: 500 as const, confirmCommit: true };
+    expect(changedPrefs(DEFAULT_PREFS, after)).toEqual({ pageSize: 500, confirmCommit: true });
+    expect(changedPrefs(after, after)).toEqual({});
+  });
+
   it("ignores no-op and invalid updates", async () => {
     const save = vi.spyOn(ipc.settings, "set");
     setPref("pageSize", DEFAULT_PREFS.pageSize);
@@ -135,11 +181,12 @@ describe("prefs store", () => {
   it("keeps edits made before loading finished and saves them", async () => {
     await ipc.settings.set(PREFS_KEY, { pageSize: 1000 });
     const loading = loadPrefs();
-    setPref("editorTabSize", 4);
+    // 2 spaces: the default indent is 4, so only a change from it is an edit.
+    setPref("editorTabSize", 2);
     await loading;
-    expect(getPrefs().editorTabSize).toBe(4);
+    expect(getPrefs().editorTabSize).toBe(2);
     await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
-    expect((await ipc.settings.get())[PREFS_KEY]).toMatchObject({ editorTabSize: 4 });
+    expect((await ipc.settings.get())[PREFS_KEY]).toMatchObject({ editorTabSize: 2 });
   });
 
   it("pushes a local-only copy to an empty app DB", async () => {

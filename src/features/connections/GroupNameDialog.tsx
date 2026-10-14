@@ -1,4 +1,4 @@
-import { Ban } from "lucide-react";
+import { Ban, ImagePlus, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { GROUP_IMAGE_ACCEPT, loadGroupImage } from "./groupImage";
 import {
   childNames,
   childPath,
@@ -18,6 +19,7 @@ import {
   GROUP_ICONS,
   groupNameError,
   iconOf,
+  imageOf,
   leafName,
   parentPath,
   useGroupActions,
@@ -84,9 +86,94 @@ export function GroupIconPicker({
 }
 
 /**
+ * The group's own image (TablePlus: a group takes an image as well as an icon): "Choose image…"
+ * (a PNG, JPEG, WebP, SVG or GIF file, drawn onto 64x64 and kept as a PNG data URI) and "Remove
+ * image". The image takes the icon's place on the group's header.
+ */
+export function GroupImagePicker({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (image: string | null) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const choose = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await loadGroupImage(file));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That image could not be used");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2">
+        {value && (
+          <img
+            src={value}
+            alt="Group image"
+            draggable={false}
+            className="bg-muted border-border size-10 shrink-0 rounded-md border object-contain"
+          />
+        )}
+        <input
+          ref={input}
+          type="file"
+          accept={GROUP_IMAGE_ACCEPT}
+          aria-label="Group image file"
+          data-testid="group-image-input"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            // The same file can be chosen again after a refusal.
+            e.target.value = "";
+            void choose(file);
+          }}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => input.current?.click()}
+        >
+          <ImagePlus aria-hidden />
+          Choose image…
+        </Button>
+        {value && (
+          <Button type="button" variant="ghost" size="sm" onClick={() => onChange(null)}>
+            <X aria-hidden />
+            Remove image
+          </Button>
+        )}
+      </div>
+      {error ? (
+        <p role="alert" className="text-error text-[11px]">
+          {error}
+        </p>
+      ) : (
+        value && (
+          <p className="text-muted-foreground text-[11px]">
+            The image is shown instead of the icon.
+          </p>
+        )
+      )}
+    </div>
+  );
+}
+
+/**
  * "New Group…" / "New Subgroup…" / "Rename Group…" (a name, checked against the other groups of
- * the same parent without case, and an icon) and "Change Icon…" (the icon only). `onSubmit`
- * receives the group's full new path; the dialog saves the icon itself.
+ * the same parent without case, and an icon or an image) and "Change Icon…" (the icon and image
+ * only). `onSubmit` receives the group's full new path; the dialog saves the icon and image
+ * itself.
  */
 export function GroupNameDialog({
   request,
@@ -109,17 +196,20 @@ export function GroupNameDialog({
   const actions = useGroupActions();
   const [name, setName] = useState("");
   const [icon, setIcon] = useState<GroupIconId | null>(null);
+  const [image, setImage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const existing = shown && shown.kind !== "new" ? shown.group : null;
   const parent = shown?.kind === "new" ? shown.parent : existing ? parentPath(existing) : "";
   const savedIcon = existing ? iconOf(stored.data ?? [], existing) : null;
+  const savedImage = existing ? imageOf(stored.data ?? [], existing) : null;
 
   useEffect(() => {
     if (!request) return;
     setName(request.kind === "new" ? "" : leafName(request.group));
     setIcon(request.kind === "new" ? null : iconOf(stored.data ?? [], request.group));
+    setImage(request.kind === "new" ? null : imageOf(stored.data ?? [], request.group));
     setError(null);
     setBusy(false);
     // Only when a new request arrives: the saved icon is the starting value.
@@ -142,6 +232,7 @@ export function GroupNameDialog({
     setBusy(true);
     let ok = path === existing || (await onSubmit(request, path));
     if (ok && icon !== savedIcon) ok = await actions.setIcon(path, icon);
+    if (ok && image !== savedImage) ok = await actions.setImage(path, image);
     setBusy(false);
     if (ok) onClose();
   };
@@ -158,7 +249,7 @@ export function GroupNameDialog({
     shown?.kind === "rename"
       ? `The connections and subgroups of “${shown.group}” move with it.`
       : shown?.kind === "icon"
-        ? `Shown on the header of “${shown.group}”.`
+        ? `Shown on the header of “${shown.group}”: an icon, or an image of your own.`
         : parent
           ? `Inside “${parent}”.`
           : "Groups sort connections on the welcome screen. Drag connections onto a group to move them.";
@@ -196,6 +287,10 @@ export function GroupNameDialog({
           <div className="flex flex-col gap-1.5">
             <span className="text-muted-foreground text-xs">Icon</span>
             <GroupIconPicker value={icon} onChange={setIcon} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-muted-foreground text-xs">Image</span>
+            <GroupImagePicker value={image} onChange={setImage} />
           </div>
           <DialogFooter>
             <Button type="button" variant="ghost" size="sm" onClick={onClose}>

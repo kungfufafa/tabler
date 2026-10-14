@@ -38,15 +38,34 @@ describe("ConnectionUrlDialog", () => {
     await user.type(field, "  mariadb://root:pw@db:3307/shop  ");
     await user.click(screen.getByRole("button", { name: "Continue" }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
-    expect(onParsed).toHaveBeenCalledWith({
-      values: expect.objectContaining({
-        driver: "mysql",
-        host: "db",
-        port: "3307",
-        user: "root",
-        database: "shop",
+    expect(onParsed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        values: expect.objectContaining({
+          driver: "mysql",
+          host: "db",
+          port: "3307",
+          user: "root",
+          database: "shop",
+        }),
+        password: "pw",
       }),
-      password: "pw",
-    });
+    );
+  });
+
+  it("takes +ssh URLs, the SSH password included", async () => {
+    const user = userEvent.setup();
+    const { field, onParsed } = renderDialog();
+    await user.type(field, "postgresql+ssh://ops:pw@bastion/app@127.0.0.1/shop{Enter}");
+    expect(onParsed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        values: expect.objectContaining({
+          sshEnabled: true,
+          sshHost: "bastion",
+          sshUser: "ops",
+          sshPassword: "pw",
+          host: "127.0.0.1",
+        }),
+      }),
+    );
   });
 });

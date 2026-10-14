@@ -2,7 +2,16 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { ConnectionInfo } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { useUiStore } from "@/stores/ui";
-import { cycleWorkspace, stepWorkspace, workspaceEntries } from "./workspaces";
+import {
+  cycleWorkspace,
+  moveWorkspace,
+  railOrder,
+  reorderWorkspaces,
+  sortWorkspaces,
+  stepWorkspace,
+  workspaceEntries,
+  workspaceInitials,
+} from "./workspaces";
 
 const info = (id: string, name: string, db: string | null = null): ConnectionInfo => ({
   connectionId: id,
@@ -78,5 +87,63 @@ describe("workspaces", () => {
     expect(workspaceEntries(order, byId, counts, "local dev").map((e) => e.connectionId)).toEqual([
       "a",
     ]);
+  });
+});
+
+describe("rail order", () => {
+  const conn = (id: string, profileId: string, db: string | null) => ({
+    info: { ...info(id, id, db), profileId },
+    status: "connected" as const,
+    message: null,
+    currentSchema: null,
+  });
+  const byId = {
+    a: conn("a", "p1", "app"),
+    b: conn("b", "p1", "shop"),
+    c: conn("c", "p2", "logs"),
+  };
+  const key = (profileId: string, db: string) => `${profileId}\u0000${db}`;
+
+  it("puts dragged workspaces first, by profile and database, then the rest as opened", () => {
+    expect(sortWorkspaces(["a", "b", "c"], byId, [])).toEqual(["a", "b", "c"]);
+    expect(sortWorkspaces(["a", "b", "c"], byId, [key("p2", "logs"), key("p1", "shop")])).toEqual([
+      "c",
+      "b",
+      "a",
+    ]);
+  });
+
+  it("keeps the dragged order, and the saved keys of closed workspaces after it", () => {
+    const saved = [key("p9", "gone")];
+    expect(reorderWorkspaces(["a", "b", "c"], byId, saved, 2, 0)).toEqual([
+      key("p2", "logs"),
+      key("p1", "app"),
+      key("p1", "shop"),
+      key("p9", "gone"),
+    ]);
+    expect(reorderWorkspaces(["a"], byId, saved, 0, 5)).toEqual(saved);
+  });
+
+  it("drags the live rail and cycles in that order", () => {
+    useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
+    useUiStore.setState({ railOrder: [] });
+    const s = useConnectionsStore.getState();
+    s.add(info("x", "First", "one"));
+    s.add(info("y", "Second", "two"));
+    moveWorkspace(1, 0);
+    expect(railOrder()).toEqual(["y", "x"]);
+    s.setActive("y");
+    useUiStore.setState({ view: "workspace" });
+    cycleWorkspace(1);
+    expect(useConnectionsStore.getState().activeId).toBe("x");
+  });
+
+  it("names a workspace's icon after its database", () => {
+    expect(workspaceInitials("tabler_dev")).toBe("TD");
+    expect(workspaceInitials("ShopOrders")).toBe("SO");
+    expect(workspaceInitials("shop")).toBe("SH");
+    expect(workspaceInitials("/Users/me/data/sample.sqlite")).toBe("SA");
+    expect(workspaceInitials("my-app.db")).toBe("MA");
+    expect(workspaceInitials("--")).toBe("?");
   });
 });

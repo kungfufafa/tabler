@@ -8,11 +8,14 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tabler_lib::commands::query::{explain_inner, run_sql_inner};
+use tabler_lib::commands::query::{
+    QUERY_TIMEOUT_CODE, explain_inner, explain_limited, query_limited, run_sql_inner,
+};
 use tabler_lib::drivers::{
     CancelSlot, CollectSink, ConnectTarget, DbSession, RowSink, connect, request_cancel,
 };
 use tabler_lib::error::AppError;
+use tabler_lib::types::browse::TraceCategory;
 use tabler_lib::types::profile::{ConnectionProfile, Driver, ProfileOptions, SslMode};
 use tabler_lib::types::query::{
     ExplainMode, QueryEvent, ResultColumn, RunOptions, StatementKind, StatementResult,
@@ -1168,4 +1171,181 @@ async fn explain_analyze_inside_a_transaction_keeps_it_open() {
     single(s, &format!("drop temporary table {t}"))
         .await
         .unwrap();
+}
+
+fn fx3_first_int(rows: &[Vec<Value>]) -> i64 {
+    match rows.first().and_then(|r| r.first()) {
+        Some(Value::Int(n)) => *n,
+        Some(Value::BigInt(s)) | Some(Value::Decimal(s)) => s.parse().unwrap(),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// Whether a connection is executing a statement that contains `marker` (not this check itself).
+async fn fx3_running(session: &dyn DbSession, marker: &str) -> bool {
+    let sql = format!(
+        "SELECT COUNT(*) FROM information_schema.PROCESSLIST \
+         WHERE ID <> CONNECTION_ID() AND INFO LIKE '%{marker}%'"
+    );
+    fx3_first_int(&session.query(&sql, &[]).await.unwrap().rows) > 0
+}
+
+#[tokio::test]
+async fn fx3_query_limit_kills_a_slow_read_on_the_server() {
+    let Some(session) = open().await else {
+        return;
+    };
+    let marker = format!("fx3_slow_{}", suffix());
+    let sql = format!("SELECT SLEEP(30), '{marker}'");
+    let started = Instant::now();
+    let limited = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            query_limited(session.as_ref(), &sql, &[], Some(Duration::from_secs(2))).await
+        })
+    };
+    let mut seen = false;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if fx3_running(session.as_ref(), &marker).await {
+            seen = true;
+            break;
+        }
+    }
+    assert!(
+        seen,
+        "the slow statement never showed up in the process list"
+    );
+    let err = limited.await.unwrap().unwrap_err();
+    let took = started.elapsed();
+    assert!(took >= Duration::from_secs(2), "{took:?}");
+    assert!(took < Duration::from_secs(8), "{took:?}");
+    assert_eq!(err.code(), QUERY_TIMEOUT_CODE, "{err:?}");
+    assert_eq!(err.to_payload().message, "Query timed out after 2 s");
+    let mut gone = false;
+    for _ in 0..40 {
+        if !fx3_running(session.as_ref(), &marker).await {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(gone, "the server kept running the killed statement");
+    assert_eq!(
+        fx3_first_int(&session.query("SELECT 5", &[]).await.unwrap().rows),
+        5
+    );
+    session.close().await;
+}
+
+#[tokio::test]
+async fn fx3_query_limit_leaves_fast_statements_and_no_limit_alone() {
+    let Some(session) = open().await else {
+        return;
+    };
+    let fast = query_limited(
+        session.as_ref(),
+        "SELECT 1",
+        &[],
+        Some(Duration::from_secs(1)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(fx3_first_int(&fast.rows), 1);
+    let started = Instant::now();
+    let done = query_limited(session.as_ref(), "SELECT SLEEP(1.3), 9", &[], None)
+        .await
+        .unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(1_250));
+    assert_eq!(done.rows.len(), 1);
+    let err = query_limited(
+        session.as_ref(),
+        "SELECT * FROM fx3_no_such_table",
+        &[],
+        Some(Duration::from_secs(5)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), "DB_ERROR");
+    session.close().await;
+}
+
+#[tokio::test]
+async fn fx3_explain_analyze_is_under_the_limit_too() {
+    let Some(session) = open().await else {
+        return;
+    };
+    if session.is_mariadb() {
+        println!("skipped: MariaDB has no EXPLAIN ANALYZE of a read the way MySQL does");
+        return;
+    }
+    let started = Instant::now();
+    let err = explain_limited(
+        session.as_ref(),
+        "SELECT SLEEP(1) FROM information_schema.TABLES LIMIT 30",
+        ExplainMode::Analyze,
+        &CancelSlot::default(),
+        Some(Duration::from_secs(1)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), QUERY_TIMEOUT_CODE, "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(8));
+    assert_eq!(
+        fx3_first_int(&single(session.as_ref(), "SELECT 3").await.unwrap()),
+        3
+    );
+    session.close().await;
+}
+
+#[tokio::test]
+async fn fx3_traces_introspection_and_data_statements() {
+    let Some(session) = open().await else {
+        return;
+    };
+    session.drain_trace();
+    let db = session.server_info().await.unwrap().current_database;
+    let schema = db.expect("the test URL names a database");
+    session.list_databases().await.unwrap();
+    session.list_tables(&schema).await.unwrap();
+    let counted = session
+        .query(
+            "SELECT COUNT(*) FROM (SELECT ? AS fx3_n) t",
+            &[Value::Int(7)],
+        )
+        .await
+        .unwrap();
+    assert_eq!(fx3_first_int(&counted.rows), 1);
+    assert!(
+        session
+            .query("SELECT * FROM fx3_no_such_table", &[])
+            .await
+            .is_err()
+    );
+
+    let trace = session.drain_trace();
+    let find = |needle: &str| {
+        trace
+            .iter()
+            .find(|e| e.sql.contains(needle))
+            .unwrap_or_else(|| panic!("no `{needle}` in {trace:#?}"))
+    };
+    let tables = find("FROM information_schema.TABLES");
+    assert_eq!(tables.category, TraceCategory::Structure);
+    assert!(
+        tables.sql.contains(&format!("TABLE_SCHEMA = '{schema}'")),
+        "{}",
+        tables.sql
+    );
+    assert!(tables.rows.is_some() && tables.error.is_none());
+    assert_eq!(
+        find("information_schema.SCHEMATA").category,
+        TraceCategory::Structure
+    );
+    let count = find("COUNT(*) FROM (SELECT 7");
+    assert_eq!(count.category, TraceCategory::Data);
+    assert_eq!(count.rows, Some(1));
+    assert!(find("fx3_no_such_table").error.is_some());
+    assert!(session.drain_trace().is_empty());
+    session.close().await;
 }

@@ -4,10 +4,13 @@ import {
   ChevronRight,
   Copy,
   FileCode2,
+  FileDown,
+  FileInput,
   Folder,
   FolderInput,
   FolderOpen,
   FolderPlus,
+  FolderSearch,
   Pencil,
   Play,
   Plus,
@@ -46,6 +49,7 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SidebarSearch } from "@/features/sidebar/SidebarSearch";
@@ -55,16 +59,25 @@ import { cn } from "@/lib/utils";
 import type { OpenConnection } from "@/stores/connections";
 import { setPref, usePrefs } from "@/stores/prefs";
 import { openAddToQueries, openEditSavedQuery } from "./dialogStore";
-import { copySavedQuery, insertSavedQuery, openSavedQuery, runSavedQuery } from "./open";
+import { pickFolder, pickQueryFiles } from "./files";
 import {
+  copySavedQuery,
+  importSavedQuery,
+  insertSavedQuery,
+  openSavedQuery,
+  runSavedQuery,
+} from "./open";
+import {
+  addQueryFolderFromDisk,
   deleteQueryFolder,
   deleteSavedQuery,
   ensureSavedQueries,
-  inputOf,
+  importSavedQueryFiles,
   moveSavedQuery,
   putQueryFolder,
-  putSavedQuery,
   queriesFor,
+  renameSavedQuery,
+  revealSavedQuery,
   uniqueName,
   useSavedQueriesStore,
 } from "./store";
@@ -141,7 +154,9 @@ function RenameInput({
  * The sidebar's Queries pane (TablePlus's "Queries", formerly "Favorites"): the saved queries of
  * the active connection and of every connection, in folders. Double-click (or ↩) runs one in a
  * new tab, or inserts it into the SQL editor with ⚙ ▸ Double Click to Insert; right-click for the
- * rest. Queries and folders can be dragged into folders.
+ * rest (Import… runs a query's file through the SQL import wizard; "Add Files to Queries…" is the
+ * other direction: `.sql` files from disk become queries). Queries and folders can be dragged
+ * into folders.
  */
 export function QueriesPane({ connection }: { connection: OpenConnection }) {
   const qc = useQueryClient();
@@ -150,6 +165,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
   const loaded = useSavedQueriesStore((s) => s.loaded);
   const error = useSavedQueriesStore((s) => s.error);
   const doubleClickInserts = usePrefs((p) => p.queriesDoubleClickInsert);
+  const autoSave = usePrefs((p) => p.queriesAutoSave);
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [renaming, setRenaming] = useState<Renaming>(null);
@@ -224,7 +240,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
     if (target.kind === "query") {
       const q = allQueries.find((x) => x.id === target.id);
       if (q && q.name !== trimmed)
-        void putSavedQuery({ ...inputOf(q), name: trimmed }).catch(fail("Could not rename"));
+        void renameSavedQuery(q, trimmed).catch(fail("Could not rename"));
     } else {
       const f = folders.find((x) => x.id === target.id);
       if (f && f.name !== trimmed)
@@ -251,6 +267,34 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
       fail("Could not move the folder"),
     );
   };
+
+  /** Add Files to Queries…: `.sql` files picked on disk become queries (in `folderId`). */
+  const importFiles = (folderId: string | null = null) => {
+    void pickQueryFiles().then((paths) => {
+      if (paths.length === 0) return;
+      void importSavedQueryFiles(paths, folderId).then((added) => {
+        if (folderId) setFolderOpen(folderId, true);
+        toast.success(
+          added.length === 1 ? `Imported “${added[0]!.name}”` : `Imported ${added.length} queries`,
+        );
+      }, fail("Could not import"));
+    });
+  };
+
+  /** Add Folder to Favorites…: a folder of `.sql` files is copied in (under `parentId`). */
+  const addFolder = (parentId: string | null = null) => {
+    void pickFolder("Add Folder to Favorites").then((path) => {
+      if (!path) return;
+      void addQueryFolderFromDisk(path, parentId).then((f) => {
+        if (parentId) setFolderOpen(parentId, true);
+        setFolderOpen(f.id, true);
+        toast.success(`Added the folder “${f.name}”`);
+      }, fail("Could not add the folder"));
+    });
+  };
+
+  const reveal = (target: { kind: "query" | "folder"; id: string } | null) =>
+    void revealSavedQuery(target).catch(fail("Could not show it in Finder"));
 
   const confirmDelete = () => {
     const target = pendingDelete;
@@ -418,6 +462,15 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
           <ContextMenuItem onSelect={() => newFolder(f.id)}>
             <FolderPlus /> New Folder…
           </ContextMenuItem>
+          <ContextMenuItem onSelect={() => importFiles(f.id)}>
+            <FileDown /> Add Files to Queries…
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => addFolder(f.id)}>
+            <FolderInput /> Add Folder to Favorites…
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => reveal({ kind: "folder", id: f.id })}>
+            <FolderSearch /> Show in Finder
+          </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => startRename({ kind: "folder", id: f.id })}>
             <Pencil /> Rename…
@@ -492,15 +545,19 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             <Play /> Run
             <ContextMenuShortcut>{formatCombo("Mod+Enter")}</ContextMenuShortcut>
           </ContextMenuItem>
+          <ContextMenuItem onSelect={() => copySavedQuery(q)}>
+            <Copy /> Copy
+            <ContextMenuShortcut>{formatCombo("Mod+C")}</ContextMenuShortcut>
+          </ContextMenuItem>
+          {/* Through the SQL import wizard (not the "Add Files to Queries…" of the folder menu). */}
+          <ContextMenuItem onSelect={() => void importSavedQuery(connection, q)}>
+            <FileInput /> Import…
+          </ContextMenuItem>
           <ContextMenuItem onSelect={() => openSavedQuery(connection, q)}>
             <SquareStack /> Open in New Tab
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => insertSavedQuery(connection, q)}>
             <TextCursorInput /> Insert to SQL Editor
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => copySavedQuery(q)}>
-            <Copy /> Copy
-            <ContextMenuShortcut>{formatCombo("Mod+C")}</ContextMenuShortcut>
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => openEditSavedQuery(q, draftConnection)}>
@@ -514,6 +571,9 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             options={moveTargets}
             onMove={(target) => moveQuery(q, target)}
           />
+          <ContextMenuItem onSelect={() => reveal({ kind: "query", id: q.id })}>
+            <FolderSearch /> Show in Finder
+          </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem
             variant="destructive"
@@ -571,7 +631,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
           </DropdownMenuTrigger>
           <DropdownMenuContent
             align="end"
-            className="w-40 text-xs"
+            className="w-52 text-xs"
             onCloseAutoFocus={onMenuCloseAutoFocus}
           >
             <DropdownMenuItem onSelect={() => newQuery()}>
@@ -579,6 +639,13 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => newFolder()}>
               <FolderPlus /> Folder…
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => importFiles()}>
+              <FileDown /> Add Files to Queries…
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => addFolder()}>
+              <FolderInput /> Add Folder to Favorites…
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -600,6 +667,16 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             >
               Double Click to Insert
             </DropdownMenuCheckboxItem>
+            <DropdownMenuCheckboxItem
+              checked={autoSave}
+              onCheckedChange={(v) => setPref("queriesAutoSave", v === true)}
+            >
+              Auto Save Favorite
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => reveal(null)}>
+              <FolderSearch /> Show Queries Folder in Finder
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

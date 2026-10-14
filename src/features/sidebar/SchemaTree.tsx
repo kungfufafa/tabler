@@ -1,10 +1,12 @@
-import { useQueries, type UseQueryResult } from "@tanstack/react-query";
+import { useQueries, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowUpRight,
   ChevronRight,
+  Database,
   Folder,
   KeyRound,
+  Layers,
   ListOrdered,
   Loader2,
   Pin,
@@ -52,12 +54,15 @@ import {
   groupHeaderMenu,
   headerMenu,
   objectMenu,
+  schemaNodeMenu,
   tableMenu,
   type MenuEntry,
 } from "@/features/objects/menu";
 import { ContextMenuEntries } from "@/features/objects/MenuEntries";
-import { routineName, usePendingMarks } from "@/features/objects/pendingOps";
+import { routineName, usePendingMarks, type StagedObjectOp } from "@/features/objects/pendingOps";
+import { stageWithoutDialog } from "@/features/objects/quickStage";
 import { useRoutines, useSequences, useSidebarReload } from "@/features/objects/queries";
+import type { MatchStrategy } from "@/features/objects/search";
 import {
   clickSelection,
   EMPTY_SELECTION,
@@ -92,7 +97,7 @@ import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
 import { EMPTY_PINS } from "@/stores/pins";
 import { recordRecent } from "@/stores/recent";
-import { useTabsStore } from "@/stores/tabs";
+import { isTableTab, useTabsStore } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
 import {
   addToGroup,
@@ -109,6 +114,7 @@ import {
   tableItemKey,
   type SidebarGroup,
 } from "./groups";
+import { collapseLazyNodes, toggleLazyNode } from "./lazyLoad";
 import { setSectionCollapsed, toggleSection, useSidebarPrefs } from "./sidebarPrefs";
 import {
   groupIdOfRow,
@@ -127,6 +133,7 @@ import {
 type HeaderRow = Extract<TreeRow, { type: "header" }>;
 type GroupHeaderRow = Extract<TreeRow, { type: "groupHeader" }>;
 type TableRow = Extract<TreeRow, { type: "table" }>;
+type SchemaNodeRow = Extract<TreeRow, { type: "schemaNode" }>;
 
 /** What a sidebar row carries while it is dragged onto a group (item keys, `groups.ts`). */
 export const DRAG_MIME = "application/x-tabler-sidebar-items";
@@ -209,11 +216,19 @@ function rememberOpened(scope: string, table: TableRef, later: boolean): void {
   recentTimer = setTimeout(flushRecent, RECENT_DELAY_MS);
 }
 
-/** Index of the next item row after `from` in direction `step` (headers are skipped). */
+/** Rows ↑/↓ stop on: items, and the schema nodes of a lazy-loaded tree. */
+function isNavRow(row: TreeRow | undefined): boolean {
+  return isItemRow(row) || row?.type === "schemaNode";
+}
+
+/** Index of the next item (or schema node) after `from` in direction `step` (headers are skipped). */
 function nextItemRow(rows: readonly TreeRow[], from: number, step: 1 | -1): number | null {
-  for (let i = from + step; i >= 0 && i < rows.length; i += step) if (isItemRow(rows[i])) return i;
+  for (let i = from + step; i >= 0 && i < rows.length; i += step) if (isNavRow(rows[i])) return i;
   return null;
 }
+
+/** Rows of a lazy-loaded tree's schema node (keyed `n:…:`) sit one level deeper. */
+const isNested = (key: string) => key.startsWith("n:");
 
 /** Unique tables / views of `rows` (one table can be listed in Recent, Pinned and its group). */
 function tablesOf(rows: readonly ItemRow[]): TableSummary[] {
@@ -240,7 +255,7 @@ function sequencesOf(rows: readonly ItemRow[]): SequenceSummary[] {
  * `g:<id>:t:<tableKey>`.
  */
 function tableKeyOfRow(key: string): string | null {
-  const m = /^(?:g:[^:]+:)?[tpr]:(.*)$/s.exec(key);
+  const m = /^(?:n:[^:]*:)?(?:g:[^:]+:)?[tpr]:(.*)$/s.exec(key);
   return m ? m[1]! : null;
 }
 
@@ -262,10 +277,15 @@ export function SchemaTree({
   pinned = EMPTY_PINS,
   showRowCounts = false,
   groups = EMPTY_GROUPS,
+  strategy = "fuzzy",
+  lazyKey = null,
   ref,
 }: {
   connectionId: string;
-  /** Table rows (`buildTreeRows`); the Functions and Sequences sections are added here. */
+  /**
+   * Table rows (`buildTreeRows`); the Functions and Sequences sections are added here. With
+   * `lazyKey`, the lazy-loaded tree (`buildLazyRows`), complete as it is.
+   */
   rows: TreeRow[];
   loading: boolean;
   error: string | null;
@@ -281,8 +301,14 @@ export function SchemaTree({
   showRowCounts?: boolean;
   /** The sidebar groups of `pinScope` (`groups.ts`); `rows` were built with them. */
   groups?: readonly SidebarGroup[];
+  /** How `search` matches (the search menu's Matching Strategy). */
+  strategy?: MatchStrategy;
+  /** Lazy load: the tree state's key (`lazyKey`) the schema nodes toggle; null otherwise. */
+  lazyKey?: string | null;
   ref?: Ref<SchemaTreeHandle>;
 }) {
+  const qc = useQueryClient();
+  const lazy = lazyKey !== null;
   const parentRef = useRef<HTMLDivElement>(null);
   const openTable = useTabsStore((s) => s.openTable);
   const activeTab = useTabsStore((s) => s.tabs.find((t) => t.id === s.activeId) ?? null);
@@ -292,23 +318,28 @@ export function SchemaTree({
   const collapsed = useSidebarPrefs((s) => s.collapsed);
   const showFunctions = useSidebarPrefs((s) => s.options.showFunctions) && driver !== "sqlite";
   const showSequences = useSidebarPrefs((s) => s.options.showSequences) && driver === "postgres";
-  const routines = useRoutines(connectionId, currentSchema, showFunctions);
-  const sequences = useSequences(connectionId, currentSchema, showSequences);
-  useSidebarReload(connectionId, currentSchema);
+  const routines = useRoutines(connectionId, currentSchema, showFunctions && !lazy);
+  const sequences = useSequences(connectionId, currentSchema, showSequences && !lazy);
+  useSidebarReload(connectionId, currentSchema, lazy);
   const baseRows = useMemo(
     () =>
-      pruneEmptyGroups(
-        mergeObjectRows(
-          tableRows,
-          showFunctions ? routines.data : undefined,
-          showSequences ? sequences.data : undefined,
-          search,
-          collapsed,
-          groups,
-        ),
-        search,
-      ),
+      lazy
+        ? tableRows
+        : pruneEmptyGroups(
+            mergeObjectRows(
+              tableRows,
+              showFunctions ? routines.data : undefined,
+              showSequences ? sequences.data : undefined,
+              search,
+              collapsed,
+              groups,
+              strategy,
+            ),
+            search,
+            strategy,
+          ),
     [
+      lazy,
       tableRows,
       showFunctions,
       routines.data,
@@ -317,8 +348,19 @@ export function SchemaTree({
       search,
       collapsed,
       groups,
+      strategy,
     ],
   );
+  /** Routine names with several overloads in one schema (their rows show the argument types). */
+  const overloaded = useMemo(() => {
+    const seen = new Map<string, number>();
+    for (const r of baseRows)
+      if (r.type === "routine") {
+        const k = `${r.routine.schema ?? ""}\u0000${r.routine.name}`;
+        seen.set(k, (seen.get(k) ?? 0) + 1);
+      }
+    return new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
+  }, [baseRows]);
   // "Show Columns": expanded table rows (by row key) list their columns, loaded on expand.
   const showColumns = useSidebarPrefs((s) => s.options.showColumns);
   const [rawExpanded, setExpanded] = useState<ReadonlySet<string>>(NO_KEYS);
@@ -409,7 +451,7 @@ export function SchemaTree({
   // Another table opened elsewhere (a tab switch, Open Anything): a selection that does not hold
   // it is stale.
   const activeTable =
-    activeTab && activeTab.kind !== "query" && activeTab.connectionId === connectionId
+    isTableTab(activeTab) && activeTab.connectionId === connectionId
       ? tableKey(activeTab.table)
       : null;
   useEffect(() => {
@@ -437,10 +479,19 @@ export function SchemaTree({
   }));
 
   const ctx: ObjectContext = { connectionId, driver, readOnly, schema: currentSchema, pinScope };
+  /** The context of a row of `schema` (a lazy-loaded tree lists several schemas). */
+  const ctxFor = (schema: string | null | undefined): ObjectContext =>
+    schema ? { ...ctx, schema } : ctx;
   const dialog = (d: ObjectDialog) =>
     openObjectDialog({ connectionId, dialect: driver, dialog: d });
-  const newHandlers = { newItem: (what: Parameters<typeof runNew>[1]) => runNew(ctx, what) };
-  const overviewOf = (schema: string | null) => {
+  /** New ▸ … into `schema` (the sidebar's schema when left out). */
+  const newIn = (schema?: string | null) => ({
+    newItem: (what: Parameters<typeof runNew>[1]) => runNew(ctxFor(schema), what),
+  });
+  const newHandlers = newIn();
+  /** New ▸ offers Group… where the sidebar keeps groups. */
+  const hasGroups = pinScope !== null;
+  const overviewOf = (schema: string | null | undefined) => {
     const s = schema ?? currentSchema;
     if (s !== null) openItemOverview({ connectionId, dialect: driver, schema: s });
   };
@@ -472,7 +523,7 @@ export function SchemaTree({
         <ContextMenuContent>
           <ContextMenuEntries
             entries={headerMenu(
-              { driver, readOnly, overview: false },
+              { driver, readOnly, overview: false, groups: hasGroups },
               {
                 ...newHandlers,
                 itemOverview: () => overviewOf(null),
@@ -491,9 +542,17 @@ export function SchemaTree({
     openTable(connectionId, refOf(t), "table", { preview: true });
     showWorkspace();
   };
-  /** Double-click, middle-click, Enter, "Open in New Tab", "Open Structure": a regular tab. */
-  const openPinned = (t: TableSummary, kind: "table" | "structure" = "table") => {
-    openTable(connectionId, refOf(t), kind);
+  /**
+   * Double-click, Enter, "Open Structure": a regular tab (the table's own when it is open).
+   * `newTab` ("Open in New Tab", middle-click): always a tab of its own, so one table can sit in
+   * several tabs.
+   */
+  const openPinned = (
+    t: TableSummary,
+    kind: "table" | "structure" = "table",
+    newTab: boolean = false,
+  ) => {
+    openTable(connectionId, refOf(t), kind, newTab ? { newTab: true } : undefined);
     showWorkspace();
   };
   const remember = (t: TableSummary, later = false) => {
@@ -544,6 +603,53 @@ export function SchemaTree({
     const truncatable = tables.filter(canTruncate);
     if (readOnly || truncatable.length === 0) return;
     dialog({ kind: "truncateTables", tables: truncatable.map(refOf) });
+  };
+  /**
+   * ⌥⌫ / ⇧⌫ / ⌘⌫: TablePlus's shortcuts skip the dialog. The targets of the row's kind are staged
+   * right away (truncate, or a drop with CASCADE on PostgreSQL / without foreign key checks on
+   * MySQL); a toast offers Undo.
+   */
+  const stageTargets = (
+    row: ItemRow,
+    what: "truncate" | "drop",
+    o: { cascade?: boolean; ignoreFk?: boolean } = {},
+  ) => {
+    if (readOnly) return;
+    const targets = targetsOf(row.key);
+    const cascade = driver === "postgres" && o.cascade === true;
+    const ignoreForeignKeys = driver === "mysql" && o.ignoreFk === true;
+    let op: StagedObjectOp | null = null;
+    if (row.type === "table") {
+      const tables = tablesOf(targets);
+      if (what === "truncate") {
+        const list = tables.filter(canTruncate);
+        if (list.length > 0)
+          op = {
+            op: "truncateTables",
+            tables: list.map(refOf),
+            cascade: false,
+            restartIdentity: false,
+            ignoreForeignKeys,
+          };
+      } else {
+        const list = tables.filter(canDrop);
+        if (list.length > 0)
+          op = {
+            op: "dropTables",
+            tables: list.map((t) => ({ table: refOf(t), kind: t.kind })),
+            cascade,
+            ignoreForeignKeys,
+          };
+      }
+    } else if (what === "drop") {
+      const list = droppableObjects(row, targets);
+      if (list.length > 0)
+        op =
+          row.type === "routine"
+            ? { op: "dropRoutines", routines: routinesOf(list).map(routineRef), cascade }
+            : { op: "dropSequences", sequences: sequencesOf(list).map(refOf), cascade };
+    }
+    if (op) void stageWithoutDialog(connectionId, op);
   };
   /** Delete… / ⌫ for whatever kind of row `row` is (the targets of the same kind). */
   const deleteTargets = (row: ItemRow, preset: { cascade?: boolean; ignoreFk?: boolean } = {}) => {
@@ -607,11 +713,12 @@ export function SchemaTree({
         isTable: isAlterable(t.kind),
         renamable: isAlterable(t.kind),
         allPinned: pinScope === null ? null : tables.every((x) => pinned.has(tableKey(x))),
+        groups: hasGroups,
       },
       {
-        ...newHandlers,
+        ...newIn(t.schema),
         openInNewTab: () => {
-          for (const x of tables) openPinned(x);
+          for (const x of tables) openPinned(x, "table", true);
           remember(t);
         },
         openStructure: () => {
@@ -626,6 +733,7 @@ export function SchemaTree({
         },
         exportItems: () => exportTables(ctx, tables),
         importCsv: () => importInto(ctx, "csv", t),
+        importJson: () => importInto(ctx, "json", t),
         importSql: () => importInto(ctx, "sql", null),
         clone: () => dialog({ kind: "clone", table: t }),
         rename: () => dialog({ kind: "renameTable", table: t }),
@@ -649,6 +757,14 @@ export function SchemaTree({
     );
   };
 
+  /** The schema an item row belongs to. */
+  const schemaOfItem = (row: ItemRow): string | null =>
+    row.type === "table"
+      ? row.table.schema
+      : row.type === "routine"
+        ? row.routine.schema
+        : row.sequence.schema;
+
   const objectEntries = (row: Exclude<ItemRow, TableRow>): MenuEntry[] => {
     const targets = targetsOf(row.key).filter((r) => r.type === row.type);
     return objectMenu(
@@ -657,9 +773,10 @@ export function SchemaTree({
         readOnly,
         count: targets.length,
         droppable: droppableObjects(row, targets).length,
+        groups: hasGroups,
       },
       {
-        ...newHandlers,
+        ...newIn(schemaOfItem(row)),
         open: () => openObject(row),
         copyName: () => copyNames(targets.map(itemName)),
         copyScript: (kind) =>
@@ -679,7 +796,12 @@ export function SchemaTree({
     e.preventDefault();
     const next = nextItemRow(rows, index, e.key === "ArrowDown" ? 1 : -1);
     const row = next === null ? undefined : rows[next];
-    if (next === null || !isItemRow(row)) return true;
+    if (next === null) return true;
+    if (row?.type === "schemaNode") {
+      focusRow(next);
+      return true;
+    }
+    if (!isItemRow(row)) return true;
     focusRow(next);
     if (e.shiftKey) {
       const from = rows[index];
@@ -718,15 +840,15 @@ export function SchemaTree({
         return;
       case "Shift+Backspace":
         handled();
-        deleteTargets(row, { cascade: driver === "postgres" });
+        stageTargets(row, "drop", { cascade: true });
         return;
       case "Mod+Backspace":
         handled();
-        deleteTargets(row, { ignoreFk: driver === "mysql" });
+        stageTargets(row, "drop", { ignoreFk: true });
         return;
       case "Alt+Backspace":
         handled();
-        if (row.type === "table") truncateTables(tablesOf(targetsOf(row.key)));
+        stageTargets(row, "truncate");
         return;
       case "ArrowRight":
       case "ArrowLeft":
@@ -787,6 +909,42 @@ export function SchemaTree({
     return true;
   };
 
+  /** Lazy load: expands (loading its items) or collapses a schema node. */
+  const toggleNode = (row: SchemaNodeRow, open?: boolean) => {
+    if (lazyKey === null) return;
+    const opening = open ?? !row.expanded;
+    toggleLazyNode(lazyKey, row.schema, opening);
+    // Opening a schema switches to it (New Table…, Open Anything's schema follow it).
+    if (opening) useConnectionsStore.getState().setCurrentSchema(connectionId, row.schema);
+  };
+
+  /** ←/→ on a schema node collapse / expand it; ↑/↓ move to the rows around it. */
+  const onNodeKeyDown = (e: KeyboardEvent, index: number, row: SchemaNodeRow) => {
+    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      toggleNode(row, e.key === "ArrowRight");
+      return;
+    }
+    onArrow(e, index);
+  };
+
+  const nodeEntries = (row: SchemaNodeRow): MenuEntry[] =>
+    schemaNodeMenu(
+      { driver, readOnly, loaded: row.count !== null, diagram: true, groups: hasGroups },
+      {
+        ...newIn(row.schema),
+        itemOverview: () => overviewOf(row.schema),
+        generateDiagram: () => openDiagram({ connectionId, schema: row.schema, tables: null }),
+        copyName: () => copyNames([row.schema]),
+        reload: () =>
+          void qc.invalidateQueries({ queryKey: schemaKeys.tables(connectionId, row.schema) }),
+        collapseAll: () => {
+          if (lazyKey !== null) collapseLazyNodes(lazyKey);
+        },
+      },
+    );
+
   const onCloseAutoFocus = (e: Event) => {
     if (!openedFromMenu.current) return;
     openedFromMenu.current = false;
@@ -806,7 +964,88 @@ export function SchemaTree({
             height: ROW_H,
             transform: `translateY(${v.start}px)`,
           };
+          if (row.type === "schemaNode") {
+            return (
+              <ContextMenu key={row.key}>
+                <ContextMenuTrigger asChild>
+                  <button
+                    type="button"
+                    style={style}
+                    data-row-index={v.index}
+                    data-schema-node={row.schema}
+                    aria-expanded={row.expanded}
+                    title={
+                      row.count === null
+                        ? `${row.schema}: items load when it is expanded`
+                        : row.schema
+                    }
+                    onClick={() => toggleNode(row)}
+                    onKeyDown={(e) => onNodeKeyDown(e, v.index, row)}
+                    className={cn(
+                      "hover:text-foreground flex items-center gap-1 pr-3 pl-1.5 text-left text-xs font-medium",
+                      row.system ? "text-muted-foreground" : "text-sidebar-foreground",
+                      FOCUS_RING,
+                      "data-[state=open]:ring-sidebar-ring/70 data-[state=open]:ring-1",
+                    )}
+                  >
+                    <ChevronRight
+                      aria-hidden
+                      className={cn(
+                        "text-muted-foreground size-3 shrink-0 transition-transform duration-100",
+                        row.expanded && "rotate-90",
+                      )}
+                    />
+                    {driver === "mysql" ? (
+                      <Database aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
+                    ) : (
+                      <Layers aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
+                    )}
+                    <span className="truncate">{row.schema}</span>
+                    {row.loading && (
+                      <Loader2
+                        aria-label="Loading"
+                        className="text-muted-foreground size-3 shrink-0 animate-spin"
+                      />
+                    )}
+                    {row.count !== null && (
+                      <span className="text-muted-foreground/70 ml-auto pl-2 text-[11px] font-normal tabular-nums">
+                        {row.count}
+                      </span>
+                    )}
+                  </button>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  <LazyEntries build={() => nodeEntries(row)} />
+                </ContextMenuContent>
+              </ContextMenu>
+            );
+          }
+          if (row.type === "nodeStatus") {
+            return (
+              <div
+                key={row.key}
+                style={style}
+                data-row-index={v.index}
+                role="status"
+                className="text-muted-foreground flex items-center gap-1.5 pr-3 pl-8 text-[11px]"
+              >
+                {row.status === "loading" ? (
+                  <>
+                    <Loader2 aria-hidden className="size-3 shrink-0 animate-spin" />
+                    Loading items…
+                  </>
+                ) : (
+                  <span className="text-error truncate" title={row.message ?? undefined}>
+                    {row.message ?? "Could not load the items"}
+                  </span>
+                )}
+              </div>
+            );
+          }
           if (row.type === "header") {
+            // A click on the label of Tables / Views / Materialized views opens their Item Overview
+            // (TablePlus); the chevron (and Enter / Space, ← / →) collapses the section.
+            const overview = OVERVIEW_HEADERS.has(row.label);
             return (
               <ContextMenu key={row.key}>
                 <ContextMenuTrigger asChild>
@@ -815,21 +1054,36 @@ export function SchemaTree({
                     style={style}
                     data-row-index={v.index}
                     aria-expanded={!row.collapsed}
-                    onClick={() => toggleSection(row.label)}
+                    title={
+                      overview ? "Click for the Item Overview; the arrow collapses" : undefined
+                    }
+                    onClick={(e) => {
+                      const onChevron =
+                        e.target instanceof Element &&
+                        e.target.closest('[data-slot="disclosure"]') !== null;
+                      if (overview && e.detail > 0 && !onChevron) overviewOf(row.schema);
+                      else toggleSection(row.label);
+                    }}
                     onKeyDown={(e) => onHeaderKeyDown(e, v.index, row)}
                     className={cn(
-                      "text-muted-foreground hover:text-foreground flex items-center gap-1 pr-3 pl-1.5 text-left text-[11px] font-semibold",
+                      "text-muted-foreground hover:text-foreground flex items-center gap-1 pr-3 text-left text-[11px] font-semibold",
+                      isNested(row.key) ? "pl-4" : "pl-1.5",
                       FOCUS_RING,
                       "data-[state=open]:ring-sidebar-ring/70 data-[state=open]:ring-1",
                     )}
                   >
-                    <ChevronRight
+                    <span
                       aria-hidden
-                      className={cn(
-                        "size-3 shrink-0 transition-transform duration-100",
-                        !row.collapsed && "rotate-90",
-                      )}
-                    />
+                      data-slot="disclosure"
+                      className="-my-1 -ml-1 flex items-center self-stretch py-1 pl-1"
+                    >
+                      <ChevronRight
+                        className={cn(
+                          "size-3 shrink-0 transition-transform duration-100",
+                          !row.collapsed && "rotate-90",
+                        )}
+                      />
+                    </span>
                     <span className="truncate">{row.label}</span>
                     <span className="text-muted-foreground/70 ml-auto pl-2 font-normal tabular-nums">
                       {row.count}
@@ -844,12 +1098,17 @@ export function SchemaTree({
                         readOnly,
                         overview: OVERVIEW_HEADERS.has(row.label),
                         diagram: row.label === "Tables",
+                        groups: hasGroups,
                       },
                       {
-                        ...newHandlers,
-                        itemOverview: () => overviewOf(null),
+                        ...newIn(row.schema),
+                        itemOverview: () => overviewOf(row.schema),
                         generateDiagram: () =>
-                          openDiagram({ connectionId, schema: currentSchema, tables: null }),
+                          openDiagram({
+                            connectionId,
+                            schema: row.schema ?? currentSchema,
+                            tables: null,
+                          }),
                       },
                     )}
                   />
@@ -895,7 +1154,8 @@ export function SchemaTree({
                       if (pinScope !== null && keys.length > 0) addToGroup(pinScope, g.id, keys);
                     }}
                     className={cn(
-                      "text-muted-foreground hover:text-foreground flex items-center gap-1 pr-3 pl-1.5 text-left text-[11px] font-semibold",
+                      "text-muted-foreground hover:text-foreground flex items-center gap-1 pr-3 text-left text-[11px] font-semibold",
+                      isNested(row.key) ? "pl-4" : "pl-1.5",
                       FOCUS_RING,
                       "data-[state=open]:ring-sidebar-ring/70 data-[state=open]:ring-1",
                       dropping &&
@@ -956,7 +1216,8 @@ export function SchemaTree({
                   remember(row.table, true);
                 }}
                 className={cn(
-                  "flex items-center gap-1.5 pr-3 pl-10 text-left text-[11px] select-none",
+                  "flex items-center gap-1.5 pr-3 text-left text-[11px] select-none",
+                  isNested(row.key) ? "pl-13" : "pl-10",
                   FOCUS_RING,
                   "hover:bg-black/[0.035] dark:hover:bg-white/[0.05]",
                 )}
@@ -985,7 +1246,10 @@ export function SchemaTree({
                 style={style}
                 data-row-index={v.index}
                 role="status"
-                className="text-muted-foreground flex items-center gap-1.5 pr-3 pl-10 text-[11px]"
+                className={cn(
+                  "text-muted-foreground flex items-center gap-1.5 pr-3 text-[11px]",
+                  isNested(row.key) ? "pl-13" : "pl-10",
+                )}
               >
                 {row.status === "loading" ? (
                   <>
@@ -1003,13 +1267,14 @@ export function SchemaTree({
           const selected = selection.keys.has(row.key);
           const isActive =
             row.type === "table" &&
-            activeTab !== null &&
-            activeTab.kind !== "query" &&
+            isTableTab(activeTab) &&
             activeTab.connectionId === connectionId &&
             activeTab.table.name === row.table.name &&
             (activeTab.table.schema ?? "") === (row.table.schema ?? "");
+          const nested = isNested(row.key);
           const rowClass = cn(
-            "flex items-center gap-1.5 pr-3 pl-5 text-left text-xs select-none",
+            "flex items-center gap-1.5 pr-3 text-left text-xs select-none",
+            nested ? "pl-8" : "pl-5",
             FOCUS_RING,
             // The right-clicked row is outlined like a focused one while its menu is open.
             "data-[state=open]:ring-sidebar-ring/70 data-[state=open]:ring-1",
@@ -1066,7 +1331,7 @@ export function SchemaTree({
                 onAuxClick={(e) => {
                   if (e.button !== 1) return;
                   e.preventDefault();
-                  openPinned(t);
+                  openPinned(t, "table", true);
                   remember(t, true);
                 }}
                 title={
@@ -1091,7 +1356,10 @@ export function SchemaTree({
                       toggleExpanded(row.key);
                     }}
                     onDoubleClick={(e) => e.stopPropagation()}
-                    className="text-muted-foreground hover:text-foreground absolute top-1/2 left-1 flex size-3.5 -translate-y-1/2 items-center justify-center"
+                    className={cn(
+                      "text-muted-foreground hover:text-foreground absolute top-1/2 flex size-3.5 -translate-y-1/2 items-center justify-center",
+                      nested ? "left-4" : "left-1",
+                    )}
                   >
                     <ChevronRight
                       className={cn(
@@ -1134,9 +1402,9 @@ export function SchemaTree({
             );
           } else {
             const Icon = row.type === "routine" ? ROUTINE_ICONS[row.routine.kind] : ListOrdered;
-            const overloaded =
+            const isOverloaded =
               row.type === "routine" &&
-              (routines.data ?? []).filter((r) => r.name === row.routine.name).length > 1;
+              overloaded.has(`${row.routine.schema ?? ""}\u0000${row.routine.name}`);
             const dropping = markOf(row) === "drop";
             entries = () => objectEntries(row);
             button = (
@@ -1175,7 +1443,7 @@ export function SchemaTree({
                 <span className={cn("truncate", dropping && "text-muted-foreground line-through")}>
                   {itemName(row)}
                 </span>
-                {overloaded && (
+                {isOverloaded && (
                   // Overloads share a name: their argument types tell them apart.
                   <span className="text-muted-foreground/70 truncate font-mono text-[10px]">
                     ({row.type === "routine" ? row.routine.identityArguments : ""})

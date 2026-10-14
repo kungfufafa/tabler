@@ -8,9 +8,14 @@ import { mockEmit, mockError, registerMock } from "./transport";
  * Mock parts of connect / test_connection beyond the basics (see handlers.ts):
  * - "Command Line (IAM authentication)": any command "prints" a fixed fake token; a command
  *   containing `fail` fails like a CLI without credentials.
- * - MySQL "Use socket": refused over SSH; a socket path containing `missing` does not exist.
+ * - MySQL "Use socket": over SSH the path is the SSH server's (full path or none); a socket path
+ *   containing `missing` does not exist.
  * - SSH keyboard-interactive: "Staging via SSH" asks for a "Verification code" (any 6 digits
  *   pass) when the prompt host is mounted (the app; tests without it are not asked).
+ * - Bootstrap CLI script: a script containing `fail` fails like rsync without a server.
+ * - SQLCipher: SQLite files created with "New…" and a key, and paths containing `encrypted`
+ *   (key `secret`), need their key (the profile's password).
+ * - PostgreSQL SSL negotiation DIRECT is refused with SSL mode disable / prefer.
  */
 
 /** What every mock password command prints. */
@@ -33,12 +38,13 @@ export function mockPasswordCommand(p: ConnectionProfile): string | null {
 /** Mirrors the backend's checks of a MySQL "Use socket" profile. */
 export function mockSocketCheck(p: ConnectionProfile): void {
   if (p.driver !== "mysql" || p.options.useSocket !== true) return;
-  if (p.ssh)
+  const typed = p.options.socketPath?.trim() ?? "";
+  if (p.ssh && typed !== "" && !typed.startsWith("/"))
     mockError(
       "INVALID_INPUT",
-      "A MySQL socket connection cannot go through an SSH tunnel yet: turn off “Use socket” or “Over SSH”",
+      `Over SSH the socket path is the one on the SSH server: enter its full path (e.g. /var/run/mysqld/mysqld.sock), not “${typed}”`,
     );
-  const path = p.options.socketPath?.trim() || "/tmp/mysql.sock";
+  const path = typed || (p.ssh ? "/var/run/mysqld/mysqld.sock" : "/tmp/mysql.sock");
   if (path.includes("missing"))
     mockError("CONNECT_FAILED", `MySQL socket not found: ${path} (is the server running?)`);
 }
@@ -87,3 +93,57 @@ registerMock("answer_ssh_prompt", ({ requestId, answers }) => {
   waiting.delete(requestId as string);
   resolve?.(Array.isArray(answers) ? (answers as string[]) : null);
 });
+
+/** Mirrors the backend's bootstrap CLI script run before a connect or test. */
+export function mockBootstrapScript(p: ConnectionProfile): void {
+  const script = p.options.bootstrapScript?.trim() ?? "";
+  if (script.includes("fail"))
+    mockError(
+      "CONNECT_FAILED",
+      "the bootstrap script failed (exit status 12): rsync: connection refused (code 10)",
+    );
+}
+
+/** SQLCipher databases of the mock: path → key (files created with a key in this session). */
+const encryptedFiles = new Map<string, string>();
+
+/** "New…" with a key creates an encrypted database. */
+export function mockCreateSqliteFile(path: string, key: string | null): void {
+  if (key) encryptedFiles.set(path, key);
+  else encryptedFiles.delete(path);
+}
+
+/** Mirrors the backend's SQLCipher checks of a SQLite connect (`key`: the profile's password). */
+export function mockSqliteKey(p: ConnectionProfile, key: string | null | undefined): void {
+  if (p.driver !== "sqlite" || p.ssh) return;
+  const path = p.sqlitePath ?? "";
+  const expected = encryptedFiles.get(path) ?? (path.includes("encrypted") ? "secret" : null);
+  if (expected === null) {
+    if (key)
+      mockError(
+        "CONNECT_FAILED",
+        "This database is not encrypted: remove the encryption key from the connection",
+      );
+    return;
+  }
+  if (!key)
+    mockError(
+      "CONNECT_FAILED",
+      "This database is encrypted (SQLCipher): enter its encryption key in the connection's settings",
+    );
+  if (key !== expected)
+    mockError("CONNECT_FAILED", "Wrong encryption key (or not a SQLCipher database)");
+}
+
+/** Mirrors the backend's PostgreSQL option checks (`check_postgres`). */
+export function mockDriverOptions(p: ConnectionProfile): void {
+  if (
+    p.driver === "postgres" &&
+    p.options.pgSslNegotiation === "direct" &&
+    (p.ssl === "disable" || p.ssl === "prefer")
+  )
+    mockError(
+      "INVALID_INPUT",
+      "SSL negotiation DIRECT needs the SSL mode require, verify-ca or verify-full",
+    );
+}

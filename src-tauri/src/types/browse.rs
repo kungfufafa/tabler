@@ -175,6 +175,33 @@ pub struct RowCount {
     pub exact: bool,
 }
 
+/// What a statement the drivers ran for the app (`SqlTrace`) was for: reading or writing rows, or
+/// reading / changing the schema (the console log's "Data queries" / "Meta queries").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum TraceCategory {
+    Data,
+    Structure,
+}
+
+/// One statement a session really sent to the server, as the console log shows it. Bound
+/// parameters are inlined for display (`WHERE id = 5`); the text is capped, never reworded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TracedSql {
+    pub sql: String,
+    pub category: TraceCategory,
+    pub duration_ms: u64,
+    /// Rows the statement returned.
+    pub rows: Option<u64>,
+    /// Rows a write changed.
+    pub affected: Option<u64>,
+    /// The server's (or driver's) message when the statement failed.
+    pub error: Option<String>,
+}
+
 /// Identifies one existing row for UPDATE/DELETE/fetch_cell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]

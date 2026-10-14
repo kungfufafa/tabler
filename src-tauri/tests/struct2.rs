@@ -483,6 +483,9 @@ async fn struct2_pg_triggers_include_columns_and_partition_scripts() {
                 gzip: false,
             },
             layout: ExportLayout::SingleFile,
+            encoding: Default::default(),
+            database: None,
+            create_folder: false,
             target: file.to_string_lossy().into_owned(),
         };
         run_export_tables(s.as_ref(), &req, &metas, |_| {}, CancellationToken::new())

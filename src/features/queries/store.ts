@@ -10,8 +10,8 @@ import {
 
 /**
  * The saved queries (TablePlus's "Queries", formerly "Favorites") and their folders, mirrored from
- * the app DB. Kept in a store rather than a query cache because the SQL editor's completion source
- * reads it outside React.
+ * the queries folder (`.sql` files, Settings ▸ Locations). Kept in a store rather than a query
+ * cache because the SQL editor's completion source reads it outside React.
  */
 interface SavedQueriesState {
   folders: QueryFolder[];
@@ -74,16 +74,58 @@ export async function deleteSavedQuery(id: string): Promise<void> {
   void refreshSavedQueries();
 }
 
-/** Moves a query into `folderId` (null: the top level). */
+/**
+ * Renames a query. Only its name changes: the backend keeps the file's own SQL (`keepSql`), not
+ * the copy this store holds, which can be stale (the file was edited elsewhere) or lossy (a file
+ * that is not UTF-8).
+ */
+export function renameSavedQuery(query: SavedQuery, name: string): Promise<SavedQuery> {
+  return putSavedQuery({ ...inputOf(query), name, keepSql: true });
+}
+
+/** Moves a query into `folderId` (null: the top level); its SQL is left as the file has it. */
 export function moveSavedQuery(query: SavedQuery, folderId: string | null): Promise<SavedQuery> {
-  return putSavedQuery({ ...inputOf(query), folderId });
+  return putSavedQuery({ ...inputOf(query), folderId, keepSql: true });
 }
 
 export async function putQueryFolder(input: QueryFolderInput): Promise<QueryFolder> {
   const saved = await ipc.savedQueries.saveFolder(input);
-  useSavedQueriesStore.setState((s) => ({ folders: upsert(s.folders, saved) }));
+  // A folder's id follows its path: a renamed / moved one comes back with a new id.
+  useSavedQueriesStore.setState((s) => ({
+    folders: upsert(
+      s.folders.filter((f) => f.id !== input.id),
+      saved,
+    ),
+  }));
   void refreshSavedQueries();
   return saved;
+}
+
+/** "Import…": `.sql` / `.sql.gz` files become queries in `folderId` (null: the top level). */
+export async function importSavedQueryFiles(
+  paths: string[],
+  folderId: string | null = null,
+): Promise<SavedQuery[]> {
+  const added = await ipc.savedQueries.importFiles(paths, folderId);
+  await refreshSavedQueries();
+  return added;
+}
+
+/** "Add Folder to Favorites…": a folder of `.sql` files is copied into the queries folder. */
+export async function addQueryFolderFromDisk(
+  path: string,
+  parentId: string | null = null,
+): Promise<QueryFolder> {
+  const folder = await ipc.savedQueries.addFolderFromDisk(path, parentId);
+  await refreshSavedQueries();
+  return folder;
+}
+
+/** Show in Finder: a query's file, a folder, or (`null`) the queries folder. */
+export function revealSavedQuery(
+  target: { kind: "query" | "folder"; id: string } | null,
+): Promise<void> {
+  return ipc.savedQueries.reveal(target?.id ?? null, target?.kind === "folder");
 }
 
 /** Deletes a folder with everything inside it. */

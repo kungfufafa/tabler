@@ -24,6 +24,19 @@ pub struct Record {
     pub line: u64,
 }
 
+/// A source of records for the import: a CSV file, or the objects of a JSON file
+/// (`jsonread::JsonRecords`).
+pub trait RecordRead: Send {
+    /// The next record; `None` at the end of the input.
+    fn next_record(&mut self) -> Result<Option<Record>, AppError>;
+}
+
+impl<R: BufRead + Send> RecordRead for CsvReader<R> {
+    fn next_record(&mut self) -> Result<Option<Record>, AppError> {
+        CsvReader::next_record(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     /// At the start of a field.

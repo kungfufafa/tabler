@@ -9,6 +9,7 @@ import {
   isKeymapOverrides,
   isValidCombo,
   menuAccelerators,
+  migrateKeymapOverrides,
   resetBindings,
   resolveKeymap,
   setBinding,
@@ -94,6 +95,42 @@ describe("resolveKeymap", () => {
     ]);
     expect(keymap.find((d) => d.id === "ui.toggle-sidebar")?.keys).toBe("Mod+0");
     expect(keymap.filter((d) => d.id === "tab.next").map((d) => d.keys)).toEqual(["Mod+]"]);
+  });
+});
+
+describe("migrateKeymapOverrides", () => {
+  it("drops the old fixed ⌘R slot of view.refresh (⌘R is Reload Workspace now)", () => {
+    expect(migrateKeymapOverrides({ "view.refresh": ["Mod+R", "Mod+Y"] })).toEqual({
+      "view.refresh": ["Mod+Y"],
+    });
+    // Back on its default (⌥⌘R) once the old slot is gone: nothing left to keep.
+    expect(
+      migrateKeymapOverrides({ "view.refresh": ["Mod+R", "Mod+Alt+R"], "tab.next": ["Mod+J"] }),
+    ).toEqual({ "tab.next": ["Mod+J"] });
+    expect(migrateKeymapOverrides({ "view.refresh": ["Mod+R", ""] })).toEqual({
+      "view.refresh": [""],
+    });
+  });
+
+  it("returns current overrides as they are", () => {
+    const current = { "view.refresh": ["Mod+Y"], "tab.next": ["Mod+J"] };
+    expect(migrateKeymapOverrides(current)).toBe(current);
+    expect(migrateKeymapOverrides(EMPTY_OVERRIDES)).toBe(EMPTY_OVERRIDES);
+  });
+
+  it("keeps ⌘R fixed on Reload Workspace", () => {
+    const reload: ShortcutDef[] = [
+      { id: "workspace.reload", keys: "Mod+R", scope: "global", label: "Reload workspace" },
+      { id: "view.refresh", keys: "Mod+Alt+R", scope: "global", label: "Reload current tab" },
+    ];
+    expect(setBinding(reload, EMPTY_OVERRIDES, "workspace.reload", 0, "Mod+Y")).toBe(
+      EMPTY_OVERRIDES,
+    );
+    // ⌥⌘R moves, but never onto ⌘R.
+    expect(comboProblem("Mod+R", reload[1]!)).toBe("reserved");
+    expect(setBinding(reload, EMPTY_OVERRIDES, "view.refresh", 0, "Mod+Y")).toEqual({
+      "view.refresh": ["Mod+Y"],
+    });
   });
 });
 

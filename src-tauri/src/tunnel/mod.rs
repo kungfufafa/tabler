@@ -12,11 +12,22 @@
 //!
 //! The listener never shares its port: it is bound without `SO_REUSEADDR` (see [`bind_local`]),
 //! so on macOS/BSD a pinned port cannot take loopback traffic away from another program that
-//! listens on the wildcard address of that port.
+//! listens on the wildcard address of that port. And it only serves this app: a connection from
+//! any other program on the Mac is refused ([`peer`]).
+//!
+//! `~/.ssh/config` decides how the SSH server is reached ([`transport`]): directly, through
+//! `ProxyJump` hosts (one SSH session per hop, each running over a `direct-tcpip` channel of the
+//! previous one) or through a `ProxyCommand`'s stdio; its `IdentityAgent` picks the agent socket
+//! (1Password, Secretive…). [`SshSession`] is the same signed-in session without a listener,
+//! for SFTP (SQLite over SSH).
 
+pub mod debug_log;
 mod hostkeys;
+pub mod peer;
 pub mod prompts;
+pub mod sqlite_remote;
 pub mod ssh_config;
+pub mod transport;
 
 use std::fmt::Display;
 use std::io;
@@ -43,8 +54,8 @@ pub use hostkeys::{
 };
 pub use prompts::{
     ClockedPrompts, ForwardedPrompts, KeyboardInteractive, PendingPrompts, PromptClock,
-    PromptEvent, PromptRound, SshPromptDone, SshPromptField, SshPromptPurpose, SshPromptRequest,
-    timeout_excluding_prompts,
+    PromptEvent, PromptRound, SshPromptDone, SshPromptField, SshPromptKind, SshPromptPurpose,
+    SshPromptRequest, timeout_excluding_prompts,
 };
 
 use crate::error::AppError;
@@ -66,11 +77,15 @@ const SESSION_END_GRACE: Duration = Duration::from_millis(500);
 pub struct TunnelAuth {
     pub password: Option<String>,
     pub passphrase: Option<String>,
-    /// SSH agent socket for agent auth; `None` uses `SSH_AUTH_SOCK`.
+    /// SSH agent socket for agent auth; `None` uses `IdentityAgent` of `~/.ssh/config`, else
+    /// `SSH_AUTH_SOCK`.
     pub agent_socket: Option<PathBuf>,
     /// Answers keyboard-interactive questions (the user, through the renderer). `None`: only a
     /// password question can be answered (with `password`).
     pub prompts: Option<Arc<dyn KeyboardInteractive>>,
+    /// The SSH password is asked on every connect ("Ask every time"): without `password`, the
+    /// user types it in the SSH prompt dialog (through `prompts`).
+    pub ask_password: bool,
 }
 
 impl std::fmt::Debug for TunnelAuth {
@@ -80,6 +95,7 @@ impl std::fmt::Debug for TunnelAuth {
             .field("passphrase", &self.passphrase.as_ref().map(|_| "***"))
             .field("agent_socket", &self.agent_socket)
             .field("prompts", &self.prompts.is_some())
+            .field("ask_password", &self.ask_password)
             .finish()
     }
 }
@@ -151,29 +167,131 @@ struct ForwardFailure {
 
 type LastForwardFailure = Arc<Mutex<Option<ForwardFailure>>>;
 
-/// Keeps a tunnel alive; dropping it (or calling `close`) shuts the listener and SSH session down.
-pub struct TunnelHandle {
-    pub local_port: u16,
+/// Where a tunnel's connections go, as seen from the SSH server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForwardTarget {
+    /// A host and port (`direct-tcpip` channels).
+    Tcp { host: String, port: u16 },
+    /// A Unix socket on the SSH server (`direct-streamlocal@openssh.com` channels): MySQL "Use
+    /// socket" over SSH. The first path that opens is used from then on (several: the usual places
+    /// when no path was typed).
+    Socket(Vec<String>),
+}
+
+impl std::fmt::Display for ForwardTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ForwardTarget::Tcp { host, port } => write!(f, "{host}:{port}"),
+            ForwardTarget::Socket(paths) => write!(f, "unix:{}", paths.join("|")),
+        }
+    }
+}
+
+/// The listener and SSH session of a tunnel, shared by its leases ([`TunnelHandle`]).
+struct TunnelShared {
     target: String,
-    /// Cancelled by `close` / `Drop`: stops the listener, forwarded connections and the session.
+    /// Cancelled when the last lease goes: stops the listener, forwarded connections and the
+    /// session.
     cancel: CancellationToken,
     state: Arc<watch::Sender<TunnelState>>,
     session: Arc<client::Handle<Client>>,
+    /// The `ProxyJump` sessions the tunnel's session runs through (first hop first).
+    jumps: Jumps,
     listener_task: Mutex<Option<JoinHandle<()>>>,
     forward_error: LastForwardFailure,
+    /// Leases not closed or dropped yet.
+    leases: Mutex<usize>,
+}
+
+/// One lease of a tunnel: [`TunnelHandle::share`] hands out more (another connection of the same
+/// profile reuses the tunnel, e.g. a second workspace while the profile pins its local port). The
+/// tunnel stays up while any lease does; closing (or dropping) the last one shuts the listener and
+/// SSH session down.
+pub struct TunnelHandle {
+    pub local_port: u16,
+    shared: Arc<TunnelShared>,
+    /// This lease was given back (closed or dropped).
+    released: std::sync::atomic::AtomicBool,
+}
+
+/// The jump-host sessions of a connection, first hop first.
+type Jumps = Arc<Vec<client::Handle<Client>>>;
+
+/// Disconnects a session and then its jump hosts, last hop first.
+async fn disconnect_all(session: &client::Handle<Client>, jumps: &[client::Handle<Client>]) {
+    let _ = session
+        .disconnect(Disconnect::ByApplication, "tunnel closed", "en")
+        .await;
+    for jump in jumps.iter().rev() {
+        let _ = jump
+            .disconnect(Disconnect::ByApplication, "tunnel closed", "en")
+            .await;
+    }
 }
 
 impl std::fmt::Debug for TunnelHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TunnelHandle")
             .field("local_port", &self.local_port)
-            .field("target", &self.target)
-            .field("state", &*self.state.borrow())
+            .field("target", &self.shared.target)
+            .field("state", &*self.shared.state.borrow())
+            .field("leases", &self.leases())
             .finish()
     }
 }
 
+/// Takes one lease of `count` back; true when it was the last one.
+fn release_lease(released: &std::sync::atomic::AtomicBool, count: &Mutex<usize>) -> bool {
+    if released.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+    let mut n = lock(count);
+    *n = n.saturating_sub(1);
+    *n == 0
+}
+
+/// Adds a lease to `count` unless every lease was given back already.
+fn add_lease(count: &Mutex<usize>) -> bool {
+    let mut n = lock(count);
+    if *n == 0 {
+        return false;
+    }
+    *n += 1;
+    true
+}
+
 impl TunnelHandle {
+    /// The tunnel's first lease (`shared.leases` starts at 1).
+    fn first_lease(local_port: u16, shared: TunnelShared) -> TunnelHandle {
+        TunnelHandle {
+            local_port,
+            shared: Arc::new(shared),
+            released: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Another lease of this tunnel while it is up (`None` once it is down or closed).
+    pub fn share(&self) -> Option<TunnelHandle> {
+        if !self.is_up() || !add_lease(&self.shared.leases) {
+            return None;
+        }
+        Some(TunnelHandle {
+            local_port: self.local_port,
+            shared: self.shared.clone(),
+            released: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// Leases of the tunnel not given back yet (this one included while it is held).
+    pub fn leases(&self) -> usize {
+        *lock(&self.shared.leases)
+    }
+
+    /// Whether both handles lease the same tunnel.
+    pub fn same_tunnel(&self, other: &TunnelHandle) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
     pub fn local_port(&self) -> u16 {
         self.local_port
     }
@@ -184,23 +302,23 @@ impl TunnelHandle {
     }
 
     pub fn state(&self) -> TunnelState {
-        self.state.borrow().clone()
+        self.shared.state.borrow().clone()
     }
 
     pub fn is_up(&self) -> bool {
-        self.state.borrow().is_up()
+        self.shared.state.borrow().is_up()
     }
 
     /// Watch that leaves `Up` once when the tunnel goes down (closed, server gone, keepalive
     /// timeout). It never comes back up: a new tunnel is a new handle.
     pub fn subscribe(&self) -> watch::Receiver<TunnelState> {
-        self.state.subscribe()
+        self.shared.state.subscribe()
     }
 
     /// The last reason a forwarded connection could not be opened, if that happened at or after
     /// `since` (taken, so it is reported once; an older failure is discarded).
     pub fn take_forward_error(&self, since: Instant) -> Option<String> {
-        let failure = lock(&self.forward_error).take()?;
+        let failure = lock(&self.shared.forward_error).take()?;
         (failure.at >= since).then_some(failure.message)
     }
 
@@ -225,27 +343,31 @@ impl TunnelHandle {
         err
     }
 
-    /// Stops the listener (new connections are refused and the port is free once this returns),
-    /// closes forwarded connections and disconnects the SSH session. Idempotent.
+    /// Gives this lease back. The last one stops the listener (new connections are refused and
+    /// the port is free once this returns), closes forwarded connections and disconnects the SSH
+    /// session; with other leases left the tunnel stays up for them. Idempotent.
     pub async fn close(&self) {
-        mark_down(&self.state, TunnelStatus::Down, "tunnel closed");
-        self.cancel.cancel();
-        let task = lock(&self.listener_task).take();
+        if !release_lease(&self.released, &self.shared.leases) {
+            return;
+        }
+        let shared = &self.shared;
+        mark_down(&shared.state, TunnelStatus::Down, "tunnel closed");
+        shared.cancel.cancel();
+        let task = lock(&shared.listener_task).take();
         if let Some(task) = task {
             let _ = task.await;
         }
-        let _ = self
-            .session
-            .disconnect(Disconnect::ByApplication, "tunnel closed", "en")
-            .await;
+        disconnect_all(&shared.session, &shared.jumps).await;
     }
 }
 
 impl Drop for TunnelHandle {
     fn drop(&mut self) {
-        mark_down(&self.state, TunnelStatus::Down, "tunnel closed");
-        // The listener loop and the supervisor see the token and finish the shutdown.
-        self.cancel.cancel();
+        if release_lease(&self.released, &self.shared.leases) {
+            mark_down(&self.shared.state, TunnelStatus::Down, "tunnel closed");
+            // The listener loop and the supervisor see the token and finish the shutdown.
+            self.shared.cancel.cancel();
+        }
     }
 }
 
@@ -312,6 +434,512 @@ fn resolve_ssh(
     })
 }
 
+/// What a connect needs once the form and `~/.ssh/config` are merged, before any network I/O.
+struct Plan {
+    alias: String,
+    resolved: ResolvedSsh,
+    credential: Credential,
+    /// `ProxyJump` / `ProxyCommand` of the alias.
+    proxy: Option<ssh_config::Proxy>,
+    /// For jump hosts: the agent and the passphrase the profile's key auth uses.
+    agent_socket: Option<PathBuf>,
+    passphrase: Option<String>,
+    prompts: Option<Arc<dyn KeyboardInteractive>>,
+    client: Arc<client::Config>,
+}
+
+/// The agent socket of `IdentityAgent`, `~` expanded (`None`: not set, `none` or an unset
+/// variable).
+fn configured_agent(config: &ssh_config::HostConfig) -> Option<PathBuf> {
+    config
+        .identity_agent
+        .as_ref()
+        .and_then(ssh_config::IdentityAgent::socket)
+        .map(|p| expand_tilde(&p))
+}
+
+/// The public key in a key file (an `IdentityFile` that names an agent's key by its `.pub`).
+fn read_public_key(path: &str) -> Option<PublicKey> {
+    let text = std::fs::read_to_string(expand_tilde(path)).ok()?;
+    russh::keys::ssh_key::PublicKey::from_openssh(text.trim()).ok()
+}
+
+/// Merges the form with `~/.ssh/config` and loads the credential: local problems (missing key,
+/// wrong passphrase) fail here, before any network I/O.
+fn plan(cfg: &SshConfig, auth: TunnelAuth) -> Result<Plan, AppError> {
+    let alias = cfg.host.trim().to_string();
+    if alias.is_empty() {
+        return Err(AppError::InvalidInput("SSH host is required".into()));
+    }
+    // What the form leaves empty comes from ~/.ssh/config (the form wins, as in TablePlus); the
+    // form's user is what `Match user` blocks of the config are tested with.
+    let config = ssh_config::for_host_as(&alias, Some(cfg.user.trim()));
+    let resolved = resolve_ssh(cfg, &alias, &config)?;
+    let identity_agent = configured_agent(&config);
+    if cfg.auth == SshAuth::Agent
+        && auth.agent_socket.is_none()
+        && config.identity_agent == Some(ssh_config::IdentityAgent::Disabled)
+    {
+        return Err(AppError::Auth(
+            "ssh: ~/.ssh/config sets \u{201c}IdentityAgent none\u{201d} for this host; choose \
+             another authentication method"
+                .into(),
+        ));
+    }
+    let agent_socket = auth.agent_socket.clone().or(identity_agent.clone());
+    let credential = match cfg.auth {
+        SshAuth::Password => match auth.password.clone() {
+            Some(password) => Credential::Password(password),
+            // "Ask every time": the user types the password in the SSH prompt dialog.
+            None if auth.ask_password && auth.prompts.is_some() => Credential::Ask,
+            // Nothing saved: the server's own questions (its password prompt) go to the user.
+            None if auth.prompts.is_some() => Credential::Prompted,
+            None => return Err(no_saved_password()),
+        },
+        SshAuth::Key => {
+            let path = resolved.key_path.as_deref();
+            // `IdentityFile ~/.ssh/key.pub` + `IdentityAgent` (1Password, Secretive): the key
+            // lives in the agent, the file only says which one.
+            let public = path.and_then(read_public_key);
+            let agent = identity_agent
+                .clone()
+                .or_else(|| std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from))
+                .filter(|_| config.identity_agent != Some(ssh_config::IdentityAgent::Disabled));
+            match (path, public, agent) {
+                (Some(_), Some(key), Some(socket)) => Credential::Agent {
+                    socket: Some(socket),
+                    prefer: Some(key),
+                },
+                // No key file anywhere, but the config names an agent.
+                (None, _, Some(socket)) if identity_agent.is_some() => Credential::Agent {
+                    socket: Some(socket),
+                    prefer: None,
+                },
+                _ => Credential::Key(load_private_key(path, auth.passphrase.as_deref())?),
+            }
+        }
+        SshAuth::Agent => Credential::Agent {
+            socket: agent_socket.clone(),
+            prefer: None,
+        },
+    };
+    let keepalive = cfg
+        .keepalive_secs
+        .filter(|s| *s > 0)
+        .map(u64::from)
+        .unwrap_or(DEFAULT_KEEPALIVE_SECS);
+    let client = Arc::new(client::Config {
+        keepalive_interval: Some(Duration::from_secs(keepalive)),
+        keepalive_max: KEEPALIVE_MAX,
+        inactivity_timeout: None,
+        nodelay: true,
+        ..Default::default()
+    });
+    Ok(Plan {
+        alias,
+        resolved,
+        credential,
+        proxy: config.proxy,
+        agent_socket,
+        passphrase: auth.passphrase,
+        prompts: auth.prompts,
+        client,
+    })
+}
+
+/// A signed-in SSH session, with the jump hosts it runs through.
+struct Connected {
+    session: client::Handle<Client>,
+    jumps: Vec<client::Handle<Client>>,
+    state: Arc<watch::Sender<TunnelState>>,
+    /// Shuts the transport down if the connect is given up before the caller disarms it.
+    abort: transport::AbortOnDrop,
+}
+
+/// `host:port` for messages.
+fn endpoint(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+/// Connects (directly, through the jump hosts or the proxy command), checks the host key(s)
+/// against `trust` and signs in.
+async fn connect(plan: Plan, trust: &dyn HostKeyTrust) -> Result<Connected, AppError> {
+    let ResolvedSsh {
+        host, port, user, ..
+    } = &plan.resolved;
+    let (host, port, user) = (host.clone(), *port, user.clone());
+    let state = Arc::new(watch::channel(TunnelState::up()).0);
+    let mut abort = transport::AbortOnDrop::default();
+    let mut jumps = Vec::new();
+    let mut proxy_stderr = None;
+    let stream = match &plan.proxy {
+        None => {
+            let (stream, guard) = transport::tcp(&host, port, plan.client.nodelay)
+                .await
+                .map_err(|e| {
+                    AppError::Tunnel(format!(
+                        "cannot connect to the SSH server {}: {e}",
+                        endpoint(&host, port)
+                    ))
+                })?;
+            abort.extend(guard);
+            stream
+        }
+        Some(ssh_config::Proxy::Command(raw)) => {
+            let tokens = ssh_config::ProxyTokens {
+                host: &host,
+                port,
+                user: &user,
+                alias: &plan.alias,
+            };
+            // The command runs under `/bin/sh` before the host key and the sign-in are checked:
+            // a host, user or alias from an imported profile or a link must not reach the shell
+            // as anything but a plain name.
+            ssh_config::check_proxy_command(raw, &tokens).map_err(AppError::Tunnel)?;
+            let command = ssh_config::expand_proxy_command(raw, &tokens);
+            log::debug!("ssh: ProxyCommand {command}");
+            let (stream, guard, tail) = transport::command(&command).map_err(|e| {
+                AppError::Tunnel(format!(
+                    "cannot run the ProxyCommand \u{201c}{command}\u{201d}: {e}"
+                ))
+            })?;
+            abort.extend(guard);
+            proxy_stderr = Some(tail);
+            stream
+        }
+        Some(ssh_config::Proxy::Jump(hops)) => {
+            let (stream, guard, sessions) = jump_chain(&plan, hops, &host, port, trust).await?;
+            abort.extend(guard);
+            jumps = sessions;
+            stream
+        }
+    };
+    let what = match &plan.proxy {
+        None => format!("the SSH server {}", endpoint(&host, port)),
+        Some(ssh_config::Proxy::Command(_)) => format!(
+            "the SSH server {} through its ProxyCommand",
+            endpoint(&host, port)
+        ),
+        Some(ssh_config::Proxy::Jump(_)) => format!(
+            "the SSH server {} through the jump host",
+            endpoint(&host, port)
+        ),
+    };
+    let (check_tx, check_rx) = oneshot::channel();
+    let handler = Client {
+        host_key_check: Some(check_tx),
+        accepted_key: None,
+        state: state.clone(),
+    };
+    let handshake = handshake(
+        plan.client.clone(),
+        stream,
+        &what,
+        (&host, port),
+        handler,
+        check_rx,
+        trust,
+    )
+    .await;
+    let mut session = match handshake {
+        Ok(session) => session,
+        Err(AppError::Tunnel(msg)) => {
+            // A proxy command that failed usually said why on stderr.
+            let said = proxy_stderr.map(|t| t.text()).unwrap_or_default();
+            return Err(AppError::Tunnel(if said.is_empty() {
+                msg
+            } else {
+                format!("{msg} (ProxyCommand: {said})")
+            }));
+        }
+        Err(e) => return Err(e),
+    };
+    let sign_in = SignIn {
+        user: &user,
+        host: &host,
+        port,
+        prompts: plan.prompts.as_deref(),
+    };
+    if let Err(e) = authenticate(&mut session, &sign_in, plan.credential, &state).await {
+        disconnect_all(&session, &jumps).await;
+        return Err(e);
+    }
+    Ok(Connected {
+        session,
+        jumps,
+        state,
+        abort,
+    })
+}
+
+/// The settings of one `ProxyJump` hop, its own `~/.ssh/config` entry applied.
+fn resolve_jump(hop: &ssh_config::JumpHost) -> (String, u16, String, ssh_config::HostConfig) {
+    let config = ssh_config::for_host_as(&hop.host, hop.user.as_deref());
+    let host = config
+        .host_name
+        .clone()
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| hop.host.clone());
+    let port = hop.port.or(config.port).unwrap_or(22);
+    let user = hop
+        .user
+        .clone()
+        .or_else(|| config.user.clone())
+        .or_else(ssh_config::default_user)
+        .unwrap_or_default();
+    (host, port, user, config)
+}
+
+/// Opens the `ProxyJump` chain one hop at a time (the first over TCP, each next one through a
+/// `direct-tcpip` channel of the previous session) and returns a channel through the last hop
+/// to `target_host:target_port`, the transports' abort guard and the hop sessions.
+async fn jump_chain(
+    plan: &Plan,
+    hops: &[ssh_config::JumpHost],
+    target_host: &str,
+    target_port: u16,
+    trust: &dyn HostKeyTrust,
+) -> Result<
+    (
+        transport::BoxedStream,
+        transport::AbortOnDrop,
+        Vec<client::Handle<Client>>,
+    ),
+    AppError,
+> {
+    let mut abort = transport::AbortOnDrop::default();
+    let mut sessions: Vec<client::Handle<Client>> = Vec::new();
+    for hop in hops {
+        let (host, port, user, config) = resolve_jump(hop);
+        let what = format!("the jump host {}", endpoint(&host, port));
+        let stream = match sessions.last() {
+            None => {
+                let (stream, guard) = transport::tcp(&host, port, plan.client.nodelay)
+                    .await
+                    .map_err(|e| AppError::Tunnel(format!("cannot connect to {what}: {e}")))?;
+                abort.extend(guard);
+                stream
+            }
+            Some(previous) => open_channel(previous, &host, port, &what).await?,
+        };
+        let (check_tx, check_rx) = oneshot::channel();
+        let handler = Client {
+            host_key_check: Some(check_tx),
+            accepted_key: None,
+            // A hop's own state is not watched: when it ends, the sessions over it end too.
+            state: Arc::new(watch::channel(TunnelState::up()).0),
+        };
+        let mut session = handshake(
+            plan.client.clone(),
+            stream,
+            &what,
+            (&host, port),
+            handler,
+            check_rx,
+            trust,
+        )
+        .await?;
+        log::debug!("ssh: signing in to {what} as {user}");
+        if let Err(e) = authenticate_jump(&mut session, plan, &user, &host, port, &config).await {
+            disconnect_all(&session, &sessions).await;
+            return Err(e);
+        }
+        sessions.push(session);
+    }
+    let last = sessions
+        .last()
+        .ok_or_else(|| AppError::internal("ProxyJump without hosts"))?;
+    let what = format!("the SSH server {}", endpoint(target_host, target_port));
+    let stream = open_channel(last, target_host, target_port, &what).await?;
+    Ok((stream, abort, sessions))
+}
+
+/// A `direct-tcpip` channel through `session` to `host:port`, as a stream.
+async fn open_channel(
+    session: &client::Handle<Client>,
+    host: &str,
+    port: u16,
+    what: &str,
+) -> Result<transport::BoxedStream, AppError> {
+    let channel = session
+        .channel_open_direct_tcpip(host.to_string(), u32::from(port), LOCAL_HOST, 0)
+        .await
+        .map_err(|e| {
+            AppError::Tunnel(format!(
+                "the jump host could not open a connection to {what}: {}",
+                describe_channel_error(&e)
+            ))
+        })?;
+    Ok(Box::new(channel.into_stream()))
+}
+
+/// Signs in to a jump host the way OpenSSH would without asking: its `IdentityFile` keys (and the
+/// profile's key and the default `~/.ssh/id_*`), then the agent (its `IdentityAgent`, the
+/// profile's agent, `SSH_AUTH_SOCK`), then keyboard-interactive answered by the user.
+async fn authenticate_jump(
+    session: &mut client::Handle<Client>,
+    plan: &Plan,
+    user: &str,
+    host: &str,
+    port: u16,
+    config: &ssh_config::HostConfig,
+) -> Result<(), AppError> {
+    let mut tried = Vec::new();
+    let profile_key = match &plan.credential {
+        Credential::Key(key) => Some(key.clone()),
+        _ => None,
+    };
+    let mut keys: Vec<Arc<PrivateKey>> = profile_key.into_iter().collect();
+    for path in config
+        .identity_files
+        .iter()
+        .map(String::as_str)
+        .chain(ssh_config::DEFAULT_IDENTITIES)
+    {
+        if !expand_tilde(path).is_file() {
+            continue;
+        }
+        // Keys that need a passphrase other than the profile's are skipped.
+        if let Ok(key) = load_private_key(Some(path), plan.passphrase.as_deref())
+            && !keys.iter().any(|k| k.public_key() == key.public_key())
+        {
+            keys.push(key);
+        }
+    }
+    let mut last = None;
+    for key in keys {
+        let hash = rsa_hash(session, &key.public_key().clone()).await?;
+        let result = session
+            .authenticate_publickey(user, PrivateKeyWithHashAlg::new(key, hash))
+            .await
+            .map_err(ssh_err)?;
+        if result.success() {
+            return Ok(());
+        }
+        last = Some(result);
+        tried.push("public key");
+    }
+    let agent = configured_agent(config)
+        .or_else(|| plan.agent_socket.clone())
+        .filter(|_| config.identity_agent != Some(ssh_config::IdentityAgent::Disabled));
+    let has_env_agent = std::env::var_os("SSH_AUTH_SOCK").is_some();
+    if agent.is_some() || has_env_agent {
+        let state = watch::channel(TunnelState::up()).0;
+        match agent_auth(session, user, agent, None, &state).await {
+            Ok(AuthResult::Success) => return Ok(()),
+            Ok(other) => last = Some(other),
+            // An agent that is not running is no reason to give up on this hop.
+            Err(e) => log::debug!("ssh: agent sign-in to the jump host failed: {e}"),
+        }
+        tried.push("ssh-agent");
+    }
+    let offers_keyboard = match &last {
+        Some(AuthResult::Failure {
+            remaining_methods, ..
+        }) => remaining_methods.contains(&MethodKind::KeyboardInteractive),
+        _ => true,
+    };
+    if offers_keyboard && plan.prompts.is_some() {
+        let sign_in = SignIn {
+            user,
+            host,
+            port,
+            prompts: plan.prompts.as_deref(),
+        };
+        if let Some((_, result)) = keyboard_interactive(session, &sign_in, None).await? {
+            if result.success() {
+                return Ok(());
+            }
+            last = Some(result);
+        }
+        tried.push("keyboard-interactive");
+    }
+    let accepted = match &last {
+        Some(AuthResult::Failure {
+            remaining_methods, ..
+        }) => method_names(remaining_methods),
+        _ => String::new(),
+    };
+    let mut msg = format!(
+        "ssh: cannot sign in to the jump host {} as \u{201c}{user}\u{201d}",
+        endpoint(host, port)
+    );
+    if tried.is_empty() {
+        msg.push_str(" (no key, agent or prompt to try)");
+    } else {
+        msg.push_str(&format!(" (tried {})", tried.join(", ")));
+    }
+    if !accepted.is_empty() {
+        msg.push_str(&format!("; it accepts: {accepted}"));
+    }
+    msg.push_str("; add its key to ~/.ssh/config (IdentityFile) or to the SSH agent");
+    Err(AppError::Auth(msg))
+}
+
+/// An SSH session signed in like a tunnel's, without a listener: the SFTP transfers of
+/// SQLite over SSH run on it.
+pub struct SshSession {
+    session: client::Handle<Client>,
+    jumps: Vec<client::Handle<Client>>,
+    state: Arc<watch::Sender<TunnelState>>,
+}
+
+impl std::fmt::Debug for SshSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshSession")
+            .field("jumps", &self.jumps.len())
+            .field("state", &*self.state.borrow())
+            .finish()
+    }
+}
+
+impl SshSession {
+    /// Connects and signs in as `cfg` says (host key checked against `trust`).
+    pub async fn open(
+        cfg: &SshConfig,
+        auth: TunnelAuth,
+        trust: &dyn HostKeyTrust,
+    ) -> Result<SshSession, AppError> {
+        let plan = plan(cfg, auth)?;
+        let Connected {
+            session,
+            jumps,
+            state,
+            abort,
+        } = connect(plan, trust).await?;
+        abort.disarm();
+        Ok(SshSession {
+            session,
+            jumps,
+            state,
+        })
+    }
+
+    pub fn is_up(&self) -> bool {
+        self.state.borrow().is_up() && !self.session.is_closed()
+    }
+
+    /// Opens an SFTP subsystem channel.
+    pub async fn sftp(&self) -> Result<russh_sftp::client::SftpSession, AppError> {
+        let channel = self.session.channel_open_session().await.map_err(ssh_err)?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(ssh_err)?;
+        russh_sftp::client::SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|e| AppError::Tunnel(format!("the SSH server did not start SFTP: {e}")))
+    }
+
+    pub async fn close(&self) {
+        disconnect_all(&self.session, &self.jumps).await;
+    }
+}
+
 /// Opens an SSH session described by `cfg`, verifies the server key against `trust`,
 /// authenticates and listens on `127.0.0.1:<cfg.local_port or ephemeral>`; every accepted
 /// connection is forwarded to `target_host:target_port` as seen from the SSH server.
@@ -322,94 +950,82 @@ pub async fn open_tunnel(
     target_port: u16,
     trust: &dyn HostKeyTrust,
 ) -> Result<TunnelHandle, AppError> {
-    let alias = cfg.host.trim().to_string();
-    if alias.is_empty() {
+    let target = ForwardTarget::Tcp {
+        host: target_host,
+        port: target_port,
+    };
+    open_tunnel_to(cfg, auth, target, trust).await
+}
+
+/// [`open_tunnel`] towards a TCP host and port or a Unix socket on the SSH server.
+pub async fn open_tunnel_to(
+    cfg: &SshConfig,
+    auth: TunnelAuth,
+    target: ForwardTarget,
+    trust: &dyn HostKeyTrust,
+) -> Result<TunnelHandle, AppError> {
+    if cfg.host.trim().is_empty() {
         return Err(AppError::InvalidInput("SSH host is required".into()));
     }
-    if target_port == 0 {
-        return Err(AppError::InvalidInput(
-            "database port is required for an SSH tunnel".into(),
-        ));
+    match &target {
+        ForwardTarget::Tcp { port: 0, .. } => {
+            return Err(AppError::InvalidInput(
+                "database port is required for an SSH tunnel".into(),
+            ));
+        }
+        ForwardTarget::Socket(paths) if paths.iter().all(|p| p.trim().is_empty()) => {
+            return Err(AppError::InvalidInput(
+                "the socket path on the SSH server is required".into(),
+            ));
+        }
+        _ => {}
     }
-    // What the form leaves empty comes from ~/.ssh/config (the form wins, as in TablePlus).
-    let config = ssh_config::for_host(&alias);
-    let ResolvedSsh {
-        host: ssh_host,
-        port: ssh_port,
-        user,
-        key_path,
-    } = resolve_ssh(cfg, &alias, &config)?;
-
     // Local problems (missing key, wrong passphrase, port in use) fail before any network I/O.
-    let credential = match cfg.auth {
-        SshAuth::Password => match auth.password.clone() {
-            Some(password) => Credential::Password(password),
-            // Nothing saved: the server's own questions (its password prompt) go to the user.
-            None if auth.prompts.is_some() => Credential::Prompted,
-            None => return Err(no_saved_password()),
-        },
-        SshAuth::Key => Credential::Key(load_private_key(
-            key_path.as_deref(),
-            auth.passphrase.as_deref(),
-        )?),
-        SshAuth::Agent => Credential::Agent(auth.agent_socket.clone()),
-    };
+    let plan = plan(cfg, auth)?;
     let listener = bind_local(cfg.local_port.unwrap_or(0)).await?;
     let local_port = listener.local_addr()?.port();
-
-    let keepalive = cfg
-        .keepalive_secs
-        .filter(|s| *s > 0)
-        .map(u64::from)
-        .unwrap_or(DEFAULT_KEEPALIVE_SECS);
-    let config = Arc::new(client::Config {
-        keepalive_interval: Some(Duration::from_secs(keepalive)),
-        keepalive_max: KEEPALIVE_MAX,
-        inactivity_timeout: None,
-        nodelay: true,
-        ..Default::default()
-    });
-    let state = Arc::new(watch::channel(TunnelState::up()).0);
-    let (check_tx, check_rx) = oneshot::channel();
-    let handler = Client {
-        host_key_check: Some(check_tx),
-        accepted_key: None,
-        state: state.clone(),
+    let (user, ssh_host, ssh_port) = (
+        plan.resolved.user.clone(),
+        plan.resolved.host.clone(),
+        plan.resolved.port,
+    );
+    let via = match &plan.proxy {
+        None => String::new(),
+        Some(ssh_config::Proxy::Command(_)) => " (ProxyCommand)".into(),
+        Some(ssh_config::Proxy::Jump(hops)) => format!(
+            " (via {})",
+            hops.iter()
+                .map(|h| h.host.as_str())
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        ),
     };
-
-    // From here until the tunnel is up, `abort` shuts the SSH socket down if this future is
-    // dropped (the caller's connect timeout) or returns an error.
-    let (mut session, abort) =
-        handshake(config, &ssh_host, ssh_port, handler, check_rx, trust).await?;
-    let sign_in = SignIn {
-        user: &user,
-        host: &ssh_host,
-        port: ssh_port,
-        prompts: auth.prompts.as_deref(),
-    };
-    if let Err(e) = authenticate(&mut session, &sign_in, credential, &state).await {
-        let _ = session
-            .disconnect(Disconnect::ByApplication, "authentication failed", "en")
-            .await;
-        return Err(e);
-    }
+    // Until the tunnel is up, the transport is shut down if this future is dropped (the caller's
+    // connect timeout) or returns an error.
+    let Connected {
+        session,
+        jumps,
+        state,
+        abort,
+    } = connect(plan, trust).await?;
     abort.disarm();
     log::info!(
-        "ssh tunnel {LOCAL_HOST}:{local_port} -> {user}@{ssh_host}:{ssh_port} -> {target_host}:{target_port}"
+        "ssh tunnel {LOCAL_HOST}:{local_port} -> {user}@{ssh_host}:{ssh_port}{via} -> {target}"
     );
 
     let session = Arc::new(session);
+    let jumps: Jumps = Arc::new(jumps);
     let cancel = CancellationToken::new();
     // Cancelled when the SSH session ends (or with `cancel`): forwarding stops, the port does not.
     let forwarding = cancel.child_token();
     let forward_error = Arc::new(Mutex::new(None));
-    let target = format!("{target_host}:{target_port}");
+    let label = target.to_string();
     let listener_task = tokio::spawn(accept_loop(
         listener,
         Forwarder {
             session: session.clone(),
-            target_host: Arc::from(target_host),
-            target_port,
+            target: Arc::new(target),
+            socket_pick: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             forward_error: forward_error.clone(),
         },
         cancel.clone(),
@@ -417,20 +1033,25 @@ pub async fn open_tunnel(
     ));
     tokio::spawn(supervise(
         session.clone(),
+        jumps.clone(),
         state.subscribe(),
         cancel.clone(),
         forwarding,
     ));
 
-    Ok(TunnelHandle {
+    Ok(TunnelHandle::first_lease(
         local_port,
-        target,
-        cancel,
-        state,
-        session,
-        listener_task: Mutex::new(Some(listener_task)),
-        forward_error,
-    })
+        TunnelShared {
+            target: label,
+            cancel,
+            state,
+            session,
+            jumps,
+            listener_task: Mutex::new(Some(listener_task)),
+            forward_error,
+            leases: Mutex::new(1),
+        },
+    ))
 }
 
 // ----- local listener ---------------------------------------------------------------------------
@@ -606,62 +1227,18 @@ fn describe_ssh_error(e: &russh::Error) -> String {
     }
 }
 
-/// Shuts the SSH server socket down when dropped, unless disarmed once the tunnel is up.
-///
-/// russh spawns the session task during the handshake and dropping its handle does not stop it:
-/// while the key exchange runs, that task only waits on the socket. Without this guard, a caller
-/// that gives up on [`open_tunnel`] (connect timeout) against a server that stalls after its
-/// banner would leave the task and the socket open until the server hangs up.
-struct AbortOnDrop(Option<std::net::TcpStream>);
-
-impl AbortOnDrop {
-    /// Hands `tcp` back together with a guard that holds a duplicate of its socket.
-    fn wrap(tcp: TcpStream) -> io::Result<(TcpStream, AbortOnDrop)> {
-        let tcp = tcp.into_std()?;
-        let guard = AbortOnDrop(Some(tcp.try_clone()?));
-        Ok((TcpStream::from_std(tcp)?, guard))
-    }
-
-    /// Keeps the socket open; the session owns it from now on.
-    fn disarm(mut self) {
-        self.0 = None;
-    }
-}
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        if let Some(socket) = self.0.take() {
-            // Pending reads in the session task see EOF, so it ends and drops its copy.
-            let _ = socket.shutdown(std::net::Shutdown::Both);
-        }
-    }
-}
-
-/// Connects to the SSH server and runs the handshake while answering the handler's host-key
-/// question with `trust`.
+/// Runs the SSH handshake over `stream` while answering the handler's host-key question with
+/// `trust` for `key_for` (host, port). `what` names the server in errors ("the jump host …").
 async fn handshake(
     config: Arc<client::Config>,
-    host: &str,
-    port: u16,
+    stream: transport::BoxedStream,
+    what: &str,
+    key_for: (&str, u16),
     handler: Client,
     mut check_rx: oneshot::Receiver<HostKeyCheck>,
     trust: &dyn HostKeyTrust,
-) -> Result<(client::Handle<Client>, AbortOnDrop), AppError> {
-    let unreachable = |e: &dyn Display| {
-        AppError::Tunnel(format!(
-            "cannot connect to the SSH server {host}:{port}: {e}"
-        ))
-    };
-    let tcp = TcpStream::connect((host, port))
-        .await
-        .map_err(|e| unreachable(&e))?;
-    if config.nodelay
-        && let Err(e) = tcp.set_nodelay(true)
-    {
-        log::debug!("ssh: set_nodelay failed: {e}");
-    }
-    let (tcp, abort) = AbortOnDrop::wrap(tcp).map_err(|e| unreachable(&e))?;
-    let connect = client::connect_stream(config, tcp, handler);
+) -> Result<client::Handle<Client>, AppError> {
+    let connect = client::connect_stream(config, stream, handler);
     tokio::pin!(connect);
     let mut checked = false;
     let result = loop {
@@ -670,15 +1247,18 @@ async fn handshake(
             check = &mut check_rx, if !checked => {
                 checked = true;
                 if let Ok(HostKeyCheck { key, reply }) = check {
-                    let _ = reply.send(verify_host_key(trust, host, port, &key));
+                    let _ = reply.send(verify_host_key(trust, key_for.0, key_for.1, &key));
                 }
             }
         }
     };
     match result {
-        Ok(session) => Ok((session, abort)),
+        Ok(session) => Ok(session),
         Err(ClientError::HostKey(e)) => Err(e),
-        Err(ClientError::Ssh(e)) => Err(unreachable(&describe_ssh_error(&e))),
+        Err(ClientError::Ssh(e)) => Err(AppError::Tunnel(format!(
+            "cannot connect to {what}: {}",
+            describe_ssh_error(&e)
+        ))),
     }
 }
 
@@ -690,8 +1270,14 @@ enum Credential {
     /// answering the server's questions (see `prompted_password`).
     Prompted,
     Key(Arc<PrivateKey>),
-    /// Agent socket override (`None`: `SSH_AUTH_SOCK`).
-    Agent(Option<PathBuf>),
+    /// Agent socket override (`None`: `SSH_AUTH_SOCK`); `prefer`: the key to offer first (the
+    /// `.pub` an `IdentityFile` names).
+    Agent {
+        socket: Option<PathBuf>,
+        prefer: Option<PublicKey>,
+    },
+    /// "Ask every time": the user types the SSH password when the server takes one.
+    Ask,
 }
 
 const NO_SAVED_PASSWORD: &str = "ssh: no SSH password is saved for this connection";
@@ -781,6 +1367,14 @@ async fn authenticate(
 ) -> Result<(), AppError> {
     let user = sign_in.user;
     let mut password = None;
+    let credential = match credential {
+        Credential::Ask => match ask_password(session, sign_in, state).await? {
+            Asked::Done => return Ok(()),
+            Asked::Password(pw) => Credential::Password(pw),
+            Asked::KeyboardInteractive => return prompted_password(session, sign_in, state).await,
+        },
+        other => other,
+    };
     let (method, result) = match credential {
         Credential::Password(pw) => {
             let result = session
@@ -798,8 +1392,13 @@ async fn authenticate(
                 .map_err(ssh_err)?;
             ("public key", result)
         }
-        Credential::Agent(socket) => ("ssh-agent", agent_auth(session, user, socket, state).await?),
-        Credential::Prompted => return prompted_password(session, sign_in, state).await,
+        Credential::Agent { socket, prefer } => (
+            "ssh-agent",
+            agent_auth(session, user, socket, prefer.as_ref(), state).await?,
+        ),
+        Credential::Prompted | Credential::Ask => {
+            return prompted_password(session, sign_in, state).await;
+        }
     };
     let AuthResult::Failure {
         remaining_methods,
@@ -856,6 +1455,64 @@ async fn authenticate(
         user,
         &remaining_methods,
         partial_success,
+    ))
+}
+
+/// What "Ask every time" found out before asking.
+enum Asked {
+    /// The server let the user in without a password (`none` authentication).
+    Done,
+    /// The user typed this password for the `password` method.
+    Password(String),
+    /// The server takes no `password`: its keyboard-interactive questions go to the user.
+    KeyboardInteractive,
+}
+
+/// The SSH password of an "Ask every time" connection: asks which methods the server takes
+/// (`none` authentication) and, when it takes a password, asks the user for it in the SSH prompt
+/// dialog (an `SshPromptKind::Password` round). Cancelling gives the connect up.
+async fn ask_password(
+    session: &mut client::Handle<Client>,
+    sign_in: &SignIn<'_>,
+    state: &watch::Sender<TunnelState>,
+) -> Result<Asked, AppError> {
+    let Some(prompts) = sign_in.prompts else {
+        return Err(no_saved_password());
+    };
+    let methods = match session
+        .authenticate_none(sign_in.user)
+        .await
+        .map_err(ssh_err)?
+    {
+        AuthResult::Success => return Ok(Asked::Done),
+        AuthResult::Failure {
+            remaining_methods, ..
+        } => remaining_methods,
+    };
+    if method_names(&methods).is_empty()
+        && let Some(reason) = session_end(session, state).await
+    {
+        return Err(ended_during_auth("password", &reason));
+    }
+    if !methods.contains(&MethodKind::Password) {
+        return Ok(Asked::KeyboardInteractive);
+    }
+    let answers = prompts
+        .answer(PromptRound {
+            user: sign_in.user.to_string(),
+            host: sign_in.host.to_string(),
+            port: sign_in.port,
+            name: "SSH password".into(),
+            instructions: String::new(),
+            prompts: vec![SshPromptField {
+                prompt: "Password:".into(),
+                echo: false,
+            }],
+            kind: Some(SshPromptKind::Password),
+        })
+        .await?;
+    Ok(Asked::Password(
+        answers.into_iter().next().unwrap_or_default(),
     ))
 }
 
@@ -969,6 +1626,7 @@ async fn keyboard_interactive(
                         echo: p.echo,
                     })
                     .collect(),
+                kind: None,
             })
             .await?
         } else {
@@ -1034,6 +1692,7 @@ async fn agent_auth(
     session: &mut client::Handle<Client>,
     user: &str,
     socket: Option<PathBuf>,
+    prefer: Option<&PublicKey>,
     state: &watch::Sender<TunnelState>,
 ) -> Result<AuthResult, AppError> {
     use russh::AgentAuthError;
@@ -1048,10 +1707,15 @@ async fn agent_auth(
             "ssh: cannot reach the SSH agent ({e}); start ssh-agent and add your key with ssh-add"
         ))
     })?;
-    let identities = agent
+    let mut identities = agent
         .request_identities()
         .await
         .map_err(|e| AppError::Auth(format!("ssh: the SSH agent did not list its keys: {e}")))?;
+    if let Some(prefer) = prefer {
+        // The key the config names goes first (agents like 1Password hold many keys, and servers
+        // stop after a few tries).
+        identities.sort_by_key(|i| i.public_key().key_data() != prefer.key_data());
+    }
     if identities.is_empty() {
         return Err(AppError::Auth(
             "ssh: the SSH agent has no keys; add one with ssh-add".into(),
@@ -1110,6 +1774,7 @@ async fn agent_auth(
     _session: &mut client::Handle<Client>,
     _user: &str,
     _socket: Option<PathBuf>,
+    _prefer: Option<&PublicKey>,
     _state: &watch::Sender<TunnelState>,
 ) -> Result<AuthResult, AppError> {
     Err(AppError::Unsupported(
@@ -1205,9 +1870,97 @@ fn looks_encrypted(text: &str) -> bool {
 #[derive(Clone)]
 struct Forwarder {
     session: Arc<client::Handle<Client>>,
-    target_host: Arc<str>,
-    target_port: u16,
+    target: Arc<ForwardTarget>,
+    /// The socket path that opened last (tried first next time).
+    socket_pick: Arc<std::sync::atomic::AtomicUsize>,
     forward_error: LastForwardFailure,
+}
+
+/// Why the SSH server did not open a channel to a Unix socket.
+fn describe_socket_error(e: &russh::Error) -> String {
+    match e {
+        russh::Error::ChannelOpenFailure(ChannelOpenFailure::ConnectFailed) => {
+            "no server listens on that socket (check the socket path: SELECT @@socket shows it)"
+                .into()
+        }
+        russh::Error::ChannelOpenFailure(ChannelOpenFailure::AdministrativelyProhibited) => {
+            "socket forwarding is not allowed by the SSH server (AllowStreamLocalForwarding)".into()
+        }
+        other => describe_channel_error(other),
+    }
+}
+
+/// The order the socket paths are tried in: the one that opened last, then the others.
+fn socket_order(count: usize, last: usize) -> Vec<usize> {
+    let first = if last < count { last } else { 0 };
+    std::iter::once(first)
+        .chain((0..count).filter(|i| *i != first))
+        .filter(|i| *i < count)
+        .collect()
+}
+
+/// Opens the channel one accepted connection is forwarded over; the error is the message the
+/// tunnel reports.
+async fn open_forward_channel(
+    forwarder: &Forwarder,
+    peer: SocketAddr,
+) -> Result<russh::Channel<client::Msg>, String> {
+    match forwarder.target.as_ref() {
+        ForwardTarget::Tcp { host, port } => forwarder
+            .session
+            .channel_open_direct_tcpip(
+                host.clone(),
+                u32::from(*port),
+                peer.ip().to_string(),
+                u32::from(peer.port()),
+            )
+            .await
+            .map_err(|e| {
+                format!(
+                    "the SSH server could not open a connection to {host}:{port}: {}",
+                    describe_channel_error(&e)
+                )
+            }),
+        ForwardTarget::Socket(paths) => {
+            use std::sync::atomic::Ordering;
+            let last = forwarder.socket_pick.load(Ordering::Relaxed);
+            let mut failure = String::new();
+            for i in socket_order(paths.len(), last) {
+                let path = paths[i].trim();
+                match forwarder
+                    .session
+                    .channel_open_direct_streamlocal(path)
+                    .await
+                {
+                    Ok(channel) => {
+                        forwarder.socket_pick.store(i, Ordering::Relaxed);
+                        return Ok(channel);
+                    }
+                    Err(e) => {
+                        failure = format!(
+                            "the SSH server could not open the socket {path}: {}",
+                            describe_socket_error(&e)
+                        );
+                        // Not a missing socket: the next path would fail the same way.
+                        if !matches!(
+                            e,
+                            russh::Error::ChannelOpenFailure(ChannelOpenFailure::ConnectFailed)
+                        ) {
+                            break;
+                        }
+                    }
+                }
+            }
+            if paths.len() > 1 {
+                failure = format!(
+                    "the SSH server has no MySQL socket at {}; enter the socket path (SELECT \
+                     @@socket shows it)",
+                    paths.join(", ")
+                );
+            }
+            Err(failure)
+        }
+    }
 }
 
 /// Accepts local connections until `cancel` (close / drop). While `forwarding` is live each one
@@ -1268,31 +2021,34 @@ async fn forward(
     forwarder: Forwarder,
     cancel: CancellationToken,
 ) {
-    let Forwarder {
-        session,
-        target_host,
-        target_port,
-        forward_error,
-    } = forwarder;
+    // Only this app (and its dump binaries) may use the tunnel (TablePlus: "the local port only
+    // accepts connections from TablePlus").
+    if peer_check_enabled()
+        && let Ok(local_addr) = local.local_addr()
+    {
+        let owner = tokio::task::spawn_blocking(move || peer::owner(peer, local_addr))
+            .await
+            .unwrap_or(peer::PeerOwner::Unknown);
+        if !owner.allowed() {
+            log::warn!(
+                "ssh tunnel on port {}: refused a connection from {peer}, which does not come \
+                 from Tabler",
+                local_addr.port()
+            );
+            return;
+        }
+        log::debug!("ssh tunnel: local connection from {peer} ({owner:?})");
+    }
     let _ = local.set_nodelay(true);
     let opened = tokio::select! {
         _ = cancel.cancelled() => return,
-        ch = session.channel_open_direct_tcpip(
-            target_host.to_string(),
-            u32::from(target_port),
-            peer.ip().to_string(),
-            u32::from(peer.port()),
-        ) => ch,
+        ch = open_forward_channel(&forwarder, peer) => ch,
     };
     let channel = match opened {
         Ok(ch) => ch,
-        Err(e) => {
-            let msg = format!(
-                "the SSH server could not open a connection to {target_host}:{target_port}: {}",
-                describe_channel_error(&e)
-            );
+        Err(msg) => {
             log::warn!("{msg}");
-            *lock(&forward_error) = Some(ForwardFailure {
+            *lock(&forwarder.forward_error) = Some(ForwardFailure {
                 at: Instant::now(),
                 message: msg,
             });
@@ -1310,10 +2066,24 @@ async fn forward(
     }
 }
 
-/// Disconnects the SSH session when the handle is closed/dropped, and stops forwarding (but
-/// keeps the port reserved) when the session dies on its own.
+/// Whether accepted connections are checked to come from this app ([`peer`]). Setting
+/// `TABLER_TUNNEL_ANY_PEER=1` turns the check off (troubleshooting only).
+fn peer_check_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let off = std::env::var("TABLER_TUNNEL_ANY_PEER").is_ok_and(|v| v == "1");
+        if off {
+            log::warn!("TABLER_TUNNEL_ANY_PEER=1: SSH tunnels accept connections from any program");
+        }
+        !off
+    })
+}
+
+/// Disconnects the SSH session (and its jump hosts) when the handle is closed/dropped, and stops
+/// forwarding (but keeps the port reserved) when the session dies on its own.
 async fn supervise(
     session: Arc<client::Handle<Client>>,
+    jumps: Jumps,
     mut state: watch::Receiver<TunnelState>,
     cancel: CancellationToken,
     forwarding: CancellationToken,
@@ -1322,9 +2092,7 @@ async fn supervise(
         _ = cancel.cancelled() => {}
         _ = state.wait_for(|s| !s.is_up()) => forwarding.cancel(),
     }
-    let _ = session
-        .disconnect(Disconnect::ByApplication, "tunnel closed", "en")
-        .await;
+    disconnect_all(&session, &jumps).await;
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -1334,6 +2102,40 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leases_are_counted_once_each_and_the_last_one_closes() {
+        let count = Mutex::new(1);
+        let (first, second) = (
+            std::sync::atomic::AtomicBool::new(false),
+            std::sync::atomic::AtomicBool::new(false),
+        );
+        assert!(add_lease(&count));
+        assert_eq!(*lock(&count), 2);
+        // Closing a lease twice gives it back once; the other lease keeps the tunnel.
+        assert!(!release_lease(&first, &count));
+        assert!(!release_lease(&first, &count));
+        assert_eq!(*lock(&count), 1);
+        assert!(release_lease(&second, &count));
+        assert_eq!(*lock(&count), 0);
+        // A tunnel whose leases are all given back is not handed out again.
+        assert!(!add_lease(&count));
+    }
+
+    #[test]
+    fn socket_paths_start_with_the_one_that_opened_last() {
+        assert_eq!(socket_order(3, 0), [0, 1, 2]);
+        assert_eq!(socket_order(3, 2), [2, 0, 1]);
+        assert_eq!(socket_order(1, 5), [0]);
+        assert!(socket_order(0, 0).is_empty());
+        let target = ForwardTarget::Socket(vec!["/tmp/mysql.sock".into()]);
+        assert_eq!(target.to_string(), "unix:/tmp/mysql.sock");
+        let tcp = ForwardTarget::Tcp {
+            host: "db".into(),
+            port: 3306,
+        };
+        assert_eq!(tcp.to_string(), "db:3306");
+    }
 
     #[test]
     fn expands_home() {
@@ -1455,6 +2257,7 @@ mod tests {
             key_path: None,
             local_port: None,
             keepalive_secs: None,
+            password_mode: None,
         };
         let auth = TunnelAuth {
             password: Some("x".into()),
@@ -1477,6 +2280,7 @@ mod tests {
             user: Some("deploy".into()),
             port: Some(2222),
             identity_files: vec!["/nonexistent/first".into(), key.clone()],
+            ..Default::default()
         };
         let mut cfg = SshConfig {
             host: "bastion".into(),
@@ -1486,6 +2290,7 @@ mod tests {
             key_path: None,
             local_port: None,
             keepalive_secs: None,
+            password_mode: None,
         };
         // Empty form fields: the config fills them (the first existing IdentityFile).
         assert_eq!(

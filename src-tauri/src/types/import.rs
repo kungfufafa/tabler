@@ -24,7 +24,7 @@ pub enum TextEncoding {
 pub struct CsvFormat {
     /// One ASCII character; `None` = detect (`,` `;` tab `|`).
     pub delimiter: Option<String>,
-    /// `"` or `'`.
+    /// `"`, `'` or a space (the export's "Space" quote).
     pub quote: String,
     /// `None` = detect (byte order mark, else UTF-8 when the start is valid UTF-8, else
     /// Windows-1252).
@@ -227,6 +227,69 @@ pub struct CsvSkippedRow {
     pub reason: String,
 }
 
+/// How a JSON file holds its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum JsonLayout {
+    /// One array of objects: `[{…}, {…}]`.
+    Array,
+    /// One object per line (NDJSON / JSON Lines), or objects one after the other.
+    Lines,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct JsonPreviewRequest {
+    pub path: String,
+    /// `None` = detect (byte order mark, else UTF-8, else Windows-1252).
+    pub encoding: Option<TextEncoding>,
+}
+
+/// The first objects of a JSON file: every key seen in them is a column.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct JsonPreview {
+    pub path: String,
+    pub file_name: String,
+    pub size: u64,
+    pub encoding: TextEncoding,
+    /// `None` for a file without any object.
+    pub layout: Option<JsonLayout>,
+    /// The keys of the sampled objects in the order first seen (the import reads these).
+    pub keys: Vec<String>,
+    /// One column per key (`column_<n>` for an empty key), with the type detected.
+    pub columns: Vec<CsvColumn>,
+    /// Up to 100 objects as rows, one value per key; `None` = null or missing. Strings as they
+    /// are, numbers and booleans as written, nested objects and arrays as compact JSON text.
+    pub rows: Vec<Vec<Option<String>>>,
+    /// Objects the keys and types were detected from.
+    pub sampled_rows: u32,
+    /// The file has more objects than `rows`.
+    pub more: bool,
+}
+
+/// Imports a JSON array of objects, or NDJSON, through the CSV wizard's machinery: each key is
+/// a column; `null` and missing keys are NULL, an empty string stays an empty string.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct JsonImportRequest {
+    /// Chosen by the renderer; `cancel_import` takes the same id.
+    pub import_id: String,
+    pub path: String,
+    /// As the preview resolved it.
+    pub encoding: Option<TextEncoding>,
+    /// The preview's keys: the columns read from each object, in this order.
+    pub keys: Vec<String>,
+    pub target: ImportTarget,
+    /// For each key by position: the table column it goes into, or `None` ("Do not import").
+    pub mapping: Vec<Option<String>>,
+    pub mode: InsertMode,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -363,5 +426,17 @@ mod tests {
             serde_json::to_value(TextEncoding::Utf16Le).unwrap(),
             "utf16Le"
         );
+        let json: JsonImportRequest = serde_json::from_value(serde_json::json!({
+            "importId": "j1",
+            "path": "/tmp/a.json",
+            "encoding": null,
+            "keys": ["id", "tags"],
+            "target": {"kind": "existing", "table": {"schema": null, "name": "t"}},
+            "mapping": ["id", null],
+            "mode": "stopOnError"
+        }))
+        .unwrap();
+        assert_eq!(json.keys, vec!["id".to_string(), "tags".to_string()]);
+        assert_eq!(serde_json::to_value(JsonLayout::Lines).unwrap(), "lines");
     }
 }

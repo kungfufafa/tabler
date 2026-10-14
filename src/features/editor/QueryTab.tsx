@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { Info } from "lucide-react";
 import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { useGroupRef, usePanelRef, type Layout } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
@@ -35,12 +36,14 @@ import { EditorBar } from "./EditorBar";
 import { EditorPanes, type EditorPaneHandlers } from "./EditorPanes";
 import { changeEditorFontSize } from "./editorSettings";
 import { HistorySheet } from "./HistorySheet";
+import { installFileAutoSave } from "./fileAutoSave";
 import { installQueryTabLifecycle } from "./lifecycle";
 import { QueryParamsDialog } from "./QueryParamsDialog";
 import { ResultsPane } from "./ResultsPane";
 import { activeEditorKey, closeSplit, isSplitOpen, openSplit } from "./split";
 
 installQueryTabLifecycle();
+installFileAutoSave();
 
 /**
  * Keys the app-wide shortcut listener leaves alone inside a query tab (it runs first, in the window
@@ -90,6 +93,7 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
   const historyOpen = useQueryTabField(tabId, "historyOpen");
   const layout = useQueryTabField(tabId, "layout");
   const resultsCollapsed = useQueryTabField(tabId, "resultsCollapsed");
+  const headNotice = useQueryTabField(tabId, "headNotice");
   const groupRef = useGroupRef();
   const resultsRef = usePanelRef();
   const resultsElement = useRef<HTMLDivElement>(null);
@@ -209,6 +213,17 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
         <ResizablePanel id="editor" defaultSize={`${DEFAULT_LAYOUT.editor}%`} minSize={96}>
           {/* The bar stays with the editor: it ends up at the bottom when the results collapse. */}
           <div className="flex h-full min-h-0 flex-col">
+            {/* The head of a big file: a copy, not linked to the file (saving never truncates it). */}
+            {headNotice && (
+              <div
+                role="status"
+                data-testid="head-notice"
+                className="border-border bg-muted/50 text-muted-foreground flex shrink-0 items-center gap-1.5 border-b px-3 py-1 text-[11px]"
+              >
+                <Info aria-hidden className="size-3 shrink-0" />
+                <span className="min-w-0 truncate">{headNotice}</span>
+              </div>
+            )}
             <div className="min-h-0 flex-1">
               <EditorPanes
                 tabId={tabId}

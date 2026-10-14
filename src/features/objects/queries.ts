@@ -21,6 +21,9 @@ export const objectKeys = {
   sequences: (c: string, schema: string) => ["tables", c, schema, "sequences"] as const,
   overview: (c: string, schema: string) => ["tables", c, schema, "overview"] as const,
   systemSchemas: (c: string) => ["tables", c, "", "systemSchemas"] as const,
+  /** Search in Database…: every schema's items (`ipc.objects.databaseItems`). */
+  databaseItems: (c: string, includeSystem: boolean) =>
+    ["tables", c, "", "databaseItems", includeSystem] as const,
 };
 
 export function useRoutines(connectionId: string | null, schema: string | null, enabled = true) {
@@ -65,15 +68,25 @@ export function useOverview(connectionId: string, schema: string | null, enabled
 
 /**
  * `view.refresh` (⌘R / ⌥⌘R, the toolbar's Refresh, View ▸ Refresh) reloads the open tab, and with
- * it the sidebar: the table list, routines and sequences of `schema` are refetched. Observes the
- * action rather than handling it, so whichever tab handles the refresh keeps doing so.
+ * it the sidebar: the table list, routines and sequences of `schema` are refetched (of every
+ * schema with `allSchemas`, the lazy-loaded tree). Observes the action rather than handling it, so
+ * whichever tab handles the refresh keeps doing so.
  */
-export function useSidebarReload(connectionId: string, schema: string | null): void {
+export function useSidebarReload(
+  connectionId: string,
+  schema: string | null,
+  allSchemas = false,
+): void {
   const qc = useQueryClient();
   useEffect(() => {
-    if (schema === null) return;
+    if (schema === null && !allSchemas) return;
     return actions.observe("view.refresh", () => {
-      void qc.invalidateQueries({ queryKey: schemaKeys.tables(connectionId, schema) });
+      void qc.invalidateQueries({
+        queryKey:
+          allSchemas || schema === null
+            ? ["tables", connectionId]
+            : schemaKeys.tables(connectionId, schema),
+      });
     });
-  }, [qc, connectionId, schema]);
+  }, [qc, connectionId, schema, allSchemas]);
 }

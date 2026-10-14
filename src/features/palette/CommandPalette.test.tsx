@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetThemesForTests, useThemes } from "@/features/appearance/themesStore";
 import { emptyStaging, insertRow } from "@/features/staging/model";
 import { useStructureStore } from "@/features/structure/store";
 import { useDatabaseSwitchStore } from "@/features/sidebar/switchDatabase";
@@ -16,6 +17,7 @@ import { actions } from "./actions";
 import { CommandPalette } from "./CommandPalette";
 import { MRU_STORAGE_KEY } from "./mru";
 import { usePaletteStore, type PaletteMode } from "./store";
+import { cancelTabSurfaceFocus } from "./focus";
 
 const mod = isMac ? { metaKey: true } : { ctrlKey: true };
 
@@ -108,6 +110,22 @@ function option(label: string, kind: string): HTMLElement {
 const type = (value: string) =>
   fireEvent.change(screen.getByRole("combobox"), { target: { value } });
 
+/** A real click: the pointer goes down on the row, then the click arrives. */
+const click = (el: HTMLElement, init: object = {}) => {
+  fireEvent.pointerDown(el, init);
+  fireEvent.click(el, init);
+};
+const doubleClick = (el: HTMLElement) => {
+  click(el);
+  click(el);
+  fireEvent.doubleClick(el);
+};
+const tabsOf = () =>
+  useTabsStore
+    .getState()
+    .tabs.filter((t) => t.kind === "table")
+    .map((t) => t.id);
+
 beforeAll(() => {
   // jsdom has no layout; cmdk scrolls the selected item into view.
   if (!Element.prototype.scrollIntoView) {
@@ -136,6 +154,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The focus poll of a chosen item must not outlive the test (jsdom is gone by then).
+  cancelTabSurfaceFocus();
   cleanups.splice(0).forEach((c) => c());
   vi.restoreAllMocks();
 });
@@ -194,7 +214,7 @@ describe("CommandPalette", () => {
     const input = renderPalette(undefined, { setup: withDatabases });
     expect(input).toHaveAttribute(
       "placeholder",
-      "Search tables, views, databases and connections…",
+      "Search tables, views, databases, connections and commands…",
     );
     expect(groupLabels()).toEqual([]);
     expect(optionTexts()).toEqual([
@@ -205,7 +225,7 @@ describe("CommandPalette", () => {
     ]);
     // The row estimate stays, muted.
     expect(within(option("users", "table")).getByText("10")).toBeInTheDocument();
-    expect(screen.getByTestId("palette-command-hint")).toHaveTextContent("Type > for commands");
+    expect(screen.getByTestId("palette-command-hint")).toHaveTextContent("Type > for all commands");
     // The header tells whose tables these are.
     expect(screen.getByText("· public")).toBeInTheDocument();
   });
@@ -215,8 +235,12 @@ describe("CommandPalette", () => {
     cleanups.push(actions.register("ui.toggle-sidebar", () => {}));
     renderPalette(undefined, { setup: withDatabases });
     type("app");
-    expect(groupLabels()).toEqual([]);
-    expect(optionTexts()).toEqual([expect.stringMatching(/^app.*database$/)]);
+    // The objects come first, without a heading; the commands that match ("appearance" is a
+    // keyword of the themes) follow under their own.
+    expect(groupLabels()).toEqual(["Commands"]);
+    const texts = optionTexts();
+    expect(texts[0]).toMatch(/^app.*database$/);
+    expect(texts.slice(1).every((t) => t.startsWith("Theme: "))).toBe(true);
     expect(within(option("app", "database")).getByLabelText("Current")).toBeInTheDocument();
     type("inv");
     expect(optionTexts()).toEqual([expect.stringMatching(/^inventory.*schema$/)]);
@@ -232,21 +256,34 @@ describe("CommandPalette", () => {
       expect.stringMatching(/^Local PG.*connection$/),
       expect.stringMatching(/^shop.*database$/),
     ]);
-    type("sm");
+    type("stm");
     expect(optionTexts()).toEqual([expect.stringMatching(/^Staging MySQL.*connection$/)]);
-    // Actions only after ">".
+    // Nothing but a command matches "sidebar": it comes under "Commands".
     type("sidebar");
-    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    expect(groupLabels()).toEqual(["Commands"]);
+    expect(optionTexts()).toEqual([expect.stringMatching(/^Toggle sidebar/)]);
   });
 
-  it("lists actions with their shortcut only after >", () => {
+  it("lists a few matching commands after the objects, every command after >", () => {
     cleanups.push(
       actions.register("ui.toggle-sidebar", () => {}),
       actions.register("grid.duplicate-row", () => {}),
     );
     renderPalette();
+    // One character: objects only (no command).
+    type("d");
+    expect(groupLabels()).toEqual([]);
+    expect(screen.queryByRole("option", { name: /Duplicate row/ })).toBeNull();
+    // Two characters: the matching commands follow the objects, each with its shortcut.
     type("du");
-    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    expect(groupLabels()).toEqual(["Commands"]);
+    expect(optionTexts()).toEqual([expect.stringMatching(/^Duplicate row/)]);
+    type("sidebar");
+    const hit = screen.getByRole("option", { name: /Toggle sidebar/ });
+    expect(within(hit).getByText(isMac ? "⌘0" : "Ctrl+0")).toBeInTheDocument();
+    // An object of that name stays first.
+    type("users");
+    expect(groupLabels()).toEqual([]);
     type("> du");
     expect(optionTexts()).toEqual([expect.stringMatching(/^Duplicate row/)]);
     // No kinds, no "Type >" hint among commands.
@@ -319,6 +356,153 @@ describe("CommandPalette", () => {
     type("stag");
     expect(optionTexts()).toEqual([expect.stringMatching(/^Staging MySQL/)]);
     expect(screen.getByText("Loading tables…")).toBeInTheDocument();
+  });
+
+  describe("a click selects, Return or a double-click opens, ⌘ opens in a new tab", () => {
+    const orders = { schema: "public", name: "orders" };
+
+    it("does not open a table on a single click; a double-click and Return do", async () => {
+      renderPalette();
+      type("orders");
+      const row = option("orders", "table");
+      click(row);
+      // Still open, nothing opened, the row is the selected one.
+      expect(usePaletteStore.getState().open).toBe(true);
+      expect(useTabsStore.getState().tabs).toHaveLength(0);
+      expect(row).toHaveAttribute("aria-selected", "true");
+      click(row);
+      expect(useTabsStore.getState().tabs).toHaveLength(0);
+
+      doubleClick(row);
+      await waitFor(() => expect(useTabsStore.getState().tabs).toHaveLength(1));
+      expect(useTabsStore.getState().tabs[0]).toMatchObject({ kind: "table", title: "orders" });
+      expect(usePaletteStore.getState().open).toBe(false);
+
+      // Return opens as before.
+      act(() => usePaletteStore.getState().setOpen(true));
+      const input = screen.getByRole("combobox");
+      fireEvent.change(input, { target: { value: "users" } });
+      fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+      await waitFor(() =>
+        expect(useTabsStore.getState().tabs.some((t) => t.title === "users")).toBe(true),
+      );
+    });
+
+    it("a click moves the selection to the row it lands on", () => {
+      renderPalette();
+      type("or");
+      const rows = screen.getAllByRole("option");
+      expect(rows.length).toBeGreaterThan(1);
+      const last = rows[rows.length - 1]!;
+      expect(last).toHaveAttribute("aria-selected", "false");
+      click(last);
+      expect(last).toHaveAttribute("aria-selected", "true");
+      expect(useTabsStore.getState().tabs).toHaveLength(0);
+    });
+
+    it("⌘-click opens the table in a new tab at once, even when it is open already", async () => {
+      useTabsStore.getState().openTable("c1", orders);
+      renderPalette();
+      type("orders");
+      expect(tabsOf()).toHaveLength(1);
+      click(option("orders", "table"), mod);
+      await waitFor(() => expect(tabsOf()).toHaveLength(2));
+      const [first, second] = useTabsStore.getState().tabs;
+      expect(second!.id).not.toBe(first!.id);
+      expect(second).toMatchObject({ kind: "table", table: orders });
+      expect(second).not.toHaveProperty("preview");
+      expect(usePaletteStore.getState().open).toBe(false);
+    });
+
+    it("⌘↩ opens another tab of an open table; ↩ shows the one that is open", async () => {
+      const first = useTabsStore.getState().openTable("c1", orders);
+      useTabsStore.getState().newQuery("c1");
+      renderPalette();
+      const pick = async (alt: boolean) => {
+        act(() => usePaletteStore.getState().setOpen(true));
+        const input = screen.getByRole("combobox");
+        fireEvent.change(input, { target: { value: "orders" } });
+        fireEvent.keyDown(input, { key: "Enter", code: "Enter", ...(alt ? mod : {}) });
+        await waitFor(() => expect(usePaletteStore.getState().open).toBe(false));
+      };
+      // Plain ↩: the table's own tab is activated, no second one appears.
+      await pick(false);
+      await waitFor(() => expect(useTabsStore.getState().activeId).toBe(first));
+      expect(tabsOf()).toEqual([first]);
+      // ⌘↩: another tab, every time.
+      await pick(true);
+      await waitFor(() => expect(tabsOf()).toHaveLength(2));
+      await pick(true);
+      await waitFor(() => expect(tabsOf()).toHaveLength(3));
+      expect(new Set(tabsOf()).size).toBe(3);
+      expect(useTabsStore.getState().tabs.filter((t) => t.kind === "table")).toEqual(
+        Array(3).fill(expect.objectContaining({ table: orders })),
+      );
+    });
+
+    it("Search in Database… follows the same rules", async () => {
+      vi.spyOn(ipc.objects, "databaseItems").mockResolvedValue({
+        tables: tables.slice(0, 2),
+        routines: [],
+      });
+      renderPalette(undefined, { mode: "objects" });
+      type("orders");
+      const row = await waitFor(() => option("orders", "table"));
+      click(row);
+      expect(usePaletteStore.getState().open).toBe(true);
+      expect(useTabsStore.getState().tabs).toHaveLength(0);
+      doubleClick(option("orders", "table"));
+      await waitFor(() => expect(tabsOf()).toHaveLength(1));
+      // ⌘-click: another tab of the same table.
+      act(() => usePaletteStore.getState().openPalette("objects", "orders"));
+      click(await waitFor(() => option("orders", "table")), mod);
+      await waitFor(() => expect(tabsOf()).toHaveLength(2));
+    });
+
+    it("Switch connection: a click only selects, a double-click switches", async () => {
+      useConnectionsStore.getState().add({
+        ...info,
+        connectionId: "c2",
+        profileId: "p2",
+        name: "Staging MySQL",
+        driver: "mysql",
+      });
+      useConnectionsStore.getState().setActive("c1");
+      renderPalette(undefined, { mode: "connections" });
+      const row = screen.getByRole("option", { name: /^Staging MySQL/ });
+      click(row);
+      expect(usePaletteStore.getState().open).toBe(true);
+      expect(useConnectionsStore.getState().activeId).toBe("c1");
+      expect(row).toHaveAttribute("aria-selected", "true");
+      doubleClick(row);
+      await waitFor(() => expect(useConnectionsStore.getState().activeId).toBe("c2"));
+      expect(usePaletteStore.getState().open).toBe(false);
+    });
+
+    it("Switch database keeps its click rules", async () => {
+      renderPalette(undefined, { mode: "databases", setup: withDatabases });
+      const row = screen.getByRole("option", { name: /^inventory/ });
+      click(row);
+      expect(usePaletteStore.getState().open).toBe(true);
+      expect(useConnectionsStore.getState().byId.c1!.currentSchema).not.toBe("inventory");
+      doubleClick(row);
+      await waitFor(() =>
+        expect(useConnectionsStore.getState().byId.c1!.currentSchema).toBe("inventory"),
+      );
+    });
+
+    it("a command row opens on a double-click only", async () => {
+      const run = vi.fn();
+      cleanups.push(actions.register("ui.toggle-sidebar", run));
+      renderPalette();
+      type("> toggle sidebar");
+      const row = screen.getByRole("option", { name: /Toggle sidebar/ });
+      click(row);
+      expect(run).not.toHaveBeenCalled();
+      expect(usePaletteStore.getState().open).toBe(true);
+      doubleClick(row);
+      await waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    });
   });
 
   it("opens a table in a new tab on ⌘-click", async () => {
@@ -456,6 +640,58 @@ describe("CommandPalette", () => {
     await waitFor(() => expect(useUiStore.getState().themePref).toBe("dark"));
   });
 
+  describe("theme commands", () => {
+    afterEach(() => resetThemesForTests());
+    const themeOptions = () =>
+      optionTexts()
+        .filter((t) => t.startsWith("Theme:"))
+        .map((t) => t.replace(/Apply.*$/, ""));
+
+    it("lists every theme: Auto, Light, Dark, both Solarized and each custom theme", () => {
+      useThemes.getState().add({ name: "Midnight", base: "dark", tokens: {} });
+      renderPalette();
+      type("> theme");
+      const listed = themeOptions();
+      for (const name of ["Auto", "Light", "Dark", "Solarized Light", "Solarized Dark", "Midnight"])
+        expect(listed.some((t) => t.startsWith(`Theme: ${name}`))).toBe(true);
+    });
+
+    it("applies Solarized Dark, which a plain 'dark' search does not pick", async () => {
+      const input = renderPalette();
+      fireEvent.change(input, { target: { value: "> theme solarized dark" } });
+      fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+      await waitFor(() => expect(useUiStore.getState().themePref).toBe("solarized-dark"));
+    });
+
+    it("applies a custom theme by its name, and follows the themes being added", async () => {
+      const input = renderPalette();
+      fireEvent.change(input, { target: { value: "> midnight" } });
+      expect(
+        screen.queryAllByRole("option").some((o) => /Midnight/.test(o.textContent ?? "")),
+      ).toBe(false);
+      let id = "";
+      act(() => {
+        id = useThemes.getState().add({ name: "Midnight", base: "dark", tokens: {} })!.id;
+      });
+      fireEvent.change(input, { target: { value: "> theme midnight" } });
+      fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+      await waitFor(() => expect(useUiStore.getState().themePref).toBe(`custom:${id}`));
+    });
+
+    it("marks the theme in use, a custom one included", () => {
+      const theme = useThemes.getState().add({ name: "Midnight", base: "dark", tokens: {} })!;
+      useUiStore.setState({ themePref: `custom:${theme.id}` });
+      renderPalette();
+      type("> theme");
+      const current = screen
+        .getAllByRole("option")
+        .filter(
+          (o) => /^Theme:/.test(o.textContent ?? "") && within(o).queryByLabelText("Current"),
+        );
+      expect(current.map((o) => o.textContent)).toEqual([expect.stringMatching(/Midnight/)]);
+    });
+  });
+
   it("scrolls back to the top when the query changes, where the selected best match is", () => {
     const input = renderPalette();
     const list = document.querySelector<HTMLElement>("[cmdk-list]")!;
@@ -579,20 +815,20 @@ describe("CommandPalette", () => {
       expect(optionTexts()).toEqual([expect.stringMatching(/^inventory/)]);
     });
 
-    it("switches the database of the active connection", async () => {
+    it("opens another database in a new workspace (TablePlus)", async () => {
       const tab = useTabsStore.getState().openTable("c1", { schema: "public", name: "orders" });
       const spy = vi
-        .spyOn(ipc.connections, "switchDatabase")
-        .mockResolvedValue({ ...info, currentDatabase: "shop" });
+        .spyOn(ipc.connections, "connect")
+        .mockResolvedValue({ ...info, connectionId: "c9", currentDatabase: "shop" });
       const input = renderPalette(undefined, { mode: "databases", setup: withDatabases });
       fireEvent.change(input, { target: { value: "shop" } });
       fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
-      await waitFor(() =>
-        expect(useConnectionsStore.getState().byId.c1!.info.currentDatabase).toBe("shop"),
-      );
-      expect(spy).toHaveBeenCalledWith("c1", "shop");
-      expect(useTabsStore.getState().tabs.some((t) => t.id === tab)).toBe(false);
-      // Switching closes every tab: it never becomes a Recent default.
+      await waitFor(() => expect(useConnectionsStore.getState().activeId).toBe("c9"));
+      expect(spy).toHaveBeenCalledWith("p1", null, "shop");
+      // The first workspace keeps its database and its tabs.
+      expect(useConnectionsStore.getState().byId.c1!.info.currentDatabase).toBe("app");
+      expect(useTabsStore.getState().tabs.some((t) => t.id === tab)).toBe(true);
+      // Opening a database never becomes a Recent default.
       expect(localStorage.getItem(MRU_STORAGE_KEY)).toBeNull();
     });
 

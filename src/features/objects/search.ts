@@ -1,14 +1,50 @@
+import { MAX_TESTED_NAME, regexError } from "@/features/sidebar/groups";
+
 /**
  * The sidebar's item search (TablePlus spec §2.3). A query is a list of alternatives separated by
  * `|` or `,` (any one may match). Inside an alternative, whitespace-separated terms must all
  * match. A term is
  * - `"exact"`: a case-insensitive substring (spaces kept, `|` and `,` inside are literal);
  * - anchored with `^` and/or `$` (`^user`, `_log$`, `^users$`): prefix / suffix / whole name;
- * - anything else: a fuzzy match, every character in order (`usr` finds `users`).
+ * - anything else: matched by the search menu's Matching Strategy (`MatchStrategy`): fuzzy (the
+ *   default: every character in order, `usr` finds `users`), contains (a substring) or prefix.
+ * The Regex strategy instead tests the whole query as one regular expression (`|` is its own
+ * alternation); a pattern that does not compile (or could run away) matches as plain text.
  * Matching ignores case. An empty query matches everything.
  */
 
 export type NameMatcher = (name: string) => boolean;
+
+/** The sidebar search menu's "Matching Strategy ▸". */
+export type MatchStrategy = "fuzzy" | "contains" | "prefix" | "regex";
+
+export const MATCH_STRATEGIES: readonly MatchStrategy[] = ["fuzzy", "contains", "prefix", "regex"];
+
+export const MATCH_STRATEGY_LABELS: Record<MatchStrategy, string> = {
+  fuzzy: "Fuzzy",
+  contains: "Contains",
+  prefix: "Prefix",
+  regex: "Regex",
+};
+
+const STRATEGY_HINTS: Record<MatchStrategy, string> = {
+  fuzzy:
+    'Fuzzy match. ^name$ anchors the start / end, | or , separates alternatives, "quotes" match exactly.',
+  contains:
+    'Contains. ^name$ anchors the start / end, | or , separates alternatives, "quotes" match exactly.',
+  prefix:
+    'Prefix. ^name$ anchors the start / end, | or , separates alternatives, "quotes" match exactly.',
+  regex: "Regular expression, ignoring case (e.g. ^user_|_log$).",
+};
+
+/** The item search field's tooltip under a Matching Strategy. */
+export function searchHint(strategy: MatchStrategy): string {
+  return STRATEGY_HINTS[strategy];
+}
+
+export function isMatchStrategy(value: unknown): value is MatchStrategy {
+  return MATCH_STRATEGIES.includes(value as MatchStrategy);
+}
 
 type Term = (name: string) => boolean;
 
@@ -61,8 +97,33 @@ function tokens(query: string): Array<{ text: string; quoted: boolean; sep: bool
   return out;
 }
 
+/** A plain (unquoted, unanchored) term under `strategy`. */
+function plainTerm(text: string, strategy: Exclude<MatchStrategy, "regex">): Term {
+  switch (strategy) {
+    case "contains":
+      return (name) => name.includes(text);
+    case "prefix":
+      return (name) => name.startsWith(text);
+    case "fuzzy":
+      return fuzzy(text);
+  }
+}
+
+/** The Regex strategy: the query as one case-insensitive pattern, plain text when unusable. */
+function compileRegex(query: string): NameMatcher {
+  const source = query.trim();
+  if (source === "") return MATCH_ALL;
+  if (regexError(source) !== null) {
+    const text = source.toLowerCase();
+    return (name) => name.toLowerCase().includes(text);
+  }
+  const re = new RegExp(source, "i");
+  return (name) => re.test(name.slice(0, MAX_TESTED_NAME));
+}
+
 /** Builds the matcher of a sidebar search query (see the module comment). */
-export function compileSearch(query: string): NameMatcher {
+export function compileSearch(query: string, strategy: MatchStrategy = "fuzzy"): NameMatcher {
+  if (strategy === "regex") return compileRegex(query);
   const alternatives: Term[][] = [[]];
   for (const tok of tokens(query.toLowerCase())) {
     if (tok.sep) {
@@ -72,7 +133,7 @@ export function compileSearch(query: string): NameMatcher {
     if (tok.text === "") continue;
     const term = tok.quoted
       ? (name: string) => name.includes(tok.text)
-      : (anchored(tok.text) ?? fuzzy(tok.text));
+      : (anchored(tok.text) ?? plainTerm(tok.text, strategy));
     alternatives[alternatives.length - 1]!.push(term);
   }
   const used = alternatives.filter((terms) => terms.length > 0);
@@ -84,6 +145,6 @@ export function compileSearch(query: string): NameMatcher {
 }
 
 /** Whether `query` filters anything (an empty or blank query lists every item). */
-export function isSearching(query: string): boolean {
-  return compileSearch(query) !== MATCH_ALL;
+export function isSearching(query: string, strategy: MatchStrategy = "fuzzy"): boolean {
+  return compileSearch(query, strategy) !== MATCH_ALL;
 }

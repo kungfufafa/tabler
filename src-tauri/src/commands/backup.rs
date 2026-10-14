@@ -44,19 +44,41 @@ fn load_profile(state: &AppState, profile_id: Uuid) -> Result<ConnectionProfile,
 }
 
 /// How the dump / restore binary reaches a MySQL profile beyond host and port: its "Use socket"
-/// file, and whether the password may go in clear text (an IAM authentication token over TLS or
-/// the socket, as for the connection itself).
+/// file, and whether the password may go in clear text (an IAM authentication token over TLS, the
+/// socket or an SSH tunnel, as for the connection itself).
 fn mysql_transport(profile: &ConnectionProfile) -> Result<(Option<String>, bool), AppError> {
     if profile.driver != Driver::Mysql {
         return Ok((None, false));
     }
-    let socket = drivers::mysql::resolve_socket(profile)?;
+    // "Use socket" over SSH: the tunnel forwards the server's socket to a local port, so the
+    // binary connects over TCP to it, as the connection does (SSH encrypts it, no TLS).
+    let over_ssh = socket_over_ssh(profile);
+    let socket = if over_ssh {
+        None
+    } else {
+        drivers::mysql::resolve_socket(profile)?
+    };
     let cleartext = drivers::mysql::cleartext_password_allowed(
         profile,
-        profile.ssl != SslMode::Disable,
-        socket.is_some(),
+        profile.ssl != SslMode::Disable && !over_ssh,
+        socket.is_some() || tunnel_config(profile).is_some(),
     );
     Ok((socket, cleartext))
+}
+
+/// A MySQL "Use socket" profile whose socket is on the SSH server.
+fn socket_over_ssh(profile: &ConnectionProfile) -> bool {
+    profile.uses_socket() && tunnel_config(profile).is_some()
+}
+
+/// The TLS mode the dump binary uses: none for a socket forwarded over SSH (the server's socket
+/// speaks no TLS; SSH encrypts it).
+fn backup_ssl(profile: &ConnectionProfile) -> SslMode {
+    if socket_over_ssh(profile) {
+        SslMode::Disable
+    } else {
+        profile.ssl
+    }
 }
 
 /// An open connection of the profile whose session is up.
@@ -345,9 +367,12 @@ pub async fn backup_run(
         user: profile.user.clone(),
         password,
         database: req.database.clone(),
-        ssl: profile.ssl,
+        ssl: backup_ssl(&profile),
         ssl_ca: profile.ssl_ca_path.clone(),
-        connect_timeout_secs: profile.options.connect_timeout_secs.unwrap_or(15),
+        connect_timeout_secs: profile
+            .options
+            .connect_timeout_secs
+            .unwrap_or(crate::types::profile::DEFAULT_CONNECT_TIMEOUT_SECS as u32),
         system_ca: args::system_ca_bundle(),
         socket,
         cleartext_password,
@@ -386,6 +411,21 @@ pub async fn backup_run(
     })
 }
 
+/// "Install with Homebrew…": `brew install <formula>` in a new Terminal window, where the user
+/// sees it run (one of the client formulae `brew::valid_formula` accepts). The window's Rescan
+/// picks the binaries up afterwards.
+#[tauri::command]
+pub async fn backup_install_with_brew(formula: String) -> Result<(), AppError> {
+    let dir = std::env::temp_dir();
+    let script = tokio::task::spawn_blocking(move || {
+        crate::backup::brew::write_script(&dir, formula.trim())
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))??;
+    log::info!("backup: opening {} in Terminal", script.display());
+    crate::backup::brew::open_in_terminal(&script).await
+}
+
 /// Stops a running job (its binary is killed; a partial backup file is removed). Unknown ids are
 /// ignored.
 #[tauri::command]
@@ -394,19 +434,42 @@ pub async fn backup_cancel(job_id: String) -> Result<(), AppError> {
     Ok(())
 }
 
-/// SQLite: copies the profile's database file to `path` (a consistent copy, WAL included).
-/// Returns the size of the copy.
+/// SQLite: copies the profile's database file to `path` (a consistent copy, WAL included; a
+/// SQLCipher database stays encrypted with its key). Returns the size of the copy.
+///
+/// SQLite over SSH: the local copy an open connection of the profile downloaded at connect (the
+/// renderer says it is that cached copy), or with `fresh` (or no open connection) the file
+/// downloaded from the SSH server now; the SSH server's questions go to this window.
 #[tauri::command]
 pub async fn backup_copy_sqlite(
+    app: tauri::AppHandle,
+    window: tauri::Window,
     state: State<'_, AppState>,
     profile_id: Uuid,
     path: String,
+    fresh: Option<bool>,
 ) -> Result<u64, AppError> {
     let profile = state
         .appdb
         .get_profile(profile_id)?
         .ok_or_else(|| AppError::NotFound(format!("profile {profile_id}")))?;
+    // Removes a copy downloaded for this backup once it is done.
+    let mut _download = crate::commands::sqlite_ssh::PendingCopy::default();
     let src = match (profile.driver, profile.sqlite_path.as_deref()) {
+        (Driver::Sqlite, Some(p))
+            if !p.trim().is_empty() && crate::tunnel::sqlite_remote::applies(&profile) =>
+        {
+            let (src, copy) = crate::commands::sqlite_ssh::backup_source(
+                &app,
+                &state,
+                &profile,
+                fresh == Some(true),
+                Some(window.label()),
+            )
+            .await?;
+            _download = copy;
+            src
+        }
         (Driver::Sqlite, Some(p)) if !p.trim().is_empty() => tunnel::expand_tilde(p.trim()),
         (Driver::Sqlite, _) => {
             return Err(AppError::InvalidInput(
@@ -419,8 +482,21 @@ pub async fn backup_copy_sqlite(
             ));
         }
     };
-    tokio::task::spawn_blocking(move || {
-        crate::backup::sqlite::copy_database(&src, Path::new(&path))
+    // A SQLCipher database is copied with its key (the profile's password), encrypted as it is.
+    let encrypted = drivers::sqlite::header_kind(&src.to_string_lossy())
+        == drivers::sqlite::HeaderKind::Encrypted;
+    let key = if encrypted {
+        connect_password(&state, &profile, None).await?
+    } else {
+        None
+    };
+    let cipher = drivers::sqlite::Cipher::from_key(
+        key.as_deref(),
+        profile.options.sqlite_cipher_compatibility,
+    );
+    tokio::task::spawn_blocking(move || match cipher {
+        Some(c) => drivers::sqlite::cipher::copy_encrypted_to(&src, Path::new(&path), &c),
+        None => crate::backup::sqlite::copy_database(&src, Path::new(&path)),
     })
     .await
     .map_err(|e| AppError::internal(e.to_string()))?
@@ -505,6 +581,111 @@ mod tests {
         assert!(mysql_transport(&profile).is_err());
         // PostgreSQL has neither.
         profile.driver = Driver::Postgres;
+        assert_eq!(mysql_transport(&profile).unwrap(), (None, false));
+    }
+
+    #[test]
+    fn a_socket_over_ssh_is_dumped_over_tcp_through_the_tunnel() {
+        let mut profile = ConnectionProfile {
+            id: Uuid::new_v4(),
+            name: "my".into(),
+            color: None,
+            group: None,
+            driver: Driver::Mysql,
+            host: None,
+            port: None,
+            user: Some("app".into()),
+            database: None,
+            ssl: SslMode::Require,
+            ssl_ca_path: None,
+            sqlite_path: None,
+            ssh: Some(crate::types::profile::SshConfig {
+                host: "bastion".into(),
+                port: 22,
+                user: "deploy".into(),
+                auth: crate::types::profile::SshAuth::Agent,
+                key_path: None,
+                local_port: None,
+                keepalive_secs: None,
+                password_mode: None,
+            }),
+            options: ProfileOptions::default(),
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_connected_at: None,
+        };
+        profile.options.use_socket = Some(true);
+        // The socket file is the server's: nothing local to look for, no TLS (SSH encrypts it).
+        profile.options.socket_path = Some("/no/such/local/mysqld.sock".into());
+        assert_eq!(mysql_transport(&profile).unwrap(), (None, false));
+        assert_eq!(backup_ssl(&profile), SslMode::Disable);
+        profile.options.password_mode = Some(crate::types::profile::PasswordMode::Command);
+        assert_eq!(mysql_transport(&profile).unwrap(), (None, true));
+        // Without SSH the socket is local again, and TLS is the profile's.
+        profile.ssh = None;
+        assert!(mysql_transport(&profile).is_err());
+        assert_eq!(backup_ssl(&profile), SslMode::Require);
+    }
+
+    /// Enable CLEARTEXT_PLUGIN over TCP with SSL DISABLED: the SSH tunnel is the private transport
+    /// (as for the connection itself), so the dump / restore binary may send the password; without
+    /// the tunnel it stays refused.
+    #[test]
+    fn a_tcp_dump_through_an_ssh_tunnel_may_send_the_clear_text_password() {
+        let mut profile = ConnectionProfile {
+            id: Uuid::new_v4(),
+            name: "my".into(),
+            color: None,
+            group: None,
+            driver: Driver::Mysql,
+            host: Some("10.0.0.5".into()),
+            port: Some(3306),
+            user: Some("pam_user".into()),
+            database: None,
+            ssl: SslMode::Disable,
+            ssl_ca_path: None,
+            sqlite_path: None,
+            ssh: Some(crate::types::profile::SshConfig {
+                host: "bastion".into(),
+                port: 22,
+                user: "deploy".into(),
+                auth: crate::types::profile::SshAuth::Agent,
+                key_path: None,
+                local_port: None,
+                keepalive_secs: None,
+                password_mode: None,
+            }),
+            options: ProfileOptions::default(),
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_connected_at: None,
+        };
+        profile.options.mysql_cleartext_plugin = Some(true);
+        assert!(profile.options.use_socket.is_none());
+        // TCP through the tunnel: allowed, still no socket and no TLS.
+        assert_eq!(mysql_transport(&profile).unwrap(), (None, true));
+        assert_eq!(backup_ssl(&profile), SslMode::Disable);
+        // Direct TCP without TLS: refused.
+        profile.ssh = None;
+        assert_eq!(mysql_transport(&profile).unwrap(), (None, false));
+        // Direct TCP with TLS: allowed.
+        profile.ssl = SslMode::Require;
+        assert_eq!(mysql_transport(&profile).unwrap(), (None, true));
+        // A tunnel without the option never sends it.
+        profile.ssl = SslMode::Disable;
+        profile.options.mysql_cleartext_plugin = None;
+        profile.ssh = Some(crate::types::profile::SshConfig {
+            host: "bastion".into(),
+            port: 22,
+            user: "deploy".into(),
+            auth: crate::types::profile::SshAuth::Agent,
+            key_path: None,
+            local_port: None,
+            keepalive_secs: None,
+            password_mode: None,
+        });
         assert_eq!(mysql_transport(&profile).unwrap(), (None, false));
     }
 

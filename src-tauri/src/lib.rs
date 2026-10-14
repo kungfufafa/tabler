@@ -6,21 +6,36 @@
 
 pub mod admin;
 pub mod appdb;
+pub mod assistant;
 pub mod backup;
+pub mod biometrics;
+pub mod bootstrap_script;
 pub mod commands;
+pub mod conn_options;
+pub mod deeplink;
 pub mod diagram;
 pub mod drivers;
 pub mod error;
 pub mod export;
+pub mod geometry;
 pub mod import;
+pub mod local_infile;
+pub mod locations;
+pub mod mcp;
+pub mod metrics;
 pub mod objects;
+pub mod passcode;
+pub mod plugins;
 pub mod profiles_io;
+pub mod query_files;
+pub mod recent;
 pub mod secrets;
 pub mod sqlgen;
 pub mod state;
 pub mod tls_files;
 pub mod tunnel;
 pub mod types;
+pub mod windows;
 
 use tauri::{Emitter, Manager, RunEvent};
 
@@ -49,14 +64,16 @@ pub mod shell {
     /// Menu items that run a renderer action: (action id = menu item id, label, accelerator).
     const MENU_ACTIONS: &[(&str, &str, &str)] = &[
         ("settings.open", "Settings…", "CmdOrCtrl+,"),
-        ("connection.new", "New Connection…", "CmdOrCtrl+N"),
+        // File ▸ New Window (TablePlus ⌘N; New Connection… has no key).
+        ("window.new", "New Window", "CmdOrCtrl+N"),
         ("tab.new-query", "New Query Tab", "CmdOrCtrl+T"),
         ("query.open", "Open SQL File…", "CmdOrCtrl+O"),
-        ("tab.close", "Close Tab", "CmdOrCtrl+W"),
+        ("tab.close", "Close Tab / Window", "CmdOrCtrl+W"),
         ("tab.close-all", "Close All Tabs", "CmdOrCtrl+Shift+W"),
         ("tab.reopen", "Reopen Closed Tab", "CmdOrCtrl+Shift+T"),
         ("export.open", "Export…", "CmdOrCtrl+Shift+E"),
-        ("ui.launcher", "Connection Manager", "CmdOrCtrl+Shift+O"),
+        // File ▸ New SQL Viewer (TablePlus ⇧⌘O); the connection manager has no key.
+        ("sqlviewer.new", "New SQL Viewer", "CmdOrCtrl+Shift+O"),
         ("palette.open", "Open Anything…", "CmdOrCtrl+P"),
         ("palette.databases", "Switch Database…", "CmdOrCtrl+K"),
         (
@@ -77,7 +94,8 @@ pub mod shell {
             "Toggle Console Log",
             "CmdOrCtrl+Shift+C",
         ),
-        ("view.refresh", "Refresh", "CmdOrCtrl+R"),
+        ("workspace.reload", "Reload Workspace", "CmdOrCtrl+R"),
+        ("view.refresh", "Refresh", "CmdOrCtrl+Alt+R"),
         ("connection.reconnect", "Reconnect", "CmdOrCtrl+Shift+R"),
         ("admin.process-list", "Process List…", "CmdOrCtrl+."),
         ("workspace.show", "Show Workspaces", "CmdOrCtrl+Shift+\\"),
@@ -132,18 +150,37 @@ pub mod shell {
         ("tab.goto-9", "Last Tab", "CmdOrCtrl+9"),
         ("ui.next-pane", "Select Next Pane", "CmdOrCtrl+Shift+]"),
         ("ui.prev-pane", "Select Previous Pane", "CmdOrCtrl+Shift+["),
+        // Window: the app lock (Settings ▸ Security ▸ Passcode).
+        ("app.lock", "Lock Tabler", "CmdOrCtrl+Ctrl+L"),
+        // Plugins ▸ Manage Plugins… (TablePlus ⌘L).
+        ("plugins.manage", "Manage Plugins…", "CmdOrCtrl+L"),
     ];
 
     /// Menu items without a keyboard shortcut (TablePlus gives them none): (action id, label).
-    /// Also the grid items whose keys are context-dependent and belong to another menu item here
-    /// (⌘I Beautify / Insert Row, ⇧⌘D Split Pane / Set DEFAULT, ⌘D the editor's next occurrence):
-    /// the page resolves those keys by focus (`MENU_UNBOUND_ACTIONS` in useNativeMenu.ts).
+    /// Also the items whose keys are context-dependent and belong to another menu item here
+    /// (⌘I Beautify / Insert Row, ⇧⌘D Split Pane / Split Right, ⇧⌘C Copy Cell Value / the console
+    /// log, ⌘D the editor's next occurrence): the page resolves those keys by focus
+    /// (`MENU_UNBOUND_ACTIONS` in useNativeMenu.ts).
     const PLAIN_MENU_ACTIONS: &[(&str, &str)] = &[
+        ("connection.new", "New Connection…"),
+        // File ▸ New Workspace (the connection picker); File ▸ Connection Manager.
+        ("workspace.new", "New Workspace"),
+        ("ui.launcher", "Connection Manager"),
+        // Edit ▸ Copy Cell Value: ⇧⌘C in a grid (the page decides by focus; the console log has
+        // the menu's ⇧⌘C everywhere else).
+        ("grid.copy-cell", "Copy Cell Value"),
+        ("window.move-tab", "Move Tab to New Window"),
+        // ⇧⌘D outside the SQL editor (inside it the same key is Split Pane); no accelerator here
+        // because Split Pane has it.
+        ("workspace.split-right", "Split Right"),
         ("backup.open", "Backup…"),
         ("restore.open", "Restore…"),
         ("admin.users", "User Management…"),
+        ("metrics.open", "Metrics Board"),
         ("connection.disconnect", "Disconnect"),
+        ("connection.encoding", "View Using Encoding…"),
         ("import.csv", "From CSV…"),
+        ("import.json", "From JSON…"),
         ("import.sql", "From SQL Dump…"),
         ("query.save-as", "Save SQL As…"),
         ("grid.new-row", "Insert Row"),
@@ -206,9 +243,14 @@ pub mod shell {
             .item(&quit)
             .build()?;
         let file = SubmenuBuilder::new(app, "File")
+            .item(&action_item(app, "window.new")?)
             .item(&action_item(app, "connection.new")?)
+            .item(&action_item(app, "workspace.new")?)
+            .item(&action_item(app, "sqlviewer.new")?)
+            .item(&action_item(app, "workspace.reload")?)
             .item(&action_item(app, "tab.new-query")?)
             .item(&action_item(app, "query.open")?)
+            .item(&crate::recent::submenu(app)?)
             .separator()
             .item(&action_item(app, "query.save-as")?)
             .item(&action_item(app, "query.save-selection")?)
@@ -224,6 +266,7 @@ pub mod shell {
             .item(
                 &SubmenuBuilder::new(app, "Import")
                     .item(&action_item(app, "import.csv")?)
+                    .item(&action_item(app, "import.json")?)
                     .item(&action_item(app, "import.sql")?)
                     .build()?,
             )
@@ -257,6 +300,7 @@ pub mod shell {
                     .item(&action_item(app, "grid.set-now")?)
                     .build()?,
             )
+            .item(&action_item(app, "grid.copy-cell")?)
             .item(&action_item(app, "grid.copy-as")?)
             .item(&action_item(app, "grid.quick-look")?)
             .build()?;
@@ -275,6 +319,8 @@ pub mod shell {
             .item(&action_item(app, "ui.toggle-inspector")?)
             .item(&action_item(app, "ui.toggle-console")?)
             .item(&action_item(app, "workspace.show")?)
+            .item(&action_item(app, "workspace.split-right")?)
+            .item(&action_item(app, "metrics.open")?)
             .separator()
             .item(&action_item(app, "view.refresh")?)
             .separator()
@@ -282,12 +328,16 @@ pub mod shell {
             .build()?;
         // TablePlus's Connection menu.
         let connection = SubmenuBuilder::new(app, "Connection")
+            .item(&action_item(app, "connection.encoding")?)
+            .separator()
             .item(&action_item(app, "admin.process-list")?)
             .item(&action_item(app, "admin.users")?)
             .separator()
             .item(&action_item(app, "connection.reconnect")?)
             .item(&action_item(app, "connection.disconnect")?)
             .build()?;
+        // Plugins ▸ Manage Plugins…, the enabled plugins' commands, Open Plugins Folder.
+        let plugins = crate::plugins::menu::build(app, &action_item(app, "plugins.manage")?)?;
         let mut go_to_tab = SubmenuBuilder::new(app, "Go to Tab");
         for n in 1..=9 {
             go_to_tab = go_to_tab.item(&action_item(app, &format!("tab.goto-{n}"))?);
@@ -310,7 +360,13 @@ pub mod shell {
         let window = SubmenuBuilder::new(app, "Window")
             .minimize()
             .item(&PredefinedMenuItem::maximize(app, None)?)
+            .separator()
+            .item(&action_item(app, "window.move-tab")?)
+            .separator()
+            .item(&action_item(app, "app.lock")?)
             .build()?;
+        // Help ▸ Enable SSH Debug Log / Show Log File (handled natively, see `on_menu_event`).
+        let help = crate::tunnel::debug_log::help_menu(app)?;
         MenuBuilder::new(app)
             .items(&[
                 &app_menu,
@@ -318,18 +374,31 @@ pub mod shell {
                 &edit,
                 &view,
                 &connection,
+                &plugins,
                 &navigate,
                 &window,
+                &help,
             ])
             .build()
     }
 
     /// Forwards a chosen menu item to the renderer.
     pub fn on_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
+        if crate::tunnel::debug_log::on_menu_event(app, id) {
+            return;
+        }
+        if crate::plugins::menu::on_menu_event(app, id) {
+            return;
+        }
+        // File ▸ Open Recent's entries (and Clear Menu).
+        if crate::recent::on_menu_event(app, id) {
+            return;
+        }
         if id == QUIT_ITEM_ID {
             let _ = app.emit(EVENT_QUIT_REQUESTED, ());
         } else if let Some(action) = menu_action(id) {
-            let _ = app.emit(EVENT_MENU_ACTION, action);
+            // Only the window the menu acts on (the focused one) runs it.
+            crate::windows::emit_to_target(app, EVENT_MENU_ACTION, action);
         }
     }
 
@@ -451,6 +520,15 @@ pub mod shell {
             let at = self.requested_at.lock().unwrap_or_else(|p| p.into_inner());
             at.map(|t| now.saturating_duration_since(t))
         }
+    }
+
+    /// Runs `fut` on Tauri's runtime from a thread outside it (the main thread in `RunEvent::Exit`)
+    /// and gives up after `limit` (`None`). The timer is created inside `block_on`:
+    /// `tokio::time::timeout` needs a runtime when it is *created*, so
+    /// `block_on(tokio::time::timeout(..))` panics on the main thread, and the release profile
+    /// (`panic = "abort"`) turns that into a crash on every quit.
+    pub fn block_on_for<F: std::future::Future>(limit: Duration, fut: F) -> Option<F::Output> {
+        tauri::async_runtime::block_on(async move { tokio::time::timeout(limit, fut).await.ok() })
     }
 
     /// macOS: NSApp `terminate:` (Dock → Quit, Quit from the Dock menu, logout and shutdown, which
@@ -581,6 +659,14 @@ pub mod shell {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn bounded_block_on_runs_from_a_thread_outside_the_runtime() {
+            // A plain #[test] thread is outside any runtime, like the main thread at exit.
+            assert_eq!(block_on_for(Duration::from_secs(1), async { 7 }), Some(7));
+            let never = std::future::pending::<()>();
+            assert_eq!(block_on_for(Duration::from_millis(20), never), None);
+        }
 
         #[test]
         fn maps_menu_items_to_renderer_actions() {
@@ -767,28 +853,54 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .manage(shell::QuitState::default())
+        .manage(windows::WindowRegistry::default())
+        .on_window_event(windows::on_window_event)
         .menu(shell::build_menu)
         .on_menu_event(|app, event| shell::on_menu_event(app, event.id().as_ref()))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .plugin(tauri_plugin_log::Builder::new().level(log_level).build())
+        .plugin(
+            // The SSH client's debug records go to the log while Help ▸ Enable SSH Debug Log is on.
+            tunnel::debug_log::configure(tauri_plugin_log::Builder::new().level(log_level)).build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
-            let db_path = dir.join("tabler.sqlite");
-            let appdb = appdb::AppDb::open(&db_path)?;
-            log::info!("app database at {}", db_path.display());
+            // Settings ▸ Locations may put the app DB elsewhere (a pointer file in `dir`).
+            let (appdb, locations) = locations::open_app_db(dir)?;
+            log::info!("app database at {}", locations.data_file().display());
             let secrets = secrets::Secrets::from_env(appdb.clone());
             app.manage(state::AppState::new(appdb, secrets));
+            // MySQL LOAD DATA LOCAL INFILE: the user allows each local file the server asks for.
+            local_infile::install_dialog_approver(app.handle().clone());
+            app.manage(locations);
+            // Help ▸ Enable SSH Debug Log as last chosen; URLs / files from the command line.
+            tunnel::debug_log::load(app.handle(), &app.state::<state::AppState>().appdb);
+            deeplink::startup(app.handle());
+            // File ▸ Open Recent from the saved list.
+            recent::refresh_menu(app.handle());
             #[cfg(target_os = "macos")]
             shell::terminate_guard::install(app.handle());
+            // The app lock: sleep and screen lock lock every window.
+            biometrics::watch_system_lock(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::app::app_info,
+            commands::deeplink::take_pending_opens,
+            commands::deeplink::mark_temporary_profile,
+            commands::deeplink::list_temporary_profiles,
+            commands::sqlite_ssh::sqlite_ssh_upload,
             commands::app::quit_app,
             commands::app::set_unsaved,
+            commands::app::cancel_quit,
+            commands::app::window_open,
+            commands::app::window_take_handoff,
+            commands::app::window_set_connections,
+            commands::app::window_label,
+            commands::app::window_is_session_owner,
             commands::profiles::list_profiles,
             commands::profiles::get_profile,
             commands::profiles::save_profile,
@@ -807,6 +919,8 @@ pub fn run() {
             commands::connections::list_connections,
             commands::connections::ping,
             commands::connections::switch_database,
+            commands::conn_extras::get_connection_encoding,
+            commands::conn_extras::set_connection_encoding,
             commands::schema::list_databases,
             commands::schema::list_schemas,
             commands::schema::list_tables,
@@ -818,14 +932,18 @@ pub fn run() {
             commands::browse::browse_table,
             commands::browse::count_table_rows,
             commands::browse::fetch_cell,
+            commands::browse::drain_sql_trace,
             commands::mutate::preview_changes,
             commands::mutate::apply_changes,
+            commands::workspace_commit::preview_workspace_changes,
+            commands::workspace_commit::apply_workspace_changes,
             commands::ddl::preview_ddl,
             commands::ddl::apply_ddl,
             commands::ddl::get_table_ddl,
             commands::objects::list_routines,
             commands::objects::list_sequences,
             commands::objects::list_system_schemas,
+            commands::objects::list_database_items,
             commands::objects::get_routine_definition,
             commands::objects::get_sequence_definition,
             commands::objects::get_item_overview,
@@ -838,11 +956,30 @@ pub fn run() {
             commands::history::list_history,
             commands::history::delete_history,
             commands::history::clear_history,
+            commands::history::clear_history_before,
             commands::saved_queries::list_saved_queries,
             commands::saved_queries::save_saved_query,
             commands::saved_queries::delete_saved_query,
             commands::saved_queries::save_query_folder,
             commands::saved_queries::delete_query_folder,
+            commands::saved_queries::import_saved_queries,
+            commands::saved_queries::add_query_folder_from_disk,
+            commands::saved_queries::reveal_saved_query,
+            commands::locations::get_locations,
+            commands::locations::inspect_location,
+            commands::locations::set_data_location,
+            commands::locations::set_queries_location,
+            commands::locations::reveal_location,
+            commands::locations::restart_app,
+            commands::mcp::mcp_info,
+            commands::mcp::mcp_install_cli,
+            commands::mcp::mcp_preview_config,
+            commands::mcp::mcp_write_config,
+            commands::sql_files::read_sql_file,
+            commands::sql_files::sql_file_info,
+            commands::sql_files::read_sql_file_head,
+            commands::sql_files::write_sql_file,
+            commands::sql_files::saved_query_path,
             commands::files::read_text_file,
             commands::files::write_text_file,
             commands::files::read_binary_file,
@@ -850,14 +987,23 @@ pub fn run() {
             commands::diagram::write_binary_file,
             commands::settings::get_settings,
             commands::settings::set_setting,
+            commands::decoder::set_geometry_wkt,
             commands::menu::set_menu_accelerators,
+            commands::recent::recent_list,
+            commands::recent::recent_add,
+            commands::recent::recent_clear,
+            commands::recent::recent_refresh_menu,
             commands::export::export_data,
             commands::export::cancel_export,
             commands::export::export_tables,
+            commands::export::export_results,
+            commands::export::export_database_tables,
             commands::import::preview_csv_import,
             commands::import::import_csv,
             commands::import::preview_sql_dump,
             commands::import::import_sql_dump,
+            commands::import::preview_json_import,
+            commands::import::import_json,
             commands::import::cancel_import,
             commands::backup::backup_list_binaries,
             commands::backup::backup_inspect_target,
@@ -865,6 +1011,7 @@ pub fn run() {
             commands::backup::backup_run,
             commands::backup::backup_cancel,
             commands::backup::backup_copy_sqlite,
+            commands::backup::backup_install_with_brew,
             commands::connections::accept_host_key,
             commands::connections::answer_ssh_prompt,
             commands::admin::admin_database_options,
@@ -876,6 +1023,31 @@ pub fn run() {
             commands::admin::admin_get_user,
             commands::admin::admin_preview_user,
             commands::admin::admin_apply_user,
+            commands::lock::authenticate_biometric,
+            commands::lock::passcode_status,
+            commands::lock::set_passcode,
+            commands::lock::verify_passcode,
+            commands::lock::lock_app,
+            commands::lock::reveal_connection_password,
+            commands::lock::session_details,
+            commands::metrics::metrics_list_boards,
+            commands::metrics::metrics_save_board,
+            commands::metrics::metrics_delete_board,
+            commands::metrics::metrics_export_boards,
+            commands::metrics::metrics_import_boards,
+            commands::metrics::metrics_run,
+            commands::plugins::plugins_list,
+            commands::plugins::plugins_install,
+            commands::plugins::plugins_remove,
+            commands::plugins::plugins_read_script,
+            commands::plugins::plugins_reveal_folder,
+            commands::plugins::plugins_set_menu,
+            commands::assistant::assistant_chat,
+            commands::assistant::assistant_cancel,
+            commands::assistant::assistant_context,
+            commands::assistant::assistant_key_status,
+            commands::assistant::assistant_set_key,
+            commands::assistant::assistant_test,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -902,7 +1074,24 @@ pub fn run() {
             if removed > 0 {
                 log::info!("removed {removed} partial backup file(s) on exit");
             }
+            // Every open session is closed (`app.exit()` runs no window handlers): a SQLite file
+            // in WAL mode is checkpointed and loses its -wal / -shm files. Before the SQLite over
+            // SSH uploads below, which send the main file of the local copy.
+            if let Some(state) = app.try_state::<state::AppState>()
+                && shell::block_on_for(
+                    std::time::Duration::from_secs(3),
+                    state.close_all_sessions(),
+                )
+                .is_none()
+            {
+                log::warn!("closing the open sessions at exit timed out");
+            }
+            // SQLite over SSH: the last changes go back to the server.
+            commands::sqlite_ssh::shutdown();
         }
+        // Finder (double-clicked files), `open -a Tabler "<url>"` and links to Tabler's schemes.
+        #[cfg(target_os = "macos")]
+        RunEvent::Opened { urls } => deeplink::on_opened(app, &urls),
         _ => {}
     });
 }

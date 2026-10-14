@@ -61,8 +61,9 @@ export const REFERENCE_SHORTCUTS: ReadonlyArray<ReferenceShortcut> = [
   { scope: "grid-edit", keys: "Escape", label: "Cancel the edit" },
   { scope: "grid-edit", keys: "Alt+Enter", label: "New line (opens the multi-line editor)" },
   { scope: "grid-edit", keys: "Mod+Enter", label: "Save (JSON / multi-line editor)" },
+  // The editors take ⌘S themselves: they stage what was typed, then commit the tab.
+  { scope: "grid-edit", keys: "Mod+S", label: "Stage the edit and commit changes" },
   // SQL editor (CodeMirror's default, search and completion keymaps).
-  { scope: "editor", keys: "Mod+/", label: "Toggle comment" },
   { scope: "editor", keys: "Mod+F", label: "Find and replace" },
   { scope: "editor", keys: "F3", label: "Find next" },
   { scope: "editor", keys: "Mod+G", label: "Find next" },
@@ -73,8 +74,8 @@ export const REFERENCE_SHORTCUTS: ReadonlyArray<ReferenceShortcut> = [
   { scope: "editor", keys: "Alt+Up", label: "Move line up / down" },
   { scope: "editor", keys: "Alt+Down", label: "Move line up / down" },
   { scope: "editor", keys: "Ctrl+Space", label: "Show completions" },
-  // SQL editor: TablePlus's multiple carets and block comments (cmExtensions.multiCaretKeymap).
-  { scope: "editor", keys: "Mod+Alt+/", label: "Wrap in /* */, or unwrap" },
+  // SQL editor: TablePlus's multiple carets (cmExtensions.multiCaretKeymap). The comment toggles
+  // (⌘/, ⌥⌘/) are KEYMAP entries now (Keymap ▸ SQL Editor).
   { scope: "editor", keys: "Mod+Click", label: "Add a caret" },
   { scope: "editor", keys: "Ctrl+Shift+Up", label: "Add a caret above / below" },
   { scope: "editor", keys: "Ctrl+Shift+Down", label: "Add a caret above / below" },

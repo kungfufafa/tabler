@@ -184,6 +184,19 @@ export function entryBase(entry: string): string {
   return m?.[1] ?? entry;
 }
 
+/** The prefix length of an index entry (`name(10)` → 10); null for a whole column. */
+export function entryLength(entry: string): number | null {
+  const m = /^(.*?)(\s*\(\s*(\d+)\s*\))?(\s+(?:asc|desc))?$/i.exec(entry.trim());
+  return m?.[3] ? Number(m[3]) : null;
+}
+
+/** `entry` with prefix length `length` (null: none), keeping its sort direction. */
+export function withEntryLength(entry: string, length: number | null): string {
+  const m = /^(.*?)(\s*\(\s*\d+\s*\))?(\s+(?:asc|desc))?$/i.exec(entry.trim());
+  const base = m?.[1] ?? entry.trim();
+  return `${base}${length ? `(${length})` : ""}${m?.[3] ?? ""}`;
+}
+
 function renameEntry(entry: string, from: string, to: string): string {
   if (entry === from) return to;
   const base = entryBase(entry);
@@ -1018,11 +1031,35 @@ export function togglePrimaryKey(meta: TableMeta, ops: readonly DdlOp[], rowKey:
   return setPrimaryKey(meta, ops, sameColumns ? (dbKey as string[]) : next);
 }
 
+/**
+ * Drops several columns in one step (the Delete key on a selection). The keys of new columns are
+ * their positions (`n:<k>`): dropping one renumbers the ones after it, so they go last to first.
+ */
+export function dropColumns(
+  meta: TableMeta,
+  ops: readonly DdlOp[],
+  rowKeys: readonly string[],
+): DdlOp[] {
+  const position = (key: string) => (key.startsWith("n:") ? Number(key.slice(2)) : -1);
+  return [...rowKeys]
+    .sort((a, b) => position(b) - position(a))
+    .reduce((current, key) => dropColumn(meta, current, key), ops as DdlOp[]);
+}
+
 /** Undoes a staged drop of an existing column. */
 export function restoreColumn(meta: TableMeta, ops: readonly DdlOp[], rowKey: string): DdlOp[] {
   const row = foldStructure(meta, ops).columns.find((c) => c.key === rowKey);
   const k = row?.status === "dropped" ? row.opAt.drop : undefined;
   return k === undefined ? (ops as DdlOp[]) : ops.filter((_, i) => i !== k);
+}
+
+/** Undoes the staged drops of several columns in one step. */
+export function restoreColumns(
+  meta: TableMeta,
+  ops: readonly DdlOp[],
+  rowKeys: readonly string[],
+): DdlOp[] {
+  return rowKeys.reduce((current, key) => restoreColumn(meta, current, key), ops as DdlOp[]);
 }
 
 export function addIndex(meta: TableMeta, ops: readonly DdlOp[], index: IndexDef): DdlOp[] {

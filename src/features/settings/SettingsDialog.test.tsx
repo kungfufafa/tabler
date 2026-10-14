@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,10 +11,14 @@ import { SettingsDialog } from "./SettingsDialog";
 import { closeSettings, useSettingsDialog } from "./store";
 
 function renderDialog() {
+  // Sections may read through React Query (the provider is app-wide in the real shell).
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <KeyboardProvider>
-      <SettingsDialog />
-    </KeyboardProvider>,
+    <QueryClientProvider client={qc}>
+      <KeyboardProvider>
+        <SettingsDialog />
+      </KeyboardProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -55,8 +60,8 @@ describe("SettingsDialog", () => {
       "true",
     );
 
-    await user.click(within(dialog).getByRole("radio", { name: /Dark/ }));
-    expect(useUiStore.getState().themePref).toBe("dark");
+    // The theme choice moved to Appearance (see generalAppearance.test.tsx).
+    expect(within(dialog).queryByRole("radiogroup", { name: "Theme" })).toBeNull();
 
     await user.click(within(dialog).getByRole("radio", { name: "Large" }));
     expect(getPrefs().uiFontSize).toBe("large");
@@ -117,6 +122,64 @@ describe("SettingsDialog", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
+  it("gives Locations, AI Assistant and MCP Server sections of their own (Mod+4, Mod+7, Mod+8)", async () => {
+    renderDialog();
+    act(() => useSettingsDialog.setState({ open: true }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog)
+        .getAllByRole("tab")
+        .slice(0, 8)
+        .map((t) => t.textContent?.trim()),
+    ).toEqual([
+      expect.stringContaining("General"),
+      expect.stringContaining("Editor"),
+      expect.stringContaining("Connections"),
+      expect.stringContaining("Locations"),
+      expect.stringContaining("Shortcuts"),
+      expect.stringContaining("Security"),
+      expect.stringContaining("AI Assistant"),
+      expect.stringContaining("MCP Server"),
+    ]);
+    // Not inside General / Connections / Security any more.
+    expect(within(dialog).queryByText("Connections & settings")).not.toBeInTheDocument();
+
+    fireEvent.keyDown(dialog, { code: "Digit4", key: "4", ctrlKey: true });
+    expect(await within(dialog).findByText("Connections & settings")).toBeInTheDocument();
+    expect(within(dialog).getByRole("heading", { name: "Locations", level: 2 })).toBeVisible();
+
+    fireEvent.keyDown(dialog, { code: "Digit7", key: "7", ctrlKey: true });
+    expect(within(dialog).getByRole("heading", { name: "AI Assistant", level: 2 })).toBeVisible();
+    expect(useSettingsDialog.getState().section).toBe("assistant");
+
+    fireEvent.keyDown(dialog, { code: "Digit8", key: "8", ctrlKey: true });
+    expect(within(dialog).getByRole("heading", { name: "MCP Server", level: 2 })).toBeVisible();
+    expect(
+      await within(dialog).findByRole("switch", { name: /Enable MCP server/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(dialog, { code: "Digit3", key: "3", ctrlKey: true });
+    expect(within(dialog).queryByRole("switch", { name: /Enable MCP server/ })).toBeNull();
+    fireEvent.keyDown(dialog, { code: "Digit6", key: "6", ctrlKey: true });
+    expect(within(dialog).getByRole("heading", { name: "Security", level: 2 })).toBeVisible();
+    expect(within(dialog).queryByRole("heading", { name: "AI Assistant" })).toBeNull();
+  });
+
+  it("has nine sections, ⌘1…⌘9: Appearance is the ninth", async () => {
+    renderDialog();
+    act(() => useSettingsDialog.setState({ open: true }));
+    const dialog = await screen.findByRole("dialog");
+    const labels = within(dialog)
+      .getAllByRole("tab")
+      .map((t) => t.textContent?.trim());
+    expect(labels).toHaveLength(9);
+    expect(labels[8]).toContain("Appearance");
+    fireEvent.keyDown(dialog, { code: "Digit9", key: "9", ctrlKey: true });
+    expect(useSettingsDialog.getState().section).toBe("appearance");
+    fireEvent.keyDown(dialog, { code: "Digit4", key: "4", ctrlKey: true });
+    expect(useSettingsDialog.getState().section).toBe("locations");
+  });
+
   it("closes on Mod+W instead of closing a tab", async () => {
     // A workspace tab.close handler registered first, like useDefaultActions does at startup.
     const closeTab = vi.fn();
@@ -143,14 +206,21 @@ describe("SettingsDialog", () => {
     act(() => useSettingsDialog.setState({ open: true, section: "connections" }));
     const dialog = await screen.findByRole("dialog");
     const timeout = within(dialog).getByRole("spinbutton", { name: "Connect timeout" });
+    // Not the default (60): typing the default would pass without the value being kept at all.
+    const typed = 90;
+    expect(typed).not.toBe(DEFAULT_PREFS.connectTimeout);
     await user.clear(timeout);
-    await user.type(timeout, "60");
+    await user.type(timeout, String(typed));
     expect(timeout).toHaveFocus();
+    // Before closing: the field shows what was typed, the stored preference is still the default.
+    expect(timeout).toHaveValue(typed);
     expect(getPrefs().connectTimeout).toBe(DEFAULT_PREFS.connectTimeout);
 
     fireEvent.keyDown(timeout, key);
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(getPrefs().connectTimeout).toBe(60);
+    // After closing: the typed value was committed.
+    expect(getPrefs().connectTimeout).toBe(typed);
+    expect(getPrefs().connectTimeout).not.toBe(DEFAULT_PREFS.connectTimeout);
   });
 
   it("keeps the open font size dropdown in the dialog's keyboard scope", async () => {
@@ -193,19 +263,20 @@ describe("SettingsDialog", () => {
     act(() => useSettingsDialog.setState({ open: true }));
     const dialog = await screen.findByRole("dialog");
 
-    const expected = [
-      () => within(dialog).getByRole("radio", { name: /System/ }),
-      () => within(dialog).getByRole("combobox", { name: "Font size" }),
-      () => within(dialog).getByRole("spinbutton", { name: "Connect timeout" }),
-      () => within(dialog).getByRole("searchbox", { name: "Search shortcuts" }),
+    const expected: [number, () => HTMLElement][] = [
+      // General opens with the link to Appearance (the theme choice lives there now).
+      [1, () => within(dialog).getByRole("button", { name: "More themes in Appearance" })],
+      [2, () => within(dialog).getByRole("combobox", { name: "Font size" })],
+      [3, () => within(dialog).getByRole("spinbutton", { name: "Connect timeout" })],
+      [5, () => within(dialog).getByRole("searchbox", { name: "Search shortcuts" })],
     ];
-    for (const [i, first] of expected.entries()) {
+    for (const [digit, first] of expected) {
       fireEvent.keyDown(document.activeElement ?? dialog, {
-        code: `Digit${i + 1}`,
-        key: String(i + 1),
+        code: `Digit${digit}`,
+        key: String(digit),
         ctrlKey: true,
       });
-      expect(within(dialog).getAllByRole("tab")[i]).toHaveFocus();
+      expect(within(dialog).getAllByRole("tab")[digit - 1]).toHaveFocus();
       await user.tab();
       expect(first()).toHaveFocus();
     }

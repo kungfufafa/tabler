@@ -5,7 +5,11 @@ import {
   gridColumns,
   onUpdateOf,
   columnOp,
+  fractionalSeconds,
+  onUpdateFor,
+  requiresIndexPrefix,
   supportsAddAutoIncrement,
+  supportsIndexPrefix,
   defaultColumnType,
   isIntegerType,
   parseColumnInput,
@@ -232,5 +236,62 @@ describe("TablePlus grid columns", () => {
       columnEditError("mysql", { ...col, dataType: "text", isKey: true }, "autoIncrement", true),
     ).toMatch(/integer type/);
     expect(columnEditError("mysql", { ...col, isKey: false }, "autoIncrement", false)).toBeNull();
+  });
+});
+
+describe("ON UPDATE of a MySQL column", () => {
+  it("is CURRENT_TIMESTAMP with the column's fractional seconds", () => {
+    // MySQL refuses one whose precision differs from the column's (1294)
+    expect(onUpdateFor("datetime(3)")).toBe("CURRENT_TIMESTAMP(3)");
+    expect(onUpdateFor("timestamp(6)")).toBe("CURRENT_TIMESTAMP(6)");
+    expect(onUpdateFor("DATETIME( 2 ) NOT NULL")).toBe("CURRENT_TIMESTAMP(2)");
+    // no precision, or a precision of 0: the bare form
+    expect(onUpdateFor("datetime")).toBe("CURRENT_TIMESTAMP");
+    expect(onUpdateFor("timestamp")).toBe("CURRENT_TIMESTAMP");
+    expect(onUpdateFor("datetime(0)")).toBe("CURRENT_TIMESTAMP");
+    expect(onUpdateFor("timestamp without time zone")).toBe("CURRENT_TIMESTAMP");
+    expect(onUpdateFor("varchar(30)")).toBe("CURRENT_TIMESTAMP");
+    expect(fractionalSeconds("time(3)")).toBe(0);
+  });
+});
+
+describe("index prefix lengths (MySQL)", () => {
+  it("char, text, blob and binary columns take a prefix; only text and blob need one", () => {
+    for (const type of [
+      "char(10)",
+      "varchar(500)",
+      "VARCHAR(20)",
+      "national varchar(9)",
+      "text",
+      "mediumtext",
+      "longtext",
+      "tinyblob",
+      "blob",
+      "longblob",
+      "binary(16)",
+      "varbinary(255)",
+    ])
+      expect(supportsIndexPrefix(type), type).toBe(true);
+    for (const type of [
+      "int",
+      "bigint unsigned",
+      "datetime(3)",
+      "json",
+      "decimal(10,2)",
+      "enum('a')",
+    ])
+      expect(supportsIndexPrefix(type), type).toBe(false);
+    for (const type of [
+      "text",
+      "TINYTEXT",
+      "mediumtext",
+      "longtext",
+      "blob",
+      "text(100)",
+      "longblob",
+    ])
+      expect(requiresIndexPrefix(type), type).toBe(true);
+    for (const type of ["varchar(500)", "char(10)", "binary(16)", "varbinary(9)", "int"])
+      expect(requiresIndexPrefix(type), type).toBe(false);
   });
 });

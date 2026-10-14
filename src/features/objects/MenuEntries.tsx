@@ -2,6 +2,8 @@ import {
   ContextMenuCheckboxItem,
   ContextMenuItem,
   ContextMenuLabel,
+  ContextMenuRadioGroup,
+  ContextMenuRadioItem,
   ContextMenuSeparator,
   ContextMenuShortcut,
   ContextMenuSub,
@@ -12,6 +14,8 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuShortcut,
   DropdownMenuSub,
@@ -42,6 +46,16 @@ export function ContextMenuEntries({ entries }: { entries: readonly MenuEntry[] 
           >
             {e.label}
           </ContextMenuCheckboxItem>
+        );
+      case "radio":
+        return (
+          <ContextMenuRadioGroup key={e.id} value={e.value} onValueChange={e.onChange}>
+            {e.options.map((o) => (
+              <ContextMenuRadioItem key={o.value} value={o.value}>
+                {o.label}
+              </ContextMenuRadioItem>
+            ))}
+          </ContextMenuRadioGroup>
         );
       case "sub":
         return (
@@ -91,6 +105,16 @@ export function DropdownMenuEntries({ entries }: { entries: readonly MenuEntry[]
           >
             {e.label}
           </DropdownMenuCheckboxItem>
+        );
+      case "radio":
+        return (
+          <DropdownMenuRadioGroup key={e.id} value={e.value} onValueChange={e.onChange}>
+            {e.options.map((o) => (
+              <DropdownMenuRadioItem key={o.value} value={o.value}>
+                {o.label}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
         );
       case "sub":
         return (

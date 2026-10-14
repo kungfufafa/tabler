@@ -11,6 +11,7 @@ import { useUiStore } from "@/stores/ui";
 import { actions } from "./actions";
 import { CommandPalette } from "./CommandPalette";
 import { usePaletteStore, type PaletteMode } from "./store";
+import { cancelTabSurfaceFocus } from "./focus";
 
 const toast = vi.hoisted(() => ({
   error: vi.fn(),
@@ -91,6 +92,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The focus poll of a chosen item must not outlive the test (jsdom is gone by then).
+  cancelTabSurfaceFocus();
   cleanups.splice(0).forEach((c) => c());
   vi.restoreAllMocks();
   Object.values(toast).forEach((f) => f.mockReset());
@@ -98,10 +101,10 @@ afterEach(() => {
 });
 
 describe("⌘K database list", () => {
-  it("selects on click and opens on double-click", async () => {
+  it("selects on click and opens on double-click (in a new workspace)", async () => {
     const spy = vi
-      .spyOn(ipc.connections, "switchDatabase")
-      .mockResolvedValue({ ...info("postgres"), currentDatabase: "shop" });
+      .spyOn(ipc.connections, "connect")
+      .mockResolvedValue({ ...info("postgres"), connectionId: "c2", currentDatabase: "shop" });
     renderPalette();
     const shop = option("shop");
     fireEvent.pointerDown(shop);
@@ -109,7 +112,9 @@ describe("⌘K database list", () => {
     expect(usePaletteStore.getState().open).toBe(true);
     expect(spy).not.toHaveBeenCalled();
     fireEvent.doubleClick(shop);
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("c1", "shop"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("p1", null, "shop"));
+    await waitFor(() => expect(useConnectionsStore.getState().activeId).toBe("c2"));
+    expect(useConnectionsStore.getState().byId.c1!.info.currentDatabase).toBe("app");
   });
 
   it("offers Open, Copy Name, Rename… and Drop… on right-click (PostgreSQL)", async () => {

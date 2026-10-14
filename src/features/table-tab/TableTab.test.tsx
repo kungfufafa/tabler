@@ -2,10 +2,20 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { resetCommitStore } from "@/features/commit/store";
+import { CommitTestHost } from "@/features/commit/testHost";
 import type { DataGridProps } from "@/features/datagrid/DataGrid";
+import { getEditorState } from "@/features/editor/editorStates";
 import { actions } from "@/features/palette/actions";
+import { exprOf } from "@/features/staging/expr";
 import { emptyStaging, insertRow, pendingCount } from "@/features/staging/model";
-import { ipc, type ApplyResult, type TableRef } from "@/lib/ipc";
+import {
+  ipc,
+  type ForeignKeyMeta,
+  type TableMeta,
+  type TableRef,
+  type WorkspaceResult,
+} from "@/lib/ipc";
 import { isMac } from "@/lib/keys/combo";
 import { KeyboardProvider } from "@/lib/keys/useShortcuts";
 import { useConnectionsStore } from "@/stores/connections";
@@ -16,6 +26,11 @@ import { useExportStore } from "@/features/export/store";
 import { useImportStore } from "@/features/import/store";
 import { filterMemoryKey, rememberFilters, resetFilterMemoryForTests } from "./filterMemory";
 import { TableTab } from "./TableTab";
+import {
+  recallColumnLayout,
+  rememberDefaultOrder,
+  resetTableViewMemoryForTests,
+} from "./tableViewMemory";
 
 const toast = vi.hoisted(() => ({
   success: vi.fn(),
@@ -33,20 +48,34 @@ vi.mock("@/features/safety/guard", () => ({
   },
 }));
 
-// The grid is replaced by a probe: tests drive TableTab through the props it hands the grid.
+// The grid is replaced by a probe: tests drive TableTab through the props it hands the grid. It
+// renders the one element TableTab looks for to hand the focus to the grid.
 const grid = vi.hoisted(() => ({ props: null as DataGridProps | null }));
 vi.mock("@/features/datagrid/DataGrid", () => ({
   DataGrid: (props: DataGridProps) => {
     grid.props = props;
-    return null;
+    return <div data-scope="grid" tabIndex={0} />;
   },
 }));
 const gridProps = () => grid.props!;
 
-const ok: ApplyResult = {
-  success: true,
-  results: [],
+const group = (over: Partial<WorkspaceResult["groups"][number]> = {}) => ({
+  status: "applied" as const,
   sql: ["INSERT 1"],
+  executed: ["INSERT 1"],
+  failedIndex: null,
+  rows: [],
+  routine: null,
+  error: null,
+  ...over,
+});
+
+/** What the workspace commit answers when it all went through. */
+const ok: WorkspaceResult = {
+  success: true,
+  atomic: true,
+  groups: [group()],
+  failedGroup: null,
   error: null,
   durationMs: 3,
 };
@@ -60,6 +89,8 @@ interface SetupOptions {
   limit?: number;
   /** Open it as the sidebar's preview tab (single click). */
   preview?: boolean;
+  /** Settings ▸ Table Data ▸ "Estimate count when table has more than" (the default: 500,000). */
+  estimateAbove?: number;
 }
 
 /** Opens a table (default public.users on the mock Postgres connection), optionally with one staged insert. */
@@ -70,8 +101,13 @@ async function setup({
   stage = true,
   limit,
   preview = false,
+  estimateAbove,
 }: SetupOptions = {}) {
-  resetPrefsForTests({ ...DEFAULT_PREFS, confirmCommit });
+  resetPrefsForTests({
+    ...DEFAULT_PREFS,
+    confirmCommit,
+    ...(estimateAbove === undefined ? {} : { gridEstimateThreshold: estimateAbove }),
+  });
   const info = await ipc.connections.connect(profile);
   useConnectionsStore.getState().add(info);
   const id = useTabsStore.getState().openTable(info.connectionId, table, "table", { preview });
@@ -86,6 +122,7 @@ async function setup({
       <QueryClientProvider client={qc}>
         <TooltipProvider>
           <TableTab tab={tab} />
+          <CommitTestHost />
         </TooltipProvider>
       </QueryClientProvider>
     </KeyboardProvider>,
@@ -112,11 +149,13 @@ const column = (name: string) => gridProps().columns[colIndex(name)]!;
 beforeEach(() => {
   grid.props = null;
   resetFilterMemoryForTests();
+  resetTableViewMemoryForTests();
   guard.allow = true;
   guard.calls = [];
   useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
   useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
   useTableTabsStore.setState({ slices: {} });
+  resetCommitStore();
 });
 
 afterEach(() => {
@@ -125,89 +164,121 @@ afterEach(() => {
   resetPrefsForTests();
 });
 
-describe("TableTab commit", () => {
+describe("TableTab commit (the workspace commit, with this tab's rows)", () => {
   it("⌘S opens the Preview SQL sheet while 'Confirm before commit' is on", async () => {
     await setup({ confirmCommit: true });
-    const preview = vi.spyOn(ipc.mutate, "preview").mockResolvedValue(["INSERT 1"]);
-    const apply = vi.spyOn(ipc.mutate, "apply");
+    const preview = vi.spyOn(ipc.workspace, "preview");
+    const apply = vi.spyOn(ipc.workspace, "apply");
     await act(() => actions.run("grid.commit"));
-    expect(preview).toHaveBeenCalledOnce();
     expect(apply).not.toHaveBeenCalled();
     expect(await screen.findByText("Preview changes")).toBeInTheDocument();
+    // The sheet groups the statements by tab.
+    expect(await screen.findByRole("region", { name: /users/ })).toHaveTextContent(/INSERT INTO/);
+    expect(preview).toHaveBeenCalled();
   });
 
   it("⌘S applies straight away when it is off", async () => {
-    const { pending } = await setup({ confirmCommit: false });
+    const { pending, slice } = await setup({ confirmCommit: false });
     // The statements are generated for the connection's safe-mode check, not shown.
-    const preview = vi.spyOn(ipc.mutate, "preview");
-    const apply = vi.spyOn(ipc.mutate, "apply").mockResolvedValue(ok);
+    const preview = vi.spyOn(ipc.workspace, "preview");
+    const apply = vi.spyOn(ipc.workspace, "apply").mockResolvedValue(ok);
+    const before = slice().refreshToken;
     await act(() => actions.run("grid.commit"));
     expect(apply).toHaveBeenCalledOnce();
+    expect(apply.mock.calls[0]![1]).toMatchObject([
+      { kind: "rows", request: { table: { name: "users" }, returning: true } },
+    ]);
     expect(preview).toHaveBeenCalledOnce();
     expect(pending()).toBe(0);
+    // The tab reloads its rows.
+    expect(slice().refreshToken).toBe(before + 1);
     expect(toast.success).toHaveBeenCalled();
     expect(screen.queryByText("Preview changes")).not.toBeInTheDocument();
   });
 
+  it("a successful commit deselects the grid's rows (TablePlus #2979)", async () => {
+    await setup({ confirmCommit: false });
+    const before = gridProps().deselectKey;
+    vi.spyOn(ipc.workspace, "apply").mockResolvedValue(ok);
+    await act(() => actions.run("grid.commit"));
+    await waitFor(() => expect(gridProps().deselectKey).not.toBe(before));
+  });
+
   it("⌘S on a table without a primary key always previews, with a warning", async () => {
     await setup({ confirmCommit: false, table: { schema: "public", name: "audit_log" } });
-    const preview = vi.spyOn(ipc.mutate, "preview").mockResolvedValue(["INSERT 1"]);
-    const apply = vi.spyOn(ipc.mutate, "apply");
+    const apply = vi.spyOn(ipc.workspace, "apply");
     await act(() => actions.run("grid.commit"));
-    expect(preview).toHaveBeenCalledOnce();
     expect(apply).not.toHaveBeenCalled();
     expect(await screen.findByText("Preview changes")).toBeInTheDocument();
     expect(screen.getByText(/^No primary key: each UPDATE\/DELETE matches/)).toBeInTheDocument();
   });
 
-  it("shows a failed direct apply in the sheet and keeps the edits", async () => {
+  it("keeps the edits and shows what failed in the sheet when the commit is reverted", async () => {
     const { pending } = await setup({ confirmCommit: false });
-    vi.spyOn(ipc.mutate, "apply").mockResolvedValue({
-      ...ok,
+    const error = {
+      code: "QUERY_FAILED",
+      message: "null value in column email",
+      detail: null,
+      hint: null,
+      sqlstate: "23502",
+      vendorCode: null,
+      position: null,
+      statementIndex: 0,
+      data: null,
+    };
+    vi.spyOn(ipc.workspace, "apply").mockResolvedValue({
       success: false,
-      sql: ["INSERT INTO users DEFAULT VALUES"],
-      error: {
-        code: "QUERY_FAILED",
-        message: "null value in column email",
-        detail: null,
-        hint: null,
-        sqlstate: "23502",
-        vendorCode: null,
-        position: null,
-        statementIndex: 0,
-        data: null,
-      },
+      atomic: true,
+      groups: [
+        group({
+          status: "failed",
+          sql: ["INSERT INTO users DEFAULT VALUES"],
+          executed: [],
+          failedIndex: 0,
+          rows: [{ rowId: "new:1", op: "insert", affected: 0, returned: null, error }],
+          error,
+        }),
+      ],
+      failedGroup: 0,
+      error,
+      durationMs: 1,
     });
     await act(() => actions.run("grid.commit"));
     expect(await screen.findByText("Preview changes")).toBeInTheDocument();
-    expect(screen.getByText("INSERT INTO users DEFAULT VALUES")).toBeInTheDocument();
+    expect(screen.getByText(/INSERT INTO users DEFAULT VALUES/)).toBeInTheDocument();
     expect(screen.getByText("null value in column email")).toBeInTheDocument();
+    expect(screen.getByText("All changes were reverted.")).toBeInTheDocument();
+    expect(toast.error).toHaveBeenCalledWith("All changes were reverted", expect.anything());
     expect(pending()).toBe(1);
   });
 
   it("'grid.preview' always opens the sheet (the unsaved dialog's Review…)", async () => {
     await setup({ confirmCommit: false });
-    const preview = vi.spyOn(ipc.mutate, "preview").mockResolvedValue(["INSERT 1"]);
-    const apply = vi.spyOn(ipc.mutate, "apply");
+    const apply = vi.spyOn(ipc.workspace, "apply");
     await act(() => actions.run("grid.preview"));
-    expect(preview).toHaveBeenCalledOnce();
     expect(apply).not.toHaveBeenCalled();
     expect(await screen.findByText("Preview changes")).toBeInTheDocument();
   });
 
-  it("the unsaved-changes dialog's Commit… runs the interrupted page change after the apply", async () => {
+  it("⇧⌘⌫ discards the tab's staged rows with the rest of the workspace", async () => {
+    const { pending } = await setup({ confirmCommit: false });
+    await act(() => actions.run("grid.discard"));
+    expect(pending()).toBe(0);
+    expect(toast.message).toHaveBeenCalledWith("Discarded 1 change");
+  });
+
+  it("the unsaved-changes dialog's Commit… runs the interrupted page change after the commit", async () => {
     const { slice, pending } = await setup({ confirmCommit: false, limit: 10 });
-    vi.spyOn(ipc.mutate, "preview").mockResolvedValue(["INSERT 1"]);
-    const apply = vi.spyOn(ipc.mutate, "apply").mockResolvedValue(ok);
+    const apply = vi.spyOn(ipc.workspace, "apply").mockResolvedValue(ok);
     const next = await screen.findByRole("button", { name: "Next page" });
     await waitFor(() => expect(next).toBeEnabled());
     fireEvent.click(next);
     expect(await screen.findByText("1 pending change")).toBeInTheDocument();
     expect(slice().offset).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Commit…" }));
-    const applyButton = await screen.findByRole("button", { name: /^Apply/ });
-    await waitFor(() => expect(applyButton).toBeEnabled());
-    await act(async () => fireEvent.click(applyButton));
+    const commit = await screen.findByRole("button", { name: /^Commit/ });
+    await waitFor(() => expect(commit).toBeEnabled());
+    await act(async () => fireEvent.click(commit));
     expect(apply).toHaveBeenCalledOnce();
     await waitFor(() => expect(slice().offset).toBe(10));
     expect(pending()).toBe(0);
@@ -215,8 +286,7 @@ describe("TableTab commit", () => {
 
   it("drops the interrupted change when the preview is dismissed", async () => {
     const { slice } = await setup({ confirmCommit: false, limit: 10 });
-    vi.spyOn(ipc.mutate, "preview").mockResolvedValue(["INSERT 1"]);
-    const apply = vi.spyOn(ipc.mutate, "apply").mockResolvedValue(ok);
+    const apply = vi.spyOn(ipc.workspace, "apply").mockResolvedValue(ok);
     const next = await screen.findByRole("button", { name: "Next page" });
     await waitFor(() => expect(next).toBeEnabled());
     fireEvent.click(next);
@@ -243,14 +313,13 @@ describe("TableTab column guard", () => {
     await waitFor(() => expect(slice().stagedOn).not.toBeNull());
     // The page was reloaded with another structure since the edit was staged.
     act(() => useTableTabsStore.getState().update(id, { stagedOn: "id\u0000gone" }));
-    const apply = vi.spyOn(ipc.mutate, "apply");
-    const preview = vi.spyOn(ipc.mutate, "preview");
+    const apply = vi.spyOn(ipc.workspace, "apply");
+    const preview = vi.spyOn(ipc.workspace, "preview");
     await act(() => actions.run("grid.commit"));
-    await act(() => actions.run("grid.preview"));
     expect(apply).not.toHaveBeenCalled();
     expect(preview).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalledWith(
-      "The table's columns changed since these edits were made",
+      "users: The table's columns changed since these edits were made",
       expect.anything(),
     );
     expect(pending()).toBe(1);
@@ -558,8 +627,11 @@ describe("TableTab filters", () => {
 
     fireEvent.change(value, { target: { value: "a@x.io" } });
     fireEvent.keyDown(value, { key: "i", code: "KeyI", ...mod });
+    // ⌘I clones the column and the operator; the value is blank, ready to type.
     let values = screen.getAllByRole("textbox", { name: "Filter value" });
-    expect(values.map((v) => (v as HTMLInputElement).value)).toEqual(["a@x.io", "a@x.io"]);
+    expect(values.map((v) => (v as HTMLInputElement).value)).toEqual(["a@x.io", ""]);
+    for (const c of screen.getAllByRole("combobox", { name: "Filter column" }))
+      expect(c).toHaveTextContent(/^email/);
     expect(values[1]).toHaveFocus();
 
     // ⇧⌘I removes the focused condition (the bar's "filter" scope wins over the global key).
@@ -610,17 +682,36 @@ describe("TableTab bottom bar", () => {
     expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
   });
 
-  it("says how many of the shown rows are selected while the grid has a selection", async () => {
+  it("says how many of the table's rows are selected while the grid has a selection", async () => {
+    vi.spyOn(ipc.browse, "count").mockResolvedValue({ count: 1204, exact: true });
     await setup({ stage: false, limit: 10 });
     const summary = await screen.findByTestId("row-summary");
-    await waitFor(() => expect(summary).toHaveTextContent(/^1–10 of /));
+    await waitFor(() => expect(summary).toHaveTextContent(/^1–10 of 1,204 rows/));
     act(() => gridProps().onSelectionChange!(3));
-    expect(summary).toHaveTextContent(/^3 of 10 rows selected\s*· 4 ms$/);
-    // Staged new rows count among the rows shown.
+    expect(summary).toHaveTextContent(/^3 of 1,204 rows selected\s*· 4 ms$/);
+    // Staged new rows count among the rows too.
     act(() => gridProps().onAction!({ type: "newRow" }));
-    await waitFor(() => expect(summary).toHaveTextContent(/^3 of 11 rows selected/));
+    await waitFor(() => expect(summary).toHaveTextContent(/^3 of 1,205 rows selected/));
     act(() => gridProps().onSelectionChange!(0));
     expect(summary).toHaveTextContent(/^1–10 of /);
+  });
+
+  it("keeps the '~' of an estimated count in 'N of ~M rows selected'", async () => {
+    vi.spyOn(ipc.browse, "count").mockResolvedValue({ count: 999_985, exact: false });
+    await setup({ stage: false, limit: 10 });
+    const summary = await screen.findByTestId("row-summary");
+    await waitFor(() => expect(summary).toHaveTextContent(/^1–10 of ~999,985 rows/));
+    act(() => gridProps().onSelectionChange!(15));
+    expect(summary).toHaveTextContent(/^15 of ~999,985 rows selected/);
+  });
+
+  it("falls back to the page's rows while the count is pending", async () => {
+    vi.spyOn(ipc.browse, "count").mockImplementation(() => new Promise(() => {}));
+    await setup({ stage: false, limit: 10 });
+    const summary = await screen.findByTestId("row-summary");
+    await waitFor(() => expect(summary).toHaveTextContent(/^1–10 of … rows/));
+    act(() => gridProps().onSelectionChange!(3));
+    expect(summary).toHaveTextContent(/^3 of 10 rows selected\s*· 4 ms$/);
   });
 
   it("[+ Row] runs the grid's new-row action; it is disabled on read-only tables", async () => {
@@ -859,8 +950,18 @@ describe("TableTab M8 grid features", () => {
 
   it("commits only after the connection's safe-mode check, with the generated SQL", async () => {
     const { pending } = await setup({ confirmCommit: false });
-    vi.spyOn(ipc.mutate, "preview").mockResolvedValue(["INSERT INTO users DEFAULT VALUES"]);
-    const apply = vi.spyOn(ipc.mutate, "apply").mockResolvedValue(ok);
+    vi.spyOn(ipc.workspace, "preview").mockResolvedValue({
+      groups: [
+        {
+          statements: ["INSERT INTO users DEFAULT VALUES"],
+          warnings: [],
+          transactional: true,
+          error: null,
+        },
+      ],
+      atomic: true,
+    });
+    const apply = vi.spyOn(ipc.workspace, "apply").mockResolvedValue(ok);
     guard.allow = false;
     await act(() => actions.run("grid.commit"));
     expect(guard.calls).toEqual([
@@ -879,11 +980,10 @@ describe("TableTab M8 grid features", () => {
 
   it("the Preview SQL sheet's Commit goes through the check too", async () => {
     await setup({ confirmCommit: true });
-    vi.spyOn(ipc.mutate, "preview").mockResolvedValue(["INSERT 1"]);
-    const apply = vi.spyOn(ipc.mutate, "apply").mockResolvedValue(ok);
+    const apply = vi.spyOn(ipc.workspace, "apply").mockResolvedValue(ok);
     guard.allow = false;
     await act(() => actions.run("grid.commit"));
-    fireEvent.click(await screen.findByRole("button", { name: /^Apply/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Commit/ }));
     await waitFor(() => expect(guard.calls).toHaveLength(1));
     expect(apply).not.toHaveBeenCalled();
     expect(screen.getByText("Preview changes")).toBeInTheDocument();
@@ -910,20 +1010,34 @@ describe("TableTab M8 grid features", () => {
     await waitFor(() => expect(row().bulk).toBeUndefined());
   });
 
-  it("Set Value ▸ NOW() stages the current time; Add a File… a file's bytes", async () => {
-    const { slice } = await setup({ stage: false });
+  it("Set Value ▸ NOW() stages the server's NOW(), sent as the whitelisted expression", async () => {
+    const { slice } = await setup({ stage: false, confirmCommit: false });
     const created = colIndex("last_login");
     act(() => gridProps().onAction!({ type: "setNow", cells: [{ r: 0, c: created }] }));
     const [change] = [...slice().staging.changes.values()];
-    expect(change!.patch.get(created)).toMatchObject({
-      t: "timestamp",
-      v: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
+    // The expression (shown as NOW() in the staged colour), never this computer's clock.
+    expect(exprOf(change!.patch.get(created) ?? { t: "null" })).toBe("now");
+    await waitFor(() =>
+      expect(gridProps().getRow(0)!.cells[created]).toMatchObject({ v: { text: "NOW()" } }),
+    );
+    const apply = vi.spyOn(ipc.workspace, "apply").mockResolvedValue(ok);
+    await act(() => actions.run("grid.commit"));
+    const sent = apply.mock.calls[0]![1][0]!;
+    if (sent.kind !== "rows") throw new Error("not a rows group");
+    expect(sent.request.changes[0]).toMatchObject({
+      op: "update",
+      changes: {},
+      exprs: { last_login: "now" },
     });
+  });
+
+  it("Set Value ▸ Add a File… stages a file's bytes", async () => {
+    const { slice } = await setup({ stage: false });
     const avatar = colIndex("avatar");
     vi.spyOn(window, "prompt").mockReturnValue("/Users/me/avatar.png");
     act(() => gridProps().onAction!({ type: "setFile", cells: [{ r: 1, c: avatar }] }));
-    await waitFor(() => expect(slice().staging.changes.size).toBe(2));
-    const blob = [...slice().staging.changes.values()][1]!.patch.get(avatar);
+    await waitFor(() => expect(slice().staging.changes.size).toBe(1));
+    const blob = [...slice().staging.changes.values()][0]!.patch.get(avatar);
     expect(blob).toMatchObject({ t: "bytes", v: { truncated: false } });
     expect(blob?.t === "bytes" && atob(blob.v.base64).startsWith("\x89PNG")).toBe(true);
   });
@@ -980,11 +1094,15 @@ describe("TableTab M8 grid features", () => {
 
   it("wires the cell menu's Import / Export Current Page… and the FK viewer", async () => {
     const { id } = await setup({ stage: false, table: { schema: "public", name: "posts" } });
-    act(() => gridProps().onImportCsv!());
+    act(() => gridProps().onImport!("csv"));
     expect(useImportStore.getState().request).toMatchObject({
       kind: "csv",
       table: { schema: "public", name: "posts" },
     });
+    act(() => gridProps().onImport!("json"));
+    expect(useImportStore.getState().request).toMatchObject({ kind: "json" });
+    act(() => gridProps().onImport!("sql"));
+    expect(useImportStore.getState().request).toMatchObject({ kind: "sql" });
     act(() => gridProps().onExportPage!());
     expect(useExportStore.getState()).toMatchObject({
       open: true,
@@ -1000,5 +1118,397 @@ describe("TableTab M8 grid features", () => {
     expect(ref.rows[0]![ref.columns.findIndex((c) => c.name === "id")]).toEqual(userId);
     expect(gridProps().quickLookKey).toBe(true);
     expect(gridProps().rowNumbers).toBe(false);
+  });
+});
+
+describe("TableTab grid3 table view", () => {
+  const users = { schema: "public", name: "users" };
+  const keyOf = (info: { profileId: string; currentDatabase: string | null }) =>
+    filterMemoryKey(info.profileId, info.currentDatabase, users);
+
+  it("remembers the column layout per table, for the next tab of it", async () => {
+    const { info } = await setup({ stage: false });
+    const layout = { widths: { email: 260 }, order: ["email", "id"], hidden: ["bio"] };
+    act(() => gridProps().onColumnStateChange!(layout));
+    expect(recallColumnLayout(keyOf(info))).toEqual(layout);
+    // Another tab of the same table starts from it.
+    grid.props = null;
+    useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
+    useTableTabsStore.setState({ slices: {} });
+    await setup({ stage: false });
+    expect(gridProps().columnState).toEqual(layout);
+    // Reset Column Positions and Widths (hidden columns stay hidden).
+    act(() => gridProps().onColumnStateChange!({ widths: {}, order: [], hidden: [] }));
+    expect(recallColumnLayout(keyOf(info))).toBeNull();
+  });
+
+  it("sorts by the primary key per the table's Default content order while nothing is sorted", async () => {
+    const info = await ipc.connections.connect("p-local-pg");
+    rememberDefaultOrder(keyOf(info), "pkDesc");
+    const rows = vi.spyOn(ipc.browse, "rows");
+    const { id } = await setup({ stage: false });
+    await waitFor(() =>
+      expect(rows.mock.calls.at(-1)?.[1].sort).toEqual([
+        { column: "id", dir: "desc", nulls: null },
+      ]),
+    );
+    // A sort of the user's own wins.
+    act(() => gridProps().onSortChange!([{ column: "email", dir: "asc", nulls: null }]));
+    await waitFor(() =>
+      expect(rows.mock.calls.at(-1)?.[1].sort).toEqual([
+        { column: "email", dir: "asc", nulls: null },
+      ]),
+    );
+    expect(useTableTabsStore.getState().slices[id]!.sort).toHaveLength(1);
+  });
+
+  it("scrolls the grid back up on a page change", async () => {
+    const { id } = await setup({ stage: false });
+    const before = gridProps().scrollResetKey;
+    act(() => useTableTabsStore.getState().update(id, { offset: 300 }));
+    await waitFor(() => expect(gridProps().scrollResetKey).not.toBe(before));
+  });
+
+  it("a filter row's Apply applies that filter alone", async () => {
+    const { id, slice } = await setup({ stage: false });
+    act(() =>
+      useTableTabsStore.getState().update(id, {
+        filters: [newFilterRow("id", "gt", "1"), newFilterRow("email", "contains", "x")],
+        filtersVisible: true,
+      }),
+    );
+    const applies = await screen.findAllByRole("button", { name: /^Appl(y|ied)$/ });
+    fireEvent.click(applies[1]!);
+    await waitFor(() => expect(slice().filters.map((f) => f.enabled)).toEqual([false, true]));
+  });
+});
+
+describe("TableTab exact count with a custom estimate threshold", () => {
+  const estimated = () =>
+    vi
+      .spyOn(ipc.browse, "count")
+      .mockImplementation(async (_c, _t, _f, exact) =>
+        exact ? { count: 50, exact: true } : { count: 1000, exact: false },
+      );
+
+  it("asks with the preference's threshold, and the '~N' counter turns exact on a click", async () => {
+    const count = estimated();
+    await setup({ stage: false, limit: 10, estimateAbove: 1000 });
+    const summary = screen.getByTestId("row-summary");
+    await waitFor(() => expect(summary).toHaveTextContent(/^1–10 of ~1,000 rows/));
+    expect(count).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.anything(),
+      null,
+      false,
+      1000,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "~1,000" }));
+    expect(count).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), null, true);
+    // The exact count lands under the key the shown count was fetched with: the "~" goes.
+    await waitFor(() => expect(summary).toHaveTextContent(/^1–10 of 50 rows/));
+    expect(screen.queryByRole("button", { name: /^~/ })).not.toBeInTheDocument();
+  });
+
+  it("the ⚙ popover's 'Count rows exactly' works with it too", async () => {
+    estimated();
+    await setup({ stage: false, limit: 10, estimateAbove: 250 });
+    const summary = screen.getByTestId("row-summary");
+    await waitFor(() => expect(summary).toHaveTextContent(/^1–10 of ~1,000 rows/));
+    fireEvent.click(screen.getByRole("button", { name: "Pagination settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Count rows exactly" }));
+    await waitFor(() => expect(summary).toHaveTextContent(/^1–10 of 50 rows/));
+    fireEvent.click(screen.getByRole("button", { name: "Pagination settings" }));
+    expect(await screen.findByRole("button", { name: "Count rows exactly" })).toBeDisabled();
+  });
+});
+
+describe("TableTab foreign keys", () => {
+  const posts = { schema: "public", name: "posts" };
+  const users = { schema: "public", name: "users" };
+  const deadbeef = {
+    t: "bytes" as const,
+    v: { base64: btoa("\xde\xad\xbe\xef"), len: 4, truncated: false },
+  };
+
+  /** Table metadata as the mock has it, with `patch` applied to the tables it names. */
+  function patchMeta(patch: Record<string, (m: TableMeta) => TableMeta>) {
+    const original = ipc.schema.table;
+    vi.spyOn(ipc.schema, "table").mockImplementation(async (c, t) => {
+      const meta = await original(c, t);
+      return patch[t.name]?.(meta) ?? meta;
+    });
+  }
+  const fkMeta = (over: Partial<ForeignKeyMeta>): ForeignKeyMeta => ({
+    name: "fk",
+    columns: ["user_id"],
+    refTable: users,
+    refColumns: ["id"],
+    onUpdate: "NO ACTION",
+    onDelete: "NO ACTION",
+    definition: null,
+    ...over,
+  });
+  /** Renders the table tab `id` too (what an FK jump opened), over its own query client. */
+  function mountTab(id: string) {
+    const tab = useTabsStore.getState().tabs.find((t) => t.id === id) as Extract<
+      Tab,
+      { kind: "table" }
+    >;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <KeyboardProvider>
+        <QueryClientProvider client={qc}>
+          <TooltipProvider>
+            <TableTab tab={tab} />
+          </TooltipProvider>
+        </QueryClientProvider>
+      </KeyboardProvider>,
+    );
+  }
+  const activeSlice = () => useTableTabsStore.getState().slices[useTabsStore.getState().activeId!]!;
+
+  it("a binary key's arrow types its hex in the referenced table's filter, and the request sends bytes", async () => {
+    patchMeta({
+      users: (m) => ({
+        ...m,
+        columns: m.columns.map((c) =>
+          c.name === "id" ? { ...c, kind: "bytes", dataType: "bytea" } : c,
+        ),
+      }),
+    });
+    const rows = vi.spyOn(ipc.browse, "rows");
+    await setup({ stage: false, table: posts });
+    act(() => gridProps().onOpenFk!(column("user_id"), deadbeef));
+    // Not the base64 text: hex, which the filter bar reads for binary columns.
+    expect(activeSlice().filters).toEqual([
+      expect.objectContaining({ column: "id", op: "eq", value: "deadbeef" }),
+    ]);
+    expect(activeSlice().filtersVisible).toBe(true);
+    mountTab(useTabsStore.getState().activeId!);
+    await waitFor(() =>
+      expect(
+        rows.mock.calls.some(([, req]) => req.table.name === "users" && req.filter !== null),
+      ).toBe(true),
+    );
+    const request = rows.mock.calls.find(([, req]) => req.table.name === "users")![1];
+    expect(request.filter).toEqual({
+      conjunction: "and",
+      items: [{ kind: "condition", column: "id", op: "eq", values: [deadbeef] }],
+    });
+    // The bar shows and accepts the hex.
+    expect(await screen.findByDisplayValue("deadbeef")).toBeInTheDocument();
+  });
+
+  it("a blob that is only a preview cannot filter: it says so and opens nothing", async () => {
+    await setup({ stage: false, table: posts });
+    const tabs = useTabsStore.getState().tabs.length;
+    act(() =>
+      gridProps().onOpenFk!(column("user_id"), {
+        t: "bytes",
+        v: { base64: "AAAA", len: 100_000, truncated: true },
+      }),
+    );
+    expect(toast.message).toHaveBeenCalledWith(
+      "Only a preview of this value is loaded",
+      expect.anything(),
+    );
+    expect(useTabsStore.getState().tabs).toHaveLength(tabs);
+  });
+
+  it("gives a column every foreign key it is part of, composite ones included", async () => {
+    const author = fkMeta({
+      name: "posts_author_fkey",
+      refTable: { schema: "public", name: "accounts" },
+    });
+    const composite = fkMeta({
+      name: "posts_user_title_fkey",
+      columns: ["user_id", "title"],
+      refColumns: ["id", "name"],
+    });
+    patchMeta({ posts: (m) => ({ ...m, foreignKeys: [...m.foreignKeys, author, composite] }) });
+    await setup({ stage: false, table: posts });
+    const userId = column("user_id");
+    expect(userId.fks?.map((f) => [f.name, f.table])).toEqual([
+      ["posts_user_id_fkey", "users"],
+      ["posts_author_fkey", "accounts"],
+      ["posts_user_title_fkey", "users"],
+    ]);
+    // `fk` stays the first single-column key (Quick Look's viewer).
+    expect(userId.fk).toMatchObject({ table: "users", column: "id" });
+    // A member of a composite key only: an arrow, and no single key.
+    const title = column("title");
+    expect(title.fk).toBeUndefined();
+    expect(title.fks).toEqual([
+      expect.objectContaining({
+        table: "users",
+        column: "name",
+        localColumns: ["user_id", "title"],
+        refColumns: ["id", "name"],
+      }),
+    ]);
+  });
+
+  it("a composite key's jump filters by every column of the key, from the row's other cells", async () => {
+    const composite = fkMeta({
+      name: "posts_user_title_fkey",
+      columns: ["user_id", "title"],
+      refColumns: ["id", "name"],
+    });
+    patchMeta({ posts: (m) => ({ ...m, foreignKeys: [composite] }) });
+    await setup({ stage: false, table: posts });
+    const title = column("title");
+    const fk = title.fks![0]!;
+    const cells = gridProps().getRow(1)!.cells;
+    const userId = cells[colIndex("user_id")]!;
+    const titleValue = cells[colIndex("title")]!;
+    // The grid hands over the clicked row's cells...
+    act(() => gridProps().onOpenFk!(title, titleValue, fk, cells));
+    expect(activeSlice()).toMatchObject({ conjunction: "and", filtersVisible: true, offset: 0 });
+    const text = (v: typeof userId) => (v.t === "text" ? v.v : String((v as { v: unknown }).v));
+    expect(activeSlice().filters).toEqual([
+      expect.objectContaining({ column: "id", op: "eq", value: text(userId) }),
+      expect.objectContaining({ column: "name", op: "eq", value: text(titleValue) }),
+    ]);
+  });
+
+  it("a composite key's jump reads the grid's focused row when the grid gives no cells", async () => {
+    const composite = fkMeta({
+      name: "posts_user_title_fkey",
+      columns: ["user_id", "title"],
+      refColumns: ["id", "name"],
+    });
+    patchMeta({ posts: (m) => ({ ...m, foreignKeys: [composite] }) });
+    await setup({ stage: false, table: posts });
+    const title = column("title");
+    const row = gridProps().getRow(2)!;
+    act(() =>
+      gridProps().onFocusCell!({
+        pos: { r: 2, c: 0 },
+        sourceIndex: colIndex("title"),
+        column: title,
+        value: row.cells[colIndex("title")]!,
+        row,
+      }),
+    );
+    act(() => gridProps().onOpenFk!(title, row.cells[colIndex("title")]!, title.fks![0]));
+    expect(activeSlice().filters.map((f) => f.column)).toEqual(["id", "name"]);
+    expect(activeSlice().filters[1]!.value).toBe((row.cells[colIndex("title")] as { v: string }).v);
+  });
+
+  it("without a chosen key the jump follows the column's own key, not a composite one listed first", async () => {
+    // What Quick Look's viewer shows is `column.fk`; its Open button names no key.
+    const composite = fkMeta({
+      name: "posts_user_title_fkey",
+      columns: ["user_id", "title"],
+      refTable: { schema: "public", name: "accounts" },
+      refColumns: ["owner", "name"],
+    });
+    patchMeta({ posts: (m) => ({ ...m, foreignKeys: [composite, ...m.foreignKeys] }) });
+    await setup({ stage: false, table: posts });
+    const userId = column("user_id");
+    expect(userId.fks?.[0]).toMatchObject({ table: "accounts" });
+    expect(userId.fk).toMatchObject({ table: "users", column: "id" });
+    const tabs = useTabsStore.getState().tabs.length;
+    act(() => gridProps().onOpenFk!(userId, gridProps().getRow(0)!.cells[colIndex("user_id")]!));
+    const opened = useTabsStore.getState().tabs;
+    expect(opened).toHaveLength(tabs + 1);
+    expect(opened.find((t) => t.id === useTabsStore.getState().activeId)).toMatchObject({
+      kind: "table",
+      table: { name: "users" },
+    });
+    expect(activeSlice().filters).toEqual([expect.objectContaining({ column: "id", op: "eq" })]);
+  });
+
+  it("a NULL part of a composite key is left out of the jump's filter", async () => {
+    const composite = fkMeta({
+      name: "posts_user_body_fkey",
+      columns: ["user_id", "body"],
+      refColumns: ["id", "email"],
+    });
+    patchMeta({ posts: (m) => ({ ...m, foreignKeys: [composite] }) });
+    await setup({ stage: false, table: posts });
+    const userId = column("user_id");
+    const cells = [...gridProps().getRow(0)!.cells];
+    cells[colIndex("body")] = { t: "null" };
+    act(() => gridProps().onOpenFk!(userId, cells[colIndex("user_id")]!, userId.fks![0], cells));
+    expect(activeSlice().filters.map((f) => f.column)).toEqual(["id"]);
+  });
+
+  it("Generate JOIN follows the chosen key; a composite key joins on every column", async () => {
+    const composite = fkMeta({
+      name: "posts_user_title_fkey",
+      columns: ["user_id", "title"],
+      refColumns: ["id", "name"],
+    });
+    patchMeta({ posts: (m) => ({ ...m, foreignKeys: [composite] }) });
+    await setup({ stage: false, table: posts });
+    const title = column("title");
+    act(() => gridProps().onGenerateJoin!(title, title.fks![0]));
+    const queryTab = useTabsStore.getState().tabs.find((t) => t.kind === "query");
+    expect(queryTab).toBeDefined();
+    expect(getEditorState(queryTab!.id)?.doc.toString()).toBe(
+      'SELECT *\nFROM "public"."posts"\nJOIN "public"."users" ON "posts"."user_id" = "users"."id" AND "posts"."title" = "users"."name"\n',
+    );
+  });
+});
+
+describe("TableTab ⌘↑ / ⌘↓ between the filters and the data", () => {
+  it("hands ⌘↑ to the filter bar only while it is shown, and ⌘↓ on its last row comes back", async () => {
+    const { id } = await setup({ stage: false });
+    // The bar is hidden: the grid keeps ⌘↑ for itself (the first row).
+    expect(gridProps().onFocusFilters).toBeUndefined();
+    act(() =>
+      useTableTabsStore.getState().update(id, {
+        filtersVisible: true,
+        filters: [newFilterRow("name", "eq", "a"), newFilterRow("email", "eq", "b")],
+      }),
+    );
+    await waitFor(() => expect(gridProps().onFocusFilters).toBeTypeOf("function"));
+    const values = await screen.findAllByRole("textbox", { name: "Filter value" });
+    // ⌘↑ on the grid's first row: the last filter row's value.
+    act(() => gridProps().onFocusFilters!());
+    expect(document.activeElement).toBe(values[1]);
+    await waitFor(() => expect(actions.has("filter.next")).toBe(true));
+    // ⌘↑ goes up a row, ⌘↓ down, and past the last one down to the data.
+    fireEvent.keyDown(values[1]!, { key: "ArrowUp", code: "ArrowUp", ...mod });
+    expect(document.activeElement).toBe(values[0]);
+    fireEvent.keyDown(values[0]!, { key: "ArrowDown", code: "ArrowDown", ...mod });
+    expect(document.activeElement).toBe(values[1]);
+    fireEvent.keyDown(values[1]!, { key: "ArrowDown", code: "ArrowDown", ...mod });
+    expect(document.activeElement).toBe(document.querySelector('[data-scope="grid"]'));
+    // Hiding the bar takes the hand-over away.
+    act(() => useTableTabsStore.getState().update(id, { filtersVisible: false }));
+    await waitFor(() => expect(gridProps().onFocusFilters).toBeUndefined());
+  });
+
+  it("the starter row of an empty bar takes the focus too", async () => {
+    const { id } = await setup({ stage: false });
+    act(() => useTableTabsStore.getState().update(id, { filtersVisible: true }));
+    await waitFor(() => expect(gridProps().onFocusFilters).toBeTypeOf("function"));
+    const [value] = await screen.findAllByRole("textbox", { name: "Filter value" });
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    act(() => gridProps().onFocusFilters!());
+    expect(document.activeElement).toBe(value);
+  });
+});
+
+describe("TableTab export buttons", () => {
+  it("both Export buttons export this table's filtered rows, not the multi-table dialog", async () => {
+    const { id } = await setup({ stage: false });
+    fireEvent.click(screen.getByRole("button", { name: "Export…" }));
+    expect(useExportStore.getState()).toMatchObject({
+      open: true,
+      target: { source: { kind: "table", tabId: id } },
+    });
+    act(() => useExportStore.setState({ open: false }));
+    act(() => useTableTabsStore.getState().update(id, { filtersVisible: true }));
+    const barExport = await screen.findByRole("button", { name: "Export" });
+    expect(barExport).toHaveAttribute("title", "Export the filtered rows");
+    fireEvent.click(barExport);
+    expect(useExportStore.getState()).toMatchObject({
+      open: true,
+      target: { source: { kind: "table", tabId: id } },
+    });
   });
 });

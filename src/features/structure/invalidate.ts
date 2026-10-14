@@ -4,7 +4,7 @@ import { schemaKeys } from "@/features/sidebar/useSchemaTree";
 import { pendingCount } from "@/features/staging/model";
 import { tableKey, type TableRef } from "@/lib/ipc";
 import { useTableTabsStore } from "@/stores/tableTabs";
-import { useTabsStore } from "@/stores/tabs";
+import { isTableTab, useTabsStore } from "@/stores/tabs";
 
 export const ddlKey = (connectionId: string, table: TableRef) =>
   ["tableDdl", connectionId, table.schema ?? "", table.name] as const;
@@ -43,7 +43,7 @@ export function tablesWithPendingEdits(connectionId: string): TableRef[] {
   const out: TableRef[] = [];
   const slices = useTableTabsStore.getState().slices;
   for (const t of useTabsStore.getState().tabs) {
-    if (t.kind === "query" || t.connectionId !== connectionId) continue;
+    if (!isTableTab(t) || t.connectionId !== connectionId) continue;
     const slice = slices[t.id];
     if (!slice || pendingCount(slice.staging) === 0) continue;
     if (!out.some((r) => tableKey(r) === tableKey(t.table))) out.push(t.table);

@@ -90,10 +90,10 @@ describe("ShortcutsSection (keymap editor)", { timeout: 20_000 }, () => {
   it("keeps ⌘R and ⌘0 fixed", () => {
     renderSection();
     expect(
-      screen.queryByLabelText(`Refresh: ${formatCombo("Mod+R")}. Change shortcut`),
+      screen.queryByLabelText(`Reload workspace: ${formatCombo("Mod+R")}. Change shortcut`),
     ).not.toBeInTheDocument();
-    expect(within(row("view.refresh")).getByTitle(/can't be changed/)).toBeInTheDocument();
-    // Its other binding (⌥⌘R, its own row) can move.
+    expect(within(row("workspace.reload")).getByTitle(/can't be changed/)).toBeInTheDocument();
+    // Reload current tab (⌥⌘R, its own action since ⌘R reloads the workspace) can move.
     expect(slot("Reload current tab", "Mod+Alt+R")).toBeInTheDocument();
   });
 

@@ -4,8 +4,38 @@ import type { ColumnMeta, ForeignKeyMeta, Value, ValueKind } from "@/lib/ipc";
  * Row height (TablePlus-compact). The ONE place it is defined: virtualization, hit-testing, the
  * selection overlay, the editor and "blank area below the rows" all derive from it.
  */
-export const ROW_H = 22;
-export const HEADER_H = 24;
+export const DEFAULT_ROW_H = 22;
+/**
+ * A live binding: Settings ▸ Appearance ▸ Data table (font, line height, padding) changes it with
+ * `setRowHeight`, and the grids re-measure (`subscribeRowHeight`). Read it at use, never cache it.
+ */
+export let ROW_H = DEFAULT_ROW_H;
+/** The column header is a little taller than a row (24px for the default 22px row). */
+export const HEADER_EXTRA_H = 2;
+/**
+ * The column header's height: the row height plus `HEADER_EXTRA_H`, so it scales with the grid's
+ * font size, line height and row padding like the rows do. A live binding like `ROW_H`.
+ */
+export let HEADER_H = DEFAULT_ROW_H + HEADER_EXTRA_H;
+
+const rowHeightListeners = new Set<() => void>();
+
+/** Sets the row height (whole px, 14–64) and the header height with it; true when it changed. */
+export function setRowHeight(px: number): boolean {
+  const next = Math.min(64, Math.max(14, Math.round(px)));
+  if (next === ROW_H) return false;
+  ROW_H = next;
+  HEADER_H = next + HEADER_EXTRA_H;
+  rowHeightListeners.forEach((l) => l());
+  return true;
+}
+
+export function subscribeRowHeight(listener: () => void): () => void {
+  rowHeightListeners.add(listener);
+  return () => rowHeightListeners.delete(listener);
+}
+
+export const getRowHeight = (): number => ROW_H;
 /** Narrowest row-number gutter (enough for three digits). */
 export const MIN_GUTTER_W = 32;
 /** The gutter without row numbers: a slim strip for the staged / error tint and row selection. */
@@ -22,7 +52,14 @@ export const MAX_COL_W = 1200;
 export interface FkRef {
   schema: string | null;
   table: string;
+  /** The referenced column (of a composite key: the one the column it sits on maps to). */
   column: string;
+  /** The constraint's name (`GridColumn.fks` entries). */
+  name?: string;
+  /** Every column of the key on this table, in key order (`GridColumn.fks` entries). */
+  localColumns?: string[];
+  /** The referenced columns, parallel to `localColumns`. */
+  refColumns?: string[];
 }
 
 export interface GridColumn {
@@ -36,7 +73,13 @@ export interface GridColumn {
   isAutoInc: boolean;
   editable: boolean;
   align: "left" | "right";
+  /** The first foreign key that is this column alone (Quick Look's FK viewer, Generate JOIN). */
   fk?: FkRef;
+  /**
+   * Every foreign key the column is part of, composite keys included: one arrow jumps straight
+   * to its target, several make it a menu. Absent without any.
+   */
+  fks?: FkRef[];
   enumValues?: string[] | null;
 }
 
@@ -107,6 +150,49 @@ export function defaultWidth(kind: ValueKind, name: string): number {
   }
 }
 
+/** The foreign keys of `col` (`fks`; a hand-made column may carry only `fk`). */
+export function fksOf(col: Pick<GridColumn, "fk" | "fks">): readonly FkRef[] {
+  return col.fks ?? (col.fk ? [col.fk] : []);
+}
+
+/** Whether a foreign key spans several columns. */
+export function isCompositeFk(fk: FkRef): boolean {
+  return (fk.localColumns?.length ?? 1) > 1;
+}
+
+/**
+ * The column pairs a jump through `fk` filters by: this table's column and the referenced one it
+ * must equal. `column` (the clicked one) stands for a key without `localColumns`.
+ */
+export function fkPairs(fk: FkRef, column: string): Array<{ local: string; ref: string }> {
+  const local = fk.localColumns ?? [column];
+  const ref = fk.refColumns ?? [fk.column];
+  return local.map((l, i) => ({ local: l, ref: ref[i] ?? fk.column }));
+}
+
+/** The referenced columns of a foreign key as text: `id`, `a, b` for a composite one. */
+export function fkColumnsText(fk: FkRef): string {
+  const refs = fk.refColumns && fk.refColumns.length > 0 ? fk.refColumns : [fk.column];
+  return refs.join(", ");
+}
+
+/** A foreign key's label in a menu: `table (column)`, `table (a, b)` for a composite one. */
+export function fkLabel(fk: FkRef): string {
+  return `${fk.table} (${fkColumnsText(fk)})`;
+}
+
+function toFkRef(f: ForeignKeyMeta, column: string): FkRef {
+  const at = Math.max(0, f.columns.indexOf(column));
+  return {
+    schema: f.refTable.schema,
+    table: f.refTable.name,
+    column: f.refColumns[at] ?? f.refColumns[0] ?? "",
+    name: f.name,
+    localColumns: [...f.columns],
+    refColumns: [...f.refColumns],
+  };
+}
+
 export function buildGridColumns(
   columns: ColumnMeta[],
   foreignKeys: ForeignKeyMeta[] = [],
@@ -114,6 +200,9 @@ export function buildGridColumns(
 ): GridColumn[] {
   return columns.map((c) => {
     const fk = foreignKeys.find((f) => f.columns.length === 1 && f.columns[0] === c.name);
+    const fks = foreignKeys
+      .filter((f) => f.columns.includes(c.name))
+      .map((f) => toFkRef(f, c.name));
     return {
       id: c.name,
       name: c.name,
@@ -128,6 +217,7 @@ export function buildGridColumns(
       fk: fk
         ? { schema: fk.refTable.schema, table: fk.refTable.name, column: fk.refColumns[0] ?? "" }
         : undefined,
+      fks: fks.length > 0 ? fks : undefined,
       enumValues: c.enumValues,
     };
   });

@@ -1,8 +1,10 @@
 //! Database drivers behind one trait. Each driver owns its connections; commands only see
 //! `Arc<dyn DbSession>`.
 
+use std::collections::VecDeque;
+use std::future::Future;
 use std::ops::ControlFlow;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -10,6 +12,7 @@ use async_trait::async_trait;
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::split::leading_keywords;
+use crate::types::browse::{TraceCategory, TracedSql};
 use crate::types::profile::{ConnectionProfile, Driver};
 use crate::types::query::{ExecOutcome, ResultColumn, ResultSet, ServerNotice, StatementKind};
 use crate::types::schema::{
@@ -19,6 +22,7 @@ use crate::types::value::Value;
 
 pub mod mysql;
 pub mod postgres;
+pub mod redact;
 pub mod sqlite;
 
 /// Receives rows streamed by `run_statement` / `stream_query`. Returning `Break` from `rows`
@@ -33,6 +37,279 @@ pub trait RowSink: Send {
     /// `StatementOutcome::notices` (or logs it).
     fn notice(&mut self, _notice: &ServerNotice, _during: bool) -> bool {
         false
+    }
+}
+
+// --- SQL trace --------------------------------------------------------------------------------
+
+/// Statements a session keeps for `DbSession::drain_trace`; the oldest fall off beyond this.
+pub const TRACE_CAP: usize = 500;
+/// Longest SQL text a trace entry keeps (a bulk INSERT would otherwise fill memory).
+pub const TRACE_SQL_MAX_CHARS: usize = 8 * 1024;
+
+/// What a session really ran, for the console log: every statement the drivers send for the app's
+/// own work (introspection, grid reads, counts, writes, exports) with its timing, row count and
+/// error. The statements the SQL editor runs (`run_statement`) are not traced: the renderer logs
+/// those itself with the exact text the user submitted; the ones the app runs through the same
+/// editor session for its own purposes (the Explain command, a SQL dump import) go through
+/// `run_statement_traced` and are. Passwords in a statement are masked (`redact`). The log is a
+/// capped queue (`TRACE_CAP`) that the renderer
+/// empties after each of its calls (`drain_sql_trace`). Cheap to clone: clones share the queue, so
+/// a SQLite actor job can hold one.
+#[derive(Debug, Clone, Default)]
+pub struct SqlTrace(Arc<Mutex<VecDeque<TracedSql>>>);
+
+/// Row and write counts a traced statement reports.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TraceCounts {
+    pub rows: Option<u64>,
+    pub affected: Option<u64>,
+}
+
+impl TraceCounts {
+    pub const NONE: TraceCounts = TraceCounts {
+        rows: None,
+        affected: None,
+    };
+
+    pub fn rows(n: usize) -> TraceCounts {
+        TraceCounts {
+            rows: Some(n as u64),
+            affected: None,
+        }
+    }
+
+    pub fn of_exec(outcome: &ExecOutcome) -> TraceCounts {
+        TraceCounts {
+            rows: outcome.rows.as_ref().map(|r| r.rows.len() as u64),
+            affected: Some(outcome.affected),
+        }
+    }
+}
+
+/// What a trace entry shows for a statement, and the passwords the statement carried (masked in
+/// `text`, see `redact`), so an error recorded for it can be scrubbed of them too.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TraceSql {
+    pub text: String,
+    secrets: Vec<String>,
+}
+
+impl TraceSql {
+    /// A server message about the statement with its passwords masked, should it quote them (a
+    /// syntax error echoes the text around its position). A password too short to be masked
+    /// without mangling the message withholds the message.
+    pub fn scrub(&self, message: String) -> String {
+        if self.secrets.is_empty() {
+            return message;
+        }
+        if self.secrets.iter().any(|s| s.chars().count() < 3) {
+            return "the statement failed (message withheld: the statement carries a password)"
+                .to_string();
+        }
+        let mut forms: Vec<&String> = self.secrets.iter().collect();
+        forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
+        forms
+            .into_iter()
+            .fold(message, |msg, form| msg.replace(form.as_str(), "********"))
+    }
+}
+
+impl From<String> for TraceSql {
+    fn from(text: String) -> TraceSql {
+        TraceSql {
+            text,
+            secrets: Vec::new(),
+        }
+    }
+}
+
+impl From<&str> for TraceSql {
+    fn from(text: &str) -> TraceSql {
+        text.to_string().into()
+    }
+}
+
+/// The text a trace entry shows for `sql` run with `params`: the parameters inlined (for display
+/// only: the statement itself ran with bound parameters), the passwords it carries masked
+/// (`redact::redact_secrets`: the console log must never show one), then capped.
+pub fn trace_sql(dialect: Dialect, sql: &str, params: &[Value]) -> TraceSql {
+    let text = if params.is_empty() {
+        sql.trim().to_string()
+    } else {
+        crate::sqlgen::select::inline_params(dialect, sql.trim(), params)
+    };
+    let redacted = redact::redact_secrets(&text, dialect);
+    TraceSql {
+        text: cap_trace_text(redacted.sql),
+        secrets: redacted.secrets,
+    }
+}
+
+/// `trace_sql`'s text, for the introspection statements, which carry no password.
+pub fn trace_text(dialect: Dialect, sql: &str, params: &[Value]) -> String {
+    trace_sql(dialect, sql, params).text
+}
+
+fn cap_trace_text(text: String) -> String {
+    let mut chars = text.char_indices().skip(TRACE_SQL_MAX_CHARS);
+    match chars.next() {
+        None => text,
+        Some((at, _)) => format!(
+            "{} /* … {} more characters */",
+            &text[..at],
+            text[at..].chars().count()
+        ),
+    }
+}
+
+/// Catalog tables and functions that mark a read as introspection ("meta") rather than data.
+const CATALOG_WORDS: [&str; 26] = [
+    "INFORMATION_SCHEMA",
+    "PERFORMANCE_SCHEMA",
+    "PG_CATALOG",
+    "PG_CLASS",
+    "PG_NAMESPACE",
+    "PG_ATTRIBUTE",
+    "PG_ATTRDEF",
+    "PG_INDEX",
+    "PG_CONSTRAINT",
+    "PG_PROC",
+    "PG_TYPE",
+    "PG_DATABASE",
+    "PG_ROLES",
+    "PG_TRIGGER",
+    "PG_SEQUENCE",
+    "PG_VIEWS",
+    "PG_TABLES",
+    "PG_DESCRIPTION",
+    "PG_ENUM",
+    "PG_EXTENSION",
+    "PG_GET_",
+    "PG_DEPEND",
+    "SQLITE_MASTER",
+    "SQLITE_SCHEMA",
+    "SQLITE_TEMP_MASTER",
+    "SQLITE_TEMP_SCHEMA",
+];
+
+/// Whether a statement the app ran reads or changes the schema (DDL, `PRAGMA`, `SHOW`, a read of
+/// the catalogs) rather than rows. A judgement from the statement text, for the paths that run
+/// whatever SQL they are given; introspection functions state their category themselves.
+pub fn classify_statement(sql: &str, dialect: Dialect) -> TraceCategory {
+    let first = leading_keywords(sql, 1);
+    if matches!(
+        first.first().map(String::as_str),
+        Some(
+            "CREATE"
+                | "ALTER"
+                | "DROP"
+                | "TRUNCATE"
+                | "RENAME"
+                | "COMMENT"
+                | "GRANT"
+                | "REVOKE"
+                | "VACUUM"
+                | "REINDEX"
+                | "PRAGMA"
+                | "SHOW"
+                | "DESCRIBE"
+                | "DESC"
+        )
+    ) {
+        return TraceCategory::Structure;
+    }
+    let code = crate::sqlgen::split::code_only(sql, dialect).to_uppercase();
+    if CATALOG_WORDS.iter().any(|w| code.contains(w))
+        || (dialect == Dialect::Mysql && code.contains("MYSQL."))
+    {
+        TraceCategory::Structure
+    } else {
+        TraceCategory::Data
+    }
+}
+
+impl SqlTrace {
+    fn queue(&self) -> std::sync::MutexGuard<'_, VecDeque<TracedSql>> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Appends a statement, dropping the oldest ones beyond `TRACE_CAP`.
+    pub fn record(&self, entry: TracedSql) {
+        let mut queue = self.queue();
+        queue.push_back(entry);
+        while queue.len() > TRACE_CAP {
+            queue.pop_front();
+        }
+    }
+
+    /// Takes every recorded statement, oldest first.
+    pub fn drain(&self) -> Vec<TracedSql> {
+        self.queue().drain(..).collect()
+    }
+
+    /// Statements waiting to be drained.
+    pub fn len(&self) -> usize {
+        self.queue().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Records one finished statement: `sql` is already display text (`trace_sql`).
+    pub fn finish<T>(
+        &self,
+        category: TraceCategory,
+        sql: impl Into<TraceSql>,
+        started: Instant,
+        result: &Result<T, AppError>,
+        counts: impl FnOnce(&T) -> TraceCounts,
+    ) {
+        let sql = sql.into();
+        let (counts, error) = match result {
+            Ok(v) => (counts(v), None),
+            Err(e) => (TraceCounts::NONE, Some(sql.scrub(e.to_string()))),
+        };
+        self.record(TracedSql {
+            sql: sql.text,
+            category,
+            duration_ms: started.elapsed().as_millis() as u64,
+            rows: counts.rows,
+            affected: counts.affected,
+            error,
+        });
+    }
+
+    /// Runs a blocking statement (a SQLite actor job) and records it.
+    pub fn run<T>(
+        &self,
+        category: TraceCategory,
+        sql: impl Into<TraceSql>,
+        counts: impl FnOnce(&T) -> TraceCounts,
+        run: impl FnOnce() -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let started = Instant::now();
+        let result = run();
+        self.finish(category, sql, started, &result, counts);
+        result
+    }
+
+    /// Runs an async statement and records it, whether it succeeds, fails or is cancelled.
+    pub async fn run_async<T, F>(
+        &self,
+        category: TraceCategory,
+        sql: impl Into<TraceSql>,
+        counts: impl FnOnce(&T) -> TraceCounts,
+        statement: F,
+    ) -> Result<T, AppError>
+    where
+        F: Future<Output = Result<T, AppError>>,
+    {
+        let started = Instant::now();
+        let result = statement.await;
+        self.finish(category, sql, started, &result, counts);
+        result
     }
 }
 
@@ -539,8 +816,39 @@ pub trait DbSession: Send + Sync {
     /// (sqlgen does this); the driver returns `Value::Text`/`Null` plus the described type name so
     /// the caller can decode. MySQL/SQLite return typed values.
     async fn query(&self, sql: &str, params: &[Value]) -> Result<ResultSet, AppError>;
+    /// `query` for a statement the caller may cancel (a table load, a row count or an EXPLAIN
+    /// under the query time out): the driver puts the live handle into `cancel` while the
+    /// statement runs (`arm_cancel`), like `execute_cancellable`, and waits for cancel requests
+    /// still on their way before the connection is used again. A statement stopped by
+    /// `request_cancel` + `DbSession::cancel` fails with `Cancelled`. Every driver overrides this:
+    /// the default cannot be cancelled.
+    async fn query_cancellable(
+        &self,
+        sql: &str,
+        params: &[Value],
+        cancel: CancelSlot,
+    ) -> Result<ResultSet, AppError> {
+        let _ = cancel;
+        self.query(sql, params).await
+    }
     /// Runs a statement for its side effects (optionally with RETURNING rows).
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecOutcome, AppError>;
+    /// `execute` for a statement the caller may cancel (a Metrics Board object that writes, which
+    /// has a time limit): the driver puts the live handle into `cancel` while the statement runs
+    /// (`arm_cancel`), as `stream_query` does, and waits for cancel requests still on their way
+    /// before the connection is used again. A statement stopped by `request_cancel` +
+    /// `DbSession::cancel` fails with `Cancelled`, and the server rolls it back (a single
+    /// statement in autocommit); one that finished first returns its outcome. Every driver
+    /// overrides this: the default cannot be cancelled.
+    async fn execute_cancellable(
+        &self,
+        sql: &str,
+        params: &[Value],
+        cancel: CancelSlot,
+    ) -> Result<ExecOutcome, AppError> {
+        let _ = cancel;
+        self.execute(sql, params).await
+    }
     /// Runs several statements inside one transaction; rolls back on the first error or when a
     /// statement's `expect_affected` is not met.
     async fn transaction(&self, statements: Vec<TxStatement>)
@@ -575,6 +883,48 @@ pub trait DbSession: Send + Sync {
 
     /// Whether the editor session has an open transaction (`None` when unknown).
     fn in_transaction(&self) -> Option<bool>;
+
+    /// Takes the statements this session ran for the app since the last call (see `SqlTrace`),
+    /// oldest first: introspection, table loads, counts, writes, exports. Sessions that keep no
+    /// trace return nothing.
+    fn drain_trace(&self) -> Vec<TracedSql> {
+        Vec::new()
+    }
+
+    /// The trace this session records into (`None`: it keeps none).
+    fn sql_trace(&self) -> Option<&SqlTrace> {
+        None
+    }
+
+    /// `run_statement` for the statements the app runs for its own purposes (the EXPLAIN a button
+    /// asks for and the transaction it wraps around an Analyze, a SQL dump import): the statement
+    /// is recorded in the session's trace like every other statement the app runs, so the console
+    /// log shows what really ran. The SQL editor's runs call `run_statement` itself: the renderer
+    /// logs those with the text the user submitted, and tracing them too would log them twice.
+    async fn run_statement_traced(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        sink: &mut dyn RowSink,
+        cancel: CancelSlot,
+    ) -> Result<StatementOutcome, AppError> {
+        let started = Instant::now();
+        let result = self.run_statement(sql, max_rows, sink, cancel).await;
+        if let Some(trace) = self.sql_trace() {
+            let dialect = self.dialect();
+            trace.finish(
+                classify_statement(sql, dialect),
+                trace_sql(dialect, sql, &[]),
+                started,
+                &result,
+                |o| TraceCounts {
+                    rows: (o.result_sets > 0).then_some(o.row_count),
+                    affected: o.affected,
+                },
+            );
+        }
+        result
+    }
 
     /// Lock a whole editor run holds (`lock_editor_runs`), so the statements of concurrent runs
     /// on the shared editor session never interleave. `run_statement` itself does not take it.
@@ -669,7 +1019,10 @@ impl ConnectTarget<'_> {
 
 pub async fn connect(target: ConnectTarget<'_>) -> Result<Arc<dyn DbSession>, AppError> {
     match target.profile.driver {
-        Driver::Sqlite => Ok(Arc::new(sqlite::LiteSession::open(target.profile).await?)),
+        // A SQLite profile's password is its SQLCipher encryption key.
+        Driver::Sqlite => Ok(Arc::new(
+            sqlite::LiteSession::open_with_key(target.profile, target.password).await?,
+        )),
         Driver::Postgres => postgres::connect(target).await,
         Driver::Mysql => mysql::connect(target).await,
     }
@@ -765,6 +1118,182 @@ mod tests {
         assert_eq!(sink.sets.len(), 2);
         assert_eq!(sink.sets[0].rows, vec![vec![Value::Int(1)]]);
         assert_eq!(sink.sets[1].columns.len(), 2);
+    }
+
+    fn traced(sql: &str) -> TracedSql {
+        TracedSql {
+            sql: sql.into(),
+            category: TraceCategory::Data,
+            duration_ms: 1,
+            rows: None,
+            affected: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn trace_drains_oldest_first_and_keeps_the_newest_entries() {
+        let trace = SqlTrace::default();
+        assert!(trace.is_empty());
+        for i in 0..TRACE_CAP + 10 {
+            trace.record(traced(&format!("SELECT {i}")));
+        }
+        assert_eq!(trace.len(), TRACE_CAP);
+        // A clone shares the queue (a SQLite actor job holds one).
+        let drained = trace.clone().drain();
+        assert_eq!(drained.len(), TRACE_CAP);
+        assert_eq!(drained[0].sql, "SELECT 10");
+        assert_eq!(
+            drained.last().unwrap().sql,
+            format!("SELECT {}", TRACE_CAP + 9)
+        );
+        assert!(trace.drain().is_empty());
+    }
+
+    #[test]
+    fn trace_records_timing_counts_and_errors() {
+        let trace = SqlTrace::default();
+        let ok: Result<Vec<u8>, AppError> = trace.run(
+            TraceCategory::Data,
+            "SELECT 1",
+            |v: &Vec<u8>| TraceCounts::rows(v.len()),
+            || {
+                std::thread::sleep(Duration::from_millis(15));
+                Ok(vec![1, 2, 3])
+            },
+        );
+        assert!(ok.is_ok());
+        let bad: Result<(), AppError> = trace.run(
+            TraceCategory::Structure,
+            "SELECT nope",
+            |_| TraceCounts::NONE,
+            || Err(AppError::db("no such column")),
+        );
+        assert!(bad.is_err());
+        let entries = trace.drain();
+        assert_eq!(entries[0].rows, Some(3));
+        assert!(entries[0].duration_ms >= 10, "{entries:?}");
+        assert_eq!(entries[0].error, None);
+        assert_eq!(entries[1].category, TraceCategory::Structure);
+        assert_eq!(entries[1].error.as_deref(), Some("no such column"));
+        assert_eq!(entries[1].rows, None);
+    }
+
+    #[test]
+    fn trace_text_inlines_parameters_and_caps_long_statements() {
+        let shown = trace_text(
+            Dialect::Postgres,
+            "  SELECT * FROM t WHERE id = $1 AND name = $2 ",
+            &[Value::Int(5), Value::Text("o'brien".into())],
+        );
+        assert_eq!(shown, "SELECT * FROM t WHERE id = 5 AND name = 'o''brien'");
+        assert_eq!(trace_text(Dialect::Sqlite, "SELECT 1", &[]), "SELECT 1");
+        let long = format!(
+            "INSERT INTO t VALUES ('{}')",
+            "x".repeat(TRACE_SQL_MAX_CHARS * 2)
+        );
+        let capped = trace_text(Dialect::Mysql, &long, &[]);
+        assert!(capped.starts_with("INSERT INTO t VALUES ('xxx"));
+        assert!(
+            capped.contains("more characters */"),
+            "{}",
+            &capped[capped.len() - 40..]
+        );
+        assert!(capped.chars().count() < TRACE_SQL_MAX_CHARS + 60);
+    }
+
+    #[test]
+    fn the_trace_never_holds_a_password() {
+        let trace = SqlTrace::default();
+        let sql = "CREATE USER 'app'@'%' IDENTIFIED BY 'hunter2'";
+        // The statement itself ran with the password; what the trace keeps is masked.
+        let failed: Result<(), AppError> = trace.run(
+            classify_statement(sql, Dialect::Mysql),
+            trace_sql(Dialect::Mysql, sql, &[]),
+            |_| TraceCounts::NONE,
+            || {
+                Err(AppError::db(
+                    "You have an error in your SQL syntax near 'hunter2' at line 1",
+                ))
+            },
+        );
+        assert!(failed.is_err());
+        let entry = trace.drain().remove(0);
+        assert_eq!(entry.sql, "CREATE USER 'app'@'%' IDENTIFIED BY '********'");
+        assert_eq!(entry.category, TraceCategory::Structure);
+        assert_eq!(
+            entry.error.as_deref(),
+            Some("You have an error in your SQL syntax near '********' at line 1")
+        );
+
+        // A statement without a password keeps its error as the server wrote it.
+        let failed: Result<(), AppError> = trace.run(
+            TraceCategory::Data,
+            trace_sql(Dialect::Mysql, "SELECT hunter2", &[]),
+            |_| TraceCounts::NONE,
+            || Err(AppError::db("Unknown column 'hunter2'")),
+        );
+        assert!(failed.is_err());
+        assert_eq!(
+            trace.drain()[0].error.as_deref(),
+            Some("Unknown column 'hunter2'")
+        );
+    }
+
+    #[test]
+    fn a_password_too_short_to_mask_withholds_the_message() {
+        let shown = trace_sql(Dialect::Postgres, "ALTER ROLE r PASSWORD 'ab'", &[]);
+        assert_eq!(shown.text, "ALTER ROLE r PASSWORD '********'");
+        let message = shown.scrub("syntax error at or near \"ab\"".into());
+        assert!(!message.contains("ab"), "{message}");
+        assert!(message.contains("withheld"), "{message}");
+        // Without a password the message passes through.
+        assert_eq!(
+            trace_sql(Dialect::Postgres, "SELECT 1", &[]).scrub("x".into()),
+            "x"
+        );
+    }
+
+    #[test]
+    fn a_bound_password_is_masked_too() {
+        let shown = trace_sql(
+            Dialect::Postgres,
+            "ALTER ROLE r WITH PASSWORD $1",
+            &[Value::Text("hunter2".into())],
+        );
+        assert_eq!(shown.text, "ALTER ROLE r WITH PASSWORD '********'");
+    }
+
+    #[test]
+    fn classifies_what_the_app_ran_as_meta_or_data() {
+        use TraceCategory::{Data, Structure};
+        let pg = Dialect::Postgres;
+        for sql in [
+            "CREATE TABLE t (a int)",
+            "alter table t add column b int",
+            "DROP INDEX i",
+            "PRAGMA table_info(t)",
+            "SHOW TABLES",
+            "SELECT * FROM information_schema.tables",
+            "SELECT relname FROM pg_class",
+            "SELECT sql FROM sqlite_master WHERE type = 'view'",
+            "SELECT pg_get_viewdef(c.oid) FROM t c",
+        ] {
+            assert_eq!(classify_statement(sql, pg), Structure, "{sql}");
+        }
+        for sql in [
+            "SELECT COUNT(*) FROM users",
+            "SELECT * FROM t WHERE note = 'information_schema'",
+            "INSERT INTO t VALUES (1)",
+            "UPDATE users SET a = 1",
+            "SELECT 1 -- pg_class",
+        ] {
+            assert_eq!(classify_statement(sql, pg), Data, "{sql}");
+        }
+        assert_eq!(
+            classify_statement("SELECT * FROM mysql.user", Dialect::Mysql),
+            Structure
+        );
     }
 
     fn conn_id(handle: Option<CancelHandle>) -> Option<u32> {

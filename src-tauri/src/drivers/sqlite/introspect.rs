@@ -2,16 +2,19 @@
 
 use std::collections::BTreeMap;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, Row};
 
 use super::decode::kind_from_decltype;
+use crate::drivers::{SqlTrace, TraceCounts, trace_text};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::ddl::{index_predicate, sqlite_checks, trigger_tail};
+use crate::types::browse::TraceCategory;
 use crate::types::schema::{
     ColumnMeta, CompletionMetadata, ForeignKeyMeta, IndexMeta, SchemaInfo, TableKind, TableMeta,
     TableRef, TableSummary, TriggerMeta, ValueKind,
 };
+use crate::types::value::Value;
 
 fn schema_of(table: &TableRef) -> String {
     table
@@ -25,30 +28,66 @@ fn q(s: &str) -> String {
     Dialect::Sqlite.quote_ident(s)
 }
 
-pub fn list_schemas(conn: &mut Connection) -> Result<Vec<SchemaInfo>, AppError> {
-    let mut stmt = conn.prepare("PRAGMA database_list")?;
-    let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-    let mut out = Vec::new();
-    for name in rows {
-        let name = name?;
-        out.push(SchemaInfo {
-            is_default: name == "main",
-            name,
-        });
-    }
-    Ok(out)
+/// Runs a catalog statement (`?1`… bound to `args`), maps every row and records it in `trace` as
+/// a structure query: the console log shows the text the app really ran.
+fn rows<T>(
+    conn: &Connection,
+    trace: &SqlTrace,
+    sql: &str,
+    args: &[&str],
+    map: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Vec<T>, AppError> {
+    let shown: Vec<Value> = args.iter().map(|a| Value::Text((*a).to_string())).collect();
+    trace.run(
+        TraceCategory::Structure,
+        trace_text(Dialect::Sqlite, sql, &shown),
+        |found: &Vec<T>| TraceCounts::rows(found.len()),
+        || {
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), map)?;
+            Ok(rows.collect::<Result<Vec<T>, _>>()?)
+        },
+    )
 }
 
-pub fn list_tables(conn: &mut Connection, schema: &str) -> Result<Vec<TableSummary>, AppError> {
+/// `rows` for a statement that yields at most one row.
+fn row_opt<T>(
+    conn: &Connection,
+    trace: &SqlTrace,
+    sql: &str,
+    args: &[&str],
+    map: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Option<T>, AppError> {
+    Ok(rows(conn, trace, sql, args, map)?.into_iter().next())
+}
+
+pub fn list_schemas(conn: &mut Connection, trace: &SqlTrace) -> Result<Vec<SchemaInfo>, AppError> {
+    let names = rows(conn, trace, "PRAGMA database_list", &[], |r| {
+        r.get::<_, String>(1)
+    })?;
+    Ok(names
+        .into_iter()
+        .map(|name| SchemaInfo {
+            is_default: name == "main",
+            name,
+        })
+        .collect())
+}
+
+pub fn list_tables(
+    conn: &mut Connection,
+    trace: &SqlTrace,
+    schema: &str,
+) -> Result<Vec<TableSummary>, AppError> {
     let sql = format!(
         "SELECT name, type FROM {}.sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
         q(schema)
     );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let found = rows(conn, trace, &sql, &[], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
     let mut out = Vec::new();
-    for row in rows {
-        let (name, ty) = row?;
+    for (name, ty) in found {
         out.push(TableSummary {
             name,
             schema: Some(schema.to_string()),
@@ -67,37 +106,46 @@ pub fn list_tables(conn: &mut Connection, schema: &str) -> Result<Vec<TableSumma
 
 pub fn view_definition(
     conn: &mut Connection,
+    trace: &SqlTrace,
     table: &TableRef,
 ) -> Result<Option<String>, AppError> {
     let sql = format!(
         "SELECT sql FROM {}.sqlite_master WHERE type = 'view' AND name = ?1",
         q(&schema_of(table))
     );
-    Ok(conn
-        .query_row(&sql, params![table.name], |r| r.get::<_, Option<String>>(0))
-        .optional()?
-        .flatten())
+    Ok(row_opt(conn, trace, &sql, &[&table.name], |r| {
+        r.get::<_, Option<String>>(0)
+    })?
+    .flatten())
 }
 
-pub fn table_meta(conn: &mut Connection, table: &TableRef) -> Result<TableMeta, AppError> {
+pub fn table_meta(
+    conn: &mut Connection,
+    trace: &SqlTrace,
+    table: &TableRef,
+) -> Result<TableMeta, AppError> {
     let schema = schema_of(table);
-    let (kind, ddl): (TableKind, Option<String>) = conn
-        .query_row(
-            &format!(
-                "SELECT type, sql FROM {}.sqlite_master WHERE type IN ('table','view') AND name = ?1",
-                q(&schema)
-            ),
-            params![table.name],
-            |r| {
-                let ty: String = r.get(0)?;
-                Ok((
-                    if ty == "view" { TableKind::View } else { TableKind::Table },
-                    r.get::<_, Option<String>>(1)?,
-                ))
-            },
-        )
-        .optional()?
-        .ok_or_else(|| AppError::NotFound(format!("table {}", table.name)))?;
+    let (kind, ddl): (TableKind, Option<String>) = row_opt(
+        conn,
+        trace,
+        &format!(
+            "SELECT type, sql FROM {}.sqlite_master WHERE type IN ('table','view') AND name = ?1",
+            q(&schema)
+        ),
+        &[&table.name],
+        |r| {
+            let ty: String = r.get(0)?;
+            Ok((
+                if ty == "view" {
+                    TableKind::View
+                } else {
+                    TableKind::Table
+                },
+                r.get::<_, Option<String>>(1)?,
+            ))
+        },
+    )?
+    .ok_or_else(|| AppError::NotFound(format!("table {}", table.name)))?;
 
     let autoinc = ddl
         .as_deref()
@@ -107,24 +155,24 @@ pub fn table_meta(conn: &mut Connection, table: &TableRef) -> Result<TableMeta, 
     // Columns
     let mut columns = Vec::new();
     {
-        let mut stmt = conn.prepare(&format!(
-            "PRAGMA {}.table_xinfo({})",
-            q(&schema),
-            q(&table.name)
-        ))?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, i64>(6)?,
-            ))
-        })?;
-        for row in rows {
-            let (cid, name, decl, notnull, dflt, pk, hidden) = row?;
+        let found = rows(
+            conn,
+            trace,
+            &format!("PRAGMA {}.table_xinfo({})", q(&schema), q(&table.name)),
+            &[],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
+                ))
+            },
+        )?;
+        for (cid, name, decl, notnull, dflt, pk, hidden) in found {
             let decl_str = decl.clone().unwrap_or_default();
             let kind = kind_from_decltype(decl.as_deref());
             let kind = if decl_str.is_empty() {
@@ -182,36 +230,37 @@ pub fn table_meta(conn: &mut Connection, table: &TableRef) -> Result<TableMeta, 
     // Indexes
     let mut indexes = Vec::new();
     if kind == TableKind::Table {
-        let list: Vec<(String, bool, String, bool)> = {
-            let mut stmt = conn.prepare(&format!(
-                "PRAGMA {}.index_list({})",
-                q(&schema),
-                q(&table.name)
-            ))?;
-            let rows = stmt.query_map([], |r| {
+        let list: Vec<(String, bool, String, bool)> = rows(
+            conn,
+            trace,
+            &format!("PRAGMA {}.index_list({})", q(&schema), q(&table.name)),
+            &[],
+            |r| {
                 Ok((
                     r.get::<_, String>(1)?,
                     r.get::<_, i64>(2)? != 0,
                     r.get::<_, String>(3)?,
                     r.get::<_, i64>(4)? != 0,
                 ))
-            })?;
-            rows.collect::<Result<_, _>>()?
-        };
+            },
+        )?;
         for (name, unique, origin, partial) in list {
             let mut cols = Vec::new();
             {
-                let mut stmt =
-                    conn.prepare(&format!("PRAGMA {}.index_xinfo({})", q(&schema), q(&name)))?;
-                let rows = stmt.query_map([], |r| {
-                    Ok((
-                        r.get::<_, Option<String>>(2)?,
-                        r.get::<_, i64>(5)?,
-                        r.get::<_, i64>(3)?,
-                    ))
-                })?;
-                for row in rows {
-                    let (col, key, desc) = row?;
+                let found = rows(
+                    conn,
+                    trace,
+                    &format!("PRAGMA {}.index_xinfo({})", q(&schema), q(&name)),
+                    &[],
+                    |r| {
+                        Ok((
+                            r.get::<_, Option<String>>(2)?,
+                            r.get::<_, i64>(5)?,
+                            r.get::<_, i64>(3)?,
+                        ))
+                    },
+                )?;
+                for (col, key, desc) in found {
                     if key == 0 {
                         continue;
                     }
@@ -222,17 +271,17 @@ pub fn table_meta(conn: &mut Connection, table: &TableRef) -> Result<TableMeta, 
                     cols.push(c);
                 }
             }
-            let definition: Option<String> = conn
-                .query_row(
-                    &format!(
-                        "SELECT sql FROM {}.sqlite_master WHERE type = 'index' AND name = ?1",
-                        q(&schema)
-                    ),
-                    params![name],
-                    |r| r.get::<_, Option<String>>(0),
-                )
-                .optional()?
-                .flatten();
+            let definition: Option<String> = row_opt(
+                conn,
+                trace,
+                &format!(
+                    "SELECT sql FROM {}.sqlite_master WHERE type = 'index' AND name = ?1",
+                    q(&schema)
+                ),
+                &[&name],
+                |r| r.get::<_, Option<String>>(0),
+            )?
+            .flatten();
             let predicate = if partial {
                 definition
                     .as_deref()
@@ -258,25 +307,25 @@ pub fn table_meta(conn: &mut Connection, table: &TableRef) -> Result<TableMeta, 
     // Foreign keys (grouped by id)
     let mut foreign_keys: Vec<ForeignKeyMeta> = Vec::new();
     if kind == TableKind::Table {
-        let mut stmt = conn.prepare(&format!(
-            "PRAGMA {}.foreign_key_list({})",
-            q(&schema),
-            q(&table.name)
-        ))?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, String>(6)?,
-            ))
-        })?;
+        let found = rows(
+            conn,
+            trace,
+            &format!("PRAGMA {}.foreign_key_list({})", q(&schema), q(&table.name)),
+            &[],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
+                ))
+            },
+        )?;
         let mut groups: BTreeMap<i64, ForeignKeyMeta> = BTreeMap::new();
-        for row in rows {
-            let (id, _seq, ref_table, from, to, on_update, on_delete) = row?;
+        for (id, _seq, ref_table, from, to, on_update, on_delete) in found {
             let entry = groups.entry(id).or_insert_with(|| ForeignKeyMeta {
                 name: format!("fk_{}_{}", table.name, id),
                 columns: Vec::new(),
@@ -295,15 +344,17 @@ pub fn table_meta(conn: &mut Connection, table: &TableRef) -> Result<TableMeta, 
     // Triggers
     let mut triggers = Vec::new();
     {
-        let mut stmt = conn.prepare(&format!(
-            "SELECT name, sql FROM {}.sqlite_master WHERE type = 'trigger' AND tbl_name = ?1 ORDER BY name",
-            q(&schema)
-        ))?;
-        let rows = stmt.query_map(params![table.name], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-        })?;
-        for row in rows {
-            let (name, sql) = row?;
+        let found = rows(
+            conn,
+            trace,
+            &format!(
+                "SELECT name, sql FROM {}.sqlite_master WHERE type = 'trigger' AND tbl_name = ?1 ORDER BY name",
+                q(&schema)
+            ),
+            &[&table.name],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+        )?;
+        for (name, sql) in found {
             let def = sql.unwrap_or_default();
             let (timing, events) = parse_trigger_head(&def);
             triggers.push(TriggerMeta {
@@ -366,27 +417,57 @@ pub fn parse_trigger_head(def: &str) -> (Option<String>, Vec<String>) {
     (Some(timing.to_string()), events)
 }
 
-pub fn completion_metadata(conn: &mut Connection) -> Result<CompletionMetadata, AppError> {
+/// Every table's column names, for autocompletion. The per-table `PRAGMA table_info` statements
+/// are recorded as one trace entry (a database with hundreds of tables would otherwise flood the
+/// console log): the statements, one per line, with their total time.
+pub fn completion_metadata(
+    conn: &mut Connection,
+    trace: &SqlTrace,
+) -> Result<CompletionMetadata, AppError> {
     let mut meta = CompletionMetadata {
         default_schema: Some("main".into()),
         schemas: BTreeMap::new(),
     };
-    for schema in list_schemas(conn)? {
+    let quiet = SqlTrace::default();
+    let started = std::time::Instant::now();
+    let mut statements = Vec::new();
+    let mut columns = 0;
+    let mut failure: Option<AppError> = None;
+    for schema in list_schemas(conn, trace)? {
         let mut tables = BTreeMap::new();
-        for t in list_tables(conn, &schema.name)? {
-            let mut stmt = conn.prepare(&format!(
-                "PRAGMA {}.table_info({})",
-                q(&schema.name),
-                q(&t.name)
-            ))?;
-            let cols: Vec<String> = stmt
-                .query_map([], |r| r.get::<_, String>(1))?
-                .collect::<Result<_, _>>()?;
+        for t in list_tables(conn, trace, &schema.name)? {
+            let sql = format!("PRAGMA {}.table_info({})", q(&schema.name), q(&t.name));
+            let cols = match rows(conn, &quiet, &sql, &[], |r| r.get::<_, String>(1)) {
+                Ok(cols) => cols,
+                Err(e) => {
+                    failure = Some(e);
+                    statements.push(sql);
+                    break;
+                }
+            };
+            columns += cols.len();
+            statements.push(sql);
             tables.insert(t.name, cols);
         }
         meta.schemas.insert(schema.name, tables);
+        if failure.is_some() {
+            break;
+        }
     }
-    Ok(meta)
+    if !statements.is_empty() {
+        trace.record(crate::types::browse::TracedSql {
+            sql: crate::drivers::trace_text(Dialect::Sqlite, &statements.join(";\n"), &[]),
+            category: TraceCategory::Structure,
+            duration_ms: started.elapsed().as_millis() as u64,
+            rows: failure.is_none().then_some(columns as u64),
+            affected: None,
+            error: failure.as_ref().map(ToString::to_string),
+        });
+    }
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(meta),
+    }
 }
 
 #[cfg(test)]
@@ -407,7 +488,7 @@ mod tests {
         )
         .unwrap();
         let t = TableRef::new(None, "stock");
-        let meta = table_meta(&mut conn, &t).unwrap();
+        let meta = table_meta(&mut conn, &SqlTrace::default(), &t).unwrap();
         let plan = plan_ddl(
             Dialect::Sqlite,
             Some(&meta),
@@ -435,7 +516,7 @@ mod tests {
             conn.execute_batch(sql)
                 .unwrap_or_else(|e| panic!("{sql}: {e}"));
         }
-        let after = table_meta(&mut conn, &t).unwrap();
+        let after = table_meta(&mut conn, &SqlTrace::default(), &t).unwrap();
         let checks: Vec<(&str, &str)> = after
             .checks
             .iter()
@@ -467,7 +548,12 @@ mod tests {
              CREATE TRIGGER items_touch UPDATE OF qty ON items BEGIN SELECT 1; END;",
         )
         .unwrap();
-        let m = table_meta(&mut conn, &TableRef::new(None, "items")).unwrap();
+        let m = table_meta(
+            &mut conn,
+            &SqlTrace::default(),
+            &TableRef::new(None, "items"),
+        )
+        .unwrap();
         let checks: Vec<(&str, &str, Vec<&str>)> = m
             .checks
             .iter()
@@ -510,14 +596,19 @@ mod tests {
              CREATE TRIGGER trg AFTER UPDATE ON users BEGIN UPDATE users SET name = name WHERE id = NEW.id; END;",
         )
         .unwrap();
-        let tables = list_tables(&mut conn, "main").unwrap();
+        let tables = list_tables(&mut conn, &SqlTrace::default(), "main").unwrap();
         assert_eq!(
             tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
             ["posts", "pt", "users", "v"]
         );
         assert_eq!(tables[3].kind, TableKind::View);
 
-        let users = table_meta(&mut conn, &TableRef::new(None, "users")).unwrap();
+        let users = table_meta(
+            &mut conn,
+            &SqlTrace::default(),
+            &TableRef::new(None, "users"),
+        )
+        .unwrap();
         assert_eq!(users.primary_key, ["id"]);
         assert!(users.columns[0].is_auto_increment);
         assert_eq!(users.columns[0].extra.as_deref(), Some("AUTOINCREMENT"));
@@ -536,7 +627,12 @@ mod tests {
         );
         assert!(users.ddl.unwrap().starts_with("CREATE TABLE users"));
 
-        let posts = table_meta(&mut conn, &TableRef::new(Some("main"), "posts")).unwrap();
+        let posts = table_meta(
+            &mut conn,
+            &SqlTrace::default(),
+            &TableRef::new(Some("main"), "posts"),
+        )
+        .unwrap();
         assert_eq!(posts.foreign_keys.len(), 1);
         assert_eq!(posts.foreign_keys[0].ref_table.name, "users");
         assert_eq!(posts.foreign_keys[0].on_delete, "CASCADE");
@@ -547,11 +643,11 @@ mod tests {
                 .any(|i| i.name == "posts_user" && i.columns == ["user_id"])
         );
 
-        let pt = table_meta(&mut conn, &TableRef::new(None, "pt")).unwrap();
+        let pt = table_meta(&mut conn, &SqlTrace::default(), &TableRef::new(None, "pt")).unwrap();
         assert_eq!(pt.primary_key, ["post_id", "tag_id"]);
         assert!(!pt.columns[0].is_auto_increment);
 
-        let meta = completion_metadata(&mut conn).unwrap();
+        let meta = completion_metadata(&mut conn, &SqlTrace::default()).unwrap();
         assert!(meta.schemas["main"].contains_key("users"));
         assert_eq!(
             meta.schemas["main"]["users"],

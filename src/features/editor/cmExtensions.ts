@@ -2,7 +2,7 @@ import {
   autocompletion,
   closeBrackets,
   closeBracketsKeymap,
-  completionKeymap,
+  type CompletionSource,
 } from "@codemirror/autocomplete";
 import {
   addCursorAbove,
@@ -13,15 +13,17 @@ import {
   indentWithTab,
   toggleBlockComment,
   toggleBlockCommentByLine,
+  toggleComment,
+  toggleLineComment,
 } from "@codemirror/commands";
-import { MySQL, PostgreSQL, SQLite, sql, type SQLNamespace } from "@codemirror/lang-sql";
+import { MySQL, PostgreSQL, SQLite, type SQLNamespace } from "@codemirror/lang-sql";
 import {
   bracketMatching,
   foldGutter,
   foldKeymap,
   indentOnInput,
   indentUnit,
-  syntaxHighlighting,
+  LanguageSupport,
 } from "@codemirror/language";
 import { lintGutter, lintKeymap } from "@codemirror/lint";
 import {
@@ -63,9 +65,21 @@ import { actions, type ActionId } from "@/features/palette/actions";
 import { savedQueryCompletionExtension } from "@/features/queries/completion";
 import { KEYMAP, type ShortcutDef } from "@/lib/keys/keymap";
 import { runShortcut } from "@/lib/keys/useShortcuts";
-import type { Prefs } from "@/stores/prefs";
-import { editorTheme, sqlHighlightStyle } from "./cmTheme";
+import type { TableMeta, TableRef } from "@/lib/ipc";
+import type { EditorAcceptKey, Prefs } from "@/stores/prefs";
+import { sqlEditorTheme } from "./cmTheme";
 import { splitStatements, statementAt, type SqlDialect, type StatementRange } from "./scanner";
+import {
+  allFieldsSource,
+  autoWhitespace,
+  completionKeys,
+  functionCompletionSource,
+  joinCompletionSource,
+  keywordSource,
+  schemaSource,
+  type RoutineName,
+} from "./sqlCompletion";
+import type { TableColumns } from "./statementTables";
 
 /** The scanner dialect of the editor (provided by the language compartment). */
 export const dialectFacet = Facet.define<SqlDialect, SqlDialect>({
@@ -89,17 +103,89 @@ export interface LanguageConfig {
   upperCaseKeywords?: boolean;
   /** Connection profile of the tab: its saved queries' keywords complete (keyword binding). */
   profileId?: string | null;
+  /** schema → table → columns (the completion metadata): `users.*`, JOIN … ON, prefixes. */
+  tables?: TableColumns;
+  /** The default schema's functions and procedures. */
+  routines?: readonly RoutineName[];
+  /** Loads a table's metadata (its foreign keys) for JOIN … ON suggestions. */
+  tableMeta?: (table: TableRef) => Promise<TableMeta | null>;
+  /** ⚙ ▸ Autocomplete Options ▸ Tables (schemas, tables, columns, JOIN, `users.*`). */
+  completeTables?: boolean;
+  /** ⚙ ▸ Autocomplete Options ▸ Keywords. */
+  completeKeywords?: boolean;
+  /** ⚙ ▸ Autocomplete Options ▸ Automatically Prefix Schemas. */
+  prefixSchemas?: boolean;
+  /** ⚙ ▸ Autocomplete Options ▸ Automatically Add a Whitespace. */
+  addWhitespace?: boolean;
+  /** Functions complete with their closing bracket (Insert Closing Braces and Quotes). */
+  closeBrackets?: boolean;
 }
 
+/** The completion preferences a language configuration takes from `prefs`. */
+export function languagePrefsOf(
+  p: Readonly<Prefs>,
+): Pick<
+  LanguageConfig,
+  | "upperCaseKeywords"
+  | "completeTables"
+  | "completeKeywords"
+  | "prefixSchemas"
+  | "addWhitespace"
+  | "closeBrackets"
+> {
+  return {
+    upperCaseKeywords: p.editorUppercaseKeywords,
+    completeTables: p.editorCompleteTables,
+    completeKeywords: p.editorCompleteKeywords,
+    prefixSchemas: p.editorPrefixSchemas,
+    addWhitespace: p.editorAddWhitespace,
+    closeBrackets: p.editorCloseBrackets,
+  };
+}
+
+/**
+ * The SQL language with its completion sources: schema / table / column names (lang-sql, with
+ * the schema prefix when asked for), `users.*` → all fields, JOIN … ON from foreign keys,
+ * keywords, functions, saved-query keywords.
+ */
 export function languageExtension(cfg: LanguageConfig): Extension {
+  const d = CM_DIALECTS[cfg.dialect];
+  const upperCase = cfg.upperCaseKeywords ?? true;
+  const tablesOn = cfg.completeTables !== false;
+  const sources: CompletionSource[] = [];
+  if (tablesOn && cfg.schema)
+    sources.push(
+      schemaSource({
+        d,
+        dialect: cfg.dialect,
+        namespace: cfg.schema,
+        defaultSchema: cfg.defaultSchema,
+        tables: cfg.tables,
+        prefixSchemas: cfg.prefixSchemas === true,
+      }),
+    );
+  if (tablesOn && cfg.tables) {
+    const tables = { dialect: cfg.dialect, tables: cfg.tables, defaultSchema: cfg.defaultSchema };
+    sources.push(allFieldsSource(tables));
+    if (cfg.tableMeta)
+      sources.push(joinCompletionSource({ ...tables, upperCase, tableMeta: cfg.tableMeta }));
+  }
+  if (cfg.completeKeywords !== false) sources.push(keywordSource(d, cfg.dialect, upperCase));
+  sources.push(
+    functionCompletionSource({
+      dialect: cfg.dialect,
+      upperCase,
+      closeBrackets: cfg.closeBrackets !== false,
+      routines: cfg.routines,
+    }),
+  );
   return [
     dialectFacet.of(cfg.dialect),
-    sql({
-      dialect: CM_DIALECTS[cfg.dialect],
-      schema: cfg.schema,
-      defaultSchema: cfg.defaultSchema,
-      upperCaseKeywords: cfg.upperCaseKeywords ?? true,
-    }),
+    new LanguageSupport(
+      d.language,
+      sources.map((autocomplete) => d.language.data.of({ autocomplete })),
+    ),
+    cfg.addWhitespace ? autoWhitespace(new Set(Object.keys(cfg.tables ?? {}))) : [],
     savedQueryCompletionExtension(cfg.profileId ?? null),
   ];
 }
@@ -116,6 +202,12 @@ export interface EditorPrefs {
   closeBrackets?: boolean;
   /** The completion list opens while typing (default on); ⌃Space always asks. */
   suggestions?: boolean;
+  /** Which key accepts a suggestion (default either). */
+  acceptKey?: EditorAcceptKey;
+  /** Indent with tabs (`tabSize` wide) instead of spaces. */
+  indentWithTabs?: boolean;
+  /** The editor's scroll bars (default shown). */
+  showScrollers?: boolean;
 }
 
 /** The editor's slice of the preferences. */
@@ -128,8 +220,17 @@ export function editorPrefsOf(p: Readonly<Prefs>): EditorPrefs {
     showInvisibles: p.editorShowInvisibles,
     closeBrackets: p.editorCloseBrackets,
     suggestions: !p.editorDisableSuggestions,
+    acceptKey: p.editorAcceptKey,
+    indentWithTabs: p.editorIndentWithTabs,
+    showScrollers: p.editorShowScrollers,
   };
 }
+
+/** ⚙ ▸ Show Scrollers off: the editor still scrolls, without the bars. */
+const hiddenScrollers = EditorView.theme({
+  ".cm-scroller": { scrollbarWidth: "none" },
+  ".cm-scroller::-webkit-scrollbar": { display: "none" },
+});
 
 const fontThemes = new Map<number, Extension>();
 function fontTheme(px: number): Extension {
@@ -144,7 +245,8 @@ function fontTheme(px: number): Extension {
 export function prefsExtension(p: EditorPrefs): Extension {
   return [
     EditorState.tabSize.of(p.tabSize),
-    indentUnit.of(" ".repeat(p.tabSize)),
+    indentUnit.of(p.indentWithTabs ? "\t" : " ".repeat(p.tabSize)),
+    p.showScrollers === false ? hiddenScrollers : [],
     p.lineWrap ? EditorView.lineWrapping : [],
     fontTheme(p.fontSize),
     p.highlightCurrentQuery === false ? [] : statementHighlighter,
@@ -154,7 +256,10 @@ export function prefsExtension(p: EditorPrefs): Extension {
       activateOnTyping: p.suggestions !== false,
       activateOnTypingDelay: 80,
       maxRenderedOptions: 80,
+      // The keys come from `completionKeys` (the accept key is a preference).
+      defaultKeymap: false,
     }),
+    completionKeys(p.acceptKey ?? "both"),
   ];
 }
 
@@ -204,13 +309,37 @@ const lineEnds = ViewPlugin.fromClass(
   { decorations: (v) => v.decorations },
 );
 
+/** CodeMirror's own tab arrow, used as a mask so it takes the invisible-characters colour. */
+const TAB_ARROW = `url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="20"><path stroke="black" stroke-width="1" fill="none" d="M1 10H196L190 5M190 15L196 10"/></svg>')`;
+
 /** "Show Invisible Characters": dots for spaces, arrows for tabs, `¬` for line ends. */
 const invisibles: Extension = [
   highlightWhitespace(),
   lineEnds,
+  // The colour is Settings ▸ Appearance ▸ SQL editor ▸ Invisible characters (`--syn-invisible`).
+  // CodeMirror draws the dots and tab arrows as grey images; these redraw them in that colour.
   EditorView.theme({
-    ".cm-eol-marker": { color: "var(--muted-foreground)", opacity: "0.45", pointerEvents: "none" },
-    ".cm-highlightSpace, .cm-highlightTab": { color: "var(--muted-foreground)" },
+    ".cm-eol-marker": {
+      color: "var(--syn-invisible, var(--muted-foreground))",
+      opacity: "0.45",
+      pointerEvents: "none",
+    },
+    ".cm-highlightSpace": {
+      backgroundImage:
+        "radial-gradient(circle at 50% 55%, var(--syn-invisible, var(--muted-foreground)) 20%, transparent 5%)",
+    },
+    ".cm-highlightTab": {
+      backgroundImage: "none",
+      backgroundColor: "var(--syn-invisible, var(--muted-foreground))",
+      maskImage: TAB_ARROW,
+      WebkitMaskImage: TAB_ARROW,
+      maskSize: "auto 100%",
+      WebkitMaskSize: "auto 100%",
+      maskPosition: "right 90%",
+      WebkitMaskPosition: "right 90%",
+      maskRepeat: "no-repeat",
+      WebkitMaskRepeat: "no-repeat",
+    },
   }),
 ];
 
@@ -341,6 +470,11 @@ export function actionKeymap(): Extension {
       return true;
     },
   }));
+  // Toggle Line / Block Comment (Keymap ▸ SQL Editor, remappable): run on this editor itself.
+  for (const d of KEYMAP) {
+    const command = d.scope === "editor" ? COMMENT_COMMANDS[d.id] : undefined;
+    if (command) bindings.push({ key: toCmKey(d.keys), preventDefault: true, run: command });
+  }
   // ⌘R would reload the webview and throw the buffer away.
   bindings.push({ key: "Mod-r", preventDefault: true, run: () => true });
   return Prec.highest(keymap.of(bindings));
@@ -375,17 +509,22 @@ export const toggleBlockCommentSmart: Command = (view) =>
     ? toggleBlockCommentByLine(view)
     : toggleBlockComment(view);
 
+/** The comment toggles' KEYMAP entries (`editorCommand`), bound by `actionKeymap`. */
+const COMMENT_COMMANDS: Partial<Record<ActionId, Command>> = {
+  "query.comment-line": toggleLineComment,
+  "query.comment-block": toggleBlockCommentSmart,
+};
+
 /**
- * TablePlus's multi-caret and comment keys on top of CodeMirror's defaults (which already give
- * ⌘-click to add a caret, ⌘D for the next occurrence, Esc back to one caret and ⌘/ for a line
- * comment): ⌃⇧↑ / ⌃⇧↓ add a caret above / below, ⌃⌘G selects every occurrence and ⌥⌘/ toggles
- * a block comment.
+ * TablePlus's multi-caret keys on top of CodeMirror's defaults (which already give ⌘-click to add
+ * a caret, ⌘D for the next occurrence and Esc back to one caret): ⌃⇧↑ / ⌃⇧↓ add a caret above /
+ * below, ⌃⌘G selects every occurrence. The comment toggles (⌘/, ⌥⌘/) come from KEYMAP instead
+ * (`actionKeymap`), so Settings ▸ Shortcuts can remap them.
  */
 export const multiCaretKeymap: readonly KeyBinding[] = [
   { key: "Ctrl-Shift-ArrowUp", run: addCursorAbove, preventDefault: true },
   { key: "Ctrl-Shift-ArrowDown", run: addCursorBelow, preventDefault: true },
   { key: "Ctrl-Alt-g", mac: "Ctrl-Mod-g", run: selectAllOccurrences, preventDefault: true },
-  { key: "Mod-Alt-/", run: toggleBlockCommentSmart, preventDefault: true },
 ];
 
 export interface EditorSetup {
@@ -412,8 +551,8 @@ export function editorExtensions(setup: EditorSetup): Extension[] {
     highlightActiveLine(),
     highlightSelectionMatches(),
     search({ top: true }),
-    syntaxHighlighting(sqlHighlightStyle),
-    editorTheme,
+    // Syntax colours, the quote-kind colours and the chrome: shared with the other SQL editors.
+    sqlEditorTheme,
     languageConf.of(languageExtension(setup.language)),
     prefsConf.of(prefsExtension(setup.prefs)),
     EditorView.updateListener.of(setup.onUpdate),
@@ -421,11 +560,11 @@ export function editorExtensions(setup: EditorSetup): Extension[] {
     actionKeymapConf.of(actionKeymap()),
     keymap.of([
       ...multiCaretKeymap,
-      ...defaultKeymap,
+      // ⌘/ comes from KEYMAP (`actionKeymap`): a remapped Toggle Line Comment frees it.
+      ...defaultKeymap.filter((b) => b.run !== toggleComment),
       ...searchKeymap,
       ...historyKeymap,
       ...foldKeymap,
-      ...completionKeymap,
       ...lintKeymap,
       indentWithTab,
     ]),

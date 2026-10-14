@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { openToolTab } from "@/features/tabs/toolTabs";
 import type {
   Dialect,
   ObjectTarget,
@@ -51,9 +52,29 @@ export function closeObjectDialog(): void {
   useObjectsStore.setState({ dialog: null });
 }
 
-/** Item Overview (spec §11.2) of `schema`. */
+/** The Item Overview's tool tab (`registerToolTab`, ItemOverview.tsx). */
+export const OVERVIEW_TOOL = "overview";
+
+export interface OverviewParams {
+  schema: string;
+}
+
+export const overviewTitle = (params: OverviewParams): string => `Overview: ${params.schema}`;
+
+/** Saved / handed-over params of an overview tab (null when they are not usable). */
+export function overviewParams(raw: unknown): OverviewParams | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const schema = (raw as { schema?: unknown }).schema;
+  return typeof schema === "string" && schema !== "" ? { schema } : null;
+}
+
+/**
+ * Item Overview (spec §11.2) of `schema`: opens as a tab of the connection's workspace (the
+ * schema's open overview tab is shown again).
+ */
 export function openItemOverview(request: OverviewRequest): void {
-  useObjectsStore.setState({ overview: request });
+  const params: OverviewParams = { schema: request.schema };
+  openToolTab(request.connectionId, OVERVIEW_TOOL, params, { title: overviewTitle(params) });
 }
 
 export function closeItemOverview(): void {

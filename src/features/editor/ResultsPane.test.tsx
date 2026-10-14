@@ -3,10 +3,11 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useActivePendingCount } from "@/app/useActivePendingCount";
-import { resetExportStore } from "@/features/export/store";
+import { CommitTestHost } from "@/features/commit/testHost";
+import { resetExportStore, useExportStore } from "@/features/export/store";
 import { actions } from "@/features/palette/actions";
 import { READ_ONLY_RESULT } from "@/features/results/editability";
-import { CLOSED_PREVIEW, pendingForTab, useResultsStore } from "@/features/results/store";
+import { pendingForTab, useResultsStore } from "@/features/results/store";
 import { ipc, type ConnectionInfo } from "@/lib/ipc";
 import { resetMockQueryState } from "@/lib/ipc/mock/query";
 import { useConnectionsStore } from "@/stores/connections";
@@ -72,7 +73,7 @@ beforeEach(() => {
     queryCounter: 0,
   });
   useQueryTabsStore.setState({ slices: {} });
-  useResultsStore.setState({ edits: {}, editability: {}, pins: {}, preview: CLOSED_PREVIEW });
+  useResultsStore.setState({ edits: {}, editability: {}, pins: {} });
   resetExportStore();
 });
 
@@ -96,6 +97,7 @@ function setup() {
     <QueryClientProvider client={qc}>
       <TooltipProvider>
         <QueryTab tab={tab} />
+        <CommitTestHost />
         <PendingProbe />
       </TooltipProvider>
     </QueryClientProvider>,
@@ -129,7 +131,9 @@ describe("results pane", { timeout: 20_000 }, () => {
     const { id, run } = setup();
     act(() => useQueryTabsStore.getState().update(id, { rowLimit: 100 }));
     await run("select * from events_big");
-    expect(await within(footer()).findByText("auto limited to 100 rows")).toBeInTheDocument();
+    expect(
+      await within(footer()).findByText("100 rows (auto limited 100 rows)"),
+    ).toBeInTheDocument();
   });
 
   it("toggles the row numbers (a preference)", async () => {
@@ -152,13 +156,17 @@ describe("results pane", { timeout: 20_000 }, () => {
     await act(() => actions.run("grid.new-row"));
     expect(pendingForTab(useResultsStore.getState(), id)).toBe(1);
     expect(screen.getByTestId("pending")).toHaveTextContent("1");
-    expect(actions.has("grid.commit")).toBe(true);
-    // ⌘S in the editor commits instead of saving the file.
+    await waitFor(() => expect(actions.has("grid.commit")).toBe(true));
+    // ⌘S in the editor commits (with the workspace's other changes) instead of saving the file.
     await act(() => actions.run("query.save"));
     await waitFor(() => expect(pendingForTab(useResultsStore.getState(), id)).toBe(0));
     expect(resultData.rowCount(resultId)).toBe(6);
     expect(toast.success).toHaveBeenCalledWith(
-      expect.stringMatching(/^Applied 1 change/),
+      expect.stringMatching(/^Committed 1 change/),
+      expect.anything(),
+    );
+    expect(toast.message).toHaveBeenCalledWith(
+      "The result's rows were updated in place",
       expect.objectContaining({ action: expect.objectContaining({ label: "Re-run" }) }),
     );
     expect(getQueryTab(id).filePath).toBeNull();
@@ -169,8 +177,10 @@ describe("results pane", { timeout: 20_000 }, () => {
     await run("select id, email from users limit 5");
     await waitFor(() => expect(actions.has("grid.new-row")).toBe(true));
     await act(() => actions.run("grid.new-row"));
+    await waitFor(() => expect(actions.has("grid.discard")).toBe(true));
     await act(() => actions.run("grid.discard"));
     expect(pendingForTab(useResultsStore.getState(), id)).toBe(0);
+    expect(toast.message).toHaveBeenCalledWith("Discarded 1 change");
   });
 
   it("says why a computed result cannot be edited", async () => {
@@ -224,6 +234,65 @@ describe("results pane", { timeout: 20_000 }, () => {
       expect.stringMatching(/Result 1 · 3 rows/),
     ]);
     expect(Object.values(useResultsStore.getState().pins[id] ?? [])).toHaveLength(1);
+  });
+
+  describe("right-click Export Result…", () => {
+    const rightClick = (el: Element) => {
+      fireEvent.pointerDown(el, { button: 2 });
+      fireEvent.contextMenu(el);
+    };
+    const cellOf = (root: ParentNode, r: number, c: number) =>
+      root.querySelector<HTMLElement>(`[data-cell][data-r="${r}"][data-c="${c}"]`)!;
+    const exported = () => {
+      const { open, target } = useExportStore.getState();
+      return open && target?.source.kind === "rows" ? target.source : null;
+    };
+
+    it("a result cell's menu opens the export dialog on that result", async () => {
+      const { run } = setup();
+      await run("select id, email from users limit 5");
+      const cell = await waitFor(() => cellOf(document.body, 0, 1));
+      rightClick(cell);
+      fireEvent.click(await screen.findByRole("menuitem", { name: /^Export Result/ }));
+      await waitFor(() => expect(exported()).not.toBeNull());
+      expect(exported()).toMatchObject({ kind: "rows", label: "Result 1" });
+      expect(exported()!.rows).toHaveLength(5);
+      expect(useExportStore.getState().target?.connectionId).toBe(info.connectionId);
+      // It is the result menu: no per-page export of a table's grid.
+      expect(
+        screen.queryByRole("menuitem", { name: /Export Current Page/ }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("in a stacked tab it exports the result that was clicked, and selects it", async () => {
+      setPref("resultViewMode", "append");
+      const { id, run } = setup();
+      await run("select id from users limit 2; select id from posts limit 3;");
+      const second = await screen.findByRole("region", { name: "Result 2" });
+      await waitFor(() => expect(cellOf(second, 0, 0)).toBeTruthy());
+      rightClick(cellOf(second, 0, 0));
+      fireEvent.click(await screen.findByRole("menuitem", { name: /^Export Result/ }));
+      await waitFor(() => expect(exported()).not.toBeNull());
+      expect(exported()).toMatchObject({ label: "Result 2" });
+      expect(exported()!.rows).toHaveLength(3);
+      expect(getQueryTab(id).pane).toBe(getQueryTab(id).run!.results[1]!.id);
+    });
+
+    it("a pinned result exports its own rows", async () => {
+      const { run } = setup();
+      await run("select id from users limit 2");
+      fireEvent.click(await within(footer()).findByRole("button", { name: "Pin Result" }));
+      await screen.findByRole("tab", { name: /Pinned.*Result 1 · 2 rows/ });
+      await run("select id from posts limit 3");
+      // Back to the pinned result, then its grid's menu.
+      fireEvent.click(screen.getByRole("tab", { name: /Pinned.*Result 1 · 2 rows/ }));
+      const cell = await waitFor(() => cellOf(document.body, 0, 0));
+      rightClick(cell);
+      fireEvent.click(await screen.findByRole("menuitem", { name: /^Export Result/ }));
+      await waitFor(() => expect(exported()).not.toBeNull());
+      expect(exported()!.rows).toHaveLength(2);
+      expect(exported()!.label).toMatch(/Result 1/);
+    });
   });
 
   it("cancels a statement past the query time out", async () => {

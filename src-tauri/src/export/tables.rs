@@ -1,7 +1,7 @@
 //! Multi-table export (File ▸ Export… on several tables, ⇧⌘E without a table): every table in
 //! full (no filter), either one file per table in a folder (`<table>.<ext>`) or every table in
 //! one file — a SQL script (laid out by `structure`: DROPs, tables, rows, then keys and
-//! triggers) or an Excel workbook with one sheet per table.
+//! triggers), an HTML page with a table per table, or an Excel workbook with one sheet per table.
 //!
 //! All or nothing: every file is written under a temporary name and moved into place only when
 //! every table was exported; an error or a cancel leaves no file behind (nor a half-replaced
@@ -25,11 +25,15 @@ use crate::types::export::{
 };
 use crate::types::schema::{TableMeta, TableRef};
 
+use super::encoding::{Encoded, effective_encoding, html_charset};
 use super::file::{Compressed, TempTarget, validate_folder, validate_target};
 use super::structure::{ScriptTable, closing_text, context_for, same_table, script_layout};
-use super::writer::{FormatSpec, RowWriter, SqlScript};
+use super::writer::{FormatSpec, HtmlWriter, RowWriter, SqlScript};
 use super::xlsx::XlsxWriter;
-use super::{FileOut, Plan, blocking, file_out, stream_plan, sync_file, table_query};
+use super::{
+    FileOut, Plan, blocking, file_out, mysql_long_lat, replaced_count, session_time_zone,
+    stream_plan, sync_file, table_query,
+};
 
 /// Longest file name stem (bytes) of a per-table file.
 const STEM_MAX: usize = 200;
@@ -44,6 +48,7 @@ pub fn file_extension(format: &ExportFormat) -> &'static str {
         ExportFormat::SqlInsert { gzip: true, .. } => "sql.gz",
         ExportFormat::SqlInsert { .. } => "sql",
         ExportFormat::Xlsx { .. } => "xlsx",
+        ExportFormat::Html => "html",
     }
 }
 
@@ -90,6 +95,17 @@ pub fn plan_outputs(
     tables: &[TableRef],
     format: &ExportFormat,
 ) -> Result<Vec<OutputFile>, AppError> {
+    plan_outputs_in(layout, target, tables, format, false)
+}
+
+/// `plan_outputs`; `create_folder` creates a missing folder of a file-per-table export first.
+pub fn plan_outputs_in(
+    layout: ExportLayout,
+    target: &str,
+    tables: &[TableRef],
+    format: &ExportFormat,
+    create_folder: bool,
+) -> Result<Vec<OutputFile>, AppError> {
     if tables.is_empty() {
         return Err(AppError::InvalidInput("no tables to export".into()));
     }
@@ -98,7 +114,7 @@ pub fn plan_outputs(
         ExportLayout::SingleFile => {
             if !matches!(
                 format,
-                ExportFormat::SqlInsert { .. } | ExportFormat::Xlsx { .. }
+                ExportFormat::SqlInsert { .. } | ExportFormat::Xlsx { .. } | ExportFormat::Html
             ) {
                 return Err(AppError::InvalidInput(
                     "CSV and JSON exports write one file per table".into(),
@@ -110,6 +126,9 @@ pub fn plan_outputs(
             }])
         }
         ExportLayout::FilePerTable => {
+            if create_folder {
+                create_export_folder(target)?;
+            }
             let dir = validate_folder(target)?;
             let plain: Vec<String> = tables.iter().map(|t| file_stem(&t.name)).collect();
             let clashes = |stem: &str| {
@@ -148,23 +167,54 @@ pub fn plan_outputs(
     }
 }
 
+/// Creates the folder of a file-per-table export (absolute, no `..`) and its parents.
+fn create_export_folder(target: &str) -> Result<(), AppError> {
+    let dir = PathBuf::from(target);
+    if target.trim().is_empty() || !dir.is_absolute() {
+        return Err(AppError::InvalidInput(
+            "the export folder must be an absolute path".into(),
+        ));
+    }
+    if dir
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(AppError::InvalidInput(
+            "the export folder cannot contain ..".into(),
+        ));
+    }
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| AppError::Io(format!("cannot create \"{}\": {e}", dir.display())))
+}
+
+/// A table's heading in a multi-table HTML page: `schema.table`, or the name alone.
+fn table_heading(table: &TableRef) -> String {
+    match table.schema.as_deref().filter(|s| !s.is_empty()) {
+        Some(schema) => format!("{schema}.{}", table.name),
+        None => table.name.clone(),
+    }
+}
+
 /// Writes one table's INSERTs into `out`. Returns the rows written.
+#[allow(clippy::too_many_arguments)]
 async fn write_sql_rows<W: Write + Send>(
     session: &dyn DbSession,
     meta: &TableMeta,
     batch_size: u32,
+    mysql_long_lat: bool,
     out: &mut W,
     cancel: &CancellationToken,
     on_rows: &mut (dyn FnMut(u64) + Send),
     export_id: &str,
 ) -> Result<u64, AppError> {
     let dialect = session.dialect();
-    let query = table_query(dialect, meta, None, None, &[], None, true)?;
+    let query = table_query(dialect, meta, None, None, &[], None, 0, true)?;
     let spec = FormatSpec::Insert {
         dialect,
         table: script_table(dialect, &meta.table),
         batch_size,
         overriding_system_value: query.identity_always,
+        mysql_long_lat,
     };
     let mut writer = RowWriter::new(spec, &mut *out);
     let rows = stream_plan(
@@ -203,7 +253,15 @@ pub async fn run_export_tables(
             "table metadata does not match the request",
         ));
     }
-    let outputs = plan_outputs(req.layout, &req.target, &req.tables, &req.format)?;
+    let outputs = plan_outputs_in(
+        req.layout,
+        &req.target,
+        &req.tables,
+        &req.format,
+        req.create_folder,
+    )?;
+    let text_encoding = effective_encoding(&req.format, req.encoding);
+    let replaced = Arc::new(AtomicU64::new(0));
     let script = SqlScript::of(&req.format);
     if let Some(s) = script
         && !(s.content || s.structure || s.drop_table)
@@ -268,7 +326,17 @@ pub async fn run_export_tables(
         match &req.format {
             ExportFormat::SqlInsert { .. } => {
                 let script = script.unwrap_or_default();
-                let mut out = Compressed::new(out, script.gzip);
+                let long_lat = script.content && mysql_long_lat(session).await;
+                let zone = if script.content {
+                    session_time_zone(session).await
+                } else {
+                    None
+                };
+                let mut out = Encoded::new(
+                    Compressed::new(out, script.gzip),
+                    text_encoding,
+                    replaced.clone(),
+                );
                 let wants_header = script.drop_table || script.structure || order.len() > 1;
                 let mut tables = Vec::with_capacity(order.len());
                 for &i in &order {
@@ -280,7 +348,7 @@ pub async fn run_export_tables(
                         context_for(session, meta, script.structure, order.len() > 1).await;
                     tables.push(ScriptTable { meta, context });
                 }
-                let layout = script_layout(dialect, &tables, script, wants_header);
+                let layout = script_layout(dialect, &tables, script, wants_header, zone.as_deref());
                 out.write_all(layout.opening.as_bytes())?;
                 for &k in &layout.order {
                     let i = order[k];
@@ -292,6 +360,7 @@ pub async fn run_export_tables(
                             session,
                             &metas[i],
                             batch_size,
+                            long_lat,
                             &mut out,
                             &cancel,
                             &mut on_rows,
@@ -306,14 +375,14 @@ pub async fn run_export_tables(
                 }
                 out.write_all(closing_text(&layout.closing, false).as_bytes())?;
                 out.write_all(script_lines(&layout.footer).as_bytes())?;
-                blocking("finishing", move || sync_file(out.finish()?)).await?;
+                blocking("finishing", move || sync_file(out.finish()?.finish()?)).await?;
             }
             ExportFormat::Xlsx { header } => {
                 let mut book = XlsxWriter::new(out, *header);
                 for &i in &order {
                     report(i, 0, done_rows);
                     book.next_sheet(&metas[i].table.name);
-                    let query = table_query(dialect, &metas[i], None, None, &[], None, false)?;
+                    let query = table_query(dialect, &metas[i], None, None, &[], None, 0, false)?;
                     let base = done_rows;
                     let mut on_rows = |rows: u64| report(i, rows, base + rows);
                     let rows = stream_plan(
@@ -332,14 +401,55 @@ pub async fn run_export_tables(
                 }
                 blocking("finishing", move || sync_file(book.finish()?)).await?;
             }
-            ExportFormat::Csv { .. } | ExportFormat::Json { .. } => {
+            ExportFormat::Html if order.len() > 1 => {
+                let title = output
+                    .path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Export".into());
+                let mut page = HtmlWriter::new(
+                    Encoded::new(out, text_encoding, replaced.clone()),
+                    &title,
+                    html_charset(text_encoding),
+                );
+                for &i in &order {
+                    if cancel.is_cancelled() {
+                        return Err(AppError::Cancelled);
+                    }
+                    report(i, 0, done_rows);
+                    page.next_table(&table_heading(&metas[i].table))?;
+                    let query = table_query(dialect, &metas[i], None, None, &[], None, 0, false)?;
+                    let base = done_rows;
+                    let mut on_rows = |rows: u64| report(i, rows, base + rows);
+                    let rows = stream_plan(
+                        session,
+                        &Plan::Query(query),
+                        &mut page,
+                        None,
+                        &cancel,
+                        &mut on_rows,
+                        &req.export_id,
+                    )
+                    .await?;
+                    page.end_table()?;
+                    done_rows += rows;
+                    record(i, rows, &mut exported);
+                }
+                blocking("finishing", move || sync_file(page.finish()?.finish()?)).await?;
+            }
+            ExportFormat::Csv { .. } | ExportFormat::Json { .. } | ExportFormat::Html => {
                 // One table per file (the plan refuses a single CSV / JSON file).
                 let i = order[0];
                 report(i, 0, done_rows);
                 let meta = &metas[i];
-                let spec = FormatSpec::from_request(&req.format, dialect, Some(&meta.table.name))?;
-                let query = table_query(dialect, meta, None, None, &[], None, false)?;
-                let mut writer = RowWriter::new(spec, out);
+                let mut spec =
+                    FormatSpec::from_request(&req.format, dialect, Some(&meta.table.name))?;
+                if let FormatSpec::Html { charset, .. } = &mut spec {
+                    *charset = html_charset(text_encoding);
+                }
+                let query = table_query(dialect, meta, None, None, &[], None, 0, false)?;
+                let mut writer =
+                    RowWriter::new(spec, Encoded::new(out, text_encoding, replaced.clone()));
                 let base = done_rows;
                 let mut on_rows = |rows: u64| report(i, rows, base + rows);
                 let rows = stream_plan(
@@ -354,7 +464,7 @@ pub async fn run_export_tables(
                 .await?;
                 done_rows += rows;
                 record(i, rows, &mut exported);
-                blocking("finishing", move || sync_file(writer.finish()?)).await?;
+                blocking("finishing", move || sync_file(writer.finish()?.finish()?)).await?;
             }
         }
         finished.push(target);
@@ -387,6 +497,7 @@ pub async fn run_export_tables(
         rows: done_rows,
         bytes,
         duration_ms: started.elapsed().as_millis() as u64,
+        replaced: replaced_count(&replaced),
     })
 }
 
@@ -478,9 +589,49 @@ mod tests {
         assert_eq!(plan[0].tables, vec![0, 1]);
         assert!(plan_outputs(ExportLayout::SingleFile, &file, &tables, &csv()).is_err());
         assert!(plan_outputs(ExportLayout::SingleFile, &file, &[], &sql(false)).is_err());
+        // HTML: one page with a table per table.
+        assert!(
+            plan_outputs(
+                ExportLayout::SingleFile,
+                &file,
+                &tables,
+                &ExportFormat::Html
+            )
+            .is_ok()
+        );
         assert!(plan_outputs(ExportLayout::FilePerTable, "relative", &tables, &csv()).is_err());
         let missing = dir.path().join("nope").to_string_lossy().into_owned();
         assert!(plan_outputs(ExportLayout::FilePerTable, &missing, &tables, &csv()).is_err());
+    }
+
+    #[test]
+    fn creates_the_folder_of_a_file_per_table_export_when_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("tabler_dev").join("csv");
+        let target = nested.to_string_lossy().into_owned();
+        let tables = [TableRef::new(Some("public"), "users")];
+        assert!(plan_outputs(ExportLayout::FilePerTable, &target, &tables, &csv()).is_err());
+        let plan =
+            plan_outputs_in(ExportLayout::FilePerTable, &target, &tables, &csv(), true).unwrap();
+        assert!(nested.is_dir());
+        assert_eq!(plan[0].path, nested.join("users.csv"));
+        let up = dir.path().join("a").join("..").join("b");
+        assert!(
+            plan_outputs_in(
+                ExportLayout::FilePerTable,
+                &up.to_string_lossy(),
+                &tables,
+                &csv(),
+                true
+            )
+            .is_err()
+        );
+        assert_eq!(
+            table_heading(&TableRef::new(Some("public"), "users")),
+            "public.users"
+        );
+        assert_eq!(table_heading(&TableRef::new(None, "t")), "t");
+        assert_eq!(file_extension(&ExportFormat::Html), "html");
     }
 
     #[test]

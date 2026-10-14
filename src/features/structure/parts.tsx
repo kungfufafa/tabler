@@ -3,6 +3,8 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { actions } from "@/features/palette/actions";
 import { cn } from "@/lib/utils";
+import { MAX_PREFIX_LENGTH } from "./columnEdits";
+import { entryBase, entryLength, withEntryLength } from "./model";
 
 /**
  * Header row of the section tables: sticks right under the section bar while the body scrolls
@@ -26,7 +28,10 @@ export function SectionHeader({
   children?: ReactNode;
 }) {
   return (
-    <div className="border-border bg-surface-2 sticky top-0 left-0 z-10 flex h-8 w-[100cqw] max-w-full min-w-0 items-center gap-2 border-y px-3">
+    <div
+      data-section-header
+      className="border-border bg-surface-2 sticky top-0 left-0 z-10 flex h-8 w-[100cqw] max-w-full min-w-0 items-center gap-2 border-y px-3"
+    >
       <h3 className="text-muted-foreground text-[11px] font-semibold tracking-wide uppercase">
         {title}
       </h3>
@@ -208,9 +213,17 @@ export function CellInput({
   );
 }
 
+/** MySQL index prefixes: which columns can take a length, and which cannot go without one. */
+export interface PrefixLengths {
+  eligible: (column: string) => boolean;
+  required: (column: string) => boolean;
+}
+
 /**
  * Ordered multi-select as chips: clicking appends to the selection (the badge shows the position),
- * clicking again removes it.
+ * clicking again removes it. With `lengths` (MySQL index columns) every picked char / text / blob
+ * column gets a small length input that turns its entry into `name(10)`; entries are matched to
+ * the chips by their column name, and a TEXT / BLOB column left without a length is flagged.
  */
 export function OrderedPicker({
   options,
@@ -218,41 +231,88 @@ export function OrderedPicker({
   onChange,
   label,
   empty,
+  lengths,
 }: {
   options: readonly string[];
   value: readonly string[];
   onChange: (next: string[]) => void;
   label: string;
   empty?: string;
+  lengths?: PrefixLengths;
 }) {
   if (options.length === 0)
     return <p className="text-muted-foreground text-[11px]">{empty ?? "Nothing to pick"}</p>;
+  const find = (name: string) =>
+    lengths ? value.findIndex((e) => entryBase(e) === name) : value.indexOf(name);
+  const unsized = lengths
+    ? value.flatMap((e) =>
+        lengths.required(entryBase(e)) && entryLength(e) === null ? [entryBase(e)] : [],
+      )
+    : [];
   return (
-    <div role="group" aria-label={label} className="flex flex-wrap gap-1">
-      {options.map((name) => {
-        const pos = value.indexOf(name);
-        const on = pos >= 0;
-        return (
-          <button
-            key={name}
-            type="button"
-            aria-pressed={on}
-            onClick={() => onChange(on ? value.filter((v) => v !== name) : [...value, name])}
-            className={cn(
-              "border-border hover:bg-muted focus-visible:ring-ring/50 inline-flex h-6 items-center gap-1 rounded-md border px-1.5 font-mono text-[11px] outline-none focus-visible:ring-2",
-              on && "border-brand/60 bg-brand-soft text-foreground hover:bg-brand-soft",
-            )}
-          >
-            {on && (
-              <span className="bg-brand text-primary-foreground inline-flex size-3.5 items-center justify-center rounded-full font-sans text-[9px] font-semibold tabular-nums">
-                {pos + 1}
-              </span>
-            )}
-            {name}
-          </button>
-        );
-      })}
-    </div>
+    <>
+      <div role="group" aria-label={label} className="flex flex-wrap gap-1">
+        {options.map((name) => {
+          const pos = find(name);
+          const on = pos >= 0;
+          const chip = (
+            <button
+              key={name}
+              type="button"
+              aria-pressed={on}
+              onClick={() => onChange(on ? value.filter((_, i) => i !== pos) : [...value, name])}
+              className={cn(
+                "border-border hover:bg-muted focus-visible:ring-ring/50 inline-flex h-6 items-center gap-1 rounded-md border px-1.5 font-mono text-[11px] outline-none focus-visible:ring-2",
+                on && "border-brand/60 bg-brand-soft text-foreground hover:bg-brand-soft",
+              )}
+            >
+              {on && (
+                <span className="bg-brand text-primary-foreground inline-flex size-3.5 items-center justify-center rounded-full font-sans text-[9px] font-semibold tabular-nums">
+                  {pos + 1}
+                </span>
+              )}
+              {name}
+            </button>
+          );
+          if (!lengths || !on || !lengths.eligible(name)) return chip;
+          const length = entryLength(value[pos]!);
+          return (
+            <span key={name} className="inline-flex items-center gap-0.5">
+              {chip}
+              <input
+                aria-label={`${name} prefix length`}
+                title="Index prefix: the first N characters (empty: the whole column)"
+                inputMode="numeric"
+                placeholder="len"
+                value={length === null ? "" : String(length)}
+                onChange={(e) => {
+                  const digits = e.target.value.replace(/\D/g, "");
+                  const n = digits === "" ? 0 : Math.min(MAX_PREFIX_LENGTH, Number(digits));
+                  onChange(
+                    value.map((entry, i) =>
+                      i === pos ? withEntryLength(entry, n || null) : entry,
+                    ),
+                  );
+                }}
+                spellCheck={false}
+                autoComplete="off"
+                className={cn(
+                  "border-border bg-background placeholder:text-muted-foreground/50 focus-visible:ring-ring/50 h-6 w-11 rounded-md border px-1 text-center font-mono text-[11px] outline-none focus-visible:ring-2",
+                  lengths.required(name) && length === null && "border-warning",
+                )}
+              />
+            </span>
+          );
+        })}
+      </div>
+      {unsized.length > 0 && (
+        <p role="status" className="text-warning text-[11px]">
+          {unsized.map((c) => `“${c}”`).join(", ")} {unsized.length === 1 ? "is a" : "are"} TEXT or
+          BLOB {unsized.length === 1 ? "column" : "columns"}: MySQL cannot index{" "}
+          {unsized.length === 1 ? "it" : "them"} in full, type a length.
+        </p>
+      )}
+    </>
   );
 }
 

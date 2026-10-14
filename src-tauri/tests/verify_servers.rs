@@ -236,6 +236,7 @@ impl SshEnv {
                 key_path: key,
                 local_port: None,
                 keepalive_secs: Some(10),
+                password_mode: None,
             },
             password,
         })

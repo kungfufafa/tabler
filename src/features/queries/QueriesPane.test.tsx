@@ -3,7 +3,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as controller from "@/features/editor/controller";
 import { getEditorState, seedEditor } from "@/features/editor/editorStates";
-import type { ConnectionInfo } from "@/lib/ipc";
+import { closeImport, useImportStore } from "@/features/import/store";
+import { ipc, type ConnectionInfo } from "@/lib/ipc";
 import { resetMockSavedQueries } from "@/lib/ipc/mock/queries";
 import type { OpenConnection } from "@/stores/connections";
 import { getPrefs, resetPrefsForTests, setPref } from "@/stores/prefs";
@@ -69,6 +70,7 @@ function dataTransfer() {
 const tabs = () => useTabsStore.getState().tabs;
 
 beforeEach(() => {
+  closeImport();
   closeSavedQueryDialog();
   resetMockSavedQueries();
   resetSavedQueriesStore();
@@ -193,7 +195,54 @@ describe("QueriesPane", () => {
     expect(within(dialog).getByLabelText("Keyword")).toHaveValue("uid");
   });
 
+  it("lists Run, Copy, Import…, Open in New Tab, Insert in the item menu, in TablePlus' order", async () => {
+    const { row } = setup();
+    fireEvent.contextMenu(await row("Recent users"));
+    const items = screen.getAllByRole("menuitem").map((m) => (m.textContent ?? "").trim());
+    const at = (re: RegExp) => items.findIndex((n) => re.test(n));
+    expect(at(/^Run/)).toBe(0);
+    expect(at(/^Copy/)).toBe(1);
+    expect(at(/^Import…/)).toBe(2);
+    expect(at(/^Open in New Tab/)).toBe(3);
+    expect(at(/^Insert to SQL Editor/)).toBe(4);
+    // Between Copy and Open in New Tab, not a second "Import…" of the folder kind.
+    expect(items.filter((n) => n.startsWith("Import…"))).toHaveLength(1);
+  });
+
+  it("Import… runs the query's .sql file through the SQL import wizard", async () => {
+    const path = vi.spyOn(ipc.savedQueries, "path");
+    const { row } = setup();
+    fireEvent.contextMenu(await row("User by id"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Import…" }));
+    await waitFor(() => expect(useImportStore.getState().request).not.toBeNull());
+    expect(path).toHaveBeenCalledWith("q-user-by-id");
+    const { request, path: file } = useImportStore.getState();
+    // The SQL wizard, on this connection, started on the query's file (no file panel).
+    expect(request).toEqual({ connectionId: "c1", kind: "sql", table: null });
+    expect(file).toMatch(/User by id\.sql$/);
+    // Nothing was opened in the editor and nothing was added to the library.
+    expect(tabs()).toHaveLength(0);
+  });
+
+  it("says why when the query's file cannot be found", async () => {
+    vi.spyOn(ipc.savedQueries, "path").mockRejectedValue(new Error("the query no longer exists"));
+    const { row } = setup();
+    fireEvent.contextMenu(await row("User by id"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Import…" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(useImportStore.getState().request).toBeNull();
+  });
+
+  it("names the folder menu's and the + menu's file import “Add Files to Queries…”", async () => {
+    const { row } = setup();
+    fireEvent.contextMenu(await row("Reports"));
+    expect(screen.getByRole("menuitem", { name: "Add Files to Queries…" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Import…" })).toBeNull();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  });
+
   it("renames inline", async () => {
+    const save = vi.spyOn(ipc.savedQueries, "save");
     const { row } = setup();
     fireEvent.contextMenu(await row("Recent users"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Rename…" }));
@@ -204,6 +253,13 @@ describe("QueriesPane", () => {
     await waitFor(() =>
       expect(useSavedQueriesStore.getState().queries.map((q) => q.name)).toContain("Newest users"),
     );
+    // A rename must not write the pane's copy of the SQL back: the file's own stays.
+    expect(save).toHaveBeenCalledOnce();
+    expect(save.mock.calls[0]![0]).toMatchObject({
+      id: "q-recent-users",
+      name: "Newest users",
+      keepSql: true,
+    });
   });
 
   it("creates a folder and names it", async () => {
@@ -222,6 +278,7 @@ describe("QueriesPane", () => {
   });
 
   it("moves a query into a folder by dragging it, or with Move to Folder", async () => {
+    const save = vi.spyOn(ipc.savedQueries, "save");
     const { row } = setup();
     const dt = dataTransfer();
     fireEvent.dragStart(await row("Recent users"), { dataTransfer: dt });
@@ -244,6 +301,10 @@ describe("QueriesPane", () => {
         useSavedQueriesStore.getState().queries.find((q) => q.id === "q-recent-users")?.folderId,
       ).toBeNull(),
     );
+    // Both moves keep the file's SQL.
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save.mock.calls[0]![0]).toMatchObject({ folderId: "f-maintenance", keepSql: true });
+    expect(save.mock.calls[1]![0]).toMatchObject({ folderId: null, keepSql: true });
   });
 
   it("deletes after asking", async () => {
@@ -285,5 +346,58 @@ describe("Add to Queries popup", () => {
     });
     expect(await row("Post count")).toBeInTheDocument();
     expect(toast.success).toHaveBeenCalledWith("Added “Post count” to Queries");
+  });
+});
+
+describe("Queries files", () => {
+  it("imports .sql files, adds a folder from disk and shows items in Finder", async () => {
+    const { row } = setup();
+    await row("Recent users");
+    const prompt = vi
+      .spyOn(window, "prompt")
+      .mockReturnValueOnce("/Users/me/queries/sample.sql, /Users/me/queries/nightly.sql.gz");
+    fireEvent.pointerDown(screen.getByRole("button", { name: "New" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add Files to Queries…" }));
+    expect(await row("sample")).toBeInTheDocument();
+    expect(await row("nightly")).toBeInTheDocument();
+    expect(toast.success).toHaveBeenCalledWith("Imported 2 queries");
+
+    prompt.mockReturnValueOnce("/Users/me/queries");
+    fireEvent.pointerDown(screen.getByRole("button", { name: "New" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add Folder to Favorites…" }));
+    expect(await row("queries")).toBeInTheDocument();
+    expect(await row("orders by day")).toBeInTheDocument();
+
+    const reveal = vi.spyOn(ipc.savedQueries, "reveal");
+    fireEvent.contextMenu(await row("Recent users"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Show in Finder" }));
+    expect(reveal).toHaveBeenCalledWith("q-recent-users", false);
+    fireEvent.contextMenu(await row("Reports"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Show in Finder" }));
+    expect(reveal).toHaveBeenLastCalledWith("f-reports", true);
+  });
+
+  it("auto saves an edited query with Auto Save Favorite", async () => {
+    setPref("queriesAutoSave", true);
+    const save = vi.spyOn(ipc.savedQueries, "save");
+    const { row } = setup();
+    fireEvent.contextMenu(await row("Recent users"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Edit…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Query" });
+    expect(dialog).toHaveTextContent("Changes save automatically");
+    fireEvent.change(within(dialog).getByLabelText("SQL"), { target: { value: "select 1;" } });
+    await waitFor(() => expect(save).toHaveBeenCalledOnce(), { timeout: 3000 });
+    expect(save.mock.calls[0]![0]).toMatchObject({ id: "q-recent-users", sql: "select 1;" });
+    // The dialog edits the SQL: its saves write it.
+    expect(save.mock.calls[0]![0]).not.toHaveProperty("keepSql");
+    expect(await within(dialog).findByText("Saved automatically")).toBeInTheDocument();
+    // The dialog stays open (Close ends it).
+    expect(useSavedQueryDialogStore.getState().request).not.toBeNull();
   });
 });

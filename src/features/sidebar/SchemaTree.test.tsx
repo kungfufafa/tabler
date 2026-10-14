@@ -182,6 +182,48 @@ describe("SchemaTree", () => {
     expect(recent()).toEqual(["public.tags", "public.posts", "public.users"]);
   });
 
+  it("Open in New Tab always opens another tab, so one table can sit in several tabs", () => {
+    renderTree({ scope: SCOPE });
+    const openNew = (name: string) => {
+      fireEvent.contextMenu(row(name));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Open in New Tab" }));
+    };
+    openNew("posts");
+    openNew("posts");
+    expect(opened()).toEqual([
+      ["posts", false],
+      ["posts", false],
+    ]);
+    const [first, second] = tabs();
+    expect(first!.id).not.toBe(second!.id);
+    expect(useTabsStore.getState().activeId).toBe(second!.id);
+    // Another table is its own tab; the table's own open (double-click, Enter) reuses one.
+    openNew("users");
+    expect(tabs()).toHaveLength(3);
+    fireEvent.doubleClick(row("posts"));
+    expect(tabs()).toHaveLength(3);
+    expect(useTabsStore.getState().activeId).toBe(first!.id);
+    // A single click keeps browsing in the preview tab, which is not one of them.
+    fireEvent.click(row("posts"));
+    expect(tabs()).toHaveLength(3);
+    // Each tab keeps its own state.
+    useTableTabsStore.getState().update(first!.id, { offset: 200 });
+    expect(useTableTabsStore.getState().slices[second!.id]?.offset ?? 0).toBe(0);
+  });
+
+  it("middle-click opens a new tab even when the table is open already", () => {
+    renderTree({});
+    fireEvent.doubleClick(row("posts"));
+    expect(tabs()).toHaveLength(1);
+    fireEvent(row("posts"), new MouseEvent("auxclick", { bubbles: true, button: 1 }));
+    fireEvent(row("posts"), new MouseEvent("auxclick", { bubbles: true, button: 1 }));
+    expect(opened()).toEqual([
+      ["posts", false],
+      ["posts", false],
+      ["posts", false],
+    ]);
+  });
+
   it("collapses a section from its header (remembered), and ↑/↓ skip its rows", () => {
     renderLiveTree();
     expect(header("Tables")).toHaveAttribute("aria-expanded", "true");

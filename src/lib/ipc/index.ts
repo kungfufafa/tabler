@@ -1,5 +1,13 @@
 import type { ApplyRequest } from "./bindings/ApplyRequest";
 import type { ApplyResult } from "./bindings/ApplyResult";
+import type { DefinitionRestore } from "./bindings/DefinitionRestore";
+import type { GroupPlan } from "./bindings/GroupPlan";
+import type { GroupResult } from "./bindings/GroupResult";
+import type { GroupStatus } from "./bindings/GroupStatus";
+import type { ServerExpr } from "./bindings/ServerExpr";
+import type { WorkspaceGroup } from "./bindings/WorkspaceGroup";
+import type { WorkspacePlan } from "./bindings/WorkspacePlan";
+import type { WorkspaceResult } from "./bindings/WorkspaceResult";
 import type { AppInfo } from "./bindings/AppInfo";
 import type { BrowsePage } from "./bindings/BrowsePage";
 import type { BrowseRequest } from "./bindings/BrowseRequest";
@@ -27,11 +35,19 @@ import type { DdlOp } from "./bindings/DdlOp";
 import type { DdlPlan } from "./bindings/DdlPlan";
 import type { DdlResult } from "./bindings/DdlResult";
 import type { DiagramSchema } from "./bindings/DiagramSchema";
+import type { MetricsBoard } from "./bindings/MetricsBoard";
+import type { MetricsBoardInput } from "./bindings/MetricsBoardInput";
+import type { MetricsImport } from "./bindings/MetricsImport";
+import type { MetricsQuery } from "./bindings/MetricsQuery";
+import type { MetricsResult } from "./bindings/MetricsResult";
 import type { ExplainMode } from "./bindings/ExplainMode";
 import type { ExplainResult } from "./bindings/ExplainResult";
 import type { ExportProgress } from "./bindings/ExportProgress";
 import type { ExportRequest } from "./bindings/ExportRequest";
 import type { ExportResult } from "./bindings/ExportResult";
+import type { ExportResultItem } from "./bindings/ExportResultItem";
+import type { ExportResultsRequest } from "./bindings/ExportResultsRequest";
+import type { ExportResultsResult } from "./bindings/ExportResultsResult";
 import type { ExportTablesProgress } from "./bindings/ExportTablesProgress";
 import type { ExportTablesRequest } from "./bindings/ExportTablesRequest";
 import type { ExportTablesResult } from "./bindings/ExportTablesResult";
@@ -44,6 +60,9 @@ import type { SqlDumpPreview } from "./bindings/SqlDumpPreview";
 import type { SqlImportProgress } from "./bindings/SqlImportProgress";
 import type { SqlImportReport } from "./bindings/SqlImportReport";
 import type { SqlImportRequest } from "./bindings/SqlImportRequest";
+import type { JsonImportRequest } from "./bindings/JsonImportRequest";
+import type { JsonPreview } from "./bindings/JsonPreview";
+import type { JsonPreviewRequest } from "./bindings/JsonPreviewRequest";
 import type { BackupEvent } from "./bindings/BackupEvent";
 import type { BackupJobRequest } from "./bindings/BackupJobRequest";
 import type { BackupJobResult } from "./bindings/BackupJobResult";
@@ -53,16 +72,27 @@ import type { DumpBinary } from "./bindings/DumpBinary";
 import type { RestoreFileInfo } from "./bindings/RestoreFileInfo";
 import type { HistoryEntry } from "./bindings/HistoryEntry";
 import type { HistoryFilter } from "./bindings/HistoryFilter";
+import type { LocationChange } from "./bindings/LocationChange";
+import type { LocationInspection } from "./bindings/LocationInspection";
+import type { LocationKind } from "./bindings/LocationKind";
+import type { LocationsInfo } from "./bindings/LocationsInfo";
+import type { McpClient } from "./bindings/McpClient";
+import type { McpCliResult } from "./bindings/McpCliResult";
+import type { McpConfigPreview } from "./bindings/McpConfigPreview";
+import type { McpInfo } from "./bindings/McpInfo";
 import type { QueryFolder } from "./bindings/QueryFolder";
 import type { QueryFolderInput } from "./bindings/QueryFolderInput";
 import type { SavedQuery } from "./bindings/SavedQuery";
 import type { SavedQueryInput } from "./bindings/SavedQueryInput";
 import type { SavedQueryLibrary } from "./bindings/SavedQueryLibrary";
+import type { SqlFileHead } from "./bindings/SqlFileHead";
+import type { SqlFileInfo } from "./bindings/SqlFileInfo";
 import type { QueryEvent } from "./bindings/QueryEvent";
 import type { RunOptions } from "./bindings/RunOptions";
 import type { StatementResult } from "./bindings/StatementResult";
 import type { ObjectOp } from "./bindings/ObjectOp";
 import type { OverviewItem } from "./bindings/OverviewItem";
+import type { DatabaseItems } from "./bindings/DatabaseItems";
 import type { RoutineRef } from "./bindings/RoutineRef";
 import type { RoutineSummary } from "./bindings/RoutineSummary";
 import type { SequenceSummary } from "./bindings/SequenceSummary";
@@ -76,6 +106,36 @@ import type { UserChange } from "./bindings/UserChange";
 import type { UserDetail } from "./bindings/UserDetail";
 import type { UserRef } from "./bindings/UserRef";
 import type { UserSummary } from "./bindings/UserSummary";
+import type { PasscodeStatus } from "./bindings/PasscodeStatus";
+import type { SessionDetails } from "./bindings/SessionDetails";
+import type { WindowHandoff } from "./bindings/WindowHandoff";
+import type { RecentEntry } from "./bindings/RecentEntry";
+import type { RecentItems } from "./bindings/RecentItems";
+import type { OpenRequest } from "./bindings/OpenRequest";
+import type { SqliteSshSync } from "./bindings/SqliteSshSync";
+import type { AssistantChatRequest } from "./bindings/AssistantChatRequest";
+import type { AssistantChatResult } from "./bindings/AssistantChatResult";
+import type { AssistantContextPreview } from "./bindings/AssistantContextPreview";
+import type { AssistantContextRequest } from "./bindings/AssistantContextRequest";
+import type { AssistantEvent } from "./bindings/AssistantEvent";
+import type { AssistantKeyStatus } from "./bindings/AssistantKeyStatus";
+import type { AssistantProvider } from "./bindings/AssistantProvider";
+import type { AssistantProviderConfig } from "./bindings/AssistantProviderConfig";
+import type { AssistantTestResult } from "./bindings/AssistantTestResult";
+import type { InstalledPlugin } from "./bindings/InstalledPlugin";
+import type { PluginList } from "./bindings/PluginList";
+import type { PluginMenuEntry } from "./bindings/PluginMenuEntry";
+import type { TracedSql } from "./bindings/TracedSql";
+import {
+  markTraceSeen,
+  maskSecrets,
+  noteLogged,
+  normalizeSql,
+  sameStatement,
+  takeTwin,
+  traceClock,
+  traceLoggedSince,
+} from "./sqlTrace";
 // Read lazily (inside `query.run`): the prefs store itself imports this facade.
 import { getPrefs } from "@/stores/prefs";
 import {
@@ -124,8 +184,17 @@ export type { Driver } from "./bindings/Driver";
 export type { SslMode } from "./bindings/SslMode";
 export type { SshAuth } from "./bindings/SshAuth";
 export type { SshConfig } from "./bindings/SshConfig";
+export type { OpenRequest } from "./bindings/OpenRequest";
+export type { RecentEntry } from "./bindings/RecentEntry";
+export type { RecentItems } from "./bindings/RecentItems";
+export type { SqliteSshEvent } from "./bindings/SqliteSshEvent";
+export type { SqliteSshSync } from "./bindings/SqliteSshSync";
+export type { SshPromptKind } from "./bindings/SshPromptKind";
 export type { SafeModeLevel } from "./bindings/SafeModeLevel";
 export type { PasswordMode } from "./bindings/PasswordMode";
+export type { SshPasswordMode } from "./bindings/SshPasswordMode";
+export type { MysqlVersion } from "./bindings/MysqlVersion";
+export type { SslNegotiation } from "./bindings/SslNegotiation";
 export type { ExportConnectionsRequest } from "./bindings/ExportConnectionsRequest";
 export type { ConnectionsFilePreview } from "./bindings/ConnectionsFilePreview";
 export type { ImportPreviewItem } from "./bindings/ImportPreviewItem";
@@ -140,6 +209,7 @@ export type { RowIdentity } from "./bindings/RowIdentity";
 export type { ForeignKeyMeta } from "./bindings/ForeignKeyMeta";
 export type { Dialect } from "./bindings/Dialect";
 export type { StagedChange } from "./bindings/StagedChange";
+export type { PasscodeStatus, SessionDetails };
 export type {
   BackupEvent,
   BackupJobRequest,
@@ -178,10 +248,14 @@ export type { CharsetInfo } from "./bindings/CharsetInfo";
 export type { UserTypeInfo } from "./bindings/UserTypeInfo";
 export type { StructureChoices } from "./bindings/StructureChoices";
 export type { DiagramSchema };
+export type { McpClient, McpCliResult, McpConfigPreview, McpInfo };
+export type { McpClientStatus } from "./bindings/McpClientStatus";
+export type { MetricsBoard, MetricsBoardInput, MetricsImport, MetricsQuery, MetricsResult };
 export type { DiagramTable } from "./bindings/DiagramTable";
 export type { DiagramColumn } from "./bindings/DiagramColumn";
 export type { DiagramRelation } from "./bindings/DiagramRelation";
 export type { ObjectOp, OverviewItem, RoutineRef, RoutineSummary, SequenceSummary };
+export type { DatabaseItems };
 export type { ObjectTarget } from "./bindings/ObjectTarget";
 export type { RoutineKind } from "./bindings/RoutineKind";
 export type {
@@ -196,6 +270,7 @@ export type {
   UserRef,
   UserSummary,
 };
+export type { WindowHandoff };
 export type { CollationOption } from "./bindings/CollationOption";
 export type { EncodingOption } from "./bindings/EncodingOption";
 export type { ObjectPrivileges } from "./bindings/ObjectPrivileges";
@@ -210,6 +285,9 @@ export type {
   CsvImportRequest,
   CsvPreview,
   CsvPreviewRequest,
+  ExportResultItem,
+  ExportResultsRequest,
+  ExportResultsResult,
   ExportTablesProgress,
   ExportTablesRequest,
   ExportTablesResult,
@@ -231,7 +309,12 @@ export type { ImportType } from "./bindings/ImportType";
 export type { InsertMode } from "./bindings/InsertMode";
 export type { SqlImportError } from "./bindings/SqlImportError";
 export type { TextEncoding } from "./bindings/TextEncoding";
+export type { ExportEncoding } from "./bindings/ExportEncoding";
+export type { JsonLayout } from "./bindings/JsonLayout";
+export type { JsonImportRequest, JsonPreview, JsonPreviewRequest };
 export type { QueryFolder, QueryFolderInput, SavedQuery, SavedQueryInput, SavedQueryLibrary };
+export type { SqlFileHead, SqlFileInfo };
+export type { LocationChange, LocationInspection, LocationKind, LocationsInfo };
 export type {
   DdlOp,
   DdlPlan,
@@ -269,8 +352,10 @@ export type SqlLogCategory = "data" | "structure" | "query";
 
 /**
  * One statement (or batch) that a facade call ran. `sql` is the text the backend reports having
- * executed; a command that does not return its SQL is logged as a `-- …` description of the
- * request instead (`meta`), never as made-up SQL.
+ * executed: the statements its sessions recorded (`drain_sql_trace`: introspection SELECTs, counts,
+ * exports…) or the SQL a command returns. When a call ran no SQL the backend reported (cached
+ * metadata, a SQL dump read from a file) it is logged as a `-- …` description of the request
+ * instead (`meta`), never as made-up SQL.
  */
 export interface SqlLogEvent {
   connectionId: string;
@@ -323,6 +408,12 @@ function described(text: string): LogFields {
   return { sql: `-- ${text}`, meta: true };
 }
 
+/** `text` on one line, cut to a length a log line can show. */
+function oneLine(text: string, max = 200): string {
+  const line = text.trim().replace(/\s+/g, " ");
+  return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
 function tableName(t: TableRef): string {
   return t.schema ? `${t.schema}.${t.name}` : t.name;
 }
@@ -332,6 +423,7 @@ const EXPORT_FORMAT = {
   json: "JSON",
   sqlInsert: "SQL INSERTs",
   xlsx: "Excel",
+  html: "HTML",
 } as const;
 
 /** How an export is logged: its SQL, or a description of the table; result rows run nothing. */
@@ -356,10 +448,104 @@ function safely<T>(f: () => T): T | null {
   }
 }
 
+/** The statements the connection's session recorded since the last drain (none when it cannot say). */
+async function drainTrace(connectionId: string): Promise<TracedSql[]> {
+  try {
+    const trace = await invoke<TracedSql[]>("drain_sql_trace", { connectionId });
+    return Array.isArray(trace) ? trace : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Logs what a call ran, after it finished. The statements the backend recorded are logged with
+ * their real SQL, category, timing and row counts, except the ones the call's own entry (`own`,
+ * real SQL the command returned) already covers. A `-- …` description (`own.meta`) is only logged
+ * when the call reported no SQL at all: nothing was recorded for the connection since `since`
+ * (concurrent calls drain each other's statements, so this looks at the connection, not the call).
+ * `own` null logs nothing of its own, and drops the recorded statements too (a quiet call).
+ */
+async function logCall(
+  connectionId: string,
+  since: number,
+  own: SqlLogEvent | null,
+  quiet = false,
+  secrets?: readonly string[],
+): Promise<void> {
+  try {
+    await logCallUnsafe(connectionId, since, own, quiet, secrets);
+  } catch {
+    // Logging must never change a command's outcome.
+  }
+}
+
+async function logCallUnsafe(
+  connectionId: string,
+  since: number,
+  call: SqlLogEvent | null,
+  quiet: boolean,
+  secrets?: readonly string[],
+): Promise<void> {
+  const trace = await drainTrace(connectionId);
+  if (quiet) return;
+  // The call's own secrets (a password it sent) never reach the log, whatever carries them.
+  const own =
+    call && secrets?.length
+      ? {
+          ...call,
+          sql: maskSecrets(call.sql, secrets),
+          ...(call.error !== undefined ? { error: maskSecrets(call.error, secrets) } : {}),
+        }
+      : call;
+  const claims = own && !own.meta ? own.sql.split(";\n").map(normalizeSql) : [];
+  const paired = claims.map(() => false);
+  for (const recorded of trace) {
+    const t = secrets?.length
+      ? {
+          ...recorded,
+          sql: maskSecrets(recorded.sql, secrets),
+          error: recorded.error !== null ? maskSecrets(recorded.error, secrets) : null,
+        }
+      : recorded;
+    markTraceSeen(connectionId);
+    const text = normalizeSql(t.sql);
+    // The call logs this statement itself (with its own timing), or another call already did.
+    const mine = claims.findIndex((c, i) => !paired[i] && sameStatement(c, text));
+    if (mine >= 0) {
+      paired[mine] = true;
+      continue;
+    }
+    if (takeTwin(connectionId, text, "trace")) continue;
+    logSql({
+      connectionId,
+      category: t.category === "structure" ? "structure" : "data",
+      sql: t.sql,
+      meta: false,
+      durationMs: t.durationMs,
+      ...(t.rows !== null ? { rows: t.rows } : {}),
+      ...(t.affected !== null ? { affected: t.affected } : {}),
+      ...(t.error !== null ? { error: t.error } : {}),
+    });
+    noteLogged(connectionId, text, "trace");
+  }
+  if (!own) return;
+  if (own.meta) {
+    if (!traceLoggedSince(connectionId, since)) logSql(own);
+    return;
+  }
+  // The trace of another call already logged this very statement: keep that one.
+  if (claims.length === 1 && !paired[0] && takeTwin(connectionId, claims[0]!, "own")) return;
+  logSql(own);
+  claims.forEach((c, i) => noteLogged(connectionId, c, "own", paired[i]));
+}
+
 /**
  * Runs `call` and logs it under `category`: the `request` entry with the error when the call
  * rejects; on success, `request` with the round-trip time, overridden by what `outcome` makes of
- * the result. `request` or `outcome` returning `null` logs nothing.
+ * the result. `request` or `outcome` returning `null` logs nothing of its own. Either way the SQL
+ * the backend recorded for the call is logged too (see `logCall`), unless `request` returned
+ * `null` (a quiet call).
  */
 async function logged<T>(
   connectionId: string,
@@ -367,23 +553,36 @@ async function logged<T>(
   request: () => LogFields | null,
   call: () => Promise<T>,
   outcome?: (result: T) => Partial<LogFields> | null,
+  secrets?: readonly string[],
 ): Promise<T> {
   const t0 = performance.now();
+  const since = traceClock();
   let result: T;
   try {
     result = await call();
   } catch (err) {
     const fields = safely(request);
-    if (fields) {
-      const error = toIpcError(err).message;
-      logSql({ connectionId, category, ...fields, durationMs: elapsed(t0), error });
-    }
+    const error = toIpcError(err).message;
+    await logCall(
+      connectionId,
+      since,
+      fields ? { connectionId, category, ...fields, durationMs: elapsed(t0), error } : null,
+      !fields,
+      secrets,
+    );
     throw err;
   }
   const fields = safely(request);
   const extra = outcome ? safely(() => outcome(result)) : {};
-  if (fields && extra)
-    logSql({ connectionId, category, ...fields, durationMs: elapsed(t0), ...extra });
+  await logCall(
+    connectionId,
+    since,
+    fields && extra
+      ? { connectionId, category, ...fields, durationMs: elapsed(t0), ...extra }
+      : null,
+    !fields,
+    secrets,
+  );
   return result;
 }
 
@@ -445,25 +644,35 @@ function queryTimeoutSecs(): number {
 
 /**
  * Logs an admin change (database / schema DDL, user management) like `ddl.apply`: the statements
- * that ran (passwords already masked by the backend), then the failure on its own.
+ * that ran (passwords masked by the backend, in the result and in the statements its session
+ * records), then the failure on its own. `secrets` (the password of a user change) are masked in
+ * everything that reaches the log, as a second lock.
  */
 async function loggedAdmin(
   connectionId: string,
   cmd: string,
   request: () => LogFields,
   call: () => Promise<AdminResult>,
+  secrets?: readonly string[],
 ): Promise<AdminResult> {
-  const result = await logged(connectionId, "structure", request, call, (r) =>
-    r.executed.length > 0 ? executed(r.executed, { durationMs: r.durationMs }) : null,
+  const since = traceClock();
+  const result = await logged(
+    connectionId,
+    "structure",
+    request,
+    call,
+    (r) => (r.executed.length > 0 ? executed(r.executed, { durationMs: r.durationMs }) : null),
+    secrets,
   );
   const failed = result.error ? safely(request) : null;
-  if (result.error && failed)
+  // The description of a failure is only worth a line when no SQL was reported for the call.
+  if (result.error && failed && !traceLoggedSince(connectionId, since))
     logSql({
       connectionId,
       category: "structure",
       ...failed,
       durationMs: result.durationMs,
-      error: result.error.message,
+      error: maskSecrets(result.error.message, secrets),
     });
   reportConnectionFailure(cmd, { connectionId }, result.error);
   return result;
@@ -497,6 +706,28 @@ export const ipc = {
     setUnsaved: (unsaved: boolean) => invoke<void>("set_unsaved", { unsaved }),
   },
 
+  windows: {
+    /**
+     * File ▸ New Window, "Open in New Window", Move Tab to New Window: opens a window; `handoff`
+     * (what it opens with) waits for its renderer. Resolves with the new window's label.
+     */
+    open: (handoff: WindowHandoff | null = null) => invoke<string>("window_open", { handoff }),
+    /** What this window was opened with (once; null for the main window and plain new ones). */
+    takeHandoff: () => invoke<WindowHandoff | null>("window_take_handoff"),
+    /** This window's open connections: the backend closes them when the window goes away. */
+    setConnections: (connectionIds: string[]) =>
+      invoke<void>("window_set_connections", { connectionIds }),
+    /** This window's label ("main" for the first window). */
+    label: () => invoke<string>("window_label"),
+    /**
+     * Whether this window keeps the session saved: the main window until it closes, then the
+     * oldest window left (told with `window:session-owner`).
+     */
+    isSessionOwner: () => invoke<boolean>("window_is_session_owner"),
+    /** The user kept their work in the unsaved-changes dialog: a quit under way is off. */
+    cancelQuit: () => invoke<void>("cancel_quit"),
+  },
+
   menu: {
     /**
      * Rebinds the native menu items' accelerators (menu item id = action id → Tauri accelerator,
@@ -506,9 +737,24 @@ export const ipc = {
       invoke<void>("set_menu_accelerators", { accelerators }),
   },
 
+  // File ▸ Open Recent: what was opened last (shared by every window); the native submenu follows.
+  recent: {
+    list: () => invoke<RecentItems>("recent_list"),
+    /** A connection was opened, an `.sql` file opened or saved: it moves to the top. */
+    add: (entry: RecentEntry) => invoke<RecentItems>("recent_add", { entry }),
+    clear: () => invoke<void>("recent_clear"),
+    /** Rebuilds the submenu (saved connections renamed or deleted). */
+    refreshMenu: () => invoke<void>("recent_refresh_menu"),
+  },
+
   settings: {
     get: () => invoke<Record<string, unknown>>("get_settings"),
     set: (key: string, value: unknown) => invoke<void>("set_setting", { key, value }),
+  },
+
+  decoder: {
+    /** Settings ▸ General ▸ Data Decoder ▸ "Automatically convert PostGIS geometry to WKT". */
+    setGeometryWkt: (enabled: boolean) => invoke<void>("set_geometry_wkt", { enabled }),
   },
 
   profiles: {
@@ -520,8 +766,15 @@ export const ipc = {
     reorder: (ids: string[]) => invoke<void>("reorder_profiles", { ids }),
     secretStatus: (id: string) => invoke<SecretStatus>("get_secret_status", { id }),
     test: (input: ProfileInput) => invoke<TestResult>("test_connection", { input }),
-    /** Creates an empty SQLite database at `path`; an existing file is left untouched. */
-    createSqliteFile: (path: string) => invoke<void>("create_sqlite_database", { path }),
+    /**
+     * Creates an empty SQLite database at `path`; an existing file is left untouched. With `key`
+     * the new file is a SQLCipher database (format of SQLCipher `compatibility`, default 4).
+     */
+    createSqliteFile: (
+      path: string,
+      key: string | null = null,
+      compatibility: number | null = null,
+    ) => invoke<void>("create_sqlite_database", { path, key, compatibility }),
     /** Puts the profiles in `group` (null: no group); returns them as stored. */
     moveToGroup: (ids: string[], group: string | null) =>
       invoke<ConnectionProfile[]>("move_profiles_to_group", { ids, group }),
@@ -550,9 +803,16 @@ export const ipc = {
   },
 
   connections: {
-    /** `password`: typed in the prompt of an "Ask every time" profile (never stored). */
-    connect: (profileId: string, password?: string | null) =>
-      invoke<ConnectionInfo>("connect", { profileId, password: password ?? null }),
+    /**
+     * `password`: typed in the prompt of an "Ask every time" profile (never stored).
+     * `databaseOverride`: open that database instead of the profile's (another workspace).
+     */
+    connect: (profileId: string, password?: string | null, databaseOverride?: string | null) =>
+      invoke<ConnectionInfo>("connect", {
+        profileId,
+        password: password ?? null,
+        databaseOverride: databaseOverride ?? null,
+      }),
     disconnect: (connectionId: string) => invoke<void>("disconnect", { connectionId }),
     list: () => invoke<ConnectionInfo[]>("list_connections"),
     ping: (connectionId: string) => invoke<ConnStatus>("ping", { connectionId }),
@@ -560,6 +820,12 @@ export const ipc = {
       invoke<void>("accept_host_key", { profileId, fingerprint, persistToKnownHosts }),
     switchDatabase: (connectionId: string, database: string) =>
       invoke<ConnectionInfo>("switch_database", { connectionId, database }),
+    /** View Using Encoding…: the encoding the open session uses now (MySQL / PostgreSQL). */
+    getEncoding: (connectionId: string) =>
+      invoke<string>("get_connection_encoding", { connectionId }),
+    /** Reopens the session with `encoding` (null: the profile's own); the profile is unchanged. */
+    setEncoding: (connectionId: string, encoding: string | null) =>
+      invoke<ConnectionInfo>("set_connection_encoding", { connectionId, encoding }),
     /**
      * Answers an SSH server's keyboard-interactive (2FA) question (`ssh:prompt`): one answer per
      * prompt, or null to cancel the connect / test waiting for it.
@@ -658,12 +924,19 @@ export const ipc = {
     },
     cancel: (connectionId: string, queryId: string) =>
       invoke<void>("cancel_query", { connectionId, queryId }),
-    /** Logged as the submitted statement, labelled with the EXPLAIN form the backend wraps it in. */
+    /**
+     * Logged as the statements the backend really ran (its trace): the EXPLAIN-wrapped text, and
+     * the transaction it wraps around an Analyze. The submitted statement is only described, when
+     * nothing was recorded (it failed before it reached the server).
+     */
     explain: (connectionId: string, sql: string, mode: ExplainMode, queryId?: string) =>
       logged(
         connectionId,
         "query",
-        () => ({ sql, meta: false, label: explainLabel(mode) }),
+        () => ({
+          ...described(`explain ${oneLine(sql)}`),
+          label: explainLabel(mode),
+        }),
         () =>
           invoke<ExplainResult>("explain", { connectionId, sql, mode, queryId: queryId ?? null }),
         (r) => ({ durationMs: r.durationMs, rows: r.rows.length }),
@@ -673,13 +946,25 @@ export const ipc = {
   history: {
     list: (filter: Partial<HistoryFilter> = {}) =>
       invoke<HistoryEntry[]>("list_history", {
-        filter: { profileId: null, search: null, limit: null, beforeId: null, ...filter },
+        filter: {
+          profileId: null,
+          search: null,
+          limit: null,
+          beforeId: null,
+          matchCase: false,
+          wholeWord: false,
+          regex: false,
+          ...filter,
+        },
       }),
     delete: (ids: number[]) => invoke<void>("delete_history", { ids }),
     clear: (profileId: string | null = null) => invoke<void>("clear_history", { profileId }),
+    /** Deletes the history older than `before` (ISO date); returns how many entries went. */
+    clearBefore: (before: string, profileId: string | null = null) =>
+      invoke<number>("clear_history_before", { before, profileId }),
   },
 
-  /** Saved queries (the sidebar's Queries pane) and their folders, in the app DB. */
+  /** Saved queries (the sidebar's Queries pane) and their folders: `.sql` files in a folder. */
   savedQueries: {
     list: () => invoke<SavedQueryLibrary>("list_saved_queries"),
     save: (input: SavedQueryInput) => invoke<SavedQuery>("save_saved_query", { input }),
@@ -687,6 +972,63 @@ export const ipc = {
     saveFolder: (input: QueryFolderInput) => invoke<QueryFolder>("save_query_folder", { input }),
     /** Also deletes the folders and queries inside it. */
     deleteFolder: (id: string) => invoke<void>("delete_query_folder", { id }),
+    /** "Import…": `.sql` / `.sql.gz` files become queries in `folderId` (null: top level). */
+    importFiles: (paths: string[], folderId: string | null = null) =>
+      invoke<SavedQuery[]>("import_saved_queries", { paths, folderId }),
+    /** "Add Folder to Favorites…": copies a folder of `.sql` files in. */
+    addFolderFromDisk: (path: string, parentId: string | null = null) =>
+      invoke<QueryFolder>("add_query_folder_from_disk", { path, parentId }),
+    /** Show in Finder: a query's file, a folder (`folder`), or (`id` null) the queries folder. */
+    reveal: (id: string | null, folder = false) =>
+      invoke<void>("reveal_saved_query", { id, folder }),
+    /** The `.sql` file behind a saved query (what "Import…" hands to the SQL import wizard). */
+    path: (id: string) => invoke<string>("saved_query_path", { id }),
+  },
+
+  /** Settings ▸ Locations: the folders of the app database and of the saved queries. */
+  locations: {
+    get: () => invoke<LocationsInfo>("get_locations"),
+    inspect: (kind: LocationKind, path: string) =>
+      invoke<LocationInspection>("inspect_location", { kind, path }),
+    /** Used from the next start (`path` null: the default folder). */
+    setData: (path: string | null, change: LocationChange) =>
+      invoke<LocationsInfo>("set_data_location", { path, change }),
+    /** Applies at once (`path` null: the default folder). */
+    setQueries: (path: string | null, change: LocationChange) =>
+      invoke<LocationsInfo>("set_queries_location", { path, change }),
+    /** Show in Finder: the app database file (`data`, also the history) or the queries folder. */
+    reveal: (kind: LocationKind) => invoke<void>("reveal_location", { kind }),
+    restart: () => invoke<void>("restart_app"),
+  },
+
+  // Settings ▸ Connections ▸ MCP Server: `tabler --mcp` and registering it with MCP clients.
+  mcp: {
+    /** The command line of the running app's MCP server and which clients are installed. */
+    info: () => invoke<McpInfo>("mcp_info"),
+    /** Claude Code / Codex: runs their `mcp add` (when the CLI is found). */
+    installCli: (client: McpClient) => invoke<McpCliResult>("mcp_install_cli", { client }),
+    /** Cursor / VS Code: the change to their mcp.json, to confirm before `writeConfig`. */
+    previewConfig: (client: McpClient) =>
+      invoke<McpConfigPreview>("mcp_preview_config", { client }),
+    /** Writes the confirmed change; refused when the file no longer reads `expectedBefore`. */
+    writeConfig: (client: McpClient, expectedBefore: string | null) =>
+      invoke<string>("mcp_write_config", { client, expectedBefore }),
+  },
+
+  /** The SQL editor's files: `.sql.gz` is decompressed on open and compressed on save. */
+  sqlFiles: {
+    /** The whole text, for a file known to be small (a file that is not UTF-8 opens too). */
+    read: (path: string) => invoke<string>("read_sql_file", { path }),
+    /** Size and compression of a file, without reading it (ask before a big one is opened). */
+    info: (path: string) => invoke<SqlFileInfo>("sql_file_info", { path }),
+    /**
+     * The first `maxBytes` of a file as text, cut after a complete line (`maxBytes` null: all of
+     * it). A gzip file is streamed, so only the head is decompressed; `encoding` names what a file
+     * that is not UTF-8 was read as.
+     */
+    readHead: (path: string, maxBytes: number | null) =>
+      invoke<SqlFileHead>("read_sql_file_head", { path, maxBytes }),
+    write: (path: string, content: string) => invoke<void>("write_sql_file", { path, content }),
   },
 
   ddl: {
@@ -698,6 +1040,7 @@ export const ipc = {
         described(table ? `apply schema changes to ${tableName(table)}` : "apply schema changes");
       // The statements whose effects persist; a failure is logged on its own after them (the
       // failing statement is not part of `executed`, and a transactional plan rolls back).
+      const since = traceClock();
       const result = await logged(
         connectionId,
         "structure",
@@ -707,7 +1050,7 @@ export const ipc = {
       );
       const { error, durationMs } = result;
       const failed = error ? safely(request) : null;
-      if (error && failed)
+      if (error && failed && !traceLoggedSince(connectionId, since))
         logSql({
           connectionId,
           category: "structure",
@@ -762,6 +1105,40 @@ export const ipc = {
         (r) => ({ durationMs: r.durationMs, rows: r.rows }),
       );
     },
+    /**
+     * Every result of a multi-statement run in one go (a workbook with a sheet each, one page or
+     * script, or a file per result in a folder); progress per result, `cancel` stops it.
+     */
+    runResults: async (
+      connectionId: string,
+      req: ExportResultsRequest,
+      onProgress: (p: ExportTablesProgress) => void,
+    ) => {
+      const channel = await makeChannel<ExportTablesProgress>(onProgress);
+      return logged(
+        connectionId,
+        "data",
+        () =>
+          described(
+            `export ${req.results.length} result${req.results.length === 1 ? "" : "s"} as ${EXPORT_FORMAT[req.format.format]}`,
+          ),
+        () =>
+          invoke<ExportResultsResult>("export_results", { connectionId, req, onProgress: channel }),
+        (r) => ({ durationMs: r.durationMs, rows: r.rows }),
+      );
+    },
+    /**
+     * The tables and views of one database of the connection for the multi-table export (every
+     * user schema's; PostgreSQL reads another database through a temporary session). Null = the
+     * current database.
+     */
+    databaseTables: (connectionId: string, database: string | null) =>
+      logged(
+        connectionId,
+        "structure",
+        () => described(`list the tables of ${database ?? "the current database"}`),
+        () => invoke<TableSummary[]>("export_database_tables", { connectionId, database }),
+      ),
   },
 
   // File ▸ Import: the CSV wizard and SQL dumps. `cancel` stops either by its import id.
@@ -806,6 +1183,26 @@ export const ipc = {
       );
     },
     cancel: (importId: string) => invoke<void>("cancel_import", { importId }),
+    /** File ▸ Import ▸ From JSON…: the keys of the first objects as columns, the first rows. */
+    previewJson: (req: JsonPreviewRequest) => invoke<JsonPreview>("preview_json_import", { req }),
+    json: async (
+      connectionId: string,
+      req: JsonImportRequest,
+      onProgress: (p: CsvImportProgress) => void,
+    ) => {
+      const channel = await makeChannel<CsvImportProgress>(onProgress);
+      return logged(
+        connectionId,
+        "data",
+        () => described(`import JSON into ${tableName(req.target.table)}`),
+        () => invoke<CsvImportReport>("import_json", { connectionId, req, onProgress: channel }),
+        (r) => ({
+          durationMs: r.durationMs,
+          affected: r.rowsImported,
+          error: r.failure?.message,
+        }),
+      );
+    },
   },
 
   // Backup / restore through pg_dump, pg_restore, psql, mysqldump and mysql (File ▸ Backup… /
@@ -824,15 +1221,50 @@ export const ipc = {
         onEvent: await makeChannel<BackupEvent>(onEvent),
       }),
     cancel: (jobId: string) => invoke<void>("backup_cancel", { jobId }),
-    /** SQLite: copies the profile's database file to `path`; resolves with its size. */
-    copySqlite: (profileId: string, path: string) =>
-      invoke<number>("backup_copy_sqlite", { profileId, path }),
+    /**
+     * SQLite: copies the profile's database file to `path`; resolves with its size. SQLite over
+     * SSH copies the local copy an open connection downloaded (the cached copy), or with `fresh`
+     * (and without an open connection) downloads the file from the SSH server first.
+     */
+    copySqlite: (profileId: string, path: string, fresh?: boolean) =>
+      invoke<number>("backup_copy_sqlite", { profileId, path, fresh: fresh ?? null }),
+    /** "Install with Homebrew…": `brew install <formula>` in a new Terminal window. */
+    installWithBrew: (formula: string) => invoke<void>("backup_install_with_brew", { formula }),
   },
 
   safety: {
     /** Whether `password` is the profile's stored DB password (Safe Mode prompts). */
     verifyPassword: (profileId: string, password: string) =>
       invoke<boolean>("verify_connection_password", { profileId, password }),
+  },
+
+  // App lock (Settings ▸ Security ▸ Passcode), Touch ID, and connection security details.
+  security: {
+    /** Touch ID or the account password ("Tabler is trying to <reason>."); false = cancelled. */
+    authenticate: (reason: string) => invoke<boolean>("authenticate_biometric", { reason }),
+    passcodeStatus: () => invoke<PasscodeStatus>("passcode_status"),
+    /** Sets / changes (`passcode`) or turns off (`null`) the passcode; `current` when one is set. */
+    setPasscode: (current: string | null, passcode: string | null) =>
+      invoke<void>("set_passcode", { current, passcode }),
+    verifyPasscode: (passcode: string) => invoke<boolean>("verify_passcode", { passcode }),
+    /** Locks every window (Window ▸ Lock Tabler). */
+    lockApp: () => invoke<void>("lock_app"),
+    /** Calls `handler` when every window must lock (sleep, screen lock, Lock Tabler). */
+    onLock: async (handler: (reason: string) => void): Promise<() => void> => {
+      const { isMock: mock } = await import("./transport");
+      if (mock) {
+        const { mockListen } = await import("./mock/transport");
+        return mockListen("lock:system", (reason) => handler(String(reason)));
+      }
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen<string>("lock:system", (e) => handler(e.payload));
+    },
+    /** The DB password for Copy as URL (after the safe-mode / Touch ID checks); null = none. */
+    revealPassword: (profileId: string) =>
+      invoke<string | null>("reveal_connection_password", { profileId }),
+    /** TLS state and character set of an open session (the status bar's details). */
+    sessionDetails: (connectionId: string) =>
+      invoke<SessionDetails>("session_details", { connectionId }),
   },
 
   files: {
@@ -855,6 +1287,41 @@ export const ipc = {
     /** Writes base64-encoded bytes to `path` (the diagram's Export ▸ PNG…). */
     writeBinaryFile: (path: string, base64: string) =>
       invoke<void>("write_binary_file", { path, base64 }),
+  },
+
+  // Metrics Board: boards in the app database, their `.tablerboard` files, object queries.
+  metrics: {
+    /** The profile's boards plus the boards of every connection (null: all boards). */
+    listBoards: (profileId: string | null) =>
+      invoke<MetricsBoard[]>("metrics_list_boards", { profileId }),
+    saveBoard: (input: MetricsBoardInput) => invoke<MetricsBoard>("metrics_save_board", { input }),
+    deleteBoard: (id: string) => invoke<void>("metrics_delete_board", { id }),
+    /** Writes boards to a `.tablerboard` file (encrypted with `password`); returns the count. */
+    exportBoards: (ids: string[], path: string, password: string | null) =>
+      invoke<number>("metrics_export_boards", { ids, path, password }),
+    /** Adds the boards of a file for `profileId` (null: every connection). */
+    importBoards: (path: string, password: string | null, profileId: string | null) =>
+      invoke<MetricsImport>("metrics_import_boards", { path, password, profileId }),
+    /**
+     * Runs one board object's query (cancel with `query.cancel` and the same id). Logged in the
+     * console unless `quiet` (automatic refreshes).
+     */
+    run: (connectionId: string, queryId: string, query: MetricsQuery, quiet = false) =>
+      logged(
+        connectionId,
+        "query",
+        () => (quiet ? null : { sql: query.parts.join("?"), meta: false, label: "METRICS" }),
+        () => invoke<MetricsResult>("metrics_run", { connectionId, queryId, query }),
+        (r) =>
+          quiet
+            ? null
+            : {
+                sql: r.sql,
+                durationMs: r.durationMs,
+                rows: r.rows.length,
+                ...(r.affected !== null ? { affected: r.affected } : {}),
+              },
+      ),
   },
 
   mutate: {
@@ -883,8 +1350,37 @@ export const ipc = {
     },
   },
 
+  // The workspace commit (⌘S, TablePlus §9): every pending GUI change of a connection — staged
+  // rows of its tabs and results, staged structure, pending sidebar operations, a definition
+  // saved from its SQL tab — in one transaction where the engine allows it.
+  workspace: {
+    preview: (connectionId: string, groups: WorkspaceGroup[]) =>
+      invoke<WorkspacePlan>("preview_workspace_changes", { connectionId, groups }),
+    /** A failure comes back in `WorkspaceResult.error` (reported to `onConnectionFailure` if fatal). */
+    apply: async (connectionId: string, groups: WorkspaceGroup[]) => {
+      const result = await logged(
+        connectionId,
+        groups.every((g) => g.kind === "rows") ? "data" : "structure",
+        () => described(`commit ${groups.length} pending change group(s)`),
+        () => invoke<WorkspaceResult>("apply_workspace_changes", { connectionId, groups }),
+        (r) => {
+          const ran = r.groups.flatMap((g) => g.executed);
+          const sql = ran.length > 0 ? ran : r.groups.flatMap((g) => g.sql);
+          if (sql.length === 0 && !r.error) return null;
+          return executed(sql, {
+            label: r.error && ran.length === 0 ? "ROLLED BACK" : undefined,
+            durationMs: r.durationMs,
+            error: r.error?.message,
+          });
+        },
+      );
+      reportConnectionFailure("apply_workspace_changes", { connectionId }, result.error);
+      return result;
+    },
+  },
+
   // Sidebar objects besides tables (routines, sequences, Item Overview) and the sidebar's object
-  // operations (drop / truncate / clone / comment). Introspection is logged as `-- …`.
+  // operations (drop / truncate / clone / comment). Introspection is logged with its recorded SQL.
   objects: {
     routines: (connectionId: string, schema: string) =>
       logged(
@@ -903,6 +1399,17 @@ export const ipc = {
     /** PostgreSQL's information_schema / pg_catalog / pg_toast (left out of `schema.schemas`). */
     systemSchemas: (connectionId: string) =>
       invoke<SchemaInfo[]>("list_system_schemas", { connectionId }),
+    /**
+     * Every table, view and routine of the connection's database across its schemas (Search in
+     * Database…); `includeSystem`: PostgreSQL's system schemas' relations too.
+     */
+    databaseItems: (connectionId: string, includeSystem = false) =>
+      logged(
+        connectionId,
+        "structure",
+        () => described("list every item of the database"),
+        () => invoke<DatabaseItems>("list_database_items", { connectionId, includeSystem }),
+      ),
     routineDefinition: (connectionId: string, routine: RoutineRef) =>
       logged(
         connectionId,
@@ -929,6 +1436,7 @@ export const ipc = {
     /** A failure comes back in `DdlResult.error` (reported to `onConnectionFailure` if fatal). */
     apply: async (connectionId: string, op: ObjectOp) => {
       const request = () => described(`apply ${op.op}`);
+      const since = traceClock();
       const result = await logged(
         connectionId,
         "structure",
@@ -936,7 +1444,7 @@ export const ipc = {
         () => invoke<DdlResult>("apply_object_op", { connectionId, op }),
         (r) => (r.executed.length > 0 ? executed(r.executed, { durationMs: r.durationMs }) : null),
       );
-      if (result.error)
+      if (result.error && !traceLoggedSince(connectionId, since))
         logSql({
           connectionId,
           category: "structure",
@@ -949,8 +1457,8 @@ export const ipc = {
     },
   },
 
-  // Introspection does not report its SQL: logged as `-- …` descriptions ("structure"). Cached
-  // answers (table metadata) are logged too, with their short round trip.
+  // Introspection is logged with the SELECTs the backend recorded ("structure"); a cached answer
+  // (table metadata) ran no SQL and is logged as a `-- …` description, with its short round trip.
   schema: {
     databases: (connectionId: string) =>
       logged(
@@ -1048,10 +1556,97 @@ export const ipc = {
         "admin_apply_user",
         () => described(`apply user changes to ${userName(change)}`),
         () => invoke<AdminResult>("admin_apply_user", { connectionId, change }),
+        change.password ? [change.password] : undefined,
       ),
   },
+
+  // Opening Tabler from outside: connection URLs (`open -a Tabler "postgres://…"`, links) and
+  // files from Finder; connections opened from a URL stay temporary until saved.
+  deeplink: {
+    /** The queued URLs and files, oldest first (each is handed out once). */
+    takePending: () => invoke<OpenRequest[]>("take_pending_opens"),
+    /** Temporary profiles are deleted at the next start unless marked saved (`false`). */
+    markTemporary: (profileId: string, temporary: boolean) =>
+      invoke<void>("mark_temporary_profile", { profileId, temporary }),
+    temporaryProfiles: () => invoke<string[]>("list_temporary_profiles"),
+  },
+
+  // SQLite over SSH: the downloaded copy's changes go back to the server.
+  sqliteSsh: {
+    /** Uploads now; `force` overwrites a remote file that changed since it was downloaded. */
+    upload: (connectionId: string, force = false) =>
+      invoke<SqliteSshSync>("sqlite_ssh_upload", { connectionId, force }),
+  },
+
+  // Plugins ▸ Manage Plugins… (⌘L): the plugins in <app data>/Plugins and the native menu.
+  plugins: {
+    list: () => invoke<PluginList>("plugins_list"),
+    /** Install from Folder…: copies the folder in (replacing the same identifier). */
+    install: (path: string) => invoke<InstalledPlugin>("plugins_install", { path }),
+    remove: (identifier: string) => invoke<void>("plugins_remove", { identifier }),
+    /** A command's script, for the renderer's sandboxed worker. */
+    readScript: (identifier: string, script: string) =>
+      invoke<string>("plugins_read_script", { identifier, script }),
+    revealFolder: () => invoke<void>("plugins_reveal_folder"),
+    /** The enabled plugins' commands in the native Plugins menu. */
+    setMenu: (entries: PluginMenuEntry[]) => invoke<void>("plugins_set_menu", { entries }),
+  },
+
+  // AI Assistant (right sidebar): chat about the active connection's STRUCTURE (never its rows)
+  // with Claude, an OpenAI-compatible server or a local Ollama. Keys stay in the Keychain.
+  assistant: {
+    /** Streams the reply on `onEvent`; provider failures come back in `result.error`. */
+    chat: async (req: AssistantChatRequest, onEvent: (event: AssistantEvent) => void) =>
+      invoke<AssistantChatResult>("assistant_chat", {
+        req,
+        onEvent: await makeChannel<AssistantEvent>(onEvent),
+      }),
+    /** Stops a running chat; false when it already ended. */
+    cancel: (requestId: string) => invoke<boolean>("assistant_cancel", { requestId }),
+    /** The structure a request with this context sends ("What is sent"). */
+    context: (context: AssistantContextRequest) =>
+      invoke<AssistantContextPreview>("assistant_context", { context }),
+    keyStatus: () => invoke<AssistantKeyStatus>("assistant_key_status"),
+    /** Stores the provider's API key in the Keychain; null removes it. */
+    setKey: (provider: AssistantProvider, key: string | null) =>
+      invoke<void>("assistant_set_key", { provider, key }),
+    test: (config: AssistantProviderConfig) =>
+      invoke<AssistantTestResult>("assistant_test", { config }),
+  },
 };
+
+export type { InstalledPlugin, PluginList, PluginMenuEntry };
+export type { InvalidPlugin } from "./bindings/InvalidPlugin";
+export type { PluginCommand } from "./bindings/PluginCommand";
+export type { PluginContextKind } from "./bindings/PluginContextKind";
+export type { PluginManifest } from "./bindings/PluginManifest";
 
 export function tableKey(t: TableRef): string {
   return `${t.schema ?? ""}.${t.name}`;
 }
+
+export type {
+  AssistantChatRequest,
+  AssistantChatResult,
+  AssistantContextPreview,
+  AssistantContextRequest,
+  AssistantEvent,
+  AssistantKeyStatus,
+  AssistantProvider,
+  AssistantProviderConfig,
+  AssistantTestResult,
+};
+export type { AssistantFailure } from "./bindings/AssistantFailure";
+export type { AssistantFailureKind } from "./bindings/AssistantFailureKind";
+export type { AssistantMessage } from "./bindings/AssistantMessage";
+export type { AssistantRole } from "./bindings/AssistantRole";
+export type {
+  DefinitionRestore,
+  GroupPlan,
+  GroupResult,
+  GroupStatus,
+  ServerExpr,
+  WorkspaceGroup,
+  WorkspacePlan,
+  WorkspaceResult,
+};

@@ -14,6 +14,12 @@ export interface StagedSlice {
    * slice (discard, successful apply).
    */
   partial?: number;
+  /**
+   * Set when the last apply failed with nothing applied (a rolled-back transaction, or a single
+   * `ALTER TABLE`, which fails as a whole): "All changes were reverted", the table is as it was
+   * and the staged ops are still here. Cleared by the next edit, undo or redo.
+   */
+  reverted?: boolean;
 }
 
 export const EMPTY_SLICE: StagedSlice = Object.freeze({ ops: [], past: [] }) as StagedSlice;
@@ -23,8 +29,9 @@ const MAX_HISTORY = 200;
 /** Records `next` as the staged list (no-op when the reducer returned the same list). */
 export function pushOps(slice: StagedSlice, next: DdlOp[]): StagedSlice {
   if (next === slice.ops) return slice;
+  const { reverted: _reverted, ...rest } = slice;
   return {
-    ...slice,
+    ...rest,
     ops: next,
     past: [...slice.past, slice.ops].slice(-MAX_HISTORY),
     future: [],
@@ -35,8 +42,9 @@ export function pushOps(slice: StagedSlice, next: DdlOp[]): StagedSlice {
 export function undoOps(slice: StagedSlice): StagedSlice {
   const prev = slice.past[slice.past.length - 1];
   if (!prev) return slice;
+  const { reverted: _reverted, ...rest } = slice;
   return {
-    ...slice,
+    ...rest,
     ops: prev,
     past: slice.past.slice(0, -1),
     future: [...(slice.future ?? []), slice.ops],
@@ -48,8 +56,9 @@ export function redoOps(slice: StagedSlice): StagedSlice {
   const future = slice.future ?? [];
   const next = future[future.length - 1];
   if (!next) return slice;
+  const { reverted: _reverted, ...rest } = slice;
   return {
-    ...slice,
+    ...rest,
     ops: next,
     past: [...slice.past, slice.ops].slice(-MAX_HISTORY),
     future: future.slice(0, -1),
@@ -71,6 +80,8 @@ interface StructureState {
   discard: (tabId: string) => void;
   /** Records that an apply of `tabId` stopped after `ran` statements had run (see `partial`). */
   markPartial: (tabId: string, ran: number) => void;
+  /** Records that an apply of `tabId` failed with nothing applied (see `reverted`). */
+  markReverted: (tabId: string) => void;
   /** Points the staged ops (and undo history) of `tabIds` at the renamed table `to`. */
   retarget: (tabIds: readonly string[], from: TableRef, to: TableRef) => void;
   /** Forgets the slices of closed tabs. */
@@ -126,6 +137,12 @@ export const useStructureStore = create<StructureState>()((set) => ({
       if (slice.partial === ran) return s;
       return { byTab: { ...s.byTab, [tabId]: { ...slice, partial: ran } } };
     }),
+  markReverted: (tabId) =>
+    set((s) => {
+      const slice = s.byTab[tabId] ?? EMPTY_SLICE;
+      if (slice.reverted) return s;
+      return { byTab: { ...s.byTab, [tabId]: { ...slice, reverted: true } } };
+    }),
   retarget: (tabIds, from, to) =>
     set((s) => {
       const ids = tabIds.filter((id) => id in s.byTab);
@@ -169,6 +186,11 @@ export function useStagedOps(tabId: string): DdlOp[] {
 /** Statements that ran before the last apply of the tab stopped partway; 0 when none. */
 export function usePartialApply(tabId: string): number {
   return useStructureStore((s) => s.byTab[tabId]?.partial ?? 0);
+}
+
+/** Whether the last apply of the tab failed with everything reverted (see `reverted`). */
+export function useRevertedApply(tabId: string): boolean {
+  return useStructureStore((s) => s.byTab[tabId]?.reverted ?? false);
 }
 
 export function useCanUndo(tabId: string): boolean {

@@ -18,12 +18,16 @@ use tokio_postgres::tls::MakeTlsConnect;
 use tokio_postgres::{Client, Config};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+use crate::conn_options::{check_postgres as check_options, extra_params, is_utf8_encoding};
 use crate::drivers::ConnectTarget;
 use crate::error::AppError;
 use crate::secrets::CommandPassword;
-use crate::types::profile::{ProfileOptions, SslMode};
+use crate::sqlgen::conn_options as opt_sql;
+use crate::types::profile::{
+    DEFAULT_CONNECT_TIMEOUT_SECS, ProfileOptions, SslMode, SslNegotiation,
+};
 
-const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS);
 
 /// TLS connector that pins SNI / certificate verification to the profile's real host name.
 ///
@@ -221,10 +225,14 @@ fn with_identity(
     }
 }
 
+/// The ALPN protocol PostgreSQL 17 requires on a direct TLS connection.
+const ALPN_POSTGRESQL: &[u8] = b"postgresql";
+
 fn client_config(
     mode: SslMode,
     ca_path: Option<&str>,
     identity: Option<ClientIdentity>,
+    direct: bool,
 ) -> Result<ClientConfig, AppError> {
     let builder = ClientConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
@@ -240,13 +248,22 @@ fn client_config(
             })),
         SslMode::VerifyFull => builder.with_root_certificates(root_store(ca_path)?),
     };
-    with_identity(builder, identity)
+    let mut config = with_identity(builder, identity)?;
+    if direct {
+        config.alpn_protocols = vec![ALPN_POSTGRESQL.to_vec()];
+    }
+    Ok(config)
+}
+
+pub(crate) fn direct_negotiation(options: &ProfileOptions) -> bool {
+    options.pg_ssl_negotiation == Some(SslNegotiation::Direct)
 }
 
 /// Builds the TLS connector for a target. `Disable` still gets a (never used) connector so the
 /// pool and the editor share one concrete type; its client certificate is not loaded.
 pub fn make_tls(target: &ConnectTarget<'_>) -> Result<PgTls, AppError> {
     let profile = target.profile;
+    check_options(profile)?;
     let identity = if profile.ssl == SslMode::Disable {
         None
     } else {
@@ -255,7 +272,12 @@ pub fn make_tls(target: &ConnectTarget<'_>) -> Result<PgTls, AppError> {
             profile.options.ssl_cert_path.as_deref(),
         )?
     };
-    let config = client_config(profile.ssl, profile.ssl_ca_path.as_deref(), identity)?;
+    let config = client_config(
+        profile.ssl,
+        profile.ssl_ca_path.as_deref(),
+        identity,
+        direct_negotiation(&profile.options),
+    )?;
     Ok(PgTls {
         inner: MakeRustlsConnect::new(config),
         sni_host: target.tls_host(),
@@ -281,7 +303,15 @@ pub fn make_config(target: &ConnectTarget<'_>) -> Config {
             .filter(|d| !d.is_empty())
             .unwrap_or("postgres"),
     );
-    config.application_name("tabler");
+    // Checked by `check_options` (`make_tls`) before anything connects.
+    let extra = extra_params(&profile.options).unwrap_or_default();
+    config.application_name(extra.application_name.as_deref().unwrap_or("tabler"));
+    if let Some(options) = &extra.options {
+        config.options(options);
+    }
+    if let Some(attrs) = extra.target_session_attrs {
+        config.target_session_attrs(attrs);
+    }
     config.connect_timeout(connect_timeout(&profile.options));
     config.ssl_mode(match profile.ssl {
         SslMode::Disable => tokio_postgres::config::SslMode::Disable,
@@ -290,6 +320,12 @@ pub fn make_config(target: &ConnectTarget<'_>) -> Config {
             tokio_postgres::config::SslMode::Require
         }
     });
+    if direct_negotiation(&profile.options) {
+        config.ssl_negotiation(tokio_postgres::config::SslNegotiation::Direct);
+    }
+    if profile.options.pg_disable_channel_binding == Some(true) {
+        config.channel_binding(tokio_postgres::config::ChannelBinding::Disable);
+    }
     config
 }
 
@@ -304,17 +340,28 @@ pub fn connect_timeout(options: &ProfileOptions) -> Duration {
 /// The statements run on every new server connection (pool and editor alike).
 pub fn session_init_sql(options: &ProfileOptions) -> String {
     let mut sql = String::from(
-        "SET DateStyle = 'ISO, YMD'; SET IntervalStyle = 'postgres'; \
-         SET extra_float_digits = 3; SET client_encoding = 'UTF8';",
+        "SET DateStyle = 'ISO, YMD'; SET IntervalStyle = 'postgres'; SET extra_float_digits = 3; ",
     );
+    let encoding = options
+        .encoding()
+        .filter(|e| opt_sql::valid_encoding(e))
+        .unwrap_or("UTF8");
+    sql.push_str(&opt_sql::pg_client_encoding(encoding));
     if let Some(tz) = options.timezone.as_deref().filter(|t| !t.trim().is_empty()) {
         sql.push_str(&format!(
             " SET TIME ZONE '{}';",
             tz.trim().replace('\'', "''")
         ));
     }
-    if options.read_only {
+    // Also a session whose encoding is not UTF-8: Tabler reads and writes text as UTF-8, so the
+    // server must refuse the writes that would be stored mis-encoded.
+    if options.read_only || !is_utf8_encoding(Some(encoding)) {
         sql.push_str(" SET default_transaction_read_only = on;");
+    }
+    // The extra parameters' server settings (checked by `check_options` before connecting).
+    for (name, value) in extra_params(options).unwrap_or_default().settings {
+        sql.push(' ');
+        sql.push_str(&opt_sql::pg_set_config(&name, &value));
     }
     if let Some(extra) = options
         .startup_sql
@@ -671,6 +718,96 @@ mod tests {
         assert_eq!(target.tls_host(), "db.example.com");
     }
 
+    /// TablePlus waits 60 s for a connect; a slow VPN or SSH-tunnelled host needs it.
+    #[test]
+    fn the_connect_timeout_defaults_to_60_seconds() {
+        let mut options = ProfileOptions::default();
+        assert_eq!(connect_timeout(&options), Duration::from_secs(60));
+        assert_eq!(DEFAULT_CONNECT_TIMEOUT, Duration::from_secs(60));
+        // 0 means unset; a typed value wins.
+        options.connect_timeout_secs = Some(0);
+        assert_eq!(connect_timeout(&options), Duration::from_secs(60));
+        options.connect_timeout_secs = Some(90);
+        assert_eq!(connect_timeout(&options), Duration::from_secs(90));
+    }
+
+    #[test]
+    fn connection_options_go_into_the_config_and_the_session_init() {
+        let mut p = profile();
+        p.ssl = SslMode::Require;
+        p.options.pg_ssl_negotiation = Some(SslNegotiation::Direct);
+        p.options.pg_disable_channel_binding = Some(true);
+        p.options.pg_params = Some("application_name=reports options='-c geqo=off' jit=off".into());
+        p.options.encoding = Some("LATIN1".into());
+        let target = ConnectTarget {
+            profile: &p,
+            password: None,
+            host_override: None,
+        };
+        let cfg = make_config(&target);
+        assert_eq!(cfg.get_application_name(), Some("reports"));
+        assert_eq!(cfg.get_options(), Some("-c geqo=off"));
+        assert_eq!(
+            cfg.get_ssl_negotiation(),
+            tokio_postgres::config::SslNegotiation::Direct
+        );
+        assert_eq!(
+            cfg.get_channel_binding(),
+            tokio_postgres::config::ChannelBinding::Disable
+        );
+        let sql = session_init_sql(&p.options);
+        assert!(sql.contains("SET client_encoding = 'LATIN1';"), "{sql}");
+        assert!(!sql.contains("'UTF8'"), "{sql}");
+        assert!(
+            sql.contains("SELECT set_config('jit', 'off', false);"),
+            "{sql}"
+        );
+        // DIRECT with a weak SSL mode is refused before connecting.
+        p.ssl = SslMode::Prefer;
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .ok();
+        let target = ConnectTarget {
+            profile: &p,
+            password: None,
+            host_override: None,
+        };
+        assert_eq!(make_tls(&target).err().unwrap().code(), "INVALID_INPUT");
+        // The defaults stay as they were.
+        let plain = profile();
+        let cfg = make_config(&ConnectTarget {
+            profile: &plain,
+            password: None,
+            host_override: None,
+        });
+        assert_eq!(cfg.get_application_name(), Some("tabler"));
+        assert!(session_init_sql(&plain.options).contains("SET client_encoding = 'UTF8';"));
+    }
+
+    #[test]
+    fn a_non_utf8_encoding_makes_the_session_read_only() {
+        const READ_ONLY: &str = "SET default_transaction_read_only = on;";
+        let mut opts = ProfileOptions::default();
+        assert!(!session_init_sql(&opts).contains(READ_ONLY));
+        for utf8 in ["UTF8", "utf8", "UTF-8", "UNICODE"] {
+            opts.encoding = Some(utf8.into());
+            assert!(!session_init_sql(&opts).contains(READ_ONLY), "{utf8}");
+        }
+        for enc in ["LATIN1", "latin1", "WIN1252", "SJIS", "EUC_JP"] {
+            opts.encoding = Some(enc.into());
+            let sql = session_init_sql(&opts);
+            assert!(
+                sql.contains(&format!("SET client_encoding = '{enc}';")),
+                "{sql}"
+            );
+            assert!(sql.contains(READ_ONLY), "{enc}: {sql}");
+        }
+        // The option alone still does it, with the default encoding.
+        opts.encoding = None;
+        opts.read_only = true;
+        assert!(session_init_sql(&opts).contains(READ_ONLY));
+    }
+
     #[test]
     fn session_init_includes_options() {
         let mut opts = ProfileOptions::default();
@@ -692,11 +829,22 @@ mod tests {
             .install_default()
             .ok();
         for mode in [SslMode::Disable, SslMode::Prefer, SslMode::Require] {
-            assert!(client_config(mode, None, None).is_ok());
+            assert!(client_config(mode, None, None, false).is_ok());
         }
         // Verify modes need roots; the native store normally has some.
-        let _ = client_config(SslMode::VerifyFull, None, None);
-        assert!(client_config(SslMode::VerifyCa, Some("/nonexistent/ca.pem"), None).is_err());
+        let _ = client_config(SslMode::VerifyFull, None, None, false);
+        assert!(
+            client_config(SslMode::VerifyCa, Some("/nonexistent/ca.pem"), None, false).is_err()
+        );
+        // Direct TLS (PostgreSQL 17) offers the ALPN protocol the server requires.
+        let direct = client_config(SslMode::Require, None, None, true).unwrap();
+        assert_eq!(direct.alpn_protocols, vec![b"postgresql".to_vec()]);
+        assert!(
+            client_config(SslMode::Require, None, None, false)
+                .unwrap()
+                .alpn_protocols
+                .is_empty()
+        );
     }
 
     /// A "server" on `[::1]` only that answers every startup with a pg_hba FATAL; `127.0.0.1`

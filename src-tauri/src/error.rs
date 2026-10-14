@@ -72,6 +72,10 @@ pub enum AppError {
     Auth(String),
     #[error("operation timed out")]
     Timeout,
+    /// A statement stopped by Settings ▸ Connections ▸ Query time out: the server was told to
+    /// cancel it. Not `Timeout`, which the renderer takes for a connection that stopped answering.
+    #[error("Query timed out after {secs} s")]
+    QueryTimeout { secs: u32 },
     #[error("ssh tunnel: {0}")]
     Tunnel(String),
     #[error("unknown host key for {host}:{port}")]
@@ -100,6 +104,13 @@ pub enum AppError {
     Internal(String),
 }
 
+/// `AppError::QueryTimeout`'s code (`commands::query::QUERY_TIMEOUT_CODE` is the same string).
+pub const QUERY_TIMEOUT_CODE: &str = "QUERY_TIMEOUT";
+
+/// What the renderer shows under "Query timed out after N s".
+pub const QUERY_TIMEOUT_HINT: &str = "The statement was cancelled. The limit is Settings ▸ \
+     Connections ▸ Query time out (0 = no limit).";
+
 impl AppError {
     pub fn code(&self) -> &'static str {
         match self {
@@ -108,6 +119,7 @@ impl AppError {
             AppError::Connect(_) => "CONNECT_FAILED",
             AppError::Auth(_) => "AUTH_FAILED",
             AppError::Timeout => "TIMEOUT",
+            AppError::QueryTimeout { .. } => QUERY_TIMEOUT_CODE,
             AppError::Tunnel(_) => "SSH_TUNNEL",
             AppError::HostKey { changed: false, .. } => "SSH_HOST_KEY_UNKNOWN",
             AppError::HostKey { changed: true, .. } => "SSH_HOST_KEY_CHANGED",
@@ -176,6 +188,9 @@ impl AppError {
                 payload.vendor_code = *vendor_code;
                 payload.position = position.clone();
                 payload.statement_index = *statement_index;
+            }
+            AppError::QueryTimeout { .. } => {
+                payload.hint = Some(QUERY_TIMEOUT_HINT.into());
             }
             AppError::HostKey {
                 host,

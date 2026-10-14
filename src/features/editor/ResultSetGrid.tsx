@@ -13,6 +13,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { DataGrid, type FocusedCell, type GridAction } from "@/features/datagrid/DataGrid";
+import { nowValue } from "@/features/datagrid/setValue";
 import {
   acceptsEmpty,
   EMPTY_COLUMN_STATE,
@@ -158,6 +159,8 @@ export interface ResultGridProps {
   height?: number;
   /** The footer's controls (rows, time, Show Message, Pin, row numbers, Export…). */
   footer?: ReactNode;
+  /** The cell menu's "Export Result…": selects this result and opens the export dialog on it. */
+  onExport?: () => void;
 }
 
 /**
@@ -176,6 +179,7 @@ export function ResultGrid({
   active,
   height,
   footer,
+  onExport,
 }: ResultGridProps) {
   const rowCount = useResultRowCount(info.id);
   // Streamed rows are appended to this array in place (`rowCount` re-renders); a commit replaces
@@ -320,6 +324,19 @@ export function ResultGrid({
             description: "DEFAULT works on new rows only.",
           });
         if (notText > 0 && edits.length === 0) toast.message("EMPTY applies to text columns only");
+        if (edits.length > 0) stage((s) => setCells(s, edits));
+        return;
+      }
+      case "setNow": {
+        // The server's NOW(), staged as the expression (see `features/staging/expr.ts`).
+        const edits: CellEdit[] = [];
+        for (const { r, c } of a.cells) {
+          const row = getRow(r);
+          const col = columns[c];
+          const value = col?.editable ? nowValue(col.kind) : null;
+          if (!row || !value || row.status === "deleted") continue;
+          edits.push({ rowKey: row.key, col: c, value, original: originalOf(row.key) });
+        }
         if (edits.length > 0) stage((s) => setCells(s, edits));
         return;
       }
@@ -499,6 +516,7 @@ export function ResultGrid({
           onEditCommit={onEditCommit}
           onAction={onAction}
           onFocusCell={onFocusCell}
+          onExportResult={onExport}
           revealCell={showFind ? reveal : null}
         />
       </div>

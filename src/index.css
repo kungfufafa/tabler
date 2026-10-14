@@ -88,27 +88,41 @@
   --border: oklch(0.9 0.003 90);
   --border-strong: oklch(0.84 0.003 90);
   --gridline: oklch(0.93 0.002 90);
-  --muted-foreground: oklch(0.55 0.01 260);
+  --muted-foreground: oklch(0.53 0.01 260);
   --null: oklch(0.7 0.01 260);
   --row-hover: oklch(0.97 0.003 90);
 
   --brand: oklch(0.58 0.17 255);
   --brand-soft: color-mix(in oklab, var(--brand) 12%, transparent);
 
-  --changed: oklch(0.96 0.08 95);
-  --inserted: oklch(0.95 0.06 150);
-  --deleted: oklch(0.95 0.05 25);
+  /* Change markers (Settings ▸ Appearance ▸ Data table): new / modified / soft deleted. */
+  --change-new: oklch(0.95 0.06 150);
+  --change-modified: oklch(0.94 0.09 75);
+  --change-deleted: oklch(0.93 0.06 18);
+  --changed: var(--change-modified);
+  --inserted: var(--change-new);
+  --deleted: var(--change-deleted);
   --error: oklch(0.58 0.2 27);
   --success: oklch(0.6 0.15 150);
   --warning: oklch(0.72 0.16 75);
 
+  /* SQL editor colours (Settings ▸ Appearance ▸ SQL editor). */
   --syn-keyword: oklch(0.5 0.2 290);
   --syn-string: oklch(0.5 0.15 150);
+  --syn-string-double: oklch(0.5 0.15 150);
+  --syn-string-backtick: oklch(0.5 0.15 150);
+  --syn-string-bracket: oklch(0.5 0.15 150);
   --syn-number: oklch(0.55 0.17 60);
-  --syn-comment: var(--muted-foreground);
-  --syn-operator: var(--foreground);
-  --syn-ident: var(--foreground);
+  --syn-comment: oklch(0.53 0.01 260);
+  --syn-other: oklch(0.22 0.01 260);
+  --syn-operator: var(--syn-other);
+  --syn-ident: var(--syn-other);
+  --syn-invisible: oklch(0.53 0.01 260);
+  --syn-error: oklch(0.58 0.2 27);
+  /* The current query / selection tints follow the connection's accent colour. */
   --editor-statement-bg: color-mix(in oklab, var(--brand) 6%, transparent);
+  --editor-selection-bg: color-mix(in oklab, var(--brand) 24%, transparent);
+  --grid-date: oklch(0.22 0.01 260);
 
   /* shadcn roles */
   --card: var(--surface);
@@ -156,20 +170,111 @@
   --brand: oklch(0.63 0.17 255);
   --brand-soft: color-mix(in oklab, var(--brand) 18%, transparent);
 
-  --changed: oklch(0.4 0.07 95 / 0.55);
-  --inserted: oklch(0.38 0.07 150 / 0.5);
-  --deleted: oklch(0.38 0.08 25 / 0.5);
+  --change-new: oklch(0.38 0.07 150 / 0.5);
+  --change-modified: oklch(0.42 0.08 65 / 0.55);
+  --change-deleted: oklch(0.38 0.08 25 / 0.5);
   --error: oklch(0.7 0.18 27);
   --success: oklch(0.72 0.15 150);
   --warning: oklch(0.8 0.15 80);
 
   --syn-keyword: oklch(0.75 0.15 290);
   --syn-string: oklch(0.75 0.13 150);
+  --syn-string-double: oklch(0.75 0.13 150);
+  --syn-string-backtick: oklch(0.75 0.13 150);
+  --syn-string-bracket: oklch(0.75 0.13 150);
   --syn-number: oklch(0.78 0.14 60);
+  --syn-comment: oklch(0.66 0.008 90);
+  --syn-other: oklch(0.92 0.005 90);
+  --syn-invisible: oklch(0.66 0.008 90);
+  --syn-error: oklch(0.7 0.18 27);
+  --grid-date: oklch(0.92 0.005 90);
 
   --primary-foreground: oklch(0.99 0 0);
   --accent: oklch(0.3 0.004 260);
   --sidebar-primary-foreground: oklch(0.99 0 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Solarized (Settings ▸ Appearance ▸ Theme). Same tokens as above; `useTheme` sets
+   data-theme-name and the matching light / dark base (colour-scheme, `.dark`). Keep these values
+   in step with appearance/builtinThemes.ts (a test compares them). Custom themes are injected
+   the same way, as `[data-theme-name="custom"]`. */
+:root[data-theme-name="solarized-light"] {
+  --background: #f7f1de;
+  --surface: #fdf6e3;
+  --surface-2: #f3ecd8;
+  --sidebar: #eee8d5;
+  --border: #e1dac4;
+  --border-strong: #cfc8b0;
+  --gridline: #eee7d2;
+  --row-hover: #f5eedb;
+  --accent: #e9e2cc;
+  --foreground: #3b5159;
+  --muted-foreground: #506870;
+  --null: #9aa7a5;
+  --error: #c4302d;
+  --success: #5f7400;
+  --warning: #8a6d00;
+  --change-new: #e3edc0;
+  --change-modified: #fcdba0;
+  --change-deleted: #f8cdd0;
+  --syn-comment: #6a7e85;
+  --syn-number: #b8430f;
+  --syn-string: #1d7f78;
+  --syn-string-double: #1d7f78;
+  --syn-string-backtick: #1d7f78;
+  --syn-string-bracket: #1d7f78;
+  --syn-keyword: #667700;
+  --editor-statement-bg: #1d73b30f;
+  --editor-selection-bg: #1d73b33d;
+  --syn-error: #c4302d;
+  --syn-other: #3b5159;
+  --syn-invisible: #506870;
+  --grid-date: #3b5159;
+}
+/* The connection's own colour (data-accent) wins over a theme's accent. */
+:root[data-theme-name="solarized-light"]:not([data-accent]) {
+  --brand: #1d73b3;
+  --primary-foreground: #ffffff;
+}
+
+:root[data-theme-name="solarized-dark"] {
+  --background: #002b36;
+  --surface: #00313d;
+  --surface-2: #073642;
+  --sidebar: #00262f;
+  --border: #0f4552;
+  --border-strong: #1c5666;
+  --gridline: #0a3945;
+  --row-hover: #063a46;
+  --accent: #0b4452;
+  --foreground: #b2bebe;
+  --muted-foreground: #9aaeb1;
+  --null: #5d777e;
+  --error: #f2605c;
+  --success: #a0b800;
+  --warning: #e0a800;
+  --change-new: #2e9e5538;
+  --change-modified: #e08a2c3a;
+  --change-deleted: #dc322f40;
+  --syn-comment: #7b9298;
+  --syn-number: #e8743b;
+  --syn-string: #35bdb2;
+  --syn-string-double: #35bdb2;
+  --syn-string-backtick: #35bdb2;
+  --syn-string-bracket: #35bdb2;
+  --syn-keyword: #a3bf00;
+  --editor-statement-bg: #3da5ee14;
+  --editor-selection-bg: #3da5ee40;
+  --syn-error: #f2605c;
+  --syn-other: #b2bebe;
+  --syn-invisible: #9aaeb1;
+  --grid-date: #b2bebe;
+}
+/* The connection's own colour (data-accent) wins over a theme's accent. */
+:root[data-theme-name="solarized-dark"]:not([data-accent]) {
+  --brand: #3da5ee;
+  --primary-foreground: #00212b;
 }
 
 /* Connection colour presets drive the brand/accent colour of the whole window. */
@@ -196,6 +301,55 @@
 }
 :root[data-accent="gray"] {
   --brand: oklch(0.5 0.01 260);
+}
+
+/* ------------------------------------------------------------------ */
+/* Fonts (Settings ▸ Appearance). Defaults here; the appearance host overrides them on <html>. The
+   rules below are unlayered on purpose: they win over the grid's / sidebar's utility classes
+   without those components knowing about the preferences. */
+:root {
+  --editor-font-family:
+    "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Monaco, "Courier New", monospace;
+  --editor-line-height: 1.6;
+  --grid-font-family:
+    -apple-system, BlinkMacSystemFont, system-ui, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --grid-font-size: 12px;
+  --grid-line-height: 16px;
+}
+
+[data-scope="grid"] :is([data-cell], [data-header], [data-gutter]) {
+  font-family: var(--grid-font-family);
+}
+[data-scope="grid"] [data-cell] {
+  font-size: var(--grid-font-size);
+  line-height: var(--grid-line-height);
+}
+[data-scope="grid"] [data-header] {
+  font-size: var(--grid-font-size);
+}
+[data-scope="grid"] [data-gutter] {
+  font-size: calc(var(--grid-font-size) - 1px);
+}
+
+/* General ▸ Table Data ▸ Disable scroll elastically (the grid sets overscroll-behavior inline). */
+:root[data-grid-no-elastic] [data-scope="grid"] {
+  overscroll-behavior: none !important;
+}
+
+/* Left sidebar font family (--sidebar-font-family is set when the preference is not empty). */
+[data-scope="sidebar"] {
+  font-family: var(--sidebar-font-family, inherit);
+}
+
+/* Left sidebar font size (set as data-sidebar-font + --sidebar-font-size when not the default). */
+:root[data-sidebar-font] [data-scope="sidebar"] :is(.text-xs, [class~="text-[11px]"]) {
+  font-size: var(--sidebar-font-size);
+}
+:root[data-sidebar-font] [data-scope="sidebar"] [class~="text-[10px]"] {
+  font-size: calc(var(--sidebar-font-size) - 1px);
+}
+:root[data-sidebar-font] [data-scope="sidebar"] [class~="text-[9px]"] {
+  font-size: calc(var(--sidebar-font-size) - 2px);
 }
 
 /* ------------------------------------------------------------------ */

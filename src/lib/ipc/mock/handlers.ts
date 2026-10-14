@@ -14,7 +14,15 @@ import type { StagedChange } from "../bindings/StagedChange";
 import type { TableRef } from "../bindings/TableRef";
 import type { Value } from "../bindings/Value";
 import { mockAdminDatabases, mockAdminSchemas } from "./admin";
-import { mockPasswordCommand, mockSocketCheck, mockSshPrompt } from "./connect_extras";
+import {
+  mockBootstrapScript,
+  mockCreateSqliteFile,
+  mockDriverOptions,
+  mockPasswordCommand,
+  mockSocketCheck,
+  mockSqliteKey,
+  mockSshPrompt,
+} from "./connect_extras";
 import { mockCheckHostKey } from "./export";
 import { SEED_PROFILES, tableMetaFor, tablesFor } from "./fixtures";
 import { matchesGroup, rowsFor, sortRows } from "./rows";
@@ -71,10 +79,11 @@ function missingSqliteFile(p: ConnectionProfile): string | null {
   return `SQLite database file not found: ${path}. Use “New…” to create one.`;
 }
 
-registerMock("create_sqlite_database", ({ path }) => {
+registerMock("create_sqlite_database", ({ path, key }) => {
   if (typeof path !== "string" || path.trim() === "")
     mockError("INVALID_INPUT", "SQLite file path is required");
   createdSqliteFiles.add(path);
+  mockCreateSqliteFile(path, typeof key === "string" ? key : null);
 });
 
 // --- profiles ---
@@ -134,11 +143,29 @@ registerMock("get_secret_status", ({ id }) => ({
   hasSshPassphrase: false,
 }));
 registerMock("test_connection", async ({ input }) => {
-  const { profile } = input as ProfileInput;
+  const { profile, password } = input as ProfileInput;
   await new Promise((r) => setTimeout(r, 300));
+  const failed = (message: string) => ({
+    ok: false,
+    serverVersion: null,
+    latencyMs: 0,
+    message,
+    tunnelUsed: profile.ssh !== null,
+  });
+  try {
+    mockBootstrapScript(profile);
+  } catch (err) {
+    return failed(err instanceof Error ? err.message : String(err));
+  }
+  mockDriverOptions(profile);
   const missing = missingSqliteFile(profile);
   if (missing)
     return { ok: false, serverVersion: null, latencyMs: 0, message: missing, tunnelUsed: false };
+  try {
+    mockSqliteKey(profile, password ?? secrets.get(profile.id) ?? sessionPasswords.get(profile.id));
+  } catch (err) {
+    return failed(err instanceof Error ? err.message : String(err));
+  }
   mockSocketCheck(profile);
   mockPasswordCommand(profile);
   // SSH profiles verify the server's host key first (unknown keys are parked under the profile id),
@@ -165,7 +192,7 @@ registerMock("test_connection", async ({ input }) => {
 });
 
 // --- connections ---
-registerMock("connect", async ({ profileId, password }) => {
+registerMock("connect", async ({ profileId, password, databaseOverride }) => {
   const p = profiles.get(profileId as string) ?? mockError("NOT_FOUND", `profile ${profileId}`);
   await new Promise((r) => setTimeout(r, 250));
   if (p.options.passwordMode === "ask") {
@@ -175,8 +202,18 @@ registerMock("connect", async ({ profileId, password }) => {
     if (typed === "wrong") mockError("AUTH_FAILED", "authentication failed: wrong password");
     sessionPasswords.set(p.id, typed);
   }
+  mockBootstrapScript(p);
+  mockDriverOptions(p);
   const missing = missingSqliteFile(p);
   if (missing) mockError("NOT_FOUND", `not found: ${missing}`);
+  mockSqliteKey(
+    p,
+    p.options.passwordMode === "ask"
+      ? sessionPasswords.get(p.id)
+      : p.options.passwordMode === "none"
+        ? null
+        : ((password as string | null | undefined) ?? secrets.get(p.id)),
+  );
   mockSocketCheck(p);
   mockPasswordCommand(p);
   const ssh = sshOf(p);
@@ -191,10 +228,17 @@ registerMock("connect", async ({ profileId, password }) => {
     color: p.color,
     driver: p.driver,
     serverVersion: serverVersion(p),
-    currentDatabase: p.driver === "sqlite" ? p.sqlitePath : (p.database ?? "postgres"),
+    currentDatabase:
+      p.driver === "sqlite"
+        ? p.sqlitePath
+        : ((databaseOverride as string | null | undefined) ?? p.database ?? "postgres"),
     currentUser: p.user,
     tunnel: ssh ? { localPort: 50000 + (connections.size % 1000) } : null,
-    readOnly: p.options.readOnly,
+    // Another encoding than UTF-8 makes the session read-only (see `set_connection_encoding`).
+    readOnly:
+      p.options.readOnly ||
+      (p.driver !== "sqlite" &&
+        !/^(utf8|utf-8|utf8mb3|utf8mb4|unicode)?$/i.test(p.options.encoding?.trim() ?? "")),
   };
   connections.set(info.connectionId, { ...info, profile: p });
   profiles.set(p.id, { ...p, lastConnectedAt: now() });
@@ -220,6 +264,37 @@ registerMock("ping", ({ connectionId }) =>
 registerMock("switch_database", ({ connectionId, database }) => {
   const c = conn(connectionId as string);
   c.currentDatabase = database as string;
+  const { profile: _p, ...info } = c;
+  return info;
+});
+/** View Using Encoding…: the live session's encoding, by connection id. */
+const sessionEncodings = new Map<string, string>();
+const defaultEncoding = (c: ConnectionInfo & { profile: ConnectionProfile }) =>
+  c.profile.options.encoding || (c.driver === "mysql" ? "utf8mb4" : "UTF8");
+registerMock("get_connection_encoding", ({ connectionId }) => {
+  const c = conn(connectionId as string);
+  if (c.driver === "sqlite")
+    mockError("INVALID_INPUT", "SQLite text is always UTF-8: there is no connection encoding");
+  return sessionEncodings.get(c.connectionId) ?? defaultEncoding(c);
+});
+registerMock("set_connection_encoding", async ({ connectionId, encoding }) => {
+  const c = conn(connectionId as string);
+  if (c.driver === "sqlite")
+    mockError("INVALID_INPUT", "SQLite text is always UTF-8: there is no connection encoding");
+  const enc = typeof encoding === "string" ? encoding.trim() : "";
+  if (enc !== "" && !/^[A-Za-z0-9_-]{1,40}$/.test(enc))
+    mockError("INVALID_INPUT", `“${enc}” is not an encoding name`);
+  if (enc.toLowerCase() === "klingon")
+    mockError("DB_ERROR", `invalid value for parameter "client_encoding": "${enc}"`);
+  await new Promise((r) => setTimeout(r, 200));
+  if (enc === "") sessionEncodings.delete(c.connectionId);
+  else sessionEncodings.set(c.connectionId, enc);
+  // Tabler reads and writes UTF-8 only: another encoding makes the session read-only (the
+  // backend's `effective_read_only`).
+  const utf8 = /^(utf8|utf-8|utf8mb3|utf8mb4|unicode)$/i.test(
+    sessionEncodings.get(c.connectionId) ?? defaultEncoding(c),
+  );
+  c.readOnly = c.profile.options.readOnly || !utf8;
   const { profile: _p, ...info } = c;
   return info;
 });

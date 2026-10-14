@@ -151,9 +151,21 @@ pub fn text_to_value_with_elem(
             // Multidimensional (or malformed) literals are kept verbatim.
             None => Value::other(type_name, text),
         },
-        ValueKind::Set | ValueKind::Bit | ValueKind::Geometry | ValueKind::Other => {
-            Value::other(type_name, text)
-        }
+        ValueKind::Geometry => geometry_value(type_name, text, crate::geometry::convert_to_wkt()),
+        ValueKind::Set | ValueKind::Bit | ValueKind::Other => Value::other(type_name, text),
+    }
+}
+
+/// A PostGIS `geometry` / `geography` value from its text output (hex EWKB): EWKT while the
+/// "convert to WKT" preference is on (`SRID=4326;POINT(1 2)`), the hex otherwise or when it does
+/// not parse.
+fn geometry_value(type_name: &str, text: &str, wkt: bool) -> Value {
+    match wkt
+        .then(|| crate::geometry::ewkb_hex_to_ewkt(text))
+        .flatten()
+    {
+        Some(ewkt) => Value::other(type_name, ewkt),
+        None => Value::other(type_name, text),
     }
 }
 
@@ -775,6 +787,28 @@ mod tests {
         assert_eq!(
             text_to_value(ValueKind::Other, "inet", "10.0.0.1/32"),
             Value::other("inet", "10.0.0.1/32")
+        );
+    }
+
+    #[test]
+    fn decodes_postgis_hex_ewkb_as_ewkt() {
+        let hex = "0101000020E6100000000000000000F03F0000000000000040";
+        assert_eq!(
+            geometry_value("geometry", hex, true),
+            Value::other("geometry", "SRID=4326;POINT(1 2)")
+        );
+        assert_eq!(
+            geometry_value("geography", hex, true),
+            Value::other("geography", "SRID=4326;POINT(1 2)")
+        );
+        // The preference off, or text that is not hex EWKB: kept as it came.
+        assert_eq!(
+            geometry_value("geometry", hex, false),
+            Value::other("geometry", hex)
+        );
+        assert_eq!(
+            geometry_value("geometry", "POINT(1 2)", true),
+            Value::other("geometry", "POINT(1 2)")
         );
     }
 

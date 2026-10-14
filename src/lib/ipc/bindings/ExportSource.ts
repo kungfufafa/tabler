@@ -12,4 +12,11 @@ export type ExportSource = { "kind": "table", table: TableRef, filter: FilterGro
 /**
  * Subset of columns (in this order); `None` = all.
  */
-columns: Array<string> | null, } | { "kind": "sql", sql: string, } | { "kind": "rows", columns: Array<ResultColumn>, rows: Array<Array<Value>>, table: string | null, };
+columns: Array<string> | null, 
+/**
+ * Skip this many rows (after the filter and sort) before the first one exported: a
+ * table tab's "Export current page" from page 2 on (`max_rows` is the page size). With
+ * an offset the rows are ordered deterministically (the sort, then the primary key,
+ * else `rowid` / every selected column), so consecutive pages never overlap.
+ */
+offset?: number, } | { "kind": "sql", sql: string, } | { "kind": "rows", columns: Array<ResultColumn>, rows: Array<Array<Value>>, table: string | null, };

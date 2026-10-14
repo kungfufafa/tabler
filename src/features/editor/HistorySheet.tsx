@@ -1,6 +1,25 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleCheck, CircleX, History, Loader2, Search, Trash2 } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  CaseSensitive,
+  CircleCheck,
+  CircleX,
+  History,
+  Loader2,
+  Play,
+  Regex,
+  Search,
+  Trash2,
+  WholeWord,
+} from "lucide-react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
 import { Kbd } from "@/components/Kbd";
@@ -23,6 +42,15 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { Toggle } from "@/components/ui/toggle";
+import { McpBadge } from "@/features/sidebar/McpBadge";
+import {
+  historyMatcher,
+  isMcpEntry,
+  readHistorySearchOptions,
+  writeHistorySearchOptions,
+  type HistorySearchOptions,
+} from "@/features/sidebar/historyEntry";
 import { formatDuration } from "@/lib/format/time";
 import { ipc, toIpcError, type HistoryEntry } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
@@ -32,8 +60,6 @@ import { groupByDay, HISTORY_KEY, timeOfDay } from "./historyGroups";
 import { plural, rowsLabel } from "./labels";
 
 const SEARCH_DEBOUNCE_MS = 200;
-/** How long a click waits for a second one (a double-click runs instead of inserting). */
-const DOUBLE_CLICK_MS = 300;
 
 function useDebounced<T>(value: T, ms: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -58,18 +84,41 @@ function EntryMeta({ e }: { e: HistoryEntry }) {
   return <span className="min-w-0 truncate tabular-nums">{parts.join(" · ")}</span>;
 }
 
-/** Case-insensitive substring match, like the backend's search. */
-function matches(e: HistoryEntry, needle: string): boolean {
-  return !needle || e.sql.toLowerCase().includes(needle);
+/** One of the search options (Match Case / Whole Word / Regex), shown as a toggle in the field. */
+function OptionToggle({
+  pressed,
+  onPressedChange,
+  label,
+  children,
+}: {
+  pressed: boolean;
+  onPressedChange: (on: boolean) => void;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <Toggle
+      size="sm"
+      pressed={pressed}
+      onPressedChange={onPressedChange}
+      aria-label={label}
+      title={label}
+      className="text-muted-foreground data-[state=on]:bg-brand-soft data-[state=on]:text-foreground h-5 min-w-5 rounded px-0.5 [&_svg:not([class*='size-'])]:size-3.5"
+    >
+      {children}
+    </Toggle>
+  );
 }
 
 const isTextField = (el: HTMLElement) =>
   el.closest("input, textarea, [contenteditable='true']") !== null;
 
 /**
- * ⌘H: every statement the backend recorded, newest first, grouped by day. Click inserts the SQL at
- * the cursor; double-click or ⌘↩ runs it. The search field drives the list as a combobox (arrows,
- * Enter, ⌘↩); ⌘⌫ deletes the active entry while the list itself has focus.
+ * ⌘H: every statement the backend recorded, newest first, grouped by day. A click only selects the
+ * entry; a double-click (or Enter) inserts the SQL at the cursor and NEVER runs it; ⌘↩ (or the
+ * entry's Run button) runs it. The search field drives the list as a combobox (arrows, Enter, ⌘↩)
+ * and has the History pane's options (Match Case, Whole Word, Regex; remembered and shared with
+ * the pane); ⌘⌫ deletes the active entry while the list itself has focus.
  */
 export function HistorySheet({
   tabId,
@@ -86,26 +135,45 @@ export function HistorySheet({
 }) {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
+  const [options, setOptionsState] = useState(readHistorySearchOptions);
   const term = useDebounced(search.trim(), SEARCH_DEBOUNCE_MS);
+  const needle = search.trim();
+  const typedMatcher = historyMatcher(needle, options);
+  const invalidRegex = typedMatcher === "invalid";
   const history = useQuery({
-    queryKey: [...HISTORY_KEY, term],
-    queryFn: () => ipc.history.list({ search: term || null, limit: 200 }),
-    enabled: open,
+    queryKey: [...HISTORY_KEY, term, options],
+    queryFn: () => ipc.history.list({ search: term || null, limit: 200, ...options }),
+    enabled: open && historyMatcher(term, options) !== "invalid",
     placeholderData: (prev) => prev,
   });
   // The fetch is debounced and keeps showing the previous list until the new one lands. Filter by
   // what is typed right now, so the rows on screen (and the one Enter / ⌘↩ acts on) always match.
-  const needle = search.trim().toLowerCase();
   const entries = useMemo(
-    () => (history.data ?? []).filter((e) => matches(e, needle)),
-    [history.data, needle],
+    () =>
+      typedMatcher === "invalid"
+        ? []
+        : typeof typedMatcher === "function"
+          ? (history.data ?? []).filter((e) => typedMatcher(e.sql))
+          : (history.data ?? []),
+    // The matcher is rebuilt each render; what it depends on is listed instead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [history.data, needle, options],
   );
+  const setOptions = (patch: Partial<HistorySearchOptions>) =>
+    setOptionsState((o) => {
+      const next = { ...o, ...patch };
+      writeHistorySearchOptions(next);
+      return next;
+    });
+  // The History pane may have changed them since the sheet last opened.
+  useEffect(() => {
+    if (open) setOptionsState(readHistorySearchOptions());
+  }, [open]);
   const settled = term === search.trim() && !history.isPlaceholderData;
   const groups = useMemo(() => groupByDay(entries), [entries]);
   const [activeIndex, setActiveIndex] = useState(0);
   const active = Math.max(0, Math.min(activeIndex, entries.length - 1));
   const listRef = useRef<HTMLDivElement>(null);
-  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** An entry was picked and the sheet is closing: ignore the clicks that trail behind. */
   const closing = useRef(false);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -114,16 +182,10 @@ export function HistorySheet({
   const activeEntry = entries[active];
   const activeDescendant = activeEntry ? optionId(activeEntry) : undefined;
 
-  useEffect(() => setActiveIndex(0), [needle, open]);
+  useEffect(() => setActiveIndex(0), [needle, options, open]);
   useEffect(() => {
     if (open) closing.current = false;
   }, [open]);
-  useEffect(
-    () => () => {
-      if (clickTimer.current) clearTimeout(clickTimer.current);
-    },
-    [],
-  );
   useEffect(() => {
     listRef.current
       ?.querySelector(`[data-index="${active}"]`)
@@ -150,8 +212,6 @@ export function HistorySheet({
   const pick = (e: HistoryEntry | undefined, then: (sql: string) => void) => {
     if (!e || closing.current) return;
     closing.current = true;
-    if (clickTimer.current) clearTimeout(clickTimer.current);
-    clickTimer.current = null;
     onOpenChange(false);
     then(e.sql);
   };
@@ -196,8 +256,8 @@ export function HistorySheet({
             <History className="text-muted-foreground size-4" /> Query history
           </SheetTitle>
           <SheetDescription className="text-xs">
-            Click to insert at the cursor, double-click or{" "}
-            <Kbd combo="Mod+Enter" className="align-middle" /> to run.
+            Double-click or <Kbd combo="Enter" className="align-middle" /> inserts at the cursor,{" "}
+            <Kbd combo="Mod+Enter" className="align-middle" /> runs.
           </SheetDescription>
           <div className="relative">
             <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
@@ -210,13 +270,37 @@ export function HistorySheet({
               aria-activedescendant={activeDescendant}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search SQL…"
+              placeholder={options.regex ? "Search SQL (regex)…" : "Search SQL…"}
               aria-label="Search history"
-              className="h-7 pl-7 text-xs md:text-xs"
+              aria-invalid={invalidRegex || undefined}
+              className="h-7 pr-20 pl-7 text-xs md:text-xs"
             />
-            {history.isFetching && (
-              <Loader2 className="text-muted-foreground absolute top-1/2 right-2 size-3.5 -translate-y-1/2 animate-spin" />
-            )}
+            <div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-px">
+              {history.isFetching && (
+                <Loader2 className="text-muted-foreground mr-1 size-3.5 animate-spin" />
+              )}
+              <OptionToggle
+                pressed={options.matchCase}
+                onPressedChange={(on) => setOptions({ matchCase: on })}
+                label="Match Case"
+              >
+                <CaseSensitive />
+              </OptionToggle>
+              <OptionToggle
+                pressed={options.wholeWord}
+                onPressedChange={(on) => setOptions({ wholeWord: on })}
+                label="Whole Word"
+              >
+                <WholeWord />
+              </OptionToggle>
+              <OptionToggle
+                pressed={options.regex}
+                onPressedChange={(on) => setOptions({ regex: on })}
+                label="Regex"
+              >
+                <Regex />
+              </OptionToggle>
+            </div>
           </div>
         </SheetHeader>
 
@@ -229,7 +313,12 @@ export function HistorySheet({
           tabIndex={0}
           aria-activedescendant={activeDescendant}
         >
-          {history.isError ? (
+          {invalidRegex ? (
+            <EmptyState
+              title="Invalid regular expression"
+              description="Fix the pattern, or turn Regex off."
+            />
+          ) : history.isError ? (
             <EmptyState title="Could not load history" description={history.error.message} />
           ) : entries.length === 0 && settled && !history.isPending ? (
             <EmptyState
@@ -263,14 +352,11 @@ export function HistorySheet({
                         "group border-gridline cursor-pointer border-b px-4 py-2",
                         selected ? "bg-brand-soft" : "hover:bg-row-hover",
                       )}
-                      onClick={(ev) => {
-                        if (closing.current) return;
-                        setActiveIndex(i);
-                        if (ev.detail > 1) return;
-                        if (clickTimer.current) clearTimeout(clickTimer.current);
-                        clickTimer.current = setTimeout(() => insert(e), DOUBLE_CLICK_MS);
+                      // A click selects; the double-click inserts (it never runs the statement).
+                      onClick={() => {
+                        if (!closing.current) setActiveIndex(i);
                       }}
-                      onDoubleClick={() => run(e)}
+                      onDoubleClick={() => insert(e)}
                     >
                       <div className="text-muted-foreground flex items-center gap-1.5 text-[11px]">
                         {e.success ? (
@@ -287,13 +373,28 @@ export function HistorySheet({
                             explain
                           </span>
                         )}
-                        {/* Pointer only: from the keyboard, Mod+Backspace on the focused list deletes. */}
+                        {isMcpEntry(e) && <McpBadge />}
+                        {/* Pointer only: from the keyboard, ⌘↩ runs and ⌘⌫ deletes the active entry. */}
+                        <button
+                          type="button"
+                          tabIndex={-1}
+                          aria-hidden
+                          data-testid="history-run"
+                          title={`Run (${formatCombo("Mod+Enter")})`}
+                          className="hover:text-foreground ml-auto shrink-0 opacity-0 group-hover:opacity-100"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            run(e);
+                          }}
+                        >
+                          <Play className="size-3.5" />
+                        </button>
                         <button
                           type="button"
                           tabIndex={-1}
                           aria-hidden
                           title={`Delete entry (${formatCombo("Mod+Backspace")})`}
-                          className="hover:text-error ml-auto shrink-0 opacity-0 group-hover:opacity-100"
+                          className="hover:text-error shrink-0 opacity-0 group-hover:opacity-100"
                           onClick={(ev) => {
                             ev.stopPropagation();
                             remove.mutate([e.id]);

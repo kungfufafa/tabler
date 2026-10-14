@@ -1,5 +1,6 @@
 import type { Value } from "@/lib/ipc";
-import { parseEditText } from "@/lib/values";
+import { parseCellText } from "./cellText";
+import type { CopyMarker } from "./clipboard";
 import type { Rect } from "./selection";
 import type { CellPos, GridColumn } from "./types";
 
@@ -8,6 +9,9 @@ export interface PasteTarget {
   /** VISUAL column index (position among the visible columns). */
   c: number;
   text: string;
+  /** The field's place in the pasted block (row, field): looks up its copy marker. */
+  br: number;
+  bc: number;
 }
 
 export interface PastePlan {
@@ -44,7 +48,7 @@ export function planPaste(
           const k = `${r}:${c}`;
           if (seen.has(k)) continue;
           seen.add(k);
-          targets.push({ r, c, text: single });
+          targets.push({ r, c, text: single, br: 0, bc: 0 });
         }
       }
     }
@@ -66,7 +70,7 @@ export function planPaste(
     widest = Math.max(widest, fields.length);
     fields.forEach((text, j) => {
       const c = anchor.c + j;
-      if (c < colCount) targets.push({ r, c, text });
+      if (c < colCount) targets.push({ r, c, text, br: i, bc: j });
     });
   });
   const clippedCols = Math.max(0, widest - Math.max(0, colCount - anchor.c));
@@ -86,13 +90,21 @@ const TEXT_LIKE: ReadonlySet<GridColumn["kind"]> = new Set(["text", "enum", "set
 
 /**
  * Typed value for pasted text, or null when it does not fit the column. An empty field is NULL in
- * a nullable non-text column (what copying a NULL writes) and '' in a text column.
+ * a nullable non-text column (what copying a NULL writes) and '' in a text column — unless Tabler
+ * copied it and remembers (`marker`) that it was NULL or DEFAULT.
  */
-export function pastedValue(col: GridColumn, text: string, previous: Value = NULL): Value | null {
+export function pastedValue(
+  col: GridColumn,
+  text: string,
+  previous: Value = NULL,
+  marker?: CopyMarker,
+): Value | null {
+  if (marker === "null") return col.nullable ? NULL : null;
+  if (marker === "default") return col.hasDefault ? { t: "default" } : null;
   if (text === "" && col.nullable && !TEXT_LIKE.has(col.kind)) return NULL;
   if (col.kind === "enum" && (col.enumValues?.length ?? 0) > 0 && !col.enumValues!.includes(text))
     return null;
-  const parsed = parseEditText(col.kind, text, previous);
+  const parsed = parseCellText(col, text, previous);
   return parsed.ok ? parsed.value : null;
 }
 
@@ -101,22 +113,27 @@ export type PastedRow = Array<{ c: number; value: Value }>;
 
 /**
  * Whole pasted rows (`holdsWholeRows`) typed per visible column. `src[i]` is the source index of
- * visible column `cols[i]`. Read-only, binary and auto-increment columns are left to their
- * defaults (like Duplicate: a copied id would clash); values that do not fit are skipped.
+ * visible column `cols[i]`. Primary keys keep their pasted values, auto-increment ones included
+ * (TablePlus; Duplicate is what clears them). Read-only and binary columns are left to their
+ * defaults; values that do not fit are skipped. `markers` (`copiedMarkers`) restore copied NULLs.
  */
 export function pastedRows(
   block: readonly (readonly string[])[],
   cols: readonly GridColumn[],
   src: readonly number[],
+  markers?: ReadonlyMap<string, CopyMarker> | null,
 ): { rows: PastedRow[]; skipped: number } {
   let skipped = 0;
-  const rows = block.map((fields) => {
+  const rows = block.map((fields, r) => {
     const cells: PastedRow = [];
     fields.forEach((text, i) => {
       const col = cols[i];
       const c = src[i];
-      if (!col || c === undefined || !col.editable || col.kind === "bytes" || col.isAutoInc) return;
-      const value = pastedValue(col, text);
+      if (!col || c === undefined || !col.editable || col.kind === "bytes") return;
+      const marker = markers?.get(`${r}:${i}`);
+      // A copied DEFAULT in a new row is the column's default anyway.
+      if (marker === "default") return;
+      const value = pastedValue(col, text, NULL, marker);
       if (value) cells.push({ c, value });
       else skipped++;
     });

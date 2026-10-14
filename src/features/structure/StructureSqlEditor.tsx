@@ -1,5 +1,5 @@
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { bracketMatching, syntaxHighlighting } from "@codemirror/language";
+import { bracketMatching } from "@codemirror/language";
 import { EditorState, Prec } from "@codemirror/state";
 import {
   drawSelection,
@@ -10,7 +10,7 @@ import {
 } from "@codemirror/view";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { languageExtension } from "@/features/editor/cmExtensions";
-import { editorTheme, sqlHighlightStyle } from "@/features/editor/cmTheme";
+import { sqlEditorTheme } from "@/features/editor/cmTheme";
 import type { Dialect } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 
@@ -68,8 +68,7 @@ export function StructureSqlEditor({
           drawSelection(),
           highlightActiveLine(),
           bracketMatching(),
-          syntaxHighlighting(sqlHighlightStyle),
-          editorTheme,
+          sqlEditorTheme,
           languageExtension({ dialect }),
           EditorView.lineWrapping,
           EditorState.readOnly.of(readOnly),

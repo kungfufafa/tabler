@@ -1,6 +1,7 @@
 //! DDL integration test for PostgreSQL: plans with `plan_ddl`, runs with `apply_plan`, and
 //! re-introspects after every step. Runs only when `TABLER_TEST_PG_URL` is set; everything
-//! happens inside a scratch schema `tabler_ddl_<random>` that is dropped at the end.
+//! happens inside a scratch schema `tabler_ddl_<random>` (the grouped-ALTER tests: `fx3_<random>`)
+//! that is dropped at the end.
 
 use std::sync::Arc;
 
@@ -498,11 +499,20 @@ where
     F: FnOnce(Arc<dyn DbSession>, String) -> Fut,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
+    in_prefixed_schema("tabler_ddl", body).await;
+}
+
+/// `in_scratch_schema` with the schema name `<stem>_<random>`.
+async fn in_prefixed_schema<F, Fut>(stem: &str, body: F)
+where
+    F: FnOnce(Arc<dyn DbSession>, String) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
     let Some(session) = open().await else {
         return;
     };
     let schema = format!(
-        "tabler_ddl_{}",
+        "{stem}_{}",
         &uuid::Uuid::new_v4().simple().to_string()[..12]
     );
     session
@@ -672,4 +682,485 @@ async fn plans_and_applies_ddl() {
     if let Err(e) = outcome {
         std::panic::resume_unwind(e.into_panic());
     }
+}
+
+// --- grouped ALTER TABLE (the ops of one table are one statement) ------------------------------
+
+/// What a schema comparison looks at: columns (in order) with their type, nullability, default
+/// and comment, then the indexes, checks and foreign keys.
+fn shape(meta: &TableMeta) -> String {
+    let mut out = String::new();
+    for c in &meta.columns {
+        out += &format!(
+            "col {} {} null={} default={:?} extra={:?} comment={:?}\n",
+            c.name, c.data_type, c.nullable, c.default_expr, c.extra, c.comment
+        );
+    }
+    for i in &meta.indexes {
+        out += &format!(
+            "idx {} {:?} unique={} primary={}\n",
+            i.name, i.columns, i.unique, i.primary
+        );
+    }
+    for k in &meta.checks {
+        out += &format!("check {} {}\n", k.name, k.expression);
+    }
+    for f in &meta.foreign_keys {
+        out += &format!(
+            "fk {} {:?} -> {}.{:?}\n",
+            f.name, f.columns, f.ref_table.name, f.ref_columns
+        );
+    }
+    out
+}
+
+/// One `ALTER TABLE` with several clauses is all or nothing, and its result reads "All changes
+/// were reverted": the table stays exactly as it was when the last clause is refused.
+#[tokio::test]
+async fn a_grouped_plan_whose_last_clause_fails_leaves_the_table_as_it_was() {
+    in_prefixed_schema("fx3", |session, schema| async move {
+        let table = TableRef::new(Some(&schema), "a");
+        session
+            .execute(
+                &format!(
+                    "CREATE TABLE \"{schema}\".a (id int PRIMARY KEY, name text, qty int NOT NULL DEFAULT 0)"
+                ),
+                &[],
+            )
+            .await
+            .expect("create");
+        session
+            .execute(&format!("INSERT INTO \"{schema}\".a VALUES (1, 'x', 5)"), &[])
+            .await
+            .expect("insert");
+        let before = session.table_meta(&table).await.expect("meta");
+        let ops = vec![
+            DdlOp::AddColumn {
+                table: table.clone(),
+                column: col("extra", "integer", true),
+                after: None,
+            },
+            DdlOp::AlterColumnDefault {
+                table: table.clone(),
+                name: "qty".into(),
+                default_expr: Some("9".into()),
+            },
+            DdlOp::AlterColumnNullable {
+                table: table.clone(),
+                name: "name".into(),
+                nullable: false,
+            },
+            // the row has qty = 5: refused, the last clause
+            DdlOp::AddCheck {
+                table: table.clone(),
+                check: tabler_lib::types::ddl::CheckDef {
+                    name: Some("fx3_qty_big".into()),
+                    expression: "qty > 100".into(),
+                },
+            },
+        ];
+        let plan = plan_ddl(Dialect::Postgres, Some(&before), &ops).expect("plan");
+        assert_eq!(plan.statements.len(), 1, "{:#?}", plan.statements);
+        assert!(plan.transactional);
+        let result = apply_plan(session.as_ref(), &plan).await;
+        assert_eq!(result.failed_index, Some(0), "{result:?}");
+        assert!(result.executed.is_empty(), "everything was reverted: {result:?}");
+        let err = result.error.expect("error payload");
+        assert_eq!(err.sqlstate.as_deref(), Some("23514"), "{err:?}");
+        let after = session.table_meta(&table).await.expect("meta");
+        assert_eq!(shape(&after), shape(&before));
+
+        // without the bad clause the same plan applies
+        apply_ok(&session, Some(&before), ops[..3].to_vec()).await;
+        let after = session.table_meta(&table).await.expect("meta");
+        assert_eq!(names(&after), ["id", "name", "qty", "extra"]);
+        assert!(!column(&after, "name").nullable);
+        assert_eq!(column(&after, "qty").default_expr.as_deref(), Some("9"));
+    })
+    .await;
+}
+
+/// The grouped plan of a mixed edit leaves the same schema as the old one-statement-per-op plan,
+/// including a primary-key swap, an edited CHECK and a drop followed by an add of one column.
+#[tokio::test]
+async fn a_grouped_plan_gives_the_schema_of_the_per_op_plan() {
+    in_prefixed_schema("fx3", |session, schema| async move {
+        session
+            .execute(
+                &format!("CREATE TABLE \"{schema}\".ref (id int PRIMARY KEY)"),
+                &[],
+            )
+            .await
+            .expect("ref");
+        for name in ["g", "o"] {
+            session
+                .execute(
+                    &format!(
+                        "CREATE TABLE \"{schema}\".{name} (\
+                           id int PRIMARY KEY, \
+                           name text, \
+                           qty int NOT NULL DEFAULT 0, \
+                           note varchar(10), \
+                           legacy int, \
+                           ref_id int, \
+                           CONSTRAINT {name}_qty_chk CHECK (qty >= 0))"
+                    ),
+                    &[],
+                )
+                .await
+                .expect("create");
+            session
+                .execute(
+                    &format!("INSERT INTO \"{schema}\".{name} VALUES (1, 'n', 3, 'abc', 1, NULL)"),
+                    &[],
+                )
+                .await
+                .expect("insert");
+        }
+        let ops = |name: &str| {
+            let t = TableRef::new(Some(&schema), name);
+            vec![
+                DdlOp::DropColumn {
+                    table: t.clone(),
+                    name: "legacy".into(),
+                },
+                // dropped and added again: the server drops first, which is the written order
+                DdlOp::DropColumn {
+                    table: t.clone(),
+                    name: "ref_id".into(),
+                },
+                DdlOp::AddColumn {
+                    table: t.clone(),
+                    column: col("ref_id", "bigint", true),
+                    after: None,
+                },
+                DdlOp::AddColumn {
+                    table: t.clone(),
+                    column: col("stamp", "timestamptz", true),
+                    after: None,
+                },
+                DdlOp::AlterColumnNullable {
+                    table: t.clone(),
+                    name: "name".into(),
+                    nullable: false,
+                },
+                DdlOp::AlterColumnDefault {
+                    table: t.clone(),
+                    name: "name".into(),
+                    default_expr: Some("'anon'".into()),
+                },
+                DdlOp::AlterColumnType {
+                    table: t.clone(),
+                    name: "note".into(),
+                    new_type: "varchar(40)".into(),
+                    using: None,
+                },
+                DdlOp::AlterColumnType {
+                    table: t.clone(),
+                    name: "qty".into(),
+                    new_type: "bigint".into(),
+                    using: None,
+                },
+                DdlOp::AlterColumnDefault {
+                    table: t.clone(),
+                    name: "qty".into(),
+                    default_expr: Some("7".into()),
+                },
+                // an edited CHECK and a swapped key
+                DdlOp::DropCheck {
+                    table: t.clone(),
+                    name: format!("{name}_qty_chk"),
+                },
+                DdlOp::AddCheck {
+                    table: t.clone(),
+                    check: tabler_lib::types::ddl::CheckDef {
+                        name: Some(format!("{name}_qty_chk")),
+                        expression: "qty >= 1".into(),
+                    },
+                },
+                DdlOp::DropPrimaryKey { table: t.clone() },
+                DdlOp::AddPrimaryKey {
+                    table: t.clone(),
+                    columns: vec!["id".into(), "qty".into()],
+                },
+                DdlOp::AddForeignKey {
+                    table: t.clone(),
+                    fk: FkDef {
+                        name: Some(format!("{name}_ref_fk")),
+                        columns: vec!["ref_id".into()],
+                        ref_table: TableRef::new(Some(&schema), "ref"),
+                        ref_columns: vec!["id".into()],
+                        on_update: None,
+                        on_delete: None,
+                    },
+                },
+                DdlOp::SetColumnComment {
+                    table: t.clone(),
+                    name: "note".into(),
+                    comment: Some("free text".into()),
+                },
+            ]
+        };
+        let grouped = TableRef::new(Some(&schema), "g");
+        let per_op = TableRef::new(Some(&schema), "o");
+
+        let meta = session.table_meta(&grouped).await.expect("meta");
+        let result = apply_ok(&session, Some(&meta), ops("g")).await;
+        // three statements instead of sixteen: the type of qty ends the first (its DEFAULT
+        // follows), the column comment cannot join
+        assert_eq!(result.executed.len(), 3, "{:#?}", result.executed);
+
+        for op in ops("o") {
+            let meta = session.table_meta(&per_op).await.expect("meta");
+            let plan = plan_ddl(Dialect::Postgres, Some(&meta), &[op]).expect("plan");
+            let result = apply_plan(session.as_ref(), &plan).await;
+            assert!(
+                result.error.is_none(),
+                "{:?}\n{:#?}",
+                result.error,
+                plan.statements
+            );
+        }
+
+        let a = session.table_meta(&grouped).await.expect("meta");
+        let b = session.table_meta(&per_op).await.expect("meta");
+        let normal = |m: &TableMeta, name: &str| shape(m).replace(&format!("{name}_"), "T_");
+        assert_eq!(normal(&a, "g"), normal(&b, "o"));
+        assert_eq!(a.primary_key, ["id", "qty"]);
+        assert_eq!(column(&a, "qty").data_type, "bigint");
+        assert_eq!(column(&a, "qty").default_expr.as_deref(), Some("7"));
+        assert_eq!(column(&a, "note").data_type, "character varying(40)");
+        assert_eq!(column(&a, "note").comment.as_deref(), Some("free text"));
+        assert_eq!(
+            column(&a, "name").default_expr.as_deref(),
+            Some("'anon'::text")
+        );
+        assert!(!column(&a, "name").nullable);
+        assert!(a.columns.iter().all(|c| c.name != "legacy"));
+    })
+    .await;
+}
+
+/// PostgreSQL runs the sub-commands of one `ALTER TABLE` in phases, not in the written order:
+/// `ALTER COLUMN … TYPE` before `ADD COLUMN`. A type change that reads a column added just before
+/// (`USING x`) fails as one statement, so the planner ends the statement at it; and a type change
+/// never shares a statement with another clause on its own column.
+#[tokio::test]
+async fn a_type_change_keeps_its_place_in_the_order_of_the_ops() {
+    in_prefixed_schema("fx3", |session, schema| async move {
+        let table = TableRef::new(Some(&schema), "t");
+        session
+            .execute(
+                &format!(
+                    "CREATE TABLE \"{schema}\".t (id int PRIMARY KEY, c text DEFAULT 'abc', d text)"
+                ),
+                &[],
+            )
+            .await
+            .expect("create");
+        session
+            .execute(
+                &format!("INSERT INTO \"{schema}\".t VALUES (1, 'abc', '12')"),
+                &[],
+            )
+            .await
+            .expect("insert");
+        // the failure the rule prevents: the type change runs before the column exists
+        let err = session
+            .execute(
+                &format!(
+                    "ALTER TABLE \"{schema}\".t ADD COLUMN x int NOT NULL DEFAULT 2, ALTER COLUMN d TYPE integer USING length(d) * x"
+                ),
+                &[],
+            )
+            .await
+            .expect_err("PostgreSQL runs TYPE before ADD COLUMN");
+        assert!(err.to_string().contains("\"x\""), "{err}");
+
+        let meta = session.table_meta(&table).await.expect("meta");
+        let mut x = col("x", "integer", false);
+        x.default_expr = Some("2".into());
+        let ops = vec![
+            DdlOp::AddColumn {
+                table: table.clone(),
+                column: x,
+                after: None,
+            },
+            DdlOp::AlterColumnType {
+                table: table.clone(),
+                name: "d".into(),
+                new_type: "integer".into(),
+                using: Some("length(d) * x".into()),
+            },
+        ];
+        let plan = plan_ddl(Dialect::Postgres, Some(&meta), &ops).expect("plan");
+        assert_eq!(plan.statements.len(), 2, "{:#?}", plan.statements);
+        apply_ok(&session, Some(&meta), ops).await;
+        let after = session.table_meta(&table).await.expect("meta");
+        assert_eq!(column(&after, "d").data_type, "integer");
+        assert_eq!(
+            scalar(&session, &format!("SELECT d FROM \"{schema}\".t")).await,
+            4
+        );
+
+        // a type, a default and a nullability of one column: the type stands alone
+        let ops = vec![
+            DdlOp::AlterColumnType {
+                table: table.clone(),
+                name: "c".into(),
+                new_type: "varchar(20)".into(),
+                using: None,
+            },
+            DdlOp::AlterColumnDefault {
+                table: table.clone(),
+                name: "c".into(),
+                default_expr: Some("'xyz'".into()),
+            },
+            DdlOp::AlterColumnNullable {
+                table: table.clone(),
+                name: "c".into(),
+                nullable: false,
+            },
+        ];
+        let plan = plan_ddl(Dialect::Postgres, Some(&after), &ops).expect("plan");
+        assert_eq!(plan.statements.len(), 2, "{:#?}", plan.statements);
+        apply_ok(&session, Some(&after), ops).await;
+        let after = session.table_meta(&table).await.expect("meta");
+        let c = column(&after, "c");
+        assert_eq!(c.data_type, "character varying(20)");
+        assert!(!c.nullable);
+        assert!(
+            c.default_expr.as_deref().unwrap_or("").starts_with("'xyz'"),
+            "{:?}",
+            c.default_expr
+        );
+
+        // other columns share a statement with it, before and after
+        let ops = vec![
+            DdlOp::AlterColumnNullable {
+                table: table.clone(),
+                name: "c".into(),
+                nullable: true,
+            },
+            DdlOp::AlterColumnType {
+                table: table.clone(),
+                name: "d".into(),
+                new_type: "bigint".into(),
+                using: None,
+            },
+            DdlOp::AlterColumnDefault {
+                table: table.clone(),
+                name: "c".into(),
+                default_expr: Some("'q'".into()),
+            },
+        ];
+        let plan = plan_ddl(Dialect::Postgres, Some(&after), &ops).expect("plan");
+        assert_eq!(plan.statements.len(), 1, "{:#?}", plan.statements);
+        apply_ok(&session, Some(&after), ops).await;
+        let after = session.table_meta(&table).await.expect("meta");
+        assert_eq!(column(&after, "d").data_type, "bigint");
+        assert!(column(&after, "c").nullable);
+    })
+    .await;
+}
+
+/// What MySQL refuses in one statement is fine here (the same plans are two statements there):
+/// a column re-added under the name of a dropped one that an index covers (the index goes with
+/// the column), and a foreign key dropped and added under one name. Both stay one statement.
+#[tokio::test]
+async fn a_dropped_and_re_added_column_or_foreign_key_is_one_statement() {
+    in_prefixed_schema("fx3", |session, schema| async move {
+        let table = TableRef::new(Some(&schema), "t");
+        for sql in [
+            format!("CREATE TABLE \"{schema}\".ref (id int PRIMARY KEY)"),
+            format!(
+                "CREATE TABLE \"{schema}\".t (id int PRIMARY KEY, a int, b int, \
+                   CONSTRAINT t_fk FOREIGN KEY (a) REFERENCES \"{schema}\".ref (id))"
+            ),
+            format!("CREATE INDEX t_ix ON \"{schema}\".t (a, b)"),
+        ] {
+            session.execute(&sql, &[]).await.expect(&sql);
+        }
+        let meta = session.table_meta(&table).await.expect("meta");
+        let ops = vec![
+            DdlOp::DropForeignKey {
+                table: table.clone(),
+                name: "t_fk".into(),
+            },
+            DdlOp::AddForeignKey {
+                table: table.clone(),
+                fk: FkDef {
+                    name: Some("t_fk".into()),
+                    columns: vec!["a".into()],
+                    ref_table: TableRef::new(Some(&schema), "ref"),
+                    ref_columns: vec!["id".into()],
+                    on_update: None,
+                    on_delete: Some("cascade".into()),
+                },
+            },
+            DdlOp::DropColumn {
+                table: table.clone(),
+                name: "b".into(),
+            },
+            DdlOp::AddColumn {
+                table: table.clone(),
+                column: col("b", "bigint", true),
+                after: None,
+            },
+        ];
+        let plan = plan_ddl(Dialect::Postgres, Some(&meta), &ops).expect("plan");
+        assert_eq!(plan.statements.len(), 1, "{:#?}", plan.statements);
+        apply_ok(&session, Some(&meta), ops).await;
+        let after = session.table_meta(&table).await.expect("meta");
+        assert_eq!(column(&after, "b").data_type, "bigint");
+        assert_eq!(after.foreign_keys.len(), 1);
+        assert_eq!(after.foreign_keys[0].name, "t_fk");
+        assert_eq!(
+            after.foreign_keys[0].on_delete.to_ascii_uppercase(),
+            "CASCADE"
+        );
+        // the index covered the dropped column and went with it
+        assert!(
+            after.indexes.iter().all(|i| i.name != "t_ix"),
+            "{:?}",
+            after.indexes
+        );
+    })
+    .await;
+}
+
+/// `ADD CONSTRAINT ck CHECK (b > 0), DROP COLUMN b` in one `ALTER TABLE` is refused by the server
+/// (PostgreSQL runs the drop pass first); the planner keeps them in two statements, in order.
+#[tokio::test]
+async fn a_check_added_before_the_drop_of_its_column_is_two_statements() {
+    in_prefixed_schema("fx3", |session, schema| async move {
+        let table = TableRef::new(Some(&schema), "t");
+        session
+            .execute(
+                &format!("CREATE TABLE \"{schema}\".t (id int PRIMARY KEY, a int, b int)"),
+                &[],
+            )
+            .await
+            .expect("create");
+        let meta = session.table_meta(&table).await.expect("meta");
+        let ops = vec![
+            DdlOp::AddCheck {
+                table: table.clone(),
+                check: tabler_lib::types::ddl::CheckDef {
+                    name: Some("ck_b".into()),
+                    expression: "b > 0".into(),
+                },
+            },
+            DdlOp::DropColumn {
+                table: table.clone(),
+                name: "b".into(),
+            },
+        ];
+        let plan = plan_ddl(Dialect::Postgres, Some(&meta), &ops).expect("plan");
+        assert_eq!(plan.statements.len(), 2, "{:#?}", plan.statements);
+        apply_ok(&session, Some(&meta), ops).await;
+        let after = session.table_meta(&table).await.expect("meta");
+        assert!(after.columns.iter().all(|c| c.name != "b"));
+    })
+    .await;
 }

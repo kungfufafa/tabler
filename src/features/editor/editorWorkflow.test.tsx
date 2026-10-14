@@ -314,7 +314,7 @@ describe("editor bar", () => {
 
   it("saves the selected statements to a new file (⇧⌘S) without changing the tab", async () => {
     const prompt = vi.spyOn(window, "prompt").mockReturnValue("/tmp/picked.sql");
-    const write = vi.spyOn(ipc.files, "writeText");
+    const write = vi.spyOn(ipc.sqlFiles, "write");
     const { id, type, view } = setup();
     type("select 1;\nselect 2;");
     act(() => view().dispatch({ selection: EditorSelection.single(10, 19) }));

@@ -1,6 +1,7 @@
 import { EditorSelection } from "@codemirror/state";
 import { toast } from "sonner";
 import { openCreateSchema } from "@/features/admin/store";
+import { markDefinition } from "@/features/commit/definitions";
 import { applyToEditor } from "@/features/editor/editorStates";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { openExportTables } from "@/features/export/store";
@@ -85,7 +86,9 @@ export function openTableTab(
 export async function openRoutine(ctx: ObjectContext, r: RoutineSummary): Promise<void> {
   try {
     const sql = await ipc.objects.routineDefinition(ctx.connectionId, routineRef(r));
-    openSqlInNewQueryTab(ctx.connectionId, sql, ctx.driver, r.name);
+    const id = openSqlInNewQueryTab(ctx.connectionId, sql, ctx.driver, r.name);
+    // ⌘S in this tab drops and recreates the routine (TablePlus), instead of saving a file.
+    markDefinition(id, { drop: routineRef(r) });
     showWorkspace();
   } catch (e) {
     failed(`Could not open ${r.name}`, e);
@@ -108,6 +111,8 @@ export function openNewObject(ctx: ObjectContext, kind: NewObjectKind): string {
   const t = newObjectTemplate(ctx.driver, kind, ctx.schema);
   const id = openSqlInNewQueryTab(ctx.connectionId, t.sql, ctx.driver, t.title);
   applyToEditor(id, () => ({ selection: EditorSelection.range(t.from, t.to) }));
+  // ⌘S in the template's tab creates the object (instead of asking to save a file).
+  markDefinition(id, { drop: null });
   showWorkspace();
   return id;
 }

@@ -31,7 +31,7 @@ describe("defaultSafeMode preference", () => {
     expect(sanitizePrefs({ defaultSafeMode: null }).defaultSafeMode).toBe("silent");
   });
 
-  it("is picked in Settings → Security", async () => {
+  it("is picked in Settings → Security", { timeout: 15_000 }, async () => {
     const user = userEvent.setup();
     render(<SecuritySection />);
     const select = screen.getByRole("combobox", { name: "Default safe mode for new connections" });

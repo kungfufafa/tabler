@@ -11,7 +11,10 @@ use crate::drivers::{
     CancelHandle, RowChunker, ServerInfo, StatementOutcome, TxStatement, arm_cancel,
     cancel_requested,
 };
-use crate::types::export::{CsvQuote, ExportLayout, ExportTablesRequest};
+use crate::types::browse::SortSpec;
+use crate::types::export::{
+    CsvQuote, ExportLayout, ExportResultItem, ExportResultsRequest, ExportTablesRequest,
+};
 use crate::types::profile::Driver;
 use crate::types::query::{ExecOutcome, ResultSet};
 use crate::types::schema::{
@@ -31,6 +34,8 @@ struct FakeSession {
     /// After the sink stops the stream, keeps "draining" the statement for this long (as the
     /// drivers do with a statement `cancel_safe_on_stop` refuses) unless it is cancelled.
     drain_after_stop: Option<Duration>,
+    /// Answer of the time zone query (`session_time_zone`); `None` = the fake cannot answer it.
+    zone: Option<Vec<Value>>,
     seen: Mutex<Vec<(String, Vec<Value>)>>,
     cancels: AtomicUsize,
 }
@@ -43,9 +48,16 @@ impl FakeSession {
             meta: None,
             block_until_cancel: false,
             drain_after_stop: None,
+            zone: None,
             seen: Mutex::new(Vec::new()),
             cancels: AtomicUsize::new(0),
         }
+    }
+
+    /// The row the session's time zone query answers.
+    fn with_zone(mut self, row: Vec<Value>) -> FakeSession {
+        self.zone = Some(row);
+        self
     }
 
     fn with_meta(mut self, meta: TableMeta) -> FakeSession {
@@ -101,8 +113,18 @@ impl DbSession for FakeSession {
     async fn completion_metadata(&self) -> Result<CompletionMetadata, AppError> {
         unsupported()
     }
-    async fn query(&self, _sql: &str, _params: &[Value]) -> Result<ResultSet, AppError> {
-        unsupported()
+    async fn query(&self, sql: &str, _params: &[Value]) -> Result<ResultSet, AppError> {
+        match (
+            &self.zone,
+            sql.contains("time_zone") || sql.contains("TimeZone"),
+        ) {
+            (Some(row), true) => Ok(ResultSet {
+                columns: Vec::new(),
+                rows: vec![row.clone()],
+                truncated: false,
+            }),
+            _ => unsupported(),
+        }
     }
     async fn execute(&self, _sql: &str, _params: &[Value]) -> Result<ExecOutcome, AppError> {
         unsupported()
@@ -278,6 +300,7 @@ fn request(
         format,
         path: path.to_string_lossy().into_owned(),
         max_rows,
+        encoding: Default::default(),
     }
 }
 
@@ -291,6 +314,7 @@ fn table_source(name: &str) -> ExportSource {
         filter: None,
         sort: vec![],
         columns: None,
+        offset: None,
     }
 }
 
@@ -580,7 +604,9 @@ async fn postgres_insert_export_overrides_identity_always() {
         .unwrap();
     assert_eq!(
         std::fs::read_to_string(&dest).unwrap(),
-        "INSERT INTO \"t\" (\"id\", \"note\") OVERRIDING SYSTEM VALUE VALUES\n(1, 'a');\n"
+        "SET TIME ZONE 'UTC';\n\
+         INSERT INTO \"t\" (\"id\", \"note\") OVERRIDING SYSTEM VALUE VALUES\n(1, 'a');\n\
+         RESET TIME ZONE;\n"
     );
 
     // An identity BY DEFAULT column takes explicit values without the clause; so does a
@@ -608,6 +634,7 @@ async fn postgres_insert_export_overrides_identity_always() {
         None,
         &[],
         None,
+        0,
         true,
     )
     .unwrap();
@@ -649,6 +676,7 @@ async fn mysql_float_columns_export_their_shortest_text() {
             filter: None,
             sort: vec![],
             columns: None,
+            offset: None,
         },
         csv_format(),
         &dest,
@@ -762,7 +790,7 @@ fn mysql_table_query_adds_hex_for_blobs_only() {
             mcol("body", "longblob", ValueKind::Bytes, false),
         ],
     );
-    let q = table_query(Dialect::Mysql, &meta, None, None, &[], Some(10), false).unwrap();
+    let q = table_query(Dialect::Mysql, &meta, None, None, &[], Some(10), 0, false).unwrap();
     assert_eq!(
         q.sql,
         "SELECT `id`, `name`, `body`, CASE WHEN LENGTH(`body`) > 65536 THEN HEX(`body`) END AS \
@@ -776,6 +804,7 @@ fn mysql_table_query_adds_hex_for_blobs_only() {
         None,
         &[],
         None,
+        0,
         false,
     )
     .unwrap();
@@ -785,7 +814,7 @@ fn mysql_table_query_adds_hex_for_blobs_only() {
     );
     assert!(q.blob_hex.is_empty());
     assert_eq!(q.columns.unwrap()[0].name, "name");
-    assert!(table_query(Dialect::Mysql, &meta, Some(&[]), None, &[], None, false).is_err());
+    assert!(table_query(Dialect::Mysql, &meta, Some(&[]), None, &[], None, 0, false).is_err());
     assert!(
         table_query(
             Dialect::Mysql,
@@ -794,6 +823,7 @@ fn mysql_table_query_adds_hex_for_blobs_only() {
             None,
             &[],
             None,
+            0,
             false
         )
         .is_err()
@@ -1210,7 +1240,7 @@ async fn rows_export_writes_the_given_rows_without_running_anything() {
         "INSERT INTO \"users\" (\"id\", \"name\") VALUES\n(0, 'row 0'),\n(1, 'row 1');\n\
          INSERT INTO \"users\" (\"id\", \"name\") VALUES\n(2, 'row 2');\n"
     );
-    // …or the one the user named; without either there is no target.
+    // …or the one the user named; without either the INSERTs go into `untitled`.
     let req = request(
         rows_source(id_name_set(1), Some("users")),
         insert("archive"),
@@ -1226,10 +1256,14 @@ async fn rows_export_writes_the_given_rows_without_running_anything() {
             .starts_with("INSERT INTO \"archive\" ")
     );
     let req = request(rows_source(id_name_set(1), None), insert(""), &dest, None);
-    let err = run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+    run_export(&fake, &req, None, |_| {}, CancellationToken::new())
         .await
-        .unwrap_err();
-    assert!(matches!(err, AppError::InvalidInput(_)), "{err:?}");
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(&dest)
+            .unwrap()
+            .starts_with("INSERT INTO \"untitled\" (")
+    );
 
     // The database was never asked for anything; no temporary file is left behind.
     assert!(fake.seen.lock().unwrap().is_empty());
@@ -1517,7 +1551,8 @@ async fn sql_export_with_structure_drop_and_gzip() {
         .is_err()
     );
 
-    // MySQL: foreign key checks are off while the script loads, restored at its end.
+    // MySQL: the time zone is set and foreign key checks are off while the script loads, both
+    // restored at its end (the fake session cannot tell its zone: UTC is assumed).
     let dest = dir.path().join("my.sql");
     let mut my = table_meta(
         "app",
@@ -1539,11 +1574,14 @@ async fn sql_export_with_structure_drop_and_gzip() {
         .unwrap();
     assert_eq!(
         std::fs::read_to_string(&dest).unwrap(),
-        "SET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS = 0;\n\
+        "SET @OLD_TIME_ZONE=@@TIME_ZONE;\n\
+         SET TIME_ZONE='+00:00';\n\
+         SET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS = 0;\n\
          DROP TABLE IF EXISTS `items`;\n\
          CREATE TABLE `items` (\n  `id` int NOT NULL\n);\n\n\
          INSERT INTO `items` (`id`, `name`) VALUES\n(0, 'row 0');\n\
-         SET FOREIGN_KEY_CHECKS = @OLD_FOREIGN_KEY_CHECKS;\n"
+         SET FOREIGN_KEY_CHECKS = @OLD_FOREIGN_KEY_CHECKS;\n\
+         SET TIME_ZONE=@OLD_TIME_ZONE;\n"
     );
 }
 
@@ -1570,6 +1608,114 @@ async fn xlsx_export_of_a_query() {
     assert!(wb.contains("name=\"Result\""));
 }
 
+#[tokio::test]
+async fn html_and_encoded_exports_of_a_query() {
+    use crate::types::export::ExportEncoding;
+    let dir = tempfile::tempdir().unwrap();
+    let set = (
+        vec![
+            rcol("id", ValueKind::Int, "int"),
+            rcol("name", ValueKind::Text, "text"),
+        ],
+        vec![
+            vec![Value::Int(1), Value::Text("Zoë <b>&</b> €".into())],
+            vec![Value::Int(2), Value::Text("世界".into())],
+            vec![Value::Int(3), Value::Null],
+        ],
+    );
+
+    // HTML: escaped, NULL marked, numbers right-aligned.
+    let dest = dir.path().join("q.html");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![set.clone()]);
+    let req = request(sql_source("select 1"), ExportFormat::Html, &dest, None);
+    let result = run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(result.rows, 3);
+    assert_eq!(result.replaced, None);
+    let html = std::fs::read_to_string(&dest).unwrap();
+    assert!(html.contains("<meta charset=\"utf-8\">"));
+    assert!(html.contains("<th>id</th><th>name</th>"));
+    assert!(
+        html.contains("<td>Zoë &lt;b&gt;&amp;&lt;/b&gt; €</td>"),
+        "{html}"
+    );
+    assert!(html.contains("<td class=\"null\">NULL</td>"));
+
+    // CSV in Windows-1252: what it cannot hold becomes `?`, and is counted.
+    let dest = dir.path().join("q.csv");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![set.clone()]);
+    let mut req = request(sql_source("select 1"), csv_format(), &dest, None);
+    req.encoding = ExportEncoding::Windows1252;
+    let result = run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(result.replaced, Some(2));
+    let bytes = std::fs::read(&dest).unwrap();
+    assert_eq!(
+        bytes,
+        b"id,name\r\n1,Zo\xEB <b>&</b> \x80\r\n2,??\r\n3,\r\n".to_vec()
+    );
+    assert_eq!(result.bytes, bytes.len() as u64);
+
+    // HTML in Latin-1 declares it; JSON in UTF-8 with a BOM starts with one.
+    let dest = dir.path().join("l.html");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![set.clone()]);
+    let mut req = request(sql_source("select 1"), ExportFormat::Html, &dest, None);
+    req.encoding = ExportEncoding::Latin1;
+    run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    let bytes = std::fs::read(&dest).unwrap();
+    let text: String = bytes.iter().map(|&b| b as char).collect();
+    assert!(text.contains("<meta charset=\"iso-8859-1\">"));
+    assert!(text.contains("Zo\u{EB} &lt;b&gt;"));
+    let dest = dir.path().join("q.json");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![set.clone()]);
+    let mut req = request(sql_source("select 1"), json_format(), &dest, None);
+    req.encoding = ExportEncoding::Utf8Bom;
+    run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    let bytes = std::fs::read(&dest).unwrap();
+    assert_eq!(&bytes[..3], &[0xEF, 0xBB, 0xBF]);
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes[3..]).unwrap();
+    assert_eq!(parsed[1]["name"], "世界");
+
+    // A UTF-16 SQL script reads back; a workbook is never transcoded.
+    let dest = dir.path().join("q.sql");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![set.clone()]);
+    let mut req = request(sql_source("select 1"), insert_format("t", 10), &dest, None);
+    req.encoding = ExportEncoding::Utf16Le;
+    run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    let bytes = std::fs::read(&dest).unwrap();
+    assert_eq!(&bytes[..2], &[0xFF, 0xFE]);
+    let units: Vec<u16> = bytes[2..]
+        .chunks(2)
+        .map(|p| u16::from_le_bytes([p[0], p[1]]))
+        .collect();
+    let sql = String::from_utf16(&units).unwrap();
+    assert!(sql.contains("(2, '世界')"), "{sql}");
+    let dest = dir.path().join("q.xlsx");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![set]);
+    let mut req = request(
+        sql_source("select 1"),
+        ExportFormat::Xlsx { header: true },
+        &dest,
+        None,
+    );
+    req.encoding = ExportEncoding::Utf16Le;
+    run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        crate::export::xlsx::tests::unzip(&std::fs::read(&dest).unwrap())
+            .contains_key("xl/workbook.xml")
+    );
+}
+
 fn tables_request(
     tables: &[&str],
     format: ExportFormat,
@@ -1585,6 +1731,9 @@ fn tables_request(
         format,
         layout,
         target: target.to_string_lossy().into_owned(),
+        encoding: Default::default(),
+        database: None,
+        create_folder: false,
     }
 }
 
@@ -1686,6 +1835,52 @@ async fn multi_table_exports() {
     assert!(c < p);
     assert!(files.contains_key("xl/worksheets/sheet2.xml"));
 
+    // One HTML page with a table per table, in the order asked; or a page per table in a
+    // folder the export creates.
+    let page = dir.path().join("all.html");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![lite_set(2)]);
+    let result = run_export_tables(
+        &fake,
+        &tables_request(
+            &["child", "parent"],
+            ExportFormat::Html,
+            ExportLayout::SingleFile,
+            &page,
+        ),
+        &metas,
+        |_| {},
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.rows, 4);
+    let html = std::fs::read_to_string(&page).unwrap();
+    assert_eq!(html.matches("<table>").count(), 2);
+    let (c, p) = (
+        html.find("<h2>main.child</h2>").unwrap(),
+        html.find("<h2>main.parent</h2>").unwrap(),
+    );
+    assert!(c < p);
+    assert!(html.contains("<title>all</title>"));
+    let folder = dir.path().join("db").join("html");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![lite_set(1)]);
+    let mut req = tables_request(
+        &["child", "parent"],
+        ExportFormat::Html,
+        ExportLayout::FilePerTable,
+        &folder,
+    );
+    req.create_folder = true;
+    run_export_tables(&fake, &req, &metas, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(files_in(&folder), ["child.html", "parent.html"]);
+    assert!(
+        std::fs::read_to_string(folder.join("parent.html"))
+            .unwrap()
+            .contains("<title>parent</title>")
+    );
+
     // Cancelled: no file at all, not even the first table's.
     let folder = dir.path().join("cancelled");
     std::fs::create_dir(&folder).unwrap();
@@ -1765,12 +1960,14 @@ async fn postgres_script_loads_keys_triggers_and_sequences_after_the_rows() {
         .unwrap();
     assert_eq!(
         std::fs::read_to_string(&dest).unwrap(),
-        "DROP TABLE IF EXISTS \"public\".\"emp\";\n\
+        "SET TIME ZONE 'UTC';\n\
+         DROP TABLE IF EXISTS \"public\".\"emp\";\n\
          CREATE TABLE \"public\".\"emp\" (\n  \"id\" integer GENERATED BY DEFAULT AS IDENTITY NOT NULL,\n  \"boss\" integer,\n  PRIMARY KEY (\"id\")\n);\n\n\
          INSERT INTO \"public\".\"emp\" (\"id\", \"boss\") VALUES\n(1, 2),\n(2, NULL);\n\n\
          SELECT setval(pg_get_serial_sequence('\"public\".\"emp\"', 'id'), GREATEST(MAX(\"id\"), 1)) FROM \"public\".\"emp\" HAVING MAX(\"id\") IS NOT NULL;\n\n\
          ALTER TABLE \"public\".\"emp\" ADD CONSTRAINT \"emp_boss_fk\" FOREIGN KEY (\"boss\") REFERENCES \"public\".\"emp\" (\"id\");\n\n\
-         CREATE TRIGGER emp_audit AFTER INSERT ON public.emp FOR EACH ROW EXECUTE FUNCTION audit();\n"
+         CREATE TRIGGER emp_audit AFTER INSERT ON public.emp FOR EACH ROW EXECUTE FUNCTION audit();\n\
+         RESET TIME ZONE;\n"
     );
 
     // Structure only: no reset (there are no rows), the keys right after the table.
@@ -1861,6 +2058,7 @@ fn script_layout_orders_like_pg_dump_and_loads_partitions_once() {
             gzip: false,
         },
         true,
+        None,
     );
     // referenced and partitioned tables first
     assert_eq!(layout.order, [2, 0, 1]);
@@ -2048,6 +2246,7 @@ fn script_layout_recreates_the_own_indexes_and_triggers_of_partitions() {
             gzip: false,
         },
         true,
+        None,
     );
     let text = &layout.opening;
     let at = |needle: &str| {
@@ -2142,6 +2341,7 @@ fn script_layout_creates_and_resets_a_shared_sequence_once() {
             gzip: false,
         },
         true,
+        None,
     );
     // the owner first (created first, dropped last)
     assert_eq!(layout.order, [1, 0, 2]);
@@ -2190,6 +2390,7 @@ fn script_layout_creates_and_resets_a_shared_sequence_once() {
             gzip: false,
         },
         true,
+        None,
     );
     assert!(layout.closing.iter().all(|s| !s.contains("setval")));
 }
@@ -2233,4 +2434,741 @@ async fn multi_table_sql_script_reloads_over_an_existing_copy_with_foreign_keys_
         .query_row("SELECT count(*) FROM child", [], |r| r.get(0))
         .unwrap();
     assert_eq!(n, 2);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Session time zone of SQL scripts
+// ---------------------------------------------------------------------------------------------
+
+fn text(s: &str) -> Value {
+    Value::Text(s.into())
+}
+
+#[tokio::test]
+async fn the_time_zone_is_read_from_the_exporting_session() {
+    let zone = |dialect: Dialect, row: Vec<Value>| {
+        let fake = FakeSession::new(dialect, vec![]).with_zone(row);
+        async move { session_time_zone(&fake).await }
+    };
+    // MySQL: the session's own zone, or (SYSTEM) the server clock's offset from UTC.
+    assert_eq!(
+        zone(Dialect::Mysql, vec![text("+07:00"), text("07:00:00")]).await,
+        Some("+07:00".into())
+    );
+    assert_eq!(
+        zone(Dialect::Mysql, vec![text("Asia/Jakarta"), text("00:00:00")]).await,
+        Some("Asia/Jakarta".into())
+    );
+    assert_eq!(
+        zone(Dialect::Mysql, vec![text("SYSTEM"), text("-05:30:00")]).await,
+        Some("-05:30".into())
+    );
+    assert_eq!(
+        zone(Dialect::Mysql, vec![text("SYSTEM"), text("00:00:00")]).await,
+        Some("+00:00".into())
+    );
+    assert_eq!(
+        zone(Dialect::Mysql, vec![text("SYSTEM"), Value::Null]).await,
+        None
+    );
+    // PostgreSQL: the TimeZone setting.
+    assert_eq!(
+        zone(Dialect::Postgres, vec![text("Europe/Berlin")]).await,
+        Some("Europe/Berlin".into())
+    );
+    // SQLite has none; a server that cannot say leaves it to the script's default.
+    assert_eq!(zone(Dialect::Sqlite, vec![text("UTC")]).await, None);
+    let mute = FakeSession::new(Dialect::Mysql, vec![]);
+    assert_eq!(session_time_zone(&mute).await, None);
+    assert_eq!(offset_from_timediff("07:00:00"), Some("+07:00".into()));
+    assert_eq!(offset_from_timediff("-03:00:00"), Some("-03:00".into()));
+    assert_eq!(offset_from_timediff("-838:59:59"), None);
+    assert_eq!(offset_from_timediff("nonsense"), None);
+}
+
+#[tokio::test]
+async fn sql_exports_set_the_session_time_zone_and_put_it_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = table_meta(
+        "app",
+        "events",
+        vec![
+            mcol("id", "int", ValueKind::Int, true),
+            mcol("name", "varchar(20)", ValueKind::Text, false),
+        ],
+    );
+    let mysql_session = || {
+        FakeSession::new(Dialect::Mysql, vec![id_name_set(2)])
+            .with_zone(vec![text("+07:00"), text("07:00:00")])
+    };
+    let mut source = table_source("events");
+    if let ExportSource::Table { table, .. } = &mut source {
+        table.schema = Some("app".into());
+    }
+    let expect = |file: &Path| {
+        let sql = std::fs::read_to_string(file).unwrap();
+        assert!(
+            sql.starts_with(
+                "SET @OLD_TIME_ZONE=@@TIME_ZONE;\nSET TIME_ZONE='+07:00';\nINSERT INTO"
+            ),
+            "{sql}"
+        );
+        assert!(
+            sql.ends_with(");\nSET TIME_ZONE=@OLD_TIME_ZONE;\n"),
+            "{sql}"
+        );
+        // No foreign key statements around the rows of one table.
+        assert!(!sql.contains("FOREIGN_KEY_CHECKS"), "{sql}");
+    };
+
+    // A table (rows only), a query and the rows of a shown result: all set the zone.
+    let file = dir.path().join("table.sql");
+    let req = request(source.clone(), insert_format("", 10), &file, None);
+    run_export(
+        &mysql_session(),
+        &req,
+        Some(&meta),
+        |_| {},
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    expect(&file);
+    let file = dir.path().join("query.sql");
+    let req = request(sql_source("select 1"), insert_format("t", 10), &file, None);
+    run_export(
+        &mysql_session(),
+        &req,
+        None,
+        |_| {},
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    expect(&file);
+    let file = dir.path().join("rows.sql");
+    let req = request(
+        rows_source(id_name_set(2), Some("events")),
+        insert_format("", 10),
+        &file,
+        None,
+    );
+    run_export(
+        &mysql_session(),
+        &req,
+        None,
+        |_| {},
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    expect(&file);
+
+    // PostgreSQL: SET TIME ZONE … RESET TIME ZONE.
+    let file = dir.path().join("pg.sql");
+    let pg = FakeSession::new(
+        Dialect::Postgres,
+        vec![(
+            vec![rcol("id", ValueKind::Int, "int4")],
+            vec![vec![text("1")]],
+        )],
+    )
+    .with_zone(vec![text("Europe/Berlin")]);
+    let req = request(sql_source("select 1"), insert_format("t", 10), &file, None);
+    run_export(&pg, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    let sql = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        sql.starts_with("SET TIME ZONE 'Europe/Berlin';\nINSERT INTO"),
+        "{sql}"
+    );
+    assert!(sql.ends_with(");\nRESET TIME ZONE;\n"), "{sql}");
+
+    // SQLite and the other formats write nothing of the kind.
+    let file = dir.path().join("lite.sql");
+    let lite = FakeSession::new(Dialect::Sqlite, vec![id_name_set(1)]);
+    let req = request(sql_source("select 1"), insert_format("t", 10), &file, None);
+    run_export(&lite, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .starts_with("INSERT INTO")
+    );
+    let file = dir.path().join("my.csv");
+    let req = request(sql_source("select 1"), csv_format(), &file, None);
+    run_export(
+        &mysql_session(),
+        &req,
+        None,
+        |_| {},
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("TIME_ZONE")
+    );
+}
+
+#[tokio::test]
+async fn multi_table_scripts_set_the_session_time_zone_around_everything() {
+    use crate::export::tables::run_export_tables;
+    let dir = tempfile::tempdir().unwrap();
+    let metas: Vec<Arc<TableMeta>> = ["a", "b"]
+        .iter()
+        .map(|n| {
+            Arc::new(table_meta(
+                "app",
+                n,
+                vec![
+                    mcol("id", "int", ValueKind::Int, true),
+                    mcol("name", "varchar(20)", ValueKind::Text, false),
+                ],
+            ))
+        })
+        .collect();
+    let fake = FakeSession::new(Dialect::Mysql, vec![id_name_set(1)])
+        .with_zone(vec![text("-03:00"), text("-03:00:00")]);
+    let file = dir.path().join("all.sql");
+    let mut req = tables_request(
+        &["a", "b"],
+        insert_format("", 10),
+        ExportLayout::SingleFile,
+        &file,
+    );
+    for t in &mut req.tables {
+        t.schema = Some("app".into());
+    }
+    run_export_tables(&fake, &req, &metas, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    let sql = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        sql.starts_with(
+            "SET @OLD_TIME_ZONE=@@TIME_ZONE;\nSET TIME_ZONE='-03:00';\n\
+             SET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS = 0;\n"
+        ),
+        "{sql}"
+    );
+    assert!(
+        sql.ends_with(
+            "SET FOREIGN_KEY_CHECKS = @OLD_FOREIGN_KEY_CHECKS;\nSET TIME_ZONE=@OLD_TIME_ZONE;\n"
+        ),
+        "{sql}"
+    );
+    // One table, rows only: the zone, and no foreign key statements.
+    let file = dir.path().join("one.sql");
+    let mut req = tables_request(
+        &["a"],
+        insert_format("", 10),
+        ExportLayout::SingleFile,
+        &file,
+    );
+    req.tables[0].schema = Some("app".into());
+    run_export_tables(&fake, &req, &metas[..1], |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    let sql = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        sql.starts_with("SET @OLD_TIME_ZONE=@@TIME_ZONE;\nSET TIME_ZONE='-03:00';\nINSERT"),
+        "{sql}"
+    );
+    assert!(!sql.contains("FOREIGN_KEY_CHECKS"), "{sql}");
+    // Structure only (no rows, no timestamps): no zone either.
+    let file = dir.path().join("structure.sql");
+    let req = tables_request(
+        &["a"],
+        script(false, true, false, false),
+        ExportLayout::SingleFile,
+        &file,
+    );
+    let mut req = req;
+    req.tables[0].schema = Some("app".into());
+    run_export_tables(&fake, &req, &metas[..1], |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        !std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("TIME_ZONE")
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Table exports from an offset (a table tab's later pages)
+// ---------------------------------------------------------------------------------------------
+
+fn page_meta(dialect: Dialect, keyed: bool) -> TableMeta {
+    let mut meta = table_meta(
+        "app",
+        "items",
+        vec![
+            mcol("id", "int", ValueKind::Int, keyed),
+            mcol("name", "text", ValueKind::Text, false),
+            mcol("doc", "json", ValueKind::Json, false),
+        ],
+    );
+    if dialect == Dialect::Sqlite {
+        meta.table = TableRef::new(Some("main"), "items");
+    }
+    meta
+}
+
+fn asc(column: &str) -> SortSpec {
+    SortSpec {
+        column: column.into(),
+        dir: crate::types::browse::SortDir::Asc,
+        nulls: None,
+    }
+}
+
+#[test]
+fn table_query_starts_at_an_offset_with_a_deterministic_order() {
+    let names = ["id".to_string(), "name".to_string()];
+    // The key orders a page; the offset follows the limit.
+    let q = table_query(
+        Dialect::Postgres,
+        &page_meta(Dialect::Postgres, true),
+        Some(&names),
+        None,
+        &[],
+        Some(10),
+        10,
+        false,
+    )
+    .unwrap();
+    assert!(
+        q.sql
+            .ends_with("FROM \"app\".\"items\" ORDER BY \"id\" ASC\nLIMIT 10 OFFSET 10"),
+        "{}",
+        q.sql
+    );
+    assert_eq!(q.columns.as_ref().unwrap().len(), 2);
+    // A sort that does not decide the order of equal rows gets the key as tie-break.
+    let q = table_query(
+        Dialect::Mysql,
+        &page_meta(Dialect::Mysql, true),
+        Some(&names),
+        None,
+        &[asc("name")],
+        Some(10),
+        20,
+        false,
+    )
+    .unwrap();
+    assert!(
+        q.sql
+            .ends_with("ORDER BY `name` ASC, `id` ASC\nLIMIT 10 OFFSET 20"),
+        "{}",
+        q.sql
+    );
+    // A sort that already names the key is left alone.
+    let q = table_query(
+        Dialect::Mysql,
+        &page_meta(Dialect::Mysql, true),
+        None,
+        None,
+        &[asc("id")],
+        Some(10),
+        20,
+        false,
+    )
+    .unwrap();
+    assert!(
+        q.sql.contains("ORDER BY `id` ASC\nLIMIT 10 OFFSET 20"),
+        "{}",
+        q.sql
+    );
+    // An offset without a page size reads to the end of the table.
+    let q = table_query(
+        Dialect::Mysql,
+        &page_meta(Dialect::Mysql, true),
+        Some(&names),
+        None,
+        &[],
+        None,
+        10,
+        false,
+    )
+    .unwrap();
+    assert!(q.sql.ends_with("LIMIT 4294967295 OFFSET 10"), "{}", q.sql);
+    // No key: SQLite orders by rowid, the others by the selected columns (by position).
+    let q = table_query(
+        Dialect::Sqlite,
+        &page_meta(Dialect::Sqlite, false),
+        Some(&names),
+        None,
+        &[],
+        Some(5),
+        5,
+        false,
+    )
+    .unwrap();
+    assert!(
+        q.sql.contains(" ORDER BY rowid ASC\nLIMIT 5 OFFSET 5"),
+        "{}",
+        q.sql
+    );
+    let q = table_query(
+        Dialect::Sqlite,
+        &page_meta(Dialect::Sqlite, false),
+        Some(&names),
+        None,
+        &[asc("name")],
+        Some(5),
+        5,
+        false,
+    )
+    .unwrap();
+    assert!(
+        q.sql
+            .contains("ORDER BY \"name\" ASC, rowid ASC\nLIMIT 5 OFFSET 5"),
+        "{}",
+        q.sql
+    );
+    let q = table_query(
+        Dialect::Postgres,
+        &page_meta(Dialect::Postgres, false),
+        None,
+        None,
+        &[],
+        Some(5),
+        5,
+        false,
+    )
+    .unwrap();
+    assert!(
+        q.sql.contains(" ORDER BY 1, 2, 3\nLIMIT 5 OFFSET 5"),
+        "{}",
+        q.sql
+    );
+    // Not a page: no paging clause and no extra ordering (the whole table, in the table's order).
+    let q = table_query(
+        Dialect::Postgres,
+        &page_meta(Dialect::Postgres, false),
+        None,
+        None,
+        &[],
+        None,
+        0,
+        false,
+    )
+    .unwrap();
+    assert!(
+        !q.sql.contains("ORDER BY") && !q.sql.contains("LIMIT"),
+        "{}",
+        q.sql
+    );
+}
+
+#[tokio::test]
+async fn a_table_export_reads_the_page_after_its_offset() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("page.csv");
+    let fake = FakeSession::new(
+        Dialect::Mysql,
+        vec![(
+            vec![rcol("name", ValueKind::Text, "varchar(20)")],
+            vec![vec![text("row 10")]],
+        )],
+    );
+    let meta = table_meta(
+        "app",
+        "items",
+        vec![
+            mcol("id", "int", ValueKind::Int, true),
+            mcol("name", "varchar(20)", ValueKind::Text, false),
+        ],
+    );
+    let source = ExportSource::Table {
+        table: TableRef::new(Some("app"), "items"),
+        filter: None,
+        sort: vec![],
+        columns: Some(vec!["name".into()]),
+        offset: Some(10),
+    };
+    let req = request(source, csv_format(), &dest, Some(10));
+    run_export(&fake, &req, Some(&meta), |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    let sql = fake.last_sql();
+    assert!(
+        sql.starts_with("SELECT `name`\nFROM `app`.`items`"),
+        "{sql}"
+    );
+    assert!(
+        sql.ends_with("ORDER BY `id` ASC\nLIMIT 10 OFFSET 10"),
+        "{sql}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&dest).unwrap(),
+        "name\r\nrow 10\r\n"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Several results at once
+// ---------------------------------------------------------------------------------------------
+
+fn result_item(label: &str, table: Option<&str>, n: i64) -> ExportResultItem {
+    let (columns, rows) = id_name_set(n);
+    ExportResultItem {
+        label: label.into(),
+        columns,
+        rows,
+        table: table.map(str::to_string),
+    }
+}
+
+fn results_request(
+    results: Vec<ExportResultItem>,
+    format: ExportFormat,
+    layout: ExportLayout,
+    target: &Path,
+) -> ExportResultsRequest {
+    ExportResultsRequest {
+        export_id: "results".into(),
+        results,
+        format,
+        layout,
+        target: target.to_string_lossy().into_owned(),
+        encoding: Default::default(),
+        name: None,
+    }
+}
+
+#[tokio::test]
+async fn all_results_go_into_one_workbook_with_a_sheet_each() {
+    use crate::export::results::run_export_results;
+    use crate::export::xlsx::tests::unzip;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("results.xlsx");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![]);
+    let mut seen = Vec::new();
+    let result = run_export_results(
+        &fake,
+        &results_request(
+            vec![
+                result_item("Result 1", Some("users"), 3),
+                result_item("Result 2", None, 2),
+            ],
+            ExportFormat::Xlsx { header: true },
+            ExportLayout::SingleFile,
+            &file,
+        ),
+        |p| seen.push(p),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.rows, 5);
+    assert_eq!(result.paths, [file.to_string_lossy().into_owned()]);
+    assert_eq!(result.results[1].label, "Result 2");
+    assert_eq!(result.results[1].rows, 2);
+    assert_eq!(result.bytes, std::fs::metadata(&file).unwrap().len());
+    assert!(seen.iter().all(|p| p.table_count == 2));
+    assert!(
+        seen.iter()
+            .any(|p| p.table_index == 1 && p.table == "Result 2")
+    );
+    // The workbook: a sheet per result, the header row plus the rows in each.
+    let files = unzip(&std::fs::read(&file).unwrap());
+    let workbook = String::from_utf8(files["xl/workbook.xml"].clone()).unwrap();
+    assert!(workbook.contains("name=\"Result 1\""), "{workbook}");
+    assert!(workbook.contains("name=\"Result 2\""), "{workbook}");
+    let rows_of = |sheet: &str| {
+        String::from_utf8(files[sheet].clone())
+            .unwrap()
+            .matches("<row ")
+            .count()
+    };
+    assert_eq!(rows_of("xl/worksheets/sheet1.xml"), 4);
+    assert_eq!(rows_of("xl/worksheets/sheet2.xml"), 3);
+    assert_eq!(files_in(dir.path()), ["results.xlsx"]);
+}
+
+#[tokio::test]
+async fn all_results_of_csv_and_json_go_into_a_file_each() {
+    use crate::export::results::run_export_results;
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeSession::new(Dialect::Sqlite, vec![]);
+    let items = || {
+        vec![
+            result_item("Result 1", Some("users"), 2),
+            result_item("Result 2", None, 1),
+            result_item("Result 3", None, 0),
+        ]
+    };
+    let folder = dir.path().to_path_buf();
+    let mut req = results_request(items(), csv_format(), ExportLayout::FilePerTable, &folder);
+    req.name = Some("query".into());
+    let result = run_export_results(&fake, &req, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        files_in(&folder),
+        ["query-1.csv", "query-2.csv", "query-3.csv"]
+    );
+    assert_eq!(result.paths.len(), 3);
+    assert_eq!(
+        std::fs::read_to_string(folder.join("query-1.csv")).unwrap(),
+        "id,name\r\n0,row 0\r\n1,row 1\r\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("query-3.csv")).unwrap(),
+        "id,name\r\n"
+    );
+    // Without a name: result-N; JSON the same.
+    let json_dir = tempfile::tempdir().unwrap();
+    let req = results_request(
+        items(),
+        json_format(),
+        ExportLayout::FilePerTable,
+        json_dir.path(),
+    );
+    run_export_results(&fake, &req, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        files_in(json_dir.path()),
+        ["result-1.json", "result-2.json", "result-3.json"]
+    );
+    // One CSV file cannot hold several results.
+    let one = dir.path().join("all.csv");
+    let req = results_request(items(), csv_format(), ExportLayout::SingleFile, &one);
+    assert!(
+        run_export_results(&fake, &req, |_| {}, CancellationToken::new())
+            .await
+            .is_err()
+    );
+    assert!(!one.exists());
+}
+
+#[tokio::test]
+async fn all_results_of_html_and_sql_go_into_one_file() {
+    use crate::export::results::run_export_results;
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeSession::new(Dialect::Sqlite, vec![]);
+    let items = vec![
+        result_item("Result 1", Some("users"), 2),
+        result_item("Result 2", None, 1),
+    ];
+    // HTML: one page, a heading and a table per result.
+    let page = dir.path().join("all.html");
+    let req = results_request(
+        items.clone(),
+        ExportFormat::Html,
+        ExportLayout::SingleFile,
+        &page,
+    );
+    run_export_results(&fake, &req, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    let html = std::fs::read_to_string(&page).unwrap();
+    assert_eq!(html.matches("<table>").count(), 2);
+    assert!(html.find("<h2>Result 1</h2>").unwrap() < html.find("<h2>Result 2</h2>").unwrap());
+
+    // SQL: one script; each result's INSERTs name its table, or `untitled`.
+    let sql_file = dir.path().join("all.sql");
+    let req = results_request(
+        items.clone(),
+        insert_format("ignored", 10),
+        ExportLayout::SingleFile,
+        &sql_file,
+    );
+    run_export_results(&fake, &req, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&sql_file).unwrap(),
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES\n(0, 'row 0'),\n(1, 'row 1');\n\n\
+         INSERT INTO \"untitled\" (\"id\", \"name\") VALUES\n(0, 'row 0');\n\n"
+    );
+    // A script of results has no structure: content is required.
+    let req = results_request(
+        items.clone(),
+        script(false, true, false, false),
+        ExportLayout::SingleFile,
+        &sql_file,
+    );
+    assert!(
+        run_export_results(&fake, &req, |_| {}, CancellationToken::new())
+            .await
+            .is_err()
+    );
+    // On MySQL the script sets the session's time zone once, around both results.
+    let my =
+        FakeSession::new(Dialect::Mysql, vec![]).with_zone(vec![text("+07:00"), text("07:00:00")]);
+    let req = results_request(
+        items,
+        insert_format("", 10),
+        ExportLayout::SingleFile,
+        &sql_file,
+    );
+    run_export_results(&my, &req, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    let sql = std::fs::read_to_string(&sql_file).unwrap();
+    assert!(
+        sql.starts_with(
+            "SET @OLD_TIME_ZONE=@@TIME_ZONE;\nSET TIME_ZONE='+07:00';\nINSERT INTO `users`"
+        ),
+        "{sql}"
+    );
+    assert!(sql.contains("INSERT INTO `untitled`"), "{sql}");
+    assert!(sql.ends_with("SET TIME_ZONE=@OLD_TIME_ZONE;\n"), "{sql}");
+    assert_eq!(sql.matches("SET TIME_ZONE='").count(), 1);
+}
+
+#[tokio::test]
+async fn all_results_refuse_what_cannot_be_written_and_leave_no_file() {
+    use crate::export::results::run_export_results;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("r.xlsx");
+    let fake = FakeSession::new(Dialect::Sqlite, vec![]);
+    // A capped binary preview in the second result: nothing is written.
+    let mut bad = result_item("Result 2", None, 1);
+    bad.columns.push(rcol("b", ValueKind::Bytes, "blob"));
+    bad.rows[0].push(Value::Bytes(BytesValue {
+        base64: String::new(),
+        len: 70_000,
+        truncated: true,
+    }));
+    let req = results_request(
+        vec![result_item("Result 1", None, 1), bad],
+        ExportFormat::Xlsx { header: true },
+        ExportLayout::SingleFile,
+        &file,
+    );
+    let err = run_export_results(&fake, &req, |_| {}, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("Result 2"), "{err}");
+    assert!(files_in(dir.path()).is_empty());
+    // A cancelled export leaves no file, nor a half-written set.
+    let token = CancellationToken::new();
+    token.cancel();
+    let req = results_request(
+        vec![result_item("Result 1", None, 1)],
+        csv_format(),
+        ExportLayout::FilePerTable,
+        dir.path(),
+    );
+    let err = run_export_results(&fake, &req, |_| {}, token)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Cancelled));
+    assert!(files_in(dir.path()).is_empty());
+    // No results at all.
+    let req = results_request(vec![], csv_format(), ExportLayout::FilePerTable, dir.path());
+    assert!(
+        run_export_results(&fake, &req, |_| {}, CancellationToken::new())
+            .await
+            .is_err()
+    );
 }

@@ -5,15 +5,19 @@ import {
   addIndex,
   columnNameError,
   dropColumn,
+  dropColumns,
   dropIndex,
   editColumn,
   entryBase,
+  entryLength,
   foldStructure,
   restoreColumn,
+  restoreColumns,
   restoreIndex,
   retargetOps,
   setPrimaryKey,
   togglePrimaryKey,
+  withEntryLength,
 } from "./model";
 import { EMPTY_SLICE, pushOps, undoOps, useStructureStore } from "./store";
 
@@ -568,5 +572,60 @@ describe("staged ops store", () => {
     stage("t1", (ops) => edit(ops, "c:nickname", "dataType", "varchar(80)"));
     stage("t1", (ops) => edit(ops, "c:nickname", "dataType", "varchar(80)"));
     expect(useStructureStore.getState().byTab.t1?.past).toHaveLength(1);
+  });
+});
+
+describe("several columns at once", () => {
+  it("dropColumns drops existing and new columns in one pass; restoreColumns undoes the drops", () => {
+    let ops = addColumn(META, [], "postgres", null).ops;
+    ops = addColumn(META, ops, "postgres", null).ops;
+    ops = addColumn(META, ops, "postgres", null).ops;
+    ops = edit(ops, "c:nickname", "dataType", "varchar(80)");
+    const view = foldStructure(META, ops);
+    expect(view.columns.filter((c) => c.status === "added").map((c) => c.key)).toEqual([
+      "n:0",
+      "n:1",
+      "n:2",
+    ]);
+    // dropping a new column renumbers the ones after it: all three go whatever the order given
+    const next = dropColumns(META, ops, ["n:0", "c:email", "n:2", "c:nickname"]);
+    const after = foldStructure(META, next);
+    expect(after.columns.filter((c) => c.status === "added").map((c) => c.key)).toEqual(["n:0"]);
+    expect(
+      after.columns
+        .filter((c) => c.status === "dropped")
+        .map((c) => c.name)
+        .sort(),
+    ).toEqual(["email", "nickname"]);
+    // the edit of the dropped nickname went with it; the key columns of the table are untouched
+    expect(next.filter((o) => o.op === "alterColumnType")).toEqual([]);
+    // one pass: the same as dropping them one by one, last new column first
+    const oneByOne = dropColumn(
+      META,
+      dropColumn(META, dropColumn(META, dropColumn(META, ops, "n:2"), "n:0"), "c:email"),
+      "c:nickname",
+    );
+    expect(next).toEqual(oneByOne);
+
+    const restored = restoreColumns(META, next, ["c:email", "c:nickname"]);
+    expect(foldStructure(META, restored).columns.filter((c) => c.status === "dropped")).toEqual([]);
+    // keys that are not dropped columns change nothing
+    expect(restoreColumns(META, ops, ["c:email", "n:1"])).toBe(ops);
+    expect(dropColumns(META, ops, ["c:ghost"])).toEqual(ops);
+  });
+});
+
+describe("index entries with a prefix length", () => {
+  it("reads and writes `name(10)` keeping the sort direction", () => {
+    expect(entryLength("name(10)")).toBe(10);
+    expect(entryLength("name ( 255 ) DESC")).toBe(255);
+    expect(entryLength("name")).toBeNull();
+    expect(entryLength("created_at DESC")).toBeNull();
+    expect(withEntryLength("name", 10)).toBe("name(10)");
+    expect(withEntryLength("name(10)", 20)).toBe("name(20)");
+    expect(withEntryLength("name(10) DESC", 5)).toBe("name(5) DESC");
+    expect(withEntryLength("name(10)", null)).toBe("name");
+    expect(withEntryLength("name DESC", null)).toBe("name DESC");
+    expect(entryBase(withEntryLength("name", 10))).toBe("name");
   });
 });

@@ -96,6 +96,12 @@ const IDENT_START = /[\p{L}_]/u;
 const WORD_CHAR = /[\p{L}\p{N}_$]/u;
 const isIdentStart = (c: string | undefined) => c !== undefined && IDENT_START.test(c);
 const isWordChar = (c: string | undefined) => c !== undefined && WORD_CHAR.test(c);
+/**
+ * Whether PostgreSQL reads `c` as part of an identifier: every non-ASCII character is one (so `€$$`
+ * is a single name, not a name and a dollar quote), as are the letters, digits, `_` and `$`.
+ */
+const isPgWordChar = (c: string | undefined) =>
+  c !== undefined && (c.codePointAt(0)! > 0x7f || isWordChar(c));
 const isSpace = (c: string | undefined) => c !== undefined && /\s/u.test(c);
 /** Unicode Cc (Rust's `char::is_control`): U+0000–U+001F and U+007F–U+009F. */
 const isControl = (c: string | undefined) => {
@@ -120,9 +126,13 @@ function skipQuoted(chars: string[], i: number, quote: string, backslash: boolea
   return chars.length;
 }
 
-function skipLine(chars: string[], i: number): number {
+/**
+ * End of the line comment that starts at `i`. `crEnds`: PostgreSQL ends one at a lone CR as well as
+ * at LF (`SELECT 1 --x<CR>, pg_sleep(100)` calls `pg_sleep`); MySQL and SQLite read to the LF.
+ */
+function skipLine(chars: string[], i: number, crEnds: boolean): number {
   let j = i;
-  while (j < chars.length && chars[j] !== "\n") j += 1;
+  while (j < chars.length && chars[j] !== "\n" && !(crEnds && chars[j] === "\r")) j += 1;
   return j;
 }
 
@@ -146,7 +156,7 @@ function skipBlockComment(chars: string[], i: number, nested: boolean): number {
 
 /** Length of the PostgreSQL dollar-quote tag (`$$`, `$body$`) at `i`, or 0. */
 function dollarTag(chars: string[], i: number): number {
-  if (isWordChar(chars[i - 1])) return 0;
+  if (isPgWordChar(chars[i - 1])) return 0;
   let j = i + 1;
   if (isIdentStart(chars[j])) {
     while (j < chars.length && isWordChar(chars[j]) && chars[j] !== "$") j += 1;
@@ -213,9 +223,9 @@ export function codeOnly(sql: string, dialect: Dialect, reading: Reading): strin
       next === "-" &&
       (!mysql || chars[i + 2] === undefined || isSpace(chars[i + 2]) || isControl(chars[i + 2]))
     ) {
-      end = skipLine(chars, i);
+      end = skipLine(chars, i, pg);
     } else if (c === "#" && mysql) {
-      end = skipLine(chars, i);
+      end = skipLine(chars, i, false);
     } else if (c === "/" && next === "*") {
       const len = mysql ? codeCommentOpen(chars, i, reading) : 0;
       if (len > 0) {
@@ -231,8 +241,15 @@ export function codeOnly(sql: string, dialect: Dialect, reading: Reading): strin
       let j = i;
       while (j < chars.length && isWordChar(chars[j])) j += 1;
       out.push(...chars.slice(i, j));
-      // PostgreSQL escape strings: E'…' with backslash escapes.
-      if (pg && j === i + 1 && (c === "e" || c === "E") && chars[j] === "'") {
+      // PostgreSQL escape strings: E'…' with backslash escapes (`€e'…'` is a name and a plain
+      // string: every non-ASCII character is part of a name).
+      if (
+        pg &&
+        j === i + 1 &&
+        !isPgWordChar(chars[i - 1]) &&
+        (c === "e" || c === "E") &&
+        chars[j] === "'"
+      ) {
         out.push(" ");
         i = skipQuoted(chars, j, "'", true);
       } else {

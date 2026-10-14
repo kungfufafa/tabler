@@ -1,6 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  ArrowDownAZ,
+  ListOrdered,
   Lock,
   Plus,
   Redo2,
@@ -10,16 +12,30 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
-import { reportTabCommit } from "@/features/objects/commitChain";
-import { commitObjectOpsInstead, previewObjectOpsInstead } from "@/features/objects/pendingActions";
+import { bumpGeneration, openWorkspaceSheet, useCommitGeneration } from "@/features/commit/store";
+import { commitWorkspace, workspacePendingCount } from "@/features/commit/workspace";
 import { actions, useAction } from "@/features/palette/actions";
-import { guardExecution } from "@/features/safety/guard";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
 import {
   BarIconButton,
@@ -28,10 +44,8 @@ import {
   BottomBarFrame,
 } from "@/features/table-tab/BarParts";
 import { ViewSwitch } from "@/features/tabs/ViewSwitch";
-import { formatDuration } from "@/lib/format/time";
 import {
   ipc,
-  tableKey,
   toIpcError,
   type DdlOp,
   type Dialect,
@@ -42,13 +56,21 @@ import {
 } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
-import { sameTable, useTabsStore, type Tab } from "@/stores/tabs";
-import { columnEditError, parseColumnInput, type ColumnField } from "./columnEdits";
+import { setPref, usePrefs, type StructureColumnOrder } from "@/stores/prefs";
+import { useTabsStore, type Tab } from "@/stores/tabs";
+import {
+  columnEditError,
+  parseColumnInput,
+  type ColumnField,
+  type ColumnValue,
+} from "./columnEdits";
 import { ColumnsSection, type ColumnHandlers } from "./ColumnsSection";
-import { DdlPreviewSheet } from "./DdlPreviewSheet";
+import { orderColumns, ordinalNumbers } from "./columnOrder";
+import { nextSelection, useColumnSelectionStore } from "./columnSelection";
+import { reloadStructure } from "./commitFinish";
 import { constantDefault, type DefaultPreset } from "./defaults";
 import { focusCell } from "./dom";
-import { ddlKey, invalidateSchema, reportHeldTables, tablesWithPendingEdits } from "./invalidate";
+import { ddlKey } from "./invalidate";
 import { AddForeignKeyDialog } from "./KeyDialogs";
 import {
   addColumn,
@@ -56,6 +78,7 @@ import {
   addIndex,
   columnNameError,
   dropColumn,
+  dropColumns,
   dropForeignKey,
   dropIndex,
   editColumn,
@@ -65,6 +88,7 @@ import {
   foldStructure,
   replaceForeignKey,
   restoreColumn,
+  restoreColumns,
   restoreForeignKey,
   restoreIndex,
   setPrimaryKey,
@@ -84,7 +108,6 @@ import {
   setTableName,
   setTableOption,
   setTriggerEnabled,
-  stagedRename,
   suggestCheckName,
   suggestTriggerName,
   triggerSource,
@@ -98,20 +121,13 @@ import {
   IndexesSection,
   TriggersSection,
 } from "./OtherSections";
-import {
-  changesSchema,
-  errorInfo,
-  payloadInfo,
-  PREVIEW_CLOSED,
-  type DdlPreviewState,
-} from "./previewState";
-import { followRename } from "./rename";
 import { ShowDdlDialog } from "./ShowDdlDialog";
 import {
   stagedOps,
   useCanRedo,
   useCanUndo,
   usePartialApply,
+  useRevertedApply,
   useStagedOps,
   useStructureStore,
 } from "./store";
@@ -176,18 +192,19 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
   const replaceStaged = useStructureStore((s) => s.replace);
   const undoStaged = useStructureStore((s) => s.undo);
   const redoStaged = useStructureStore((s) => s.redo);
-  const discardStaged = useStructureStore((s) => s.discard);
   const ops = useStagedOps(tab.id);
   const canUndo = useCanUndo(tab.id);
   const canRedo = useCanRedo(tab.id);
   const partialRan = usePartialApply(tab.id);
+  const reverted = useRevertedApply(tab.id);
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const pendingFocus = useRef<string | null>(null);
   const focusRoot = useCallback(() => rootRef.current?.focus({ preventScroll: true }), []);
   const [showTriggers, setShowTriggers] = useState(false);
   const [filter, setFilter] = useState("");
-  const [viewReset, setViewReset] = useState(0);
+  // Bumped when the staged work was committed or discarded (the view drops its local edits).
+  const viewReset = useCommitGeneration(tab.id);
 
   const metaKey = useMemo(
     () => schemaKeys.table(connectionId, table.schema, table.name),
@@ -262,14 +279,15 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
     [view],
   );
 
-  /** Validates `field` = `raw` of column `key`; returns the parsed value or null (toasted). */
-  const checked = useCallback(
-    (key: string, field: ColumnField, raw: string | boolean) => {
+  /** Validates `field` = `raw` of column `key`: the parsed value, or why it is refused. */
+  const validate = useCallback(
+    (
+      key: string,
+      field: ColumnField,
+      raw: string | boolean,
+    ): { ok: true; value: ColumnValue } | { ok: false; error: string } => {
       const parsed = parseColumnInput(dialect, field, raw);
-      if (!parsed.ok) {
-        toast.error(parsed.error);
-        return null;
-      }
+      if (!parsed.ok) return parsed;
       const row = view?.columns.find((c) => c.key === key);
       if (view && row) {
         const err =
@@ -286,14 +304,24 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
             field,
             parsed.value,
           );
-        if (err) {
-          toast.error(err);
-          return null;
-        }
+        if (err) return { ok: false, error: err };
       }
       return parsed;
     },
     [dialect, view, isKeyColumn],
+  );
+
+  /** Like `validate`, with the refusal toasted; the parsed value or null. */
+  const checked = useCallback(
+    (key: string, field: ColumnField, raw: string | boolean) => {
+      const r = validate(key, field, raw);
+      if (!r.ok) {
+        toast.error(r.error);
+        return null;
+      }
+      return r;
+    },
+    [validate],
   );
 
   const onEdit = useCallback(
@@ -363,6 +391,93 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
     [view, editable, apply],
   );
 
+  // ---- columns: order, selection, bulk edit ---------------------------------------
+  const columnOrder = usePrefs((p) => p.structureColumnOrder);
+  const orderedView = useMemo(
+    () => (view ? { ...view, columns: orderColumns(view.columns, columnOrder) } : null),
+    [view, columnOrder],
+  );
+  const numbers = useMemo(() => (view ? ordinalNumbers(view.columns) : undefined), [view]);
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const anchorKey = useRef<string | null>(null);
+  const orderedKeys = useMemo(() => orderedView?.columns.map((c) => c.key) ?? [], [orderedView]);
+  const onSelectColumn = useCallback(
+    (key: string, mods: { meta: boolean; shift: boolean }) => {
+      const next = nextSelection(selectedKeys, anchorKey.current, orderedKeys, key, mods);
+      anchorKey.current = next.anchor;
+      setSelectedKeys(next.selected);
+    },
+    [selectedKeys, orderedKeys],
+  );
+  // Columns that are gone (committed, discarded, a removed new one) leave the selection.
+  useEffect(() => {
+    setSelectedKeys((current) => {
+      const live = current.filter((k) => orderedKeys.includes(k));
+      return live.length === current.length ? current : live;
+    });
+  }, [orderedKeys]);
+  const selectedSet = useMemo(() => new Set(selectedKeys), [selectedKeys]);
+  const selectedRows = useMemo(
+    () => (orderedView ? orderedView.columns.filter((c) => selectedSet.has(c.key)) : []),
+    [orderedView, selectedSet],
+  );
+
+  /**
+   * The right sidebar's edit of the selected columns: `raw` as `field` on every live one, as one
+   * undo step. Refused as a whole (one message) when any of them cannot take it.
+   */
+  const onBulkEdit = useCallback(
+    (field: ColumnField, raw: string | boolean) => {
+      const keys = selectedRows.filter((r) => r.status !== "dropped").map((r) => r.key);
+      if (keys.length === 0) return;
+      const values = new Map<string, ColumnValue>();
+      for (const key of keys) {
+        const r = validate(key, field, raw);
+        if (!r.ok) {
+          const name = selectedRows.find((c) => c.key === key)?.name ?? "";
+          toast.error(keys.length > 1 ? `${name}: ${r.error}` : r.error);
+          return;
+        }
+        values.set(key, r.value);
+      }
+      apply((m, current) =>
+        keys.reduce(
+          (ops, key) => editColumn(m, ops, dialect, key, field, values.get(key) ?? null),
+          current,
+        ),
+      );
+    },
+    [selectedRows, validate, apply, dialect],
+  );
+  // The sidebar shows the selected columns while this view is the one in front.
+  const publishSelection = useColumnSelectionStore((s) => s.publish);
+  const clearSelection = useColumnSelectionStore((s) => s.clear);
+  useEffect(() => {
+    if (!isActive || selectedRows.length === 0) {
+      clearSelection(tab.id);
+      return;
+    }
+    publishSelection({
+      tabId: tab.id,
+      table: table.name,
+      dialect,
+      rows: selectedRows,
+      editable,
+      onEdit: onBulkEdit,
+    });
+    return () => clearSelection(tab.id);
+  }, [
+    isActive,
+    selectedRows,
+    tab.id,
+    table.name,
+    dialect,
+    editable,
+    onBulkEdit,
+    publishSelection,
+    clearSelection,
+  ]);
+
   const columnHandlers: ColumnHandlers = useMemo(
     () => ({
       onEdit,
@@ -377,9 +492,13 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
       onDeleteFk: (key: string) => apply((m, current) => dropForeignKey(m, current, key)),
       onDrop: (key: string) => apply((m, current) => dropColumn(m, current, key)),
       onRestore: (key: string) => apply((m, current) => restoreColumn(m, current, key)),
+      // several columns at once are one staged step: one ⌘Z brings them all back
+      onDropMany: (keys: string[]) => apply((m, current) => dropColumns(m, current, keys)),
+      onRestoreMany: (keys: string[]) => apply((m, current) => restoreColumns(m, current, keys)),
       onAdd: onAddColumn,
+      onSelect: onSelectColumn,
     }),
-    [onEdit, onPreset, onSetCheck, apply, onAddColumn],
+    [onEdit, onPreset, onSetCheck, apply, onAddColumn, onSelectColumn],
   );
 
   // ---- indexes, checks, table -------------------------------------------------
@@ -511,108 +630,21 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
   );
 
   // ---- review / apply -------------------------------------------------------
-  const [preview, setPreview] = useState<DdlPreviewState>(PREVIEW_CLOSED);
-
-  const openPreview = useCallback(async () => {
-    const current = stagedOps(tab.id);
-    if (current.length === 0) {
-      toast.message("No structure changes to apply");
+  // Staged structure is part of the workspace commit: ⌘S commits every pending change of the
+  // connection, ⇧⌘P previews them all in one sheet, ⇧⌘⌫ discards them (`features/commit`).
+  const openPreview = useCallback(() => {
+    if (workspacePendingCount(connectionId) === 0) {
+      toast.message("No changes to apply");
       return;
     }
-    setPreview({ ...PREVIEW_CLOSED, open: true, loading: true, ops: current });
-    try {
-      const plan = await ipc.ddl.preview(connectionId, table, current);
-      setPreview((p) => (p.ops === current ? { ...p, loading: false, plan } : p));
-    } catch (e) {
-      setPreview((p) => (p.ops === current ? { ...p, loading: false, error: errorInfo(e) } : p));
-    }
-  }, [connectionId, table, tab.id]);
+    openWorkspaceSheet(connectionId);
+  }, [connectionId]);
 
-  /** Reloads metadata of `target`; with `clear`, drops the staged ops in the same render. */
-  const reload = useCallback(
-    async (clear: boolean, target: TableRef = table) => {
-      const key = schemaKeys.table(connectionId, target.schema, target.name);
-      try {
-        await ipc.schema.invalidate(connectionId, target);
-        const fresh = await ipc.schema.table(connectionId, target, true);
-        qc.setQueryData(key, fresh);
-        if (clear) discardStaged(tab.id);
-      } catch {
-        if (clear) discardStaged(tab.id);
-        void qc.invalidateQueries({ queryKey: key });
-      }
-      invalidateSchema(qc, connectionId);
-      void qc.invalidateQueries({ queryKey: ddlKey(connectionId, target) });
-      // The table's data tab reloads too, unless it holds staged row edits: they point at columns
-      // by position, which the new structure may have moved.
-      if (tablesWithPendingEdits(connectionId).some((t) => sameTable(t, target))) {
-        reportHeldTables([target]);
-      } else {
-        void qc.invalidateQueries({ queryKey: ["rows", connectionId, tableKey(target)] });
-        void qc.invalidateQueries({ queryKey: ["count", connectionId, tableKey(target)] });
-      }
-    },
-    [connectionId, table, qc, discardStaged, tab.id],
-  );
-
-  const applyPreview = useCallback(async () => {
-    const current = preview.ops;
-    if (current.length === 0 || preview.applying) return;
-    // Safe mode: the generated SQL is what the connection's level asks about.
-    const statements = preview.plan?.statements ?? [];
-    if (!(await guardExecution(connectionId, { kind: "commit", statements }))) {
-      reportTabCommit(tab.id, "cancelled");
-      return;
-    }
-    setPreview((p) => ({ ...p, applying: true, error: null, failedIndex: null, executed: null }));
-    try {
-      const result = await ipc.ddl.apply(connectionId, table, current);
-      reportTabCommit(tab.id, result.error ? "failed" : "committed");
-      if (!result.error) {
-        setPreview(PREVIEW_CLOSED);
-        const n = result.executed.length;
-        toast.success(`Structure updated · ${n} statement${n === 1 ? "" : "s"}`, {
-          description: formatDuration(result.durationMs),
-        });
-        // A rename (the Name field) ran last: the tab follows the table to its new name.
-        const renamed = stagedRename(current, table);
-        const target = renamed ? followRename(qc, connectionId, table, renamed) : table;
-        await reload(true, target);
-        setViewReset((n) => n + 1);
-        rootRef.current?.focus({ preventScroll: true });
-        return;
-      }
-      setPreview((p) => ({
-        ...p,
-        applying: false,
-        error: payloadInfo(result.error!),
-        failedIndex: result.failedIndex ?? result.error!.statementIndex ?? null,
-        executed: result.executed,
-      }));
-      // A non-transactional plan (MySQL) that stopped partway left the table changed: remember
-      // it beyond the sheet, the staged ops no longer match the table.
-      const ran = result.executed.filter(changesSchema).length;
-      if (ran > 0) useStructureStore.getState().markPartial(tab.id, ran);
-    } catch (e) {
-      reportTabCommit(tab.id, "failed");
-      setPreview((p) => ({ ...p, applying: false, error: errorInfo(e) }));
-    }
-  }, [preview.ops, preview.applying, preview.plan, connectionId, table, reload, tab.id, qc]);
-
+  /** A plan that stopped partway left the table changed: reload it, dropping the staged ops. */
   const discardAndRefresh = useCallback(() => {
-    setPreview(PREVIEW_CLOSED);
-    setViewReset((n) => n + 1);
-    void reload(true);
-  }, [reload]);
-
-  const discard = useCallback(() => {
-    if (stagedOps(tab.id).length === 0) return;
-    // After a partial apply the metadata is stale too: reload it along with the discard.
-    if (partialRan > 0) void reload(true);
-    else discardStaged(tab.id);
-    setViewReset((n) => n + 1);
-    toast.message("Structure changes discarded");
-  }, [discardStaged, tab.id, partialRan, reload]);
+    void reloadStructure(qc, connectionId, tab.id, table, true);
+    bumpGeneration(tab.id);
+  }, [qc, connectionId, tab.id, table]);
 
   const refresh = useCallback(async () => {
     try {
@@ -635,11 +667,21 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
     else if (showTriggers) onAddTrigger();
     else onAddColumn();
   }, [onAddIndex, onAddCheck, onAddTrigger, onAddColumn, showTriggers]);
-  /** ⌘⌫: drops the row holding the focus (column, index, check, foreign key or trigger). */
+  /**
+   * ⌘⌫: drops the row holding the focus (column, index, check, foreign key or trigger). A column
+   * of a selection of several takes the whole selection with it, in one step.
+   */
   const dropFocused = useCallback(() => {
     const row = document.activeElement?.closest<HTMLElement>("[data-row-kind]");
     const key = row?.dataset.rowKey;
     if (!row || !key) return;
+    if (row.dataset.rowKind === "column" && selectedSet.has(key)) {
+      const keys = selectedRows.filter((r) => r.status !== "dropped").map((r) => r.key);
+      if (keys.length > 1 && keys.includes(key)) {
+        apply((mm, current) => dropColumns(mm, current, keys));
+        return;
+      }
+    }
     const drop: Record<string, Reducer> = {
       column: (mm, current) => dropColumn(mm, current, key),
       index: (mm, current) => dropIndex(mm, current, key),
@@ -649,7 +691,40 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
     };
     const fn = drop[row.dataset.rowKind ?? ""];
     if (fn) apply(fn);
-  }, [apply]);
+  }, [apply, selectedSet, selectedRows]);
+  /**
+   * Double-click on blank space adds a row (TablePlus): the blank row that ends a grid, its "No …"
+   * row, or the empty space of a grid or below them. Clicks on real rows, controls, popovers and
+   * menus are theirs.
+   */
+  const onBlankDoubleClick = useCallback(
+    (e: MouseEvent<HTMLElement>) => {
+      const target = e.target as Element;
+      if (!editable || !e.currentTarget.contains(target)) return;
+      if (
+        target.closest(
+          "input, textarea, select, button, a, label, [role='menu'], [role='menuitem'], [role='combobox'], [contenteditable='true'], [data-section-header], thead, [data-row-kind]",
+        )
+      )
+        return;
+      let kind = target.closest<HTMLElement>("[data-blank-row]")?.dataset.blankRow;
+      if (!kind) {
+        // empty space: the grid's own section, else the grid the view is about
+        const section = target.closest("section")?.getAttribute("aria-label");
+        if (section === "Checks" || section === "Foreign keys") return;
+        kind =
+          section === "Indexes"
+            ? "indexes"
+            : section === "Triggers" || (!section && showTriggers)
+              ? "triggers"
+              : "columns";
+      }
+      if (kind === "indexes") onAddIndex();
+      else if (kind === "triggers") onAddTrigger();
+      else onAddColumn();
+    },
+    [editable, showTriggers, onAddColumn, onAddIndex, onAddTrigger],
+  );
   const focusSearch = useCallback(() => {
     searchRef.current?.focus();
     searchRef.current?.select();
@@ -662,20 +737,12 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
   useEffect(() => {
     if (hasOps && isPreview) pin(tab.id);
   }, [hasOps, isPreview, pin, tab.id]);
-  // With nothing staged here, ⌘S / ⇧⌘P act on the connection's pending item operations (sidebar
-  // Truncate… / Delete…). Registered while the view can stage, not only once it has staged: a
-  // cell's ⌘S stages its edit and dispatches in the same tick, before any re-render.
-  const commitStaged = useCallback(() => {
-    if (stagedOps(tab.id).length === 0 && commitObjectOpsInstead(qc, connectionId)) return;
-    return openPreview();
-  }, [tab.id, qc, connectionId, openPreview]);
-  const previewStaged = useCallback(() => {
-    if (stagedOps(tab.id).length === 0 && previewObjectOpsInstead(connectionId)) return;
-    return openPreview();
-  }, [tab.id, connectionId, openPreview]);
+  // Registered while the view can stage, not only once it has staged: a cell's ⌘S stages its edit
+  // and dispatches in the same tick, before any re-render (the host's own handlers register once
+  // the workspace holds changes).
+  const commitStaged = useCallback(() => void commitWorkspace(connectionId), [connectionId]);
   useAction("grid.commit", isActive && canStage ? commitStaged : null);
-  useAction("grid.preview", isActive && canStage ? previewStaged : null);
-  useAction("grid.discard", isActive && hasOps ? discard : null);
+  useAction("grid.preview", isActive && canStage ? openPreview : null);
   useAction("grid.undo", isActive && canUndo ? undo : null);
   useAction("grid.redo", isActive && canRedo ? redo : null);
   useAction("grid.new-row", isActive && editable ? newRow : null);
@@ -683,6 +750,10 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
   useAction("grid.filter", isActive && !!meta.data && !isView ? focusSearch : null);
   useAction("view.refresh", isActive ? refresh : null);
   useAction("view.data", isActive ? showData : null);
+  // ⌘↩ resolves to Quick Look in this grid scope, which a structure has nothing to show for: it
+  // opens the SQL editor, as it does from every other tab that is not a SQL tab.
+  const openEditor = useCallback(() => void actions.run("query.open-editor"), []);
+  useAction("grid.quick-look", isActive ? openEditor : null);
 
   // ---- dialogs ---------------------------------------------------------------
   const [showDdl, setShowDdl] = useState(false);
@@ -705,6 +776,11 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
 
   const liveColumns = useMemo(
     () => view?.columns.filter((c) => c.status !== "dropped").map((c) => c.name) ?? [],
+    [view],
+  );
+  const columnTypes = useMemo(
+    () =>
+      new Map(view?.columns.filter((c) => c.status !== "dropped").map((c) => [c.name, c.dataType])),
     [view],
   );
   const userTypes = useMemo(() => choices.data?.userTypes.map((t) => t.name) ?? [], [choices.data]);
@@ -738,6 +814,7 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
   }
   const m = meta.data;
   const v = view!;
+  const ordered = orderedView!;
 
   const qualifiedName = m.table.schema ? `${m.table.schema}.${m.table.name}` : m.table.name;
   const live = <T extends { status: string }>(rows: T[]) =>
@@ -766,6 +843,18 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
         <div className="border-border text-muted-foreground flex shrink-0 items-center gap-1.5 border-b px-3 py-1 text-[11px]">
           <Lock className="size-3" />
           {readOnlyNote}
+        </div>
+      )}
+      {reverted && partialRan === 0 && (
+        <div
+          role="alert"
+          className="border-border bg-surface-2 text-muted-foreground flex shrink-0 items-center gap-2 border-b px-3 py-1 text-[11px]"
+        >
+          <AlertTriangle className="text-warning size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            The last apply failed. All changes were reverted: the table is as it was, and the staged
+            changes are still here.
+          </span>
         </div>
       )}
       {partialRan > 0 && (
@@ -813,13 +902,13 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
               editable={viewEditable}
               resetKey={viewReset}
               onStage={(next) => replaceStaged(tab.id, next)}
-              onReview={() => void openPreview()}
+              onReview={openPreview}
             />
           </div>
           <div className="border-border @container min-h-0 flex-[2] overflow-auto border-t">
             <div className="min-w-[640px]">
               <ColumnsSection
-                view={v}
+                view={ordered}
                 dialect={dialect}
                 editable={false}
                 connectionId={connectionId}
@@ -828,12 +917,14 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
                 userTypes={userTypes}
                 collations={collations}
                 handlers={columnHandlers}
+                selected={selectedSet}
+                numbers={numbers}
               />
             </div>
           </div>
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div className="min-h-0 flex-1 overflow-auto" onDoubleClick={onBlankDoubleClick}>
           {/* Size container as wide as the scroll viewport: section bars span it (100cqw) and
               stick to its left edge while the tables scroll sideways. */}
           <div className="@container">
@@ -854,7 +945,7 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
               ) : (
                 <>
                   <ColumnsSection
-                    view={v}
+                    view={ordered}
                     dialect={dialect}
                     editable={editable}
                     connectionId={connectionId}
@@ -863,12 +954,15 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
                     userTypes={userTypes}
                     collations={collations}
                     handlers={columnHandlers}
+                    selected={selectedSet}
+                    numbers={numbers}
                   />
                   <IndexesSection
                     rows={v.indexes}
                     dialect={dialect}
                     editable={editable}
                     columns={liveColumns}
+                    columnTypes={columnTypes}
                     onAdd={onAddIndex}
                     onEdit={onEditIndex}
                     onDrop={(key) => apply((mm, current) => dropIndex(mm, current, key))}
@@ -951,6 +1045,34 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
             />
           </div>
         )}
+        {!isView && (
+          <DropdownMenu>
+            <BarTooltip label="Order the columns by name or by their position in the table">
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="h-6 shrink-0 px-1.5"
+                  aria-label="Order columns by"
+                >
+                  {columnOrder === "name" ? <ArrowDownAZ /> : <ListOrdered />}
+                  {columnOrder === "name" ? "Name" : "Ordinal position"}
+                </Button>
+              </DropdownMenuTrigger>
+            </BarTooltip>
+            <DropdownMenuContent align="start" className="min-w-44">
+              <DropdownMenuRadioGroup
+                value={columnOrder}
+                onValueChange={(v) => setPref("structureColumnOrder", v as StructureColumnOrder)}
+              >
+                <DropdownMenuRadioItem value="name">Order columns by Name</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="ordinal">
+                  Order columns by Ordinal position
+                </DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
         <div className="flex min-w-0 flex-1 justify-center px-1">
           <span
             className="text-foreground/80 min-w-0 truncate whitespace-nowrap tabular-nums"
@@ -998,7 +1120,7 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
                 <BarTooltip label="Review and apply the changes" action="grid.commit">
                   <Button
                     size="xs"
-                    onClick={() => void openPreview()}
+                    onClick={openPreview}
                     aria-label="Review & apply"
                     className="h-6 shrink-0 px-2"
                   >
@@ -1027,20 +1149,6 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
         </BarIconButton>
       </BottomBar>
 
-      <DdlPreviewSheet
-        state={preview}
-        dialect={dialect}
-        table={m.table}
-        onOpenChange={(open) => {
-          if (open || preview.applying) return;
-          reportTabCommit(tab.id, "cancelled");
-          setPreview(PREVIEW_CLOSED);
-        }}
-        onApply={() => void applyPreview()}
-        returnFocus={focusRoot}
-        staleRan={partialRan}
-        onDiscardAndRefresh={discardAndRefresh}
-      />
       <ShowDdlDialog
         open={showDdl}
         onOpenChange={setShowDdl}

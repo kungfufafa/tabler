@@ -13,6 +13,16 @@ afterEach(() => {
 });
 
 describe("mock sidebar objects", () => {
+  it("lists every schema's items for Search in Database…", async () => {
+    const c = await connect("p-local-pg");
+    const all = await ipc.objects.databaseItems(c);
+    const schemas = new Set(all.tables.map((t) => t.schema));
+    expect(schemas).toEqual(new Set(["public", "inventory"]));
+    expect(all.routines.map((r) => r.name)).toContain("slugify");
+    const withSystem = await ipc.objects.databaseItems(c, true);
+    expect(withSystem.tables.length).toBeGreaterThanOrEqual(all.tables.length);
+  });
+
   it("lists PG routines and sequences, and opens their definitions", async () => {
     const c = await connect("p-local-pg");
     const routines = await ipc.objects.routines(c, "public");

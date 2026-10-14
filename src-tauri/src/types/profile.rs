@@ -54,18 +54,127 @@ pub struct SshConfig {
     pub key_path: Option<String>,
     pub local_port: Option<u16>,
     pub keepalive_secs: Option<u32>,
+    /// Where the SSH password of `auth == password` comes from; None (profiles saved before the
+    /// setting) = Keychain.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub password_mode: Option<SshPasswordMode>,
 }
 
-/// TablePlus-style environment tag of a connection; the workspace's status bar shows it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
+impl SshConfig {
+    pub fn password_mode(&self) -> SshPasswordMode {
+        self.password_mode.unwrap_or_default()
+    }
+}
+
+/// How the SSH password (password auth) is stored, like the database password's menu:
+/// - `keychain`: stored in the macOS Keychain (the default).
+/// - `ask`: asked on every connect through the SSH prompt dialog; never stored.
+/// - `none`: no password is sent (keyboard-interactive / 2FA servers answer through prompts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 #[ts(export)]
+pub enum SshPasswordMode {
+    #[default]
+    Keychain,
+    Ask,
+    None,
+}
+
+/// TablePlus-style environment tag of a connection; the workspace's status bar shows it. Five
+/// built-in tags plus custom ones (b494) the user names; the colours of custom tags live in the
+/// renderer's `connectionTags` setting. Crosses IPC (and connection files) as its name: the
+/// built-ins as `local` / `testing` / `development` / `staging` / `production` (older profiles'
+/// values), a custom tag as the name the user gave it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, TS)]
+#[ts(export, type = "string")]
 pub enum ConnectionTag {
     Local,
     Testing,
     Development,
     Staging,
     Production,
+    Custom(String),
+}
+
+/// Longest custom tag name.
+pub const TAG_NAME_MAX: usize = 40;
+
+/// The connect timeout (seconds) of a profile that sets none: 60 s, as in TablePlus. The form and
+/// Settings ▸ Connections accept 1 to 300.
+pub const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 60;
+
+impl ConnectionTag {
+    pub const BUILT_IN: [ConnectionTag; 5] = [
+        ConnectionTag::Local,
+        ConnectionTag::Testing,
+        ConnectionTag::Development,
+        ConnectionTag::Staging,
+        ConnectionTag::Production,
+    ];
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            ConnectionTag::Local => "local",
+            ConnectionTag::Testing => "testing",
+            ConnectionTag::Development => "development",
+            ConnectionTag::Staging => "staging",
+            ConnectionTag::Production => "production",
+            ConnectionTag::Custom(name) => name,
+        }
+    }
+
+    /// The tag a stored name stands for: a built-in name (any case) is that built-in, anything
+    /// else a custom tag of that (trimmed) name.
+    pub fn from_name(name: &str) -> ConnectionTag {
+        let name = name.trim();
+        ConnectionTag::BUILT_IN
+            .into_iter()
+            .find(|t| t.as_str().eq_ignore_ascii_case(name))
+            .unwrap_or_else(|| ConnectionTag::Custom(name.to_string()))
+    }
+}
+
+impl Serialize for ConnectionTag {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ConnectionTag {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Ok(ConnectionTag::from_name(&name))
+    }
+}
+
+/// MySQL "Ver." (driver version): which server family the form is for. It picks the SSL mode
+/// names (MariaDB / SingleStore / old MySQL: PREFERRED, ENFORCE, VERIFY-SERVER-CERT). One driver
+/// serves all; `Old` also accepts the pre-4.1 `mysql_old_password` login (`secure_auth` off) and
+/// negotiates TLS 1.0 / 1.1 where the platform's TLS library allows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MysqlVersion {
+    #[default]
+    Default,
+    Mariadb,
+    /// "Old MySQL (5.x)".
+    Old,
+    /// "SingleStore DB" (MySQL wire protocol).
+    Singlestore,
+}
+
+/// PostgreSQL "SSL negotiation": the `SSLRequest` handshake (`postgres`, every server) or TLS
+/// straight away (`direct`, PostgreSQL 17+, libpq's `sslnegotiation=direct`; needs SSL mode
+/// require or stricter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum SslNegotiation {
+    #[default]
+    Postgres,
+    Direct,
 }
 
 /// TablePlus safe-mode level of a connection: what the app asks before it sends statements to the
@@ -112,6 +221,7 @@ pub struct ProfileOptions {
     /// Safe-mode level; None for profiles saved before safe mode existed (= silent).
     pub safe_mode: Option<SafeModeLevel>,
     pub timezone: Option<String>,
+    /// Advanced ▸ Connect timeout in seconds; None (or 0): [`DEFAULT_CONNECT_TIMEOUT_SECS`].
     pub connect_timeout_secs: Option<u32>,
     pub read_only: bool,
     /// Bootstrap commands: SQL run right after login on every session connection.
@@ -137,6 +247,53 @@ pub struct ProfileOptions {
     /// The socket file of "Use socket"; empty: the first of the usual paths that exists.
     #[ts(optional = nullable)]
     pub socket_path: Option<String>,
+    /// Bootstrap CLI script (b546): a shell script run through the login shell before every
+    /// connect and test (start a proxy, copy a SQLite file…); a failure aborts the connect.
+    #[ts(optional = nullable)]
+    pub bootstrap_script: Option<String>,
+    /// Connection encoding: MySQL `SET NAMES <charset>` (default utf8mb4), PostgreSQL
+    /// `client_encoding` (default UTF8). Not used by SQLite.
+    #[ts(optional = nullable)]
+    pub encoding: Option<String>,
+    /// SQLCipher "SQLCipher compatibility" (`PRAGMA cipher_compatibility`, 1–4); None: 4, the
+    /// current format. Only used with an encryption key (the SQLite profile's password).
+    #[ts(optional = nullable)]
+    pub sqlite_cipher_compatibility: Option<u8>,
+    /// SQLite "Resource file" (`.sqliterc`): SQL statements read from this file at every
+    /// connect and run after open (after the encryption key, before the bootstrap commands).
+    #[ts(optional = nullable)]
+    pub sqlite_resource_file: Option<String>,
+    /// SQLite over SSH: upload the downloaded copy back on Commit / Disconnect; unset or false:
+    /// the copy opens read-only.
+    #[ts(optional = nullable)]
+    pub sqlite_ssh_upload: Option<bool>,
+    /// MySQL "Ver." dropdown; None = Default.
+    #[ts(optional = nullable)]
+    pub mysql_version: Option<MysqlVersion>,
+    /// MySQL Other options ▸ Enable CLEARTEXT_PLUGIN: send the password in clear text when the
+    /// server asks (`mysql_clear_password`, PAM / LDAP); only over TLS or a socket.
+    #[ts(optional = nullable)]
+    pub mysql_cleartext_plugin: Option<bool>,
+    /// MySQL Other options ▸ Enable LOAD DATA LOCAL INFILE: the server may read local files, each
+    /// one only after the user allowed it.
+    #[ts(optional = nullable)]
+    pub mysql_local_infile: Option<bool>,
+    /// PostgreSQL SSL negotiation; None = postgres.
+    #[ts(optional = nullable)]
+    pub pg_ssl_negotiation: Option<SslNegotiation>,
+    /// PostgreSQL Other options ▸ Disable channel binding (SCRAM-SHA-256-PLUS is not used).
+    #[ts(optional = nullable)]
+    pub pg_disable_channel_binding: Option<bool>,
+    /// PostgreSQL extra connection parameters, libpq style (`key=value` separated by spaces,
+    /// newlines or `&`; values may be single-quoted): `application_name` and `options` go into
+    /// the startup message, other names are server settings applied after login
+    /// (`statement_timeout`, `search_path`, `jit`…).
+    #[ts(optional = nullable)]
+    pub pg_params: Option<String>,
+    /// "Lazy Load Schema Items" of the sidebar for this connection (`lazyload=` of a link's URL);
+    /// None = the Settings ▸ General default.
+    #[ts(optional = nullable)]
+    pub lazy_load: Option<bool>,
 }
 
 impl ProfileOptions {
@@ -147,6 +304,22 @@ impl ProfileOptions {
     /// The trimmed password command, if one is set.
     pub fn password_command(&self) -> Option<&str> {
         self.password_command
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+    }
+
+    /// The trimmed bootstrap CLI script, if one is set.
+    pub fn bootstrap_script(&self) -> Option<&str> {
+        self.bootstrap_script
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+    }
+
+    /// The trimmed connection encoding, if one is set.
+    pub fn encoding(&self) -> Option<&str> {
+        self.encoding
             .as_deref()
             .map(str::trim)
             .filter(|c| !c.is_empty())

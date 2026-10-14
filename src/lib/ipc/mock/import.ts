@@ -1,5 +1,5 @@
-// Mock handlers for File ▸ Import: preview_csv_import, import_csv, preview_sql_dump,
-// import_sql_dump and cancel_import. The "files" are generated from their names, so the browser
+// Mock handlers for File ▸ Import: preview_csv_import, import_csv, preview_json_import,
+// import_json, preview_sql_dump, import_sql_dump and cancel_import. The "files" are generated from their names, so the browser
 // mock shows a realistic wizard: `users.csv` matches the seeded users table, anything else is a
 // small product list; a name containing `bad` fails partway, `latin` is detected as Windows-1252.
 import type { CsvImportProgress } from "../bindings/CsvImportProgress";
@@ -9,11 +9,14 @@ import type { CsvPreview } from "../bindings/CsvPreview";
 import type { CsvPreviewRequest } from "../bindings/CsvPreviewRequest";
 import type { ImportColumnDef } from "../bindings/ImportColumnDef";
 import type { ImportType } from "../bindings/ImportType";
+import type { JsonImportRequest } from "../bindings/JsonImportRequest";
+import type { JsonPreview } from "../bindings/JsonPreview";
+import type { JsonPreviewRequest } from "../bindings/JsonPreviewRequest";
 import type { SqlDumpPreview } from "../bindings/SqlDumpPreview";
 import type { SqlImportProgress } from "../bindings/SqlImportProgress";
 import type { SqlImportReport } from "../bindings/SqlImportReport";
 import type { SqlImportRequest } from "../bindings/SqlImportRequest";
-import { mockError, mockLatency, registerMock } from "./transport";
+import { mockError, mockInvoke, mockLatency, registerMock } from "./transport";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -190,6 +193,64 @@ registerMock("import_csv", async ({ req, onProgress }) => {
     running.delete(r.importId);
     cancelled.delete(r.importId);
   }
+});
+
+// --- JSON: the same generated rows, as objects (`.ndjson` / `.jsonl`: one per line) -----------
+
+/** A JSON value's text as the backend previews it: strings unquoted, null for empty. */
+function jsonCell(raw: string, ty: ImportType): string | null {
+  const v = cell(raw);
+  if (v === null) return null;
+  if (ty === "boolean") return v === "true" ? "true" : "false";
+  return v;
+}
+
+registerMock("preview_json_import", async ({ req }) => {
+  const r = req as JsonPreviewRequest;
+  const file = csvFile(r.path);
+  const name = baseName(r.path);
+  await sleep(mockLatency === 0 ? 0 : 120);
+  if (name.toLowerCase().includes("notjson"))
+    mockError(
+      "INVALID_INPUT",
+      "item 1 (line 1) is a number, not an object: the file must hold an array of objects or one object per line",
+    );
+  return {
+    path: r.path,
+    fileName: name,
+    size: file.rows.length * 120,
+    encoding: r.encoding ?? "utf8",
+    layout: /\.(ndjson|jsonl)$/i.test(name) ? "lines" : "array",
+    keys: file.header,
+    columns: file.header.map((key, i) => ({
+      name: key,
+      detected: column(key, file.types[i] ?? "text"),
+    })),
+    rows: file.rows
+      .slice(0, 100)
+      .map((row) => row.map((v, i) => jsonCell(v, file.types[i] ?? "text"))),
+    sampledRows: Math.min(1000, file.rows.length),
+    more: file.rows.length > 100,
+  } satisfies JsonPreview;
+});
+
+registerMock("import_json", async ({ connectionId, req, onProgress }) => {
+  const r = req as JsonImportRequest;
+  if (r.keys.length === 0) mockError("INVALID_INPUT", "the JSON file has no keys to import");
+  // The objects go through the CSV wizard's machinery in the backend too.
+  return mockInvoke<CsvImportReport>("import_csv", {
+    connectionId,
+    onProgress,
+    req: {
+      importId: r.importId,
+      path: r.path,
+      format: { delimiter: ",", quote: '"', encoding: r.encoding, header: true },
+      target: r.target,
+      mapping: r.mapping,
+      emptyAsNull: true,
+      mode: r.mode,
+    } satisfies CsvImportRequest,
+  });
 });
 
 /** A dump "file" with a few bytes that are not UTF-8 (decoded as Windows-1252). */

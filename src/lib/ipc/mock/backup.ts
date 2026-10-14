@@ -290,3 +290,18 @@ registerMock("backup_copy_sqlite", async ({ profileId, path }) => {
     mockError("INVALID_INPUT", "the destination path must be absolute");
   return 1_064_960;
 });
+
+/** Formulae "Install with Homebrew…" may run (the backend's `brew::valid_formula`). */
+const BREW_FORMULA =
+  /^(libpq|postgresql@\d{1,2}|mysql-client(@\d{1,2}(\.\d{1,2})?)?|mariadb(@\d{1,2}(\.\d{1,2})?)?)$/;
+
+/** Formulae the mock "opened in Terminal" (tests read them). */
+export const mockBrewInstalls: string[] = [];
+
+registerMock("backup_install_with_brew", async ({ formula }) => {
+  const f = String(formula ?? "").trim();
+  if (!BREW_FORMULA.test(f)) mockError("INVALID_INPUT", `"${f}" is not a formula Tabler installs`);
+  await sleep(mockLatency === 0 ? 0 : 200);
+  mockBrewInstalls.push(f);
+  return null;
+});

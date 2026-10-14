@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
-import { compileSearch, isSearching } from "@/features/objects/search";
+import { compileSearch, isSearching, type MatchStrategy } from "@/features/objects/search";
 import {
   ipc,
   tableKey,
@@ -33,6 +33,31 @@ export type TreeRow =
       count: number;
       /** The section's rows are left out of the list. */
       collapsed: boolean;
+      /** Lazy load: the schema node the section belongs to. */
+      schema?: string;
+    }
+  | {
+      /**
+       * Lazy load: a schema (PostgreSQL) or database (MySQL) whose items load once it is expanded;
+       * its rows follow, keyed `n:<encoded schema>:…` (`nodePrefix`).
+       */
+      type: "schemaNode";
+      key: string;
+      schema: string;
+      expanded: boolean;
+      /** Items loaded for it (matching the search); null while not loaded. */
+      count: number | null;
+      loading: boolean;
+      /** PostgreSQL's information_schema / pg_catalog / pg_toast ("Show System Schemas"). */
+      system: boolean;
+    }
+  | {
+      /** An expanded schema node whose items are loading or failed to load. */
+      type: "nodeStatus";
+      key: string;
+      parentKey: string;
+      status: "loading" | "error";
+      message: string | null;
     }
   | {
       /** A sidebar group's header (`groups.ts`); its items follow, keyed `g:<id>:…`. */
@@ -76,10 +101,26 @@ export function isItemRow(row: TreeRow | undefined): row is ItemRow {
   );
 }
 
-/** Rows of a group section are keyed `g:<group id>:<item row key>`. */
+/** Rows of a group section are keyed `g:<group id>:<item row key>` (after a `nodePrefix`). */
 export function groupIdOfRow(key: string): string | null {
-  const m = /^g:([^:]+):/.exec(key);
+  const m = /^(?:n:[^:]*:)?g:([^:]+):/.exec(key);
   return m ? m[1]! : null;
+}
+
+/** Lazy load: the key prefix of a schema node's rows (`n:<encoded schema>:`). */
+export function nodePrefix(schema: string): string {
+  return `n:${encodeURIComponent(schema)}:`;
+}
+
+/** Lazy load: the schema node a row belongs to (by its key), or null outside the nodes. */
+export function nodeSchemaOfRow(key: string): string | null {
+  const m = /^n:([^:]*):/.exec(key);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]!);
+  } catch {
+    return null;
+  }
 }
 
 /** The name an item row shows (and that Copy Name copies). */
@@ -149,13 +190,14 @@ const GROUP_ORDER: Array<[TableSummary["kind"][], SidebarSection]> = [
 
 /**
  * Flattens tables into header+row entries for the virtualized tree, filtered by `search` (see
- * `compileSearch`: fuzzy terms, `^name$` anchors, `|` / `,` alternatives, "exact" quotes). With an
- * empty search, recently opened tables (`tableKey`s, most recent first) come first under "Recent"
- * (rows keyed `r:`). Pinned tables that match come next under "Pinned" (rows keyed `p:`). Both
- * stay in their regular group too. Then every sidebar group (`groups`, in their order, even an
- * empty one: items are dragged into it) with the tables it holds (rows keyed `g:<id>:t:`); those
- * leave Tables / Views / Materialized views. A `collapsed` section (or group) keeps its header
- * (with its count) but leaves its rows out, so ↑/↓ skip them.
+ * `compileSearch`: `strategy` terms, `^name$` anchors, `|` / `,` alternatives, "exact" quotes).
+ * With an empty search, recently opened tables (`tableKey`s, most recent first) come first under
+ * "Recent" (rows keyed `r:`); they stay in their regular section too. Pinned tables that match come
+ * next under "Pinned" (rows keyed `p:`) and leave the alphabetical sections (TablePlus). Then every
+ * sidebar group (`groups`, in their order, even an empty one: items are dragged into it) with the
+ * tables it holds (rows keyed `g:<id>:t:`); those leave Tables / Views / Materialized views. A
+ * `collapsed` section (or group) keeps its header (with its count) but leaves its rows out, so
+ * ↑/↓ skip them.
  */
 export function buildTreeRows(
   tables: TableSummary[],
@@ -164,8 +206,9 @@ export function buildTreeRows(
   recent: readonly string[] = EMPTY_RECENT,
   collapsed: ReadonlySet<SidebarSection> = EMPTY_COLLAPSED,
   groups: readonly SidebarGroup[] = EMPTY_GROUPS,
+  strategy: MatchStrategy = "fuzzy",
 ): TreeRow[] {
-  const matchName = compileSearch(search);
+  const matchName = compileSearch(search, strategy);
   const matches = (t: TableSummary) => matchName(t.name);
   const rows: TreeRow[] = [];
   const section = (label: SidebarSection, prefix: string, items: TableSummary[]) => {
@@ -182,7 +225,7 @@ export function buildTreeRows(
     for (const t of items)
       rows.push({ type: "table", key: `${prefix}:${t.schema ?? ""}.${t.name}`, table: t });
   };
-  if (!isSearching(search) && recent.length > 0) {
+  if (!isSearching(search, strategy) && recent.length > 0) {
     const byKey = new Map(tables.map((t) => [tableKey(t), t]));
     section(
       "Recent",
@@ -223,7 +266,7 @@ export function buildTreeRows(
     section(
       label,
       "t",
-      ungrouped.filter((t) => kinds.includes(t.kind) && matches(t)),
+      ungrouped.filter((t) => kinds.includes(t.kind) && !pinned.has(tableKey(t)) && matches(t)),
     );
   return rows;
 }
@@ -235,10 +278,11 @@ export function useTreeRows(
   recent: readonly string[] = EMPTY_RECENT,
   collapsed: ReadonlySet<SidebarSection> = EMPTY_COLLAPSED,
   groups: readonly SidebarGroup[] = EMPTY_GROUPS,
+  strategy: MatchStrategy = "fuzzy",
 ): TreeRow[] {
   return useMemo(
-    () => buildTreeRows(tables ?? [], search, pinned, recent, collapsed, groups),
-    [tables, search, pinned, recent, collapsed, groups],
+    () => buildTreeRows(tables ?? [], search, pinned, recent, collapsed, groups, strategy),
+    [tables, search, pinned, recent, collapsed, groups, strategy],
   );
 }
 
@@ -281,8 +325,9 @@ export function mergeObjectRows(
   search: string,
   collapsed: ReadonlySet<SidebarSection> = EMPTY_COLLAPSED,
   groups: readonly SidebarGroup[] = EMPTY_GROUPS,
+  strategy: MatchStrategy = "fuzzy",
 ): TreeRow[] {
-  const matches = compileSearch(search);
+  const matches = compileSearch(search, strategy);
   const byGroup = new Map<string, RoutineSummary[]>();
   const free: RoutineSummary[] = [];
   for (const r of routines ?? []) {
@@ -325,8 +370,15 @@ export function mergeObjectRows(
 }
 
 /** While searching, groups with no match leave the list (empty groups show otherwise). */
-export function pruneEmptyGroups(rows: TreeRow[], search: string): TreeRow[] {
-  if (!isSearching(search) || !rows.some((r) => r.type === "groupHeader" && r.count === 0))
+export function pruneEmptyGroups(
+  rows: TreeRow[],
+  search: string,
+  strategy: MatchStrategy = "fuzzy",
+): TreeRow[] {
+  if (
+    !isSearching(search, strategy) ||
+    !rows.some((r) => r.type === "groupHeader" && r.count === 0)
+  )
     return rows;
   return rows.filter((r) => r.type !== "groupHeader" || r.count > 0);
 }

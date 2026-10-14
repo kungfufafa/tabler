@@ -1,9 +1,9 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { ipc, toIpcError } from "@/lib/ipc";
+import { ipc, toIpcError, type SshPromptRequest } from "@/lib/ipc";
 import { mockFingerprint, resetMockHostKeys } from "@/lib/ipc/mock/export";
-import { SshPromptHost } from "./SshPrompt";
+import { SshPrompt, SshPromptHost } from "./SshPrompt";
 import { promptLabel, useSshPromptStore } from "./sshPromptStore";
 
 const STAGING = "p-staging-ssh";
@@ -90,5 +90,53 @@ describe("SSH keyboard-interactive prompt", () => {
     expect(promptLabel("Verification code: ")).toBe("Verification code");
     expect(promptLabel("Password:")).toBe("Password");
     expect(promptLabel("  ")).toBe("Answer");
+  });
+});
+
+describe("the app's own SSH questions", () => {
+  const base: SshPromptRequest = {
+    requestId: "q1",
+    profileId: "p1",
+    label: "Remote SQLite",
+    purpose: "connect",
+    user: "ops",
+    host: "box",
+    port: 22,
+    name: "SSH password",
+    instructions: "",
+    prompts: [{ prompt: "Password:", echo: false }],
+    kind: "password",
+  };
+
+  it("asks for the SSH password of “Ask every time”", async () => {
+    const user = userEvent.setup();
+    const onAnswer = vi.fn();
+    render(<SshPrompt request={base} onAnswer={onAnswer} />);
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Enter the SSH password of ops@box to open Remote SQLite");
+    await user.type(within(dialog).getByLabelText("Password"), "pw{Enter}");
+    expect(onAnswer).toHaveBeenCalledWith("q1", ["pw"]);
+  });
+
+  it("confirms a large download without fields", async () => {
+    const user = userEvent.setup();
+    const onAnswer = vi.fn();
+    render(
+      <SshPrompt
+        request={{
+          ...base,
+          name: "Large database file",
+          instructions: "“app.db” is 250 MB on the SSH server. Download it?",
+          prompts: [],
+          kind: "confirm",
+        }}
+        onAnswer={onAnswer}
+      />,
+    );
+    const dialog = await screen.findByRole("alertdialog", { name: "Large database file" });
+    expect(dialog).toHaveTextContent("is 250 MB on the SSH server");
+    expect(within(dialog).queryByRole("textbox")).toBeNull();
+    await user.click(within(dialog).getByRole("button", { name: "Continue" }));
+    expect(onAnswer).toHaveBeenCalledWith("q1", []);
   });
 });

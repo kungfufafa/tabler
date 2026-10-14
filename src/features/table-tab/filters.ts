@@ -8,6 +8,7 @@ import type {
   Value,
   ValueKind,
 } from "@/lib/ipc";
+import { parseHexBytes } from "@/features/datagrid/cellText";
 import type { FilterDefaultColumn, FilterDefaultOperator } from "@/stores/prefs";
 import { newFilterRow, type FilterRowSpec } from "@/stores/tableTabs";
 
@@ -31,6 +32,11 @@ const TEXT_VALUE_OPS: ReadonlySet<FilterOp> = new Set<FilterOp>([
   "notLike",
   "ilike",
 ]);
+
+/** Whether `op` compares as text whatever the column's type (patterns, LIKE). */
+export function isTextValueOp(op: FilterOp): boolean {
+  return TEXT_VALUE_OPS.has(op);
+}
 
 /** Every operator in TablePlus's order; the `…Case` labels are the PostgreSQL / SQLite ones. */
 export const OPS: OpDef[] = [
@@ -110,10 +116,20 @@ export function opAllowed(op: FilterOp, dialect: Dialect, target: OpTarget = nul
   return opsFor(dialect, target).some((o) => o.op === op);
 }
 
-/** Turns typed filter text into a tagged value by column kind (the backend binds and casts). */
+/**
+ * Turns typed filter text into a tagged value by column kind (the backend binds and casts). Text
+ * that is not a value of the kind stays text (the server then answers); only a blob's hex is
+ * checked up front, because a text value compared with a binary column silently matches nothing
+ * (`filterValueError` says what is wrong, `toFilterGroup` leaves such a row out).
+ */
 export function parseFilterValue(kind: ValueKind, text: string): Value {
   const t = text.trim();
   switch (kind) {
+    case "bytes": {
+      // Hex, with or without a `0x` / `\x` prefix: a foreign-key jump on a binary key types it.
+      const bytes = parseHexBytes(t);
+      return bytes.ok ? bytes.value : { t: "text", v: t };
+    }
     case "int":
     case "bigInt": {
       if (/^-?\d+$/.test(t)) {
@@ -226,6 +242,36 @@ export function targetOf(column: string, columns: readonly ColumnMeta[]): OpTarg
   return columns.find((c) => c.name === column) ?? null;
 }
 
+/**
+ * Why filter text cannot be sent for a column of `kind` (the cell editor's message), null when it
+ * can. Only binary columns are strict: their value must be hex.
+ */
+export function filterValueError(kind: ValueKind | null, text: string): string | null {
+  if (kind !== "bytes" || text.trim() === "") return null;
+  const bytes = parseHexBytes(text);
+  return bytes.ok ? null : bytes.error;
+}
+
+/**
+ * Why a condition on a column cannot be applied as typed (`filterValueError` of its value, its
+ * second value or the items of its list), null when it can. Patterns, raw SQL and "Any column"
+ * compare as text and never fail.
+ */
+export function rowValueError(row: FilterRowSpec, columns: readonly ColumnMeta[]): string | null {
+  if (isRawSqlRow(row) || isAnyColumnRow(row) || TEXT_VALUE_OPS.has(row.op)) return null;
+  const col = columns.find((c) => c.name === row.column);
+  if (!col) return null;
+  const { arity } = opDef(row.op);
+  if (arity === 0) return null;
+  const texts =
+    arity === "list" ? splitList(row.value) : arity === 2 ? [row.value, row.value2] : [row.value];
+  for (const text of texts) {
+    const error = filterValueError(col.kind, text);
+    if (error) return error;
+  }
+  return null;
+}
+
 /** The values of one row for `kind` (null: the row is not complete and is skipped). */
 function rowValues(row: FilterRowSpec, kind: ValueKind | null): Value[] | null {
   const def = opDef(row.op);
@@ -268,7 +314,8 @@ export function toFilterGroup(
       continue;
     }
     const col = columns.find((c) => c.name === row.column);
-    if (!col) continue;
+    // A blob compared with text matches nothing: a row that is not hex waits to be corrected.
+    if (!col || rowValueError(row, columns)) continue;
     const values = rowValues(row, col.kind);
     if (values) items.push({ kind: "condition", column: col.name, op: row.op, values });
   }

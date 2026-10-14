@@ -1,12 +1,23 @@
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Segmented } from "@/features/settings/controls";
 import { cn } from "@/lib/utils";
+import { DecimalChoice } from "./DecimalChoice";
 import {
-  CSV_DECIMALS,
   CSV_DELIMITERS,
   CSV_LINE_BREAKS,
   CSV_QUOTES,
+  ENCODINGS,
+  csvProblem,
+  decimalProblem,
+  encodingApplies,
   type ExportOptions,
 } from "./options";
 
@@ -73,11 +84,98 @@ export function Check({
 const mono = (label: string) => <span className="font-mono">{label}</span>;
 
 /**
- * The options of the chosen format, as TablePlus labels them. `tableSource`: the export reads
- * whole tables, so a SQL script can carry their structure. `sqlExtra` adds rows to the SQL
- * options (the single export's table name and batch size).
+ * "Encoding" of the text formats (CSV, JSON, SQL, HTML). `follows` is shown while the choice is
+ * the one Connection ▸ View Using Encoding asked for; `onChange` tells the form the user chose.
  */
-export function FormatOptions({
+function EncodingRow({
+  options,
+  setOptions,
+  follows,
+  onChange,
+}: {
+  options: ExportOptions;
+  setOptions: Dispatch<SetStateAction<ExportOptions>>;
+  follows?: ReactNode;
+  onChange?: () => void;
+}) {
+  const lossy = options.encoding === "windows1252" || options.encoding === "latin1";
+  return (
+    <Row
+      id="export-encoding"
+      label="Encoding"
+      hint={
+        follows || lossy ? (
+          <>
+            {follows && <span data-testid="export-encoding-follows">{follows}</span>}
+            {follows && lossy && " · "}
+            {lossy && "Characters this encoding cannot hold are written as ?"}
+          </>
+        ) : undefined
+      }
+    >
+      <Select
+        value={options.encoding}
+        onValueChange={(v) => {
+          onChange?.();
+          setOptions((o) => ({ ...o, encoding: v as ExportOptions["encoding"] }));
+        }}
+      >
+        <SelectTrigger
+          id="export-encoding"
+          size="sm"
+          aria-label="Encoding"
+          className="h-7 w-48 text-xs"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {ENCODINGS.map((e) => (
+            <SelectItem key={e.value} value={e.value} title={e.title} className="text-xs">
+              {e.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </Row>
+  );
+}
+
+/**
+ * The options of the chosen format, as TablePlus labels them, and the text encoding. See
+ * `FormatSpecificOptions` for the arguments.
+ */
+export function FormatOptions(props: {
+  options: ExportOptions;
+  setOptions: Dispatch<SetStateAction<ExportOptions>>;
+  tableSource: boolean;
+  sqlExtra?: ReactNode;
+  /** The encoding follows Connection ▸ View Using Encoding: what to say about it. */
+  encodingFollows?: ReactNode;
+  /** The user picked an encoding in the select. */
+  onEncodingChange?: () => void;
+}) {
+  const { encodingFollows, onEncodingChange, ...rest } = props;
+  return (
+    <>
+      <FormatSpecificOptions {...rest} />
+      {encodingApplies(props.options.format) && (
+        <EncodingRow
+          options={props.options}
+          setOptions={props.setOptions}
+          follows={encodingFollows}
+          onChange={onEncodingChange}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * The options of the chosen format. `tableSource`: the export reads whole tables, so a SQL
+ * script can carry their structure. `sqlExtra` adds rows to the SQL options (the single export's
+ * table name and batch size).
+ */
+function FormatSpecificOptions({
   options,
   setOptions,
   tableSource,
@@ -93,6 +191,8 @@ export function FormatOptions({
     patch: Partial<ExportOptions[K]>,
   ) => setOptions((o) => ({ ...o, [key]: { ...o[key], ...patch } }));
   const structureTitle = tableSource ? undefined : "Only table exports carry a structure";
+  const decimalIssue = decimalProblem(options.csv.decimal, options.csv.delimiter);
+  const spaceQuoteIssue = decimalIssue === null ? csvProblem(options.csv) : null;
 
   switch (options.format) {
     case "csv":
@@ -128,14 +228,20 @@ export function FormatOptions({
               }))}
             />
           </Row>
-          <Row id="export-quote" label="Quote">
+          <Row
+            id="export-quote"
+            label="Quote"
+            hint={
+              spaceQuoteIssue ? <span className="text-warning">{spaceQuoteIssue}</span> : undefined
+            }
+          >
             <Segmented
               id="export-quote"
               value={options.csv.quote}
               onChange={(quote) => set("csv", { quote })}
               options={CSV_QUOTES.map((q) => ({
                 ...q,
-                label: q.value === "ifNeeded" ? q.label : mono(q.label),
+                label: q.value === "ifNeeded" || q.value === "space" ? q.label : mono(q.label),
               }))}
             />
           </Row>
@@ -147,12 +253,17 @@ export function FormatOptions({
               options={CSV_LINE_BREAKS.map((l) => ({ ...l, label: mono(l.label) }))}
             />
           </Row>
-          <Row id="export-decimal" label="Decimal">
-            <Segmented
+          <Row
+            id="export-decimal"
+            label="Decimal"
+            hint={decimalIssue ? <span className="text-warning">{decimalIssue}</span> : undefined}
+          >
+            <DecimalChoice
               id="export-decimal"
               value={options.csv.decimal}
+              delimiter={options.csv.delimiter}
               onChange={(decimal) => set("csv", { decimal })}
-              options={CSV_DECIMALS.map((d) => ({ ...d, label: mono(d.label) }))}
+              commitInvalid
             />
           </Row>
         </>
@@ -232,6 +343,18 @@ export function FormatOptions({
           <Check checked={options.xlsx.header} onChange={(header) => set("xlsx", { header })}>
             Put field names in the first row
           </Check>
+        </Row>
+      );
+    case "html":
+      return (
+        <Row
+          id="export-html-options"
+          label="Options"
+          hint="The column names head the table; NULL is shown in italics."
+        >
+          <span id="export-html-options" className="pt-1.5 text-xs leading-4">
+            An HTML table with a little inline style
+          </span>
         </Row>
       );
   }

@@ -1,5 +1,6 @@
 import { KeyRound } from "lucide-react";
 import { useEffect, useId, useState } from "react";
+import { toast } from "sonner";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -13,8 +14,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { hasSingleHost, useSingleHost } from "@/features/export/singleHost";
-import type { SshPromptRequest } from "@/lib/ipc";
-import { listenEvent, type Unlisten } from "@/lib/ipc/events";
+import { ipc, isMock, toIpcError, type SqliteSshEvent, type SshPromptRequest } from "@/lib/ipc";
+import { listenEvent, listenWindowEvent, type Unlisten } from "@/lib/ipc/events";
 import {
   answerSshPrompt,
   cancelSshPrompts,
@@ -37,8 +38,15 @@ function Questions({
 }) {
   const uid = useId();
   const [answers, setAnswers] = useState(() => request.prompts.map(() => ""));
-  const verb = request.purpose === "test" ? "Test" : "Connect";
+  const confirm = request.kind === "confirm";
+  const verb = confirm ? "Continue" : request.purpose === "test" ? "Test" : "Connect";
   const title = request.name.trim() || "SSH authentication";
+  const opening = request.label ? (
+    <>
+      {" "}
+      to open <span className="text-foreground">{request.label}</span>
+    </>
+  ) : null;
   return (
     <form
       className="contents"
@@ -53,18 +61,24 @@ function Questions({
           {title}
         </AlertDialogTitle>
         <AlertDialogDescription className="text-xs">
-          <span className="text-foreground font-mono">{server(request)}</span> asks for more
-          information
-          {request.label ? (
+          {confirm ? (
+            request.instructions.trim()
+          ) : request.kind === "password" ? (
             <>
-              {" "}
-              to open <span className="text-foreground">{request.label}</span>
+              Enter the SSH password of{" "}
+              <span className="text-foreground font-mono">{server(request)}</span>
+              {opening}. It is not stored.
             </>
-          ) : null}
-          .
+          ) : (
+            <>
+              <span className="text-foreground font-mono">{server(request)}</span> asks for more
+              information
+              {opening}.
+            </>
+          )}
         </AlertDialogDescription>
       </AlertDialogHeader>
-      {request.instructions.trim() !== "" && (
+      {!confirm && request.instructions.trim() !== "" && (
         <p
           data-testid="ssh-prompt-instructions"
           className="bg-surface-2 border-border text-foreground rounded-md border px-3 py-2 text-xs wrap-anywhere whitespace-pre-wrap"
@@ -134,9 +148,62 @@ export function SshPrompt({
   );
 }
 
+/** Shows a file in Finder (no-op in the browser mock). */
+async function reveal(path: string): Promise<void> {
+  if (isMock) return;
+  const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+  await revealItemInDir(path);
+}
+
+/**
+ * SQLite over SSH upload results: a quiet note after an upload, a warning with "Upload Anyway"
+ * when the file on the server changed meanwhile, the kept copy's location after a failed last
+ * upload.
+ */
+function showSqliteSshStatus(e: SqliteSshEvent): void {
+  switch (e.kind) {
+    case "uploaded":
+      toast.success(`Uploaded changes of “${e.name}”`, { description: e.remote, duration: 2500 });
+      break;
+    case "conflict":
+      toast.warning(`“${e.name}” changed on the SSH server`, {
+        description: `${e.message}. Uploading replaces the server's version (${e.remote}).`,
+        duration: 20_000,
+        action: {
+          label: "Upload Anyway",
+          onClick: () =>
+            void ipc.sqliteSsh.upload(e.connectionId, true).then(
+              (done) => {
+                if (done.uploaded) toast.success(`Uploaded changes of “${e.name}”`);
+              },
+              (err: unknown) =>
+                toast.error("Could not upload the changes", {
+                  description: toIpcError(err).message,
+                }),
+            ),
+        },
+      });
+      break;
+    case "error":
+      toast.error(`Could not upload the changes of “${e.name}”`, { description: e.message });
+      break;
+    case "keptLocal":
+      toast.warning(e.message, {
+        description: e.localPath ?? e.remote,
+        duration: Infinity,
+        ...(e.localPath
+          ? { action: { label: "Show in Finder", onClick: () => void reveal(e.localPath!) } }
+          : {}),
+      });
+      break;
+  }
+}
+
 /**
  * Listens for `ssh:prompt` and shows the questions one at a time. Mount once near the app root;
- * extra instances stay inert.
+ * extra instances stay inert. The backend sends a question to the window that started the connect
+ * (or the focused one) and upload results to the window that owns the connection, so they are
+ * heard on this window only; "done" goes to every window (only the one showing it has it).
  */
 export function SshPromptHost() {
   const owner = useSingleHost(SSH_PROMPT_HOST);
@@ -146,8 +213,9 @@ export function SshPromptHost() {
     let gone = false;
     let unlisten: Unlisten[] = [];
     void Promise.all([
-      listenEvent("ssh:prompt", enqueueSshPrompt),
+      listenWindowEvent("ssh:prompt", enqueueSshPrompt),
       listenEvent("ssh:prompt-done", (done) => dropSshPrompt(done.requestId)),
+      listenWindowEvent("sqlite-ssh:status", showSqliteSshStatus),
     ]).then((fns) => {
       if (gone) fns.forEach((f) => f());
       else unlisten = fns;

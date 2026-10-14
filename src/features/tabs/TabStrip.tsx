@@ -1,11 +1,4 @@
-import {
-  closestCenter,
-  DndContext,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from "@dnd-kit/core";
+import { closestCenter, DndContext, useDroppable } from "@dnd-kit/core";
 import { horizontalListSortingStrategy, SortableContext } from "@dnd-kit/sortable";
 import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
@@ -14,8 +7,17 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { actions } from "@/features/palette/actions";
 import { isTauri } from "@/lib/ipc";
 import { shortcutFor, useKeymapVersion } from "@/lib/keys/keymap";
+import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
-import { canGoBack, canGoForward, useTabsStore, workspaceTabs } from "@/stores/tabs";
+import {
+  canGoBack,
+  canGoForward,
+  focusedGroup,
+  groupTabs,
+  useTabsStore,
+  type TabGroup,
+} from "@/stores/tabs";
+import { groupDropId, onTabDragEnd, useTabSensors } from "./tabDrag";
 import { TabItem } from "./TabItem";
 import { wheelToScrollLeft } from "./wheel";
 
@@ -82,47 +84,35 @@ function BarButton({
   );
 }
 
-/**
- * The workspace's tab bar (macOS document tabs, TablePlus style): ‹ › walk the tab history, the
- * tabs fill the row in equal widths, `+` opens a new query. Tabs drag to reorder, middle-click
- * closes, and the wheel scrolls the row when the tabs no longer fit.
- */
-export function TabStrip() {
-  // Each connection is its own workspace (TablePlus): the bar shows the active connection's tabs.
-  const workspace = useConnectionsStore((s) => s.activeId);
+/** One group's tabs: sortable, and a drop target for tabs of the other group. */
+function TabList({ group, workspace }: { group: TabGroup; workspace: string | null }) {
   const allTabs = useTabsStore((s) => s.tabs);
-  const tabs = useMemo(() => workspaceTabs(allTabs, workspace), [allTabs, workspace]);
+  const splits = useTabsStore((s) => s.splits);
+  const tabs = useMemo(
+    () => (workspace === null ? [] : groupTabs({ tabs: allTabs, splits }, workspace, group)),
+    [allTabs, splits, workspace, group],
+  );
   const activeId = useTabsStore((s) => s.activeId);
+  const split = workspace === null ? undefined : splits[workspace];
+  // A group of a split workspace keeps showing its tab while the other group has the focus.
+  const shownId = split ? split.shown[group] : activeId;
+  const focused = useTabsStore((s) =>
+    workspace === null || !s.splits[workspace] ? true : focusedGroup(s, workspace) === group,
+  );
   const activate = useTabsStore((s) => s.activate);
   const close = useTabsStore((s) => s.close);
-  const move = useTabsStore((s) => s.move);
-  const back = useTabsStore((s) => s.back);
-  const forward = useTabsStore((s) => s.forward);
-  const backEnabled = useTabsStore(canGoBack);
-  const forwardEnabled = useTabsStore(canGoForward);
-  const hasConnection = useConnectionsStore((s) => s.activeId !== null);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const listRef = useRef<HTMLDivElement>(null);
-  // Tooltips show the current (possibly remapped) shortcuts.
-  useKeymapVersion();
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const { setNodeRef } = useDroppable({ id: groupDropId(group) });
 
-  // Keep the active tab visible (new tabs, ⌘1…9, ⌃Tab, reopen).
+  // Keep the shown tab visible (new tabs, ⌘1…9, ⌃Tab, reopen).
   useEffect(() => {
     const list = listRef.current;
-    if (!list || !activeId) return;
+    if (!list || !shownId) return;
     const el = Array.from(list.children).find(
-      (c): c is HTMLElement => c instanceof HTMLElement && c.dataset.tabId === activeId,
+      (c): c is HTMLElement => c instanceof HTMLElement && c.dataset.tabId === shownId,
     );
     el?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
-  }, [activeId, tabs.length]);
-
-  const onDragEnd = (e: DragEndEvent) => {
-    if (!e.over || e.active.id === e.over.id) return;
-    // `move` takes positions in the whole strip (every workspace), not in the visible part.
-    const from = allTabs.findIndex((t) => t.id === e.active.id);
-    const to = allTabs.findIndex((t) => t.id === e.over!.id);
-    if (from >= 0 && to >= 0) move(from, to);
-  };
+  }, [shownId, tabs.length]);
 
   const onWheel = (e: React.WheelEvent) => {
     const list = listRef.current;
@@ -132,58 +122,107 @@ export function TabStrip() {
   };
 
   return (
+    <div className="flex min-w-0 flex-1 items-stretch" onWheel={onWheel}>
+      <SortableContext items={tabs.map((t) => t.id)} strategy={horizontalListSortingStrategy}>
+        <div
+          ref={(el) => {
+            listRef.current = el;
+            setNodeRef(el);
+          }}
+          role="tablist"
+          aria-label={split ? (group === 0 ? "Left tab group" : "Right tab group") : "Open tabs"}
+          data-tab-group={group}
+          className="flex h-full min-w-0 flex-1 [scrollbar-width:none] items-stretch overflow-x-auto overflow-y-hidden [&::-webkit-scrollbar]:hidden"
+        >
+          {tabs.map((t) => (
+            <TabItem
+              key={t.id}
+              tab={t}
+              active={t.id === shownId}
+              groupFocused={focused}
+              onActivate={() => activate(t.id)}
+              onClose={() => close(t.id)}
+            />
+          ))}
+          {tabs.length === 0 && <StripFiller />}
+        </div>
+      </SortableContext>
+    </div>
+  );
+}
+
+/**
+ * The workspace's tab bar (macOS document tabs, TablePlus style): ‹ › walk the tab history, the
+ * tabs fill the row in equal widths, `+` opens a new query. Tabs drag to reorder, middle-click
+ * closes, and the wheel scrolls the row when the tabs no longer fit.
+ *
+ * A split workspace has one bar per group (`group`); their tabs drag from one group to the other
+ * inside the `DndContext` the workspace provides (`shared`), else the bar has its own.
+ */
+export function TabStrip({ group = 0, shared = false }: { group?: TabGroup; shared?: boolean }) {
+  // Each connection is its own workspace (TablePlus): the bar shows the active connection's tabs.
+  const workspace = useConnectionsStore((s) => s.activeId);
+  const back = useTabsStore((s) => s.back);
+  const forward = useTabsStore((s) => s.forward);
+  const backEnabled = useTabsStore(canGoBack);
+  const forwardEnabled = useTabsStore(canGoForward);
+  const hasConnection = useConnectionsStore((s) => s.activeId !== null);
+  const split = useTabsStore((s) => (workspace === null ? false : !!s.splits[workspace]));
+  const sensors = useTabSensors();
+  // Tooltips show the current (possibly remapped) shortcuts.
+  useKeymapVersion();
+
+  const newQuery = () => {
+    // The right group's `+` opens the query there: focus that group first.
+    const s = useTabsStore.getState();
+    const shown = workspace === null ? null : (s.splits[workspace]?.shown[group] ?? null);
+    if (shown && s.activeId !== shown) s.activate(shown);
+    void actions.run("tab.new-query");
+  };
+
+  const list = <TabList group={group} workspace={workspace} />;
+  return (
     <div
       data-slot="tab-bar"
+      data-tab-group={split ? group : undefined}
       // The bar is a shade darker than the window; the visible tab takes the window background.
-      className="border-border bg-surface-2 flex h-7 shrink-0 items-stretch border-b dark:bg-black/20"
+      className={cn(
+        "border-border bg-surface-2 flex h-7 shrink-0 items-stretch border-b dark:bg-black/20",
+      )}
     >
-      <div className="border-border flex shrink-0 items-center gap-px border-r px-1">
-        <BarButton
-          label="Back"
-          combo={shortcutFor("tab.back")}
-          disabled={!backEnabled}
-          onClick={back}
-        >
-          <ChevronLeft className="size-3.5" />
-        </BarButton>
-        <BarButton
-          label="Forward"
-          combo={shortcutFor("tab.forward")}
-          disabled={!forwardEnabled}
-          onClick={forward}
-        >
-          <ChevronRight className="size-3.5" />
-        </BarButton>
-      </div>
-      <div className="flex min-w-0 flex-1 items-stretch" onWheel={onWheel}>
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-          <SortableContext items={tabs.map((t) => t.id)} strategy={horizontalListSortingStrategy}>
-            <div
-              ref={listRef}
-              role="tablist"
-              aria-label="Open tabs"
-              className="flex h-full min-w-0 flex-1 [scrollbar-width:none] items-stretch overflow-x-auto overflow-y-hidden [&::-webkit-scrollbar]:hidden"
-            >
-              {tabs.map((t) => (
-                <TabItem
-                  key={t.id}
-                  tab={t}
-                  active={t.id === activeId}
-                  onActivate={() => activate(t.id)}
-                  onClose={() => close(t.id)}
-                />
-              ))}
-              {tabs.length === 0 && <StripFiller />}
-            </div>
-          </SortableContext>
+      {group === 0 && (
+        <div className="border-border flex shrink-0 items-center gap-px border-r px-1">
+          <BarButton
+            label="Back"
+            combo={shortcutFor("tab.back")}
+            disabled={!backEnabled}
+            onClick={back}
+          >
+            <ChevronLeft className="size-3.5" />
+          </BarButton>
+          <BarButton
+            label="Forward"
+            combo={shortcutFor("tab.forward")}
+            disabled={!forwardEnabled}
+            onClick={forward}
+          >
+            <ChevronRight className="size-3.5" />
+          </BarButton>
+        </div>
+      )}
+      {shared ? (
+        list
+      ) : (
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onTabDragEnd}>
+          {list}
         </DndContext>
-      </div>
+      )}
       <div className="border-border flex shrink-0 items-center border-l px-1">
         <BarButton
           label="New query"
           combo={shortcutFor("tab.new-query")}
           disabled={!hasConnection}
-          onClick={() => void actions.run("tab.new-query")}
+          onClick={newQuery}
         >
           <Plus className="size-3.5" />
         </BarButton>

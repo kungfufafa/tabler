@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Database,
+  Gauge,
   LayoutGrid,
   Lock,
   LockKeyhole,
@@ -11,9 +12,18 @@ import {
   UserCog,
   type LucideIcon,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuRadioGroup,
+  ContextMenuRadioItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,10 +47,22 @@ import { changeSafeModeLevel } from "@/features/safety/setLevel";
 import { useWindowFullscreen } from "@/hooks/useWindowFullscreen";
 import { toIpcError, type ConnectionProfile, type SafeModeLevel } from "@/lib/ipc";
 import { useActiveConnection } from "@/stores/connections";
+import { setPref, usePrefs } from "@/stores/prefs";
 import { ActionControl } from "./ActionControl";
+import { CustomizeToolbarDialog } from "./CustomizeToolbar";
 import { PanelToggles } from "./PanelToggles";
 import { StatusPill } from "./StatusPill";
 import { ToolbarButton, ToolbarTip } from "./ToolbarButton";
+import { useActionAvailable } from "./useActionAvailable";
+import {
+  splitAtStatus,
+  TOOLBAR_DISPLAY_LABEL,
+  TOOLBAR_DISPLAYS,
+  TOOLBAR_ITEM_SHORT,
+  visibleItems,
+  type ToolbarDisplay,
+  type ToolbarItemId,
+} from "./toolbarLayout";
 
 /** The lock's icon: open = Silent, closed = Alert Mode 1 / 2, keyhole (accent) = Safe Mode 1 / 2. */
 function levelIcon(level: SafeModeLevel): LucideIcon {
@@ -164,17 +186,128 @@ function SafeModeLock() {
   );
 }
 
+/** One toolbar item; `text` adds the captions of "Icon and Text". */
+function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
+  const active = useActiveConnection();
+  const hasConnection = active !== null;
+  const caption = text ? TOOLBAR_ITEM_SHORT[id] : undefined;
+  switch (id) {
+    case "sidebar":
+      return (
+        <ToolbarButton label="Toggle sidebar" action="ui.toggle-sidebar" text={caption}>
+          <PanelLeft className="size-4" />
+        </ToolbarButton>
+      );
+    case "actions":
+      return <ActionControl />;
+    case "safeMode":
+      return <SafeModeLock />;
+    case "databases":
+      return (
+        <div className="flex items-center gap-0.5">
+          <ToolbarButton label="Switch database" action="palette.databases" text={caption}>
+            <Database className="size-3.5" />
+          </ToolbarButton>
+          <ToolbarTip label="New query" action="tab.new-query">
+            <Button
+              variant="ghost"
+              size="xs"
+              aria-label="New query"
+              disabled={!hasConnection}
+              onClick={() => void actions.run("tab.new-query")}
+              className="text-muted-foreground hover:text-foreground h-6.5 px-1.5 text-[11px] font-semibold tracking-wide"
+            >
+              SQL
+            </Button>
+          </ToolbarTip>
+        </div>
+      );
+    case "status":
+      return <StatusPill />;
+    case "refresh":
+      return (
+        <ToolbarButton label="Refresh" action="view.refresh" text={caption}>
+          <RefreshCw className="size-3.5" />
+        </ToolbarButton>
+      );
+    case "openAnything":
+      return (
+        <ToolbarButton label="Open anything" action="palette.open" text={caption}>
+          <Search className="size-3.5" />
+        </ToolbarButton>
+      );
+    case "workspaces":
+      return (
+        <ToolbarButton label="Show workspaces" action="workspace.show" text={caption}>
+          <LayoutGrid className="size-3.5" />
+        </ToolbarButton>
+      );
+    case "users":
+      return (
+        <ToolbarButton
+          label="User management"
+          action="admin.users"
+          text={caption}
+          disabled={!active || active.info.driver === "sqlite"}
+        >
+          <UserCog className="size-3.5" />
+        </ToolbarButton>
+      );
+    case "metrics":
+      return (
+        <ToolbarButton
+          label="Metrics board"
+          action="metrics.open"
+          text={caption}
+          disabled={!hasConnection}
+        >
+          <Gauge className="size-3.5" />
+        </ToolbarButton>
+      );
+    case "panels":
+      return <PanelToggles />;
+    case "space":
+      return <div data-tauri-drag-region data-slot="toolbar-space" className="w-5 shrink-0" />;
+    case "flexibleSpace":
+      return (
+        <div
+          data-tauri-drag-region
+          data-slot="toolbar-flexible-space"
+          className="h-full min-w-5 flex-1"
+        />
+      );
+  }
+}
+
+/** Occurrence-numbered keys: spaces may repeat. */
+function itemKeys(items: readonly ToolbarItemId[]): string[] {
+  const seen = new Map<ToolbarItemId, number>();
+  return items.map((id) => {
+    const n = seen.get(id) ?? 0;
+    seen.set(id, n + 1);
+    return `${id}:${n}`;
+  });
+}
+
+function Items({ items, text }: { items: readonly ToolbarItemId[]; text: boolean }): ReactNode {
+  const keys = itemKeys(items);
+  return items.map((id, i) => <ToolbarItem key={keys[i]} id={id} text={text} />);
+}
+
 /**
- * TablePlus's single toolbar row in the macOS title bar: sidebar toggle, the staged-changes action
- * control, the safe-mode lock, Databases / SQL, the centred status pill, then Refresh, Open
- * Anything and the panel toggles. The empty space drags the window. The traffic lights sit in the
- * left inset (gone in fullscreen). The launcher shows only the title.
+ * TablePlus's single toolbar row in the macOS title bar, customisable like Safari's (right-click
+ * ▸ Customize Toolbar…, Icon Only / Icon and Text; the `toolbarItems` preference). The default
+ * set: sidebar toggle, the staged-changes action control, the safe-mode lock, Databases / SQL,
+ * the centred status pill, then Refresh, Open Anything, Show Workspaces, User Management, Metrics
+ * Board (once something handles it) and the panel toggles. The empty space drags the window. The
+ * traffic lights sit in the left inset (gone in fullscreen). The launcher shows only the title.
  */
 export function Toolbar({ launcher }: { launcher: boolean }) {
   const fullscreen = useWindowFullscreen();
-  const active = useActiveConnection();
-  const hasConnection = active !== null;
-  const canManageUsers = active !== null && active.info.driver !== "sqlite";
+  const items = usePrefs((p) => p.toolbarItems);
+  const display = usePrefs((p) => p.toolbarDisplay);
+  const metrics = useActionAvailable("metrics.open");
+  const [customizing, setCustomizing] = useState(false);
   const inset = fullscreen ? 8 : 80;
 
   if (launcher) {
@@ -196,58 +329,64 @@ export function Toolbar({ launcher }: { launcher: boolean }) {
     );
   }
 
+  const text = display === "iconAndText";
+  const rows = splitAtStatus(visibleItems(items, { metrics }));
   return (
-    <header
-      data-tauri-drag-region
-      data-slot="toolbar"
-      className="border-border bg-surface-2 flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b pr-2"
-      style={{ paddingLeft: inset }}
-    >
-      {/* Equal-growth sides keep the pill centred while there is room. */}
-      <div data-tauri-drag-region className="flex min-w-fit flex-1 basis-0 items-center gap-1.5">
-        <ToolbarButton label="Toggle sidebar" action="ui.toggle-sidebar">
-          <PanelLeft className="size-4" />
-        </ToolbarButton>
-        <ActionControl />
-        <SafeModeLock />
-        <div className="flex items-center gap-0.5">
-          <ToolbarButton label="Switch database" action="palette.databases">
-            <Database className="size-3.5" />
-          </ToolbarButton>
-          <ToolbarTip label="New query" action="tab.new-query">
-            <Button
-              variant="ghost"
-              size="xs"
-              aria-label="New query"
-              disabled={!hasConnection}
-              onClick={() => void actions.run("tab.new-query")}
-              className="text-muted-foreground hover:text-foreground h-6.5 px-1.5 text-[11px] font-semibold tracking-wide"
-            >
-              SQL
-            </Button>
-          </ToolbarTip>
-        </div>
-      </div>
-      <StatusPill />
-      <div
-        data-tauri-drag-region
-        className="flex min-w-fit flex-1 basis-0 items-center justify-end gap-1"
-      >
-        <ToolbarButton label="Refresh" action="view.refresh">
-          <RefreshCw className="size-3.5" />
-        </ToolbarButton>
-        <ToolbarButton label="Open anything" action="palette.open">
-          <Search className="size-3.5" />
-        </ToolbarButton>
-        {/* TablePlus's toolbar order: Open Anything, Show Workspaces, User Management, panels. */}
-        <ToolbarButton label="Show workspaces" action="workspace.show">
-          <LayoutGrid className="size-3.5" />
-        </ToolbarButton>
-        <ToolbarButton label="User management" action="admin.users" disabled={!canManageUsers}>
-          <UserCog className="size-3.5" />
-        </ToolbarButton>
-        <PanelToggles />
-      </div>
-    </header>
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <header
+            data-tauri-drag-region
+            data-slot="toolbar"
+            data-display={display}
+            className="border-border bg-surface-2 flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b pr-2"
+            style={{ paddingLeft: inset }}
+          >
+            {rows.status ? (
+              <>
+                {/* Equal-growth sides keep the pill centred while there is room. */}
+                <div
+                  data-tauri-drag-region
+                  className="flex h-full min-w-fit flex-1 basis-0 items-center gap-1.5"
+                >
+                  <Items items={rows.left} text={text} />
+                </div>
+                <StatusPill />
+                <div
+                  data-tauri-drag-region
+                  className="flex h-full min-w-fit flex-1 basis-0 items-center justify-end gap-1"
+                >
+                  <Items items={rows.right} text={text} />
+                </div>
+              </>
+            ) : (
+              <div
+                data-tauri-drag-region
+                className="flex h-full min-w-0 flex-1 items-center gap-1.5"
+              >
+                <Items items={rows.left} text={text} />
+              </div>
+            )}
+          </header>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="min-w-44">
+          <ContextMenuRadioGroup
+            value={display}
+            onValueChange={(v) => setPref("toolbarDisplay", v as ToolbarDisplay)}
+          >
+            {TOOLBAR_DISPLAYS.map((d) => (
+              <ContextMenuRadioItem key={d} value={d}>
+                {TOOLBAR_DISPLAY_LABEL[d]}
+              </ContextMenuRadioItem>
+            ))}
+          </ContextMenuRadioGroup>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => setCustomizing(true)}>
+            Customize Toolbar…
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+      <CustomizeToolbarDialog open={customizing} onOpenChange={setCustomizing} />
+    </>
   );
 }

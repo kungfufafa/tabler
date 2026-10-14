@@ -1,5 +1,6 @@
 //! Streaming data export (M6): a table (with the grid's filter / sort / column choice) or one
-//! SQL statement, written to CSV, JSON / NDJSON or SQL `INSERT` statements.
+//! SQL statement, written to CSV, JSON / NDJSON, SQL `INSERT` statements, HTML or Excel, in the
+//! chosen text encoding (`encoding`).
 //!
 //! Rows are streamed from a worker connection (`DbSession::stream_query`) straight into a
 //! format writer on a buffered temporary file next to the destination; nothing holds the whole
@@ -21,7 +22,9 @@
 //! renderer's rows go through the same sink, in chunks, so progress, `max_rows`, cancellation
 //! and the temporary file behave exactly as for a query.
 
+pub mod encoding;
 pub mod file;
+pub mod results;
 pub mod structure;
 pub mod tables;
 pub mod writer;
@@ -48,8 +51,8 @@ use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::select::{SelectSpec, build_select};
 use crate::sqlgen::split::{is_meta_command, leading_keywords, split_statements};
-use crate::sqlgen::transfer::script_table;
-use crate::types::browse::{FilterGroup, RowIdentity, SortSpec};
+use crate::sqlgen::transfer::{default_time_zone, script_table};
+use crate::types::browse::{FilterGroup, RowIdentity, SortDir, SortSpec};
 use crate::types::export::{
     ExportFormat, ExportProgress, ExportRequest, ExportResult, ExportSource,
 };
@@ -57,6 +60,7 @@ use crate::types::query::ResultColumn;
 use crate::types::schema::{ColumnMeta, TableKind, TableMeta, ValueKind};
 use crate::types::value::{BYTES_PREVIEW_CAP, BytesValue, Value};
 
+use encoding::{Encoded, effective_encoding, html_charset};
 use file::{BlockingWrite, Compressed, CountingWriter, TempTarget, validate_target};
 use structure::{ScriptTable, closing_text, context_for, script_layout};
 use writer::{FormatSpec, RowOut, RowWriter, SqlScript};
@@ -175,8 +179,13 @@ pub struct ExportQuery {
 }
 
 /// The SELECT for a table export: the grid's columns, filter and sort, no paging (or
-/// `LIMIT max_rows`). `skip_generated` leaves generated columns out when no explicit column
-/// list is given (INSERT exports cannot write them).
+/// `LIMIT max_rows`, starting after `offset` rows: a table tab's page). `skip_generated` leaves
+/// generated columns out when no explicit column list is given (INSERT exports cannot write them).
+///
+/// A page (`offset` or `max_rows`) is ordered deterministically, so consecutive pages neither
+/// overlap nor miss rows: the sort, then the primary key; a table without a key by `rowid`
+/// (SQLite) or by every selected column.
+#[allow(clippy::too_many_arguments)]
 pub fn table_query(
     dialect: Dialect,
     meta: &TableMeta,
@@ -184,6 +193,7 @@ pub fn table_query(
     filter: Option<&FilterGroup>,
     sort: &[SortSpec],
     max_rows: Option<u64>,
+    offset: u64,
     skip_generated: bool,
 ) -> Result<ExportQuery, AppError> {
     let names: Vec<String> = match selected {
@@ -222,24 +232,54 @@ pub fn table_query(
         RowIdentity::Pk
     };
     let limit = max_rows.map_or(u32::MAX, |n| u32::try_from(n).unwrap_or(u32::MAX));
+    let paged = offset > 0 || max_rows.is_some();
+    // The key breaks the ties of the sort (without a sort `build_select` orders by it already).
+    let mut order: Vec<SortSpec> = sort.to_vec();
+    if paged && !sort.is_empty() {
+        for key in &meta.primary_key {
+            if !order.iter().any(|s| &s.column == key) {
+                order.push(SortSpec {
+                    column: key.clone(),
+                    dir: SortDir::Asc,
+                    nulls: None,
+                });
+            }
+        }
+    }
     let built = build_select(&SelectSpec {
         dialect,
         table: &meta.table,
         columns: &meta.columns,
         selected: Some(&names),
         filter,
-        sort,
+        sort: &order,
         limit,
-        offset: 0,
+        offset,
         pk: &meta.primary_key,
         identity,
     })?;
     let mut sql = built.sql;
-    if limit == u32::MAX {
+    if limit == u32::MAX && offset == 0 {
         // Unbounded: drop the paging clause (the sink enforces `max_rows` anyway).
         let paging = format!("\nLIMIT {} OFFSET 0", u32::MAX);
         if let Some(stripped) = sql.strip_suffix(&paging) {
             sql = stripped.to_string();
+        }
+    }
+    if paged && meta.primary_key.is_empty() {
+        // No key to order by: `rowid` on a SQLite table, else the selected columns (by position,
+        // which also orders PostgreSQL's text cells, and JSON columns that have no ordering).
+        let terms = if dialect == Dialect::Sqlite && meta.kind == TableKind::Table {
+            "rowid ASC".to_string()
+        } else {
+            (1..=cols.len())
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        if let Some(at) = sql.rfind("\nLIMIT ") {
+            let glue = if order.is_empty() { " ORDER BY " } else { ", " };
+            sql.insert_str(at, &format!("{glue}{terms}"));
         }
     }
 
@@ -400,7 +440,7 @@ fn check_returns_rows(sql: &str) -> Result<(), AppError> {
 /// `BYTES_PREVIEW_CAP` bytes of each; writing that would silently cut the value). The error
 /// names what can export the value in full: a query export decodes PostgreSQL `bytea` in full,
 /// while MySQL and SQLite drivers cap blobs in queries too, so there only a table export can.
-fn check_rows(
+pub(crate) fn check_rows(
     columns: &[ResultColumn],
     rows: &[Vec<Value>],
     dialect: Dialect,
@@ -782,6 +822,104 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| AppError::internal(format!("export {what} task failed: {e}")))?
 }
 
+/// Whether INSERTs read geographic WKT back with `axis-order=long-lat`: MySQL 8 and later (not
+/// 5.7, not MariaDB, which take no such option) read a geographic SRS's WKT latitude first, while
+/// the spatial decoder writes MySQL's storage order (longitude first). Asked once per export.
+pub(crate) async fn mysql_long_lat(session: &dyn DbSession) -> bool {
+    if session.dialect() != Dialect::Mysql {
+        return false;
+    }
+    match session.server_info().await {
+        Ok(info) => crate::backup::version::parse_server_version(&info.version).is_some_and(|v| {
+            v.flavor == crate::types::backup::VersionFlavor::Mysql && v.major >= 8
+        }),
+        Err(e) => {
+            log::debug!("export: server version unknown ({e}); spatial WKT without axis order");
+            false
+        }
+    }
+}
+
+/// The session time zone the exported literals are read in, for the script's `SET TIME ZONE`
+/// (see `time_zone_header`): MySQL's `@@session.time_zone`, as an offset (`+07:00`) when it is
+/// `SYSTEM`; PostgreSQL's `TimeZone` setting. `None` for SQLite (no session zone) and when the
+/// server does not say (the script then assumes the dialect's default zone).
+pub(crate) async fn session_time_zone(session: &dyn DbSession) -> Option<String> {
+    let dialect = session.dialect();
+    let read = match dialect {
+        Dialect::Sqlite => return None,
+        Dialect::Postgres => read_pg_zone(session).await,
+        Dialect::Mysql => read_mysql_zone(session).await,
+    };
+    match read {
+        Ok(zone) => Some(zone),
+        Err(e) => {
+            log::debug!(
+                "export: session time zone unknown ({e}); the script assumes {}",
+                default_time_zone(dialect)
+            );
+            None
+        }
+    }
+}
+
+async fn read_pg_zone(session: &dyn DbSession) -> Result<String, AppError> {
+    let rs = session
+        .query("SELECT current_setting('TimeZone')::text", &[])
+        .await?;
+    rs.rows
+        .first()
+        .and_then(|r| r.first())
+        .and_then(Value::as_text)
+        .filter(|z| !z.trim().is_empty())
+        .ok_or_else(|| AppError::internal("no TimeZone setting"))
+}
+
+async fn read_mysql_zone(session: &dyn DbSession) -> Result<String, AppError> {
+    let rs = session
+        .query(
+            "SELECT @@session.time_zone, CAST(TIMEDIFF(NOW(), UTC_TIMESTAMP()) AS CHAR)",
+            &[],
+        )
+        .await?;
+    let row = rs
+        .rows
+        .first()
+        .ok_or_else(|| AppError::internal("no time_zone row"))?;
+    let zone = row
+        .first()
+        .and_then(Value::as_text)
+        .filter(|z| !z.trim().is_empty())
+        .ok_or_else(|| AppError::internal("no time_zone setting"))?;
+    if zone.eq_ignore_ascii_case("SYSTEM") {
+        // The server's own zone: the difference between its clock and UTC.
+        return row
+            .get(1)
+            .and_then(Value::as_text)
+            .and_then(|d| offset_from_timediff(&d))
+            .ok_or_else(|| AppError::internal("unreadable system time zone offset"));
+    }
+    Ok(zone)
+}
+
+/// `TIMEDIFF` text (`07:00:00`, `-05:30:00`) as a MySQL zone offset (`+07:00`, `-05:30`).
+pub(crate) fn offset_from_timediff(diff: &str) -> Option<String> {
+    let diff = diff.trim();
+    let (sign, rest) = match diff.strip_prefix('-') {
+        Some(rest) => ('-', rest),
+        None => ('+', diff.strip_prefix('+').unwrap_or(diff)),
+    };
+    let mut parts = rest.split(':');
+    let hours: u32 = parts.next()?.parse().ok()?;
+    let minutes: u32 = parts.next()?.parse().ok()?;
+    (minutes < 60 && hours <= 14).then(|| format!("{sign}{hours:02}:{minutes:02}"))
+}
+
+/// The characters written as `?`, when there were any.
+fn replaced_count(replaced: &AtomicU64) -> Option<u64> {
+    Some(replaced.load(Ordering::Relaxed)).filter(|&n| n > 0)
+}
+
 /// Views have no table structure to write (TablePlus does not export view bodies either).
 fn is_view(kind: TableKind) -> bool {
     matches!(
@@ -819,6 +957,7 @@ pub async fn run_export(
             filter,
             sort,
             columns,
+            offset,
         } => {
             let meta = table_meta.ok_or_else(|| AppError::internal("table metadata missing"))?;
             let query = table_query(
@@ -828,6 +967,7 @@ pub async fn run_export(
                 filter.as_ref(),
                 sort,
                 req.max_rows,
+                offset.unwrap_or(0),
                 matches!(req.format, ExportFormat::SqlInsert { .. }),
             )?;
             (Plan::Query(query), Some(table.name.as_str()))
@@ -843,44 +983,61 @@ pub async fn run_export(
         }
     };
     let mut spec = FormatSpec::from_request(&req.format, dialect, default_table)?;
+    let text_encoding = effective_encoding(&req.format, req.encoding);
+    if let FormatSpec::Html { charset, .. } = &mut spec {
+        *charset = html_charset(text_encoding);
+    }
     let script = SqlScript::of(&req.format);
+    let content = script.is_none_or(|s| s.content);
+    // The INSERTs' timestamps are written as the exporting session read them: the script sets
+    // that session time zone first (and puts the previous one back at its end).
+    let zone = if content && script.is_some() {
+        session_time_zone(session).await
+    } else {
+        None
+    };
     // Structure and DROP exist for table sources only (not views): the script then has the
     // layout of a multi-table one (rows between the tables and their keys and triggers).
+    let mut creates_table = false;
     let layout = match (script, table_meta) {
         (Some(s), Some(meta)) if (s.drop_table || s.structure) && !is_view(meta.kind) => {
             let context = context_for(session, meta, s.structure, false).await;
+            creates_table = true;
             Some(script_layout(
                 dialect,
                 &[ScriptTable { meta, context }],
                 s,
                 true,
+                zone.as_deref(),
             ))
         }
+        // Rows only: just the time zone statements around them.
+        (Some(s), _) => Some(script_layout(dialect, &[], s, false, zone.as_deref())),
         _ => None,
     };
     let (preamble, closing, footer) = match layout {
         Some(l) => (l.opening, l.closing, l.footer),
         None => (String::new(), Vec::new(), Vec::new()),
     };
-    let content = script.is_none_or(|s| s.content);
     if !content && preamble.is_empty() {
         return Err(AppError::InvalidInput(
             "nothing to export: include the table structure or its content".into(),
         ));
     }
+    let long_lat = matches!(spec, FormatSpec::Insert { .. }) && mysql_long_lat(session).await;
     if let FormatSpec::Insert {
         overriding_system_value,
         table,
+        mysql_long_lat,
         ..
     } = &mut spec
     {
+        *mysql_long_lat = long_lat;
         if let Plan::Query(query) = &plan {
             *overriding_system_value = query.identity_always;
         }
         // The INSERTs go into the table the script creates.
-        if !preamble.is_empty()
-            && let Some(meta) = table_meta
-        {
+        if creates_table && let Some(meta) = table_meta {
             *table = script_table(dialect, &meta.table);
         }
     }
@@ -909,9 +1066,14 @@ pub async fn run_export(
     };
     // Every early return below drops `target`, which deletes the temporary file.
     let bytes = Arc::new(AtomicU64::new(0));
-    let mut out = Compressed::new(
-        file_out(file, bytes.clone()),
-        script.is_some_and(|s| s.gzip),
+    let replaced = Arc::new(AtomicU64::new(0));
+    let mut out = Encoded::new(
+        Compressed::new(
+            file_out(file, bytes.clone()),
+            script.is_some_and(|s| s.gzip),
+        ),
+        text_encoding,
+        replaced.clone(),
     );
     out.write_all(preamble.as_bytes())?;
     let mut writer = RowWriter::new(spec, out);
@@ -942,7 +1104,7 @@ pub async fn run_export(
             out.write_all(line.as_bytes())?;
             out.write_all(b"\n")?;
         }
-        sync_file(out.finish()?)?;
+        sync_file(out.finish()?.finish()?)?;
         target.commit()
     })
     .await?;
@@ -954,6 +1116,7 @@ pub async fn run_export(
         rows,
         bytes,
         duration_ms: started.elapsed().as_millis() as u64,
+        replaced: replaced_count(&replaced),
     })
 }
 

@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { EditorView } from "@codemirror/view";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { actions } from "@/features/palette/actions";
 import type { Value } from "@/lib/ipc";
@@ -14,6 +16,7 @@ import {
   ROW_H,
   SLIM_GUTTER_W,
   type ColumnState,
+  type FkRef,
   type GridColumn,
   type ViewRow,
 } from "./types";
@@ -97,7 +100,7 @@ function setup(columnState: ColumnState, extra: Partial<DataGridProps> = {}) {
     onAction: vi.fn(),
     onFocusCell: vi.fn(),
   };
-  render(
+  const { unmount } = render(
     <DataGrid
       columns={columns}
       rowCount={rows.length}
@@ -113,7 +116,7 @@ function setup(columnState: ColumnState, extra: Partial<DataGridProps> = {}) {
   const cell = (r: number, c: number) =>
     document.querySelector<HTMLElement>(`[data-cell][data-r="${r}"][data-c="${c}"]`)!;
   const click = (r: number, c: number) => fireEvent.pointerDown(cell(r, c), { button: 0 });
-  return { ...props, grid, cell, click };
+  return { ...props, grid, cell, click, unmount };
 }
 
 describe("DataGrid with hidden / reordered columns", () => {
@@ -186,6 +189,31 @@ describe("DataGrid with hidden / reordered columns", () => {
     expect(writeText).toHaveBeenCalledWith("ann@x.io\tAnn\nbob@x.io\tBob");
   });
 
+  it("Edit ▸ Copy Cell Value (grid.copy-cell) copies the focused cell's value, in an active grid only", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText, readText: vi.fn() },
+    });
+    const { click, unmount } = setup(state);
+    expect(actions.has("grid.copy-cell")).toBe(true);
+    // Display column 1 is `name`; its focused cell holds "Bob".
+    click(1, 1);
+    await act(() => actions.run("grid.copy-cell"));
+    expect(writeText).toHaveBeenLastCalledWith("Bob");
+    // Another cell, another value (the focus moved, not the selection of rows).
+    click(0, 0);
+    await act(() => actions.run("grid.copy-cell"));
+    expect(writeText).toHaveBeenLastCalledWith("ann@x.io");
+    unmount();
+    expect(actions.has("grid.copy-cell")).toBe(false);
+  });
+
+  it("does not answer grid.copy-cell while another grid is the active one", () => {
+    setup(state, { active: false });
+    expect(actions.has("grid.copy-cell")).toBe(false);
+  });
+
   it("pastes into source columns as one batch, skipping values that do not fit", () => {
     const { click, grid, onAction } = setup({ ...state, hidden: [] });
     // Visual order now: email, name, id.
@@ -214,12 +242,19 @@ describe("DataGrid with hidden / reordered columns", () => {
     expect(toast.message).toHaveBeenCalledWith("This table is read-only");
   });
 
-  it("explains that blobs are not edited inline", () => {
+  it("edits a whole blob as hex, and explains that a cut-off preview is not edited inline", () => {
     const blobColumns = [...columns, col("avatar", "bytes")];
-    const blobRows: ViewRow[] = rows.map((r) => ({
+    const blobRows: ViewRow[] = rows.map((r, i) => ({
       ...r,
-      cells: [...r.cells, { t: "bytes", v: { base64: "AA==", len: 1, truncated: false } } as Value],
+      cells: [
+        ...r.cells,
+        {
+          t: "bytes",
+          v: { base64: i === 0 ? "AP8=" : "AAAA", len: i === 0 ? 2 : 100_000, truncated: i === 1 },
+        } as Value,
+      ],
     }));
+    const onEditCommit = vi.fn();
     render(
       <DataGrid
         columns={blobColumns}
@@ -227,14 +262,27 @@ describe("DataGrid with hidden / reordered columns", () => {
         getRow={(i) => blobRows[i]}
         editable
         onAction={vi.fn()}
+        onEditCommit={onEditCommit}
       />,
     );
     const grid = document.querySelector<HTMLElement>('[data-scope="grid"]')!;
-    fireEvent.pointerDown(document.querySelector('[data-cell][data-r="0"][data-c="3"]')!, {
-      button: 0,
-    });
+    const blob = (r: number) => document.querySelector(`[data-cell][data-r="${r}"][data-c="3"]`)!;
+    fireEvent.pointerDown(blob(0), { button: 0 });
     fireEvent.keyDown(grid, { key: "Enter" });
-    expect(toast.message).toHaveBeenCalledWith("Binary values can't be edited inline");
+    const input = screen.getByRole("textbox", { name: "Edit avatar" });
+    expect(input).toHaveValue("00ff");
+    fireEvent.change(input, { target: { value: "\\x4869" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onEditCommit).toHaveBeenLastCalledWith(0, 3, {
+      t: "bytes",
+      v: { base64: "SGk=", len: 2, truncated: false },
+    });
+    fireEvent.pointerDown(blob(1), { button: 0 });
+    fireEvent.keyDown(grid, { key: "Enter" });
+    expect(toast.message).toHaveBeenCalledWith(
+      "Only a preview of this value is loaded",
+      expect.anything(),
+    );
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 });
@@ -335,6 +383,77 @@ describe("DataGrid paste of a copied NULL / empty cell", () => {
     fireEvent.paste(grid, { clipboardData: { types: ["image/png"], getData: () => "" } });
     fireEvent.paste(grid, { clipboardData: { types: [], getData: () => "" } });
     expect(onAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("DataGrid paste of a copied column that ends in NULL cells", () => {
+  const two = [col("id", "int"), col("a"), col("b")];
+  const data: ViewRow[] = ["x", "y", null].map((a, i) => ({
+    key: `pk:${i + 1}`,
+    cells: [
+      { t: "int", v: i + 1 },
+      a === null ? { t: "null" } : { t: "text", v: a },
+      { t: "null" },
+    ],
+  }));
+
+  it("pastes every copied row back, the last NULL one included", async () => {
+    let clipboard = "";
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn((text: string) => {
+          clipboard = text;
+          return Promise.resolve();
+        }),
+        readText: vi.fn(() => Promise.resolve(clipboard)),
+      },
+    });
+    const onAction = vi.fn();
+    render(
+      <DataGrid
+        columns={two}
+        rowCount={data.length}
+        getRow={(i) => data[i]}
+        editable
+        active={false}
+        onAction={onAction}
+      />,
+    );
+    const grid = document.querySelector<HTMLElement>('[data-scope="grid"]')!;
+    const click = (r: number, c: number) =>
+      fireEvent.pointerDown(document.querySelector(`[data-cell][data-r="${r}"][data-c="${c}"]`)!, {
+        button: 0,
+      });
+    const key = (k: string, extra: object = {}) =>
+      act(async () => {
+        fireEvent.keyDown(grid, {
+          key: k,
+          code: k.length === 1 ? `Key${k.toUpperCase()}` : k,
+          ...extra,
+        });
+      });
+    // Copy column a (x, y, NULL): the text is "x\ny\n".
+    click(0, 1);
+    // A cell range of one column: ⇧→ starts a range, ⇧← shrinks it back, ⇧↓ grows it.
+    await key("ArrowRight", { shiftKey: true });
+    await key("ArrowLeft", { shiftKey: true });
+    await key("ArrowDown", { shiftKey: true });
+    await key("ArrowDown", { shiftKey: true });
+    await key("c", mod);
+    expect(clipboard).toBe("x\ny\n");
+    // Paste it into column b, from its first row.
+    click(0, 2);
+    await key("v", mod);
+    expect(onAction).toHaveBeenLastCalledWith({
+      type: "setValues",
+      edits: [
+        { r: 0, c: 2, value: { t: "text", v: "x" } },
+        { r: 1, c: 2, value: { t: "text", v: "y" } },
+        { r: 2, c: 2, value: { t: "null" } },
+      ],
+    });
+    expect(toast.success).toHaveBeenLastCalledWith("Pasted 3 cells");
   });
 });
 
@@ -663,11 +782,14 @@ describe("DataGrid row selection (TablePlus)", () => {
     fireEvent.keyDown(grid, { key: "ArrowLeft" });
     expect(focusOf(onFocusCell)).toEqual({ r: 4, c: 0 });
     expect(selected()).toEqual([2, 3, 4]);
-    // ⇧→ does not select cells.
+    // ⇧→ selects a cell range over those rows (TablePlus's red-border cell selection).
     fireEvent.keyDown(grid, { key: "ArrowRight", shiftKey: true });
-    expect(selected()).toEqual([2, 3, 4]);
+    expect(selected()).toEqual([]);
+    expect(document.querySelector('[data-selection="cells"]')).not.toBeNull();
+    expect(onSelectionChange).toHaveBeenLastCalledWith(3);
     fireEvent.keyDown(grid, { key: "ArrowUp" });
     expect(selected()).toEqual([3]);
+    expect(document.querySelector('[data-selection="cells"]')).toBeNull();
   });
 
   it("⇧-click extends, ⌘-click toggles rows, a row number selects its row", () => {
@@ -689,12 +811,21 @@ describe("DataGrid row selection (TablePlus)", () => {
     expect(selected()).toEqual([1, 2, 3]);
   });
 
-  it("dragging across rows selects a range of rows", () => {
-    const { grid, cell } = mountMany();
+  it("dragging down a column selects rows; across columns a cell range", () => {
+    const { grid, cell, onSelectionChange } = mountMany();
     fireEvent.pointerDown(cell(1, 1), { button: 0 });
-    hit = cell(3, 2);
+    hit = cell(3, 1);
     fireEvent.pointerMove(grid, { clientX: 10, clientY: 10 });
     expect(selected()).toEqual([1, 2, 3]);
+    hit = cell(3, 2);
+    fireEvent.pointerMove(grid, { clientX: 10, clientY: 10 });
+    expect(selected()).toEqual([]);
+    const range = document.querySelector<HTMLElement>('[data-selection="cells"]')!;
+    expect(range.style.top).toBe(`${HEADER_H + ROW_H}px`);
+    expect(range.style.height).toBe(`${3 * ROW_H}px`);
+    expect(onSelectionChange).toHaveBeenLastCalledWith(3);
+    fireEvent.pointerUp(grid, { button: 0 });
+    fireEvent.pointerDown(cell(1, 1), { button: 0 });
     hit = document.querySelector('[data-gutter="0"]');
     fireEvent.pointerMove(grid, { clientX: 10, clientY: 10 });
     expect(selected()).toEqual([0, 1]);
@@ -865,7 +996,7 @@ describe("DataGrid cell menu (TablePlus order)", () => {
       quickLookKey: true,
       onQuickFilter: vi.fn(),
       onRefresh: vi.fn(),
-      onImportCsv: vi.fn(),
+      onImport: vi.fn(),
       onExportPage: vi.fn(),
     });
     click(0, 1);
@@ -884,6 +1015,8 @@ describe("DataGrid cell menu (TablePlus order)", () => {
       "Copy Cell Value",
       "Copy All Column Values",
       "Copy Rows As",
+      "Copy Selected Cells",
+      "Copy Selected Cells As",
       "—",
       "Quick Filter",
       "—",
@@ -917,6 +1050,8 @@ describe("DataGrid cell menu (TablePlus order)", () => {
       "Copy Cell Value",
       "Copy All Column Values",
       "Copy Rows As",
+      "Copy Selected Cells",
+      "Copy Selected Cells As",
       "—",
       "Quick Filter",
       "—",
@@ -936,6 +1071,8 @@ describe("DataGrid cell menu (TablePlus order)", () => {
       "Copy Cell Value",
       "Copy All Column Values",
       "Copy Rows As",
+      "Copy Selected Cells",
+      "Copy Selected Cells As",
     ]);
   });
 
@@ -977,11 +1114,11 @@ describe("DataGrid cell menu (TablePlus order)", () => {
     expect(onAction).toHaveBeenLastCalledWith({ type: "newRow" });
   });
 
-  it("Refresh, Import ▸ From CSV… and Export Current Page… call their owner", async () => {
+  it("Refresh, Import ▸ From CSV… / JSON… / SQL Dump… and Export Current Page… call their owner", async () => {
     const onRefresh = vi.fn();
-    const onImportCsv = vi.fn();
+    const onImport = vi.fn();
     const onExportPage = vi.fn();
-    const { cell, click } = setup(state, { onRefresh, onImportCsv, onExportPage });
+    const { cell, click } = setup(state, { onRefresh, onImport, onExportPage });
     click(0, 1);
     openMenu(cell(0, 1));
     fireEvent.click(item(/^Refresh/));
@@ -989,10 +1126,105 @@ describe("DataGrid cell menu (TablePlus order)", () => {
     openMenu(cell(0, 1));
     fireEvent.click(item(/^Export Current Page/));
     await waitFor(() => expect(onExportPage).toHaveBeenCalledOnce());
-    openMenu(cell(0, 1));
-    fireEvent.click(item(/^Import/));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "From CSV…" }));
-    await waitFor(() => expect(onImportCsv).toHaveBeenCalledOnce());
+    for (const [label, kind] of [
+      ["From CSV…", "csv"],
+      ["From JSON…", "json"],
+      ["From SQL Dump…", "sql"],
+    ] as const) {
+      openMenu(cell(0, 1));
+      fireEvent.click(item(/^Import/));
+      const labels = (await screen.findAllByRole("menuitem"))
+        .map((el) => el.textContent)
+        .filter((t) => t?.startsWith("From "));
+      expect(labels).toEqual(["From CSV…", "From JSON…", "From SQL Dump…"]);
+      fireEvent.click(await screen.findByRole("menuitem", { name: label }));
+      await waitFor(() => expect(onImport).toHaveBeenLastCalledWith(kind));
+    }
+    expect(onImport).toHaveBeenCalledTimes(3);
+  });
+
+  it("drops the selection when deselectKey changes (a commit deselects the edited rows)", () => {
+    const onSelectionChange = vi.fn();
+    const props = {
+      columns,
+      rowCount: rows.length,
+      getRow: (i: number) => rows[i],
+      editable: true,
+      active: false,
+      onSelectionChange,
+    };
+    const { rerender } = render(<DataGrid {...props} deselectKey={0} />);
+    const el = document.querySelector('[data-cell][data-r="1"][data-c="1"]')!;
+    fireEvent.pointerDown(el, { button: 0 });
+    expect(onSelectionChange).toHaveBeenLastCalledWith(1);
+    // The same key again (an unrelated re-render) keeps it.
+    rerender(<DataGrid {...props} deselectKey={0} />);
+    expect(onSelectionChange).toHaveBeenLastCalledWith(1);
+    rerender(<DataGrid {...props} deselectKey={1} />);
+    expect(onSelectionChange).toHaveBeenLastCalledWith(0);
+  });
+
+  it("Generate JOIN appears in the menu of a foreign key cell only, even for NULL", () => {
+    const withFk = [
+      col("id", "int"),
+      { ...col("owner_id", "int"), fk: { schema: "public", table: "users", column: "id" } },
+      col("name"),
+    ];
+    const data: ViewRow[] = [
+      {
+        key: "a",
+        cells: [
+          { t: "int", v: 1 },
+          { t: "int", v: 7 },
+          { t: "text", v: "x" },
+        ],
+      },
+      { key: "b", cells: [{ t: "int", v: 2 }, { t: "null" }, { t: "text", v: "y" }] },
+    ];
+    const onGenerateJoin = vi.fn();
+    const menuAt = (r: number, c: number) => {
+      cleanup();
+      render(
+        <DataGrid
+          columns={withFk}
+          rowCount={data.length}
+          getRow={(i) => data[i]}
+          editable
+          active={false}
+          onGenerateJoin={onGenerateJoin}
+        />,
+      );
+      const el = document.querySelector(`[data-cell][data-r="${r}"][data-c="${c}"]`)!;
+      fireEvent.pointerDown(el, { button: 0 });
+      openMenu(el);
+    };
+    // A plain column has no such item.
+    menuAt(0, 2);
+    expect(screen.queryByRole("menuitem", { name: /Generate JOIN/ })).not.toBeInTheDocument();
+    // The FK column has it, with a value or with NULL (and "Open users" only with a value).
+    menuAt(1, 1);
+    expect(screen.getByRole("menuitem", { name: /Generate JOIN/ })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /^Open users/ })).not.toBeInTheDocument();
+    menuAt(0, 1);
+    expect(screen.getByRole("menuitem", { name: /^Open users/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Generate JOIN/ }));
+    expect(onGenerateJoin).toHaveBeenCalledOnce();
+    expect(onGenerateJoin.mock.calls[0]![0]).toMatchObject({ id: "owner_id" });
+    // Without an owner, no item.
+    cleanup();
+    render(
+      <DataGrid
+        columns={withFk}
+        rowCount={data.length}
+        getRow={(i) => data[i]}
+        editable
+        active={false}
+      />,
+    );
+    const el = document.querySelector('[data-cell][data-r="0"][data-c="1"]')!;
+    fireEvent.pointerDown(el, { button: 0 });
+    openMenu(el);
+    expect(screen.queryByRole("menuitem", { name: /Generate JOIN/ })).not.toBeInTheDocument();
   });
 
   it("offers Discard Changes only on rows with staged changes", () => {
@@ -1254,14 +1486,14 @@ describe("DataGrid M8 grid features", () => {
       label.querySelectorAll('[data-slot="context-menu-shortcut"]').forEach((k) => k.remove());
       return label.textContent?.trim();
     });
-    expect(labels.slice(0, 4)).toEqual(["EMPTY", "NULL", "DEFAULT", "Now (local time)"]);
+    expect(labels.slice(0, 4)).toEqual(["EMPTY", "NULL", "DEFAULT", "NOW()"]);
     expect(screen.queryByRole("menuitem", { name: /Add a File/ })).not.toBeInTheDocument();
-    fireEvent.click(item("Now (local time)"));
+    fireEvent.click(item("NOW()"));
     expect(onAction).toHaveBeenLastCalledWith({ type: "setNow", cells: [{ r: 0, c: 1 }] });
     click(0, 2);
     openMenu(cell(0, 2));
     fireEvent.click(item(/Set Value/));
-    expect(screen.queryByRole("menuitem", { name: /^Now/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /^NOW/ })).not.toBeInTheDocument();
     fireEvent.click(item(/Add a File/));
     expect(onAction).toHaveBeenLastCalledWith({ type: "setFile", cells: [{ r: 0, c: 2 }] });
   });
@@ -1275,7 +1507,7 @@ describe("DataGrid M8 grid features", () => {
     expect(onAction).toHaveBeenLastCalledWith({ type: "setEmpty", cells: [{ r: 1, c: 1 }] });
   });
 
-  it("Copy Rows As offers TablePlus's seven formats, numbered in the ⌘⌥C popup", async () => {
+  it("Copy Rows As offers TablePlus's seven formats and Raw, numbered in the ⌘⌥C popup", async () => {
     const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -1295,6 +1527,7 @@ describe("DataGrid M8 grid features", () => {
       "CSV",
       "CSV with header",
       "SQL Insert statement",
+      "Raw",
     ]);
     // 3 is HTML.
     await act(async () => {
@@ -1401,5 +1634,758 @@ describe("DataGrid M8 grid features", () => {
     resetPrefsForTests({ ...DEFAULT_PREFS, gridAlternatingRows: false });
     setup(state);
     expect(rowEl(1).className).not.toContain("bg-foreground/[2.5%]");
+  });
+});
+
+describe("DataGrid grid3 features", () => {
+  const state: ColumnState = { widths: {}, order: [], hidden: [] };
+  afterEach(() => resetPrefsForTests());
+
+  it("a header click sorts DESC, then ASC, then not at all; Add to Sort appends a key", () => {
+    const onSortChange = vi.fn();
+    const header = () => document.querySelector<HTMLElement>('[data-header="name"]')!;
+    const press = () => {
+      fireEvent.pointerDown(header(), { button: 0 });
+      fireEvent.pointerUp(header(), { button: 0 });
+    };
+    setup(state, { onSortChange });
+    press();
+    expect(onSortChange).toHaveBeenLastCalledWith([{ column: "name", dir: "desc", nulls: null }]);
+    cleanup();
+    setup(state, { onSortChange, sort: [{ column: "name", dir: "desc", nulls: null }] });
+    press();
+    expect(onSortChange).toHaveBeenLastCalledWith([{ column: "name", dir: "asc", nulls: null }]);
+    cleanup();
+    setup(state, { onSortChange, sort: [{ column: "name", dir: "asc", nulls: null }] });
+    press();
+    expect(onSortChange).toHaveBeenLastCalledWith([]);
+    cleanup();
+    setup(state, { onSortChange, sort: [{ column: "id", dir: "asc", nulls: null }] });
+    openMenu(header());
+    fireEvent.pointerDown(item(/Add to Sort/), { button: 0 });
+    fireEvent.keyDown(item(/Add to Sort/), { key: "ArrowRight" });
+    fireEvent.click(screen.getByRole("menuitem", { name: /^DESC$/ }));
+    expect(onSortChange).toHaveBeenLastCalledWith([
+      { column: "id", dir: "asc", nulls: null },
+      { column: "name", dir: "desc", nulls: null },
+    ]);
+  });
+
+  it("⌘C then ⌘V keeps NULL apart from EMPTY, and keeps key values", () => {
+    const typed = [col("id", "int"), col("name"), col("email")];
+    const typedRows: ViewRow[] = [
+      { key: "pk:1", cells: [{ t: "int", v: 1 }, { t: "null" }, { t: "text", v: "" }] },
+    ];
+    const onAction = vi.fn();
+    render(
+      <DataGrid
+        columns={typed}
+        rowCount={1}
+        getRow={(i) => typedRows[i]}
+        editable
+        onAction={onAction}
+      />,
+    );
+    const grid = document.querySelector<HTMLElement>('[data-scope="grid"]')!;
+    fireEvent.pointerDown(document.querySelector('[data-cell][data-r="0"][data-c="0"]')!, {
+      button: 0,
+    });
+    let copied = "";
+    fireEvent.copy(grid, { clipboardData: { setData: (_: string, t: string) => (copied = t) } });
+    expect(copied).toBe("1\t\t");
+    fireEvent.paste(grid, { clipboardData: { getData: () => copied } });
+    expect(onAction).toHaveBeenLastCalledWith({
+      type: "insertRows",
+      rows: [
+        [
+          { c: 0, value: { t: "int", v: 1 } },
+          { c: 1, value: { t: "null" } },
+          { c: 2, value: { t: "text", v: "" } },
+        ],
+      ],
+    });
+  });
+
+  it("Copy Selected Cells copies only the cell range", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText, readText: vi.fn() },
+    });
+    const { grid, click, cell } = setup(state);
+    click(0, 1);
+    fireEvent.keyDown(grid, { key: "ArrowDown", shiftKey: true });
+    fireEvent.keyDown(grid, { key: "ArrowRight", shiftKey: true });
+    openMenu(cell(1, 2));
+    await act(async () => fireEvent.click(item("Copy Selected Cells")));
+    expect(writeText).toHaveBeenLastCalledWith("Ann\tann@x.io\nBob\tbob@x.io");
+    expect(toast.success).toHaveBeenLastCalledWith("Copied 4 cells");
+    // ⌘C on a range copies the range too.
+    await act(() => actions.run("grid.copy"));
+    expect(writeText).toHaveBeenLastCalledWith("Ann\tann@x.io\nBob\tbob@x.io");
+  });
+
+  it("scrolls back to the top when the page changes", () => {
+    const view = render(
+      <DataGrid columns={columns} rowCount={2} getRow={(i) => rows[i]} scrollResetKey={0} />,
+    );
+    const grid = document.querySelector<HTMLElement>('[data-scope="grid"]')!;
+    grid.scrollTop = 120;
+    view.rerender(
+      <DataGrid columns={columns} rowCount={2} getRow={(i) => rows[i]} scrollResetKey={0} />,
+    );
+    expect(grid.scrollTop).toBe(120);
+    view.rerender(
+      <DataGrid columns={columns} rowCount={2} getRow={(i) => rows[i]} scrollResetKey={300} />,
+    );
+    expect(grid.scrollTop).toBe(0);
+  });
+
+  it("shows a cut-off value in a tooltip only with Allows expansion Tool Tips", () => {
+    const { cell } = setup(state);
+    const span = cell(0, 1).firstElementChild as HTMLElement;
+    Object.defineProperty(span, "scrollWidth", { configurable: true, value: 500 });
+    Object.defineProperty(span, "clientWidth", { configurable: true, value: 100 });
+    fireEvent.mouseOver(span);
+    expect(cell(0, 1)).not.toHaveAttribute("title");
+    act(() => resetPrefsForTests({ ...DEFAULT_PREFS, gridExpansionTooltips: true }));
+    fireEvent.mouseOver(span);
+    expect(cell(0, 1)).toHaveAttribute("title", "Ann");
+  });
+
+  it("shows the loading wallpaper while the first page loads (a preference)", () => {
+    const view = render(
+      <DataGrid columns={columns} rowCount={0} getRow={() => undefined} loading />,
+    );
+    expect(screen.getByTestId("loading-wallpaper")).toBeInTheDocument();
+    act(() => resetPrefsForTests({ ...DEFAULT_PREFS, gridLoadingWallpaper: false }));
+    view.rerender(<DataGrid columns={columns} rowCount={0} getRow={() => undefined} loading />);
+    expect(screen.queryByTestId("loading-wallpaper")).not.toBeInTheDocument();
+  });
+
+  it("auto-hides the scroll bars with the preference", () => {
+    act(() => resetPrefsForTests({ ...DEFAULT_PREFS, gridAutoHideScrollers: true }));
+    const { grid } = setup(state);
+    expect(grid).toHaveAttribute("data-autohide-scrollers");
+    fireEvent.scroll(grid);
+    expect(grid).toHaveAttribute("data-scrolling");
+  });
+
+  it("shows geometry as WKT and previews it on hover", async () => {
+    const geoCols = [col("id", "int"), col("geom", "geometry")];
+    const geoRows: ViewRow[] = [
+      {
+        key: "pk:1",
+        cells: [
+          { t: "int", v: 1 },
+          { t: "other", v: { ty: "geometry", text: "SRID=4326;LINESTRING(0 0,1 1)" } },
+        ],
+      },
+    ];
+    render(<DataGrid columns={geoCols} rowCount={1} getRow={(i) => geoRows[i]} />);
+    const geo = document.querySelector<HTMLElement>('[data-cell][data-r="0"][data-c="1"]')!;
+    expect(geo).toHaveTextContent(/^LINESTRING\(0 0,1 1\)$/);
+    fireEvent.mouseOver(geo);
+    const tip = await screen.findByTestId("geometry-preview");
+    expect(tip).toHaveTextContent("LINESTRING · SRID 4326");
+    expect(tip.querySelector('[data-geometry="lines"]')).not.toBeNull();
+    fireEvent.mouseLeave(document.querySelector('[data-scope="grid"]')!);
+    expect(screen.queryByTestId("geometry-preview")).not.toBeInTheDocument();
+  });
+
+  it("a detached Quick Look stays open and follows the focused cell", async () => {
+    const { grid, click } = setup(state, { quickLookKey: true });
+    click(0, 1);
+    await act(() => actions.run("grid.quick-look"));
+    fireEvent.click(screen.getByRole("button", { name: /Detach/ }));
+    expect(document.querySelector('[data-quick-look="detached"]')).not.toBeNull();
+    const text = () =>
+      document.querySelector<HTMLElement>('[data-quick-look="detached"] .cm-content')!.textContent;
+    expect(text()).toBe("Ann");
+    fireEvent.keyDown(grid, { key: "ArrowDown" });
+    expect(text()).toBe("Bob");
+    fireEvent.keyDown(grid, { key: "ArrowRight" });
+    expect(text()).toBe("bob@x.io");
+    fireEvent.click(screen.getByRole("button", { name: "Close Quick Look" }));
+    expect(document.querySelector('[data-quick-look="detached"]')).toBeNull();
+  });
+
+  describe("with an edit that is not saved", () => {
+    /** A grid that keeps the edits staged through `onEditCommit`, as the table tab does. */
+    function Staged({ onCommit }: { onCommit?: (r: number, c: number, v: Value) => void }) {
+      const [data, setData] = useState(rows);
+      return (
+        <DataGrid
+          columns={columns}
+          rowCount={data.length}
+          getRow={(i) => data[i]}
+          columnState={state}
+          editable
+          active
+          quickLookKey
+          onAction={vi.fn()}
+          onFocusCell={vi.fn()}
+          onEditCommit={(r, c, v) => {
+            onCommit?.(r, c, v);
+            setData((d) =>
+              d.map((row, i) =>
+                i === r ? { ...row, cells: row.cells.map((x, j) => (j === c ? v : x)) } : row,
+              ),
+            );
+          }}
+        />
+      );
+    }
+    const panel = () => document.querySelector<HTMLElement>('[data-quick-look="detached"]');
+    const shown = () => panel()!.querySelector<HTMLElement>(".cm-content")!.textContent;
+    const type = (text: string) => {
+      const view = EditorView.findFromDOM(panel()!.querySelector<HTMLElement>(".cm-editor")!)!;
+      act(() => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } }));
+    };
+    const cellAt = (r: number, c: number) =>
+      document.querySelector<HTMLElement>(`[data-cell][data-r="${r}"][data-c="${c}"]`)!;
+    /** Detaches the Quick Look on Ann (row 0, name) and edits it. */
+    async function editAnn() {
+      const { container } = render(<Staged />);
+      const grid = container.querySelector<HTMLElement>('[data-scope="grid"]')!;
+      fireEvent.pointerDown(cellAt(0, 1), { button: 0 });
+      await act(() => actions.run("grid.quick-look"));
+      fireEvent.click(screen.getByRole("button", { name: /Detach/ }));
+      expect(shown()).toBe("Ann");
+      type("EDITED");
+      expect(screen.getByText("Edited — not staged yet")).toBeInTheDocument();
+      return grid;
+    }
+
+    it("does not move to another focused cell and keeps its text", async () => {
+      const grid = await editAnn();
+      fireEvent.pointerDown(cellAt(1, 1), { button: 0 });
+      expect(shown()).toBe("EDITED");
+      expect(panel()).toHaveTextContent("row 1");
+      expect(screen.getByText("Edited — not staged yet")).toBeInTheDocument();
+      fireEvent.keyDown(grid, { key: "ArrowRight" });
+      fireEvent.keyDown(grid, { key: "ArrowUp" });
+      expect(shown()).toBe("EDITED");
+      expect(panel()).toHaveTextContent("row 1");
+    });
+
+    it("follows the focused cell again once the edit is saved", async () => {
+      const grid = await editAnn();
+      fireEvent.pointerDown(cellAt(1, 1), { button: 0 });
+      expect(shown()).toBe("EDITED");
+      fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+      // Staged on Ann's row, and the panel is on the focused cell (Bob) at once.
+      expect(cellAt(0, 1)).toHaveTextContent("EDITED");
+      await waitFor(() => expect(shown()).toBe("Bob"));
+      expect(panel()).toHaveTextContent("row 2");
+      fireEvent.keyDown(grid, { key: "ArrowRight" });
+      expect(shown()).toBe("bob@x.io");
+    });
+
+    it("follows the focused cell again once the edit is discarded", async () => {
+      await editAnn();
+      fireEvent.pointerDown(cellAt(1, 1), { button: 0 });
+      expect(shown()).toBe("EDITED");
+      fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+      await waitFor(() => expect(shown()).toBe("Bob"));
+      expect(cellAt(0, 1)).toHaveTextContent("Ann");
+    });
+
+    it("does not take another cell when Quick Look is asked for it", async () => {
+      await editAnn();
+      fireEvent.pointerDown(cellAt(1, 1), { button: 0 });
+      await act(() => actions.run("grid.quick-look"));
+      expect(toast.message).toHaveBeenCalledWith("Save or discard the edit in Quick Look first");
+      expect(shown()).toBe("EDITED");
+      expect(panel()).toHaveTextContent("row 1");
+    });
+
+    it("a closed panel forgets the edit: the next one follows", async () => {
+      const grid = await editAnn();
+      fireEvent.click(screen.getByRole("button", { name: "Close Quick Look" }));
+      expect(panel()).toBeNull();
+      fireEvent.pointerDown(cellAt(1, 1), { button: 0 });
+      await act(() => actions.run("grid.quick-look"));
+      fireEvent.click(screen.getByRole("button", { name: /Detach/ }));
+      expect(shown()).toBe("Bob");
+      fireEvent.keyDown(grid, { key: "ArrowUp" });
+      expect(shown()).toBe("Ann");
+    });
+  });
+});
+
+describe("DataGrid foreign keys: one jumps, several ask which", () => {
+  const ref = (table: string, column: string, extra: Partial<FkRef> = {}): FkRef => ({
+    schema: "public",
+    table,
+    column,
+    ...extra,
+  });
+  const users = ref("users", "id");
+  const accounts = ref("accounts", "uid", { name: "owner_account_fkey" });
+  const pair = ref("orders", "b", {
+    name: "owner_pair_fkey",
+    localColumns: ["owner_id", "name"],
+    refColumns: ["a", "b"],
+  });
+  const data: ViewRow[] = [
+    {
+      key: "a",
+      cells: [
+        { t: "int", v: 1 },
+        { t: "int", v: 7 },
+        { t: "text", v: "x" },
+      ],
+    },
+    { key: "b", cells: [{ t: "int", v: 2 }, { t: "null" }, { t: "text", v: "y" }] },
+  ];
+  const owner = (fks: FkRef[], fk?: FkRef): GridColumn[] => [
+    col("id", "int"),
+    { ...col("owner_id", "int"), fk, fks },
+    col("name"),
+  ];
+  function mountFk(cols: GridColumn[], extra: Partial<DataGridProps> = {}) {
+    const onOpenFk = vi.fn();
+    const view = render(
+      <DataGrid
+        columns={cols}
+        rowCount={data.length}
+        getRow={(i) => data[i]}
+        editable
+        active
+        onOpenFk={onOpenFk}
+        {...extra}
+      />,
+    );
+    const cell = (r: number, c: number) =>
+      document.querySelector<HTMLElement>(`[data-cell][data-r="${r}"][data-c="${c}"]`)!;
+    const arrow = (r: number, c: number) => cell(r, c).querySelector<HTMLElement>("[data-fk]")!;
+    /** A press and release on an arrow, as the pointer does it. */
+    const press = (el: Element) => {
+      fireEvent.pointerDown(el, { button: 0 });
+      fireEvent.pointerUp(el, { button: 0 });
+    };
+    return { ...view, onOpenFk, cell, arrow, press };
+  }
+  const menuItems = (menu: HTMLElement) =>
+    within(menu)
+      .getAllByRole("menuitem")
+      .map((i) => i.textContent);
+
+  it("one foreign key: the arrow opens it at once, with the column and value only", () => {
+    const { onOpenFk, arrow, press } = mountFk(owner([users], users));
+    press(arrow(0, 1));
+    expect(onOpenFk).toHaveBeenCalledOnce();
+    expect(onOpenFk.mock.calls[0]).toHaveLength(2);
+    expect(onOpenFk).toHaveBeenCalledWith(expect.objectContaining({ id: "owner_id" }), {
+      t: "int",
+      v: 7,
+    });
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    // NULL has no arrow.
+    expect(arrow(1, 1)).toBeNull();
+  });
+
+  it("several foreign keys: the arrow opens a menu of 'table (column)', and the pick opens that one", async () => {
+    const { onOpenFk, arrow, cell } = mountFk(owner([users, accounts], users));
+    expect(arrow(0, 1)).toHaveAttribute("aria-label", "Open a referenced table");
+    fireEvent.pointerDown(arrow(0, 1), { button: 0 });
+    // The menu opens once the press is released (the press moves the focus to the arrow).
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    fireEvent.pointerUp(arrow(0, 1), { button: 0 });
+    const menu = await screen.findByRole("menu");
+    expect(menuItems(menu)).toEqual(["users (id)", "accounts (uid)"]);
+    // Anchored under the cell that was pressed.
+    const anchor = document.querySelector<HTMLElement>('[data-slot="dropdown-menu-trigger"]')!;
+    expect(anchor.style.left).toBe(cell(0, 1).style.left);
+    expect(anchor.style.top).toBe(`${HEADER_H + ROW_H}px`);
+    expect(onOpenFk).not.toHaveBeenCalled();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "accounts (uid)" }));
+    expect(onOpenFk).toHaveBeenCalledOnce();
+    expect(onOpenFk).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "owner_id" }),
+      { t: "int", v: 7 },
+      accounts,
+    );
+    await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+  });
+
+  it("the menu is keyboard operable: ↓ and ↩ pick, ⎋ closes it without opening anything", async () => {
+    const { onOpenFk, arrow, press } = mountFk(owner([users, accounts], users));
+    press(arrow(0, 1));
+    const menu = await screen.findByRole("menu");
+    const [first, second] = within(menu).getAllByRole("menuitem");
+    await waitFor(() => expect(first).toHaveFocus());
+    fireEvent.keyDown(first!, { key: "ArrowDown" });
+    await waitFor(() => expect(second).toHaveFocus());
+    fireEvent.keyDown(second!, { key: "Enter" });
+    expect(onOpenFk).toHaveBeenCalledWith(expect.anything(), { t: "int", v: 7 }, accounts);
+
+    onOpenFk.mockClear();
+    press(arrow(0, 1));
+    const again = await screen.findByRole("menu");
+    fireEvent.keyDown(within(again).getAllByRole("menuitem")[0]!, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+    expect(onOpenFk).not.toHaveBeenCalled();
+  });
+
+  it("the arrow stays out of the tab order", () => {
+    const { arrow } = mountFk(owner([users, accounts], users));
+    expect(arrow(0, 1)).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("⌘J opens the focused cell's key at once, or the menu with several; NULL does nothing", async () => {
+    const one = mountFk(owner([users], users));
+    fireEvent.pointerDown(one.cell(0, 1), { button: 0 });
+    await act(() => actions.run("grid.open-fk"));
+    expect(one.onOpenFk).toHaveBeenCalledWith(expect.objectContaining({ id: "owner_id" }), {
+      t: "int",
+      v: 7,
+    });
+    expect(one.onOpenFk.mock.calls[0]).toHaveLength(2);
+    one.onOpenFk.mockClear();
+    fireEvent.pointerDown(one.cell(1, 1), { button: 0 });
+    await act(() => actions.run("grid.open-fk"));
+    expect(one.onOpenFk).not.toHaveBeenCalled();
+    cleanup();
+
+    const several = mountFk(owner([users, accounts], users));
+    fireEvent.pointerDown(several.cell(0, 1), { button: 0 });
+    await act(() => actions.run("grid.open-fk"));
+    const menu = await screen.findByRole("menu");
+    expect(menuItems(menu)).toEqual(["users (id)", "accounts (uid)"]);
+    expect(several.onOpenFk).not.toHaveBeenCalled();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "users (id)" }));
+    expect(several.onOpenFk).toHaveBeenCalledWith(expect.anything(), { t: "int", v: 7 }, users);
+  });
+
+  it("⌘J is registered only by an active grid that can open keys", () => {
+    mountFk(owner([users], users), { onOpenFk: undefined });
+    expect(actions.has("grid.open-fk")).toBe(false);
+    cleanup();
+    mountFk(owner([users], users), { active: false });
+    expect(actions.has("grid.open-fk")).toBe(false);
+    cleanup();
+    mountFk(owner([users], users));
+    expect(actions.has("grid.open-fk")).toBe(true);
+  });
+
+  it("the cell menu's Open item: the key's table, or 'Open Referenced Row…' with a menu for several", async () => {
+    const one = mountFk(owner([users], users));
+    fireEvent.pointerDown(one.cell(0, 1), { button: 0 });
+    openMenu(one.cell(0, 1));
+    fireEvent.click(item(/^Open users · id/));
+    expect(one.onOpenFk).toHaveBeenCalledWith(expect.objectContaining({ id: "owner_id" }), {
+      t: "int",
+      v: 7,
+    });
+    expect(one.onOpenFk.mock.calls[0]).toHaveLength(2);
+    cleanup();
+
+    const several = mountFk(owner([users, accounts], users));
+    fireEvent.pointerDown(several.cell(0, 1), { button: 0 });
+    openMenu(several.cell(0, 1));
+    fireEvent.click(item(/^Open Referenced Row/));
+    // Once the cell menu has closed, the keys' menu opens under the cell.
+    const menu = await screen.findByRole("menu");
+    expect(menuItems(menu)).toEqual(["users (id)", "accounts (uid)"]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "accounts (uid)" }));
+    expect(several.onOpenFk).toHaveBeenCalledWith(expect.anything(), { t: "int", v: 7 }, accounts);
+  });
+
+  it("Generate JOIN uses the same menu: one key at once, several ask which", async () => {
+    const onGenerateJoin = vi.fn();
+    const one = mountFk(owner([users], users), { onGenerateJoin });
+    fireEvent.pointerDown(one.cell(0, 1), { button: 0 });
+    openMenu(one.cell(0, 1));
+    fireEvent.click(item(/Generate JOIN/));
+    expect(onGenerateJoin).toHaveBeenCalledOnce();
+    expect(onGenerateJoin.mock.calls[0]).toHaveLength(1);
+    cleanup();
+    onGenerateJoin.mockClear();
+
+    const several = mountFk(owner([users, accounts], users), { onGenerateJoin });
+    fireEvent.pointerDown(several.cell(0, 1), { button: 0 });
+    openMenu(several.cell(0, 1));
+    fireEvent.click(item(/Generate JOIN/));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByText("Generate JOIN with")).toBeInTheDocument();
+    expect(menuItems(menu)).toEqual(["users (id)", "accounts (uid)"]);
+    expect(onGenerateJoin).not.toHaveBeenCalled();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "accounts (uid)" }));
+    expect(onGenerateJoin).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "owner_id" }),
+      accounts,
+    );
+  });
+
+  it("Quick Look's Open button jumps through the column's own key, not whichever sorts first", async () => {
+    // CodeMirror (Quick Look) measures text ranges; jsdom has no layout.
+    Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
+    Range.prototype.getBoundingClientRect ??= () => new DOMRect();
+    const onLoadReferenced = vi.fn().mockResolvedValue({
+      table: "public.users",
+      columns: [{ name: "id", dataType: "bigint" }],
+      rows: [[{ t: "int", v: 7 }]],
+    });
+    // A composite key sorts first in `fks`; `fk` (what Quick Look shows) is the single one.
+    const { onOpenFk, cell } = mountFk(owner([pair, users], users), { onLoadReferenced });
+    fireEvent.pointerDown(cell(0, 1), { button: 1 });
+    fireEvent.click(await screen.findByRole("button", { name: /Open public\.users/ }));
+    expect(onOpenFk).toHaveBeenCalledOnce();
+    expect(onOpenFk).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "owner_id" }),
+      { t: "int", v: 7 },
+      users,
+    );
+  });
+
+  it("a composite key's member has an arrow; the jump gets the key and the row's cells", () => {
+    const { onOpenFk, arrow, press } = mountFk(owner([pair]));
+    // No single-column key (`fk`), but the arrow is there.
+    expect(arrow(0, 1)).toBeInTheDocument();
+    press(arrow(0, 1));
+    expect(onOpenFk).toHaveBeenCalledOnce();
+    expect(onOpenFk).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "owner_id" }),
+      { t: "int", v: 7 },
+      pair,
+      data[0]!.cells,
+    );
+  });
+
+  it("a composite key and a single one on the same column ask which", async () => {
+    const { onOpenFk, arrow, press } = mountFk(owner([users, pair], users));
+    press(arrow(0, 1));
+    const menu = await screen.findByRole("menu");
+    expect(menuItems(menu)).toEqual(["users (id)", "orders (a, b)"]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "orders (a, b)" }));
+    expect(onOpenFk).toHaveBeenCalledWith(
+      expect.anything(),
+      { t: "int", v: 7 },
+      pair,
+      data[0]!.cells,
+    );
+  });
+
+  it("a hand-made column with only `fk` still jumps", () => {
+    const { onOpenFk, arrow, press } = mountFk([
+      col("id", "int"),
+      { ...col("owner_id", "int"), fk: users },
+      col("name"),
+    ]);
+    press(arrow(0, 1));
+    expect(onOpenFk).toHaveBeenCalledWith(expect.anything(), { t: "int", v: 7 });
+  });
+});
+
+describe("DataGrid Export Result…", () => {
+  const state: ColumnState = { widths: {}, order: [], hidden: [] };
+  const exportItems = () =>
+    screen.queryAllByRole("menuitem", { name: /^Export / }).map((i) => i.textContent?.trim());
+
+  it("a result grid's cell menu has Export Result…, which calls its owner", async () => {
+    const onExportResult = vi.fn();
+    const { cell, click } = setup(state, { onExportResult });
+    click(0, 1);
+    openMenu(cell(0, 1));
+    expect(exportItems()).toEqual(["Export Result…"]);
+    fireEvent.click(item(/^Export Result/));
+    await waitFor(() => expect(onExportResult).toHaveBeenCalledOnce());
+  });
+
+  it("is shown only when the owner passes it, and never beside Export Current Page…", () => {
+    const { cell, click } = setup(state);
+    click(0, 1);
+    openMenu(cell(0, 1));
+    expect(exportItems()).toEqual([]);
+    cleanup();
+
+    const page = setup(state, { onExportPage: vi.fn() });
+    page.click(0, 1);
+    openMenu(page.cell(0, 1));
+    expect(exportItems()).toEqual(["Export Current Page…"]);
+    cleanup();
+
+    const both = setup(state, { onExportPage: vi.fn(), onExportResult: vi.fn() });
+    both.click(0, 1);
+    openMenu(both.cell(0, 1));
+    expect(exportItems()).toEqual(["Export Result…"]);
+  });
+});
+
+describe("DataGrid ⌘↑ up to the filter bar", () => {
+  const state: ColumnState = { widths: {}, order: [], hidden: [] };
+  const many: ViewRow[] = ["Ann", "Bob", "Cy", "Dee"].map((name, i) => ({
+    key: `pk:${i + 1}`,
+    cells: [
+      { t: "int", v: i + 1 },
+      { t: "text", v: name },
+      { t: "text", v: `${name.toLowerCase()}@x.io` },
+    ],
+  }));
+  const mountMany = (extra: Partial<DataGridProps> = {}) =>
+    setup(state, { rowCount: many.length, getRow: (i) => many[i], ...extra });
+  const focusOf = (onFocusCell: ReturnType<typeof vi.fn>) => onFocusCell.mock.calls.at(-1)![0].pos;
+
+  it("⌘↑ on the first row hands the focus to the bar; elsewhere it jumps to the first row", () => {
+    const onFocusFilters = vi.fn();
+    const { grid, click, onFocusCell } = mountMany({ onFocusFilters });
+    // Rows, but no focused cell yet: not "the first row".
+    fireEvent.keyDown(grid, { key: "ArrowUp", ...mod });
+    expect(onFocusFilters).not.toHaveBeenCalled();
+    click(2, 1);
+    fireEvent.keyDown(grid, { key: "ArrowUp", ...mod });
+    expect(onFocusFilters).not.toHaveBeenCalled();
+    expect(focusOf(onFocusCell)).toEqual({ r: 0, c: 1 });
+    // Now on the first row: the next ⌘↑ leaves the grid.
+    fireEvent.keyDown(grid, { key: "ArrowUp", ...mod });
+    expect(onFocusFilters).toHaveBeenCalledOnce();
+    // A plain ↑ and ⌘↓ never do.
+    fireEvent.keyDown(grid, { key: "ArrowUp" });
+    fireEvent.keyDown(grid, { key: "ArrowDown", ...mod });
+    expect(onFocusFilters).toHaveBeenCalledOnce();
+    expect(focusOf(onFocusCell)).toEqual({ r: 3, c: 1 });
+  });
+
+  it("without the bar (no prop), ⌘↑ always jumps to the first row", () => {
+    const { grid, click, onFocusCell } = mountMany();
+    click(0, 1);
+    fireEvent.keyDown(grid, { key: "ArrowUp", ...mod });
+    expect(focusOf(onFocusCell)).toEqual({ r: 0, c: 1 });
+    click(3, 1);
+    fireEvent.keyDown(grid, { key: "ArrowUp", ...mod });
+    expect(focusOf(onFocusCell)).toEqual({ r: 0, c: 1 });
+  });
+
+  it("⇧⌘↑ extends the selection to the first row instead", () => {
+    const onFocusFilters = vi.fn();
+    const { grid, click } = mountMany({ onFocusFilters });
+    click(0, 1);
+    fireEvent.keyDown(grid, { key: "ArrowUp", ...mod, shiftKey: true });
+    expect(onFocusFilters).not.toHaveBeenCalled();
+  });
+
+  it("with no rows ⌘↑ goes to the bar too", () => {
+    const onFocusFilters = vi.fn();
+    const { grid } = setup(state, { rowCount: 0, getRow: () => undefined, onFocusFilters });
+    fireEvent.keyDown(grid, { key: "ArrowUp", ...mod });
+    expect(onFocusFilters).toHaveBeenCalledOnce();
+  });
+});
+
+describe("DataGrid paste of CSV text", () => {
+  const state: ColumnState = { widths: {}, order: [], hidden: [] };
+  const paste = (grid: HTMLElement, text: string) =>
+    fireEvent.paste(grid, { clipboardData: { getData: () => text } });
+  const text = (v: string): Value => ({ t: "text", v });
+
+  it("two comma separated lines of one field per column insert one new row each", () => {
+    const { grid, onAction } = setup(state, { columns: columns.slice(1) });
+    paste(grid, "a,b\n1,2");
+    expect(onAction).toHaveBeenCalledWith({
+      type: "insertRows",
+      rows: [
+        [
+          { c: 0, value: text("a") },
+          { c: 1, value: text("b") },
+        ],
+        [
+          { c: 0, value: text("1") },
+          { c: 1, value: text("2") },
+        ],
+      ],
+    });
+    expect(toast.success).toHaveBeenCalledWith("Pasted 2 rows");
+  });
+
+  it("reads quotes, semicolons and the preference's delimiter", () => {
+    const { grid, onAction } = setup(state, { columns: columns.slice(1) });
+    paste(grid, '"Smith, John";x\r\n"say ""hi""";y\r\n');
+    expect(onAction).toHaveBeenLastCalledWith({
+      type: "insertRows",
+      rows: [
+        [
+          { c: 0, value: text("Smith, John") },
+          { c: 1, value: text("x") },
+        ],
+        [
+          { c: 0, value: text('say "hi"') },
+          { c: 1, value: text("y") },
+        ],
+      ],
+    });
+  });
+
+  it("a block narrower than the grid fills cells from the focused one", () => {
+    const { grid, click, onAction } = setup(state);
+    click(0, 1);
+    paste(grid, "P,p@x\nQ,q@x");
+    expect(onAction).toHaveBeenLastCalledWith({
+      type: "setValues",
+      edits: [
+        { r: 0, c: 1, value: text("P") },
+        { r: 0, c: 2, value: text("p@x") },
+        { r: 1, c: 1, value: text("Q") },
+        { r: 1, c: 2, value: text("q@x") },
+      ],
+    });
+  });
+
+  it("one line with one field per column is a row; any other single line is a value", () => {
+    const { grid, click, onAction } = setup(state);
+    paste(grid, "3,Cy,cy@x.io");
+    expect(onAction).toHaveBeenLastCalledWith({
+      type: "insertRows",
+      rows: [
+        [
+          { c: 0, value: { t: "int", v: 3 } },
+          { c: 1, value: text("Cy") },
+          { c: 2, value: text("cy@x.io") },
+        ],
+      ],
+    });
+    onAction.mockClear();
+    // A lone 'Smith, John' stays one value in the focused cell.
+    click(1, 1);
+    paste(grid, "Smith, John");
+    expect(onAction).toHaveBeenLastCalledWith({
+      type: "setValues",
+      edits: [{ r: 1, c: 1, value: text("Smith, John") }],
+    });
+    // Even in a two-column grid, where its two fields would fit.
+    cleanup();
+    const two = setup(state, { columns: columns.slice(1) });
+    two.click(0, 0);
+    paste(two.grid, "Smith, John");
+    expect(two.onAction).toHaveBeenLastCalledWith({
+      type: "setValues",
+      edits: [{ r: 0, c: 0, value: text("Smith, John") }],
+    });
+  });
+
+  it("tab separated text is parsed as before", () => {
+    const { grid, click, onAction } = setup(state);
+    click(0, 1);
+    paste(grid, "P\tp@x\nQ\tq,x");
+    expect(onAction).toHaveBeenLastCalledWith({
+      type: "setValues",
+      edits: [
+        { r: 0, c: 1, value: text("P") },
+        { r: 0, c: 2, value: text("p@x") },
+        { r: 1, c: 1, value: text("Q") },
+        { r: 1, c: 2, value: text("q,x") },
+      ],
+    });
+  });
+
+  it("text without a delimiter pastes into the cell as ever", () => {
+    const { grid, click, onAction } = setup(state);
+    click(0, 1);
+    paste(grid, "Zed");
+    expect(onAction).toHaveBeenLastCalledWith({
+      type: "setValues",
+      edits: [{ r: 0, c: 1, value: text("Zed") }],
+    });
   });
 });

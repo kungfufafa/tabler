@@ -1,6 +1,8 @@
-import { HighlightStyle } from "@codemirror/language";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import type { Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
+import { quoteKindMarks } from "@/features/appearance/quoteMarks";
 
 /**
  * Editor chrome and syntax colours. Everything reads CSS variables from `index.css`, so the same
@@ -10,21 +12,22 @@ export const editorTheme = EditorView.theme({
   "&": {
     height: "100%",
     backgroundColor: "var(--surface)",
-    color: "var(--foreground)",
+    // "Others" (Settings ▸ Appearance ▸ SQL editor): the colour of everything not coloured below.
+    color: "var(--syn-other, var(--foreground))",
   },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": {
-    fontFamily: "var(--font-mono)",
-    lineHeight: "1.6",
+    fontFamily: "var(--editor-font-family, var(--font-mono))",
+    lineHeight: "var(--editor-line-height, 1.6)",
     overscrollBehavior: "contain",
   },
   ".cm-content": { caretColor: "var(--brand)", padding: "6px 0" },
   ".cm-line": { padding: "0 10px 0 6px" },
   ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--brand)", borderLeftWidth: "2px" },
   "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
-    { backgroundColor: "color-mix(in oklab, var(--brand) 24%, transparent)" },
+    { backgroundColor: "var(--editor-selection-bg)" },
   ".cm-selectionBackground": {
-    backgroundColor: "color-mix(in oklab, var(--brand) 14%, transparent)",
+    backgroundColor: "color-mix(in oklab, var(--editor-selection-bg) 58%, transparent)",
   },
   ".cm-gutters": {
     backgroundColor: "var(--surface)",
@@ -37,8 +40,25 @@ export const editorTheme = EditorView.theme({
   ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--foreground)" },
   ".cm-activeLine": { backgroundColor: "color-mix(in oklab, var(--foreground) 3.5%, transparent)" },
   ".cm-current-statement": { backgroundColor: "var(--editor-statement-bg)" },
+  // The active line's tint over the current statement's.
   ".cm-activeLine.cm-current-statement": {
-    backgroundColor: "color-mix(in oklab, var(--brand) 10%, transparent)",
+    backgroundColor: "var(--editor-statement-bg)",
+    backgroundImage:
+      "linear-gradient(color-mix(in oklab, var(--foreground) 3.5%, transparent), color-mix(in oklab, var(--foreground) 3.5%, transparent))",
+  },
+  // Quote kinds the grammar does not tell apart (see appearance/quoteMarks.ts): each reads its own
+  // token. They set the colour and `--syn-string`, so they win whichever span the highlighter nests.
+  ".cm-q-double": {
+    "--syn-string": "var(--syn-string-double)",
+    color: "var(--syn-string-double)",
+  },
+  ".cm-q-backtick": {
+    "--syn-string": "var(--syn-string-backtick)",
+    color: "var(--syn-string-backtick)",
+  },
+  ".cm-q-bracket": {
+    "--syn-string": "var(--syn-string-bracket)",
+    color: "var(--syn-string-bracket)",
   },
   ".cm-foldGutter .cm-gutterElement": { padding: "0 4px", cursor: "pointer" },
   ".cm-foldPlaceholder": {
@@ -61,7 +81,7 @@ export const editorTheme = EditorView.theme({
     outline: "1px solid color-mix(in oklab, var(--brand) 50%, transparent)",
   },
   "&.cm-focused .cm-nonmatchingBracket": {
-    backgroundColor: "color-mix(in oklab, var(--error) 20%, transparent)",
+    backgroundColor: "color-mix(in oklab, var(--syn-error) 20%, transparent)",
   },
   ".cm-panels": {
     backgroundColor: "var(--surface-2)",
@@ -137,11 +157,11 @@ export const editorTheme = EditorView.theme({
   ".cm-completionIcon": { opacity: 0.6, width: "1.1em" },
   ".cm-tooltip-lint": { fontFamily: "var(--font-sans)", fontSize: "12px" },
   ".cm-diagnostic": { padding: "4px 8px", whiteSpace: "pre-wrap" },
-  ".cm-diagnostic-error": { borderLeft: "3px solid var(--error)" },
+  ".cm-diagnostic-error": { borderLeft: "3px solid var(--syn-error)" },
   ".cm-diagnosticSource": { color: "var(--muted-foreground)", fontSize: "11px" },
   ".cm-lintRange-error": {
     backgroundImage: "none",
-    textDecoration: "underline wavy var(--error)",
+    textDecoration: "underline wavy var(--syn-error)",
     textDecorationSkipInk: "none",
     textUnderlineOffset: "3px",
   },
@@ -166,5 +186,18 @@ export const sqlHighlightStyle = HighlightStyle.define([
   { tag: [t.special(t.name), t.quote], color: "var(--syn-ident)" },
   { tag: [t.punctuation, t.paren, t.bracket, t.separator], color: "var(--muted-foreground)" },
   { tag: [t.variableName, t.labelName], color: "var(--syn-ident)" },
-  { tag: t.invalid, color: "var(--error)" },
+  { tag: t.invalid, color: "var(--syn-error)" },
 ]);
+
+/**
+ * The look every CodeMirror SQL editor of the app shares (the SQL editor and viewer, the
+ * Structure SQL editor, the Metrics inspector's query editor, the bootstrap commands): the syntax
+ * colours, the double-quote / backtick / bracket colours of Settings ▸ Appearance, and the chrome.
+ * Use this instead of listing `syntaxHighlighting(sqlHighlightStyle)` and `editorTheme` by hand,
+ * so a colour setting reaches every editor.
+ */
+export const sqlEditorTheme: Extension = [
+  syntaxHighlighting(sqlHighlightStyle),
+  quoteKindMarks,
+  editorTheme,
+];

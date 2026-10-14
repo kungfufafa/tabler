@@ -6,6 +6,8 @@ import {
   groupIdOfRow,
   isItemRow,
   mergeObjectRows,
+  nodePrefix,
+  nodeSchemaOfRow,
   pruneEmptyGroups,
   withColumnRows,
   type ColumnState,
@@ -45,7 +47,7 @@ describe("buildTreeRows", () => {
     ]);
   });
 
-  it("lists matching pinned tables first and keeps them in their group", () => {
+  it("lists matching pinned tables first; they leave the alphabetical sections", () => {
     const pinned = new Set(["public.posts", "public.user_stats", "inventory.orders", "x.gone"]);
     const rows = buildTreeRows(tables, "", pinned);
     expect(keys(rows)).toEqual([
@@ -55,12 +57,9 @@ describe("buildTreeRows", () => {
       "p:inventory.orders",
       "h:Tables",
       "t:public.users",
-      "t:public.posts",
-      "t:inventory.orders",
-      "h:Views",
-      "t:public.user_stats",
     ]);
     expect(rows[0]).toMatchObject({ type: "header", label: "Pinned", count: 3 });
+    expect(rows[4]).toMatchObject({ type: "header", label: "Tables", count: 1 });
   });
 
   it("applies the search to pinned tables and drops the section when none match", () => {
@@ -70,8 +69,6 @@ describe("buildTreeRows", () => {
       "p:public.user_stats",
       "h:Tables",
       "t:public.users",
-      "h:Views",
-      "t:public.user_stats",
     ]);
     expect(keys(buildTreeRows(tables, "order", pinned))).toEqual([
       "h:Tables",
@@ -91,7 +88,6 @@ describe("buildTreeRows", () => {
       "p:public.posts",
       "h:Tables",
       "t:public.users",
-      "t:public.posts",
       "t:inventory.orders",
       "h:Views",
       "t:public.user_stats",
@@ -121,7 +117,7 @@ describe("buildTreeRows", () => {
       "",
       new Set(["b.t"]),
     );
-    expect(keys(rows)).toEqual(["h:Pinned", "p:b.t", "h:Tables", "t:a.t", "t:b.t"]);
+    expect(keys(rows)).toEqual(["h:Pinned", "p:b.t", "h:Tables", "t:a.t"]);
   });
 
   it("keeps a collapsed section's header and count but leaves its rows out", () => {
@@ -138,7 +134,7 @@ describe("buildTreeRows", () => {
     ]);
     expect(rows[0]).toMatchObject({ label: "Recent", count: 1, collapsed: true });
     expect(rows[1]).toMatchObject({ label: "Pinned", count: 1, collapsed: false });
-    expect(rows[3]).toMatchObject({ label: "Tables", count: 3, collapsed: true });
+    expect(rows[3]).toMatchObject({ label: "Tables", count: 2, collapsed: true });
     // The search still counts the matches of a collapsed section.
     expect(buildTreeRows(tables, "user", undefined, undefined, new Set(["Views"]))).toEqual([
       { type: "header", key: "h:Tables", label: "Tables", count: 1, collapsed: false },
@@ -181,6 +177,31 @@ describe("buildTreeRows search syntax", () => {
     // Fuzzy by default.
     expect(keys(buildTreeRows(tables, "pst"))).toEqual(["h:Tables", "t:public.posts"]);
   });
+
+  it("matches with the search menu's Matching Strategy", () => {
+    const build = (q: string, strategy: "contains" | "prefix" | "regex") =>
+      keys(buildTreeRows(tables, q, undefined, undefined, undefined, undefined, strategy));
+    expect(build("pst", "contains")).toEqual([]);
+    expect(build("ost", "contains")).toEqual(["h:Tables", "t:public.posts"]);
+    expect(build("ost", "prefix")).toEqual([]);
+    expect(build("ord", "prefix")).toEqual(["h:Tables", "t:inventory.orders"]);
+    expect(build("^(users|orders)$", "regex")).toEqual([
+      "h:Tables",
+      "t:public.users",
+      "t:inventory.orders",
+    ]);
+    // The same strategy filters the routines, sequences and groups.
+    const rows = mergeObjectRows(
+      [],
+      [routine("slugify"), routine("add")],
+      [sequence("users_id_seq")],
+      "^s",
+      undefined,
+      undefined,
+      "regex",
+    );
+    expect(keys(rows)).toEqual(["h:Functions", "f:public.slugify()"]);
+  });
 });
 
 describe("mergeObjectRows", () => {
@@ -203,7 +224,6 @@ describe("mergeObjectRows", () => {
       "f:public.archive_posts()",
       "h:Tables",
       "t:public.users",
-      "t:public.posts",
       "t:inventory.orders",
       "h:Views",
       "t:public.user_stats",
@@ -291,6 +311,12 @@ describe("sidebar groups in the tree", () => {
     expect(rows.filter(isItemRow).map((r) => r.key)).not.toContain("g:v");
     expect(groupIdOfRow("g:m:t:public.posts")).toBe("m");
     expect(groupIdOfRow("t:public.posts")).toBeNull();
+    // Inside a lazy-loaded schema node.
+    expect(groupIdOfRow("n:public:g:m:t:public.posts")).toBe("m");
+    expect(groupIdOfRow("n:public:t:public.posts")).toBeNull();
+    expect(nodeSchemaOfRow("n:my%3Aschema:t:x.y")).toBe("my:schema");
+    expect(nodeSchemaOfRow("t:public.posts")).toBeNull();
+    expect(nodePrefix("my:schema")).toBe("n:my%3Aschema:");
     // Collapsed: the header (and its count) stays.
     const collapsed = buildTreeRows(tables, "", undefined, undefined, undefined, [
       { ...views, collapsed: true },

@@ -5,12 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useChartViews } from "@/features/charts/store";
 import { resetExportStore } from "@/features/export/store";
 import { actions } from "@/features/palette/actions";
-import {
-  CLOSED_PREVIEW,
-  pendingForTab,
-  setResultStaging,
-  useResultsStore,
-} from "@/features/results/store";
+import { pendingForTab, setResultStaging, useResultsStore } from "@/features/results/store";
 import { setCell } from "@/features/staging/model";
 import { ipc, type ConnectionInfo } from "@/lib/ipc";
 import { resetMockQueryState } from "@/lib/ipc/mock/query";
@@ -84,7 +79,7 @@ beforeEach(() => {
     queryCounter: 0,
   });
   useQueryTabsStore.setState({ slices: {} });
-  useResultsStore.setState({ edits: {}, editability: {}, pins: {}, preview: CLOSED_PREVIEW });
+  useResultsStore.setState({ edits: {}, editability: {}, pins: {} });
   useFindStore.setState({ byTab: {} });
   useChartViews.setState({ views: {} });
   resetExportStore();

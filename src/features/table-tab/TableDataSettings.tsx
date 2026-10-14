@@ -1,4 +1,5 @@
 import { Switch } from "@/components/ui/switch";
+import { GridBehaviourRows } from "@/features/appearance/GridBehaviourRows";
 import { NumberField, SettingGroup, SettingRow } from "@/features/settings/controls";
 import { ESTIMATE_COUNT_RANGE, setPref, usePrefs } from "@/stores/prefs";
 
@@ -9,8 +10,21 @@ export function TableDataSettings() {
   const threshold = usePrefs((p) => p.gridEstimateThreshold);
   const autoNull = usePrefs((p) => p.gridAutoNullEmpty);
   const rowNumbers = usePrefs((p) => p.gridRowNumbers);
+  const autoHide = usePrefs((p) => p.gridAutoHideScrollers);
+  const tooltips = usePrefs((p) => p.gridExpansionTooltips);
   return (
     <SettingGroup title="Table Data">
+      <SettingRow
+        id="pref-grid-autohide-scrollers"
+        label="Auto hide table scrollers"
+        description="Thin scroll bars that show only while scrolling or under the pointer."
+      >
+        <Switch
+          id="pref-grid-autohide-scrollers"
+          checked={autoHide}
+          onCheckedChange={(v) => setPref("gridAutoHideScrollers", v)}
+        />
+      </SettingRow>
       <SettingRow id="pref-grid-alternating" label="Alternating row background colors">
         <Switch
           id="pref-grid-alternating"
@@ -55,11 +69,65 @@ export function TableDataSettings() {
           onCheckedChange={(v) => setPref("gridAutoNullEmpty", v)}
         />
       </SettingRow>
+      <SettingRow
+        id="pref-grid-expansion-tooltips"
+        label="Allows expansion Tool Tips"
+        description="A cell cut off by its column shows its whole value when the pointer rests on it."
+      >
+        <Switch
+          id="pref-grid-expansion-tooltips"
+          checked={tooltips}
+          onCheckedChange={(v) => setPref("gridExpansionTooltips", v)}
+        />
+      </SettingRow>
       <SettingRow id="pref-grid-row-numbers" label="Show row numbers">
         <Switch
           id="pref-grid-row-numbers"
           checked={rowNumbers}
           onCheckedChange={(v) => setPref("gridRowNumbers", v)}
+        />
+      </SettingRow>
+      <GridBehaviourRows />
+    </SettingGroup>
+  );
+}
+
+/** Settings ▸ General ▸ Application ▸ Use loading wallpaper (TablePlus, on by default). */
+export function LoadingWallpaperRow() {
+  const on = usePrefs((p) => p.gridLoadingWallpaper);
+  return (
+    <SettingRow
+      id="pref-loading-wallpaper"
+      label="Use loading wallpaper"
+      description="A quiet pattern in the grid while a table's rows load."
+    >
+      <Switch
+        id="pref-loading-wallpaper"
+        checked={on}
+        onCheckedChange={(v) => setPref("gridLoadingWallpaper", v)}
+      />
+    </SettingRow>
+  );
+}
+
+/** Settings ▸ General ▸ Data Decoder (TablePlus's "Automatically convert PostGIS geometry to WKT"). */
+export function DataDecoderSettings() {
+  const wkt = usePrefs((p) => p.geometryToWkt);
+  return (
+    <SettingGroup title="Data Decoder">
+      <SettingRow
+        id="pref-geometry-wkt"
+        label="Automatically convert PostGIS geometry to WKT"
+        description={
+          wkt
+            ? "PostGIS geometry / geography and MySQL spatial values show as WKT (SRID=4326;POINT(1 2)). Rows load in that form from the next refresh."
+            : "Spatial values show as the hex the database sends."
+        }
+      >
+        <Switch
+          id="pref-geometry-wkt"
+          checked={wkt}
+          onCheckedChange={(v) => setPref("geometryToWkt", v)}
         />
       </SettingRow>
     </SettingGroup>

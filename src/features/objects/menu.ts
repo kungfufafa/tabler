@@ -1,7 +1,9 @@
 import {
+  ChevronsDownUp,
   Code,
   Copy,
   CopyPlus,
+  DatabaseZap,
   Download,
   Eraser,
   Eye,
@@ -16,6 +18,7 @@ import {
   Pin,
   PinOff,
   Plus,
+  RefreshCw,
   SquareFunction,
   SquarePlus,
   SquareStack,
@@ -28,6 +31,12 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { Driver } from "@/lib/ipc";
+import {
+  isMatchStrategy,
+  MATCH_STRATEGIES,
+  MATCH_STRATEGY_LABELS,
+  type MatchStrategy,
+} from "./search";
 import { supportsNewObject, type NewObjectKind } from "./templates";
 
 /**
@@ -54,6 +63,14 @@ export type MenuEntry =
       checked: boolean;
       onChange: (checked: boolean) => void;
     }
+  | {
+      /** One choice of several (a radio group), e.g. Matching Strategy ▸ Fuzzy / Contains…. */
+      kind: "radio";
+      id: string;
+      value: string;
+      options: ReadonlyArray<{ value: string; label: string }>;
+      onChange: (value: string) => void;
+    }
   | { kind: "separator"; id: string }
   | { kind: "label"; id: string; label: string };
 
@@ -67,12 +84,13 @@ export interface NewMenuHandlers {
 }
 
 /** "New ▸" entries for a driver: Table / View / Materialized View (PG) / Function / Procedure
- * (PG, MySQL) / Schema (PG). */
+ * (PG, MySQL) / Schema (PG), and Group… when the sidebar can keep groups (`group`). */
 export function newEntries(
   driver: Driver,
   readOnly: boolean,
   on: NewMenuHandlers,
   suffix = "…",
+  { group = false }: { group?: boolean } = {},
 ): MenuEntry[] {
   const out: MenuEntry[] = [
     {
@@ -108,16 +126,30 @@ export function newEntries(
       disabled: readOnly,
       onSelect: () => on.newItem("schema"),
     });
+  if (group)
+    out.push({
+      kind: "item",
+      id: "new-group",
+      label: `Group${suffix}`,
+      icon: Folder,
+      onSelect: () => on.newItem("group"),
+    });
   return out;
 }
 
-export function newSubmenu(driver: Driver, readOnly: boolean, on: NewMenuHandlers): MenuEntry {
+/** "New ▸" (with Group… when `group`: TablePlus's New ▸ Group…, spec §2.3). */
+export function newSubmenu(
+  driver: Driver,
+  readOnly: boolean,
+  on: NewMenuHandlers,
+  group = false,
+): MenuEntry {
   return {
     kind: "sub",
     id: "new",
     label: "New",
     icon: Plus,
-    items: newEntries(driver, readOnly, on),
+    items: newEntries(driver, readOnly, on, "…", { group }),
   };
 }
 
@@ -138,6 +170,8 @@ export interface TableMenuOptions {
   renamable: boolean;
   /** Every target is pinned already ("Unpin from Top"); null hides the pin entry. */
   allPinned: boolean | null;
+  /** New ▸ offers Group… (the sidebar keeps groups for this connection). */
+  groups?: boolean;
 }
 
 export interface TableMenuHandlers extends NewMenuHandlers {
@@ -148,6 +182,7 @@ export interface TableMenuHandlers extends NewMenuHandlers {
   togglePin: () => void;
   exportItems: () => void;
   importCsv: () => void;
+  importJson: () => void;
   importSql: () => void;
   clone: () => void;
   rename: () => void;
@@ -159,6 +194,15 @@ export interface TableMenuHandlers extends NewMenuHandlers {
 }
 
 const many = (n: number) => (n > 1 ? ` ${n} Items` : "");
+
+/** Entries other features add at the end of the table / view menu (Plugins ▸). */
+const tableMenuExtensions = new Set<(o: TableMenuOptions) => MenuEntry[]>();
+
+/** Adds entries to every table / view menu. Returns the function that removes them. */
+export function registerTableMenuExtension(extend: (o: TableMenuOptions) => MenuEntry[]) {
+  tableMenuExtensions.add(extend);
+  return () => void tableMenuExtensions.delete(extend);
+}
 
 /**
  * The table / view context menu, in TablePlus's order (spec §2.4). `groupItems` (sidebar groups,
@@ -232,6 +276,13 @@ export function tableMenu(
         },
         {
           kind: "item",
+          id: "import-json",
+          label: "From JSON…",
+          disabled: o.readOnly || !o.isTable,
+          onSelect: on.importJson,
+        },
+        {
+          kind: "item",
           id: "import-sql",
           label: "From SQL Dump…",
           disabled: o.readOnly,
@@ -240,7 +291,7 @@ export function tableMenu(
       ],
     },
     sep("s2"),
-    newSubmenu(o.driver, o.readOnly, on),
+    newSubmenu(o.driver, o.readOnly, on, o.groups),
     {
       kind: "item",
       id: "clone",
@@ -319,6 +370,7 @@ export function tableMenu(
       onSelect: on.generateDiagram,
     },
   );
+  for (const extend of tableMenuExtensions) entries.push(...extend(o));
   return entries;
 }
 
@@ -392,6 +444,8 @@ export interface ObjectMenuOptions {
   count: number;
   /** How many of them Delete… acts on (not already pending a drop); `count` when left out. */
   droppable?: number;
+  /** New ▸ offers Group…. */
+  groups?: boolean;
 }
 
 export interface ObjectMenuHandlers extends NewMenuHandlers {
@@ -441,7 +495,7 @@ export function objectMenu(
       ],
     },
     sep("s1"),
-    newSubmenu(o.driver, o.readOnly, on),
+    newSubmenu(o.driver, o.readOnly, on, o.groups),
     {
       kind: "item",
       id: "delete",
@@ -460,7 +514,7 @@ export function objectMenu(
  * New ▸.
  */
 export function headerMenu(
-  o: { driver: Driver; readOnly: boolean; overview: boolean; diagram?: boolean },
+  o: { driver: Driver; readOnly: boolean; overview: boolean; diagram?: boolean; groups?: boolean },
   on: NewMenuHandlers & { itemOverview: () => void; generateDiagram?: () => void },
 ): MenuEntry[] {
   const entries: MenuEntry[] = [];
@@ -481,7 +535,62 @@ export function headerMenu(
       onSelect: on.generateDiagram,
     });
   if (entries.length > 0) entries.push(sep("s1"));
-  entries.push(newSubmenu(o.driver, o.readOnly, on));
+  entries.push(newSubmenu(o.driver, o.readOnly, on, o.groups));
+  return entries;
+}
+
+/**
+ * Lazy load: right-click on a schema (PostgreSQL) / database (MySQL) node: Item Overview,
+ * Generate Diagram…, Copy Name, Reload Items, Collapse All, New ▸.
+ */
+export function schemaNodeMenu(
+  o: { driver: Driver; readOnly: boolean; loaded: boolean; diagram: boolean; groups?: boolean },
+  on: NewMenuHandlers & {
+    itemOverview: () => void;
+    generateDiagram: () => void;
+    copyName: () => void;
+    reload: () => void;
+    collapseAll: () => void;
+  },
+): MenuEntry[] {
+  const entries: MenuEntry[] = [
+    {
+      kind: "item",
+      id: "item-overview",
+      label: "Item Overview",
+      icon: Info,
+      onSelect: on.itemOverview,
+    },
+  ];
+  if (o.diagram)
+    entries.push({
+      kind: "item",
+      id: "generate-diagram",
+      label: "Generate Diagram…",
+      icon: Waypoints,
+      onSelect: on.generateDiagram,
+    });
+  entries.push(
+    { kind: "item", id: "copy-name", label: "Copy Name", icon: Copy, onSelect: on.copyName },
+    sep("s1"),
+    {
+      kind: "item",
+      id: "reload",
+      label: "Reload Items",
+      icon: RefreshCw,
+      disabled: !o.loaded,
+      onSelect: on.reload,
+    },
+    {
+      kind: "item",
+      id: "collapse-all",
+      label: "Collapse All",
+      icon: ChevronsDownUp,
+      onSelect: on.collapseAll,
+    },
+    sep("s2"),
+    newSubmenu(o.driver, o.readOnly, on, o.groups),
+  );
   return entries;
 }
 
@@ -495,30 +604,119 @@ export interface SidebarSettings {
   showRowCounts: boolean;
   /** Each table / view row expands to its columns. */
   showColumns: boolean;
+  /** "Lazy Load Schema Items" of the connection; null where it does not apply (SQLite). */
+  lazyLoad?: boolean | null;
 }
 
-/** Sidebar Settings ▸ checkboxes (sequences and system schemas are PostgreSQL's). */
+export type SidebarSettingKey = keyof SidebarSettings;
+
+/**
+ * Sidebar Settings ▸ checkboxes, in TablePlus's words (sequences and system schemas are
+ * PostgreSQL's; lazy loading PostgreSQL's and MySQL's).
+ */
 export function settingsEntries(
   driver: Driver,
   s: SidebarSettings,
-  set: <K extends keyof SidebarSettings>(key: K, value: boolean) => void,
+  set: (key: SidebarSettingKey, value: boolean) => void,
 ): MenuEntry[] {
-  const check = (id: keyof SidebarSettings, label: string): MenuEntry => ({
+  const check = (id: SidebarSettingKey, label: string): MenuEntry => ({
     kind: "check",
     id,
     label,
-    checked: s[id],
+    checked: s[id] === true,
     onChange: (v) => set(id, v),
   });
-  const out = [check("showRecent", "Show Recent")];
+  const out = [check("showRecent", "Show Recently Section")];
   if (driver !== "sqlite") out.push(check("showFunctions", "Show Function Section"));
   if (driver === "postgres")
     out.push(
       check("showSequences", "Show Sequences"),
       check("showSystemSchemas", "Show System Schemas"),
     );
-  out.push(check("showRowCounts", "Show row counts"), check("showColumns", "Show Columns"));
+  if (s.lazyLoad !== undefined && s.lazyLoad !== null)
+    out.push(check("lazyLoad", "Lazy Load Schema Items"));
+  out.push(check("showRowCounts", "Show Row Counts"), check("showColumns", "Show Columns"));
   return out;
+}
+
+/** The search field menu's Settings ▸ (TablePlus: recently section, system schemas, lazy load). */
+export function searchSettingsEntries(
+  driver: Driver,
+  s: Pick<SidebarSettings, "showRecent" | "showSystemSchemas" | "lazyLoad">,
+  set: (key: SidebarSettingKey, value: boolean) => void,
+): MenuEntry[] {
+  const out: MenuEntry[] = [
+    {
+      kind: "check",
+      id: "showRecent",
+      label: "Show Recently Section",
+      checked: s.showRecent,
+      onChange: (v) => set("showRecent", v),
+    },
+  ];
+  if (driver === "postgres")
+    out.push({
+      kind: "check",
+      id: "showSystemSchemas",
+      label: "Load System Schemas",
+      checked: s.showSystemSchemas,
+      onChange: (v) => set("showSystemSchemas", v),
+    });
+  if (s.lazyLoad !== undefined && s.lazyLoad !== null)
+    out.push({
+      kind: "check",
+      id: "lazyLoad",
+      label: "Lazy Load Item in Schema",
+      checked: s.lazyLoad,
+      onChange: (v) => set("lazyLoad", v),
+    });
+  return out;
+}
+
+/**
+ * The sidebar search field's menu (spec §2.3): Search in Database…, Matching Strategy ▸ (Fuzzy /
+ * Contains / Prefix / Regex), Settings ▸.
+ */
+export function searchMenu(
+  o: {
+    strategy: MatchStrategy;
+    settings: MenuEntry[];
+    /** Search in Database… needs a connection. */
+    canSearchDatabase: boolean;
+  },
+  on: { searchInDatabase: () => void; setStrategy: (strategy: MatchStrategy) => void },
+): MenuEntry[] {
+  return [
+    {
+      kind: "item",
+      id: "search-database",
+      label: "Search in Database…",
+      icon: DatabaseZap,
+      disabled: !o.canSearchDatabase,
+      onSelect: on.searchInDatabase,
+    },
+    sep("s1"),
+    {
+      kind: "sub",
+      id: "matching-strategy",
+      label: "Matching Strategy",
+      items: [
+        {
+          kind: "radio",
+          id: "strategy",
+          value: o.strategy,
+          options: MATCH_STRATEGIES.map((value) => ({
+            value,
+            label: MATCH_STRATEGY_LABELS[value],
+          })),
+          onChange: (v) => {
+            if (isMatchStrategy(v)) on.setStrategy(v);
+          },
+        },
+      ],
+    },
+    { kind: "sub", id: "settings", label: "Settings", items: o.settings },
+  ];
 }
 
 /** The sidebar "+" menu: New Table… … New Schema…, New Group…, New Query, Settings ▸. */
@@ -529,18 +727,11 @@ export function plusMenu(
   on: NewMenuHandlers,
   newQueryShortcut?: string,
 ): MenuEntry[] {
-  const items = newEntries(driver, readOnly, on).map((e) =>
+  const items = newEntries(driver, readOnly, on, "…", { group: true }).map((e) =>
     e.kind === "item" ? { ...e, label: `New ${e.label}` } : e,
   );
   return [
     ...items,
-    {
-      kind: "item",
-      id: "new-group",
-      label: "New Group…",
-      icon: Folder,
-      onSelect: () => on.newItem("group"),
-    },
     {
       kind: "item",
       id: "new-query",

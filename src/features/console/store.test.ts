@@ -3,6 +3,8 @@ import type { ConnectionInfo } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import {
   appendCapped,
+  CONSOLE_FILTER_LABEL,
+  CONSOLE_FILTERS,
   CONSOLE_MAX_ENTRIES,
   filterEntries,
   useConsoleStore,
@@ -60,6 +62,8 @@ describe("console store", () => {
       sql: "SELECT 1",
     });
     expect(b).toMatchObject({ connectionName: null, database: null, sql: "SELECT 2" });
+    expect(a!.dialect).toBe("postgres");
+    expect(b!.dialect).toBeUndefined();
     expect(b!.id).toBeGreaterThan(a!.id);
   });
 
@@ -76,8 +80,8 @@ describe("console store", () => {
   it("clears and sets the filter", () => {
     const s = useConsoleStore.getState();
     s.log({ connectionId: "c1", category: "data", sql: "SELECT 1", meta: false });
-    s.setFilter("query");
-    expect(useConsoleStore.getState().filter).toBe("query");
+    s.setFilter("meta");
+    expect(useConsoleStore.getState().filter).toBe("meta");
     useConsoleStore.getState().clear();
     expect(useConsoleStore.getState().entries).toEqual([]);
   });
@@ -100,9 +104,16 @@ describe("filterEntries", () => {
     expect(filterEntries(all, "all")).toBe(all);
   });
 
-  it("keeps one category, in order", () => {
-    expect(filterEntries(all, "data").map((e) => e.id)).toEqual([1, 4]);
-    expect(filterEntries(all, "structure").map((e) => e.id)).toEqual([2]);
-    expect(filterEntries(all, "query").map((e) => e.id)).toEqual([3]);
+  it("Meta queries only keeps the schema entries; Data queries only the rest, in order", () => {
+    expect(filterEntries(all, "meta").map((e) => e.id)).toEqual([2]);
+    expect(filterEntries(all, "data").map((e) => e.id)).toEqual([1, 3, 4]);
+  });
+
+  it("labels the filters like TablePlus", () => {
+    expect(CONSOLE_FILTERS.map((f) => CONSOLE_FILTER_LABEL[f])).toEqual([
+      "All queries",
+      "Meta queries only",
+      "Data queries only",
+    ]);
   });
 });

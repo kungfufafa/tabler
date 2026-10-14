@@ -5,7 +5,8 @@ import { HISTORY_KEY } from "@/features/editor/historyGroups";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
 import { writeClipboard } from "@/features/datagrid/clipboard";
-import type { SavedQuery } from "@/lib/ipc";
+import { openImport } from "@/features/import/store";
+import { ipc, toIpcError, type SavedQuery } from "@/lib/ipc";
 import type { OpenConnection } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
@@ -56,4 +57,22 @@ export function copySavedQuery(query: SavedQuery): void {
     () => toast.success("Copied SQL"),
     () => toast.error("Could not copy"),
   );
+}
+
+/**
+ * "Import…": runs the query's `.sql` file through the SQL import wizard on the connection (the
+ * wizard asks to confirm, streams the file and reports errors), instead of opening it in the
+ * editor. Queries live as `.sql` files in the queries folder, so the file is what the wizard
+ * reads: it is never copied or sent through the editor.
+ */
+export async function importSavedQuery(
+  connection: OpenConnection,
+  query: SavedQuery,
+): Promise<void> {
+  try {
+    const path = await ipc.savedQueries.path(query.id);
+    openImport({ connectionId: connection.info.connectionId, kind: "sql", table: null }, path);
+  } catch (e) {
+    toast.error("Could not import the query", { description: toIpcError(e).message });
+  }
 }

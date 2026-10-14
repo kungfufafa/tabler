@@ -23,10 +23,20 @@ import {
   QUERY_PARAM_SYNTAXES,
   setPref,
   usePrefs,
+  type AutoSaveQueryTabs,
+  type EditorAcceptKey,
   type Prefs,
   type QueryParamSyntax,
+  type ResultViewMode,
 } from "@/stores/prefs";
-import { changeEditorFontSize, EDITOR_FONT_SIZES, QUERY_PARAM_EXAMPLES } from "./editorSettings";
+import {
+  ACCEPT_KEY_LABELS,
+  AUTO_SAVE_TAB_LABELS,
+  changeEditorFontSize,
+  EDITOR_FONT_SIZES,
+  QUERY_PARAM_EXAMPLES,
+  RESULT_VIEW_LABELS,
+} from "./editorSettings";
 
 type BoolPref = {
   [K in keyof Prefs]: Prefs[K] extends boolean ? K : never;
@@ -51,11 +61,44 @@ function Shortcut({ action }: { action: Parameters<typeof shortcutFor>[0] }) {
   return combo ? <DropdownMenuShortcut>{formatCombo(combo)}</DropdownMenuShortcut> : null;
 }
 
+/** A radio submenu over one preference. */
+function RadioSub<K extends keyof Prefs>({
+  label,
+  pref,
+  labels,
+  width = "w-56",
+}: {
+  label: string;
+  pref: K;
+  labels: Record<Extract<Prefs[K], string>, string>;
+  width?: string;
+}) {
+  const value = usePrefs((p) => p[pref]);
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>{label}</DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className={width}>
+        <DropdownMenuRadioGroup
+          value={String(value)}
+          onValueChange={(v) => setPref(pref, v as Prefs[K])}
+        >
+          {(Object.keys(labels) as Extract<Prefs[K], string>[]).map((v) => (
+            <DropdownMenuRadioItem key={v} value={v} onSelect={(e) => e.preventDefault()}>
+              {labels[v]}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+}
+
 /**
  * The ⚙ menu of the editor bar (TablePlus's SQL editor settings): font size, line wrapping, the
- * current-query highlight, invisible characters, autocomplete and query params options, Return
- * on Error, Raise Notice notifications (PostgreSQL). Every item is a preference shared by all
- * query tabs (also in Settings ▸ Editor).
+ * current-query highlight, invisible characters, scrollers, Auto Save SQL Query Tab, autocomplete
+ * and query params options, the result view mode and row numbers, Return on Error, Raise Notice
+ * notifications (PostgreSQL). Every item is a preference shared by all query tabs (also in
+ * Settings ▸ Editor).
  */
 export function EditorSettingsMenu() {
   const fontSize = usePrefs((p) => p.editorFontSize);
@@ -119,15 +162,34 @@ export function EditorSettingsMenu() {
         <Check pref="editorLineWrap" label="Wrap Lines to Editor Width" />
         <Check pref="editorHighlightCurrentQuery" label="Highlight Current Query" />
         <Check pref="editorShowInvisibles" label="Show Invisible Characters" />
+        <Check pref="editorShowScrollers" label="Show Scrollers" />
+        <RadioSub<"autoSaveQueryTabs">
+          label="Auto Save SQL Query Tab"
+          pref="autoSaveQueryTabs"
+          labels={AUTO_SAVE_TAB_LABELS satisfies Record<AutoSaveQueryTabs, string>}
+          width="w-96"
+        />
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>Autocomplete Options</DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="w-80">
+            <Check pref="editorCompleteTables" label="Tables" />
+            <Check pref="editorCompleteKeywords" label="Keywords" />
+            <DropdownMenuSeparator />
             <Check pref="editorDisableSuggestions" label="Disable All Suggestions" />
+            <Check pref="editorAddWhitespace" label="Automatically Add a Whitespace" />
+            <Check pref="editorPrefixSchemas" label="Automatically Prefix Schemas" />
             <Check pref="editorUppercaseKeywords" label="Automatically Uppercase Keywords" />
             <Check
               pref="editorCloseBrackets"
               label="Automatically Insert Closing Braces and Quotes"
+            />
+            <DropdownMenuSeparator />
+            <RadioSub<"editorAcceptKey">
+              label="Auto-complete Key"
+              pref="editorAcceptKey"
+              labels={ACCEPT_KEY_LABELS satisfies Record<EditorAcceptKey, string>}
+              width="w-44"
             />
           </DropdownMenuSubContent>
         </DropdownMenuSub>
@@ -165,6 +227,13 @@ export function EditorSettingsMenu() {
             />
           </DropdownMenuSubContent>
         </DropdownMenuSub>
+        <RadioSub<"resultViewMode">
+          label="Result View Mode"
+          pref="resultViewMode"
+          labels={RESULT_VIEW_LABELS satisfies Record<ResultViewMode, string>}
+          width="w-64"
+        />
+        <Check pref="resultRowNumbers" label="Show Result Row Numbers" />
         <DropdownMenuSeparator />
         <Check pref="editorStopOnError" label="Return on Error" />
         <Check pref="editorRaiseNotices" label="Enable Raise Notice Notifications" />

@@ -7,36 +7,84 @@ use uuid::Uuid;
 use crate::commands::browse::cached_meta;
 use crate::drivers::TxStatement;
 use crate::drivers::postgres::decode::text_to_value;
-use crate::error::AppError;
+use crate::error::{AppError, ErrorPayload};
 use crate::sqlgen::mutate::{TableSpec, build_change, ordered};
 use crate::sqlgen::select::inline_params;
-use crate::state::AppState;
+use crate::state::{AppState, Connection};
 use crate::types::mutate::{ApplyRequest, ApplyResult, RowResult};
 use crate::types::profile::Driver;
 use crate::types::query::ExecOutcome;
 use crate::types::schema::ColumnMeta;
 use crate::types::value::Value;
 
-/// Statements for a request, in execution order, with the change they came from.
-async fn plan(
-    state: &AppState,
-    connection_id: Uuid,
-    req: &ApplyRequest,
-) -> Result<
-    (
-        Vec<(usize, TxStatement)>,
-        Vec<ColumnMeta>,
-        Driver,
-        crate::sqlgen::Dialect,
-    ),
-    AppError,
-> {
-    let conn = state.connection(connection_id).await?;
+/// A request planned against the table's cached metadata: its statements in execution order,
+/// each with the index of the change it came from.
+pub struct PlannedRows {
+    pub statements: Vec<(usize, TxStatement)>,
+    pub columns: Vec<ColumnMeta>,
+    pub driver: Driver,
+    pub dialect: crate::sqlgen::Dialect,
+}
+
+impl PlannedRows {
+    /// The statements with their literals inlined (what the preview shows).
+    pub fn sql(&self) -> Vec<String> {
+        self.statements
+            .iter()
+            .map(|(_, st)| inline_params(self.dialect, &st.sql, &st.params))
+            .collect()
+    }
+
+    /// One result per statement after the transaction ran (`outcomes` in statement order).
+    pub fn results(&self, req: &ApplyRequest, outcomes: &[ExecOutcome]) -> Vec<RowResult> {
+        self.statements
+            .iter()
+            .zip(outcomes.iter())
+            .map(|((index, _), outcome)| {
+                let change = &req.changes[*index];
+                RowResult {
+                    row_id: change.row_id().to_string(),
+                    op: change.op_name().to_string(),
+                    affected: outcome.affected,
+                    returned: returned_row(self.driver, &self.columns, outcome),
+                    error: None,
+                }
+            })
+            .collect()
+    }
+
+    /// One result per statement after the transaction failed: `failed` (an index into the
+    /// statements) carries `payload`.
+    pub fn failed_results(
+        &self,
+        req: &ApplyRequest,
+        failed: Option<usize>,
+        payload: &ErrorPayload,
+    ) -> Vec<RowResult> {
+        self.statements
+            .iter()
+            .enumerate()
+            .map(|(i, (index, _))| {
+                let change = &req.changes[*index];
+                RowResult {
+                    row_id: change.row_id().to_string(),
+                    op: change.op_name().to_string(),
+                    affected: 0,
+                    returned: None,
+                    error: (failed == Some(i)).then(|| payload.clone()),
+                }
+            })
+            .collect()
+    }
+}
+
+/// Plans a request on a connection (refused on a read-only one).
+pub async fn plan_rows(conn: &Connection, req: &ApplyRequest) -> Result<PlannedRows, AppError> {
     if conn.profile.options.read_only {
         return Err(AppError::Unsupported("this connection is read-only".into()));
     }
     let session = conn.session().await;
-    let meta = cached_meta(&conn, &req.table).await?;
+    let meta = cached_meta(conn, &req.table).await?;
     let dialect = session.dialect();
     let spec = TableSpec {
         dialect,
@@ -55,7 +103,21 @@ async fn plan(
         st.expect_affected = expect;
         out.push((index, st));
     }
-    Ok((out, meta.columns.clone(), session.driver(), dialect))
+    Ok(PlannedRows {
+        statements: out,
+        columns: meta.columns.clone(),
+        driver: session.driver(),
+        dialect,
+    })
+}
+
+async fn plan(
+    state: &AppState,
+    connection_id: Uuid,
+    req: &ApplyRequest,
+) -> Result<PlannedRows, AppError> {
+    let conn = state.connection(connection_id).await?;
+    plan_rows(&conn, req).await
 }
 
 #[tauri::command]
@@ -64,11 +126,7 @@ pub async fn preview_changes(
     connection_id: Uuid,
     req: ApplyRequest,
 ) -> Result<Vec<String>, AppError> {
-    let (statements, _, _, dialect) = plan(&state, connection_id, &req).await?;
-    Ok(statements
-        .iter()
-        .map(|(_, st)| inline_params(dialect, &st.sql, &st.params))
-        .collect())
+    Ok(plan(&state, connection_id, &req).await?.sql())
 }
 
 fn returned_row(
@@ -99,12 +157,9 @@ pub async fn apply_changes(
     req: ApplyRequest,
 ) -> Result<ApplyResult, AppError> {
     let started = Instant::now();
-    let (statements, columns, driver, dialect) = plan(&state, connection_id, &req).await?;
-    let sql: Vec<String> = statements
-        .iter()
-        .map(|(_, st)| inline_params(dialect, &st.sql, &st.params))
-        .collect();
-    if statements.is_empty() {
+    let planned = plan(&state, connection_id, &req).await?;
+    let sql = planned.sql();
+    if planned.statements.is_empty() {
         return Ok(ApplyResult {
             success: true,
             results: vec![],
@@ -116,57 +171,29 @@ pub async fn apply_changes(
     let session = state.session(connection_id).await?;
     log::info!(
         "apply_changes {} statement(s) on {}",
-        statements.len(),
+        planned.statements.len(),
         req.table.name
     );
     match session
-        .transaction(statements.iter().map(|(_, st)| st.clone()).collect())
+        .transaction(
+            planned
+                .statements
+                .iter()
+                .map(|(_, st)| st.clone())
+                .collect(),
+        )
         .await
     {
-        Ok(outcomes) => {
-            let results = statements
-                .iter()
-                .zip(outcomes.iter())
-                .map(|((index, _), outcome)| {
-                    let change = &req.changes[*index];
-                    RowResult {
-                        row_id: change.row_id().to_string(),
-                        op: change.op_name().to_string(),
-                        affected: outcome.affected,
-                        returned: returned_row(driver, &columns, outcome),
-                        error: None,
-                    }
-                })
-                .collect();
-            Ok(ApplyResult {
-                success: true,
-                results,
-                sql,
-                error: None,
-                duration_ms: started.elapsed().as_millis() as u64,
-            })
-        }
+        Ok(outcomes) => Ok(ApplyResult {
+            success: true,
+            results: planned.results(&req, &outcomes),
+            sql,
+            error: None,
+            duration_ms: started.elapsed().as_millis() as u64,
+        }),
         Err(err) => {
             let payload = err.to_payload();
-            let failed = payload.statement_index;
-            let results = statements
-                .iter()
-                .enumerate()
-                .map(|(i, (index, _))| {
-                    let change = &req.changes[*index];
-                    RowResult {
-                        row_id: change.row_id().to_string(),
-                        op: change.op_name().to_string(),
-                        affected: 0,
-                        returned: None,
-                        error: if failed == Some(i) {
-                            Some(payload.clone())
-                        } else {
-                            None
-                        },
-                    }
-                })
-                .collect();
+            let results = planned.failed_results(&req, payload.statement_index, &payload);
             Ok(ApplyResult {
                 success: false,
                 results,

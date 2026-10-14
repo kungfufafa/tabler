@@ -6,9 +6,17 @@ import type { Dialect, IndexDef, TableRef } from "@/lib/ipc";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { ChoiceCell, ColumnsCell } from "./cells";
-import { rowDeleteKey } from "./dom";
-import type { CheckRow, FkRow, IndexRow, RowStatus, TriggerRow } from "./model";
-import { CellInput, HEAD_ROW, IconAction, SectionHeader } from "./parts";
+import { requiresIndexPrefix, supportsIndexPrefix } from "./columnEdits";
+import { focusRowOnMouseDown, rowDeleteKey } from "./dom";
+import {
+  entryBase,
+  type CheckRow,
+  type FkRow,
+  type IndexRow,
+  type RowStatus,
+  type TriggerRow,
+} from "./model";
+import { CellInput, HEAD_ROW, IconAction, SectionHeader, type PrefixLengths } from "./parts";
 import {
   indexMethods,
   supportsIncludeColumns,
@@ -31,10 +39,28 @@ function Th({ children, className }: { children?: ReactNode; className?: string 
   return <th className={cn("truncate px-3 font-mono font-medium", className)}>{children}</th>;
 }
 
-function EmptyRow({ span, text }: { span: number; text: string }) {
+/** The grids a double-click on blank space adds a row to (`data-blank-row`, see StructureTab). */
+export type BlankKind = "columns" | "indexes" | "triggers";
+
+/** "No indexes": a double-click on it adds one while the table can be changed (`kind`). */
+export function EmptyRow({ span, text, kind }: { span: number; text: string; kind?: BlankKind }) {
   return (
-    <tr>
+    <tr data-blank-row={kind}>
       <td colSpan={span} className="text-muted-foreground px-3 py-2 text-[11px] italic">
+        {text}
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * The empty row that ends an editable grid: a double-click on it (or on any blank space of the
+ * grid) adds a row, as TablePlus's "double-click a blank row".
+ */
+export function BlankRow({ span, kind, text }: { span: number; kind: BlankKind; text: string }) {
+  return (
+    <tr data-blank-row={kind} className="h-7">
+      <td colSpan={span} className="text-muted-foreground/50 px-3 text-[11px] italic select-none">
         {text}
       </td>
     </tr>
@@ -107,6 +133,7 @@ export function IndexesSection({
   dialect,
   editable,
   columns,
+  columnTypes,
   onAdd,
   onEdit,
   onDrop,
@@ -117,6 +144,8 @@ export function IndexesSection({
   editable: boolean;
   /** Live column names (for column_name). */
   columns: readonly string[];
+  /** Live column name → data type (MySQL: which columns take an index prefix length). */
+  columnTypes?: ReadonlyMap<string, string>;
   onAdd: () => void;
   onEdit: (key: string, patch: Partial<IndexDef>) => void;
   onDrop: (key: string) => void;
@@ -132,6 +161,21 @@ export function IndexesSection({
   ];
   const span = 5 + (include ? 1 : 0) + (partial ? 1 : 0) + (comments ? 1 : 0);
   const newKeys = shortcutFor("grid.new-row");
+  const mysql = dialect === "mysql";
+  /** MySQL: a prefix length per char / text / blob column (not for FULLTEXT and SPATIAL). */
+  const lengthsOf = (r: IndexRow): PrefixLengths | undefined => {
+    if (!mysql) return undefined;
+    const whole = ["FULLTEXT", "SPATIAL"].includes((r.method ?? "").toUpperCase());
+    const type = (c: string) => columnTypes?.get(c) ?? "";
+    return {
+      eligible: (c) => !whole && supportsIndexPrefix(type(c)),
+      required: (c) => !whole && requiresIndexPrefix(type(c)),
+    };
+  };
+  // (an entry `name(10)` is the chip of its column, not a chip of its own)
+  const optionsOf = (r: IndexRow) => [
+    ...new Set([...columns, ...r.columns.filter((e) => !mysql || !columns.includes(entryBase(e)))]),
+  ];
   return (
     <section aria-label="Indexes">
       <SectionHeader title="Indexes" count={rows.filter((r) => r.status !== "dropped").length}>
@@ -190,11 +234,14 @@ export function IndexesSection({
             return (
               <tr
                 key={r.key}
-                className={rowClass(r.status)}
+                className={cn(rowClass(r.status), "outline-none")}
                 data-status={r.status}
                 data-row-kind="index"
                 data-row-key={r.key}
                 data-index-key={r.key}
+                // a row the Delete key can act on
+                tabIndex={-1}
+                onMouseDown={focusRowOnMouseDown}
                 onKeyDown={(e) => {
                   if (editable && !r.primary)
                     rowDeleteKey(e, () =>
@@ -244,11 +291,12 @@ export function IndexesSection({
                 <td className="px-1">
                   <ColumnsCell
                     value={r.columns}
-                    options={[...new Set([...columns, ...r.columns])]}
+                    options={optionsOf(r)}
                     onChange={(next) => onEdit(r.key, { columns: next })}
                     label={`${r.name} columns`}
                     cellKey={`${r.key}:columns`}
                     disabled={!canEdit}
+                    lengths={lengthsOf(r)}
                   />
                 </td>
                 {include && (
@@ -281,7 +329,12 @@ export function IndexesSection({
               </tr>
             );
           })}
-          {rows.length === 0 && <EmptyRow span={span} text="No indexes" />}
+          {rows.length === 0 && (
+            <EmptyRow span={span} text="No indexes" kind={editable ? "indexes" : undefined} />
+          )}
+          {editable && (
+            <BlankRow span={span} kind="indexes" text="+ double-click to add an index" />
+          )}
         </tbody>
       </table>
     </section>
@@ -337,10 +390,12 @@ export function ChecksSection({
             return (
               <tr
                 key={r.key}
-                className={rowClass(r.status)}
+                className={cn(rowClass(r.status), "outline-none")}
                 data-status={r.status}
                 data-row-kind="check"
                 data-row-key={r.key}
+                tabIndex={-1}
+                onMouseDown={focusRowOnMouseDown}
                 onKeyDown={(e) => {
                   if (editable)
                     rowDeleteKey(e, () =>
@@ -641,7 +696,20 @@ export function TriggersSection({
               </tr>
             );
           })}
-          {rows.length === 0 && <EmptyRow span={enabledColumn ? 6 : 5} text="No triggers" />}
+          {rows.length === 0 && (
+            <EmptyRow
+              span={enabledColumn ? 6 : 5}
+              text="No triggers"
+              kind={editable ? "triggers" : undefined}
+            />
+          )}
+          {editable && (
+            <BlankRow
+              span={enabledColumn ? 6 : 5}
+              kind="triggers"
+              text="+ double-click to add a trigger"
+            />
+          )}
         </tbody>
       </table>
     </section>

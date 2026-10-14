@@ -33,8 +33,8 @@ use tabler_lib::error::AppError;
 use tabler_lib::secrets::{Backend, SecretKind, Secrets};
 use tabler_lib::state::{AppState, Connection};
 use tabler_lib::tunnel::{
-    AppHostKeys, MemoryHostKeys, PendingHostKey, TunnelAuth, TunnelHandle, TunnelStatus,
-    accept_pending_host_key, open_tunnel, trust_host_key,
+    AppHostKeys, ForwardTarget, MemoryHostKeys, PendingHostKey, TunnelAuth, TunnelHandle,
+    TunnelStatus, accept_pending_host_key, open_tunnel, open_tunnel_to, trust_host_key,
 };
 use tabler_lib::types::profile::{
     ConnStatus, ConnectionInfo, ConnectionProfile, Driver, ProfileInput, ProfileOptions, SshAuth,
@@ -346,6 +346,42 @@ impl server::Handler for ServerHandler {
         });
         Ok(())
     }
+
+    /// `direct-streamlocal@openssh.com`: a Unix socket on the server (MySQL socket over SSH).
+    async fn channel_open_direct_streamlocal(
+        &mut self,
+        channel: Channel<Msg>,
+        socket_path: &str,
+        reply: server::ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.forwards.fetch_add(1, Ordering::SeqCst);
+        let path = socket_path.to_string();
+        tokio::spawn(async move {
+            match tokio::net::UnixStream::connect(&path).await {
+                Ok(mut unix) => {
+                    reply.accept().await;
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut unix).await;
+                }
+                Err(_) => reply.reject(ChannelOpenFailure::ConnectFailed).await,
+            }
+        });
+        Ok(())
+    }
+}
+
+/// Unix socket echo server at `path`.
+fn start_unix_echo(path: &Path) {
+    let listener = tokio::net::UnixListener::bind(path).unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let (mut r, mut w) = socket.split();
+                let _ = tokio::io::copy(&mut r, &mut w).await;
+            });
+        }
+    });
 }
 
 /// TCP echo server; returns its port.
@@ -372,6 +408,7 @@ fn ssh_cfg(port: u16, auth: SshAuth, key_path: Option<&Path>) -> SshConfig {
         key_path: key_path.map(|p| p.display().to_string()),
         local_port: None,
         keepalive_secs: Some(5),
+        password_mode: None,
     }
 }
 
@@ -1027,6 +1064,89 @@ async fn unreachable_target_reports_a_forwarding_error() {
     tunnel.close().await;
 }
 
+/// MySQL "Use socket" over SSH: the tunnel forwards its local port to a Unix socket on the SSH
+/// server, trying the usual places in turn when no path was typed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn socket_target_forwards_to_the_servers_unix_socket() {
+    let server = SshServer::start(random_key().public_key().clone()).await;
+    let trust = trusting(&server);
+    let cfg = ssh_cfg(server.port(), SshAuth::Password, None);
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("mysqld.sock");
+    start_unix_echo(&sock);
+    let missing = dir.path().join("none.sock").to_string_lossy().into_owned();
+    let target = ForwardTarget::Socket(vec![missing.clone(), sock.to_string_lossy().into_owned()]);
+    let tunnel = tokio::time::timeout(
+        Duration::from_secs(20),
+        open_tunnel_to(&cfg, password(PASSWORD), target, &trust),
+    )
+    .await
+    .expect("open timed out")
+    .unwrap();
+    round_trip(tunnel.local_port(), 64 * 1024).await;
+    // The path that opened is tried first from then on.
+    let before = server.forwards();
+    round_trip(tunnel.local_port(), 1024).await;
+    assert_eq!(server.forwards(), before + 1);
+    tunnel.close().await;
+
+    // No socket there: the forward fails and says so.
+    let target = ForwardTarget::Socket(vec![missing]);
+    let tunnel = open_tunnel_to(&cfg, password(PASSWORD), target, &trust)
+        .await
+        .unwrap();
+    let started = Instant::now();
+    let mut stream = TcpStream::connect((LOCALHOST, tunnel.local_port()))
+        .await
+        .unwrap();
+    let mut buf = [0u8; 8];
+    let n = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buf))
+        .await
+        .expect("forwarded stream was not closed")
+        .unwrap_or(0);
+    assert_eq!(n, 0);
+    let err = tunnel.explain_error(AppError::Connect("connection closed".into()), started);
+    assert!(
+        matches!(&err, AppError::Tunnel(m) if m.contains("could not open the socket")),
+        "{err:?}"
+    );
+    tunnel.close().await;
+}
+
+/// Another workspace of a profile leases the same tunnel: closing one lease leaves it up for the
+/// other; the last one closes it and frees the port.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shared_tunnel_stays_up_until_its_last_lease_closes() {
+    let echo = start_echo().await;
+    let server = SshServer::start(random_key().public_key().clone()).await;
+    let trust = trusting(&server);
+    let cfg = ssh_cfg(server.port(), SshAuth::Password, None);
+    let first = open(&cfg, password(PASSWORD), echo, &trust).await.unwrap();
+    let second = first.share().expect("an up tunnel is shared");
+    assert!(second.same_tunnel(&first));
+    assert_eq!(
+        (first.leases(), second.local_port()),
+        (2, first.local_port())
+    );
+    let port = first.local_port();
+    first.close().await;
+    // Closing twice gives the lease back once.
+    first.close().await;
+    assert!(second.is_up());
+    assert_eq!(second.leases(), 1);
+    round_trip(port, 4096).await;
+    // Dropping a lease (a connection that failed to open) keeps the others.
+    let third = second.share().expect("still up");
+    assert_eq!(second.leases(), 2);
+    drop(third);
+    assert_eq!(second.leases(), 1);
+    assert!(second.is_up(), "dropping a lease keeps the others");
+    second.close().await;
+    assert!(!second.is_up());
+    assert!(second.share().is_none());
+    assert_refused(port).await;
+}
+
 /// Regression: with `AuthenticationMethods password,keyboard-interactive` the password was also
 /// sent as the answer to the one-time-code prompt (handing it to the second-factor backend and
 /// burning an attempt there), and the user was told that the correct password had failed.
@@ -1616,6 +1736,42 @@ async fn register_connection(
         .await
         .insert(conn.id, conn.clone());
     conn
+}
+
+/// A second workspace of a profile that pins its local port (another database of the server)
+/// leases the open connection's tunnel instead of binding the port again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_workspace_shares_the_profiles_pinned_tunnel() {
+    let server = SshServer::start(random_key().public_key().clone()).await;
+    let state = test_state();
+    trust_in_appdb(&state, &server);
+    let dir = tempfile::tempdir().unwrap();
+    let pinned = free_port();
+    let base = profile(
+        Driver::Postgres,
+        LOCALHOST.into(),
+        Some(free_port()),
+        Some("tabler".into()),
+        Some("tabler".into()),
+    );
+    let profile_a = tunneled_profile(base, &server, pinned);
+    let conn = register_connection(&state, &profile_a, dir.path()).await;
+    let mut other_db = profile_a.clone();
+    other_db.database = Some("analytics".into());
+    let shared = state.shared_tunnel(&other_db).await.expect("shared");
+    assert_eq!(shared.local_port(), pinned);
+    assert!(shared.same_tunnel(conn.tunnel.as_ref().unwrap()));
+    // Another profile (or edited SSH settings) gets no lease of it.
+    let mut profile_b = profile_a.clone();
+    profile_b.id = Uuid::new_v4();
+    assert!(state.shared_tunnel(&profile_b).await.is_none());
+    // The first workspace closes: the second keeps the tunnel.
+    conn.tunnel.as_ref().unwrap().close().await;
+    assert!(shared.is_up());
+    shared.close().await;
+    assert!(!conn.tunnel.as_ref().unwrap().is_up());
+    assert!(state.shared_tunnel(&other_db).await.is_none());
+    conn.session().await.close().await;
 }
 
 /// Regression: Reconnect (connect the profile again, then disconnect the old connection) always

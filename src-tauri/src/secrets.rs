@@ -1,6 +1,7 @@
 //! Secret storage: macOS Keychain through `keyring`, or a plaintext table in the app DB when
 //! `TABLER_SECRETS_BACKEND=file` (development only — unsigned rebuilds trigger Keychain prompts).
-//! Also the "Command Line (IAM authentication)" password mode: [`run_password_command`].
+//! Also the "Command Line (IAM authentication)" password mode: [`run_password_command`], and the
+//! bootstrap CLI script run before connecting: [`run_bootstrap_script`].
 
 use std::process::Stdio;
 use std::sync::Arc;
@@ -383,6 +384,156 @@ pub async fn run_password_command(command: &str, timeout: Duration) -> Result<St
     }
 }
 
+/// How long a bootstrap CLI script may run before the connect gives up on it.
+pub const BOOTSTRAP_SCRIPT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A file in the temp directory that receives a script's output and is removed when dropped
+/// (processes the script left running keep writing to the unlinked file).
+struct OutputFile(std::path::PathBuf);
+
+/// How much of the end of a script's output is read to build an error message, however much the
+/// script wrote.
+const TAIL_READ: u64 = 16 * 1024;
+
+impl OutputFile {
+    /// Creates the file readable by the user only: a script's output may hold tokens.
+    fn create() -> Result<(OutputFile, std::fs::File), AppError> {
+        let path =
+            std::env::temp_dir().join(format!("tabler-bootstrap-{}.log", Uuid::new_v4().simple()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let file = options
+            .open(&path)
+            .map_err(|e| AppError::Io(format!("bootstrap script output: {e}")))?;
+        Ok((OutputFile(path), file))
+    }
+
+    /// The last [`STDERR_LIMIT`] characters of what was written. Only the last [`TAIL_READ`] bytes
+    /// of the file are read, whatever its size.
+    fn tail(&self) -> String {
+        std::fs::File::open(&self.0)
+            .map(tail_of)
+            .unwrap_or_default()
+    }
+}
+
+/// The last [`STDERR_LIMIT`] characters of `source`, from its last [`TAIL_READ`] bytes at most
+/// (`…` in front when text was left out).
+fn tail_of<R: std::io::Read + std::io::Seek>(mut source: R) -> String {
+    use std::io::{Read as _, SeekFrom};
+    let read = |source: &mut R| -> std::io::Result<(Vec<u8>, bool)> {
+        let len = source.seek(SeekFrom::End(0))?;
+        let start = len.saturating_sub(TAIL_READ);
+        source.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::new();
+        source.take(TAIL_READ).read_to_end(&mut bytes)?;
+        Ok((bytes, start > 0))
+    };
+    let (bytes, cut_file) = read(&mut source).unwrap_or_default();
+    // The read may start inside a character: drop what is left of it.
+    let from = if cut_file {
+        bytes
+            .iter()
+            .take(3)
+            .take_while(|b| (**b & 0xC0) == 0x80)
+            .count()
+    } else {
+        0
+    };
+    let text = String::from_utf8_lossy(&bytes[from..]);
+    let text = text.trim();
+    let skip = text.chars().count().saturating_sub(STDERR_LIMIT);
+    let text = match text.char_indices().nth(skip) {
+        Some((cut, _)) => &text[cut..],
+        None => text,
+    };
+    if text.is_empty() {
+        String::new()
+    } else if cut_file || skip > 0 {
+        format!("…{text}")
+    } else {
+        text.to_string()
+    }
+}
+
+impl Drop for OutputFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Runs a connection's bootstrap CLI script (b546) before connecting: `$SHELL -l -c <script>`
+/// (the login shell, as for password commands; see [`shell_flags`]) with `env` added, no stdin
+/// and a `timeout`, in a process group of its own. Its output (stdout and stderr) goes to a
+/// temporary file, so what it starts in the background (a proxy, a port forward) can keep
+/// running and writing after the script ends. A script that fails (non-zero exit) or times out
+/// has its whole process group killed, and the error carries the end of its output.
+pub async fn run_bootstrap_script(
+    script: &str,
+    env: &[(&str, String)],
+    timeout: Duration,
+) -> Result<(), AppError> {
+    let script = script.trim();
+    if script.is_empty() {
+        return Ok(());
+    }
+    let (output, file) = OutputFile::create()?;
+    let err_file = file
+        .try_clone()
+        .map_err(|e| AppError::Io(format!("bootstrap script output: {e}")))?;
+    let shell = login_shell();
+    let mut cmd = tokio::process::Command::new(&shell);
+    cmd.args(shell_flags(&shell))
+        .arg(script)
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(file))
+        .stderr(Stdio::from(err_file))
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let mut child = cmd.spawn().map_err(|e| {
+        AppError::Connect(format!("cannot run the bootstrap script ({shell}): {e}"))
+    })?;
+    // Killed on timeout, failure or when the connect waiting for it is given up (dropped).
+    let mut group = ProcessGroup(child.id().and_then(|id| i32::try_from(id).ok()));
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(status) => status,
+        Err(_) => {
+            group.kill();
+            let out = output.tail();
+            return Err(AppError::Connect(format!(
+                "the bootstrap script did not finish within {}s{}",
+                timeout.as_secs(),
+                if out.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {out}")
+                }
+            )));
+        }
+    }
+    .map_err(|e| AppError::Connect(format!("the bootstrap script failed: {e}")))?;
+    if !status.success() {
+        group.kill();
+        let status = match status.code() {
+            Some(code) => format!("exit status {code}"),
+            None => "killed by a signal".into(),
+        };
+        let out = output.tail();
+        return Err(AppError::Connect(if out.is_empty() {
+            format!("the bootstrap script failed ({status})")
+        } else {
+            format!("the bootstrap script failed ({status}): {out}")
+        }));
+    }
+    // Success: what it started in the background is the point of the script (a proxy…).
+    group.0 = None;
+    Ok(())
+}
+
 type FetchPassword = Arc<dyn Fn() -> BoxFuture<'static, Result<String, AppError>> + Send + Sync>;
 
 /// The password of a session whose profile gets it from a command ("Command Line (IAM
@@ -584,6 +735,227 @@ mod tests {
             .unwrap();
         assert_eq!(out, "tok");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_scripts_run_before_connecting() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        // Multi-line scripts with the connection's variables.
+        let script = format!(
+            "set -e\nprintf '%s' \"$TABLER_CONNECTION\" > \"{}\"\necho done",
+            marker.display()
+        );
+        run_bootstrap_script(
+            &script,
+            &[("TABLER_CONNECTION", "prod".into())],
+            BOOTSTRAP_SCRIPT_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "prod");
+        // A failure aborts with the end of its output (stdout and stderr).
+        let err = run_bootstrap_script(
+            "echo starting; echo 'proxy: port in use' >&2; exit 3",
+            &[],
+            BOOTSTRAP_SCRIPT_TIMEOUT,
+        )
+        .await
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exit status 3") && msg.contains("proxy: port in use"),
+            "{msg}"
+        );
+        assert!(msg.contains("starting"), "{msg}");
+        // Empty: nothing runs.
+        run_bootstrap_script("  ", &[], BOOTSTRAP_SCRIPT_TIMEOUT)
+            .await
+            .unwrap();
+    }
+
+    /// A proxy started in the background keeps running after the script ends; a script that
+    /// times out is killed with everything it started.
+    #[tokio::test]
+    async fn bootstrap_background_jobs_survive_but_timeouts_kill_the_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let alive = |pid: &str| {
+            std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", pid])
+                .output()
+                .map(|o| {
+                    let stat = String::from_utf8_lossy(&o.stdout);
+                    o.status.success() && !stat.trim().is_empty() && !stat.contains('Z')
+                })
+                .unwrap_or(false)
+        };
+        let script = format!(
+            "sleep 30 & echo $! > \"{}\"; echo started",
+            pid_file.display()
+        );
+        let started = std::time::Instant::now();
+        run_bootstrap_script(&script, &[], BOOTSTRAP_SCRIPT_TIMEOUT)
+            .await
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let pid = pid.trim().to_string();
+        assert!(alive(&pid), "the background job was killed");
+        let _ = std::process::Command::new("kill").arg(&pid).status();
+
+        let err = run_bootstrap_script(
+            &format!("sleep 30 & echo $! > \"{}\"; sleep 30", pid_file.display()),
+            &[],
+            Duration::from_millis(500),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("did not finish within"), "{err}");
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let pid = pid.trim().to_string();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while alive(&pid) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !alive(&pid),
+            "the background job of a timed-out script still runs"
+        );
+    }
+
+    /// A source of `len` bytes that is never in memory, counting what is read from it: the end
+    /// of a script's output must be found without reading the rest.
+    struct Endless {
+        len: u64,
+        pos: u64,
+        read: u64,
+    }
+
+    impl Endless {
+        const END: &'static [u8] = b"proxy: port in use\n";
+
+        fn byte(&self, at: u64) -> u8 {
+            let end_start = self.len - Self::END.len() as u64;
+            if at >= end_start {
+                Self::END[(at - end_start) as usize]
+            } else if at % 20 == 19 {
+                b'\n'
+            } else {
+                b'a' + (at % 20) as u8
+            }
+        }
+    }
+
+    impl std::io::Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = (buf.len() as u64).min(self.len.saturating_sub(self.pos)) as usize;
+            for (i, b) in buf[..n].iter_mut().enumerate() {
+                *b = self.byte(self.pos + i as u64);
+            }
+            self.pos += n as u64;
+            self.read += n as u64;
+            Ok(n)
+        }
+    }
+
+    impl std::io::Seek for Endless {
+        fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.pos = match to {
+                std::io::SeekFrom::Start(p) => p,
+                std::io::SeekFrom::End(d) => self.len.checked_add_signed(d).unwrap(),
+                std::io::SeekFrom::Current(d) => self.pos.checked_add_signed(d).unwrap(),
+            };
+            Ok(self.pos)
+        }
+    }
+
+    #[test]
+    fn the_tail_of_a_huge_output_reads_only_its_end() {
+        // 40 GiB: reading it all (the old `fs::read`) would not finish.
+        let mut source = Endless {
+            len: 40 << 30,
+            pos: 0,
+            read: 0,
+        };
+        let tail = tail_of(&mut source);
+        assert!(source.read <= TAIL_READ, "{} bytes read", source.read);
+        assert!(tail.starts_with('…'), "{tail}");
+        assert!(tail.ends_with("proxy: port in use"), "{tail}");
+        assert!(tail.chars().count() <= STDERR_LIMIT + 1, "{}", tail.len());
+
+        // Short output is returned whole, trimmed, without the ellipsis.
+        assert_eq!(
+            tail_of(std::io::Cursor::new(b"  one\ntwo \n\n")),
+            "one\ntwo"
+        );
+        assert_eq!(tail_of(std::io::Cursor::new(b"")), "");
+        assert_eq!(tail_of(std::io::Cursor::new(b" \n ")), "");
+        // More than STDERR_LIMIT characters: the last ones, with the ellipsis.
+        let long = format!("{}END", "x".repeat(2 * STDERR_LIMIT));
+        let tail = tail_of(std::io::Cursor::new(long.as_bytes()));
+        assert_eq!(tail.chars().count(), STDERR_LIMIT + 1);
+        assert!(tail.starts_with("…x") && tail.ends_with("xEND"), "{tail}");
+    }
+
+    #[test]
+    fn a_tail_that_starts_inside_a_character_drops_it() {
+        // 20000 two-byte characters and a byte: the read starts on the second byte of one.
+        let text = format!("{}a", "é".repeat(20_000));
+        assert_eq!(
+            (text.len() as u64 - TAIL_READ) % 2,
+            1,
+            "the read must cut a character"
+        );
+        let tail = tail_of(std::io::Cursor::new(text.as_bytes()));
+        assert!(!tail.contains('\u{FFFD}'), "{tail}");
+        assert!(tail.starts_with("…é") && tail.ends_with("éa"), "{tail}");
+        // Four-byte characters, any alignment.
+        for pad in 0..4 {
+            let text = format!("{}{}", "z".repeat(pad), "\u{1F600}".repeat(10_000));
+            let tail = tail_of(std::io::Cursor::new(text.as_bytes()));
+            assert!(!tail.contains('\u{FFFD}'), "pad {pad}: {tail}");
+            assert_eq!(tail.chars().count(), STDERR_LIMIT + 1, "pad {pad}");
+        }
+    }
+
+    #[test]
+    fn a_big_output_file_is_tailed_quickly() {
+        use std::io::Write as _;
+        let (output, file) = OutputFile::create().unwrap();
+        let mut out = std::io::BufWriter::new(file);
+        let mut written = 0usize;
+        let mut n = 0u64;
+        while written < 20 * 1024 * 1024 {
+            let line = format!("line {n}: the proxy is chatty\n");
+            out.write_all(line.as_bytes()).unwrap();
+            written += line.len();
+            n += 1;
+        }
+        out.write_all(b"fatal: port in use\n").unwrap();
+        out.flush().unwrap();
+        let started = std::time::Instant::now();
+        let tail = output.tail();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(tail.chars().count() <= STDERR_LIMIT + 1, "{}", tail.len());
+        assert!(tail.ends_with("fatal: port in use"), "{tail}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_bootstrap_output_file_is_private_and_removed() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (output, file) = OutputFile::create().unwrap();
+        let mode = file.metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{mode:o}");
+        let path = output.0.clone();
+        assert!(path.exists());
+        drop(output);
+        assert!(!path.exists());
     }
 
     #[tokio::test]

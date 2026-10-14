@@ -22,7 +22,8 @@ nullAs: string,
  */
 lineBreak: string, 
 /**
- * Decimal separator of numbers: `.` or `,`.
+ * Decimal separator of numbers: one ASCII character that is not a digit, the delimiter,
+ * a quote or a line break (`.` by default, `,` or a custom one).
  */
 decimal: string, 
 /**
@@ -53,4 +54,4 @@ gzip: boolean, } | { "format": "xlsx",
 /**
  * Column names as the first (bold, frozen) row.
  */
-header: boolean, };
+header: boolean, } | { "format": "html" };

@@ -2,7 +2,10 @@ import { Plug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
+import { searchMenu, searchSettingsEntries } from "@/features/objects/menu";
+import { searchHint } from "@/features/objects/search";
 import { useAction } from "@/features/palette/actions";
+import { usePaletteStore } from "@/features/palette/store";
 import { QueriesPane } from "@/features/queries/QueriesPane";
 import {
   showSidebarPane,
@@ -17,11 +20,15 @@ import { useUiStore } from "@/stores/ui";
 import { GroupDialogHost } from "./GroupDialog";
 import { useGroups } from "./groups";
 import { HistoryPane } from "./HistoryPane";
+import { lazyKey, useLazyLoad } from "./lazyLoad";
 import { SchemaTree, type SchemaTreeHandle } from "./SchemaTree";
 import { SidebarFooter } from "./SidebarFooter";
 import { SidebarSearch } from "./SidebarSearch";
-import { useSidebarPrefs } from "./sidebarPrefs";
+import { SidebarTopBar } from "./SidebarTopBar";
+import { setMatchStrategy, useSidebarPrefs } from "./sidebarPrefs";
+import { useLazySchemaTree } from "./useLazySchemaTree";
 import { useCurrentSchema, useTables, useTreeRows } from "./useSchemaTree";
+import { useSidebarSettings } from "./useSidebarSettings";
 
 const PANES: Array<{ id: SidebarPaneId; label: string }> = [
   { id: "items", label: "Items" },
@@ -61,7 +68,10 @@ function PaneSwitch({ pane }: { pane: SidebarPaneId }) {
   );
 }
 
-/** The Items pane: the search field and the schema tree (Recent, Pinned, Tables, Views…). */
+/**
+ * The Items pane: the search field (with its menu) and the schema tree (Recent, Pinned, Tables,
+ * Views…), or with "Lazy Load Schema Items" one node per schema / database.
+ */
 function ItemsPane({
   connection,
   hidden,
@@ -76,25 +86,53 @@ function ItemsPane({
   const searchRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<SchemaTreeHandle>(null);
   const connectionId = connection.info.connectionId;
+  const lazy = useLazyLoad(connection);
   const schema = useCurrentSchema(connectionId);
-  const tables = useTables(connectionId, schema);
+  const tables = useTables(connectionId, lazy ? null : schema);
   const collapsed = useSidebarPrefs((s) => s.collapsed);
   const showRecent = useSidebarPrefs((s) => s.options.showRecent);
   const showRowCounts = useSidebarPrefs((s) => s.options.showRowCounts);
+  const strategy = useSidebarPrefs((s) => s.matchStrategy);
+  const { settings, set } = useSidebarSettings(connection);
   // Pins and recent tables follow the saved connection and its database, not the (per-session)
   // connection id.
   const scope = pinScope(connection.info.profileId, connection.info.currentDatabase);
   const pinned = usePinned(scope);
   const recent = useRecent(scope);
   const groups = useGroups(scope);
-  const rows = useTreeRows(
-    tables.data,
+  const shownRecent = showRecent ? recent : EMPTY_RECENT;
+  const regularRows = useTreeRows(
+    lazy ? undefined : tables.data,
     search,
     pinned,
-    showRecent ? recent : EMPTY_RECENT,
+    shownRecent,
     collapsed,
     groups,
+    strategy,
   );
+  const lazyTree = useLazySchemaTree(connection, lazy, {
+    search,
+    strategy,
+    pinned,
+    recent: shownRecent,
+    collapsed,
+    groups,
+  });
+  const rows = lazy ? lazyTree.rows : regularRows;
+  /** The search field's menu: Search in Database…, Matching Strategy ▸, Settings ▸. */
+  const menu = () =>
+    searchMenu(
+      {
+        strategy,
+        settings: searchSettingsEntries(connection.info.driver, settings, set),
+        canSearchDatabase: true,
+      },
+      {
+        // Every object of the database, in schemas not loaded too, starting from this search.
+        searchInDatabase: () => usePaletteStore.getState().openPalette("objects", search.trim()),
+        setStrategy: setMatchStrategy,
+      },
+    );
 
   // Only a bump after mounting focuses: a remount (another connection) must not take focus.
   const focusedFor = useRef(focusSearch);
@@ -113,19 +151,23 @@ function ItemsPane({
           value={search}
           onChange={setSearch}
           onArrowDown={() => treeRef.current?.focusFirstRow()}
+          hint={searchHint(strategy)}
+          menu={menu}
         />
       </div>
       <SchemaTree
         ref={treeRef}
         connectionId={connectionId}
         rows={rows}
-        loading={tables.isPending && schema !== null}
-        error={tables.isError ? tables.error.message : null}
+        loading={lazy ? lazyTree.loading : tables.isPending && schema !== null}
+        error={lazy ? lazyTree.error : tables.isError ? tables.error.message : null}
         search={search}
         pinScope={scope}
         pinned={pinned}
         showRowCounts={showRowCounts}
         groups={groups}
+        strategy={strategy}
+        lazyKey={lazy ? lazyKey(connectionId, connection.info.currentDatabase) : null}
       />
     </div>
   );
@@ -145,6 +187,8 @@ export function Sidebar() {
 
   return (
     <aside className="bg-sidebar text-sidebar-foreground flex h-full flex-col" data-scope="sidebar">
+      {/* Show Connections / Show Databases / Open Query Editor (disabled without a connection). */}
+      <SidebarTopBar />
       {active ? (
         <>
           <div className="flex h-8 shrink-0 items-center px-2">
