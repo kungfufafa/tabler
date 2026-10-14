@@ -4,6 +4,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { createContext, useContext, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { resetCommitStore } from "@/features/commit/store";
+import { CommitTestHost } from "@/features/commit/testHost";
 import { actions } from "@/features/palette/actions";
 import { ipc, type TableRef } from "@/lib/ipc";
 import { resetMockDdl } from "@/lib/ipc/mock/ddl";
@@ -87,6 +89,7 @@ async function setup(profileId = "p-local-pg", table: TableRef = USERS) {
     <QueryClientProvider client={qc}>
       <TooltipProvider>
         <Host />
+        <CommitTestHost />
       </TooltipProvider>
     </QueryClientProvider>,
   );
@@ -122,16 +125,29 @@ async function pick(trigger: HTMLElement, item: RegExp | string) {
   fireEvent.click(match);
 }
 
+/**
+ * The workspace's Preview SQL sheet (⌘S with staged structure): its structure section, once the
+ * statements are listed.
+ */
+async function structureSection() {
+  const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+  const section = await within(sheet).findByRole("region", { name: /^Structure / });
+  await waitFor(() => expect(section).toHaveTextContent(/[A-Z]{3,}/));
+  return { sheet, section };
+}
+
+/** The Preview SQL sheet (⇧⌘P), then its Commit. */
 async function apply() {
-  await act(() => actions.run("grid.commit"));
-  await screen.findByTestId("ddl-statement-0");
-  fireEvent.click(screen.getByRole("button", { name: /^Apply/ }));
+  await act(() => actions.run("grid.preview"));
+  const { sheet } = await structureSection();
+  fireEvent.click(within(sheet).getByRole("button", { name: /^Commit/ }));
 }
 
 beforeEach(() => {
   useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
   useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
   useStructureStore.setState({ byTab: {} });
+  resetCommitStore();
   guard.guardExecution.mockClear();
 });
 
@@ -171,7 +187,7 @@ describe("structure header", () => {
     await waitFor(() => expect(guard.guardExecution).toHaveBeenCalled());
     expect(toast.success).not.toHaveBeenCalled();
     expect(ops()).toHaveLength(1);
-    expect(screen.getByText("Review structure changes")).toBeInTheDocument();
+    expect(screen.getByText("Preview changes")).toBeInTheDocument();
   });
 
   it("MySQL: table options stage one ALTER TABLE", async () => {
@@ -194,8 +210,8 @@ describe("structure header", () => {
         },
       },
     ]);
-    await act(() => actions.run("grid.commit"));
-    expect(await screen.findByTestId("ddl-statement-0")).toHaveTextContent(
+    await act(() => actions.run("grid.preview"));
+    expect((await structureSection()).section).toHaveTextContent(
       "ALTER TABLE `tabler_dev`.`users` ENGINE = MyISAM, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_bin",
     );
   });
@@ -300,9 +316,10 @@ describe("columns grid", () => {
     type(cell("c:bio:check"), "score > 1");
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/uses “bio” and no other/));
     expect(ops()).toHaveLength(3);
-    await act(() => actions.run("grid.commit"));
-    expect(await screen.findByTestId("ddl-statement-2")).toHaveTextContent(
-      'ALTER TABLE "public"."users" ADD CONSTRAINT "users_score_check" CHECK (score <= 100)',
+    await act(() => actions.run("grid.preview"));
+    // the three staged checks are clauses of one ALTER TABLE
+    expect((await structureSection()).section).toHaveTextContent(
+      'ALTER TABLE "public"."users" DROP CONSTRAINT "users_balance_check", ADD CONSTRAINT "users_balance_check" CHECK (balance > 0), ADD CONSTRAINT "users_score_check" CHECK (score <= 100)',
     );
   });
 
@@ -349,7 +366,8 @@ describe("columns grid", () => {
     expect(document.activeElement).toBe(search);
     fireEvent.change(search, { target: { value: "last" } });
     const rows = within(screen.getByRole("region", { name: "Columns" })).getAllByRole("row");
-    expect(rows).toHaveLength(2); // header + last_login
+    expect(rows).toHaveLength(3); // header + last_login + the blank row that ends the grid
+    expect(rows[2]).toHaveAttribute("data-blank-row", "columns");
     fireEvent.keyDown(search, { key: "Escape" });
     expect(search).toHaveValue("");
 
@@ -419,8 +437,8 @@ describe("indexes and checks", () => {
       expect(ops()[0]).toMatchObject({ op: "addIndex", index: { include: ["name"] } }),
     );
     expect(cell("ni:0:include")).toHaveTextContent("name");
-    await act(() => actions.run("grid.commit"));
-    expect(await screen.findByTestId("ddl-statement-0")).toHaveTextContent(
+    await act(() => actions.run("grid.preview"));
+    expect((await structureSection()).section).toHaveTextContent(
       'CREATE INDEX "users_email_idx" ON "public"."users" ("email") INCLUDE ("name")',
     );
   });
@@ -475,8 +493,8 @@ describe("triggers", () => {
     expect(ops()).toEqual([]);
     expect(row).not.toHaveClass("text-muted-foreground");
     await pick(enabled, "FALSE");
-    await act(() => actions.run("grid.commit"));
-    expect(await screen.findByTestId("ddl-statement-0")).toHaveTextContent(
+    await act(() => actions.run("grid.preview"));
+    expect((await structureSection()).section).toHaveTextContent(
       'ALTER TABLE "public"."posts" DISABLE TRIGGER "posts_set_updated_at"',
     );
   });
@@ -553,8 +571,8 @@ describe("triggers", () => {
     fireEvent.keyDown(added, { key: "Delete" });
     expect(ops().map((o) => o.op)).toEqual(["dropTrigger", "createTrigger"]);
 
-    await act(() => actions.run("grid.commit"));
-    expect(await screen.findByTestId("ddl-statement-0")).toHaveTextContent(
+    await act(() => actions.run("grid.preview"));
+    expect((await structureSection()).section).toHaveTextContent(
       'DROP TRIGGER "posts_set_updated_at" ON "public"."posts"',
     );
   });

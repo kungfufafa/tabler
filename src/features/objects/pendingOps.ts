@@ -1,14 +1,14 @@
 import { useMemo } from "react";
 import { create } from "zustand";
-import { guardExecution } from "@/features/safety/guard";
 import { routineItemKey, sequenceItemKey, tableItemKey } from "@/features/sidebar/groups";
-import { ipc, toIpcError, type ObjectOp, type RoutineRef, type TableRef } from "@/lib/ipc";
+import { ipc, type ObjectOp, type RoutineRef, type TableRef } from "@/lib/ipc";
 
 /**
  * Sidebar Truncate… / Delete… (of tables and views, functions / procedures, sequences) are staged
  * like every other GUI change (TablePlus, spec §2.4 / §9): they wait here, per connection, until
- * ⌘S commits them (after the active tab's own changes), ⇧⌘⌫ discards them, the tab that carries
- * them in the unsaved-changes guard is closed with Discard, or the connection goes away.
+ * ⌘S commits them with the workspace's other changes (`features/commit/workspace.ts`), ⇧⌘⌫
+ * discards them, the tab that carries them in the unsaved-changes guard is closed with Discard,
+ * or the connection goes away.
  */
 export type PendingOpKind = "drop" | "truncate";
 
@@ -40,15 +40,12 @@ export interface PendingObjectOp {
 
 interface PendingOpsState {
   byConnection: Record<string, PendingObjectOp[]>;
-  /** Connections whose ops are being committed right now. */
-  committing: Record<string, true>;
 }
 
 export const EMPTY_OPS: readonly PendingObjectOp[] = Object.freeze([]);
 
 export const usePendingOpsStore = create<PendingOpsState>()(() => ({
   byConnection: {},
-  committing: {},
 }));
 
 export function kindOf(op: StagedObjectOp): PendingOpKind {
@@ -148,25 +145,6 @@ function setOps(connectionId: string, update: (ops: PendingObjectOp[]) => Pendin
   });
 }
 
-function setCommitting(connectionId: string, on: boolean): void {
-  usePendingOpsStore.setState((s) => {
-    if ((s.committing[connectionId] === true) === on) return s;
-    const committing = { ...s.committing };
-    if (on) committing[connectionId] = true;
-    else delete committing[connectionId];
-    return { committing };
-  });
-}
-
-/** Whether the connection's pending ops are being committed (× and discard wait meanwhile). */
-export function isCommittingObjectOps(connectionId: string | null): boolean {
-  return connectionId !== null && usePendingOpsStore.getState().committing[connectionId] === true;
-}
-
-export function useObjectOpsCommitting(connectionId: string | null): boolean {
-  return usePendingOpsStore((s) => connectionId !== null && s.committing[connectionId] === true);
-}
-
 /** Adds an op to the connection's pending list (committed after the ones already there). */
 export function stageObjectOp(
   connectionId: string,
@@ -250,14 +228,7 @@ export function usePendingMarks(connectionId: string | null): ReadonlyMap<string
   return useMemo(() => pendingMarks(ops), [ops]);
 }
 
-// --- commit --------------------------------------------------------------------------------------
-
-export type CommitOutcome =
-  | { status: "empty" }
-  | { status: "busy" }
-  | { status: "cancelled" }
-  | { status: "done"; committed: PendingObjectOp[] }
-  | { status: "failed"; committed: PendingObjectOp[]; failed: PendingObjectOp; error: string };
+// --- settling a commit ----------------------------------------------------------------------------
 
 function markFailed(connectionId: string, id: string, error: string): void {
   setOps(connectionId, (ops) => ops.map((o) => (o.id === id ? { ...o, error } : o)));
@@ -269,6 +240,15 @@ function replaceOp(connectionId: string, op: PendingObjectOp): void {
 
 function isStaged(connectionId: string, id: string): boolean {
   return pendingObjectOps(connectionId).some((o) => o.id === id);
+}
+
+/** Clears the error an op kept from an earlier commit that stopped at it. */
+export function clearOpError(connectionId: string, id: string): void {
+  setOps(connectionId, (ops) =>
+    ops.some((o) => o.id === id && o.error !== null)
+      ? ops.map((o) => (o.id === id ? { ...o, error: null } : o))
+      : ops,
+  );
 }
 
 /**
@@ -320,82 +300,48 @@ async function doneTargets(
   return done;
 }
 
+/** After the workspace commit applied `o`: it leaves the pending list. */
+export function settleCommittedOp(connectionId: string, o: PendingObjectOp): void {
+  unstageObjectOp(connectionId, o.id);
+}
+
 /**
- * Commits the connection's pending ops in order: plans them again (the SQL the safe mode is
- * shown), asks the safe mode once for all of them (`guardExecution` kind "commit"), then runs one
- * backend call per op that is still staged when its turn comes (one removed or discarded meanwhile
- * is skipped). The first failure stops the run: that op (marked with the error, minus the objects
- * a non-transactional plan already dropped or truncated) and the ones after it stay pending; what
- * ran leaves the list.
+ * After the workspace commit stopped at `o` with `error`: the objects a non-transactional plan
+ * already dropped or truncated (`executed`) leave it and are returned as committed; the rest
+ * stays pending, marked with the error.
  */
-export async function commitObjectOps(connectionId: string): Promise<CommitOutcome> {
-  const ops = pendingObjectOps(connectionId);
-  if (ops.length === 0) return { status: "empty" };
-  if (isCommittingObjectOps(connectionId)) return { status: "busy" };
-  setCommitting(connectionId, true);
-  const committed: PendingObjectOp[] = [];
-  try {
-    const plans: string[][] = [];
-    for (const o of ops) {
-      try {
-        plans.push((await ipc.objects.preview(connectionId, o.op)).statements);
-      } catch (e) {
-        const error = toIpcError(e).message;
-        markFailed(connectionId, o.id, error);
-        return { status: "failed", committed, failed: o, error };
-      }
-    }
-    if (!(await guardExecution(connectionId, { kind: "commit", statements: plans.flat() })))
-      return { status: "cancelled" };
-    for (const o of ops) {
-      if (!isStaged(connectionId, o.id)) continue;
-      let error: string | null;
-      let executed: string[] = [];
-      try {
-        const r = await ipc.objects.apply(connectionId, o.op);
-        error = r.error ? r.error.message : null;
-        executed = r.executed;
-      } catch (e) {
-        error = toIpcError(e).message;
-      }
-      if (error === null) {
-        committed.push(o);
-        unstageObjectOp(connectionId, o.id);
-        continue;
-      }
-      const done = await doneTargets(connectionId, o.op, executed);
-      if (done.size === 0) {
-        markFailed(connectionId, o.id, error);
-        return { status: "failed", committed, failed: { ...o, error }, error };
-      }
-      // Partly applied: what ran is committed; the rest stays pending with the error.
-      committed.push({
-        ...o,
-        op: withTargets(o.op, (key) => done.has(key)),
-        statements: executed,
-      });
-      const rest = withTargets(o.op, (key) => !done.has(key));
-      if (opTargets(rest).length === 0) {
-        unstageObjectOp(connectionId, o.id);
-        continue;
-      }
-      let statements = o.statements;
-      try {
-        statements = (await ipc.objects.preview(connectionId, rest)).statements;
-      } catch {
-        // Keeps the SQL it was staged with.
-      }
-      const failed: PendingObjectOp = { ...o, op: rest, statements, error };
-      if (isStaged(connectionId, o.id)) replaceOp(connectionId, failed);
-      return { status: "failed", committed, failed, error };
-    }
-    return { status: "done", committed };
-  } finally {
-    setCommitting(connectionId, false);
+export async function settleFailedOp(
+  connectionId: string,
+  o: PendingObjectOp,
+  executed: readonly string[],
+  error: string,
+): Promise<PendingObjectOp | null> {
+  const done = await doneTargets(connectionId, o.op, executed);
+  if (done.size === 0) {
+    markFailed(connectionId, o.id, error);
+    return null;
   }
+  const committed: PendingObjectOp = {
+    ...o,
+    op: withTargets(o.op, (key) => done.has(key)),
+    statements: [...executed],
+  };
+  const rest = withTargets(o.op, (key) => !done.has(key));
+  if (opTargets(rest).length === 0) {
+    unstageObjectOp(connectionId, o.id);
+    return committed;
+  }
+  let statements = o.statements;
+  try {
+    statements = (await ipc.objects.preview(connectionId, rest)).statements;
+  } catch {
+    // Keeps the SQL it was staged with.
+  }
+  if (isStaged(connectionId, o.id)) replaceOp(connectionId, { ...o, op: rest, statements, error });
+  return committed;
 }
 
 /** Test helper: forget every pending op. */
 export function resetPendingObjectOps(): void {
-  usePendingOpsStore.setState({ byConnection: {}, committing: {} });
+  usePendingOpsStore.setState({ byConnection: {} });
 }

@@ -1,6 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { TableRef } from "@/lib/ipc";
-import { useTabsStore } from "@/stores/tabs";
+import { isTableTab, useTabsStore } from "@/stores/tabs";
 import { invalidateSchema } from "./invalidate";
 import { sameRef } from "./model";
 import { useStructureStore } from "./store";
@@ -9,9 +9,7 @@ import { useStructureStore } from "./store";
 export function tabsOf(connectionId: string, table: TableRef): string[] {
   return useTabsStore
     .getState()
-    .tabs.filter(
-      (t) => t.kind !== "query" && t.connectionId === connectionId && sameRef(t.table, table),
-    )
+    .tabs.filter((t) => isTableTab(t) && t.connectionId === connectionId && sameRef(t.table, table))
     .map((t) => t.id);
 }
 
@@ -31,7 +29,7 @@ export function followRename(
   useStructureStore.getState().retarget(ids, from, renamed);
   useTabsStore.setState((s) => ({
     tabs: s.tabs.map((t) =>
-      ids.includes(t.id) && t.kind !== "query" ? { ...t, table: renamed, title: newName } : t,
+      ids.includes(t.id) && isTableTab(t) ? { ...t, table: renamed, title: newName } : t,
     ),
   }));
   qc.removeQueries({ queryKey: ["table", connectionId, from.schema ?? "", from.name] });

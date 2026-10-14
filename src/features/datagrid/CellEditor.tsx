@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type { Value } from "@/lib/ipc";
-import { parseEditText } from "@/lib/values";
+import { parseCellText } from "./cellText";
 import { ChoiceSelect } from "./editors/ChoiceSelect";
 import { InlineInput } from "./editors/InlineInput";
 import { reformatJson } from "./editors/json";
@@ -97,18 +97,30 @@ export function CellEditor({
     done.current = true;
     onCancel();
   };
-  const commitText = (exit: EditorExit, t: string = text) => {
-    if (done.current) return;
+  /**
+   * Stages `t` as the cell's value and leaves the editor by `exit`; false when it does not parse
+   * (the error shows; a blur drops the edit, as it always did, while `keepOpen` — ⌘S — leaves the
+   * editor open to fix it).
+   */
+  const commitText = (exit: EditorExit, t: string = text, keepOpen = false): boolean => {
+    if (done.current) return false;
     // "Auto convert empty Numeric, UUID, JSON or Array to NULL".
-    if (emptyBecomesNull(col, t)) return commitValue({ t: "null" }, exit);
-    const result = parseEditText(col.kind, t, previous);
+    if (emptyBecomesNull(col, t)) {
+      commitValue({ t: "null" }, exit);
+      return true;
+    }
+    // NOW() / CURRENT_TIMESTAMP in a date or time cell, hex in a binary one.
+    const result = parseCellText(col, t, previous);
     if (!result.ok) {
       setError(result.error);
-      if (exit === "blur") cancel();
-      return;
+      if (exit === "blur" && !keepOpen) cancel();
+      return false;
     }
     commitValue(result.value, exit);
+    return true;
   };
+  /** ⌘S: stages the text where the cell is (no move), or says it cannot (the editor stays). */
+  const saveText = (t: string = text) => commitText("blur", t, true);
   const changeText = (t: string) => {
     setText(t);
     setError(null);
@@ -142,6 +154,7 @@ export function CellEditor({
             error={error}
             onTextChange={changeText}
             onCommit={(exit) => commitText(exit)}
+            onSave={() => saveText()}
             onCancel={cancel}
           />
         </>
@@ -161,6 +174,11 @@ export function CellEditor({
                 ? commitValue(previous, "enter")
                 : commitText("enter", t)
             }
+            onSaveAndCommit={(t) => {
+              if (t !== jsonBase || previous.t !== "json") return saveText(t);
+              commitValue(previous, "blur");
+              return true;
+            }}
           />
         </>
       );
@@ -175,6 +193,7 @@ export function CellEditor({
           calendar={mode === "date"}
           onTextChange={changeText}
           onCommit={(exit) => commitText(exit)}
+          onSave={() => saveText()}
           onCancel={cancel}
           onAltEnter={(start, end) => {
             if (col.kind === "json") {

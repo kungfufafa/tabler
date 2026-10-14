@@ -74,7 +74,40 @@ const MIGRATIONS: &[&str] = &[
         updated_at TEXT NOT NULL
     );
     CREATE INDEX saved_queries_folder ON saved_queries(folder_id);",
+    // v3: Metrics Board boards (`crate::metrics`); `profile_id` NULL = every connection.
+    "CREATE TABLE IF NOT EXISTS metrics_boards (
+        id TEXT PRIMARY KEY,
+        profile_id TEXT,
+        name TEXT NOT NULL,
+        objects TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS metrics_boards_profile ON metrics_boards(profile_id);",
 ];
+
+/// Settings key set once the app DB's saved queries were written out as `.sql` files.
+const QUERIES_MIGRATED_KEY: &str = "queries.migratedToFiles";
+
+/// The Match Case / Whole Word / Regex matcher of a history search.
+fn history_matcher(term: &str, filter: &HistoryFilter) -> Result<regex::Regex, AppError> {
+    let body = if filter.regex {
+        term.to_string()
+    } else {
+        regex::escape(term)
+    };
+    let body = if filter.whole_word {
+        format!(r"\b(?:{body})\b")
+    } else {
+        body
+    };
+    regex::RegexBuilder::new(&body)
+        .case_insensitive(!filter.match_case)
+        .size_limit(1 << 20)
+        .build()
+        .map_err(|e| AppError::InvalidInput(format!("invalid regular expression: {e}")))
+}
 
 /// History rows kept; older ones are pruned.
 const HISTORY_KEEP: i64 = 10_000;
@@ -303,19 +336,30 @@ impl AppDb {
     }
 
     pub fn delete_profile(&self, id: Uuid) -> Result<bool, AppError> {
-        let conn = self.lock();
-        let n = conn
+        let mut conn = self.lock();
+        let db = |e: rusqlite::Error| AppError::AppDb(e.to_string());
+        let tx = conn.transaction().map_err(db)?;
+        let n = tx
             .execute(
                 "DELETE FROM profiles WHERE id = ?1",
                 params![id.to_string()],
             )
-            .map_err(|e| AppError::AppDb(e.to_string()))?;
+            .map_err(db)?;
         // Its saved queries are kept, for every connection.
-        conn.execute(
+        tx.execute(
             "UPDATE saved_queries SET profile_id = NULL WHERE profile_id = ?1",
             params![id.to_string()],
         )
-        .map_err(|e| AppError::AppDb(e.to_string()))?;
+        .map_err(db)?;
+        // Its Metrics boards go with it: a board holds SQL written for that connection's schema
+        // (never shown elsewhere), and without the profile nothing could list or delete it
+        // (also the case for a URL-opened temporary connection that is purged).
+        tx.execute(
+            "DELETE FROM metrics_boards WHERE profile_id = ?1",
+            params![id.to_string()],
+        )
+        .map_err(db)?;
+        tx.commit().map_err(db)?;
         Ok(n > 0)
     }
 
@@ -474,13 +518,22 @@ impl AppDb {
         Ok(ids)
     }
 
-    /// History rows, newest first. `search` is a case-insensitive substring match on the SQL.
+    /// History rows, newest first. `search` is a case-insensitive substring match on the SQL;
+    /// Match Case / Whole Word / Regex refine it (checked in Rust after a LIKE pre-filter, which
+    /// is exact for a plain search and a superset otherwise; a regex scans every row).
     pub fn list_history(&self, filter: &HistoryFilter) -> Result<Vec<HistoryEntry>, AppError> {
         let limit = filter
             .limit
             .unwrap_or(HISTORY_DEFAULT_LIMIT)
             .clamp(1, HISTORY_MAX_LIMIT);
-        let pattern = filter.search.as_deref().filter(|s| !s.is_empty()).map(|s| {
+        let term = filter.search.as_deref().filter(|s| !s.is_empty());
+        let matcher = match term {
+            Some(t) if filter.match_case || filter.whole_word || filter.regex => {
+                Some(history_matcher(t, filter)?)
+            }
+            _ => None,
+        };
+        let pattern = term.filter(|_| !filter.regex).map(|s| {
             let escaped = s
                 .replace('\\', "\\\\")
                 .replace('%', "\\%")
@@ -497,8 +550,7 @@ impl AppDb {
                  WHERE (?1 IS NULL OR profile_id = ?1)
                    AND (?2 IS NULL OR sql LIKE ?2 ESCAPE '\\')
                    AND (?3 IS NULL OR id < ?3)
-                 ORDER BY id DESC
-                 LIMIT ?4",
+                 ORDER BY id DESC",
             )
             .map_err(db)?;
         let rows = stmt
@@ -506,8 +558,7 @@ impl AppDb {
                 params![
                     filter.profile_id.map(|id| id.to_string()),
                     pattern,
-                    filter.before_id,
-                    limit
+                    filter.before_id
                 ],
                 |r| {
                     let profile_id: Option<String> = r.get(1)?;
@@ -529,7 +580,47 @@ impl AppDb {
                 },
             )
             .map_err(db)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        let mut out = Vec::new();
+        for row in rows {
+            let entry = row.map_err(db)?;
+            if matcher.as_ref().is_none_or(|m| m.is_match(&entry.sql)) {
+                out.push(entry);
+                if out.len() >= limit as usize {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Deletes the history older than `before` (RFC 3339), of one profile or of all: "Clear
+    /// History Older Than…" and the "Keep history for" pruning. Returns how many rows went.
+    pub fn clear_history_before(
+        &self,
+        before: &str,
+        profile_id: Option<Uuid>,
+    ) -> Result<u64, AppError> {
+        let cutoff = chrono::DateTime::parse_from_rfc3339(before)
+            .map_err(|e| AppError::InvalidInput(format!("invalid date {before:?}: {e}")))?
+            .with_timezone(&chrono::Utc)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let conn = self.lock();
+        let n = conn
+            .execute(
+                "DELETE FROM history WHERE started_at < ?1 AND (?2 IS NULL OR profile_id = ?2)",
+                params![cutoff, profile_id.map(|id| id.to_string())],
+            )
+            .map_err(|e| AppError::AppDb(e.to_string()))?;
+        Ok(n as u64)
+    }
+
+    /// The saved queries of the app DB were written to the queries folder (they are files now).
+    pub fn saved_queries_migrated(&self) -> Result<bool, AppError> {
+        Ok(self.get_setting(QUERIES_MIGRATED_KEY)?.is_some())
+    }
+
+    pub fn mark_saved_queries_migrated(&self) -> Result<(), AppError> {
+        self.set_setting(QUERIES_MIGRATED_KEY, &serde_json::Value::Bool(true))
     }
 
     /// Deletes the given history rows; returns how many existed.
@@ -794,6 +885,83 @@ mod tests {
     }
 
     #[test]
+    fn history_search_options_and_pruning() {
+        let db = AppDb::open_in_memory().unwrap();
+        let p1 = Uuid::new_v4();
+        db.insert_history(&[
+            entry(Some(p1), "SELECT * FROM users", true),
+            entry(Some(p1), "select * from users_archive", true),
+            entry(None, "update Users set x = 1", true),
+        ])
+        .unwrap();
+        let search = |term: &str, match_case: bool, whole_word: bool, regex: bool| {
+            db.list_history(&HistoryFilter {
+                search: Some(term.into()),
+                match_case,
+                whole_word,
+                regex,
+                ..HistoryFilter::default()
+            })
+            .map(|rows| rows.into_iter().map(|r| r.sql).collect::<Vec<_>>())
+        };
+        assert_eq!(search("users", false, false, false).unwrap().len(), 3);
+        assert_eq!(
+            search("Users", true, false, false).unwrap(),
+            ["update Users set x = 1"]
+        );
+        assert_eq!(search("users", false, true, false).unwrap().len(), 2);
+        assert_eq!(
+            search("users", true, true, false).unwrap(),
+            ["SELECT * FROM users"]
+        );
+        assert_eq!(
+            search(r"^select .* users_\w+$", false, false, true).unwrap(),
+            ["select * from users_archive"]
+        );
+        assert!(matches!(
+            search("(", false, false, true),
+            Err(AppError::InvalidInput(_))
+        ));
+        // A limit counts matches, not scanned rows.
+        let one = db
+            .list_history(&HistoryFilter {
+                search: Some("users".into()),
+                whole_word: true,
+                limit: Some(1),
+                ..HistoryFilter::default()
+            })
+            .unwrap();
+        assert_eq!(one.len(), 1);
+
+        // Clear older than a date (all, or one profile's).
+        let old = NewHistoryEntry {
+            started_at: "2020-01-01T00:00:00.000Z".into(),
+            ..entry(Some(p1), "select 'old'", true)
+        };
+        let older = NewHistoryEntry {
+            started_at: "2019-06-01T00:00:00.000Z".into(),
+            ..entry(None, "select 'older'", true)
+        };
+        db.insert_history(&[old, older]).unwrap();
+        assert_eq!(
+            db.clear_history_before("2020-06-01T00:00:00+02:00", Some(p1))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.clear_history_before("2020-06-01T00:00:00Z", None)
+                .unwrap(),
+            1
+        );
+        assert_eq!(db.list_history(&HistoryFilter::default()).unwrap().len(), 3);
+        assert!(db.clear_history_before("yesterday", None).is_err());
+
+        assert!(!db.saved_queries_migrated().unwrap());
+        db.mark_saved_queries_migrated().unwrap();
+        assert!(db.saved_queries_migrated().unwrap());
+    }
+
+    #[test]
     fn history_crud() {
         let db = AppDb::open_in_memory().unwrap();
         let p1 = Uuid::new_v4();
@@ -899,6 +1067,7 @@ mod tests {
             sql: format!("select '{name}'"),
             folder_id: folder,
             profile_id: profile,
+            keep_sql: None,
         }
     }
 
@@ -953,6 +1122,7 @@ mod tests {
                 sql: "select 2".into(),
                 folder_id: None,
                 profile_id: None,
+                keep_sql: None,
             })
             .unwrap();
         assert_eq!(updated.id, q.id);
@@ -1078,6 +1248,45 @@ mod tests {
         let lib = db.list_saved_queries().unwrap();
         assert_eq!(lib.queries.len(), 1);
         assert_eq!(lib.queries[0].profile_id, None);
+    }
+
+    #[test]
+    fn deleting_a_profile_deletes_its_metrics_boards() {
+        use crate::metrics::{get_board, list_boards, save_board};
+        use crate::types::metrics::MetricsBoardInput;
+        let db = AppDb::open_in_memory().unwrap();
+        let gone = db.upsert_profile(&profile("temporary")).unwrap();
+        let kept = db.upsert_profile(&profile("other")).unwrap();
+        let board = |profile_id: Option<Uuid>, name: &str| {
+            save_board(
+                &db,
+                &MetricsBoardInput {
+                    id: None,
+                    profile_id,
+                    name: name.into(),
+                    objects: serde_json::json!([{ "id": "o1", "sql": "SELECT 1" }]),
+                },
+            )
+            .unwrap()
+        };
+        let orphan = board(Some(gone.id), "only on temporary");
+        let global = board(None, "everywhere");
+        let theirs = board(Some(kept.id), "only on other");
+
+        assert!(db.delete_profile(gone.id).unwrap());
+
+        // The deleted profile's board is gone for good (it cannot be listed any more, so it
+        // would never be cleaned up) ...
+        assert!(get_board(&db, orphan.id).unwrap().is_none());
+        // ... while boards of every connection and of other profiles stay.
+        assert!(get_board(&db, global.id).unwrap().is_some());
+        assert!(get_board(&db, theirs.id).unwrap().is_some());
+        let names: Vec<_> = list_boards(&db, None)
+            .unwrap()
+            .into_iter()
+            .map(|b| b.name)
+            .collect();
+        assert_eq!(names, ["everywhere", "only on other"]);
     }
 
     #[test]

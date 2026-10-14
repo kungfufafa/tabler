@@ -188,10 +188,12 @@ async fn conn2_mysql_connects_through_its_socket() {
         key_path: None,
         local_port: None,
         keepalive_secs: None,
+        password_mode: None,
     });
-    let err = run_connection_test(&state, input(profile))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), "INVALID_INPUT");
-    assert!(err.to_string().contains("SSH"), "{err}");
+    // A socket together with Over SSH is allowed now (the tunnel forwards the server's socket):
+    // the test goes through the tunnel first, and an unreachable bastion is reported as such.
+    let result = run_connection_test(&state, input(profile)).await.unwrap();
+    assert!(!result.ok);
+    assert!(result.tunnel_used, "{}", result.message);
+    assert!(result.message.contains("SSH"), "{}", result.message);
 }

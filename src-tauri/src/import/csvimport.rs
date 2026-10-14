@@ -33,7 +33,7 @@ use crate::types::import::{
 use crate::types::schema::{TableMeta, TableRef, ValueKind};
 use crate::types::value::Value;
 
-use super::csvread::{CsvReader, Record};
+use super::csvread::{CsvReader, Record, RecordRead};
 use super::detect::{
     TypeGuess, created_value_problem, detect_delimiter, parse_bool, timestamp_in_utc,
 };
@@ -52,13 +52,13 @@ const STATEMENT_BYTES: usize = 4 * 1024 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const FILE_BUFFER: usize = 256 * 1024;
 
-fn file_name(path: &Path) -> String {
+pub(crate) fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
-fn open_file(path: &str) -> Result<(File, u64), AppError> {
+pub(crate) fn open_file(path: &str) -> Result<(File, u64), AppError> {
     let p = Path::new(path);
     if !p.is_absolute() {
         return Err(AppError::InvalidInput(
@@ -77,8 +77,10 @@ fn quote_byte(quote: &str) -> Result<u8, AppError> {
     match quote {
         "\"" => Ok(b'"'),
         "'" => Ok(b'\''),
+        // The export's "Space" quote: every value between spaces (a space inside is doubled).
+        " " => Ok(b' '),
         _ => Err(AppError::InvalidInput(
-            "the CSV quote must be \" or '".into(),
+            "the CSV quote must be \", ' or a space".into(),
         )),
     }
 }
@@ -97,7 +99,7 @@ fn delimiter_byte(delimiter: &str, quote: u8) -> Result<u8, AppError> {
 }
 
 /// The start of the file, for detection.
-fn sniff(path: &str) -> Result<Vec<u8>, AppError> {
+pub(crate) fn sniff(path: &str) -> Result<Vec<u8>, AppError> {
     let (file, _) = open_file(path)?;
     let mut sample = Vec::with_capacity(SNIFF_BYTES);
     file.take(SNIFF_BYTES as u64).read_to_end(&mut sample)?;
@@ -264,9 +266,9 @@ struct TargetColumn {
     created: Option<ImportType>,
 }
 
-/// Where each CSV column goes.
+/// Where each CSV column (or JSON key) goes.
 #[derive(Debug, Clone)]
-struct Plan {
+pub(crate) struct Plan {
     dialect: Dialect,
     /// Per CSV column: target index.
     by_csv: Vec<Option<usize>>,
@@ -277,6 +279,7 @@ struct Plan {
     primary_key: Vec<String>,
     /// STOP ON ERROR: a row that cannot be imported stops the import (other modes skip it).
     stop_on_error: bool,
+    mode: InsertMode,
 }
 
 fn plan(
@@ -284,40 +287,52 @@ fn plan(
     req: &CsvImportRequest,
     meta: Option<&TableMeta>,
 ) -> Result<Plan, AppError> {
-    let (table, available, primary_key, create): (TableRef, Vec<TargetColumn>, _, _) =
-        match &req.target {
-            ImportTarget::Existing { table } => {
-                let meta = meta.ok_or_else(|| AppError::NotFound(table.name.clone()))?;
-                let cols = meta
-                    .columns
-                    .iter()
-                    .filter(|c| !c.is_generated)
-                    .map(|c| TargetColumn {
-                        name: c.name.clone(),
-                        pg_type: c.cast_type().to_string(),
-                        boolean: c.kind == ValueKind::Bool,
-                        created: None,
-                    })
-                    .collect();
-                (meta.table.clone(), cols, meta.primary_key.clone(), None)
-            }
-            ImportTarget::Create { table, columns } => {
-                let sql = create_import_table(dialect, table, columns)?;
-                let cols = columns
-                    .iter()
-                    .map(|c| TargetColumn {
-                        name: c.name.trim().to_string(),
-                        pg_type: import_type_sql(Dialect::Postgres, c),
-                        boolean: c.ty == ImportType::Boolean,
-                        created: Some(c.ty),
-                    })
-                    .collect();
-                (table.clone(), cols, Vec::new(), Some(sql))
-            }
-        };
-    let mut by_csv = Vec::with_capacity(req.mapping.len());
+    plan_for(dialect, &req.target, &req.mapping, req.mode, meta)
+}
+
+/// Where each source column goes: `mapping` names, per column by position, the table column
+/// it fills (`None`: not imported).
+pub(crate) fn plan_for(
+    dialect: Dialect,
+    target: &ImportTarget,
+    mapping: &[Option<String>],
+    mode: InsertMode,
+    meta: Option<&TableMeta>,
+) -> Result<Plan, AppError> {
+    let (table, available, primary_key, create): (TableRef, Vec<TargetColumn>, _, _) = match target
+    {
+        ImportTarget::Existing { table } => {
+            let meta = meta.ok_or_else(|| AppError::NotFound(table.name.clone()))?;
+            let cols = meta
+                .columns
+                .iter()
+                .filter(|c| !c.is_generated)
+                .map(|c| TargetColumn {
+                    name: c.name.clone(),
+                    pg_type: c.cast_type().to_string(),
+                    boolean: c.kind == ValueKind::Bool,
+                    created: None,
+                })
+                .collect();
+            (meta.table.clone(), cols, meta.primary_key.clone(), None)
+        }
+        ImportTarget::Create { table, columns } => {
+            let sql = create_import_table(dialect, table, columns)?;
+            let cols = columns
+                .iter()
+                .map(|c| TargetColumn {
+                    name: c.name.trim().to_string(),
+                    pg_type: import_type_sql(Dialect::Postgres, c),
+                    boolean: c.ty == ImportType::Boolean,
+                    created: Some(c.ty),
+                })
+                .collect();
+            (table.clone(), cols, Vec::new(), Some(sql))
+        }
+    };
+    let mut by_csv = Vec::with_capacity(mapping.len());
     let mut columns: Vec<TargetColumn> = Vec::new();
-    for target in &req.mapping {
+    for target in mapping {
         let Some(name) = target else {
             by_csv.push(None);
             continue;
@@ -340,7 +355,8 @@ fn plan(
         create,
         table,
         primary_key,
-        stop_on_error: req.mode == InsertMode::StopOnError,
+        stop_on_error: mode == InsertMode::StopOnError,
+        mode,
     })
 }
 
@@ -406,7 +422,7 @@ const MAX_SKIPPED: usize = 100;
 
 /// The file being imported, with what reading it has learned so far.
 struct Source {
-    reader: FileReader,
+    reader: Box<dyn RecordRead>,
     /// The header line is still to be read.
     header_pending: bool,
     /// Fields every record has: the header's, else the first record's.
@@ -647,13 +663,57 @@ async fn import_in_chunks(
     session: &dyn DbSession,
     req: &CsvImportRequest,
     meta: Option<&TableMeta>,
+    progress: impl FnMut(CsvImportProgress) + Send,
+    cancel: CancellationToken,
+    chunk_cells: usize,
+) -> Result<CsvImportReport, AppError> {
+    let plan = plan(session.dialect(), req, meta)?;
+    let open = |bytes: Arc<AtomicU64>| {
+        let (delimiter, quote, encoding) = resolve_format(&req.path, &req.format)?;
+        let (reader, total) = open_reader(&req.path, delimiter, quote, encoding, bytes)?;
+        Ok((Box::new(reader) as Box<dyn RecordRead>, total))
+    };
+    let input = RecordInput {
+        header: req.format.header,
+        empty_as_null: req.empty_as_null,
+    };
+    import_records(
+        session,
+        plan,
+        meta,
+        input,
+        open,
+        progress,
+        cancel,
+        chunk_cells,
+    )
+    .await
+}
+
+/// How the records of an import's source are read.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RecordInput {
+    /// The first record is a header (skipped; it sets the width every record must have).
+    pub header: bool,
+    /// An unquoted empty field is NULL.
+    pub empty_as_null: bool,
+}
+
+/// Imports the records `open` reads (it gets the counter of bytes read and returns the reader
+/// with the source's size) as `plan` says; see `run_csv_import`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn import_records(
+    session: &dyn DbSession,
+    plan: Plan,
+    meta: Option<&TableMeta>,
+    input: RecordInput,
+    open: impl FnOnce(Arc<AtomicU64>) -> Result<(Box<dyn RecordRead>, u64), AppError>,
     mut progress: impl FnMut(CsvImportProgress) + Send,
     cancel: CancellationToken,
     chunk_cells: usize,
 ) -> Result<CsvImportReport, AppError> {
     let started = Instant::now();
     let dialect = session.dialect();
-    let plan = plan(dialect, req, meta)?;
     let insert_columns: Vec<(String, String)> = plan
         .columns
         .iter()
@@ -672,17 +732,16 @@ async fn import_in_chunks(
         dialect,
         table: &plan.table,
         columns: &insert_columns,
-        mode: req.mode,
+        mode: plan.mode,
         primary_key: &plan.primary_key,
     };
     target.validate()?;
-    let (delimiter, quote, encoding) = resolve_format(&req.path, &req.format)?;
     let bytes = Arc::new(AtomicU64::new(0));
     let read_count = Arc::new(AtomicU64::new(0));
-    let (reader, total_bytes) = open_reader(&req.path, delimiter, quote, encoding, bytes.clone())?;
+    let (reader, total_bytes) = open(bytes.clone())?;
     let mut source = Some(Source {
         reader,
-        header_pending: req.format.header,
+        header_pending: input.header,
         width: None,
         next_row: 1,
     });
@@ -729,7 +788,7 @@ async fn import_in_chunks(
         let task_plan = plan.clone();
         let task_cancel = cancel.clone();
         let task_count = read_count.clone();
-        let empty_as_null = req.empty_as_null;
+        let empty_as_null = input.empty_as_null;
         let task = tokio::task::spawn_blocking(move || {
             let result = src.read_chunk(
                 &task_plan,
@@ -988,6 +1047,41 @@ mod tests {
         assert!(preview_csv("relative.csv", &format(true)).is_err());
     }
 
+    #[test]
+    fn preview_reads_values_quoted_with_spaces() {
+        // What the export's "Space" quote writes: every value between spaces, a space inside a
+        // value doubled, an unquoted empty field for NULL.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "space.csv",
+            b" id , note , tag \n 1 , a  b  c ,\n 2 ,  , x,y \n",
+        );
+        let spaced = CsvFormat {
+            delimiter: Some(",".into()),
+            quote: " ".into(),
+            encoding: Some(TextEncoding::Utf8),
+            header: true,
+        };
+        let p = preview_csv(&path, &spaced).unwrap();
+        let names: Vec<&str> = p.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["id", "note", "tag"]);
+        assert_eq!(
+            p.rows,
+            vec![
+                vec![Some("1".into()), Some("a b c".into()), None],
+                vec![Some("2".into()), Some(String::new()), Some("x,y".into())],
+            ]
+        );
+        // The quote cannot be the delimiter; anything but `"`, `'` and a space is refused.
+        let mut same = spaced.clone();
+        same.delimiter = Some(" ".into());
+        assert!(preview_csv(&path, &same).is_err());
+        let mut other = spaced;
+        other.quote = "x".into();
+        assert!(preview_csv(&path, &other).is_err());
+    }
+
     fn request(path: &str, target: ImportTarget, mapping: &[Option<&str>]) -> CsvImportRequest {
         CsvImportRequest {
             import_id: "t".into(),
@@ -1237,7 +1331,7 @@ mod tests {
         let count = AtomicU64::new(0);
         let read = |req: &CsvImportRequest, header: bool| {
             let mut src = Source {
-                reader: reader_over(text),
+                reader: Box::new(reader_over(text)),
                 header_pending: header,
                 width: None,
                 next_row: 1,

@@ -64,8 +64,8 @@ pub fn code_only(sql: &str, dialect: Dialect) -> String {
             '"' => Some(s.skip_quoted(i, '"', s.backslash_escapes)),
             '`' if dialect != Dialect::Postgres => Some(s.skip_quoted(i, '`', false)),
             '[' if dialect == Dialect::Sqlite => Some(s.skip_until(i + 1, ']')),
-            '-' if next == Some('-') && s.dash_comment_ok(i) => Some(s.skip_line(i)),
-            '#' if s.mysql() => Some(s.skip_line(i)),
+            '-' if next == Some('-') && s.dash_comment_ok(i) => Some(s.skip_comment_line(i)),
+            '#' if s.mysql() => Some(s.skip_comment_line(i)),
             '/' if next == Some('*') => {
                 if s.mysql() && matches!(s.at(i + 2), Some('!') | Some('+')) {
                     // Code: keep scanning inside it.
@@ -306,8 +306,8 @@ impl Splitter {
                     self.mark_content(i);
                     self.skip_until(i + 1, ']')
                 }
-                '-' if next == Some('-') && self.dash_comment_ok(i) => self.skip_line(i),
-                '#' if self.mysql() => self.skip_line(i),
+                '-' if next == Some('-') && self.dash_comment_ok(i) => self.skip_comment_line(i),
+                '#' if self.mysql() => self.skip_comment_line(i),
                 '/' if next == Some('*') => {
                     // MySQL executable comments (`/*! … */`) and optimizer hints are code.
                     if self.mysql() && matches!(self.at(i + 2), Some('!') | Some('+')) {
@@ -366,6 +366,16 @@ impl Splitter {
 
     fn skip_line(&self, mut i: usize) -> usize {
         while i < self.n() && self.chars[i] != '\n' {
+            i += 1;
+        }
+        i
+    }
+
+    /// End of the line comment that starts at `i`. PostgreSQL ends one at a lone CR as well as at
+    /// LF (`SELECT 1 --x<CR>; DELETE …` runs the DELETE); MySQL and SQLite read to the LF.
+    fn skip_comment_line(&self, mut i: usize) -> usize {
+        let cr_ends = self.dialect == Dialect::Postgres;
+        while i < self.n() && self.chars[i] != '\n' && !(cr_ends && self.chars[i] == '\r') {
             i += 1;
         }
         i

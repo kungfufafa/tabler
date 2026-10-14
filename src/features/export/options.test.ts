@@ -3,10 +3,17 @@ import type { ColumnMeta, FilterGroup, Value } from "@/lib/ipc";
 import {
   browsePageOf,
   buildExportRequest,
-  canExportPage,
+  buildExportResultsRequest,
+  columnChanges,
+  CSV_QUOTES,
+  csvProblem,
   currentPageSql,
   DEFAULT_EXPORT_OPTIONS,
+  decimalProblem,
   defaultFileName,
+  ENCODINGS,
+  encodingApplies,
+  encodingForCharset,
   EXPORT_OPTIONS_KEY,
   buildExportTablesRequest,
   exportProblem,
@@ -18,9 +25,12 @@ import {
   hasCappedBytes,
   loadExportOptions,
   parseExportOptions,
+  resultsLayout,
+  resultsProblem,
   safeFileBase,
   saveExportOptions,
-  stripRowidAlias,
+  toExportFormat,
+  UNTITLED_TABLE,
   visibleColumnNames,
   type ExportInput,
   type ExportOptions,
@@ -55,7 +65,7 @@ function tableInput(patch: Partial<Extract<ExportInput, { kind: "table" }>> = {}
     columns: null,
     generated: [],
     scope: "all",
-    page: { limit: 200, offset: 0, sql: 'SELECT "id" FROM "users" LIMIT 200 OFFSET 0' },
+    page: { limit: 200, offset: 0 },
     ...patch,
   };
 }
@@ -180,45 +190,64 @@ describe("buildExportRequest", () => {
 
   it("exports the first page as the table query capped at the page size", () => {
     const req = build(tableInput({ scope: "page" }));
-    expect(req.source.kind).toBe("table");
+    expect(req.source).toMatchObject({ kind: "table", offset: 0 });
     expect(req.maxRows).toBe(200);
   });
 
-  it("exports a later page by re-running the browse statement (without SQLite's rowid)", () => {
-    const sql =
-      'SELECT "id", "name", rowid AS "_tabler_rowid"\nFROM "main"."users"\nORDER BY rowid ASC\nLIMIT 200 OFFSET 400';
+  it("exports a later page as a table query that starts at the page's offset", () => {
     const req = build(
-      tableInput({ scope: "page", page: { limit: 200, offset: 400, sql } }),
-      opts({ format: "sqlInsert" }),
+      tableInput({ scope: "page", columns: ["id", "email"], page: { limit: 200, offset: 400 } }),
     );
+    // Still a table source: the filter, the sort and the column choice all apply.
     expect(req.source).toEqual({
-      kind: "sql",
-      sql: 'SELECT "id", "name"\nFROM "main"."users"\nORDER BY rowid ASC\nLIMIT 200 OFFSET 400',
+      kind: "table",
+      table: { schema: "public", name: "users" },
+      filter,
+      sort: [{ column: "name", dir: "asc", nulls: null }],
+      columns: ["id", "email"],
+      offset: 400,
     });
     expect(req.maxRows).toBe(200);
-    // A query source has no table to name the INSERTs after: the table's name is filled in.
-    expect(req.format).toMatchObject({ format: "sqlInsert", tableName: "users" });
+    // Rows of every page are all rows from the first: no offset.
+    expect(
+      (build(tableInput({ page: { limit: 200, offset: 400 } })).source as { offset?: number })
+        .offset,
+    ).toBeUndefined();
   });
 
-  it("never exports a later page with hidden columns (the browse statement selects them all)", () => {
-    const sql =
-      'SELECT "id"::text AS "id", "password_hash"::text AS "password_hash"\nFROM "public"."users"\nLIMIT 200 OFFSET 200';
-    const input = tableInput({
+  it("exports a later page with hidden columns and without generated ones", () => {
+    const hidden = tableInput({
       scope: "page",
       columns: ["id", "email"],
-      page: { limit: 200, offset: 200, sql },
+      generated: ["total"],
+      page: { limit: 200, offset: 200 },
     });
-    expect(exportProblem(input, "csv")).toMatchObject({
-      field: "rows",
-      message: expect.stringContaining("Only visible columns"),
+    // No problem on any page: the offset is part of the table query.
+    for (const format of ["csv", "json", "xlsx", "html", "sqlInsert"] as const) {
+      expect(exportProblem(hidden, format)).toBeNull();
+    }
+    expect(build(hidden).source).toMatchObject({ columns: ["id", "email"], offset: 200 });
+    // An INSERT export of a later page leaves generated columns out like on the first page.
+    const insert = tableInput({
+      scope: "page",
+      generated: ["total"],
+      page: { limit: 200, offset: 200 },
     });
-    expect(() => build(input)).toThrow(/Only visible columns/);
-    // With every column chosen explicitly (unchecked), the page re-runs as before.
-    const all = build(tableInput({ scope: "page", page: { limit: 200, offset: 200, sql } }));
-    expect(all.source).toEqual({ kind: "sql", sql });
-    // The first page stays a table export and keeps the column choice.
-    const first = build(tableInput({ scope: "page", columns: ["id", "email"] }));
-    expect(first.source).toMatchObject({ kind: "table", columns: ["id", "email"] });
+    expect(build(insert, opts({ format: "sqlInsert" })).source).toMatchObject({
+      kind: "table",
+      columns: null,
+      offset: 200,
+    });
+    const subset = tableInput({
+      scope: "page",
+      columns: ["id", "total"],
+      generated: ["total"],
+      page: { limit: 200, offset: 200 },
+    });
+    expect(build(subset, opts({ format: "sqlInsert" })).source).toMatchObject({
+      columns: ["id"],
+      offset: 200,
+    });
   });
 
   it("leaves generated columns out of INSERT exports of a column subset", () => {
@@ -239,15 +268,6 @@ describe("buildExportRequest", () => {
     const onlyGenerated = tableInput({ columns: ["total"], generated: ["total"] });
     expect(exportProblem(onlyGenerated, "sqlInsert")).toMatchObject({ field: "columns" });
     expect(exportProblem(onlyGenerated, "json")).toBeNull();
-    // A later page re-runs the browse statement, which can't drop generated columns.
-    const laterPage = tableInput({
-      scope: "page",
-      generated: ["total"],
-      page: { limit: 200, offset: 200, sql: "SELECT 1 LIMIT 200 OFFSET 200" },
-    });
-    expect(exportProblem(laterPage, "sqlInsert")).toMatchObject({ field: "rows" });
-    expect(exportProblem(laterPage, "csv")).toBeNull();
-    expect(() => build(laterPage, opts({ format: "sqlInsert" }))).toThrow();
   });
 
   it("passes SQL sources through unchanged", () => {
@@ -312,12 +332,6 @@ describe("rows with cut binary values", () => {
 });
 
 describe("page export helpers", () => {
-  it("needs the browse statement only for later pages", () => {
-    expect(canExportPage({ offset: 0, sql: null })).toBe(true);
-    expect(canExportPage({ offset: 200, sql: null })).toBe(false);
-    expect(canExportPage({ offset: 200, sql: "SELECT 1" })).toBe(true);
-  });
-
   it("reads the page of a browse statement (backend and mock spellings)", () => {
     expect(browsePageOf('SELECT "a"\nFROM "t" ORDER BY "a" ASC\nLIMIT 200 OFFSET 400')).toEqual({
       limit: 200,
@@ -341,25 +355,35 @@ describe("page export helpers", () => {
     expect(currentPageSql({ limit: 100, offset: 200, sql: page2 })).toBeNull();
     expect(currentPageSql({ limit: 200, offset: 200, sql: null })).toBeNull();
     expect(currentPageSql({ limit: 200, offset: 200, sql: "SELECT 1" })).toBeNull();
-    // Not loaded = "wait for the page", never another page's rows.
-    const stale = tableInput({ scope: "page", page: { limit: 200, offset: 200, sql: null } });
-    expect(exportProblem(stale, "csv")).toMatchObject({ field: "rows", message: /Wait/ });
-  });
-
-  it("strips only the synthetic rowid column", () => {
-    expect(stripRowidAlias('SELECT "a", rowid AS "_tabler_rowid" FROM t')).toBe(
-      'SELECT "a" FROM t',
-    );
-    expect(stripRowidAlias('SELECT "rowid" FROM t')).toBe('SELECT "rowid" FROM t');
   });
 });
 
 describe("visibleColumnNames", () => {
   const cols = ["id", "name", "email", "bio"].map((name) => ({ name }) as ColumnMeta);
 
-  it("is null when nothing is hidden", () => {
-    expect(visibleColumnNames(cols, { order: ["email"], hidden: [] })).toBeNull();
+  it("is null when nothing is hidden and the order is the table's", () => {
+    expect(visibleColumnNames(cols, { order: [], hidden: [] })).toBeNull();
+    expect(
+      visibleColumnNames(cols, { order: ["id", "name", "email", "bio"], hidden: [] }),
+    ).toBeNull();
     expect(visibleColumnNames(cols, { order: [], hidden: ["gone"] })).toBeNull();
+  });
+
+  it("follows the grid order when columns were only dragged, nothing hidden", () => {
+    expect(visibleColumnNames(cols, { order: ["email"], hidden: [] })).toEqual([
+      "email",
+      "id",
+      "name",
+      "bio",
+    ]);
+    expect(columnChanges(cols, { order: ["email"], hidden: [] })).toEqual({
+      hidden: false,
+      reordered: true,
+    });
+    expect(columnChanges(cols, { order: [], hidden: [] })).toEqual({
+      hidden: false,
+      reordered: false,
+    });
   });
 
   it("follows the grid order and drops hidden columns", () => {
@@ -368,6 +392,212 @@ describe("visibleColumnNames", () => {
       "id",
       "name",
     ]);
+    expect(columnChanges(cols, { order: ["email", "id"], hidden: ["bio"] })).toEqual({
+      hidden: true,
+      reordered: true,
+    });
+    // Hiding alone is not a reorder.
+    expect(visibleColumnNames(cols, { order: [], hidden: ["bio"] })).toEqual([
+      "id",
+      "name",
+      "email",
+    ]);
+    expect(columnChanges(cols, { order: [], hidden: ["bio"] })).toEqual({
+      hidden: true,
+      reordered: false,
+    });
+  });
+});
+
+describe("CSV Space quote and custom decimal", () => {
+  it("offers the Space quote between the quotes and Quote if needed", () => {
+    expect(CSV_QUOTES.map((q) => q.value)).toEqual(["double", "single", "space", "ifNeeded"]);
+    const format = toExportFormat(
+      opts({ csv: { ...DEFAULT_EXPORT_OPTIONS.csv, quote: "space" } }),
+      "",
+    );
+    expect(format).toMatchObject({ format: "csv", quote: "space" });
+  });
+
+  it("sends a custom decimal separator and refuses one the backend would", () => {
+    const hash = opts({ csv: { ...DEFAULT_EXPORT_OPTIONS.csv, delimiter: ";", decimal: "#" } });
+    expect(toExportFormat(hash, "")).toMatchObject({ format: "csv", decimal: "#", delimiter: ";" });
+    expect(build(tableInput(), hash).format).toMatchObject({ decimal: "#" });
+    expect(csvProblem(hash.csv)).toBeNull();
+    const bad = (decimal: string, delimiter: ExportOptions["csv"]["delimiter"] = ";") =>
+      csvProblem({ ...DEFAULT_EXPORT_OPTIONS.csv, delimiter, decimal });
+    expect(bad("")).toMatch(/Type the decimal separator/);
+    expect(bad("5")).toMatch(/not a digit or a quote/);
+    expect(bad('"')).toMatch(/not a digit or a quote/);
+    expect(bad("ab")).toMatch(/not a digit or a quote/);
+    expect(bad(";")).toMatch(/differ from the delimiter/);
+    expect(bad(";", "\t")).toBeNull();
+    // `,` is the classic choice: numbers holding it are quoted, also with a comma delimiter.
+    expect(bad(",", ",")).toBeNull();
+    expect(bad(".", ",")).toBeNull();
+    expect(decimalProblem("#", ",")).toBeNull();
+    expect(() => build(tableInput(), opts({ csv: { ...hash.csv, decimal: "7" } }))).toThrow(
+      /decimal separator/,
+    );
+    // Only CSV has them.
+    expect(
+      build(tableInput(), opts({ format: "json", csv: { ...hash.csv, decimal: "7" } })).format,
+    ).toMatchObject({ format: "json" });
+  });
+
+  it("remembers a custom decimal and drops one that clashes with the delimiter", () => {
+    const semicolons = { ...DEFAULT_CSV_FIELDS, delimiter: ";" } as const;
+    const keep = parseExportOptions(
+      { csv: { decimal: "#", delimiter: ";" }, csvDefaults: semicolons },
+      semicolons,
+    );
+    // The CSV default options say what they said when the options were saved: the remembered `#`
+    // wins.
+    expect(keep.csv.decimal).toBe("#");
+    expect(parseExportOptions({ csv: { decimal: "7" } }).csv.decimal).toBe(".");
+    expect(parseExportOptions({ csv: { quote: "space" } }).csv.quote).toBe("space");
+    // The preference decides when it changed since: a custom character comes through as it is.
+    expect(
+      parseExportOptions(
+        { csv: { decimal: "." }, csvDefaults: DEFAULT_CSV_FIELDS },
+        { ...DEFAULT_CSV_FIELDS, decimal: "#" },
+      ).csv.decimal,
+    ).toBe("#");
+    // …unless it equals the delimiter: it could not be told apart.
+    expect(
+      parseExportOptions(
+        { csv: {}, csvDefaults: DEFAULT_CSV_FIELDS },
+        { ...DEFAULT_CSV_FIELDS, delimiter: ";", decimal: ";" },
+      ).csv.decimal,
+    ).toBe(".");
+  });
+});
+
+const DEFAULT_CSV_FIELDS = {
+  delimiter: ",",
+  quote: "ifNeeded",
+  lineBreak: "\n",
+  decimal: ".",
+} as const;
+
+describe("a result or query of an unknown table", () => {
+  it("inserts into untitled without a name, and into the name typed", () => {
+    const query: ExportInput = { kind: "sql", sql: "select 1" };
+    const sqlOptions = opts({ format: "sqlInsert" });
+    expect(build(query, sqlOptions).format).toMatchObject({ tableName: UNTITLED_TABLE });
+    expect(build(query, sqlOptions, " archive ").format).toMatchObject({ tableName: "archive" });
+    const join: ExportInput = {
+      kind: "rows",
+      columns: [{ name: "n", dataType: "int4", kind: "int", nullable: null, table: null }],
+      rows: [[{ t: "int", v: 1 }]],
+      table: null,
+    };
+    expect(exportProblem(join, "sqlInsert", sqlOptions.sql)).toBeNull();
+    expect(build(join, sqlOptions).format).toMatchObject({ tableName: "untitled" });
+    expect(build(join, sqlOptions, "archive").format).toMatchObject({ tableName: "archive" });
+    // A known table stays the backend's default (no name sent).
+    expect(build({ ...join, table: "users" }, sqlOptions).format).toMatchObject({ tableName: "" });
+  });
+});
+
+describe("the encoding of the connection (View Using Encoding)", () => {
+  it("maps MySQL and PostgreSQL charset names to the export's encodings", () => {
+    for (const name of ["latin1", "LATIN1", "iso-8859-1", "ISO_8859_1", " latin1 "])
+      expect(encodingForCharset(name)).toBe("latin1");
+    for (const name of ["cp1252", "windows-1252", "WIN1252", "Windows1252"])
+      expect(encodingForCharset(name)).toBe("windows1252");
+    for (const name of ["utf16", "UTF16", "ucs2", "UTF-16LE"])
+      expect(encodingForCharset(name)).toBe("utf16Le");
+    // UTF-8 keeps the remembered choice, and so does a charset the export has no encoding for.
+    for (const name of ["utf8", "utf8mb4", "UTF8", "utf8mb3", "UTF-8", "sjis", "EUC_JP", "", null])
+      expect(encodingForCharset(name)).toBeNull();
+    expect(encodingForCharset(undefined)).toBeNull();
+    // Every mapped encoding is one the dialog offers.
+    for (const name of ["latin1", "cp1252", "utf16"]) {
+      const mapped = encodingForCharset(name);
+      expect(ENCODINGS.some((e) => e.value === mapped)).toBe(true);
+    }
+  });
+});
+
+describe("the results of a run", () => {
+  const col = (name: string) => ({
+    name,
+    dataType: "int4",
+    kind: "int" as const,
+    nullable: null,
+    table: null,
+  });
+  const items = [
+    {
+      label: "Result 1",
+      columns: [col("id")],
+      rows: [[{ t: "int" as const, v: 1 }]],
+      table: "users",
+    },
+    { label: "Result 2", columns: [col("n")], rows: [], table: null },
+  ];
+  const buildAll = (options = opts(), target = "/tmp/all.xlsx") =>
+    buildExportResultsRequest({ exportId: "r1", items, options, target, name: "results" });
+
+  it("writes one file where the format holds several results, else a file per result", () => {
+    expect(resultsLayout("xlsx")).toBe("singleFile");
+    expect(resultsLayout("html")).toBe("singleFile");
+    expect(resultsLayout("sqlInsert")).toBe("singleFile");
+    expect(resultsLayout("csv")).toBe("filePerTable");
+    expect(resultsLayout("json")).toBe("filePerTable");
+  });
+
+  it("builds the export_results request with every result and its table", () => {
+    const req = buildAll(opts({ format: "xlsx" }));
+    expect(req).toMatchObject({
+      exportId: "r1",
+      layout: "singleFile",
+      target: "/tmp/all.xlsx",
+      format: { format: "xlsx", header: true },
+      encoding: "utf8",
+      name: "results",
+    });
+    expect(req.results.map((r) => [r.label, r.table, r.rows.length])).toEqual([
+      ["Result 1", "users", 1],
+      ["Result 2", null, 0],
+    ]);
+    expect(buildAll(opts(), "/tmp/out").layout).toBe("filePerTable");
+    // INSERTs name each result's own table: no name in the format.
+    expect(buildAll(opts({ format: "sqlInsert" })).format).toMatchObject({ tableName: "" });
+    // The encoding of a text format.
+    expect(buildAll(opts({ format: "html", encoding: "latin1" })).encoding).toBe("latin1");
+  });
+
+  it("refuses what the backend would: no content, a cut binary value, a bad CSV choice", () => {
+    const none = sqlOpts({ content: false, structure: true });
+    expect(resultsProblem(items, "sqlInsert", none)).toMatchObject({ field: "options" });
+    expect(() => buildAll(opts({ format: "sqlInsert", sql: none }))).toThrow(/no structure/);
+    const capped = [
+      ...items,
+      {
+        label: "Result 3",
+        columns: [col("b")],
+        rows: [[{ t: "bytes" as const, v: { base64: "", len: 70_000, truncated: true } }]],
+        table: null,
+      },
+    ];
+    expect(resultsProblem(capped, "csv")).toMatchObject({
+      field: "rows",
+      message: expect.stringContaining("Result 3"),
+    });
+    expect(resultsProblem(items, "csv")).toBeNull();
+    expect(() =>
+      buildExportResultsRequest({
+        exportId: "r",
+        items,
+        options: opts({ csv: { ...DEFAULT_EXPORT_OPTIONS.csv, decimal: "5" } }),
+        target: "/tmp/x",
+      }),
+    ).toThrow(/decimal/);
+    expect(() =>
+      buildExportResultsRequest({ exportId: "r", items: [], options: opts(), target: "/tmp/x" }),
+    ).toThrow(/no results/);
   });
 });
 
@@ -542,5 +772,78 @@ describe("several tables", () => {
     expect(
       defaultFileName("t", opts({ format: "sqlInsert", sql: sqlOpts({ gzip: true }) }), at),
     ).toBe("t_20261011-0905.sql.gz");
+  });
+});
+
+describe("HTML and encodings", () => {
+  const input: ExportInput = { kind: "sql", sql: "select 1" };
+
+  it("maps HTML and sends the encoding of text formats only", () => {
+    const req = build(input, opts({ format: "html", encoding: "windows1252" }));
+    expect(req.format).toEqual({ format: "html" });
+    expect(req.encoding).toBe("windows1252");
+    expect(build(input, opts({ format: "csv", encoding: "utf16Le" })).encoding).toBe("utf16Le");
+    // A workbook is zipped UTF-8 XML: never transcoded.
+    expect(build(input, opts({ format: "xlsx", encoding: "latin1" })).encoding).toBe("utf8");
+    expect(encodingApplies("xlsx")).toBe(false);
+    expect(encodingApplies("sqlInsert")).toBe(true);
+    expect(ENCODINGS.map((e) => e.value)).toEqual([
+      "utf8",
+      "utf8Bom",
+      "utf16Le",
+      "windows1252",
+      "latin1",
+    ]);
+  });
+
+  it("names HTML files and lays several tables out in one page unless asked", () => {
+    const at = new Date(2026, 9, 11, 9, 5);
+    expect(defaultFileName("t", opts({ format: "html" }), at)).toBe("t_20261011-0905.html");
+    expect(fileFilter(opts({ format: "html" }))).toEqual({
+      name: "HTML",
+      extensions: ["html", "htm"],
+    });
+    expect(multiLayout(opts({ format: "html" }))).toBe("singleFile");
+    expect(
+      multiLayout(
+        opts({ format: "html", multi: { ...DEFAULT_EXPORT_OPTIONS.multi, htmlSingleFile: false } }),
+      ),
+    ).toBe("filePerTable");
+  });
+
+  it("remembers the encoding and the HTML layout; unknown values fall back", () => {
+    const parsed = parseExportOptions({
+      format: "html",
+      encoding: "utf8Bom",
+      multi: { htmlSingleFile: false },
+    });
+    expect(parsed.format).toBe("html");
+    expect(parsed.encoding).toBe("utf8Bom");
+    expect(parsed.multi.htmlSingleFile).toBe(false);
+    expect(parseExportOptions({ encoding: "ebcdic" }).encoding).toBe("utf8");
+  });
+
+  it("names another database and asks for its folder to be created", () => {
+    const req = buildExportTablesRequest({
+      exportId: "m",
+      tables: [{ schema: "public", name: "orders" }],
+      options: opts({ format: "csv", encoding: "utf8Bom" }),
+      target: "/tmp/x/shop",
+      database: "shop",
+      createFolder: true,
+    });
+    expect(req).toMatchObject({
+      database: "shop",
+      createFolder: true,
+      encoding: "utf8Bom",
+      layout: "filePerTable",
+    });
+    const plain = buildExportTablesRequest({
+      exportId: "m",
+      tables: [{ schema: "public", name: "orders" }],
+      options: opts(),
+      target: "/tmp/x",
+    });
+    expect(plain).toMatchObject({ database: null, createFolder: false, encoding: "utf8" });
   });
 });

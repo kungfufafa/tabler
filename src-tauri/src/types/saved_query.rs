@@ -35,6 +35,13 @@ pub struct SavedQueryInput {
     pub sql: String,
     pub folder_id: Option<Uuid>,
     pub profile_id: Option<Uuid>,
+    /// Rename / move / re-tag only: leave the file's SQL as it is on disk and ignore `sql`. The
+    /// renderer's copy of the SQL may be stale (the file changed outside Tabler) or lossy (a file
+    /// that is not UTF-8), so a metadata change must not write it back. Ignored when the query
+    /// does not exist yet.
+    #[serde(default)]
+    #[ts(optional)]
+    pub keep_sql: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

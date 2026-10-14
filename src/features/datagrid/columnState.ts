@@ -80,11 +80,23 @@ const PADDING = 24;
 /** Header extras: the type/key icon and its gap. */
 const HEADER_EXTRA = 18;
 
-/** Width that fits the header and the sampled cell texts (≈7.5px per char + padding), clamped. */
-export function fitWidth(col: Pick<GridColumn, "name">, sampleTexts: readonly string[]): number {
+/** The grid's font size the glyph width `CHAR_W` was measured at (the default, 12px). */
+const BASE_FONT_SIZE = 12;
+
+/**
+ * Width that fits the header and the sampled cell texts (≈7.5px per char at the default 12px font,
+ * scaled with `fontSize`, + padding), clamped. Double-clicking a column border uses it, so the
+ * fit follows Settings ▸ Appearance ▸ Data table ▸ Font size.
+ */
+export function fitWidth(
+  col: Pick<GridColumn, "name">,
+  sampleTexts: readonly string[],
+  fontSize: number = BASE_FONT_SIZE,
+): number {
+  const glyph = CHAR_W * ((fontSize > 0 ? fontSize : BASE_FONT_SIZE) / BASE_FONT_SIZE);
   let chars = 0;
   for (const t of sampleTexts) if (t.length > chars) chars = t.length;
-  const cells = chars * CHAR_W + PADDING;
-  const header = col.name.length * CHAR_W + PADDING + HEADER_EXTRA;
+  const cells = chars * glyph + PADDING;
+  const header = col.name.length * glyph + PADDING + HEADER_EXTRA;
   return Math.round(Math.max(MIN_COL_W, Math.min(MAX_COL_W, Math.max(cells, header))));
 }

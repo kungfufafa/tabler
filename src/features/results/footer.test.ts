@@ -9,8 +9,9 @@ import {
 
 describe("results footer labels", () => {
   it("say when the row limit cut the result", () => {
-    expect(autoLimitLabel(1000)).toBe(`auto limited to ${(1000).toLocaleString()} rows`);
-    expect(autoLimitLabel(1)).toBe("auto limited to 1 row");
+    const n = (1000).toLocaleString();
+    expect(autoLimitLabel(1000)).toBe(`${n} rows (auto limited ${n} rows)`);
+    expect(autoLimitLabel(1)).toBe("1 row (auto limited 1 row)");
   });
 
   it("show the execution time once the statement finished", () => {

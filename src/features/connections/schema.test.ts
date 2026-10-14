@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
+import { DEFAULT_PREFS } from "@/stores/prefs";
 import {
   connectionDetail,
   connectionFormSchema,
+  DEFAULT_CONNECT_TIMEOUT_SECS,
   DEFAULT_FORM,
   formToProfileInput,
+  MYSQL_VERSION_LABEL,
+  MYSQL_VERSIONS,
   newProfileForm,
+  passwordModesFor,
   profileToForm,
   urlToForm,
 } from "./schema";
-import { parseConnectionUrl } from "./url";
+import { mysqlVersionOf, parseConnectionUrl } from "./url";
 
 describe("connection form schema", () => {
   it("requires host and user for server drivers, a path for sqlite", () => {
@@ -76,6 +81,7 @@ describe("connection form schema", () => {
       keyPath: null,
       localPort: null,
       keepaliveSecs: null,
+      passwordMode: "keychain",
     });
   });
 
@@ -237,6 +243,7 @@ describe("connection form — TablePlus parity fields", () => {
       keyPath: null,
       localPort: 15432,
       keepaliveSecs: 20,
+      passwordMode: null,
     });
     expect(profileToForm(input.profile)).toMatchObject({
       sshPort: "",
@@ -286,7 +293,7 @@ describe("Command Line (IAM authentication) and MySQL Use socket", () => {
     expect(keychain.profile.options.passwordCommand).toBeNull();
   });
 
-  it("round-trips Use socket: no host needed, no SSH, path optional", () => {
+  it("round-trips Use socket: no host needed, path optional, over SSH it is the server's", () => {
     const values = { ...profileToForm(my), useSocket: true, host: "", socketPath: "" };
     expect(connectionFormSchema.safeParse(values).success).toBe(true);
     const input = formToProfileInput({ ...values, socketPath: "/tmp/mysql.sock" }, my, my.id);
@@ -303,11 +310,22 @@ describe("Command Line (IAM authentication) and MySQL Use socket", () => {
     expect(detect.profile.options.socketPath).toBeNull();
     expect(connectionDetail(detect.profile).startsWith("socket")).toBe(true);
 
-    const ssh = connectionFormSchema.safeParse({ ...values, sshEnabled: true, sshHost: "b" });
-    expect(ssh.success).toBe(false);
-    expect(ssh.success ? [] : ssh.error.issues.map((i) => i.path.join("."))).toEqual([
+    // Over SSH (TablePlus b228) the path is the SSH server's: empty (its usual places) or full.
+    const over = { ...values, sshEnabled: true, sshHost: "b" };
+    expect(connectionFormSchema.safeParse(over).success).toBe(true);
+    expect(
+      connectionFormSchema.safeParse({ ...over, socketPath: "/run/mysqld/m.sock" }).success,
+    ).toBe(true);
+    const relative = connectionFormSchema.safeParse({ ...over, socketPath: "~/m.sock" });
+    expect(relative.success).toBe(false);
+    expect(relative.success ? [] : relative.error.issues.map((i) => i.path.join("."))).toEqual([
       "socketPath",
     ]);
+    const tunnelled = formToProfileInput({ ...over, socketPath: "/run/mysqld/m.sock" }, my, my.id);
+    expect(tunnelled.profile).toMatchObject({
+      ssh: { host: "b" },
+      options: { useSocket: true, socketPath: "/run/mysqld/m.sock" },
+    });
     // Only MySQL has it: a PostgreSQL form ignores the flag.
     const onPg = formToProfileInput({ ...profileToForm(pg), useSocket: true }, pg, pg.id);
     expect(onPg.profile.options.useSocket).toBeNull();
@@ -318,5 +336,194 @@ describe("Command Line (IAM authentication) and MySQL Use socket", () => {
     const off = formToProfileInput({ ...values, host: "db", useSocket: false }, my, my.id);
     expect(off.profile.options.useSocket).toBeNull();
     expect(off.profile.options.socketPath).toBeNull();
+  });
+});
+
+describe("conn3a: SQLCipher, resource file, driver options, encoding, tags", () => {
+  const pg = { ...DEFAULT_FORM, name: "pg", user: "u", host: "h" };
+  const lite = { ...DEFAULT_FORM, name: "lite", driver: "sqlite" as const, sqlitePath: "/x.db" };
+
+  it("round-trips the SQLite key mode, SQLCipher compatibility and resource file", () => {
+    const input = formToProfileInput(
+      {
+        ...lite,
+        password: "k3y",
+        sqliteCipherCompatibility: "3",
+        sqliteResourceFile: "~/.sqliterc",
+      },
+      null,
+      "id-1",
+    );
+    // The key is the profile's password (Keychain).
+    expect(input.password).toBe("k3y");
+    expect(input.profile.options).toMatchObject({
+      passwordMode: "keychain",
+      sqliteCipherCompatibility: 3,
+      sqliteResourceFile: "~/.sqliterc",
+      encoding: null,
+      sqliteSshUpload: null,
+    });
+    expect(profileToForm(input.profile)).toMatchObject({
+      sqliteCipherCompatibility: "3",
+      sqliteResourceFile: "~/.sqliterc",
+    });
+    // Default compatibility (4) is stored as none; "Ask every time" sends no key.
+    const ask = formToProfileInput({ ...lite, passwordMode: "ask", password: "x" }, null, "id-1");
+    expect(ask.password).toBeNull();
+    expect(ask.profile.options.sqliteCipherCompatibility).toBeNull();
+    expect(profileToForm(ask.profile).sqliteCipherCompatibility).toBe("");
+    expect(passwordModesFor("sqlite")).toEqual(["keychain", "ask", "none"]);
+    expect(passwordModesFor("mysql")).toContain("command");
+  });
+
+  it("SQLite over SSH keeps the SSH settings (no local port) and the upload switch", () => {
+    const v = {
+      ...lite,
+      sqlitePath: "/srv/app.sqlite",
+      sshEnabled: true,
+      sshHost: "box",
+      sshLocalPort: "15432",
+      sqliteSshUpload: true,
+    };
+    expect(connectionFormSchema.safeParse(v).success).toBe(true);
+    const input = formToProfileInput(v, null, "id-1");
+    expect(input.profile.ssh).toMatchObject({ host: "box", localPort: null });
+    expect(input.profile.sqlitePath).toBe("/srv/app.sqlite");
+    expect(input.profile.options.sqliteSshUpload).toBe(true);
+    expect(profileToForm(input.profile)).toMatchObject({ sshEnabled: true, sqliteSshUpload: true });
+    // The remote path is required, and so is the SSH host.
+    const r = connectionFormSchema.safeParse({ ...v, sqlitePath: "", sshHost: "" });
+    const issues = r.success ? [] : r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        "sqlitePath: Enter the path of the database file on the SSH server",
+        "sshHost: SSH host is required",
+      ]),
+    );
+  });
+
+  it("round-trips the MySQL Ver., Other options and encoding (only for MySQL)", () => {
+    const my = {
+      ...pg,
+      driver: "mysql" as const,
+      mysqlVersion: "mariadb" as const,
+      mysqlCleartextPlugin: true,
+      mysqlLocalInfile: true,
+      encoding: "latin1",
+      pgParams: "jit=off",
+    };
+    const input = formToProfileInput(my, null, "id-1");
+    expect(input.profile.options).toMatchObject({
+      mysqlVersion: "mariadb",
+      mysqlCleartextPlugin: true,
+      mysqlLocalInfile: true,
+      encoding: "latin1",
+      pgParams: null,
+      pgSslNegotiation: null,
+    });
+    expect(profileToForm(input.profile)).toMatchObject({
+      mysqlVersion: "mariadb",
+      mysqlCleartextPlugin: true,
+      mysqlLocalInfile: true,
+      encoding: "latin1",
+    });
+    const plain = formToProfileInput({ ...my, mysqlVersion: "default" }, null, "id-1");
+    expect(plain.profile.options.mysqlVersion).toBeNull();
+    const bad = connectionFormSchema.safeParse({ ...my, encoding: "latin1; DROP" });
+    expect(bad.success).toBe(false);
+  });
+
+  it("SingleStore DB round-trips through the form and a link's driverVersion index 3", () => {
+    // Append only: a link's `driverVersion=` is an index into this list.
+    expect([...MYSQL_VERSIONS]).toEqual(["default", "mariadb", "old", "singlestore"]);
+    expect(MYSQL_VERSION_LABEL.singlestore).toBe("SingleStore DB");
+    expect(MYSQL_VERSION_LABEL.old).toBe("Old MySQL (5.x)");
+
+    const my = { ...pg, driver: "mysql" as const, mysqlVersion: "singlestore" as const };
+    expect(connectionFormSchema.safeParse(my).success).toBe(true);
+    const input = formToProfileInput(my, null, "id-1");
+    expect(input.profile.options.mysqlVersion).toBe("singlestore");
+    expect(profileToForm(input.profile).mysqlVersion).toBe("singlestore");
+    // Other drivers keep none.
+    const other = formToProfileInput({ ...pg, mysqlVersion: "singlestore" }, null, "id-1");
+    expect(other.profile.options.mysqlVersion).toBeNull();
+    // Every version survives the profile -> form -> profile trip.
+    for (const version of MYSQL_VERSIONS) {
+      const trip = formToProfileInput(
+        profileToForm(formToProfileInput({ ...my, mysqlVersion: version }, null, "id-2").profile),
+        null,
+        "id-2",
+      );
+      expect(trip.profile.options.mysqlVersion).toBe(version === "default" ? null : version);
+    }
+    // The link's index 3 is SingleStore DB; 4 is out of range.
+    expect(mysqlVersionOf(3)).toBe("singlestore");
+    expect(mysqlVersionOf(2)).toBe("old");
+    expect(mysqlVersionOf(4)).toBeNull();
+  });
+
+  it("the form's connect timeout default is the backend's 60 s", () => {
+    expect(DEFAULT_CONNECT_TIMEOUT_SECS).toBe(60);
+    expect(newProfileForm(DEFAULT_PREFS.connectTimeout).connectTimeoutSecs).toBe("60");
+  });
+
+  it("round-trips the PostgreSQL SSL negotiation, channel binding and extra parameters", () => {
+    const v = {
+      ...pg,
+      ssl: "require" as const,
+      pgSslNegotiation: "direct" as const,
+      pgDisableChannelBinding: true,
+      pgParams: "  statement_timeout=5000 jit=off  ",
+      mysqlLocalInfile: true,
+    };
+    expect(connectionFormSchema.safeParse(v).success).toBe(true);
+    const input = formToProfileInput(v, null, "id-1");
+    expect(input.profile.options).toMatchObject({
+      pgSslNegotiation: "direct",
+      pgDisableChannelBinding: true,
+      pgParams: "statement_timeout=5000 jit=off",
+      mysqlLocalInfile: null,
+    });
+    expect(profileToForm(input.profile)).toMatchObject({
+      pgSslNegotiation: "direct",
+      pgDisableChannelBinding: true,
+    });
+    // DIRECT needs require or stricter, as libpq says.
+    const weak = connectionFormSchema.safeParse({ ...v, ssl: "prefer" });
+    const paths = weak.success ? [] : weak.error.issues.map((i) => i.path.join("."));
+    expect(paths).toContain("pgSslNegotiation");
+  });
+
+  it("round-trips the bootstrap script and the SSH password storage", () => {
+    const v = {
+      ...pg,
+      bootstrapScript: "cloud-sql-proxy &",
+      sshEnabled: true,
+      sshHost: "bastion",
+      sshAuth: "password" as const,
+      sshPasswordMode: "ask" as const,
+      sshPassword: "typed",
+    };
+    const input = formToProfileInput(v, null, "id-1");
+    expect(input.profile.options.bootstrapScript).toBe("cloud-sql-proxy &");
+    expect(input.profile.ssh?.passwordMode).toBe("ask");
+    // Asked every time: never stored.
+    expect(input.sshPassword).toBeNull();
+    expect(profileToForm(input.profile)).toMatchObject({
+      bootstrapScript: "cloud-sql-proxy &",
+      sshPasswordMode: "ask",
+    });
+    const kept = formToProfileInput({ ...v, sshPasswordMode: "keychain" }, null, "id-1");
+    expect(kept.sshPassword).toBe("typed");
+    expect(
+      formToProfileInput({ ...v, bootstrapScript: "  " }, null, "id-1").profile.options,
+    ).toMatchObject({ bootstrapScript: null });
+  });
+
+  it("takes custom tags (any name up to 40 characters)", () => {
+    const input = formToProfileInput({ ...pg, tag: "QA" }, null, "id-1");
+    expect(input.profile.options.tag).toBe("QA");
+    expect(profileToForm(input.profile).tag).toBe("QA");
+    expect(connectionFormSchema.safeParse({ ...pg, tag: "x".repeat(41) }).success).toBe(false);
   });
 });

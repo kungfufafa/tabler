@@ -1,15 +1,16 @@
 import { EditorView } from "@codemirror/view";
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ensureSavedQueries } from "@/features/queries/store";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
-import { ipc } from "@/lib/ipc";
+import { ipc, type TableRef } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { usePrefsStore } from "@/stores/prefs";
 import {
   editorPrefsOf,
   languageConf,
+  languagePrefsOf,
   languageExtension,
   prefsConf,
   prefsExtension,
@@ -40,8 +41,28 @@ export function SqlEditor({
     queryFn: () => ipc.schema.completion(connectionId),
     staleTime: 5 * 60_000,
   });
-  const upperCaseKeywords = usePrefsStore((s) => s.prefs.editorUppercaseKeywords);
+  const completionPrefs = usePrefsStore(useShallow((s) => languagePrefsOf(s.prefs)));
   const prefs = usePrefsStore(useShallow((s) => editorPrefsOf(s.prefs)));
+  const defaultSchema = completionDefaultSchema(dialect, completion.data, currentDatabase);
+  // Function completion: the default schema's routines (SQLite has none).
+  const routines = useQuery({
+    queryKey: ["completion-routines", connectionId, defaultSchema ?? ""],
+    queryFn: () => ipc.objects.routines(connectionId, defaultSchema!),
+    enabled: dialect !== "sqlite" && !!defaultSchema,
+    staleTime: 5 * 60_000,
+    select: (list) => list.map((r) => ({ name: r.name, kind: r.kind })),
+  });
+  // JOIN … ON suggestions read the tables' foreign keys (cached like the sidebar's metadata).
+  const qc = useQueryClient();
+  const tableMeta = useCallback(
+    (table: TableRef) =>
+      qc.fetchQuery({
+        queryKey: schemaKeys.table(connectionId, table.schema, table.name),
+        queryFn: () => ipc.schema.table(connectionId, table),
+        staleTime: 5 * 60_000,
+      }),
+    [qc, connectionId],
+  );
   const profileId = useConnectionsStore((s) => s.byId[connectionId]?.info.profileId ?? null);
 
   // Keyword binding completes from the saved queries.
@@ -51,11 +72,14 @@ export function SqlEditor({
     () => ({
       dialect,
       schema: completionNamespace(completion.data),
-      defaultSchema: completionDefaultSchema(dialect, completion.data, currentDatabase),
-      upperCaseKeywords,
+      defaultSchema,
+      tables: completion.data?.schemas as LanguageConfig["tables"],
+      routines: routines.data,
+      tableMeta,
       profileId,
+      ...completionPrefs,
     }),
-    [dialect, completion.data, currentDatabase, upperCaseKeywords, profileId],
+    [dialect, completion.data, defaultSchema, routines.data, tableMeta, profileId, completionPrefs],
   );
   const languageRef = useRef(language);
   languageRef.current = language;

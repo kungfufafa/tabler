@@ -1,7 +1,12 @@
 import { useSyncExternalStore } from "react";
 import type { ActionId } from "@/features/palette/actions";
-import { getPrefs, usePrefsStore } from "@/stores/prefs";
-import { EMPTY_OVERRIDES, resolveKeymap, type KeymapOverrides } from "./overrides";
+import { getPrefs, setPref, usePrefsStore } from "@/stores/prefs";
+import {
+  EMPTY_OVERRIDES,
+  migrateKeymapOverrides,
+  resolveKeymap,
+  type KeymapOverrides,
+} from "./overrides";
 
 export type Scope = "global" | "sidebar" | "grid" | "grid-edit" | "filter" | "editor" | "dialog";
 
@@ -16,6 +21,18 @@ export interface ShortcutDef {
   allowInDialog?: boolean;
   /** Global shortcut that must not fire while a cell editor has focus (its edit is not staged yet). */
   notWhileEditing?: boolean;
+  /**
+   * Global shortcut that fires only with the focus outside every scoped area (sidebar, grid, filter
+   * bar, cell editor, SQL editor, dialog), which keep the key for themselves: ⌘↩ opens the SQL
+   * editor from a table, structure or tool tab.
+   */
+  unscopedOnly?: boolean;
+  /**
+   * Run by the focused CodeMirror editor itself (its keymap is built from KEYMAP, see
+   * `actionKeymap`), not through the action registry: the key acts on whichever editor has the
+   * focus (either pane of a split SQL editor, the SQL Viewer). Remappable like any other binding.
+   */
+  editorCommand?: boolean;
 }
 
 /**
@@ -31,8 +48,23 @@ export const KEYMAP: ShortcutDef[] = [
     label: "New query tab",
     allowInEditor: true,
   },
-  // Inside the editor ⌘E is Explain (editor scope wins).
-  { id: "tab.new-query", keys: "Mod+E", scope: "global", label: "Open SQL editor" },
+  // TablePlus: ⌘E opens a SQL editor, from the SQL editor too (Explain is ⌥⌘E, editor scope).
+  {
+    id: "tab.new-query",
+    keys: "Mod+E",
+    scope: "global",
+    label: "Open SQL editor",
+    allowInEditor: true,
+  },
+  // TablePlus: ⌘↩ from a non-SQL tab opens the SQL editor (in a grid it is Quick Look, in the
+  // filter bar Apply, in the editor Run Current; the sidebar's lists open their item with it).
+  {
+    id: "query.open-editor",
+    keys: "Mod+Enter",
+    scope: "global",
+    label: "Open SQL editor (non-SQL tab)",
+    unscopedOnly: true,
+  },
   {
     id: "tab.close",
     keys: "Mod+W",
@@ -137,11 +169,12 @@ export const KEYMAP: ShortcutDef[] = [
     label: "Toggle console log",
     allowInEditor: true,
   },
+  // TablePlus: ⇧⌘O is File ▸ New SQL Viewer; the connection manager (File menu) has no key.
   {
-    id: "ui.launcher",
+    id: "sqlviewer.new",
     keys: "Mod+Shift+O",
     scope: "global",
-    label: "Connection manager",
+    label: "New SQL Viewer",
     allowInEditor: true,
   },
   {
@@ -151,14 +184,15 @@ export const KEYMAP: ShortcutDef[] = [
     label: "Search for item",
     allowInEditor: true,
   },
+  // TablePlus: ⌘R reloads the whole workspace (fixed; from the SQL editor too), ⌥⌘R only the
+  // current tab.
   {
-    id: "sidebar.focus-search",
-    keys: "Mod+L",
+    id: "workspace.reload",
+    keys: "Mod+R",
     scope: "global",
-    label: "Search for item",
+    label: "Reload workspace",
     allowInEditor: true,
   },
-  { id: "view.refresh", keys: "Mod+R", scope: "global", label: "Refresh" },
   { id: "view.refresh", keys: "Mod+Alt+R", scope: "global", label: "Reload current tab" },
   // Switching the view unmounts an open cell editor before it could stage its value.
   {
@@ -175,11 +209,12 @@ export const KEYMAP: ShortcutDef[] = [
     label: "Show structure",
     notWhileEditing: true,
   },
+  // TablePlus: ⌘N opens a new window; File ▸ New Connection… has no key.
   {
-    id: "connection.new",
+    id: "window.new",
     keys: "Mod+N",
     scope: "global",
-    label: "New connection",
+    label: "New window",
     allowInEditor: true,
   },
   {
@@ -200,6 +235,7 @@ export const KEYMAP: ShortcutDef[] = [
     allowInEditor: true,
   },
   // Staging works from anywhere in the tab (toolbar, filter bar…), not only with the grid focused.
+  // A cell editor takes ⌘S itself (it stages what was typed first, then commits).
   {
     id: "grid.commit",
     keys: "Mod+S",
@@ -207,12 +243,16 @@ export const KEYMAP: ShortcutDef[] = [
     label: "Commit changes",
     notWhileEditing: true,
   },
+  // Workspace-wide (TablePlus): ⇧⌘P and ⇧⌘⌫ also answer while the SQL editor's text has the focus
+  // when the workspace holds staged changes. Their handlers only exist then, so with nothing to
+  // preview or discard the key still reaches CodeMirror.
   {
     id: "grid.preview",
     keys: "Mod+Shift+P",
     scope: "global",
     label: "Preview SQL",
     notWhileEditing: true,
+    allowInEditor: true,
   },
   {
     id: "grid.discard",
@@ -220,6 +260,7 @@ export const KEYMAP: ShortcutDef[] = [
     scope: "global",
     label: "Discard all changes",
     notWhileEditing: true,
+    allowInEditor: true,
   },
   // Opens the filter bar (Esc closes it) on the last applied filter's value.
   { id: "grid.filter", keys: "Mod+F", scope: "grid", label: "Filter rows" },
@@ -228,13 +269,19 @@ export const KEYMAP: ShortcutDef[] = [
   { id: "grid.delete-rows", keys: "Mod+Backspace", scope: "grid", label: "Delete selected rows" },
   { id: "grid.duplicate-row", keys: "Mod+D", scope: "grid", label: "Duplicate row" },
   { id: "grid.set-null", keys: "Mod+Shift+N", scope: "grid", label: "Set NULL" },
-  { id: "grid.set-default", keys: "Mod+Shift+D", scope: "grid", label: "Set DEFAULT" },
+  // Tabler's own key; ⇧⌘D is TablePlus's Split Right. macOS keeps ⌥⌘D for Show / Hide Dock (turn
+  // that off in System Settings ▸ Keyboard ▸ Keyboard Shortcuts, or use the second key).
+  { id: "grid.set-default", keys: "Mod+Alt+D", scope: "grid", label: "Set DEFAULT" },
+  { id: "grid.set-default", keys: "Mod+Alt+Shift+D", scope: "grid", label: "Set DEFAULT" },
   { id: "grid.open-fk", keys: "Mod+J", scope: "grid", label: "Open referenced row" },
   { id: "grid.undo", keys: "Mod+Z", scope: "grid", label: "Undo staged change" },
   { id: "grid.redo", keys: "Mod+Shift+Z", scope: "grid", label: "Redo staged change" },
   { id: "grid.toggle-detail", keys: "Space", scope: "grid", label: "Toggle row detail" },
   { id: "grid.copy", keys: "Mod+C", scope: "grid", label: "Copy selected rows" },
   { id: "grid.copy-as", keys: "Mod+Alt+C", scope: "grid", label: "Copy rows as…" },
+  // ⇧⌘C is two things in TablePlus's own docs: the console log, and Copy Cell Value. Scope settles
+  // it: in a grid it copies the focused cell's value, everywhere else it toggles the console.
+  { id: "grid.copy-cell", keys: "Mod+Shift+C", scope: "grid", label: "Copy cell value" },
   { id: "grid.paste", keys: "Mod+V", scope: "grid", label: "Paste" },
   // In a grid ⌘↩ is Quick Look (TablePlus); elsewhere it keeps its own meaning.
   { id: "grid.quick-look", keys: "Mod+Enter", scope: "grid", label: "Quick Look editor" },
@@ -264,7 +311,8 @@ export const KEYMAP: ShortcutDef[] = [
   },
   { id: "query.run", keys: "Mod+Shift+Enter", scope: "editor", label: "Run all" },
   { id: "query.cancel", keys: "Mod+.", scope: "editor", label: "Cancel running query" },
-  { id: "query.explain", keys: "Mod+E", scope: "editor", label: "Explain" },
+  // TablePlus has no default key for Explain; ⌘E stays "Open SQL editor" in the editor too.
+  { id: "query.explain", keys: "Mod+Alt+E", scope: "editor", label: "Explain" },
   { id: "query.format", keys: "Mod+I", scope: "editor", label: "Beautify SQL" },
   { id: "query.format", keys: "Alt+Shift+F", scope: "editor", label: "Beautify SQL" },
   { id: "query.minify", keys: "Mod+Shift+I", scope: "editor", label: "Uglify SQL" },
@@ -295,7 +343,32 @@ export const KEYMAP: ShortcutDef[] = [
   { id: "query.font-bigger", keys: "Mod+=", scope: "editor", label: "Increase font size" },
   { id: "query.font-bigger", keys: "Mod+Shift+=", scope: "editor", label: "Increase font size" },
   { id: "query.font-smaller", keys: "Mod+-", scope: "editor", label: "Decrease font size" },
+  // Keymap ▸ SQL Editor: the comment toggles run in the focused editor (CodeMirror commands).
+  {
+    id: "query.comment-line",
+    keys: "Mod+/",
+    scope: "editor",
+    label: "Toggle line comment",
+    editorCommand: true,
+  },
+  {
+    id: "query.comment-block",
+    keys: "Mod+Alt+/",
+    scope: "editor",
+    label: "Toggle block comment",
+    editorCommand: true,
+  },
   { id: "query.split", keys: "Mod+Shift+D", scope: "editor", label: "Split pane horizontally" },
+  // Outside the SQL editor (where the editor scope's Split Pane wins) ⇧⌘D splits the workspace,
+  // from the grid, the sidebar, the filter bar and the structure tab as well. Not from a cell /
+  // inspector editor (grid-edit: splitting remounts the tab body under the open edit).
+  {
+    id: "workspace.split-right",
+    keys: "Mod+Shift+D",
+    scope: "global",
+    label: "Split right",
+    notWhileEditing: true,
+  },
   // Workspaces (TablePlus ⇧⌘\ and Keymap ▸ Navigate) and the tab bar's ‹ › history.
   {
     id: "workspace.show",
@@ -318,6 +391,25 @@ export const KEYMAP: ShortcutDef[] = [
     label: "Select previous workspace",
     allowInEditor: true,
   },
+  // Window ▸ Lock Tabler (the SQL editor and dialogs included: the lock screen covers them).
+  {
+    id: "app.lock",
+    keys: "Mod+Ctrl+L",
+    scope: "global",
+    label: "Lock Tabler",
+    allowInEditor: true,
+    allowInDialog: true,
+  },
+  // Plugins ▸ Manage Plugins… (TablePlus ⌘L; ⇧⌘F stays Search for item) and the built-in SQL
+  // Formatter plugin's Plugins ▸ SQL Format (⌃I in the SQL editor).
+  {
+    id: "plugins.manage",
+    keys: "Mod+L",
+    scope: "global",
+    label: "Manage plugins…",
+    allowInEditor: true,
+  },
+  { id: "plugins.sql-format", keys: "Ctrl+I", scope: "editor", label: "SQL Format (plugin)" },
   { id: "tab.back", keys: "Ctrl+-", scope: "global", label: "Go back", allowInEditor: true },
   {
     id: "tab.forward",
@@ -349,6 +441,7 @@ export function findShortcut(
     if (s === "global" && scope === "editor" && !def.allowInEditor) return undefined;
     if (s === "global" && scope === "dialog" && !def.allowInDialog) return undefined;
     if (s === "global" && scope === "grid-edit" && def.notWhileEditing) return undefined;
+    if (s === "global" && scope !== "global" && def.unscopedOnly) return undefined;
     return def;
   }
   return undefined;
@@ -399,7 +492,17 @@ export function useKeymapVersion(): number {
   return useSyncExternalStore(subscribeKeymap, getKeymapVersion);
 }
 
+/**
+ * Applies the preference. Overrides saved by an older keymap are brought up to date first and
+ * saved that way (which comes back here once, with nothing left to migrate).
+ */
+function syncFromPrefs(overrides: KeymapOverrides): void {
+  const migrated = migrateKeymapOverrides(overrides);
+  applyKeymapOverrides(migrated);
+  if (migrated !== overrides) setPref("keymapOverrides", migrated);
+}
+
 // The preference is the source of truth; its localStorage mirror is read when prefs.ts loads, so
 // even labels computed at import time see the user's bindings.
-applyKeymapOverrides(getPrefs().keymapOverrides);
-usePrefsStore.subscribe((s) => applyKeymapOverrides(s.prefs.keymapOverrides));
+syncFromPrefs(getPrefs().keymapOverrides);
+usePrefsStore.subscribe((s) => syncFromPrefs(s.prefs.keymapOverrides));

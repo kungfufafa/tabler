@@ -4,8 +4,12 @@ export const SETTINGS_SECTIONS = [
   "general",
   "editor",
   "connections",
+  "locations",
   "shortcuts",
   "security",
+  "assistant",
+  "mcp",
+  "appearance",
 ] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 

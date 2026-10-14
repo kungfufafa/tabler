@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::types::schema::{TableKind, TableRef};
+use crate::types::schema::{TableKind, TableRef, TableSummary};
 
 /// What a routine is. PostgreSQL has all four (`pg_proc.prokind`); MySQL only functions and
 /// procedures; SQLite has none.
@@ -140,4 +140,14 @@ pub enum ObjectOp {
         target: ObjectTarget,
         comment: Option<String>,
     },
+}
+
+/// Every table-like object and routine of the connection's database, across its schemas (the
+/// sidebar's "Search in Database…"; Open Anything over schemas the sidebar did not load).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DatabaseItems {
+    pub tables: Vec<TableSummary>,
+    pub routines: Vec<RoutineSummary>,
 }

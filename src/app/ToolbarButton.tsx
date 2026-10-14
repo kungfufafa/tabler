@@ -33,6 +33,7 @@ export function ToolbarTip({
 /**
  * Small ghost icon button of the toolbar: runs `action` (unless `onClick` is given) and shows its
  * label and shortcut in a tooltip. `pressed` marks a toggle (panel buttons) and highlights it.
+ * `text`: a caption beside the icon (Customize Toolbar ▸ Icon and Text).
  */
 export function ToolbarButton({
   label,
@@ -41,6 +42,7 @@ export function ToolbarButton({
   disabled,
   pressed,
   className,
+  text,
   children,
 }: {
   label: string;
@@ -49,6 +51,7 @@ export function ToolbarButton({
   disabled?: boolean;
   pressed?: boolean;
   className?: string;
+  text?: string;
   children: ReactNode;
 }) {
   return (
@@ -62,11 +65,13 @@ export function ToolbarButton({
         onClick={onClick ?? (() => void actions.run(action))}
         className={cn(
           "text-muted-foreground hover:text-foreground size-6.5",
+          text && "w-auto gap-1 px-1.5 text-[11px] font-medium",
           pressed && "bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand",
           className,
         )}
       >
         {children}
+        {text && <span data-slot="toolbar-text">{text}</span>}
       </Button>
     </ToolbarTip>
   );

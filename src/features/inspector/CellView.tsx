@@ -2,9 +2,13 @@ import { Copy, Download, Loader2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ValueKindIcon } from "@/components/TypeIcon";
 import { Button } from "@/components/ui/button";
+import { jsonError } from "@/features/datagrid/editors/json";
+import { Seg, Toggle } from "@/features/datagrid/quicklook/controls";
+import { readSortKeys, writeSortKeys } from "@/features/datagrid/quicklook/jsonPrefs";
+import { sortJsonKeys } from "@/features/datagrid/quicklook/jsonTree";
 import { ipc, type Value } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
-import { formatBytes } from "@/lib/values";
+import { decodeBytesText, formatBytes } from "@/lib/values";
 import type { InspectedCell } from "@/stores/inspector";
 import { copy } from "./copy";
 import { copyText, textStats, viewText } from "./fields";
@@ -17,7 +21,10 @@ type FullValue =
   | { id: string; status: "done"; value: Value }
   | { id: string; status: "error"; error: string };
 
-/** The Cell view: one cell's full value (re-indented JSON, a hex dump for blobs, full blob load). */
+/**
+ * The Cell view: one cell's full value (re-indented JSON, optionally with its keys sorted; a hex
+ * dump or the text of a blob that is text; full blob load).
+ */
 export function CellView({ cell }: { cell: InspectedCell }) {
   const { column, value, fetch } = cell;
   const fetchId = fetch
@@ -27,6 +34,9 @@ export function CellView({ cell }: { cell: InspectedCell }) {
   const current = full && full.id === fetchId ? full : null;
   const shown = current?.status === "done" ? current.value : value;
   const stats = textStats(shown);
+  // "Sort keys" (display only, remembered): the JSON's object entries in key order.
+  const [sortKeys, setSortKeys] = useState(() => readSortKeys("cell"));
+  const sortable = shown.t === "json" && jsonError(shown.v) === null;
 
   const loadFull = async () => {
     if (!fetch || !fetchId) return;
@@ -68,6 +78,18 @@ export function CellView({ cell }: { cell: InspectedCell }) {
       <div className="border-border text-muted-foreground flex min-h-7 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-1 text-[11px]">
         <span className="font-mono">{column.dataType}</span>
         {stats && <span>· {stats}</span>}
+        {sortable && (
+          <Toggle
+            pressed={sortKeys}
+            onChange={(next) => {
+              setSortKeys(next);
+              writeSortKeys("cell", next);
+            }}
+            title="List the keys of every object in order (display only)"
+          >
+            Sort keys
+          </Toggle>
+        )}
         {shown.t === "bytes" && (
           <span>
             · {formatBytes(shown.v.len)}
@@ -101,7 +123,7 @@ export function CellView({ cell }: { cell: InspectedCell }) {
             (shown.t === "null" || shown.t === "default") && "text-null italic",
           )}
         >
-          {viewText(shown)}
+          {sortable && sortKeys ? sortJsonKeys(viewText(shown)) : viewText(shown)}
         </pre>
       )}
     </div>
@@ -109,22 +131,49 @@ export function CellView({ cell }: { cell: InspectedCell }) {
 }
 
 function BytesView({ value }: { value: Extract<Value, { t: "bytes" }> }) {
+  const { base64, len, truncated } = value.v;
   const dump = useMemo(() => {
     try {
-      return hexDump(base64Head(value.v.base64, HEX_PREVIEW));
+      return hexDump(base64Head(base64, HEX_PREVIEW));
     } catch {
       return null;
     }
-  }, [value.v.base64]);
-  const shownBytes = Math.min(HEX_PREVIEW, value.v.len);
+  }, [base64]);
+  // A blob that is text can be read as text (the default); anything else only as hex.
+  const text = useMemo(() => decodeBytesText(base64, HEX_PREVIEW, truncated), [base64, truncated]);
+  const [pick, setPick] = useState<"hex" | "text" | null>(null);
+  const view =
+    pick === "text" && text === null ? "hex" : (pick ?? (text !== null ? "text" : "hex"));
+  const shownBytes = Math.min(HEX_PREVIEW, len);
   return (
     <div className="bg-surface flex min-h-0 flex-1 flex-col">
-      <pre className="selectable min-h-0 flex-1 overflow-auto p-3 font-mono text-[11px] leading-4 whitespace-pre">
-        {dump ?? `base64: ${value.v.base64.slice(0, 2000)}`}
+      {text !== null && (
+        <div className="border-border flex shrink-0 items-center border-b px-3 py-1">
+          <Seg
+            label="Binary view"
+            value={view}
+            options={[
+              { value: "hex", label: "Hex" },
+              { value: "text", label: "Text" },
+            ]}
+            onChange={setPick}
+          />
+        </div>
+      )}
+      <pre
+        data-testid={view === "text" ? "cell-view-text" : "cell-view-hex"}
+        className={cn(
+          "selectable min-h-0 flex-1 overflow-auto p-3 font-mono",
+          view === "text"
+            ? "text-xs leading-5 break-words whitespace-pre-wrap"
+            : "text-[11px] leading-4 whitespace-pre",
+        )}
+      >
+        {view === "text" ? text : (dump ?? `base64: ${base64.slice(0, 2000)}`)}
       </pre>
-      {value.v.len > shownBytes && (
+      {len > shownBytes && (
         <div className="border-border text-muted-foreground border-t px-3 py-1 text-[11px]">
-          Showing the first {formatBytes(shownBytes)} of {formatBytes(value.v.len)}
+          Showing the first {formatBytes(shownBytes)} of {formatBytes(len)}
         </div>
       )}
     </div>

@@ -222,9 +222,13 @@ function emptyScene(width: number, height: number, title: string, text: string):
   };
 }
 
-/** Lays out `data` in a `width` × `height` box. */
-export function layoutChart(data: ChartData, width: number, height: number): Scene {
-  const title = chartTitle(data);
+/** Lays out `data` in a `width` × `height` box, under `title` (default: `chartTitle`). */
+export function layoutChart(
+  data: ChartData,
+  width: number,
+  height: number,
+  title: string = chartTitle(data),
+): Scene {
   if (data.categories.length === 0) return emptyScene(width, height, title, "No rows to chart");
   return data.kind === "pie"
     ? layoutPie(data, width, height, title)

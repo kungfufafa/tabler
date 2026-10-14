@@ -45,11 +45,12 @@ function importHere(kind: ImportKind): void {
   openImport({
     connectionId: target.connectionId,
     kind,
-    table: kind === "csv" ? target.table : null,
+    table: kind === "sql" ? null : target.table,
   });
 }
 
 const importCsv = () => importHere("csv");
+const importJson = () => importHere("json");
 const importSql = () => importHere("sql");
 
 /** Sessions whose file panel is up (so a re-mounted picker does not open a second one). */
@@ -76,19 +77,21 @@ function FilePicker({ kind, session }: { kind: ImportKind; session: number }) {
 }
 
 /**
- * Mounts the import flows (CSV wizard, SQL dump) opened through `openImport`, and the
- * `import.csv` / `import.sql` actions of File ▸ Import. Mount once near the app root.
+ * Mounts the import flows (CSV / JSON wizard, SQL dump) opened through `openImport`, and the
+ * `import.csv` / `import.json` / `import.sql` actions of File ▸ Import. Mount once near the app
+ * root.
  */
 export function ImportHost() {
   const owner = useSingleHost(IMPORT_HOST);
   useAction("import.csv", owner ? importCsv : null);
+  useAction("import.json", owner ? importJson : null);
   useAction("import.sql", owner ? importSql : null);
   const request = useImportStore((s) => s.request);
   const path = useImportStore((s) => s.path);
   const session = useImportStore((s) => s.session);
   if (!owner || !request) return null;
   if (path === null) return <FilePicker key={session} kind={request.kind} session={session} />;
-  return request.kind === "csv" ? (
+  return request.kind !== "sql" ? (
     <CsvImportWizard key={session} request={request} path={path} />
   ) : (
     <SqlImportDialog key={session} request={request} path={path} />

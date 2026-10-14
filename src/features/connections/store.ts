@@ -53,7 +53,11 @@ export function openNewConnectionInGroup(group: string): void {
   openConnectionDialog(null, { values: { group: normalizePath(group) }, password: null });
 }
 
-/** Opens "New connection from URL…". */
+/**
+ * Opens "New connection from URL…": the welcome screen's action, and what "Import from URL…" in
+ * the New connection sheet calls after closing the sheet (the URL dialog then reopens the form,
+ * prefilled, through `openConnectionDialog`).
+ */
 export function openConnectionUrlDialog(): void {
   useConnectionDialog.setState({ urlOpen: true });
 }

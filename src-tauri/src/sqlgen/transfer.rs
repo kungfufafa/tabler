@@ -60,9 +60,69 @@ pub fn table_structure(dialect: Dialect, meta: &TableMeta) -> String {
     }
 }
 
-/// Statements that open a multi-table script: MySQL checks no foreign keys while it loads (the
-/// previous setting is restored by `script_footer`), as mysqldump does.
-pub fn script_header(dialect: Dialect) -> Vec<String> {
+/// The session time zone an export script assumes when the exporting session's own could not be
+/// read (see `export::session_time_zone`).
+pub fn default_time_zone(dialect: Dialect) -> &'static str {
+    match dialect {
+        Dialect::Mysql => "+00:00",
+        Dialect::Postgres => "UTC",
+        Dialect::Sqlite => "",
+    }
+}
+
+/// A time zone as a quoted string literal; anything but a plain zone name or offset (the server
+/// answers with these) falls back to the default zone rather than being written into SQL.
+fn zone_literal(dialect: Dialect, zone: &str) -> String {
+    let plain = !zone.is_empty()
+        && zone.len() <= 64
+        && zone.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '_' | '+' | '-' | ':' | '/' | ' ' | '.' | '<' | '>')
+        });
+    format!(
+        "'{}'",
+        if plain {
+            zone
+        } else {
+            default_time_zone(dialect)
+        }
+    )
+}
+
+/// The statements that make a script's timestamp literals mean what they meant when they were
+/// read: the session time zone is set to `zone` (the zone of the exporting session) and put back
+/// by `time_zone_footer`. MySQL `TIMESTAMP` literals carry no offset, so they load under whatever
+/// zone the importing session has; PostgreSQL's `timestamp` has none either. `None` = the
+/// dialect's default zone (see `default_time_zone`); SQLite has no session time zone.
+pub fn time_zone_header(dialect: Dialect, zone: Option<&str>) -> Vec<String> {
+    match dialect {
+        Dialect::Mysql => vec![
+            "SET @OLD_TIME_ZONE=@@TIME_ZONE;".into(),
+            format!(
+                "SET TIME_ZONE={};",
+                zone_literal(dialect, zone.unwrap_or(default_time_zone(dialect)))
+            ),
+        ],
+        Dialect::Postgres => vec![format!(
+            "SET TIME ZONE {};",
+            zone_literal(dialect, zone.unwrap_or(default_time_zone(dialect)))
+        )],
+        Dialect::Sqlite => Vec::new(),
+    }
+}
+
+/// Puts the session time zone back (see `time_zone_header`).
+pub fn time_zone_footer(dialect: Dialect) -> Vec<String> {
+    match dialect {
+        Dialect::Mysql => vec!["SET TIME_ZONE=@OLD_TIME_ZONE;".into()],
+        Dialect::Postgres => vec!["RESET TIME ZONE;".into()],
+        Dialect::Sqlite => Vec::new(),
+    }
+}
+
+/// MySQL checks no foreign keys while a multi-table script loads, as mysqldump does (the previous
+/// setting is restored by `foreign_key_footer`); the other dialects need nothing.
+pub fn foreign_key_header(dialect: Dialect) -> Vec<String> {
     match dialect {
         Dialect::Mysql => vec![
             "SET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS = 0;".into(),
@@ -71,11 +131,26 @@ pub fn script_header(dialect: Dialect) -> Vec<String> {
     }
 }
 
-pub fn script_footer(dialect: Dialect) -> Vec<String> {
+pub fn foreign_key_footer(dialect: Dialect) -> Vec<String> {
     match dialect {
         Dialect::Mysql => vec!["SET FOREIGN_KEY_CHECKS = @OLD_FOREIGN_KEY_CHECKS;".into()],
         Dialect::Postgres | Dialect::Sqlite => Vec::new(),
     }
+}
+
+/// Statements that open a script with rows: the session time zone is set to `zone` (see
+/// `time_zone_header`), then MySQL's foreign key checks go off (see `foreign_key_header`).
+pub fn script_header(dialect: Dialect, zone: Option<&str>) -> Vec<String> {
+    let mut lines = time_zone_header(dialect, zone);
+    lines.extend(foreign_key_header(dialect));
+    lines
+}
+
+/// Undoes `script_header`, in reverse order.
+pub fn script_footer(dialect: Dialect) -> Vec<String> {
+    let mut lines = foreign_key_footer(dialect);
+    lines.extend(time_zone_footer(dialect));
+    lines
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -929,8 +1004,66 @@ mod tests {
             ),
             "CREATE TABLE `t` (\n  `a` int\n);"
         );
-        assert_eq!(script_header(Dialect::Mysql).len(), 1);
-        assert!(script_footer(Dialect::Mysql)[0].contains("@OLD_FOREIGN_KEY_CHECKS"));
-        assert!(script_header(Dialect::Postgres).is_empty());
+    }
+
+    #[test]
+    fn scripts_set_and_restore_the_session_time_zone() {
+        // MySQL: foreign key checks off and the zone of the exporting session, both undone.
+        let header = script_header(Dialect::Mysql, Some("+07:00")).join("\n");
+        assert!(
+            header.contains("SET @OLD_TIME_ZONE=@@TIME_ZONE;"),
+            "{header}"
+        );
+        assert!(header.contains("SET TIME_ZONE='+07:00';"), "{header}");
+        assert!(header.contains("FOREIGN_KEY_CHECKS = 0"), "{header}");
+        let footer = script_footer(Dialect::Mysql).join("\n");
+        assert!(footer.contains("SET TIME_ZONE=@OLD_TIME_ZONE;"), "{footer}");
+        assert!(footer.contains("SET FOREIGN_KEY_CHECKS = @OLD_FOREIGN_KEY_CHECKS;"));
+        // The zone is set before anything loads and restored after everything did.
+        assert!(header.find("TIME_ZONE='+07:00'") < header.find("FOREIGN_KEY_CHECKS = 0"));
+        assert!(footer.find("FOREIGN_KEY_CHECKS") < footer.find("OLD_TIME_ZONE"));
+        // A named zone is written as it is; one that cannot be read is UTC.
+        assert!(
+            script_header(Dialect::Mysql, Some("Asia/Jakarta"))
+                .join("\n")
+                .contains("SET TIME_ZONE='Asia/Jakarta';")
+        );
+        assert!(
+            script_header(Dialect::Mysql, None)
+                .join("\n")
+                .contains("SET TIME_ZONE='+00:00';")
+        );
+        // PostgreSQL.
+        assert_eq!(
+            script_header(Dialect::Postgres, Some("Europe/Berlin")),
+            vec!["SET TIME ZONE 'Europe/Berlin';".to_string()]
+        );
+        assert_eq!(
+            script_header(Dialect::Postgres, None),
+            vec!["SET TIME ZONE 'UTC';".to_string()]
+        );
+        assert_eq!(
+            script_footer(Dialect::Postgres),
+            vec!["RESET TIME ZONE;".to_string()]
+        );
+        // SQLite has no session time zone.
+        assert!(script_header(Dialect::Sqlite, Some("+07:00")).is_empty());
+        assert!(script_footer(Dialect::Sqlite).is_empty());
+        assert!(time_zone_header(Dialect::Sqlite, Some("UTC")).is_empty());
+        // The time zone alone (a script of one table's rows): no foreign key statements.
+        assert_eq!(
+            time_zone_header(Dialect::Mysql, Some("-05:00")),
+            vec![
+                "SET @OLD_TIME_ZONE=@@TIME_ZONE;".to_string(),
+                "SET TIME_ZONE='-05:00';".to_string()
+            ]
+        );
+        assert_eq!(
+            time_zone_footer(Dialect::Mysql),
+            vec!["SET TIME_ZONE=@OLD_TIME_ZONE;".to_string()]
+        );
+        // Text from the server never becomes SQL.
+        let attack = script_header(Dialect::Postgres, Some("UTC'; DROP TABLE t; --")).join("");
+        assert_eq!(attack, "SET TIME ZONE 'UTC';");
     }
 }

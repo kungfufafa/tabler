@@ -6,6 +6,7 @@ import type { QueryFolderInput } from "../bindings/QueryFolderInput";
 import type { SavedQuery } from "../bindings/SavedQuery";
 import type { SavedQueryInput } from "../bindings/SavedQueryInput";
 import type { SavedQueryLibrary } from "../bindings/SavedQueryLibrary";
+import { mockFileText, mockWriteFile } from "./query";
 import { mockError, registerMock } from "./transport";
 
 let folders: QueryFolder[] = [];
@@ -134,7 +135,8 @@ registerMock("save_saved_query", ({ input }) => {
     id: i.id ?? crypto.randomUUID(),
     name: n,
     keyword: k,
-    sql: i.sql,
+    // `keepSql` (rename / move): the stored SQL is the file's own, whatever the caller holds.
+    sql: i.keepSql === true && existing ? existing.sql : i.sql,
     folderId: i.folderId,
     profileId: i.profileId,
     createdAt: existing?.createdAt ?? at,
@@ -174,5 +176,92 @@ registerMock("delete_query_folder", ({ id }) => {
   const gone = subtree(String(id));
   queries = queries.filter((q) => q.folderId === null || !gone.has(q.folderId));
   folders = folders.filter((f) => !gone.has(f.id));
+  return null;
+});
+
+// --- files (Import…, Add Folder to Favorites…, Show in Finder) --------------------------------
+
+/** Mock folders on disk for Add Folder to Favorites… (path → query name → SQL). */
+const DISK_FOLDERS: Record<string, Record<string, string>> = {
+  "/Users/me/queries": {
+    sample: "SELECT p.id, p.title FROM posts p ORDER BY p.id DESC LIMIT 20;",
+    "orders by day": "SELECT date(created_at) AS day, count(*) FROM orders GROUP BY 1 ORDER BY 1;",
+  },
+};
+
+/** The query name an imported file gets: its name without `.sql` / `.sql.gz`. */
+function importName(path: string): string {
+  const base = path.split(/[\\/]/).pop() ?? path;
+  return base.replace(/\.gz$/i, "").replace(/\.sql$/i, "") || "Imported";
+}
+
+registerMock("import_saved_queries", ({ paths, folderId }) => {
+  const folder = (folderId as string | null) ?? null;
+  if (folder && !folders.some((f) => f.id === folder))
+    mockError("NOT_FOUND", "the folder no longer exists");
+  const at = now();
+  const added: SavedQuery[] = [];
+  for (const path of (paths as string[]) ?? []) {
+    const text = mockFileText(path);
+    if (text === undefined) mockError("IO", `${path}: No such file or directory`);
+    const taken = queries.filter((q) => q.folderId === folder).map((q) => q.name.toLowerCase());
+    let n = importName(path);
+    for (let i = 2; taken.includes(n.toLowerCase()); i++) n = `${importName(path)} ${i}`;
+    const q: SavedQuery = {
+      id: crypto.randomUUID(),
+      name: n,
+      keyword: null,
+      sql: text,
+      folderId: folder,
+      profileId: null,
+      createdAt: at,
+      updatedAt: at,
+    };
+    queries = [...queries, q];
+    added.push(q);
+  }
+  return clone(added);
+});
+
+registerMock("add_query_folder_from_disk", ({ path, parentId }) => {
+  const src = DISK_FOLDERS[String(path).replace(/\/+$/, "")];
+  if (!src) mockError("INVALID_INPUT", `${String(path)} is not a folder`);
+  const at = now();
+  const parent = (parentId as string | null) ?? null;
+  const base = String(path).split("/").filter(Boolean).pop() ?? "Imported";
+  const siblings = folders.filter((f) => f.parentId === parent).map((f) => f.name.toLowerCase());
+  let n = base;
+  for (let i = 2; siblings.includes(n.toLowerCase()); i++) n = `${base} ${i}`;
+  const folder: QueryFolder = { id: crypto.randomUUID(), name: n, parentId: parent, createdAt: at };
+  folders = [...folders, folder];
+  for (const [name, sql] of Object.entries(src))
+    queries = [
+      ...queries,
+      {
+        id: crypto.randomUUID(),
+        name,
+        keyword: null,
+        sql,
+        folderId: folder.id,
+        profileId: null,
+        createdAt: at,
+        updatedAt: at,
+      },
+    ];
+  return clone(folder);
+});
+
+/** The `.sql` file of a saved query: written to the mock file system so a wizard can read it. */
+registerMock("saved_query_path", ({ id }) => {
+  const q = queries.find((x) => x.id === id);
+  if (!q) mockError("NOT_FOUND", "the query no longer exists");
+  const path = `/Users/me/Library/Application Support/Tabler/Queries/${q.name}.sql`;
+  mockWriteFile(path, q.sql);
+  return path;
+});
+
+registerMock("reveal_saved_query", ({ id, folder }) => {
+  if (id && !(folder ? folders : queries).some((x) => x.id === id))
+    mockError("NOT_FOUND", "the query no longer exists");
   return null;
 });

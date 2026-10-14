@@ -1,15 +1,20 @@
-// Mock handlers for export_data, export_tables, cancel_export and accept_host_key, plus the SSH
-// host-key check the mock `connect` / `test_connection` run for profiles with an SSH tunnel.
+// Mock handlers for export_data, export_tables, export_results, export_database_tables, cancel_export and
+// accept_host_key, plus the SSH host-key check the mock `connect` / `test_connection` run for
+// profiles with an SSH tunnel.
 import type { ConnectionInfo } from "../bindings/ConnectionInfo";
 import type { Driver } from "../bindings/Driver";
 import type { ExportFormat } from "../bindings/ExportFormat";
 import type { ExportProgress } from "../bindings/ExportProgress";
 import type { ExportRequest } from "../bindings/ExportRequest";
 import type { ExportResult } from "../bindings/ExportResult";
+import type { ExportResultsRequest } from "../bindings/ExportResultsRequest";
+import type { ExportResultsResult } from "../bindings/ExportResultsResult";
 import type { ExportTablesProgress } from "../bindings/ExportTablesProgress";
 import type { ExportTablesRequest } from "../bindings/ExportTablesRequest";
 import type { ExportTablesResult } from "../bindings/ExportTablesResult";
+import type { SchemaInfo } from "../bindings/SchemaInfo";
 import type { SshConfig } from "../bindings/SshConfig";
+import type { TableSummary } from "../bindings/TableSummary";
 import type { Value } from "../bindings/Value";
 import { tableMetaFor } from "./fixtures";
 import { matchesGroup, rowsFor } from "./rows";
@@ -150,8 +155,7 @@ function heldRows(
   return source.rows.length;
 }
 
-/** `hasTable`: the source names a default INSERT target (a table, or a result's table). */
-function validateFormat(format: ExportFormat, hasTable: boolean): void {
+function validateFormat(format: ExportFormat): void {
   if (format.format === "csv") {
     const d = format.delimiter;
     if (d.length !== 1 || d.charCodeAt(0) > 127 || ['"', "'", "\r", "\n"].includes(d))
@@ -161,16 +165,31 @@ function validateFormat(format: ExportFormat, hasTable: boolean): void {
       );
     if (!["\n", "\r\n", "\r"].includes(format.lineBreak))
       mockError("INVALID_INPUT", "the CSV line break must be \\n, \\r\\n or \\r");
-    if (format.decimal !== "." && format.decimal !== ",")
-      mockError("INVALID_INPUT", "the CSV decimal separator must be . or ,");
+    if (format.quote === "space" && d === " ")
+      mockError(
+        "INVALID_INPUT",
+        "the CSV delimiter cannot be a space when values are quoted with spaces",
+      );
+    // One printable ASCII character that is no digit or quote; not the delimiter, but `,`.
+    const dec = format.decimal;
+    if (
+      dec.length !== 1 ||
+      dec.charCodeAt(0) < 0x20 ||
+      dec.charCodeAt(0) > 0x7e ||
+      /[0-9"']/.test(dec) ||
+      (dec === d && dec !== ",")
+    )
+      mockError(
+        "INVALID_INPUT",
+        "the CSV decimal separator must be a single ASCII character other than a digit, the delimiter, a quote or a line break",
+      );
   }
   if (format.format === "sqlInsert") {
     if (format.batchSize < 1)
       mockError("INVALID_INPUT", "the INSERT batch size must be at least 1");
     if (!format.content && !format.structure && !format.dropTable)
       mockError("INVALID_INPUT", "nothing to export: include the table structure or its content");
-    if (format.content && !hasTable && format.tableName.trim() === "")
-      mockError("INVALID_INPUT", "a target table name is required for an INSERT export");
+    // No table name and no source table: the INSERTs go into `untitled` (as the backend does).
   }
 }
 
@@ -186,10 +205,13 @@ function tableRows(driver: Driver, req: ExportRequest): number {
       mockError("INVALID_INPUT", `unknown column "${name}"`);
   }
   const total = meta.rowEstimate ?? 25;
-  if (!filter) return total;
-  return rowsFor(`${driver}:${schema}.${table.name}`, meta.columns, total).filter((r) =>
-    matchesGroup(filter, r, meta.columns),
-  ).length;
+  const matching = filter
+    ? rowsFor(`${driver}:${schema}.${table.name}`, meta.columns, total).filter((r) =>
+        matchesGroup(filter, r, meta.columns),
+      ).length
+    : total;
+  // A page: the rows after the offset.
+  return Math.max(0, matching - (req.source.offset ?? 0));
 }
 
 function sqlRows(driver: Driver, sql: string): number {
@@ -218,7 +240,17 @@ function bytesPerRow(format: ExportFormat): number {
   if (format.format === "csv") return format.quote === "ifNeeded" ? 84 : 96;
   if (format.format === "json") return format.pretty && !format.ndjson ? 210 : 140;
   if (format.format === "xlsx") return 48;
+  if (format.format === "html") return 150;
   return format.gzip ? 30 : 120;
+}
+
+/** Characters a single-byte encoding cannot hold in the generated rows (one per ~40 rows). */
+function replacedFor(encoding: string | undefined, rows: number): { replaced?: number } {
+  return encoding === "windows1252" || encoding === "latin1"
+    ? rows >= 40
+      ? { replaced: Math.floor(rows / 40) }
+      : {}
+    : {};
 }
 
 registerMock("export_data", async ({ connectionId, req, onProgress }) => {
@@ -232,10 +264,7 @@ registerMock("export_data", async ({ connectionId, req, onProgress }) => {
   const conn =
     conns.find((c) => c.connectionId === connectionId) ??
     mockError("NOT_CONNECTED", "not connected");
-  validateFormat(
-    r.format,
-    r.source.kind === "table" || (r.source.kind === "rows" && r.source.table !== null),
-  );
+  validateFormat(r.format);
   let total =
     r.source.kind === "table"
       ? tableRows(conn.driver, r)
@@ -264,6 +293,7 @@ registerMock("export_data", async ({ connectionId, req, onProgress }) => {
       rows: total,
       bytes: head + total * perRow,
       durationMs: Math.max(1, Math.round(performance.now() - started)),
+      ...replacedFor(r.encoding, total),
     } satisfies ExportResult;
   } finally {
     running.delete(r.exportId);
@@ -288,6 +318,8 @@ function fileExt(format: ExportFormat): string {
       return format.gzip ? "sql.gz" : "sql";
     case "xlsx":
       return "xlsx";
+    case "html":
+      return "html";
   }
 }
 
@@ -301,11 +333,12 @@ registerMock("export_tables", async ({ connectionId, req, onProgress }) => {
   if (!r.target.startsWith("/")) mockError("INVALID_INPUT", "the export target must be absolute");
   if (r.layout === "singleFile" && (r.format.format === "csv" || r.format.format === "json"))
     mockError("INVALID_INPUT", "CSV and JSON exports write one file per table");
+  if (r.target.includes("..")) mockError("INVALID_INPUT", "the export folder cannot contain ..");
   const conns = await mockInvoke<ConnectionInfo[]>("list_connections", {});
   const conn =
     conns.find((c) => c.connectionId === connectionId) ??
     mockError("NOT_CONNECTED", "not connected");
-  validateFormat(r.format, true);
+  validateFormat(r.format);
   const counts = r.tables.map(
     (t) => tableMetaFor(conn.driver, t.schema ?? "public", t.name)?.rowEstimate ?? 25,
   );
@@ -343,9 +376,122 @@ registerMock("export_tables", async ({ connectionId, req, onProgress }) => {
       rows,
       bytes: rows * perRow,
       durationMs: Math.max(1, Math.round(performance.now() - started)),
+      ...replacedFor(r.encoding, rows),
     } satisfies ExportTablesResult;
   } finally {
     running.delete(r.exportId);
     cancelled.delete(r.exportId);
   }
+});
+
+// --- all results of a run --------------------------------------------------------------------
+
+registerMock("export_results", async ({ connectionId, req, onProgress }) => {
+  const r = req as ExportResultsRequest;
+  const channel = onProgress as { send?: (p: ExportTablesProgress) => void } | undefined;
+  if (!r.exportId?.trim()) mockError("INVALID_INPUT", "exportId is required");
+  if (running.has(r.exportId))
+    mockError("INVALID_INPUT", `export "${r.exportId}" is already running`);
+  if (r.results.length === 0) mockError("INVALID_INPUT", "no results to export");
+  if (!r.target.startsWith("/")) mockError("INVALID_INPUT", "the export target must be absolute");
+  if (r.layout === "singleFile" && (r.format.format === "csv" || r.format.format === "json"))
+    mockError("INVALID_INPUT", "CSV and JSON exports write one file per result");
+  if (r.format.format === "sqlInsert" && !r.format.content)
+    mockError("INVALID_INPUT", "a result has no table structure: include its content");
+  const conns = await mockInvoke<ConnectionInfo[]>("list_connections", {});
+  const conn =
+    conns.find((c) => c.connectionId === connectionId) ??
+    mockError("NOT_CONNECTED", "not connected");
+  validateFormat(r.format);
+  for (const item of r.results) {
+    try {
+      heldRows(conn.driver, {
+        kind: "rows",
+        columns: item.columns,
+        rows: item.rows,
+        table: item.table,
+      });
+    } catch (e) {
+      const message = (e as { message?: string }).message ?? String(e);
+      mockError("INVALID_INPUT", `${item.label}: ${message}`);
+    }
+  }
+  const perRow = bytesPerRow(r.format);
+  const delay = mockLatency === 0 ? 2 : 60;
+  const started = performance.now();
+  const stem = (r.name?.trim() || "result").replace(/[/\\:*?"<>|]/g, "_");
+  let rows = 0;
+  running.add(r.exportId);
+  try {
+    const results = [];
+    for (const [i, item] of r.results.entries()) {
+      await sleep(delay);
+      if (cancelled.has(r.exportId)) mockError("CANCELLED", "export cancelled");
+      rows += item.rows.length;
+      channel?.send?.({
+        tableIndex: i,
+        tableCount: r.results.length,
+        table: item.label,
+        tableRows: item.rows.length,
+        rows,
+        bytes: rows * perRow,
+      });
+      const path =
+        r.layout === "singleFile" ? r.target : `${r.target}/${stem}-${i + 1}.${fileExt(r.format)}`;
+      results.push({ label: item.label, path, rows: item.rows.length });
+    }
+    return {
+      results,
+      paths: r.layout === "singleFile" ? [r.target] : results.map((x) => x.path),
+      rows,
+      bytes: rows * perRow,
+      durationMs: Math.max(1, Math.round(performance.now() - started)),
+      ...replacedFor(r.encoding, rows),
+    } satisfies ExportResultsResult;
+  } finally {
+    running.delete(r.exportId);
+    cancelled.delete(r.exportId);
+  }
+});
+
+// --- multi-database export ------------------------------------------------------------------
+
+/** Tables of the mock's other PostgreSQL databases (read "through a session of their own"). */
+const OTHER_DB_TABLES: Record<string, Array<[string, TableSummary["kind"], number]>> = {
+  ecommerce_sales: [
+    ["customers", "table", 1_250],
+    ["orders", "table", 8_400],
+    ["order_items", "table", 23_100],
+    ["daily_revenue", "view", 0],
+  ],
+  postgres: [],
+};
+
+registerMock("export_database_tables", async ({ connectionId, database }) => {
+  const conns = await mockInvoke<ConnectionInfo[]>("list_connections", {});
+  const conn =
+    conns.find((c) => c.connectionId === connectionId) ??
+    mockError("NOT_CONNECTED", "not connected");
+  const db = (database as string | null) ?? null;
+  await sleep(mockLatency === 0 ? 0 : 150);
+  if (conn.driver === "mysql") {
+    const name = db ?? conn.currentDatabase ?? mockError("INVALID_INPUT", "choose a database");
+    return mockInvoke<TableSummary[]>("list_tables", { connectionId, schema: name });
+  }
+  if (conn.driver === "postgres" && db !== null && db !== conn.currentDatabase) {
+    const list = OTHER_DB_TABLES[db] ?? [["items", "table", 42] as const];
+    return list.map(([name, kind, rows]) => ({
+      name,
+      schema: "public",
+      kind,
+      rowEstimate: kind === "view" ? null : rows,
+      sizeBytes: kind === "view" ? null : rows * 160,
+      comment: null,
+    })) satisfies TableSummary[];
+  }
+  const schemas = await mockInvoke<SchemaInfo[]>("list_schemas", { connectionId });
+  const lists = await Promise.all(
+    schemas.map((s) => mockInvoke<TableSummary[]>("list_tables", { connectionId, schema: s.name })),
+  );
+  return lists.flat();
 });

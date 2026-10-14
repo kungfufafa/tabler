@@ -3,15 +3,21 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActionControl } from "@/app/ActionControl";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { resetCommitStore } from "@/features/commit/store";
 import { actions } from "@/features/palette/actions";
 import { guardExecution } from "@/features/safety/guard";
 import { useStructureStore } from "@/features/structure/store";
 import { StructureTab } from "@/features/structure/StructureTab";
-import { ipc, type ConnectionInfo, type DdlOp, type DdlResult } from "@/lib/ipc";
+import {
+  ipc,
+  type ConnectionInfo,
+  type DdlOp,
+  type WorkspaceGroup,
+  type WorkspaceResult,
+} from "@/lib/ipc";
 import { resetMockDdl } from "@/lib/ipc/mock/ddl";
 import { useConnectionsStore } from "@/stores/connections";
 import { hasUnsaved, useTabsStore } from "@/stores/tabs";
-import { cancelCommitChain, reportTabCommit } from "./commitChain";
 import { ObjectsHost } from "./ObjectsHost";
 import {
   pendingObjectCount,
@@ -35,7 +41,90 @@ if (!Range.prototype.getClientRects) {
 // Runs against the in-memory mock backend (a PostgreSQL connection).
 
 let info: ConnectionInfo;
-const ok: DdlResult = { executed: ["TRUNCATE"], failedIndex: null, error: null, durationMs: 1 };
+/** The SQL a group is previewed with (the backend plans it; the test only needs distinct text). */
+function sqlOfGroup(g: WorkspaceGroup): string[] {
+  switch (g.kind) {
+    case "rows":
+      return ["UPDATE users SET name = 'x'"];
+    case "ddl":
+      return g.ops.map((o) => (o.op === "rawSql" ? o.sql : `ALTER TABLE users /* ${o.op} */`));
+    case "definition":
+      return [g.sql];
+    case "object":
+      switch (g.op.op) {
+        case "truncateTables":
+          return g.op.tables.map((t) => `TRUNCATE TABLE "${t.schema}"."${t.name}"`);
+        case "dropSequences":
+          return g.op.sequences.map((t) => `DROP SEQUENCE "${t.schema}"."${t.name}" CASCADE`);
+        case "dropRoutines":
+          return g.op.routines.map(
+            (r) => `DROP FUNCTION "${r.schema}"."${r.name}"(${r.identityArguments})`,
+          );
+        default:
+          return [`-- ${g.op.op}`];
+      }
+  }
+}
+
+/** Plans every group with `sqlOfGroup` and applies them all. */
+function stubWorkspace() {
+  vi.spyOn(ipc.workspace, "preview").mockImplementation(async (_c, groups) => ({
+    groups: groups.map((g) => ({
+      statements: sqlOfGroup(g),
+      warnings: [],
+      transactional: true,
+      error: null,
+    })),
+    atomic: true,
+  }));
+  return vi.spyOn(ipc.workspace, "apply").mockImplementation(async (_c, groups) => ({
+    success: true,
+    atomic: true,
+    groups: groups.map((g) => ({
+      status: "applied" as const,
+      sql: sqlOfGroup(g),
+      executed: sqlOfGroup(g),
+      failedIndex: null,
+      rows: [],
+      routine: null,
+      error: null,
+    })),
+    failedGroup: null,
+    error: null,
+    durationMs: 1,
+  }));
+}
+
+/** A commit that fails in group `at` (a single-transaction commit, so nothing stays applied). */
+function failAt(groups: WorkspaceGroup[], at: number, message: string): WorkspaceResult {
+  const error = {
+    code: "DB_ERROR",
+    message,
+    detail: null,
+    hint: null,
+    sqlstate: null,
+    vendorCode: null,
+    position: null,
+    statementIndex: 0,
+    data: null,
+  };
+  return {
+    success: false,
+    atomic: true,
+    groups: groups.map((g, i) => ({
+      status: i === at ? ("failed" as const) : ("rolledBack" as const),
+      sql: sqlOfGroup(g),
+      executed: [],
+      failedIndex: i === at ? 0 : null,
+      rows: [],
+      routine: null,
+      error: i === at ? error : null,
+    })),
+    failedGroup: at,
+    error,
+    durationMs: 1,
+  };
+}
 
 const truncate = (name: string): StagedObjectOp => ({
   op: "truncateTables",
@@ -102,6 +191,7 @@ afterAll(async () => {
 describe("pending item operations", () => {
   beforeEach(() => {
     resetPendingObjectOps();
+    resetCommitStore();
     useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
     useConnectionsStore.getState().add(info);
     useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
@@ -110,13 +200,12 @@ describe("pending item operations", () => {
     Object.values(toast).forEach((f) => f.mockReset());
   });
   afterEach(() => {
-    cancelCommitChain();
     resetMockDdl();
     vi.restoreAllMocks();
   });
 
-  it("shows in the action control; Preview opens their sheet, whose Commit runs them", async () => {
-    const apply = vi.spyOn(ipc.objects, "apply").mockResolvedValue(ok);
+  it("shows in the action control; Preview opens the workspace sheet, whose Commit runs them", async () => {
+    const apply = stubWorkspace();
     renderHost();
     expect(within(control()).getByRole("button", { name: "Commit changes" })).toBeDisabled();
     act(() => {
@@ -131,19 +220,24 @@ describe("pending item operations", () => {
 
     fireEvent.click(within(control()).getByRole("button", { name: "Preview SQL" }));
     const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
-    expect(sheet).toHaveTextContent('TRUNCATE TABLE "public"."posts";');
+    await waitFor(() => expect(sheet).toHaveTextContent('TRUNCATE TABLE "public"."posts";'));
     fireEvent.click(within(sheet).getByRole("button", { name: /^Commit/ }));
     await waitFor(() => expect(apply).toHaveBeenCalledOnce());
+    expect(apply.mock.calls[0]![1]).toEqual([{ kind: "object", op: truncate("posts") }]);
     expect(guardExecution).toHaveBeenCalledWith(info.connectionId, {
       kind: "commit",
       statements: ['TRUNCATE TABLE "public"."posts"'],
     });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(within(control()).getByRole("button", { name: "Commit changes" })).toBeDisabled();
+    expect(toast.success).toHaveBeenCalledWith(
+      expect.stringMatching(/^Committed 1 change/),
+      expect.objectContaining({ description: "Truncated posts" }),
+    );
   });
 
   it("lists routine and sequence drops in the sheet; × takes one out, Commit runs the rest", async () => {
-    const apply = vi.spyOn(ipc.objects, "apply").mockResolvedValue(ok);
+    const apply = stubWorkspace();
     renderHost();
     const c = info.connectionId;
     act(() => {
@@ -154,9 +248,11 @@ describe("pending item operations", () => {
 
     fireEvent.click(within(control()).getByRole("button", { name: "Preview SQL" }));
     const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
-    const list = within(sheet).getByRole("region", { name: "Item operations" });
-    expect(list).toHaveTextContent(
-      'Drop function slugify(value text)DROP FUNCTION "public"."slugify"(value text);',
+    const list = within(sheet).getByRole("region", { name: "Sidebar Item operations" });
+    await waitFor(() =>
+      expect(list).toHaveTextContent(
+        'Drop function slugify(value text)DROP FUNCTION "public"."slugify"(value text);',
+      ),
     );
     expect(list).toHaveTextContent(
       'Drop sequence posts_id_seqDROP SEQUENCE "public"."posts_id_seq" CASCADE;',
@@ -168,13 +264,16 @@ describe("pending item operations", () => {
 
     fireEvent.click(within(sheet).getByRole("button", { name: /^Commit/ }));
     await waitFor(() => expect(apply).toHaveBeenCalledOnce());
-    expect(apply).toHaveBeenCalledWith(c, dropSeq);
+    expect(apply.mock.calls[0]![1]).toEqual([{ kind: "object", op: dropSeq }]);
     expect(guardExecution).toHaveBeenCalledWith(c, {
       kind: "commit",
       statements: ['DROP SEQUENCE "public"."posts_id_seq" CASCADE'],
     });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(toast.success).toHaveBeenCalledWith("Deleted posts_id_seq");
+    expect(toast.success).toHaveBeenCalledWith(
+      expect.stringMatching(/^Committed 1 change/),
+      expect.objectContaining({ description: "Deleted posts_id_seq" }),
+    );
     expect(pendingObjectCount(c)).toBe(0);
   });
 
@@ -208,80 +307,136 @@ describe("pending item operations", () => {
     });
   });
 
-  it("⌘S commits the active tab's changes first, then the operations", async () => {
-    const order: string[] = [];
-    vi.spyOn(ipc.objects, "apply").mockImplementation(async () => {
-      order.push("operations");
-      return ok;
-    });
+  it("one ⌘S commits the structure tab's staged DDL and the pending operations together", async () => {
+    const apply = stubWorkspace();
     const c = info.connectionId;
-    const table = { schema: "public", name: "users" };
-    useTabsStore.getState().openTable(c, table, "structure");
-    const tabId = useTabsStore.getState().activeId!;
-    useStructureStore.setState({
-      byTab: {
-        [tabId]: { ops: [{ op: "rawSql", sql: "COMMENT ON TABLE users IS 'x'" }], past: [] },
-      },
-    });
-    renderHost();
+    const tabId = await structureTab([{ op: "rawSql", sql: "COMMENT ON TABLE users IS 'x'" }]);
     act(() => {
       stageObjectOp(c, truncate("posts"), [], null);
     });
     expect(within(control()).getByRole("button", { name: "Commit 2 changes" })).toBeEnabled();
-    // A tab's commit handler (on top of the fallback): the ops wait for its report.
-    const off = actions.register("grid.commit", async () => {
-      order.push("tab");
-      await ipc.ddl.apply(c, table, useStructureStore.getState().byTab[tabId]!.ops);
-      useStructureStore.setState({ byTab: {} });
-      reportTabCommit(tabId, "committed");
+    // ⌘S commits at once, staged structure included (⇧⌘P is the way to see the SQL first): no
+    // second action, no sheet.
+    await act(() => actions.run("grid.commit"));
+    await waitFor(() => expect(apply).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("dialog", { name: "Preview changes" })).toBeNull();
+    // ONE guard for every statement and ONE backend call: structure first, then the operations.
+    expect(guardExecution).toHaveBeenCalledOnce();
+    expect(guardExecution).toHaveBeenCalledWith(c, {
+      kind: "commit",
+      statements: ["COMMENT ON TABLE users IS 'x'", 'TRUNCATE TABLE "public"."posts"'],
     });
-    try {
-      fireEvent.click(within(control()).getByRole("button", { name: "Commit 2 changes" }));
-      await waitFor(() => expect(order).toEqual(["tab", "operations"]));
-      await waitFor(() => expect(pendingObjectCount(c)).toBe(0));
-    } finally {
-      off();
-    }
+    expect(apply).toHaveBeenCalledOnce();
+    expect(apply.mock.calls[0]![1].map((g) => g.kind)).toEqual(["ddl", "object"]);
+    await waitFor(() => expect(pendingObjectCount(c)).toBe(0));
+    await waitFor(() => expect(useStructureStore.getState().byTab[tabId]).toBeUndefined());
+    expect(within(control()).getByRole("button", { name: "Commit changes" })).toBeDisabled();
   });
 
-  it("⇧⌘⌫ with a tab's changes discards the operations too; a failed tab commit keeps them", async () => {
-    const apply = vi.spyOn(ipc.objects, "apply").mockResolvedValue(ok);
+  it("a failed commit reverts everything: both stay pending, the failing part says why", async () => {
     const c = info.connectionId;
-    const table = { schema: "public", name: "users" };
-    useTabsStore.getState().openTable(c, table, "structure");
-    const tabId = useTabsStore.getState().activeId!;
-    const stage = () =>
-      useStructureStore.setState({
-        byTab: { [tabId]: { ops: [{ op: "rawSql", sql: "SELECT nosuchtype_x" }], past: [] } },
-      });
-    stage();
-    renderHost();
+    const tabId = await structureTab([{ op: "rawSql", sql: "SELECT nosuchtype_x" }]);
     act(() => {
       stageObjectOp(c, truncate("posts"), [], null);
     });
-    // The tab's commit fails (the mock rejects the unknown type): the operations wait.
-    const offCommit = actions.register("grid.commit", async () => {
-      const r = await ipc.ddl.apply(c, table, useStructureStore.getState().byTab[tabId]!.ops);
-      reportTabCommit(tabId, r.error ? "failed" : "committed");
-    });
-    const offDiscard = actions.register("grid.discard", () => {
-      useStructureStore.setState({ byTab: {} });
-    });
-    try {
-      await act(() => actions.run("grid.commit"));
-      expect(apply).not.toHaveBeenCalled();
-      expect(pendingObjectCount(c)).toBe(1);
-      await act(() => actions.run("grid.discard"));
-      expect(pendingObjectCount(c)).toBe(0);
-      expect(apply).not.toHaveBeenCalled();
-    } finally {
-      offCommit();
-      offDiscard();
-    }
+    vi.spyOn(ipc.workspace, "preview").mockImplementation(async (_c, groups) => ({
+      groups: groups.map((g) => ({
+        statements: sqlOfGroup(g),
+        warnings: [],
+        transactional: true,
+        error: null,
+      })),
+      atomic: true,
+    }));
+    vi.spyOn(ipc.workspace, "apply").mockImplementation(async (_c, groups) =>
+      failAt(groups, 0, 'type "nosuchtype_x" does not exist'),
+    );
+    // ⌘S commits at once; the sheet opens only to show where it failed.
+    await act(() => actions.run("grid.commit"));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    // Nothing was cleared: the staged DDL and the operation are still pending.
+    expect(pendingObjectCount(c)).toBe(1);
+    expect(useStructureStore.getState().byTab[tabId]?.ops).toHaveLength(1);
+    expect(toast.error).toHaveBeenCalledWith(
+      "All changes were reverted",
+      expect.objectContaining({ description: expect.stringContaining("nosuchtype_x") }),
+    );
+    // The sheet stays open on the failing tab's statement.
+    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    expect(within(sheet).getByRole("alert")).toHaveTextContent(/nosuchtype_x" does not exist/);
+    expect(within(sheet).getByText("All changes were reverted.")).toBeInTheDocument();
+    // ⇧⌘⌫ discards the operation along with the tab's changes.
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    await act(() => actions.run("grid.discard"));
+    expect(pendingObjectCount(c)).toBe(0);
+    expect(useStructureStore.getState().byTab[tabId]).toBeUndefined();
   });
 
-  it("with nothing staged in a structure view, ⌘S / ⇧⌘P and the Commits run the operations", async () => {
-    const apply = vi.spyOn(ipc.objects, "apply").mockResolvedValue(ok);
+  it("a part that ran before a non-transactional failure leaves the pending list", async () => {
+    const c = info.connectionId;
+    stageObjectOp(c, truncate("posts"), ['TRUNCATE TABLE "public"."posts"'], null);
+    stageObjectOp(c, dropSeq, ['DROP SEQUENCE "public"."posts_id_seq" CASCADE'], null);
+    renderHost();
+    stubWorkspace();
+    vi.spyOn(ipc.objects, "preview").mockImplementation(async (_c, op) => ({
+      statements:
+        op.op === "truncateTables"
+          ? op.tables.map((t) => `TRUNCATE TABLE "public"."${t.name}"`)
+          : ['DROP SEQUENCE "public"."posts_id_seq" CASCADE'],
+      warnings: [],
+      transactional: false,
+    }));
+    vi.spyOn(ipc.workspace, "apply").mockImplementation(async (_c, groups) => {
+      const error = {
+        code: "DB_ERROR",
+        message: "cannot drop sequence",
+        detail: null,
+        hint: null,
+        sqlstate: null,
+        vendorCode: null,
+        position: null,
+        statementIndex: 0,
+        data: null,
+      };
+      return {
+        success: false,
+        atomic: false,
+        groups: [
+          {
+            status: "applied" as const,
+            sql: sqlOfGroup(groups[0]!),
+            executed: sqlOfGroup(groups[0]!),
+            failedIndex: null,
+            rows: [],
+            routine: null,
+            error: null,
+          },
+          {
+            status: "failed" as const,
+            sql: sqlOfGroup(groups[1]!),
+            executed: [],
+            failedIndex: 0,
+            rows: [],
+            routine: null,
+            error,
+          },
+        ],
+        failedGroup: 1,
+        error,
+        durationMs: 1,
+      };
+    });
+    await act(() => actions.run("grid.commit"));
+    await waitFor(() => expect(pendingObjectOps(c).map((o) => o.op.op)).toEqual(["dropSequences"]));
+    expect(pendingObjectOps(c)[0]!.error).toBe("cannot drop sequence");
+    expect(toast.error).toHaveBeenCalledWith(
+      "The commit stopped partway",
+      expect.objectContaining({ description: expect.stringContaining("1 change before it") }),
+    );
+  });
+
+  it("the Commit with a structure view in front runs the operations too; the sheet comes from ⇧⌘P", async () => {
+    const apply = stubWorkspace();
     const c = info.connectionId;
     await structureTab();
     const stage = () =>
@@ -307,49 +462,13 @@ describe("pending item operations", () => {
     expect(toast.message).not.toHaveBeenCalledWith("No structure changes to apply");
   });
 
-  it("⌘S runs the operations once the structure view applied its changes", async () => {
-    const order: string[] = [];
-    const ddl = vi.spyOn(ipc.ddl, "apply");
-    vi.spyOn(ipc.objects, "apply").mockImplementation(async () => {
-      order.push(`operations after ${ddl.mock.calls.length} structure apply`);
-      return ok;
-    });
-    const c = info.connectionId;
-    await structureTab([{ op: "rawSql", sql: "COMMENT ON TABLE users IS 'x'" }]);
-    act(() => {
-      stageObjectOp(c, truncate("posts"), [], null);
-    });
-    await act(() => actions.run("grid.commit"));
-    const sheet = await screen.findByRole("dialog", { name: "Review structure changes" });
-    await waitFor(() =>
-      expect(within(sheet).getByRole("button", { name: /^Apply/ })).toBeEnabled(),
-    );
-    fireEvent.click(within(sheet).getByRole("button", { name: /^Apply/ }));
-    await waitFor(() => expect(order).toEqual(["operations after 1 structure apply"]));
-  });
-
-  it("a dismissed structure preview drops them from ⌘S: later loads and Discard run nothing", async () => {
-    const apply = vi.spyOn(ipc.objects, "apply").mockResolvedValue(ok);
+  it("closing the structure tab with Discard drops its changes; the operations stay pending and nothing runs", async () => {
+    const apply = stubWorkspace();
     const c = info.connectionId;
     const tabId = await structureTab([{ op: "rawSql", sql: "COMMENT ON TABLE users IS 'x'" }]);
     act(() => {
       stageObjectOp(c, truncate("posts"), [], info.currentDatabase);
     });
-    await act(() => actions.run("grid.commit"));
-    const sheet = await screen.findByRole("dialog", { name: "Review structure changes" });
-    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    // Another tab's grid loads its rows (logged as data statements of the connection).
-    await ipc.browse.rows(c, {
-      table: { schema: "public", name: "posts" },
-      columns: null,
-      filter: null,
-      sort: [],
-      limit: 10,
-      offset: 0,
-    });
-    // The structure tab is closed with Discard: its changes go; the operations, which belong to
-    // the connection, stay pending — and nothing runs.
     expect(useTabsStore.getState().requestClose([tabId])).toBe(false);
     act(() => {
       useTabsStore.getState().confirmClose();
@@ -359,31 +478,30 @@ describe("pending item operations", () => {
     expect(pendingObjectCount(c)).toBe(1);
   });
 
-  it("a failed structure apply drops them from ⌘S, even when retried from its sheet", async () => {
-    const apply = vi.spyOn(ipc.objects, "apply").mockResolvedValue(ok);
-    const c = info.connectionId;
-    const tabId = await structureTab([{ op: "rawSql", sql: "SELECT nosuchtype_x" }]);
-    act(() => {
-      stageObjectOp(c, truncate("posts"), [], null);
-    });
-    await act(() => actions.run("grid.commit"));
-    const sheet = await screen.findByRole("dialog", { name: "Review structure changes" });
-    await waitFor(() =>
-      expect(within(sheet).getByRole("button", { name: /^Apply/ })).toBeEnabled(),
-    );
-    fireEvent.click(within(sheet).getByRole("button", { name: /^Apply/ }));
-    await within(sheet).findByRole("alert");
-    // A later successful apply of the tab (from the same sheet) no longer brings them along.
-    reportTabCommit(tabId, "committed");
-    await new Promise((r) => setTimeout(r, 20));
-    expect(apply).not.toHaveBeenCalled();
-    expect(pendingObjectCount(c)).toBe(1);
-  });
-
   it("the sheet's × and the control's Discard / Commit wait while they commit", async () => {
     let release!: () => void;
-    vi.spyOn(ipc.objects, "apply").mockImplementation(
-      () => new Promise<DdlResult>((r) => (release = () => r(ok))),
+    stubWorkspace();
+    vi.spyOn(ipc.workspace, "apply").mockImplementation(
+      (_c, groups) =>
+        new Promise<WorkspaceResult>((r) => {
+          release = () =>
+            r({
+              success: true,
+              atomic: true,
+              groups: groups.map((g) => ({
+                status: "applied" as const,
+                sql: sqlOfGroup(g),
+                executed: sqlOfGroup(g),
+                failedIndex: null,
+                rows: [],
+                routine: null,
+                error: null,
+              })),
+              failedGroup: null,
+              error: null,
+              durationMs: 1,
+            });
+        }),
     );
     renderHost();
     const c = info.connectionId;
@@ -402,8 +520,6 @@ describe("pending item operations", () => {
       expect(within(toolbar).getByRole("button", { name, hidden: true })).toBeDisabled();
     await act(() => actions.run("grid.discard"));
     expect(pendingObjectCount(c)).toBe(2);
-    release();
-    await waitFor(() => expect(pendingObjectCount(c)).toBe(1));
     release();
     await waitFor(() => expect(pendingObjectCount(c)).toBe(0));
   });

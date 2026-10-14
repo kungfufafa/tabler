@@ -7,10 +7,12 @@ import { cn } from "@/lib/utils";
 import { BarIconButton, BarSeparator, BarTooltip, BottomBarFrame } from "./BarParts";
 import { ColumnsMenu } from "./ColumnsMenu";
 import { Pagination, type PageChange } from "./Pagination";
+import type { DefaultOrder } from "./tableViewMemory";
 
 /**
  * "1–200 of ~1,000 rows · 4 ms": the page's place in the table, and how long it took. While rows
- * are selected: "3 of 200 rows selected · 4 ms" (TablePlus).
+ * are selected: "15 of ~999,985 rows selected · 4 ms" (TablePlus): the table's row count, with the
+ * same "~" when it is an estimate, once it is known (the page's rows until then).
  */
 function RowSummary({
   offset,
@@ -36,6 +38,11 @@ function RowSummary({
   onCountExact: () => void;
 }) {
   const total = count?.count ?? null;
+  // The rows the selection is out of: the table's count plus the staged new rows (the grid shows
+  // them too), never fewer than the rows shown (a stale estimate).
+  const known = total === null ? null : total + Math.max(0, shownRows - pageRows);
+  const outOf = known !== null && known >= shownRows ? known : shownRows;
+  const outOfEstimated = known !== null && known >= shownRows && count?.exact === false;
   const range =
     pageRows === 0
       ? "0"
@@ -48,7 +55,7 @@ function RowSummary({
     >
       {selectedRows > 0 ? (
         <span className="text-foreground/80 min-w-0 truncate">
-          {`${formatCount(selectedRows)} of ${formatCount(shownRows)} ${shownRows === 1 ? "row" : "rows"} selected`}
+          {`${formatCount(selectedRows)} of ${formatCount(outOf, outOfEstimated)} ${outOf === 1 ? "row" : "rows"} selected`}
         </span>
       ) : (
         <span className="text-foreground/80 min-w-0 truncate">
@@ -98,7 +105,10 @@ export interface TableBottomBarProps {
   offset: number;
   limit: number;
   pageRows: number;
-  /** Rows selected in the grid: the summary reads "N of M rows selected" while there are any. */
+  /**
+   * Rows selected in the grid: the summary reads "N of M rows selected" while there are any, M
+   * being the table's row count (`count`; the rows shown while it is pending).
+   */
   selectedRows?: number;
   /** Rows the grid shows (the page plus staged new rows); `pageRows` when not given. */
   shownRows?: number;
@@ -124,6 +134,10 @@ export interface TableBottomBarProps {
   onToggleColumn: (name: string, visible: boolean) => void;
   onShowAllColumns: () => void;
   onExport: () => void;
+  /** ⚙ ▸ Default order (the table's Default content order). */
+  defaultOrder?: DefaultOrder;
+  onDefaultOrderChange?: (order: DefaultOrder) => void;
+  hasPrimaryKey?: boolean;
 }
 
 /**
@@ -192,7 +206,12 @@ export function TableBottomBar(p: TableBottomBarProps) {
         onToggleColumn={p.onToggleColumn}
         onShowAll={p.onShowAllColumns}
       />
-      <BarIconButton label="Export…" action="export.open" onClick={p.onExport}>
+      {/* ⇧⌘E is the multi-table export; this one exports this table's filtered rows. */}
+      <BarIconButton
+        label="Export…"
+        tooltip="Export the table's rows (the filtered ones)"
+        onClick={p.onExport}
+      >
         <FileDown />
       </BarIconButton>
       <BarSeparator />
@@ -203,6 +222,9 @@ export function TableBottomBar(p: TableBottomBarProps) {
         count={p.count}
         onChange={p.onPageChange}
         onCountExact={p.onCountExact}
+        defaultOrder={p.defaultOrder}
+        onDefaultOrderChange={p.onDefaultOrderChange}
+        hasPrimaryKey={p.hasPrimaryKey}
       />
     </BottomBarFrame>
   );

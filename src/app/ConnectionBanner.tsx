@@ -1,7 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, RotateCw, Unplug } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useAction } from "@/features/palette/actions";
 import {
   bannerState,
   reconnectConnection,
@@ -27,11 +26,7 @@ export function ConnectionBanner() {
   const connectionId = active?.info.connectionId ?? null;
   // Shared per connection, so it survives unmounts and other connections' attempts finishing.
   const busy = useReconnectInFlight(connectionId);
-  // ⇧⌘R: pings the active connection and reopens it when it is gone.
-  useAction(
-    "connection.reconnect",
-    connectionId ? () => void reconnectConnection(connectionId, qc) : null,
-  );
+  // ⇧⌘R (force reconnect) is registered by `useConnectionEvents`, which is always mounted.
   const state = bannerState(active, busy);
   if (!state || !connectionId) return null;
 

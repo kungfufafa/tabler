@@ -10,7 +10,9 @@ use crate::objects;
 use crate::sqlgen::Dialect;
 use crate::state::AppState;
 use crate::types::ddl::{DdlPlan, DdlResult};
-use crate::types::objects::{ObjectOp, OverviewItem, RoutineRef, RoutineSummary, SequenceSummary};
+use crate::types::objects::{
+    DatabaseItems, ObjectOp, OverviewItem, RoutineRef, RoutineSummary, SequenceSummary,
+};
 use crate::types::schema::{SchemaInfo, TableRef};
 
 #[tauri::command]
@@ -40,6 +42,18 @@ pub async fn list_system_schemas(
 ) -> Result<Vec<SchemaInfo>, AppError> {
     let session = state.session(connection_id).await?;
     objects::system_schemas(session.as_ref()).await
+}
+
+/// Every table, view and routine of the connection's database, across its schemas (the
+/// sidebar's Search in Database…). `include_system`: PostgreSQL's system schemas too.
+#[tauri::command]
+pub async fn list_database_items(
+    state: State<'_, AppState>,
+    connection_id: Uuid,
+    include_system: Option<bool>,
+) -> Result<DatabaseItems, AppError> {
+    let session = state.session(connection_id).await?;
+    objects::database_items(session.as_ref(), include_system.unwrap_or(false)).await
 }
 
 #[tauri::command]

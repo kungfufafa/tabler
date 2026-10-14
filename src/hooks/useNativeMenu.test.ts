@@ -1,7 +1,7 @@
 import { renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { actions, type ActionId } from "@/features/palette/actions";
-import { DEFAULT_KEYMAP } from "@/lib/keys/keymap";
+import { DEFAULT_KEYMAP, findShortcut } from "@/lib/keys/keymap";
 import { SYNCED_IDS } from "@/lib/keys/menuSync";
 import { comboToAccelerator } from "@/lib/keys/overrides";
 import {
@@ -22,6 +22,10 @@ const events = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/ipc/events", () => ({
   listenEvent: vi.fn(async (name: string, handler: Handler) => {
+    events.handlers.set(name, handler);
+    return events.unlisten;
+  }),
+  listenWindowEvent: vi.fn(async (name: string, handler: Handler) => {
     events.handlers.set(name, handler);
     return events.unlisten;
   }),
@@ -171,10 +175,18 @@ describe("menu accelerators", () => {
       "grid.new-row",
       "grid.duplicate-row",
       "grid.set-default",
+      // ⇧⌘C in a grid, where the console log's key is Copy Cell Value.
+      "grid.copy-cell",
+      // ⇧⌘D outside the SQL editor, where it is Split Pane.
+      "workspace.split-right",
     ]);
     for (const id of MENU_UNBOUND_ACTIONS) expect(SYNCED_IDS).not.toContain(id);
-    // Their keys are the editor items' (⌘I Beautify, ⇧⌘D Split Pane): the page decides by focus.
+    // Their keys are the editor items' (⌘I Beautify, ⇧⌘D Split Pane) or another item's (⇧⌘C is the
+    // console log's): the page decides by focus. Copy Cell Value has a key now, still no accelerator.
     expect(SYNCED_IDS).toEqual(expect.arrayContaining(["query.format", "query.split"]));
+    expect(SYNCED_IDS).toContain("ui.toggle-console");
+    expect(SYNCED_IDS).not.toContain("grid.copy-cell");
+    expect(DEFAULT_KEYMAP.some((d) => d.id === "grid.copy-cell")).toBe(true);
     const modifiers = new Set(["CmdOrCtrl", "Ctrl", "Alt", "Shift"]);
     for (const id of SYNCED_IDS) {
       const combo = DEFAULT_KEYMAP.find((d) => d.id === id)!.keys;
@@ -208,13 +220,29 @@ describe("menuActionAllowed", () => {
     for (const id of MENU_ACTIONS) {
       expect(menuActionAllowed(id, "global")).toBe(true);
       expect(menuActionAllowed(id, "grid"), id).toBe(!EDITOR_EDIT_ITEMS.includes(id));
-      expect(menuActionAllowed(id, "dialog")).toBe(id === "tab.close");
+      // Close Tab closes a dialog's window; Lock Tabler locks over any dialog.
+      expect(menuActionAllowed(id, "dialog")).toBe(id === "tab.close" || id === "app.lock");
     }
     expect(menuActionAllowed("view.refresh", "editor")).toBe(false);
     expect(menuActionAllowed("view.structure", "grid-edit")).toBe(false);
     expect(menuActionAllowed("view.refresh", "grid-edit")).toBe(true);
     expect(menuActionAllowed("query.open", "editor")).toBe(true);
     expect(menuActionAllowed("settings.open", "editor")).toBe(true);
+  });
+
+  it("lets Lock Tabler (⌃⌘L) through from every scope, dialogs and the SQL editor included", () => {
+    for (const scope of [
+      "global",
+      "grid",
+      "grid-edit",
+      "filter",
+      "sidebar",
+      "editor",
+      "dialog",
+    ] as const) {
+      expect(menuActionAllowed("app.lock", scope), scope).toBe(true);
+      expect(findShortcut("Mod+Ctrl+L", scope)?.id, scope).toBe("app.lock");
+    }
   });
 
   it("keeps the grid's items away from a cell editor, the filter bar, the sidebar and the editor", () => {

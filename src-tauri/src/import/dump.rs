@@ -801,7 +801,7 @@ pub async fn run_sql_import(
                 ))
             } else {
                 session
-                    .run_statement(&sql, 1, &mut Discard, slot.clone())
+                    .run_statement_traced(&sql, 1, &mut Discard, slot.clone())
                     .await
                     .map(|_| ())
             };
@@ -871,7 +871,7 @@ pub async fn run_sql_import(
     // Never leave the dump's transaction open (on a session that may live on).
     if session.in_transaction() == Some(true) {
         match session
-            .run_statement("ROLLBACK", 1, &mut Discard, CancelSlot::default())
+            .run_statement_traced("ROLLBACK", 1, &mut Discard, CancelSlot::default())
             .await
         {
             Ok(_) => {

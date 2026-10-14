@@ -3,11 +3,12 @@ import { act, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { DataGridProps } from "@/features/datagrid/DataGrid";
+import { CommitTestHost } from "@/features/commit/testHost";
 import { actions } from "@/features/palette/actions";
 import { emptyStaging, insertRow, pendingCount } from "@/features/staging/model";
 import { TableTab } from "@/features/table-tab/TableTab";
 import { rowKeys } from "@/features/table-tab/useTableRows";
-import { ipc, type ApplyRequest, type TableRef } from "@/lib/ipc";
+import { ipc, type TableRef } from "@/lib/ipc";
 import { resetMockDdl } from "@/lib/ipc/mock/ddl";
 import { useConnectionsStore } from "@/stores/connections";
 import { DEFAULT_PREFS, resetPrefsForTests } from "@/stores/prefs";
@@ -58,6 +59,7 @@ describe("a schema change from the SQL editor", () => {
       <QueryClientProvider client={qc}>
         <TooltipProvider>
           <TableTab tab={tab} />
+          <CommitTestHost />
         </TooltipProvider>
       </QueryClientProvider>,
     );
@@ -91,11 +93,13 @@ describe("a schema change from the SQL editor", () => {
     expect(toast.message).toHaveBeenCalledWith("Unsaved edits in users", expect.anything());
 
     // Commit: the change still targets `name`, not the column that moved into its position.
-    const preview = vi.spyOn(ipc.mutate, "preview").mockResolvedValue(["UPDATE …"]);
+    const preview = vi.spyOn(ipc.workspace, "preview");
     await waitFor(() => expect(actions.has("grid.commit")).toBe(true));
     await act(() => actions.run("grid.commit"));
-    expect(preview).toHaveBeenCalledOnce();
-    const req = preview.mock.calls[0]![1] as ApplyRequest;
+    await waitFor(() => expect(preview).toHaveBeenCalled());
+    const group = preview.mock.calls[0]![1][0]!;
+    if (group.kind !== "rows") throw new Error("not a rows group");
+    const req = group.request;
     expect(req.changes).toHaveLength(1);
     expect(req.changes[0]).toMatchObject({
       op: "update",

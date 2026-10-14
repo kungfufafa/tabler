@@ -1,7 +1,8 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { profileKeys } from "@/features/connections/useConnections";
+import { useAction } from "@/features/palette/actions";
 import {
   IpcError,
   ipc,
@@ -13,6 +14,7 @@ import {
 } from "@/lib/ipc";
 import { listenEvent } from "@/lib/ipc/events";
 import { useConnectionsStore, type OpenConnection } from "@/stores/connections";
+import { getQueryTab, isBusy } from "@/stores/queryTabs";
 import { useTabsStore } from "@/stores/tabs";
 
 export const KEEPALIVE_INTERVAL_MS = 60_000;
@@ -426,62 +428,103 @@ async function restoreDatabase(
   }
 }
 
-async function runReconnect(connectionId: string, qc: QueryClient): Promise<ReconnectOutcome> {
+/** How many SQL editor tabs of the connection are executing a statement or an explain right now. */
+function runningQueryCount(connectionId: string): number {
+  return useTabsStore
+    .getState()
+    .tabs.filter(
+      (t) => t.kind === "query" && t.connectionId === connectionId && isBusy(getQueryTab(t.id)),
+    ).length;
+}
+
+async function runReconnect(
+  connectionId: string,
+  qc: QueryClient,
+  force: boolean,
+): Promise<ReconnectOutcome> {
   const conn = openConnection(connectionId);
   if (!conn) return "failed";
   const { name, profileId } = conn.info;
   const id = statusToastId(profileId);
-  useConnectionsStore.getState().setStatus(connectionId, "reconnecting", conn.message);
+  // A forced reconnect of a healthy session leaves its status alone until the new one is open
+  // (the status pill shows the attempt): a failure then keeps the old session exactly as it was.
+  const changedStatus = !(force && conn.status === "connected");
+  if (changedStatus) {
+    useConnectionsStore.getState().setStatus(connectionId, "reconnecting", conn.message);
+  }
   /** A session opened here that has not been handed to the store yet. */
   let opened: string | null = null;
   try {
-    const status = await pingWithDeadline(ipc.connections.ping(connectionId)).catch(
-      (): ConnStatus => "lost",
-    );
-    // Disconnected by the user meanwhile: nothing to recover.
-    if (!openConnection(connectionId)) return "failed";
-    if (status === "connected") {
-      useConnectionsStore.getState().setStatus(connectionId, "connected", null);
-      refetchFailed(qc, connectionId);
-      toast.success(`Reconnected to ${name}`, { id });
-      return "alive";
+    if (!force) {
+      const status = await pingWithDeadline(ipc.connections.ping(connectionId)).catch(
+        (): ConnStatus => "lost",
+      );
+      // Disconnected by the user meanwhile: nothing to recover.
+      if (!openConnection(connectionId)) return "failed";
+      if (status === "connected") {
+        useConnectionsStore.getState().setStatus(connectionId, "connected", null);
+        refetchFailed(qc, connectionId);
+        toast.success(`Reconnected to ${name}`, { id });
+        return "alive";
+      }
     }
     const fresh = await ipc.connections.connect(profileId);
     opened = fresh.connectionId;
-    const wanted = (openConnection(connectionId) ?? conn).info.currentDatabase;
-    const info = await restoreDatabase(fresh, wanted);
+    const current = openConnection(connectionId) ?? conn;
+    const info = await restoreDatabase(fresh, current.info.currentDatabase);
+    // Counted just before the old session is released (that is what stops them).
+    const stopped = force ? runningQueryCount(connectionId) : 0;
+    // `migrateConnection` also releases the old session on the server.
     if (!migrateConnection(connectionId, info, qc)) {
       release(fresh.connectionId);
       return "failed";
     }
     opened = null;
+    const kept = "Opened a new session; your tabs were kept.";
     toast.success(`Reconnected to ${name}`, {
       id,
-      description: "Opened a new session; your tabs were kept.",
+      description:
+        stopped > 0
+          ? `${kept} ${stopped === 1 ? "The query that was running was" : `${stopped} running queries were`} stopped.`
+          : kept,
     });
     return "reconnected";
   } catch (err) {
     if (opened) release(opened);
     if (!openConnection(connectionId)) return "failed";
     const message = toIpcError(err).message;
-    useConnectionsStore.getState().setStatus(connectionId, "lost", message);
+    // A forced reconnect of a healthy session never touched its status: the old session stays as
+    // it was (whatever the keepalive made of it meanwhile) and only the toast reports the failure.
+    if (changedStatus) useConnectionsStore.getState().setStatus(connectionId, "lost", message);
     toast.error(`Could not reconnect to ${name}`, { id, description: message });
     return "failed";
   }
 }
 
+export interface ReconnectOptions {
+  /**
+   * Force reconnect (⇧⌘R, Connection ▸ Reconnect): skip the ping and the "still alive" shortcut,
+   * always open a fresh session from the profile and move the tabs onto it. A failed forced
+   * reconnect leaves the old session as it was.
+   */
+  force?: boolean;
+}
+
 /**
  * Banner "Reconnect": a ping first (the server may simply be back), otherwise a fresh connection
  * from the same profile, switched to the database the old one was on, that the open tabs are moved
- * onto. Calls for a connection that is already reconnecting share the attempt in flight.
+ * onto. With `force` the ping is skipped and a new session is always opened (see
+ * `ReconnectOptions`). Calls for a connection that is already reconnecting share the attempt in
+ * flight.
  */
 export function reconnectConnection(
   connectionId: string,
   qc: QueryClient,
+  options: ReconnectOptions = {},
 ): Promise<ReconnectOutcome> {
   const running = reconnects.get(connectionId);
   if (running) return running;
-  const attempt = runReconnect(connectionId, qc).finally(() => {
+  const attempt = runReconnect(connectionId, qc, options.force === true).finally(() => {
     reconnects.delete(connectionId);
     notifyReconnects();
   });
@@ -490,9 +533,93 @@ export function reconnectConnection(
   return attempt;
 }
 
+// ---- auto-reconnect when the app becomes active ------------------------------------------------
+
+/** A connection is checked / reconnected automatically at most this often. */
+export const AUTO_RECONNECT_INTERVAL_MS = 15_000;
+
+type ActivationTarget = Pick<Window, "addEventListener" | "removeEventListener">;
+
+export interface AutoReconnectOptions {
+  /** The open connections and their status. */
+  connections: () => ReadonlyArray<{ id: string; status: ConnStatus }>;
+  /** A connected connection's health check (rejects or answers non-"connected" when it is gone). */
+  ping: (connectionId: string) => Promise<ConnStatus>;
+  reconnect: (connectionId: string) => Promise<unknown>;
+  /** Whether a reconnect of this connection is already running. */
+  busy?: (connectionId: string) => boolean;
+  target?: ActivationTarget;
+  doc?: VisibilityDoc;
+  intervalMs?: number;
+  now?: () => number;
+}
+
+/**
+ * TablePlus b308: lost connections reconnect by themselves when the app becomes active (the
+ * window gains focus or becomes visible) and when the network comes back (`online`). Connected
+ * ones are pinged then, and reconnected right away when the ping fails (a Mac back from sleep).
+ * Each connection is handled at most once per `intervalMs`. The reconnect keeps tabs and staged
+ * work (`reconnectConnection`). Returns a stop function.
+ */
+export function startAutoReconnect(opts: AutoReconnectOptions): () => void {
+  const target = opts.target ?? window;
+  const doc = opts.doc ?? document;
+  const intervalMs = opts.intervalMs ?? AUTO_RECONNECT_INTERVAL_MS;
+  const now = opts.now ?? Date.now;
+  const last = new Map<string, number>();
+  let stopped = false;
+
+  const due = (id: string) => {
+    const at = last.get(id);
+    if (at !== undefined && now() - at < intervalMs) return false;
+    last.set(id, now());
+    return true;
+  };
+  const reconnect = (id: string) => {
+    if (stopped || opts.busy?.(id)) return;
+    opts.reconnect(id).catch(() => undefined);
+  };
+  const activate = () => {
+    if (stopped) return;
+    for (const { id, status } of opts.connections()) {
+      if (status === "lost") {
+        if (due(id)) reconnect(id);
+      } else if (status === "connected" && due(id)) {
+        opts.ping(id).then(
+          (result) => {
+            if (result !== "connected") reconnect(id);
+          },
+          () => reconnect(id),
+        );
+      }
+    }
+  };
+  const onVisibility = () => {
+    if (doc.visibilityState === "visible") activate();
+  };
+  target.addEventListener("focus", activate);
+  target.addEventListener("online", activate);
+  doc.addEventListener("visibilitychange", onVisibility);
+  return () => {
+    stopped = true;
+    target.removeEventListener("focus", activate);
+    target.removeEventListener("online", activate);
+    doc.removeEventListener("visibilitychange", onVisibility);
+  };
+}
+
 /** Keeps the connections store in sync with backend status events and runs the keepalive. Mount once. */
 export function useConnectionEvents(): void {
   const qc = useQueryClient();
+  const activeId = useConnectionsStore((s) => s.activeId);
+  // ⇧⌘R / Connection ▸ Reconnect: a FORCED reconnect of the active connection (a new session even
+  // when the old one still answers a ping). Registered here, not in the banner, so it also works
+  // on the connection manager while a connection is open.
+  const forceReconnect = useMemo(
+    () => (activeId ? () => void reconnectConnection(activeId, qc, { force: true }) : null),
+    [activeId, qc],
+  );
+  useAction("connection.reconnect", forceReconnect);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
@@ -547,4 +674,18 @@ export function useConnectionEvents(): void {
       unsubscribe();
     };
   }, [qc]);
+
+  useEffect(
+    () =>
+      startAutoReconnect({
+        connections: () => {
+          const { order, byId } = useConnectionsStore.getState();
+          return order.map((id) => ({ id, status: byId[id]?.status ?? "disconnected" }));
+        },
+        ping: (id) => pingWithDeadline(ipc.connections.ping(id)),
+        reconnect: (id) => reconnectConnection(id, qc),
+        busy: isReconnecting,
+      }),
+    [qc],
+  );
 }

@@ -187,6 +187,9 @@ async fn export_tables(s: &dyn DbSession, schema: &str, names: &[&str], file: &P
         tables,
         format: script_format(),
         layout: ExportLayout::SingleFile,
+        encoding: Default::default(),
+        database: None,
+        create_folder: false,
         target: file.to_string_lossy().into_owned(),
     };
     run_export_tables(s, &req, &metas, |_| {}, CancellationToken::new())
@@ -203,10 +206,12 @@ async fn export_table(s: &dyn DbSession, schema: &str, name: &str, file: &Path) 
             filter: None,
             sort: vec![],
             columns: None,
+            offset: None,
         },
         format: script_format(),
         path: file.to_string_lossy().into_owned(),
         max_rows: None,
+        encoding: Default::default(),
     };
     run_export(s, &req, None, |_| {}, CancellationToken::new())
         .await

@@ -54,6 +54,8 @@ impl Connection {
     }
 
     pub async fn invalidate(&self, table: Option<&TableRef>) {
+        // The assistant's structure context of this connection is read again too.
+        crate::assistant::context_cache::forget(self.id);
         let mut cache = self.schema_cache.write().await;
         match table {
             Some(t) => {
@@ -119,10 +121,34 @@ impl AppState {
     pub async fn remove_connection(&self, id: Uuid) -> Option<Arc<Connection>> {
         let mut conns = self.connections.write().await;
         let conn = conns.remove(&id)?;
+        crate::assistant::context_cache::forget(id);
         if !conns.values().any(|c| c.profile.id == conn.profile.id) {
             self.set_session_password(conn.profile.id, None);
         }
         Some(conn)
+    }
+
+    /// App exit: takes every open connection and closes its driver session, so the databases end
+    /// cleanly. `app.exit()` runs no window handlers, so nothing else closes them: a SQLite file
+    /// in WAL mode would keep its `-wal` / `-shm` files, with the pages that are not in the main
+    /// file yet, and a SQLite-over-SSH copy would be uploaded without them. (The caller bounds
+    /// the time this takes, and runs the SQLite-over-SSH uploads after it.)
+    pub async fn close_all_sessions(&self) {
+        let conns: Vec<Arc<Connection>> = {
+            let mut map = self.connections.write().await;
+            map.drain().map(|(_, c)| c).collect()
+        };
+        for conn in &conns {
+            crate::assistant::context_cache::forget(conn.id);
+        }
+        futures::future::join_all(conns.iter().map(|c| async move {
+            c.session().await.close().await;
+        }))
+        .await;
+        self.session_passwords
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
     }
 
     pub async fn connection(&self, id: Uuid) -> Result<Arc<Connection>, AppError> {
@@ -136,6 +162,21 @@ impl AppState {
 
     pub async fn session(&self, id: Uuid) -> Result<Arc<dyn DbSession>, AppError> {
         Ok(self.connection(id).await?.session().await)
+    }
+
+    /// A new lease of the SSH tunnel an open connection of `profile` uses (same SSH settings and
+    /// database host), while that tunnel is up: a second workspace of the profile goes through
+    /// it. The tunnel closes with its last connection.
+    pub async fn shared_tunnel(
+        &self,
+        profile: &ConnectionProfile,
+    ) -> Option<crate::tunnel::TunnelHandle> {
+        let conns = self.connections.read().await;
+        conns
+            .values()
+            .filter(|c| crate::commands::connections::same_tunnel_settings(&c.profile, profile))
+            .filter_map(|c| c.tunnel.as_ref())
+            .find_map(crate::tunnel::TunnelHandle::share)
     }
 }
 
@@ -231,5 +272,59 @@ mod tests {
         for conn in [a, b, c] {
             conn.session().await.close().await;
         }
+    }
+
+    /// Quitting closes the local SQLite sessions: a WAL database leaves no `-wal` / `-shm` file,
+    /// and what was written is in the main file (it used to stay in the WAL until the process
+    /// died, or was lost with the files).
+    #[tokio::test]
+    async fn closing_all_sessions_checkpoints_a_wal_database() {
+        let appdb = AppDb::open_in_memory().unwrap();
+        let state = AppState::new(appdb.clone(), Secrets::new(Backend::File, appdb));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wal.sqlite");
+        let path_str = path.to_string_lossy().into_owned();
+        let (pid, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let (a, b) = (
+            open(&sqlite_profile(pid, &path_str)).await,
+            open(&sqlite_profile(other, &path_str)).await,
+        );
+        let session = a.session().await;
+        session
+            .query("PRAGMA journal_mode = WAL", &[])
+            .await
+            .unwrap();
+        session
+            .execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", &[])
+            .await
+            .unwrap();
+        session
+            .execute("INSERT INTO t (v) VALUES ('kept')", &[])
+            .await
+            .unwrap();
+        let wal = dir.path().join("wal.sqlite-wal");
+        let shm = dir.path().join("wal.sqlite-shm");
+        assert!(
+            wal.exists() && shm.exists(),
+            "an open WAL database has both files"
+        );
+        state.insert_connection(a.clone(), Some("pw".into())).await;
+        state.insert_connection(b.clone(), None).await;
+        drop(session);
+
+        state.close_all_sessions().await;
+
+        assert!(!wal.exists(), "the -wal file is left behind");
+        assert!(!shm.exists(), "the -shm file is left behind");
+        assert!(state.connections.read().await.is_empty());
+        assert_eq!(state.session_password(pid), None);
+        // The sessions are closed: further queries fail.
+        assert!(a.session().await.execute("SELECT 1", &[]).await.is_err());
+        // The row survived: it is in the main file.
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let v: String = conn.query_row("SELECT v FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, "kept");
+        // Nothing open: harmless.
+        state.close_all_sessions().await;
     }
 }

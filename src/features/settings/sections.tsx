@@ -1,6 +1,7 @@
-import { KeyRound, Monitor, Moon, Sun } from "lucide-react";
+import { KeyRound } from "lucide-react";
 import type { ReactNode } from "react";
 import { Kbd } from "@/components/Kbd";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -9,10 +10,20 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { EditorWorkflowSettings } from "@/features/editor/EditorSettingsRows";
+import { themeLabel } from "@/features/appearance/themeActions";
+import { useThemes } from "@/features/appearance/themesStore";
+import { StartupConnectionRow } from "@/features/connections/StartupConnectionRow";
+import { EditorWorkflowSettings, NewTabOpensRow } from "@/features/editor/EditorSettingsRows";
+import { NotifySettingRows } from "@/features/notify/NotifySettingRows";
+import { PasscodeSettings, SafeModeTouchIdRow } from "@/features/lock/SecuritySettings";
 import { SAFE_MODE_OPTIONS } from "@/features/safety/levels";
+import { LazyLoadSettingRow } from "@/features/sidebar/LazyLoadSettingRow";
 import { CsvDefaultSettings } from "@/features/table-tab/CsvDefaultSettings";
-import { TableDataSettings } from "@/features/table-tab/TableDataSettings";
+import {
+  DataDecoderSettings,
+  LoadingWallpaperRow,
+  TableDataSettings,
+} from "@/features/table-tab/TableDataSettings";
 import { shortcutFor } from "@/lib/keys/keymap";
 import {
   CONNECT_TIMEOUT_RANGE,
@@ -26,15 +37,10 @@ import {
   type Prefs,
   type UiFontSize,
 } from "@/stores/prefs";
-import { useUiStore, type ThemePref } from "@/stores/ui";
+import { useUiStore } from "@/stores/ui";
 import { NumberField, SectionShell, Segmented, SettingGroup, SettingRow } from "./controls";
 import { AutoSaveQueryTabsRow, ReopenWorkspacesRow } from "./sessionRows";
-
-const THEME_OPTIONS = [
-  { value: "system", label: "System", icon: <Monitor /> },
-  { value: "light", label: "Light", icon: <Sun /> },
-  { value: "dark", label: "Dark", icon: <Moon /> },
-] as const satisfies readonly { value: ThemePref; label: string; icon: ReactNode }[];
+import { openSettings } from "./store";
 
 const FONT_SIZE_LABELS: Record<UiFontSize, string> = {
   small: "Small",
@@ -60,7 +66,7 @@ function InlineKbd({ combo }: { combo: string }) {
 
 export function GeneralSection() {
   const themePref = useUiStore((s) => s.themePref);
-  const setThemePref = useUiStore((s) => s.setThemePref);
+  const customs = useThemes((s) => s.themes);
   const uiFontSize = usePrefs((p) => p.uiFontSize);
   const pageSize = usePrefs((p) => p.pageSize);
   const confirmCommit = usePrefs((p) => p.confirmCommit);
@@ -68,13 +74,20 @@ export function GeneralSection() {
   return (
     <SectionShell title="General">
       <SettingGroup title="Appearance">
-        <SettingRow id="pref-theme" label="Theme">
-          <Segmented
-            id="pref-theme"
-            value={themePref}
-            options={THEME_OPTIONS}
-            onChange={setThemePref}
-          />
+        {/* The choice (Auto, Light, Dark, Solarized, custom themes) lives in Appearance; the
+            stored preference is the same one, so what was picked here before still applies. */}
+        <SettingRow
+          label="Theme"
+          description={
+            <>
+              In use: {themeLabel(themePref, customs)}. Auto, Light, Dark, Solarized and your own
+              themes are chosen in Appearance.
+            </>
+          }
+        >
+          <Button variant="outline" size="xs" onClick={() => openSettings("appearance")}>
+            More themes in Appearance
+          </Button>
         </SettingRow>
         <SettingRow
           id="pref-ui-font-size"
@@ -92,6 +105,9 @@ export function GeneralSection() {
 
       <SettingGroup title="Application">
         <ReopenWorkspacesRow />
+        <StartupConnectionRow />
+        <NewTabOpensRow />
+        <LoadingWallpaperRow />
       </SettingGroup>
 
       <SettingGroup title="Tables">
@@ -133,40 +149,93 @@ export function GeneralSection() {
         </SettingRow>
       </SettingGroup>
       <TableDataSettings />
+      <LazyLoadSettingRow />
+      <NotifySettingRows />
       <CsvDefaultSettings />
+      <DataDecoderSettings />
     </SectionShell>
   );
 }
 
-const kwClass = "text-[color:var(--syn-keyword)]";
+/** A run of the preview in the colour of one SQL editor token (Settings ▸ Appearance ▸ SQL editor). */
+function Tok({
+  token,
+  italic,
+  children,
+}: {
+  token: string;
+  italic?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <span style={{ color: `var(--${token})`, fontStyle: italic ? "italic" : undefined }}>
+      {children}
+    </span>
+  );
+}
 
-function EditorPreview() {
+/**
+ * The editor preview: sample SQL in the SQL editor's own font family, size and line height and
+ * every syntax colour (comment, keyword, number, the four quote kinds, others, error, invisible
+ * characters, the current statement's and the selection's background), read live from the same
+ * custom properties the editor uses, so it follows Settings ▸ Appearance (font, line height,
+ * colours, theme) as well as the options of this section (tab size, wrapping, keyword case).
+ */
+export function EditorPreview() {
   const fontSize = usePrefs((p) => p.editorFontSize);
   const tabSize = usePrefs((p) => p.editorTabSize);
   const wrap = usePrefs((p) => p.editorLineWrap);
   const upper = usePrefs((p) => p.editorUppercaseKeywords);
+  const invisibles = usePrefs((p) => p.editorShowInvisibles);
   const kw = (word: string) => (
-    <span className={kwClass}>{upper ? word.toUpperCase() : word.toLowerCase()}</span>
+    <Tok token="syn-keyword">{upper ? word.toUpperCase() : word.toLowerCase()}</Tok>
   );
-  const indent = " ".repeat(tabSize);
+  const indent = (invisibles ? "·" : " ").repeat(tabSize);
+  // Invisible characters: a pilcrow-like mark at the line ends.
+  const eol = invisibles ? <Tok token="syn-invisible">¬</Tok> : null;
   return (
     <pre
       aria-label="Editor preview"
-      className="border-border bg-surface text-foreground selectable overflow-x-auto rounded-lg border px-3 py-2.5 font-mono leading-[1.6]"
-      style={{ fontSize, whiteSpace: wrap ? "pre-wrap" : "pre", overflowWrap: "anywhere" }}
+      className="border-border bg-surface selectable overflow-x-auto rounded-lg border px-3 py-2.5"
+      style={{
+        fontSize,
+        fontFamily: "var(--editor-font-family)",
+        lineHeight: "var(--editor-line-height)",
+        color: "var(--syn-other)",
+        whiteSpace: wrap ? "pre-wrap" : "pre",
+        overflowWrap: "anywhere",
+      }}
     >
-      <span className="text-[color:var(--syn-comment)]">
-        -- Recently active customers who have a verified email address and at least one paid order
-      </span>
+      <Tok token="syn-comment" italic>
+        -- Recently active customers who have a verified email address and a paid order
+      </Tok>
+      {eol}
       {"\n"}
-      {kw("select")} id, email, created_at{"\n"}
-      {kw("from")} customers{"\n"}
-      {kw("where")} verified {kw("and")} ({"\n"}
-      {indent}last_seen_at {">"} now() - {kw("interval")}{" "}
-      <span className="text-[color:var(--syn-string)]">'7 days'</span>
-      {"\n"}){"\n"}
-      {kw("order by")} created_at {kw("desc")} {kw("limit")}{" "}
-      <span className="text-[color:var(--syn-number)]">100</span>;
+      <span className="-mx-3 block px-3" style={{ backgroundColor: "var(--editor-statement-bg)" }}>
+        {kw("select")} id, email, <Tok token="syn-string-double">"Created At"</Tok>,{" "}
+        <Tok token="syn-string-backtick">`region`</Tok>,{" "}
+        <Tok token="syn-string-bracket">[plan]</Tok>
+        {eol}
+        {"\n"}
+        {kw("from")}{" "}
+        <span style={{ backgroundColor: "var(--editor-selection-bg)" }}>customers</span>
+        {eol}
+        {"\n"}
+        {kw("where")} verified {kw("and")} ({eol}
+        {"\n"}
+        {indent}last_seen_at {">"} now() - {kw("interval")} <Tok token="syn-string">'7 days'</Tok>
+        {eol}
+        {"\n"}){eol}
+        {"\n"}
+        {kw("order by")} created_at {kw("desc")} {kw("limit")} <Tok token="syn-number">100</Tok>;
+      </span>
+      <span
+        className="underline decoration-wavy underline-offset-2"
+        style={{ color: "var(--syn-error)", textDecorationColor: "var(--syn-error)" }}
+      >
+        {upper ? "SELEC" : "selec"}
+      </span>{" "}
+      1;
     </pre>
   );
 }
@@ -251,14 +320,20 @@ export function EditorSection() {
   );
 }
 
-/** TablePlus's "Query time out": SQL editor statements running longer are cancelled. */
+/**
+ * TablePlus's "Query time out": a statement running longer is cancelled on the server. It covers
+ * every query the app runs for the user: the SQL editor, a table's page loads, row counts, cell
+ * fetches and Explain (the backend reads this preference).
+ */
+export const QUERY_TIMEOUT_DESCRIPTION =
+  "Applies to every query: the SQL editor, table data, row counts and Explain. 0 = no limit.";
 function QueryTimeoutRow() {
   const timeout = usePrefs((p) => p.queryTimeout);
   return (
     <SettingRow
       id="pref-query-timeout"
       label="Query time out"
-      description="SQL editor queries running longer are cancelled. 0 = no limit."
+      description={QUERY_TIMEOUT_DESCRIPTION}
     >
       <NumberField
         id="pref-query-timeout"
@@ -359,7 +434,9 @@ export function SecuritySection() {
             </SelectContent>
           </Select>
         </SettingRow>
+        <SafeModeTouchIdRow />
       </SettingGroup>
+      <PasscodeSettings />
     </SectionShell>
   );
 }

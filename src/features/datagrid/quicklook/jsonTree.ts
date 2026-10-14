@@ -110,6 +110,106 @@ export function parseJsonTree(text: string): JsonNode {
   return root;
 }
 
+/**
+ * `text` with the entries of every object ordered by key (the viewer's "Sort keys"), recursively
+ * and stably: equal keys (duplicates) keep their relative order, arrays keep theirs. Only the
+ * entries move. Every literal stays exactly as written (big numbers, `1.10`, `\u` escapes) and so
+ * does the whitespace: the gaps between entries stay where they were, so indented text stays
+ * indented. Keys compare by UTF-16 code unit (the order of `jq -S`), not by locale. Throws a
+ * SyntaxError (like `parseJsonTree`) on invalid JSON.
+ */
+export function sortJsonKeys(text: string): string {
+  parseJsonTree(text); // validates, so the scan below can trust the text
+  const n = text.length;
+  let i = 0;
+  const ws = () => {
+    while (i < n && " \t\n\r".includes(text[i]!)) i++;
+  };
+  /** Skips the string literal at `i`; returns its decoded value. */
+  const string = (): string => {
+    const from = i;
+    i++;
+    while (text[i] !== '"') i += text[i] === "\\" ? 2 : 1;
+    i++;
+    return JSON.parse(text.slice(from, i)) as string;
+  };
+  /** The value starting at `i`, as text with its objects' entries sorted. */
+  const value = (): string => {
+    const start = i;
+    const ch = text[i];
+    if (ch === "[") {
+      i++;
+      const lead = i;
+      ws();
+      let out = `[${text.slice(lead, i)}`;
+      if (text[i] === "]") {
+        i++;
+        return `${out}]`;
+      }
+      for (;;) {
+        out += value();
+        const gapFrom = i;
+        ws();
+        if (text[i] === ",") {
+          i++;
+          ws();
+          out += text.slice(gapFrom, i);
+          continue;
+        }
+        out += `${text.slice(gapFrom, i)}]`;
+        i++;
+        return out;
+      }
+    }
+    if (ch === "{") {
+      i++;
+      const lead = i;
+      ws();
+      const open = text.slice(lead, i);
+      if (text[i] === "}") {
+        i++;
+        return `{${open}}`;
+      }
+      const members: Array<{ key: string; text: string }> = [];
+      /** The `  ,  ` between entry k and k + 1: it stays in its place while the entries move. */
+      const gaps: string[] = [];
+      let trail: string;
+      for (;;) {
+        const keyFrom = i;
+        const key = string();
+        ws();
+        i++; // ':'
+        ws();
+        members.push({ key, text: text.slice(keyFrom, i) + value() });
+        const gapFrom = i;
+        ws();
+        if (text[i] === ",") {
+          i++;
+          ws();
+          gaps.push(text.slice(gapFrom, i));
+          continue;
+        }
+        trail = text.slice(gapFrom, i);
+        i++; // '}'
+        break;
+      }
+      members.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+      let out = `{${open}`;
+      members.forEach((m, k) => {
+        out += m.text + (gaps[k] ?? "");
+      });
+      return `${out}${trail}}`;
+    }
+    if (ch === '"') string();
+    else while (i < n && !" \t\n\r,]}".includes(text[i]!)) i++; // a number, true, false or null
+    return text.slice(start, i);
+  };
+  ws();
+  const lead = text.slice(0, i);
+  const sorted = value();
+  return lead + sorted + text.slice(i);
+}
+
 /** One-line summary of a node: `{3 keys}`, `[2 items]`, or the scalar as JSON. */
 export function nodeSummary(node: JsonNode): string {
   switch (node.type) {

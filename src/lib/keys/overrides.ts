@@ -12,11 +12,29 @@ export type KeymapOverrides = Readonly<Record<string, readonly string[]>>;
 
 export const EMPTY_OVERRIDES: KeymapOverrides = Object.freeze({});
 
-/** Bindings that cannot be remapped, as in TablePlus (⌘R reload, ⌘0 toggle the list — #3802). */
+/**
+ * Bindings that cannot be remapped, as in TablePlus (⌘R reload, ⌘0 toggle the list — #3802). ⌘R
+ * was Refresh (`view.refresh`) until it became Reload Workspace; both spellings stay fixed.
+ */
 export const FIXED_BINDINGS: ReadonlyArray<{ id: ActionId; keys: string }> = [
+  { id: "workspace.reload", keys: "Mod+R" },
   { id: "view.refresh", keys: "Mod+R" },
   { id: "ui.toggle-sidebar", keys: "Mod+0" },
 ];
+
+/**
+ * Brings overrides saved by an older keymap up to date (same object when nothing changed):
+ * `view.refresh` had two slots (the fixed ⌘R, then ⌥⌘R) before ⌘R moved to `workspace.reload`, so
+ * its saved ⌘R slot is dropped and the ⌥⌘R one becomes its only slot.
+ */
+export function migrateKeymapOverrides(overrides: KeymapOverrides): KeymapOverrides {
+  const refresh = overrides["view.refresh"];
+  if (!refresh || refresh.length !== 2 || refresh[0] !== "Mod+R") return overrides;
+  const next: Record<string, readonly string[]> = { ...overrides };
+  if (refresh[1] === "Mod+Alt+R") delete next["view.refresh"];
+  else next["view.refresh"] = [refresh[1]!];
+  return next;
+}
 
 /** Combos no other binding may take: the fixed ones plus Quit (⌘Q, handled by the native menu). */
 export const RESERVED_COMBOS: ReadonlySet<string> = new Set([

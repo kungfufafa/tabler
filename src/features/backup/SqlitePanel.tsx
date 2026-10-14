@@ -1,13 +1,20 @@
-import { Copy, Database, Loader2 } from "lucide-react";
+import { CloudDownload, Copy, Database, Loader2, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { announceFileDone } from "@/features/notify/done";
+import { notifyInBackground } from "@/features/notify/notify";
 import { ipc, toIpcError, type ConnectionProfile } from "@/lib/ipc";
+import { useConnectionsStore } from "@/stores/connections";
 import { basename, formatBytes } from "./options";
-import { pickSqliteCopyPath, revealInFinder } from "./pickers";
+import { pickSqliteCopyPath } from "./pickers";
 import type { BackupMode } from "./store";
 
-/** SQLite has no dump binary: its database is backed up by copying the file. */
+/**
+ * SQLite has no dump binary: its database is backed up by copying the file. A SQLite file over SSH
+ * is copied from the local cache an open connection downloaded (the panel says so, and offers
+ * "Download fresh copy first"), or downloaded from the SSH server for the backup.
+ */
 export function SqlitePanel({
   profile,
   mode,
@@ -20,7 +27,12 @@ export function SqlitePanel({
 }) {
   const [copying, setCopying] = useState(false);
   const file = profile.sqlitePath ?? "";
-  const copy = async () => {
+  const overSsh = profile.ssh !== null;
+  // The connection's downloaded copy is what a backup copies unless a fresh one is asked for.
+  const cached = useConnectionsStore((s) =>
+    s.order.some((id) => s.byId[id]?.info.profileId === profile.id),
+  );
+  const copy = async (fresh = false) => {
     const stem = basename(file).replace(/\.(sqlite3?|db)$/i, "") || "database";
     const date = new Date().toISOString().slice(0, 10);
     let dest: string | null;
@@ -33,16 +45,20 @@ export function SqlitePanel({
     if (!dest) return;
     setCopying(true);
     try {
-      const size = await ipc.backup.copySqlite(profile.id, dest);
-      toast.success(`Copied ${profile.name}`, {
-        description: `${basename(dest)} · ${formatBytes(size)}`,
-        action: {
-          label: "Show in Finder",
-          onClick: () => void revealInFinder(dest).catch(() => undefined),
-        },
+      const size = await (overSsh
+        ? ipc.backup.copySqlite(profile.id, dest, fresh)
+        : ipc.backup.copySqlite(profile.id, dest));
+      const cachedCopy = overSsh && cached && !fresh;
+      announceFileDone({
+        title: `Copied ${profile.name}`,
+        popupTitle: "Backup completed",
+        description: `${basename(dest)} · ${formatBytes(size)}${cachedCopy ? " · cached copy" : ""}`,
+        path: dest,
       });
     } catch (e) {
-      toast.error("Could not copy the database file", { description: toIpcError(e).message });
+      const message = toIpcError(e).message;
+      void notifyInBackground({ title: `Backup of ${profile.name} failed`, body: message });
+      toast.error("Could not copy the database file", { description: message });
     } finally {
       setCopying(false);
     }
@@ -63,15 +79,42 @@ export function SqlitePanel({
         </p>
         {file && (
           <p className="text-muted-foreground font-mono text-[11px] break-all" title={file}>
-            {file}
+            {overSsh && profile.ssh ? `${profile.ssh.host}:${file}` : file}
+          </p>
+        )}
+        {overSsh && mode === "backup" && (
+          <p
+            role="note"
+            className="text-muted-foreground mt-1 flex items-start gap-1.5 text-left text-[11px]"
+          >
+            <TriangleAlert className="text-warning mt-0.5 size-3 shrink-0" />
+            {cached
+              ? "This database is on an SSH server. Copying it backs up the cached copy Tabler downloaded when the connection was opened: changes made on the server since then are not in it. Download a fresh copy first to include them."
+              : "This database is on an SSH server. Its file is downloaded for the backup, over SFTP."}
           </p>
         )}
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-center gap-2">
         {mode === "backup" && (
           <Button type="button" size="sm" onClick={() => void copy()} disabled={copying || !file}>
             {copying ? <Loader2 className="animate-spin" /> : <Copy />}
-            Copy Database File…
+            {overSsh && cached
+              ? "Copy Cached File…"
+              : overSsh
+                ? "Download and Copy…"
+                : "Copy Database File…"}
+          </Button>
+        )}
+        {mode === "backup" && overSsh && cached && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void copy(true)}
+            disabled={copying || !file}
+          >
+            <CloudDownload />
+            Download Fresh Copy First…
           </Button>
         )}
         {onChooseOther && (

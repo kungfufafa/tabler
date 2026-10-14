@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
 import type { EditorExit } from "./registry";
+import { commitTabSoon, isSaveKey } from "./saveKey";
 import { insertAtCaret, useGrabFocus, type CaretPlacement } from "./useGrabFocus";
 
 const MIN_W = 360;
@@ -41,6 +42,7 @@ export function MultilinePanel({
   error,
   onTextChange,
   onCommit,
+  onSave,
   onCancel,
 }: {
   anchorRef: RefObject<HTMLElement | null>;
@@ -51,7 +53,9 @@ export function MultilinePanel({
   /** Validation error from the last commit attempt, shown in the footer. */
   error?: string | null;
   onTextChange: (text: string) => void;
-  onCommit: (exit: EditorExit) => void;
+  onCommit: (exit: EditorExit) => boolean | void;
+  /** ⌘S: stages the text and says whether it did, then the tab is committed (see `InlineInput`). */
+  onSave?: () => boolean;
   onCancel: () => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -82,7 +86,10 @@ export function MultilinePanel({
         onKeyDown={(e) => {
           e.stopPropagation();
           if (e.nativeEvent.isComposing) return;
-          if (e.key === "Enter" && e.altKey) {
+          if (isSaveKey(e.nativeEvent)) {
+            e.preventDefault();
+            if ((onSave ? onSave() : onCommit("blur")) !== false) commitTabSoon();
+          } else if (e.key === "Enter" && e.altKey) {
             e.preventDefault();
             insertAtCaret(e.currentTarget, "\n");
           } else if (e.key === "Enter" && !e.shiftKey) {

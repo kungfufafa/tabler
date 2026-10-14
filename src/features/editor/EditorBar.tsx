@@ -157,7 +157,7 @@ function ButtonKbd({ action, className }: { action: ActionId; className?: string
 const splitMain = "h-6 gap-1 rounded-r-none px-1.5 text-[11px] font-normal";
 const splitMenu = "h-6 w-4 rounded-l-none px-0";
 
-/** "Line 4, Column 13", or "12 characters selected" (of the pane used last when split). */
+/** "Line 4, Column 13, Location 40" (+ the selection size) of the pane used last when split. */
 function CursorPosition({ tabId }: { tabId: string }) {
   const label = useCursorLabel(useActiveEditorKey(tabId));
   return (
@@ -248,7 +248,7 @@ function limitLabel(limit: number | null): string {
   return limit === null ? "No limit" : formatCount(limit);
 }
 
-/** Rows read per statement: "No limit", 100, 1,000 or 10,000 (per tab). */
+/** Rows read per statement: "No limit" (the default), 100, 300, 500, 1,000 or 10,000 (per tab). */
 function RowLimitSelect({ tabId }: { tabId: string }) {
   const limit = useQueryTabField(tabId, "rowLimit");
   const value = limit === null ? "none" : String(limit);

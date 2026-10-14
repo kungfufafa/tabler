@@ -4,7 +4,7 @@ import { schemaKeys } from "@/features/sidebar/useSchemaTree";
 import { invalidateSchema } from "@/features/structure/invalidate";
 import { ipc, toIpcError, type AdminDdl, type AdminResult, type ErrorPayload } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
-import { useTabsStore } from "@/stores/tabs";
+import { isTableTab, useTabsStore } from "@/stores/tabs";
 
 export interface AdminErrorInfo {
   message: string;
@@ -95,9 +95,7 @@ export async function runAdminDdl(
 function forgetSchema(connectionId: string, schema: string) {
   const tabs = useTabsStore.getState();
   const ids = tabs.tabs
-    .filter(
-      (t) => t.kind !== "query" && t.connectionId === connectionId && t.table.schema === schema,
-    )
+    .filter((t) => isTableTab(t) && t.connectionId === connectionId && t.table.schema === schema)
     .map((t) => t.id);
   if (ids.length > 0) tabs.forceClose(ids);
   const conns = useConnectionsStore.getState();

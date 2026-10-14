@@ -1,22 +1,38 @@
-import { Binary, ChevronsUpDown, Copy, Ellipsis, KeyRound } from "lucide-react";
+import { insertNewline } from "@codemirror/commands";
+import { searchPanelOpen } from "@codemirror/search";
+import type { EditorView } from "@codemirror/view";
+import {
+  ArrowDownAZ,
+  Binary,
+  Braces,
+  ChevronsUpDown,
+  Copy,
+  Ellipsis,
+  KeyRound,
+} from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { jsonError, reformatJson } from "@/features/datagrid/editors/json";
 import { JsonEditorDialog } from "@/features/datagrid/editors/JsonEditorDialog";
+import { CodeView } from "@/features/datagrid/quicklook/CodeView";
+import { readSortKeys, writeSortKeys } from "@/features/datagrid/quicklook/jsonPrefs";
+import { sortJsonKeys } from "@/features/datagrid/quicklook/jsonTree";
+import { detectLanguage, type ValueLanguage } from "@/features/datagrid/quicklook/languages";
 import { choiceKeyOf, choicesFor, NULL_CHOICE } from "@/features/datagrid/editors/registry";
-import { insertAtCaret } from "@/features/datagrid/editors/useGrabFocus";
 import { NOW_KINDS, NOW_LABEL, nowValue } from "@/features/datagrid/setValue";
 import { acceptsEmpty, type GridColumn } from "@/features/datagrid/types";
 import { actions } from "@/features/palette/actions";
 import type { Value } from "@/lib/ipc";
 import { comboFromEvent, formatCombo } from "@/lib/keys/combo";
 import { cn } from "@/lib/utils";
-import { editText, formatBytes, hasLineBreak } from "@/lib/values";
+import { decodeBytesText, editText, formatBytes, hasLineBreak } from "@/lib/values";
 import { copy } from "./copy";
 import {
   clearedPlaceholder,
@@ -28,11 +44,9 @@ import {
   TEXTAREA_KINDS,
 } from "./fields";
 
-/** Browsers that size a text area to its content natively (`field-sizing: content`). */
-const NATIVE_AUTOSIZE =
-  typeof CSS !== "undefined" &&
-  typeof CSS.supports === "function" &&
-  CSS.supports("field-sizing", "content");
+/** Bytes of a blob decoded for the text shown in its read-only box, and how many characters show. */
+const BLOB_TEXT_BYTES = 4096;
+const BLOB_TEXT_CHARS = 40;
 
 /** The value box: an input-like, monospace 12px field on the panel's darker background. */
 const BOX = cn(
@@ -70,7 +84,11 @@ function focusGrid() {
  * header line, the value in an input-like box below. Editable boxes stage their value like an
  * inline grid edit: ↩ (⌘↩ once the text spans lines), blur, or a click elsewhere commits; ⎋
  * reverts; ⌘S commits the field first and then the whole tab. Invalid text shows an error and is
- * not staged.
+ * not staged. Every text-like field (text, JSON, XML, enum, set, array, spatial and other values)
+ * is a CodeMirror (the Quick Look Editor's, compact): it grows with its text, has syntax colours,
+ * multiple carets (⌘-click, ⌃⇧↑ / ⌃⇧↓) and ⌘F search and replace, and a one-line value is
+ * committed by a plain ↩ (⌥↩ adds a line) like a native box. Numbers, dates, UUIDs and the like
+ * stay plain one-line inputs.
  */
 export function FieldBlock({
   col,
@@ -83,7 +101,18 @@ export function FieldBlock({
   onEdit,
   onViewCell,
 }: FieldBlockProps) {
-  const base = mixed ? "" : fieldText(value);
+  /** The field's "Pretty JSON" (on: valid JSON shows indented; off: as stored). */
+  const [prettyJson, setPrettyJson] = useState(true);
+  /** "Sort keys" (remembered): the stored JSON's object entries in key order, for display only. */
+  const [sortKeys, setSortKeys] = useState(() => readSortKeys("details"));
+  const sortable = useMemo(
+    () => !mixed && value.t === "json" && jsonError(value.v) === null,
+    [mixed, value],
+  );
+  const base = useMemo(() => {
+    const text = mixed ? "" : prettyJson ? fieldText(value) : editText(value);
+    return sortKeys && sortable ? sortJsonKeys(text) : text;
+  }, [mixed, prettyJson, value, sortKeys, sortable]);
   const ident = `${rowKey}\u0000${mixed ? "mixed" : value.t}\u0000${base}`;
   const [seen, setSeen] = useState(ident);
   /** Unstaged text; null while the box shows the value itself. */
@@ -104,7 +133,33 @@ export function FieldBlock({
   const text = draft ?? base;
   const dirty = draft !== null && draft !== base;
   const multiline = col.kind === "json" || hasLineBreak(text) || hasLineBreak(base);
+  /** The text-like kinds are a CodeMirror; the others a one-line input. */
+  const useCode = TEXTAREA_KINDS.has(col.kind);
   const truncatedBlob = value.t === "bytes" && value.v.truncated;
+  /** A blob that is text: its start, for the read-only box (the Cell view has all of it). */
+  const blobText = useMemo(() => {
+    if (value.t !== "bytes" || mixed) return null;
+    const decoded = decodeBytesText(value.v.base64, BLOB_TEXT_BYTES, value.v.truncated);
+    const flat = decoded?.replace(/\s+/g, " ").trim();
+    if (!flat) return null;
+    const chars = Array.from(flat);
+    const cut =
+      chars.length > BLOB_TEXT_CHARS || value.v.truncated || value.v.len > BLOB_TEXT_BYTES;
+    return chars.slice(0, BLOB_TEXT_CHARS).join("") + (cut ? "…" : "");
+  }, [value, mixed]);
+  // JSON / XML are coloured (TablePlus b300), a one-line document too.
+  const language = useMemo<ValueLanguage | null>(
+    () => (!mixed && useCode ? detectLanguage(col.kind, col.dataType, text) : null),
+    [mixed, useCode, col.kind, col.dataType, text],
+  );
+  /** JSON this field could format / minify (its stored text, or the draft). */
+  const jsonText =
+    !mixed && (col.kind === "json" || value.t === "json") && jsonError(text) === null;
+
+  const changeSort = (next: boolean) => {
+    setSortKeys(next);
+    writeSortKeys("details", next);
+  };
 
   const stage = (v: Value) => {
     setDraft(null);
@@ -131,6 +186,21 @@ export function FieldBlock({
     setDraft(null);
     setError(null);
   };
+  /** The JSON editor's Save: stages its text (an unchanged one stages nothing); false when invalid. */
+  const applyJson = (t: string): boolean => {
+    setJsonOpen(false);
+    if (t === base) {
+      revert();
+      return true;
+    }
+    const result = parseFieldText(col, t, value);
+    if (result.ok) {
+      stage(result.value);
+      return true;
+    }
+    setError(result.error);
+    return false;
+  };
 
   // A click outside the field (a grid row, the toolbar's Commit…) stages the draft BEFORE that
   // click's own handlers run: selecting another row re-targets this panel, and blur comes too late.
@@ -148,7 +218,7 @@ export function FieldBlock({
     return () => window.removeEventListener("pointerdown", onPointerDown, true);
   }, [dirty]);
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.nativeEvent.isComposing) return;
     const combo = comboFromEvent(e.nativeEvent);
     if (combo === "Mod+S") {
@@ -161,20 +231,54 @@ export function FieldBlock({
       if (draft !== null || error) revert();
       else focusGrid();
     } else if (e.key === "Enter") {
+      // A one-line input: ↩ (and ⌘↩) stages.
+      e.preventDefault();
+      commit();
+    }
+  };
+
+  /** The keys of the CodeMirror box: ⌘S, ⎋ and ↩ as in the native ones (stage, revert, stage). */
+  const onCodeKeyDown = (e: KeyboardEvent, view: EditorView): boolean => {
+    const combo = comboFromEvent(e);
+    if (combo === "Mod+S") {
+      e.preventDefault();
+      if (commit()) window.setTimeout(() => void actions.run("grid.commit"), 0);
+      return true;
+    }
+    if (e.key === "Escape") {
+      // An open search panel and several carets take the first ⎋ (CodeMirror closes / collapses).
+      if (searchPanelOpen(view.state) || view.state.selection.ranges.length > 1) return false;
+      e.preventDefault();
+      if (draft !== null || error) revert();
+      else focusGrid();
+      return true;
+    }
+    if (e.key === "Enter") {
       if (combo === "Mod+Enter") {
         e.preventDefault();
         commit();
-      } else if (multiline) {
-        // A plain ↩ adds a line.
-      } else if (e.altKey) {
+        return true;
+      }
+      if (e.altKey && !e.metaKey && !e.ctrlKey) {
         // ⌥↩ — a line break (like a macOS text field); the box turns multi-line.
         e.preventDefault();
-        if (TEXTAREA_KINDS.has(col.kind)) insertAtCaret(e.currentTarget, "\n");
-      } else {
+        return insertNewline(view);
+      }
+      if (!multiline) {
+        // A one-line value: ↩ stages, like the native boxes. Once it spans lines a plain ↩ is a
+        // line break (CodeMirror's) and ⌘↩ stages.
         e.preventDefault();
         commit();
+        return true;
       }
     }
+    return false;
+  };
+  const onReadOnlyCodeKeyDown = (e: KeyboardEvent, view: EditorView): boolean => {
+    if (e.key !== "Escape") return false;
+    if (searchPanelOpen(view.state) || view.state.selection.ranges.length > 1) return false;
+    focusGrid();
+    return true;
   };
 
   const placeholder = mixed
@@ -197,7 +301,21 @@ export function FieldBlock({
         title={truncatedBlob ? "Only a preview is loaded" : undefined}
       >
         <Binary className="text-muted-foreground size-3 shrink-0" />
-        <span className="text-muted-foreground selectable min-w-0 flex-1 truncate">
+        {blobText !== null && (
+          <span
+            data-testid="field-blob-text"
+            className="selectable min-w-0 flex-1 truncate"
+            title={blobText}
+          >
+            {blobText}
+          </span>
+        )}
+        <span
+          className={cn(
+            "text-muted-foreground selectable truncate",
+            blobText !== null ? "shrink-0 font-sans text-[10px]" : "min-w-0 flex-1",
+          )}
+        >
           {formatBytes(value.v.len)} binary{truncatedBlob ? " (preview)" : ""}
         </span>
         <button
@@ -226,40 +344,75 @@ export function FieldBlock({
       />
     );
   } else {
-    const common = {
-      value: text,
-      "aria-label": label,
-      "aria-invalid": error ? true : undefined,
-      readOnly: !typeable,
-      placeholder,
-      spellCheck: false,
-      autoComplete: "off",
-      autoCorrect: "off",
-      autoCapitalize: "off",
-      // Keeps grid shortcuts (⌘Z, ⌘S…) off a box being typed in; see `onKeyDown` for ⌘S.
-      "data-scope": typeable ? "grid-edit" : undefined,
-      onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-        setDraft(e.target.value);
-        setError(null);
-      },
-      onKeyDown: typeable
-        ? onKeyDown
-        : (e: React.KeyboardEvent) => {
-            if (e.key === "Escape") focusGrid();
-          },
-      onBlur: typeable
-        ? () => {
-            if (draft !== null) commit();
-          }
-        : undefined,
-    } as const;
-    box = TEXTAREA_KINDS.has(col.kind) ? (
-      <AutoTextarea
-        {...common}
-        className={cn(boxClass, "max-h-60 min-h-[26px] resize-none py-[3px] wrap-anywhere")}
+    box = useCode ? (
+      <CodeView
+        compact
+        text={text}
+        wrap
+        label={label}
+        language={language}
+        placeholder={placeholder}
+        invalid={!!error}
+        readOnly={!typeable}
+        // Keeps the grid's shortcuts (⌘Z, ⌘S…) off a box being typed in, like the native ones.
+        shortcutScope={typeable ? "grid-edit" : "global"}
+        onChange={
+          typeable
+            ? (t) => {
+                // What the user typed; the document following a new value is not an edit.
+                if (t === text) return;
+                setDraft(t);
+                setError(null);
+              }
+            : undefined
+        }
+        onKeyDown={typeable ? onCodeKeyDown : onReadOnlyCodeKeyDown}
+        onBlur={
+          typeable
+            ? () => {
+                if (draft !== null) commit();
+              }
+            : undefined
+        }
+        className={cn(
+          "bg-surface focus-within:border-ring focus-within:ring-ring/30 min-h-[26px] w-full min-w-0 font-mono focus-within:ring-2",
+          changed && "bg-changed [&_.cm-editor]:bg-transparent",
+          error && "border-error focus-within:border-error focus-within:ring-error/30",
+        )}
       />
     ) : (
-      <input {...common} className={cn(boxClass, "h-[26px] tabular-nums")} />
+      <input
+        value={text}
+        aria-label={label}
+        aria-invalid={error ? true : undefined}
+        readOnly={!typeable}
+        placeholder={placeholder}
+        spellCheck={false}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        // Keeps grid shortcuts (⌘Z, ⌘S…) off a box being typed in; see `onKeyDown` for ⌘S.
+        data-scope={typeable ? "grid-edit" : undefined}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          setError(null);
+        }}
+        onKeyDown={
+          typeable
+            ? onKeyDown
+            : (e) => {
+                if (e.key === "Escape") focusGrid();
+              }
+        }
+        onBlur={
+          typeable
+            ? () => {
+                if (draft !== null) commit();
+              }
+            : undefined
+        }
+        className={cn(boxClass, "h-[26px] tabular-nums")}
+      />
     );
   }
 
@@ -304,18 +457,69 @@ export function FieldBlock({
             onCopy={() => copy(copyText(value))}
             onEditJson={() => setJsonOpen(true)}
             onViewCell={onViewCell}
+            json={
+              jsonText
+                ? {
+                    pretty: prettyJson,
+                    onPrettyChange: setPrettyJson,
+                    sort: sortKeys,
+                    onSortChange: sortable ? changeSort : undefined,
+                    // Format / Minify change the JSON itself (staged like an edit).
+                    onReformat: typeable
+                      ? (indent) => {
+                          const next = reformatJson(text, indent);
+                          if (next === editText(value)) return revert();
+                          const result = parseFieldText(col, next, value);
+                          if (result.ok) stage(result.value);
+                        }
+                      : undefined,
+                  }
+                : undefined
+            }
           />
         ) : (
-          <button
-            type="button"
-            aria-label={`Copy ${col.name}`}
-            title={truncatedBlob ? "Only a preview is loaded" : "Copy value"}
-            disabled={truncatedBlob}
-            onClick={() => copy(copyText(value))}
-            className="text-muted-foreground hover:text-foreground hover:bg-accent flex size-4 shrink-0 items-center justify-center rounded opacity-0 group-hover/field:opacity-100 focus-visible:opacity-100 disabled:opacity-0"
-          >
-            <Copy className="size-3" />
-          </button>
+          <>
+            {sortable && (
+              <button
+                type="button"
+                aria-label={`Sort keys in ${col.name}`}
+                aria-pressed={sortKeys}
+                title={sortKeys ? "Show the keys as stored" : "Sort keys"}
+                onClick={() => changeSort(!sortKeys)}
+                className={cn(
+                  "hover:text-foreground hover:bg-accent flex size-4 shrink-0 items-center justify-center rounded opacity-60 group-hover/field:opacity-100 focus-visible:opacity-100",
+                  sortKeys ? "text-brand" : "text-muted-foreground",
+                )}
+              >
+                <ArrowDownAZ className="size-3" />
+              </button>
+            )}
+            {jsonText && (
+              <button
+                type="button"
+                aria-label={`Pretty JSON in ${col.name}`}
+                aria-pressed={prettyJson}
+                title={prettyJson ? "Show the JSON as stored" : "Pretty JSON"}
+                onClick={() => setPrettyJson(!prettyJson)}
+                className={cn(
+                  "hover:text-foreground hover:bg-accent flex size-4 shrink-0 items-center justify-center rounded opacity-60 group-hover/field:opacity-100 focus-visible:opacity-100",
+                  prettyJson ? "text-brand" : "text-muted-foreground",
+                )}
+              >
+                <Braces className="size-3" />
+              </button>
+            )}
+            <button
+              type="button"
+              aria-label={`Copy ${col.name}`}
+              title={truncatedBlob ? "Only a preview is loaded" : "Copy value"}
+              disabled={truncatedBlob}
+              onClick={() => copy(copyText(value))}
+              className="text-muted-foreground hover:text-foreground hover:bg-accent flex size-4 shrink-0 items-center justify-center rounded opacity-0 group-hover/field:opacity-100 focus-visible:opacity-100 disabled:opacity-0"
+            >
+              <Copy className="size-3" />
+            </button>
+          </>
         )}
       </div>
       {box}
@@ -343,13 +547,9 @@ export function FieldBlock({
                 }
               : undefined
           }
-          onSave={(t) => {
-            setJsonOpen(false);
-            if (t === base) return revert();
-            const result = parseFieldText(col, t, value);
-            if (result.ok) stage(result.value);
-            else setError(result.error);
-          }}
+          onSave={(t) => void applyJson(t)}
+          // ⌘S in the dialog: the text is staged, and only then is the tab committed.
+          onSaveAndCommit={applyJson}
         />
       )}
     </div>
@@ -422,6 +622,7 @@ function FieldMenu({
   onCopy,
   onEditJson,
   onViewCell,
+  json,
 }: {
   col: GridColumn;
   value: Value;
@@ -432,6 +633,15 @@ function FieldMenu({
   onCopy: () => void;
   onEditJson: () => void;
   onViewCell: () => void;
+  /** A JSON value: the Pretty JSON toggle, Sort keys, and Format / Minify (editable fields). */
+  json?: {
+    pretty: boolean;
+    onPrettyChange: (pretty: boolean) => void;
+    /** Sort keys (display only); the item is offered when there is a handler. */
+    sort: boolean;
+    onSortChange?: (sort: boolean) => void;
+    onReformat?: (indent: number | null) => void;
+  };
 }) {
   const isEmpty = !mixed && value.t === "text" && value.v === "";
   const now = NOW_KINDS.has(col.kind);
@@ -491,9 +701,42 @@ function FieldMenu({
             Edit JSON…
           </DropdownMenuItem>
         )}
-        {(col.nullable || acceptsEmpty(col) || col.hasDefault || now || col.kind === "json") && (
-          <DropdownMenuSeparator />
+        {json && (
+          <>
+            <DropdownMenuCheckboxItem
+              className="text-xs"
+              checked={json.pretty}
+              onCheckedChange={(v) => json.onPrettyChange(v === true)}
+            >
+              Pretty JSON
+            </DropdownMenuCheckboxItem>
+            {json.onSortChange && (
+              <DropdownMenuCheckboxItem
+                className="text-xs"
+                checked={json.sort}
+                onCheckedChange={(v) => json.onSortChange?.(v === true)}
+              >
+                Sort keys
+              </DropdownMenuCheckboxItem>
+            )}
+            {json.onReformat && (
+              <>
+                <DropdownMenuItem className="text-xs" onSelect={() => json.onReformat?.(2)}>
+                  Format JSON
+                </DropdownMenuItem>
+                <DropdownMenuItem className="text-xs" onSelect={() => json.onReformat?.(null)}>
+                  Minify JSON
+                </DropdownMenuItem>
+              </>
+            )}
+          </>
         )}
+        {(col.nullable ||
+          acceptsEmpty(col) ||
+          col.hasDefault ||
+          now ||
+          col.kind === "json" ||
+          !!json) && <DropdownMenuSeparator />}
         <DropdownMenuItem className="text-xs" disabled={!canCopy} onSelect={onCopy}>
           Copy Value
         </DropdownMenuItem>
@@ -502,35 +745,5 @@ function FieldMenu({
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
-  );
-}
-
-/** Sizes a text area to its content (where `field-sizing: content` is not supported). */
-function fitHeight(el: HTMLTextAreaElement | null) {
-  if (!el || NATIVE_AUTOSIZE) return;
-  el.style.height = "auto";
-  const border = el.offsetHeight - el.clientHeight;
-  el.style.height = `${el.scrollHeight + border}px`;
-}
-
-/** A text area that grows with its content (up to its CSS max-height, then scrolls). */
-function AutoTextarea({ className, ...props }: React.ComponentProps<"textarea">) {
-  const ref = useRef<HTMLTextAreaElement>(null);
-  useLayoutEffect(() => fitHeight(ref.current), [props.value]);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || NATIVE_AUTOSIZE) return;
-    // Wrapping changes with the panel's width.
-    let width = el.clientWidth;
-    const ro = new ResizeObserver(() => {
-      if (el.clientWidth === width) return;
-      width = el.clientWidth;
-      fitHeight(el);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  return (
-    <textarea ref={ref} rows={1} className={cn(className, "field-sizing-content")} {...props} />
   );
 }

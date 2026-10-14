@@ -3,7 +3,6 @@ import { create } from "zustand";
 import type { ResultSetInfo } from "@/features/editor/runModel";
 import { emptyStaging, pendingCount } from "@/features/staging/model";
 import type { StagingState } from "@/features/staging/types";
-import { PREVIEW_CLOSED, type PreviewState } from "@/features/table-tab/previewState";
 import { useQueryTabsStore } from "@/stores/queryTabs";
 import { dropResults, resultData } from "@/stores/resultData";
 import { registerUnsavedSource, useTabsStore } from "@/stores/tabs";
@@ -11,8 +10,9 @@ import { sameTarget, type ResultEditability, type ResultEditTarget } from "./edi
 
 /**
  * Per-result state of the SQL editor's results that outlives the grid (only the visible tab is
- * mounted): staged edits, what the grid found out about editability, pinned results and the
- * Preview SQL sheet of a result commit. Keys are `resultData` buffer ids.
+ * mounted): staged edits, what the grid found out about editability and pinned results (their
+ * commit is part of the workspace commit, `features/commit/workspace.ts`). Keys are `resultData`
+ * buffer ids.
  */
 
 export interface ResultEdits {
@@ -37,26 +37,17 @@ export interface PinnedResult {
   sql: string | null;
 }
 
-export interface ResultPreview extends PreviewState {
-  tabId: string | null;
-  resultId: string | null;
-}
-
 interface ResultsState {
   edits: Record<string, ResultEdits>;
   editability: Record<string, ResultEditability>;
   /** By query tab id, in pin order. */
   pins: Record<string, PinnedResult[]>;
-  preview: ResultPreview;
 }
-
-export const CLOSED_PREVIEW: ResultPreview = { ...PREVIEW_CLOSED, tabId: null, resultId: null };
 
 export const useResultsStore = create<ResultsState>()(() => ({
   edits: {},
   editability: {},
   pins: {},
-  preview: CLOSED_PREVIEW,
 }));
 
 const EMPTY_STAGING = emptyStaging();
@@ -225,14 +216,6 @@ export function unpinResult(tabId: string, pinId: string): void {
   }));
   dropKeys((id) => id === pinId);
   dropResults((id) => id === pinId);
-}
-
-export function openResultPreview(patch: Partial<ResultPreview>): void {
-  useResultsStore.setState((st) => ({ preview: { ...st.preview, ...patch } }));
-}
-
-export function closeResultPreview(): void {
-  useResultsStore.setState({ preview: CLOSED_PREVIEW });
 }
 
 // --- lifecycle ------------------------------------------------------------------------------

@@ -2,6 +2,7 @@ import {
   AArrowDown,
   AArrowUp,
   Activity,
+  AppWindow,
   ArrowLeft,
   ArrowLeftToLine,
   ArrowRight,
@@ -21,6 +22,7 @@ import {
   CircleSlash2,
   ClipboardCopy,
   ClipboardPaste,
+  ClipboardType,
   Columns2,
   Columns3Cog,
   Copy,
@@ -32,17 +34,22 @@ import {
   Eraser,
   Eye,
   FileCode,
+  FileCode2,
   FileDown,
+  FileJson,
   FileUp,
   FileSearch,
   FoldVertical,
   FolderOpen,
   Funnel,
+  Gauge,
   Network,
   History,
   LayoutGrid,
+  ListPlus,
   ListTree,
   ListX,
+  LockKeyhole,
   PanelBottom,
   PanelLeft,
   PanelRight,
@@ -52,9 +59,11 @@ import {
   Plug,
   PlugZap,
   Plus,
+  Puzzle,
   Redo2,
   RefreshCw,
   RotateCcw,
+  RotateCw,
   Save,
   SaveAll,
   ScrollText,
@@ -62,10 +71,15 @@ import {
   Settings,
   Sigma,
   Square,
+  SquareSplitHorizontal,
+  SquareSlash,
+  CornerDownLeft,
+  MessageSquareCode,
   SquareArrowLeft,
   SquareArrowRight,
   SquareChevronRight,
   SquareFunction,
+  Sparkles,
   SquareX,
   Table2,
   TableProperties,
@@ -74,6 +88,7 @@ import {
   Undo2,
   Unplug,
   UserCog,
+  WandSparkles,
   Workflow,
   X,
   type LucideIcon,
@@ -90,7 +105,7 @@ import type {
   TableSummary,
 } from "@/lib/ipc";
 import type { ShortcutDef } from "@/lib/keys/keymap";
-import type { Tab, TabKind } from "@/stores/tabs";
+import type { OpenTableOptions, Tab, TabKind } from "@/stores/tabs";
 import type { ActionId } from "./actions";
 import {
   fuzzyMatch,
@@ -107,7 +122,7 @@ export type PaletteGroupId =
  * Grouped sections (⌘K, ⇧⌘K) use their group's id; Open Anything (⌘P) shows one flat list of
  * database objects, or of commands once the query starts with `>`.
  */
-export type PaletteSectionId = PaletteGroupId | "objects" | "commands";
+export type PaletteSectionId = PaletteGroupId | "objects" | "commands" | "more";
 
 /** Group order: of the narrowed lists' sections, and the last tie-break of Open Anything. */
 export const GROUP_ORDER: readonly PaletteGroupId[] = [
@@ -132,6 +147,9 @@ export const OBJECT_GROUPS: readonly PaletteGroupId[] = [
   "connections",
 ];
 
+/** Heading of the commands that Open Anything lists after its objects. */
+export const COMMANDS_HEADING = "Commands";
+
 export const SECTION_HEADINGS: Record<PaletteGroupId, string> = {
   tables: "Tables",
   routines: "Functions",
@@ -145,6 +163,10 @@ export const SECTION_HEADINGS: Record<PaletteGroupId, string> = {
 
 /** Large schemas can have thousands of tables; only this many are rendered per query. */
 export const TABLE_LIMIT = 200;
+/** Open Anything's trailing "Commands" section: shortest query that searches commands, … */
+export const COMMAND_HITS_MIN_QUERY = 2;
+/** … and how many matching commands it shows (`>` lists them all). */
+export const COMMAND_HITS_LIMIT = 5;
 /** Recently used items listed first while the query is empty. */
 export const RECENT_LIMIT = 5;
 /** Open Anything lists commands (keymap actions, palette commands) after this prefix. */
@@ -195,6 +217,8 @@ export interface PaletteItem {
    * Disconnect, database switches) so it never becomes the default ↩ target of an empty query.
    */
   noRecent?: boolean;
+  /** Runs with the palette left open ("Load all schemas": the list grows in place). */
+  keepOpen?: boolean;
   /** Right-click menu of the row (⌘K database list). */
   menu?: PaletteMenuEntry[];
 }
@@ -442,8 +466,11 @@ export interface OpenAnythingOptions {
  * Open Anything (⌘P), like TablePlus: one flat list without headings.
  * - Empty query: the `browse` groups (the current schema's tables, views…), recently opened ones
  *   first, then alphabetically.
- * - A query: tables, open tabs, schemas, databases and connections in one strictly ranked list.
- * - `>` first: the commands (keymap actions and palette commands) matching the rest.
+ * - A query: tables, open tabs, schemas, databases and connections in one strictly ranked list,
+ *   then (TablePlus b676: Open Anything also searches app features) a "Commands" section with
+ *   the few commands matching it (from two characters on, each with its shortcut).
+ * - `>` first: the commands (keymap actions and palette commands) matching the rest, all of them
+ *   (`>` alone lists every command).
  */
 export function buildOpenAnything(
   groups: Partial<Record<PaletteGroupId, readonly PaletteItem[]>>,
@@ -480,15 +507,25 @@ export function buildOpenAnything(
         limit,
       )
     : rankStrict(gather(listed), query, { mru, limit });
-  if (ranked.items.length === 0 && pending === undefined) return [];
-  return [
-    {
+  const sections: PaletteSection[] = [];
+  if (ranked.items.length > 0 || pending !== undefined)
+    sections.push({
       id: "objects",
       ...ranked,
       showKind: true,
       ...(pending !== undefined ? { loading: pending } : {}),
-    },
-  ];
+    });
+  // Features and commands match too, after the objects (never before a table of that name).
+  if (!empty && normalizeQuery(query).length >= COMMAND_HITS_MIN_QUERY) {
+    const commands = rankStrict(gather(["actions"]), query, {
+      mru,
+      limit: COMMAND_HITS_LIMIT,
+      secondary: true,
+    });
+    if (commands.items.length > 0)
+      sections.push({ id: "commands", heading: COMMANDS_HEADING, ...commands });
+  }
+  return sections;
 }
 
 export interface BuildSectionsOptions {
@@ -566,25 +603,44 @@ export const TABLE_KIND_LABELS: Record<TableKind, string> = {
 };
 
 /**
+ * Whether Search in Database… shows each object's schema. PostgreSQL and SQLite always do; MySQL
+ * lists the objects of the default database only, or of every database when the connection has
+ * none, so its rows show the database once the result spans more than one (two `users` tables
+ * of different databases must be told apart).
+ */
+export function showSchemaInObjects(
+  driver: string | null,
+  objects: readonly { schema: string | null }[],
+): boolean {
+  return driver !== "mysql" || new Set(objects.map((o) => o.schema)).size > 1;
+}
+
+/**
  * ↩ shows the table in the connection's preview tab, like a single click in the sidebar
- * (TablePlus Open Anything); ⌘↩ / ⌘-click opens it in a tab of its own. The structure is one
- * ⌃⌘] away once the table shows.
+ * (TablePlus Open Anything; the table's own tab when it is open); ⌘↩ / ⌘-click opens it in a new
+ * tab of its own every time. The structure is one ⌃⌘] away once the table shows.
  */
 export function tableItems(
   tables: readonly TableSummary[],
-  ctx: { profileId: string; open: (table: TableSummary, options: { preview: boolean }) => void },
+  ctx: {
+    profileId: string;
+    open: (table: TableSummary, options: OpenTableOptions) => void;
+    /** Several schemas are listed: each row shows its schema instead of the row estimate. */
+    showSchema?: boolean;
+  },
 ): PaletteItem[] {
   return tables.map((t) => ({
     key: tableItemKey(ctx.profileId, t),
     group: "tables",
     label: t.name,
     tags: KIND_TAGS[t.kind],
-    meta: formatEstimate(t.rowEstimate),
+    meta: ctx.showSchema ? (t.schema ?? undefined) : formatEstimate(t.rowEstimate),
     kind: TABLE_KIND_LABELS[t.kind],
     icon: { type: "table", kind: t.kind },
     run: () => ctx.open(t, { preview: true }),
     verb: "Open",
-    runAlt: () => ctx.open(t, { preview: false }),
+    // Always another tab, even when the table is open already (one table, several tabs).
+    runAlt: () => ctx.open(t, { preview: false, newTab: true }),
     altLabel: "New tab",
   }));
 }
@@ -609,13 +665,19 @@ const ROUTINE_KIND_LABELS: Record<RoutineKind, string> = {
  */
 export function routineItems(
   routines: readonly RoutineSummary[],
-  ctx: { profileId: string; open: (routine: RoutineSummary) => unknown },
+  ctx: {
+    profileId: string;
+    open: (routine: RoutineSummary) => unknown;
+    /** Several schemas are listed: each row shows its schema. */
+    showSchema?: boolean;
+  },
 ): PaletteItem[] {
   return routines.map((r) => ({
     key: `routine:${enc(ctx.profileId)}:${enc(r.schema)}:${enc(r.name)}:${enc(r.identityArguments)}`,
     group: "routines",
     label: r.name,
     detail: r.identityArguments || undefined,
+    ...(ctx.showSchema && r.schema ? { meta: r.schema } : {}),
     tags: r.kind === "procedure" ? ["procedure", "routine"] : ["function", "routine"],
     kind: ROUTINE_KIND_LABELS[r.kind],
     icon: { type: "action", icon: ROUTINE_ICONS[r.kind] },
@@ -684,6 +746,8 @@ export function connectionItems(
     summary: (p: ConnectionProfile) => string;
     connect: (p: ConnectionProfile) => void;
     switchTo: (connectionId: string) => void;
+    /** The row's right-click menu (Open in New Window). */
+    menu?: (p: ConnectionProfile) => PaletteMenuEntry[];
   },
 ): PaletteItem[] {
   return profiles.map((p) => {
@@ -698,6 +762,7 @@ export function connectionItems(
       keywords: [p.driver, p.group ?? "", p.database ?? "", p.host ?? ""].filter(Boolean),
       kind: "connection",
       icon: { type: "connection", color: p.color, driver: p.driver },
+      ...(ctx.menu ? { menu: ctx.menu(p) } : {}),
     } satisfies Partial<PaletteItem>;
     if (connectionId)
       return {
@@ -780,6 +845,29 @@ export function databaseItems(
 }
 
 /**
+ * Lazy load (TablePlus #3309): Open Anything searches only the loaded schemas; this row, listed
+ * after the results, loads the `notLoaded` others (the palette stays open and the list grows).
+ */
+export function loadAllSchemasItem(ctx: {
+  profileId: string;
+  notLoaded: number;
+  run: () => unknown;
+}): PaletteItem {
+  return {
+    key: `schemas-load-all:${enc(ctx.profileId)}`,
+    group: "schemas",
+    label: "Load all schemas",
+    meta: `${ctx.notLoaded} not searched`,
+    keywords: ["lazy load every schema items search"],
+    icon: { type: "action", icon: ListPlus },
+    run: ctx.run,
+    verb: "Load",
+    noRecent: true,
+    keepOpen: true,
+  };
+}
+
+/**
  * The "+ New Database…" / "+ New Schema…" row at the end of the ⌘K list. Never a Recent default,
  * and listed for "new", "create" or "+".
  */
@@ -837,6 +925,7 @@ const ACTION_ICONS: Partial<Record<ActionId, LucideIcon>> = {
   "grid.toggle-detail": PanelRightOpen,
   "grid.copy": Copy,
   "grid.copy-as": ClipboardCopy,
+  "grid.copy-cell": ClipboardType,
   "grid.paste": ClipboardPaste,
   "query.run": Play,
   "query.run-current": CirclePlay,
@@ -867,6 +956,9 @@ const ACTION_ICONS: Partial<Record<ActionId, LucideIcon>> = {
   "query.font-smaller": AArrowDown,
   "query.split": Columns2,
   "workspace.show": LayoutGrid,
+  "workspace.split-right": SquareSplitHorizontal,
+  "window.new": AppWindow,
+  "window.move-tab": AppWindow,
   "workspace.next": SquareArrowRight,
   "workspace.prev": SquareArrowLeft,
   "tab.back": ArrowLeft,
@@ -877,7 +969,18 @@ const ACTION_ICONS: Partial<Record<ActionId, LucideIcon>> = {
   "restore.open": ArchiveRestore,
   "diagram.open": Network,
   "import.csv": FileUp,
+  "import.json": FileJson,
   "import.sql": FileCode,
+  "metrics.open": Gauge,
+  "assistant.ask": Sparkles,
+  "app.lock": LockKeyhole,
+  "workspace.reload": RotateCw,
+  "sqlviewer.new": FileCode2,
+  "query.open-editor": CornerDownLeft,
+  "query.comment-line": SquareSlash,
+  "query.comment-block": MessageSquareCode,
+  "plugins.manage": Puzzle,
+  "plugins.sql-format": WandSparkles,
 };
 
 export function actionIcon(id: ActionId): LucideIcon {
@@ -910,6 +1013,7 @@ export function actionApplies(id: ActionId, ctx: ActionContext): boolean {
     // Without a table or result tab, ⇧⌘E exports several tables of the current schema.
     case "export.open":
     case "import.csv":
+    case "import.json":
     case "import.sql":
       return ctx.hasConnection;
     case "tab.close":

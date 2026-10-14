@@ -15,8 +15,9 @@ import { resetPrefsForTests } from "@/stores/prefs";
 import { getQueryTab, updateQueryTab, useQueryTabsStore } from "@/stores/queryTabs";
 import { flushResultVersions, resultData } from "@/stores/resultData";
 import { useTabsStore, type Tab } from "@/stores/tabs";
-import { explainQuery, NO_LIMIT_MAX_ROWS } from "./controller";
+import { explainQuery, NO_LIMIT_MAX_ROWS, openQueryFile } from "./controller";
 import { getEditorState, getEditorView } from "./editorStates";
+import { answerLargeFile, useLargeFileStore } from "./largeFile";
 import { QueryTab } from "./QueryTab";
 import { RUN_BUTTON_KEY, useRunButtonStore } from "./runButton";
 
@@ -225,7 +226,7 @@ describe("QueryTab", () => {
     type("select id,name from users where id=1");
     await act(() => actions.run("query.format"));
     expect(view().state.doc.toString()).toBe(
-      "SELECT\n  id,\n  name\nFROM\n  users\nWHERE\n  id = 1",
+      "SELECT\n    id,\n    name\nFROM\n    users\nWHERE\n    id = 1",
     );
   });
 
@@ -236,7 +237,7 @@ describe("QueryTab", () => {
     type(sql, sql.indexOf("users"));
     await act(() => actions.run("query.format"));
     expect(doc()).toBe(
-      "select 1;\nSELECT\n  id,\n  name -- who\nFROM\n  users\nWHERE\n  id = 1;\nselect 3;",
+      "select 1;\nSELECT\n    id,\n    name -- who\nFROM\n    users\nWHERE\n    id = 1;\nselect 3;",
     );
     // The cursor stays in the statement it formatted.
     await act(() => actions.run("query.minify"));
@@ -368,6 +369,38 @@ describe("QueryTab", () => {
     prompt.mockRestore();
   });
 
+  it("says above the editor that a big file's first 5 MB is a copy, not the file", async () => {
+    const { id, view } = setup();
+    expect(screen.queryByTestId("head-notice")).toBeNull();
+    const BIG = "/Users/me/dumps/huge-dump.sql";
+    const MB = 1024 * 1024;
+    vi.spyOn(ipc.sqlFiles, "info").mockResolvedValue({ bytes: 50 * MB, compressed: false });
+    vi.spyOn(ipc.sqlFiles, "readHead").mockResolvedValue({
+      text: "INSERT INTO t VALUES (1);\n",
+      totalBytes: 50 * MB,
+      truncated: true,
+      compressed: false,
+      encoding: null,
+    });
+    vi.spyOn(window, "prompt").mockReturnValue(BIG);
+    const opened = openQueryFile(id);
+    await waitFor(() => expect(useLargeFileStore.getState().request).not.toBeNull());
+    answerLargeFile("head");
+    await act(() => opened);
+
+    const notice = await screen.findByTestId("head-notice");
+    expect(notice).toHaveAttribute("role", "status");
+    expect(notice).toHaveTextContent(
+      "Showing the first 5 MB of huge-dump.sql; saving here will not overwrite the file",
+    );
+    expect(view().state.doc.toString()).toBe("INSERT INTO t VALUES (1);\n");
+    expect(getQueryTab(id).filePath).toBeNull();
+
+    // Saving elsewhere makes it a file of its own: the notice goes.
+    act(() => updateQueryTab(id, { headNotice: null }));
+    expect(screen.queryByTestId("head-notice")).toBeNull();
+  });
+
   it("explains the statement under the cursor into the Plan pane", async () => {
     const { id, type } = setup();
     const sql = "select 1;\nselect * from posts limit 5;";
@@ -437,9 +470,16 @@ describe("QueryTab", () => {
     act(() => view().dispatch({ changes: { from: 0, to: view().state.doc.length, insert: "" } }));
     await act(() => actions.run("query.history"));
     const entry = await screen.findByText("select * from tags limit 3", { selector: "pre" });
+    const runId = getQueryTab(id).run?.id;
+    // A click only selects the entry; the double-click inserts it (and never runs it).
     act(() => entry.click());
+    expect(getQueryTab(id).historyOpen).toBe(true);
+    expect(view().state.doc.toString()).toBe("");
+    fireEvent.doubleClick(entry);
     await waitFor(() => expect(getQueryTab(id).historyOpen).toBe(false));
     await waitFor(() => expect(view().state.doc.toString()).toBe("select * from tags limit 3;"));
+    // Inserted, not run again.
+    expect(getQueryTab(id).run?.id).toBe(runId);
   });
 
   it("keeps error locations on the right text when the document changes during a run", async () => {
@@ -543,18 +583,19 @@ describe("Editor bar", () => {
     expect(screen.getAllByRole("toolbar")).toHaveLength(1);
   });
 
-  it("shows the cursor position, or how much is selected", () => {
+  it("shows the cursor position (line, column, location) and how much is selected", () => {
     const { view, type } = setup();
     const position = screen.getByTestId("cursor-position");
-    expect(position).toHaveTextContent("Line 1, Column 1");
+    expect(position).toHaveTextContent("Line 1, Column 1, Location 1");
     type("select 1;\nselect 22", 19);
-    expect(position).toHaveTextContent("Line 2, Column 10");
+    expect(position).toHaveTextContent("Line 2, Column 10, Location 20");
     act(() => view().dispatch({ selection: { anchor: 0, head: 6 } }));
-    expect(position).toHaveTextContent("6 characters selected");
+    expect(position).toHaveTextContent("Line 1, Column 7, Location 7 (6 characters selected)");
     act(() => view().dispatch({ selection: { anchor: 3, head: 4 } }));
-    expect(position).toHaveTextContent("1 character selected");
+    expect(position).toHaveTextContent("Line 1, Column 5, Location 5 (1 character selected)");
     act(() => view().dispatch({ selection: { anchor: 12 } }));
-    expect(position).toHaveTextContent("Line 2, Column 3");
+    expect(position).toHaveTextContent("Line 2, Column 3, Location 13");
+    expect(position).not.toHaveTextContent("selected");
   });
 
   it("summarizes rows changed and errors of the last run", async () => {
@@ -569,12 +610,42 @@ describe("Editor bar", () => {
     expect(summary).toHaveClass("text-error");
   });
 
+  it("starts a new tab at No limit and offers 100, 300, 500, 1,000 and 10,000", async () => {
+    const user = userEvent.setup();
+    const { id, type } = setup();
+    const run = vi.spyOn(ipc.query, "run");
+    try {
+      const limit = screen.getByRole("combobox", { name: "Row limit" });
+      expect(getQueryTab(id).rowLimit).toBeNull();
+      expect(limit).toHaveTextContent("No limit");
+      type("select 1");
+      await act(() => actions.run("query.run"));
+      // "No limit" asks for the backend's highest cap (0 would mean its default).
+      expect(run.mock.calls.at(-1)?.[3]).toEqual({ maxRows: NO_LIMIT_MAX_ROWS, stopOnError: true });
+
+      act(() => limit.focus());
+      await user.keyboard("{Enter}");
+      const options = await screen.findAllByRole("option");
+      expect(options.map((o) => o.textContent)).toEqual([
+        "No limit",
+        "100",
+        "300",
+        "500",
+        "1,000",
+        "10,000",
+      ]);
+    } finally {
+      run.mockRestore();
+    }
+  });
+
   it("caps each run at the tab's row limit", async () => {
     const user = userEvent.setup();
     const { id, type } = setup();
     const run = vi.spyOn(ipc.query, "run");
     try {
       const limit = screen.getByRole("combobox", { name: "Row limit" });
+      act(() => updateQueryTab(id, { rowLimit: 10_000 }));
       expect(limit).toHaveTextContent("Limit 10,000");
       type("select * from events_big");
       await act(() => actions.run("query.run"));
@@ -583,7 +654,8 @@ describe("Editor bar", () => {
       act(() => limit.focus());
       await user.keyboard("{Enter}");
       await waitFor(() => expect(screen.getByRole("option", { name: "10,000" })).toHaveFocus());
-      await user.keyboard("{ArrowUp}{ArrowUp}{Enter}");
+      // 10,000 -> 1,000 -> 500 -> 300 -> 100
+      await user.keyboard("{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{Enter}");
       await waitFor(() => expect(getQueryTab(id).rowLimit).toBe(100));
       expect(limit).toHaveTextContent("Limit 100");
 
@@ -594,7 +666,7 @@ describe("Editor bar", () => {
       expect(screen.getByText(/^1 statement · 100 rows · \d+ ms$/)).toBeInTheDocument();
       expect(screen.getByText("limit reached")).toBeInTheDocument();
 
-      // "No limit" asks for the backend's highest cap (0 would mean its default).
+      // Back to "No limit".
       act(() => updateQueryTab(id, { rowLimit: null }));
       expect(limit).toHaveTextContent("No limit");
       type("select 1");
@@ -610,8 +682,8 @@ describe("Editor bar", () => {
     act(() => updateQueryTab(first.id, { rowLimit: 1_000 }));
     first.unmount();
     const second = setup();
-    expect(getQueryTab(second.id).rowLimit).toBe(10_000);
-    expect(screen.getByRole("combobox", { name: "Row limit" })).toHaveTextContent("Limit 10,000");
+    expect(getQueryTab(second.id).rowLimit).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Row limit" })).toHaveTextContent("No limit");
     expect(getQueryTab(first.id).rowLimit).toBe(1_000);
   });
 
@@ -627,7 +699,7 @@ describe("Editor bar", () => {
     type("select id,name from users");
     fireEvent.click(screen.getByRole("button", { name: "Beautify" }));
     await waitFor(() =>
-      expect(view().state.doc.toString()).toBe("SELECT\n  id,\n  name\nFROM\n  users"),
+      expect(view().state.doc.toString()).toBe("SELECT\n    id,\n    name\nFROM\n    users"),
     );
     fireEvent.keyDown(screen.getByRole("button", { name: "Format options" }), { key: "Enter" });
     fireEvent.click(await screen.findByRole("menuitem", { name: /Uglify SQL/ }));

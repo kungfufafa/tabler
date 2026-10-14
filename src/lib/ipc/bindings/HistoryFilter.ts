@@ -5,10 +5,22 @@
  */
 export type HistoryFilter = { profileId: string | null, 
 /**
- * Case-insensitive substring match on the SQL text.
+ * Substring match on the SQL text (case-insensitive unless `match_case`).
  */
 search: string | null, 
 /**
  * Defaults to 200, capped at 1000.
  */
-limit: number | null, beforeId: number | null, };
+limit: number | null, beforeId: number | null, 
+/**
+ * Search options (History ▸ search field): case-sensitive match…
+ */
+matchCase: boolean, 
+/**
+ * …the term as a whole word…
+ */
+wholeWord: boolean, 
+/**
+ * …`search` is a regular expression (Rust `regex` syntax).
+ */
+regex: boolean, };

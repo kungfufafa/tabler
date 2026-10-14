@@ -12,6 +12,7 @@ import {
 } from "@dnd-kit/core";
 import { useQuery } from "@tanstack/react-query";
 import {
+  AppWindow,
   ArchiveRestore,
   ArrowUpDown,
   ChevronRight,
@@ -59,8 +60,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { openBackup } from "@/features/backup/store";
-import { writeClipboard } from "@/features/datagrid/clipboard";
 import { usePaletteStore } from "@/features/palette/store";
+import { copyConnectionUrl } from "@/features/safety/copyUrl";
+import { openProfileInNewWindow } from "@/features/tabs/windowHandoff";
 import { ipc, type ConnectionProfile } from "@/lib/ipc";
 import { comboFromEvent } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
@@ -72,6 +74,7 @@ import {
   childPath,
   GROUP_ICONS,
   iconOf,
+  imageOf,
   idsInSubtree,
   isWithin,
   knownGroups,
@@ -107,7 +110,6 @@ import {
   useConnectionDialog,
   useLauncherPrefs,
 } from "./store";
-import { profileToUrl } from "./url";
 import { useDeleteProfile, useDuplicateProfile, useProfiles } from "./useConnections";
 
 function WelcomeAction({
@@ -150,6 +152,7 @@ function WelcomeAction({
 function GroupHeader({
   node,
   icon,
+  image,
   collapsed,
   dropDisabled,
   menu,
@@ -157,6 +160,8 @@ function GroupHeader({
 }: {
   node: GroupNode;
   icon: GroupIconId | null;
+  /** The group's own image: it is shown instead of the icon. */
+  image: string | null;
   collapsed: boolean;
   /** While this group, or one enclosing it, is dragged (it cannot go into itself). */
   dropDisabled: boolean;
@@ -194,7 +199,7 @@ function GroupHeader({
           <ChevronRight
             className={cn("size-3 shrink-0 transition-transform", !collapsed && "rotate-90")}
           />
-          <GroupIcon icon={icon} className="size-3" />
+          <GroupIcon icon={icon} image={image} className="size-3" />
           <span className="truncate tracking-wide uppercase">{node.name}</span>
           <span className="font-normal tabular-nums">{node.count}</span>
         </button>
@@ -239,12 +244,15 @@ const separator: MenuEntry = { kind: "separator" };
 const fileNameOf = (s: string) => s.replace(/[/\\:*?"<>|]+/g, "-").trim() || "Connections";
 
 /**
- * The welcome screen and connection manager: the first screen, and reachable later with ⌘⇧O.
+ * The welcome screen and connection manager: the first screen, and reachable later from the
+ * workspace rail's Connection manager button, File ▸ Connection Manager and ⌘K (it has no key).
  * Drawn as a compact centred window (like TablePlus's welcome window) on the window background.
  * Left: app name, version and the "new connection" actions, Backup… / Restore… at the bottom.
  * Right: the saved connections, the ungrouped ones first without a header, then the group tree
  * (nested, collapsible headers; empty groups too); click selects, double-click / ↩ connects,
- * ↑/↓ move, ⌫ deletes, ⌘F searches (matches listed flat, with their group path), ⌘N creates.
+ * ↑/↓ move, ⌫ deletes, ⌘F searches (matches listed flat, with their group path). New Connection
+ * has no key (⌘N is New Window, ⇧⌘O New SQL Viewer): it is "Create a new connection…" here, the
+ * context menu's New ▸ Connection… and File ▸ New Connection….
  * Rows can be dragged onto a group header, headers onto another header (nesting) or the
  * top-level strip. Right-click (or "…") offers New ▸, Sort by ▸, Import / Export Connections,
  * Move to Group ▸ and the group actions. Nothing is selected on load: the list only rings its
@@ -314,12 +322,12 @@ export function Launcher() {
     ? results.length > 0
     : tree.ungrouped.length > 0 || tree.groups.length > 0;
 
-  // ⌘N new connection, ⌘F search — while the launcher (or nothing) has the focus.
+  // ⌘F search — while the launcher (or nothing) has the focus. (⌘N is File ▸ New Window, handled
+  // before this listener by the shortcut layer; New Connection has no key.)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
-      const combo = comboFromEvent(e);
-      if (combo !== "Mod+N" && combo !== "Mod+F") return;
+      if (comboFromEvent(e) !== "Mod+F") return;
       const t = e.target instanceof Node ? e.target : null;
       const inLauncher =
         !t ||
@@ -328,12 +336,8 @@ export function Launcher() {
         (rootRef.current?.contains(t) ?? false);
       if (!inLauncher) return;
       e.preventDefault();
-      if (combo === "Mod+N") {
-        openConnectionDialog();
-      } else {
-        searchRef.current?.focus();
-        searchRef.current?.select();
-      }
+      searchRef.current?.focus();
+      searchRef.current?.select();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -395,6 +399,10 @@ export function Launcher() {
     } else if ((e.key === "Backspace" || e.key === "Delete") && selected) {
       e.preventDefault();
       setPendingDelete(selected);
+    } else if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === "c" && selected) {
+      // ⌘C on a connection: Copy as URL, password included (TablePlus).
+      e.preventDefault();
+      void copyConnectionUrl(selected, true);
     }
   };
 
@@ -404,14 +412,6 @@ export function Launcher() {
       e.preventDefault();
       setQuery("");
     }
-  };
-
-  const copyUrl = (p: ConnectionProfile) => {
-    const url = profileToUrl(p);
-    writeClipboard(url).then(
-      () => toast.success("Copied", { description: url }),
-      () => toast.error("Could not copy the URL"),
-    );
   };
 
   // ---- menus -------------------------------------------------------------------------------
@@ -554,6 +554,12 @@ export function Launcher() {
 
   const rowMenu = (p: ConnectionProfile): MenuEntry[] => [
     { kind: "item", label: "Connect", icon: Plug, run: () => openProfile(p.id) },
+    {
+      kind: "item",
+      label: "Open in New Window",
+      icon: AppWindow,
+      run: () => void openProfileInNewWindow(p.id),
+    },
     { kind: "item", label: "Edit…", icon: Pencil, run: () => openConnectionDialog(p) },
     {
       kind: "item",
@@ -561,7 +567,18 @@ export function Launcher() {
       icon: Copy,
       run: () => duplicate.mutate(p.id, { onSuccess: (copy) => setSelectedId(copy.id) }),
     },
-    { kind: "item", label: "Copy as URL", icon: Link2, run: () => copyUrl(p) },
+    // TablePlus copies the password too (after the safe-mode / Touch ID checks).
+    {
+      kind: "item",
+      label: "Copy as URL",
+      icon: Link2,
+      run: () => void copyConnectionUrl(p, true),
+    },
+    {
+      kind: "item",
+      label: "Copy as URL (without password)",
+      run: () => void copyConnectionUrl(p, false),
+    },
     separator,
     moveMenu(p),
     separator,
@@ -718,6 +735,7 @@ export function Launcher() {
         <GroupHeader
           node={node}
           icon={iconOf(records, node.path)}
+          image={imageOf(records, node.path)}
           collapsed={isCollapsed}
           dropDisabled={draggingGroup !== undefined && isWithin(node.path, draggingGroup)}
           menu={groupMenu(node.path)}
@@ -907,7 +925,11 @@ export function Launcher() {
                         </div>
                       ) : dragging?.kind === "group" ? (
                         <div className="bg-popover border-border flex h-8 w-56 items-center gap-1.5 rounded-md border px-2 shadow-md">
-                          <GroupIcon icon={iconOf(records, dragging.path)} fallback />
+                          <GroupIcon
+                            icon={iconOf(records, dragging.path)}
+                            image={imageOf(records, dragging.path)}
+                            fallback
+                          />
                           <span className="truncate text-[11px] font-semibold tracking-wide uppercase">
                             {leafName(dragging.path)}
                           </span>

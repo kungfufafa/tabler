@@ -6,7 +6,8 @@
 //! with AES-256-GCM under a key derived from the password with PBKDF2-HMAC-SHA256; a wrong
 //! password and a modified file both fail authentication.
 //!
-//! Groups are paths (`Clients / Acme / Prod`) with an optional icon id. Version 1 files carried
+//! Groups are paths (`Clients / Acme / Prod`) with an optional icon id and an optional image (a
+//! small `data:image/…` URI the user chose, TablePlus's group image). Version 1 files carried
 //! plain group names; they still read (as top-level groups without an icon).
 //!
 //! Pure: no Tauri, app DB or Keychain access (see `commands::profiles` for those).
@@ -49,6 +50,10 @@ const AAD: &[u8] = b"tabler-connections/1";
 pub const GROUP_SEPARATOR: &str = " / ";
 /// Longest icon id kept (ids are short kebab-case names such as `hard-drive`).
 const MAX_ICON_LEN: usize = 40;
+/// Longest group image kept: its whole `data:image/…` URI, in characters (the renderer draws a
+/// 64x64 PNG, a few KB; this leaves room for a busy one and keeps the settings and the files
+/// small). Mirrors `MAX_GROUP_IMAGE_CHARS` in the renderer's `groups.ts`.
+pub const MAX_IMAGE_LEN: usize = 24 * 1024;
 
 /// Secrets of one exported connection; absent fields were not exported (or not stored).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,13 +86,16 @@ pub struct ExportedConnection {
 }
 
 /// A connection group, as saved in the `connectionGroups` setting and in files: its path (levels
-/// joined by `GROUP_SEPARATOR`) and the id of its icon (`None`: the plain folder).
+/// joined by `GROUP_SEPARATOR`), the id of its icon (`None`: the plain folder) and the image the
+/// user chose for it (a `data:image/…` URI; it takes the place of the icon on the header).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupRecord {
     pub path: String,
     #[serde(default)]
     pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 /// What a file carries: the connections and the groups (empty groups included).
@@ -158,8 +166,24 @@ fn icon_id(raw: Option<&str>) -> Option<String> {
     valid.then(|| id.to_string())
 }
 
-/// Adds `path` (unless blank or already there; an existing group without an icon takes `icon`).
-fn add_group(out: &mut Vec<GroupRecord>, path: &str, icon: Option<String>) {
+/// A group image as kept: the trimmed `data:image/…` URI, when it is one and fits
+/// [`MAX_IMAGE_LEN`]. Anything else (a `javascript:` or `http:` URL, an oversize picture) is
+/// dropped: the group keeps its icon.
+pub fn image_uri(raw: Option<&str>) -> Option<String> {
+    let uri = raw?.trim();
+    (uri.len() <= MAX_IMAGE_LEN
+        && uri.len() > "data:image/".len()
+        && uri.starts_with("data:image/")
+        && !uri.chars().any(char::is_control))
+    .then(|| uri.to_string())
+}
+
+/// What a group looks like: its icon and its image (either may be missing).
+type Look = (Option<String>, Option<String>);
+
+/// Adds `path` (unless blank or already there; an existing group takes the `icon` / `image` it
+/// lacks).
+fn add_group(out: &mut Vec<GroupRecord>, path: &str, (icon, image): Look) {
     if path.is_empty() {
         return;
     }
@@ -168,10 +192,14 @@ fn add_group(out: &mut Vec<GroupRecord>, path: &str, icon: Option<String>) {
             if existing.icon.is_none() {
                 existing.icon = icon;
             }
+            if existing.image.is_none() {
+                existing.image = image;
+            }
         }
         None => out.push(GroupRecord {
             path: path.to_string(),
             icon,
+            image,
         }),
     }
 }
@@ -181,29 +209,36 @@ fn add_group(out: &mut Vec<GroupRecord>, path: &str, icon: Option<String>) {
 pub fn parse_groups(value: &Value) -> Vec<GroupRecord> {
     let mut out = Vec::new();
     for item in value.as_array().map(Vec::as_slice).unwrap_or_default() {
-        let (raw, icon) = match item {
-            Value::String(name) => (name.as_str(), None),
+        let (raw, look) = match item {
+            Value::String(name) => (name.as_str(), (None, None)),
             Value::Object(o) => match o.get("path").and_then(Value::as_str) {
-                Some(path) => (path, icon_id(o.get("icon").and_then(Value::as_str))),
+                Some(path) => (
+                    path,
+                    (
+                        icon_id(o.get("icon").and_then(Value::as_str)),
+                        image_uri(o.get("image").and_then(Value::as_str)),
+                    ),
+                ),
                 None => continue,
             },
             _ => continue,
         };
-        add_group(&mut out, &normalize_group_path(raw), icon);
+        add_group(&mut out, &normalize_group_path(raw), look);
     }
     out
 }
 
-fn icon_in(groups: &[GroupRecord], path: &str) -> Option<String> {
+fn look_in(groups: &[GroupRecord], path: &str) -> Look {
     groups
         .iter()
         .find(|g| g.path == path)
-        .and_then(|g| g.icon.clone())
+        .map(|g| (g.icon.clone(), g.image.clone()))
+        .unwrap_or_default()
 }
 
 /// The groups an export writes: the `requested` ones (empty groups included) and those the
-/// exported connections `used`, each with its ancestors so the tree survives, with the icons
-/// saved in `stored`.
+/// exported connections `used`, each with its ancestors so the tree survives, with the icons and
+/// images saved in `stored`.
 pub fn export_groups(
     stored: &[GroupRecord],
     requested: &[String],
@@ -216,17 +251,17 @@ pub fn export_groups(
             continue;
         }
         for p in with_ancestors(&path) {
-            let icon = icon_in(stored, &p);
-            add_group(&mut out, &p, icon);
+            let look = look_in(stored, &p);
+            add_group(&mut out, &p, look);
         }
     }
     out
 }
 
-/// The saved groups after an import: `known` (order and icons kept), plus the groups of the
-/// imported connections (`used`) and, when the whole file was imported, every group of the file
-/// (empty ones too), with their ancestors. Groups are matched by path; a new group, or a known
-/// one without an icon, takes the file's icon.
+/// The saved groups after an import: `known` (order, icons and images kept), plus the groups of
+/// the imported connections (`used`) and, when the whole file was imported, every group of the
+/// file (empty ones too), with their ancestors. Groups are matched by path; a new group, or a
+/// known one without an icon (or an image), takes the file's.
 pub fn merge_imported_groups(
     known: &[GroupRecord],
     file: &[GroupRecord],
@@ -241,8 +276,8 @@ pub fn merge_imported_groups(
             continue;
         }
         for p in with_ancestors(&path) {
-            let icon = icon_in(file, &p);
-            add_group(&mut out, &p, icon);
+            let look = look_in(file, &p);
+            add_group(&mut out, &p, look);
         }
     }
     out
@@ -521,6 +556,7 @@ mod tests {
                 key_path: None,
                 local_port: Some(15432),
                 keepalive_secs: Some(20),
+                password_mode: None,
             }),
             options: ProfileOptions {
                 tag: Some(ConnectionTag::Staging),
@@ -539,6 +575,16 @@ mod tests {
         GroupRecord {
             path: path.into(),
             icon: icon.map(str::to_string),
+            image: None,
+        }
+    }
+
+    const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==";
+
+    fn pictured(path: &str, icon: Option<&str>, image: &str) -> GroupRecord {
+        GroupRecord {
+            image: Some(image.into()),
+            ..group(path, icon)
         }
     }
 
@@ -843,6 +889,155 @@ mod tests {
             panic!("plain file");
         };
         assert_eq!(payload.groups, p.groups);
+    }
+
+    #[test]
+    fn saved_groups_read_images_and_drop_what_is_not_one() {
+        let too_long = format!("data:image/png;base64,{}", "A".repeat(MAX_IMAGE_LEN));
+        let value = serde_json::json!([
+            { "path": "Logo", "icon": "server", "image": PNG },
+            { "path": "Padded", "image": format!("  {PNG}\n") },
+            { "path": "Script", "icon": "star", "image": "javascript:alert(1)" },
+            { "path": "Remote", "image": "http://example.com/logo.png" },
+            { "path": "Https", "image": "https://example.com/logo.png" },
+            { "path": "Html", "image": "data:text/html;base64,PHNjcmlwdD4=" },
+            { "path": "Huge", "image": too_long },
+            { "path": "Control", "image": "data:image/png;base64,AA\u{0}AA" },
+            { "path": "Bare", "image": "data:image/" },
+            { "path": "Number", "image": 7 },
+            { "path": "Empty", "image": "" },
+        ]);
+        let groups = parse_groups(&value);
+        let by_path = |p: &str| groups.iter().find(|g| g.path == p).unwrap();
+        assert_eq!(by_path("Logo"), &pictured("Logo", Some("server"), PNG));
+        // Trimmed like the icon id.
+        assert_eq!(by_path("Padded").image.as_deref(), Some(PNG));
+        // Everything else loses its image and keeps the rest of the record.
+        for path in [
+            "Script", "Remote", "Https", "Html", "Huge", "Control", "Bare", "Number", "Empty",
+        ] {
+            assert_eq!(by_path(path).image, None, "{path}");
+        }
+        assert_eq!(by_path("Script").icon.as_deref(), Some("star"));
+        // The cap is on the whole URI: exactly at the limit still fits.
+        let fits = format!(
+            "data:image/png;base64,{}",
+            "A".repeat(MAX_IMAGE_LEN - "data:image/png;base64,".len())
+        );
+        assert_eq!(fits.len(), MAX_IMAGE_LEN);
+        assert_eq!(image_uri(Some(&fits)).as_deref(), Some(fits.as_str()));
+        assert_eq!(image_uri(Some(&format!("{fits}A"))), None);
+        assert_eq!(image_uri(None), None);
+    }
+
+    #[test]
+    fn a_group_image_survives_export_then_import() {
+        let mut p = payload();
+        for c in &mut p.connections {
+            c.secrets = ExportedSecrets::default();
+        }
+        p.groups = vec![
+            pictured("Staging", Some("server"), PNG),
+            group("Staging / Empty", None),
+        ];
+        // Plain file: the image is in the JSON, and reads back.
+        let bytes = write_with_iterations(&p, None, "now", FAST).unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            envelope["payload"]["groups"],
+            serde_json::json!([
+                { "path": "Staging", "icon": "server", "image": PNG },
+                { "path": "Staging / Empty", "icon": null }
+            ])
+        );
+        let ReadOutcome::Opened { payload: back, .. } = read(&bytes, None).unwrap() else {
+            panic!("plain file");
+        };
+        assert_eq!(back.groups, p.groups);
+        // Encrypted: sealed with the rest of the payload.
+        let sealed = write_with_iterations(&p, Some("pw"), "now", FAST).unwrap();
+        assert!(!String::from_utf8_lossy(&sealed).contains("iVBORw0KGgo"));
+        let ReadOutcome::Opened { payload: back, .. } = read(&sealed, Some("pw")).unwrap() else {
+            panic!("the password opens it");
+        };
+        assert_eq!(back.groups, p.groups);
+        // Importing everything into an empty app brings the image along.
+        assert_eq!(
+            merge_imported_groups(&[], &back.groups, &[], true),
+            back.groups
+        );
+    }
+
+    #[test]
+    fn a_file_with_a_bad_image_loses_only_the_image() {
+        let file = br#"{"format":"tabler-connections","version":2,"exportedAt":"then",
+            "payload":{"groups":[
+                {"path":"A","icon":"server","image":"javascript:alert(1)"},
+                {"path":"B","image":"data:image/png;base64,AAAA"}],"connections":[]}}"#;
+        let ReadOutcome::Opened { payload, .. } = read(file, None).unwrap() else {
+            panic!("plain file");
+        };
+        assert_eq!(
+            payload.groups,
+            [
+                group("A", Some("server")),
+                pictured("B", None, "data:image/png;base64,AAAA")
+            ]
+        );
+    }
+
+    #[test]
+    fn exports_take_the_saved_image_too() {
+        let stored = [
+            pictured("Clients", Some("briefcase"), PNG),
+            group("Other", None),
+        ];
+        let requested = ["Clients / Acme".to_string()];
+        assert_eq!(
+            export_groups(&stored, &requested, &[]),
+            [
+                pictured("Clients", Some("briefcase"), PNG),
+                group("Clients / Acme", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn imports_never_erase_a_known_image_and_fill_a_missing_one() {
+        let other = "data:image/png;base64,BBBB";
+        let known = [
+            pictured("Local", Some("home"), PNG),
+            group("Clients", Some("briefcase")),
+            group("Archive", None),
+        ];
+        let file = [
+            // The file has no image for a group that has one here: it stays.
+            group("Local", Some("rocket")),
+            // The file's image goes to a known group that has none (its icon stays).
+            pictured("Clients", Some("star"), other),
+            // A different image for a group that already has one never replaces it.
+            pictured("Archive", None, other),
+            pictured("New", Some("zap"), other),
+        ];
+        let merged = merge_imported_groups(&known, &file, &[], true);
+        assert_eq!(
+            merged,
+            [
+                pictured("Local", Some("home"), PNG),
+                pictured("Clients", Some("briefcase"), other),
+                pictured("Archive", None, other),
+                pictured("New", Some("zap"), other),
+            ]
+        );
+        // Only some connections: just the groups they use (and the ancestors), with their images.
+        let used = ["New".to_string(), "Local".to_string()];
+        assert_eq!(
+            merge_imported_groups(&known[..1], &file, &used, false),
+            [
+                pictured("Local", Some("home"), PNG),
+                pictured("New", Some("zap"), other)
+            ]
+        );
     }
 
     #[test]

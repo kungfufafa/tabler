@@ -271,6 +271,11 @@ export const TABLE_COLUMNS: Record<string, ColSpec[]> = {
     ["c_inet", "inet", "other"],
     ["c_point", "point", "other"],
     ["c_int_array", "integer[]", "array", { arrayElemType: "integer" }],
+    // Spatial values (EWKT, as the backend decodes them; see rows.ts `geometryCell`).
+    ["c_location", "geometry(Point,4326)", "geometry"],
+    ["c_area", "geometry(Polygon,4326)", "geometry"],
+    ["c_route", "geography(LineString,4326)", "geometry"],
+    ["c_geom", "geometry", "geometry"],
   ],
   "Order Items": [
     ["order_id", "integer", "int", { isPk: true, pkOrdinal: 1, nullable: false }],
@@ -321,7 +326,7 @@ const PUBLIC_TABLES: Array<[string, TableSummary["kind"], number | null]> = [
   ["post_tags", "table", 400],
   ["audit_log", "table", 30],
   ["events_big", "table", 100000],
-  ["types_zoo", "table", 3],
+  ["types_zoo", "table", 12],
   ["Order Items", "table", 10],
   ["CamelCase", "table", 5],
   ["active_users", "view", null],

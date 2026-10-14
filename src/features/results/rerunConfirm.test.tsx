@@ -15,7 +15,6 @@ import { bufferKey } from "./changes";
 import { RerunConfirmDialog } from "./RerunConfirmDialog";
 import { answerRerunConfirm, confirmRerunDiscard, useRerunConfirmStore } from "./rerunConfirm";
 import {
-  CLOSED_PREVIEW,
   installResultsLifecycle,
   pendingForRun,
   pendingForTab,
@@ -74,7 +73,7 @@ beforeEach(() => {
   installResultsLifecycle();
   resetPrefsForTests();
   useRerunConfirmStore.setState({ request: null });
-  useResultsStore.setState({ edits: {}, editability: {}, pins: {}, preview: CLOSED_PREVIEW });
+  useResultsStore.setState({ edits: {}, editability: {}, pins: {} });
   useConnectionsStore.setState({
     byId: { [CONN]: { info: { connectionId: CONN, driver: "postgres" } as ConnectionInfo } },
   } as never);

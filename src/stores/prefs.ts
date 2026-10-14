@@ -1,7 +1,46 @@
 import { toast } from "sonner";
 import { create } from "zustand";
-import { ipc, type SafeModeLevel } from "@/lib/ipc";
+import { ipc, type AssistantProvider, type SafeModeLevel } from "@/lib/ipc";
+import { broadcastEvent, RENDERER_ID } from "@/lib/ipc/events";
 import { EMPTY_OVERRIDES, isKeymapOverrides, type KeymapOverrides } from "@/lib/keys/overrides";
+import {
+  DEFAULT_TOOLBAR_ITEMS,
+  isToolbarItems,
+  TOOLBAR_DISPLAYS,
+  type ToolbarDisplay,
+  type ToolbarItemId,
+} from "@/app/toolbarLayout";
+import {
+  ANTHROPIC_MODEL_IDS,
+  ASSISTANT_PROVIDERS,
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_OPENAI_BASE_URL,
+  isBaseUrl,
+  isModelName,
+} from "@/features/assistant/providers";
+import {
+  EMPTY_PLUGIN_STATES,
+  isPluginStates,
+  type PluginStates,
+} from "@/features/plugins/pluginPrefs";
+import {
+  DEFAULT_EDITOR_LINE_HEIGHT,
+  DEFAULT_GRID_FONT_SIZE,
+  DEFAULT_GRID_LINE_HEIGHT,
+  DEFAULT_GRID_ROW_PADDING,
+  DEFAULT_SIDEBAR_FONT_SIZE,
+  EDITOR_LINE_HEIGHT_RANGE,
+  EMPTY_COLOR_OVERRIDES,
+  GRID_FONT_SIZE_RANGE,
+  GRID_LINE_HEIGHT_RANGE,
+  GRID_ROW_PADDING_RANGE,
+  isColorOverrides,
+  isFontFamily,
+  isNumberIn,
+  SIDEBAR_FONT_SIZE_RANGE,
+  type ColorOverrides,
+} from "@/features/appearance/appearancePrefs";
 
 /**
  * User preferences. One JSON object stored under the `prefs` key of the app DB settings table,
@@ -32,6 +71,10 @@ export const QUERY_TIMEOUT_RANGE = { min: 0, max: 86_400 } as const;
 /** SQL editor results: one tab per result set, or every result set stacked in one tab. */
 export const RESULT_VIEW_MODES = ["tabs", "append"] as const;
 export type ResultViewMode = (typeof RESULT_VIEW_MODES)[number];
+
+/** Structure view ▸ "Order columns by": the table's ordinal position, or their names. */
+export const STRUCTURE_COLUMN_ORDERS = ["ordinal", "name"] as const;
+export type StructureColumnOrder = (typeof STRUCTURE_COLUMN_ORDERS)[number];
 
 export const SAFE_MODE_LEVELS = [
   "silent",
@@ -71,6 +114,10 @@ export const ESTIMATE_COUNT_RANGE = { min: 1_000, max: 1_000_000_000 } as const;
  * "all": every one (TablePlus's default since b632).
  */
 export const AUTO_SAVE_QUERY_TABS = ["none", "first", "all"] as const;
+
+/** General ▸ Application ▸ "At launch" (TablePlus's older "Connection startup" preference). */
+export const STARTUP_ACTIONS = ["welcome", "connection"] as const;
+export type StartupAction = (typeof STARTUP_ACTIONS)[number];
 export type AutoSaveQueryTabs = (typeof AUTO_SAVE_QUERY_TABS)[number];
 
 /**
@@ -80,12 +127,37 @@ export type AutoSaveQueryTabs = (typeof AUTO_SAVE_QUERY_TABS)[number];
  */
 export const CSV_DELIMITER_PREFS = [",", "\t", ";"] as const;
 export type CsvDelimiterPref = (typeof CSV_DELIMITER_PREFS)[number];
-export const CSV_QUOTE_PREFS = ["double", "single", "ifNeeded"] as const;
+export const CSV_QUOTE_PREFS = ["double", "single", "space", "ifNeeded"] as const;
 export type CsvQuotePref = (typeof CSV_QUOTE_PREFS)[number];
 export const CSV_LINE_BREAK_PREFS = ["\n", "\r\n", "\r"] as const;
 export type CsvLineBreakPref = (typeof CSV_LINE_BREAK_PREFS)[number];
+/** The decimal separator: `.`, `,` or one custom character (see `isCsvDecimal`). */
 export const CSV_DECIMAL_PREFS = [".", ","] as const;
-export type CsvDecimalPref = (typeof CSV_DECIMAL_PREFS)[number];
+export type CsvDecimalPref = string;
+/**
+ * A valid decimal separator: `.`, `,` or one printable ASCII character that is not a digit or a
+ * quote (the export backend refuses the same).
+ */
+export const isCsvDecimal = (v: unknown): boolean =>
+  typeof v === "string" &&
+  v.length === 1 &&
+  v.charCodeAt(0) >= 0x20 &&
+  v.charCodeAt(0) <= 0x7e &&
+  !/[0-9"']/.test(v);
+
+/** SQL editor "Auto-complete key": Enter, Tab, or either (TablePlus: "Enter or Tab"). */
+export const EDITOR_ACCEPT_KEYS = ["both", "enter", "tab"] as const;
+export type EditorAcceptKey = (typeof EDITOR_ACCEPT_KEYS)[number];
+/** General ▸ New tab: "Command + T should open" a SQL Query Editor tab or an empty one. */
+export const NEW_TAB_OPENS = ["query", "empty"] as const;
+export type NewTabOpens = (typeof NEW_TAB_OPENS)[number];
+/** History ▸ "Keep history for": 1, 2 or 3 years, or forever. */
+export const HISTORY_RETENTIONS = ["1y", "2y", "3y", "forever"] as const;
+export type HistoryRetention = (typeof HISTORY_RETENTIONS)[number];
+
+/** Settings ▸ Security ▸ "Auto lock if away for": minutes without activity; 0 = Never. */
+export const AUTO_LOCK_MINUTES = [0, 1, 5, 15, 30, 60] as const;
+export type AutoLockMinutes = (typeof AUTO_LOCK_MINUTES)[number];
 
 export interface Prefs {
   /** Interface text size (Small 12px / Default 13px / Large 14px). */
@@ -149,8 +221,25 @@ export interface Prefs {
   gridAutoNullEmpty: boolean;
   /** Table Data: a row-number gutter in table grids. */
   gridRowNumbers: boolean;
+  /** Structure bottom bar ▸ Order columns by: ordinal position (as stored) or name. */
+  structureColumnOrder: StructureColumnOrder;
+  /** Table Data ▸ Allows expansion Tool Tips: a truncated cell shows its whole value on hover. */
+  gridExpansionTooltips: boolean;
+  /** Table Data ▸ Auto hide table scrollers: overlay scroll bars that fade out when idle. */
+  gridAutoHideScrollers: boolean;
+  /** General ▸ Application ▸ Use loading wallpaper: a placeholder pattern while a page loads. */
+  gridLoadingWallpaper: boolean;
+  /** General ▸ Data Decoder: PostGIS / MySQL spatial values decode to WKT instead of hex. */
+  geometryToWkt: boolean;
   /** General ▸ Application: reconnect the workspaces (and their tabs) open at the last quit. */
   reopenWorkspaces: boolean;
+  /**
+   * General ▸ Application ▸ "At launch": the welcome screen, or open the connection
+   * `startupProfileId` (its form instead with `startupPromptForm`). Reopened workspaces win.
+   */
+  startupAction: StartupAction;
+  startupProfileId: string;
+  startupPromptForm: boolean;
   autoSaveQueryTabs: AutoSaveQueryTabs;
   /** Settings ▸ Shortcuts: remapped bindings (see `KeymapOverrides`). */
   keymapOverrides: KeymapOverrides;
@@ -159,6 +248,88 @@ export interface Prefs {
   csvQuote: CsvQuotePref;
   csvLineBreak: CsvLineBreakPref;
   csvDecimal: CsvDecimalPref;
+  /** Table Data: "Show open containing folder popup after exporting data" (exports, backups). */
+  exportRevealPopup: boolean;
+  /** Native notifications when an export / import / backup / restore ends in the background. */
+  showNotifications: boolean;
+  /** SQL editor ⚙ ▸ Autocomplete Options ▸ Tables: schemas, tables and columns are suggested. */
+  editorCompleteTables: boolean;
+  /** ⚙ ▸ Autocomplete Options ▸ Keywords: SQL keywords are suggested. */
+  editorCompleteKeywords: boolean;
+  /** ⚙ ▸ Autocomplete Options ▸ Automatically Add a Whitespace after an accepted suggestion. */
+  editorAddWhitespace: boolean;
+  /** ⚙ ▸ Autocomplete Options ▸ Automatically Prefix Schemas: tables complete as `schema.table`. */
+  editorPrefixSchemas: boolean;
+  /** "Auto-complete key": which key accepts a suggestion. */
+  editorAcceptKey: EditorAcceptKey;
+  /** "Indent with": tabs instead of spaces (`editorTabSize` wide). */
+  editorIndentWithTabs: boolean;
+  /** SQL editor ⚙ ▸ Show Scrollers: the editor's scroll bars (off: hidden). */
+  editorShowScrollers: boolean;
+  /** "Automatically save queries while editing": file-backed query tabs save as you type. */
+  editorAutoSaveFiles: boolean;
+  /** "Command + T should open": a query tab with the most recent script, or an empty one. */
+  newTabOpens: NewTabOpens;
+  /** "Keep history for": older history is pruned at startup. */
+  historyRetention: HistoryRetention;
+  /** Queries ▸ "Auto Save Favorite": the query editor popup saves while you type. */
+  queriesAutoSave: boolean;
+  /** Security ▸ Unlock Safe Mode with Touch ID (Safe Mode prompts offer Touch ID). */
+  safeModeTouchId: boolean;
+  /** Security ▸ Passcode ▸ Unlock Passcode with Touch ID. */
+  passcodeTouchId: boolean;
+  /** Security ▸ Passcode ▸ Auto lock if away for (minutes; 0 = Never). */
+  autoLockMinutes: AutoLockMinutes;
+  /** Copy as URL with the password was confirmed once (it is not asked again). */
+  copyUrlPasswordConfirmed: boolean;
+  /** Customize Toolbar…: the items, left → right. */
+  toolbarItems: readonly ToolbarItemId[];
+  /** Customize Toolbar… ▸ Show: Icon Only / Icon and Text. */
+  toolbarDisplay: ToolbarDisplay;
+  /**
+   * Connections ▸ MCP Server: `tabler --mcp` serves MCP clients (off: it exits). The `--mcp`
+   * process reads these three from the app DB (`src-tauri/src/mcp/prefs.rs`).
+   */
+  mcpEnabled: boolean;
+  /** "Allow MCP clients to change data" (only on Silent Mode, non read-only connections). */
+  mcpAllowWrites: boolean;
+  /** "Expose production connections": Production-tagged connections are hidden otherwise. */
+  mcpExposeProduction: boolean;
+  /** Security ▸ AI Assistant ▸ Enable Assistant tab on the right sidebar. */
+  assistantEnabled: boolean;
+  /** AI Assistant: where chat requests go, and each provider's model / server. */
+  assistantProvider: AssistantProvider;
+  assistantAnthropicModel: string;
+  assistantOpenaiBaseUrl: string;
+  assistantOpenaiModel: string;
+  assistantOllamaBaseUrl: string;
+  assistantOllamaModel: string;
+  /**
+   * General ▸ Sidebar ▸ "Lazy load schema items": the default for connections whose form leaves it
+   * unset; the sidebar then lists the schemas and loads one's items when it is expanded.
+   */
+  sidebarLazyLoad: boolean;
+  /** Plugins ▸ Manage Plugins…: per plugin, enabled / permissions granted / links confirmed. */
+  pluginStates: PluginStates;
+  /** Settings ▸ Appearance ▸ SQL editor: font family ("" = the system monospace) and line height. */
+  editorFontFamily: string;
+  editorLineHeight: number;
+  /** Settings ▸ Appearance ▸ Data table: font ("" = the system font), size, line height, padding. */
+  gridFontFamily: string;
+  gridFontSize: number;
+  gridLineHeight: number;
+  /** Vertical padding of a grid row in px (Compact 1 / Default 3 / Comfortable 6). */
+  gridRowPadding: number;
+  /** Settings ▸ Appearance ▸ Left sidebar font size in px. */
+  sidebarFontSize: number;
+  /** Settings ▸ Appearance ▸ Left sidebar font family ("" = the UI font). */
+  sidebarFontFamily: string;
+  /** Per theme, the colours that replace the theme's own (editor syntax, change markers, dates). */
+  colorOverrides: ColorOverrides;
+  /** General ▸ Table Data ▸ Disable scroll elastically (no rubber-band bounce in the grid). */
+  gridNoElastic: boolean;
+  /** General ▸ Table Data ▸ Auto expand text column: text columns open as wide as their content. */
+  gridAutoExpandText: boolean;
 }
 
 export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
@@ -166,10 +337,10 @@ export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
   pageSize: 300,
   confirmCommit: false,
   editorFontSize: 13,
-  editorTabSize: 2,
+  editorTabSize: 4,
   editorLineWrap: false,
   editorUppercaseKeywords: true,
-  connectTimeout: 15,
+  connectTimeout: 60,
   defaultSafeMode: "silent",
   keepAlive: true,
   queryTimeout: 300,
@@ -193,13 +364,63 @@ export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
   gridEstimateThreshold: 500_000,
   gridAutoNullEmpty: true,
   gridRowNumbers: false,
+  structureColumnOrder: "ordinal",
+  gridExpansionTooltips: false,
+  gridAutoHideScrollers: false,
+  gridLoadingWallpaper: true,
+  geometryToWkt: true,
   reopenWorkspaces: true,
+  startupAction: "welcome",
+  startupProfileId: "",
+  startupPromptForm: false,
   autoSaveQueryTabs: "all",
   keymapOverrides: EMPTY_OVERRIDES,
   csvDelimiter: ",",
   csvQuote: "ifNeeded",
   csvLineBreak: "\n",
   csvDecimal: ".",
+  exportRevealPopup: true,
+  showNotifications: true,
+  editorCompleteTables: true,
+  editorCompleteKeywords: true,
+  editorAddWhitespace: false,
+  editorPrefixSchemas: false,
+  editorAcceptKey: "both",
+  editorIndentWithTabs: false,
+  editorShowScrollers: true,
+  editorAutoSaveFiles: true,
+  newTabOpens: "query",
+  historyRetention: "forever",
+  queriesAutoSave: false,
+  safeModeTouchId: false,
+  passcodeTouchId: false,
+  autoLockMinutes: 5,
+  copyUrlPasswordConfirmed: false,
+  toolbarItems: DEFAULT_TOOLBAR_ITEMS,
+  toolbarDisplay: "icon",
+  mcpEnabled: false,
+  mcpAllowWrites: false,
+  mcpExposeProduction: false,
+  assistantEnabled: true,
+  assistantProvider: "anthropic",
+  assistantAnthropicModel: DEFAULT_ANTHROPIC_MODEL,
+  assistantOpenaiBaseUrl: DEFAULT_OPENAI_BASE_URL,
+  assistantOpenaiModel: "",
+  assistantOllamaBaseUrl: DEFAULT_OLLAMA_BASE_URL,
+  assistantOllamaModel: "",
+  sidebarLazyLoad: false,
+  pluginStates: EMPTY_PLUGIN_STATES,
+  editorFontFamily: "",
+  editorLineHeight: DEFAULT_EDITOR_LINE_HEIGHT,
+  gridFontFamily: "",
+  gridFontSize: DEFAULT_GRID_FONT_SIZE,
+  gridLineHeight: DEFAULT_GRID_LINE_HEIGHT,
+  gridRowPadding: DEFAULT_GRID_ROW_PADDING,
+  sidebarFontSize: DEFAULT_SIDEBAR_FONT_SIZE,
+  sidebarFontFamily: "",
+  colorOverrides: EMPTY_COLOR_OVERRIDES,
+  gridNoElastic: false,
+  gridAutoExpandText: false,
 });
 
 const PREF_KEYS = Object.keys(DEFAULT_PREFS) as (keyof Prefs)[];
@@ -246,13 +467,63 @@ const VALID: { [K in keyof Prefs]: (v: unknown) => boolean } = {
   gridEstimateThreshold: intIn(ESTIMATE_COUNT_RANGE.min, ESTIMATE_COUNT_RANGE.max),
   gridAutoNullEmpty: isBool,
   gridRowNumbers: isBool,
+  structureColumnOrder: oneOf(STRUCTURE_COLUMN_ORDERS),
+  gridExpansionTooltips: isBool,
+  gridAutoHideScrollers: isBool,
+  gridLoadingWallpaper: isBool,
+  geometryToWkt: isBool,
   reopenWorkspaces: isBool,
+  startupAction: oneOf(STARTUP_ACTIONS),
+  startupProfileId: (v: unknown) => typeof v === "string" && v.length <= 64,
+  startupPromptForm: isBool,
   autoSaveQueryTabs: oneOf(AUTO_SAVE_QUERY_TABS),
   keymapOverrides: isKeymapOverrides,
   csvDelimiter: oneOf(CSV_DELIMITER_PREFS),
   csvQuote: oneOf(CSV_QUOTE_PREFS),
   csvLineBreak: oneOf(CSV_LINE_BREAK_PREFS),
-  csvDecimal: oneOf(CSV_DECIMAL_PREFS),
+  csvDecimal: isCsvDecimal,
+  exportRevealPopup: isBool,
+  showNotifications: isBool,
+  editorCompleteTables: isBool,
+  editorCompleteKeywords: isBool,
+  editorAddWhitespace: isBool,
+  editorPrefixSchemas: isBool,
+  editorAcceptKey: oneOf(EDITOR_ACCEPT_KEYS),
+  editorIndentWithTabs: isBool,
+  editorShowScrollers: isBool,
+  editorAutoSaveFiles: isBool,
+  newTabOpens: oneOf(NEW_TAB_OPENS),
+  historyRetention: oneOf(HISTORY_RETENTIONS),
+  queriesAutoSave: isBool,
+  safeModeTouchId: isBool,
+  passcodeTouchId: isBool,
+  autoLockMinutes: oneOf(AUTO_LOCK_MINUTES),
+  copyUrlPasswordConfirmed: isBool,
+  toolbarItems: isToolbarItems,
+  toolbarDisplay: oneOf(TOOLBAR_DISPLAYS),
+  mcpEnabled: isBool,
+  mcpAllowWrites: isBool,
+  mcpExposeProduction: isBool,
+  assistantEnabled: isBool,
+  assistantProvider: oneOf(ASSISTANT_PROVIDERS),
+  assistantAnthropicModel: oneOf(ANTHROPIC_MODEL_IDS),
+  assistantOpenaiBaseUrl: isBaseUrl,
+  assistantOpenaiModel: isModelName,
+  assistantOllamaBaseUrl: isBaseUrl,
+  assistantOllamaModel: isModelName,
+  sidebarLazyLoad: isBool,
+  pluginStates: isPluginStates,
+  editorFontFamily: isFontFamily,
+  editorLineHeight: isNumberIn(EDITOR_LINE_HEIGHT_RANGE.min, EDITOR_LINE_HEIGHT_RANGE.max),
+  gridFontFamily: isFontFamily,
+  gridFontSize: intIn(GRID_FONT_SIZE_RANGE.min, GRID_FONT_SIZE_RANGE.max),
+  gridLineHeight: isNumberIn(GRID_LINE_HEIGHT_RANGE.min, GRID_LINE_HEIGHT_RANGE.max),
+  gridRowPadding: intIn(GRID_ROW_PADDING_RANGE.min, GRID_ROW_PADDING_RANGE.max),
+  sidebarFontSize: intIn(SIDEBAR_FONT_SIZE_RANGE.min, SIDEBAR_FONT_SIZE_RANGE.max),
+  sidebarFontFamily: isFontFamily,
+  colorOverrides: isColorOverrides,
+  gridNoElastic: isBool,
+  gridAutoExpandText: isBool,
 };
 
 function assign<K extends keyof Prefs>(target: Prefs, key: K, value: unknown): void {
@@ -299,17 +570,48 @@ function writeLocal(prefs: Prefs): void {
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let loadPromise: Promise<void> | null = null;
 let editedBeforeLoad = false;
+/** The preferences as last saved to (or read from) the app DB: a save tells the others the rest. */
+let lastSaved: Prefs | null = null;
+
+/** The keys whose values differ between `before` and `after`, with their `after` values. */
+export function changedPrefs(before: Readonly<Prefs>, after: Readonly<Prefs>): Partial<Prefs> {
+  const out: Record<string, unknown> = {};
+  for (const key of PREF_KEYS) if (before[key] !== after[key]) out[key] = after[key];
+  return out as Partial<Prefs>;
+}
 
 async function saveNow(): Promise<void> {
+  const prefs = usePrefsStore.getState().prefs;
   try {
-    await ipc.settings.set(PREFS_KEY, usePrefsStore.getState().prefs);
+    await ipc.settings.set(PREFS_KEY, prefs);
   } catch (err) {
     console.warn("[prefs] save failed", err);
     toast.error("Could not save preferences", {
       id: "prefs-save",
       description: err instanceof Error ? err.message : String(err),
     });
+    return;
   }
+  const changed = changedPrefs(lastSaved ?? DEFAULT_PREFS, prefs);
+  lastSaved = prefs;
+  // The other windows apply the change now (`applyPrefsFromOtherWindow`), not at their restart.
+  if (Object.keys(changed).length > 0)
+    void broadcastEvent("prefs:changed", { from: RENDERER_ID, changed }).catch((err: unknown) =>
+      console.warn("[prefs] could not tell the other windows", err),
+    );
+}
+
+/**
+ * Another window saved preferences (`prefs:changed`): its changed keys are applied here without
+ * saving them again. Edits of this window that are still waiting to be saved keep their keys.
+ */
+export function applyPrefsFromOtherWindow(changed: unknown): void {
+  const current = usePrefsStore.getState().prefs;
+  const next = sanitizePrefs(changed, current);
+  lastSaved = sanitizePrefs(changed, lastSaved ?? DEFAULT_PREFS);
+  if (samePrefs(next, current)) return;
+  usePrefsStore.setState({ prefs: next });
+  writeLocal(next);
 }
 
 function scheduleSave(): void {
@@ -350,6 +652,7 @@ export function loadPrefs(): Promise<void> {
       return;
     }
     const prefs = sanitizePrefs(stored);
+    lastSaved = prefs;
     usePrefsStore.setState({ prefs: samePrefs(prefs, current) ? current : prefs, loaded: true });
     writeLocal(prefs);
   })();
@@ -402,5 +705,6 @@ export function resetPrefsForTests(prefs: Readonly<Prefs> = DEFAULT_PREFS): void
   saveTimer = null;
   loadPromise = null;
   editedBeforeLoad = false;
+  lastSaved = null;
   usePrefsStore.setState({ prefs: { ...prefs }, loaded: false });
 }

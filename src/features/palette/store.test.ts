@@ -41,4 +41,20 @@ describe("palette store", () => {
     s.toggle();
     expect(usePaletteStore.getState().open).toBe(false);
   });
+
+  it("opens Search in Database with the sidebar's query; other openings start empty", () => {
+    const s = usePaletteStore.getState();
+    s.openPalette("objects", "ord");
+    expect(usePaletteStore.getState()).toMatchObject({
+      open: true,
+      mode: "objects",
+      session: 1,
+      initialQuery: "ord",
+    });
+    s.toggle("all");
+    expect(usePaletteStore.getState()).toMatchObject({ mode: "all", initialQuery: "" });
+    s.setOpen(false);
+    s.setOpen(true);
+    expect(usePaletteStore.getState()).toMatchObject({ mode: "all", initialQuery: "" });
+  });
 });

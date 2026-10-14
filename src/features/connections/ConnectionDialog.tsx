@@ -1,14 +1,17 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
   Check,
+  ChevronDown,
   ChevronRight,
   FilePlus2,
   FolderOpen,
   Info,
+  Link2,
   Loader2,
   Network,
   ScrollText,
   ShieldOff,
+  Tags,
   X,
 } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -16,6 +19,12 @@ import { Controller, useForm, type FieldErrors, type UseFormReturn } from "react
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -30,6 +39,7 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -42,11 +52,13 @@ import {
   isMock,
   toIpcError,
   type ConnectionProfile,
-  type ConnectionTag,
   type Driver,
+  type MysqlVersion,
   type PasswordMode,
   type SafeModeLevel,
+  type SshPasswordMode,
   type SslMode,
+  type SslNegotiation,
 } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
@@ -55,26 +67,42 @@ import { cn } from "@/lib/utils";
 import { getPrefs } from "@/stores/prefs";
 import { DriverBadge } from "./badges";
 import { BootstrapCommandsDialog } from "./BootstrapCommandsDialog";
-import { accentColor, DRIVER_LABEL, DRIVER_TINT, DRIVERS, TAG_COLOR, TAG_LABEL } from "./colors";
+import { accentColor, cssColor, DRIVER_LABEL, DRIVER_TINT, DRIVERS } from "./colors";
+import { CustomColorSwatch } from "./CustomColorSwatch";
+import { EditTagsDialog } from "./EditTagsDialog";
 import { GroupCombobox } from "./GroupCombobox";
 import { knownGroups, useStoredGroups } from "./groups";
 import { openConnectionOf, useOpenProfile } from "./openProfile";
-import { askConnectionPassword, handOverPassword, isPromptCancelled } from "./passwordPromptStore";
+import {
+  askConnectionPassword,
+  handOverPassword,
+  isPromptCancelled,
+  requestPassword,
+} from "./passwordPromptStore";
 import {
   CONNECTION_TAGS,
   connectionFormSchema,
+  DEFAULT_CONNECT_TIMEOUT_SECS,
+  ENCODING_CHOICES,
   DEFAULT_FORM,
   formToProfileInput,
+  MYSQL_REMOTE_SOCKET_PLACEHOLDER,
   MYSQL_SOCKET_PLACEHOLDER,
+  MYSQL_VERSION_LABEL,
+  MYSQL_VERSIONS,
   newProfileForm,
   PASSWORD_MODE_LABEL,
-  PASSWORD_MODES,
+  passwordModesFor,
   profileToForm,
   SAFE_MODE_LABEL,
   SAFE_MODES,
+  SQLCIPHER_COMPATIBILITY,
+  SSH_PASSWORD_MODES,
   urlToForm,
   type ConnectionFormValues,
 } from "./schema";
+import { openConnectionUrlDialog } from "./store";
+import { tagColorOf, tagLabel, useCustomTags, type CustomTag } from "./tags";
 import type { ParsedConnectionUrl } from "./url";
 import {
   hostKeyDeclined,
@@ -88,8 +116,11 @@ type Form = UseFormReturn<ConnectionFormValues>;
 
 const DEFAULT_PORT: Record<Driver, string> = { postgres: "5432", mysql: "3306", sqlite: "" };
 
-/** SSL modes per driver, in menu order: libpq's names for PostgreSQL, MySQL's for MySQL. */
-const SSL_MODES: Record<Exclude<Driver, "sqlite">, ReadonlyArray<[SslMode, string]>> = {
+/**
+ * SSL modes per driver, in menu order: libpq's names for PostgreSQL, MySQL's for MySQL, and the
+ * MariaDB / old MySQL driver's three (Ver. ▸ MariaDB or Old MySQL).
+ */
+const SSL_MODES: Record<Exclude<Driver, "sqlite"> | "mariadb", ReadonlyArray<[SslMode, string]>> = {
   postgres: [
     ["disable", "disable"],
     ["prefer", "prefer"],
@@ -104,6 +135,55 @@ const SSL_MODES: Record<Exclude<Driver, "sqlite">, ReadonlyArray<[SslMode, strin
     ["verify-ca", "VERIFY-CA"],
     ["verify-full", "VERIFY-IDENTITY"],
   ],
+  mariadb: [
+    ["prefer", "PREFERRED"],
+    ["require", "ENFORCE"],
+    ["verify-full", "VERIFY-SERVER-CERT"],
+  ],
+};
+
+/** MariaDB, SingleStore DB and Old MySQL share the short list (TablePlus's Ver. menu). */
+const SHORT_SSL_LIST: readonly MysqlVersion[] = ["mariadb", "singlestore", "old"];
+
+/** The SSL mode list of the form's driver and MySQL version. */
+function sslModesOf(driver: Driver, version: MysqlVersion): ReadonlyArray<[SslMode, string]> {
+  if (driver !== "mysql") return SSL_MODES.postgres;
+  return SHORT_SSL_LIST.includes(version) ? SSL_MODES.mariadb : SSL_MODES.mysql;
+}
+
+/** The MariaDB / SingleStore / old MySQL list has no DISABLED and no VERIFY-CA: their nearest mode. */
+function sslForVersion(ssl: SslMode, version: MysqlVersion): SslMode {
+  if (!SHORT_SSL_LIST.includes(version)) return ssl;
+  return ssl === "disable" ? "prefer" : ssl === "verify-ca" ? "verify-full" : ssl;
+}
+
+/**
+ * What Old MySQL changes for TLS: servers of the 5.5 / 5.6 era offer TLS 1.0 / 1.1 only, which
+ * the default driver (TLS 1.2 and up) cannot speak. The old driver goes through the system's TLS
+ * library, which does, but it cannot send the PEM client certificate.
+ */
+const OLD_MYSQL_TLS_NOTE =
+  "Old MySQL: TLS 1.0 and 1.1 servers are supported (macOS), as are pre-4.1 password hashes. Key… / Cert… are only sent over TLS 1.2 or newer";
+
+const SSL_NEGOTIATION_LABEL: Record<SslNegotiation, string> = {
+  postgres: "Postgres",
+  direct: "Direct",
+};
+
+const SSH_PASSWORD_MODE_LABEL: Record<SshPasswordMode, string> = {
+  keychain: "Store in keychain",
+  ask: "Ask every time",
+  none: "No password",
+};
+
+/** "Edit Tags…" at the end of the Tag menu (not a tag). */
+const EDIT_TAGS = "__tabler.edit-tags__";
+
+const SQLCIPHER_LABEL: Record<(typeof SQLCIPHER_COMPATIBILITY)[number], string> = {
+  "": "Default (SQLCipher 4)",
+  "3": "SQLCipher 3",
+  "2": "SQLCipher 2",
+  "1": "SQLCipher 1",
 };
 
 const SAFE_MODE_HINT: Record<SafeModeLevel, string> = {
@@ -229,8 +309,22 @@ async function pickNewSqliteFile(): Promise<string | null> {
 async function createSqliteFile(form: Form): Promise<void> {
   const path = (await pickNewSqliteFile())?.trim();
   if (!path) return;
+  const { passwordMode, password, sqliteCipherCompatibility } = form.getValues();
+  // With an encryption key the new database is encrypted (SQLCipher): the key typed in the form,
+  // or, when it is asked every time, asked now.
+  let key: string | null = passwordMode === "keychain" && password !== "" ? password : null;
+  if (passwordMode === "ask") {
+    key = await requestPassword({
+      title: "Encryption key of the new database",
+      description:
+        "The new database is encrypted with this key (SQLCipher). It is asked again on every connect.",
+      confirmLabel: "Create",
+    });
+    if (key === null) return;
+  }
+  const compatibility = sqliteCipherCompatibility === "" ? null : Number(sqliteCipherCompatibility);
   try {
-    await ipc.profiles.createSqliteFile(path);
+    await ipc.profiles.createSqliteFile(path, key || null, compatibility);
   } catch (err) {
     toast.error("Could not create the SQLite file", { description: toIpcError(err).message });
     return;
@@ -361,6 +455,7 @@ function DriverPicker({
 /** "Bootstrap commands…" and a one-line preview of what is set. */
 function BootstrapRow({ form, onOpen }: { form: Form; onOpen: () => void }) {
   const sql = form.watch("startupSql").trim();
+  const script = form.watch("bootstrapScript").trim();
   const lines = sql === "" ? [] : sql.split("\n").filter((l) => l.trim() !== "");
   return (
     <Row label="">
@@ -378,9 +473,25 @@ function BootstrapRow({ form, onOpen }: { form: Form; onOpen: () => void }) {
             {lines.length > 1 ? ` (+${lines.length - 1} more)` : ""}
           </span>
         )}
+        {script !== "" && (
+          <span
+            className="text-muted-foreground shrink-0 text-[11px]"
+            title={script}
+            data-testid="bootstrap-script-summary"
+          >
+            {lines.length > 0 ? "· " : ""}+ shell script
+          </span>
+        )}
       </div>
     </Row>
   );
+}
+
+/** The Tag menu: the built-ins, the custom tags, and the form's tag when nobody defines it. */
+function tagOptions(current: string | null, custom: readonly CustomTag[]): string[] {
+  const out: string[] = [...CONNECTION_TAGS, ...custom.map((t) => t.name)];
+  if (current && !out.some((t) => t.toLowerCase() === current.toLowerCase())) out.push(current);
+  return out;
 }
 
 function GeneralFields({
@@ -388,14 +499,18 @@ function GeneralFields({
   hasStoredPassword,
   groups,
   onBootstrap,
+  onEditTags,
 }: {
   form: Form;
   hasStoredPassword: boolean;
   /** Existing group names, suggested in the Group field. */
   groups: readonly string[];
   onBootstrap: () => void;
+  onEditTags: () => void;
 }) {
   const { register, control, formState, watch, setValue, getValues } = form;
+  const customTags = useCustomTags();
+  const mysqlVersion = watch("mysqlVersion");
   const errors = formState.errors;
   const uid = useId();
   const driver = watch("driver");
@@ -405,6 +520,7 @@ function GeneralFields({
   const sqlite = driver === "sqlite";
   const keychain = passwordMode === "keychain";
   const socket = driver === "mysql" && watch("useSocket");
+  const socketOverSsh = socket && watch("sshEnabled");
   /** MySQL "Use socket": swaps Host / Port for the socket path. */
   const socketToggle = driver === "mysql" && (
     <label className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs whitespace-nowrap">
@@ -444,22 +560,31 @@ function GeneralFields({
             render={({ field }) => (
               <Select
                 value={field.value ?? ""}
-                onValueChange={(v) => field.onChange(v as ConnectionTag)}
+                onValueChange={(v) => {
+                  // "Edit Tags…" opens the tag editor and keeps the current tag.
+                  if (v === EDIT_TAGS) onEditTags();
+                  else field.onChange(v);
+                }}
               >
                 <SelectTrigger id={`${uid}-tag`} className="w-36">
                   <SelectValue placeholder="None" />
                 </SelectTrigger>
                 <SelectContent>
-                  {CONNECTION_TAGS.map((t) => (
+                  {tagOptions(field.value, customTags).map((t) => (
                     <SelectItem key={t} value={t}>
                       <span
                         aria-hidden
-                        className="size-2 rounded-full"
-                        style={{ background: accentColor(TAG_COLOR[t]) }}
+                        className="size-2 shrink-0 rounded-full"
+                        style={{ background: cssColor(tagColorOf(t, customTags)) }}
                       />
-                      {TAG_LABEL[t]}
+                      <span className="truncate">{tagLabel(t)}</span>
                     </SelectItem>
                   ))}
+                  <SelectSeparator />
+                  <SelectItem value={EDIT_TAGS}>
+                    <Tags aria-hidden className="size-3.5" />
+                    Edit Tags…
+                  </SelectItem>
                 </SelectContent>
               </Select>
             )}
@@ -491,6 +616,7 @@ function GeneralFields({
                     style={{ background: accentColor(c) }}
                   />
                 ))}
+                <CustomColorSwatch value={field.value} onChange={field.onChange} />
               </div>
             )}
           />
@@ -514,68 +640,77 @@ function GeneralFields({
         />
       </Row>
       <Row label="Driver" htmlFor={`${uid}-driver`}>
-        <Controller
-          control={control}
-          name="driver"
-          render={({ field }) => (
-            <Select
-              value={field.value}
-              onValueChange={(v) => {
-                const next = v as Driver;
-                const port = getValues("port").trim();
-                field.onChange(next);
-                // Follow the driver unless the port was typed in.
-                if (next !== "sqlite" && (port === "" || port === "5432" || port === "3306"))
-                  setValue("port", DEFAULT_PORT[next]);
-              }}
-            >
-              <SelectTrigger id={`${uid}-driver`} className="w-48">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {DRIVERS.map((d) => (
-                  <SelectItem key={d} value={d}>
-                    {DRIVER_LABEL[d]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <div className="flex items-center gap-2">
+          <Controller
+            control={control}
+            name="driver"
+            render={({ field }) => (
+              <Select
+                value={field.value}
+                onValueChange={(v) => {
+                  const next = v as Driver;
+                  const port = getValues("port").trim();
+                  field.onChange(next);
+                  // Follow the driver unless the port was typed in.
+                  if (next !== "sqlite" && (port === "" || port === "5432" || port === "3306"))
+                    setValue("port", DEFAULT_PORT[next]);
+                }}
+              >
+                <SelectTrigger id={`${uid}-driver`} className="w-48">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DRIVERS.map((d) => (
+                    <SelectItem key={d} value={d}>
+                      {DRIVER_LABEL[d]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          />
+          {driver === "mysql" && (
+            <>
+              <Label
+                htmlFor={`${uid}-version`}
+                className="text-muted-foreground shrink-0 text-xs font-normal"
+              >
+                Ver.
+              </Label>
+              <Controller
+                control={control}
+                name="mysqlVersion"
+                render={({ field }) => (
+                  <Select
+                    value={field.value}
+                    onValueChange={(v) => {
+                      const version = v as MysqlVersion;
+                      field.onChange(version);
+                      // The MariaDB / old MySQL list has its own three SSL modes.
+                      setValue("ssl", sslForVersion(getValues("ssl"), version), {
+                        shouldDirty: true,
+                      });
+                    }}
+                  >
+                    <SelectTrigger id={`${uid}-version`} className="w-40">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {MYSQL_VERSIONS.map((m) => (
+                        <SelectItem key={m} value={m}>
+                          {MYSQL_VERSION_LABEL[m]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </>
           )}
-        />
+        </div>
       </Row>
 
-      {sqlite ? (
-        <Row label="Database file" htmlFor={`${uid}-file`} error={errors.sqlitePath?.message}>
-          <div className="flex gap-2">
-            <Input
-              id={`${uid}-file`}
-              {...register("sqlitePath")}
-              placeholder="/path/to/database.sqlite"
-              className="font-mono"
-              aria-invalid={errors.sqlitePath ? true : undefined}
-            />
-            <Button
-              type="button"
-              variant="outline"
-              title="Open an existing database file"
-              onClick={async () => {
-                const p = await pickSqliteFile();
-                if (p) setValue("sqlitePath", p, { shouldValidate: true, shouldDirty: true });
-              }}
-            >
-              <FolderOpen /> Choose…
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              title="Create a new, empty database file"
-              onClick={() => void createSqliteFile(form)}
-            >
-              <FilePlus2 /> New…
-            </Button>
-          </div>
-        </Row>
-      ) : null}
+      {sqlite ? <SqliteFields form={form} hasStoredPassword={hasStoredPassword} /> : null}
       {sqlite ? (
         <BootstrapRow form={form} onOpen={onBootstrap} />
       ) : (
@@ -585,13 +720,19 @@ function GeneralFields({
               label="Socket"
               htmlFor={`${uid}-socket`}
               error={errors.socketPath?.message}
-              hint="Leave empty to detect it (/tmp/mysql.sock, /var/run/mysqld/mysqld.sock, Homebrew's)"
+              hint={
+                socketOverSsh
+                  ? "The socket file on the SSH server, forwarded through the tunnel. Leave empty to try /var/run/mysqld/mysqld.sock, /tmp/mysql.sock and /var/lib/mysql/mysql.sock there"
+                  : "Leave empty to detect it (/tmp/mysql.sock, /var/run/mysqld/mysqld.sock, Homebrew's)"
+              }
             >
               <div className="flex items-center gap-2">
                 <Input
                   id={`${uid}-socket`}
                   {...register("socketPath")}
-                  placeholder={MYSQL_SOCKET_PLACEHOLDER}
+                  placeholder={
+                    socketOverSsh ? MYSQL_REMOTE_SOCKET_PLACEHOLDER : MYSQL_SOCKET_PLACEHOLDER
+                  }
                   className="font-mono"
                   aria-invalid={errors.socketPath ? true : undefined}
                 />
@@ -685,7 +826,7 @@ function GeneralFields({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {PASSWORD_MODES.map((m) => (
+                      {passwordModesFor("postgres").map((m) => (
                         <SelectItem key={m} value={m}>
                           {PASSWORD_MODE_LABEL[m]}
                         </SelectItem>
@@ -749,30 +890,73 @@ function GeneralFields({
           <Row
             label="SSL mode"
             htmlFor={`${uid}-ssl`}
+            error={errors.pgSslNegotiation?.message}
             hint={
               driver === "mysql" && ssl === "verify-ca"
-                ? "The MySQL driver also checks the host name here: use a name the certificate lists"
-                : undefined
+                ? "Checks the certificate chain (the CA file, else the system's roots) but not the host name; VERIFY-IDENTITY checks the name too"
+                : driver === "mysql" && mysqlVersion === "old"
+                  ? OLD_MYSQL_TLS_NOTE
+                  : driver === "postgres" && watch("pgSslNegotiation") === "direct"
+                    ? "Direct: TLS right away, without asking the server first (PostgreSQL 17+)"
+                    : undefined
             }
           >
-            <Controller
-              control={control}
-              name="ssl"
-              render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger id={`${uid}-ssl`} className="w-48">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SSL_MODES[driver === "mysql" ? "mysql" : "postgres"].map(([m, label]) => (
-                      <SelectItem key={m} value={m}>
-                        {label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            <div className="flex items-center gap-2">
+              <Controller
+                control={control}
+                name="ssl"
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger id={`${uid}-ssl`} className="w-48">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {sslModesOf(driver, mysqlVersion).map(([m, label]) => (
+                        <SelectItem key={m} value={m}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+              {driver === "postgres" && (
+                <>
+                  <Label
+                    htmlFor={`${uid}-negotiation`}
+                    className="text-muted-foreground shrink-0 text-xs font-normal"
+                  >
+                    Negotiation
+                  </Label>
+                  <Controller
+                    control={control}
+                    name="pgSslNegotiation"
+                    render={({ field }) => (
+                      <Select
+                        value={field.value}
+                        onValueChange={(v) => field.onChange(v as SslNegotiation)}
+                      >
+                        <SelectTrigger
+                          id={`${uid}-negotiation`}
+                          aria-label="SSL negotiation"
+                          className="w-28"
+                          aria-invalid={errors.pgSslNegotiation ? true : undefined}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(["postgres", "direct"] as const).map((m) => (
+                            <SelectItem key={m} value={m}>
+                              {SSL_NEGOTIATION_LABEL[m]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </>
               )}
-            />
+            </div>
           </Row>
           {sslKeys && (
             <Row
@@ -806,9 +990,324 @@ function GeneralFields({
               </div>
             </Row>
           )}
+          <OtherOptionsRow form={form} />
         </>
       )}
     </div>
+  );
+}
+
+/** The driver toggles of TablePlus's "Other options" menu, as [field, label, hint]. */
+const OTHER_OPTIONS: Record<
+  Exclude<Driver, "sqlite">,
+  ReadonlyArray<
+    readonly [
+      "mysqlCleartextPlugin" | "mysqlLocalInfile" | "pgDisableChannelBinding",
+      string,
+      string,
+    ]
+  >
+> = {
+  mysql: [
+    [
+      "mysqlCleartextPlugin",
+      "Enable CLEARTEXT_PLUGIN",
+      "Sends the password in clear text when the server asks (PAM, LDAP); over SSL or a socket only",
+    ],
+    [
+      "mysqlLocalInfile",
+      "Enable LOAD DATA LOCAL INFILE",
+      "The server may read local files; Tabler asks before it sends each one",
+    ],
+  ],
+  postgres: [
+    [
+      "pgDisableChannelBinding",
+      "Disable channel binding",
+      "Logs in with SCRAM-SHA-256 without channel binding (some poolers and proxies need it)",
+    ],
+  ],
+};
+
+/** "Other options": a menu of the driver's toggles, with the ones that are on listed beside it. */
+function OtherOptionsRow({ form }: { form: Form }) {
+  const driver = form.watch("driver");
+  const flags = {
+    mysqlCleartextPlugin: form.watch("mysqlCleartextPlugin"),
+    mysqlLocalInfile: form.watch("mysqlLocalInfile"),
+    pgDisableChannelBinding: form.watch("pgDisableChannelBinding"),
+  };
+  if (driver === "sqlite") return null;
+  const options = OTHER_OPTIONS[driver];
+  const on = options.filter(([field]) => flags[field]);
+  return (
+    <Row
+      label="Other options"
+      hint={on.length > 0 ? on.map(([, , hint]) => hint).join(" · ") : undefined}
+    >
+      <div className="flex h-8 min-w-0 items-center gap-2">
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" variant="outline" size="sm">
+              Other options
+              <ChevronDown />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            {options.map(([field, label]) => (
+              <DropdownMenuCheckboxItem
+                key={field}
+                checked={flags[field]}
+                onCheckedChange={(v) => form.setValue(field, v === true, { shouldDirty: true })}
+              >
+                {label}
+              </DropdownMenuCheckboxItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {on.length > 0 && (
+          <span
+            className="text-muted-foreground min-w-0 truncate text-[11px]"
+            data-testid="other-options-summary"
+          >
+            {on.map(([, label]) => label).join(", ")}
+          </span>
+        )}
+      </div>
+    </Row>
+  );
+}
+
+/**
+ * The SQLite part of the form: the database file (or its path on the SSH server, for SQLite over
+ * SSH), the SQLCipher encryption key with its storage mode and compatibility, the `.sqliterc`
+ * resource file, and the upload switch of SQLite over SSH.
+ */
+function SqliteFields({ form, hasStoredPassword }: { form: Form; hasStoredPassword: boolean }) {
+  const { register, control, formState, watch, setValue } = form;
+  const errors = formState.errors;
+  const uid = useId();
+  const remote = watch("sshEnabled");
+  const mode = watch("passwordMode");
+  const clearPassword = watch("clearPassword");
+  const keychain = mode === "keychain";
+  const resourceFile = watch("sqliteResourceFile");
+  return (
+    <>
+      {remote ? (
+        <Row
+          label="Remote path"
+          htmlFor={`${uid}-file`}
+          error={errors.sqlitePath?.message}
+          hint="The file is downloaded over SFTP on connect (fine for small databases); without upload it opens read-only."
+        >
+          <Input
+            id={`${uid}-file`}
+            {...register("sqlitePath")}
+            placeholder="/var/lib/app/database.sqlite"
+            className="font-mono"
+            aria-invalid={errors.sqlitePath ? true : undefined}
+          />
+        </Row>
+      ) : (
+        <Row label="Database file" htmlFor={`${uid}-file`} error={errors.sqlitePath?.message}>
+          <div className="flex gap-2">
+            <Input
+              id={`${uid}-file`}
+              {...register("sqlitePath")}
+              placeholder="/path/to/database.sqlite"
+              className="font-mono"
+              aria-invalid={errors.sqlitePath ? true : undefined}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              title="Open an existing database file"
+              onClick={async () => {
+                const p = await pickSqliteFile();
+                if (p) setValue("sqlitePath", p, { shouldValidate: true, shouldDirty: true });
+              }}
+            >
+              <FolderOpen /> Choose…
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              title="Create a new, empty database file (encrypted with the key below, if any)"
+              onClick={() => void createSqliteFile(form)}
+            >
+              <FilePlus2 /> New…
+            </Button>
+          </div>
+        </Row>
+      )}
+      {remote && (
+        <Row label="">
+          <label className="text-muted-foreground flex h-8 items-center gap-2 text-xs">
+            <Controller
+              control={control}
+              name="sqliteSshUpload"
+              render={({ field }) => (
+                <Checkbox
+                  checked={field.value}
+                  onCheckedChange={(v) => field.onChange(v === true)}
+                  aria-label="Upload changes back on Commit / Disconnect"
+                />
+              )}
+            />
+            Upload changes back on Commit / Disconnect
+          </label>
+        </Row>
+      )}
+      <Row
+        label="Encryption key"
+        htmlFor={`${uid}-key`}
+        hint={
+          mode === "ask"
+            ? "Asked on every connect; kept in memory while connected"
+            : mode === "none"
+              ? "A plain, unencrypted database"
+              : hasStoredPassword && !clearPassword
+                ? "Stored in Keychain — leave empty to keep"
+                : clearPassword
+                  ? "The stored key is removed on save"
+                  : "SQLCipher; leave empty for a plain database"
+        }
+      >
+        <div className="flex items-center gap-2">
+          <Input
+            id={`${uid}-key`}
+            {...register("password")}
+            type="password"
+            placeholder={
+              !keychain
+                ? mode === "ask"
+                  ? "Asked when connecting"
+                  : "No key"
+                : hasStoredPassword && !clearPassword
+                  ? "••••••••"
+                  : ""
+            }
+            className="font-mono"
+            autoComplete="new-password"
+            disabled={clearPassword || !keychain}
+          />
+          <Controller
+            control={control}
+            name="passwordMode"
+            render={({ field }) => (
+              <Select
+                value={field.value}
+                onValueChange={(v) => {
+                  field.onChange(v as PasswordMode);
+                  if (v !== "keychain") setValue("password", "");
+                }}
+              >
+                <SelectTrigger aria-label="Encryption key storage" className="w-40 shrink-0">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {passwordModesFor("sqlite").map((m) => (
+                    <SelectItem key={m} value={m}>
+                      {m === "none" ? "No key" : PASSWORD_MODE_LABEL[m]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          />
+          {hasStoredPassword && keychain && (
+            <label
+              className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-[11px] whitespace-nowrap"
+              title="Remove the key stored in the Keychain"
+            >
+              <Controller
+                control={control}
+                name="clearPassword"
+                render={({ field }) => (
+                  <Checkbox
+                    checked={field.value}
+                    onCheckedChange={(v) => field.onChange(v === true)}
+                  />
+                )}
+              />
+              Clear
+            </label>
+          )}
+        </div>
+      </Row>
+      {mode !== "none" && (
+        <Row label="Compatibility" htmlFor={`${uid}-cipher`}>
+          <Controller
+            control={control}
+            name="sqliteCipherCompatibility"
+            render={({ field }) => (
+              <Select
+                value={field.value === "" ? "4" : field.value}
+                onValueChange={(v) =>
+                  field.onChange(
+                    (v === "4" ? "" : v) as ConnectionFormValues["sqliteCipherCompatibility"],
+                  )
+                }
+              >
+                <SelectTrigger
+                  id={`${uid}-cipher`}
+                  aria-label="SQLCipher compatibility"
+                  className="w-48"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SQLCIPHER_COMPATIBILITY.map((v) => (
+                    <SelectItem key={v || "4"} value={v || "4"}>
+                      {SQLCIPHER_LABEL[v]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          />
+        </Row>
+      )}
+      <Row
+        label="Resource file"
+        htmlFor={`${uid}-rc`}
+        hint=".sqliterc: its SQL runs after open, before the bootstrap commands (sqlite3 dot-commands are skipped)"
+      >
+        <div className="flex gap-2">
+          <Input
+            id={`${uid}-rc`}
+            {...register("sqliteResourceFile")}
+            placeholder="~/.sqliterc"
+            className="font-mono"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            aria-label="Choose the resource file"
+            title="Choose the resource file"
+            onClick={async () => {
+              const p = await pickFile("Choose the resource file (.sqliterc)");
+              if (p) setValue("sqliteResourceFile", p, { shouldDirty: true });
+            }}
+          >
+            <FolderOpen /> Choose…
+          </Button>
+          {resourceFile !== "" && (
+            <Button
+              type="button"
+              variant="outline"
+              aria-label="Clear the resource file"
+              title="Remove"
+              className="px-2"
+              onClick={() => setValue("sqliteResourceFile", "", { shouldDirty: true })}
+            >
+              —
+            </Button>
+          )}
+        </div>
+      </Row>
+    </>
   );
 }
 
@@ -817,6 +1316,9 @@ function SshFields({ form }: { form: Form }) {
   const errors = formState.errors;
   const uid = useId();
   const auth = watch("sshAuth");
+  const passwordMode = watch("sshPasswordMode");
+  /** SQLite over SSH downloads the file: no tunnel, so no local port. */
+  const tunnel = watch("driver") !== "sqlite";
   return (
     <>
       <Row
@@ -915,14 +1417,52 @@ function SshFields({ form }: { form: Form }) {
         </>
       )}
       {auth === "password" && (
-        <Row label="SSH password" htmlFor={`${uid}-password`}>
-          <Input
-            id={`${uid}-password`}
-            {...register("sshPassword")}
-            type="password"
-            className="font-mono"
-            autoComplete="new-password"
-          />
+        <Row
+          label="SSH password"
+          htmlFor={`${uid}-password`}
+          hint={
+            passwordMode === "ask"
+              ? "Asked on every connect, in the SSH prompt"
+              : passwordMode === "none"
+                ? "Sends no password (the server's own questions are still answered)"
+                : undefined
+          }
+        >
+          <div className="flex items-center gap-2">
+            <Input
+              id={`${uid}-password`}
+              {...register("sshPassword")}
+              type="password"
+              className="font-mono"
+              autoComplete="new-password"
+              placeholder={passwordMode === "keychain" ? "" : SSH_PASSWORD_MODE_LABEL[passwordMode]}
+              disabled={passwordMode !== "keychain"}
+            />
+            <Controller
+              control={control}
+              name="sshPasswordMode"
+              render={({ field }) => (
+                <Select
+                  value={field.value}
+                  onValueChange={(v) => {
+                    field.onChange(v as SshPasswordMode);
+                    if (v !== "keychain") setValue("sshPassword", "");
+                  }}
+                >
+                  <SelectTrigger aria-label="SSH password storage" className="w-40 shrink-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SSH_PASSWORD_MODES.map((m) => (
+                      <SelectItem key={m} value={m}>
+                        {SSH_PASSWORD_MODE_LABEL[m]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            />
+          </div>
         </Row>
       )}
       {auth === "agent" && (
@@ -935,19 +1475,21 @@ function SshFields({ form }: { form: Form }) {
         </>
       )}
       <Row
-        label="Local port"
-        htmlFor={`${uid}-local-port`}
+        label={tunnel ? "Local port" : "Keep-alive"}
+        htmlFor={tunnel ? `${uid}-local-port` : `${uid}-keepalive`}
         error={errors.sshLocalPort?.message ?? errors.sshKeepaliveSecs?.message}
       >
         <div className="flex items-center gap-2">
-          <Input
-            id={`${uid}-local-port`}
-            {...register("sshLocalPort")}
-            placeholder="auto"
-            className="w-24 shrink-0 font-mono"
-            inputMode="numeric"
-            aria-invalid={errors.sshLocalPort ? true : undefined}
-          />
+          {tunnel && (
+            <Input
+              id={`${uid}-local-port`}
+              {...register("sshLocalPort")}
+              placeholder="auto"
+              className="w-24 shrink-0 font-mono"
+              inputMode="numeric"
+              aria-invalid={errors.sshLocalPort ? true : undefined}
+            />
+          )}
           <Label
             htmlFor={`${uid}-keepalive`}
             className="text-muted-foreground shrink-0 text-xs font-normal"
@@ -1042,11 +1584,61 @@ function AdvancedFields({ form }: { form: Form }) {
           <Input id={`${uid}-tz`} {...register("timezone")} className="w-56 font-mono" />
         </Row>
       )}
+      {driver !== "sqlite" && (
+        <Row
+          label="Encoding"
+          htmlFor={`${uid}-encoding`}
+          error={formState.errors.encoding?.message}
+          hint={
+            driver === "mysql"
+              ? "SET NAMES; empty means utf8mb4 (Connection ▸ View Using Encoding… changes it while connected)"
+              : "client_encoding; empty means UTF8 (Connection ▸ View Using Encoding… changes it while connected)"
+          }
+        >
+          <Input
+            id={`${uid}-encoding`}
+            {...register("encoding")}
+            list={`${uid}-encodings`}
+            placeholder={driver === "mysql" ? "utf8mb4" : "UTF8"}
+            className="w-56 font-mono"
+            autoComplete="off"
+            aria-invalid={formState.errors.encoding ? true : undefined}
+          />
+          <datalist id={`${uid}-encodings`}>
+            {ENCODING_CHOICES[driver].map((e) => (
+              <option key={e} value={e} />
+            ))}
+          </datalist>
+        </Row>
+      )}
+      {driver === "postgres" && (
+        <Row
+          label="Parameters"
+          htmlFor={`${uid}-params`}
+          hint={
+            <>
+              libpq style <span className="font-mono">key=value</span>, separated by spaces or new
+              lines: application_name, options, target_session_attrs, or any server setting
+              (statement_timeout, search_path, jit…)
+            </>
+          }
+        >
+          <Textarea
+            id={`${uid}-params`}
+            {...register("pgParams")}
+            placeholder="statement_timeout=30000 jit=off search_path='app, public'"
+            rows={2}
+            spellCheck={false}
+            autoComplete="off"
+            className="min-h-0 resize-none font-mono text-xs"
+          />
+        </Row>
+      )}
       <Row
         label="Connect timeout"
         htmlFor={`${uid}-timeout`}
         error={formState.errors.connectTimeoutSecs?.message}
-        hint="Seconds; empty means 15"
+        hint={`Seconds; empty means ${DEFAULT_CONNECT_TIMEOUT_SECS}`}
       >
         <Input
           id={`${uid}-timeout`}
@@ -1061,7 +1653,13 @@ function AdvancedFields({ form }: { form: Form }) {
 }
 
 /** Fields that live in the (collapsible) Advanced block. */
-const ADVANCED_FIELDS = ["connectTimeoutSecs", "timezone", "safeMode"] as const;
+const ADVANCED_FIELDS = [
+  "connectTimeoutSecs",
+  "timezone",
+  "safeMode",
+  "encoding",
+  "pgParams",
+] as const;
 
 export function ConnectionDialog({
   open,
@@ -1101,6 +1699,7 @@ export function ConnectionDialog({
   const [pickedDriver, setPickedDriver] = useState<Driver>("postgres");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [bootstrapOpen, setBootstrapOpen] = useState(false);
+  const [tagsOpen, setTagsOpen] = useState(false);
   const [busy, setBusy] = useState<"save" | "connect" | null>(null);
   const [testing, setTesting] = useState(false);
   /** Saved by Test (or Save) during this dialog session: later saves update it. */
@@ -1129,6 +1728,7 @@ export function ConnectionDialog({
     setPickedDriver("postgres");
     setAdvancedOpen(false);
     setBootstrapOpen(false);
+    setTagsOpen(false);
     setBusy(null);
     setTesting(false);
     savedOnce.current = false;
@@ -1231,6 +1831,15 @@ export function ConnectionDialog({
     }
   };
 
+  /**
+   * "Import from URL…" of the New connection sheet: closes it and opens the URL dialog, which
+   * opens the form again with the link's values.
+   */
+  const importFromUrl = () => {
+    onOpenChange(false);
+    openConnectionUrlDialog();
+  };
+
   const toggleSsh = () => {
     const on = !sshEnabled;
     form.setValue("sshEnabled", on, { shouldDirty: true });
@@ -1270,13 +1879,18 @@ export function ConnectionDialog({
                 onConfirm={pickDriver}
               />
             </div>
-            <DialogFooter className="border-border mx-0 mb-0 shrink-0 border-t px-5 py-3">
-              <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
-                Cancel
+            <DialogFooter className="border-border mx-0 mb-0 shrink-0 border-t px-5 py-3 sm:justify-between">
+              <Button type="button" variant="ghost" size="sm" onClick={importFromUrl}>
+                <Link2 /> Import from URL…
               </Button>
-              <Button type="button" size="sm" onClick={() => pickDriver(pickedDriver)}>
-                Create
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+                  Cancel
+                </Button>
+                <Button type="button" size="sm" onClick={() => pickDriver(pickedDriver)}>
+                  Create
+                </Button>
+              </div>
             </DialogFooter>
           </>
         ) : (
@@ -1289,6 +1903,18 @@ export function ConnectionDialog({
                   Credentials are stored in the macOS Keychain, never in plain files.
                 </DialogDescription>
               </div>
+              {profile === null && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto shrink-0"
+                  onClick={importFromUrl}
+                  title="Fill the form from a connection URL (postgres://, mysql://, sqlite://…)"
+                >
+                  <Link2 /> Import from URL…
+                </Button>
+              )}
             </DialogHeader>
             <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-4">
               <GeneralFields
@@ -1296,9 +1922,10 @@ export function ConnectionDialog({
                 hasStoredPassword={secret.data?.hasPassword ?? false}
                 groups={groups}
                 onBootstrap={() => setBootstrapOpen(true)}
+                onEditTags={() => setTagsOpen(true)}
               />
-              {sshEnabled && !sqlite && (
-                <Section title="SSH tunnel" sectionRef={sshRef}>
+              {sshEnabled && (
+                <Section title={sqlite ? "SSH (SFTP)" : "SSH tunnel"} sectionRef={sshRef}>
                   <SshFields form={form} />
                 </Section>
               )}
@@ -1310,22 +1937,24 @@ export function ConnectionDialog({
             </div>
             <DialogFooter className="border-border mx-0 mb-0 shrink-0 flex-row items-center gap-2 border-t px-5 py-3 sm:justify-between">
               <div className="flex shrink-0 items-center gap-1.5">
-                {!sqlite && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    aria-pressed={sshEnabled}
-                    onClick={toggleSsh}
-                    title="Connect through an SSH tunnel"
-                    className={cn(
-                      sshEnabled &&
-                        "border-brand/50 bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand dark:border-brand/50 dark:bg-brand-soft",
-                    )}
-                  >
-                    <Network /> Over SSH
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  aria-pressed={sshEnabled}
+                  onClick={toggleSsh}
+                  title={
+                    sqlite
+                      ? "Open a database file on an SSH server (downloaded over SFTP)"
+                      : "Connect through an SSH tunnel"
+                  }
+                  className={cn(
+                    sshEnabled &&
+                      "border-brand/50 bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand dark:border-brand/50 dark:bg-brand-soft",
+                  )}
+                >
+                  <Network /> Over SSH
+                </Button>
                 <Button
                   type="button"
                   variant="ghost"
@@ -1376,9 +2005,21 @@ export function ConnectionDialog({
         <BootstrapCommandsDialog
           open={bootstrapOpen}
           value={form.watch("startupSql")}
+          script={form.watch("bootstrapScript")}
           driver={driver}
           onOpenChange={setBootstrapOpen}
-          onSave={(sql) => form.setValue("startupSql", sql, { shouldDirty: true })}
+          onSave={(sql, script) => {
+            form.setValue("startupSql", sql, { shouldDirty: true });
+            form.setValue("bootstrapScript", script, { shouldDirty: true });
+          }}
+        />
+        <EditTagsDialog
+          open={tagsOpen}
+          onOpenChange={setTagsOpen}
+          current={form.watch("tag")}
+          onRenamed={(from, to) => {
+            if (form.getValues("tag") === from) form.setValue("tag", to, { shouldDirty: true });
+          }}
         />
       </DialogContent>
     </Dialog>

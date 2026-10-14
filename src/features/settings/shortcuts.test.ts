@@ -79,7 +79,8 @@ describe("groupShortcuts", () => {
     expect(row("SQL editor", "Run all")?.keys).toEqual(["Mod+Shift+Enter"]);
     expect(row("SQL editor", "Beautify SQL")?.keys).toEqual(["Mod+I", "Alt+Shift+F"]);
     expect(row("SQL editor", "Uglify SQL")?.keys).toEqual(["Mod+Shift+I"]);
-    expect(row("SQL editor", "Explain")?.keys).toEqual(["Mod+E"]);
+    // ⌘E is "Open SQL editor" in the SQL editor too (TablePlus has no key for Explain).
+    expect(row("SQL editor", "Explain")?.keys).toEqual(["Mod+Alt+E"]);
     expect(row("Global", "Toggle result pane")?.keys).toEqual(["Ctrl+`"]);
   });
 });
@@ -148,6 +149,7 @@ describe("reference shortcuts", () => {
       "Cancel the edit",
       "New line (opens the multi-line editor)",
       "Save (JSON / multi-line editor)",
+      "Stage the edit and commit changes",
     ]);
     const editor = rowsOf("SQL editor");
     expect(editor.find((r) => r.label === "Find next")?.keys).toEqual(["F3", "Mod+G"]);
@@ -158,8 +160,8 @@ describe("reference shortcuts", () => {
   it("is searchable like the keymap (but not by its synthetic ids)", () => {
     const labels = (q: string) =>
       groupShortcuts(KEYMAP, q, true).flatMap((g) => g.rows.map((r) => r.label));
-    expect(labels("comment")).toEqual(["Toggle comment"]);
-    expect(labels("⌘/")).toEqual(["Toggle comment"]);
+    expect(labels("comment")).toEqual(["Toggle line comment", "Toggle block comment"]);
+    expect(labels("⌘/")).toEqual(["Toggle line comment"]);
     expect(labels("cell editor escape")).toEqual(["Cancel the edit"]);
     expect(labels("f2")).toEqual(["Edit cell (typing does not edit)"]);
     expect(labels("ref:")).toEqual([]);

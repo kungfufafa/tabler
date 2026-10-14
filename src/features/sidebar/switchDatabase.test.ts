@@ -5,7 +5,18 @@ import { ipc, type ConnectionInfo } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTableTabsStore } from "@/stores/tableTabs";
 import { useTabsStore } from "@/stores/tabs";
-import { switchDatabase, useDatabaseSwitchStore } from "./switchDatabase";
+import * as passwords from "@/features/connections/passwordPromptStore";
+import { usePaletteStore } from "@/features/palette/store";
+import { railOrder } from "@/features/tabs/workspaces";
+import { profile } from "@/lib/ipc/mock/fixtures";
+import { useUiStore } from "@/stores/ui";
+import {
+  connectWorkspace,
+  openDatabaseWorkspace,
+  switchDatabase,
+  useDatabaseSwitchStore,
+  workspaceOf,
+} from "./switchDatabase";
 
 const toast = vi.hoisted(() => ({ error: vi.fn() }));
 vi.mock("sonner", () => ({ toast }));
@@ -132,5 +143,87 @@ describe("switchDatabase", () => {
     const spy = vi.spyOn(ipc.connections, "switchDatabase");
     await expect(switchDatabase(new QueryClient(), "c9", "shop")).resolves.toBe(false);
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe("per-database workspaces", () => {
+  beforeEach(() => {
+    useUiStore.setState({ railOrder: [], view: "workspace" });
+    usePaletteStore.setState({ connecting: [] });
+  });
+
+  const opened = (connectionId: string, database: string): ConnectionInfo => ({
+    ...info,
+    connectionId,
+    currentDatabase: database,
+  });
+
+  it("opens another database in a new workspace next to this one", async () => {
+    const { qc, tab } = setup();
+    useConnectionsStore.getState().add({ ...info, connectionId: "c2", profileId: "p2" });
+    const connect = vi.spyOn(ipc.connections, "connect").mockResolvedValue(opened("c3", "shop"));
+    await expect(openDatabaseWorkspace(qc, "c1", "shop")).resolves.toBe(true);
+    expect(connect).toHaveBeenCalledWith("p1", null, "shop");
+    const conns = useConnectionsStore.getState();
+    expect(conns.activeId).toBe("c3");
+    // This workspace keeps its database and its tabs.
+    expect(conns.byId.c1!.info.currentDatabase).toBe("app");
+    expect(useTabsStore.getState().tabs.map((t) => t.id)).toEqual([tab]);
+    expect(railOrder()).toEqual(["c1", "c3", "c2"]);
+    expect(workspaceOf("p1", "shop")).toBe("c3");
+    expect(useDatabaseSwitchStore.getState().pending).toEqual({});
+
+    // Open already: shown, not opened twice.
+    useConnectionsStore.getState().setActive("c1");
+    await expect(openDatabaseWorkspace(qc, "c1", "shop")).resolves.toBe(true);
+    expect(useConnectionsStore.getState().activeId).toBe("c3");
+    await expect(openDatabaseWorkspace(qc, "c3", "app")).resolves.toBe(true);
+    expect(useConnectionsStore.getState().activeId).toBe("c1");
+    expect(connect).toHaveBeenCalledOnce();
+  });
+
+  it("reports a database that cannot be opened", async () => {
+    const { qc } = setup();
+    vi.spyOn(ipc.connections, "connect").mockRejectedValue(new Error("no such database"));
+    await expect(openDatabaseWorkspace(qc, "c1", "gone")).resolves.toBe(false);
+    expect(toast.error).toHaveBeenCalledWith("Could not open gone", {
+      description: "no such database",
+    });
+    expect(useConnectionsStore.getState().order).toEqual(["c1"]);
+  });
+
+  it("asks an 'Ask every time' profile's password only when the backend does not have it", async () => {
+    const qc = new QueryClient();
+    const asking = profile({ id: "p1", name: "Local PG", driver: "postgres" });
+    qc.setQueryData(
+      ["profiles"],
+      [{ ...asking, options: { ...asking.options, passwordMode: "ask" } }],
+    );
+    const connect = vi
+      .spyOn(ipc.connections, "connect")
+      .mockRejectedValueOnce({ code: "AUTH_FAILED", message: "enter the password" })
+      .mockResolvedValue(opened("c5", "app"));
+    const asked = vi.spyOn(passwords, "askConnectionPassword").mockResolvedValue("secret");
+    await expect(connectWorkspace(qc, "p1", "app")).resolves.toBe("c5");
+    expect(connect.mock.calls).toEqual([
+      ["p1", null, "app"],
+      ["p1", "secret", "app"],
+    ]);
+    expect(asked).toHaveBeenCalledOnce();
+    expect(usePaletteStore.getState().connecting).toEqual([]);
+  });
+
+  it("keeps a workspace's place in the rail when it switches database in place", async () => {
+    const { qc } = setup();
+    useConnectionsStore.getState().add({ ...info, connectionId: "c2", profileId: "p2" });
+    useUiStore.setState({ railOrder: ["p2\u0000app", "p1\u0000app"] });
+    expect(railOrder()).toEqual(["c2", "c1"]);
+    vi.spyOn(ipc.connections, "switchDatabase").mockResolvedValue({
+      ...info,
+      currentDatabase: "shop",
+    });
+    await switchDatabase(qc, "c1", "shop");
+    expect(useUiStore.getState().railOrder).toEqual(["p2\u0000app", "p1\u0000shop"]);
+    expect(railOrder()).toEqual(["c2", "c1"]);
   });
 });

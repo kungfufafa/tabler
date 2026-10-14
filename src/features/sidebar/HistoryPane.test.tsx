@@ -58,6 +58,17 @@ const sqlOf = (tabId: string) => getEditorState(tabId)?.doc.toString();
 const wait = (ms: number) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
 
 describe("HistoryPane", () => {
+  it("badges the statements an MCP client ran", async () => {
+    const base = (await ipc.history.list({ search: null, limit: 1 }))[0]!;
+    vi.spyOn(ipc.history, "list").mockResolvedValue([
+      { ...base, id: 9, sql: "select 9", source: "mcp" },
+      { ...base, id: 8, sql: "select 8", source: "editor" },
+    ]);
+    const { entry } = setup();
+    expect(within(await entry("select 9")).getByText("MCP")).toBeInTheDocument();
+    expect(within(await entry("select 8")).queryByText("MCP")).toBeNull();
+  });
+
   beforeEach(() => {
     // Only the clock is fixed (mid-afternoon), so "Today" / "Yesterday" never straddle midnight.
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -105,13 +116,24 @@ describe("HistoryPane", () => {
     setup(connection("p-other", "Shop"));
     expect(await screen.findByText("No history yet")).toBeInTheDocument();
     expect(screen.getByText("Statements you run on Shop appear here.")).toBeInTheDocument();
-    expect(list).toHaveBeenLastCalledWith({ profileId: "p-other", search: null, limit: 200 });
+    const noOptions = { matchCase: false, wholeWord: false, regex: false };
+    expect(list).toHaveBeenLastCalledWith({
+      profileId: "p-other",
+      search: null,
+      limit: 200,
+      ...noOptions,
+    });
 
     const toggle = screen.getByRole("button", { name: "All connections" });
     expect(toggle).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(toggle);
     expect(await screen.findByText(NEWEST)).toBeInTheDocument();
-    expect(list).toHaveBeenLastCalledWith({ profileId: null, search: null, limit: 200 });
+    expect(list).toHaveBeenLastCalledWith({
+      profileId: null,
+      search: null,
+      limit: 200,
+      ...noOptions,
+    });
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     expect(useSidebarPrefs.getState().options.historyAllConnections).toBe(true);
     expect(JSON.parse(localStorage.getItem(OPTIONS_STORAGE_KEY)!)).toMatchObject({
@@ -135,28 +157,29 @@ describe("HistoryPane", () => {
     expect(await screen.findByText(NEWEST)).toBeInTheDocument();
   });
 
-  it("opens a clicked entry in a new query tab, and runs it on a double-click", async () => {
+  it("only selects on a click, and opens a new query tab on a double-click without running it", async () => {
     const run = vi.spyOn(controller, "runQuery").mockResolvedValue();
     const { entry } = setup();
-    fireEvent.click(await entry(UPDATE), { detail: 1 });
-    // The click waits for a possible second one.
+    const update = await entry(UPDATE);
+    fireEvent.click(update, { detail: 1 });
+    // A click selects the entry (to copy it, say): no tab opens, now or later.
+    await wait(500);
     expect(tabs()).toHaveLength(0);
-    await waitFor(() => expect(tabs()).toHaveLength(1));
-    const first = tabs()[0]!;
-    expect(first).toMatchObject({ kind: "query", connectionId: "c1" });
-    expect(useTabsStore.getState().activeId).toBe(first.id);
-    expect(sqlOf(first.id)).toBe(UPDATE);
+    expect(update.getAttribute("aria-selected")).toBe("true");
     expect(run).not.toHaveBeenCalled();
 
     const row = await entry(USERS);
     fireEvent.click(row, { detail: 1 });
     fireEvent.click(row, { detail: 2 });
     fireEvent.doubleClick(row);
-    await wait(400);
-    expect(tabs()).toHaveLength(2);
-    const second = tabs()[1]!;
-    expect(sqlOf(second.id)).toBe(USERS);
-    expect(run).toHaveBeenCalledExactlyOnceWith(second.id, "auto", expect.any(Object));
+    await wait(500);
+    expect(tabs()).toHaveLength(1);
+    const first = tabs()[0]!;
+    expect(first).toMatchObject({ kind: "query", connectionId: "c1" });
+    expect(useTabsStore.getState().activeId).toBe(first.id);
+    expect(sqlOf(first.id)).toBe(USERS);
+    // Opening is not running: a double-click on an old DELETE / UPDATE must be harmless.
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("moves through the entries with the keyboard: ↓ from the search, Enter, ⌘↩, ⌘⌫", async () => {
@@ -171,10 +194,12 @@ describe("HistoryPane", () => {
     fireEvent.keyDown(await entry(NEWEST), { key: "ArrowUp" });
     expect(search()).toHaveFocus();
 
-    // Enter (a keyboard click) opens at once; ⌘↩ opens and runs.
+    // Enter (a keyboard click, the double-click of the keyboard) opens without running; ⌘↩ opens
+    // and runs.
     fireEvent.click(await entry(NEWEST), { detail: 0 });
     expect(tabs()).toHaveLength(1);
     expect(sqlOf(tabs()[0]!.id)).toBe(NEWEST);
+    expect(run).not.toHaveBeenCalled();
     fireEvent.keyDown(await entry(FAILED), { key: "Enter", metaKey: true });
     expect(tabs()).toHaveLength(2);
     expect(run).toHaveBeenCalledExactlyOnceWith(tabs()[1]!.id, "auto", expect.any(Object));
@@ -182,6 +207,17 @@ describe("HistoryPane", () => {
     fireEvent.keyDown(await entry(FAILED), { key: "Backspace", metaKey: true });
     await waitFor(() => expect(screen.queryByText(FAILED)).toBeNull());
     expect((await ipc.history.list({})).map((e) => e.sql)).not.toContain(FAILED);
+  });
+
+  it("lists Copy, Run, Open in New Tab, Insert in that order in the context menu", async () => {
+    const { entry } = setup();
+    fireEvent.contextMenu(await entry(UPDATE));
+    const names = screen.getAllByRole("menuitem").map((m) => (m.textContent ?? "").trim());
+    const at = (label: RegExp) => names.findIndex((n) => label.test(n));
+    expect(at(/^Copy SQL/)).toBe(0);
+    expect(at(/^Run in New Tab/)).toBe(1);
+    expect(at(/^Open in New Tab/)).toBe(2);
+    expect(at(/^Insert to SQL Editor/)).toBe(3);
   });
 
   it("offers Open in New Tab, Run in New Tab, Copy SQL and Delete Entry in the context menu", async () => {
@@ -201,7 +237,7 @@ describe("HistoryPane", () => {
     expect(run).toHaveBeenCalledOnce();
 
     fireEvent.contextMenu(await entry(UPDATE));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Copy SQL" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Copy SQL/ }));
     expect(writeText).toHaveBeenCalledWith(UPDATE);
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Copied SQL"));
 
@@ -209,6 +245,67 @@ describe("HistoryPane", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /Delete Entry/ }));
     await waitFor(() => expect(screen.queryByText(UPDATE)).toBeNull());
     expect(screen.getByText(NEWEST)).toBeInTheDocument();
+  });
+
+  it("selects several entries with ⌘-click / ⇧-click and copies them all with ⌘C", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const { entry } = setup();
+    fireEvent.click(await entry(NEWEST), { metaKey: true, detail: 1 });
+    fireEvent.click(await entry(FAILED), { shiftKey: true, detail: 1 });
+    await wait(400);
+    // Selecting opens nothing.
+    expect(tabs()).toHaveLength(0);
+    expect((await entry(UPDATE)).getAttribute("aria-selected")).toBe("true");
+    expect((await entry(USERS)).getAttribute("aria-selected")).toBe("false");
+    fireEvent.keyDown(await entry(UPDATE), { key: "c", metaKey: true });
+    expect(writeText).toHaveBeenCalledWith(`${NEWEST};\n${UPDATE};\n${FAILED};`);
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Copied 3 statements"));
+    fireEvent.contextMenu(await entry(UPDATE));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Delete 3 Entries/ }));
+    await waitFor(() => expect(screen.queryByText(UPDATE)).toBeNull());
+    expect(screen.getByText(USERS)).toBeInTheDocument();
+  });
+
+  it("searches with Match Case / Whole Word / Regex from the filter menu", async () => {
+    const list = vi.spyOn(ipc.history, "list");
+    const { entry, search } = setup();
+    await entry(NEWEST);
+    fireEvent.pointerDown(screen.getByRole("button", { name: "History options" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Regex" }));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.change(search(), { target: { value: "^(select|update)\\b" } });
+    await waitFor(() =>
+      expect(list).toHaveBeenLastCalledWith(
+        expect.objectContaining({ search: "^(select|update)\\b", regex: true }),
+      ),
+    );
+    expect(screen.queryByText(FAILED)).toBeNull();
+    expect(screen.getByText(UPDATE)).toBeInTheDocument();
+    fireEvent.change(search(), { target: { value: "(" } });
+    expect(await screen.findByText("Invalid regular expression")).toBeInTheDocument();
+    localStorage.removeItem("tabler.history.searchOptions");
+  });
+
+  it("clears the history older than a day, and all of it", async () => {
+    const { entry } = setup();
+    fireEvent.contextMenu(await entry(UPDATE));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Clear History Older Than/ }));
+    const date = await screen.findByLabelText("Clear history before");
+    // Before yesterday afternoon: the 3-day-old entry and the failed one (1 day 1 h ago) go.
+    fireEvent.change(date, { target: { value: "2026-10-11" } });
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    await waitFor(() => expect(screen.queryByText(USERS)).toBeNull());
+    expect(screen.getByText(UPDATE)).toBeInTheDocument();
+    expect(toast.success).toHaveBeenCalledWith("Deleted 1 entry");
+
+    fireEvent.contextMenu(await entry(UPDATE));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Clear All History/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Clear History" }));
+    expect(await screen.findByText("No history yet")).toBeInTheDocument();
   });
 
   it("adds an entry to the saved queries", async () => {

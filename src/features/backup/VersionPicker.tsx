@@ -8,6 +8,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { DumpBinary, DumpTool, ParsedVersion } from "@/lib/ipc";
+import { InstallHelpNote } from "./InstallHelp";
+import { installHelp } from "./install";
 import { binaryLabel, versionWarning } from "./options";
 import { Field } from "./parts";
 
@@ -15,7 +17,8 @@ const folder = (path: string) => path.slice(0, path.lastIndexOf("/")) || "/";
 
 /**
  * "Choose version": every binary of `tool` found on this Mac, with the warning when the chosen
- * one is older than the server.
+ * one is older than the server. When none can serve the server, "Install with Homebrew…", the
+ * download page and Rescan (TablePlus bundles the binaries; Tabler uses the installed ones).
  */
 export function VersionPicker({
   tool,
@@ -37,22 +40,16 @@ export function VersionPicker({
   disabled?: boolean;
 }) {
   const list = binaries.filter((b) => b.tool === tool);
-  const warning = versionWarning(selected, server);
+  const help = loading ? null : installHelp(tool, binaries, server);
+  // The install note says it already when every binary is too old.
+  const warning = help ? null : versionWarning(selected, server);
   const id = `backup-version-${tool}`;
   return (
     <Field
       label="Choose version"
       htmlFor={id}
       hint={
-        list.length === 0 && !loading ? (
-          <span className="text-warning">
-            No {tool} found in PATH, Homebrew, Postgres.app or /usr/local. Install it (e.g.{" "}
-            <span className="font-mono">
-              brew install {tool.startsWith("pg") || tool === "psql" ? "libpq" : "mysql-client"}
-            </span>
-            ) and rescan.
-          </span>
-        ) : selected ? (
+        selected ? (
           <span className="font-mono break-all" title={selected.path}>
             {selected.path}
           </span>
@@ -102,6 +99,9 @@ export function VersionPicker({
           <RotateCw className={loading ? "animate-spin" : undefined} />
         </Button>
       </div>
+      {help && (
+        <InstallHelpNote help={help} loading={loading} onRescan={onRescan} disabled={disabled} />
+      )}
       {warning && (
         <div role="note" className="text-warning flex items-start gap-1.5 text-[11px] leading-4">
           <TriangleAlert className="mt-px size-3.5 shrink-0" />

@@ -1,5 +1,14 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  act,
+  fireEvent,
+  render as rtlRender,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement, ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ipc, type ConnectionInfo, type ConnectionProfile, type SafeModeLevel } from "@/lib/ipc";
@@ -8,6 +17,14 @@ import { guardExecution, SEND_QUERIES_TITLE, type GuardRequest } from "./guard";
 import { SafetyHost } from "./SafetyHost";
 import { changeSafeModeLevel } from "./setLevel";
 import { useSafetyPromptStore } from "./store";
+
+/** The prompt shows the connection's tag, whose custom colours come from a query. */
+const render = (ui: ReactElement) => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrap = (node: ReactNode) => <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
+  const result = rtlRender(wrap(ui));
+  return { ...result, rerender: (next: ReactElement) => result.rerender(wrap(next)) };
+};
 
 // The mock backend stores the DB password "secret" for this seeded profile.
 const PROFILE_ID = "p-local-pg";

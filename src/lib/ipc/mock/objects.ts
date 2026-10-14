@@ -1,5 +1,5 @@
 // Mock handlers for the sidebar objects (M8): list_routines, list_sequences, list_system_schemas,
-// get_routine_definition, get_sequence_definition, get_item_overview, preview_object_op and
+// list_database_items, get_routine_definition, get_sequence_definition, get_item_overview, preview_object_op and
 // apply_object_op. Table changes (drop / truncate / clone) go through the DDL mock (`apply_ddl`),
 // so the table list and metadata follow; routines, sequences and comments live here.
 import type { ColumnDef } from "../bindings/ColumnDef";
@@ -335,6 +335,21 @@ registerMock("list_system_schemas", async ({ connectionId }) => {
     name,
     isDefault: false,
   }));
+});
+
+registerMock("list_database_items", async ({ connectionId, includeSystem }) => {
+  const c = await requireConnection(connectionId);
+  const schemas = await mockInvoke<SchemaInfo[]>("list_schemas", { connectionId });
+  const names = schemas.map((s) => s.name);
+  // The system schemas' relations, like the backend (their routines never are).
+  if (includeSystem === true && c.driver === "postgres") names.push("information_schema");
+  const tables: TableSummary[] = [];
+  const routines: RoutineSummary[] = [];
+  for (const schema of names) {
+    tables.push(...(await mockInvoke<TableSummary[]>("list_tables", { connectionId, schema })));
+    if (schema !== "information_schema") routines.push(...routinesFor(c, schema));
+  }
+  return { tables, routines };
 });
 
 registerMock("get_routine_definition", async ({ connectionId, routine }) => {

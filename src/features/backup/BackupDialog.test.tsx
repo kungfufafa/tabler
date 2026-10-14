@@ -5,6 +5,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { actions } from "@/features/palette/actions";
 import { ipc, type BackupJobRequest, type BackupJobResult } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
+import { DEFAULT_PREFS, resetPrefsForTests } from "@/stores/prefs";
+import { NotifyHost } from "@/features/notify/NotifyHost";
+import { mockBrewInstalls } from "@/lib/ipc/mock/backup";
 import { BackupHost } from "./BackupHost";
 import { BACKUP_OPTIONS_KEY, loadBackupOptions } from "./options";
 import { openBackup, resetBackupStore, useBackupStore } from "./store";
@@ -49,6 +52,8 @@ const runRequest = (spy: { mock: { calls: unknown[][] } }) =>
 
 beforeEach(() => {
   localStorage.clear();
+  // The success toast; the "open containing folder" popup is tested on its own.
+  resetPrefsForTests({ ...DEFAULT_PREFS, exportRevealPopup: false });
   resetBackupStore();
   useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
 });
@@ -310,5 +315,45 @@ describe("Restore window", () => {
     await user.click(within(dialog).getByRole("button", { name: /Choose File/ }));
     expect(await within(dialog).findByText(/not a MySQL dump/)).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: /Start Restore/ })).toBeDisabled();
+  });
+});
+
+describe("dump binaries and the done popup", () => {
+  it("offers Install with Homebrew… when no pg_dump is installed, then Rescan", async () => {
+    const user = userEvent.setup();
+    const list = vi.spyOn(ipc.backup, "binaries").mockResolvedValue([]);
+    setup();
+    const dialog = await openWindow({ mode: "backup", profileId: "p-local-pg", database: null });
+    const note = await within(dialog).findByRole("note");
+    expect(note).toHaveTextContent("No pg_dump found");
+    expect(within(dialog).getByRole("button", { name: /Start Backup/ })).toBeDisabled();
+    mockBrewInstalls.length = 0;
+    await user.click(within(note).getByRole("button", { name: /Install with Homebrew/ }));
+    await within(note).findByRole("status");
+    expect(mockBrewInstalls).toEqual(["libpq"]);
+    // The server's version as the alternative.
+    await user.click(within(note).getByRole("button", { name: "postgresql@17" }));
+    await waitFor(() => expect(mockBrewInstalls).toEqual(["libpq", "postgresql@17"]));
+    // Installed meanwhile: Rescan finds it.
+    list.mockRestore();
+    await user.click(within(note).getByRole("button", { name: /Rescan/ }));
+    expect(await within(dialog).findByText("PostgreSQL 17.6 — pg_dump")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("note")).toBeNull();
+  });
+
+  it("shows the open containing folder popup after a backup", async () => {
+    const user = userEvent.setup();
+    resetPrefsForTests(DEFAULT_PREFS);
+    setup();
+    render(<NotifyHost />);
+    const dialog = await openWindow({ mode: "backup", profileId: "p-local-pg", database: null });
+    expect(await within(dialog).findByText("PostgreSQL 17.6 — pg_dump")).toBeInTheDocument();
+    vi.spyOn(window, "prompt").mockReturnValue("/Users/me/Backups");
+    await user.click(within(dialog).getByRole("button", { name: /Start Backup/ }));
+    const popup = await screen.findByRole("alertdialog", {}, { timeout: 5000 });
+    expect(within(popup).getByText("Backup completed")).toBeInTheDocument();
+    expect(within(popup).getByText("Backed up tabler_dev")).toBeInTheDocument();
+    expect(within(popup).getByRole("button", { name: "Show in Finder" })).toBeInTheDocument();
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });

@@ -14,7 +14,40 @@ export const SSH_PROMPT_HOST = "ssh-keyboard-interactive-prompt";
 /** Questions waiting for an answer; the first one is on screen. */
 export const useSshPromptStore = create<{ queue: SshPromptRequest[] }>()(() => ({ queue: [] }));
 
+/**
+ * SSH passwords handed over for a connect (a `+ssh` URL's password: used for that session only,
+ * never stored), by profile id. The connect's password question is answered with it instead of
+ * being shown; each is used once.
+ */
+const handedOver = new Map<string, string>();
+
+export function presetSshPassword(profileId: string, password: string): void {
+  handedOver.set(profileId, password);
+}
+
+export function clearSshPassword(profileId: string): void {
+  handedOver.delete(profileId);
+}
+
+/** Whether a round asks for the SSH password: the app's own question, or the server's one hidden
+ * "Password:" prompt. */
+export function isPasswordQuestion(r: SshPromptRequest): boolean {
+  if (r.kind === "password") return true;
+  return (
+    r.kind === undefined &&
+    r.prompts.length === 1 &&
+    !r.prompts[0]!.echo &&
+    /password/i.test(r.prompts[0]!.prompt)
+  );
+}
+
 export function enqueueSshPrompt(request: SshPromptRequest): void {
+  const preset = handedOver.get(request.profileId);
+  if (preset !== undefined && isPasswordQuestion(request)) {
+    handedOver.delete(request.profileId);
+    answerSshPrompt(request.requestId, [preset]);
+    return;
+  }
   useSshPromptStore.setState((s) =>
     s.queue.some((r) => r.requestId === request.requestId) ? s : { queue: [...s.queue, request] },
   );

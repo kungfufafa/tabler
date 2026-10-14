@@ -5,9 +5,11 @@ import {
   clampCursor,
   keepsQueryText,
   parseSession,
+  parseTab,
   queryTabContent,
   serializeWorkspace,
   SESSION_VERSION,
+  workspaceKey,
   type LiveQueryTab,
   type SessionQueryTab,
   type SessionTab,
@@ -129,7 +131,7 @@ describe("buildSession", () => {
     activeTab: null,
   });
 
-  it("lists live workspaces first, then remembered ones (closed), each profile once", () => {
+  it("lists live workspaces first, then remembered ones (closed), each workspace once", () => {
     const s = buildSession([ws("p1"), ws("p2")], [ws("p2"), ws("p3")], "p2");
     expect(s.version).toBe(SESSION_VERSION);
     expect(s.workspaces.map((w) => [w.profileId, w.open])).toEqual([
@@ -139,6 +141,94 @@ describe("buildSession", () => {
     ]);
     expect(s.activeProfileId).toBe("p2");
     expect(buildSession([ws("p1")], [], "gone").activeProfileId).toBeNull();
+  });
+
+  it("keeps a workspace per database of a profile, and which one was on screen", () => {
+    const on = (database: string, open = true) => ({ ...ws("p1", open), database });
+    const s = buildSession([on("app"), on("shop")], [on("shop"), on("logs")], "p1", "shop");
+    expect(s.workspaces.map((w) => [w.database, w.open])).toEqual([
+      ["app", true],
+      ["shop", true],
+      ["logs", false],
+    ]);
+    expect(s.activeDatabase).toBe("shop");
+    expect(parseSession(JSON.parse(JSON.stringify(s)))).toEqual(s);
+    expect(workspaceKey(on("app"))).not.toBe(workspaceKey(on("shop")));
+  });
+});
+
+describe("tool tabs", () => {
+  const overview: Tab = {
+    id: "o",
+    kind: "tool",
+    connectionId: "c1",
+    tool: "overview",
+    title: "Overview: public",
+    params: { schema: "public" },
+  };
+
+  it("are saved only when their tool keeps them, and read back", () => {
+    const base = { ...live(), tabs: [overview] };
+    expect(serializeWorkspace(base, "all").tabs).toEqual([]);
+    const kept = serializeWorkspace({ ...base, keepsTool: (t) => t === "overview" }, "all");
+    expect(kept.tabs).toEqual([
+      { kind: "tool", tool: "overview", title: "Overview: public", params: { schema: "public" } },
+    ]);
+    expect(parseTab(kept.tabs[0])).toEqual(kept.tabs[0]);
+    expect(parseTab({ kind: "tool", tool: "" })).toBeNull();
+    expect(parseTab({ kind: "tool", tool: "metrics" })).toEqual({
+      kind: "tool",
+      tool: "metrics",
+      title: "metrics",
+      params: null,
+    });
+  });
+});
+
+describe("tool tabs that decide per tab", () => {
+  const viewer = (id: string, path: string | null): Tab => ({
+    id,
+    kind: "tool",
+    connectionId: "c1",
+    tool: "sqlviewer",
+    title: path ?? "SQL Viewer",
+    params: { path },
+  });
+  // What the SQL Viewer registers: only a viewer of a file can be reopened.
+  const keepsViewer = (tool: string, params: unknown) =>
+    tool === "sqlviewer" && typeof (params as { path?: unknown })?.path === "string";
+
+  it("asks the tool with the tab's params: an untitled viewer is not serialised, one with a path is", () => {
+    const ws = serializeWorkspace(
+      {
+        ...live(),
+        tabs: [viewer("v1", null), viewer("v2", "/q/a.sql"), viewer("v3", null)],
+        activeTabId: "v2",
+        keepsTool: keepsViewer,
+      },
+      "all",
+    );
+    expect(ws.tabs).toEqual([
+      { kind: "tool", tool: "sqlviewer", title: "/q/a.sql", params: { path: "/q/a.sql" } },
+    ]);
+    // The active index follows the tabs that were left out.
+    expect(ws.activeTab).toBe(0);
+  });
+
+  it("gives a tab without params to the tool as null", () => {
+    const seen: unknown[] = [];
+    serializeWorkspace(
+      {
+        ...live(),
+        tabs: [{ id: "x", kind: "tool", connectionId: "c1", tool: "t", title: "T" }],
+        keepsTool: (_tool, params) => {
+          seen.push(params);
+          return false;
+        },
+      },
+      "all",
+    );
+    expect(seen).toEqual([null]);
   });
 });
 
@@ -170,7 +260,9 @@ describe("parseSession", () => {
             { kind: "query", sql: "select 1", cursor: -4 },
           ],
         },
-        { profileId: "p1", open: true, tabs: [] },
+        // The same workspace twice (profile and database): the first one counts.
+        { profileId: "p1", open: true, database: "shop", tabs: [] },
+        { kind: "tool" },
       ],
     });
     expect(s.activeProfileId).toBeNull();
@@ -187,6 +279,107 @@ describe("parseSession", () => {
         ],
       },
     ]);
+  });
+});
+
+describe("a table tab's filter bar (a window handoff)", () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: "r1",
+    column: "id",
+    op: "eq",
+    value: "5",
+    value2: "",
+    enabled: true,
+    ...over,
+  });
+  const table = (over: Record<string, unknown> = {}) => ({
+    kind: "table",
+    table: users,
+    view: "table",
+    title: "users",
+    ...over,
+  });
+
+  it("is kept with its visibility and conjunction", () => {
+    expect(parseTab(table({ filters: [row()], filtersVisible: true, conjunction: "or" }))).toEqual({
+      kind: "table",
+      table: users,
+      view: "table",
+      title: "users",
+      filters: [row()],
+      filtersVisible: true,
+      conjunction: "or",
+    });
+    // The bar is shown unless the handoff says it is hidden; "and" is the default conjunction.
+    expect(parseTab(table({ filters: [row()] }))).toMatchObject({ filtersVisible: true });
+    expect(parseTab(table({ filters: [row()], filtersVisible: false }))).toMatchObject({
+      filtersVisible: false,
+    });
+    expect(parseTab(table({ filters: [row()], conjunction: "xor" }))).not.toHaveProperty(
+      "conjunction",
+    );
+  });
+
+  it("is validated: rows with missing or mistyped fields and unknown operators are dropped", () => {
+    const parsed = parseTab(
+      table({
+        filters: [
+          row({ id: "ok1" }),
+          row({ id: 7 }),
+          row({ id: "bad-col", column: null }),
+          row({ id: "bad-value", value: 5 }),
+          row({ id: "bad-value2", value2: undefined }),
+          row({ id: "bad-enabled", enabled: "yes" }),
+          row({ id: "bad-op", op: "regexp-ish" }),
+          row({ id: "raw", op: "like", column: "__raw_sql__", enabled: false }),
+          "junk",
+          null,
+        ],
+      }),
+    );
+    expect(parsed?.kind === "table" && parsed.filters?.map((f) => f.id)).toEqual(["ok1", "raw"]);
+  });
+
+  it("gives a repeated or empty row id a new one", () => {
+    const parsed = parseTab(
+      table({ filters: [row({ id: "a" }), row({ id: "a" }), row({ id: "" })] }),
+    );
+    const ids = parsed?.kind === "table" ? (parsed.filters ?? []).map((f) => f.id) : [];
+    expect(ids).toHaveLength(3);
+    expect(new Set(ids).size).toBe(3);
+    expect(ids[0]).toBe("a");
+  });
+
+  it("is left out when no row survives, or when it is not a list", () => {
+    for (const filters of [[], [row({ op: "nope" })], "x", 4, null, {}]) {
+      const parsed = parseTab(table({ filters, filtersVisible: true, conjunction: "or" }));
+      expect(parsed).toEqual({ kind: "table", table: users, view: "table", title: "users" });
+    }
+  });
+
+  it("is capped", () => {
+    const many = Array.from({ length: 80 }, (_, i) => row({ id: `r${i}` }));
+    const parsed = parseTab(table({ filters: many }));
+    expect(parsed?.kind === "table" && parsed.filters).toHaveLength(50);
+  });
+
+  it("is never part of the saved session itself", () => {
+    const saved = serializeWorkspace(live(), "all");
+    expect(saved.tabs.filter((t) => t.kind === "table")).toEqual([
+      { kind: "table", table: users, view: "table", title: "users" },
+      { kind: "table", table: users, view: "structure", title: "Users!" },
+    ]);
+  });
+
+  it("keeps two tabs of one table as two tabs", () => {
+    const twice: Tab[] = [
+      { id: "a", kind: "table", connectionId: "c1", table: users, title: "users" },
+      { id: "b", kind: "table", connectionId: "c1", table: users, title: "users" },
+    ];
+    const saved = serializeWorkspace({ ...live(null), tabs: twice }, "all");
+    expect(saved.tabs).toHaveLength(2);
+    const back = parseSession(JSON.parse(JSON.stringify(buildSession([saved], [], "p1"))));
+    expect(back.workspaces[0]!.tabs).toEqual(saved.tabs);
   });
 });
 

@@ -4,9 +4,11 @@
 //! - [`args`]: their command lines (the password only ever goes in the environment);
 //! - [`detect`]: what a restore file holds (plain SQL, `PGDMP` custom archive, tar; gzip);
 //! - [`run`]: running one, streaming its output, gzip in and out, cancel;
-//! - [`sqlite`]: SQLite has no dump binary: its database file is copied.
+//! - [`sqlite`]: SQLite has no dump binary: its database file is copied;
+//! - [`brew`]: "Install with Homebrew…" when no (recent enough) binary is installed.
 
 pub mod args;
+pub mod brew;
 pub mod detect;
 pub mod discover;
 pub mod run;

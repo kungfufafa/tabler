@@ -6,7 +6,7 @@ import { ipc, type RowCount, type SortSpec } from "@/lib/ipc";
 import { getPrefs } from "@/stores/prefs";
 import { useTableTabsStore } from "@/stores/tableTabs";
 import {
-  canExportPage,
+  columnChanges,
   currentPageSql,
   formatCount,
   visibleColumnNames,
@@ -34,11 +34,18 @@ export interface ResolvedExportSource {
   /** True when the export comes from a table tab (filter / sort / page apply). */
   fromTab: boolean;
   count: RowCount | null;
-  /** Rows on the current page and its first row (1-based); null while the page is not loaded. */
-  page: { first: number; rows: number } | null;
-  /** "Only current page" is possible (a later page needs its browse statement loaded). */
+  /**
+   * The current page: its first row (1-based), the rows it holds (null while it is not loaded) and
+   * its size. Null outside a table tab.
+   */
+  page: { first: number; rows: number | null; limit: number } | null;
+  /** "Only current page" is possible: the export starts at the page's offset, loaded or not. */
   pageExportable: boolean;
-  columns: { visible: number; total: number };
+  /**
+   * The grid's columns: how many are visible of the total, and what the grid changed (hidden
+   * columns, columns dragged into another order).
+   */
+  columns: { visible: number; total: number; hidden: boolean; reordered: boolean };
   loading: boolean;
   error: string | null;
 }
@@ -89,7 +96,7 @@ export function useExportSource(
         count: { count: held.rows.length, exact: true },
         page: null,
         pageExportable: false,
-        columns: { visible: n, total: n },
+        columns: { visible: n, total: n, hidden: false, reordered: false },
         loading: false,
         error: null,
       };
@@ -106,7 +113,7 @@ export function useExportSource(
         count: null,
         page: null,
         pageExportable: false,
-        columns: { visible: 0, total: 0 },
+        columns: { visible: 0, total: 0, hidden: false, reordered: false },
         loading: false,
         error: null,
       };
@@ -119,10 +126,12 @@ export function useExportSource(
     const visible = slice && meta.data ? visibleColumnNames(columns, slice.columnState) : null;
     const limit = slice?.limit ?? getPrefs().pageSize;
     const offset = slice?.offset ?? 0;
-    // `slice.page` still describes the previous page while the next one loads (or if it failed).
+    // `slice.page` still describes the previous page while the next one loads (or if it failed):
+    // its row count is only the current page's when its statement is.
     const pageSql = currentPageSql({ limit, offset, sql: slice?.page?.sql ?? null });
-    const pageInfo = { limit, offset, sql: pageSql };
+    const pageInfo = { limit, offset };
     const loadedPage = pageSql !== null ? slice?.page : undefined;
+    const changes = slice && meta.data ? columnChanges(columns, slice.columnState) : null;
     const details: string[] = [];
     const n = filter?.items.length ?? 0;
     if (n > 0) details.push(`${n} filter${n === 1 ? "" : "s"}`);
@@ -148,9 +157,14 @@ export function useExportSource(
       defaultTableName: table.name,
       fromTab: slice !== undefined,
       count: slice?.count ?? null,
-      page: loadedPage ? { first: offset + 1, rows: loadedPage.rows } : null,
-      pageExportable: slice !== undefined && canExportPage(pageInfo),
-      columns: { visible: visible?.length ?? columns.length, total: columns.length },
+      page: slice ? { first: offset + 1, rows: loadedPage?.rows ?? null, limit } : null,
+      pageExportable: slice !== undefined,
+      columns: {
+        visible: visible?.length ?? columns.length,
+        total: columns.length,
+        hidden: changes?.hidden ?? false,
+        reordered: changes?.reordered ?? false,
+      },
       loading: meta.isPending && table !== null,
       error: meta.isError ? meta.error.message : null,
     };

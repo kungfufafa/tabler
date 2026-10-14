@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { isMatchStrategy, type MatchStrategy } from "@/features/objects/search";
 
 /** Which pane the left sidebar shows: the schema items or the query history. */
 export type SidebarPane = "items" | "history";
@@ -19,6 +20,8 @@ export const COLLAPSED_STORAGE_KEY = "tabler.sidebar.collapsed";
 export const OPTIONS_STORAGE_KEY = "tabler.sidebar.options.v2";
 /** Where the first build kept the options (Recent and row counts on by default). */
 export const LEGACY_OPTIONS_STORAGE_KEY = "tabler.sidebar.options";
+/** localStorage key of the item search's Matching Strategy (search menu, `MatchStrategy`). */
+export const MATCH_STORAGE_KEY = "tabler.sidebar.match";
 
 export interface SidebarOptions {
   /** List the recently opened tables in a "Recent" section. */
@@ -127,6 +130,12 @@ interface SidebarPrefsState {
   pane: SidebarPane;
   collapsed: ReadonlySet<SidebarSection>;
   options: SidebarOptions;
+  /** How the item search matches plain terms (search menu ▸ Matching Strategy). */
+  matchStrategy: MatchStrategy;
+}
+
+export function parseMatchStrategy(value: unknown): MatchStrategy {
+  return isMatchStrategy(value) ? value : "fuzzy";
 }
 
 function readStored(): SidebarPrefsState {
@@ -134,6 +143,7 @@ function readStored(): SidebarPrefsState {
     pane: parsePane(readJson(PANE_STORAGE_KEY)),
     collapsed: parseCollapsed(readJson(COLLAPSED_STORAGE_KEY)),
     options: readOptions(),
+    matchStrategy: parseMatchStrategy(readJson(MATCH_STORAGE_KEY)),
   };
 }
 
@@ -167,6 +177,12 @@ export function setSidebarOption<K extends keyof SidebarOptions>(
   const options = { ...current, [key]: value };
   useSidebarPrefs.setState({ options });
   writeJson(OPTIONS_STORAGE_KEY, options);
+}
+
+export function setMatchStrategy(strategy: MatchStrategy): void {
+  if (useSidebarPrefs.getState().matchStrategy === strategy) return;
+  useSidebarPrefs.setState({ matchStrategy: strategy });
+  writeJson(MATCH_STORAGE_KEY, strategy);
 }
 
 /** Test helper: reads the stored preferences again. */

@@ -1,4 +1,4 @@
-import type { ConnectionProfile, ConnectionTag } from "@/lib/ipc";
+import type { ConnectionProfile } from "@/lib/ipc";
 import { DRIVER_LABEL } from "./colors";
 import {
   ancestorPaths,
@@ -9,7 +9,8 @@ import {
   pathDepth,
   splitPath,
 } from "./groups";
-import { CONNECTION_TAGS, connectionDetail } from "./schema";
+import { connectionDetail } from "./schema";
+import { compareTags } from "./tags";
 
 /** DOM id of a profile's row in the launcher list (the list's `aria-activedescendant`). */
 export const connectionRowId = (profileId: string) => `connection-row-${profileId}`;
@@ -26,8 +27,6 @@ export const CONNECTION_SORT_LABEL: Record<ConnectionSort, string> = {
 
 const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 const byName = (a: ConnectionProfile, b: ConnectionProfile) => collator.compare(a.name, b.name);
-const tagRank = (tag: ConnectionTag | null) =>
-  tag === null ? CONNECTION_TAGS.length : CONNECTION_TAGS.indexOf(tag);
 
 /** The connections of one group in the chosen order (stable: ties keep the saved order). */
 export function sortProfiles(
@@ -41,7 +40,7 @@ export function sortProfiles(
     case "name":
       return out.sort(byName);
     case "tag":
-      return out.sort((a, b) => tagRank(a.options.tag) - tagRank(b.options.tag) || byName(a, b));
+      return out.sort((a, b) => compareTags(a.options.tag, b.options.tag) || byName(a, b));
     case "driver":
       return out.sort(
         (a, b) => collator.compare(DRIVER_LABEL[a.driver], DRIVER_LABEL[b.driver]) || byName(a, b),

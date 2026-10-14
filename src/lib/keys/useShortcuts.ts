@@ -10,12 +10,17 @@ const DIALOGS = "[role='dialog'], [role='alertdialog']";
  * dialogs). A CodeMirror editor inside a dialog (Bootstrap commands, a trigger's body) is the
  * dialog's: the SQL editor's keys (⌘↩ Run, ⌘O, ⌘W…) must not reach the tab behind it, and the
  * editor's own keymap (⌘↩ / ⌘S save) must get them. A dialog that shields the app's shortcuts
- * itself (Quick Look) opts in to the editor scope with `data-shortcut-scope="editor"`.
+ * itself (Quick Look) opts in to the editor scope with `data-shortcut-scope="editor"`. A
+ * CodeMirror that is a form field, not a SQL editor (the Details sidebar's), names its own scope
+ * with `data-cm-scope` (`grid-edit` while it can be edited, like the native fields beside it).
  */
 export function resolveScope(target: Element | null): Scope {
   if (!target) return "global";
   const dialog = target.closest(DIALOGS);
   if (target.closest(".cm-editor")) {
+    const own = target.closest<HTMLElement>("[data-cm-scope]")?.dataset.cmScope as
+      Scope | undefined;
+    if (own) return own;
     if (!dialog) return "editor";
     const optIn = target.closest("[data-shortcut-scope='editor']");
     return optIn && dialog.contains(optIn) ? "editor" : "dialog";
@@ -59,6 +64,16 @@ export function isCapturingShortcut(): boolean {
  */
 const GRID_PASSTHROUGH: ReadonlySet<ActionId> = new Set(["grid.quick-look"]);
 
+/**
+ * Grid keys that share their chord with a global binding: with no grid handler to run, the global
+ * action answers. ⇧⌘C copies the cell value in a grid, but a grid-scoped area with nothing to copy
+ * (the structure tab) is still where the console log toggles.
+ */
+const FALLS_BACK_TO_GLOBAL: ReadonlySet<ActionId> = new Set(["grid.copy-cell"]);
+
+/** ⌘R / ⌥⌘R: the webview would reload the page (and lose every buffer) if nothing stopped it. */
+const RELOAD_KEYS: ReadonlySet<ActionId> = new Set(["workspace.reload", "view.refresh"]);
+
 /** Whether an unhandled shortcut is still kept from the menu bar and the page (see the listener). */
 export function blocksUnhandled(def: ShortcutDef, scope: Scope): boolean {
   return scope === "grid" && def.scope === "grid" && !GRID_PASSTHROUGH.has(def.id);
@@ -97,10 +112,22 @@ export function KeyboardProvider({ children }: { children: ReactNode }) {
       const scope = resolveScope(target);
       const def = findShortcut(combo, scope);
       if (!def) return;
+      // The focused CodeMirror editor runs it itself (Toggle Line / Block Comment): its keymap is
+      // built from KEYMAP, so a remapped key still reaches the right editor pane.
+      if (def.editorCommand && scope === "editor") return;
       if (!actions.has(def.id)) {
+        if (FALLS_BACK_TO_GLOBAL.has(def.id)) {
+          const global = findShortcut(combo, "global");
+          if (global && actions.has(global.id)) {
+            e.preventDefault();
+            e.stopPropagation();
+            runShortcut(global.id);
+            return;
+          }
+        }
         // Nothing handles it yet; still stop the webview from doing something odd (⌘R reload, ⌘P print).
-        if (def.id === "view.refresh" || def.id === "palette.open") e.preventDefault();
-        // A grid key the focused grid refuses (⌘I New Row, ⇧⌘D Set DEFAULT in a read-only result)
+        if (RELOAD_KEYS.has(def.id) || def.id === "palette.open") e.preventDefault();
+        // A grid key the focused grid refuses (⌘I New Row, ⌥⌘D Set DEFAULT in a read-only result)
         // is spent: neither the menu's key equivalent (Beautify, Split Pane) nor the query tab's
         // forwarding of editor keys may run it in the editor behind the grid.
         if (blocksUnhandled(def, scope)) e.preventDefault();

@@ -36,7 +36,7 @@ const FK_GUARD_MARKER: &str = "tabler-fk-violations:";
 pub const DDL_LOCK_TIMEOUT_SECS: u64 = 5;
 
 /// Plans `ops` against fresh metadata of `table` (when given).
-async fn plan_for(
+pub(crate) async fn plan_for(
     conn: &Connection,
     table: Option<&TableRef>,
     ops: &[DdlOp],
@@ -192,8 +192,14 @@ pub async fn apply_ddl(
     conn.invalidate(None).await;
     match (&result.error, result.failed_index) {
         (Some(err), index) => log::info!(
-            "apply_ddl on {target} failed at statement {index:?} after {} ms: {}",
+            "apply_ddl on {target} failed at statement {index:?} after {} ms{}: {}",
             result.duration_ms,
+            // (a transactional plan rolled back; one MySQL ALTER TABLE fails as a whole)
+            if plan.transactional && result.executed.is_empty() {
+                " (all changes were reverted)"
+            } else {
+                ""
+            },
             err.message
         ),
         (None, _) => log::info!("apply_ddl on {target} done in {} ms", result.duration_ms),
@@ -540,7 +546,8 @@ async fn restore_settings(session: &dyn DbSession, rest: &[String], executed: &m
 /// A transactional plan as the batch sent to the driver, and the number of statements put in
 /// front of the plan's own. PG bounds lock waits (`SET LOCAL` ends with the transaction);
 /// SQLite commits inside the batch, so a failed COMMIT is rolled back by the driver (see
-/// `run_block`).
+/// `run_block`). A MySQL plan is transactional when it is one statement (an `ALTER TABLE` that
+/// fails leaves the table as it was); it bounds its metadata-lock wait like `execute_one`.
 fn transactional_batch(dialect: Dialect, statements: &[String]) -> (Vec<TxStatement>, usize) {
     let plain = |s: &String| TxStatement::new(s.clone(), Vec::new());
     match dialect {
@@ -558,7 +565,14 @@ fn transactional_batch(dialect: Dialect, statements: &[String]) -> (Vec<TxStatem
             batch.push(TxStatement::new("BEGIN", Vec::new()));
             (batch, 0)
         }
-        Dialect::Mysql => (statements.iter().map(plain).collect(), 0),
+        Dialect::Mysql => {
+            let mut batch = vec![TxStatement::new(
+                format!("SET SESSION lock_wait_timeout = {DDL_LOCK_TIMEOUT_SECS}"),
+                Vec::new(),
+            )];
+            batch.extend(statements.iter().map(plain));
+            (batch, 1)
+        }
     }
 }
 
@@ -582,7 +596,7 @@ async fn execute_one(session: &dyn DbSession, sql: &str) -> Result<(), AppError>
 
 /// Explains a failure to get a lock in time: usually an open transaction, very often the SQL
 /// editor's own, holds a lock on the table.
-fn explain_lock_wait(session: &dyn DbSession, payload: &mut ErrorPayload) {
+pub(crate) fn explain_lock_wait(session: &dyn DbSession, payload: &mut ErrorPayload) {
     let lock_wait = match session.dialect() {
         // lock_not_available ("canceling statement due to lock timeout")
         Dialect::Postgres => payload.sqlstate.as_deref() == Some("55P03"),
@@ -1200,7 +1214,17 @@ mod tests {
                 0
             )
         );
-        assert_eq!(sqls(Dialect::Mysql), (vec!["A".to_string(), "B".into()], 0));
+        assert_eq!(
+            sqls(Dialect::Mysql),
+            (
+                vec![
+                    "SET SESSION lock_wait_timeout = 5".to_string(),
+                    "A".into(),
+                    "B".into()
+                ],
+                1
+            )
+        );
     }
 
     async fn lite_session() -> (Arc<dyn DbSession>, tempfile::TempDir) {

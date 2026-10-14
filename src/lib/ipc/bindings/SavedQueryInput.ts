@@ -3,4 +3,11 @@
 /**
  * Creates (`id` = `None`) or replaces a saved query.
  */
-export type SavedQueryInput = { id: string | null, name: string, keyword: string | null, sql: string, folderId: string | null, profileId: string | null, };
+export type SavedQueryInput = { id: string | null, name: string, keyword: string | null, sql: string, folderId: string | null, profileId: string | null, 
+/**
+ * Rename / move / re-tag only: leave the file's SQL as it is on disk and ignore `sql`. The
+ * renderer's copy of the SQL may be stale (the file changed outside Tabler) or lossy (a file
+ * that is not UTF-8), so a metadata change must not write it back. Ignored when the query
+ * does not exist yet.
+ */
+keepSql?: boolean, };

@@ -9,12 +9,14 @@ import { SafetyHost } from "@/features/safety/SafetyHost";
 import { emptyStaging, insertRow } from "@/features/staging/model";
 import { useStructureStore } from "@/features/structure/store";
 import { ipc, type ConnectionInfo, type ConnectionProfile } from "@/lib/ipc";
+import { getPrefs, resetPrefsForTests, setPref } from "@/stores/prefs";
 import { useConnectionsStore, type OpenConnection } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
 import { useTableTabsStore } from "@/stores/tableTabs";
 import { useUiStore } from "@/stores/ui";
 import { databaseLabel, serverLabel } from "./connectionLabels";
-import { pillModel, pillText } from "./statusPillModel";
+import { pillModel, pillText, tagLabel, transportLabel } from "./statusPillModel";
+import { DEFAULT_TOOLBAR_ITEMS } from "./toolbarLayout";
 import { Toolbar } from "./Toolbar";
 import { WorkspaceRail } from "./WorkspaceRail";
 
@@ -67,6 +69,7 @@ function spyAction(id: ActionId) {
 }
 
 beforeEach(() => {
+  resetPrefsForTests();
   useTabsStore.setState({
     tabs: [],
     activeId: null,
@@ -152,6 +155,47 @@ describe("pillModel", () => {
     );
   });
 
+  it("does not call a tool tab (Metrics Board, Item Overview, SQL Viewer) a SQL Query", () => {
+    const conn = open(info("a"));
+    for (const tool of ["metrics", "item-overview", "sqlviewer"]) {
+      const tab = {
+        id: `tool-${tool}`,
+        kind: "tool" as const,
+        connectionId: "a",
+        tool,
+        title: tool,
+      };
+      expect(pillText(pillModel(conn, tab, null, false))).toBe(
+        "PostgreSQL 17.6 : Conn a : tabler_dev : public",
+      );
+    }
+  });
+
+  it("adds SSH / TLS / SSH/TLS after the server", () => {
+    expect(transportLabel(false, false)).toBeNull();
+    expect(transportLabel(true, false)).toBe("SSH");
+    expect(transportLabel(false, true)).toBe("TLS");
+    expect(transportLabel(true, true)).toBe("SSH/TLS");
+    const tls = pillModel(open(info("a")), null, null, false, true);
+    expect(pillText(tls)).toBe("PostgreSQL 17.6 : TLS : Conn a : tabler_dev : public");
+    expect(tls.segments[1]).toEqual({ role: "transport", text: "TLS" });
+    const both = pillModel(
+      open(info("a", { tunnel: { localPort: 1 } })),
+      null,
+      "staging",
+      false,
+      true,
+    );
+    expect(pillText(both)).toBe(
+      "STAGING │ PostgreSQL 17.6 : SSH/TLS : Conn a : tabler_dev : public",
+    );
+  });
+
+  it("labels custom tags with their name", () => {
+    expect(tagLabel("development")).toBe("DEV");
+    expect(tagLabel("qa")).toBe("QA");
+  });
+
   it("leads with the connection problem", () => {
     const lost = open(info("a"), { status: "lost" });
     const model = pillModel(lost, null, null, false);
@@ -175,7 +219,7 @@ describe("Toolbar", () => {
     expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
 
-  it("enables the action control only while the visible tab has staged work", () => {
+  it("enables the action control while the workspace has pending changes, in any of its tabs", () => {
     useConnectionsStore.getState().add(info("a"));
     const t = useTabsStore.getState().openTable("a", users);
     const commit = spyAction("grid.commit");
@@ -194,11 +238,18 @@ describe("Toolbar", () => {
     expect(preview).toHaveBeenCalledTimes(1);
     expect(document.querySelector("[data-slot=pending-badge]")).toHaveTextContent("3");
 
-    // The structure view acts on its staged DDL, not on the data view's rows.
+    // One commit covers the tab's other view too: its staged DDL joins the rows.
     act(() => useTabsStore.getState().setView(t, "structure"));
-    expect(within(group).getByRole("button", { name: "Commit changes" })).toBeDisabled();
+    expect(within(group).getByRole("button", { name: "Commit 3 changes" })).toBeEnabled();
     act(() => useStructureStore.getState().stage(t, () => [{ op: "rawSql", sql: "x" }]));
-    expect(within(group).getByRole("button", { name: "Commit 1 change" })).toBeEnabled();
+    expect(within(group).getByRole("button", { name: "Commit 4 changes" })).toBeEnabled();
+
+    // ... and the changes of a tab that is not in front.
+    const other = useTabsStore.getState().openTable("a", { schema: "public", name: "posts" });
+    act(() => useTabsStore.getState().activate(other));
+    expect(within(group).getByRole("button", { name: "Commit 4 changes" })).toBeEnabled();
+    act(() => stageRows(other, 2));
+    expect(within(group).getByRole("button", { name: "Commit 6 changes" })).toBeEnabled();
   });
 
   it("highlights the open panels and toggles them", () => {
@@ -372,18 +423,71 @@ describe("Toolbar", () => {
     await vi.waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   });
 
-  it("puts the connection tag in the pill and opens the connection switcher on click", async () => {
+  it("puts the connection tag in the pill; a click shows the details, which switch connection", async () => {
     vi.mocked(ipc.profiles.list).mockResolvedValue([
-      { id: "p-a", options: { tag: "production" } } as ConnectionProfile,
+      {
+        id: "p-a",
+        driver: "postgres",
+        host: "db.example.com",
+        port: 5432,
+        ssh: null,
+        options: { tag: "production" },
+      } as unknown as ConnectionProfile,
     ]);
+    vi.spyOn(ipc.security, "sessionDetails").mockResolvedValue({
+      tls: true,
+      tlsVersion: "TLSv1.3",
+      tlsCipher: "TLS_AES_256_GCM_SHA384",
+      encoding: "UTF8",
+    });
     useConnectionsStore.getState().add(info("a"));
     const switcher = spyAction("palette.connections");
     wrap(<Toolbar launcher={false} />);
     const tag = await screen.findByText("PRODUCTION");
     expect(tag).toHaveAttribute("data-slot", "status-pill-tag");
-    const pill = screen.getByRole("button", { name: /^PRODUCTION │ PostgreSQL 17\.6 : Conn a/ });
+    const pill = await screen.findByRole("button", {
+      name: /^PRODUCTION │ PostgreSQL 17\.6 : TLS : Conn a/,
+    });
     fireEvent.click(pill);
+    const details = await screen.findByRole("dialog");
+    expect(details).toHaveTextContent("db.example.com:5432");
+    expect(details).toHaveTextContent("TLSv1.3 · TLS_AES_256_GCM_SHA384");
+    expect(details).toHaveTextContent("UTF8");
+    expect(details).toHaveTextContent("postgres");
+    fireEvent.click(within(details).getByRole("button", { name: "Switch Connection…" }));
     expect(switcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("recolours the connection from the details", async () => {
+    const profile = {
+      id: "p-a",
+      name: "Conn a",
+      color: "green",
+      driver: "postgres",
+      options: {},
+    } as unknown as ConnectionProfile;
+    vi.mocked(ipc.profiles.list).mockResolvedValue([profile]);
+    vi.spyOn(ipc.profiles, "get").mockResolvedValue(profile);
+    const save = vi.spyOn(ipc.profiles, "save").mockImplementation(async (i) => i.profile);
+    vi.spyOn(ipc.security, "sessionDetails").mockResolvedValue({
+      tls: false,
+      tlsVersion: null,
+      tlsCipher: null,
+      encoding: null,
+    });
+    useConnectionsStore.getState().add(info("a"));
+    wrap(<Toolbar launcher={false} />);
+    fireEvent.click(await screen.findByRole("button", { name: /connection details/ }));
+    const colours = await screen.findByRole("radiogroup", { name: "Connection colour" });
+    expect(within(colours).getByRole("radio", { name: "green" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    fireEvent.click(within(colours).getByRole("radio", { name: "red" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile).toMatchObject({ id: "p-a", color: "red" });
+    await vi.waitFor(() => expect(useConnectionsStore.getState().byId.a!.info.color).toBe("red"));
+    expect(screen.getByRole("dialog")).toHaveTextContent("Not encrypted");
   });
 
   it("tints the pill with the warning colour while the connection is lost", () => {
@@ -402,6 +506,87 @@ describe("Toolbar", () => {
   });
 });
 
+describe("customisable toolbar", () => {
+  const order = () =>
+    Array.from(document.querySelectorAll("[data-slot=toolbar] button[aria-label]")).map((b) =>
+      b.getAttribute("aria-label"),
+    );
+
+  it("renders the stored layout, spaces included, and follows the preference", () => {
+    useConnectionsStore.getState().add(info("a"));
+    wrap(<Toolbar launcher={false} />);
+    expect(order()).toContain("Refresh");
+    act(() => setPref("toolbarItems", ["refresh", "flexibleSpace", "openAnything", "space"]));
+    expect(order()).toEqual(["Refresh", "Open anything"]);
+    expect(document.querySelector("[data-slot=status-pill]")).toBeNull();
+    expect(document.querySelector("[data-slot=toolbar-flexible-space]")).not.toBeNull();
+    expect(document.querySelector("[data-slot=toolbar-space]")).not.toBeNull();
+    act(() => setPref("toolbarItems", ["openAnything", "status", "refresh"]));
+    expect(order()[0]).toBe("Open anything");
+    expect(order().at(-1)).toBe("Refresh");
+    expect(document.querySelector("[data-slot=status-pill]")).not.toBeNull();
+  });
+
+  it("shows the Metrics Board only while something handles it", () => {
+    useConnectionsStore.getState().add(info("a"));
+    wrap(<Toolbar launcher={false} />);
+    expect(screen.queryByRole("button", { name: "Metrics board" })).toBeNull();
+    let metrics = vi.fn();
+    act(() => {
+      metrics = spyAction("metrics.open");
+    });
+    const button = screen.getByRole("button", { name: "Metrics board" });
+    fireEvent.click(button);
+    expect(metrics).toHaveBeenCalledTimes(1);
+    act(() => unregister.pop()!());
+    expect(screen.queryByRole("button", { name: "Metrics board" })).toBeNull();
+  });
+
+  it("right-click offers Icon Only / Icon and Text", { timeout: 15_000 }, async () => {
+    useConnectionsStore.getState().add(info("a"));
+    wrap(<Toolbar launcher={false} />);
+    fireEvent.contextMenu(document.querySelector("[data-slot=toolbar]")!);
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByRole("menuitemradio", { name: "Icon Only" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: "Icon and Text" }));
+    expect(getPrefs().toolbarDisplay).toBe("iconAndText");
+    expect(screen.getByRole("button", { name: "Refresh" })).toHaveTextContent("Refresh");
+  });
+
+  it(
+    "Customize Toolbar… edits the layout: remove, add, repeat spaces, restore",
+    { timeout: 15_000 },
+    async () => {
+      useConnectionsStore.getState().add(info("a"));
+      wrap(<Toolbar launcher={false} />);
+      fireEvent.contextMenu(document.querySelector("[data-slot=toolbar]")!);
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Customize Toolbar…" }));
+      const sheet = await screen.findByRole("dialog", { name: "Customize Toolbar" });
+      const strip = within(sheet).getByRole("list", { name: "Toolbar items" });
+      expect(
+        within(strip)
+          .getAllByRole("listitem")
+          .map((i) => i.getAttribute("data-item")),
+      ).toEqual(DEFAULT_TOOLBAR_ITEMS);
+      // ⌫ on a strip item removes it; the palette offers it again; double-click adds it back.
+      const refresh = within(strip).getByRole("listitem", { name: "Refresh" });
+      fireEvent.keyDown(refresh, { key: "Backspace" });
+      expect(getPrefs().toolbarItems).not.toContain("refresh");
+      fireEvent.doubleClick(within(sheet).getByRole("button", { name: "Add Refresh" }));
+      expect(getPrefs().toolbarItems.at(-1)).toBe("refresh");
+      // Spaces may repeat.
+      fireEvent.doubleClick(within(sheet).getByRole("button", { name: "Add Flexible Space" }));
+      fireEvent.doubleClick(within(sheet).getByRole("button", { name: "Add Flexible Space" }));
+      expect(getPrefs().toolbarItems.filter((i) => i === "flexibleSpace")).toHaveLength(2);
+      fireEvent.click(within(sheet).getByRole("button", { name: "Restore Default Set" }));
+      expect(getPrefs().toolbarItems).toEqual(DEFAULT_TOOLBAR_ITEMS);
+    },
+  );
+});
+
 describe("WorkspaceRail", () => {
   it("shows while any connection is open, even a single one", () => {
     const { container } = wrap(<WorkspaceRail />);
@@ -411,9 +596,10 @@ describe("WorkspaceRail", () => {
     expect(screen.getByRole("button", { name: "Connection manager" })).toBeInTheDocument();
     act(() => useConnectionsStore.getState().add(info("b", { driver: "mysql" })));
     const rail = screen.getByRole("navigation", { name: "Open connections" });
-    expect(within(rail).getByRole("button", { name: "Conn a" })).toHaveTextContent("PG");
-    expect(within(rail).getByRole("button", { name: "Conn b" })).toHaveTextContent("MY");
-    expect(within(rail).getByRole("button", { name: "Conn b" })).toHaveAttribute(
+    // One icon per workspace: the database's initials (tabler_dev → TD).
+    expect(within(rail).getByRole("button", { name: /Conn a/ })).toHaveTextContent("TD");
+    expect(within(rail).getByRole("button", { name: /Conn b/ })).toHaveTextContent("TD");
+    expect(within(rail).getByRole("button", { name: /Conn b/ })).toHaveAttribute(
       "aria-current",
       "true",
     );
@@ -424,10 +610,10 @@ describe("WorkspaceRail", () => {
     useConnectionsStore.getState().add(info("b"));
     useUiStore.setState({ view: "launcher" });
     wrap(<WorkspaceRail />);
-    fireEvent.click(screen.getByRole("button", { name: "Conn a" }));
+    fireEvent.click(screen.getByRole("button", { name: /Conn a/ }));
     expect(useConnectionsStore.getState().activeId).toBe("a");
     expect(useUiStore.getState().view).toBe("workspace");
-    expect(screen.getByRole("button", { name: "Conn a" })).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("button", { name: /Conn a/ })).toHaveAttribute("aria-current", "true");
   });
 
   it("opens the connection manager from +, highlighted while it shows", () => {
@@ -440,7 +626,7 @@ describe("WorkspaceRail", () => {
     expect(launcher).toHaveBeenCalledTimes(1);
     act(() => useUiStore.setState({ view: "launcher" }));
     expect(plus).toHaveAttribute("aria-current", "true");
-    expect(screen.getByRole("button", { name: "Conn a" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("button", { name: /Conn a/ })).not.toHaveAttribute("aria-current");
   });
 
   it("disconnects from the context menu", async () => {
@@ -449,7 +635,7 @@ describe("WorkspaceRail", () => {
     useConnectionsStore.getState().add(info("b"));
     useTabsStore.getState().openTable("a", users);
     wrap(<WorkspaceRail />);
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Conn a" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /Conn a/ }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Disconnect" }));
     await vi.waitFor(() => expect(disconnect).toHaveBeenCalledWith("a"));
     await vi.waitFor(() => expect(useConnectionsStore.getState().order).toEqual(["b"]));

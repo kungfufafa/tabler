@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the bundle's Info.plist by the Tauri bundler: the URL schemes Tabler opens
+     (`open -a Tabler "postgres://…"`, links). Keep in sync with deeplink::URL_SCHEMES. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>com.mekayastudio.tabler.connection-url</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>postgres</string>
+        <string>postgresql</string>
+        <string>mysql</string>
+        <string>mariadb</string>
+        <string>sqlite</string>
+        <string>tabler</string>
+        <string>postgres+ssh</string>
+        <string>postgresql+ssh</string>
+        <string>mysql+ssh</string>
+        <string>mariadb+ssh</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

@@ -15,13 +15,15 @@ import { useUiStore } from "@/stores/ui";
 import {
   showWorkspace,
   toggleWorkspaceSwitcher,
+  useRailOrder,
   useWorkspaceSwitcher,
   workspaceEntries,
 } from "./workspaces";
 
 function Switcher({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
-  const order = useConnectionsStore((s) => s.order);
+  // Rail order (the user may have dragged it).
+  const order = useRailOrder();
   const byId = useConnectionsStore((s) => s.byId);
   const activeId = useConnectionsStore((s) => s.activeId);
   const launcher = useUiStore((s) => s.view === "launcher");

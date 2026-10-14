@@ -6,6 +6,9 @@ import {
   canGoBack,
   canGoForward,
   dirtyTabs,
+  focusedGroup,
+  groupTabs,
+  isTableTab,
   maxQueryNumber,
   pickNeighbour,
   registerUnsavedSource,
@@ -15,7 +18,7 @@ import {
   workspaceTabs,
   type Tab,
 } from "./tabs";
-import { useTableTabsStore } from "./tableTabs";
+import { newFilterRow, useTableTabsStore } from "./tableTabs";
 
 const users = { schema: "public", name: "users" };
 const posts = { schema: "public", name: "posts" };
@@ -57,6 +60,7 @@ describe("tabs store", () => {
       closeRequest: null,
       history: [],
       historyIndex: -1,
+      splits: {},
     });
     useTableTabsStore.setState({ slices: {} });
     useStructureStore.setState({ byTab: {} });
@@ -76,6 +80,77 @@ describe("tabs store", () => {
     expect(state().activeId).toBe(d);
     expect(s.openTable("c1", users)).toBe(a);
     expect(tabOf(a).kind).toBe("table");
+    expect(state().activeId).toBe(a);
+  });
+
+  it("openTable with newTab opens several tabs of one table, each with its own state", () => {
+    const s = state();
+    const a = s.openTable("c1", users);
+    const b = s.openTable("c1", users, "table", { newTab: true });
+    const c = s.openTable("c1", users, "table", { newTab: true });
+    expect(new Set([a, b, c]).size).toBe(3);
+    expect(ids()).toEqual([a, b, c]);
+    for (const id of [a, b, c])
+      expect(tabOf(id)).toMatchObject({ kind: "table", table: users, connectionId: "c1" });
+    expect(previewOf(b)).toBeUndefined();
+    expect(state().activeId).toBe(c);
+    // Per-tab state is keyed by the tab: filtering one leaves the others alone.
+    useTableTabsStore.getState().update(b, { filters: [newFilterRow("id", "eq", "1")] });
+    expect(useTableTabsStore.getState().slices[a]?.filters ?? []).toEqual([]);
+    expect(useTableTabsStore.getState().slices[c]?.filters ?? []).toEqual([]);
+    // Without newTab the default call still reuses (the first of) them and re-activates it.
+    expect(s.openTable("c1", users)).toBe(a);
+    expect(ids()).toHaveLength(3);
+    expect(state().activeId).toBe(a);
+    // Another connection is its own world.
+    expect(s.openTable("c2", users, "table", { newTab: true })).not.toBe(a);
+    expect(ids()).toHaveLength(4);
+  });
+
+  it("newTab never reuses or replaces a preview tab, and is never a preview itself", () => {
+    const s = state();
+    const p = s.openTable("c1", users, "table", { preview: true });
+    expect(previewOf(p)).toBe(true);
+    const b = s.openTable("c1", users, "table", { newTab: true });
+    expect(b).not.toBe(p);
+    expect(ids()).toEqual([p, b]);
+    expect(previewOf(p)).toBe(true);
+    expect(previewOf(b)).toBeUndefined();
+    // newTab wins over preview: still a pinned tab of its own, the preview tab stays.
+    const c = s.openTable("c1", posts, "table", { newTab: true, preview: true });
+    expect(ids()).toEqual([p, b, c]);
+    expect(previewOf(c)).toBeUndefined();
+    expect(previewOf(p)).toBe(true);
+    // The next preview open still replaces the preview tab in place.
+    const d = s.openTable("c1", orders, "table", { preview: true });
+    expect(ids()).toEqual([d, b, c]);
+  });
+
+  it("in a split workspace a new tab of the table joins the focused group, beside its twin", () => {
+    const s = state();
+    const a = s.openTable("c1", users);
+    const copy = s.splitRight(a)!;
+    expect(groupTabs(state(), "c1", 0).map((t) => t.id)).toEqual([a]);
+    expect(groupTabs(state(), "c1", 1).map((t) => t.id)).toEqual([copy]);
+    // The right group has the focus: the new tab opens there; the left group's table stays put.
+    const b = s.openTable("c1", users, "table", { newTab: true });
+    expect(groupTabs(state(), "c1", 0).map((t) => t.id)).toEqual([a]);
+    expect(groupTabs(state(), "c1", 1).map((t) => t.id)).toEqual([copy, b]);
+    expect(state().activeId).toBe(b);
+    // Three tabs of one table, each with its own state.
+    for (const id of [a, copy, b]) expect(tabOf(id)).toMatchObject({ kind: "table", table: users });
+  });
+
+  it("closes, reopens and restores each tab of one table on its own", () => {
+    const s = state();
+    const a = s.openTable("c1", users);
+    const b = s.openTable("c1", users, "table", { newTab: true });
+    stage(b, 1);
+    s.forceClose([a]);
+    expect(ids()).toEqual([b]);
+    expect(useTableTabsStore.getState().slices[b]?.staging.changes.size).toBe(1);
+    s.reopenClosed();
+    expect(ids()).toEqual([b, a]);
     expect(state().activeId).toBe(a);
   });
 
@@ -525,7 +600,67 @@ describe("tabs store", () => {
     expect(ids()).toEqual([q1, q2, a]);
     expect(state().activeId).toBe(q2);
     expect(state().tabs[1]).toMatchObject({ kind: "query", connectionId: "c1", title: "Query 2" });
-    expect(s.duplicate(a)).toBeNull();
+    expect(s.duplicate("nope")).toBeNull();
+    // Table tabs duplicate too (their own test); tool tabs and unknown ids do not.
+    const tool = "tool-1";
+    s.open({ id: tool, kind: "tool", connectionId: "c1", tool: "metrics", title: "Metrics" });
+    expect(s.duplicate(tool)).toBeNull();
+    expect(state().tabs.find((t) => t.id === a)).toBeDefined();
+  });
+
+  it("duplicates a table tab next to the source: same table and view, filters and sort copied", () => {
+    const s = state();
+    const a = s.openTable("c1", users, "structure");
+    const q = s.newQuery("c1");
+    useTableTabsStore.getState().update(a, {
+      filters: [newFilterRow("id", "eq", "5")],
+      filtersVisible: true,
+      conjunction: "or",
+      limit: 50,
+      offset: 100,
+      sort: [{ column: "id", dir: "desc", nulls: null }],
+      columnState: { widths: { id: 70 }, order: ["id"], hidden: [] },
+      page: { rows: 1, durationMs: 1, sql: "select" },
+      count: { count: 1, exact: true },
+      stagedOn: "id",
+    });
+    stage(a, 2);
+    const copy = s.duplicate(a)!;
+    expect(ids()).toEqual([a, copy, q]);
+    expect(state().activeId).toBe(copy);
+    expect(tabOf(copy)).toMatchObject({ kind: "structure", connectionId: "c1", table: users });
+    expect(previewOf(copy)).toBeUndefined();
+    const from = useTableTabsStore.getState().slices[a]!;
+    const to = useTableTabsStore.getState().slices[copy]!;
+    expect(to).toMatchObject({
+      conjunction: "or",
+      filtersVisible: true,
+      limit: 50,
+      offset: 100,
+      sort: [{ column: "id", dir: "desc", nulls: null }],
+      columnState: { widths: { id: 70 }, order: ["id"], hidden: [] },
+      page: null,
+      count: null,
+      stagedOn: null,
+    });
+    expect(to.filters).toMatchObject([{ column: "id", op: "eq", value: "5", enabled: true }]);
+    expect(to.filters[0]!.id).not.toBe(from.filters[0]!.id);
+    // Staged edits stay with the source.
+    expect(to.staging.changes.size).toBe(0);
+    expect(from.staging.changes.size).toBe(2);
+    // The copies are independent.
+    useTableTabsStore.getState().update(copy, (c) => ({
+      columnState: { ...c.columnState, widths: { id: 99 } },
+    }));
+    expect(useTableTabsStore.getState().slices[a]!.columnState.widths).toEqual({ id: 70 });
+  });
+
+  it("duplicates a table tab that has no state yet", () => {
+    const s = state();
+    const a = s.openTable("c1", users);
+    const copy = s.duplicate(a)!;
+    expect(tabOf(copy)).toMatchObject({ kind: "table", table: users });
+    expect(copy).not.toBe(a);
   });
 
   it("retargets open and recently closed tabs to a new connection id", () => {
@@ -712,5 +847,192 @@ describe("tabs store", () => {
       expect(s.requestWindowClose()).toBe(false);
       expect(state().closeRequest?.dirty.map((d) => d.id)).toEqual([q, f]);
     });
+  });
+});
+
+describe("tool tabs", () => {
+  beforeEach(() => {
+    useTabsStore.setState({
+      tabs: [],
+      activeId: null,
+      closed: [],
+      queryCounter: 0,
+      closeRequest: null,
+      history: [],
+      historyIndex: -1,
+      splits: {},
+    });
+  });
+
+  const tool = (id: string, connectionId = "c1"): Tab => ({
+    id,
+    kind: "tool",
+    connectionId,
+    tool: "overview",
+    title: "Overview: public",
+    params: { schema: "public" },
+  });
+
+  it("are tabs like any other: no unsaved work of their own, reopened as they were", () => {
+    const s = state();
+    s.open(tool("o1"));
+    expect(isTableTab(tabOf("o1"))).toBe(false);
+    expect(unsavedCount(tabOf("o1"))).toBe(0);
+    const remove = registerUnsavedSource((t) => (t.kind === "tool" ? 2 : 0));
+    expect(unsavedCount(tabOf("o1"))).toBe(2);
+    remove();
+    // Not table tabs: a table open never reuses them, Data / Structure never touch them.
+    const t = s.openTable("c1", users);
+    expect(t).not.toBe("o1");
+    s.setView("o1", "structure");
+    s.pin("o1");
+    expect(tabOf("o1")).toEqual(tool("o1"));
+    s.close("o1");
+    s.reopenClosed();
+    expect(tabOf("o1")).toEqual(tool("o1"));
+    expect(state().activeId).toBe("o1");
+  });
+});
+
+describe("split workspace", () => {
+  beforeEach(() => {
+    useTabsStore.setState({
+      tabs: [],
+      activeId: null,
+      closed: [],
+      queryCounter: 0,
+      closeRequest: null,
+      history: [],
+      historyIndex: -1,
+      splits: {},
+    });
+    useTableTabsStore.setState({ slices: {} });
+    useStructureStore.setState({ byTab: {} });
+  });
+
+  const group = (g: 0 | 1, connectionId = "c1") =>
+    groupTabs(state(), connectionId, g).map((t) => t.id);
+
+  it("Split Right opens a copy of the active tab in a new right group", () => {
+    const s = state();
+    const a = s.openTable("c1", users, "structure");
+    const q = s.newQuery("c1");
+    s.activate(a);
+    const copy = s.splitRight()!;
+    expect(tabOf(copy)).toMatchObject({ kind: "structure", table: users, title: "users" });
+    expect(group(0)).toEqual([a, q]);
+    expect(group(1)).toEqual([copy]);
+    expect(state().splits.c1!.shown).toEqual([a, copy]);
+    expect(state().activeId).toBe(copy);
+    expect(focusedGroup(state(), "c1")).toBe(1);
+    // A query tab's copy is a fresh query.
+    s.activate(q);
+    const q2 = s.splitRight(q)!;
+    expect(tabOf(q2)).toMatchObject({ kind: "query", title: "Query 2" });
+    expect(group(1)).toEqual([copy, q2]);
+    // Nothing to split without a tab.
+    useTabsStore.setState({ activeId: null });
+    expect(s.splitRight()).toBeNull();
+  });
+
+  it("opens new tabs in the focused group and shows each group's own tab", () => {
+    const s = state();
+    const a = s.openTable("c1", users);
+    const right = s.splitRight()!;
+    const q = s.newQuery("c1");
+    expect(group(1)).toEqual([right, q]);
+    s.activate(a);
+    const p = s.openTable("c1", posts);
+    expect(group(0)).toEqual([a, p]);
+    expect(state().splits.c1!.shown).toEqual([p, q]);
+    // ⌘] / ⌘1…9 stay in the focused group.
+    s.next();
+    expect(state().activeId).toBe(a);
+    s.activateIndex(9);
+    expect(state().activeId).toBe(p);
+    // Opening a table that is open in the other group shows it there.
+    s.openTable("c1", users);
+    expect(state().activeId).toBe(a);
+  });
+
+  it("keeps a preview tab per group", () => {
+    const s = state();
+    const a = s.openTable("c1", users, "table", { preview: true });
+    const copy = s.splitRight()!;
+    const b = s.openTable("c1", posts, "table", { preview: true });
+    // The copy is a pinned tab: the right group's first preview is a new tab.
+    expect(group(1)).toEqual([copy, b]);
+    const c = s.openTable("c1", orders, "table", { preview: true });
+    expect(group(1)).toEqual([copy, c]);
+    expect(group(0)).toEqual([a]);
+  });
+
+  it("moves tabs between the groups and closes the split when a group empties", () => {
+    const s = state();
+    const a = s.openTable("c1", users);
+    const b = s.openTable("c1", posts);
+    const c = s.openTable("c1", orders);
+    s.moveToGroup(b, 1);
+    expect(group(0)).toEqual([a, c]);
+    expect(group(1)).toEqual([b]);
+    expect(state().activeId).toBe(b);
+    expect(state().splits.c1!.shown).toEqual([c, b]);
+    // In front of a tab of the other group.
+    s.moveToGroup(c, 1, b);
+    expect(group(1)).toEqual([c, b]);
+    expect(group(0)).toEqual([a]);
+    s.moveToGroup(a, 1);
+    expect(state().splits.c1).toBeUndefined();
+    expect(group(0)).toEqual([c, b, a]);
+    // The only tab of a workspace cannot leave it alone.
+    const d = s.openTable("c2", users);
+    s.moveToGroup(d, 1);
+    expect(state().splits.c2).toBeUndefined();
+  });
+
+  it("closing the active tab shows its group's neighbour; the split closes with its last tab", () => {
+    const s = state();
+    const a = s.openTable("c1", users);
+    const b = s.openTable("c1", posts);
+    const copy = s.splitRight(b)!;
+    const q = s.newQuery("c1");
+    s.close(q);
+    expect(state().activeId).toBe(copy);
+    s.close(copy);
+    expect(state().splits.c1).toBeUndefined();
+    expect(state().activeId).toBe(b);
+    expect(ids()).toEqual([a, b]);
+  });
+
+  it("Close Others / to the Right stay inside the tab's group", () => {
+    const s = state();
+    const a = s.openTable("c1", users);
+    const b = s.openTable("c1", posts);
+    const r1 = s.splitRight(b)!;
+    const r2 = s.newQuery("c1");
+    s.closeOthers(r2);
+    expect(ids()).toEqual([a, b, r2]);
+    s.activate(a);
+    s.closeToRight(a);
+    expect(ids()).toEqual([a, r2]);
+    expect(r1).toBeTruthy();
+  });
+
+  it("follows a reconnect and goes with the connection", () => {
+    const s = state();
+    s.openTable("c1", users);
+    s.openTable("c1", posts);
+    s.splitRight();
+    s.retargetConnection("c1", "c9");
+    expect(state().splits.c9).toBeDefined();
+    expect(state().splits.c1).toBeUndefined();
+    s.closeForConnection("c9");
+    expect(state().splits).toEqual({});
+    // unsplit puts everything back in one group.
+    const x = s.openTable("c1", users);
+    s.openTable("c1", posts);
+    s.splitRight(x);
+    s.unsplit("c1");
+    expect(state().splits.c1).toBeUndefined();
   });
 });

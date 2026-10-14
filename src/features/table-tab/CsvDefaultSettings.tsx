@@ -1,9 +1,5 @@
-import {
-  CSV_DECIMALS,
-  CSV_DELIMITERS,
-  CSV_LINE_BREAKS,
-  CSV_QUOTES,
-} from "@/features/export/options";
+import { DecimalChoice } from "@/features/export/DecimalChoice";
+import { CSV_DELIMITERS, CSV_LINE_BREAKS, CSV_QUOTES } from "@/features/export/options";
 import { Segmented, SettingGroup, SettingRow } from "@/features/settings/controls";
 import { setPref, usePrefs } from "@/stores/prefs";
 
@@ -46,11 +42,15 @@ export function CsvDefaultSettings() {
           onChange={(v) => setPref("csvLineBreak", v)}
         />
       </SettingRow>
-      <SettingRow id="pref-csv-decimal" label="Decimal">
-        <Segmented
+      <SettingRow
+        id="pref-csv-decimal"
+        label="Decimal"
+        description="The preset separators, or one character of your own (not a digit, a quote or the delimiter)."
+      >
+        <DecimalChoice
           id="pref-csv-decimal"
           value={decimal}
-          options={CSV_DECIMALS}
+          delimiter={delimiter}
           onChange={(v) => setPref("csvDecimal", v)}
         />
       </SettingRow>

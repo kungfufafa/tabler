@@ -13,6 +13,7 @@ import { formatCombo } from "@/lib/keys/combo";
 import { cn } from "@/lib/utils";
 import type { GridColumn } from "../types";
 import { jsonError, reformatJson } from "./json";
+import { commitTabSoon, isSaveKey } from "./saveKey";
 import { insertAtCaret } from "./useGrabFocus";
 
 /** JSON cell editor: validates live; Format/Minify only rewrite whitespace (numbers stay exact). */
@@ -20,12 +21,18 @@ export function JsonEditorDialog({
   col,
   initialText,
   onSave,
+  onSaveAndCommit,
   onSetNull,
   onCancel,
 }: {
   col: GridColumn;
   initialText: string;
   onSave: (text: string) => void;
+  /**
+   * ⌘S: stages the text like Save does, without moving the grid's focus, and says whether it did;
+   * the tab is committed after it. Without it ⌘S is Save followed by the commit.
+   */
+  onSaveAndCommit?: (text: string) => boolean;
   /** Shown as "Set NULL" when the column is nullable. */
   onSetNull?: () => void;
   onCancel: () => void;
@@ -35,6 +42,14 @@ export function JsonEditorDialog({
   const error = useMemo(() => jsonError(text), [text]);
   const save = () => {
     if (!error) onSave(text);
+  };
+  /** ⌘S: the text is staged (an invalid one is not), then the whole tab is committed. */
+  const saveAndCommit = () => {
+    if (error) return;
+    if (onSaveAndCommit) {
+      if (!onSaveAndCommit(text)) return;
+    } else onSave(text);
+    commitTabSoon();
   };
   const reformat = (indent: number | null) => {
     if (!error) setText(reformatJson(text, indent));
@@ -79,6 +94,9 @@ export function JsonEditorDialog({
             } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               save();
+            } else if (isSaveKey(e.nativeEvent)) {
+              e.preventDefault();
+              saveAndCommit();
             }
           }}
           className="[field-sizing:fixed] h-72 min-h-32 resize-y font-mono text-xs leading-5 md:text-xs"

@@ -1,7 +1,9 @@
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ipc, type ConnStatus, type ConnectionInfo } from "@/lib/ipc";
+import type { RunState } from "@/features/editor/runModel";
 import { useConnectionsStore, type OpenConnection } from "@/stores/connections";
+import { updateQueryTab, useQueryTabsStore } from "@/stores/queryTabs";
 import { useTabsStore } from "@/stores/tabs";
 import {
   applyStatus,
@@ -530,5 +532,158 @@ describe("reconnectConnection", () => {
       "Could not reconnect to Local PG",
       expect.objectContaining({ description: expect.stringMatching(/no-such-profile/) }),
     );
+  });
+
+  describe("force (⇧⌘R, Connection ▸ Reconnect)", () => {
+    /** A connected session that still answers a ping, with a table tab open on it. */
+    async function healthySession() {
+      const live = await ipc.connections.connect("p-local-pg");
+      useConnectionsStore.getState().add(live);
+      const tab = useTabsStore.getState().openTable(live.connectionId, {
+        schema: "public",
+        name: "users",
+      });
+      return { oldId: live.connectionId, live, tab };
+    }
+
+    it("opens a new session although the old one still answers a ping", async () => {
+      const { oldId, tab } = await healthySession();
+      const ping = vi.spyOn(ipc.connections, "ping");
+      const connect = vi.spyOn(ipc.connections, "connect");
+      const disconnect = vi.spyOn(ipc.connections, "disconnect");
+
+      await expect(reconnectConnection(oldId, new QueryClient(), { force: true })).resolves.toBe(
+        "reconnected",
+      );
+
+      // No ping, one new session, the old one released exactly once.
+      expect(ping).not.toHaveBeenCalled();
+      expect(connect).toHaveBeenCalledTimes(1);
+      expect(connect).toHaveBeenCalledWith("p-local-pg");
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      expect(disconnect).toHaveBeenCalledWith(oldId);
+      const after = useConnectionsStore.getState();
+      const fresh = after.order[0]!;
+      expect(fresh).not.toBe(oldId);
+      expect(after.order).toEqual([fresh]);
+      expect(after.byId[fresh]?.status).toBe("connected");
+      expect(after.byId[oldId]).toBeUndefined();
+      // Tabs move onto the new session.
+      expect(useTabsStore.getState().tabs.find((t) => t.id === tab)?.connectionId).toBe(fresh);
+      expect(toasts.success).toHaveBeenCalledWith(
+        "Reconnected to Local Postgres",
+        expect.objectContaining({ description: "Opened a new session; your tabs were kept." }),
+      );
+    });
+
+    it("without force the same healthy session is kept (ping first)", async () => {
+      const { oldId } = await healthySession();
+      const connect = vi.spyOn(ipc.connections, "connect");
+      await expect(reconnectConnection(oldId, new QueryClient())).resolves.toBe("alive");
+      expect(connect).not.toHaveBeenCalled();
+      expect(useConnectionsStore.getState().order).toEqual([oldId]);
+    });
+
+    it("keeps the database the user had switched to", async () => {
+      const { oldId, live } = await healthySession();
+      const switched = await ipc.connections.switchDatabase(oldId, "ecommerce_sales");
+      useConnectionsStore.getState().setInfo(switched);
+      expect(switched.currentDatabase).not.toBe(live.currentDatabase);
+
+      await expect(reconnectConnection(oldId, new QueryClient(), { force: true })).resolves.toBe(
+        "reconnected",
+      );
+      const fresh = useConnectionsStore.getState().order[0]!;
+      expect(useConnectionsStore.getState().byId[fresh]?.info.currentDatabase).toBe(
+        "ecommerce_sales",
+      );
+    });
+
+    it("leaves the old connection connected when the forced connect fails", async () => {
+      const { oldId, tab } = await healthySession();
+      vi.spyOn(ipc.connections, "connect").mockRejectedValue({
+        code: "CONNECT_FAILED",
+        message: "connection refused",
+      });
+      const disconnect = vi.spyOn(ipc.connections, "disconnect");
+
+      await expect(reconnectConnection(oldId, new QueryClient(), { force: true })).resolves.toBe(
+        "failed",
+      );
+
+      const after = useConnectionsStore.getState();
+      expect(after.order).toEqual([oldId]);
+      expect(after.byId[oldId]).toMatchObject({ status: "connected", message: null });
+      expect(useTabsStore.getState().tabs.find((t) => t.id === tab)?.connectionId).toBe(oldId);
+      // The session that is still in use is never released.
+      expect(disconnect).not.toHaveBeenCalled();
+      expect(toasts.error).toHaveBeenCalledWith(
+        "Could not reconnect to Local Postgres",
+        expect.objectContaining({ description: "connection refused" }),
+      );
+    });
+
+    it("closes the new session and keeps the old one when the database cannot be reopened", async () => {
+      const { oldId, live } = await healthySession();
+      useConnectionsStore.getState().setInfo({ ...live, currentDatabase: "ecommerce_sales" });
+      vi.spyOn(ipc.connections, "switchDatabase").mockRejectedValue({
+        code: "QUERY_FAILED",
+        message: 'database "ecommerce_sales" does not exist',
+      });
+      const disconnect = vi.spyOn(ipc.connections, "disconnect");
+
+      await expect(reconnectConnection(oldId, new QueryClient(), { force: true })).resolves.toBe(
+        "failed",
+      );
+      expect(useConnectionsStore.getState().byId[oldId]?.status).toBe("connected");
+      expect(useConnectionsStore.getState().order).toEqual([oldId]);
+      // Only the session opened for the attempt is closed again.
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      expect(disconnect).not.toHaveBeenCalledWith(oldId);
+    });
+
+    it("also recovers a lost connection, without waiting for a ping", async () => {
+      const { oldId } = await lostSessionOn("postgres");
+      const ping = vi.spyOn(ipc.connections, "ping");
+      await expect(reconnectConnection(oldId, new QueryClient(), { force: true })).resolves.toBe(
+        "reconnected",
+      );
+      expect(ping).not.toHaveBeenCalled();
+      const fresh = useConnectionsStore.getState().order[0]!;
+      expect(fresh).not.toBe(oldId);
+    });
+
+    it("says that a running query was stopped", async () => {
+      const { oldId } = await healthySession();
+      const q = useTabsStore.getState().newQuery(oldId);
+      updateQueryTab(q, {
+        run: { id: "run-1", status: "running" } as unknown as RunState,
+      });
+
+      await expect(reconnectConnection(oldId, new QueryClient(), { force: true })).resolves.toBe(
+        "reconnected",
+      );
+      expect(toasts.success).toHaveBeenCalledWith(
+        "Reconnected to Local Postgres",
+        expect.objectContaining({
+          description: expect.stringMatching(/new session; your tabs were kept\. .*stopped/),
+        }),
+      );
+      useQueryTabsStore.setState({ slices: {} });
+    });
+
+    it("a second forced call shares the attempt in flight", async () => {
+      const { oldId, live } = await healthySession();
+      const opened = deferred<ConnectionInfo>();
+      const connect = vi.spyOn(ipc.connections, "connect").mockReturnValue(opened.promise);
+      const qc = new QueryClient();
+      const first = reconnectConnection(oldId, qc, { force: true });
+      const second = reconnectConnection(oldId, qc, { force: true });
+      expect(second).toBe(first);
+      await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+      opened.resolve({ ...live, connectionId: "fresh" });
+      await expect(first).resolves.toBe("reconnected");
+      expect(connect).toHaveBeenCalledTimes(1);
+    });
   });
 });

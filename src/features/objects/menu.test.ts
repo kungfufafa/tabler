@@ -5,6 +5,9 @@ import {
   headerMenu,
   objectMenu,
   plusMenu,
+  schemaNodeMenu,
+  searchMenu,
+  searchSettingsEntries,
   settingsEntries,
   tableMenu,
   type MenuEntry,
@@ -20,6 +23,8 @@ function labels(entries: readonly MenuEntry[]): unknown[] {
         return "—";
       case "sub":
         return { [e.label]: labels(e.items) };
+      case "radio":
+        return { [`(${e.value})`]: e.options.map((o) => o.label) };
       default:
         return e.label;
     }
@@ -52,6 +57,7 @@ function tableHandlers(): TableMenuHandlers {
     togglePin: vi.fn(),
     exportItems: vi.fn(),
     importCsv: vi.fn(),
+    importJson: vi.fn(),
     importSql: vi.fn(),
     clone: vi.fn(),
     rename: vi.fn(),
@@ -83,7 +89,7 @@ describe("sidebar menus", () => {
       "Pin to Top",
       "—",
       "Export…",
-      { Import: ["From CSV…", "From SQL Dump…"] },
+      { Import: ["From CSV…", "From JSON…", "From SQL Dump…"] },
       "—",
       {
         New: ["Table…", "View…", "Materialized View…", "Function…", "Procedure…", "Schema…"],
@@ -96,6 +102,21 @@ describe("sidebar menus", () => {
       { "Copy Script As": ["CREATION", "DROP", "TRUNCATE", "Laravel Migration"] },
       "Generate Diagram…",
     ]);
+  });
+
+  it("imports into the table from CSV, JSON or an SQL dump", () => {
+    const on = tableHandlers();
+    const m = tableMenu(TABLE, on);
+    for (const id of ["import-csv", "import-json", "import-sql"]) {
+      expect(disabled(m, id), id).toBe(false);
+      const e = find(m, id);
+      if (e?.kind === "item") e.onSelect();
+    }
+    expect(on.importCsv).toHaveBeenCalledOnce();
+    expect(on.importJson).toHaveBeenCalledOnce();
+    expect(on.importSql).toHaveBeenCalledOnce();
+    const ro = tableMenu({ ...TABLE, readOnly: true }, tableHandlers());
+    expect(disabled(ro, "import-json")).toBe(true);
   });
 
   it("counts a multi-selection and disables single-item actions", () => {
@@ -132,6 +153,7 @@ describe("sidebar menus", () => {
     expect(disabled(view, "clone")).toBe(true);
     expect(disabled(view, "truncate")).toBe(true);
     expect(disabled(view, "import-csv")).toBe(true);
+    expect(disabled(view, "import-json")).toBe(true);
     expect(disabled(view, "script-truncate")).toBe(true);
     expect(disabled(view, "script-laravel")).toBe(true);
     expect(disabled(view, "delete")).toBe(false);
@@ -265,11 +287,11 @@ describe("sidebar menus", () => {
       "—",
       {
         Settings: [
-          "Show Recent",
+          "Show Recently Section",
           "Show Function Section",
           "Show Sequences",
           "Show System Schemas",
-          "Show row counts",
+          "Show Row Counts",
           "Show Columns",
         ],
       },
@@ -290,15 +312,154 @@ describe("sidebar menus", () => {
       vi.fn(),
     );
     expect(labels(mysql)).toEqual([
-      "Show Recent",
+      "Show Recently Section",
       "Show Function Section",
-      "Show row counts",
+      "Show Row Counts",
       "Show Columns",
     ]);
     expect(labels(settingsEntries("sqlite", {} as never, vi.fn()))).toEqual([
-      "Show Recent",
-      "Show row counts",
+      "Show Recently Section",
+      "Show Row Counts",
       "Show Columns",
     ]);
+  });
+
+  it("offers Lazy Load Schema Items where the connection can lazy-load", () => {
+    const set = vi.fn();
+    const base = {
+      showRecent: false,
+      showFunctions: true,
+      showSequences: false,
+      showSystemSchemas: false,
+      showRowCounts: false,
+      showColumns: false,
+    };
+    const pg = settingsEntries("postgres", { ...base, lazyLoad: true }, set);
+    expect(labels(pg)).toContain("Lazy Load Schema Items");
+    const lazy = find(pg, "lazyLoad");
+    expect(lazy).toMatchObject({ kind: "check", checked: true });
+    if (lazy?.kind === "check") lazy.onChange(false);
+    expect(set).toHaveBeenCalledWith("lazyLoad", false);
+    // SQLite (null) and callers that do not know it (undefined) have no such entry.
+    expect(labels(settingsEntries("sqlite", { ...base, lazyLoad: null }, set))).not.toContain(
+      "Lazy Load Schema Items",
+    );
+    expect(labels(settingsEntries("postgres", base, set))).not.toContain("Lazy Load Schema Items");
+  });
+
+  it("builds the search field menu: Search in Database…, Matching Strategy, Settings", () => {
+    const set = vi.fn();
+    const settings = searchSettingsEntries(
+      "postgres",
+      { showRecent: true, showSystemSchemas: false, lazyLoad: false },
+      set,
+    );
+    const on = { searchInDatabase: vi.fn(), setStrategy: vi.fn() };
+    const m = searchMenu({ strategy: "contains", settings, canSearchDatabase: true }, on);
+    expect(labels(m)).toEqual([
+      "Search in Database…",
+      "—",
+      { "Matching Strategy": [{ "(contains)": ["Fuzzy", "Contains", "Prefix", "Regex"] }] },
+      {
+        Settings: ["Show Recently Section", "Load System Schemas", "Lazy Load Item in Schema"],
+      },
+    ]);
+    const search = find(m, "search-database");
+    if (search?.kind === "item") search.onSelect();
+    expect(on.searchInDatabase).toHaveBeenCalledOnce();
+    const radio = find(m, "strategy");
+    if (radio?.kind === "radio") {
+      radio.onChange("regex");
+      radio.onChange("bogus");
+    }
+    expect(on.setStrategy).toHaveBeenCalledTimes(1);
+    expect(on.setStrategy).toHaveBeenCalledWith("regex");
+    const system = find(m, "showSystemSchemas");
+    if (system?.kind === "check") system.onChange(true);
+    expect(set).toHaveBeenCalledWith("showSystemSchemas", true);
+    // MySQL has no system schemas to load; SQLite does not lazy-load.
+    expect(
+      labels(
+        searchSettingsEntries(
+          "mysql",
+          { showRecent: false, showSystemSchemas: false, lazyLoad: true },
+          set,
+        ),
+      ),
+    ).toEqual(["Show Recently Section", "Lazy Load Item in Schema"]);
+    expect(
+      labels(
+        searchSettingsEntries(
+          "sqlite",
+          { showRecent: false, showSystemSchemas: false, lazyLoad: null },
+          set,
+        ),
+      ),
+    ).toEqual(["Show Recently Section"]);
+    const offline = searchMenu({ strategy: "fuzzy", settings, canSearchDatabase: false }, on);
+    expect(disabled(offline, "search-database")).toBe(true);
+  });
+
+  it("puts Group… in New ▸ where the sidebar keeps groups", () => {
+    const on = tableHandlers();
+    const sub = find(tableMenu({ ...TABLE, groups: true }, on), "new");
+    expect(sub?.kind === "sub" ? labels(sub.items).at(-1) : null).toBe("Group…");
+    const group = find(tableMenu({ ...TABLE, groups: true }, on), "new-group");
+    if (group?.kind === "item") group.onSelect();
+    expect(on.newItem).toHaveBeenCalledWith("group");
+    const header = headerMenu(
+      { driver: "mysql", readOnly: true, overview: true, groups: true },
+      { newItem: vi.fn(), itemOverview: vi.fn() },
+    );
+    const headerNew = find(header, "new");
+    expect(headerNew?.kind === "sub" ? labels(headerNew.items) : []).toEqual([
+      "Table…",
+      "View…",
+      "Function…",
+      "Procedure…",
+      "Group…",
+    ]);
+    // Grouping does not change the schema, so read-only connections keep it.
+    expect(disabled(header, "new-group")).toBe(false);
+  });
+
+  it("lists a schema node's menu (lazy load)", () => {
+    const on = {
+      newItem: vi.fn(),
+      itemOverview: vi.fn(),
+      generateDiagram: vi.fn(),
+      copyName: vi.fn(),
+      reload: vi.fn(),
+      collapseAll: vi.fn(),
+    };
+    const m = schemaNodeMenu(
+      { driver: "postgres", readOnly: false, loaded: false, diagram: true },
+      on,
+    );
+    expect(labels(m)).toEqual([
+      "Item Overview",
+      "Generate Diagram…",
+      "Copy Name",
+      "—",
+      "Reload Items",
+      "Collapse All",
+      "—",
+      { New: ["Table…", "View…", "Materialized View…", "Function…", "Procedure…", "Schema…"] },
+    ]);
+    expect(disabled(m, "reload")).toBe(true);
+    for (const id of ["item-overview", "generate-diagram", "copy-name", "collapse-all"]) {
+      const e = find(m, id);
+      if (e?.kind === "item") e.onSelect();
+    }
+    expect(on.itemOverview).toHaveBeenCalledOnce();
+    expect(on.generateDiagram).toHaveBeenCalledOnce();
+    expect(on.copyName).toHaveBeenCalledOnce();
+    expect(on.collapseAll).toHaveBeenCalledOnce();
+    const loaded = schemaNodeMenu(
+      { driver: "mysql", readOnly: false, loaded: true, diagram: false },
+      on,
+    );
+    expect(labels(loaded)).not.toContain("Generate Diagram…");
+    expect(disabled(loaded, "reload")).toBe(false);
   });
 });

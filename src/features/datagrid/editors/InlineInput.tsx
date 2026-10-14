@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { mergeDatePart, splitDatePart } from "@/lib/values";
 import type { GridColumn } from "../types";
 import type { EditorExit } from "./registry";
+import { commitTabSoon, isSaveKey } from "./saveKey";
 import { useGrabFocus, type CaretPlacement } from "./useGrabFocus";
 
 /** Single-line inline input (text, numbers, typed JSON) — with a calendar button for dates. */
@@ -18,6 +19,7 @@ export function InlineInput({
   calendar,
   onTextChange,
   onCommit,
+  onSave,
   onCancel,
   onAltEnter,
 }: {
@@ -28,7 +30,13 @@ export function InlineInput({
   /** Shows the date picker (date / timestamp columns). */
   calendar?: boolean;
   onTextChange: (text: string) => void;
-  onCommit: (exit: EditorExit) => void;
+  onCommit: (exit: EditorExit) => boolean | void;
+  /**
+   * ⌘S: stages the text like a blur does and says whether it did (a text that does not parse
+   * stays in the editor with its error); the tab is committed after it. Without it ⌘S stages
+   * through `onCommit("blur")`.
+   */
+  onSave?: () => boolean;
   onCancel: () => void;
   /** ⌥↩ — switch to a richer editor; receives the selection so a newline can go at the caret. */
   onAltEnter?: (selStart: number, selEnd: number) => void;
@@ -50,7 +58,10 @@ export function InlineInput({
         onKeyDown={(e) => {
           e.stopPropagation();
           if (e.nativeEvent.isComposing) return;
-          if (e.key === "Enter" && e.altKey) {
+          if (isSaveKey(e.nativeEvent)) {
+            e.preventDefault();
+            if ((onSave ? onSave() : onCommit("blur")) !== false) commitTabSoon();
+          } else if (e.key === "Enter" && e.altKey) {
             e.preventDefault();
             const el = e.currentTarget;
             onAltEnter?.(el.selectionStart ?? text.length, el.selectionEnd ?? text.length);

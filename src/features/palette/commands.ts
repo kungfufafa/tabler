@@ -1,21 +1,13 @@
 import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
-import {
-  DatabaseZap,
-  Keyboard,
-  Monitor,
-  Moon,
-  Plus,
-  Sun,
-  Unplug,
-  type LucideIcon,
-} from "lucide-react";
+import { DatabaseZap, Keyboard, Plus, Unplug } from "lucide-react";
 import { useMemo } from "react";
 import { toast } from "sonner";
+import type { CustomTheme } from "@/features/appearance/customTheme";
 import { closeConnectionTabs } from "@/features/connections/closeGuard";
 import { openConnectionDialog } from "@/features/connections/store";
 import { useConnect, useDisconnect } from "@/features/connections/useConnections";
 import { openSettings } from "@/features/settings/store";
-import { switchDatabase } from "@/features/sidebar/switchDatabase";
+import { openDatabaseWorkspace, switchDatabase } from "@/features/sidebar/switchDatabase";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
 import { ipc, type ConnectionProfile, type TableRef } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
@@ -24,6 +16,7 @@ import { useUiStore, type ThemePref } from "@/stores/ui";
 import { actions, type ActionId } from "./actions";
 import { actionIcon, type PaletteItem } from "./items";
 import { usePaletteStore } from "./store";
+import { themeCommandItems } from "./themeItems";
 
 /** Side effects the palette items trigger. Built once by the always-mounted palette shell. */
 export interface PaletteCommands {
@@ -40,6 +33,11 @@ export interface PaletteCommands {
    * Resolves once the switch settled; failures are reported as a toast.
    */
   switchDatabase: (connectionId: string, database: string) => Promise<void>;
+  /**
+   * ⌘K ↩ / double-click: opens another database in a new workspace (TablePlus), or shows its
+   * workspace when it is open already. Failures are reported as a toast.
+   */
+  openDatabase: (connectionId: string, database: string) => Promise<void>;
   /** Resolves true when the connection was disconnected, false when the user kept it. */
   disconnect: (connectionId: string) => Promise<boolean>;
   reloadSchema: (connectionId: string) => Promise<void>;
@@ -144,6 +142,9 @@ export function usePaletteCommands(): PaletteCommands {
       switchDatabase: async (connectionId, database) => {
         if (await switchDatabase(qc, connectionId, database)) showWorkspace();
       },
+      openDatabase: async (connectionId, database) => {
+        if (await openDatabaseWorkspace(qc, connectionId, database)) showWorkspace();
+      },
       disconnect: (connectionId) => disconnectGuarded(connectionId, disconnect),
       reloadSchema: async (connectionId) => {
         try {
@@ -166,12 +167,6 @@ export function usePaletteCommands(): PaletteCommands {
   );
 }
 
-const THEMES: Array<{ pref: ThemePref; label: string; icon: LucideIcon }> = [
-  { pref: "light", label: "Theme: Light", icon: Sun },
-  { pref: "dark", label: "Theme: Dark", icon: Moon },
-  { pref: "system", label: "Theme: System", icon: Monitor },
-];
-
 /**
  * Registered actions without a keyboard shortcut that the palette lists as commands (the
  * Connection menu and the ⌘K database list's commands). Shown only while they have a handler,
@@ -179,6 +174,7 @@ const THEMES: Array<{ pref: ThemePref; label: string; icon: LucideIcon }> = [
  */
 export const PALETTE_ONLY_ACTIONS = [
   "admin.users",
+  "connection.encoding",
   "admin.new-database",
   "admin.drop-database",
   "admin.new-schema",
@@ -187,16 +183,25 @@ export const PALETTE_ONLY_ACTIONS = [
   "restore.open",
   "diagram.open",
   "import.csv",
+  "import.json",
   "import.sql",
+  "metrics.open",
+  // Connection Manager lost its key (⇧⌘O is New SQL Viewer), so the palette is its only listing.
+  "ui.launcher",
+  "assistant.ask",
 ] as const satisfies readonly ActionId[];
 
 const ADMIN_COMMANDS: Record<
   (typeof PALETTE_ONLY_ACTIONS)[number],
-  { label: string; keywords: string; noRecent?: boolean }
+  { label: string; keywords: string; noRecent?: boolean; noDetail?: boolean }
 > = {
   "admin.users": {
     label: "User Management…",
     keywords: "users roles accounts privileges grants permissions password",
+  },
+  "connection.encoding": {
+    label: "View Using Encoding…",
+    keywords: "encoding charset character set names client_encoding latin1 utf8 mojibake",
   },
   "admin.new-database": { label: "New Database…", keywords: "create add database" },
   "admin.drop-database": {
@@ -217,12 +222,31 @@ const ADMIN_COMMANDS: Record<
     keywords: "er erd diagram entity relationship foreign keys relations schema plugin",
   },
   "import.csv": { label: "Import from CSV…", keywords: "import csv load file wizard rows" },
+  "import.json": {
+    label: "Import from JSON…",
+    keywords: "import json ndjson jsonl objects array load file wizard rows",
+  },
   "import.sql": { label: "Import from SQL Dump…", keywords: "import sql dump load file script" },
+  "metrics.open": {
+    label: "Metrics Board",
+    keywords: "metrics board dashboard charts scoreboard kpi widgets",
+  },
+  "ui.launcher": {
+    label: "Connection Manager",
+    keywords: "connections launcher welcome saved profiles servers open connect new window",
+    noDetail: true,
+  },
+  "assistant.ask": {
+    label: "Ask Assistant…",
+    keywords: "ai assistant chat claude gpt ollama sql helper question explain generate query",
+  },
 };
 
 /** Actions that only exist in the palette (no keyboard shortcut). */
 export function paletteCommandItems(ctx: {
   themePref: ThemePref;
+  /** The user's own themes (Settings ▸ Appearance): each one is listed as a theme command. */
+  customThemes?: readonly CustomTheme[];
   /** The active connection, if any. */
   active: { connectionId: string; name: string; schema: string | null } | null;
   commands: Pick<
@@ -234,16 +258,12 @@ export function paletteCommandItems(ctx: {
   has?: (id: ActionId) => boolean;
 }): PaletteItem[] {
   const { commands, active } = ctx;
-  const items: PaletteItem[] = THEMES.map(({ pref, label, icon }) => ({
-    key: `cmd:theme.${pref}`,
-    group: "actions",
-    label,
-    keywords: ["appearance color scheme toggle theme", pref === "dark" ? "dark mode" : ""],
-    icon: { type: "action", icon },
-    current: ctx.themePref === pref,
-    run: () => commands.setTheme(pref),
-    verb: "Apply",
-  }));
+  // Every theme of Settings ▸ Appearance: Auto, Light, Dark, Solarized Light / Dark, custom themes.
+  const items: PaletteItem[] = themeCommandItems({
+    themePref: ctx.themePref,
+    customThemes: ctx.customThemes,
+    setTheme: commands.setTheme,
+  });
   items.push({
     key: "cmd:connection.new",
     group: "actions",
@@ -296,7 +316,7 @@ export function paletteCommandItems(ctx: {
         key: `action:${id}`,
         group: "actions",
         label: c.label,
-        detail: active?.name,
+        detail: c.noDetail ? undefined : active?.name,
         keywords: [c.keywords],
         icon: { type: "action", icon: actionIcon(id) },
         run: () => run(id),

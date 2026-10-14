@@ -2,7 +2,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { resetCommitStore } from "@/features/commit/store";
+import { CommitTestHost } from "@/features/commit/testHost";
 import { actions } from "@/features/palette/actions";
+import { InspectorPanel } from "@/features/inspector/InspectorPanel";
 import { ipc, type DdlOp, type TableRef } from "@/lib/ipc";
 import { resetMockDdl } from "@/lib/ipc/mock/ddl";
 import { isMac } from "@/lib/keys/combo";
@@ -11,6 +14,8 @@ import { getEditorState } from "@/features/editor/editorStates";
 import { EditorView } from "@codemirror/view";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore, type Tab } from "@/stores/tabs";
+import { getPrefs, resetPrefsForTests } from "@/stores/prefs";
+import { useColumnSelectionStore } from "./columnSelection";
 import { useStructureStore } from "./store";
 import { StructureTab } from "./StructureTab";
 
@@ -45,6 +50,8 @@ async function setup(
           sidebar row
         </button>
         <StructureTab tab={tab} />
+        <CommitTestHost />
+        <InspectorPanel />
       </TooltipProvider>
     </QueryClientProvider>
   );
@@ -68,10 +75,28 @@ function type(input: HTMLInputElement, value: string) {
   fireEvent.keyDown(input, { key: "Enter" });
 }
 
+/**
+ * The workspace's Preview SQL sheet (⌘S / ⇧⌘P with staged structure): the structure section of
+ * the table `title`, once its statements are listed.
+ */
+async function structureSection(title = "users") {
+  const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+  const section = await within(sheet).findByRole("region", { name: `Structure ${title}` });
+  await waitFor(() => expect(section).toHaveTextContent(/[A-Z]{3,}/));
+  return { sheet, section };
+}
+
+/** Presses the sheet's Commit. */
+const commitSheet = (sheet: HTMLElement) =>
+  fireEvent.click(within(sheet).getByRole("button", { name: /^Commit/ }));
+
 beforeEach(() => {
   useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
   useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
   useStructureStore.setState({ byTab: {} });
+  useColumnSelectionStore.setState({ selection: null });
+  resetPrefsForTests();
+  resetCommitStore();
 });
 
 afterEach(() => {
@@ -108,7 +133,7 @@ describe("StructureTab", () => {
     expect(screen.queryByRole("region", { name: "Columns" })).toBeNull();
   });
 
-  it("stages a rename, reviews it with ⌘S and applies it", async () => {
+  it("stages a rename, reviews it (⇧⌘P) and applies it", async () => {
     const { ops } = await setup();
     type(cell("c:nickname:name"), "nick");
     expect(ops()).toEqual([
@@ -123,52 +148,62 @@ describe("StructureTab", () => {
     expect(cell("c:nickname:name").closest("td")).toHaveClass("bg-changed");
     expect(screen.getByText("1 change")).toBeInTheDocument();
 
-    await act(() => actions.run("grid.commit"));
-    const statement = await screen.findByTestId("ddl-statement-0");
-    expect(statement).toHaveTextContent(
+    await act(() => actions.run("grid.preview"));
+    const { sheet, section } = await structureSection();
+    expect(section).toHaveTextContent(
       'ALTER TABLE "public"."users" RENAME COLUMN "nickname" TO "nick"',
     );
     expect(screen.getByText(/run in a single transaction/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /^Apply/ }));
+    commitSheet(sheet);
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
     expect(ops()).toEqual([]);
     await waitFor(() => expect(cell("c:nick:name").value).toBe("nick"));
     expect(cell("c:nick:name").closest("td")).not.toHaveClass("bg-changed");
-    expect(screen.queryByText("Review structure changes")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Preview changes")).not.toBeInTheDocument());
   });
 
   it("shows the failed statement and keeps the staged ops when apply fails", async () => {
     const { ops } = await setup();
     type(cell("c:bio:dataType"), "nosuchtype");
-    await act(() => actions.run("grid.commit"));
-    await screen.findByTestId("ddl-statement-0");
-    fireEvent.click(screen.getByRole("button", { name: /^Apply/ }));
+    await act(() => actions.run("grid.preview"));
+    const { sheet } = await structureSection();
+    commitSheet(sheet);
     const failed = await screen.findByText('type "nosuchtype" does not exist');
-    expect(failed.closest("li")).toHaveAttribute("data-failed", "true");
+    // The failing part of the sheet carries the error, with the statement and "reverted".
+    const alert = failed.closest('[role="alert"]')!;
+    expect(alert).toHaveTextContent(/Statement 1: ALTER TABLE/);
+    expect(alert).toHaveTextContent("All changes were reverted.");
     expect(ops()).toHaveLength(1);
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it("⌘S inside a cell commits the edit and opens the review", async () => {
-    const { ops } = await setup();
+  it("⌘S inside a cell commits the cell's edit first, then the workspace", async () => {
+    // The commit plans the workspace (it applies right away, or opens the review first with
+    // "Confirm before commit"): the edit is in the plan whichever it does.
+    const planned = vi.spyOn(ipc.workspace, "preview");
+    await setup();
     const input = cell("c:balance:defaultExpr");
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "" } });
     await act(async () => {
       fireEvent.keyDown(input, { key: "s", metaKey: true });
     });
-    expect(ops()).toEqual([
+    await waitFor(() => expect(planned).toHaveBeenCalled(), { timeout: 10_000 });
+    expect(planned.mock.calls[0]![1]).toEqual([
       {
-        op: "alterColumnDefault",
+        kind: "ddl",
         table: { schema: "public", name: "users" },
-        name: "balance",
-        defaultExpr: null,
+        ops: [
+          {
+            op: "alterColumnDefault",
+            table: { schema: "public", name: "users" },
+            name: "balance",
+            defaultExpr: null,
+          },
+        ],
       },
     ]);
-    expect(await screen.findByTestId("ddl-statement-0")).toHaveTextContent(
-      'ALTER TABLE "public"."users" ALTER COLUMN "balance" DROP DEFAULT',
-    );
   });
 
   it("adds a column (⌘N), drops another, undoes and discards", async () => {
@@ -207,10 +242,9 @@ describe("StructureTab", () => {
         nullable: true,
       },
     ]);
-    await act(() => actions.run("grid.commit"));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      /rebuilt from introspected metadata/,
-    );
+    await act(() => actions.run("grid.preview"));
+    await structureSection("tags");
+    expect(await screen.findByText(/rebuilt from introspected metadata/)).toBeInTheDocument();
     expect(screen.getByText(/run one by one/)).toBeInTheDocument();
   });
 
@@ -266,9 +300,10 @@ describe("StructureTab", () => {
     expect(within(bar).getByText("1 change")).toBeInTheDocument();
     expect(within(bar).getByRole("button", { name: "Undo last change" })).toBeEnabled();
     fireEvent.click(within(bar).getByRole("button", { name: "Review & apply" }));
-    expect(await screen.findByTestId("ddl-statement-0")).toHaveTextContent(/RENAME COLUMN/);
+    const { section } = await structureSection("posts");
+    expect(section).toHaveTextContent(/RENAME COLUMN/);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByTestId("ddl-statement-0")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Preview changes")).toBeNull());
     fireEvent.click(within(bar).getByRole("button", { name: "Discard all changes" }));
     expect(ops()).toEqual([]);
     expect(within(bar).queryByText("1 change")).toBeNull();
@@ -330,14 +365,12 @@ describe("StructureTab", () => {
     const { ops } = await setup("p-shop-mysql", { schema: "tabler_dev", name: "users" });
     type(cell("c:nickname:name"), "nick");
     type(cell("c:bio:dataType"), "nosuchtype");
-    await act(() => actions.run("grid.commit"));
-    await screen.findByTestId("ddl-statement-1");
-    fireEvent.click(screen.getByRole("button", { name: /^Apply/ }));
-    await screen.findByText(/already ran and stay applied/);
+    await act(() => actions.run("grid.preview"));
+    const { sheet } = await structureSection();
+    commitSheet(sheet);
+    await screen.findByText(/Changes before it stay committed/);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() =>
-      expect(screen.queryByText("Review structure changes")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByText("Preview changes")).not.toBeInTheDocument());
 
     const banner = screen.getByText(/The last apply stopped partway/).closest("[role='alert']")!;
     expect(banner).toHaveTextContent("1 statement already ran");
@@ -438,11 +471,13 @@ describe("StructureTab", () => {
     await act(() => actions.run("grid.redo"));
     expect(ops()).toHaveLength(2);
 
-    await act(() => actions.run("grid.commit"));
-    expect(await screen.findByTestId("ddl-statement-1")).toHaveTextContent(
-      'ALTER TABLE "public"."users" ADD PRIMARY KEY ("id", "email")',
+    await act(() => actions.run("grid.preview"));
+    const { sheet, section } = await structureSection();
+    // the key swap is one statement
+    expect(section).toHaveTextContent(
+      'ALTER TABLE "public"."users" DROP CONSTRAINT "users_pkey", ADD PRIMARY KEY ("id", "email")',
     );
-    fireEvent.click(screen.getByRole("button", { name: /^Apply/ }));
+    commitSheet(sheet);
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
     expect(ops()).toEqual([]);
     await waitFor(() => expect(tokens()).toEqual(["id", "email"]));
@@ -474,9 +509,118 @@ describe("StructureTab", () => {
       }),
     );
     expect(ops()).toEqual([{ op: "rawSql", sql: expect.stringMatching(/WHERE true;$/) }]);
-    await act(() => actions.run("grid.commit"));
-    expect(await screen.findByTestId("ddl-statement-0")).toHaveTextContent(
+    await act(() => actions.run("grid.preview"));
+    const { section } = await structureSection("active_users");
+    expect(section).toHaveTextContent(
       /CREATE OR REPLACE VIEW "public"\."active_users" AS SELECT .* WHERE true;/,
     );
+  });
+});
+
+describe("StructureTab: order columns by, and bulk edit in the right sidebar", () => {
+  const POSTS = { schema: "public", name: "posts" };
+  const rowKeys = () =>
+    [...document.querySelectorAll<HTMLElement>('tr[data-row-kind="column"]')].map(
+      (tr) => tr.dataset.rowKey,
+    );
+  const numberOf = (name: string) =>
+    within(cell(`c:${name}:name`).closest("tr")!).getByRole("button", {
+      name: `Select column ${name}`,
+    });
+
+  it("orders the columns by name or by ordinal position, remembering the choice", async () => {
+    await setup("p-local-pg", POSTS);
+    const ordinal = rowKeys();
+    expect(ordinal.slice(0, 3)).toEqual(["c:id", "c:user_id", "c:title"]);
+    const bar = screen.getByRole("toolbar", { name: "Table structure" });
+    const toggle = within(bar).getByRole("button", { name: "Order columns by" });
+    expect(toggle).toHaveTextContent("Ordinal position");
+
+    fireEvent.keyDown(toggle, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Order columns by Name" }));
+    expect(getPrefs().structureColumnOrder).toBe("name");
+    expect(rowKeys()).toEqual([...ordinal].sort((a, b) => a!.localeCompare(b!)));
+    expect(toggle).toHaveTextContent("Name");
+    // The `#` column keeps the position in the table, whatever order is shown.
+    expect(numberOf("title")).toHaveTextContent("3");
+    expect(numberOf("body")).toHaveTextContent("4");
+
+    fireEvent.keyDown(toggle, { key: "Enter" });
+    fireEvent.click(
+      await screen.findByRole("menuitemradio", { name: "Order columns by Ordinal position" }),
+    );
+    expect(getPrefs().structureColumnOrder).toBe("ordinal");
+    expect(rowKeys()).toEqual(ordinal);
+  });
+
+  it("selecting several columns shows their common attributes, 'Multiple values' where they differ", async () => {
+    await setup("p-local-pg", POSTS);
+    fireEvent.click(numberOf("title"));
+    // One column: its own attributes.
+    expect(await screen.findByText("title")).toBeInTheDocument();
+    expect((screen.getByLabelText("Type") as HTMLInputElement).value).toBe("text");
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("title");
+
+    fireEvent.click(numberOf("body"), { metaKey: true });
+    expect(await screen.findByText("2 columns selected")).toBeInTheDocument();
+    // Both are text; one is NOT NULL and the other nullable.
+    expect((screen.getByLabelText("Type") as HTMLInputElement).value).toBe("text");
+    expect(screen.queryByLabelText("Name")).toBeNull();
+    const nullable = screen.getByLabelText("Nullable") as HTMLSelectElement;
+    expect(nullable.value).toBe("");
+    expect(within(nullable).getByRole("option", { name: "Multiple values" })).toBeInTheDocument();
+    expect(numberOf("title")).toHaveAttribute("aria-pressed", "true");
+    expect(cell("c:title:name").closest("tr")).toHaveAttribute("data-selected", "true");
+    // A plain click selects one again.
+    fireEvent.click(numberOf("body"));
+    expect(screen.queryByText("2 columns selected")).toBeNull();
+  });
+
+  it("an edit in the sidebar stages on every selected column, as one undo step", async () => {
+    const { ops } = await setup("p-local-pg", POSTS);
+    fireEvent.click(numberOf("title"));
+    fireEvent.click(numberOf("status"), { metaKey: true });
+    fireEvent.click(numberOf("views"), { shiftKey: true });
+    // title … views (⇧ extends from the last plain / ⌘ click).
+    expect(await screen.findByText(/columns selected/)).toBeInTheDocument();
+
+    const comment = screen.getByLabelText("Comment") as HTMLInputElement;
+    fireEvent.change(comment, { target: { value: "reviewed" } });
+    fireEvent.keyDown(comment, { key: "Enter" });
+    const comments = ops().filter((o) => o.op === "setColumnComment");
+    expect(comments.map((o) => o.op === "setColumnComment" && o.name)).toEqual([
+      "status",
+      "published_at",
+      "views",
+    ]);
+    expect(comments.every((o) => o.op === "setColumnComment" && o.comment === "reviewed")).toBe(
+      true,
+    );
+    // Their comment cells show it.
+    expect(cell("c:status:comment").value).toBe("reviewed");
+    expect(cell("c:views:comment").value).toBe("reviewed");
+
+    // One ⌘Z takes the whole bulk edit back.
+    await act(() => actions.run("grid.undo"));
+    expect(ops()).toEqual([]);
+  });
+
+  it("an invalid bulk edit is refused as a whole, with one message", async () => {
+    const { ops } = await setup("p-local-pg", POSTS);
+    fireEvent.click(numberOf("body"));
+    fireEvent.click(numberOf("status"), { metaKey: true });
+    // serial only exists for new columns: nothing stages for either of them.
+    const type = (await screen.findByLabelText("Type")) as HTMLInputElement;
+    fireEvent.change(type, { target: { value: "serial" } });
+    fireEvent.keyDown(type, { key: "Enter" });
+    expect(ops()).toEqual([]);
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringMatching(/^body: serial only exists for new columns/),
+    );
+    // A valid type goes to both, as one change each.
+    fireEvent.change(type, { target: { value: "varchar(40)" } });
+    fireEvent.keyDown(type, { key: "Enter" });
+    expect(ops().map((o) => o.op)).toEqual(["alterColumnType", "alterColumnType"]);
   });
 });

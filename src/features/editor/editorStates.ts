@@ -15,6 +15,7 @@ import {
   actionKeymapConf,
   editorExtensions,
   editorPrefsOf,
+  languagePrefsOf,
   type LanguageConfig,
 } from "./cmExtensions";
 import { dropAnchors, recordDocChanges } from "./docAnchors";
@@ -55,6 +56,20 @@ function notify(tabId: string): void {
   listeners.get(tabId)?.forEach((fn) => fn());
 }
 
+/** Who wants to hear about every tab's document edits (the .sql file auto-save). */
+const docListeners = new Set<(tabId: string) => void>();
+
+/** Calls `fn(tabId)` after each edit of a tab's document (not of a split pane's). */
+export function onDocChanged(fn: (tabId: string) => void): () => void {
+  docListeners.add(fn);
+  return () => void docListeners.delete(fn);
+}
+
+function docChanged(tabId: string): void {
+  if (isSplitKey(tabId)) return;
+  for (const fn of [...docListeners]) fn(tabId);
+}
+
 /**
  * A remapped or removed shortcut (Settings ▸ Shortcuts) applies to the editors already open too:
  * every live view and every stored state gets the query keymap rebuilt from KEYMAP.
@@ -83,6 +98,7 @@ function onUpdate(tabId: string) {
     if (!u.docChanged) return;
     recordDocChanges(tabId, u.changes.desc);
     syncDirty(tabId, u.state.doc);
+    docChanged(tabId);
     // Error squiggles describe the text that ran; editing makes them stale.
     if (diagnosticCount(u.state) > 0) {
       const view = u.view;
@@ -103,7 +119,7 @@ export function createEditorState(
     doc,
     selection: EditorSelection.cursor(0),
     extensions: editorExtensions({
-      language: { upperCaseKeywords: p.editorUppercaseKeywords, ...language },
+      language: { ...languagePrefsOf(p), ...language },
       prefs: editorPrefsOf(p),
       onUpdate: onUpdate(tabId),
     }),
@@ -174,6 +190,7 @@ export function applyToEditor(
   if (tr.docChanged) {
     recordDocChanges(tabId, tr.changes.desc);
     syncDirty(tabId, tr.state.doc);
+    docChanged(tabId);
   }
   return true;
 }

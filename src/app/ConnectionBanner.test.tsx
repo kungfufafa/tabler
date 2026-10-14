@@ -1,6 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { actions } from "@/features/palette/actions";
+import { useConnectionEvents } from "@/hooks/useConnectionEvents";
 import { ipc, type ConnectionInfo } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
@@ -35,6 +37,21 @@ function renderBanner() {
   return render(
     <QueryClientProvider client={new QueryClient()}>
       <ConnectionBanner />
+    </QueryClientProvider>,
+  );
+}
+
+/** What `Providers` mounts once: the connection events hook (and with it ⇧⌘R). */
+function Events() {
+  useConnectionEvents();
+  return null;
+}
+
+function renderApp(withBanner: boolean) {
+  return render(
+    <QueryClientProvider client={new QueryClient()}>
+      <Events />
+      {withBanner && <ConnectionBanner />}
     </QueryClientProvider>,
   );
 }
@@ -100,5 +117,50 @@ describe("ConnectionBanner", () => {
     await act(async () => opened.pb.resolve(info("b2", "pb")));
     expect(useConnectionsStore.getState().order).toEqual(["a2", "b2"]);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  describe("⇧⌘R (connection.reconnect)", () => {
+    it("is a forced reconnect: a new session although the ping answers", async () => {
+      const live = await ipc.connections.connect("p-local-pg");
+      useConnectionsStore.getState().add(live);
+      const ping = vi.spyOn(ipc.connections, "ping");
+      const connect = vi.spyOn(ipc.connections, "connect");
+      renderApp(false);
+
+      await act(async () => {
+        await actions.run("connection.reconnect");
+      });
+      await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() =>
+        expect(useConnectionsStore.getState().order[0]).not.toBe(live.connectionId),
+      );
+      expect(ping).not.toHaveBeenCalled();
+      expect(useConnectionsStore.getState().order).toHaveLength(1);
+    });
+
+    it("works where no banner is mounted (the connection manager) and without a connection", async () => {
+      renderApp(false);
+      // No open connection: nothing handles it.
+      expect(actions.has("connection.reconnect")).toBe(false);
+      act(() => useConnectionsStore.getState().add(info("a", "pa")));
+      expect(actions.has("connection.reconnect")).toBe(true);
+      expect(document.querySelector("[data-slot=connection-banner]")).toBeNull();
+    });
+
+    it("the banner's Reconnect button keeps the ping-first path", async () => {
+      const live = await ipc.connections.connect("p-local-pg");
+      useConnectionsStore.getState().add(live);
+      useConnectionsStore.getState().setStatus(live.connectionId, "lost", "timeout");
+      const ping = vi.spyOn(ipc.connections, "ping");
+      const connect = vi.spyOn(ipc.connections, "connect");
+      renderApp(true);
+      fireEvent.click(reconnectButton());
+      await vi.waitFor(() => expect(ping).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() =>
+        expect(useConnectionsStore.getState().byId[live.connectionId]?.status).toBe("connected"),
+      );
+      // The old session answered: no new one.
+      expect(connect).not.toHaveBeenCalled();
+    });
   });
 });

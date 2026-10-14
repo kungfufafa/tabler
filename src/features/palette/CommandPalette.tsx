@@ -6,6 +6,7 @@ import {
   Plus,
   FileCode2,
   Layers,
+  LayoutGrid,
   LoaderCircle,
   Search,
   Table2,
@@ -112,8 +113,8 @@ const MODE_TEXT: Record<
   all: {
     title: "Open anything",
     description:
-      "Search tables, views, schemas, databases, open tabs and connections. Type > for commands.",
-    placeholder: "Search tables, views, databases and connections…",
+      "Search tables, views, schemas, databases, open tabs, connections and commands. Type > to list every command.",
+    placeholder: "Search tables, views, databases, connections and commands…",
     verb: "Open",
     empty: "Nothing to show",
   },
@@ -131,15 +132,29 @@ const MODE_TEXT: Record<
     verb: "Switch",
     empty: "No saved connections",
   },
+  objects: {
+    title: "Search in Database",
+    description:
+      "Search every table, view and function of the database, in all of its schemas, loaded or not.",
+    placeholder: "Search in database…",
+    verb: "Open",
+    empty: "Nothing in this database",
+  },
 };
 
-const TAB_ICONS = { table: Table2, structure: TableProperties, query: FileCode2 } as const;
+const TAB_ICONS = {
+  table: Table2,
+  structure: TableProperties,
+  query: FileCode2,
+  tool: LayoutGrid,
+} as const;
 
 /** Open Anything (⌘P), Switch database (⌘K), Switch connection (⇧⌘K). */
 export function CommandPalette() {
   const open = usePaletteStore((s) => s.open);
   const mode = usePaletteStore((s) => s.mode);
   const session = usePaletteStore((s) => s.session);
+  const initialQuery = usePaletteStore((s) => s.initialQuery);
   const setOpen = usePaletteStore((s) => s.setOpen);
   const toggle = usePaletteStore((s) => s.toggle);
   const commands = usePaletteCommands();
@@ -223,6 +238,7 @@ export function CommandPalette() {
         <PaletteBody
           key={session}
           mode={mode}
+          initialQuery={initialQuery}
           commands={commands}
           onRun={runAfterClose}
           onToggle={toggleMode}
@@ -234,18 +250,21 @@ export function CommandPalette() {
 
 function PaletteBody({
   mode,
+  initialQuery = "",
   commands,
   onRun,
   onToggle,
 }: {
   mode: PaletteMode;
+  /** What the query starts as (Search in Database… hands over the sidebar's search). */
+  initialQuery?: string;
   commands: PaletteCommands;
   onRun: (fn: PaletteRun) => void;
   onToggle: (mode: PaletteMode) => void;
 }) {
   // Not deferred on purpose: ↩ right after typing must act on the results for what was typed.
   // Ranking is cheap (a few ms for thousands of tables) and at most TABLE_LIMIT rows render.
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const data = usePaletteItems(query, commands, mode);
   const text = MODE_TEXT[mode];
   const flat = useMemo(() => flattenSections(data.sections), [data.sections]);
@@ -258,13 +277,15 @@ function PaletteBody({
       : (flat[0]?.key ?? "");
   const selected = flat.find((i) => i.key === selectedKey) ?? null;
   const modClick = useRef(false);
-  // ⌘K's list (TablePlus): a click only selects a row, a double-click or ↩ opens it.
+  // Every list (TablePlus): a click only selects a row, a double-click or ↩ opens it, ⌘-click
+  // opens it in a new tab at once. A stray click while moving the pointer opens nothing.
   const pointerSelect = useRef(false);
-  const clickSelects = mode === "databases";
   const listRef = useRef<HTMLDivElement>(null);
-  const objects = mode === "all" && !data.commandMode;
+  const objects = (mode === "all" || mode === "objects") && !data.commandMode;
   // Inline completion (TablePlus): the rest of the selected object's name after what was typed.
-  const ghost = objects && selected ? completionOf(query, selected.label) : "";
+  // (Not for a command listed after the objects: Tab would put its title in the query.)
+  const ghost =
+    objects && selected && selected.group !== "actions" ? completionOf(query, selected.label) : "";
 
   // A new query selects its best match, the first row. cmdk does not scroll to it because the
   // selected value is controlled (it never sees the selection change), so reset the scroll here.
@@ -275,6 +296,11 @@ function PaletteBody({
   const choose = (item: PaletteItem, alt: boolean) => {
     // Keys pressed during the close animation still reach the (fading) input; ignore them.
     if (!usePaletteStore.getState().open) return;
+    // "Load all schemas": the list grows in place.
+    if (item.keepOpen) {
+      execute(item.run);
+      return;
+    }
     if (!item.noRecent) recordMru(item.key);
     onRun(alt && item.runAlt ? item.runAlt : item.run);
   };
@@ -366,7 +392,7 @@ function PaletteBody({
             section={section}
             onChoose={choose}
             modClick={modClick}
-            pointerSelect={clickSelects ? pointerSelect : null}
+            pointerSelect={pointerSelect}
             onMenu={(key) => setSelection({ query, key })}
             onMenuEntry={runMenuEntry}
           />
@@ -376,7 +402,7 @@ function PaletteBody({
       <Footer
         selected={selected}
         verb={text.verb}
-        hint={objects}
+        hint={objects && mode === "all"}
         databaseActions={mode === "databases"}
         onRun={onRun}
       />
@@ -415,9 +441,9 @@ function Section({
   section: PaletteSection;
   onChoose: (item: PaletteItem, alt: boolean) => void;
   modClick: RefObject<boolean>;
-  /** Set: a click only selects (cmdk already did on hover), a double-click chooses. */
-  pointerSelect: RefObject<boolean> | null;
-  /** A row's context menu opens: select that row. */
+  /** A click only selects (cmdk already did on hover), a double-click chooses; ⌘-click chooses. */
+  pointerSelect: RefObject<boolean>;
+  /** A row's context menu opens or a click lands on it: select that row. */
   onMenu: (key: string) => void;
   onMenuEntry: (entry: PaletteMenuEntry) => void;
 }) {
@@ -430,18 +456,21 @@ function Section({
           showKind={section.showKind ?? false}
           onPointerDown={(e) => {
             modClick.current = isMac ? e.metaKey : e.ctrlKey;
-            if (pointerSelect) pointerSelect.current = true;
+            pointerSelect.current = true;
           }}
           onSelect={() => {
             const alt = modClick.current;
+            const byPointer = pointerSelect.current;
             modClick.current = false;
-            if (pointerSelect?.current) {
-              pointerSelect.current = false;
+            pointerSelect.current = false;
+            if (byPointer && !alt) {
+              // A plain click: the row is selected, nothing opens (that is ↩ or a double-click).
+              onMenu(ranked.item.key);
               return;
             }
             onChoose(ranked.item, alt);
           }}
-          onDoubleClick={pointerSelect ? () => onChoose(ranked.item, false) : undefined}
+          onDoubleClick={() => onChoose(ranked.item, false)}
           onMenu={() => onMenu(ranked.item.key)}
           onMenuEntry={onMenuEntry}
         />
@@ -621,7 +650,7 @@ function Footer({
 }: {
   selected: PaletteItem | null;
   verb: string;
-  /** Shows "Type > for commands" (Open Anything's object list). */
+  /** Shows "Type > for all commands" (Open Anything's object list). */
   hint: boolean;
   /** ⌘K: the database list's + / − buttons. */
   databaseActions: boolean;
@@ -647,7 +676,7 @@ function Footer({
       )}
       {hint && (
         <span className="ml-auto" data-testid="palette-command-hint">
-          Type <kbd className="font-mono">{COMMAND_PREFIX}</kbd> for commands
+          Type <kbd className="font-mono">{COMMAND_PREFIX}</kbd> for all commands
         </span>
       )}
       <span className={cn("flex items-center gap-1", !hint && "ml-auto")}>

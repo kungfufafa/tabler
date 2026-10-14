@@ -27,7 +27,8 @@ use crate::sqlgen::ddl::{
     pg_context_sequences_sql, shared_sequence_reset_sql, table_parts,
 };
 use crate::sqlgen::transfer::{
-    drop_table_if_exists, script_footer, script_header, table_structure,
+    drop_table_if_exists, foreign_key_footer, foreign_key_header, script_footer, script_header,
+    table_structure, time_zone_footer, time_zone_header,
 };
 use crate::sqlgen::{BuiltSql, Dialect};
 use crate::types::schema::{TableMeta, TableRef};
@@ -86,12 +87,15 @@ pub fn dependency_order(parents: &[Vec<usize>]) -> Vec<usize> {
 }
 
 /// Lays out a script of `tables` (DROP / structure / rows as `script` asks). `with_header` adds
-/// the statements around a multi-table script (MySQL: no foreign key checks while it loads).
+/// the statements around a multi-table script (MySQL: no foreign key checks while it loads). A
+/// script with rows always sets the session time zone to `zone` (the zone the exporting session
+/// read the values in; `None` = the dialect's default) and puts the previous one back at its end.
 pub fn script_layout(
     dialect: Dialect,
     tables: &[ScriptTable<'_>],
     script: SqlScript,
     with_header: bool,
+    zone: Option<&str>,
 ) -> ScriptLayout {
     let position = |t: &TableRef| tables.iter().position(|s| same_table(&s.meta.table, t));
     let sequences = shared_sequences(tables);
@@ -199,11 +203,16 @@ pub fn script_layout(
     }
 
     let mut opening = String::new();
-    if with_header {
-        for line in script_header(dialect) {
-            opening.push_str(&line);
-            opening.push('\n');
-        }
+    // Without rows there are no timestamps: a structure-only script sets no time zone.
+    let header = match (with_header, script.content) {
+        (true, true) => script_header(dialect, zone),
+        (true, false) => foreign_key_header(dialect),
+        (false, true) => time_zone_header(dialect, zone),
+        (false, false) => Vec::new(),
+    };
+    for line in header {
+        opening.push_str(&line);
+        opening.push('\n');
     }
     opening.push_str(&drops);
     if !drops.is_empty() && (creates.is_empty() || tables.len() > 1) {
@@ -223,10 +232,11 @@ pub fn script_layout(
         rows,
         opening,
         closing,
-        footer: if with_header {
-            script_footer(dialect)
-        } else {
-            Vec::new()
+        footer: match (with_header, script.content) {
+            (true, true) => script_footer(dialect),
+            (true, false) => foreign_key_footer(dialect),
+            (false, true) => time_zone_footer(dialect),
+            (false, false) => Vec::new(),
         },
     }
 }

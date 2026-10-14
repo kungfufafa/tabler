@@ -10,6 +10,8 @@ import { DEMO_IMPORT_PATH, resetMockConnectionFiles } from "@/lib/ipc/mock/conne
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
 import { resetMockSettings } from "@/lib/ipc/mock/settings";
 import { isMac } from "@/lib/keys/combo";
+import { KeyboardProvider } from "@/lib/keys/useShortcuts";
+import { WindowHost } from "@/features/tabs/WindowHost";
 import { useConnectionsStore } from "@/stores/connections";
 import { useBackupStore } from "@/features/backup/store";
 import { useTabsStore } from "@/stores/tabs";
@@ -379,12 +381,36 @@ describe("Launcher", () => {
       await vi.waitFor(() => expect(usePaletteStore.getState().connecting).toEqual([]));
     });
 
-    it("⌘N opens the new-connection form", async () => {
+    it("⌘N does not open the new-connection form: it is New Window, New Connection has no key", async () => {
       renderLauncher();
       await row("Local Postgres");
+      const event = new KeyboardEvent("keydown", { ...mod("N"), bubbles: true, cancelable: true });
+      list().dispatchEvent(event);
+      // The launcher's own listener leaves ⌘N alone (the shortcut layer runs New Window).
+      expect(event.defaultPrevented).toBe(false);
+      expect(useConnectionDialog.getState()).toMatchObject({ open: false });
+      expect(screen.queryByRole("dialog", { name: "New connection" })).not.toBeInTheDocument();
+    });
+
+    it("⌘N runs New Window and opens no form when the shortcut layer is mounted", async () => {
+      const open = vi.spyOn(ipc.windows, "open").mockResolvedValue("w-2");
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={qc}>
+          <TooltipProvider>
+            <KeyboardProvider>
+              <Launcher />
+              <WindowHost />
+              <ConnectionDialogHost />
+            </KeyboardProvider>
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+      await row("Local Postgres");
       fireEvent.keyDown(list(), mod("N"));
-      expect(useConnectionDialog.getState()).toMatchObject({ open: true, profile: null });
-      expect(await screen.findByRole("dialog", { name: "New connection" })).toBeInTheDocument();
+      await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+      expect(useConnectionDialog.getState()).toMatchObject({ open: false });
+      expect(screen.queryByRole("dialog", { name: "New connection" })).not.toBeInTheDocument();
     });
   });
 
@@ -405,9 +431,11 @@ describe("Launcher", () => {
           .map((i) => i.textContent?.trim()),
       ).toEqual([
         "Connect",
+        "Open in New Window",
         "Edit…",
         "Duplicate",
         "Copy as URL",
+        "Copy as URL (without password)",
         "Move to Group",
         "Export Connections",
         "Import Connections…",
@@ -457,7 +485,9 @@ describe("Launcher", () => {
       fireEvent.contextMenu(el);
       expect(el).toHaveAttribute("aria-selected", "true");
       await user.click(await screen.findByRole("menuitem", { name: "Copy as URL" }));
-      const url = "postgresql://app@10.0.1.20:5432/app_staging?name=Staging+via+SSH&env=staging";
+      // An SSH profile copies in the `+ssh` form, with its colour and tag.
+      const url =
+        "postgresql+ssh://deploy@bastion.example.com/app@10.0.1.20:5432/app_staging?name=Staging+via+SSH&statusColor=8B5DCE&env=staging";
       await vi.waitFor(() =>
         expect(toast.success).toHaveBeenCalledWith("Copied", { description: url }),
       );
@@ -722,6 +752,28 @@ describe("Launcher", () => {
           { path: "EU", icon: "cloud" },
           { path: "EU / Old", icon: null },
         ]);
+      });
+
+      it("shows a group's own image on its header, instead of its icon", async () => {
+        const png =
+          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==";
+        await ipc.settings.set("connectionGroups", [
+          { path: "Local", icon: "home", image: png },
+          { path: "Staging", icon: "cloud" },
+        ]);
+        renderLauncher();
+        await row("Local Postgres");
+        const image = await vi.waitFor(() => {
+          const el = header("Local").querySelector<HTMLImageElement>("img[data-slot=group-image]");
+          if (!el) throw new Error("no image yet");
+          return el;
+        });
+        expect(image).toHaveAttribute("src", png);
+        expect(image).toHaveAttribute("alt", "");
+        // The image replaces the icon; a group without one keeps its icon.
+        expect(header("Local").querySelector("svg.lucide-house")).toBeNull();
+        expect(header("Staging").querySelector("svg.lucide-cloud")).not.toBeNull();
+        expect(header("Staging").querySelector("img")).toBeNull();
       });
 
       it("Change Icon… sets the icon shown on the header", async () => {

@@ -8,6 +8,7 @@ import {
   selectedRowCount,
   selectedRows,
   selectionReducer,
+  selectionRect,
   type SelectionAction,
   type SelectionState,
 } from "./selection";
@@ -158,5 +159,64 @@ describe("selectionReducer (rows, TablePlus)", () => {
       [0, 1],
       [3, 6],
     ]);
+  });
+});
+
+describe("selectionReducer (cell ranges)", () => {
+  const drag = (r: number, c: number) => ({ type: "dragTo", pos: { r, c } }) as const;
+
+  it("a drag that stays in its column selects rows; across columns it selects a cell range", () => {
+    let s = run([click(1, 1), drag(3, 1)]);
+    expect(selectionRect(s)).toBeNull();
+    expect(selectedRows(s)).toEqual([1, 2, 3]);
+    s = run([drag(3, 3)], s);
+    expect(selectionRect(s)).toEqual({ r0: 1, r1: 3, c0: 1, c1: 3 });
+    expect(selectedRows(s)).toEqual([1, 2, 3]);
+    expect(isCellSelected(s, 2, 2)).toBe(true);
+    expect(isCellSelected(s, 2, 0)).toBe(false);
+    expect(isCellSelected(s, 4, 2)).toBe(false);
+    // Back over the start: still a range (one cell wide), until a plain click.
+    s = run([drag(0, 1)], s);
+    expect(selectionRect(s)).toEqual({ r0: 0, r1: 1, c0: 1, c1: 1 });
+    s = run([click(5, 2)], s);
+    expect(selectionRect(s)).toBeNull();
+    expect(selectedRows(s)).toEqual([5]);
+  });
+
+  it("a drag down the row numbers stays a row selection", () => {
+    const s = run([click(1, 1), { type: "dragTo", pos: { r: 4, c: 3 }, rowsOnly: true }]);
+    expect(selectionRect(s)).toBeNull();
+    expect(selectedRows(s)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("⇧← / ⇧→ start a range from the selected rows; ⇧↑ / ⇧↓ grow it; plain arrows end it", () => {
+    let s = run([click(2, 1), move(1, 0, { shift: true }), move(0, 1, { shift: true })]);
+    expect(selectionRect(s)).toEqual({ r0: 2, r1: 3, c0: 1, c1: 2 });
+    s = run([move(1, 0, { shift: true }), move(0, -2, { shift: true })], s);
+    expect(selectionRect(s)).toEqual({ r0: 2, r1: 4, c0: 0, c1: 1 });
+    expect(selectedRows(s)).toEqual([2, 3, 4]);
+    s = run([move(0, 1)], s);
+    expect(selectionRect(s)).toBeNull();
+    expect(selectedRows(s)).toEqual([4]);
+  });
+
+  it("⇧-click grows a range; focusing a cell inside it keeps it; clamp cuts it", () => {
+    let s = run([click(0, 0), move(0, 1, { shift: true }), click(2, 3, { shift: true })]);
+    expect(selectionRect(s)).toEqual({ r0: 0, r1: 2, c0: 0, c1: 3 });
+    s = run([{ type: "focus", pos: { r: 1, c: 1 } }], s);
+    expect(selectionRect(s)).toEqual({ r0: 0, r1: 2, c0: 0, c1: 3 });
+    expect(s.focus).toEqual({ r: 1, c: 1 });
+    s = selectionReducer(s, { type: "clamp" }, { rows: 2, cols: 2 });
+    expect(selectionRect(s)).toEqual({ r0: 0, r1: 1, c0: 0, c1: 1 });
+    expect(selectedRows(s)).toEqual([0, 1]);
+    expect(selectionReducer(s, { type: "clamp" }, { rows: 2, cols: 2 })).toBe(s);
+  });
+
+  it("selecting all rows or a column ends a range", () => {
+    const s = run([click(0, 0), move(0, 1, { shift: true })]);
+    expect(selectionRect(run([{ type: "selectAll" }], s))).toBeNull();
+    expect(
+      selectionRect(run([{ type: "selectColumn", c: 2, shift: false, meta: false }], s)),
+    ).toBeNull();
   });
 });

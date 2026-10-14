@@ -46,9 +46,15 @@ pub struct NewHistoryEntry {
 #[ts(export)]
 pub struct HistoryFilter {
     pub profile_id: Option<Uuid>,
-    /// Case-insensitive substring match on the SQL text.
+    /// Substring match on the SQL text (case-insensitive unless `match_case`).
     pub search: Option<String>,
     /// Defaults to 200, capped at 1000.
     pub limit: Option<u32>,
     pub before_id: Option<i64>,
+    /// Search options (History ▸ search field): case-sensitive match…
+    pub match_case: bool,
+    /// …the term as a whole word…
+    pub whole_word: bool,
+    /// …`search` is a regular expression (Rust `regex` syntax).
+    pub regex: bool,
 }

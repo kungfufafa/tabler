@@ -15,7 +15,9 @@ import { useUiStore } from "@/stores/ui";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { PasswordPromptHost } from "./PasswordPrompt";
 import { usePasswordPromptStore } from "./passwordPromptStore";
+import { useConnectionDialog } from "./store";
 import { parseConnectionUrl, type ParsedConnectionUrl } from "./url";
+import { resetCustomTags } from "./tags";
 import { profileKeys } from "./useConnections";
 
 vi.mock("sonner", () => ({
@@ -115,8 +117,8 @@ describe("ConnectionDialog — new connection", () => {
     await user.keyboard("{Enter}");
     const form = await screen.findByRole("dialog", { name: "New SQLite connection" });
     expect(within(form).getByLabelText("Database file")).toBeInTheDocument();
-    // No SSH for SQLite; Advanced carries the foreign-keys switch.
-    expect(within(form).queryByRole("button", { name: "Over SSH" })).toBeNull();
+    // SQLite over SSH (the file is downloaded); Advanced carries the foreign-keys switch.
+    expect(within(form).getByRole("button", { name: "Over SSH" })).toBeInTheDocument();
     await user.click(within(form).getByRole("button", { name: "Advanced" }));
     expect(within(form).getByLabelText("Foreign keys")).toBeChecked();
   });
@@ -323,7 +325,7 @@ describe("ConnectionDialog — form", () => {
     renderDialog({ profile: SQLITE });
     const form = await screen.findByRole("dialog", { name: "Edit sample.sqlite" });
     expect(within(form).getByLabelText("Database file")).toHaveValue(SQLITE.sqlitePath);
-    expect(within(form).getByRole("button", { name: /Choose/ })).toBeInTheDocument();
+    expect(within(form).getByRole("button", { name: "Choose…" })).toBeInTheDocument();
     expect(within(form).getByRole("button", { name: /New…/ })).toBeInTheDocument();
     expect(within(form).queryByLabelText("Host")).toBeNull();
   });
@@ -557,7 +559,7 @@ describe("ConnectionDialog — IAM command and MySQL socket", () => {
     expect(test.mock.calls[0]![0].password).toBeNull();
   });
 
-  it("MySQL Use socket swaps Host / Port for the socket path and cannot go over SSH", async () => {
+  it("MySQL Use socket swaps Host / Port for the socket path, which goes over SSH as the server's", async () => {
     const save = vi.spyOn(ipc.profiles, "save");
     const user = userEvent.setup();
     renderDialog({ profile: SHOP });
@@ -569,17 +571,31 @@ describe("ConnectionDialog — IAM command and MySQL socket", () => {
     const socket = within(form).getByLabelText("Socket");
     expect(socket).toHaveAttribute("placeholder", "/tmp/mysql.sock");
 
+    // Over SSH the path is the SSH server's: its usual places are the hint, and it must be full.
     await user.click(within(form).getByRole("button", { name: "Over SSH" }));
     await user.type(within(form).getByLabelText("SSH host"), "bastion");
+    expect(socket).toHaveAttribute("placeholder", "/var/run/mysqld/mysqld.sock");
+    expect(within(form).getByText(/socket file on the SSH server/)).toBeInTheDocument();
+    await user.type(socket, "~/mysql.sock");
     await user.click(within(form).getByRole("button", { name: "Save" }));
-    expect(await within(form).findByText(/cannot go over SSH yet/)).toBeInTheDocument();
+    expect(await within(form).findByText(/enter its full path/)).toBeInTheDocument();
     expect(save).not.toHaveBeenCalled();
 
-    await user.click(within(form).getByRole("button", { name: "Over SSH" }));
+    await user.clear(socket);
+    await user.type(socket, "/run/mysqld/mysqld.sock");
     await user.click(within(form).getByRole("button", { name: "Save" }));
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save.mock.calls[0]![0].profile).toMatchObject({
-      ssh: null,
+      ssh: { host: "bastion" },
+      options: { useSocket: true, socketPath: "/run/mysqld/mysqld.sock" },
+    });
+
+    // Without a path: the backend tries the usual places on the server.
+    await user.clear(socket);
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+    expect(save.mock.calls[1]![0].profile).toMatchObject({
+      ssh: { host: "bastion" },
       options: { useSocket: true, socketPath: null },
     });
   });
@@ -654,5 +670,286 @@ describe("ConnectionDialog — groups", () => {
     await user.click(within(form).getByRole("button", { name: "Save" }));
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save.mock.calls[0]![0].profile.group).toBe("Clients / Acme / Prod");
+  });
+});
+
+describe("ConnectionDialog — conn3a options", () => {
+  const PG = SEED_PROFILES.find((p) => p.id === "p-local-pg")!;
+  const MY = SEED_PROFILES.find((p) => p.driver === "mysql" && !p.ssh)!;
+
+  beforeEach(() => resetCustomTags());
+
+  it("SQLite: encryption key, SQLCipher compatibility and resource file are saved", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog({ profile: SQLITE });
+    const form = await screen.findByRole("dialog", { name: "Edit sample.sqlite" });
+    await user.type(within(form).getByLabelText("Encryption key"), "s3cret");
+    await choose(user, form, "SQLCipher compatibility", "SQLCipher 3");
+    await user.type(within(form).getByLabelText("Resource file"), "~/.sqliterc");
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    const input = save.mock.calls[0]![0];
+    expect(input.password).toBe("s3cret");
+    expect(input.profile.options).toMatchObject({
+      sqliteCipherCompatibility: 3,
+      sqliteResourceFile: "~/.sqliterc",
+    });
+    // "No key": no compatibility to choose.
+    expect(within(form).queryByLabelText("SQLCipher compatibility")).not.toBeNull();
+  });
+
+  it("SQLite: New… with a key creates an encrypted database", async () => {
+    const create = vi.spyOn(ipc.profiles, "createSqliteFile");
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue("/tmp/vault.sqlite");
+    const user = userEvent.setup();
+    renderDialog({ profile: SQLITE });
+    const form = await screen.findByRole("dialog", { name: "Edit sample.sqlite" });
+    await user.type(within(form).getByLabelText("Encryption key"), "k");
+    await user.click(within(form).getByRole("button", { name: /New…/ }));
+    await vi.waitFor(() => expect(create).toHaveBeenCalledWith("/tmp/vault.sqlite", "k", null));
+    expect(within(form).getByLabelText("Database file")).toHaveValue("/tmp/vault.sqlite");
+    prompt.mockRestore();
+  });
+
+  it("SQLite over SSH: a remote path and the upload switch, no local port", async () => {
+    const user = userEvent.setup();
+    renderDialog({ profile: SQLITE });
+    const form = await screen.findByRole("dialog", { name: "Edit sample.sqlite" });
+    await user.click(within(form).getByRole("button", { name: "Over SSH" }));
+    expect(within(form).getByLabelText("Remote path")).toBeInTheDocument();
+    expect(within(form).queryByRole("button", { name: "Choose…" })).toBeNull();
+    expect(
+      within(form).getByRole("checkbox", { name: "Upload changes back on Commit / Disconnect" }),
+    ).toBeInTheDocument();
+    expect(within(form).queryByLabelText("Local port")).toBeNull();
+  });
+
+  it("MySQL Ver. MariaDB uses PREFERRED / ENFORCE / VERIFY-SERVER-CERT; Other options are saved", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog({ profile: { ...MY, ssl: "disable" } });
+    const form = await screen.findByRole("dialog", { name: `Edit ${MY.name}` });
+    await choose(user, form, "Ver.", "MariaDB");
+    // DISABLED is not in the MariaDB list: PREFERRED.
+    expect(within(form).getByRole("combobox", { name: "SSL mode" })).toHaveTextContent("PREFERRED");
+    within(form).getByRole("combobox", { name: "SSL mode" }).focus();
+    await user.keyboard("{Enter}");
+    const options = screen.getAllByRole("option").map((o) => o.textContent);
+    expect(options).toEqual(["PREFERRED", "ENFORCE", "VERIFY-SERVER-CERT"]);
+    await user.click(screen.getByRole("option", { name: "ENFORCE" }));
+    await user.click(within(form).getByRole("button", { name: /Other options/ }));
+    await user.click(
+      screen.getByRole("menuitemcheckbox", { name: "Enable LOAD DATA LOCAL INFILE" }),
+    );
+    expect(within(form).getByTestId("other-options-summary")).toHaveTextContent(
+      "Enable LOAD DATA LOCAL INFILE",
+    );
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile).toMatchObject({
+      ssl: "require",
+      options: { mysqlVersion: "mariadb", mysqlLocalInfile: true, mysqlCleartextPlugin: null },
+    });
+  });
+
+  it("PostgreSQL: DIRECT needs a strict SSL mode; channel binding, parameters and encoding are saved", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog({ profile: { ...PG, ssl: "prefer" } });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    await choose(user, form, "SSL negotiation", "Direct");
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    expect(await within(form).findByText(/DIRECT needs the SSL mode require/)).toBeInTheDocument();
+    expect(save).not.toHaveBeenCalled();
+    await choose(user, form, "SSL mode", "require");
+    await user.click(within(form).getByRole("button", { name: /Other options/ }));
+    await user.click(screen.getByRole("menuitemcheckbox", { name: "Disable channel binding" }));
+    await user.click(within(form).getByRole("button", { name: "Advanced" }));
+    await user.type(within(form).getByLabelText("Encoding"), "LATIN1");
+    await user.type(within(form).getByLabelText("Parameters"), "statement_timeout=5000");
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile.options).toMatchObject({
+      pgSslNegotiation: "direct",
+      pgDisableChannelBinding: true,
+      pgParams: "statement_timeout=5000",
+      encoding: "LATIN1",
+    });
+  });
+
+  it("Bootstrap commands… also holds the shell script run before connecting", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog({ profile: PG });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    await user.click(within(form).getByRole("button", { name: /Bootstrap commands/ }));
+    const editor = await screen.findByRole("dialog", { name: "Bootstrap commands" });
+    await user.type(
+      within(editor).getByLabelText("Shell script, run before connecting"),
+      "cloud-sql-proxy &",
+    );
+    await user.click(within(editor).getByRole("button", { name: "Save" }));
+    expect(within(form).getByTestId("bootstrap-script-summary")).toHaveTextContent("shell script");
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile.options.bootstrapScript).toBe("cloud-sql-proxy &");
+  });
+
+  it("SSH password storage: Ask every time sends no stored password", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog({
+      profile: { ...STAGING, ssh: { ...STAGING.ssh!, auth: "password", keyPath: null } },
+    });
+    const form = await screen.findByRole("dialog", { name: `Edit ${STAGING.name}` });
+    await choose(user, form, "SSH password storage", "Ask every time");
+    expect(within(form).getByLabelText("SSH password")).toBeDisabled();
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile.ssh?.passwordMode).toBe("ask");
+    expect(save.mock.calls[0]![0].sshPassword).toBeNull();
+  });
+
+  it("Status color ▸ Custom…: a hex colour is saved with the connection", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog({ profile: PG });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    await user.click(within(form).getByRole("radio", { name: "Custom…" }));
+    await user.type(await screen.findByLabelText("Hex"), "#12ab34{Enter}");
+    expect(within(form).getByRole("radio", { name: "Custom…" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile.color).toBe("#12ab34");
+  });
+
+  it("custom tags: the Tag menu lists them and Edit Tags… adds one", async () => {
+    resetCustomTags([{ name: "QA", color: "teal" }], true);
+    const set = vi.spyOn(ipc.settings, "set");
+    const user = userEvent.setup();
+    renderDialog({ profile: PG });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    await choose(user, form, "Tag", "QA");
+    expect(within(form).getByRole("combobox", { name: "Tag" })).toHaveTextContent("QA");
+    await choose(user, form, "Tag", "Edit Tags…");
+    const tags = await screen.findByRole("dialog", { name: "Edit Tags" });
+    await user.click(within(tags).getByRole("button", { name: "Add Tag" }));
+    const names = within(tags).getAllByLabelText("Tag name");
+    await user.type(names[names.length - 1]!, "Production");
+    expect(within(tags).getByRole("alert")).toHaveTextContent("is a built-in tag");
+    await user.clear(names[names.length - 1]!);
+    await user.type(names[names.length - 1]!, "Demo");
+    await user.click(within(tags).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() =>
+      expect(set).toHaveBeenCalledWith("connectionTags", [
+        { name: "QA", color: "teal" },
+        expect.objectContaining({ name: "Demo" }),
+      ]),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit Tags" })).toBeNull());
+    // The form kept its tag.
+    expect(within(form).getByRole("combobox", { name: "Tag" })).toHaveTextContent("QA");
+  });
+});
+
+describe("ConnectionDialog — Import from URL, Ver. and timeout", () => {
+  const MY = SEED_PROFILES.find((p) => p.driver === "mysql" && !p.ssh)!;
+
+  beforeEach(() => useConnectionDialog.setState({ open: false, urlOpen: false }));
+
+  it("the driver step has Import from URL…: it closes the sheet and opens the URL dialog", async () => {
+    const user = userEvent.setup();
+    const { onOpenChange } = renderDialog();
+    const picker = await screen.findByRole("dialog", { name: "New connection" });
+    expect(useConnectionDialog.getState().urlOpen).toBe(false);
+    await user.click(within(picker).getByRole("button", { name: "Import from URL…" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(useConnectionDialog.getState().urlOpen).toBe(true);
+  });
+
+  it("the form of a new connection has it too; editing an existing connection does not", async () => {
+    const user = userEvent.setup();
+    const { onOpenChange } = renderDialog({
+      prefill: parseConnectionUrl("mysql://app@db.example.com/shop"),
+    });
+    const form = await screen.findByRole("dialog", { name: "New MySQL / MariaDB connection" });
+    await user.click(within(form).getByRole("button", { name: "Import from URL…" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(useConnectionDialog.getState().urlOpen).toBe(true);
+  });
+
+  it("an existing connection's sheet has no Import from URL…", async () => {
+    renderDialog({ profile: MY });
+    const form = await screen.findByRole("dialog", { name: `Edit ${MY.name}` });
+    expect(within(form).queryByRole("button", { name: "Import from URL…" })).toBeNull();
+    expect(useConnectionDialog.getState().urlOpen).toBe(false);
+  });
+
+  it("Ver. SingleStore DB uses the MariaDB-style SSL list and is saved", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog({ profile: { ...MY, ssl: "disable" } });
+    const form = await screen.findByRole("dialog", { name: `Edit ${MY.name}` });
+    await choose(user, form, "Ver.", "SingleStore DB");
+    // DISABLED is not in this list: PREFERRED.
+    expect(within(form).getByRole("combobox", { name: "SSL mode" })).toHaveTextContent("PREFERRED");
+    within(form).getByRole("combobox", { name: "SSL mode" }).focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "PREFERRED",
+      "ENFORCE",
+      "VERIFY-SERVER-CERT",
+    ]);
+    await user.click(screen.getByRole("option", { name: "VERIFY-SERVER-CERT" }));
+    await user.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile).toMatchObject({
+      ssl: "verify-full",
+      options: { mysqlVersion: "singlestore" },
+    });
+  });
+
+  it("Ver. Old MySQL shows what changes for TLS; the other versions show nothing", async () => {
+    const user = userEvent.setup();
+    renderDialog({ profile: { ...MY, ssl: "require" } });
+    const form = await screen.findByRole("dialog", { name: `Edit ${MY.name}` });
+    const note = /TLS 1\.0 and 1\.1 servers are supported/;
+    expect(within(form).queryByText(note)).toBeNull();
+    await choose(user, form, "Ver.", "Old MySQL (5.x)");
+    expect(within(form).getByText(note)).toHaveTextContent("Key… / Cert…");
+    await choose(user, form, "Ver.", "MariaDB");
+    expect(within(form).queryByText(note)).toBeNull();
+    await choose(user, form, "Ver.", "SingleStore DB");
+    expect(within(form).queryByText(note)).toBeNull();
+  });
+
+  it("VERIFY-CA says the host name is not checked (VERIFY-IDENTITY checks it)", async () => {
+    renderDialog({ profile: { ...MY, ssl: "verify-ca" } });
+    const form = await screen.findByRole("dialog", { name: `Edit ${MY.name}` });
+    const hint = within(form).getByText(/Checks the certificate chain/);
+    expect(hint).toHaveTextContent("but not the host name");
+    expect(hint).toHaveTextContent("VERIFY-IDENTITY checks the name too");
+    expect(within(form).queryByText(/also checks the host name/)).toBeNull();
+  });
+
+  it("the connect timeout field says an empty value means 60 seconds", async () => {
+    const user = userEvent.setup();
+    renderDialog({ profile: MY });
+    const form = await screen.findByRole("dialog", { name: `Edit ${MY.name}` });
+    await user.click(within(form).getByRole("button", { name: "Advanced" }));
+    expect(within(form).getByText("Seconds; empty means 60")).toBeInTheDocument();
+    expect(within(form).queryByText(/empty means 15/)).toBeNull();
+  });
+
+  it("a new connection starts with the preference's timeout, 60 by default", async () => {
+    const user = userEvent.setup();
+    renderDialog({ prefill: parseConnectionUrl("mysql://app@db.example.com/shop") });
+    const form = await screen.findByRole("dialog", { name: "New MySQL / MariaDB connection" });
+    await user.click(within(form).getByRole("button", { name: "Advanced" }));
+    expect(within(form).getByLabelText("Connect timeout")).toHaveValue("60");
   });
 });

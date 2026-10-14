@@ -1,4 +1,4 @@
-import { FileCode2, Table2, TableProperties } from "lucide-react";
+import { FileCode2, LayoutGrid, Table2, TableProperties } from "lucide-react";
 import { useState } from "react";
 import { Kbd } from "@/components/Kbd";
 import {
@@ -17,13 +17,30 @@ import { actions } from "@/features/palette/actions";
 import { pendingCount } from "@/features/staging/model";
 import { structurePendingCount } from "@/features/structure/store";
 import { closeWindowNow } from "@/hooks/useUnsavedGuard";
+import { ipc } from "@/lib/ipc";
 import { comboFromEvent } from "@/lib/keys/combo";
 import { useTableTabsStore } from "@/stores/tableTabs";
 import { useTabsStore, type CloseRequest } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
 
 const DISCARD_COMBO = "Mod+D";
-const KIND_ICONS = { table: Table2, structure: TableProperties, query: FileCode2 } as const;
+const KIND_ICONS = {
+  table: Table2,
+  structure: TableProperties,
+  query: FileCode2,
+  tool: LayoutGrid,
+} as const;
+
+/**
+ * Keeps the work the dialog asked about. A quit waits for every window to agree, so keeping the
+ * work of a window close (kind "window": the quit's own question too) calls the quit off.
+ */
+function keepWork(): void {
+  const tabs = useTabsStore.getState();
+  const request = tabs.closeRequest;
+  tabs.cancelClose();
+  if (request?.kind === "window") void ipc.windows.cancelQuit().catch(() => undefined);
+}
 
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -52,14 +69,16 @@ function afterTabSwitch(fn: () => void) {
  */
 export function UnsavedChangesDialog() {
   const live = useTabsStore((s) => s.closeRequest);
-  const cancel = useTabsStore((s) => s.cancelClose);
+  const cancel = keepWork;
   // Keep showing the last request while the dialog animates out.
   const [last, setLast] = useState<CloseRequest | null>(live);
   if (live && live !== last) setLast(live);
   const request = live ?? last;
   // Table and structure tabs both answer `grid.preview` with their Preview SQL sheet.
   const reviewTarget =
-    request?.dirty.find((d) => d.kind !== "query" && d.connectionId === undefined) ?? null;
+    request?.dirty.find(
+      (d) => (d.kind === "table" || d.kind === "structure") && d.connectionId === undefined,
+    ) ?? null;
   // A connection's staged sidebar operations have no tab: Review shows their own sheet.
   const reviewConnection =
     reviewTarget === null
@@ -73,14 +92,14 @@ export function UnsavedChangesDialog() {
 
   const review = () => {
     if (reviewConnection !== null) {
-      useTabsStore.getState().cancelClose();
+      keepWork();
       useUiStore.getState().setView("workspace");
       openPendingSheet(reviewConnection);
       return;
     }
     if (!reviewTarget) return;
     const tabs = useTabsStore.getState();
-    tabs.cancelClose();
+    keepWork();
     tabs.activate(reviewTarget.id);
     // A table's tab keeps row edits and structure changes in its two views: show the view that
     // holds the work (rows first), whichever one is up, so its Preview SQL sheet answers.

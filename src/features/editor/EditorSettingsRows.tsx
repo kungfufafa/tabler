@@ -7,15 +7,23 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { SettingGroup, SettingRow } from "@/features/settings/controls";
+import { Segmented, SettingGroup, SettingRow } from "@/features/settings/controls";
 import {
+  EDITOR_ACCEPT_KEYS,
+  HISTORY_RETENTIONS,
+  NEW_TAB_OPENS,
   QUERY_PARAM_SYNTAXES,
   setPref,
   usePrefs,
   type Prefs,
   type QueryParamSyntax,
 } from "@/stores/prefs";
-import { QUERY_PARAM_EXAMPLES } from "./editorSettings";
+import {
+  ACCEPT_KEY_LABELS,
+  HISTORY_RETENTION_LABELS,
+  NEW_TAB_LABELS,
+  QUERY_PARAM_EXAMPLES,
+} from "./editorSettings";
 
 type BoolPref = {
   [K in keyof Prefs]: Prefs[K] extends boolean ? K : never;
@@ -82,9 +90,90 @@ function ParamSyntaxRow() {
   );
 }
 
+/** A select over one string preference. */
+function SelectRow<K extends keyof Prefs>({
+  pref,
+  label,
+  description,
+  values,
+  labels,
+  width = "w-40",
+}: {
+  pref: K;
+  label: string;
+  description?: ReactNode;
+  values: readonly Extract<Prefs[K], string>[];
+  labels: Record<Extract<Prefs[K], string>, string>;
+  width?: string;
+}) {
+  const value = usePrefs((p) => p[pref]);
+  const id = `pref-${pref}`;
+  return (
+    <SettingRow id={id} label={label} description={description}>
+      <Select value={String(value)} onValueChange={(v) => setPref(pref, v as Prefs[K])}>
+        <SelectTrigger
+          id={id}
+          size="sm"
+          aria-describedby={description ? `${id}-description` : undefined}
+          className={`h-7 ${width} rounded-md text-xs`}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent data-scope="dialog">
+          {values.map((v) => (
+            <SelectItem key={v} value={v} className="text-xs">
+              {labels[v]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </SettingRow>
+  );
+}
+
+const INDENT_OPTIONS = [
+  { value: "spaces", label: "Spaces" },
+  { value: "tabs", label: "Tabs" },
+] as const;
+
+/** "Indent with: Spaces / Tabs" (the width is the tab size above). */
+function IndentRow() {
+  const tabs = usePrefs((p) => p.editorIndentWithTabs);
+  const size = usePrefs((p) => p.editorTabSize);
+  return (
+    <SettingRow
+      id="pref-editorIndentWithTabs"
+      label="Indent with"
+      description={`${tabs ? "A tab" : `${size} spaces`} per indent level (Tab key, Beautify).`}
+    >
+      <Segmented
+        id="pref-editorIndentWithTabs"
+        value={tabs ? "tabs" : "spaces"}
+        options={INDENT_OPTIONS}
+        onChange={(v) => setPref("editorIndentWithTabs", v === "tabs")}
+      />
+    </SettingRow>
+  );
+}
+
+/** General ▸ Application: "Command + T should open" (TablePlus). */
+export function NewTabOpensRow() {
+  return (
+    <SelectRow
+      pref="newTabOpens"
+      label="Command + T should open"
+      description="A SQL Query Editor tab brings back the connection's most recent script when none of its query tabs is open; an empty tab never does."
+      values={NEW_TAB_OPENS}
+      labels={NEW_TAB_LABELS}
+      width="w-44"
+    />
+  );
+}
+
 /**
  * Settings ▸ Editor rows that mirror the SQL editor's ⚙ menu: highlighting, invisible characters,
- * autocomplete, query parameters and Return on Error (the same preferences).
+ * indentation, autocomplete, files, query parameters, Return on Error, history and saved queries
+ * (the same preferences).
  */
 export function EditorWorkflowSettings() {
   return (
@@ -96,13 +185,40 @@ export function EditorWorkflowSettings() {
           description="Tints the statement under the cursor (what ⌘↩ runs)."
         />
         <SwitchRow pref="editorShowInvisibles" label="Show invisible characters" />
+        <SwitchRow pref="editorShowScrollers" label="Show scrollers" />
+        <IndentRow />
+        <SwitchRow pref="editorCloseBrackets" label="Insert closing braces and quotes" />
+        <SwitchRow
+          pref="editorAutoSaveFiles"
+          label="Automatically save queries while editing"
+          description="A query tab opened from (or saved to) a .sql file saves to it as you type. Off: ⌘S saves."
+        />
+      </SettingGroup>
+      <SettingGroup title="Autocomplete">
         <SwitchRow
           pref="editorDisableSuggestions"
           invert
           label="Suggest while typing"
           description="Off: completions only open with ⌃Space."
         />
-        <SwitchRow pref="editorCloseBrackets" label="Insert closing braces and quotes" />
+        <SwitchRow pref="editorCompleteTables" label="Suggest tables and columns" />
+        <SwitchRow pref="editorCompleteKeywords" label="Suggest keywords" />
+        <SwitchRow
+          pref="editorPrefixSchemas"
+          label="Automatically prefix schemas"
+          description="Tables complete as schema.table, those of every schema included."
+        />
+        <SwitchRow
+          pref="editorAddWhitespace"
+          label="Automatically add a whitespace"
+          description="A space follows an accepted suggestion."
+        />
+        <SelectRow
+          pref="editorAcceptKey"
+          label="Auto-complete key"
+          values={EDITOR_ACCEPT_KEYS}
+          labels={ACCEPT_KEY_LABELS}
+        />
       </SettingGroup>
       <SettingGroup title="Query parameters">
         <SwitchRow
@@ -126,6 +242,26 @@ export function EditorWorkflowSettings() {
           pref="editorRaiseNotices"
           label="Raise notice notifications"
           description="PostgreSQL: RAISE NOTICE / WARNING of a running query show as notifications (Messages lists them either way)."
+        />
+      </SettingGroup>
+      <SettingGroup title="History and queries">
+        <SelectRow
+          pref="historyRetention"
+          label="Keep history for"
+          description="Older entries are deleted when Tabler starts."
+          values={HISTORY_RETENTIONS}
+          labels={HISTORY_RETENTION_LABELS}
+          width="w-28"
+        />
+        <SwitchRow
+          pref="queriesDoubleClickInsert"
+          label="Double click to insert a saved query"
+          description="Off: a double-click runs it in a new tab."
+        />
+        <SwitchRow
+          pref="queriesAutoSave"
+          label="Auto save favorite"
+          description="The saved query editor saves while you type (no ⌘S)."
         />
       </SettingGroup>
     </>

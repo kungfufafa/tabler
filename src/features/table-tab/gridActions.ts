@@ -1,7 +1,9 @@
+import { bytesHex } from "@/features/datagrid/cellText";
 import { loadExportOptions } from "@/features/export/options";
 import { openExport, setExportDraft, useExportStore } from "@/features/export/store";
 import type { GridColumn } from "@/features/datagrid/types";
 import { isMock, type ColumnMeta, type FilterGroup, type TableRef, type Value } from "@/lib/ipc";
+import { valueText } from "@/lib/values";
 
 /**
  * Set Value ▸ Add a File…: the native open panel. The browser mock has no file dialog, so it asks
@@ -44,6 +46,17 @@ export function referencedFilter(column: GridColumn, value: Value): FilterGroup 
     conjunction: "and",
     items: [{ kind: "condition", column: fk.column, op: "eq", values: [value] }],
   };
+}
+
+/**
+ * What a foreign-key jump puts in the referenced table's filter bar for `value`: its text, a blob
+ * as plain hex (`deadbeef`, what the filter bar reads for binary columns). Null when the jump
+ * cannot filter by it: NULL / DEFAULT, or a blob that is only a preview (its hex is cut off).
+ */
+export function fkFilterText(value: Value): string | null {
+  if (value.t === "null" || value.t === "default") return null;
+  if (value.t === "bytes") return value.v.truncated ? null : bytesHex(value.v.base64);
+  return valueText(value) ?? "";
 }
 
 /** `schema.name` (or the name alone) for labels. */

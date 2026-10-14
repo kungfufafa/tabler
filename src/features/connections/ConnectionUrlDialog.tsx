@@ -64,8 +64,9 @@ export function ConnectionUrlDialog({
           <DialogHeader>
             <DialogTitle>New connection from URL</DialogTitle>
             <DialogDescription>
-              Paste a postgres://, mysql://, mariadb:// or sqlite:// URL. You can review it before
-              saving; the password goes to the Keychain.
+              Paste a postgres://, mysql://, mariadb:// or sqlite:// URL (over SSH:
+              postgresql+ssh://sshuser@sshhost/user@host/db). You can review it before saving; the
+              passwords go to the Keychain.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5">

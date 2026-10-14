@@ -6,3 +6,5 @@ src/lib/ipc/bindings
 pnpm-lock.yaml
 src/components/ui
 .claude
+# stale generated copies of the ts-rs bindings (the real ones are in src/lib/ipc/bindings)
+src-tauri/bindings

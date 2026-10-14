@@ -9,11 +9,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tabler_lib::commands::query::{explain_inner, run_sql_inner};
+use tabler_lib::commands::query::{
+    QUERY_TIMEOUT_CODE, explain_inner, explain_limited, query_limited, run_sql_inner,
+};
 use tabler_lib::drivers::{
     CancelSlot, CollectSink, ConnectTarget, DbSession, RowSink, connect, request_cancel,
 };
 use tabler_lib::error::AppError;
+use tabler_lib::types::browse::TraceCategory;
 use tabler_lib::types::profile::{ConnectionProfile, Driver, ProfileOptions, SslMode};
 use tabler_lib::types::query::{
     ExplainMode, QueryEvent, ResultColumn, RunOptions, StatementKind, StatementResult,
@@ -479,4 +482,105 @@ async fn close_interrupts_the_running_statement() {
     assert!(result.is_err(), "{result:?}");
     let err = single(session.as_ref(), "select 1").await.unwrap_err();
     assert!(matches!(err, AppError::NotConnected), "{err:?}");
+}
+
+const FX3_ENDLESS: &str = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c \
+                           WHERE x < 2000000000) SELECT count(*) FROM c";
+
+#[tokio::test]
+async fn fx3_query_limit_interrupts_a_slow_read() {
+    let Some((session, _dir)) = open().await else {
+        return;
+    };
+    let started = Instant::now();
+    let err = query_limited(
+        session.as_ref(),
+        FX3_ENDLESS,
+        &[],
+        Some(Duration::from_secs(1)),
+    )
+    .await
+    .unwrap_err();
+    let took = started.elapsed();
+    assert!(took >= Duration::from_secs(1), "{took:?}");
+    assert!(took < Duration::from_secs(5), "{took:?}");
+    assert_eq!(err.code(), QUERY_TIMEOUT_CODE);
+    assert_eq!(err.to_payload().message, "Query timed out after 1 s");
+    // The worker connection runs again: the interrupted statement left nothing behind.
+    let rs = session.query("SELECT 5", &[]).await.unwrap();
+    assert_eq!(rs.rows, vec![vec![Value::Int(5)]]);
+    // A fast statement is untouched; "no limit" never cancels.
+    let fast = query_limited(
+        session.as_ref(),
+        "SELECT 1",
+        &[],
+        Some(Duration::from_secs(1)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(fast.rows, vec![vec![Value::Int(1)]]);
+    let slow = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 4000000) \
+                SELECT count(*) FROM c";
+    let done = query_limited(session.as_ref(), slow, &[], None)
+        .await
+        .unwrap();
+    assert_eq!(done.rows, vec![vec![Value::Int(4_000_000)]]);
+    session.close().await;
+}
+
+#[tokio::test]
+async fn fx3_explain_runs_under_the_limit() {
+    let Some((session, _dir)) = open().await else {
+        return;
+    };
+    let plan = explain_limited(
+        session.as_ref(),
+        "SELECT 1",
+        ExplainMode::Plan,
+        &CancelSlot::default(),
+        Some(Duration::from_secs(30)),
+    )
+    .await
+    .unwrap();
+    assert!(!plan.columns.is_empty());
+    session.close().await;
+}
+
+#[tokio::test]
+async fn fx3_traces_introspection_and_data_statements() {
+    let Some((session, _dir)) = open().await else {
+        return;
+    };
+    session.drain_trace();
+    let tables = session.list_tables("main").await.unwrap();
+    assert!(!tables.is_empty(), "the fixture has tables");
+    let first = &tables[0];
+    session
+        .table_meta(&tabler_lib::types::schema::TableRef::new(
+            Some("main"),
+            &first.name,
+        ))
+        .await
+        .unwrap();
+    let counted = session
+        .query(&format!("SELECT COUNT(*) FROM \"{}\"", first.name), &[])
+        .await
+        .unwrap();
+    assert_eq!(counted.rows.len(), 1);
+
+    let trace = session.drain_trace();
+    let find = |needle: &str| {
+        trace
+            .iter()
+            .find(|e| e.sql.contains(needle))
+            .unwrap_or_else(|| panic!("no `{needle}` in {trace:#?}"))
+    };
+    let listed = find("sqlite_master");
+    assert_eq!(listed.category, TraceCategory::Structure);
+    assert!(listed.rows.is_some() && !listed.sql.starts_with("--"));
+    assert_eq!(find("PRAGMA").category, TraceCategory::Structure);
+    let count = find("COUNT(*)");
+    assert_eq!(count.category, TraceCategory::Data);
+    assert_eq!(count.rows, Some(1));
+    session.close().await;
 }

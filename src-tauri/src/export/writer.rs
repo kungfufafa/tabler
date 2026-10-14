@@ -1,5 +1,6 @@
-//! Format writers: turn rows of `Value`s into CSV, JSON / NDJSON, SQL `INSERT` text or an Excel
-//! sheet, incrementally, into any `io::Write`. Nothing here buffers more than the current row.
+//! Format writers: turn rows of `Value`s into CSV, JSON / NDJSON, SQL `INSERT` text, an HTML
+//! table or an Excel sheet, incrementally, into any `io::Write`. Nothing here buffers more than
+//! the current row.
 
 use std::io::{self, Write};
 use std::sync::LazyLock;
@@ -32,11 +33,20 @@ pub enum FormatSpec {
         /// PostgreSQL: write `OVERRIDING SYSTEM VALUE` (the rows carry values for an identity
         /// column declared `GENERATED ALWAYS`, which a plain INSERT may not set).
         overriding_system_value: bool,
+        /// MySQL 8 or later (not MariaDB, not 5.7): geographic WKT is read back with
+        /// `axis-order=long-lat`, the order the spatial decoder writes (MySQL's storage order).
+        mysql_long_lat: bool,
     },
     Xlsx {
         header: bool,
         /// Name of the (single) sheet.
         sheet: String,
+    },
+    Html {
+        /// The page's `<title>`.
+        title: String,
+        /// The `charset` the page declares (see `encoding::html_charset`).
+        charset: &'static str,
     },
 }
 
@@ -45,15 +55,15 @@ pub enum FormatSpec {
 pub struct CsvSpec {
     pub delimiter: u8,
     pub header: bool,
-    /// `"` or `'`.
+    /// `"`, `'` or a space.
     pub quote: u8,
     /// Quote every value, not only the ones that need it.
     pub always_quote: bool,
     pub null_as: String,
     /// `\n`, `\r\n` or `\r`.
     pub line_break: &'static [u8],
-    /// Write numbers with `,` as the decimal separator.
-    pub decimal_comma: bool,
+    /// The decimal separator of numbers (`.` writes them as they are).
+    pub decimal: u8,
     /// Line breaks inside values become one space.
     pub line_break_to_space: bool,
 }
@@ -68,7 +78,7 @@ impl CsvSpec {
             always_quote: false,
             null_as: String::new(),
             line_break: b"\n",
-            decimal_comma: false,
+            decimal: b'.',
             line_break_to_space: false,
         }
     }
@@ -103,6 +113,14 @@ impl SqlScript {
     }
 }
 
+/// The INSERT target of a result with no known table.
+pub const UNTITLED_TABLE: &str = "untitled";
+
+/// A SQL script's INSERT statements end once they reach this many bytes (a row never splits, so a
+/// statement can pass it by one row): a statement beyond the server's packet limit (MySQL's
+/// `max_allowed_packet`) cannot be loaded back. The row-count batch stays the other bound.
+pub const INSERT_CHUNK_BYTES: usize = 250 * 1024;
+
 fn single_ascii(text: &str, what: &str, forbidden: &[char]) -> Result<u8, AppError> {
     let mut chars = text.chars();
     match (chars.next(), chars.next()) {
@@ -110,6 +128,29 @@ fn single_ascii(text: &str, what: &str, forbidden: &[char]) -> Result<u8, AppErr
         _ => Err(AppError::InvalidInput(format!(
             "the CSV {what} must be a single ASCII character other than a quote or a line break"
         ))),
+    }
+}
+
+/// The CSV decimal separator: `.`, `,` or one custom ASCII character that is not a digit, a quote,
+/// a line break or another control character, and differs from the delimiter (`,` is the one
+/// exception: its numbers are quoted wherever the delimiter is a comma too).
+fn decimal_byte(decimal: &str, delimiter: u8) -> Result<u8, AppError> {
+    let mut chars = decimal.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None)
+            if c.is_ascii()
+                && !c.is_ascii_digit()
+                && !c.is_ascii_control()
+                && !matches!(c, '"' | '\'')
+                && (c as u8 != delimiter || c == ',') =>
+        {
+            Ok(c as u8)
+        }
+        _ => Err(AppError::InvalidInput(
+            "the CSV decimal separator must be a single ASCII character other than a digit, \
+             the delimiter, a quote or a line break"
+                .into(),
+        )),
     }
 }
 
@@ -135,8 +176,15 @@ impl FormatSpec {
                 let (quote, always_quote) = match quote {
                     CsvQuote::Double => (b'"', true),
                     CsvQuote::Single => (b'\'', true),
+                    CsvQuote::Space => (b' ', true),
                     CsvQuote::IfNeeded => (b'"', false),
                 };
+                if quote == b' ' && delimiter == b' ' {
+                    return Err(AppError::InvalidInput(
+                        "the CSV delimiter cannot be a space when values are quoted with spaces"
+                            .into(),
+                    ));
+                }
                 let line_break: &'static [u8] = match line_break.as_str() {
                     "\n" => b"\n",
                     "\r\n" => b"\r\n",
@@ -147,15 +195,7 @@ impl FormatSpec {
                         ));
                     }
                 };
-                let decimal_comma = match decimal.as_str() {
-                    "." => false,
-                    "," => true,
-                    _ => {
-                        return Err(AppError::InvalidInput(
-                            "the CSV decimal separator must be . or ,".into(),
-                        ));
-                    }
-                };
+                let decimal = decimal_byte(decimal, delimiter)?;
                 // As PostgreSQL's COPY requires: the NULL marker is written unquoted, so it must
                 // not contain anything that would need quoting.
                 if null_as
@@ -174,7 +214,7 @@ impl FormatSpec {
                     always_quote,
                     null_as: null_as.clone(),
                     line_break,
-                    decimal_comma,
+                    decimal,
                     line_break_to_space: *line_break_to_space,
                 })
             }
@@ -192,25 +232,27 @@ impl FormatSpec {
                         "the INSERT batch size must be at least 1".into(),
                     ));
                 }
+                // A result whose table is unknown (a join, a computed column, a query) is
+                // written as `untitled`, as TablePlus does.
                 let name = match table_name.trim() {
-                    "" => default_table.unwrap_or_default(),
+                    "" => default_table.unwrap_or(UNTITLED_TABLE),
                     _ => table_name.as_str(),
                 };
-                if name.is_empty() {
-                    return Err(AppError::InvalidInput(
-                        "a target table name is required for an INSERT export".into(),
-                    ));
-                }
                 FormatSpec::Insert {
                     dialect,
                     table: dialect.quote_ident(name),
                     batch_size: *batch_size,
                     overriding_system_value: false,
+                    mysql_long_lat: false,
                 }
             }
             ExportFormat::Xlsx { header } => FormatSpec::Xlsx {
                 header: *header,
                 sheet: default_table.unwrap_or("Result").to_string(),
+            },
+            ExportFormat::Html => FormatSpec::Html {
+                title: default_table.unwrap_or("Result").to_string(),
+                charset: "utf-8",
             },
         })
     }
@@ -252,6 +294,7 @@ pub enum RowWriter<W: Write> {
     Json(JsonWriter<W>),
     Insert(InsertWriter<W>),
     Xlsx(Box<XlsxWriter<W>>),
+    Html(Box<HtmlWriter<W>>),
 }
 
 impl<W: Write> RowWriter<W> {
@@ -274,19 +317,25 @@ impl<W: Write> RowWriter<W> {
                 table,
                 batch_size,
                 overriding_system_value,
+                mysql_long_lat,
             } => RowWriter::Insert(InsertWriter {
                 w: out,
                 dialect,
                 table,
                 overriding_system_value,
+                mysql_long_lat,
                 prefix: String::new(),
                 batch_size,
                 in_batch: 0,
+                stmt_bytes: 0,
             }),
             FormatSpec::Xlsx { header, sheet } => {
                 let mut w = XlsxWriter::new(out, header);
                 w.next_sheet(&sheet);
                 RowWriter::Xlsx(Box::new(w))
+            }
+            FormatSpec::Html { title, charset } => {
+                RowWriter::Html(Box::new(HtmlWriter::new(out, &title, charset)))
             }
         }
     }
@@ -297,6 +346,7 @@ impl<W: Write> RowWriter<W> {
             RowWriter::Json(w) => w.begin(columns),
             RowWriter::Insert(w) => w.begin(columns),
             RowWriter::Xlsx(w) => w.begin(columns),
+            RowWriter::Html(w) => w.begin(columns),
         }
     }
 
@@ -306,6 +356,7 @@ impl<W: Write> RowWriter<W> {
             RowWriter::Json(w) => w.write_row(row).map_err(io_err),
             RowWriter::Insert(w) => w.write_row(row),
             RowWriter::Xlsx(w) => w.write_row(row),
+            RowWriter::Html(w) => w.write_row(row).map_err(io_err),
         }
     }
 
@@ -316,6 +367,7 @@ impl<W: Write> RowWriter<W> {
             RowWriter::Json(w) => w.finish().map_err(io_err),
             RowWriter::Insert(w) => w.finish().map_err(io_err),
             RowWriter::Xlsx(w) => w.finish(),
+            RowWriter::Html(w) => w.finish().map_err(io_err),
         }
     }
 }
@@ -421,8 +473,9 @@ fn csv_text(v: &Value, spec: &CsvSpec) -> Option<String> {
         Value::Float(f) => float_text(*f),
         other => other.as_text()?,
     };
-    let text = if spec.decimal_comma && matches!(v, Value::Float(_) | Value::Decimal(_)) {
-        text.replace('.', ",")
+    let text = if spec.decimal != b'.' && matches!(v, Value::Float(_) | Value::Decimal(_)) {
+        // The separator is one ASCII character.
+        text.replace('.', char::from(spec.decimal).encode_utf8(&mut [0; 4]))
     } else {
         text
     };
@@ -559,7 +612,7 @@ pub fn write_json_value<W: Write>(w: &mut W, v: &Value) -> io::Result<()> {
 }
 
 /// Copies valid JSON text without the whitespace between tokens (so NDJSON stays one line).
-fn write_minified_json<W: Write>(w: &mut W, raw: &str) -> io::Result<()> {
+pub(crate) fn write_minified_json<W: Write>(w: &mut W, raw: &str) -> io::Result<()> {
     let bytes = raw.as_bytes();
     let mut in_str = false;
     let mut escaped = false;
@@ -584,6 +637,154 @@ fn write_minified_json<W: Write>(w: &mut W, raw: &str) -> io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// HTML
+// ---------------------------------------------------------------------------------------------
+
+/// The page's inline style: compact, readable in light and dark viewers.
+const HTML_STYLE: &str = "\
+:root{color-scheme:light dark}
+body{font:13px -apple-system,BlinkMacSystemFont,\"Segoe UI\",Helvetica,Arial,sans-serif;margin:16px}
+h2{font-size:15px;margin:20px 0 8px}
+table{border-collapse:collapse;margin:0 0 16px}
+th,td{border:1px solid #c8c8cc;padding:3px 8px;text-align:left;vertical-align:top;white-space:pre-wrap}
+th{background:rgba(127,127,127,.14);font-weight:600}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+td.null{color:#8e8e93;font-style:italic}
+";
+
+/// `text` with `&`, `<`, `>`, `"` and `'` escaped for HTML text and attribute values.
+pub fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// An HTML page with one `<table>` per result set: `begin` opens a table (closing the previous
+/// one), `next_table` names the following one with a heading (multi-table files).
+pub struct HtmlWriter<W: Write> {
+    w: W,
+    title: String,
+    charset: &'static str,
+    /// Heading written before the next table.
+    heading: Option<String>,
+    started: bool,
+    in_table: bool,
+}
+
+impl<W: Write> HtmlWriter<W> {
+    pub fn new(w: W, title: &str, charset: &'static str) -> HtmlWriter<W> {
+        HtmlWriter {
+            w,
+            title: title.to_string(),
+            charset,
+            heading: None,
+            started: false,
+            in_table: false,
+        }
+    }
+
+    fn start(&mut self) -> io::Result<()> {
+        if !std::mem::replace(&mut self.started, true) {
+            write!(
+                self.w,
+                "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"{}\">\n<title>{}</title>\n<style>\n{HTML_STYLE}</style>\n</head>\n<body>\n",
+                self.charset,
+                html_escape(&self.title)
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Closes the open table; the next one gets `heading` above it.
+    pub fn next_table(&mut self, heading: &str) -> Result<(), AppError> {
+        self.end_table()?;
+        self.heading = Some(heading.to_string());
+        Ok(())
+    }
+
+    /// Closes the open table, if any.
+    pub fn end_table(&mut self) -> Result<(), AppError> {
+        if std::mem::take(&mut self.in_table) {
+            self.w.write_all(b"</tbody>\n</table>\n").map_err(io_err)?;
+        }
+        Ok(())
+    }
+
+    fn begin(&mut self, columns: &[String]) -> Result<(), AppError> {
+        self.start().map_err(io_err)?;
+        self.end_table()?;
+        let mut head = String::new();
+        if let Some(h) = self.heading.take() {
+            head.push_str(&format!("<h2>{}</h2>\n", html_escape(&h)));
+        }
+        head.push_str("<table>\n<thead>\n<tr>");
+        for c in columns {
+            head.push_str("<th>");
+            head.push_str(&html_escape(c));
+            head.push_str("</th>");
+        }
+        head.push_str("</tr>\n</thead>\n<tbody>\n");
+        self.w.write_all(head.as_bytes()).map_err(io_err)?;
+        self.in_table = true;
+        Ok(())
+    }
+
+    fn write_row(&mut self, row: &[Value]) -> io::Result<()> {
+        let mut line = String::from("<tr>");
+        for v in row {
+            match v {
+                Value::Null | Value::Default => line.push_str("<td class=\"null\">NULL</td>"),
+                Value::Int(_) | Value::BigInt(_) | Value::Decimal(_) | Value::Float(_) => {
+                    let text = match v {
+                        Value::Float(f) => float_text(*f),
+                        other => other.as_text().unwrap_or_default(),
+                    };
+                    line.push_str("<td class=\"num\">");
+                    line.push_str(&html_escape(&text));
+                    line.push_str("</td>");
+                }
+                other => {
+                    line.push_str("<td>");
+                    line.push_str(&html_escape(&other.as_text().unwrap_or_default()));
+                    line.push_str("</td>");
+                }
+            }
+        }
+        line.push_str("</tr>\n");
+        self.w.write_all(line.as_bytes())
+    }
+
+    /// Closes the open table and the page (a page without any table is still complete).
+    pub fn finish(mut self) -> io::Result<W> {
+        self.start()?;
+        if std::mem::take(&mut self.in_table) {
+            self.w.write_all(b"</tbody>\n</table>\n")?;
+        }
+        self.w.write_all(b"</body>\n</html>\n")?;
+        self.w.flush()?;
+        Ok(self.w)
+    }
+}
+
+impl<W: Write> RowOut for HtmlWriter<W> {
+    fn begin(&mut self, columns: &[String]) -> Result<(), AppError> {
+        HtmlWriter::begin(self, columns)
+    }
+    fn write_row(&mut self, row: &[Value]) -> Result<(), AppError> {
+        HtmlWriter::write_row(self, row).map_err(io_err)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // SQL INSERT
 // ---------------------------------------------------------------------------------------------
 
@@ -592,11 +793,14 @@ pub struct InsertWriter<W: Write> {
     dialect: Dialect,
     table: String,
     overriding_system_value: bool,
+    mysql_long_lat: bool,
     /// `INSERT INTO t (a, b) VALUES\n`, built by `begin`.
     prefix: String,
     batch_size: u32,
     /// Rows written into the open statement (0 = no statement open).
     in_batch: u32,
+    /// Bytes of the open statement so far (see `INSERT_CHUNK_BYTES`).
+    stmt_bytes: usize,
 }
 
 impl<W: Write> InsertWriter<W> {
@@ -630,7 +834,7 @@ impl<W: Write> InsertWriter<W> {
             if i > 0 {
                 line.push_str(", ");
             }
-            line.push_str(&sql_literal(self.dialect, v));
+            line.push_str(&insert_literal(self.dialect, v, self.mysql_long_lat));
         }
         line.push(')');
         let sep: &[u8] = if self.in_batch == 0 {
@@ -640,10 +844,14 @@ impl<W: Write> InsertWriter<W> {
         };
         self.w.write_all(sep).map_err(io_err)?;
         self.w.write_all(line.as_bytes()).map_err(io_err)?;
+        self.stmt_bytes += sep.len() + line.len();
         self.in_batch += 1;
-        if self.in_batch >= self.batch_size {
+        // The statement ends at the row batch or at ~250 KB, whichever comes first (checked
+        // after the row, so one huge row still goes out whole).
+        if self.in_batch >= self.batch_size || self.stmt_bytes >= INSERT_CHUNK_BYTES {
             self.w.write_all(b";\n").map_err(io_err)?;
             self.in_batch = 0;
+            self.stmt_bytes = 0;
         }
         Ok(())
     }
@@ -664,6 +872,55 @@ static BIT_LITERAL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^b'[01]*'$").expect("valid bit regex"));
 static HEX_DIGITS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:[0-9A-Fa-f]{2})*$").expect("valid hex regex"));
+/// The WKT the spatial decoder writes: a type keyword, then numbers, parentheses, commas, `EMPTY`
+/// and dimension tags (`Z`, `M`, `ZM`).
+static WKT_TEXT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z][A-Za-z0-9 ,.()+\-]*$").expect("valid WKT regex"));
+
+/// `SRID=4326;POINT(1 2)` → (4326, `POINT(1 2)`); plain WKT has SRID 0. None for anything that
+/// is not (E)WKT.
+pub fn split_ewkt(text: &str) -> Option<(u32, &str)> {
+    let t = text.trim();
+    let (srid, wkt) = match t.get(..5) {
+        Some(p) if p.eq_ignore_ascii_case("SRID=") => {
+            let (n, wkt) = t[5..].split_once(';')?;
+            (n.trim().parse::<u32>().ok()?, wkt.trim())
+        }
+        _ => (0, t),
+    };
+    WKT_TEXT.is_match(wkt).then_some((srid, wkt))
+}
+
+/// A MySQL spatial value given as (E)WKT: `ST_GeomFromText('…', srid)`. MySQL 8 reads the
+/// coordinates of a geographic SRS latitude first unless told `axis-order=long-lat`; the decoder
+/// writes them in MySQL's storage order (longitude first), so 8+ gets that option for an SRID.
+fn mysql_geometry(text: &str, long_lat: bool) -> Option<String> {
+    let (srid, wkt) = split_ewkt(text)?;
+    let wkt = string_literal(Dialect::Mysql, wkt);
+    Some(if long_lat && srid != 0 {
+        format!("ST_GeomFromText({wkt}, {srid}, 'axis-order=long-lat')")
+    } else {
+        format!("ST_GeomFromText({wkt}, {srid})")
+    })
+}
+
+/// The PostGIS type a column type names (`geometry`, `geometry(Point,4326)`,
+/// `public.geography`), if it is one.
+fn postgis_type(ty: &str) -> Option<&'static str> {
+    let lower = ty.trim().to_ascii_lowercase();
+    let base = lower.split('(').next().unwrap_or_default();
+    let base = base
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_matches('"');
+    match base {
+        "geometry" => Some("geometry"),
+        "geography" => Some("geography"),
+        _ => None,
+    }
+}
 
 /// A value as a SQL literal of `dialect`, for the INSERT export. Unlike the preview `literal`,
 /// the text never depends on the loading session's settings: string literals contain no
@@ -672,6 +929,13 @@ static HEX_DIGITS: LazyLock<Regex> =
 /// written as hex, so `NO_BACKSLASH_ESCAPES` cannot turn data into SQL. Database text is never
 /// emitted unquoted unless it is a well-formed number; MySQL BIT / geometry values stay loadable.
 pub fn sql_literal(dialect: Dialect, v: &Value) -> String {
+    insert_literal(dialect, v, false)
+}
+
+/// `sql_literal`, with spatial values loadable on the server they came from: MySQL (E)WKT through
+/// `ST_GeomFromText` (see `mysql_geometry`; `mysql_long_lat` for MySQL 8+), PostGIS EWKT or hex
+/// cast to its type (`'SRID=4326;POINT(1 2)'::geometry`).
+pub fn insert_literal(dialect: Dialect, v: &Value, mysql_long_lat: bool) -> String {
     match v {
         Value::Null | Value::Default | Value::Bool(_) | Value::Int(_) => literal(dialect, v),
         Value::Float(f) if f.is_finite() => float_literal(*f),
@@ -700,10 +964,18 @@ pub fn sql_literal(dialect: Dialect, v: &Value) -> String {
             } else if o.ty == "geometry" && HEX_DIGITS.is_match(&o.text) {
                 // The internal format (SRID + WKB), as mysqldump --hex-blob writes it.
                 format!("X'{}'", o.text)
+            } else if o.ty == "geometry"
+                && let Some(geometry) = mysql_geometry(&o.text, mysql_long_lat)
+            {
+                geometry
             } else {
                 string_literal(dialect, &o.text)
             }
         }
+        Value::Other(o) if dialect == Dialect::Postgres => match postgis_type(&o.ty) {
+            Some(ty) => format!("{}::{ty}", string_literal(dialect, &o.text)),
+            None => string_literal(dialect, &o.text),
+        },
         other => string_literal(dialect, &other.as_text().unwrap_or_default()),
     }
 }
@@ -767,7 +1039,7 @@ mod tests {
             always_quote: quote_all,
             null_as: null_as.into(),
             line_break: b"\r\n",
-            decimal_comma: false,
+            decimal: b'.',
             line_break_to_space: false,
         })
     }
@@ -1294,6 +1566,65 @@ mod tests {
     }
 
     #[test]
+    fn spatial_values_load_back_as_geometries() {
+        let my = |text: &str, long_lat: bool| {
+            insert_literal(Dialect::Mysql, &Value::other("geometry", text), long_lat)
+        };
+        // Hex (the decoder off): the internal format, byte for byte.
+        assert_eq!(my("E6100000010100000000", false), "X'E6100000010100000000'");
+        // WKT: ST_GeomFromText with the SRID; MySQL 8 reads geographic WKT longitude first.
+        assert_eq!(
+            my("LINESTRING(0 0,1 2)", true),
+            "ST_GeomFromText('LINESTRING(0 0,1 2)', 0)"
+        );
+        assert_eq!(
+            my("SRID=4326;POINT(2 1)", true),
+            "ST_GeomFromText('POINT(2 1)', 4326, 'axis-order=long-lat')"
+        );
+        assert_eq!(
+            my("SRID=4326;POINT(2 1)", false),
+            "ST_GeomFromText('POINT(2 1)', 4326)"
+        );
+        assert_eq!(
+            my("srid=3857; MULTIPOINT((1 2),(3 -4.5e3)) ", false),
+            "ST_GeomFromText('MULTIPOINT((1 2),(3 -4.5e3))', 3857)"
+        );
+        assert_eq!(
+            my("GEOMETRYCOLLECTION EMPTY", false),
+            "ST_GeomFromText('GEOMETRYCOLLECTION EMPTY', 0)"
+        );
+        // Anything else stays a string (never SQL).
+        assert_eq!(my("POINT(1 2)'); DROP", false), "'POINT(1 2)''); DROP'");
+        assert_eq!(my("SRID=x;POINT(1 2)", false), "'SRID=x;POINT(1 2)'");
+        assert_eq!(
+            insert_literal(Dialect::Mysql, &Value::other("set", "POINT(1 2)"), true),
+            "'POINT(1 2)'"
+        );
+        // PostGIS: EWKT (or hex EWKB) cast to the column's type.
+        let pg = |ty: &str, text: &str| {
+            insert_literal(Dialect::Postgres, &Value::other(ty, text), false)
+        };
+        assert_eq!(
+            pg("geometry", "SRID=4326;POINT(1 2)"),
+            "'SRID=4326;POINT(1 2)'::geometry"
+        );
+        assert_eq!(
+            pg("geometry(Point,4326)", "0101000020E6100000"),
+            "'0101000020E6100000'::geometry"
+        );
+        assert_eq!(
+            pg("public.geography", "POINT(1 2)"),
+            "'POINT(1 2)'::geography"
+        );
+        assert_eq!(pg("inet", "10.0.0.1"), "'10.0.0.1'");
+        assert_eq!(
+            split_ewkt("SRID=4326;POINT(1 2)"),
+            Some((4326, "POINT(1 2)"))
+        );
+        assert_eq!(split_ewkt("not wkt!"), None);
+    }
+
+    #[test]
     fn string_literals_do_not_depend_on_escape_settings() {
         let text = |d: Dialect, s: &str| sql_literal(d, &Value::Text(s.into()));
         // No backslash: plain literals with doubled quotes in every dialect.
@@ -1325,6 +1656,7 @@ mod tests {
             table: "\"t\"".into(),
             batch_size: 10,
             overriding_system_value: true,
+            mysql_long_lat: false,
         };
         let rows = [vec![Value::Int(1), Value::Text("a".into())]];
         assert_eq!(
@@ -1353,7 +1685,17 @@ mod tests {
         assert!(!bad(";"));
         assert!(!bad("\t"));
         assert!(FormatSpec::from_request(&sql_insert("t", 0), Dialect::Postgres, None).is_err());
-        assert!(FormatSpec::from_request(&sql_insert(" ", 10), Dialect::Postgres, None).is_err());
+        // No table name and no source table: the INSERTs go into `untitled`.
+        assert_eq!(
+            FormatSpec::from_request(&sql_insert(" ", 10), Dialect::Postgres, None).unwrap(),
+            FormatSpec::Insert {
+                dialect: Dialect::Postgres,
+                table: "\"untitled\"".into(),
+                batch_size: 10,
+                overriding_system_value: false,
+                mysql_long_lat: false,
+            }
+        );
         assert_eq!(
             FormatSpec::from_request(&sql_insert("Dest`x", 10), Dialect::Mysql, Some("src"))
                 .unwrap(),
@@ -1362,6 +1704,7 @@ mod tests {
                 table: "`Dest``x`".into(),
                 batch_size: 10,
                 overriding_system_value: false,
+                mysql_long_lat: false,
             }
         );
         // The NULL text is written unquoted, so it cannot hold the delimiter, a quote or a
@@ -1476,11 +1819,18 @@ mod tests {
             }))
             .is_err()
         );
+        // A decimal separator is one character that is no digit: `;` is a valid custom one.
+        assert!(
+            csv_request(serde_json::json!({
+                "format": "csv", "delimiter": ",", "header": true, "nullAs": "", "decimal": "5"
+            }))
+            .is_err()
+        );
         assert!(
             csv_request(serde_json::json!({
                 "format": "csv", "delimiter": ",", "header": true, "nullAs": "", "decimal": ";"
             }))
-            .is_err()
+            .is_ok()
         );
         assert!(
             csv_request(serde_json::json!({
@@ -1492,6 +1842,250 @@ mod tests {
             "format": "csv", "delimiter": ",", "header": true, "nullAs": "a'b", "quote": "single"
         }))
         .is_err());
+    }
+
+    #[test]
+    fn html_escapes_and_marks_nulls_and_numbers() {
+        let spec =
+            FormatSpec::from_request(&ExportFormat::Html, Dialect::Sqlite, Some("a<b")).unwrap();
+        let out = run(
+            spec,
+            &["id", "note & \"x\""],
+            &[
+                vec![
+                    Value::Int(1),
+                    Value::Text("<script>alert('x')</script>".into()),
+                ],
+                vec![Value::Float(2.5), Value::Null],
+                vec![
+                    Value::Decimal("12.50".into()),
+                    Value::Text("a\nb 😀".into()),
+                ],
+            ],
+        );
+        assert!(out.starts_with("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">"));
+        assert!(out.contains("<title>a&lt;b</title>"));
+        assert!(out.contains("<th>id</th><th>note &amp; &quot;x&quot;</th>"));
+        assert!(out.contains(
+            "<tr><td class=\"num\">1</td><td>&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;</td></tr>"
+        ));
+        assert!(out.contains("<tr><td class=\"num\">2.5</td><td class=\"null\">NULL</td></tr>"));
+        assert!(out.contains("<td>a\nb 😀</td>"));
+        assert!(!out.contains("<script>"));
+        assert!(out.ends_with("</tbody>\n</table>\n</body>\n</html>\n"));
+        assert_eq!(out.matches("<table>").count(), 1);
+    }
+
+    #[test]
+    fn html_pages_hold_one_table_per_table() {
+        let mut page = HtmlWriter::new(Vec::new(), "export", "windows-1252");
+        page.next_table("public.users").unwrap();
+        RowOut::begin(&mut page, &["id".into()]).unwrap();
+        RowOut::write_row(&mut page, &[Value::Int(1)]).unwrap();
+        page.end_table().unwrap();
+        page.next_table("orders").unwrap();
+        RowOut::begin(&mut page, &["n".into()]).unwrap();
+        let out = String::from_utf8(page.finish().unwrap()).unwrap();
+        assert!(out.contains("<meta charset=\"windows-1252\">"));
+        assert_eq!(out.matches("<table>").count(), 2);
+        assert_eq!(out.matches("</table>").count(), 2);
+        let users = out.find("<h2>public.users</h2>").unwrap();
+        let orders = out.find("<h2>orders</h2>").unwrap();
+        assert!(users < orders);
+        // No table at all: still a complete page.
+        let empty =
+            String::from_utf8(HtmlWriter::new(Vec::new(), "t", "utf-8").finish().unwrap()).unwrap();
+        assert!(empty.ends_with("<body>\n</body>\n</html>\n"));
+    }
+
+    #[test]
+    fn csv_space_quote_wraps_every_value_in_spaces() {
+        let rows = vec![
+            vec![
+                Value::Int(1),
+                Value::Text("ab".into()),
+                Value::Text("a b  c".into()),
+                Value::Null,
+            ],
+            vec![
+                Value::Int(2),
+                Value::Text("x,y".into()),
+                Value::Text(String::new()),
+                Value::Text("it's \"q\"".into()),
+            ],
+        ];
+        let cols = ["id", "t", "s", "n"];
+        let spec = |patch: serde_json::Value| {
+            let mut base = serde_json::json!({
+                "format": "csv", "delimiter": ",", "header": true, "nullAs": "",
+                "quote": "space"
+            });
+            for (k, v) in patch.as_object().unwrap() {
+                base[k] = v.clone();
+            }
+            csv_request(base)
+        };
+        let out = run(spec(serde_json::json!({})).unwrap(), &cols, &rows);
+        // Every value between spaces (the header too), a space inside a value doubled, NULL empty
+        // and unquoted.
+        assert_eq!(
+            out,
+            [
+                " id , t , s , n \n",
+                " 1 , ab , a  b    c ,\n",
+                " 2 , x,y ,  , it's  \"q\" \n",
+            ]
+            .concat()
+        );
+        // The quote is a single space: another reader taking a space as its quote reads it back.
+        let mut reader = crate::import::csvread::CsvReader::new(out.as_bytes(), b',', b' ');
+        let header = reader.next_record().unwrap().unwrap();
+        assert_eq!(
+            header
+                .fields
+                .iter()
+                .map(|f| f.text.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "t", "s", "n"]
+        );
+        let first = reader.next_record().unwrap().unwrap();
+        assert_eq!(first.fields[2].text, "a b  c");
+        assert!(first.fields[2].quoted);
+        assert_eq!(first.fields[3].text, "");
+        assert!(!first.fields[3].quoted);
+        let second = reader.next_record().unwrap().unwrap();
+        assert_eq!(second.fields[1].text, "x,y");
+        assert_eq!(second.fields[2].text, "");
+        assert!(second.fields[2].quoted);
+        // A space delimiter would be a quote: refused.
+        assert!(spec(serde_json::json!({"delimiter": " "})).is_err());
+        // Without the space quote a space delimiter stays what it was: only ASCII is required.
+        assert!(spec(serde_json::json!({"delimiter": " ", "quote": "ifNeeded"})).is_ok());
+        // The NULL text is written unquoted, so it cannot hold the quote.
+        assert!(spec(serde_json::json!({"nullAs": "N/A "})).is_err());
+        assert!(spec(serde_json::json!({"nullAs": "NULL"})).is_ok());
+    }
+
+    #[test]
+    fn csv_custom_decimal_separator() {
+        let rows = vec![vec![
+            Value::Float(3.25),
+            Value::Decimal("12.50".into()),
+            Value::Int(7),
+            Value::Text("1.5".into()),
+        ]];
+        let cols = ["f", "d", "i", "t"];
+        let spec = |delimiter: &str, decimal: &str| {
+            csv_request(serde_json::json!({
+                "format": "csv", "delimiter": delimiter, "header": false, "nullAs": "",
+                "decimal": decimal
+            }))
+        };
+        // A custom character replaces the point of numbers, never of text.
+        assert_eq!(
+            run(spec(";", "#").unwrap(), &cols, &rows),
+            "3#25;12#50;7;1.5\n"
+        );
+        // The two classic choices keep working (a comma delimiter then quotes the numbers).
+        assert_eq!(
+            run(spec(";", ",").unwrap(), &cols, &rows),
+            "3,25;12,50;7;1.5\n"
+        );
+        assert_eq!(
+            run(spec(",", ",").unwrap(), &cols, &rows),
+            "\"3,25\",\"12,50\",7,1.5\n"
+        );
+        assert_eq!(
+            run(spec(";", ".").unwrap(), &cols, &rows),
+            "3.25;12.50;7;1.5\n"
+        );
+        // Exponent notation keeps its point replaced too: 1.5e20 → 1#5e20.
+        assert_eq!(
+            run(
+                spec(";", "#").unwrap(),
+                &["f"],
+                &[vec![Value::Float(1.5e20)]]
+            ),
+            "1#5e20\n"
+        );
+        // Not a decimal separator: empty, several characters, a digit, the delimiter, a quote, a
+        // line break or another control character, a non-ASCII character.
+        for bad in ["", "..", "5", "\"", "'", "\n", "\r", "\t", "€"] {
+            assert!(spec(";", bad).is_err(), "{bad:?} must be refused");
+        }
+        assert!(spec(";", ";").is_err());
+        assert!(spec("\t", "\t").is_err());
+        assert!(spec(";", "#").is_ok());
+        assert!(spec(";", " ").is_ok());
+    }
+
+    /// Splits an INSERT script into its statements (the `;` that ends each is dropped).
+    fn statements(script: &str) -> Vec<String> {
+        crate::sqlgen::split::split_statements(script, Dialect::Sqlite)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect()
+    }
+
+    #[test]
+    fn insert_statements_end_at_250_kb() {
+        // 30 rows of 20 KB text with a batch size far above 30: the bytes decide.
+        let big = "x".repeat(20 * 1024);
+        let rows: Vec<Vec<Value>> = (0..30)
+            .map(|i| vec![Value::Int(i), Value::Text(format!("{i:02}{big}"))])
+            .collect();
+        let out = run(insert(Dialect::Postgres, 1000), &["id", "t"], &rows);
+        let stmts = statements(&out);
+        assert!(stmts.len() >= 3, "{} statements", stmts.len());
+        let row = 20 * 1024 + 40;
+        for stmt in &stmts {
+            // Closed as soon as it passed 250 KB: below the limit plus the row that crossed it.
+            assert!(
+                stmt.len() < INSERT_CHUNK_BYTES + row,
+                "{} bytes",
+                stmt.len()
+            );
+            assert!(stmt.starts_with("INSERT INTO \"my table\" (\"id\", \"t\") VALUES\n("));
+        }
+        // Every row once and in order (a row is one line starting with its id).
+        let ids: Vec<usize> = out
+            .lines()
+            .filter_map(|l| l.strip_prefix('('))
+            .map(|l| l.split(',').next().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(ids, (0..30).collect::<Vec<_>>());
+        assert_eq!(out.matches("INSERT INTO").count(), stmts.len());
+        // The statements the splitter finds hold every row once.
+        let rows_in_statements: usize = stmts.iter().map(|s| s.matches("\n(").count()).sum();
+        assert_eq!(rows_in_statements, 30);
+        assert!(out.ends_with(");\n"));
+    }
+
+    #[test]
+    fn insert_chunking_keeps_small_rows_in_row_batches() {
+        // Small rows: the row-count batch decides, as before.
+        let rows: Vec<Vec<Value>> = (0..25).map(|i| vec![Value::Int(i)]).collect();
+        let out = run(insert(Dialect::Sqlite, 10), &["id"], &rows);
+        assert_eq!(out.matches("INSERT INTO").count(), 3);
+        // A single row bigger than the limit still goes out whole, in a statement of its own.
+        let huge = "y".repeat(INSERT_CHUNK_BYTES + 10);
+        let rows = vec![
+            vec![Value::Int(1), Value::Text("small".into())],
+            vec![Value::Int(2), Value::Text(huge.clone())],
+            vec![Value::Int(3), Value::Text("small".into())],
+        ];
+        let out = run(insert(Dialect::Mysql, 100), &["id", "t"], &rows);
+        let stmts = statements(&out);
+        assert_eq!(stmts.len(), 2, "{}", out.len());
+        assert!(stmts[0].contains("small") && stmts[0].contains(&huge));
+        assert!(stmts[1].contains("(3, 'small')"));
+        // A statement with the huge row first closes right after it.
+        let rows = vec![
+            vec![Value::Int(2), Value::Text(huge)],
+            vec![Value::Int(3), Value::Text("small".into())],
+        ];
+        let out = run(insert(Dialect::Mysql, 100), &["id", "t"], &rows);
+        assert_eq!(statements(&out).len(), 2);
     }
 
     #[test]

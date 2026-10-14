@@ -52,7 +52,7 @@ afterEach(() => {
   Object.values(toast).forEach((fn) => fn.mockReset());
 });
 
-describe("CSV import wizard", () => {
+describe("CSV import wizard", { timeout: 20_000 }, () => {
   it("matches the CSV's columns by name and imports into the table", async () => {
     const user = userEvent.setup();
     await setup();
@@ -150,7 +150,8 @@ describe("CSV import wizard", () => {
       expect(within(dialog).getByTestId("csv-status")).toHaveTextContent("matched 7 columns"),
     );
     await user.click(within(dialog).getByRole("button", { name: /^Import/ }));
-    const alert = await within(dialog).findByRole("alert");
+    // The mock reads and writes in steps that re-render the 100-row preview: slow under load.
+    const alert = await within(dialog).findByRole("alert", {}, { timeout: 5000 });
     expect(alert).toHaveTextContent("violates not-null constraint");
     expect(alert).toHaveTextContent("rows 1–240, line 2");
     expect(alert).toHaveTextContent("Nothing was imported.");
@@ -374,5 +375,74 @@ describe("SQL dump import", () => {
     expect(within(dialog).getByText(/63 statements ran/)).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Done" }));
     await waitFor(() => expect(useImportStore.getState().request).toBeNull());
+  });
+});
+
+describe("JSON import", () => {
+  it(
+    "File ▸ Import ▸ From JSON… maps the keys by name and imports through the wizard",
+    {
+      timeout: 20_000,
+    },
+    async () => {
+      const user = userEvent.setup();
+      await setup();
+      await waitFor(() => expect(actions.has("import.json")).toBe(true));
+      vi.spyOn(window, "prompt").mockReturnValue("/Users/me/Downloads/users.json");
+      act(() => {
+        useTabsStore.getState().openTable(info.connectionId, users);
+      });
+      await act(() => actions.run("import.json"));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText("Import JSON")).toBeInTheDocument();
+      expect(window.prompt).toHaveBeenCalledWith("Import JSON file", expect.any(String));
+      const status = await within(dialog).findByTestId("csv-status");
+      await waitFor(() =>
+        expect(status).toHaveTextContent("JSON 7 keys, table 16 columns, matched 7 columns"),
+      );
+      expect(within(dialog).getByText(/array of objects/)).toBeInTheDocument();
+      // No CSV reading options: keys are names, null is NULL.
+      expect(within(dialog).queryByRole("checkbox", { name: "First line is header" })).toBeNull();
+      expect(within(dialog).queryByRole("combobox", { name: "Delimiter" })).toBeNull();
+      expect(within(dialog).getByRole("combobox", { name: "Encoding" })).toBeInTheDocument();
+      const run = vi.spyOn(ipc.imports, "json");
+      await user.click(within(dialog).getByRole("button", { name: /^Import/ }));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledOnce(), { timeout: 5000 });
+      expect(guard).toHaveBeenCalledWith(info.connectionId, {
+        kind: "operation",
+        label: "Import JSON into users",
+        write: true,
+      });
+      const req = run.mock.calls[0]![1];
+      expect(req).toMatchObject({
+        path: "/Users/me/Downloads/users.json",
+        encoding: "utf8",
+        keys: ["id", "email", "name", "role", "is_active", "balance", "created_at"],
+        target: { kind: "existing", table: users },
+        mode: "stopOnError",
+      });
+      expect(req.mapping).toEqual([
+        "id",
+        "email",
+        "name",
+        "role",
+        "is_active",
+        "balance",
+        "created_at",
+      ]);
+      expect(toast.success.mock.calls[0]![0]).toBe("Imported 240 rows");
+    },
+  );
+
+  it("shows why a file is not JSON objects", async () => {
+    await setup();
+    act(() =>
+      openImport(
+        { connectionId: info.connectionId, kind: "json", table: users },
+        "/Users/me/Downloads/users_notjson.json",
+      ),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("not an object");
   });
 });

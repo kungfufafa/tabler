@@ -1,6 +1,10 @@
 {
   "identifier": "desktop-capability",
   "platforms": ["macOS", "windows", "linux"],
-  "windows": ["main"],
-  "permissions": ["window-state:default"]
+  "windows": ["main", "w-*"],
+  "permissions": [
+    "window-state:default",
+    "core:window:allow-set-theme",
+    "core:app:allow-set-app-theme"
+  ]
 }

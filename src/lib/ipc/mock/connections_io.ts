@@ -9,8 +9,9 @@ import { mockError, mockInvoke, registerMock } from "./transport";
  * Mocks of the connection list's import / export and group commands. Exported files live in
  * memory by path; `/Users/me/Downloads/team.tablerconnections` exists from the start (encrypted,
  * password "tabler", with nested groups and icons) so "Import Connections…" can be tried in the
- * browser. Groups are `{ path, icon }` records, in files and in the `connectionGroups` setting
- * (plain names from older versions read as groups without an icon), like `profiles_io.rs`.
+ * browser. Groups are `{ path, icon, image? }` records, in files and in the `connectionGroups`
+ * setting (plain names from older versions read as groups without an icon; `image` is a small
+ * `data:image/` URI the user chose), like `profiles_io.rs`.
  */
 
 interface MockFileEntry {
@@ -22,6 +23,20 @@ interface MockFileEntry {
 interface MockGroup {
   path: string;
   icon: string | null;
+  /** The group's own image (a `data:image/` URI); absent without one, like the backend's JSON. */
+  image?: string;
+}
+
+/** Longest image kept (`MAX_IMAGE_LEN` in profiles_io.rs). */
+const MAX_IMAGE_LEN = 24 * 1024;
+
+/** `image_uri`: the trimmed `data:image/` URI when it is one and fits; else nothing. */
+function imageUri(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const uri = raw.trim();
+  const control = [...uri].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
+  const clean = uri.startsWith("data:image/") && uri.length > 11 && !control;
+  return clean && uri.length <= MAX_IMAGE_LEN ? uri : undefined;
 }
 
 interface MockFile {
@@ -42,12 +57,15 @@ const normalizePath = (raw: string | null | undefined) =>
 const withAncestors = (path: string) =>
   path.split(" / ").map((_, i, levels) => levels.slice(0, i + 1).join(" / "));
 
-function addGroup(list: MockGroup[], raw: string, icon: string | null): void {
+function addGroup(list: MockGroup[], raw: string, icon: string | null, image?: string): void {
   const path = normalizePath(raw);
   if (!path) return;
   const existing = list.find((g) => g.path === path);
-  if (!existing) list.push({ path, icon });
-  else if (!existing.icon) existing.icon = icon;
+  if (!existing) list.push(image ? { path, icon, image } : { path, icon });
+  else {
+    if (!existing.icon) existing.icon = icon;
+    if (!existing.image && image) existing.image = image;
+  }
 }
 
 /** `parse_groups`: records, or plain names from older versions. */
@@ -56,20 +74,22 @@ function parseGroups(raw: unknown): MockGroup[] {
   for (const v of Array.isArray(raw) ? raw : []) {
     if (typeof v === "string") addGroup(out, v, null);
     else if (v && typeof v === "object" && typeof (v as MockGroup).path === "string") {
-      const icon = (v as MockGroup).icon;
-      addGroup(out, (v as MockGroup).path, typeof icon === "string" && icon ? icon : null);
+      const { path, icon, image } = v as MockGroup;
+      addGroup(out, path, typeof icon === "string" && icon ? icon : null, imageUri(image));
     }
   }
   return out;
 }
 
-/** Adds every path of `paths` (with its enclosing groups), icons taken from `icons`. */
-function addPaths(list: MockGroup[], paths: readonly string[], icons: readonly MockGroup[]) {
+/** Adds every path of `paths` (with its enclosing groups), icons and images taken from `looks`. */
+function addPaths(list: MockGroup[], paths: readonly string[], looks: readonly MockGroup[]) {
   for (const raw of paths) {
     const path = normalizePath(raw);
     if (!path) continue;
-    for (const p of withAncestors(path))
-      addGroup(list, p, icons.find((g) => g.path === p)?.icon ?? null);
+    for (const p of withAncestors(path)) {
+      const look = looks.find((g) => g.path === p);
+      addGroup(list, p, look?.icon ?? null, look?.image);
+    }
   }
 }
 

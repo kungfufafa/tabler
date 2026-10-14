@@ -1,6 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { create } from "zustand";
+import { announceFileDone } from "@/features/notify/done";
+import { notifyInBackground } from "@/features/notify/notify";
 import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
 import {
   ipc,
@@ -14,7 +16,6 @@ import {
 import { useConnectionsStore } from "@/stores/connections";
 import { guardJob } from "./guard";
 import { basename, formatBytes, formatElapsed } from "./options";
-import { revealInFinder } from "./pickers";
 
 export type BackupMode = "backup" | "restore";
 
@@ -143,26 +144,27 @@ export interface StartJobArgs {
 
 const isOpen = () => useBackupStore.getState().request !== null;
 
+/**
+ * A finished job: a backup shows the "open containing folder" popup (or a toast, see
+ * `announceFileDone`); a restore a toast. Both post a notification while Tabler is in the
+ * background.
+ */
 function finishedToast(mode: BackupMode, result: BackupJobResult, database: string): void {
   const name = basename(result.path);
   const details = `${name} · ${formatBytes(result.bytes)} · ${formatElapsed(result.durationMs)}`;
-  const reveal = {
-    label: "Show in Finder",
-    onClick: () =>
-      void revealInFinder(result.path).catch((e: unknown) =>
-        toast.error("Could not show the file", { description: toIpcError(e).message }),
-      ),
-  };
   if (mode === "backup") {
-    toast.success(`Backed up ${database}`, { description: details, action: reveal });
+    announceFileDone({
+      title: `Backed up ${database}`,
+      popupTitle: "Backup completed",
+      description: details,
+      path: result.path,
+    });
   } else if (result.errors > 0) {
-    toast.warning(
-      `Restored ${database} with ${result.errors} error${result.errors === 1 ? "" : "s"}`,
-      {
-        description: `${name}: see the log in the Restore window.`,
-      },
-    );
+    const title = `Restored ${database} with ${result.errors} error${result.errors === 1 ? "" : "s"}`;
+    void notifyInBackground({ title, body: name });
+    toast.warning(title, { description: `${name}: see the log in the Restore window.` });
   } else {
+    void notifyInBackground({ title: `Restored ${database}`, body: details });
     toast.success(`Restored ${database}`, { description: details });
   }
 }
@@ -268,6 +270,8 @@ export async function startJob(args: StartJobArgs): Promise<BackupJobResult | nu
   } catch (err) {
     const e = toIpcError(err);
     const what = mode === "backup" ? "Backup" : "Restore";
+    if (e.code !== "CANCELLED")
+      void notifyInBackground({ title: `${what} of ${database} failed`, body: e.message });
     if (e.code === "CANCELLED") {
       useBackupStore.setState((s) => (s.run?.jobId === jobId ? { run: null } : s));
       toast.message(`${what} cancelled`, {

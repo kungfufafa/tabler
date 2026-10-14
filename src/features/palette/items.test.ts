@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ConnectionProfile, TableSummary } from "@/lib/ipc";
+import type { ConnectionProfile, RoutineSummary, TableSummary } from "@/lib/ipc";
 import { KEYMAP } from "@/lib/keys/keymap";
 import type { Tab } from "@/stores/tabs";
 import type { ActionId } from "./actions";
@@ -20,7 +20,10 @@ import {
   keymapActionItems,
   rankStrict,
   RECENT_LIMIT,
+  COMMAND_HITS_LIMIT,
+  routineItems,
   schemaItems,
+  showSchemaInObjects,
   TABLE_LIMIT,
   tabItems,
   tableItemKey,
@@ -266,8 +269,16 @@ describe("Open Anything (buildOpenAnything)", () => {
   });
 
   it("ranks objects of every kind in one flat list: prefix, word starts, then substrings", () => {
-    expect(labels("po")).toEqual(["post_counts", "post_tags", "postgres", "posts", "repost_log"]);
-    // Actions never show up without the > prefix, nor through loose subsequences.
+    // (Export… is a command hit: commands follow the objects, from two characters on.)
+    expect(labels("po")).toEqual([
+      "post_counts",
+      "post_tags",
+      "postgres",
+      "posts",
+      "repost_log",
+      "Export…",
+    ]);
+    // Commands never show up through loose subsequences, only by prefix, word start or substring.
     expect(labels("po")).not.toContain("Duplicate row");
     expect(labels("oi")).toEqual(["order_items"]);
     expect(labels("ord")).toEqual(["order_items", "orders", "orders"]);
@@ -329,6 +340,89 @@ describe("Open Anything (buildOpenAnything)", () => {
     expect(labels("> inspector")).toEqual(["Toggle row detail panel"]);
     expect(labels("> dark mode")).toEqual(["Theme: Dark"]);
     expect(labels(">users")).toEqual([]);
+  });
+
+  describe("app features after the objects (TablePlus b676)", () => {
+    const features = {
+      tables: tableItems([table("backup_log"), table("users")], { profileId: "p1", open }),
+      actions: [
+        { ...item("cmd:backup", "Backup Database…"), combo: "Mod+Shift+B" },
+        item("cmd:restore", "Restore Database…"),
+        { ...item("cmd:export", "Export…"), keywords: ["backup copy data"] },
+        item("action:fk", "Open referenced row"),
+      ],
+    };
+    const sectionsFor = (query: string, g: typeof features = features) =>
+      buildOpenAnything(g, query).map((s) => [s.id, s.heading, keysOf(s.items)] as const);
+    const keysOf = (items: { item: PaletteItem }[]) => items.map((r) => r.item.label);
+
+    it("lists objects first, then a Commands section with the matching commands", () => {
+      expect(sectionsFor("backup")).toEqual([
+        ["objects", undefined, ["backup_log"]],
+        // Label hits first, then the keyword hit.
+        ["commands", "Commands", ["Backup Database…", "Export…"]],
+      ]);
+      const [objects, commands] = buildOpenAnything(features, "backup");
+      expect(objects!.showKind).toBe(true);
+      expect(commands!.showKind).toBeUndefined();
+      // The rows keep their shortcut for the row to show.
+      expect(commands!.items[0]!.item.combo).toBe("Mod+Shift+B");
+      expect(commands!.items[0]!.ranges).toEqual([[0, 6]]);
+      // The first row (the default ↩ target) is an object, never a command.
+      expect(flattenSections(buildOpenAnything(features, "backup"))[0]!.label).toBe("backup_log");
+    });
+
+    it("shows the commands alone when no object matches", () => {
+      expect(sectionsFor("restore")).toEqual([["commands", "Commands", ["Restore Database…"]]]);
+      expect(sectionsFor("qqq")).toEqual([]);
+    });
+
+    it("needs two characters, and an empty query lists no commands", () => {
+      expect(sectionsFor("b")).toEqual([["objects", undefined, ["backup_log"]]]);
+      // One character: the objects only ("users" has an r), no command.
+      expect(sectionsFor("r")).toEqual([["objects", undefined, ["users"]]]);
+      expect(sectionsFor(" r ")).toEqual([["objects", undefined, ["users"]]]);
+      expect(sectionsFor("re")).toEqual([
+        ["commands", "Commands", ["Restore Database…", "Open referenced row"]],
+      ]);
+      expect(sectionsFor("")).toEqual([["objects", undefined, ["backup_log", "users"]]]);
+    });
+
+    it("lists at most five commands", () => {
+      const many = {
+        actions: Array.from({ length: 9 }, (_, i) => item(`cmd:${i}`, `Export format ${i}`)),
+      };
+      const [commands] = buildOpenAnything(many, "export");
+      expect(commands!.items).toHaveLength(COMMAND_HITS_LIMIT);
+      expect(COMMAND_HITS_LIMIT).toBe(5);
+      // > still lists every command.
+      expect(buildOpenAnything(many, ">export")[0]!.items).toHaveLength(9);
+      expect(buildOpenAnything(many, ">")[0]!.items).toHaveLength(9);
+    });
+
+    it("ranks recently used commands first among equal matches", () => {
+      const twin = {
+        actions: [item("cmd:a", "Export A"), item("cmd:b", "Export B")],
+      };
+      const [commands] = buildOpenAnything(twin, "export", { mru: ["cmd:b"] });
+      expect(keysOf(commands!.items)).toEqual(["Export B", "Export A"]);
+    });
+
+    it("does not list commands in Search in Database… (it has no actions group)", () => {
+      expect(buildOpenAnything({ tables: features.tables }, "backup").map((s) => s.id)).toEqual([
+        "objects",
+      ]);
+    });
+
+    it("keeps the loading placeholder of the objects before the commands", () => {
+      const sections = buildOpenAnything({ ...features, tables: [] }, "backup", {
+        loading: ["tables"],
+      });
+      expect(sections.map((s) => [s.id, s.loading ?? null])).toEqual([
+        ["objects", "tables"],
+        ["commands", null],
+      ]);
+    });
   });
 
   it("follows the list with a placeholder while tables load", () => {
@@ -439,6 +533,56 @@ describe("table kinds", () => {
   });
 });
 
+describe("Search in Database… on MySQL without a default database", () => {
+  const inDb = (name: string, schema: string): TableSummary => ({
+    ...table(name, 7),
+    schema,
+  });
+  const routine = (name: string, schema: string): RoutineSummary => ({
+    schema,
+    name,
+    kind: "function",
+    arguments: "",
+    identityArguments: "",
+    returnType: "int",
+    language: "sql",
+    comment: null,
+  });
+
+  it("shows the database of each row once the result spans several, so same-named tables differ", () => {
+    const tables = [inDb("users", "shop"), inDb("users", "blog")];
+    const showSchema = showSchemaInObjects("mysql", tables);
+    expect(showSchema).toBe(true);
+    const items = tableItems(tables, { profileId: "p1", open: vi.fn(), showSchema });
+    expect(items.map((i) => i.meta)).toEqual(["shop", "blog"]);
+    expect(new Set(items.map((i) => i.key)).size).toBe(2);
+    const routines = [routine("f", "shop"), routine("f", "blog")];
+    const rows = routineItems(routines, {
+      profileId: "p1",
+      open: vi.fn(),
+      showSchema: showSchemaInObjects("mysql", routines),
+    });
+    expect(rows.map((i) => i.meta)).toEqual(["shop", "blog"]);
+  });
+
+  it("keeps the row estimate while the result is of one database, and for no objects", () => {
+    expect(showSchemaInObjects("mysql", [inDb("a", "shop"), inDb("b", "shop")])).toBe(false);
+    expect(showSchemaInObjects("mysql", [])).toBe(false);
+    const [row] = tableItems([inDb("a", "shop")], {
+      profileId: "p1",
+      open: vi.fn(),
+      showSchema: showSchemaInObjects("mysql", [inDb("a", "shop")]),
+    });
+    expect(row!.meta).toBe("7");
+  });
+
+  it("is unchanged for PostgreSQL and SQLite: the schema is always shown", () => {
+    expect(showSchemaInObjects("postgres", [inDb("a", "public")])).toBe(true);
+    expect(showSchemaInObjects("postgres", [])).toBe(true);
+    expect(showSchemaInObjects("sqlite", [{ schema: "main" }])).toBe(true);
+  });
+});
+
 describe("item builders", () => {
   it("opens tables in the preview tab, and in a new tab on the alternate action", () => {
     const open = vi.fn();
@@ -452,7 +596,11 @@ describe("item builders", () => {
     expect(users!.meta).toMatch(/^~12/);
     users!.run();
     users!.runAlt!();
-    expect(open.mock.calls.map((c) => c[1])).toEqual([{ preview: true }, { preview: false }]);
+    // ⌘↩ / ⌘-click: always a tab of its own (one table can sit in several tabs).
+    expect(open.mock.calls.map((c) => c[1])).toEqual([
+      { preview: true },
+      { preview: false, newTab: true },
+    ]);
   });
 
   it("switches schemas and marks the current and the default one", () => {
@@ -576,9 +724,11 @@ describe("item builders", () => {
     };
     const none = paletteCommandItems({ themePref: "dark", active: null, commands });
     expect(none.map((i) => i.key)).toEqual([
+      "cmd:theme.system",
       "cmd:theme.light",
       "cmd:theme.dark",
-      "cmd:theme.system",
+      "cmd:theme.solarized-light",
+      "cmd:theme.solarized-dark",
       "cmd:connection.new",
       "cmd:settings.shortcuts",
     ]);
@@ -602,5 +752,46 @@ describe("item builders", () => {
     expect(commands.setTheme).toHaveBeenCalledWith("light");
     // Destructive: never becomes a "Recent" default.
     expect(byKey.get("cmd:connection.disconnect")!.noRecent).toBe(true);
+  });
+
+  it("lists Import from CSV / JSON / SQL Dump while they have a handler", () => {
+    const commands = {
+      setTheme: vi.fn(),
+      newConnection: vi.fn(),
+      openShortcuts: vi.fn(),
+      disconnect: vi.fn(),
+      reloadSchema: vi.fn(),
+      runAction: vi.fn(async () => undefined),
+    };
+    const imports = new Set(["import.csv", "import.json", "import.sql"]);
+    const items = paletteCommandItems({
+      themePref: "dark",
+      active: { connectionId: "c1", name: "Local", schema: "public" },
+      commands,
+      has: (id) => imports.has(id),
+    });
+    const listed = items.filter((i) => i.key.startsWith("action:import."));
+    expect(listed.map((i) => i.label)).toEqual([
+      "Import from CSV…",
+      "Import from JSON…",
+      "Import from SQL Dump…",
+    ]);
+    const json = listed[1]!;
+    expect(json.icon).toEqual({ type: "action", icon: actionIcon("import.json") });
+    expect(actionIcon("import.json")).not.toBe(actionIcon("import.csv"));
+    void json.run();
+    expect(commands.runAction).toHaveBeenCalledWith("import.json");
+    // The JSON import needs a connection, like the other imports.
+    expect(
+      actionApplies("import.json", { hasConnection: false, tabCount: 0, closedCount: 0 }),
+    ).toBe(false);
+    // Without a handler (no connection) it is not listed.
+    const none = paletteCommandItems({
+      themePref: "dark",
+      active: null,
+      commands,
+      has: () => false,
+    });
+    expect(none.some((i) => i.key === "action:import.json")).toBe(false);
   });
 });

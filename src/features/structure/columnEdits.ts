@@ -348,6 +348,65 @@ export function withField(
   }
 }
 
+/** Fractional-seconds precision of a MySQL `datetime(n)` / `timestamp(n)` type (0 without one). */
+export function fractionalSeconds(dataType: string): number {
+  const m = /^\s*(?:datetime|timestamp)\s*\(\s*(\d+)\s*\)/i.exec(dataType);
+  return m ? Number(m[1]) : 0;
+}
+
+/**
+ * The `ON UPDATE` MySQL takes for a column of type `dataType` when it is switched on:
+ * `CURRENT_TIMESTAMP` with the column's fractional-seconds precision, because MySQL refuses one
+ * that differs (error 1294: `datetime(3)` needs `CURRENT_TIMESTAMP(3)`).
+ */
+export function onUpdateFor(dataType: string): string {
+  const fsp = fractionalSeconds(dataType);
+  return fsp > 0 ? `CURRENT_TIMESTAMP(${fsp})` : "CURRENT_TIMESTAMP";
+}
+
+/** Longest MySQL index prefix (bytes in an InnoDB key). */
+export const MAX_PREFIX_LENGTH = 3072;
+
+const typeWord = (type: string) =>
+  /^\s*(?:national\s+)?([a-z]+)/i.exec(type)?.[1]?.toLowerCase() ?? "";
+
+const PREFIX_TYPES = new Set([
+  "char",
+  "varchar",
+  "nchar",
+  "nvarchar",
+  "binary",
+  "varbinary",
+  "tinytext",
+  "text",
+  "mediumtext",
+  "longtext",
+  "tinyblob",
+  "blob",
+  "mediumblob",
+  "longblob",
+]);
+const LONG_TYPES = new Set([
+  "tinytext",
+  "text",
+  "mediumtext",
+  "longtext",
+  "tinyblob",
+  "blob",
+  "mediumblob",
+  "longblob",
+]);
+
+/** MySQL column types an index can cover by a prefix: char, varchar, text*, blob*, binary, varbinary. */
+export function supportsIndexPrefix(dataType: string): boolean {
+  return PREFIX_TYPES.has(typeWord(dataType));
+}
+
+/** TEXT and BLOB columns cannot be indexed in full: MySQL needs a prefix length (error 1170). */
+export function requiresIndexPrefix(dataType: string): boolean {
+  return LONG_TYPES.has(typeWord(dataType));
+}
+
 /** The `ON UPDATE …` expression of a MySQL `EXTRA` text (`on update CURRENT_TIMESTAMP(3)`). */
 export function onUpdateOf(extra: string | null): string | null {
   const m = /\bon update ([a-z_]+(?:\(\d*\))?)/i.exec(extra ?? "");

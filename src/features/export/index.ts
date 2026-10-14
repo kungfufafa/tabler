@@ -5,6 +5,7 @@ export {
   openExport,
   openExportForActiveTab,
   openExportTables,
+  openExportTablesForActiveTab,
   type ExportSourceSpec,
   type OpenExportArgs,
 } from "./store";

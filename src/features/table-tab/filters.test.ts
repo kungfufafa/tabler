@@ -1,25 +1,34 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { createElement } from "react";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { createElement, useState } from "react";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { actions } from "@/features/palette/actions";
 import { TABLE_COLUMNS, tableMetaFor } from "@/lib/ipc/mock/fixtures";
 import { isMac } from "@/lib/keys/combo";
 import { KeyboardProvider } from "@/lib/keys/useShortcuts";
 import { getPrefs, resetPrefsForTests, setPref } from "@/stores/prefs";
+import type { FilterRowSpec } from "@/stores/tableTabs";
 import { FilterBar } from "./FilterBar";
 import {
   ANY_COLUMN,
   defaultFilterRow,
+  filterValueError,
   isFilterOp,
   joinList,
   opLabel,
   opsFor,
   parseFilterValue,
   RAW_SQL_COLUMN,
+  rowValueError,
   splitList,
   toFilterGroup,
   whereOfPageSql,
 } from "./filters";
+
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), message: vi.fn() }));
+vi.mock("sonner", () => ({ toast }));
+afterEach(() => {
+  Object.values(toast).forEach((fn) => fn.mockReset());
+});
 
 const users = tableMetaFor("postgres", "public", "users")!.columns;
 const row = (
@@ -40,6 +49,57 @@ describe("filters", () => {
     expect(parseFilterValue("bool", "yes")).toEqual({ t: "bool", v: true });
     expect(parseFilterValue("text", " a ")).toEqual({ t: "text", v: " a " });
     expect(parseFilterValue("decimal", "1.5")).toEqual({ t: "decimal", v: "1.5" });
+  });
+  it("parses hex for binary columns, with or without a prefix", () => {
+    const deadbeef = {
+      t: "bytes",
+      v: { base64: btoa("\xde\xad\xbe\xef"), len: 4, truncated: false },
+    };
+    expect(parseFilterValue("bytes", "deadbeef")).toEqual(deadbeef);
+    expect(parseFilterValue("bytes", "0xDEADBEEF")).toEqual(deadbeef);
+    expect(parseFilterValue("bytes", "\\xdeadbeef")).toEqual(deadbeef);
+    expect(parseFilterValue("bytes", " de ad be ef ")).toEqual(deadbeef);
+    // What is not hex stays text: it is never sent as bytes.
+    expect(parseFilterValue("bytes", "xyz")).toEqual({ t: "text", v: "xyz" });
+    expect(parseFilterValue("bytes", "abc")).toEqual({ t: "text", v: "abc" });
+  });
+  it("says what is wrong with a binary column's value, with the cell editor's message", () => {
+    const message = "Enter hex bytes (pairs of 0-9 / a-f)";
+    expect(filterValueError("bytes", "xyz")).toBe(message);
+    expect(filterValueError("bytes", "abc")).toBe(message);
+    expect(filterValueError("bytes", "0xDEADBEEF")).toBeNull();
+    // Blank is "not filled in yet", other kinds are not strict.
+    expect(filterValueError("bytes", "  ")).toBeNull();
+    expect(filterValueError("int", "xyz")).toBeNull();
+    expect(filterValueError(null, "xyz")).toBeNull();
+    expect(rowValueError(row("avatar", "eq", "xyz"), users)).toBe(message);
+    expect(rowValueError(row("avatar", "between", "00", "zz"), users)).toBe(message);
+    expect(rowValueError(row("avatar", "in", "00, 0x1f, 7"), users)).toBe(message);
+    expect(rowValueError(row("avatar", "in", "00, 0x1f"), users)).toBeNull();
+    expect(rowValueError(row("avatar", "isNull"), users)).toBeNull();
+    // Patterns compare as text; other columns are the server's business.
+    expect(rowValueError(row("avatar", "contains", "xyz"), users)).toBeNull();
+    expect(rowValueError(row("name", "eq", "xyz"), users)).toBeNull();
+    expect(rowValueError(row(ANY_COLUMN, "eq", "xyz"), users)).toBeNull();
+  });
+  it("filters a binary column by its hex: bytes values, per item in a list, never as text", () => {
+    const bytes = (hex: string) => parseFilterValue("bytes", hex);
+    const group = toFilterGroup(
+      [row("avatar", "eq", "deadbeef"), row("avatar", "in", "00ff, 0x1f2e")],
+      users,
+      "and",
+    );
+    expect(group?.items).toEqual([
+      { kind: "condition", column: "avatar", op: "eq", values: [bytes("deadbeef")] },
+      { kind: "condition", column: "avatar", op: "in", values: [bytes("00ff"), bytes("1f2e")] },
+    ]);
+    // A value that is not hex is left out (text compared with a blob would match nothing).
+    expect(toFilterGroup([row("avatar", "eq", "xyz")], users, "and")).toBeNull();
+    expect(toFilterGroup([row("avatar", "in", "00ff, zz")], users, "and")).toBeNull();
+    // "Any column" compares as text and skips blobs.
+    expect(toFilterGroup([row(ANY_COLUMN, "eq", "deadbeef")], users, "and")?.items).toEqual([
+      { kind: "anyColumn", op: "eq", values: [{ t: "text", v: "deadbeef" }] },
+    ]);
   });
   it("splits IN lists with quotes", () => {
     expect(splitList(`1, 2,"a, b", 'c'`)).toEqual(["1", "2", "a, b", "c"]);
@@ -141,11 +201,11 @@ describe("filters", () => {
         onClear: vi.fn(),
       }),
     );
-    const input = screen.getByRole("textbox", { name: "Raw SQL condition" });
+    const input = screen.getByRole("combobox", { name: "Raw SQL condition" });
     expect(input).toHaveValue("age > 30");
     expect(input).toHaveAttribute("placeholder", "e.g. age > 30 AND name LIKE 'A%'");
-    // Only the column row has an operator select next to its column select.
-    expect(screen.getAllByRole("combobox")).toHaveLength(3);
+    // Only the column row has an operator select next to its column select (+ the SQL field).
+    expect(screen.getAllByRole("combobox")).toHaveLength(4);
     fireEvent.change(input, { target: { value: "age > 40" } });
     expect(onChange.mock.calls[0]?.[0][0]).toMatchObject({
       column: RAW_SQL_COLUMN,
@@ -153,6 +213,60 @@ describe("filters", () => {
     });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onApply).toHaveBeenCalledTimes(1);
+  });
+
+  it("completes columns and keywords in the Raw SQL field", () => {
+    const onChange = vi.fn();
+    render(
+      createElement(FilterBar, {
+        columns: users,
+        rows: [{ ...row(RAW_SQL_COLUMN, "eq", ""), id: "r1" }],
+        conjunction: "and",
+        dirty: true,
+        table: "users",
+        onChange,
+        onApply: vi.fn(),
+        onClear: vi.fn(),
+      }),
+    );
+    const input = screen.getByRole("combobox", { name: "Raw SQL condition" });
+    fireEvent.change(input, { target: { value: "na", selectionStart: 2 } });
+    const list = screen.getByRole("listbox", { name: "Suggestions" });
+    expect(list).toHaveTextContent("name");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onChange.mock.calls.at(-1)?.[0][0]).toMatchObject({ value: "name" });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("a row's Apply applies that filter alone and reads Applied once applied", () => {
+    const onApply = vi.fn();
+    const onApplyRow = vi.fn();
+    const rows = [
+      { ...row("id", "gt", "5"), id: "r1" },
+      { ...row("name", "eq", "Ann"), id: "r2" },
+    ];
+    render(
+      createElement(FilterBar, {
+        columns: users,
+        rows,
+        conjunction: "and",
+        dirty: false,
+        appliedRows: [rows[0]!],
+        onChange: vi.fn(),
+        onApply,
+        onApplyRow,
+        onClear: vi.fn(),
+      }),
+    );
+    const applies = screen.getAllByRole("button", { name: /^Appl(y|ied)$/ });
+    expect(applies.map((b) => b.textContent)).toEqual(["Applied", "Apply"]);
+    fireEvent.click(applies[1]!);
+    expect(onApplyRow).toHaveBeenLastCalledWith("r2");
+    fireEvent.keyDown(screen.getAllByRole("textbox", { name: "Filter value" })[0]!, {
+      key: "Enter",
+    });
+    expect(onApplyRow).toHaveBeenLastCalledWith("r1");
+    expect(onApply).not.toHaveBeenCalled();
   });
 
   it("reads the WHERE condition back from a page's SELECT", () => {
@@ -228,20 +342,82 @@ describe("filters", () => {
       expect(onExport).toHaveBeenCalledOnce();
     });
 
-    it("SQL shows the applied WHERE from the page's SELECT", async () => {
-      mount({
-        dirty: true,
-        sql: 'SELECT *\nFROM "public"."users"\nWHERE "name" = \'Ann\' ORDER BY "id" ASC\nLIMIT 200 OFFSET 0',
-      });
+    const FULL_SQL =
+      'SELECT *\nFROM "public"."users"\nWHERE "name" = \'Ann\' ORDER BY "id" ASC\nLIMIT 200 OFFSET 0';
+    const openSql = () =>
       fireEvent.click(screen.getByRole("button", { name: "Show the filter's SQL" }));
-      expect(await screen.findByTestId("filter-where")).toHaveTextContent(`WHERE "name" = 'Ann'`);
+
+    it("SQL shows the whole generated query, highlighted, and the WHERE alone on request", async () => {
+      mount({ dirty: true, sql: FULL_SQL });
+      openSql();
+      const query = await screen.findByTestId("filter-sql");
+      // SELECT, ORDER BY and LIMIT / OFFSET, not just the condition.
+      expect(query.textContent).toBe(FULL_SQL);
+      // The console's highlighter splits it into coloured spans.
+      expect(query.querySelectorAll("span").length).toBeGreaterThan(3);
       expect(screen.getByText(/not applied yet/)).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Full query" })).toHaveAttribute(
+        "aria-checked",
+        "true",
+      );
+
+      fireEvent.click(screen.getByRole("radio", { name: "WHERE only" }));
+      expect(screen.queryByTestId("filter-sql")).not.toBeInTheDocument();
+      expect(screen.getByTestId("filter-where").textContent).toBe(`WHERE "name" = 'Ann'`);
+      fireEvent.click(screen.getByRole("radio", { name: "Full query" }));
+      expect(screen.getByTestId("filter-sql").textContent).toBe(FULL_SQL);
     });
 
-    it("SQL says so when nothing is applied", async () => {
+    it("SQL's Copy puts the shown statement on the clipboard", async () => {
+      const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue();
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText, readText: vi.fn() },
+      });
+      mount({ sql: FULL_SQL });
+      openSql();
+      fireEvent.click(await screen.findByRole("button", { name: "Copy" }));
+      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(FULL_SQL));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Copied"));
+      // The WHERE view copies what it shows.
+      fireEvent.click(screen.getByRole("radio", { name: "WHERE only" }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(`WHERE "name" = 'Ann'`));
+    });
+
+    it("SQL says so when nothing is applied or the page has not loaded", async () => {
+      const { unmount } = render(
+        createElement(FilterBar, {
+          columns: users,
+          rows: [],
+          conjunction: "and",
+          dirty: false,
+          onChange: vi.fn(),
+          onApply: vi.fn(),
+          onClear: vi.fn(),
+        }),
+      );
+      openSql();
+      expect(await screen.findByText("The query shows once the page has loaded.")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Copy" })).toBeDisabled();
+      unmount();
+
       mount({ sql: 'SELECT * FROM "users" LIMIT 200 OFFSET 0' });
-      fireEvent.click(screen.getByRole("button", { name: "Show the filter's SQL" }));
-      expect(await screen.findByText("No filter is applied.")).toBeInTheDocument();
+      openSql();
+      // The whole query, without a WHERE.
+      expect((await screen.findByTestId("filter-sql")).textContent).toBe(
+        'SELECT * FROM "users" LIMIT 200 OFFSET 0',
+      );
+      fireEvent.click(screen.getByRole("radio", { name: "WHERE only" }));
+      expect(screen.getByText("No filter is applied.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Copy" })).toBeDisabled();
+    });
+
+    it("Export exports the filtered rows and does not advertise ⇧⌘E (the multi-table export)", () => {
+      mount();
+      const button = screen.getByRole("button", { name: "Export" });
+      expect(button).toHaveAttribute("title", "Export the filtered rows");
+      expect(button.getAttribute("title")).not.toMatch(/⇧⌘E|Shift\+E|Ctrl\+Shift/);
     });
   });
 
@@ -280,14 +456,23 @@ describe("filters", () => {
       expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     });
 
-    it("⌘I duplicates the focused row, ⇧⌘I removes it", () => {
+    it("⌘I duplicates the focused row's column and operator, not its value; ⇧⌘I removes it", () => {
       const { onChange, rows, values } = mount();
       act(() => values[0]!.focus());
       fireEvent.keyDown(values[0]!, { key: "i", code: "KeyI", ...mod });
       const [next] = onChange.mock.calls.at(-1)!;
       expect(next).toHaveLength(3);
-      expect(next[1]).toEqual({ ...rows[0], id: expect.any(String) });
+      // TablePlus clones the column and the operator; the value is typed anew.
+      expect(next[1]).toEqual({
+        id: expect.any(String),
+        column: "name",
+        op: "eq",
+        value: "",
+        value2: "",
+        enabled: true,
+      });
       expect(next[1].id).not.toBe("r1");
+      expect(next[0]).toBe(rows[0]);
       act(() => values[1]!.focus());
       fireEvent.keyDown(values[1]!, { key: "I", code: "KeyI", ...mod, shiftKey: true });
       expect(onChange.mock.calls.at(-1)![0]).toEqual([rows[0]]);
@@ -306,6 +491,111 @@ describe("filters", () => {
       act(() => values[1]!.blur());
       expect(actions.has("filter.remove")).toBe(false);
       unregister();
+    });
+
+    /** The bar with its rows kept in state, as the table tab does. */
+    function Stateful({
+      initial,
+      onFocusData,
+    }: {
+      initial: FilterRowSpec[];
+      onFocusData?: () => void;
+    }) {
+      const [rows, setRows] = useState(initial);
+      return createElement(
+        KeyboardProvider,
+        null,
+        createElement(FilterBar, {
+          columns: users,
+          rows,
+          conjunction: "and",
+          dirty: true,
+          onChange: (next: FilterRowSpec[]) => setRows(next),
+          onApply: vi.fn(),
+          onClear: vi.fn(),
+          onFocusData,
+        }),
+      );
+    }
+    const valuesOf = (name = "Filter value") =>
+      screen.getAllByRole("textbox", { name }).map((v) => (v as HTMLInputElement).value);
+    const operators = () =>
+      screen.getAllByRole("combobox", { name: "Filter operator" }).map((o) => o.textContent);
+
+    it("⌘I on 'name contains abc' inserts 'name contains ' with an empty value, focused", () => {
+      render(
+        createElement(Stateful, { initial: [{ ...row("name", "contains", "abc"), id: "r1" }] }),
+      );
+      const [first] = screen.getAllByRole("textbox", { name: "Filter value" });
+      act(() => first!.focus());
+      fireEvent.keyDown(first!, { key: "i", code: "KeyI", ...mod });
+      // The original is unchanged; the clone has the column and the operator, no value.
+      expect(valuesOf()).toEqual(["abc", ""]);
+      expect(operators()).toEqual(["Contains", "Contains"]);
+      for (const c of screen.getAllByRole("combobox", { name: "Filter column" }))
+        expect(c).toHaveTextContent(/^name/);
+      const inputs = screen.getAllByRole("textbox", { name: "Filter value" });
+      expect(inputs[1]).toHaveFocus();
+    });
+
+    it("⌘I leaves the second value blank and the clone checked, whatever the original was", () => {
+      const between = { ...row("balance", "between", "1", "9", false), id: "r1" };
+      render(createElement(Stateful, { initial: [between] }));
+      const [first] = screen.getAllByRole("textbox", { name: "Filter value" });
+      act(() => first!.focus());
+      fireEvent.keyDown(first!, { key: "i", code: "KeyI", ...mod });
+      expect(valuesOf()).toEqual(["1", ""]);
+      expect(valuesOf("Second filter value")).toEqual(["9", ""]);
+      expect(
+        screen
+          .getAllByRole("checkbox", { name: "Enable filter" })
+          .map((c) => c.ariaChecked ?? c.getAttribute("aria-checked")),
+      ).toEqual(["false", "true"]);
+    });
+
+    it("+ also keeps the row's operator", () => {
+      render(
+        createElement(Stateful, { initial: [{ ...row("name", "hasPrefix", "ab"), id: "r1" }] }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Add filter" }));
+      expect(valuesOf()).toEqual(["ab", ""]);
+      expect(operators()).toEqual(["Has prefix", "Has prefix"]);
+    });
+
+    it("⌘↓ on the last row goes down to the data; on the others it moves to the next row", () => {
+      const onFocusData = vi.fn();
+      const initial = [
+        { ...row("name", "eq", "Ann"), id: "r1" },
+        { ...row("id", "gt", "5"), id: "r2" },
+      ];
+      render(createElement(Stateful, { initial, onFocusData }));
+      const values = screen.getAllByRole("textbox", { name: "Filter value" });
+      act(() => values[0]!.focus());
+      fireEvent.keyDown(values[0]!, { key: "ArrowDown", code: "ArrowDown", ...mod });
+      expect(document.activeElement).toBe(values[1]);
+      expect(onFocusData).not.toHaveBeenCalled();
+      fireEvent.keyDown(values[1]!, { key: "ArrowDown", code: "ArrowDown", ...mod });
+      expect(onFocusData).toHaveBeenCalledOnce();
+      // ⌘↑ on the first row stays in the bar.
+      fireEvent.keyDown(values[0]!, { key: "ArrowUp", code: "ArrowUp", ...mod });
+      expect(onFocusData).toHaveBeenCalledOnce();
+    });
+
+    it("marks a binary column's value that is not hex, and hints at hex", () => {
+      const initial = [
+        { ...row("avatar", "eq", "xyz"), id: "r1" },
+        { ...row("avatar", "eq", "0xDEADBEEF"), id: "r2" },
+        { ...row("avatar", "contains", "xyz"), id: "r3" },
+      ];
+      render(createElement(Stateful, { initial }));
+      const [bad, good, pattern] = screen.getAllByRole("textbox", { name: "Filter value" });
+      expect(bad).toHaveAttribute("aria-invalid", "true");
+      expect(bad).toHaveAttribute("title", "Enter hex bytes (pairs of 0-9 / a-f)");
+      expect(bad).toHaveAttribute("placeholder", "hex, e.g. 00ff");
+      expect(good).not.toHaveAttribute("aria-invalid");
+      // A pattern compares the blob as text.
+      expect(pattern).not.toHaveAttribute("aria-invalid");
+      expect(pattern).toHaveAttribute("placeholder", "value");
     });
 
     it("⎋ closes the bar unless something else handled it", () => {

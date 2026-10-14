@@ -51,3 +51,56 @@ describe("mock run_sql column origins", () => {
       expect((await columnsOf("pg", sql)).every((c) => !c.origin)).toBe(true);
   });
 });
+
+describe("mock SQL file commands", () => {
+  const DIR = "/Users/me/mock-files";
+
+  it("tells the size of a file without reading it, and that a .gz is compressed", async () => {
+    await ipc.sqlFiles.write(`${DIR}/a.sql`, "select 'é';\n");
+    // "é" is two bytes in UTF-8.
+    expect(await ipc.sqlFiles.info(`${DIR}/a.sql`)).toEqual({ bytes: 13, compressed: false });
+    await ipc.sqlFiles.write(`${DIR}/b.sql.gz`, "select 1;\n".repeat(100));
+    const gz = await ipc.sqlFiles.info(`${DIR}/b.sql.gz`);
+    expect(gz.compressed).toBe(true);
+    expect(gz.bytes).toBeLessThan(1000);
+    await expect(ipc.sqlFiles.info(`${DIR}/missing.sql`)).rejects.toMatchObject({
+      payload: { code: "NOT_FOUND" },
+    });
+  });
+
+  it("reads a head that ends after a whole line, or all of the file", async () => {
+    const text = "select 1;\nselect 2;\nselect 3;\n";
+    await ipc.sqlFiles.write(`${DIR}/c.sql`, text);
+    expect(await ipc.sqlFiles.readHead(`${DIR}/c.sql`, null)).toMatchObject({
+      text,
+      truncated: false,
+      encoding: null,
+    });
+    expect(await ipc.sqlFiles.readHead(`${DIR}/c.sql`, 100)).toMatchObject({
+      text,
+      truncated: false,
+    });
+    // 25 bytes end inside the third line: the head stops after the second.
+    expect(await ipc.sqlFiles.readHead(`${DIR}/c.sql`, 25)).toMatchObject({
+      text: "select 1;\nselect 2;\n",
+      totalBytes: text.length,
+      truncated: true,
+    });
+  });
+
+  it("pretends to hold a huge dump that only opens as a head", async () => {
+    const big = "/Users/me/dumps/huge-dump.sql";
+    expect((await ipc.sqlFiles.info(big)).bytes).toBeGreaterThan(100 * 1024 * 1024);
+    const head = await ipc.sqlFiles.readHead(big, 1000);
+    expect(head.truncated).toBe(true);
+    expect(head.text.length).toBeLessThanOrEqual(1000);
+    expect(head.text.endsWith(";\n")).toBe(true);
+    // Whole, it would be too big for one string.
+    await expect(ipc.sqlFiles.readHead(big, null)).rejects.toMatchObject({
+      payload: { code: "INVALID_INPUT" },
+    });
+    await expect(ipc.sqlFiles.read(big)).rejects.toMatchObject({
+      payload: { code: "INVALID_INPUT" },
+    });
+  });
+});

@@ -92,16 +92,58 @@ describe("TableBottomBar", () => {
     expect(summary()).not.toHaveTextContent("4 ms");
   });
 
-  it("says how many rows are selected instead of the range while rows are selected", () => {
-    const { rerender } = mount({ offset: 400, selectedRows: 3 });
-    expect(summary()).toHaveTextContent(/^3 of 200 rows selected\s*· 4 ms$/);
-    // The rows shown include staged new rows when the owner says so.
-    rerender({ offset: 400, selectedRows: 1_200, shownRows: 1_201, pageRows: 1_200 });
-    expect(summary()).toHaveTextContent(/^1,200 of 1,201 rows selected/);
-    rerender({ selectedRows: 1, shownRows: 1, pageRows: 1 });
+  it("says how many of the table's rows are selected instead of the range", () => {
+    const { rerender } = mount({
+      offset: 400,
+      selectedRows: 3,
+      count: { count: 1204, exact: true },
+    });
+    // The denominator is the table's row count, not the page's.
+    expect(summary()).toHaveTextContent(/^3 of 1,204 rows selected\s*· 4 ms$/);
+    // An estimate keeps its "~" (TablePlus: "15 of ~999,985 rows selected").
+    rerender({ selectedRows: 15, count: { count: 999_985, exact: false } });
+    expect(summary()).toHaveTextContent(/^15 of ~999,985 rows selected/);
+    // While the count is pending, it is the rows of the page.
+    rerender({ selectedRows: 3, count: null, countPending: true });
+    expect(summary()).toHaveTextContent(/^3 of 200 rows selected/);
+    rerender({ selectedRows: 3, count: null, countPending: false });
+    expect(summary()).toHaveTextContent(/^3 of 200 rows selected/);
+    rerender({ selectedRows: 1, count: { count: 1, exact: true }, pageRows: 1, shownRows: 1 });
     expect(summary()).toHaveTextContent(/^1 of 1 row selected/);
-    rerender({ selectedRows: 0 });
+    rerender({ selectedRows: 0, count: { count: 1000, exact: true }, pageRows: 200 });
     expect(summary()).toHaveTextContent(/^401–600 of 1,000 rows/);
+  });
+
+  it("counts staged new rows in the rows a selection is out of, and never shows fewer than shown", () => {
+    // Two staged rows on a page of 200 of 1,000 (the grid shows 202).
+    const { rerender } = mount({
+      offset: 400,
+      selectedRows: 5,
+      shownRows: 202,
+      count: { count: 1000, exact: true },
+    });
+    expect(summary()).toHaveTextContent(/^5 of 1,002 rows selected/);
+    rerender({ count: { count: 1000, exact: false } });
+    expect(summary()).toHaveTextContent(/^5 of ~1,002 rows selected/);
+    // A stale count below what the grid holds: the rows shown, which is exact.
+    rerender({
+      selectedRows: 1_200,
+      pageRows: 1_200,
+      shownRows: 1_201,
+      count: { count: 90, exact: false },
+    });
+    expect(summary()).toHaveTextContent(/^1,200 of 1,201 rows selected/);
+  });
+
+  it("Export… exports the filtered rows and does not advertise ⇧⌘E (the multi-table export)", async () => {
+    mount();
+    const button = screen.getByRole("button", { name: "Export…" });
+    fireEvent.focus(button);
+    const tip = await screen.findByRole("tooltip");
+    expect(tip).toHaveTextContent("Export the table's rows (the filtered ones)");
+    // No key hint: ⇧⌘E opens the multi-table export dialog.
+    expect(tip.querySelector("kbd")).toBeNull();
+    expect(tip.textContent).not.toMatch(/⇧⌘E|Ctrl\+Shift\+E/);
   });
 
   it("[+ Row] adds a row unless the table is read-only", () => {

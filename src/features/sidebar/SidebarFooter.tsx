@@ -1,20 +1,17 @@
-import { Plus, Settings2 } from "lucide-react";
+import { ChevronsUpDown, Plus, Settings2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { runNew, type ObjectContext } from "@/features/objects/actions";
-import { plusMenu, settingsEntries, type SidebarSettings } from "@/features/objects/menu";
+import { plusMenu, settingsEntries } from "@/features/objects/menu";
 import { DropdownMenuEntries } from "@/features/objects/MenuEntries";
 import { PG_SYSTEM_SCHEMAS, useSystemSchemas } from "@/features/objects/queries";
 import { TableDialogs, type TableDialogState } from "@/features/structure/TableDialogs";
@@ -24,20 +21,22 @@ import { useConnectionsStore, type OpenConnection } from "@/stores/connections";
 import { pinScope } from "@/stores/pins";
 import { setSidebarOption, useSidebarPrefs } from "./sidebarPrefs";
 import { useCurrentSchema, useSchemas } from "./useSchemaTree";
+import { useSidebarSettings } from "./useSidebarSettings";
 
 const iconButton =
   "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground data-[state=open]:bg-sidebar-accent data-[state=open]:text-foreground focus-visible:ring-ring/50 flex h-6 shrink-0 items-center justify-center gap-0.5 rounded-md px-1 outline-none focus-visible:ring-2";
 
 /**
- * Schema selector: PostgreSQL schemas (plus the system schemas when "Show System Schemas" is on),
- * SQLite's attached databases (main, temp, …). Shown only when there is more than one to pick
- * from.
+ * The schema switcher at the bottom (TablePlus): PostgreSQL schemas (plus the system schemas when
+ * "Show System Schemas" is on, which its menu toggles too), SQLite's attached databases (main,
+ * temp, …; shown only when there is more than one).
  */
 export function SchemaPicker({ connection }: { connection: OpenConnection }) {
   const id = connection.info.connectionId;
   const driver = connection.info.driver;
   const schemas = useSchemas(id);
-  const showSystem = useSidebarPrefs((s) => s.options.showSystemSchemas) && driver === "postgres";
+  const showSystemPref = useSidebarPrefs((s) => s.options.showSystemSchemas);
+  const showSystem = showSystemPref && driver === "postgres";
   const system = useSystemSchemas(id, showSystem);
   const current = useCurrentSchema(id);
   const setCurrentSchema = useConnectionsStore((s) => s.setCurrentSchema);
@@ -47,46 +46,56 @@ export function SchemaPicker({ connection }: { connection: OpenConnection }) {
       setCurrentSchema(id, null);
   }, [showSystem, current, id, setCurrentSchema]);
   if (driver !== "postgres" && driver !== "sqlite") return null;
-  const list = [...(schemas.data ?? [])];
+  if (!schemas.data) return null;
+  const list = [...schemas.data];
   if (showSystem)
     for (const s of system.data ?? []) if (!list.some((x) => x.name === s.name)) list.push(s);
-  if (list.length < 2) return null;
+  // PostgreSQL keeps it for its "Show System Schemas" toggle.
+  if (list.length < 2 && driver !== "postgres") return null;
+  const label = driver === "sqlite" ? "Attached database" : "Schema";
   return (
-    <Select value={current ?? ""} onValueChange={(v) => setCurrentSchema(id, v)}>
-      <SelectTrigger
-        size="sm"
-        aria-label={driver === "sqlite" ? "Attached database" : "Schema"}
-        title={driver === "sqlite" ? "Attached database" : "Schema"}
-        className="hover:bg-sidebar-accent/60 min-w-0 gap-1 border-transparent bg-transparent px-1.5 text-[11px] shadow-none data-[size=sm]:h-6 dark:bg-transparent [&_svg:not([class*='size-'])]:size-3"
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label={label}
+        title={label}
+        className={cn(iconButton, "max-w-40 min-w-0 px-1.5 text-[11px]")}
       >
-        <SelectValue placeholder="Schema" />
-      </SelectTrigger>
-      <SelectContent align="end">
-        {list.map((s) => (
-          <SelectItem
-            key={s.name}
-            value={s.name}
-            className={cn("text-xs", PG_SYSTEM_SCHEMAS.includes(s.name) && "text-muted-foreground")}
-          >
-            {s.name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+        <span className="truncate">{current ?? label}</span>
+        <ChevronsUpDown aria-hidden className="size-3 shrink-0 opacity-70" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side="top" align="end" className="max-h-80 min-w-44">
+        <DropdownMenuRadioGroup
+          value={current ?? ""}
+          onValueChange={(v) => setCurrentSchema(id, v)}
+        >
+          {list.map((s) => (
+            <DropdownMenuRadioItem
+              key={s.name}
+              value={s.name}
+              className={cn(
+                "text-xs",
+                PG_SYSTEM_SCHEMAS.includes(s.name) && "text-muted-foreground",
+              )}
+            >
+              {s.name}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+        {driver === "postgres" && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuCheckboxItem
+              checked={showSystemPref}
+              onCheckedChange={(v) => setSidebarOption("showSystemSchemas", v === true)}
+              className="text-xs"
+            >
+              Show System Schemas
+            </DropdownMenuCheckboxItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
-}
-
-/** The sidebar's view options (⚙ and "+" ▸ Settings), as `settingsEntries` takes them. */
-function useSidebarSettings(): SidebarSettings {
-  const options = useSidebarPrefs((s) => s.options);
-  return {
-    showRecent: options.showRecent,
-    showFunctions: options.showFunctions,
-    showSequences: options.showSequences,
-    showSystemSchemas: options.showSystemSchemas,
-    showRowCounts: options.showRowCounts,
-    showColumns: options.showColumns,
-  };
 }
 
 /**
@@ -97,7 +106,8 @@ export function SidebarFooter({ connection }: { connection: OpenConnection }) {
   // Read at render: the user can remap it (Settings ▸ Shortcuts).
   useKeymapVersion();
   const newQueryCombo = shortcutFor("tab.new-query");
-  const settings = useSidebarSettings();
+  const { settings, set } = useSidebarSettings(connection);
+  const lazy = settings.lazyLoad === true;
   const currentSchema = useCurrentSchema(connection.info.connectionId);
   const [dialog, setDialog] = useState<TableDialogState | null>(null);
   const { driver, readOnly, connectionId } = connection.info;
@@ -108,9 +118,7 @@ export function SidebarFooter({ connection }: { connection: OpenConnection }) {
     schema: currentSchema,
     pinScope: pinScope(connection.info.profileId, connection.info.currentDatabase),
   };
-  const settingItems = settingsEntries(driver, settings, (key, value) =>
-    setSidebarOption(key, value),
-  );
+  const settingItems = settingsEntries(driver, settings, set);
   const plus = plusMenu(
     driver,
     readOnly,
@@ -143,7 +151,8 @@ export function SidebarFooter({ connection }: { connection: OpenConnection }) {
         </DropdownMenuContent>
       </DropdownMenu>
       <div className="ml-auto flex min-w-0 justify-end">
-        <SchemaPicker connection={connection} />
+        {/* Lazy load lists the schemas in the tree itself. */}
+        {!lazy && <SchemaPicker connection={connection} />}
       </div>
       <TableDialogs
         connectionId={connectionId}

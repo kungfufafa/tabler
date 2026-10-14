@@ -12,6 +12,18 @@ function findTabSurface(exclude: Element | null): HTMLElement | null {
   return null;
 }
 
+/** The pending poll, when one is waiting for the tab's surface to mount. */
+let pending: number | undefined;
+
+/**
+ * Stops waiting for a tab surface to focus. A newer `focusTabSurface` replaces the poll of an
+ * older one; tests call it when they end so no poll outlives the environment it polls.
+ */
+export function cancelTabSurfaceFocus(): void {
+  if (pending !== undefined) window.clearTimeout(pending);
+  pending = undefined;
+}
+
 /**
  * Moves focus into the newly activated tab's grid/editor once it has mounted. Only the active
  * tab's content is mounted, so switching tabs unmounts whatever had focus and leaves focus on
@@ -20,16 +32,18 @@ function findTabSurface(exclude: Element | null): HTMLElement | null {
  * as focus moves anywhere else, or after a few seconds.
  */
 export function focusTabSurface(): void {
+  cancelTabSurfaceFocus();
   const before = document.activeElement;
   const deadline = Date.now() + SURFACE_WAIT_MS;
   const tick = () => {
+    pending = undefined;
     const current = document.activeElement;
     // Focus moved on (a click, the command itself, the palette reopening): leave it there.
     if (current && current !== document.body && current !== before) return;
     const surface = findTabSurface(before);
     if (surface) surface.focus({ preventScroll: true });
-    else if (Date.now() < deadline) window.setTimeout(tick, SURFACE_POLL_MS);
+    else if (Date.now() < deadline) pending = window.setTimeout(tick, SURFACE_POLL_MS);
   };
   // The switch renders after the current task; look once it has.
-  window.setTimeout(tick, 0);
+  pending = window.setTimeout(tick, 0);
 }

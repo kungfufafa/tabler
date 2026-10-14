@@ -265,17 +265,48 @@ impl RowSink for DiscardSink {
 ///
 /// The wrapper statements run with slots of their own: they are not the user's statement (and
 /// are quick), and the closing ones must run even after the user cancelled the EXPLAIN.
-async fn open_analyze(session: &dyn DbSession, sql: &str) -> Result<Vec<String>, AppError> {
+async fn open_analyze(
+    session: &dyn DbSession,
+    sql: &str,
+    traced: bool,
+) -> Result<Vec<String>, AppError> {
     let dialect = session.dialect();
     let writes = analyze_writes(sql, dialect);
-    let in_tx = transaction_state(session).await;
+    let in_tx = transaction_state(session, traced).await;
     let Some((open, close)) = analyze_wrapper(dialect, in_tx, writes)? else {
         return Ok(Vec::new());
     };
-    session
-        .run_statement(&open, 1, &mut DiscardSink, CancelSlot::default())
-        .await?;
+    run_around_explain(
+        session,
+        traced,
+        &open,
+        1,
+        &mut DiscardSink,
+        CancelSlot::default(),
+    )
+    .await?;
     Ok(close)
+}
+
+/// `run_statement` for what runs around an EXPLAIN: the statement itself and the wrapper and
+/// probes of an Analyze. `traced` records it in the session's trace (the Explain command: the
+/// console log shows what really ran); the SQL editor's runs are logged by the renderer from the
+/// run's events and are not.
+async fn run_around_explain(
+    session: &dyn DbSession,
+    traced: bool,
+    sql: &str,
+    max_rows: usize,
+    sink: &mut dyn RowSink,
+    cancel: CancelSlot,
+) -> Result<StatementOutcome, AppError> {
+    if traced {
+        session
+            .run_statement_traced(sql, max_rows, sink, cancel)
+            .await
+    } else {
+        session.run_statement(sql, max_rows, sink, cancel).await
+    }
 }
 
 /// Whether the editor connection has a transaction open, for `analyze_wrapper`: the session's
@@ -284,7 +315,7 @@ async fn open_analyze(session: &dyn DbSession, sql: &str) -> Result<Vec<String>,
 /// statement), which the tracking does not see and `START TRANSACTION` would commit. MariaDB
 /// reports `@@in_transaction` as well, which also covers its `ANALYZE <statement>` (the tracking
 /// takes that for the implicitly committing `ANALYZE TABLE`). `None` when unknown.
-async fn transaction_state(session: &dyn DbSession) -> Option<bool> {
+async fn transaction_state(session: &dyn DbSession, traced: bool) -> Option<bool> {
     let tracked = session.in_transaction();
     if session.dialect() != Dialect::Mysql {
         return tracked;
@@ -295,10 +326,7 @@ async fn transaction_state(session: &dyn DbSession) -> Option<bool> {
     }
     let read = |sql: &'static str| async move {
         let mut sink = CollectSink::default();
-        match session
-            .run_statement(sql, 1, &mut sink, CancelSlot::default())
-            .await
-        {
+        match run_around_explain(session, traced, sql, 1, &mut sink, CancelSlot::default()).await {
             Ok(_) => sink
                 .sets
                 .into_iter()
@@ -350,11 +378,17 @@ fn flag(v: &Value) -> Option<bool> {
 /// Runs the statements `open_analyze` returned, whatever happened to the EXPLAIN. A failure is
 /// logged (never reported in place of the EXPLAIN's own result) and stops the rest: releasing a
 /// savepoint that could not be rolled back to would keep the statement's changes.
-async fn close_analyze(session: &dyn DbSession, close: &[String]) {
+async fn close_analyze(session: &dyn DbSession, traced: bool, close: &[String]) {
     for sql in close {
-        if let Err(e) = session
-            .run_statement(sql, 1, &mut DiscardSink, CancelSlot::default())
-            .await
+        if let Err(e) = run_around_explain(
+            session,
+            traced,
+            sql,
+            1,
+            &mut DiscardSink,
+            CancelSlot::default(),
+        )
+        .await
         {
             log::warn!("explain analyze: `{sql}` failed: {e}");
             return;
@@ -363,7 +397,8 @@ async fn close_analyze(session: &dyn DbSession, close: &[String]) {
 }
 
 /// Runs the (already wrapped) EXPLAIN `exec_sql` of `statement`; an Analyze runs inside a
-/// rolled-back transaction or savepoint (`open_analyze`).
+/// rolled-back transaction or savepoint (`open_analyze`). `traced`: see `run_around_explain`.
+#[allow(clippy::too_many_arguments)]
 async fn run_explain(
     session: &dyn DbSession,
     statement: &str,
@@ -372,43 +407,93 @@ async fn run_explain(
     max_rows: usize,
     sink: &mut dyn RowSink,
     cancel: &CancelSlot,
+    traced: bool,
 ) -> Result<StatementOutcome, AppError> {
     if cancel_requested(cancel) {
         return Err(AppError::Cancelled);
     }
     let close = match mode {
-        ExplainMode::Analyze => open_analyze(session, statement).await?,
+        ExplainMode::Analyze => open_analyze(session, statement, traced).await?,
         ExplainMode::Plan => Vec::new(),
     };
-    let result = session
-        .run_statement(exec_sql, max_rows, sink, cancel.clone())
-        .await;
-    close_analyze(session, &close).await;
+    let result =
+        run_around_explain(session, traced, exec_sql, max_rows, sink, cancel.clone()).await;
+    close_analyze(session, traced, &close).await;
     result
 }
 
 /// Error code of a statement stopped by `RunOptions::timeout_secs`. Not `TIMEOUT`: the renderer
 /// takes that for a connection that stopped answering.
-pub const QUERY_TIMEOUT_CODE: &str = "QUERY_TIMEOUT";
+pub const QUERY_TIMEOUT_CODE: &str = crate::error::QUERY_TIMEOUT_CODE;
 
 /// What a statement stopped by the query time out reports.
 pub fn timeout_payload(secs: u32, index: usize) -> ErrorPayload {
-    let mut payload = AppError::Timeout.to_payload();
-    payload.code = QUERY_TIMEOUT_CODE.to_string();
-    payload.message = format!("Query timed out after {secs} s");
-    payload.hint = Some(
-        "The statement was cancelled. The limit is Settings ▸ Connections ▸ Query time out \
-         (0 = no limit)."
-            .into(),
-    );
+    let mut payload = AppError::QueryTimeout { secs }.to_payload();
     payload.statement_index = Some(index);
     payload
+}
+
+/// The query time out preference (Settings ▸ Connections ▸ Query time out, in seconds, 0 = no
+/// limit) as a limit.
+pub fn time_limit(secs: u32) -> Option<Duration> {
+    (secs > 0).then(|| Duration::from_secs(secs.into()))
+}
+
+/// The limit every statement the app runs for the user is under: the preference in the app
+/// settings (default 300 s, as the renderer's), read on every call so a change applies at once;
+/// `explicit` (a `timeoutSecs` argument, 0 = none) overrides it. A settings database that cannot
+/// be read leaves the default in force.
+pub fn query_time_limit(appdb: &crate::appdb::AppDb, explicit: Option<u32>) -> Option<Duration> {
+    let secs = explicit.unwrap_or_else(|| {
+        crate::mcp::prefs::McpPrefs::load(appdb)
+            .map(|p| p.query_timeout_secs)
+            .unwrap_or(crate::mcp::prefs::DEFAULT_QUERY_TIMEOUT_SECS)
+    });
+    time_limit(secs)
+}
+
+/// Turns the `Cancelled` a timed-out statement ends with into the timeout error (a statement that
+/// finished before its cancel landed keeps its outcome).
+pub fn timed_out_as_error<T>(
+    result: Result<T, AppError>,
+    expired: bool,
+    limit: Option<Duration>,
+) -> Result<T, AppError> {
+    match result {
+        Err(AppError::Cancelled) if expired => Err(AppError::QueryTimeout {
+            secs: limit.map_or(0, |l| l.as_secs() as u32),
+        }),
+        other => other,
+    }
+}
+
+/// `session.query` under the query time out: past `limit` the statement is cancelled on the server
+/// (the pool connection is not left running it) and the call fails with `QueryTimeout`. Used for
+/// the table grid's page loads, row counts and cell fetches; without a limit it is a plain query.
+pub async fn query_limited(
+    session: &dyn DbSession,
+    sql: &str,
+    params: &[Value],
+    limit: Option<Duration>,
+) -> Result<ResultSet, AppError> {
+    if limit.is_none() {
+        return session.query(sql, params).await;
+    }
+    let slot = CancelSlot::default();
+    let (result, expired) = with_timeout(
+        session,
+        &slot,
+        limit,
+        session.query_cancellable(sql, params, slot.clone()),
+    )
+    .await;
+    timed_out_as_error(result, expired, limit)
 }
 
 /// Runs one statement under the run's time limit. When `limit` passes first, the statement is
 /// cancelled the way Stop cancels it (through the run's slot, so the rest of the run is not
 /// started either) and its end is still awaited. Returns whether the limit was hit.
-async fn with_timeout<T>(
+pub(crate) async fn with_timeout<T>(
     session: &dyn DbSession,
     cancel: &CancelSlot,
     limit: Option<Duration>,
@@ -516,7 +601,7 @@ async fn run_statements(
                 match options.explain {
                     Some(mode) => {
                         run_explain(
-                            session, &st.sql, &exec_sql, mode, max_rows, &mut sink, cancel,
+                            session, &st.sql, &exec_sql, mode, max_rows, &mut sink, cancel, false,
                         )
                         .await
                     }
@@ -650,6 +735,18 @@ pub async fn explain_inner(
     mode: ExplainMode,
     cancel: &CancelSlot,
 ) -> Result<ExplainResult, AppError> {
+    explain_limited(session, sql, mode, cancel, None).await
+}
+
+/// `explain_inner` under the query time out: past `limit` the statement is cancelled the way Stop
+/// cancels it and the call fails with `QueryTimeout`.
+pub async fn explain_limited(
+    session: &dyn DbSession,
+    sql: &str,
+    mode: ExplainMode,
+    cancel: &CancelSlot,
+    limit: Option<Duration>,
+) -> Result<ExplainResult, AppError> {
     let dialect = session.dialect();
     let statements = split_statements(sql, dialect);
     let st = statements
@@ -665,17 +762,30 @@ pub async fn explain_inner(
     let mut sink = CollectSink::default();
     let _editor = lock_editor_runs(session, cancel).await?;
     let started = Instant::now();
-    run_explain(
+    let (outcome, expired) = with_timeout(
         session,
-        &st.sql,
-        &exec_sql,
-        mode,
-        EXPLAIN_MAX_ROWS,
-        &mut sink,
         cancel,
+        limit,
+        run_explain(
+            session,
+            &st.sql,
+            &exec_sql,
+            mode,
+            EXPLAIN_MAX_ROWS,
+            &mut sink,
+            cancel,
+            true,
+        ),
     )
-    .await
-    .map_err(|e| locate_error(e, st, sql, &exec_sql, shift, dialect).0)?;
+    .await;
+    // A MySQL `KILL` can end an EXPLAIN ANALYZE without an error, leaving a plan of a statement
+    // that did not run to completion: past the limit that counts as timed out too.
+    let outcome = match outcome {
+        Ok(_) if expired => Err(AppError::Cancelled),
+        other => other,
+    };
+    timed_out_as_error(outcome, expired, limit)
+        .map_err(|e| locate_error(e, st, sql, &exec_sql, shift, dialect).0)?;
     let set = sink.sets.into_iter().next().unwrap_or_default();
     let text = plan_text(dialect, &set);
     Ok(ExplainResult {
@@ -851,6 +961,7 @@ pub async fn explain(
     sql: String,
     mode: ExplainMode,
     query_id: Option<String>,
+    timeout_secs: Option<u32>,
 ) -> Result<ExplainResult, AppError> {
     let conn = state.connection(connection_id).await?;
     let session = conn.session().await;
@@ -867,7 +978,8 @@ pub async fn explain(
             )?),
             None => None,
         };
-        explain_inner(session.as_ref(), &sql, mode, &slot).await
+        let limit = query_time_limit(&state.appdb, timeout_secs);
+        explain_limited(session.as_ref(), &sql, mode, &slot, limit).await
     };
     let statement = split_statements(&sql, session.dialect())
         .into_iter()
@@ -1826,6 +1938,124 @@ mod tests {
             timeout_payload(300, 2).message,
             "Query timed out after 300 s"
         );
+    }
+
+    const ENDLESS: &str = "with recursive c(x) as (select 1 union all select x + 1 from c \
+                           where x < 2000000000) select count(*) from c";
+
+    #[tokio::test]
+    async fn query_limited_cancels_a_slow_read_and_reports_the_time_out() {
+        let (session, _dir) = sqlite_session().await;
+        let started = Instant::now();
+        let err = query_limited(&session, ENDLESS, &[], Some(Duration::from_secs(1)))
+            .await
+            .unwrap_err();
+        let took = started.elapsed();
+        assert!(took >= Duration::from_secs(1), "{took:?}");
+        assert!(took < Duration::from_secs(10), "it was cancelled: {took:?}");
+        let payload = err.to_payload();
+        assert_eq!(payload.code, QUERY_TIMEOUT_CODE);
+        assert_eq!(payload.message, "Query timed out after 1 s");
+        assert!(payload.hint.as_deref().unwrap().contains("Query time out"));
+        // The worker connection is usable again, and the cancelled statement is in the trace.
+        let rs = session.query("select 41 + 1", &[]).await.unwrap();
+        assert_eq!(rs.rows, vec![vec![Value::Int(42)]]);
+        let trace = session.drain_trace();
+        let cancelled = trace
+            .iter()
+            .find(|t| t.sql.contains("with recursive"))
+            .unwrap();
+        assert!(cancelled.error.is_some(), "{trace:?}");
+    }
+
+    #[tokio::test]
+    async fn query_limited_leaves_fast_and_unlimited_statements_alone() {
+        let (session, _dir) = sqlite_session().await;
+        let fast = query_limited(&session, "select 7", &[], Some(Duration::from_secs(30)))
+            .await
+            .unwrap();
+        assert_eq!(fast.rows, vec![vec![Value::Int(7)]]);
+        // No limit: a statement that outlasts what a limit would have been just completes.
+        let slow = "with recursive c(x) as (select 1 union all select x + 1 from c where x < 3000000) \
+                    select count(*) from c";
+        let started = Instant::now();
+        let done = query_limited(&session, slow, &[], None).await.unwrap();
+        assert_eq!(done.rows, vec![vec![Value::Int(3_000_000)]]);
+        assert!(started.elapsed() > Duration::from_millis(50));
+        // An ordinary failure is not turned into a time out.
+        let err = query_limited(
+            &session,
+            "select * from no_such",
+            &[],
+            Some(Duration::from_secs(30)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), "DB_ERROR");
+    }
+
+    #[test]
+    fn the_query_time_out_is_read_from_the_settings() {
+        use crate::appdb::AppDb;
+        let db = AppDb::open_in_memory().unwrap();
+        // Preference absent: the default 300 s.
+        assert_eq!(query_time_limit(&db, None), Some(Duration::from_secs(300)));
+        db.set_setting("prefs", &serde_json::json!({ "queryTimeout": 45 }))
+            .unwrap();
+        assert_eq!(query_time_limit(&db, None), Some(Duration::from_secs(45)));
+        // 0 = no limit.
+        db.set_setting("prefs", &serde_json::json!({ "queryTimeout": 0 }))
+            .unwrap();
+        assert_eq!(query_time_limit(&db, None), None);
+        // An invalid value keeps the default.
+        db.set_setting("prefs", &serde_json::json!({ "queryTimeout": "soon" }))
+            .unwrap();
+        assert_eq!(query_time_limit(&db, None), Some(Duration::from_secs(300)));
+        // An explicit argument wins over the preference, 0 included.
+        assert_eq!(query_time_limit(&db, Some(5)), Some(Duration::from_secs(5)));
+        assert_eq!(query_time_limit(&db, Some(0)), None);
+        assert_eq!(time_limit(0), None);
+        assert_eq!(time_limit(1), Some(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn the_timeout_error_has_its_own_code_and_a_hint() {
+        let e = AppError::QueryTimeout { secs: 300 };
+        assert_eq!(e.code(), QUERY_TIMEOUT_CODE);
+        assert_ne!(e.code(), AppError::Timeout.code());
+        assert_eq!(e.to_string(), "Query timed out after 300 s");
+        let p = timeout_payload(300, 2);
+        assert_eq!(
+            (p.code.as_str(), p.statement_index),
+            (QUERY_TIMEOUT_CODE, Some(2))
+        );
+        assert_eq!(p.hint, e.to_payload().hint);
+        // Only a cancelled statement is reported as timed out, and only once the limit passed.
+        let limit = Some(Duration::from_secs(3));
+        assert!(matches!(
+            timed_out_as_error::<()>(Err(AppError::Cancelled), true, limit),
+            Err(AppError::QueryTimeout { secs: 3 })
+        ));
+        assert!(matches!(
+            timed_out_as_error::<()>(Err(AppError::Cancelled), false, limit),
+            Err(AppError::Cancelled)
+        ));
+        assert!(timed_out_as_error(Ok(1), true, limit).is_ok());
+    }
+
+    #[tokio::test]
+    async fn explain_under_a_limit_still_explains() {
+        let (session, _dir) = sqlite_session().await;
+        let plan = explain_limited(
+            &session,
+            "select 1",
+            ExplainMode::Plan,
+            &CancelSlot::default(),
+            Some(Duration::from_secs(30)),
+        )
+        .await
+        .unwrap();
+        assert!(!plan.columns.is_empty());
     }
 
     #[tokio::test]

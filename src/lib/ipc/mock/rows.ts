@@ -69,6 +69,35 @@ function dateAt(i: number, withTz: boolean, withTime = true): string {
   return withTz ? `${date} ${time}+07` : `${date} ${time}`;
 }
 
+/** Mock spatial values around Jakarta: points, polygons, routes, then every other type (3D / M). */
+function geometryCell(col: ColumnMeta, i: number): Value {
+  const lon = +(106.8 + (i % 12) * 0.013).toFixed(4);
+  const lat = +(-6.2 + (i % 7) * 0.009).toFixed(4);
+  const d = 0.004;
+  const other = (text: string): Value => ({ t: "other", v: { ty: col.dataType, text } });
+  if (col.nullable && i % 9 === 8) return { t: "null" };
+  if (/point/i.test(col.dataType)) return other(`SRID=4326;POINT(${lon} ${lat})`);
+  if (/polygon/i.test(col.dataType))
+    return other(
+      `SRID=4326;POLYGON((${lon} ${lat},${+(lon + d).toFixed(4)} ${lat},${+(lon + d).toFixed(4)} ${+(lat + d).toFixed(4)},${lon} ${+(lat + d).toFixed(4)},${lon} ${lat}))`,
+    );
+  if (/linestring/i.test(col.dataType))
+    return other(
+      `SRID=4326;LINESTRING(${lon} ${lat},${+(lon + 0.01).toFixed(4)} ${+(lat + 0.004).toFixed(4)},${+(lon + 0.02).toFixed(4)} ${+(lat - 0.003).toFixed(4)})`,
+    );
+  const samples = [
+    "MULTIPOINT((0 0),(2 1),(4 3))",
+    "SRID=3857;MULTIPOLYGON(((0 0,10 0,10 10,0 10,0 0),(3 3,6 3,6 6,3 6,3 3)),((12 0,16 0,14 4,12 0)))",
+    "GEOMETRYCOLLECTION(POINT(2 2),LINESTRING(0 0,4 4,8 0),POLYGON((5 5,9 5,7 9,5 5)))",
+    "POINT Z (1 2 3)",
+    "LINESTRING M (0 0 1,3 4 2,6 0 3)",
+    "CIRCULARSTRING(0 0,1 1,2 0)",
+    "CURVEPOLYGON(COMPOUNDCURVE(CIRCULARSTRING(0 0,2 2,4 0),(4 0,0 0)))",
+    "POLYGON EMPTY",
+  ];
+  return other(samples[i % samples.length]!);
+}
+
 export function cellFor(col: ColumnMeta, i: number, rand: () => number): Value {
   if (col.nullable && !col.isPk && rand() < 0.08) return { t: "null" };
   switch (col.kind) {
@@ -133,6 +162,8 @@ export function cellFor(col: ColumnMeta, i: number, rand: () => number): Value {
       return { t: "timestampTz", v: dateAt(i, true) };
     case "interval":
       return { t: "interval", v: `${i % 5} days 0${i % 10}:00:00` };
+    case "geometry":
+      return geometryCell(col, i);
     case "other":
       return {
         t: "other",

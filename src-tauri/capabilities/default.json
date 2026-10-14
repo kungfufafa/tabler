@@ -1,18 +1,24 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the main window and the windows opened later (w-2, w-3…)",
+  "windows": ["main", "w-*"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-is-fullscreen",
     "core:window:allow-set-title",
     "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:window:allow-set-theme",
+    "core:app:allow-set-app-theme",
+    "core:window:allow-show",
     "opener:default",
     "dialog:default",
     "log:default",
     "clipboard-manager:allow-write-text",
-    "clipboard-manager:allow-read-text"
+    "clipboard-manager:allow-read-text",
+    "notification:default"
   ]
 }

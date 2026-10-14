@@ -69,6 +69,7 @@ export const DELIMITERS: ReadonlyArray<{ value: string; label: string }> = [
 export const QUOTES: ReadonlyArray<{ value: string; label: string }> = [
   { value: '"', label: 'Double quote ( " )' },
   { value: "'", label: "Single quote ( ' )" },
+  { value: " ", label: "Space" },
 ];
 
 /**
@@ -140,14 +141,20 @@ export function matchedCount(mapping: readonly (string | null)[]): number {
 }
 
 /** "CSV 5 columns, table 4 columns, matched 4 columns". */
-export function statusLine(csv: number, table: number, matched: number): string {
+export function statusLine(
+  csv: number,
+  table: number,
+  matched: number,
+  kind: "CSV" | "JSON" = "CSV",
+): string {
   const n = (count: number) => `${count} column${count === 1 ? "" : "s"}`;
-  return `CSV ${n(csv)}, table ${n(table)}, matched ${n(matched)}`;
+  const source = kind === "JSON" ? `${csv} key${csv === 1 ? "" : "s"}` : n(csv);
+  return `${kind} ${source}, table ${n(table)}, matched ${n(matched)}`;
 }
 
 /** A table name from a file name: `Sales Report 2026.csv` → `sales_report_2026`. */
 export function tableNameFromFile(fileName: string): string {
-  const stem = fileName.replace(/\.[^.]*$/, "").replace(/\.(csv|tsv|txt)$/i, "");
+  const stem = fileName.replace(/\.[^.]*$/, "").replace(/\.(csv|tsv|txt|json)$/i, "");
   let name = stem
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
@@ -195,7 +202,7 @@ export function loadCsvPrefs(s: StorageLike | null = storage()): CsvWizardPrefs 
     const r = raw as Record<string, unknown>;
     return {
       header: typeof r.header === "boolean" ? r.header : d.header,
-      quote: r.quote === "'" || r.quote === '"' ? r.quote : d.quote,
+      quote: QUOTES.some((q) => q.value === r.quote) ? (r.quote as string) : d.quote,
       emptyAsNull: typeof r.emptyAsNull === "boolean" ? r.emptyAsNull : d.emptyAsNull,
       strategy: MATCH_STRATEGIES.some((m) => m.value === r.strategy)
         ? (r.strategy as MatchStrategy)

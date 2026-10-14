@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/select";
 import { csvDefaults, importDelimiter, importQuote } from "@/features/datagrid/csv";
 import { formatBytes, formatCount } from "@/features/export/options";
+import { notifyInBackground } from "@/features/notify/notify";
 import { guardExecution } from "@/features/safety/guard";
 import { useCurrentSchema, useTables } from "@/features/sidebar/useSchemaTree";
 import { invalidateSchema } from "@/features/structure/invalidate";
@@ -34,7 +35,6 @@ import {
   type CsvImportFailure,
   type CsvImportProgress,
   type CsvImportReport,
-  type CsvPreview,
   type ImportColumnDef,
   type ImportType,
   type InsertMode,
@@ -60,6 +60,7 @@ import {
   tableNameFromFile,
   type MatchStrategy,
 } from "./mapping";
+import { fromCsvPreview, fromJsonPreview, layoutLabel, type WizardPreview } from "./jsonPreview";
 import { closeImport, type ImportRequest } from "./store";
 
 /** "Do not import" in the per-column header menus (Radix Select needs a non-empty value). */
@@ -168,10 +169,14 @@ interface RunState {
 /**
  * The Import CSV wizard (File ▸ Import ▸ From CSV…): target table or "Create new table", a
  * preview of the first 100 rows with a column mapping per CSV column, the reading options and
- * the insert option. Mounted by `ImportHost` once a file was picked.
+ * the insert option. Mounted by `ImportHost` once a file was picked. A JSON file (From JSON…:
+ * an array of objects or NDJSON) goes through the same wizard: its keys are the columns, matched
+ * by name; null and missing keys are NULL; only the encoding is a reading option.
  */
 export function CsvImportWizard({ request, path }: { request: ImportRequest; path: string }) {
   const { connectionId } = request;
+  const json = request.kind === "json";
+  const kindLabel = json ? "JSON" : "CSV";
   const qc = useQueryClient();
   const driver = useConnectionsStore((s) => s.byId[connectionId]?.info.driver);
   const current = useCurrentSchema(connectionId);
@@ -205,21 +210,31 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
   const starting = useRef(false);
   const [guarding, setGuarding] = useState(false);
 
-  const previewKey = ["csvPreview", path, format] as const;
   const preview = useQuery({
-    queryKey: previewKey,
-    queryFn: () => ipc.imports.previewCsv({ path, format }),
+    queryKey: json ? ["jsonPreview", path, format.encoding] : ["csvPreview", path, format],
+    queryFn: async (): Promise<WizardPreview> =>
+      json
+        ? fromJsonPreview(await ipc.imports.previewJson({ path, encoding: format.encoding }))
+        : fromCsvPreview(await ipc.imports.previewCsv({ path, format })),
     placeholderData: keepPreviousData,
     staleTime: Infinity,
     gcTime: 60_000,
     retry: false,
   });
-  const data: CsvPreview | undefined = preview.data;
+  const data: WizardPreview | undefined = preview.data;
+  // JSON keys are names: they match like a CSV header.
+  const header = json || format.header;
 
   // The first preview detects the delimiter and encoding: show them as chosen (and reuse the
   // preview for the resolved options instead of reading the file again). A detection that found
   // a single column is not sure of the delimiter: the CSV default option's one is tried instead.
   useEffect(() => {
+    if (json) {
+      if (!data || format.encoding !== null) return;
+      qc.setQueryData(["jsonPreview", path, data.encoding], data);
+      setFormat((f) => ({ ...f, encoding: data.encoding }));
+      return;
+    }
     if (!data || (format.delimiter !== null && format.encoding !== null)) return;
     const resolved: CsvFormat = {
       ...format,
@@ -231,7 +246,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
     if (resolved.delimiter === data.delimiter)
       qc.setQueryData(["csvPreview", path, resolved], data);
     setFormat(resolved);
-  }, [data, format, path, qc, csvPrefs]);
+  }, [data, format, path, qc, csvPrefs, json]);
 
   // Table list: tables only (not views); the request's table first selected.
   const tableList = useMemo(
@@ -262,7 +277,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
 
   const csvNames = useMemo(() => (data?.columns ?? []).map((c) => c.name), [data]);
   // A new preview (other delimiter, header…) resets the per-column choices.
-  const signature = `${csvNames.join("\u0001")}|${format.header}`;
+  const signature = `${csvNames.join("\u0001")}|${header}`;
   const lastSignature = useRef<string | null>(null);
   useEffect(() => {
     if (!data || lastSignature.current === signature) return;
@@ -273,8 +288,8 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
   }, [data, signature]);
 
   const matched = useMemo(
-    () => matchColumns(csvNames, tableColumns, strategy, format.header),
-    [csvNames, tableColumns, strategy, format.header],
+    () => matchColumns(csvNames, tableColumns, strategy, header),
+    [csvNames, tableColumns, strategy, header],
   );
   const mapping = useMemo(() => applyOverrides(matched, overrides), [matched, overrides]);
   const createDefs = defs ?? [];
@@ -308,7 +323,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
     }
   };
 
-  const runImport = async (data: CsvPreview) => {
+  const runImport = async (data: WizardPreview) => {
     setFailure(null);
     setStartError(null);
     const resolved: CsvFormat = {
@@ -327,7 +342,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
     try {
       allowed = await guardExecution(connectionId, {
         kind: "operation",
-        label: `Import CSV into ${table.name}`,
+        label: `Import ${kindLabel} into ${table.name}`,
         write: true,
       });
     } catch (e) {
@@ -337,25 +352,50 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
       setGuarding(false);
     }
     if (!allowed) return;
-    saveCsvPrefs({ header: format.header, quote: format.quote, emptyAsNull, strategy });
+    if (!json) saveCsvPrefs({ header: format.header, quote: format.quote, emptyAsNull, strategy });
     const importId = crypto.randomUUID();
     setRun({ importId, progress: null, cancelling: false });
+    const importTarget = creating
+      ? { kind: "create" as const, table, columns }
+      : { kind: "existing" as const, table };
+    const onProgress = (progress: CsvImportProgress) =>
+      setRun((r) => (r?.importId === importId ? { ...r, progress } : r));
     try {
-      const report = await ipc.imports.csv(
-        connectionId,
-        {
-          importId,
-          path,
-          format: resolved,
-          target: creating ? { kind: "create", table, columns } : { kind: "existing", table },
-          mapping: effective,
-          emptyAsNull,
-          mode: effectiveMode,
-        },
-        (progress) => setRun((r) => (r?.importId === importId ? { ...r, progress } : r)),
-      );
+      const report = json
+        ? await ipc.imports.json(
+            connectionId,
+            {
+              importId,
+              path,
+              encoding: resolved.encoding,
+              keys: data.keys ?? [],
+              target: importTarget,
+              mapping: effective,
+              mode: effectiveMode,
+            },
+            onProgress,
+          )
+        : await ipc.imports.csv(
+            connectionId,
+            {
+              importId,
+              path,
+              format: resolved,
+              target: importTarget,
+              mapping: effective,
+              emptyAsNull,
+              mode: effectiveMode,
+            },
+            onProgress,
+          );
       if (report.rowsImported > 0 || report.createdTable) invalidateSchema(qc, connectionId, table);
       const rows = `${formatCount(report.rowsImported)} row${report.rowsImported === 1 ? "" : "s"}`;
+      if (!report.cancelled)
+        void notifyInBackground(
+          report.failure
+            ? { title: `${kindLabel} import failed`, body: report.failure.message }
+            : { title: `Imported ${rows}`, body: `${data.fileName} → ${table.name}` },
+        );
       if (report.failure) {
         const notes = report.notes.length > 0 ? `. ${report.notes.join(" ")}` : "";
         setFailure({ text: failureText(report.failure) + notes, imported: report.rowsImported });
@@ -384,7 +424,9 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
         closeImport();
       }
     } catch (e) {
-      setStartError(toIpcError(e).message);
+      const message = toIpcError(e).message;
+      void notifyInBackground({ title: `${kindLabel} import failed`, body: message });
+      setStartError(message);
     } finally {
       setRun(null);
     }
@@ -424,13 +466,16 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
         <DialogHeader className="border-border gap-1 border-b px-4 py-3 pr-12">
           <DialogTitle className="flex items-center gap-2 text-sm">
             <FileUp className="text-brand size-4" />
-            Import CSV
+            Import {kindLabel}
           </DialogTitle>
           <DialogDescription className="flex min-w-0 items-center gap-1.5 text-xs">
             <span className="text-foreground truncate font-mono" title={path}>
               {data?.fileName ?? path.slice(path.lastIndexOf("/") + 1)}
             </span>
             {data && <span className="shrink-0">· {formatBytes(data.size)}</span>}
+            {json && layoutLabel(data?.layout ?? null) && (
+              <span className="shrink-0">· {layoutLabel(data?.layout ?? null)}</span>
+            )}
             {data && (
               <span className="shrink-0">
                 · {data.more ? "first " : ""}
@@ -508,34 +553,42 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
             </Field>
           </div>
           <div className="flex min-w-0 flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-x-4">
-              <Toggle
-                checked={format.header}
-                onChange={(header) => setFormat((f) => ({ ...f, header }))}
-              >
-                First line is header
-              </Toggle>
-              <Toggle checked={emptyAsNull} onChange={setEmptyAsNull}>
-                Empty unquoted field as NULL
-              </Toggle>
-            </div>
-            <Field label="Delimiter">
-              <Choice
-                label="Delimiter"
-                value={format.delimiter ?? data?.delimiter ?? ","}
-                options={DELIMITERS}
-                onChange={(delimiter) => setFormat((f) => ({ ...f, delimiter }))}
-                className="w-36"
-              />
-              <span className="text-muted-foreground text-xs">Quote</span>
-              <Choice
-                label="Quote"
-                value={format.quote}
-                options={QUOTES}
-                onChange={(quote) => setFormat((f) => ({ ...f, quote }))}
-                className="w-40"
-              />
-            </Field>
+            {json ? (
+              <p className="text-muted-foreground flex h-7 items-center text-xs">
+                Each key is a column; null and missing keys are NULL.
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-x-4">
+                <Toggle
+                  checked={format.header}
+                  onChange={(header) => setFormat((f) => ({ ...f, header }))}
+                >
+                  First line is header
+                </Toggle>
+                <Toggle checked={emptyAsNull} onChange={setEmptyAsNull}>
+                  Empty unquoted field as NULL
+                </Toggle>
+              </div>
+            )}
+            {!json && (
+              <Field label="Delimiter">
+                <Choice
+                  label="Delimiter"
+                  value={format.delimiter ?? data?.delimiter ?? ","}
+                  options={DELIMITERS}
+                  onChange={(delimiter) => setFormat((f) => ({ ...f, delimiter }))}
+                  className="w-36"
+                />
+                <span className="text-muted-foreground text-xs">Quote</span>
+                <Choice
+                  label="Quote"
+                  value={format.quote}
+                  options={QUOTES}
+                  onChange={(quote) => setFormat((f) => ({ ...f, quote }))}
+                  className="w-40"
+                />
+              </Field>
+            )}
             <Field label="Encoding">
               <Choice<TextEncoding>
                 label="Encoding"
@@ -648,7 +701,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                           </SelectContent>
                         </Select>
                       )}
-                      {format.header && (
+                      {header && (
                         <div
                           className="text-muted-foreground mt-1 truncate px-0.5 font-mono"
                           title={csvNames[i]}
@@ -678,7 +731,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                           )}
                           title={v ?? undefined}
                         >
-                          {v === null && emptyAsNull ? (
+                          {v === null && (json || emptyAsNull) ? (
                             <span className="text-muted-foreground italic">NULL</span>
                           ) : (
                             (v ?? "")
@@ -743,6 +796,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                   csvNames.length,
                   creating ? createDefs.length : tableColumns.length,
                   matchCount,
+                  kindLabel,
                 )}
               </span>
             )}

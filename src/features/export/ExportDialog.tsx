@@ -1,5 +1,5 @@
 import { CircleAlert, FileDown, Loader2 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
@@ -16,16 +16,22 @@ import { toIpcError } from "@/lib/ipc";
 import { isReadOnlyStatement } from "@/lib/sql/statement";
 import { useConnectionsStore } from "@/stores/connections";
 import { cn } from "@/lib/utils";
-import { pickExportPath } from "./destination";
+import { allResultsFor, type RunResult } from "./allResults";
+import { pickExportFolder, pickExportPath } from "./destination";
 import { Check, FormatOptions, Row } from "./formParts";
 import {
   BATCH_SIZE_RANGE,
   FORMATS,
+  UNTITLED_TABLE,
   buildExportRequest,
+  buildExportResultsRequest,
   clampBatchSize,
+  csvProblem,
   defaultFileName,
   dirname,
+  encodingForCharset,
   exportProblem,
+  fileExtension,
   fileFilter,
   formatBytes,
   formatCount,
@@ -33,6 +39,8 @@ import {
   hasCappedBytes,
   loadExportOptions,
   loadLastDir,
+  resultsLayout,
+  resultsProblem,
   saveExportOptions,
   saveLastDir,
   sqlWritesStructure,
@@ -40,6 +48,7 @@ import {
   type ExportOptions,
   type ExportProblem,
   type FormatKind,
+  type ResultsScope,
   type RowScope,
 } from "./options";
 import {
@@ -47,12 +56,14 @@ import {
   closeExport,
   releaseExportTarget,
   runExport,
+  runExportResults,
   setExportDraft,
   useExportStore,
   type ExportRun,
   type OpenExportArgs,
 } from "./store";
 import { TablesExportForm } from "./TablesExportForm";
+import { useConnectionCharset } from "./useConnectionCharset";
 import { useExportSource, type ResolvedExportSource } from "./useExportSource";
 
 const problemHint = (problem: ExportProblem) =>
@@ -69,8 +80,10 @@ function rowsHint(
 ): ReactNode {
   if (problem?.field === "rows") return problemHint(problem);
   if (scope === "page") {
-    if (!src.pageExportable) return "Wait for the page to load to export it.";
     if (!src.page) return null;
+    // Not loaded yet (the next page is on its way): the export reads from the page's first row.
+    if (src.page.rows === null)
+      return `Up to ${formatCount(src.page.limit)} rows from row ${formatCount(src.page.first)}`;
     if (src.page.rows === 0) return "The current page is empty.";
     return `Rows ${formatCount(src.page.first)}–${formatCount(src.page.first + src.page.rows - 1)}`;
   }
@@ -145,6 +158,34 @@ function heldRowsHint(
   return "The result stopped at the row limit; only the rows shown are written.";
 }
 
+/** Under the "All results" choice: where the results go, and which of them are not whole. */
+function allResultsHint(format: FormatKind, ext: string, results: readonly RunResult[]): ReactNode {
+  const cut = results.filter((r) => r.truncated && r.stopped === null).length;
+  const stopped = results.filter((r) => r.stopped !== null).length;
+  const plural = (n: number) => `${n} result${n === 1 ? "" : "s"}`;
+  const where =
+    format === "xlsx"
+      ? "One workbook with a sheet per result"
+      : format === "html"
+        ? "One page with a heading per result"
+        : format === "sqlInsert"
+          ? "One script; each result's INSERTs name its table, or untitled"
+          : `One .${ext} file per result in the folder you choose`;
+  return (
+    <>
+      <div>{where}</div>
+      {cut > 0 && (
+        <div>{plural(cut)} stopped at the row limit: only the rows shown are written.</div>
+      )}
+      {stopped > 0 && (
+        <div>
+          {plural(stopped)} cancelled or failed partway: only the rows that arrived are written.
+        </div>
+      )}
+    </>
+  );
+}
+
 function ExportForm({ target }: { target: OpenExportArgs }) {
   const run = useExportStore((s) => s.run);
   const error = useExportStore((s) => s.error);
@@ -167,7 +208,29 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
   const [options, setOptions] = useState<ExportOptions>(
     () => draft?.options ?? loadExportOptions(),
   );
+  // Connection ▸ View Using Encoding: a connection reading latin1 (cp1252, UTF-16) writes its files
+  // in it, until the encoding is chosen here. The remembered choice is not overwritten by it.
+  const rememberedEncoding = useRef(draft?.rememberedEncoding ?? options.encoding);
+  const charset = useConnectionCharset(target.connectionId);
+  const followed = encodingForCharset(charset);
+  // A draft written by the form remembers whether the select was changed; one written from outside
+  // (Export Current Page…) has not been touched, so the connection's encoding still applies.
+  const [encodingTouched, setEncodingTouched] = useState(draft?.encodingTouched ?? false);
+  useEffect(() => {
+    if (followed && !encodingTouched)
+      setOptions((o) => (o.encoding === followed ? o : { ...o, encoding: followed }));
+  }, [followed, encodingTouched]);
+  const following = followed !== null && !encodingTouched && options.encoding === followed;
+  const storedOptions = (o: ExportOptions): ExportOptions =>
+    following ? { ...o, encoding: rememberedEncoding.current } : o;
   const [scope, setScope] = useState<RowScope>(draft?.scope ?? "all");
+  // A shown result of a run holding several: this one, or all of them.
+  const runResults = useMemo(
+    () => (held ? allResultsFor(target.connectionId, held) : null),
+    [target.connectionId, held],
+  );
+  const [resultsScope, setResultsScope] = useState<ResultsScope>(draft?.resultsScope ?? "this");
+  const allResults = runResults !== null && resultsScope === "all" ? runResults : null;
   const [visibleOnly, setVisibleOnly] = useState(draft?.visibleOnly ?? true);
   const [tableName, setTableName] = useState(draft?.tableName ?? "");
   // The rows shown by default, unless they can't be written as they are.
@@ -184,34 +247,88 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
   );
   const statementText = target.source.kind === "sql" ? target.source.sql : (held?.sql ?? null);
   useEffect(
-    () => setExportDraft({ options, scope, visibleOnly, tableName, batchText, allRows }),
-    [options, scope, visibleOnly, tableName, batchText, allRows],
+    () =>
+      setExportDraft({
+        options,
+        scope,
+        visibleOnly,
+        tableName,
+        batchText,
+        allRows,
+        resultsScope,
+        encodingTouched,
+        rememberedEncoding: rememberedEncoding.current,
+      }),
+    [options, scope, visibleOnly, tableName, batchText, allRows, resultsScope, encodingTouched],
   );
 
+  const resultsFiles = allResults !== null && resultsLayout(options.format) === "filePerTable";
   const fileName = useMemo(
-    () => defaultFileName(src.fileBase, options, new Date()),
-    [src.fileBase, options],
+    () =>
+      allResults
+        ? resultsFiles
+          ? `${allResults.length} .${fileExtension(options)} files into a folder`
+          : defaultFileName("results", options, new Date())
+        : defaultFileName(src.fileBase, options, new Date()),
+    [src.fileBase, options, allResults, resultsFiles],
   );
 
   const running = run !== null;
   const tableSource = input?.kind === "table";
   // The script creates the source table: its INSERTs go there.
   const scriptsTable = tableSource && sqlWritesStructure(options);
-  // Table and result sources name their INSERT target themselves (when the result's table is
-  // known); a query needs one.
-  const needsTableName =
-    options.format === "sqlInsert" &&
-    options.sql.content &&
-    tableName.trim() === "" &&
-    !src.defaultTableName;
   const emptySql =
     isSql && (target.source.kind === "sql" ? target.source.sql.trim() === "" : false);
-  const problem = useMemo(
+  const singleProblem = useMemo(
     () => (input ? exportProblem(input, options.format, options.sql) : null),
     [input, options.format, options.sql],
   );
+  const allProblem = useMemo(
+    () => (allResults ? resultsProblem(allResults, options.format, options.sql) : null),
+    [allResults, options.format, options.sql],
+  );
+  const problem = allResults ? allProblem : singleProblem;
+  const csvIssue = options.format === "csv" ? csvProblem(options.csv) : null;
   const canSubmit =
-    !running && !picking && input !== null && !needsTableName && !emptySql && !problem;
+    !running && !picking && input !== null && !emptySql && !problem && csvIssue === null;
+
+  /** "All results": one file (Excel, HTML, SQL) or a folder with a file per result (CSV, JSON). */
+  const submitAllResults = async (results: readonly RunResult[], finalOptions: ExportOptions) => {
+    const oneFile = resultsLayout(finalOptions.format) === "singleFile";
+    let destination: string | null;
+    try {
+      destination = oneFile
+        ? await pickExportPath(
+            defaultFileName("results", finalOptions, new Date()),
+            fileFilter(finalOptions),
+            loadLastDir(),
+          )
+        : await pickExportFolder(loadLastDir());
+    } catch (e) {
+      toast.error("Could not open the dialog", { description: toIpcError(e).message });
+      return;
+    } finally {
+      setPicking(false);
+    }
+    if (!destination) return;
+    saveExportOptions(storedOptions(finalOptions));
+    const dir = oneFile ? dirname(destination) : destination;
+    if (dir) saveLastDir(dir);
+    let req;
+    try {
+      req = buildExportResultsRequest({
+        exportId: crypto.randomUUID(),
+        items: results,
+        options: finalOptions,
+        target: destination,
+        name: "results",
+      });
+    } catch (e) {
+      useExportStore.setState({ error: toIpcError(e).message });
+      return;
+    }
+    void runExportResults(target.connectionId, req);
+  };
 
   const submit = async () => {
     if (!canSubmit || !input) return;
@@ -220,6 +337,10 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
       sql: { ...options.sql, batchSize: clampBatchSize(Number.parseInt(batchText, 10)) },
     };
     setPicking(true);
+    if (allResults) {
+      await submitAllResults(allResults, finalOptions);
+      return;
+    }
     let path: string | null;
     try {
       const name = defaultFileName(src.fileBase, finalOptions, new Date());
@@ -231,7 +352,7 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
       setPicking(false);
     }
     if (!path) return;
-    saveExportOptions(finalOptions);
+    saveExportOptions(storedOptions(finalOptions));
     const dir = dirname(path);
     if (dir) saveLastDir(dir);
     let req;
@@ -319,7 +440,40 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
             />
           </Row>
         )}
+        {runResults && held && (
+          <Row
+            id="export-results"
+            label="Results"
+            hint={
+              allResults ? (
+                <>
+                  {allResultsHint(options.format, fileExtension(options), allResults)}
+                  {problem?.field === "rows" && problemHint(problem)}
+                </>
+              ) : undefined
+            }
+          >
+            <Segmented<ResultsScope>
+              id="export-results"
+              value={resultsScope}
+              onChange={setResultsScope}
+              options={[
+                {
+                  value: "this",
+                  label: "This result",
+                  title: `Only ${held.label}, as shown`,
+                },
+                {
+                  value: "all",
+                  label: `All results (${runResults.length})`,
+                  title: "Every finished result of the run",
+                },
+              ]}
+            />
+          </Row>
+        )}
         {held &&
+          !allResults &&
           (rerunSql !== null ||
             held.truncated ||
             held.stopped !== null ||
@@ -354,14 +508,16 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
               )}
             </Row>
           )}
-        {!isSql && !held && src.columns.visible < src.columns.total && (
+        {!isSql && !held && (src.columns.hidden || src.columns.reordered) && (
           <Row
             id="export-columns"
             label="Columns"
             hint={problem?.field === "columns" ? problemHint(problem) : undefined}
           >
             <Check checked={visibleOnly} onChange={setVisibleOnly}>
-              Only visible columns ({src.columns.visible} of {src.columns.total})
+              {src.columns.hidden
+                ? `Only visible columns${src.columns.reordered ? ", in grid order" : ""} (${src.columns.visible} of ${src.columns.total})`
+                : "Columns in grid order"}
             </Check>
           </Row>
         )}
@@ -378,37 +534,35 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
           options={options}
           setOptions={setOptions}
           tableSource={tableSource}
+          encodingFollows={following ? `Follows View Using Encoding (${charset})` : undefined}
+          onEncodingChange={() => setEncodingTouched(true)}
           sqlExtra={
             options.sql.content && (
               <>
-                <Row
-                  id="export-table-name"
-                  label="Table name"
-                  hint={
-                    scriptsTable ? (
-                      "The script creates and fills the source table"
-                    ) : needsTableName ? (
-                      <span className="text-warning">
-                        {held && !rerun
-                          ? "The result's table is unknown: it needs a target table name"
-                          : "A query export needs a target table name"}
-                      </span>
-                    ) : (
-                      "Target of the INSERT statements"
-                    )
-                  }
-                >
-                  <Input
+                {!allResults && (
+                  <Row
                     id="export-table-name"
-                    value={scriptsTable ? "" : tableName}
-                    disabled={scriptsTable}
-                    onChange={(e) => setTableName(e.target.value)}
-                    placeholder={src.defaultTableName ?? "table_name"}
-                    spellCheck={false}
-                    autoComplete="off"
-                    className="h-7 w-56 font-mono text-xs"
-                  />
-                </Row>
+                    label="Table name"
+                    hint={
+                      scriptsTable
+                        ? "The script creates and fills the source table"
+                        : src.defaultTableName
+                          ? "Target of the INSERT statements"
+                          : "Target of the INSERT statements; without a name they go into untitled"
+                    }
+                  >
+                    <Input
+                      id="export-table-name"
+                      value={scriptsTable ? "" : tableName}
+                      disabled={scriptsTable}
+                      onChange={(e) => setTableName(e.target.value)}
+                      placeholder={src.defaultTableName ?? UNTITLED_TABLE}
+                      spellCheck={false}
+                      autoComplete="off"
+                      className="h-7 w-56 font-mono text-xs"
+                    />
+                  </Row>
+                )}
                 <Row id="export-batch" label="Batch size" hint="Rows per INSERT statement">
                   <Input
                     id="export-batch"
@@ -436,7 +590,15 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
       <div className="border-border bg-surface-2/60 flex min-h-12 items-center gap-2 rounded-b-xl border-t px-4 py-2">
         <div className="min-w-0 flex-1">
           {run ? (
-            <Progress run={run} />
+            <div className="flex min-w-0 flex-col gap-0.5">
+              {run.table && (
+                <span className="text-muted-foreground truncate text-[11px]">
+                  Result {run.table.index + 1} of {run.table.count}:{" "}
+                  <span className="text-foreground">{run.table.name}</span>
+                </span>
+              )}
+              <Progress run={run} />
+            </div>
           ) : error ? (
             <div role="alert" className="text-error flex min-w-0 items-start gap-1.5 text-xs">
               <CircleAlert className="mt-px size-3.5 shrink-0" />

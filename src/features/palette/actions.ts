@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { createContext, useContext, useEffect } from "react";
 
 export type TabGoto = `tab.goto-${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`;
 
@@ -14,6 +14,12 @@ export type ActionId =
   | "tab.forward"
   /** Show Workspaces (⇧⌘\): the open workspaces, to switch to one. */
   | "workspace.show"
+  /** Split Right (⇧⌘D outside the SQL editor): a second tab group beside the first. */
+  | "workspace.split-right"
+  /** File ▸ New Window (⌘N). */
+  | "window.new"
+  /** Window ▸ Move Tab to New Window. */
+  | "window.move-tab"
   | "workspace.next"
   | "workspace.prev"
   | TabGoto
@@ -34,7 +40,7 @@ export type ActionId =
   | "view.data"
   | "view.structure"
   | "connection.reconnect"
-  /** Shows the welcome screen with the new-connection form (⌘N). */
+  /** Shows the welcome screen with the new-connection form (File ▸ New Connection…, no key). */
   | "connection.new"
   | "grid.commit"
   /** Always opens the Preview SQL sheet, whatever "Confirm before commit" says. */
@@ -110,6 +116,8 @@ export type ActionId =
   | "admin.drop-schema"
   /** Connection ▸ Disconnect (asks first when tabs hold unsaved work). */
   | "connection.disconnect"
+  /** Connection ▸ View Using Encoding…: the open session's encoding (MySQL / PostgreSQL). */
+  | "connection.encoding"
   /** File ▸ Backup… / Restore…: the backup window (pg_dump / mysqldump and friends). */
   | "backup.open"
   | "restore.open"
@@ -117,6 +125,8 @@ export type ActionId =
   /** File ▸ Import ▸ From CSV… / From SQL Dump… into the active connection. */
   | "import.csv"
   | "import.sql"
+  /** File ▸ Import ▸ From JSON…: an array of objects or NDJSON, through the CSV wizard. */
+  | "import.json"
   /** Generate Diagram…: the ER diagram of the active connection's current schema. */
   | "diagram.open"
   /** Edit ▸ Set Value ▸ Now (local time) on the selected cells. */
@@ -124,9 +134,29 @@ export type ActionId =
   /** Edit ▸ Toggle Line Comment (⌘/) / Toggle Block Comment (⌥⌘/) in the SQL editor. */
   | "query.comment-line"
   | "query.comment-block"
+  /** File ▸ Reload Workspace (⌘R): every tab of the active workspace, its sidebar and completion. */
+  | "workspace.reload"
+  /** File ▸ New Workspace: the connection picker (⇧⌘K); a connection opens in a workspace of its own. */
+  | "workspace.new"
+  /** File ▸ New SQL Viewer (⇧⌘O): a .sql viewer / editor that runs nothing. */
+  | "sqlviewer.new"
+  /** Edit ▸ Copy Cell Value: the focused grid cell's value (no default key; ⇧⌘C is the console). */
+  | "grid.copy-cell"
+  /** ⌘↩ outside the SQL editor, grid and filter bar: opens the SQL editor (Run Current in a SQL tab). */
+  | "query.open-editor"
   /** Navigate ▸ Select Next / Previous Pane (⇧⌘] / ⇧⌘[): sidebar → tab → row detail → console. */
   | "ui.next-pane"
-  | "ui.prev-pane";
+  | "ui.prev-pane"
+  /** Window ▸ Lock Tabler (⌃⌘L): the passcode lock screen (Settings ▸ Security ▸ Passcode). */
+  | "app.lock"
+  /** Plugins ▸ Manage Plugins… (⌘L). */
+  | "plugins.manage"
+  /** Plugins ▸ SQL Format (⌃I in the SQL editor): the built-in SQL Formatter plugin. */
+  | "plugins.sql-format"
+  /** Toolbar ▸ Metrics Board (the metrics package registers it; the item hides without it). */
+  | "metrics.open"
+  /** Ask Assistant…: opens the right sidebar's Assistant tab and focuses its message field. */
+  | "assistant.ask";
 
 export type ActionHandler = () => void | Promise<void>;
 
@@ -138,6 +168,28 @@ export type ActionHandler = () => void | Promise<void>;
 class ActionRegistry {
   private handlers = new Map<ActionId, ActionHandler[]>();
   private observers = new Map<ActionId, Set<() => void>>();
+  /** Called whenever a handler is registered or removed (see `subscribe`). */
+  private listeners = new Set<() => void>();
+  /** While set, `run` only runs the actions it allows (the app lock screen). */
+  private gate: ((id: ActionId) => boolean) | null = null;
+
+  private changed(): void {
+    for (const fn of [...this.listeners]) fn();
+  }
+
+  /** Calls `fn` after every handler registration or removal, e.g. to show what `has`. */
+  subscribe(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => void this.listeners.delete(fn);
+  }
+
+  /** Lets `run` run only the actions `gate` allows until the returned function is called. */
+  setGate(gate: (id: ActionId) => boolean): () => void {
+    this.gate = gate;
+    return () => {
+      if (this.gate === gate) this.gate = null;
+    };
+  }
 
   /**
    * Calls `fn` whenever `id` is dispatched (shortcut, toolbar, palette, native menu), before and
@@ -162,12 +214,14 @@ class ActionRegistry {
     const list = this.handlers.get(id) ?? [];
     list.push(handler);
     this.handlers.set(id, list);
+    this.changed();
     return () => {
       const current = this.handlers.get(id);
       if (!current) return;
       const i = current.lastIndexOf(handler);
       if (i >= 0) current.splice(i, 1);
       if (current.length === 0) this.handlers.delete(id);
+      this.changed();
     };
   }
 
@@ -179,12 +233,14 @@ class ActionRegistry {
     const list = this.handlers.get(id) ?? [];
     list.unshift(handler);
     this.handlers.set(id, list);
+    this.changed();
     return () => {
       const current = this.handlers.get(id);
       if (!current) return;
       const i = current.indexOf(handler);
       if (i >= 0) current.splice(i, 1);
       if (current.length === 0) this.handlers.delete(id);
+      this.changed();
     };
   }
 
@@ -193,6 +249,7 @@ class ActionRegistry {
   }
 
   async run(id: ActionId): Promise<boolean> {
+    if (this.gate && !this.gate(id)) return false;
     this.notify(id);
     const list = this.handlers.get(id);
     const handler = list?.[list.length - 1];
@@ -204,10 +261,17 @@ class ActionRegistry {
 
 export const actions = new ActionRegistry();
 
+/**
+ * Whether `useAction` below registers its handlers. A split workspace shows two tabs at once: only
+ * the focused group's tab answers the shortcuts and menu items (see `TabContent`).
+ */
+export const ActionsEnabledContext = createContext(true);
+
 /** Registers a handler for the lifetime of the component (re-registers when `handler` changes). */
 export function useAction(id: ActionId, handler: ActionHandler | null | undefined): void {
+  const enabled = useContext(ActionsEnabledContext);
   useEffect(() => {
-    if (!handler) return;
+    if (!handler || !enabled) return;
     return actions.register(id, handler);
-  }, [id, handler]);
+  }, [id, handler, enabled]);
 }

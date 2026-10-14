@@ -12,6 +12,10 @@ import {
   groupNameError,
   iconOf,
   idsInGroup,
+  imageOf,
+  isGroupImage,
+  MAX_GROUP_IMAGE_CHARS,
+  withImage,
   idsInSubtree,
   isWithin,
   knownGroups,
@@ -26,6 +30,7 @@ import {
   rebasePath,
   sanitizeGroups,
   splitPath,
+  storableGroups,
   withIcon,
   type GroupRecord,
 } from "./groups";
@@ -42,7 +47,13 @@ const PROFILES = [
   at("local", "Local"),
   at("loose", null),
 ];
-const rec = (path: string, icon: GroupRecord["icon"] = null): GroupRecord => ({ path, icon });
+const rec = (
+  path: string,
+  icon: GroupRecord["icon"] = null,
+  image: string | null = null,
+): GroupRecord => ({ path, icon, image });
+const PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==";
 
 describe("group paths", () => {
   it("splits on “ / ” only, trimming levels and dropping empty ones", () => {
@@ -110,6 +121,55 @@ describe("saved groups", () => {
     ).toEqual([rec("Clients / Acme", "building"), rec("Odd")]);
     expect(sanitizeGroups("A")).toEqual([]);
     expect(sanitizeGroups(undefined)).toEqual([]);
+  });
+
+  it("keeps a group's own image, and drops what is no image", () => {
+    const big = `data:image/png;base64,${"A".repeat(MAX_GROUP_IMAGE_CHARS)}`;
+    expect(
+      sanitizeGroups([
+        { path: "Logo", icon: "server", image: PNG },
+        { path: "Svg", image: "data:image/svg+xml;base64,PHN2Zy8+" },
+        { path: "Padded", image: `  ${PNG}\n` },
+        { path: "Script", icon: "star", image: "javascript:alert(1)" },
+        { path: "Http", image: "http://example.com/logo.png" },
+        { path: "Https", image: "https://example.com/logo.png" },
+        { path: "Html", image: "data:text/html;base64,PHNjcmlwdD4=" },
+        { path: "Huge", image: big },
+        { path: "Newline", image: "data:image/png;base64,AA\nAA" },
+        { path: "Number", image: 5 },
+        { path: "Empty", image: "" },
+        { path: "Bare", image: "data:image/" },
+      ]),
+    ).toEqual([
+      rec("Logo", "server", PNG),
+      rec("Svg", null, "data:image/svg+xml;base64,PHN2Zy8+"),
+      rec("Padded", null, PNG),
+      rec("Script", "star"),
+      rec("Http"),
+      rec("Https"),
+      rec("Html"),
+      rec("Huge"),
+      rec("Newline"),
+      rec("Number"),
+      rec("Empty"),
+      rec("Bare"),
+    ]);
+    // The cap is on the whole URI (the same as the backend's).
+    const edge = `data:image/png;base64,${"A".repeat(MAX_GROUP_IMAGE_CHARS - 22)}`;
+    expect(edge).toHaveLength(MAX_GROUP_IMAGE_CHARS);
+    expect(isGroupImage(edge)).toBe(true);
+    expect(isGroupImage(`${edge}A`)).toBe(false);
+    expect(isGroupImage(null)).toBe(false);
+    // A repeated group takes the image it lacks; a known one is not replaced.
+    expect(
+      sanitizeGroups([
+        { path: "A", icon: "star" },
+        { path: "A", icon: "cloud", image: PNG },
+        { path: "A", image: "data:image/png;base64,OTHER" },
+      ]),
+    ).toEqual([rec("A", "star", PNG)]);
+    // Old plain names and records without an image have none.
+    expect(sanitizeGroups(["A", { path: "B" }])).toEqual([rec("A"), rec("B")]);
   });
 
   it("lists saved, used and enclosing groups once, in tree order", () => {
@@ -227,6 +287,35 @@ describe("group operations", () => {
     expect(remapCollapsed(["Local"], "Clients", null)).toEqual(["Local"]);
   });
 
+  it("a rename or a delete keeps the images that stay", () => {
+    const records = [rec("Clients", "briefcase", PNG), rec("Clients / Acme", null, PNG)];
+    expect(planRenameGroup(records, PROFILES, "Clients", "Customers").groups).toEqual([
+      rec("Customers", "briefcase", PNG),
+      rec("Customers / Acme", null, PNG),
+    ]);
+    expect(planDeleteGroup(records, PROFILES, "Clients").groups).toEqual([rec("Acme", null, PNG)]);
+  });
+
+  it("saves the groups in the setting's form: an image only for a group that has one", () => {
+    expect(storableGroups([rec("A", "star", PNG), rec("B"), rec("C", null, null)])).toEqual([
+      { path: "A", icon: "star", image: PNG },
+      { path: "B", icon: null },
+      { path: "C", icon: null },
+    ]);
+    expect(Object.keys(storableGroups([rec("B")])[0]!)).toEqual(["path", "icon"]);
+  });
+
+  it("sets or removes an image, saving a group that was only used", () => {
+    expect(withImage([rec("A", "star")], "A", PNG)).toEqual([rec("A", "star", PNG)]);
+    expect(withImage([rec("A", "star", PNG)], "A", null)).toEqual([rec("A", "star")]);
+    expect(withImage([rec("A")], "B / C", PNG)).toEqual([rec("A"), rec("B / C", null, PNG)]);
+    // Changing the icon leaves the image alone, and the other way round.
+    expect(withIcon([rec("A", "star", PNG)], "A", "cloud")).toEqual([rec("A", "cloud", PNG)]);
+    expect(imageOf([rec("A", null, PNG)], "A")).toBe(PNG);
+    expect(imageOf([rec("A")], "A")).toBeNull();
+    expect(imageOf([], "Nope")).toBeNull();
+  });
+
   it("sets an icon, saving a group that was only used", () => {
     expect(withIcon([rec("A")], "A", "star")).toEqual([rec("A", "star")]);
     expect(withIcon([rec("A", "star")], "B / C", "cloud")).toEqual([
@@ -269,7 +358,10 @@ describe("applying a group plan", () => {
       "Customers / Acme",
       "Customers / Globex",
     ]);
-    expect(save).toHaveBeenCalledWith("connectionGroups", [rec("Customers", "briefcase")]);
+    // Saved as the setting reads: no `image` key without an image.
+    expect(save).toHaveBeenCalledWith("connectionGroups", [
+      { path: "Customers", icon: "briefcase" },
+    ]);
     expect(qc.getQueryData(groupKeys.all)).toEqual([rec("Customers", "briefcase")]);
   });
 

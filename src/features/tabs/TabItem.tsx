@@ -1,6 +1,6 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { FileCode2, Table2, TableProperties, X } from "lucide-react";
+import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   ContextMenu,
@@ -18,11 +18,11 @@ import type { ActionId } from "@/features/palette/actions";
 import { accentColor } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
-import { useTabsStore, type Tab } from "@/stores/tabs";
+import { groupOf, isTableTab, useTabsStore, type Tab } from "@/stores/tabs";
 import { useTableTabsStore } from "@/stores/tableTabs";
+import { moveTabToNewWindow } from "./windowHandoff";
 import { startTabRename, stopTabRename, useTabRenameStore } from "./renameStore";
-
-const ICONS = { table: Table2, structure: TableProperties, query: FileCode2 } as const;
+import { tabIcon } from "./tabIcon";
 
 function Shortcut({ id }: { id: ActionId }) {
   const keys = shortcutFor(id);
@@ -37,13 +37,11 @@ function Shortcut({ id }: { id: ActionId }) {
  */
 function useUnsaved(tab: Tab): number {
   const rows = useTableTabsStore((s) => {
-    if (tab.kind === "query") return 0;
+    if (!isTableTab(tab)) return 0;
     const slice = s.slices[tab.id];
     return slice ? pendingCount(slice.staging) : 0;
   });
-  const ddl = useStructureStore((s) =>
-    tab.kind === "query" ? 0 : (s.byTab[tab.id]?.ops.length ?? 0),
-  );
+  const ddl = useStructureStore((s) => (isTableTab(tab) ? (s.byTab[tab.id]?.ops.length ?? 0) : 0));
   if (tab.kind === "query") return tab.dirty ? 1 : 0;
   return rows + ddl;
 }
@@ -58,6 +56,9 @@ function TabMenu({ tab }: { tab: Tab }) {
     return own[own.length - 1]?.id === tab.id;
   });
   const canReopen = useTabsStore((s) => s.closed.length > 0);
+  // Split workspace: the tab's group, and whether the other group exists.
+  const group = useTabsStore((s) => groupOf(s.splits, tab));
+  const split = useTabsStore((s) => !!s.splits[tab.connectionId]);
   const store = useTabsStore.getState;
   const item = "py-0.5 text-xs";
   return (
@@ -103,9 +104,10 @@ function TabMenu({ tab }: { tab: Tab }) {
         <Shortcut id="tab.close-all" />
       </ContextMenuItem>
       <ContextMenuSeparator />
-      {tab.kind === "query" && (
+      {/* A table tab's copy starts with its filters, sort and column layout (not its staged edits). */}
+      {(tab.kind === "query" || isTableTab(tab)) && (
         <ContextMenuItem className={item} onSelect={() => store().duplicate(tab.id)}>
-          Duplicate
+          Duplicate Tab
         </ContextMenuItem>
       )}
       <ContextMenuItem
@@ -115,6 +117,30 @@ function TabMenu({ tab }: { tab: Tab }) {
       >
         Reopen Closed Tab
         <Shortcut id="tab.reopen" />
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem className={item} onSelect={() => store().splitRight(tab.id)}>
+        Split Right
+        <Shortcut id="workspace.split-right" />
+      </ContextMenuItem>
+      {split ? (
+        <ContextMenuItem
+          className={item}
+          onSelect={() => store().moveToGroup(tab.id, group === 0 ? 1 : 0)}
+        >
+          {group === 0 ? "Move to Right Group" : "Move to Left Group"}
+        </ContextMenuItem>
+      ) : (
+        <ContextMenuItem
+          className={item}
+          disabled={count < 2}
+          onSelect={() => store().moveToGroup(tab.id, 1)}
+        >
+          Move to Right Group
+        </ContextMenuItem>
+      )}
+      <ContextMenuItem className={item} onSelect={() => void moveTabToNewWindow(tab.id)}>
+        Move Tab to New Window
       </ContextMenuItem>
     </ContextMenuContent>
   );
@@ -169,11 +195,15 @@ function TitleInput({ tab }: { tab: Tab }) {
 export function TabItem({
   tab,
   active,
+  groupFocused = true,
   onActivate,
   onClose,
 }: {
   tab: Tab;
+  /** The tab its group shows. */
   active: boolean;
+  /** False in the group of a split workspace that does not have the focus. */
+  groupFocused?: boolean;
   onActivate: () => void;
   onClose: () => void;
 }) {
@@ -184,10 +214,10 @@ export function TabItem({
   const pin = useTabsStore((s) => s.pin);
   const renaming = useTabRenameStore((s) => s.renamingId === tab.id);
   const unsaved = useUnsaved(tab);
-  const Icon = ICONS[tab.kind];
-  const subtitle = tab.kind === "query" ? undefined : (tab.table.schema ?? undefined);
+  const Icon = tabIcon(tab);
+  const subtitle = isTableTab(tab) ? (tab.table.schema ?? undefined) : undefined;
   const name = subtitle ? `${subtitle}.${tab.title}` : tab.title;
-  const preview = tab.kind !== "query" && tab.preview === true;
+  const preview = isTableTab(tab) && tab.preview === true;
   const unsavedLabel =
     tab.kind === "query"
       ? "Unsaved changes"
@@ -201,9 +231,10 @@ export function TabItem({
           style={{
             transform: CSS.Translate.toString(transform),
             transition,
-            // A subtle line in the connection's colour under the visible tab.
+            // A subtle line in the connection's colour under the visible tab (fainter in the
+            // group of a split workspace that does not have the focus).
             boxShadow: active
-              ? `inset 0 -2px 0 color-mix(in oklab, ${accentColor(color)} 75%, transparent)`
+              ? `inset 0 -2px 0 color-mix(in oklab, ${accentColor(color)} ${groupFocused ? 75 : 30}%, transparent)`
               : undefined,
           }}
           {...attributes}
@@ -287,7 +318,10 @@ export function TabItem({
           </button>
           <span className="flex min-w-0 flex-1 items-center justify-center gap-1.5 px-6">
             <Icon
-              className={cn("size-3.5 shrink-0", active ? "text-brand" : "opacity-70")}
+              className={cn(
+                "size-3.5 shrink-0",
+                active && groupFocused ? "text-brand" : "opacity-70",
+              )}
               aria-hidden
             />
             {renaming ? (

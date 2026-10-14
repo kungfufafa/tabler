@@ -10,7 +10,7 @@ export type CsvFormat = {
  */
 delimiter: string | null, 
 /**
- * `"` or `'`.
+ * `"`, `'` or a space (the export's "Space" quote).
  */
 quote: string, 
 /**

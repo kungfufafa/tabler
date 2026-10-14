@@ -9,6 +9,7 @@ import {
   statusLine,
   tableNameFromFile,
   DEFAULT_CSV_PREFS,
+  QUOTES,
 } from "./mapping";
 
 const table = ["id", "email", "name", "created_at"];
@@ -91,6 +92,20 @@ describe("insert options and names", () => {
     expect(tableNameFromFile("2026-orders.csv")).toBe("t_2026_orders");
     expect(tableNameFromFile("Café.tsv")).toBe("cafe");
     expect(tableNameFromFile("...csv")).toBe("imported");
+  });
+
+  it("offers the double quote, the single quote and Space", () => {
+    expect(QUOTES.map((q) => q.value)).toEqual(['"', "'", " "]);
+    // A Space quote is remembered like the others; unknown quotes fall back to the default.
+    const data = new Map<string, string>();
+    const s = {
+      getItem: (k: string) => data.get(k) ?? null,
+      setItem: (k: string, v: string) => void data.set(k, v),
+    };
+    saveCsvPrefs({ ...DEFAULT_CSV_PREFS, quote: " " }, s);
+    expect(loadCsvPrefs(s).quote).toBe(" ");
+    data.set("tabler.import.csv", '{"quote":"x"}');
+    expect(loadCsvPrefs(s).quote).toBe('"');
   });
 
   it("remembers the wizard's options", () => {

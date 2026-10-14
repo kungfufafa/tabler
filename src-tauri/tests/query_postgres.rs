@@ -8,12 +8,15 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tabler_lib::commands::query::{explain_inner, run_sql_inner};
+use tabler_lib::commands::query::{
+    QUERY_TIMEOUT_CODE, explain_inner, explain_limited, query_limited, run_sql_inner,
+};
 use tabler_lib::drivers::{
     CancelHandle, CancelSlot, CollectSink, ConnectTarget, DbSession, RowSink, connect,
     request_cancel,
 };
 use tabler_lib::error::AppError;
+use tabler_lib::types::browse::TraceCategory;
 use tabler_lib::types::profile::{ConnectionProfile, Driver, ProfileOptions, SslMode};
 use tabler_lib::types::query::{
     ExplainMode, QueryEvent, ResultColumn, RunOptions, StatementKind, StatementResult,
@@ -1258,4 +1261,186 @@ async fn explain_analyze_inside_a_transaction_keeps_it_open() {
     assert_eq!(s.in_transaction(), Some(false));
     assert_eq!(count_rows(s, &t).await, 3, "ROLLBACK removed the INSERT");
     single(s, &format!("drop table {t}")).await.unwrap();
+}
+
+/// Whether a backend is executing a statement that contains `marker` (not this check itself).
+async fn fx3_active_on(session: &dyn DbSession, marker: &str) -> bool {
+    let sql = format!(
+        "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' \
+         AND pid <> pg_backend_pid() AND query LIKE '%{marker}%'"
+    );
+    count_of(&session.query(&sql, &[]).await.unwrap().rows) > 0
+}
+
+#[tokio::test]
+async fn fx3_query_limit_cancels_a_slow_read_on_the_server() {
+    let Some(session) = open().await else {
+        return;
+    };
+    let marker = format!("fx3_slow_{}", suffix());
+    let sql = format!("SELECT pg_sleep(30), '{marker}'");
+    let started = Instant::now();
+    let limited = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            query_limited(session.as_ref(), &sql, &[], Some(Duration::from_secs(2))).await
+        })
+    };
+    // The statement really runs on a server backend…
+    let mut seen = false;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if fx3_active_on(session.as_ref(), &marker).await {
+            seen = true;
+            break;
+        }
+    }
+    assert!(
+        seen,
+        "the slow statement never showed up in pg_stat_activity"
+    );
+    // …until the limit passes: the call fails with the time out…
+    let err = limited.await.unwrap().unwrap_err();
+    let took = started.elapsed();
+    assert!(took >= Duration::from_secs(2), "{took:?}");
+    assert!(took < Duration::from_secs(8), "{took:?}");
+    assert_eq!(err.code(), QUERY_TIMEOUT_CODE);
+    assert_eq!(err.to_payload().message, "Query timed out after 2 s");
+    assert!(err.to_payload().hint.is_some());
+    // …and the server backend is no longer running it.
+    let mut gone = false;
+    for _ in 0..40 {
+        if !fx3_active_on(session.as_ref(), &marker).await {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(gone, "the server kept running the cancelled statement");
+    // The session is still fine.
+    assert_eq!(
+        count_of(&session.query("SELECT 5", &[]).await.unwrap().rows),
+        5
+    );
+    session.close().await;
+}
+
+#[tokio::test]
+async fn fx3_query_limit_leaves_fast_statements_and_no_limit_alone() {
+    let Some(session) = open().await else {
+        return;
+    };
+    let fast = query_limited(
+        session.as_ref(),
+        "SELECT 1",
+        &[],
+        Some(Duration::from_secs(1)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(count_of(&fast.rows), 1);
+    // Without a limit a statement runs as long as it needs to.
+    let started = Instant::now();
+    let done = query_limited(session.as_ref(), "SELECT pg_sleep(1.3), 9", &[], None)
+        .await
+        .unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(1_300));
+    assert_eq!(done.rows.len(), 1);
+    // A failing statement keeps its own error.
+    let err = query_limited(
+        session.as_ref(),
+        "SELECT * FROM fx3_no_such_table",
+        &[],
+        Some(Duration::from_secs(5)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), "DB_ERROR");
+    session.close().await;
+}
+
+#[tokio::test]
+async fn fx3_explain_analyze_is_under_the_limit_too() {
+    let Some(session) = open().await else {
+        return;
+    };
+    let started = Instant::now();
+    let err = explain_limited(
+        session.as_ref(),
+        "SELECT pg_sleep(30)",
+        ExplainMode::Analyze,
+        &CancelSlot::default(),
+        Some(Duration::from_secs(1)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), QUERY_TIMEOUT_CODE, "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(8));
+    // The editor connection is usable again.
+    assert_eq!(
+        count_of(&single(session.as_ref(), "SELECT 3").await.unwrap()),
+        3
+    );
+    session.close().await;
+}
+
+#[tokio::test]
+async fn fx3_traces_introspection_and_data_statements() {
+    let Some(session) = open().await else {
+        return;
+    };
+    session.drain_trace();
+    session.list_schemas().await.unwrap();
+    session.list_tables("public").await.unwrap();
+    let counted = session
+        .query(
+            "SELECT count(*)::bigint FROM generate_series(1, $1::int)",
+            &[Value::Int(7)],
+        )
+        .await
+        .unwrap();
+    assert_eq!(count_of(&counted.rows), 7);
+    assert!(
+        session
+            .query("SELECT * FROM fx3_no_such_table", &[])
+            .await
+            .is_err()
+    );
+
+    let trace = session.drain_trace();
+    let find = |needle: &str| {
+        trace
+            .iter()
+            .find(|e| e.sql.contains(needle))
+            .unwrap_or_else(|| panic!("no `{needle}` in {trace:#?}"))
+    };
+    let tables = find("FROM pg_class c");
+    assert_eq!(tables.category, TraceCategory::Structure);
+    assert!(
+        tables.sql.contains("n.nspname = 'public'"),
+        "{}",
+        tables.sql
+    );
+    assert!(tables.rows.is_some() && tables.error.is_none());
+    assert!(!tables.sql.starts_with("--"));
+    assert_eq!(find("FROM pg_namespace").category, TraceCategory::Structure);
+    let count = find("generate_series");
+    assert_eq!(count.category, TraceCategory::Data);
+    assert!(
+        count.sql.ends_with("generate_series(1, 7::int)"),
+        "{}",
+        count.sql
+    );
+    assert_eq!(count.rows, Some(1));
+    let failed = find("fx3_no_such_table");
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("fx3_no_such_table")
+    );
+    // Everything was drained.
+    assert!(session.drain_trace().is_empty());
+    session.close().await;
 }

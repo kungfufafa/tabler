@@ -2,9 +2,9 @@ import { useEffect } from "react";
 import { useResultsStore } from "@/features/results/store";
 import { useStructureStore } from "@/features/structure/store";
 import { ipc, isTauri } from "@/lib/ipc";
-import { listenEvent } from "@/lib/ipc/events";
+import { broadcastEvent, listenEvent } from "@/lib/ipc/events";
 import { comboFromEvent, isMac } from "@/lib/keys/combo";
-import { hasUnsaved, useTabsStore } from "@/stores/tabs";
+import { hasUnsaved, subscribeWindowWork, useTabsStore } from "@/stores/tabs";
 import { useTableTabsStore } from "@/stores/tableTabs";
 
 type Unlisten = () => void | Promise<void>;
@@ -102,8 +102,12 @@ export function attachBeforeUnload(
 
 /**
  * macOS ⌘Q while something is unsaved: WKWebView offers key equivalents to the page first, and a
- * prevented keydown keeps the menu from firing, so ⌘Q is swallowed here and routed straight into
- * the unsaved-changes dialog. A clean window lets the key through to the menu.
+ * prevented keydown keeps the menu from firing, so ⌘Q is swallowed here and does what the menu's
+ * "Quit Tabler" does: it tells every window (`app:quit-requested`), so each runs
+ * `handleQuitRequest` (a clean window answers `quit_app`, a dirty one opens its dialog) and the
+ * backend's quit handshake decides when the app exits. Closing only this window instead would leave
+ * the app running when Discard is chosen with other windows open. A clean window lets the key
+ * through to the menu.
  *
  * The app menu's "Quit Tabler" is a custom item (not NSApp `terminate:`, which exits without any
  * `CloseRequested`): it emits `app:quit-requested`, handled by `handleQuitRequest` with the same
@@ -116,34 +120,61 @@ export function attachQuitShortcut(
   target: Pick<Window, "addEventListener" | "removeEventListener">,
   opts: {
     isDirty: () => boolean;
-    /** Asks the user; returns true when the window may close right away. */
-    request: () => boolean;
-    closeNow: () => Promise<void>;
+    /** Sends `app:quit-requested` to every window, the way the native Quit item does. */
+    broadcast?: () => Promise<void>;
+    /** When the broadcast failed: this window handles the quit alone. */
+    fallback?: () => void;
   },
 ): () => void {
+  const broadcast = opts.broadcast ?? (() => broadcastEvent("app:quit-requested", null));
+  const fallback = opts.fallback ?? (() => handleQuitRequest());
   const onKeyDown = (e: KeyboardEvent) => {
     if (comboFromEvent(e, true) !== "Mod+Q" || !opts.isDirty()) return;
     e.preventDefault();
     e.stopPropagation();
-    if (opts.request()) void opts.closeNow();
+    void broadcast().catch(fallback);
   };
   target.addEventListener("keydown", onKeyDown, { capture: true });
   return () => target.removeEventListener("keydown", onKeyDown, { capture: true });
 }
 
 /**
+ * Brings this window to the front (a quit asked its user something while another window, or none,
+ * had the focus): un-minimises, shows and focuses it, each step best effort. Tauri only.
+ */
+export async function bringWindowForward(): Promise<void> {
+  if (!isTauri()) return;
+  let win: Awaited<ReturnType<typeof tauriWindow>>;
+  try {
+    win = await tauriWindow();
+  } catch {
+    return;
+  }
+  for (const step of [() => win.unminimize(), () => win.show(), () => win.setFocus()]) {
+    try {
+      await step();
+    } catch {
+      // Best effort: the dialog is up whether or not the window came forward.
+    }
+  }
+}
+
+/**
  * Answers the backend's `app:quit-requested`: acknowledges it (so the backend does not take a
  * later request for a hung renderer's), then quits right away when nothing is unsaved, otherwise
  * opens the unsaved-changes dialog (kind "window"), whose Discard closes the window; the backend
- * then lets the app exit because no window is left.
+ * then lets the app exit because no window is left. The window that asks is brought forward: the
+ * request goes to every window, so it may be a background one whose dialog nobody sees.
  */
 export function handleQuitRequest(
   request: () => boolean = () => useTabsStore.getState().requestWindowClose(),
   quit: () => Promise<void> = ipc.app.quit,
   acknowledge: () => Promise<void> = () => ipc.app.setUnsaved(hasUnsaved()),
+  bringForward: () => Promise<void> = bringWindowForward,
 ): void {
   void acknowledge().catch(() => undefined);
   if (request()) void quit().catch(() => undefined);
+  else void bringForward().catch(() => undefined);
 }
 
 /**
@@ -179,17 +210,41 @@ async function tauriWindow() {
   return getCurrentWindow();
 }
 
-/** Every store `hasUnsaved` reads: tabs (dirty query tabs), staged rows and staged DDL. */
+/**
+ * File ▸ Close / ⌘W with no tab to close: asks this window to close, like its red button. The
+ * native close request goes through the guard above (installed while something is unsaved), so a
+ * window holding unsaved work shows the unsaved-changes dialog first; a clean one just closes.
+ * Resolves with false when there is no window to close (the browser mock) or it could not be asked.
+ */
+export async function requestWindowClose(
+  close: () => Promise<void> = async () => (await tauriWindow()).close(),
+): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    await close();
+    return true;
+  } catch (e) {
+    console.warn("[window] could not close the window", e);
+    return false;
+  }
+}
+
+/**
+ * Every store `hasUnsaved` reads: tabs (dirty query tabs), staged rows and staged DDL, and the
+ * window-level work (the standalone SQL Viewer).
+ */
 export const subscribeUnsaved = (onChange: () => void) => {
   const a = useTabsStore.subscribe(onChange);
   const b = useTableTabsStore.subscribe(onChange);
   const c = useStructureStore.subscribe(onChange);
   const d = useResultsStore.subscribe(onChange);
+  const e = subscribeWindowWork(onChange);
   return () => {
     a();
     b();
     c();
     d();
+    e();
   };
 };
 
@@ -215,13 +270,7 @@ export function useUnsavedGuard(): void {
     const reportUnsaved = createUnsavedReporter(hasUnsaved, ipc.app.setUnsaved);
     const unsubscribeReport = subscribeUnsaved(reportUnsaved);
     reportUnsaved();
-    const detachQuit = isMac
-      ? attachQuitShortcut(window, {
-          isDirty: hasUnsaved,
-          request: () => useTabsStore.getState().requestWindowClose(),
-          closeNow: guard.closeNow,
-        })
-      : undefined;
+    const detachQuit = isMac ? attachQuitShortcut(window, { isDirty: hasUnsaved }) : undefined;
     let unlistenQuit: (() => void) | undefined;
     let disposed = false;
     void listenEvent("app:quit-requested", () => handleQuitRequest()).then((u) => {

@@ -16,9 +16,10 @@ use crate::sqlgen::objects::{
 };
 use crate::types::ddl::{DdlPlan, DdlResult};
 use crate::types::objects::{
-    ObjectOp, ObjectTarget, OverviewItem, RoutineKind, RoutineRef, RoutineSummary, SequenceSummary,
+    DatabaseItems, ObjectOp, ObjectTarget, OverviewItem, RoutineKind, RoutineRef, RoutineSummary,
+    SequenceSummary,
 };
-use crate::types::schema::{SchemaInfo, TableKind, TableRef};
+use crate::types::schema::{SchemaInfo, TableKind, TableRef, TableSummary};
 use crate::types::value::Value;
 
 /// How long a MySQL object operation waits for a metadata lock (as `commands::ddl` does).
@@ -120,22 +121,42 @@ const PG_NOT_EXTENSION_PROC: &str = "NOT EXISTS (SELECT 1 FROM pg_catalog.pg_dep
 const PG_NOT_EXTENSION_REL: &str = "NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dep \
      WHERE dep.classid = 'pg_catalog.pg_class'::regclass AND dep.objid = c.oid AND dep.deptype = 'e')";
 
-fn pg_routines_sql(kind: &str) -> String {
+/// Routines of the schemas `filter` accepts (`n` is `pg_namespace`); with `schema_column` every
+/// row starts with the schema name.
+fn pg_routines_select(kind: &str, schema_column: bool, filter: &str) -> String {
+    let (schema, order) = if schema_column {
+        ("n.nspname::text, ", "1, p.proname, 5")
+    } else {
+        ("", "p.proname, 4")
+    };
     format!(
-        "SELECT p.proname::text, {kind}, pg_catalog.pg_get_function_arguments(p.oid)::text, \
+        "SELECT {schema}p.proname::text, {kind}, pg_catalog.pg_get_function_arguments(p.oid)::text, \
                 pg_catalog.pg_get_function_identity_arguments(p.oid)::text, \
                 CASE WHEN {kind} <> 'p' THEN pg_catalog.pg_get_function_result(p.oid)::text END, \
                 l.lanname::text, pg_catalog.obj_description(p.oid, 'pg_proc')::text \
          FROM pg_catalog.pg_proc p \
          JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace \
          LEFT JOIN pg_catalog.pg_language l ON l.oid = p.prolang \
-         WHERE n.nspname = $1 AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+         WHERE {filter} AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
            AND {PG_NOT_EXTENSION_PROC} \
-         ORDER BY p.proname, 4"
+         ORDER BY {order}"
     )
 }
 
-const MYSQL_ROUTINES_SQL: &str = "SELECT r.ROUTINE_NAME, r.ROUTINE_TYPE, \
+fn pg_routines_sql(kind: &str) -> String {
+    pg_routines_select(kind, false, "n.nspname = $1")
+}
+
+/// Routines of the databases `filter` accepts (`r` is `information_schema.ROUTINES`); with
+/// `schema_column` every row starts with the database name.
+fn mysql_routines_select(schema_column: bool, filter: &str) -> String {
+    let (schema, order) = if schema_column {
+        ("r.ROUTINE_SCHEMA, ", "r.ROUTINE_SCHEMA, r.ROUTINE_NAME")
+    } else {
+        ("", "r.ROUTINE_NAME")
+    };
+    format!(
+        "SELECT {schema}r.ROUTINE_NAME, r.ROUTINE_TYPE, \
        (SELECT GROUP_CONCAT(CONCAT_WS(' ', CASE WHEN r.ROUTINE_TYPE = 'PROCEDURE' THEN p.PARAMETER_MODE END, \
                 p.PARAMETER_NAME, p.DTD_IDENTIFIER) \
                ORDER BY p.ORDINAL_POSITION SEPARATOR ', ') \
@@ -143,8 +164,10 @@ const MYSQL_ROUTINES_SQL: &str = "SELECT r.ROUTINE_NAME, r.ROUTINE_TYPE, \
          WHERE p.SPECIFIC_SCHEMA = r.ROUTINE_SCHEMA AND p.SPECIFIC_NAME = r.SPECIFIC_NAME \
            AND p.ROUTINE_TYPE = r.ROUTINE_TYPE AND p.ORDINAL_POSITION > 0), \
        r.DTD_IDENTIFIER, r.ROUTINE_BODY, r.ROUTINE_COMMENT \
-  FROM information_schema.ROUTINES r WHERE r.ROUTINE_SCHEMA = ? \
- ORDER BY r.ROUTINE_NAME";
+  FROM information_schema.ROUTINES r WHERE {filter} \
+ ORDER BY {order}"
+    )
+}
 
 fn pg_routine_kind(kind: Option<&str>) -> RoutineKind {
     match kind {
@@ -155,7 +178,7 @@ fn pg_routine_kind(kind: Option<&str>) -> RoutineKind {
     }
 }
 
-/// A row of `pg_routines_sql`: name, kind, arguments, identity arguments, result, language,
+/// A row of `pg_routines_select`: name, kind, arguments, identity arguments, result, language,
 /// comment.
 pub fn routine_from_pg_row(schema: &str, row: &[Value]) -> Option<RoutineSummary> {
     let kind = pg_routine_kind(text(row.get(1)).as_deref());
@@ -175,7 +198,7 @@ pub fn routine_from_pg_row(schema: &str, row: &[Value]) -> Option<RoutineSummary
     })
 }
 
-/// A row of `MYSQL_ROUTINES_SQL`: name, type, arguments, return type, body language, comment.
+/// A row of `mysql_routines_select`: name, type, arguments, return type, body language, comment.
 pub fn routine_from_mysql_row(schema: &str, row: &[Value]) -> Option<RoutineSummary> {
     let kind = match text(row.get(1)).as_deref() {
         Some(t) if t.eq_ignore_ascii_case("PROCEDURE") => RoutineKind::Procedure,
@@ -206,7 +229,15 @@ pub async fn list_routines(
     let params = [Value::Text(schema.to_string())];
     let rows = match session.dialect() {
         Dialect::Postgres => pg_query_with_kind(session, pg_routines_sql, &params).await?,
-        Dialect::Mysql => session.query(MYSQL_ROUTINES_SQL, &params).await?.rows,
+        Dialect::Mysql => {
+            session
+                .query(
+                    &mysql_routines_select(false, "r.ROUTINE_SCHEMA = ?"),
+                    &params,
+                )
+                .await?
+                .rows
+        }
         Dialect::Sqlite => return Ok(Vec::new()),
     };
     let from_row = match session.dialect() {
@@ -436,6 +467,150 @@ pub async fn system_schemas(session: &dyn DbSession) -> Result<Vec<SchemaInfo>, 
             is_default: false,
         })
         .collect())
+}
+
+// --- database-wide search (Search in Database…) ----------------------------------------------
+
+/// PostgreSQL schemas the database search covers: never the temporary ones; the system schemas
+/// (`pg_catalog`, `information_schema`, `pg_toast`) only with `include_system`.
+fn pg_search_filter(include_system: bool) -> &'static str {
+    if include_system {
+        "n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast\\_temp\\_%'"
+    } else {
+        "n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast') \
+         AND n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast\\_temp\\_%'"
+    }
+}
+
+/// Every relation of the database in one query: schema, name, relkind, row estimate, comment.
+/// Sizes are left out (they stat every relation's files).
+fn pg_database_tables_sql(include_system: bool) -> String {
+    format!(
+        "SELECT n.nspname::text, c.relname::text, c.relkind::text, \
+                CASE WHEN c.reltuples < 0 OR c.relkind NOT IN ('r', 'p', 'm', 'f') THEN NULL \
+                     ELSE c.reltuples::bigint END, \
+                pg_catalog.obj_description(c.oid, 'pg_class')::text \
+         FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND {} \
+         ORDER BY 1, 2",
+        pg_search_filter(include_system)
+    )
+}
+
+fn pg_database_routines_sql(kind: &str) -> String {
+    pg_routines_select(kind, true, pg_search_filter(false))
+}
+
+/// MySQL: the current database, or every non-system one when the connection has none selected
+/// (as `list_schemas` does).
+fn mysql_search_filter(column: &str) -> String {
+    format!(
+        "({column} = DATABASE() OR (DATABASE() IS NULL AND {column} NOT IN \
+         ('information_schema', 'performance_schema', 'mysql', 'sys')))"
+    )
+}
+
+fn mysql_database_tables_sql() -> String {
+    format!(
+        "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE, TABLE_ROWS, TABLE_COMMENT \
+         FROM information_schema.TABLES WHERE {} ORDER BY 1, 2",
+        mysql_search_filter("TABLE_SCHEMA")
+    )
+}
+
+/// A row of `pg_database_tables_sql`.
+pub fn table_from_pg_row(row: &[Value]) -> Option<TableSummary> {
+    Some(TableSummary {
+        schema: Some(some_text(row.first())?),
+        name: some_text(row.get(1))?,
+        kind: pg_relkind(text(row.get(2)).as_deref()),
+        row_estimate: int(row.get(3)),
+        size_bytes: None,
+        comment: some_text(row.get(4)),
+    })
+}
+
+/// A row of `mysql_database_tables_sql`; views carry the comment `VIEW`, which is dropped.
+pub fn table_from_mysql_row(row: &[Value]) -> Option<TableSummary> {
+    let kind = match text(row.get(2)).as_deref() {
+        Some("VIEW") => TableKind::View,
+        Some("SYSTEM VIEW") => TableKind::SystemView,
+        _ => TableKind::Table,
+    };
+    let view = kind != TableKind::Table;
+    Some(TableSummary {
+        schema: Some(some_text(row.first())?),
+        name: some_text(row.get(1))?,
+        kind,
+        row_estimate: if view { None } else { int(row.get(3)) },
+        size_bytes: None,
+        comment: some_text(row.get(4)).filter(|c| !(view && c == "VIEW")),
+    })
+}
+
+/// A routine row that starts with its schema (`pg_routines_select` / `mysql_routines_select`
+/// with `schema_column`).
+fn routine_with_schema(
+    row: &[Value],
+    from_row: fn(&str, &[Value]) -> Option<RoutineSummary>,
+) -> Option<RoutineSummary> {
+    let schema = some_text(row.first())?;
+    from_row(&schema, row.get(1..)?)
+}
+
+/// Every table, view and routine of the connection's database, across its schemas (PostgreSQL:
+/// the system schemas' relations too with `include_system`; MySQL: the current database; SQLite:
+/// every attached database, no routines).
+pub async fn database_items(
+    session: &dyn DbSession,
+    include_system: bool,
+) -> Result<DatabaseItems, AppError> {
+    match session.dialect() {
+        Dialect::Postgres => {
+            let tables = session
+                .query(&pg_database_tables_sql(include_system), &[])
+                .await?
+                .rows;
+            let routines = pg_query_with_kind(session, pg_database_routines_sql, &[]).await?;
+            Ok(DatabaseItems {
+                tables: tables.iter().filter_map(|r| table_from_pg_row(r)).collect(),
+                routines: routines
+                    .iter()
+                    .filter_map(|r| routine_with_schema(r, routine_from_pg_row))
+                    .collect(),
+            })
+        }
+        Dialect::Mysql => {
+            let tables = session.query(&mysql_database_tables_sql(), &[]).await?.rows;
+            let routines = session
+                .query(
+                    &mysql_routines_select(true, &mysql_search_filter("r.ROUTINE_SCHEMA")),
+                    &[],
+                )
+                .await?
+                .rows;
+            Ok(DatabaseItems {
+                tables: tables
+                    .iter()
+                    .filter_map(|r| table_from_mysql_row(r))
+                    .collect(),
+                routines: routines
+                    .iter()
+                    .filter_map(|r| routine_with_schema(r, routine_from_mysql_row))
+                    .collect(),
+            })
+        }
+        Dialect::Sqlite => {
+            let mut tables = Vec::new();
+            for s in session.list_schemas().await? {
+                tables.extend(session.list_tables(&s.name).await?);
+            }
+            Ok(DatabaseItems {
+                tables,
+                routines: Vec::new(),
+            })
+        }
+    }
 }
 
 // --- item overview ---------------------------------------------------------------------------
@@ -1119,6 +1294,95 @@ mod tests {
         assert_eq!(my_view.kind, TableKind::View);
         assert_eq!(my_view.comment, None);
         assert_eq!(my_view.charset, None);
+    }
+
+    #[test]
+    fn maps_database_search_rows() {
+        let pg = table_from_pg_row(&[
+            t("sales"),
+            t("orders"),
+            t("p"),
+            Value::Int(120),
+            t("All orders"),
+        ])
+        .unwrap();
+        assert_eq!(pg.schema.as_deref(), Some("sales"));
+        assert_eq!(pg.kind, TableKind::Partitioned);
+        assert_eq!(pg.row_estimate, Some(120));
+        assert_eq!(pg.comment.as_deref(), Some("All orders"));
+        assert!(table_from_pg_row(&[Value::Null, t("x"), t("r")]).is_none());
+
+        let my = table_from_mysql_row(&[
+            t("shop"),
+            t("v_orders"),
+            t("VIEW"),
+            Value::Int(3),
+            t("VIEW"),
+        ])
+        .unwrap();
+        assert_eq!(my.kind, TableKind::View);
+        assert_eq!(my.row_estimate, None);
+        assert_eq!(my.comment, None);
+        let my = table_from_mysql_row(&[
+            t("shop"),
+            t("orders"),
+            t("BASE TABLE"),
+            Value::BigInt("12".into()),
+            t(""),
+        ])
+        .unwrap();
+        assert_eq!(my.kind, TableKind::Table);
+        assert_eq!(my.row_estimate, Some(12));
+
+        let r = routine_with_schema(
+            &[
+                t("util"),
+                t("slugify"),
+                t("f"),
+                t("value text"),
+                t("value text"),
+                t("text"),
+                t("sql"),
+                Value::Null,
+            ],
+            routine_from_pg_row,
+        )
+        .unwrap();
+        assert_eq!(r.schema.as_deref(), Some("util"));
+        assert_eq!(r.name, "slugify");
+        assert_eq!(r.identity_arguments, "value text");
+        assert!(routine_with_schema(&[t("util")], routine_from_pg_row).is_none());
+    }
+
+    #[test]
+    fn database_search_sql_covers_the_right_schemas() {
+        let user = pg_database_tables_sql(false);
+        assert!(user.contains("NOT IN ('pg_catalog', 'information_schema', 'pg_toast')"));
+        assert!(user.contains("NOT LIKE 'pg\\_temp\\_%'"));
+        let all = pg_database_tables_sql(true);
+        assert!(!all.contains("NOT IN ('pg_catalog'"));
+        assert!(all.contains("NOT LIKE 'pg\\_toast\\_temp\\_%'"));
+        // Routines of the system schemas are never listed (thousands of built-ins).
+        let routines = pg_database_routines_sql("p.prokind::text");
+        assert!(routines.starts_with("SELECT n.nspname::text, p.proname::text"));
+        assert!(routines.contains("ORDER BY 1, p.proname, 5"));
+        assert!(!routines.contains("$1"));
+        // One schema's routines keep their parameter and order.
+        let one = pg_routines_sql("p.prokind::text");
+        assert!(one.starts_with("SELECT p.proname::text"));
+        assert!(one.contains("WHERE n.nspname = $1 AND"));
+        assert!(one.ends_with("ORDER BY p.proname, 4"));
+
+        let my = mysql_database_tables_sql();
+        assert!(
+            my.contains("TABLE_SCHEMA = DATABASE() OR (DATABASE() IS NULL AND TABLE_SCHEMA NOT IN")
+        );
+        let my_routines = mysql_routines_select(true, &mysql_search_filter("r.ROUTINE_SCHEMA"));
+        assert!(my_routines.starts_with("SELECT r.ROUTINE_SCHEMA, r.ROUTINE_NAME"));
+        assert!(my_routines.ends_with("ORDER BY r.ROUTINE_SCHEMA, r.ROUTINE_NAME"));
+        let my_one = mysql_routines_select(false, "r.ROUTINE_SCHEMA = ?");
+        assert!(my_one.contains("WHERE r.ROUTINE_SCHEMA = ?"));
+        assert!(my_one.ends_with("ORDER BY r.ROUTINE_NAME"));
     }
 
     #[test]

@@ -1,3 +1,5 @@
+import { cssColor } from "@/features/connections/colors";
+import { tagColorOf } from "@/features/connections/tags";
 import type { ConnectionInfo, ConnectionTag, Driver } from "@/lib/ipc";
 import { accentColor, type AccentPreset } from "@/lib/theme";
 
@@ -23,8 +25,10 @@ export const TAG_STYLE: Record<ConnectionTag, { label: string; color: AccentPres
   production: { label: "PRODUCTION", color: "red" },
 };
 
+/** A tag's colour: a built-in's, or a custom tag's (b494; gray when nobody defines it). */
 export function tagColor(tag: ConnectionTag): string {
-  return accentColor(TAG_STYLE[tag].color);
+  const builtin = TAG_STYLE[tag];
+  return builtin ? accentColor(builtin.color) : cssColor(tagColorOf(tag));
 }
 
 /**

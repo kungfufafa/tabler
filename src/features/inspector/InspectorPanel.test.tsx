@@ -1,11 +1,12 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GridColumn } from "@/features/datagrid/types";
 import { actions } from "@/features/palette/actions";
 import { ipc, type Value } from "@/lib/ipc";
 import { KeyboardProvider } from "@/lib/keys/useShortcuts";
 import { useInspectorStore, type InspectedCell, type InspectedRow } from "@/stores/inspector";
 import { useUiStore } from "@/stores/ui";
+import { cmDoc, cmType, cmView, polyfillLayout } from "./cmTestUtils";
 import { InspectorPanel } from "./InspectorPanel";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), message: vi.fn() } }));
@@ -67,6 +68,8 @@ function show(cell: Partial<InspectedCell> & { focused: number }) {
 }
 
 const cellMode = () => act(() => useInspectorStore.setState({ mode: "cell" }));
+
+beforeAll(polyfillLayout);
 
 beforeEach(() => {
   useInspectorStore.setState({ cell: null, mode: "row" });
@@ -173,9 +176,10 @@ describe("InspectorPanel", () => {
     expect(writeText).toHaveBeenLastCalledWith(raw);
 
     fireEvent.click(screen.getByRole("radio", { name: "Details" }));
+    // JSON lives in a CodeMirror (multiple carets, search); read-only here.
     const box = screen.getByRole("textbox", { name: "doc" });
-    expect(box).toHaveValue(pretty);
-    expect(box).toHaveAttribute("readonly");
+    expect(cmView("doc").state.doc.toString()).toBe(pretty);
+    expect(box).toHaveAttribute("aria-readonly", "true");
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy doc" })));
     expect(writeText).toHaveBeenLastCalledWith(raw);
   });
@@ -201,11 +205,15 @@ describe("InspectorPanel", () => {
     expect(within(items[0]!).getByRole("img", { name: "Primary key" })).toBeInTheDocument();
     expect(within(items[1]!).queryByRole("img", { name: "Primary key" })).not.toBeInTheDocument();
     expect(within(items[3]!).getByText("hidden")).toBeInTheDocument();
-    expect(within(items[3]!).getByRole("textbox", { name: "note" })).toHaveAttribute(
-      "placeholder",
-      "NULL",
+    // Text is a CodeMirror field, a NULL one shows its placeholder.
+    expect(
+      within(items[3]!).getByRole("textbox", { name: "note" }).closest(".cm-editor"),
+    ).not.toBeNull();
+    expect(items[3]!.querySelector(".cm-placeholder")).toHaveTextContent("NULL");
+    expect(within(items[1]!).getByRole("textbox", { name: "bio" }).closest(".cm-editor")).not.toBe(
+      null,
     );
-    expect(within(items[1]!).getByRole("textbox", { name: "bio" })).toHaveValue("line 1\nline 2");
+    expect(cmDoc("bio")).toBe("line 1\nline 2");
     // A blob is summarised; its bytes are in the Cell view.
     expect(within(items[2]!).getByText(/68\.4 KB binary \(preview\)/)).toBeInTheDocument();
 
@@ -287,6 +295,9 @@ describe("InspectorPanel editing (Details)", () => {
     );
   }
   const box = (name: string) => screen.getByRole("textbox", { name });
+  /** The placeholder of a CodeMirror field. */
+  const placeholderOf = (name: string) =>
+    box(name).closest(".cm-editor")?.querySelector(".cm-placeholder")?.textContent ?? null;
 
   it("bulk edit: N rows selected, Multiple values, and an edit for all of them", () => {
     const edit = vi.fn();
@@ -296,12 +307,12 @@ describe("InspectorPanel editing (Details)", () => {
       bulk: { count: 3, mixed: new Set([idx("name"), idx("active")]), id: "a|b|c" },
     });
     expect(screen.getByRole("status")).toHaveTextContent("3 rows selected");
-    expect(box("name")).toHaveValue("");
-    expect(box("name")).toHaveAttribute("placeholder", "Multiple values");
+    expect(cmDoc("name")).toBe("");
+    expect(placeholderOf("name")).toBe("Multiple values");
     // A field the rows agree on shows its value.
-    expect(box("bio")).toHaveValue("line 1\nline 2");
+    expect(cmDoc("bio")).toBe("line 1\nline 2");
     expect(screen.getByRole("combobox", { name: "active" })).toHaveDisplayValue("Multiple values");
-    fireEvent.change(box("name"), { target: { value: "Same" } });
+    cmType("name", "Same");
     fireEvent.keyDown(box("name"), { key: "Enter", code: "Enter" });
     expect(edit).toHaveBeenCalledWith(idx("name"), { t: "text", v: "Same" });
   });
@@ -338,10 +349,10 @@ describe("InspectorPanel editing (Details)", () => {
     expect(within(menu).getByRole("menuitem", { name: "Set NULL" })).not.toHaveAttribute(
       "data-disabled",
     );
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Set Now (local time)" }));
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Set NOW()" }));
     expect(edit).toHaveBeenCalledWith(cols.length - 1, {
-      t: "date",
-      v: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      t: "other",
+      v: { ty: "\u0000expr", text: "NOW()" },
     });
   });
 
@@ -349,7 +360,7 @@ describe("InspectorPanel editing (Details)", () => {
     const edit = vi.fn();
     render(<InspectorPanel />);
     showRow({ edit });
-    fireEvent.change(box("name"), { target: { value: "Budi" } });
+    cmType("name", "Budi");
     expect(screen.getByText(/to stage/)).toBeInTheDocument();
     fireEvent.keyDown(box("name"), { key: "Enter", code: "Enter" });
     expect(edit).toHaveBeenCalledWith(idx("name"), { t: "text", v: "Budi" });
@@ -404,18 +415,21 @@ describe("InspectorPanel editing (Details)", () => {
     const edit = vi.fn();
     render(<InspectorPanel />);
     showRow({ edit });
-    fireEvent.change(box("bio"), { target: { value: "line 1\nline 2\nline 3" } });
-    expect(fireEvent.keyDown(box("bio"), { key: "Enter", code: "Enter" })).toBe(true);
+    cmType("bio", "line 1\nline 2\nline 3");
+    // ↩ is a line break in the CodeMirror box: nothing staged, the key is the editor's.
+    fireEvent.keyDown(box("bio"), { key: "Enter", code: "Enter" });
     expect(edit).not.toHaveBeenCalled();
+    expect(cmView("bio").state.doc.lines).toBe(4);
+    cmType("bio", "line 1\nline 2\nline 3");
     fireEvent.keyDown(box("bio"), { key: "Enter", code: "Enter", ctrlKey: true });
     expect(edit).toHaveBeenCalledWith(idx("bio"), { t: "text", v: "line 1\nline 2\nline 3" });
 
-    expect(box("doc")).toHaveValue('{\n  "a": 1\n}');
-    fireEvent.change(box("doc"), { target: { value: '{"a": ' } });
+    expect(cmView("doc").state.doc.toString()).toBe('{\n  "a": 1\n}');
+    cmType("doc", '{"a": ');
     fireEvent.keyDown(box("doc"), { key: "Enter", code: "Enter", ctrlKey: true });
     expect(edit).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("alert")).toHaveTextContent(/Invalid JSON/);
-    fireEvent.change(box("doc"), { target: { value: '{"a": 2}' } });
+    cmType("doc", '{"a": 2}');
     fireEvent.keyDown(box("doc"), { key: "Enter", code: "Enter", ctrlKey: true });
     expect(edit).toHaveBeenLastCalledWith(idx("doc"), { t: "json", v: '{"a": 2}' });
   });
@@ -424,24 +438,27 @@ describe("InspectorPanel editing (Details)", () => {
     const edit = vi.fn();
     render(<InspectorPanel />);
     showRow({ edit });
-    const name = box("name") as HTMLTextAreaElement;
-    name.setSelectionRange(3, 3);
+    const name = box("name");
+    act(() => cmView("name").dispatch({ selection: { anchor: 3 } }));
     fireEvent.keyDown(name, { key: "Enter", code: "Enter", altKey: true });
-    expect(name).toHaveValue("Eko\n");
+    expect(cmDoc("name")).toBe("Eko\n");
+    // Now it spans lines: a plain ↩ is one more line break, ⌘↩ stages.
     fireEvent.keyDown(name, { key: "Enter", code: "Enter" });
     expect(edit).not.toHaveBeenCalled();
+    expect(cmDoc("name")).toBe("Eko\n\n");
     fireEvent.keyDown(name, { key: "Enter", code: "Enter", ctrlKey: true });
-    expect(edit).toHaveBeenCalledWith(idx("name"), { t: "text", v: "Eko\n" });
+    expect(edit).toHaveBeenCalledWith(idx("name"), { t: "text", v: "Eko\n\n" });
   });
 
   it("does not stage an unchanged field", () => {
     const edit = vi.fn();
     render(<InspectorPanel />);
     showRow({ edit });
-    fireEvent.change(box("name"), { target: { value: "Ek" } });
-    fireEvent.change(box("name"), { target: { value: "Eko" } });
+    cmType("name", "Ek");
+    cmType("name", "Eko");
     fireEvent.keyDown(box("name"), { key: "Enter", code: "Enter" });
-    fireEvent.change(box("doc"), { target: { value: '{\n  "a": 1\n}' } });
+    cmType("doc", '{"a": 1}');
+    cmType("doc", '{\n  "a": 1\n}');
     fireEvent.blur(box("doc"));
     expect(edit).not.toHaveBeenCalled();
   });
@@ -507,36 +524,40 @@ describe("InspectorPanel editing (Details)", () => {
     const edit = vi.fn();
     render(<InspectorPanel />);
     showRow({ edit });
-    expect(box("slug")).toHaveAttribute("readonly");
-    expect(box("slug")).toHaveAttribute("placeholder", "EMPTY");
+    expect(box("slug")).toHaveAttribute("aria-readonly", "true");
+    expect(placeholderOf("slug")).toBe("EMPTY");
     expect(screen.getByRole("button", { name: "Copy slug" })).toBeInTheDocument();
-    expect(box("name")).not.toHaveAttribute("readonly");
+    expect(box("name")).not.toHaveAttribute("aria-readonly");
 
     showRow({ edit, status: "deleted" });
-    expect(box("name")).toHaveAttribute("readonly");
+    expect(box("name")).toHaveAttribute("aria-readonly", "true");
     expect(screen.queryByRole("combobox", { name: "active" })).not.toBeInTheDocument();
     expect(box("active")).toHaveValue("true");
 
     showRow({});
-    expect(box("name")).toHaveAttribute("readonly");
+    expect(box("name")).toHaveAttribute("aria-readonly", "true");
     expect(screen.queryByRole("button", { name: "name options" })).not.toBeInTheDocument();
-    fireEvent.change(box("name"), { target: { value: "x" } });
+    // Whatever reaches the read-only box is not a draft: nothing shows as pending or is staged.
+    cmType("name", "x");
     fireEvent.blur(box("name"));
     expect(edit).not.toHaveBeenCalled();
+    expect(screen.queryByText(/to stage/)).not.toBeInTheDocument();
   });
 
   it("highlights staged values and shows the re-published value", () => {
     const edit = vi.fn();
     render(<InspectorPanel />);
     showRow({ edit });
-    fireEvent.change(box("name"), { target: { value: "Budi" } });
+    cmType("name", "Budi");
     fireEvent.keyDown(box("name"), { key: "Enter", code: "Enter" });
     const staged = [...ecells];
     staged[idx("name")] = { t: "text", v: "Budi" };
     showRow({ edit, cells: staged, changed: new Set([idx("name")]) });
-    expect(box("name")).toHaveValue("Budi");
-    expect(box("name")).toHaveClass("bg-changed");
-    expect(box("bio")).not.toHaveClass("bg-changed");
+    expect(cmDoc("name")).toBe("Budi");
+    const wrapper = (name: string) =>
+      box(name).closest<HTMLElement>('[data-testid="quick-look-code"]');
+    expect(wrapper("name")).toHaveClass("bg-changed");
+    expect(wrapper("bio")).not.toHaveClass("bg-changed");
   });
 
   it("stages a draft before a click elsewhere selects another row", () => {
@@ -548,7 +569,7 @@ describe("InspectorPanel editing (Details)", () => {
       </>,
     );
     showRow({ edit });
-    fireEvent.change(box("name"), { target: { value: "Budi" } });
+    cmType("name", "Budi");
     const grid = screen.getByTestId("grid");
     grid.addEventListener("pointerdown", () => {
       // The grid re-targets the panel on pointerdown: the draft must already be staged.
@@ -568,7 +589,7 @@ describe("InspectorPanel editing (Details)", () => {
     });
     expect(edit).toHaveBeenCalledTimes(1);
     // The other row shows its own value; leaving the field stages nothing into it.
-    expect(box("name")).toHaveValue("Eko");
+    expect(cmDoc("name")).toBe("Eko");
     fireEvent.blur(box("name"));
     expect(edit).toHaveBeenCalledTimes(1);
   });
@@ -598,7 +619,7 @@ describe("InspectorPanel editing (Details)", () => {
         </KeyboardProvider>,
       );
       showRow({ edit });
-      fireEvent.change(box("name"), { target: { value: "Budi" } });
+      cmType("name", "Budi");
       const notPrevented = fireEvent.keyDown(box("name"), {
         key: "s",
         code: "KeyS",
@@ -617,6 +638,64 @@ describe("InspectorPanel editing (Details)", () => {
     } finally {
       off();
     }
+  });
+
+  it("⌘S in a JSON (CodeMirror) field stages it first, then commits the tab once", async () => {
+    const order: string[] = [];
+    const edit = vi.fn(() => order.push("edit"));
+    const commit = vi.fn(() => {
+      order.push("commit");
+    });
+    const querySave = vi.fn();
+    const off = [
+      actions.register("grid.commit", commit),
+      actions.register("query.save", querySave),
+    ];
+    try {
+      render(
+        <KeyboardProvider>
+          <InspectorPanel />
+        </KeyboardProvider>,
+      );
+      showRow({ edit });
+      cmType("doc", '{"a": 7}');
+      const notPrevented = fireEvent.keyDown(box("doc"), {
+        key: "s",
+        code: "KeyS",
+        ctrlKey: true,
+      });
+      expect(notPrevented).toBe(false);
+      await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+      expect(order).toEqual(["edit", "commit"]);
+      expect(edit).toHaveBeenCalledWith(idx("doc"), { t: "json", v: '{"a": 7}' });
+      // The field is not the SQL editor: ⌘S does not save a query file from it.
+      expect(querySave).not.toHaveBeenCalled();
+
+      // A broken draft stages nothing and blocks the commit.
+      cmType("doc", "{oops");
+      fireEvent.keyDown(box("doc"), { key: "s", code: "KeyS", ctrlKey: true });
+      await new Promise((r) => setTimeout(r, 5));
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(edit).toHaveBeenCalledTimes(1);
+    } finally {
+      off.forEach((f) => f());
+    }
+  });
+
+  it("Escape in a JSON field reverts the draft, and then goes back to the grid", () => {
+    render(
+      <>
+        <InspectorPanel />
+        <div data-scope="grid" tabIndex={0} data-testid="grid" />
+      </>,
+    );
+    showRow({ edit: vi.fn() });
+    cmType("doc", '{"a": 9}');
+    fireEvent.keyDown(box("doc"), { key: "Escape", code: "Escape" });
+    expect(cmView("doc").state.doc.toString()).toBe('{\n  "a": 1\n}');
+    expect(screen.getByTestId("grid")).not.toHaveFocus();
+    fireEvent.keyDown(box("doc"), { key: "Escape", code: "Escape" });
+    expect(screen.getByTestId("grid")).toHaveFocus();
   });
 
   it("Escape in an unchanged field goes back to the grid", () => {

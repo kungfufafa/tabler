@@ -18,6 +18,7 @@ import { CellPopover, ChoiceCell, FlagsCell, PresetMenu, CELL_BUTTON } from "./c
 import {
   GRID_LABEL,
   gridColumns,
+  onUpdateFor,
   supportsColumnCollation,
   supportsColumnPosition,
   typeSuggestions,
@@ -25,10 +26,11 @@ import {
   type GridColumn,
 } from "./columnEdits";
 import { defaultPresets, type DefaultPreset } from "./defaults";
-import { cellByKey, rowDeleteKey } from "./dom";
+import { cellByKey, focusRowOnMouseDown, onRowItself, rowDeleteKey } from "./dom";
 import { ForeignKeyForm } from "./KeyDialogs";
 import type { ColumnRow, FkRow, StructureView } from "./model";
 import { columnCheck } from "./objects";
+import { BlankRow, EmptyRow } from "./OtherSections";
 import { CellInput, Field, HEAD_ROW, IconAction, SectionHeader } from "./parts";
 
 export interface ColumnHandlers {
@@ -42,7 +44,15 @@ export interface ColumnHandlers {
   onDeleteFk: (key: string) => void;
   onDrop: (key: string) => void;
   onRestore: (key: string) => void;
+  /** Delete on a selection of several columns: drops (or restores) all of them in one step. */
+  onDropMany?: (keys: string[]) => void;
+  onRestoreMany?: (keys: string[]) => void;
   onAdd: (after?: string | null) => void;
+  /**
+   * A click on a row (its `#`, or any part that is not a control): selects the column (⌘ toggles,
+   * ⇧ extends) for the sidebar's bulk edit and for Delete.
+   */
+  onSelect?: (key: string, mods: { meta: boolean; shift: boolean }) => void;
 }
 
 const NULLABLE = [
@@ -76,6 +86,8 @@ export function ColumnsSection({
   userTypes,
   collations,
   handlers,
+  selected,
+  numbers,
 }: {
   view: StructureView;
   dialect: Dialect;
@@ -84,6 +96,10 @@ export function ColumnsSection({
   table: TableRef;
   /** Column-name search (⌘F): rows whose name contains it. */
   filter: string;
+  /** Keys of the selected columns (highlighted; the sidebar edits them together). */
+  selected?: ReadonlySet<string>;
+  /** Row key → its `#`: the column's position in the table, whatever order the grid shows. */
+  numbers?: ReadonlyMap<string, number>;
   /** The database's own column types (PG enums, domains…), offered in data_type. */
   userTypes: readonly string[];
   /** MySQL collations, offered in the column details. */
@@ -102,6 +118,7 @@ export function ColumnsSection({
     .map((r, i) => ({ r, i }))
     .filter(({ r }) => !needle || r.name.toLowerCase().includes(needle));
   const liveNames = rows.filter((r) => r.status !== "dropped").map((r) => r.name);
+  const picked = selected ? rows.filter((r) => selected.has(r.key)) : [];
   return (
     <section aria-label="Columns">
       <SectionHeader title="Columns" count={live}>
@@ -156,6 +173,9 @@ export function ColumnsSection({
               key={r.key}
               row={r}
               index={i}
+              number={numbers?.get(r.key) ?? i + 1}
+              selected={selected?.has(r.key) ?? false}
+              picked={picked}
               view={view}
               dialect={dialect}
               cols={cols}
@@ -169,14 +189,14 @@ export function ColumnsSection({
             />
           ))}
           {shown.length === 0 && (
-            <tr>
-              <td
-                colSpan={cols.length + 2}
-                className="text-muted-foreground px-3 py-2 text-[11px] italic"
-              >
-                {rows.length === 0 ? "No columns" : `No column matches “${filter.trim()}”`}
-              </td>
-            </tr>
+            <EmptyRow
+              span={cols.length + 2}
+              text={rows.length === 0 ? "No columns" : `No column matches “${filter.trim()}”`}
+              kind={editable ? "columns" : undefined}
+            />
+          )}
+          {editable && (
+            <BlankRow span={cols.length + 2} kind="columns" text="+ double-click to add a column" />
           )}
         </tbody>
       </table>
@@ -187,6 +207,9 @@ export function ColumnsSection({
 function ColumnRowView({
   row: r,
   index,
+  number,
+  selected,
+  picked,
   view,
   dialect,
   cols,
@@ -200,6 +223,11 @@ function ColumnRowView({
 }: {
   row: ColumnRow;
   index: number;
+  /** The `#` shown. */
+  number: number;
+  selected: boolean;
+  /** Every selected row (this one included when `selected`). */
+  picked: readonly ColumnRow[];
   view: StructureView;
   dialect: Dialect;
   cols: GridColumn[];
@@ -211,10 +239,21 @@ function ColumnRowView({
   collationsId: string;
   handlers: ColumnHandlers;
 }) {
-  const { onEdit, onDrop, onRestore, onAdd } = handlers;
+  const { onEdit, onDrop, onRestore, onDropMany, onRestoreMany, onAdd, onSelect } = handlers;
   const dropped = r.status === "dropped";
   const added = r.status === "added";
   const canEdit = editable && !dropped;
+  // Delete on a row of a selection of several acts on the selection (its live rows, or its
+  // dropped ones to restore); on any other row, on that row alone.
+  const targets =
+    selected && picked.length > 1
+      ? picked.filter((p) => (p.status === "dropped") === dropped)
+      : [r];
+  const many = targets.length > 1;
+  const dropRows = () => {
+    if (many) (dropped ? onRestoreMany : onDropMany)?.(targets.map((t) => t.key));
+    else (dropped ? onRestore : onDrop)(r.key);
+  };
   const changed = (...f: ColumnField[]) => f.some((x) => r.changed.includes(x)) && "bg-changed";
   const strike = dropped && "line-through";
   const text = (
@@ -332,13 +371,14 @@ function ColumnRowView({
                 },
                 {
                   id: "onUpdate",
-                  label: `on update ${r.onUpdate ?? "CURRENT_TIMESTAMP"}`,
+                  label: `on update ${r.onUpdate ?? onUpdateFor(r.dataType)}`,
                   checked: r.onUpdate !== null,
                 },
               ]}
               onToggle={(id, on) => {
                 if (id === "autoIncrement") onEdit(r.key, "autoIncrement", on);
-                else onEdit(r.key, "onUpdate", on ? "CURRENT_TIMESTAMP" : "");
+                // (MySQL refuses an ON UPDATE whose precision differs from the column's)
+                else onEdit(r.key, "onUpdate", on ? onUpdateFor(r.dataType) : "");
               }}
             />
           </td>
@@ -374,12 +414,22 @@ function ColumnRowView({
       data-row-kind="column"
       data-row-key={r.key}
       data-status={r.status}
+      data-selected={selected || undefined}
+      aria-selected={onSelect ? selected : undefined}
+      // a row the Delete key can act on, focused by pressing it outside its controls
+      tabIndex={-1}
+      onMouseDown={focusRowOnMouseDown}
+      onClick={(e) => {
+        if (!onSelect || !onRowItself(e)) return;
+        onSelect(r.key, { meta: e.metaKey || e.ctrlKey, shift: e.shiftKey });
+      }}
       onKeyDown={(e) => {
-        if (editable) rowDeleteKey(e, () => (dropped ? onRestore(r.key) : onDrop(r.key)));
+        if (editable) rowDeleteKey(e, dropRows);
       }}
       className={cn(
-        "group border-gridline h-7 border-b",
+        "group border-gridline h-7 border-b outline-none",
         r.status === "existing" && "focus-within:bg-row-hover",
+        selected && "bg-brand-soft",
         added && "bg-inserted",
         dropped && "bg-deleted text-muted-foreground",
       )}
@@ -388,10 +438,20 @@ function ColumnRowView({
         <button
           type="button"
           tabIndex={-1}
+          data-row-select
           aria-label={`Select column ${r.name}`}
-          className="text-muted-foreground focus-visible:text-foreground focus:bg-accent w-full rounded-sm px-1 text-right font-mono text-[10px] tabular-nums outline-none"
+          aria-pressed={onSelect ? selected : undefined}
+          title={
+            onSelect
+              ? "Select the column (⌘ / ⇧ for several): Space edits them in the sidebar, Delete drops them"
+              : undefined
+          }
+          className={cn(
+            "text-muted-foreground focus-visible:text-foreground focus:bg-accent w-full rounded-sm px-1 text-right font-mono text-[10px] tabular-nums outline-none",
+            selected && "text-foreground font-semibold",
+          )}
         >
-          {index + 1}
+          {number}
         </button>
       </td>
       {cols.map(cell)}
@@ -447,12 +507,16 @@ function ColumnRowView({
         </ContextMenuItem>
         <ContextMenuSeparator />
         {dropped ? (
-          <ContextMenuItem className={item} onSelect={() => onRestore(r.key)}>
-            Restore Column
+          <ContextMenuItem className={item} onSelect={dropRows}>
+            {many ? `Restore ${targets.length} columns` : "Restore Column"}
           </ContextMenuItem>
         ) : (
-          <ContextMenuItem className={item} onSelect={() => onDrop(r.key)}>
-            {added ? "Remove New Column" : "Delete Column"}
+          <ContextMenuItem className={item} onSelect={dropRows}>
+            {many
+              ? `Delete ${targets.length} columns`
+              : added
+                ? "Remove New Column"
+                : "Delete Column"}
           </ContextMenuItem>
         )}
       </ContextMenuContent>

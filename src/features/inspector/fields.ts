@@ -1,8 +1,10 @@
+import { parseCellText } from "@/features/datagrid/cellText";
 import { jsonError, reformatJson } from "@/features/datagrid/editors/json";
-import { emptyBecomesNull } from "@/features/datagrid/setValue";
+import { AUTO_NULL_KINDS, emptyBecomesNull } from "@/features/datagrid/setValue";
 import type { GridColumn } from "@/features/datagrid/types";
 import type { Value, ValueKind } from "@/lib/ipc";
-import { editText, inspectText, parseEditText, type ParseResult } from "@/lib/values";
+import { editText, inspectText, type ParseResult } from "@/lib/values";
+import { getPrefs } from "@/stores/prefs";
 
 /** What "Copy" puts on the clipboard: the raw text (JSON verbatim), or a blob's base64. */
 export function copyText(v: Value): string {
@@ -29,8 +31,9 @@ export function textStats(v: Value): string | null {
 }
 
 /**
- * Kinds whose Details box is a wrapping, auto-growing text area (long values wrap instead of
- * scrolling sideways, and line breaks survive); the other kinds get a one-line input.
+ * Kinds whose Details box is the compact CodeMirror editor (a wrapping box that grows with its
+ * text, multiple carets, ⌘F search, JSON / XML colours; long values wrap instead of scrolling
+ * sideways, and line breaks survive); the other kinds get a one-line input.
  */
 export const TEXTAREA_KINDS: ReadonlySet<ValueKind> = new Set([
   "text",
@@ -68,26 +71,37 @@ export function placeholderOf(v: Value): string | undefined {
   return fieldText(v) === "" ? "EMPTY" : undefined;
 }
 
-/** Placeholder of a box the user cleared: what committing it would store. */
-export function clearedPlaceholder(col: Pick<GridColumn, "kind" | "nullable">): string | undefined {
+/**
+ * Placeholder of a box the user cleared: what committing it would store. For the kinds "Auto
+ * convert empty Numeric, UUID, JSON or Array to NULL" covers it promises NULL only while that
+ * preference is on (with it off, an empty box is an error, as in the grid's editor).
+ */
+export function clearedPlaceholder(
+  col: Pick<GridColumn, "kind" | "nullable">,
+  autoNull: boolean = getPrefs().gridAutoNullEmpty,
+): string | undefined {
   if (TEXT_LIKE.has(col.kind)) return "EMPTY";
-  return col.nullable ? "NULL" : undefined;
+  if (!col.nullable) return undefined;
+  return AUTO_NULL_KINDS.has(col.kind) && !autoNull ? undefined : "NULL";
 }
 
 /**
  * Turns a field's text into a value of the column's kind, with the inline editor's parser
- * (`parseEditText`). A cleared box in a nullable, non-text column means NULL (as pasting an empty
- * cell does) — a blank (spaces only) one too in numeric / UUID / JSON / array columns while "Auto
- * convert empty … to NULL" is on; enum labels must be one of the column's labels when known.
+ * (`parseCellText`: NOW() in date / time columns, hex in binary ones). A cleared (or, for numeric /
+ * UUID / JSON / array columns, blank) box in a nullable column means NULL: in the numeric / UUID /
+ * JSON / array columns only while "Auto convert empty … to NULL" is on (with it off the cleared box
+ * gets the same error the grid's editor gives), in the other non-text columns (dates, times,
+ * booleans, binary…) always, as pasting an empty cell does. Enum labels must be one of the
+ * column's labels when known.
  */
 export function parseFieldText(col: GridColumn, text: string, previous: Value): ParseResult {
-  if (text === "" && col.nullable && !TEXT_LIKE.has(col.kind))
+  if (text === "" && col.nullable && !TEXT_LIKE.has(col.kind) && !AUTO_NULL_KINDS.has(col.kind))
     return { ok: true, value: { t: "null" } };
   if (emptyBecomesNull(col, text)) return { ok: true, value: { t: "null" } };
   const labels = col.enumValues ?? [];
   if (col.kind === "enum" && labels.length > 0 && !labels.includes(text))
     return { ok: false, error: `Pick one of: ${labels.join(", ")}` };
-  return parseEditText(col.kind, text, previous);
+  return parseCellText(col, text, previous);
 }
 
 /** Lower-cased search match on the column name. */

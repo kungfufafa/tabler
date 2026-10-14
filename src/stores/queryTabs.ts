@@ -26,6 +26,12 @@ export interface QueryTabState {
   pane: ResultPane;
   /** File the buffer was opened from / saved to; the tab is titled after it. */
   filePath: string | null;
+  /**
+   * Set when the buffer holds only the head of a big file ("Showing the first 5 MB of x.sql;
+   * saving here will not overwrite the file"): the tab is then not linked to the file
+   * (`filePath` null) and the editor shows this notice.
+   */
+  headNotice: string | null;
   historyOpen: boolean;
   /**
    * Editor / results split (panel id → percentage), remembered across tab switches. The last
@@ -38,14 +44,18 @@ export interface QueryTabState {
   rowLimit: number | null;
 }
 
-/** Row limit of a new query tab (the backend's default cap). */
-export const DEFAULT_ROW_LIMIT = 10_000;
+/**
+ * Row limit of a new query tab: "No limit" (TablePlus' default). The run still sends the
+ * backend's highest cap (`NO_LIMIT_MAX_ROWS`), so a runaway SELECT cannot fill the memory.
+ */
+export const DEFAULT_ROW_LIMIT: number | null = null;
 
 export const EMPTY_QUERY_TAB: Readonly<QueryTabState> = Object.freeze({
   run: null,
   plan: null,
   pane: "messages",
   filePath: null,
+  headNotice: null,
   historyOpen: false,
   layout: null,
   resultsCollapsed: false,

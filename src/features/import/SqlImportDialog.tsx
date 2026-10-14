@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { formatBytes, formatCount } from "@/features/export/options";
+import { notifyInBackground } from "@/features/notify/notify";
 import { guardExecution } from "@/features/safety/guard";
 import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
 import { ipc, toIpcError, type SqlImportProgress, type SqlImportReport } from "@/lib/ipc";
@@ -102,6 +103,11 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
       );
       // The dump may have changed any table; press ⌘R in a tab to see its new rows.
       if (result.executed > 0) reportHeldTables(invalidateConnectionSchema(qc, connectionId));
+      if (!result.cancelled)
+        void notifyInBackground({
+          title: result.failed > 0 ? "SQL dump imported with errors" : "Imported SQL dump",
+          body: `${fileName} · ${statements(result.executed)} ran${result.failed > 0 ? `, ${formatCount(result.failed)} failed` : ""}`,
+        });
       if (result.cancelled) {
         toast.message("Import cancelled", {
           description: [
@@ -122,7 +128,9 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
         setReport(result);
       }
     } catch (e) {
-      setError(toIpcError(e).message);
+      const message = toIpcError(e).message;
+      void notifyInBackground({ title: "SQL dump import failed", body: message });
+      setError(message);
     } finally {
       setRun(null);
     }

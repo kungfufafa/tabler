@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { actions } from "@/features/palette/actions";
 import { DEFAULT_PREFS, resetPrefsForTests } from "@/stores/prefs";
 import type { Value, ValueKind } from "@/lib/ipc";
 import { CellEditor } from "./CellEditor";
@@ -153,5 +154,155 @@ describe("CellEditor ▸ Auto convert empty Numeric, UUID, JSON or Array to NULL
     const { onCommit } = renderEditor(col("text"), { t: "null" }, "NULL");
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit c" }), { key: "Enter" });
     expect(onCommit).toHaveBeenCalledWith({ t: "text", v: "NULL" }, "enter");
+  });
+});
+
+describe("CellEditor ▸ ⌘S stages the edit and commits the tab", () => {
+  const offs: Array<() => void> = [];
+  afterEach(() => {
+    offs.splice(0).forEach((off) => off());
+    resetPrefsForTests();
+  });
+  const ctrlS = { key: "s", code: "KeyS", ctrlKey: true };
+
+  /** Registers `grid.commit` and records the order of the editor's commit and the tab's. */
+  function watch(onCommit: ReturnType<typeof vi.fn>) {
+    const order: string[] = [];
+    onCommit.mockImplementation(() => void order.push("stage"));
+    const commit = vi.fn(() => void order.push("commit"));
+    offs.push(actions.register("grid.commit", commit));
+    return { commit, order };
+  }
+
+  it("inline input: stages the typed value where the cell is, then runs grid.commit once", async () => {
+    const { onCommit, onCancel } = renderEditor(col("int"), { t: "int", v: 3 }, "7");
+    const { commit, order } = watch(onCommit);
+    const input = screen.getByRole("textbox", { name: "Edit c" });
+    expect(fireEvent.keyDown(input, ctrlS)).toBe(false); // preventDefault: no browser "save page"
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledWith({ t: "int", v: 7 }, "blur");
+    // Not in the same tick: the tab has to render the staged edit first.
+    expect(commit).not.toHaveBeenCalled();
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    expect(order).toEqual(["stage", "commit"]);
+    // The blur that follows the editor closing stages nothing twice.
+    fireEvent.blur(input);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("inline input: a value that does not parse is neither staged nor committed, and stays open", async () => {
+    const { onCommit, onCancel } = renderEditor(col("int"), { t: "int", v: 3 }, "abc");
+    const { commit } = watch(onCommit);
+    const input = screen.getByRole("textbox", { name: "Edit c" });
+    fireEvent.keyDown(input, ctrlS);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    expect(screen.getByText("Enter a whole number")).toBeInTheDocument();
+    expect(input).toBeInTheDocument();
+    // Fixing it and pressing ⌘S again works.
+    fireEvent.change(input, { target: { value: "8" } });
+    fireEvent.keyDown(input, ctrlS);
+    expect(onCommit).toHaveBeenCalledWith({ t: "int", v: 8 }, "blur");
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+  });
+
+  it("inline input: an emptied number follows the auto-NULL preference", async () => {
+    const { onCommit } = renderEditor(col("int"), { t: "int", v: 3 }, "");
+    const { commit } = watch(onCommit);
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit c" }), ctrlS);
+    expect(onCommit).toHaveBeenCalledWith({ t: "null" }, "blur");
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+  });
+
+  it("multi-line panel: the same", async () => {
+    const { onCommit, onCancel } = renderEditor(col("text"), { t: "text", v: "a\nb" }, "a\nb");
+    const { commit, order } = watch(onCommit);
+    const area = screen.getByRole("textbox", { name: "Edit c" });
+    expect(area.tagName).toBe("TEXTAREA");
+    fireEvent.change(area, { target: { value: "a\nb\nc" } });
+    expect(fireEvent.keyDown(area, ctrlS)).toBe(false);
+    expect(onCommit).toHaveBeenCalledWith({ t: "text", v: "a\nb\nc" }, "blur");
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    expect(order).toEqual(["stage", "commit"]);
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("multi-line panel: an invalid value stays in the editor and nothing is committed", async () => {
+    // Text with a line break opens the panel whatever the column's kind; a number cannot hold it.
+    const { onCommit, onCancel } = renderEditor(col("int"), { t: "int", v: 1 }, "1\n2");
+    const { commit } = watch(onCommit);
+    const area = screen.getByRole("textbox", { name: "Edit c" });
+    expect(area.tagName).toBe("TEXTAREA");
+    fireEvent.keyDown(area, ctrlS);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    expect(screen.getByText("Enter a whole number")).toBeInTheDocument();
+    fireEvent.change(area, { target: { value: "12" } });
+    fireEvent.keyDown(area, ctrlS);
+    expect(onCommit).toHaveBeenCalledWith({ t: "int", v: 12 }, "blur");
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+  });
+
+  it("JSON dialog: stages the valid text and commits; invalid JSON does neither", async () => {
+    const { onCommit } = renderEditor(
+      col("json", { dataType: "jsonb" }),
+      { t: "json", v: '{"a":1}' },
+      '{"a":1}',
+    );
+    const { commit, order } = watch(onCommit);
+    const dialog = screen.getByRole("dialog");
+    const area = within(dialog).getByRole("textbox");
+    fireEvent.change(area, { target: { value: '{"a":' } });
+    fireEvent.keyDown(area, ctrlS);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(/JSON/);
+
+    fireEvent.change(area, { target: { value: '{"a": 2}' } });
+    expect(fireEvent.keyDown(area, ctrlS)).toBe(false);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledWith({ t: "json", v: '{"a": 2}' }, "blur");
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    expect(order).toEqual(["stage", "commit"]);
+  });
+
+  it("JSON dialog: ⌘S on the unchanged text keeps the stored value and commits the tab", async () => {
+    const { onCommit } = renderEditor(col("json"), { t: "json", v: '{"a":1}' }, '{"a":1}');
+    const { commit } = watch(onCommit);
+    fireEvent.keyDown(within(screen.getByRole("dialog")).getByRole("textbox"), ctrlS);
+    expect(onCommit).toHaveBeenCalledWith({ t: "json", v: '{"a":1}' }, "blur");
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+  });
+
+  it("leaves Enter, Tab and Escape as they were (they never commit the tab)", async () => {
+    const commitTab = vi.fn();
+    offs.push(actions.register("grid.commit", commitTab));
+    const enter = renderEditor(col("text"), { t: "text", v: "a" }, "b");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit c" }), { key: "Enter" });
+    expect(enter.onCommit).toHaveBeenCalledWith({ t: "text", v: "b" }, "enter");
+    document.body.innerHTML = "";
+    const tab = renderEditor(col("text"), { t: "text", v: "a" }, "b");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit c" }), { key: "Tab" });
+    expect(tab.onCommit).toHaveBeenCalledWith({ t: "text", v: "b" }, "tab");
+    document.body.innerHTML = "";
+    const esc = renderEditor(col("text"), { t: "text", v: "a" }, "b");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit c" }), { key: "Escape" });
+    expect(esc.onCancel).toHaveBeenCalledOnce();
+    expect(esc.onCommit).not.toHaveBeenCalled();
+    // Plain "s" and ⌘⇧S are not the commit key.
+    document.body.innerHTML = "";
+    const other = renderEditor(col("text"), { t: "text", v: "a" }, "b");
+    const input = screen.getByRole("textbox", { name: "Edit c" });
+    fireEvent.keyDown(input, { key: "s", code: "KeyS" });
+    fireEvent.keyDown(input, { key: "s", code: "KeyS", ctrlKey: true, shiftKey: true });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(other.onCommit).not.toHaveBeenCalled();
+    expect(commitTab).not.toHaveBeenCalled();
   });
 });

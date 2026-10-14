@@ -11,7 +11,14 @@ import { useConnectionsStore } from "@/stores/connections";
 import { useTableTabsStore } from "@/stores/tableTabs";
 import { useTabsStore } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
-import { disconnectGuarded, reloadSchema, usePaletteCommands } from "./commands";
+import {
+  disconnectGuarded,
+  PALETTE_ONLY_ACTIONS,
+  paletteCommandItems,
+  reloadSchema,
+  usePaletteCommands,
+} from "./commands";
+import type { ActionId } from "./actions";
 import { usePaletteStore } from "./store";
 
 const toast = vi.hoisted(() => ({
@@ -327,5 +334,45 @@ describe("palette navigation commands", () => {
     const { commands } = renderCommands();
     act(() => commands().openShortcuts());
     expect(useSettingsDialog.getState()).toMatchObject({ open: true, section: "shortcuts" });
+  });
+});
+
+describe("palette-only actions", () => {
+  const noop = () => undefined;
+  const items = (has: (id: ActionId) => boolean, active: boolean) =>
+    paletteCommandItems({
+      themePref: "system",
+      active: active ? { connectionId: "c1", name: "Local PG", schema: null } : null,
+      commands: {
+        setTheme: noop,
+        newConnection: noop,
+        openShortcuts: noop,
+        disconnect: () => Promise.resolve(true),
+        reloadSchema: () => Promise.resolve(),
+        runAction: vi.fn(),
+      },
+      has,
+    });
+
+  it("lists Connection Manager (its key moved to New SQL Viewer) and Ask Assistant…", () => {
+    expect(PALETTE_ONLY_ACTIONS).toContain("ui.launcher");
+    expect(PALETTE_ONLY_ACTIONS).toContain("assistant.ask");
+    const all = items(() => true, true);
+    const manager = all.find((i) => i.key === "action:ui.launcher");
+    expect(manager).toMatchObject({ label: "Connection Manager", group: "actions" });
+    expect(manager?.detail).toBeUndefined();
+    expect(manager?.keywords?.join(" ")).toMatch(/launcher/);
+    const ask = all.find((i) => i.key === "action:assistant.ask");
+    expect(ask).toMatchObject({ label: "Ask Assistant…", detail: "Local PG" });
+    expect(ask?.keywords?.join(" ")).toMatch(/assistant/);
+  });
+
+  it("lists them only while they have a handler, and runs them through the registry", () => {
+    expect(items((id) => id !== "assistant.ask", false).map((i) => i.key)).toContain(
+      "action:ui.launcher",
+    );
+    const keys = items((id) => id !== "assistant.ask", false).map((i) => i.key);
+    expect(keys).not.toContain("action:assistant.ask");
+    expect(items(() => false, false).map((i) => i.key)).not.toContain("action:ui.launcher");
   });
 });

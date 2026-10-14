@@ -1,4 +1,4 @@
-import { Loader2, LockKeyhole, ShieldAlert } from "lucide-react";
+import { FingerprintPattern, Loader2, LockKeyhole, ShieldAlert } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import {
   AlertDialog,
@@ -14,8 +14,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { TagPill } from "@/features/connections/badges";
 import { hasSingleHost, useSingleHost } from "@/features/export/singleHost";
+import { authenticateOwner } from "@/features/lock/biometric";
 import { ipc, toIpcError } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
+import { usePrefs } from "@/stores/prefs";
 import { SAFE_MODE_LABEL } from "./levels";
 import {
   abandonSafetyPrompts,
@@ -129,6 +131,11 @@ function AlertBody({ prompt }: { prompt: SafetyPrompt }) {
   );
 }
 
+/** What the system Touch ID dialog says: "Tabler is trying to <reason>." */
+function touchIdReason(prompt: PasswordPrompt): string {
+  return `unlock Safe Mode for “${prompt.target.name}”`;
+}
+
 function PasswordBody({ prompt }: { prompt: PasswordPrompt }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [value, setValue] = useState("");
@@ -136,6 +143,29 @@ function PasswordBody({ prompt }: { prompt: PasswordPrompt }) {
   const [checking, setChecking] = useState(false);
   const byName = prompt.secret === "name";
   useEffect(() => inputRef.current?.focus(), []);
+
+  // Settings ▸ Security ▸ Unlock Safe Mode with Touch ID: offered once on its own, then on the
+  // button; the typed password keeps working.
+  const touchIdPref = usePrefs((p) => p.safeModeTouchId);
+  const [touchId, setTouchId] = useState<"idle" | "asking" | "unavailable">("idle");
+  const askTouchId = async () => {
+    setTouchId("asking");
+    const result = await authenticateOwner(touchIdReason(prompt));
+    if (result === "ok") {
+      answerSafetyPrompt(prompt.id, true);
+      return;
+    }
+    setTouchId(result === "unavailable" ? "unavailable" : "idle");
+    if (result === "unavailable") setError("Touch ID is not available. Type the password.");
+    inputRef.current?.focus();
+  };
+  const askRef = useRef(askTouchId);
+  askRef.current = askTouchId;
+  useEffect(() => {
+    if (touchIdPref) void askRef.current();
+    // Once per prompt (the body is keyed by the prompt).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const retry = (message: string) => {
     setError(message);
@@ -198,6 +228,23 @@ function PasswordBody({ prompt }: { prompt: PasswordPrompt }) {
         )}
       </div>
       <AlertDialogFooter className="py-1">
+        {touchIdPref && touchId !== "unavailable" && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={touchId === "asking"}
+            onClick={() => void askTouchId()}
+            className="sm:mr-auto"
+          >
+            {touchId === "asking" ? (
+              <Loader2 className="animate-spin" aria-hidden />
+            ) : (
+              <FingerprintPattern aria-hidden />
+            )}
+            Use Touch ID
+          </Button>
+        )}
         <AlertDialogCancel size="sm" type="button">
           Cancel
         </AlertDialogCancel>

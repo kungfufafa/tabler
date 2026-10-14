@@ -1,8 +1,12 @@
 import {
+  FolderOpen,
   Keyboard,
+  Palette,
   Plug,
+  Server,
   ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
   SquareCode,
   type LucideIcon,
 } from "lucide-react";
@@ -10,11 +14,17 @@ import { Tabs as TabsPrimitive } from "radix-ui";
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent } from "react";
 import { flushSync } from "react-dom";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { AppearanceSettings } from "@/features/appearance";
+import { AssistantSettingsGroup } from "@/features/assistant/AssistantSettings";
+import { LocationsSettings } from "@/features/locations/LocationsSettings";
+import { McpSettings } from "@/features/mcp/McpSettings";
 import { useAction } from "@/features/palette/actions";
 import { comboFromEvent, formatCombo, isMac } from "@/lib/keys/combo";
 import { isCapturingShortcut } from "@/lib/keys/useShortcuts";
 import { flushPrefs, loadPrefs, usePrefs } from "@/stores/prefs";
 import { applyUiFontSize } from "./applyPrefs";
+import { SectionShell } from "./controls";
+import { installCrossWindowSync } from "./crossWindow";
 import { ConnectionsSection, EditorSection, GeneralSection, SecuritySection } from "./sections";
 import { ShortcutsSection } from "./ShortcutsSection";
 import {
@@ -29,14 +39,49 @@ const SECTION_META: Record<SettingsSection, { label: string; icon: LucideIcon }>
   general: { label: "General", icon: SlidersHorizontal },
   editor: { label: "Editor", icon: SquareCode },
   connections: { label: "Connections", icon: Plug },
+  locations: { label: "Locations", icon: FolderOpen },
   shortcuts: { label: "Shortcuts", icon: Keyboard },
   security: { label: "Security", icon: ShieldCheck },
+  assistant: { label: "AI Assistant", icon: Sparkles },
+  mcp: { label: "MCP Server", icon: Server },
+  appearance: { label: "Appearance", icon: Palette },
 };
 
-/** Loads preferences once per session, applies the interface text size and flushes saves on exit. */
+/** Settings ▸ Locations: where the connections, settings and saved queries are kept. */
+function LocationsSection() {
+  return (
+    <SectionShell title="Locations">
+      <LocationsSettings />
+    </SectionShell>
+  );
+}
+
+/** Settings ▸ AI Assistant: provider, model, API key and what is sent. */
+function AssistantSection() {
+  return (
+    <SectionShell title="AI Assistant">
+      <AssistantSettingsGroup />
+    </SectionShell>
+  );
+}
+
+/** Settings ▸ MCP Server: the `tabler --mcp` server and its one-click install. */
+function McpSection() {
+  return (
+    <SectionShell title="MCP Server">
+      <McpSettings />
+    </SectionShell>
+  );
+}
+
+/**
+ * Loads preferences once per session, applies the interface text size, flushes saves on exit and
+ * follows the settings other windows change.
+ */
 function PrefsLoader() {
   const uiFontSize = usePrefs((p) => p.uiFontSize);
   useLayoutEffect(() => applyUiFontSize(uiFontSize), [uiFontSize]);
+  useEffect(() => installCrossWindowSync(), []);
   useEffect(() => {
     void loadPrefs();
     const flush = () => void flushPrefs();
@@ -52,7 +97,10 @@ function PrefsLoader() {
 
 const openFromAction = () => openSettings();
 
-/** Settings dialog (⌘,): General / Editor / Connections / Shortcuts. Always mounted from AppShell. */
+/**
+ * Settings dialog (⌘,): General / Editor / Connections / Locations / Shortcuts / Security / AI
+ * Assistant / MCP Server / Appearance (⌘1…⌘9). Always mounted from AppShell.
+ */
 export function SettingsDialog() {
   const open = useSettingsDialog((s) => s.open);
   const section = useSettingsDialog((s) => s.section);
@@ -173,6 +221,13 @@ export function SettingsDialog() {
                 <ConnectionsSection />
               </TabsPrimitive.Content>
               <TabsPrimitive.Content
+                value="locations"
+                tabIndex={-1}
+                className="flex min-h-0 flex-1 flex-col outline-none"
+              >
+                <LocationsSection />
+              </TabsPrimitive.Content>
+              <TabsPrimitive.Content
                 value="shortcuts"
                 tabIndex={-1}
                 className="flex min-h-0 flex-1 flex-col outline-none"
@@ -185,6 +240,27 @@ export function SettingsDialog() {
                 className="flex min-h-0 flex-1 flex-col outline-none"
               >
                 <SecuritySection />
+              </TabsPrimitive.Content>
+              <TabsPrimitive.Content
+                value="assistant"
+                tabIndex={-1}
+                className="flex min-h-0 flex-1 flex-col outline-none"
+              >
+                <AssistantSection />
+              </TabsPrimitive.Content>
+              <TabsPrimitive.Content
+                value="mcp"
+                tabIndex={-1}
+                className="flex min-h-0 flex-1 flex-col outline-none"
+              >
+                <McpSection />
+              </TabsPrimitive.Content>
+              <TabsPrimitive.Content
+                value="appearance"
+                tabIndex={-1}
+                className="flex min-h-0 flex-1 flex-col outline-none"
+              >
+                <AppearanceSettings />
               </TabsPrimitive.Content>
             </div>
           </TabsPrimitive.Root>

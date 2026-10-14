@@ -33,9 +33,10 @@ import { profileKeys } from "./useConnections";
 
 /**
  * Connection groups form a tree. A profile's `group` is a path whose levels are joined by
- * " / " (`Clients / Acme / Prod`); the groups themselves (with their icons, and empty ones too:
- * TablePlus's "New ▸ Group…") are saved in the settings key `connectionGroups` as
- * `{ path, icon }` records. Older versions saved plain names: they read as top-level groups.
+ * " / " (`Clients / Acme / Prod`); the groups themselves (with their icons or images, and empty
+ * ones too: TablePlus's "New ▸ Group…") are saved in the settings key `connectionGroups` as
+ * `{ path, icon, image }` records. Older versions saved plain names: they read as top-level
+ * groups.
  */
 
 /** App DB settings key of the saved groups (mirrors `GROUPS_SETTING` in profiles.rs). */
@@ -52,8 +53,8 @@ export const MAX_GROUP_PATH = 200;
 // ---- icons ---------------------------------------------------------------------------------
 
 /**
- * The icons a group can show on its header. TablePlus lets a group carry any image; Tabler
- * offers this curated set of icons instead (they follow the theme in light and dark).
+ * The icons a group can show on its header: this curated set (they follow the theme in light and
+ * dark), or an image of the user's own (`GroupRecord.image`), which takes their place.
  */
 export const GROUP_ICONS = {
   folder: { label: "Folder", icon: Folder },
@@ -87,6 +88,27 @@ export const GROUP_ICON_IDS = Object.keys(GROUP_ICONS) as GroupIconId[];
 
 export const isGroupIconId = (v: unknown): v is GroupIconId =>
   typeof v === "string" && Object.hasOwn(GROUP_ICONS, v);
+
+// ---- images --------------------------------------------------------------------------------
+
+/**
+ * The longest group image kept: its whole `data:image/…` URI, in characters (a 64x64 PNG is a few
+ * KB; the cap keeps the settings and exported files small). Mirrors `MAX_IMAGE_LEN` in
+ * profiles_io.rs, which drops what is longer when it reads the setting or a file.
+ */
+export const MAX_GROUP_IMAGE_CHARS = 24 * 1024;
+
+/**
+ * Whether `v` is a group image Tabler keeps: a `data:image/…` URI within the size cap. Anything
+ * else (`javascript:`, `http:`, a picture that is too big…) is not an image of a group.
+ */
+export const isGroupImage = (v: unknown): v is string =>
+  typeof v === "string" &&
+  v.length <= MAX_GROUP_IMAGE_CHARS &&
+  v.startsWith("data:image/") &&
+  v.length > "data:image/".length &&
+  // eslint-disable-next-line no-control-regex
+  !/[\u0000-\u001f\u007f]/.test(v);
 
 // ---- paths ---------------------------------------------------------------------------------
 
@@ -161,12 +183,18 @@ export interface GroupRecord {
   path: string;
   /** null: no icon on the header. */
   icon: GroupIconId | null;
+  /**
+   * The image the user chose for the group: a `data:image/png;base64,…` URI (see
+   * `groupImage.ts`). It takes the icon's place on the header; null: the icon (or none).
+   */
+  image: string | null;
 }
 
 /**
- * The saved groups of a stored value: `{ path, icon }` records, or the plain names older
+ * The saved groups of a stored value: `{ path, icon, image }` records, or the plain names older
  * versions saved (migrated as top-level groups without an icon). Paths are made canonical and
- * kept once; unknown icons are dropped; anything else is skipped.
+ * kept once; unknown icons and anything that is not a `data:image/` URI within the size cap are
+ * dropped; anything else is skipped.
  */
 export function sanitizeGroups(raw: unknown): GroupRecord[] {
   if (!Array.isArray(raw)) return [];
@@ -174,24 +202,37 @@ export function sanitizeGroups(raw: unknown): GroupRecord[] {
   for (const v of raw) {
     const rec =
       typeof v === "string"
-        ? { path: v, icon: null }
+        ? { path: v, icon: null, image: null }
         : typeof v === "object" && v !== null && typeof (v as { path?: unknown }).path === "string"
-          ? (v as { path: string; icon?: unknown })
+          ? (v as { path: string; icon?: unknown; image?: unknown })
           : null;
     if (!rec) continue;
     const icon = isGroupIconId(rec.icon) ? rec.icon : null;
-    addGroup(out, rec.path, icon);
+    // Trimmed like the backend does (a pasted URI may carry a newline at its end).
+    const image = typeof rec.image === "string" ? rec.image.trim() : null;
+    addGroup(out, rec.path, icon, isGroupImage(image) ? image : null);
   }
   return out;
 }
 
-/** Adds `path` to `list` in place (a group already there without an icon takes `icon`). */
-function addGroup(list: GroupRecord[], raw: string, icon: GroupIconId | null = null): void {
+/**
+ * Adds `path` to `list` in place (a group already there takes the `icon` and `image` it
+ * lacks).
+ */
+function addGroup(
+  list: GroupRecord[],
+  raw: string,
+  icon: GroupIconId | null = null,
+  image: string | null = null,
+): void {
   const path = normalizePath(raw);
   if (!path) return;
   const existing = list.find((g) => g.path === path);
-  if (!existing) list.push({ path, icon });
-  else if (!existing.icon) existing.icon = icon;
+  if (!existing) list.push({ path, icon, image });
+  else {
+    if (!existing.icon) existing.icon = icon;
+    if (!existing.image) existing.image = image;
+  }
 }
 
 export async function loadStoredGroups(): Promise<GroupRecord[]> {
@@ -223,6 +264,10 @@ export function knownGroups(
 /** The icon saved for `path` (null when none). */
 export const iconOf = (stored: readonly GroupRecord[], path: string): GroupIconId | null =>
   stored.find((g) => g.path === path)?.icon ?? null;
+
+/** The image saved for `path` (null when none); it is shown instead of the icon. */
+export const imageOf = (stored: readonly GroupRecord[], path: string): string | null =>
+  stored.find((g) => g.path === path)?.image ?? null;
 
 /** Why `name` cannot be used for a group in `parent`; null when it can. */
 export function groupNameError(
@@ -301,7 +346,7 @@ function remap(
   const groups: GroupRecord[] = [];
   for (const r of records) {
     const path = group(r.path);
-    if (path !== null) addGroup(groups, path, r.icon);
+    if (path !== null) addGroup(groups, path, r.icon, r.image);
   }
   const targets = new Map<string, string[]>();
   for (const p of profiles) {
@@ -350,7 +395,19 @@ export function withIcon(
 ): GroupRecord[] {
   const p = normalizePath(path);
   const out = records.map((g) => (g.path === p ? { ...g, icon } : g));
-  if (p && !out.some((g) => g.path === p)) out.push({ path: p, icon });
+  if (p && !out.some((g) => g.path === p)) out.push({ path: p, icon, image: null });
+  return out;
+}
+
+/** The saved groups with `image` on `path` (null: none; saving the group if it was only used). */
+export function withImage(
+  records: readonly GroupRecord[],
+  path: string,
+  image: string | null,
+): GroupRecord[] {
+  const p = normalizePath(path);
+  const out = records.map((g) => (g.path === p ? { ...g, image } : g));
+  if (p && !out.some((g) => g.path === p)) out.push({ path: p, icon: null, image });
   return out;
 }
 
@@ -358,8 +415,15 @@ async function storedGroups(qc: QueryClient): Promise<GroupRecord[]> {
   return qc.ensureQueryData({ queryKey: groupKeys.all, queryFn: loadStoredGroups });
 }
 
+/**
+ * The setting's form of the groups: `{ path, icon }`, plus `image` for a group that has one (like
+ * the backend writes it: no `image` key without an image).
+ */
+export const storableGroups = (records: readonly GroupRecord[]) =>
+  records.map(({ image, ...rest }) => (image ? { ...rest, image } : rest));
+
 async function persistGroups(qc: QueryClient, next: GroupRecord[]): Promise<void> {
-  await ipc.settings.set(GROUPS_SETTING, next);
+  await ipc.settings.set(GROUPS_SETTING, storableGroups(next));
   qc.setQueryData(groupKeys.all, next);
 }
 
@@ -414,7 +478,7 @@ async function moveBack(ids: readonly string[], profiles: readonly ConnectionPro
 
 export interface GroupActions {
   /** Saves the group `path` (subgroups: a path inside another group). */
-  create: (path: string, icon?: GroupIconId | null) => Promise<boolean>;
+  create: (path: string, icon?: GroupIconId | null, image?: string | null) => Promise<boolean>;
   /** Renames (or moves) the group to the path `to`; subgroups and connections follow. */
   rename: (from: string, to: string) => Promise<boolean>;
   /** Moves the group into `newParent` ("" = top level). */
@@ -422,6 +486,8 @@ export interface GroupActions {
   /** Deletes the group; its connections and subgroups move up one level. */
   remove: (path: string) => Promise<boolean>;
   setIcon: (path: string, icon: GroupIconId | null) => Promise<boolean>;
+  /** Sets (or, with null, removes) the group's own image. */
+  setImage: (path: string, image: string | null) => Promise<boolean>;
   /** Moves profiles into `group` (null: no group). */
   moveTo: (ids: string[], group: string | null) => Promise<boolean>;
 }
@@ -454,10 +520,10 @@ export function useGroupActions(): GroupActions {
         await applyGroupPlan(qc, planRenameGroup(await storedGroups(qc), before, f, t), before);
       });
     return {
-      create: (path, icon = null) =>
+      create: (path, icon = null, image = null) =>
         attempt("Could not create the group", async () => {
           const next = [...(await storedGroups(qc))];
-          addGroup(next, path, icon);
+          addGroup(next, path, icon, isGroupImage(image) ? image : null);
           await persistGroups(qc, next);
         }),
       rename,
@@ -471,6 +537,12 @@ export function useGroupActions(): GroupActions {
       setIcon: (path, icon) =>
         attempt("Could not change the icon", async () => {
           await persistGroups(qc, withIcon(await storedGroups(qc), path, icon));
+        }),
+      setImage: (path, image) =>
+        attempt("Could not change the image", async () => {
+          if (image !== null && !isGroupImage(image))
+            throw new Error("That is not an image Tabler can keep");
+          await persistGroups(qc, withImage(await storedGroups(qc), path, image));
         }),
       moveTo: (ids, group) =>
         attempt("Could not move the connection", async () => {

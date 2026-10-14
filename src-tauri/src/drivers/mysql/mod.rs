@@ -20,12 +20,14 @@ use tokio::sync::Mutex;
 
 use crate::drivers::{
     CANCEL_SETTLE_LIMIT, CancelHandle, CancelSlot, ConnectTarget, DbSession, LATE_CANCEL_NOTICE,
-    RowSink, ServerInfo, StatementOutcome, TxState, TxStatement, arm_cancel, cancel_requested,
-    cancel_safe_on_stop, check_affected, settle_cancels, tx_effect,
+    RowSink, ServerInfo, SqlTrace, StatementOutcome, TraceCounts, TxState, TxStatement, arm_cancel,
+    cancel_requested, cancel_safe_on_stop, check_affected, classify_statement, settle_cancels,
+    trace_sql, tx_effect,
 };
 use crate::error::AppError;
 use crate::secrets::CommandPassword;
 use crate::sqlgen::Dialect;
+use crate::types::browse::TracedSql;
 use crate::types::profile::Driver;
 use crate::types::query::{ExecOutcome, ResultSet, StatementKind};
 use crate::types::schema::{
@@ -90,6 +92,8 @@ pub struct MySession {
     editor_runs: Mutex<()>,
     /// Idle seconds after which `ping` pings the editor ([`EDITOR_KEEPALIVE_IDLE_SECS`]).
     editor_keepalive_idle_secs: i64,
+    /// The statements this session ran for the app, for the console log (see `SqlTrace`).
+    trace: SqlTrace,
 }
 
 impl MySession {
@@ -111,6 +115,7 @@ impl MySession {
             closing: AtomicBool::new(false),
             editor_runs: Mutex::new(()),
             editor_keepalive_idle_secs: EDITOR_KEEPALIVE_IDLE_SECS,
+            trace: SqlTrace::default(),
         })
     }
 
@@ -321,42 +326,116 @@ impl DbSession for MySession {
 
     async fn list_databases(&self) -> Result<Vec<DatabaseInfo>, AppError> {
         let mut conn = self.conn().await?;
-        introspect::list_databases(&mut conn).await
+        introspect::list_databases(&mut introspect::Traced::new(&mut conn, &self.trace)).await
     }
 
     async fn list_schemas(&self) -> Result<Vec<SchemaInfo>, AppError> {
         let mut conn = self.conn().await?;
-        introspect::list_schemas(&mut conn).await
+        introspect::list_schemas(&mut introspect::Traced::new(&mut conn, &self.trace)).await
     }
 
     async fn list_tables(&self, schema: &str) -> Result<Vec<TableSummary>, AppError> {
         let mut conn = self.conn().await?;
-        introspect::list_tables(&mut conn, schema).await
+        introspect::list_tables(&mut introspect::Traced::new(&mut conn, &self.trace), schema).await
     }
 
     async fn table_meta(&self, table: &TableRef) -> Result<TableMeta, AppError> {
         let mut conn = self.conn().await?;
-        introspect::table_meta(&mut conn, table).await
+        introspect::table_meta(&mut introspect::Traced::new(&mut conn, &self.trace), table).await
     }
 
     async fn view_definition(&self, table: &TableRef) -> Result<Option<String>, AppError> {
         let mut conn = self.conn().await?;
-        introspect::view_definition(&mut conn, table).await
+        introspect::view_definition(&mut introspect::Traced::new(&mut conn, &self.trace), table)
+            .await
     }
 
     async fn completion_metadata(&self) -> Result<CompletionMetadata, AppError> {
         let mut conn = self.conn().await?;
-        introspect::completion_metadata(&mut conn).await
+        introspect::completion_metadata(&mut introspect::Traced::new(&mut conn, &self.trace)).await
     }
 
     async fn query(&self, sql: &str, params: &[Value]) -> Result<ResultSet, AppError> {
         let mut conn = self.conn().await?;
-        exec::run_query(&mut conn, sql, params).await
+        self.trace
+            .run_async(
+                classify_statement(sql, Dialect::Mysql),
+                trace_sql(Dialect::Mysql, sql, params),
+                |rs: &ResultSet| TraceCounts::rows(rs.rows.len()),
+                exec::run_query(&mut conn, sql, params),
+            )
+            .await
+    }
+
+    async fn query_cancellable(
+        &self,
+        sql: &str,
+        params: &[Value],
+        cancel: CancelSlot,
+    ) -> Result<ResultSet, AppError> {
+        let mut conn = self.conn().await?;
+        let conn_id = conn.id();
+        let result = {
+            let _armed = arm_cancel(&cancel, CancelHandle::Mysql { conn_id })?;
+            self.trace
+                .run_async(
+                    classify_statement(sql, Dialect::Mysql),
+                    trace_sql(Dialect::Mysql, sql, params),
+                    |rs: &ResultSet| TraceCounts::rows(rs.rows.len()),
+                    exec::run_query(&mut conn, sql, params),
+                )
+                .await
+        };
+        if cancel_requested(&cancel) && !conn.is_disconnected() {
+            // The connection goes back to the pool: no late KILL may follow it there.
+            settle(&cancel).await;
+            editor::absorb_stray_kill(&mut conn).await;
+            // A killed `SELECT SLEEP(n)` ends without an error: a read the user (or the query
+            // time out) cancelled is reported as cancelled, as `run_statement` does.
+            if result.is_ok() && cancel_safe_on_stop(sql, Dialect::Mysql) {
+                return Err(AppError::Cancelled);
+            }
+        }
+        result
     }
 
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecOutcome, AppError> {
         let mut conn = self.conn().await?;
-        exec::run_execute(&mut conn, sql, params).await
+        self.trace
+            .run_async(
+                classify_statement(sql, Dialect::Mysql),
+                trace_sql(Dialect::Mysql, sql, params),
+                TraceCounts::of_exec,
+                exec::run_execute(&mut conn, sql, params),
+            )
+            .await
+    }
+
+    async fn execute_cancellable(
+        &self,
+        sql: &str,
+        params: &[Value],
+        cancel: CancelSlot,
+    ) -> Result<ExecOutcome, AppError> {
+        let mut conn = self.conn().await?;
+        let conn_id = conn.id();
+        let result = {
+            let _armed = arm_cancel(&cancel, CancelHandle::Mysql { conn_id })?;
+            self.trace
+                .run_async(
+                    classify_statement(sql, Dialect::Mysql),
+                    trace_sql(Dialect::Mysql, sql, params),
+                    TraceCounts::of_exec,
+                    exec::run_execute(&mut conn, sql, params),
+                )
+                .await
+        };
+        if cancel_requested(&cancel) && !conn.is_disconnected() {
+            // The connection goes back to the pool: no late KILL may follow it there.
+            settle(&cancel).await;
+            editor::absorb_stray_kill(&mut conn).await;
+        }
+        result
     }
 
     async fn transaction(
@@ -367,7 +446,14 @@ impl DbSession for MySession {
         let mut tx = conn.start_transaction(TxOpts::default()).await?;
         let mut out = Vec::with_capacity(statements.len());
         for (index, st) in statements.iter().enumerate() {
-            match exec::run_execute(&mut tx, &st.sql, &st.params)
+            match self
+                .trace
+                .run_async(
+                    classify_statement(&st.sql, Dialect::Mysql),
+                    trace_sql(Dialect::Mysql, &st.sql, &st.params),
+                    TraceCounts::of_exec,
+                    exec::run_execute(&mut tx, &st.sql, &st.params),
+                )
                 .await
                 .and_then(|o| {
                     check_affected(st, &o, index)?;
@@ -460,7 +546,14 @@ impl DbSession for MySession {
         let killer = workers.killer(conn_id);
         let result = {
             let _armed = arm_cancel(&cancel, CancelHandle::Mysql { conn_id })?;
-            editor::run(&mut conn, sql, params, None, sink, &killer, false).await
+            self.trace
+                .run_async(
+                    classify_statement(sql, Dialect::Mysql),
+                    trace_sql(Dialect::Mysql, sql, params),
+                    |o: &StatementOutcome| TraceCounts::rows(o.row_count as usize),
+                    editor::run(&mut conn, sql, params, None, sink, &killer, false),
+                )
+                .await
         };
         if cancel_requested(&cancel) && !conn.is_disconnected() {
             // The connection goes back to the pool: no late KILL may follow it there.
@@ -491,6 +584,14 @@ impl DbSession for MySession {
 
     fn in_transaction(&self) -> Option<bool> {
         self.tx_state.get()
+    }
+
+    fn drain_trace(&self) -> Vec<TracedSql> {
+        self.trace.drain()
+    }
+
+    fn sql_trace(&self) -> Option<&SqlTrace> {
+        Some(&self.trace)
     }
 
     fn is_mariadb(&self) -> bool {

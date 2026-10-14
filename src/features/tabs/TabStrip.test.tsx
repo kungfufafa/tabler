@@ -7,7 +7,7 @@ import { emptyStaging, insertRow } from "@/features/staging/model";
 import { useStructureStore } from "@/features/structure/store";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
-import { useTableTabsStore } from "@/stores/tableTabs";
+import { newFilterRow, useTableTabsStore } from "@/stores/tableTabs";
 import { useUiStore } from "@/stores/ui";
 import { TabStrip as Strip } from "./TabStrip";
 import { UnsavedChangesDialog } from "./UnsavedChangesDialog";
@@ -210,18 +210,59 @@ describe("TabStrip", () => {
     expect(useTabsStore.getState().activeId).toBe(b);
   });
 
-  it("offers Duplicate only on query tabs", () => {
+  it("offers Duplicate Tab on query and table tabs, not on tool tabs", () => {
     const s = useTabsStore.getState();
     s.openTable("c1", users);
     const q = s.newQuery("c1");
+    s.open({ id: "tool1", kind: "tool", connectionId: "c1", tool: "metrics", title: "Metrics" });
     render(<TabStrip />);
-    fireEvent.contextMenu(tabEl(/users/));
-    expect(screen.queryByRole("menuitem", { name: "Duplicate" })).not.toBeInTheDocument();
+    fireEvent.contextMenu(tabEl(/Metrics/));
+    expect(screen.queryByRole("menuitem", { name: "Duplicate Tab" })).not.toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     fireEvent.contextMenu(tabEl(/Query 1/));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }));
-    expect(ids()).toHaveLength(3);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate Tab" }));
+    expect(ids()).toHaveLength(4);
     expect(ids()[2]).not.toBe(q);
+  });
+
+  it("duplicates a table tab with its filters, sort and columns but not its staged edits", () => {
+    const s = useTabsStore.getState();
+    const a = s.openTable("c1", users);
+    const row = { ...newFilterRow("id", "eq", "5"), enabled: true };
+    let staging = emptyStaging();
+    staging = insertRow(staging, "new:0", []);
+    useTableTabsStore.getState().update(a, {
+      filters: [row],
+      filtersVisible: true,
+      sort: [{ column: "name", dir: "desc", nulls: null }],
+      columnState: { widths: { id: 90 }, order: ["name", "id"], hidden: ["secret"] },
+      staging,
+    });
+    render(<TabStrip />);
+    fireEvent.contextMenu(tabEl(/users/));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate Tab" }));
+    expect(ids()).toHaveLength(2);
+    const copyId = ids()[1]!;
+    expect(copyId).not.toBe(a);
+    expect(useTabsStore.getState().activeId).toBe(copyId);
+    const copy = useTabsStore.getState().tabs[1]!;
+    expect(copy).toMatchObject({ kind: "table", connectionId: "c1", table: users, title: "users" });
+    expect((copy as { preview?: boolean }).preview).toBeUndefined();
+    const slice = useTableTabsStore.getState().slices[copyId]!;
+    expect(slice.filters).toMatchObject([{ column: "id", op: "eq", value: "5", enabled: true }]);
+    expect(slice.filters[0]!.id).not.toBe(row.id);
+    expect(slice.filtersVisible).toBe(true);
+    expect(slice.sort).toEqual([{ column: "name", dir: "desc", nulls: null }]);
+    expect(slice.columnState).toEqual({
+      widths: { id: 90 },
+      order: ["name", "id"],
+      hidden: ["secret"],
+    });
+    expect(slice.staging.changes.size).toBe(0);
+    // The source keeps its own staged work; the copy diverges from here on.
+    expect(useTableTabsStore.getState().slices[a]!.staging.changes.size).toBe(1);
+    useTableTabsStore.getState().update(copyId, { filters: [] });
+    expect(useTableTabsStore.getState().slices[a]!.filters).toHaveLength(1);
   });
 
   it("opens a new query on double-click in the empty strip, even with no tabs", () => {

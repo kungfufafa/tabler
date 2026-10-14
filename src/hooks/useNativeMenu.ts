@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { actions, type ActionId } from "@/features/palette/actions";
-import { listenEvent } from "@/lib/ipc/events";
+import { listenWindowEvent } from "@/lib/ipc/events";
 import { KEYMAP, type Scope } from "@/lib/keys/keymap";
 import { resolveScope } from "@/lib/keys/useShortcuts";
 
@@ -10,9 +10,14 @@ import { resolveScope } from "@/lib/keys/useShortcuts";
  */
 export const MENU_ACTIONS = [
   "settings.open",
+  "window.new",
   "connection.new",
   "tab.new-query",
   "query.open",
+  // File: New Workspace, New SQL Viewer (⇧⌘O), Reload Workspace (⌘R).
+  "workspace.new",
+  "sqlviewer.new",
+  "workspace.reload",
   "tab.close",
   "tab.close-all",
   "tab.reopen",
@@ -35,8 +40,11 @@ export const MENU_ACTIONS = [
   "workspace.prev",
   "admin.process-list",
   "admin.users",
+  "metrics.open",
   "connection.disconnect",
+  "connection.encoding",
   "import.csv",
+  "import.json",
   "import.sql",
   // File: the SQL editor's save items.
   "query.save-as",
@@ -55,6 +63,7 @@ export const MENU_ACTIONS = [
   "grid.set-empty",
   "grid.set-default",
   "grid.set-now",
+  "grid.copy-cell",
   "grid.copy-as",
   "grid.quick-look",
   // View.
@@ -76,19 +85,28 @@ export const MENU_ACTIONS = [
   "tab.goto-9",
   "ui.prev-pane",
   "ui.next-pane",
+  // Window.
+  "window.move-tab",
+  "workspace.split-right",
+  "app.lock",
+  // Plugins.
+  "plugins.manage",
 ] as const satisfies readonly ActionId[];
 
 /**
  * Menu items shown without their keys: their shortcut is context-dependent and the same keys run
  * another menu item (⌘I Beautify / Insert Row, ⌘D duplicate row / the editor's next occurrence,
- * ⇧⌘D Split Pane / Set DEFAULT). The key goes through the page's scope resolution instead (the
- * grid's keymap scope wins while the grid has the focus); the menu item only answers clicks. Their
- * accelerators are never synced (`installMenuAcceleratorSync`). Mirrors `PLAIN_MENU_ACTIONS`.
+ * ⇧⌘D Split Pane in the SQL editor / Split Right everywhere else, ⇧⌘C Copy Cell Value in a grid /
+ * the console log elsewhere). The key goes through the page's scope resolution instead (the
+ * focused area's keymap scope wins); the menu item only answers clicks. Their accelerators are
+ * never synced (`installMenuAcceleratorSync`). Mirrors `PLAIN_MENU_ACTIONS`.
  */
 export const MENU_UNBOUND_ACTIONS: readonly MenuActionId[] = [
   "grid.new-row",
   "grid.duplicate-row",
   "grid.set-default",
+  "grid.copy-cell",
+  "workspace.split-right",
 ];
 
 export type MenuActionId = (typeof MENU_ACTIONS)[number];
@@ -204,7 +222,7 @@ export function useNativeMenu(): void {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
-    void listenEvent("menu:action", (id) => void dispatchMenuAction(id)).then((u) => {
+    void listenWindowEvent("menu:action", (id) => void dispatchMenuAction(id)).then((u) => {
       if (cancelled) u();
       else unlisten = u;
     });

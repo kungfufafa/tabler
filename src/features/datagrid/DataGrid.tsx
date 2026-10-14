@@ -1,6 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowDown,
+  ArrowDownUp,
   ArrowUp,
   ClipboardPaste,
   Copy,
@@ -11,6 +12,7 @@ import {
   FileUp,
   Filter,
   KeyRound,
+  Link2,
   Maximize2,
   MoveHorizontal,
   PanelRight,
@@ -27,6 +29,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import {
   ContextMenu,
@@ -47,6 +50,8 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useAutoExpandColumns } from "@/features/appearance/autoExpand";
+import { useRowHeightChange } from "@/features/appearance/gridMetrics";
 import { useAction, type ActionId } from "@/features/palette/actions";
 import type { FilterOp, SortSpec, Value } from "@/lib/ipc";
 import { comboFromEvent, formatCombo, isMac } from "@/lib/keys/combo";
@@ -57,11 +62,15 @@ import { toggleRowDetail, useInspectorStore } from "@/stores/inspector";
 import { usePrefs } from "@/stores/prefs";
 import { useUiStore } from "@/stores/ui";
 import { CellEditor, type EditorExit } from "./CellEditor";
+import { bytesHex, wholeBytes } from "./cellText";
 import {
+  copiedMarkers,
   formatCells,
   formatColumnValues,
-  parseTsv,
+  parseTsvPaste,
   readClipboardText,
+  rememberCopy,
+  sniffCsvPaste,
   writeClipboard,
   type CopyContext,
   type CopyFormat,
@@ -76,7 +85,14 @@ import {
   resetLayout,
   showAll,
 } from "./columnState";
+import { GeometryPreview } from "./geometry/GeometryView";
+import { parseWkt } from "./geometry/wkt";
 import { GridCell } from "./GridCell";
+import {
+  renderGridMenuExtensions,
+  setActiveGridMenuContext,
+  type GridMenuContext,
+} from "./menuExtensions";
 import { holdsWholeRows, pastedRows, pastedValue, planPaste, type PastedRow } from "./paste";
 import { QuickLook, type ReferencedRows } from "./quicklook/QuickLook";
 import {
@@ -88,17 +104,23 @@ import {
   selectedRowCount,
   selectedRows,
   selectionReducer,
+  selectionRect,
+  type Rect,
   type SelectionAction,
   type SelectionState,
 } from "./selection";
 import { NOW_KINDS, NOW_LABEL } from "./setValue";
-import { nextSort } from "./sort";
+import { addSort, nextSort } from "./sort";
 import {
   acceptsEmpty,
   columnWidth,
   EMPTY_COLUMN_STATE,
+  fkColumnsText,
+  fkLabel,
+  fksOf,
   gutterWidth,
   HEADER_H,
+  isCompositeFk,
   layoutColumns,
   MAX_COL_W,
   MIN_COL_W,
@@ -106,6 +128,7 @@ import {
   SLIM_GUTTER_W,
   type CellPos,
   type ColumnState,
+  type FkRef,
   type GridColumn,
   type ViewRow,
 } from "./types";
@@ -138,6 +161,15 @@ export interface QuickFilter {
   values: Value[];
 }
 
+/** What the cell menu's Import ▸ can start (TablePlus: CSV, JSON, SQL dump). */
+export type GridImportKind = "csv" | "json" | "sql";
+
+const IMPORT_ITEMS: ReadonlyArray<{ kind: GridImportKind; label: string }> = [
+  { kind: "csv", label: "From CSV…" },
+  { kind: "json", label: "From JSON…" },
+  { kind: "sql", label: "From SQL Dump…" },
+];
+
 export interface FocusedCell {
   /** VISUAL position (row, visible column). */
   pos: CellPos;
@@ -162,7 +194,13 @@ export interface DataGridProps {
   onFocusCell?: (cell: FocusedCell | null) => void;
   /** Called with the number of selected rows whenever it changes (the bottom bar's "N of M"). */
   onSelectionChange?: (rows: number) => void;
-  onOpenFk?: (column: GridColumn, value: Value) => void;
+  /**
+   * The arrow of a foreign-key cell, ⌘J and the cell menu's Open item. A column with one
+   * single-column key calls `(column, value)`; with several keys the grid asks which one first and
+   * passes it as `fk`. A composite key also passes the clicked row's cells (SOURCE order), which
+   * hold its other columns.
+   */
+  onOpenFk?: (column: GridColumn, value: Value, fk?: FkRef, row?: readonly Value[]) => void;
   /** Dialect/table used by "Copy as INSERT". */
   copyContext?: CopyContext;
   /** Enables inline editing and row actions. */
@@ -184,10 +222,22 @@ export interface DataGridProps {
   rowNumbers?: boolean;
   /** Enables the cell menu's "Refresh". */
   onRefresh?: () => void;
-  /** Enables the cell menu's "Import ▸ From CSV…". */
-  onImportCsv?: () => void;
-  /** Enables the cell menu's "Export Current Page…". */
+  /**
+   * Enables the FK cell menu's "Generate JOIN" (the column holds a foreign key). With several
+   * keys the grid asks which one first and passes it as `fk`.
+   */
+  onGenerateJoin?: (column: GridColumn, fk?: FkRef) => void;
+  /** Enables the cell menu's "Import ▸ From CSV… / From JSON… / From SQL Dump…". */
+  onImport?: (kind: GridImportKind) => void;
+  /** Enables the cell menu's "Export Current Page…" (table grids). */
   onExportPage?: () => void;
+  /** Enables the cell menu's "Export Result…" (a SQL result's rows); it replaces the page export. */
+  onExportResult?: () => void;
+  /**
+   * ⌘↑ on the first row (or with no rows) hands the focus to the filter bar. Passed only while
+   * the bar is shown; without it ⌘↑ always jumps to the first row.
+   */
+  onFocusFilters?: () => void;
   /**
    * ⌘↩ opens Quick Look (table grids). Off by default: in a SQL tab's results ⌘↩ stays Run
    * Current; the menu and a middle-click still open it there.
@@ -202,6 +252,13 @@ export interface DataGridProps {
    * object is passed: the SQL editor's find in results steps through its matches with it.
    */
   revealCell?: CellPos | null;
+  /** The grid scrolls back to the top whenever this changes (a table tab's page, TablePlus). */
+  scrollResetKey?: unknown;
+  /**
+   * The grid drops its selection whenever this changes: a successful commit deselects the rows it
+   * edited (TablePlus #2979).
+   */
+  deselectKey?: unknown;
   className?: string;
 }
 
@@ -224,7 +281,10 @@ interface CopyChoice {
   headers?: boolean;
 }
 
-/** Copy Rows As ▸ (TablePlus's list and order); ⌘⌥C opens it with number keys 1–7. */
+/**
+ * Copy Rows As ▸ / Copy Selected Cells As ▸ (TablePlus's list and order, then "Raw": the values
+ * without any quoting); ⌘⌥C opens it with number keys 1–8.
+ */
 const COPY_CHOICES: CopyChoice[] = [
   { label: "Plain text", short: "plain text", format: "tsv" },
   { label: "JSON", short: "JSON", format: "json" },
@@ -233,6 +293,7 @@ const COPY_CHOICES: CopyChoice[] = [
   { label: "CSV", short: "CSV", format: "csv" },
   { label: "CSV with header", short: "CSV with header", format: "csv", headers: true },
   { label: "SQL Insert statement", short: "INSERT statements", format: "insert" },
+  { label: "Raw", short: "raw values", format: "raw" },
 ];
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -335,6 +396,21 @@ interface QuickMenu {
   y: number;
 }
 
+/**
+ * The foreign-key menu: the keys of a cell's column, anchored under that cell (content
+ * coordinates). `purpose` says what the pick does: open the referenced rows or generate a JOIN.
+ */
+interface FkMenu {
+  x: number;
+  y: number;
+  column: GridColumn;
+  value: Value;
+  /** The row's cells (SOURCE order): a composite key reads its other columns from them. */
+  cells: readonly Value[];
+  fks: readonly FkRef[];
+  purpose: "open" | "join";
+}
+
 interface HeaderPress {
   id: string;
   pointerId: number;
@@ -377,6 +453,12 @@ function gutterTint(row: ViewRow | undefined, selected: boolean): string | undef
 const DRAG_THRESHOLD = 4;
 const EDGE = 24;
 
+/** `a`…`b` (inclusive). */
+const span = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
+
+/** How long the pointer rests on a geometry cell before its preview shows. */
+const GEOMETRY_HOVER_MS = 350;
+
 export function DataGrid({
   columns,
   rowCount,
@@ -401,12 +483,17 @@ export function DataGrid({
   onSelectedRowsChange,
   rowNumbers = true,
   onRefresh,
-  onImportCsv,
+  onGenerateJoin,
+  onImport,
   onExportPage,
+  onExportResult,
+  onFocusFilters,
   quickLookKey = false,
   onLoadReferenced,
   onLoadFullValue,
   revealCell,
+  scrollResetKey,
+  deselectKey,
   className,
 }: DataGridProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -420,6 +507,8 @@ export function DataGrid({
     },
     [onColumnStateChange],
   );
+  // General ▸ Table Data ▸ Auto expand text column.
+  useAutoExpandColumns({ columns, columnState, setColumnState, rowCount, loading, getRow });
   // `cols` are the visible columns in display order; `src[c]` maps a visual column to its index in
   // `columns` / `row.cells`. Selection and virtualization use visual indexes; data access uses src.
   const { cols, src } = useMemo(() => layoutColumns(columns, columnState), [columns, columnState]);
@@ -434,6 +523,11 @@ export function DataGrid({
   /** Row-number gutter: as narrow as the largest row number allows (a slim strip without them). */
   const gutterW = rowNumbers ? gutterWidth(rowCount) : SLIM_GUTTER_W;
   const zebra = usePrefs((p) => p.gridAlternatingRows);
+  const expansionTips = usePrefs((p) => p.gridExpansionTooltips);
+  const autoHideScrollers = usePrefs((p) => p.gridAutoHideScrollers);
+  const loadingWallpaper = usePrefs((p) => p.gridLoadingWallpaper);
+  // Size to Fit / double-clicking a column border measure with the grid's font size.
+  const gridFontSize = usePrefs((p) => p.gridFontSize);
   const colIndexById = useMemo(() => new Map(cols.map((c, i) => [c.id, i])), [cols]);
   const valueAt = useCallback(
     (row: ViewRow, c: number): Value => row.cells[src[c] ?? -1] ?? NULL,
@@ -459,8 +553,30 @@ export function DataGrid({
   } | null>(null);
   const [copyMenu, setCopyMenu] = useState(false);
   const [quickMenu, setQuickMenu] = useState<QuickMenu | null>(null);
-  /** The Quick Look Editor's cell: its row and SOURCE column. */
-  const [quickLook, setQuickLook] = useState<{ r: number; source: number } | null>(null);
+  /** The menu of a cell whose column holds several foreign keys (its arrow, ⌘J, the cell menu). */
+  const [fkMenu, setFkMenu] = useState<FkMenu | null>(null);
+  /**
+   * The Quick Look Editor's cell: its row and SOURCE column. `detached`: a floating panel that
+   * stays open and follows the focused cell.
+   */
+  const [quickLook, setQuickLook] = useState<{
+    r: number;
+    source: number;
+    detached?: boolean;
+  } | null>(null);
+  const quickLookRef = useRef(quickLook);
+  quickLookRef.current = quickLook;
+  /**
+   * The Quick Look holds an edit that is not saved: a detached panel must not be handed another
+   * cell then (its text would be lost). The ref is for handlers, the state re-syncs the panel with
+   * the focused cell once the edit is saved or dropped.
+   */
+  const [quickLookDirty, setQuickLookDirty] = useState(false);
+  const quickLookDirtyRef = useRef(false);
+  const onQuickLookDirty = useCallback((dirty: boolean) => {
+    quickLookDirtyRef.current = dirty;
+    setQuickLookDirty(dirty);
+  }, []);
   const [menuTarget, setMenuTarget] = useState<MenuTarget>({ kind: "cell" });
   const [reorder, setReorder] = useState<Reorder | null>(null);
 
@@ -471,6 +587,8 @@ export function DataGrid({
     paddingStart: HEADER_H,
     overscan: 8,
   });
+  // Settings ▸ Appearance ▸ Data table: a new row height (`ROW_H` is live) re-measures the rows.
+  useRowHeightChange(() => rowVirtualizer.measure());
   const colVirtualizer = useVirtualizer({
     horizontal: true,
     count: cols.length,
@@ -512,6 +630,41 @@ export function DataGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealCell]);
 
+  // A new page starts at its top (TablePlus b256).
+  const firstReset = useRef(true);
+  useEffect(() => {
+    if (firstReset.current) {
+      firstReset.current = false;
+      return;
+    }
+    const el = scrollerRef.current;
+    if (el) el.scrollTop = 0;
+  }, [scrollResetKey]);
+
+  // A commit deselects the rows it edited (TablePlus #2979).
+  const firstDeselect = useRef(true);
+  useEffect(() => {
+    if (firstDeselect.current) {
+      firstDeselect.current = false;
+      return;
+    }
+    setSelection(EMPTY_SELECTION);
+  }, [deselectKey]);
+
+  // The detached Quick Look follows the focused cell, unless it holds an edit that is not saved:
+  // it keeps showing the cell being edited until the edit is saved or dropped.
+  useEffect(() => {
+    const f = selection.focus;
+    if (!f || quickLookDirty) return;
+    const source = src[f.c];
+    setQuickLook((q) =>
+      q?.detached && source !== undefined && (q.r !== f.r || q.source !== source)
+        ? { r: f.r, source, detached: true }
+        : q,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusKey, src, quickLookDirty]);
+
   const selectedCount = selectedRowCount(selection);
   useEffect(() => {
     onSelectionChange?.(selectedCount);
@@ -530,19 +683,25 @@ export function DataGrid({
       if (!editable) return false;
       const col = cols[pos.c];
       const row = getRow(pos.r);
-      return !!col && !!row && col.editable && col.kind !== "bytes" && row.status !== "deleted";
+      if (!col || !row || !col.editable || row.status === "deleted") return false;
+      // Blobs edit as hex, once held in full (a long one is only a preview until Quick Look loads it).
+      return col.kind !== "bytes" || wholeBytes(valueAt(row, pos.c));
     },
-    [editable, cols, getRow],
+    [editable, cols, getRow, valueAt],
   );
-  /** Explains why Enter/double-click does nothing on a blob cell. */
+  /** Explains why Enter/double-click does nothing on a blob cell cut to its preview. */
   const noteBytes = useCallback(
     (pos: CellPos): boolean => {
       const col = cols[pos.c];
-      if (!editable || !col?.editable || col.kind !== "bytes") return false;
-      toast.message("Binary values can't be edited inline");
+      const row = getRow(pos.r);
+      if (!editable || !col?.editable || col.kind !== "bytes" || !row) return false;
+      if (wholeBytes(valueAt(row, pos.c))) return false;
+      toast.message("Only a preview of this value is loaded", {
+        description: "Open it in Quick Look to load it in full and edit it as hex.",
+      });
       return true;
     },
-    [editable, cols],
+    [editable, cols, getRow, valueAt],
   );
 
   /** Opens the editor on a cell with its current value (typing never starts an edit). */
@@ -550,7 +709,12 @@ export function DataGrid({
     (pos: CellPos) => {
       if (!canEditCell(pos)) return;
       const row = getRow(pos.r)!;
-      setEditing({ pos, source: src[pos.c]!, initialText: editText(valueAt(row, pos.c)) });
+      const value = valueAt(row, pos.c);
+      setEditing({
+        pos,
+        source: src[pos.c]!,
+        initialText: value.t === "bytes" ? bytesHex(value.v.base64) : editText(value),
+      });
     },
     [canEditCell, getRow, src, valueAt],
   );
@@ -591,6 +755,15 @@ export function DataGrid({
   const sourceCells = useCallback(
     (s: SelectionState): CellPos[] => {
       const out: CellPos[] = [];
+      const rect = selectionRect(s);
+      if (rect) {
+        for (let r = rect.r0; r <= rect.r1 && out.length < MAX_ACTION_CELLS; r++)
+          for (let c = rect.c0; c <= rect.c1; c++) {
+            const source = src[c];
+            if (source !== undefined) out.push({ r, c: source });
+          }
+        return out.slice(0, MAX_ACTION_CELLS);
+      }
       if (s.cols.length > 0) {
         const sources = selectedColumns(s).flatMap((c) => src[c] ?? []);
         for (let r = 0; r < rowCount && out.length < MAX_ACTION_CELLS; r++)
@@ -680,34 +853,159 @@ export function DataGrid({
   // Read-only grids (query results) have a row detail too.
   useAction("grid.toggle-detail", active ? toggleRowDetail : null);
 
-  // ---- copy ----------------------------------------------------------------
+  // ---- foreign keys ----------------------------------------------------------
+  /** An arrow press on a cell with several keys: its menu opens on release (see `endPointer`). */
+  const fkPress = useRef<{ pos: CellPos } | null>(null);
+  /** Opens `fk` (or generates its JOIN): the owner's callback in the form its contract names. */
+  const runFk = useCallback(
+    (
+      purpose: FkMenu["purpose"],
+      column: GridColumn,
+      value: Value,
+      cells: readonly Value[],
+      fk: FkRef,
+      chosen: boolean,
+    ) => {
+      if (purpose === "join") {
+        if (chosen || isCompositeFk(fk)) onGenerateJoin?.(column, fk);
+        else onGenerateJoin?.(column);
+      } else if (isCompositeFk(fk)) onOpenFk?.(column, value, fk, cells);
+      else if (chosen) onOpenFk?.(column, value, fk);
+      else onOpenFk?.(column, value);
+    },
+    [onOpenFk, onGenerateJoin],
+  );
   /**
-   * What ⌘C / Copy Rows As copy: the selected rows over the visible columns in display order, or
-   * every row of the selected columns.
+   * The foreign key action on the cell at `pos`: one key runs at once, several ask which one in a
+   * small menu under the cell.
+   */
+  const chooseFk = useCallback(
+    (purpose: FkMenu["purpose"], pos: CellPos) => {
+      const row = getRow(pos.r);
+      const column = cols[pos.c];
+      if (!row || !column) return;
+      const fks = fksOf(column);
+      if (fks.length === 0) return;
+      const value = valueAt(row, pos.c);
+      if (purpose === "open" && value.t === "null") return;
+      if (fks.length === 1) return runFk(purpose, column, value, row.cells, fks[0]!, false);
+      setFkMenu({
+        x: gutterW + (offsets[pos.c] ?? 0),
+        y: HEADER_H + (pos.r + 1) * ROW_H,
+        column,
+        value,
+        cells: row.cells,
+        fks,
+        purpose,
+      });
+    },
+    [getRow, cols, valueAt, runFk, gutterW, offsets],
+  );
+  /** ⌘J: the focused cell's referenced row(s). */
+  const openFocusedFk = useCallback(() => {
+    const f = selectionRef.current.focus;
+    if (f) chooseFk("open", f);
+  }, [chooseFk]);
+  useAction("grid.open-fk", active && onOpenFk ? openFocusedFk : null);
+  // The FK menu highlights its first key once it has mounted, so ↩ picks it at once.
+  const fkMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!fkMenu) return;
+    const id = window.setTimeout(
+      () =>
+        fkMenuRef.current
+          ?.querySelector<HTMLElement>('[role="menuitem"]')
+          ?.focus({ preventScroll: true }),
+      0,
+    );
+    return () => window.clearTimeout(id);
+  }, [fkMenu]);
+
+  // ---- copy ----------------------------------------------------------------
+  /** The block of `rect`'s cells (visual indexes), or of `rowIdx` × `vcs`. */
+  const collectBlock = useCallback(
+    (rowIdx: readonly number[], vcs: readonly number[]) => {
+      if (rowIdx.length === 0 || vcs.length === 0) return null;
+      const rows: Value[][] = [];
+      for (const r of rowIdx) {
+        const row = getRow(r);
+        if (row) rows.push(vcs.map((c) => valueAt(row, c)));
+      }
+      return { columns: vcs.map((c) => cols[c]!), rows };
+    },
+    [cols, getRow, valueAt],
+  );
+  /**
+   * What ⌘C / Copy Rows As copy: the cell range, the selected rows over the visible columns in
+   * display order, or every row of the selected columns.
    */
   const collectSelected = useCallback((): { columns: GridColumn[]; rows: Value[][] } | null => {
     const s = selectionRef.current;
+    const rect = selectionRect(s);
+    if (rect) return collectBlock(span(rect.r0, rect.r1), span(rect.c0, rect.c1));
     const byColumn = s.cols.length > 0;
     const vcs = byColumn ? selectedColumns(s) : cols.map((_, c) => c);
-    const indexes = byColumn ? Array.from({ length: rowCount }, (_, r) => r) : selectedRows(s);
-    if (indexes.length === 0 || vcs.length === 0) return null;
-    const rows: Value[][] = [];
-    for (const r of indexes) {
-      const row = getRow(r);
-      if (row) rows.push(vcs.map((c) => valueAt(row, c)));
-    }
-    return { columns: vcs.map((c) => cols[c]!), rows };
-  }, [cols, getRow, valueAt, rowCount]);
+    const indexes = byColumn ? span(0, rowCount - 1) : selectedRows(s);
+    return collectBlock(indexes, vcs);
+  }, [cols, rowCount, collectBlock]);
+  /**
+   * Copy Selected Cells (As): the cell range, else the focused column of the selected rows (every
+   * row of the selected columns).
+   */
+  const collectCells = useCallback((): { columns: GridColumn[]; rows: Value[][] } | null => {
+    const s = selectionRef.current;
+    const rect = selectionRect(s);
+    if (rect) return collectBlock(span(rect.r0, rect.r1), span(rect.c0, rect.c1));
+    if (s.cols.length > 0) return collectBlock(span(0, rowCount - 1), selectedColumns(s));
+    if (!s.focus) return null;
+    const rows = selectedRows(s);
+    return collectBlock(rows.length > 0 ? rows : [s.focus.r], [s.focus.c]);
+  }, [rowCount, collectBlock]);
+  /** For the cell menu's extensions (Plugins ▸) and, in the active grid, the menu bar's plugins. */
+  const extensionContext = useCallback((): GridMenuContext => {
+    const s = selectionRef.current;
+    const focus = s.focus;
+    const row = focus ? getRow(focus.r) : undefined;
+    const source = focus ? src[focus.c] : undefined;
+    const rect = selectionRect(s);
+    const picked = rect ? span(rect.r0, rect.r1) : selectedRows(s);
+    const indexes = picked.length > 0 ? picked : focus ? [focus.r] : [];
+    return {
+      columns,
+      copyContext,
+      focusedRow: row?.cells ?? null,
+      focusedColumn: source ?? null,
+      selectedRows: () =>
+        indexes.flatMap((r) => {
+          const cells = getRow(r)?.cells;
+          return cells ? [cells] : [];
+        }),
+      stageFocused:
+        editable && onEditCommit && focus && source !== undefined && row?.status !== "deleted"
+          ? (value) => onEditCommit(focus.r, source, value)
+          : undefined,
+    };
+  }, [columns, copyContext, getRow, src, editable, onEditCommit]);
+  useEffect(
+    () => (active ? setActiveGridMenuContext(extensionContext) : undefined),
+    [active, extensionContext],
+  );
 
+  /** Plain text for ⌘C, its NULL / DEFAULT fields remembered for a paste back into Tabler. */
+  const tsvOf = useCallback((block: { columns: GridColumn[]; rows: Value[][] }) => {
+    const text = formatCells("tsv", block.columns, block.rows);
+    rememberCopy(text, block.rows);
+    return text;
+  }, []);
   const copy = useCallback(async () => {
     const block = collectSelected();
     if (!block) return;
     try {
-      await writeClipboard(formatCells("tsv", block.columns, block.rows));
+      await writeClipboard(tsvOf(block));
     } catch (e) {
       toast.error("Could not copy to the clipboard", { description: (e as Error).message });
     }
-  }, [collectSelected]);
+  }, [collectSelected, tsvOf]);
 
   const copyText = useCallback(async (text: string, done?: string) => {
     try {
@@ -741,26 +1039,45 @@ export function DataGrid({
   }, [rowCount, getRow, valueAt, copyText]);
 
   const copyAs = useCallback(
-    async (choice: CopyChoice) => {
-      const block = collectSelected();
+    async (choice: CopyChoice, what: "rows" | "cells" = "rows") => {
+      const block = what === "cells" ? collectCells() : collectSelected();
       if (!block) return;
       try {
         await writeClipboard(
-          formatCells(choice.format, block.columns, block.rows, {
-            ...copyContext,
-            headers: choice.headers ?? false,
-            // Settings ▸ General ▸ CSV default options (a Tab delimiter gives TSV, as in TablePlus).
-            csv: csvDefaults(),
-          }),
+          choice.format === "tsv" && !choice.headers
+            ? tsvOf(block)
+            : formatCells(choice.format, block.columns, block.rows, {
+                ...copyContext,
+                headers: choice.headers ?? false,
+                // Settings ▸ General ▸ CSV default options (a Tab delimiter gives TSV, as in TablePlus).
+                csv: csvDefaults(),
+              }),
         );
       } catch (e) {
         toast.error("Could not copy to the clipboard", { description: (e as Error).message });
         return;
       }
-      toast.success(`Copied ${plural(block.rows.length, "row")} as ${choice.short}`);
+      const n = block.rows.length * block.columns.length;
+      toast.success(
+        what === "cells"
+          ? `Copied ${plural(n, "cell")} as ${choice.short}`
+          : `Copied ${plural(block.rows.length, "row")} as ${choice.short}`,
+      );
     },
-    [collectSelected, copyContext],
+    [collectSelected, collectCells, copyContext, tsvOf],
   );
+  /** Context menu ▸ Copy Selected Cells: the cells as plain text (like ⌘C on a range). */
+  const copyCells = useCallback(async () => {
+    const block = collectCells();
+    if (!block) return;
+    try {
+      await writeClipboard(tsvOf(block));
+    } catch (e) {
+      toast.error("Could not copy to the clipboard", { description: (e as Error).message });
+      return;
+    }
+    toast.success(`Copied ${plural(block.rows.length * block.columns.length, "cell")}`);
+  }, [collectCells, tsvOf]);
 
   const openCopyMenu = useCallback(() => {
     if (selectionRef.current.focus) setCopyMenu(true);
@@ -787,13 +1104,17 @@ export function DataGrid({
         if (readOnlyNotice) toast.message(readOnlyNotice);
         return;
       }
-      // "" parses to one empty field: a copied NULL / empty cell pastes as NULL (or '' for text).
-      const block = parseTsv(text);
+      // "" parses to one empty field: a copied NULL / empty cell pastes as NULL (or '' for text) —
+      // unless Tabler copied it and remembers which fields were NULL.
+      // Comma / semicolon separated text (a CSV file, Copy as CSV) splits into columns as well.
+      const block = sniffCsvPaste(text, cols.length, csvDefaults()) ?? parseTsvPaste(text);
       if (block.length === 0) return;
+      const markers = copiedMarkers(text);
       const s = selectionRef.current;
+      const rect = selectionRect(s);
       // TablePlus: copied rows (one field per visible column) paste as new rows.
-      if (holdsWholeRows(block, cols.length)) {
-        const { rows, skipped } = pastedRows(block, cols, src);
+      if (!rect && holdsWholeRows(block, cols.length)) {
+        const { rows, skipped } = pastedRows(block, cols, src, markers);
         pendingRows.current = { before: rowCount, count: rows.length };
         onAction?.({ type: "insertRows", rows });
         let msg = `Pasted ${plural(rows.length, "row")}`;
@@ -806,19 +1127,16 @@ export function DataGrid({
         return;
       }
       // A value goes into the focused cell; a block starts in its column, on the first row of the
-      // selected rows around it. With whole columns selected, a value fills them and a block starts
-      // at their top.
-      const columnRects = mergeSpans(s.cols).map(([c0, c1]) => ({
-        r0: 0,
-        r1: rowCount - 1,
-        c0,
-        c1,
-      }));
+      // selected rows around it. With whole columns selected (or a cell range), a value fills them
+      // and a block starts at their top-left.
+      const ranges: Rect[] = rect
+        ? [rect]
+        : mergeSpans(s.cols).map(([c0, c1]) => ({ r0: 0, r1: rowCount - 1, c0, c1 }));
       const f = s.focus;
       const value = block.length === 1 && block[0]!.length === 1;
       const run = mergeSpans(s.rows).find(([r0, r1]) => f.r >= r0 && f.r <= r1);
       const anchor = { r: value ? f.r : (run?.[0] ?? f.r), c: f.c };
-      const plan = planPaste(block, columnRects, anchor, rowCount, cols.length);
+      const plan = planPaste(block, ranges, anchor, rowCount, cols.length);
       const edits: Array<{ r: number; c: number; value: Value }> = [];
       let skipped = 0;
       for (const t of plan.targets) {
@@ -836,7 +1154,12 @@ export function DataGrid({
           skipped++;
           continue;
         }
-        const value = pastedValue(col, t.text, row.cells[source] ?? NULL);
+        const value = pastedValue(
+          col,
+          t.text,
+          row.cells[source] ?? NULL,
+          markers?.get(`${t.br}:${t.bc}`),
+        );
         if (!value) {
           skipped++;
           continue;
@@ -874,7 +1197,13 @@ export function DataGrid({
       const f = pos ?? selectionRef.current.focus;
       const source = f ? src[f.c] : undefined;
       if (!f || source === undefined || !getRow(f.r)) return;
-      setQuickLook({ r: f.r, source });
+      const q = quickLookRef.current;
+      if (q?.detached && quickLookDirtyRef.current && (q.r !== f.r || q.source !== source)) {
+        // The floating panel keeps the cell being edited.
+        toast.message("Save or discard the edit in Quick Look first");
+        return;
+      }
+      setQuickLook({ r: f.r, source, detached: q?.detached });
     },
     [src, getRow],
   );
@@ -882,6 +1211,8 @@ export function DataGrid({
 
   useAction("grid.copy", active ? () => void copy() : null);
   useAction("grid.copy-as", active ? openCopyMenu : null);
+  // Edit ▸ Copy Cell Value: the same text the cell menu's Copy Cell Value copies.
+  useAction("grid.copy-cell", active ? copyCellValue : null);
   useAction("grid.paste", enabled ? () => void paste() : null);
 
   // ---- column header -------------------------------------------------------
@@ -895,13 +1226,22 @@ export function DataGrid({
         const row = getRow(vr.index);
         if (row) texts.push(cellDisplay(valueAt(row, vi)).text);
       }
-      const w = fitWidth(col, texts) + (col.fk ? 16 : 0);
+      const w = fitWidth(col, texts, gridFontSize) + (fksOf(col).length > 0 ? 16 : 0);
       setColumnState({
         ...columnState,
         widths: { ...columnState.widths, [id]: Math.min(MAX_COL_W, w) },
       });
     },
-    [colIndexById, cols, rowVirtualizer, getRow, valueAt, setColumnState, columnState],
+    [
+      colIndexById,
+      cols,
+      rowVirtualizer,
+      getRow,
+      valueAt,
+      setColumnState,
+      columnState,
+      gridFontSize,
+    ],
   );
 
   const commitReorder = (r: Reorder) => {
@@ -962,9 +1302,13 @@ export function DataGrid({
     }
     if (target.closest("[data-fk]") && !contextClick) {
       const cell = cellFromEvent(target);
-      const row = cell ? getRow(cell.r) : undefined;
       const column = cell ? cols[cell.c] : undefined;
-      if (cell && row && column && onOpenFk) onOpenFk(column, valueAt(row, cell.c));
+      if (cell && column && onOpenFk) {
+        // One key opens at once; several ask which, once the press is released (the menu would
+        // lose the focus the press moves to the arrow).
+        if (fksOf(column).length > 1) fkPress.current = { pos: cell };
+        else chooseFk("open", cell);
+      }
       return;
     }
     const header = target.closest<HTMLElement>("[data-header]");
@@ -1088,6 +1432,7 @@ export function DataGrid({
       dispatch({
         type: "dragTo",
         pos: { r: Number(gutterRow), c: selectionRef.current.focus?.c ?? 0 },
+        rowsOnly: true,
       });
     if (scroller) {
       const rect = scroller.getBoundingClientRect();
@@ -1102,6 +1447,10 @@ export function DataGrid({
     const quick = quickPress.current;
     quickPress.current = null;
     if (quick && e.type === "pointerup") setQuickMenu(quick);
+    const fkOpen = fkPress.current;
+    fkPress.current = null;
+    if (fkOpen && e.type === "pointerup" && (e.target as Element).closest?.("[data-fk]"))
+      chooseFk("open", fkOpen.pos);
     const press = headerPress.current;
     headerPress.current = null;
     if (press && e.type === "pointerup") {
@@ -1165,7 +1514,8 @@ export function DataGrid({
       editing ||
       copyMenu ||
       quickMenu ||
-      quickLook ||
+      fkMenu ||
+      (quickLook && !quickLook.detached) ||
       !e.currentTarget.contains(e.target as Node)
     )
       return;
@@ -1207,6 +1557,19 @@ export function DataGrid({
     };
     switch (e.key) {
       case "ArrowUp":
+        // ⌘↑ on the first row (or with no rows) goes up to the filter bar (TablePlus); anywhere
+        // else it jumps to the first row.
+        if (
+          mod &&
+          !e.shiftKey &&
+          !e.altKey &&
+          onFocusFilters &&
+          (rowCount === 0 || selection.focus?.r === 0)
+        ) {
+          e.preventDefault();
+          onFocusFilters();
+          return;
+        }
         return move(-1, 0);
       case "ArrowDown":
         return move(1, 0);
@@ -1281,7 +1644,7 @@ export function DataGrid({
     const block = collectSelected();
     if (!block) return;
     e.preventDefault();
-    e.clipboardData.setData("text/plain", formatCells("tsv", block.columns, block.rows));
+    e.clipboardData.setData("text/plain", tsvOf(block));
   };
   const onPaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
     if (editing || !e.currentTarget.contains(e.target as Node)) return;
@@ -1293,6 +1656,80 @@ export function DataGrid({
     pasteText(e.clipboardData.getData("text/plain"));
   };
 
+  // ---- hover: expansion tooltips, geometry previews, idle scroll bars ------
+  const [geoHover, setGeoHover] = useState<{
+    key: string;
+    text: string;
+    typeName: string;
+    left: number;
+    top: number;
+    bottom: number;
+  } | null>(null);
+  const hoverTimer = useRef<number | null>(null);
+  const hoverKey = useRef<string | null>(null);
+  const clearHover = useCallback(() => {
+    if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+    hoverKey.current = null;
+    setGeoHover(null);
+  }, []);
+  useEffect(() => clearHover, [clearHover]);
+  const onMouseOver = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (dragging.current || resizing.current || headerPress.current || editing) return;
+    const el = (e.target as Element).closest?.<HTMLElement>("[data-cell]");
+    if (!el || !e.currentTarget.contains(el)) return clearHover();
+    const pos = cellFromEvent(el);
+    const col = pos ? cols[pos.c] : undefined;
+    const row = pos ? getRow(pos.r) : undefined;
+    if (!pos || !col || !row) return clearHover();
+    const value = valueAt(row, pos.c);
+    // Preferences ▸ Table Data ▸ Allows expansion Tool Tips: the whole value of a cut-off cell.
+    if (expansionTips) {
+      const text = el.firstElementChild as HTMLElement | null;
+      const d = cellDisplay(value);
+      if (text && text.scrollWidth > text.clientWidth && !d.placeholder)
+        el.title = d.text.slice(0, 2000);
+      else el.removeAttribute("title");
+    }
+    // A spatial value shows a small drawing of itself (TablePlus's geometry viewer on hover).
+    const key = `${pos.r}:${pos.c}`;
+    if (col.kind !== "geometry" || value.t !== "other") return clearHover();
+    if (hoverKey.current === key) return;
+    clearHover();
+    hoverKey.current = key;
+    const text = value.v.text;
+    hoverTimer.current = window.setTimeout(() => {
+      hoverTimer.current = null;
+      const r = el.getBoundingClientRect();
+      setGeoHover({
+        key,
+        text,
+        typeName: col.dataType,
+        left: r.left,
+        top: r.top,
+        bottom: r.bottom,
+      });
+    }, GEOMETRY_HOVER_MS);
+  };
+  const geoPreview = useMemo(() => (geoHover ? parseWkt(geoHover.text) : null), [geoHover]);
+
+  /** Auto hide table scrollers: the scroll bars show while scrolling (and on hover). */
+  const [scrolling, setScrolling] = useState(false);
+  const scrollTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (scrollTimer.current !== null) window.clearTimeout(scrollTimer.current);
+    },
+    [],
+  );
+  const onScroll = () => {
+    if (hoverKey.current !== null) clearHover();
+    if (!autoHideScrollers) return;
+    setScrolling(true);
+    if (scrollTimer.current !== null) window.clearTimeout(scrollTimer.current);
+    scrollTimer.current = window.setTimeout(() => setScrolling(false), 900);
+  };
+
   // ---- render --------------------------------------------------------------
   const virtualRows = rowVirtualizer.getVirtualItems();
   const virtualCols = colVirtualizer.getVirtualItems();
@@ -1302,8 +1739,9 @@ export function DataGrid({
   const focusedValue =
     focusedRow && selection.focus ? valueAt(focusedRow, selection.focus.c) : undefined;
   const byColumn = selection.cols.length > 0;
+  const rect = selectionRect(selection);
   /** Rows Copy / Copy Rows As work on (every row while whole columns are selected). */
-  const copyRows = byColumn ? rowCount : selectedCount;
+  const copyRows = rect ? rect.r1 - rect.r0 + 1 : byColumn ? rowCount : selectedCount;
 
   const headerId = menuTarget.kind === "header" ? menuTarget.id : null;
   const headerVi = headerId === null ? undefined : colIndexById.get(headerId);
@@ -1315,11 +1753,13 @@ export function DataGrid({
   // Set Value items that would change nothing for the target column(s) are disabled.
   const settable = { null: false, empty: false, default: false, now: false, file: false };
   if (editable) {
-    const targets = byColumn
-      ? selectedColumns(selection)
-      : selection.focus
-        ? [selection.focus.c]
-        : [];
+    const targets = rect
+      ? span(rect.c0, rect.c1)
+      : byColumn
+        ? selectedColumns(selection)
+        : selection.focus
+          ? [selection.focus.c]
+          : [];
     for (const c of targets) {
       const col = cols[c];
       if (!col?.editable) continue;
@@ -1362,35 +1802,50 @@ export function DataGrid({
     selectedRows(selectionRef.current).some((r) => !!getRow(r)?.status);
 
   // Selected rows get a full-row accent tint (row number included), selected columns a full-height
-  // one. Drawn above the cells, so staged colours show through.
-  const rowSelected = (r: number) => !byColumn && isRowSelected(selection, r);
-  const overlay = byColumn
-    ? mergeSpans(selection.cols).map(([c0, c1]) => (
-        <div
-          key={`c${c0}`}
-          data-selection="columns"
-          className="pointer-events-none absolute z-[1] bg-(--grid-selection)"
-          style={{
-            left: gutterW + (offsets[c0] ?? 0),
-            top: HEADER_H,
-            width: (offsets[c1 + 1] ?? 0) - (offsets[c0] ?? 0),
-            height: rowCount * ROW_H,
-          }}
-        />
-      ))
-    : mergeSpans(selection.rows).map(([r0, r1]) => (
-        <div
-          key={`r${r0}`}
-          data-selection="rows"
-          className="pointer-events-none absolute z-[1] bg-(--grid-selection)"
-          style={{
-            left: gutterW,
-            top: HEADER_H + r0 * ROW_H,
-            width: totalWidth,
-            height: (r1 - r0 + 1) * ROW_H,
-          }}
-        />
-      ));
+  // one, a cell range a tinted box with a red border (TablePlus). Drawn above the cells, so staged
+  // colours show through.
+  const rowSelected = (r: number) => !byColumn && !rect && isRowSelected(selection, r);
+  const inRangeRows = (r: number) => !!rect && r >= rect.r0 && r <= rect.r1;
+  const overlay = rect ? (
+    <div
+      data-selection="cells"
+      className="ring-error/80 pointer-events-none absolute z-[1] bg-(--grid-selection) ring-1 ring-inset"
+      style={{
+        left: gutterW + (offsets[rect.c0] ?? 0),
+        top: HEADER_H + rect.r0 * ROW_H,
+        width: (offsets[rect.c1 + 1] ?? 0) - (offsets[rect.c0] ?? 0),
+        height: (rect.r1 - rect.r0 + 1) * ROW_H,
+      }}
+    />
+  ) : byColumn ? (
+    mergeSpans(selection.cols).map(([c0, c1]) => (
+      <div
+        key={`c${c0}`}
+        data-selection="columns"
+        className="pointer-events-none absolute z-[1] bg-(--grid-selection)"
+        style={{
+          left: gutterW + (offsets[c0] ?? 0),
+          top: HEADER_H,
+          width: (offsets[c1 + 1] ?? 0) - (offsets[c0] ?? 0),
+          height: rowCount * ROW_H,
+        }}
+      />
+    ))
+  ) : (
+    mergeSpans(selection.rows).map(([r0, r1]) => (
+      <div
+        key={`r${r0}`}
+        data-selection="rows"
+        className="pointer-events-none absolute z-[1] bg-(--grid-selection)"
+        style={{
+          left: gutterW,
+          top: HEADER_H + r0 * ROW_H,
+          width: totalWidth,
+          height: (r1 - r0 + 1) * ROW_H,
+        }}
+      />
+    ))
+  );
 
   const editorRect = editing
     ? {
@@ -1411,12 +1866,7 @@ export function DataGrid({
       row,
       column,
       value: row.cells[quickLook.source] ?? NULL,
-      editable:
-        editable &&
-        !!onEditCommit &&
-        column.editable &&
-        column.kind !== "bytes" &&
-        row.status !== "deleted",
+      editable: editable && !!onEditCommit && column.editable && row.status !== "deleted",
     };
   })();
   const closeQuickLook = () => {
@@ -1432,10 +1882,33 @@ export function DataGrid({
   const altClick = isMac ? "⌥Click" : "Alt+Click";
   /** Row and value actions (Set Value, Insert / Duplicate / Delete, Discard Changes). */
   const canAct = editable && !!onAction;
-  const openFkItem = focusedCol?.fk && focusedValue && focusedValue.t !== "null" && (
-    <ContextMenuItem onSelect={() => onOpenFk?.(focusedCol, focusedValue)}>
-      <ExternalLink /> Open {focusedCol.fk.table} · {focusedCol.fk.column}
+  const focusedFks = focusedCol ? fksOf(focusedCol) : [];
+  const openFkItem = focusedFks.length > 0 && focusedValue && focusedValue.t !== "null" && (
+    <ContextMenuItem
+      onSelect={() => {
+        // Several keys: their menu opens once this one has closed.
+        const pos = selection.focus;
+        if (pos && focusedFks.length > 1) afterMenuClose.current = () => chooseFk("open", pos);
+        else if (pos) chooseFk("open", pos);
+      }}
+    >
+      <ExternalLink />{" "}
+      {focusedFks.length > 1
+        ? "Open Referenced Row…"
+        : `Open ${focusedFks[0]!.table} · ${fkColumnsText(focusedFks[0]!)}`}
       <MenuKeys id="grid.open-fk" />
+    </ContextMenuItem>
+  );
+
+  const joinItem = focusedFks.length > 0 && onGenerateJoin && (
+    <ContextMenuItem
+      onSelect={() => {
+        const pos = selection.focus;
+        if (pos && focusedFks.length > 1) afterMenuClose.current = () => chooseFk("join", pos);
+        else if (pos) chooseFk("join", pos);
+      }}
+    >
+      <Link2 /> Generate JOIN
     </ContextMenuItem>
   );
 
@@ -1451,9 +1924,19 @@ export function DataGrid({
             // Selected rows (macOS table style): the accent while the grid has the focus, grey
             // otherwise.
             "[--grid-selection:color-mix(in_oklab,var(--foreground)_8%,transparent)] focus-within:[--grid-selection:color-mix(in_oklab,var(--brand)_26%,transparent)] dark:focus-within:[--grid-selection:color-mix(in_oklab,var(--brand)_38%,transparent)]",
+            // Preferences ▸ Table Data ▸ Auto hide table scrollers: thin bars, shown only while
+            // scrolling or hovering them.
+            autoHideScrollers &&
+              "hover:[&::-webkit-scrollbar-thumb]:bg-foreground/15 data-[scrolling]:[&::-webkit-scrollbar-thumb]:bg-foreground/35 [&::-webkit-scrollbar]:size-2 [&::-webkit-scrollbar-corner]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-transparent [&::-webkit-scrollbar-track]:bg-transparent",
             className,
           )}
+          data-autohide-scrollers={autoHideScrollers ? "" : undefined}
+          data-scrolling={autoHideScrollers && scrolling ? "" : undefined}
           style={{ contain: "strict", overscrollBehavior: "contain" }}
+          onScroll={onScroll}
+          onMouseOver={onMouseOver}
+          onMouseLeave={clearHover}
+          onPointerDownCapture={clearHover}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={endPointer}
@@ -1557,10 +2040,13 @@ export function DataGrid({
                     data-gutter={vr.index}
                     className={cn(
                       "border-border bg-surface-2 text-muted-foreground sticky left-0 z-[2] float-left flex h-full items-center justify-end border-r border-b pr-1.5 text-[11px] tabular-nums",
-                      (isFocusRow || selected) && "text-foreground",
+                      (isFocusRow || selected || inRangeRows(vr.index)) && "text-foreground",
                       row?.error && "text-error",
                     )}
-                    style={{ width: gutterW, backgroundImage: gutterTint(row, selected) }}
+                    style={{
+                      width: gutterW,
+                      backgroundImage: gutterTint(row, selected || inRangeRows(vr.index)),
+                    }}
                     title={
                       row?.error ??
                       (row?.status === "inserted"
@@ -1716,6 +2202,43 @@ export function DataGrid({
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
+            {fkMenu && (
+              <DropdownMenu open onOpenChange={(open) => !open && setFkMenu(null)}>
+                <DropdownMenuTrigger asChild>
+                  <div
+                    aria-hidden
+                    className="pointer-events-none absolute size-0"
+                    style={{ left: fkMenu.x, top: fkMenu.y }}
+                  />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="start"
+                  sideOffset={2}
+                  className="min-w-48"
+                  ref={fkMenuRef}
+                  onCloseAutoFocus={(e) => {
+                    e.preventDefault();
+                    focusGrid();
+                  }}
+                >
+                  <DropdownMenuLabel className="text-muted-foreground py-1 text-[11px] font-medium">
+                    {fkMenu.purpose === "join" ? "Generate JOIN with" : "Open"}
+                  </DropdownMenuLabel>
+                  {fkMenu.fks.map((fk, i) => (
+                    <DropdownMenuItem
+                      key={`${fk.name ?? ""}:${i}`}
+                      className="text-[12.5px]"
+                      title={fk.name}
+                      onSelect={() =>
+                        runFk(fkMenu.purpose, fkMenu.column, fkMenu.value, fkMenu.cells, fk, true)
+                      }
+                    >
+                      {fkLabel(fk)}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
           {quickLookCell && (
             <QuickLook
@@ -1723,12 +2246,19 @@ export function DataGrid({
               column={quickLookCell.column}
               value={quickLookCell.value}
               rowNumber={quickLook!.r + 1}
+              detached={quickLook!.detached}
+              onDetach={() => {
+                setQuickLook((q) => (q ? { ...q, detached: true } : q));
+                focusGrid();
+              }}
               onClose={closeQuickLook}
+              onDirtyChange={onQuickLookDirty}
               onSave={
                 quickLookCell.editable
                   ? (v) => {
                       onEditCommit?.(quickLook!.r, quickLook!.source, v);
-                      closeQuickLook();
+                      // The floating panel stays open (on the cell it follows).
+                      if (!quickLook!.detached) closeQuickLook();
                     }
                   : undefined
               }
@@ -1741,7 +2271,8 @@ export function DataGrid({
                 quickLookCell.column.fk && onOpenFk
                   ? () => {
                       closeQuickLook();
-                      onOpenFk(quickLookCell.column, quickLookCell.value);
+                      // The key the viewer shows, not whichever of the column's keys sorts first.
+                      onOpenFk(quickLookCell.column, quickLookCell.value, quickLookCell.column.fk);
                     }
                   : undefined
               }
@@ -1761,6 +2292,46 @@ export function DataGrid({
               {emptyText}
             </div>
           )}
+          {rowCount === 0 && loading && loadingWallpaper && (
+            // General ▸ Use loading wallpaper: a quiet pattern while the first page loads.
+            <div
+              data-testid="loading-wallpaper"
+              aria-hidden
+              className="text-muted-foreground/70 pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center text-[11px]"
+              style={{
+                top: HEADER_H,
+                backgroundImage:
+                  "repeating-linear-gradient(135deg, color-mix(in oklab, var(--foreground) 5%, transparent) 0 1px, transparent 1px 14px), radial-gradient(color-mix(in oklab, var(--foreground) 6%, transparent) 1px, transparent 1px)",
+                backgroundSize: "auto, 14px 14px",
+              }}
+            >
+              <span className="bg-surface/80 rounded px-2 py-0.5">Loading…</span>
+            </div>
+          )}
+          {geoHover &&
+            geoPreview &&
+            createPortal(
+              <div
+                role="tooltip"
+                data-testid="geometry-preview"
+                className="border-border bg-popover text-popover-foreground pointer-events-none fixed z-50 rounded-md border p-1.5 shadow-md"
+                style={{
+                  left: Math.max(4, Math.min(geoHover.left, window.innerWidth - 200)),
+                  top:
+                    geoHover.bottom + 160 > window.innerHeight
+                      ? Math.max(4, geoHover.top - 156)
+                      : geoHover.bottom + 4,
+                }}
+              >
+                <GeometryPreview g={geoPreview} />
+                <div className="text-muted-foreground mt-1 max-w-[180px] truncate font-mono text-[10px]">
+                  {geoPreview.type}
+                  {geoPreview.dims && ` ${geoPreview.dims}`}
+                  {geoPreview.srid !== null && ` · SRID ${geoPreview.srid}`}
+                </div>
+              </div>,
+              document.body,
+            )}
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent
@@ -1825,6 +2396,23 @@ export function DataGrid({
                 >
                   Remove Sort
                 </ContextMenuItem>
+                <ContextMenuSub>
+                  <ContextMenuSubTrigger>
+                    <ArrowDownUp /> Add to Sort
+                  </ContextMenuSubTrigger>
+                  <ContextMenuSubContent className="w-36">
+                    <ContextMenuItem
+                      onSelect={() => onSortChange(addSort(sort, headerCol.id, "asc"))}
+                    >
+                      <ArrowUp /> ASC
+                    </ContextMenuItem>
+                    <ContextMenuItem
+                      onSelect={() => onSortChange(addSort(sort, headerCol.id, "desc"))}
+                    >
+                      <ArrowDown /> DESC
+                    </ContextMenuItem>
+                  </ContextMenuSubContent>
+                </ContextMenuSub>
               </>
             )}
             <ContextMenuSeparator />
@@ -1937,7 +2525,22 @@ export function DataGrid({
                 ))}
               </ContextMenuSubContent>
             </ContextMenuSub>
-            {(canQuickFilter || openFkItem) && <ContextMenuSeparator />}
+            <ContextMenuItem inset disabled={!selection.focus} onSelect={() => void copyCells()}>
+              Copy Selected Cells
+            </ContextMenuItem>
+            <ContextMenuSub>
+              <ContextMenuSubTrigger inset disabled={!selection.focus}>
+                Copy Selected Cells As
+              </ContextMenuSubTrigger>
+              <ContextMenuSubContent className="w-48">
+                {COPY_CHOICES.map((choice) => (
+                  <ContextMenuItem key={choice.label} onSelect={() => void copyAs(choice, "cells")}>
+                    {choice.label}
+                  </ContextMenuItem>
+                ))}
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+            {(canQuickFilter || openFkItem || joinItem) && <ContextMenuSeparator />}
             {canQuickFilter && (
               <ContextMenuSub>
                 <ContextMenuSubTrigger>
@@ -1954,31 +2557,46 @@ export function DataGrid({
               </ContextMenuSub>
             )}
             {openFkItem}
-            {(onImportCsv || onExportPage) && <ContextMenuSeparator />}
-            {onImportCsv && (
+            {joinItem}
+            {(onImport || onExportPage || onExportResult) && <ContextMenuSeparator />}
+            {onImport && (
               <ContextMenuSub>
                 <ContextMenuSubTrigger>
                   <FileUp /> Import
                 </ContextMenuSubTrigger>
-                <ContextMenuSubContent className="w-40">
-                  <ContextMenuItem
-                    onSelect={() => {
-                      afterMenuClose.current = onImportCsv;
-                    }}
-                  >
-                    From CSV…
-                  </ContextMenuItem>
+                <ContextMenuSubContent className="w-44">
+                  {IMPORT_ITEMS.map(({ kind, label }) => (
+                    <ContextMenuItem
+                      key={kind}
+                      onSelect={() => {
+                        afterMenuClose.current = () => onImport(kind);
+                      }}
+                    >
+                      {label}
+                    </ContextMenuItem>
+                  ))}
                 </ContextMenuSubContent>
               </ContextMenuSub>
             )}
-            {onExportPage && (
+            {onExportResult ? (
+              // A SQL result has no pages: it exports as a whole, never both items.
               <ContextMenuItem
                 onSelect={() => {
-                  afterMenuClose.current = onExportPage;
+                  afterMenuClose.current = onExportResult;
                 }}
               >
-                <FileDown /> Export Current Page…
+                <FileDown /> Export Result…
               </ContextMenuItem>
+            ) : (
+              onExportPage && (
+                <ContextMenuItem
+                  onSelect={() => {
+                    afterMenuClose.current = onExportPage;
+                  }}
+                >
+                  <FileDown /> Export Current Page…
+                </ContextMenuItem>
+              )
             )}
             {canAct && (
               <>
@@ -1997,6 +2615,7 @@ export function DataGrid({
                 />
               </>
             )}
+            {renderGridMenuExtensions(extensionContext)}
           </>
         )}
       </ContextMenuContent>

@@ -15,8 +15,9 @@ use crate::secrets::SecretKind;
 use crate::state::AppState;
 use crate::tunnel::{KeyboardInteractive, SshPromptPurpose, TunnelAuth, TunnelHandle};
 use crate::types::profile::{
-    ConnectionProfile, ConnectionsFilePreview, Driver, ExportConnectionsRequest, PasswordMode,
-    ProfileInput, SecretStatus, SshAuth, TestResult,
+    ConnectionProfile, ConnectionTag, ConnectionsFilePreview, Driver, ExportConnectionsRequest,
+    PasswordMode, ProfileInput, SecretStatus, SshAuth, SshConfig, SshPasswordMode, TAG_NAME_MAX,
+    TestResult,
 };
 
 /// Settings key of the connection group names (so empty groups exist): a JSON array of strings.
@@ -43,6 +44,14 @@ fn validate(profile: &ConnectionProfile) -> Result<(), AppError> {
     if profile.name.trim().is_empty() {
         return Err(AppError::InvalidInput("Connection name is required".into()));
     }
+    if let Some(ConnectionTag::Custom(name)) = &profile.options.tag
+        && (name.is_empty() || name.chars().count() > TAG_NAME_MAX)
+    {
+        return Err(AppError::InvalidInput(format!(
+            "A tag name has 1 to {TAG_NAME_MAX} characters"
+        )));
+    }
+    crate::conn_options::check(profile)?;
     match profile.driver {
         crate::types::profile::Driver::Sqlite => {
             if profile
@@ -95,8 +104,22 @@ pub async fn store_secrets(state: &AppState, input: &ProfileInput) -> Result<(),
     } else if let Some(p) = &input.password {
         state.secrets.set(id, SecretKind::DbPassword, p).await?;
     }
+    // An SSH password asked every time (or never sent) is not kept.
+    let ssh_password_kept = input
+        .profile
+        .ssh
+        .as_ref()
+        .is_none_or(|ssh| ssh.password_mode() == SshPasswordMode::Keychain);
+    if !ssh_password_kept {
+        state.secrets.delete(id, SecretKind::SshPassword).await?;
+    }
+    let ssh_password = if ssh_password_kept {
+        input.ssh_password.clone()
+    } else {
+        None
+    };
     for (value, kind) in [
-        (&input.ssh_password, SecretKind::SshPassword),
+        (&ssh_password, SecretKind::SshPassword),
         (&input.ssh_passphrase, SecretKind::SshPassphrase),
     ] {
         match value.as_deref() {
@@ -209,16 +232,35 @@ pub async fn resolve_tunnel_auth(
     state: &AppState,
     input: &ProfileInput,
 ) -> Result<TunnelAuth, AppError> {
-    let Some(ssh) = tunnel_config(&input.profile) else {
-        return Ok(TunnelAuth::default());
-    };
+    match tunnel_config(&input.profile) {
+        Some(ssh) => tunnel_auth_for(state, input, ssh).await,
+        None => Ok(TunnelAuth::default()),
+    }
+}
+
+/// [`resolve_tunnel_auth`] for the SSH settings `ssh` (SQLite over SSH has no tunnel config but
+/// signs in the same way). An SSH password asked every time is the one typed in the dialog, else
+/// asked through the SSH prompt; "No password" sends none.
+pub async fn tunnel_auth_for(
+    state: &AppState,
+    input: &ProfileInput,
+    ssh: &SshConfig,
+) -> Result<TunnelAuth, AppError> {
     let id = input.profile.id;
     let mut auth = TunnelAuth::default();
     match ssh.auth {
-        SshAuth::Password => {
-            auth.password =
-                typed_or_stored(state, id, &input.ssh_password, SecretKind::SshPassword).await?;
-        }
+        SshAuth::Password => match ssh.password_mode() {
+            SshPasswordMode::Keychain => {
+                auth.password =
+                    typed_or_stored(state, id, &input.ssh_password, SecretKind::SshPassword)
+                        .await?;
+            }
+            SshPasswordMode::Ask => {
+                auth.password = input.ssh_password.clone().filter(|p| !p.is_empty());
+                auth.ask_password = auth.password.is_none();
+            }
+            SshPasswordMode::None => {}
+        },
         SshAuth::Key => {
             auth.passphrase =
                 typed_or_stored(state, id, &input.ssh_passphrase, SecretKind::SshPassphrase)
@@ -269,10 +311,17 @@ pub async fn open_test_tunnel(
 #[tauri::command]
 pub async fn test_connection(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, AppState>,
     input: ProfileInput,
 ) -> Result<TestResult, AppError> {
-    let prompts = renderer_prompts(&app, &state, &input.profile, SshPromptPurpose::Test);
+    let prompts = renderer_prompts(
+        &app,
+        &state,
+        &input.profile,
+        SshPromptPurpose::Test,
+        Some(window.label()),
+    );
     run_connection_test_with(&state, input, Some(prompts)).await
 }
 
@@ -296,6 +345,40 @@ pub async fn run_connection_test_with(
         input.profile.name,
         input.profile.driver
     );
+    // Before anything else, as for a connect: the script may put the SQLite file in place or
+    // start the proxy the test goes through. Its failure is the test's result.
+    if let Err(e) = crate::bootstrap_script::run_for_profile(&input.profile).await {
+        return Ok(TestResult {
+            ok: false,
+            server_version: None,
+            latency_ms: 0,
+            message: e.to_string(),
+            tunnel_used: tunnel_config(&input.profile).is_some(),
+        });
+    }
+    // SQLite over SSH: the test signs in and finds the file over SFTP (the connect downloads it).
+    if let Some(ssh) = input
+        .profile
+        .ssh
+        .as_ref()
+        .filter(|_| crate::tunnel::sqlite_remote::applies(&input.profile))
+    {
+        let mut auth = tunnel_auth_for(state, &input, ssh).await?;
+        auth.prompts = prompts;
+        let started = Instant::now();
+        let result = crate::commands::sqlite_ssh::test_remote(state, &input.profile, auth).await;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        return match result {
+            Err(e @ (AppError::HostKey { .. } | AppError::Cancelled)) => Err(e),
+            result => Ok(TestResult {
+                ok: result.is_ok(),
+                server_version: None,
+                latency_ms,
+                message: result.unwrap_or_else(|e| e.to_string()),
+                tunnel_used: true,
+            }),
+        };
+    }
     let password = resolve_password(state, &input).await?;
     let mut ssh_auth = resolve_tunnel_auth(state, &input).await?;
     ssh_auth.prompts = prompts;
@@ -354,10 +437,17 @@ pub async fn run_connection_test_with(
 }
 
 /// "New…" in the connection dialog: creates an empty SQLite database at `path` (an existing file
-/// is left untouched). Connecting never creates files (see `check_database_file`).
+/// is left untouched). Connecting never creates files (see `check_database_file`). With `key`
+/// (the form's encryption key) the new file is a SQLCipher database, in the format of
+/// `compatibility` (SQLCipher 1–4, default 4).
 #[tauri::command]
-pub async fn create_sqlite_database(path: String) -> Result<(), AppError> {
-    drivers::sqlite::create_database_file(&path).await
+pub async fn create_sqlite_database(
+    path: String,
+    key: Option<String>,
+    compatibility: Option<u8>,
+) -> Result<(), AppError> {
+    let cipher = drivers::sqlite::Cipher::from_key(key.as_deref(), compatibility);
+    drivers::sqlite::create_database_file_with(&path, cipher).await
 }
 
 // ----- groups -----------------------------------------------------------------------------------
@@ -457,6 +547,8 @@ pub async fn run_export(state: &AppState, req: ExportConnectionsRequest) -> Resu
         if !req.include_passwords {
             profiles_io::drop_password_command(&mut profile);
         }
+        // A bootstrap CLI script is a shell script: it never leaves in a file (imports drop it).
+        profile.options.bootstrap_script = None;
         if req.include_ssh_secrets && profile.ssh.is_some() {
             secrets.ssh_password = state.secrets.get(id, SecretKind::SshPassword).await?;
             secrets.ssh_passphrase = state.secrets.get(id, SecretKind::SshPassphrase).await?;
@@ -563,7 +655,10 @@ pub async fn run_import(
         ));
     };
     let mut imported = Vec::new();
-    for (profile, secrets) in profiles_io::plan_import(&payload, ids, keep_password_commands) {
+    for (mut profile, secrets) in profiles_io::plan_import(&payload, ids, keep_password_commands) {
+        // A bootstrap CLI script runs through the user's shell before every connect: never taken
+        // from a file (the import preview does not show it).
+        profile.options.bootstrap_script = None;
         let stored = state.appdb.upsert_profile(&profile)?;
         let id = stored.id;
         if stored.options.password_mode() == PasswordMode::Keychain
@@ -792,6 +887,94 @@ mod tests {
         assert_eq!(only_beta.len(), 1);
     }
 
+    /// Group images (TablePlus: a group takes an image of the user's own): they live in the
+    /// `connectionGroups` setting, go out with an export and come back with an import, where a
+    /// stored image is never replaced and a missing one is filled in.
+    #[tokio::test]
+    async fn group_images_round_trip_in_the_setting_and_travel_in_files() {
+        const PNG: &str = "data:image/png;base64,iVBORw0KGgo=";
+        const OTHER: &str = "data:image/png;base64,AAAA";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pictures.tablerconnections");
+        let path = path.to_string_lossy().into_owned();
+        let source = state();
+        source
+            .appdb
+            .set_setting(
+                GROUPS_SETTING,
+                &serde_json::json!([
+                    { "path": "Team", "icon": "users", "image": PNG },
+                    { "path": "Logo only", "image": OTHER },
+                    { "path": "Script", "icon": "star", "image": "javascript:alert(1)" },
+                ]),
+            )
+            .unwrap();
+        // The setting reads back with the images; one that is no image is dropped.
+        let stored = stored_group_records(&source).unwrap();
+        assert_eq!(stored[0].image.as_deref(), Some(PNG));
+        assert_eq!(stored[0].icon.as_deref(), Some("users"));
+        assert_eq!(stored[1].image.as_deref(), Some(OTHER));
+        assert_eq!(stored[2].image, None);
+        assert_eq!(stored[2].icon.as_deref(), Some("star"));
+
+        let a = source
+            .appdb
+            .upsert_profile(&pg_profile("Alpha", Some("Team")))
+            .unwrap();
+        let request = ExportConnectionsRequest {
+            profile_ids: vec![a.id],
+            groups: vec!["Logo only".into(), "Script".into()],
+            include_passwords: false,
+            include_ssh_secrets: false,
+            file_password: None,
+            path: path.clone(),
+        };
+        run_export(&source, request).await.unwrap();
+        let file = std::fs::read_to_string(&path).unwrap();
+        assert!(file.contains(PNG) && file.contains(OTHER));
+        assert!(!file.contains("javascript:"));
+
+        // An app that has "Team" without an image and "Logo only" with another one.
+        let target = state();
+        target
+            .appdb
+            .set_setting(
+                GROUPS_SETTING,
+                &serde_json::json!([
+                    { "path": "Team", "icon": "rocket" },
+                    { "path": "Logo only", "image": "data:image/png;base64,KEEP" },
+                ]),
+            )
+            .unwrap();
+        run_import(&target, &path, None, &[a.id], &[])
+            .await
+            .unwrap();
+        let after = stored_group_records(&target).unwrap();
+        let team = after.iter().find(|g| g.path == "Team").unwrap();
+        assert_eq!(team.icon.as_deref(), Some("rocket"));
+        assert_eq!(
+            team.image.as_deref(),
+            Some(PNG),
+            "a missing image is filled in"
+        );
+        let logo = after.iter().find(|g| g.path == "Logo only").unwrap();
+        assert_eq!(
+            logo.image.as_deref(),
+            Some("data:image/png;base64,KEEP"),
+            "a stored image is never replaced"
+        );
+        // The setting itself carries the image under its key.
+        let raw = target.appdb.get_setting(GROUPS_SETTING).unwrap().unwrap();
+        assert_eq!(raw[0]["image"], PNG);
+        // A group without an image has no `image` key at all.
+        assert!(
+            raw.as_array()
+                .unwrap()
+                .iter()
+                .all(|g| g["path"] != "Script" || g.get("image").is_none())
+        );
+    }
+
     /// Regression: password commands (run through the shell on every connect) were exported in
     /// the clear and imported without the user seeing them.
     #[tokio::test]
@@ -875,6 +1058,79 @@ mod tests {
             state.appdb.get_profile(a.id).unwrap().unwrap().sort_order,
             a.sort_order
         );
+    }
+
+    /// Bootstrap CLI scripts run through the shell on every connect: never exported, never
+    /// imported.
+    #[tokio::test]
+    async fn bootstrap_scripts_never_travel_in_connection_files() {
+        let state = state();
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = pg_profile("proxied", None);
+        p.options.bootstrap_script = Some("cloud-sql-proxy &".into());
+        state.appdb.upsert_profile(&p).unwrap();
+        let path = dir.path().join("c.tablerconnections");
+        let path = path.to_string_lossy().into_owned();
+        run_export(
+            &state,
+            ExportConnectionsRequest {
+                profile_ids: vec![p.id],
+                groups: vec![],
+                include_passwords: true,
+                include_ssh_secrets: false,
+                file_password: Some("pw".into()),
+                path: path.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let preview = inspect_file(&state, &path, Some("pw")).await.unwrap();
+        assert_eq!(
+            preview.connections[0].profile.options.bootstrap_script,
+            None
+        );
+        let imported = run_import(&state, &path, Some("pw"), &[p.id], &[p.id])
+            .await
+            .unwrap();
+        assert_eq!(imported[0].options.bootstrap_script, None);
+    }
+
+    /// The SQLite profile's password is its SQLCipher key: Test opens an encrypted file with it.
+    #[tokio::test]
+    async fn test_connection_opens_an_encrypted_sqlite_file_with_its_key() {
+        let state = state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("vault.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        create_sqlite_database(path.clone(), Some("k".into()), None)
+            .await
+            .unwrap();
+        let mut input = sqlite_input(&path);
+        let result = run_connection_test(&state, input.clone()).await.unwrap();
+        assert!(!result.ok);
+        assert!(
+            result.message.contains("encryption key"),
+            "{}",
+            result.message
+        );
+        input.password = Some("nope".into());
+        let result = run_connection_test(&state, input.clone()).await.unwrap();
+        assert!(
+            result.message.starts_with("Wrong encryption key"),
+            "{}",
+            result.message
+        );
+        input.password = Some("k".into());
+        let result = run_connection_test(&state, input.clone()).await.unwrap();
+        assert!(result.ok, "{}", result.message);
+        // A failing bootstrap script is the test's result.
+        input.profile.options.bootstrap_script = Some("echo 'no vpn' >&2; exit 2".into());
+        let result = run_connection_test(&state, input).await.unwrap();
+        assert!(!result.ok);
+        assert!(result.message.contains("no vpn"), "{}", result.message);
     }
 
     #[tokio::test]

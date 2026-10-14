@@ -1,17 +1,18 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { CommitHost } from "@/features/commit/CommitHost";
 import { TableDialogs, type TableDialogState } from "@/features/structure/TableDialogs";
 import { ItemOverviewDialog } from "./ItemOverview";
 import { ObjectDialogView } from "./ObjectDialogs";
 import { installPendingOps, usePendingOpActions } from "./pendingActions";
-import { PendingOpsSheet } from "./PendingOpsSheet";
 import { closeItemOverview, closeObjectDialog, useObjectsStore } from "./store";
 
 /**
  * Mounts the sidebar's object dialogs (drop / truncate / clone, routines, sequences, and the
  * structure package's create / rename table dialogs) and the Item Overview, whichever the sidebar
- * menus and keys opened through `openObjectDialog` / `openItemOverview`; and the pending item
- * operations (staged Truncate… / Delete…): their ⌘S / ⇧⌘P / ⇧⌘⌫ and Preview SQL sheet.
+ * menus and keys opened through `openObjectDialog` / `openItemOverview`; and the workspace commit
+ * (every pending change of the active connection, including the staged Truncate… / Delete…): its
+ * ⌘S / ⇧⌘P / ⇧⌘⌫ and Preview SQL sheet.
  */
 export function ObjectsHost() {
   useEffect(installPendingOps, []);
@@ -52,7 +53,7 @@ export function ObjectsHost() {
           onClose={closeItemOverview}
         />
       )}
-      <PendingOpsSheet />
+      <CommitHost />
     </>
   );
 }

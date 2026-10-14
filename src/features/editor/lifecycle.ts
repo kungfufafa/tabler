@@ -2,7 +2,9 @@ import { ipc } from "@/lib/ipc";
 import { getQueryTab, updateQueryTab, useQueryTabsStore } from "@/stores/queryTabs";
 import { dropResults } from "@/stores/resultData";
 import { useTabsStore } from "@/stores/tabs";
-import { dropEditor, editorTabIds } from "./editorStates";
+import { useConnectionsStore } from "@/stores/connections";
+import { dropEditor, editorTabIds, getEditorState } from "./editorStates";
+import { rememberLastScript } from "./newTab";
 import { dropRememberedParams } from "./paramsPrompt";
 import { baseTabId, dropSplit } from "./split";
 import { dropSubmissions } from "./submissions";
@@ -40,6 +42,10 @@ export function installQueryTabLifecycle(): void {
       if (t.kind !== "query" || open.has(t.id)) continue;
       stopRunning(t.id, t.connectionId);
       releaseResults(t.id);
+      // "Command + T should open: SQL Query Editor tab" brings it back (a file reopens from disk).
+      const profileId = useConnectionsStore.getState().byId[t.connectionId]?.info.profileId;
+      const text = getEditorState(t.id)?.doc.toString();
+      if (profileId && text && !getQueryTab(t.id).filePath) rememberLastScript(profileId, text);
     }
     const keep = new Set<string>(open);
     for (const t of s.closed) if (t.kind === "query") keep.add(t.id);

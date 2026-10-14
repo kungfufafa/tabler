@@ -3,7 +3,8 @@ import { memo } from "react";
 import type { Value } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { cellDisplay, type CellDisplayClass } from "@/lib/values";
-import type { GridColumn, RowStatus } from "./types";
+import { looksLikeWkt, splitEwkt } from "./geometry/wkt";
+import { fksOf, type GridColumn, type RowStatus } from "./types";
 
 /**
  * One font for every kind (TablePlus); the cell sets `tabular-nums` so digits line up. Only the
@@ -18,7 +19,8 @@ const CLS: Record<CellDisplayClass, string> = {
   json: "",
   bytes: "text-muted-foreground",
   other: "",
-  temporal: "",
+  // Settings ▸ Appearance ▸ Data table ▸ Date text.
+  temporal: "text-(color:--grid-date)",
   uuid: "",
   text: "",
 };
@@ -45,13 +47,20 @@ export const GridCell = memo(function GridCell({
   changed,
 }: GridCellProps) {
   const d = cellDisplay(value);
-  const hasFk = col.fk !== undefined && value.t !== "null";
+  // A spatial value reads as its WKT; the SRID shows in the hover preview and Quick Look.
+  const text =
+    col.kind === "geometry" && value.t === "other" && looksLikeWkt(d.text)
+      ? splitEwkt(d.text).wkt
+      : d.text;
+  const fks = fksOf(col);
+  const hasFk = fks.length > 0 && value.t !== "null";
+  // No `title`: the grid sets one on hover for a cut-off value when "Allows expansion Tool Tips"
+  // is on (Preferences ▸ Table Data, off by default as in TablePlus).
   return (
     <div
       data-cell=""
       data-r={r}
       data-c={c}
-      title={!d.placeholder && d.text.length > 40 ? d.text.slice(0, 500) : undefined}
       className={cn(
         "border-gridline absolute top-0 flex h-full items-center overflow-hidden border-r border-b px-2 text-[12px] leading-4 whitespace-nowrap tabular-nums",
         // Numbers (int, bigint, decimal, float) right-aligned, everything else left-aligned.
@@ -62,13 +71,14 @@ export const GridCell = memo(function GridCell({
       )}
       style={{ left, width }}
     >
-      <span className={cn("truncate", CLS[d.cls])}>{d.text}</span>
+      <span className={cn("truncate", CLS[d.cls])}>{text}</span>
       {hasFk && (
         <button
           type="button"
           data-fk=""
           tabIndex={-1}
-          aria-label={`Open ${col.fk!.table}`}
+          aria-label={fks.length > 1 ? "Open a referenced table" : `Open ${fks[0]!.table}`}
+          title={fks.length > 1 ? `${fks.length} foreign keys: pick the table to open` : undefined}
           className="text-brand hover:bg-brand-soft ml-auto hidden size-4 shrink-0 items-center justify-center rounded group-hover/row:flex"
         >
           <ArrowUpRight className="size-3" />

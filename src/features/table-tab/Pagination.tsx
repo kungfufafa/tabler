@@ -14,6 +14,13 @@ import { formatCount } from "@/lib/format/time";
 import type { RowCount } from "@/lib/ipc";
 import { PAGE_SIZES } from "@/stores/prefs";
 import { BarIconButton, BarTooltip } from "./BarParts";
+import { DEFAULT_ORDERS, type DefaultOrder } from "./tableViewMemory";
+
+const ORDER_LABELS: Record<DefaultOrder, string> = {
+  none: "None",
+  pkAsc: "Primary key ASC",
+  pkDesc: "Primary key DESC",
+};
 
 export interface PageChange {
   offset: number;
@@ -28,7 +35,8 @@ function pageSizes(limit: number): number[] {
 
 /**
  * TablePlus's `‹ ⚙ ›` paging control: previous / next page, and a popover with the page size
- * (Limit), a free Offset, the first / last page and the exact row count.
+ * (Limit), a free Offset, the first / last page, the exact row count and the table's "Default
+ * content order" (remembered per table; used while no column is sorted).
  */
 export function Pagination({
   offset,
@@ -37,6 +45,9 @@ export function Pagination({
   count,
   onChange,
   onCountExact,
+  defaultOrder,
+  onDefaultOrderChange,
+  hasPrimaryKey = true,
 }: {
   offset: number;
   limit: number;
@@ -44,6 +55,11 @@ export function Pagination({
   count: RowCount | null;
   onChange: (next: PageChange) => void;
   onCountExact: () => void;
+  /** The table's Default content order (shown when `onDefaultOrderChange` is given). */
+  defaultOrder?: DefaultOrder;
+  onDefaultOrderChange?: (order: DefaultOrder) => void;
+  /** Without a primary key there is no key order to choose. */
+  hasPrimaryKey?: boolean;
 }) {
   const total = count?.count ?? null;
   const page = Math.floor(offset / limit) + 1;
@@ -171,6 +187,39 @@ export function Pagination({
               </Button>
             </div>
           </form>
+          {onDefaultOrderChange && (
+            <div className="border-border grid grid-cols-[auto_1fr] items-center gap-x-2 border-t pt-2">
+              <label htmlFor={`${id}-order`} className="text-muted-foreground">
+                Default order
+              </label>
+              <Select
+                value={defaultOrder ?? "none"}
+                disabled={!hasPrimaryKey}
+                onValueChange={(v) => onDefaultOrderChange(v as DefaultOrder)}
+              >
+                <SelectTrigger
+                  id={`${id}-order`}
+                  size="sm"
+                  aria-label="Default content order"
+                  title={
+                    hasPrimaryKey
+                      ? "How rows are ordered while no column is sorted (this table)"
+                      : "This table has no primary key"
+                  }
+                  className="h-7 w-full text-xs"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DEFAULT_ORDERS.map((o) => (
+                    <SelectItem key={o} value={o} className="text-xs">
+                      {ORDER_LABELS[o]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="border-border flex items-center border-t pt-2">
             <Button
               type="button"

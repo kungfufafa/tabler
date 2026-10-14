@@ -37,6 +37,10 @@ const SEED_FILES: Array<[string, string]> = [
     "/Users/me/queries/sample.sql",
     "-- Recent posts with their authors\nSELECT p.id, p.title, u.name, p.published_at\nFROM posts p\nJOIN users u ON u.id = p.user_id\nORDER BY p.published_at DESC\nLIMIT 20;\n",
   ],
+  [
+    "/Users/me/queries/nightly.sql.gz",
+    "-- A gzipped script (opened decompressed)\nSELECT count(*) FROM events_big;\n",
+  ],
 ];
 const files = new Map<string, string>(SEED_FILES);
 
@@ -1083,25 +1087,62 @@ registerMock("explain", async ({ connectionId, sql, mode, queryId }) => {
   }
 });
 
+/** The History search (Match Case / Whole Word / Regex), as `appdb.rs` matches it. */
+export function historyMatcher(f: {
+  search: string | null;
+  matchCase: boolean;
+  wholeWord: boolean;
+  regex: boolean;
+}): ((sql: string) => boolean) | null {
+  const term = f.search ?? "";
+  if (!term) return null;
+  if (!f.matchCase && !f.wholeWord && !f.regex) {
+    const needle = term.toLowerCase();
+    return (sql) => sql.toLowerCase().includes(needle);
+  }
+  let body = f.regex ? term : term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (f.wholeWord) body = `\\b(?:${body})\\b`;
+  let re: RegExp;
+  try {
+    re = new RegExp(body, f.matchCase ? "u" : "iu");
+  } catch (e) {
+    return mockError("INVALID_INPUT", `invalid regular expression: ${(e as Error).message}`);
+  }
+  return (sql) => re.test(sql);
+}
+
 registerMock("list_history", ({ filter }) => {
   const f = {
     profileId: null,
     search: null,
     limit: null,
     beforeId: null,
+    matchCase: false,
+    wholeWord: false,
+    regex: false,
     ...(filter as Partial<HistoryFilter>),
   };
-  const needle = f.search?.trim().toLowerCase() ?? "";
+  const matches = historyMatcher(f);
   const limit = Math.min(1000, Math.max(1, f.limit ?? 200));
   return history
     .filter(
       (h) =>
         (f.profileId === null || h.profileId === f.profileId) &&
         (f.beforeId === null || h.id < f.beforeId) &&
-        (!needle || h.sql.toLowerCase().includes(needle)),
+        (!matches || matches(h.sql)),
     )
     .sort((a, b) => b.id - a.id)
     .slice(0, limit);
+});
+
+registerMock("clear_history_before", ({ before, profileId }) => {
+  const cutoff = Date.parse(String(before));
+  if (Number.isNaN(cutoff)) mockError("INVALID_INPUT", `invalid date ${String(before)}`);
+  const n = history.length;
+  history = history.filter(
+    (h) => !(Date.parse(h.startedAt) < cutoff && (!profileId || h.profileId === profileId)),
+  );
+  return n - history.length;
 });
 
 registerMock("delete_history", ({ ids }) => {
@@ -1119,6 +1160,102 @@ registerMock("read_text_file", ({ path }) => {
   const content = files.get(String(path));
   if (content === undefined) mockError("NOT_FOUND", `No such file: ${String(path)}`);
   return content;
+});
+
+/** Text of a mock file (the Queries pane's Import… reads them too). */
+export function mockFileText(path: string): string | undefined {
+  return files.get(path);
+}
+
+/** Puts a file in the mock's in-memory file system (the saved queries' `.sql` files). */
+export function mockWriteFile(path: string, text: string): void {
+  files.set(path, text);
+}
+
+/**
+ * Files the mock only pretends to hold, to try the large-file prompt in `pnpm dev:mock`: path →
+ * size on disk. Their text is generated INSERT lines; reading one whole is refused (the backend
+ * reads at most `EDITOR_FILE_MAX_BYTES` at once).
+ */
+const BIG_FILES = new Map<string, number>([
+  ["/Users/me/dumps/huge-dump.sql", 900 * 1024 * 1024],
+  ["/Users/me/dumps/big-dump.sql", 100 * 1024 * 1024],
+]);
+const MOCK_WHOLE_FILE_MAX = 512 * 1024 * 1024;
+
+const utf8Length = (text: string) => new TextEncoder().encode(text).length;
+
+/** The first lines of a generated big file, at most `maxBytes` of them, whole lines only. */
+function bigFileHead(maxBytes: number): string {
+  const lines: string[] = [];
+  let bytes = 0;
+  for (let i = 1; ; i++) {
+    const line = `INSERT INTO events_big (id, kind) VALUES (${i}, 'click');\n`;
+    if (bytes + line.length > maxBytes) break;
+    lines.push(line);
+    bytes += line.length;
+  }
+  return lines.join("");
+}
+
+registerMock("sql_file_info", ({ path }) => {
+  const p = String(path);
+  const big = BIG_FILES.get(p);
+  if (big !== undefined) return { bytes: big, compressed: false };
+  const text = files.get(p);
+  if (text === undefined) mockError("NOT_FOUND", `No such file: ${p}`);
+  const compressed = /\.gz$/i.test(p);
+  // A gzip file is smaller than its text.
+  return { bytes: compressed ? Math.ceil(utf8Length(text) / 4) : utf8Length(text), compressed };
+});
+
+/** `.sql.gz` files are plain text in the mock (no compression in the browser). */
+registerMock("read_sql_file", ({ path }) => {
+  const p = String(path);
+  if ((BIG_FILES.get(p) ?? 0) > MOCK_WHOLE_FILE_MAX)
+    mockError("INVALID_INPUT", `${p} is too big to read whole`);
+  const content = files.get(p);
+  if (content === undefined) mockError("NOT_FOUND", `No such file: ${p}`);
+  return content;
+});
+
+registerMock("read_sql_file_head", ({ path, maxBytes }) => {
+  const p = String(path);
+  const limit = typeof maxBytes === "number" ? maxBytes : null;
+  const big = BIG_FILES.get(p);
+  if (big !== undefined) {
+    if (limit === null) mockError("INVALID_INPUT", `${p} is too big to read whole`);
+    return {
+      text: bigFileHead(limit),
+      totalBytes: big,
+      truncated: true,
+      compressed: false,
+      encoding: null,
+    };
+  }
+  const text = files.get(p);
+  if (text === undefined) mockError("NOT_FOUND", `No such file: ${p}`);
+  const compressed = /\.gz$/i.test(p);
+  const total = compressed ? Math.ceil(utf8Length(text) / 4) : utf8Length(text);
+  if (limit === null || utf8Length(text) <= limit)
+    return { text, totalBytes: total, truncated: false, compressed, encoding: null };
+  // Cut after the last complete line that fits.
+  const bytes = new TextEncoder().encode(text).slice(0, limit);
+  const head = new TextDecoder().decode(bytes).replace(/\uFFFD$/, "");
+  const end = head.lastIndexOf("\n");
+  return {
+    text: end >= 0 ? head.slice(0, end + 1) : head,
+    totalBytes: total,
+    truncated: true,
+    compressed,
+    encoding: null,
+  };
+});
+
+registerMock("write_sql_file", ({ path, content }) => {
+  if (typeof path !== "string" || !path.trim()) mockError("INVALID_INPUT", "path required");
+  files.set(path, String(content ?? ""));
+  return null;
 });
 
 registerMock("write_text_file", ({ path, content }) => {

@@ -2,8 +2,9 @@ import { ChevronRight, Folder, Loader2 } from "lucide-react";
 import { Fragment } from "react";
 import type { ConnectionTag, Driver } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
-import { DRIVER_SHORT, TAG_COLOR, TAG_LABEL, TINTED, tintStyle } from "./colors";
-import { GROUP_ICONS, splitPath, type GroupIconId } from "./groups";
+import { DRIVER_SHORT, TINTED, tintStyle } from "./colors";
+import { GROUP_ICONS, isGroupImage, splitPath, type GroupIconId } from "./groups";
+import { tagColorOf, tagLabel, useCustomTags } from "./tags";
 
 /** Rounded square with the driver's short label (PG / MY / SQ), tinted with a connection colour. */
 export function DriverBadge({
@@ -36,12 +37,13 @@ export function DriverBadge({
   );
 }
 
-/** Lowercase environment tag pill (`local`, `production`…) in the tag's colour. */
+/** Lowercase environment tag pill (`local`, `production`, a custom tag…) in the tag's colour. */
 export function TagPill({ tag, className }: { tag: ConnectionTag; className?: string }) {
+  const custom = useCustomTags();
   return (
     <span
-      style={tintStyle(TAG_COLOR[tag])}
-      title={`Tag: ${TAG_LABEL[tag]}`}
+      style={tintStyle(tagColorOf(tag, custom))}
+      title={`Tag: ${tagLabel(tag)}`}
       className={cn(
         TINTED,
         "inline-flex h-4 shrink-0 items-center rounded-full px-1.5 text-[10px] leading-none font-medium",
@@ -53,16 +55,32 @@ export function TagPill({ tag, className }: { tag: ConnectionTag; className?: st
   );
 }
 
-/** A group's icon (nothing for none, unless `fallback` asks for the plain folder). */
+/**
+ * A group's icon (nothing for none, unless `fallback` asks for the plain folder). The group's own
+ * `image` (a `data:image/` URI the user chose) takes the icon's place, at the same size.
+ */
 export function GroupIcon({
   icon,
+  image,
   fallback = false,
   className,
 }: {
   icon: GroupIconId | null | undefined;
+  image?: string | null;
   fallback?: boolean;
   className?: string;
 }) {
+  if (image && isGroupImage(image))
+    return (
+      <img
+        src={image}
+        alt=""
+        aria-hidden
+        draggable={false}
+        data-slot="group-image"
+        className={cn("size-3.5 shrink-0 rounded-[3px] object-contain", className)}
+      />
+    );
   const Icon = icon ? GROUP_ICONS[icon].icon : fallback ? Folder : null;
   return Icon ? <Icon aria-hidden className={cn("size-3.5 shrink-0", className)} /> : null;
 }

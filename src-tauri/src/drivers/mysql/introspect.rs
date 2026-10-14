@@ -1,18 +1,48 @@
 //! MySQL / MariaDB catalog queries (`information_schema` + `SHOW CREATE`).
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Params, Row};
 
 use super::decode::{int_of, text_of};
+use crate::drivers::{SqlTrace, TraceCounts, trace_text};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::ddl::{check_columns, check_expression};
+use crate::types::browse::TraceCategory;
 use crate::types::schema::{
     CheckMeta, ColumnMeta, CompletionMetadata, DatabaseInfo, ForeignKeyMeta, IndexMeta, SchemaInfo,
     TableKind, TableMeta, TableOptions, TableRef, TableSummary, TriggerMeta, ValueKind,
 };
+use crate::types::value::Value;
+
+/// A worker connection whose catalog queries are recorded in the session's trace as structure
+/// queries (the console log shows the `information_schema` SELECTs the app really ran).
+pub struct Traced<'a> {
+    conn: &'a mut Conn,
+    trace: &'a SqlTrace,
+}
+
+impl<'a> Traced<'a> {
+    pub fn new(conn: &'a mut Conn, trace: &'a SqlTrace) -> Traced<'a> {
+        Traced { conn, trace }
+    }
+}
+
+/// A bound catalog parameter as the value it shows in the trace.
+fn shown(param: &mysql_async::Value) -> Value {
+    match param {
+        mysql_async::Value::NULL => Value::Null,
+        mysql_async::Value::Bytes(b) => Value::Text(String::from_utf8_lossy(b).into_owned()),
+        mysql_async::Value::Int(i) => Value::Int(*i),
+        mysql_async::Value::UInt(u) => i64::try_from(*u)
+            .map(Value::Int)
+            .unwrap_or_else(|_| Value::Decimal(u.to_string())),
+        other => Value::Text(format!("{other:?}")),
+    }
+}
 
 /// Schemas hidden from "user" listings.
 pub const SYSTEM_SCHEMAS: [&str; 4] = ["information_schema", "performance_schema", "mysql", "sys"];
@@ -31,16 +61,28 @@ fn p(s: &str) -> mysql_async::Value {
 
 /// Runs a catalog query (binary protocol when parameters are given) and returns its rows.
 async fn rows(
-    conn: &mut Conn,
+    conn: &mut Traced<'_>,
     sql: &str,
     params: Vec<mysql_async::Value>,
 ) -> Result<Vec<Row>, AppError> {
-    let rows: Vec<Row> = if params.is_empty() {
-        conn.query(sql).await?
-    } else {
-        conn.exec(sql, Params::Positional(params)).await?
-    };
-    Ok(rows)
+    let display: Vec<Value> = params.iter().map(shown).collect();
+    let started = Instant::now();
+    let result: Result<Vec<Row>, AppError> = async {
+        Ok(if params.is_empty() {
+            conn.conn.query(sql).await?
+        } else {
+            conn.conn.exec(sql, Params::Positional(params)).await?
+        })
+    }
+    .await;
+    conn.trace.finish(
+        TraceCategory::Structure,
+        trace_text(Dialect::Mysql, sql, &display),
+        started,
+        &result,
+        |found| TraceCounts::rows(found.len()),
+    );
+    result
 }
 
 fn s(row: &mut Row, i: usize) -> Option<String> {
@@ -147,12 +189,12 @@ fn table_kind(table_type: &str) -> TableKind {
     }
 }
 
-pub async fn current_database(conn: &mut Conn) -> Result<Option<String>, AppError> {
+pub async fn current_database(conn: &mut Traced<'_>) -> Result<Option<String>, AppError> {
     let mut rows = rows(conn, "SELECT DATABASE()", vec![]).await?;
     Ok(rows.first_mut().and_then(|r| s(r, 0)))
 }
 
-pub async fn list_databases(conn: &mut Conn) -> Result<Vec<DatabaseInfo>, AppError> {
+pub async fn list_databases(conn: &mut Traced<'_>) -> Result<Vec<DatabaseInfo>, AppError> {
     let current = current_database(conn).await?;
     let rows = rows(
         conn,
@@ -176,7 +218,7 @@ pub async fn list_databases(conn: &mut Conn) -> Result<Vec<DatabaseInfo>, AppErr
 
 /// MySQL has no schemas inside a database: the current database is the single default schema.
 /// Without a selected database every non-system database is offered, none default.
-pub async fn list_schemas(conn: &mut Conn) -> Result<Vec<SchemaInfo>, AppError> {
+pub async fn list_schemas(conn: &mut Traced<'_>) -> Result<Vec<SchemaInfo>, AppError> {
     if let Some(db) = current_database(conn).await? {
         return Ok(vec![SchemaInfo {
             name: db,
@@ -194,7 +236,10 @@ pub async fn list_schemas(conn: &mut Conn) -> Result<Vec<SchemaInfo>, AppError> 
         .collect())
 }
 
-pub async fn list_tables(conn: &mut Conn, schema: &str) -> Result<Vec<TableSummary>, AppError> {
+pub async fn list_tables(
+    conn: &mut Traced<'_>,
+    schema: &str,
+) -> Result<Vec<TableSummary>, AppError> {
     let rows = rows(
         conn,
         "SELECT TABLE_NAME, TABLE_TYPE, TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH, TABLE_COMMENT \
@@ -233,7 +278,7 @@ pub async fn list_tables(conn: &mut Conn, schema: &str) -> Result<Vec<TableSumma
     Ok(out)
 }
 
-async fn schema_of(conn: &mut Conn, table: &TableRef) -> Result<String, AppError> {
+async fn schema_of(conn: &mut Traced<'_>, table: &TableRef) -> Result<String, AppError> {
     if let Some(schema) = table.schema.clone().filter(|s| !s.is_empty()) {
         return Ok(schema);
     }
@@ -243,17 +288,32 @@ async fn schema_of(conn: &mut Conn, table: &TableRef) -> Result<String, AppError
 }
 
 /// Second column of `SHOW CREATE TABLE|VIEW`; `None` on any error (permissions, missing object).
-async fn show_create(conn: &mut Conn, what: &str, schema: &str, name: &str) -> Option<String> {
+async fn show_create(
+    conn: &mut Traced<'_>,
+    what: &str,
+    schema: &str,
+    name: &str,
+) -> Option<String> {
     let sql = format!(
         "SHOW CREATE {what} {}",
         Dialect::Mysql.qualify(Some(schema), name)
     );
-    let mut row: Row = conn.query_first(sql).await.ok().flatten()?;
+    let started = Instant::now();
+    let result: Result<Option<Row>, AppError> =
+        async { Ok(conn.conn.query_first(sql.as_str()).await?) }.await;
+    conn.trace.finish(
+        TraceCategory::Structure,
+        trace_text(Dialect::Mysql, &sql, &[]),
+        started,
+        &result,
+        |found| TraceCounts::rows(usize::from(found.is_some())),
+    );
+    let mut row = result.ok().flatten()?;
     s(&mut row, 1)
 }
 
 pub async fn view_definition(
-    conn: &mut Conn,
+    conn: &mut Traced<'_>,
     table: &TableRef,
 ) -> Result<Option<String>, AppError> {
     let schema = schema_of(conn, table).await?;
@@ -274,7 +334,11 @@ pub async fn view_definition(
     Ok(show_create(conn, "VIEW", &schema, &table.name).await)
 }
 
-async fn columns(conn: &mut Conn, schema: &str, name: &str) -> Result<Vec<ColumnMeta>, AppError> {
+async fn columns(
+    conn: &mut Traced<'_>,
+    schema: &str,
+    name: &str,
+) -> Result<Vec<ColumnMeta>, AppError> {
     let rows = rows(
         conn,
         "SELECT ORDINAL_POSITION, COLUMN_NAME, COLUMN_TYPE, DATA_TYPE, IS_NULLABLE, \
@@ -341,7 +405,11 @@ struct IndexRow {
     comment: Option<String>,
 }
 
-async fn index_rows(conn: &mut Conn, schema: &str, name: &str) -> Result<Vec<IndexRow>, AppError> {
+async fn index_rows(
+    conn: &mut Traced<'_>,
+    schema: &str,
+    name: &str,
+) -> Result<Vec<IndexRow>, AppError> {
     // `EXPRESSION` (functional indexes) exists on MySQL >= 8.0.13 only; retry without it.
     const WITH_EXPR: &str = "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME, SUB_PART, INDEX_TYPE, \
          COLLATION, EXPRESSION, INDEX_COMMENT FROM information_schema.STATISTICS \
@@ -408,7 +476,7 @@ fn group_indexes(rows: Vec<IndexRow>) -> Vec<IndexMeta> {
 }
 
 async fn foreign_keys(
-    conn: &mut Conn,
+    conn: &mut Traced<'_>,
     schema: &str,
     name: &str,
 ) -> Result<Vec<ForeignKeyMeta>, AppError> {
@@ -458,7 +526,7 @@ async fn foreign_keys(
 /// CHECK constraints (MySQL 8.0.16+, MariaDB 10.2+); empty where the server has no
 /// `CHECK_CONSTRAINTS` table.
 async fn checks(
-    conn: &mut Conn,
+    conn: &mut Traced<'_>,
     schema: &str,
     name: &str,
     columns: &[String],
@@ -531,7 +599,11 @@ pub fn table_options(
     }
 }
 
-async fn triggers(conn: &mut Conn, schema: &str, name: &str) -> Result<Vec<TriggerMeta>, AppError> {
+async fn triggers(
+    conn: &mut Traced<'_>,
+    schema: &str,
+    name: &str,
+) -> Result<Vec<TriggerMeta>, AppError> {
     let raw = rows(
         conn,
         "SELECT TRIGGER_NAME, ACTION_TIMING, EVENT_MANIPULATION, ACTION_STATEMENT \
@@ -554,7 +626,7 @@ async fn triggers(conn: &mut Conn, schema: &str, name: &str) -> Result<Vec<Trigg
     Ok(out)
 }
 
-pub async fn table_meta(conn: &mut Conn, table: &TableRef) -> Result<TableMeta, AppError> {
+pub async fn table_meta(conn: &mut Traced<'_>, table: &TableRef) -> Result<TableMeta, AppError> {
     let schema = schema_of(conn, table).await?;
     let name = table.name.as_str();
 
@@ -646,7 +718,7 @@ pub async fn table_meta(conn: &mut Conn, table: &TableRef) -> Result<TableMeta, 
     })
 }
 
-pub async fn completion_metadata(conn: &mut Conn) -> Result<CompletionMetadata, AppError> {
+pub async fn completion_metadata(conn: &mut Traced<'_>) -> Result<CompletionMetadata, AppError> {
     let default_schema = current_database(conn).await?;
     let sql = format!(
         "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS \

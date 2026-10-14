@@ -3,26 +3,29 @@ import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { writeClipboard } from "@/features/datagrid/clipboard";
 import { formatCount, formatDuration } from "@/lib/format/time";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/ui";
+import { consoleSegments } from "./highlight";
 import {
+  CONSOLE_FILTER_LABEL,
+  CONSOLE_FILTERS,
   filterEntries,
   useConsoleStore,
   type ConsoleCategory,
   type ConsoleEntry,
   type ConsoleFilter,
 } from "./store";
-
-const FILTERS: Array<{ value: ConsoleFilter; label: string }> = [
-  { value: "all", label: "All" },
-  { value: "data", label: "Data" },
-  { value: "structure", label: "Structure" },
-  { value: "query", label: "Query" },
-];
 
 const CATEGORY: Record<ConsoleCategory, { label: string; className: string }> = {
   data: { label: "Data", className: "bg-brand-soft text-brand" },
@@ -77,48 +80,46 @@ export function ConsolePanel() {
   }, [shown]);
 
   const keys = shortcutFor("ui.toggle-console");
-  const filterLabel = FILTERS.find((f) => f.value === filter)?.label ?? "";
 
   return (
     <section aria-label="Console" className="bg-surface flex h-full min-h-0 flex-col">
       <div className="border-border flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b px-3 text-xs whitespace-nowrap">
         <span className="text-muted-foreground font-semibold">Console</span>
-        <div
-          role="radiogroup"
-          aria-label="Console filter"
-          className="border-border bg-surface-2 flex h-5.5 shrink-0 items-center rounded-md border p-px"
+        <Select
+          value={filter}
+          onValueChange={(v) => {
+            atBottom.current = true;
+            setFilter(v as ConsoleFilter);
+          }}
         >
-          {FILTERS.map((f) => {
-            const checked = f.value === filter;
-            return (
-              <button
-                key={f.value}
-                type="button"
-                role="radio"
-                aria-checked={checked}
-                onClick={() => {
-                  atBottom.current = true;
-                  setFilter(f.value);
-                }}
-                className={cn(
-                  "focus-visible:ring-ring/50 h-full rounded-[5px] px-2 text-[11px] leading-none outline-none focus-visible:ring-2",
-                  checked
-                    ? "bg-background text-foreground font-medium shadow-xs"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {f.label}
-              </button>
-            );
-          })}
-        </div>
+          <SelectTrigger
+            size="sm"
+            aria-label="Console filter"
+            className="h-5.5 w-auto min-w-32 gap-1 rounded-md px-2 text-[11px]"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CONSOLE_FILTERS.map((f) => (
+              <SelectItem key={f} value={f} className="text-xs">
+                {CONSOLE_FILTER_LABEL[f]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <span className="text-muted-foreground tabular-nums">
           {formatCount(shown.length)} {shown.length === 1 ? "entry" : "entries"}
         </span>
         <span className="flex-1" />
-        <Button variant="ghost" size="xs" onClick={clear} disabled={entries.length === 0}>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={clear}
+          disabled={entries.length === 0}
+          aria-label="Clear console"
+          title="Clear console"
+        >
           <Trash2 />
-          Clear
         </Button>
         <Button
           variant="ghost"
@@ -138,8 +139,8 @@ export function ConsolePanel() {
           />
         ) : (
           <EmptyState
-            title={`No ${filterLabel.toLowerCase()} entries`}
-            description="Choose All to see every entry."
+            title={filter === "meta" ? "No meta queries" : "No data queries"}
+            description="Choose All queries to see every entry."
           />
         )
       ) : (
@@ -160,6 +161,20 @@ export function ConsolePanel() {
         </div>
       )}
     </section>
+  );
+}
+
+/** The entry's SQL with the editor's syntax colours (static spans, no editor). */
+function HighlightedSql({ entry }: { entry: ConsoleEntry }) {
+  const segments = useMemo(() => consoleSegments(entry.sql, entry.dialect), [entry]);
+  return segments.map((s, i) =>
+    s.cls ? (
+      <span key={i} className={s.cls}>
+        {s.text}
+      </span>
+    ) : (
+      s.text
+    ),
   );
 }
 
@@ -205,7 +220,7 @@ const ConsoleRow = memo(function ConsoleRow({ entry }: { entry: ConsoleEntry }) 
           long && !expanded && "line-clamp-6",
         )}
       >
-        {entry.sql}
+        {entry.meta ? entry.sql : <HighlightedSql entry={entry} />}
       </pre>
       {long && (
         <button

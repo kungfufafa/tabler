@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+/// <reference types="node" />
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useStructureStore } from "@/features/structure/store";
+import { listenEvent } from "@/lib/ipc/events";
 import { hasUnsaved, useTabsStore } from "@/stores/tabs";
 import {
   attachBeforeUnload,
@@ -7,6 +11,7 @@ import {
   createUnsavedReporter,
   createWindowCloseGuard,
   handleQuitRequest,
+  requestWindowClose,
   subscribeUnsaved,
   type GuardedWindow,
 } from "./useUnsavedGuard";
@@ -154,35 +159,71 @@ describe("attachQuitShortcut", () => {
   };
   const cmdQ = { code: "KeyQ", key: "q", metaKey: true };
 
-  function setup(dirty: boolean, mayClose = false) {
+  function setup(dirty: boolean) {
     const opts = {
       isDirty: vi.fn(() => dirty),
-      request: vi.fn(() => mayClose),
-      closeNow: vi.fn(async () => {}),
+      broadcast: vi.fn(async () => {}),
+      fallback: vi.fn(),
     };
     return { opts, detach: attachQuitShortcut(window, opts) };
   }
 
-  it("routes ⌘Q through the unsaved-changes dialog instead of letting the menu quit", () => {
+  afterEach(() => {
+    useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
+  });
+
+  it("tells every window to quit, like the menu's Quit item, instead of closing this one", () => {
     const { opts, detach } = setup(true);
     expect(press(cmdQ)).toBe(true);
-    expect(opts.request).toHaveBeenCalledTimes(1);
-    expect(opts.closeNow).not.toHaveBeenCalled();
+    expect(opts.broadcast).toHaveBeenCalledTimes(1);
+    expect(opts.fallback).not.toHaveBeenCalled();
     detach();
     expect(press(cmdQ)).toBe(false);
+    expect(opts.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("with unsaved work in the tabs: broadcasts once, asks nothing itself, closes nothing", () => {
+    useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
+    const id = useTabsStore.getState().newQuery("c1");
+    useTabsStore.getState().setDirty(id, true);
+    expect(hasUnsaved()).toBe(true);
+    const broadcast = vi.fn(async () => {});
+    const detach = attachQuitShortcut(window, { isDirty: hasUnsaved, broadcast });
+    expect(press(cmdQ)).toBe(true);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    // The dialog and the close come from the broadcast's `app:quit-requested` (handleQuitRequest),
+    // in every window: not from the key handler.
+    expect(useTabsStore.getState().closeRequest).toBeNull();
+    expect(useTabsStore.getState().tabs).toHaveLength(1);
+    detach();
+  });
+
+  it("reaches every window's quit handler through the app:quit-requested event", async () => {
+    const heard = vi.fn();
+    const unlisten = await listenEvent("app:quit-requested", heard);
+    const detach = attachQuitShortcut(window, { isDirty: () => true });
+    expect(press(cmdQ)).toBe(true);
+    await vi.waitFor(() => expect(heard).toHaveBeenCalledTimes(1));
+    detach();
+    unlisten();
+  });
+
+  it("handles the quit in this window alone when the broadcast fails", async () => {
+    const opts = {
+      isDirty: () => true,
+      broadcast: vi.fn(async () => Promise.reject(new Error("emit refused"))),
+      fallback: vi.fn(),
+    };
+    const detach = attachQuitShortcut(window, opts);
+    expect(press(cmdQ)).toBe(true);
+    await vi.waitFor(() => expect(opts.fallback).toHaveBeenCalledTimes(1));
+    detach();
   });
 
   it("lets a clean window quit natively", () => {
     const { opts, detach } = setup(false);
     expect(press(cmdQ)).toBe(false);
-    expect(opts.request).not.toHaveBeenCalled();
-    detach();
-  });
-
-  it("closes right away when the request finds nothing to lose", () => {
-    const { opts, detach } = setup(true, true);
-    expect(press(cmdQ)).toBe(true);
-    expect(opts.closeNow).toHaveBeenCalledTimes(1);
+    expect(opts.broadcast).not.toHaveBeenCalled();
     detach();
   });
 
@@ -191,7 +232,7 @@ describe("attachQuitShortcut", () => {
     expect(press({ code: "KeyQ", key: "q" })).toBe(false);
     expect(press({ ...cmdQ, shiftKey: true })).toBe(false);
     expect(press({ code: "KeyQ", key: "q", ctrlKey: true })).toBe(false);
-    expect(opts.request).not.toHaveBeenCalled();
+    expect(opts.broadcast).not.toHaveBeenCalled();
     detach();
   });
 });
@@ -215,7 +256,12 @@ describe("handleQuitRequest", () => {
   it("acknowledges even when the dialog has to ask", () => {
     const acknowledge = vi.fn(async () => {});
     const quit = vi.fn(async () => {});
-    handleQuitRequest(() => false, quit, acknowledge);
+    handleQuitRequest(
+      () => false,
+      quit,
+      acknowledge,
+      async () => {},
+    );
     expect(acknowledge).toHaveBeenCalledTimes(1);
     expect(quit).not.toHaveBeenCalled();
   });
@@ -226,9 +272,70 @@ describe("handleQuitRequest", () => {
       () => true,
       quit,
       () => Promise.reject(new Error("gone")),
+      async () => {},
     );
     await Promise.resolve();
     expect(quit).toHaveBeenCalledTimes(1);
+  });
+
+  it("brings a dirty window forward (its dialog may be behind another window) and does not quit", () => {
+    const quit = vi.fn(async () => {});
+    const focus = vi.fn(async () => {});
+    handleQuitRequest(
+      () => false,
+      quit,
+      async () => {},
+      focus,
+    );
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(quit).not.toHaveBeenCalled();
+  });
+
+  it("quits a clean window without touching the focus", () => {
+    const quit = vi.fn(async () => {});
+    const focus = vi.fn(async () => {});
+    handleQuitRequest(
+      () => true,
+      quit,
+      async () => {},
+      focus,
+    );
+    expect(quit).toHaveBeenCalledTimes(1);
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  it("survives a failing focus", async () => {
+    const focus = vi.fn(() => Promise.reject(new Error("no permission")));
+    const quit = vi.fn(async () => {});
+    expect(() =>
+      handleQuitRequest(
+        () => false,
+        quit,
+        async () => {},
+        focus,
+      ),
+    ).not.toThrow();
+    await Promise.resolve();
+    expect(quit).not.toHaveBeenCalled();
+  });
+});
+
+describe("the window permissions the quit flow needs", () => {
+  it("are granted to every window by the default capability", () => {
+    const cap = JSON.parse(
+      readFileSync(
+        path.resolve(import.meta.dirname, "../../src-tauri/capabilities/default.json"),
+        "utf8",
+      ),
+    ) as { permissions: string[]; windows: string[] };
+    expect(cap.windows).toEqual(expect.arrayContaining(["main", "w-*"]));
+    for (const permission of [
+      "core:window:allow-set-focus",
+      "core:window:allow-unminimize",
+      "core:window:allow-show",
+      "core:window:allow-close",
+    ])
+      expect(cap.permissions).toContain(permission);
   });
 });
 
@@ -277,5 +384,50 @@ describe("createUnsavedReporter", () => {
     useStructureStore.getState().remove([id]);
     unsubscribe();
     expect(report.mock.calls.map(([u]) => u)).toEqual([false, true, false]);
+  });
+});
+
+describe("requestWindowClose (⌘W with no tab to close)", () => {
+  const asTauri = (on: boolean) => {
+    if (on) (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    else delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+  };
+  afterEach(() => asTauri(false));
+
+  it("has no window to close in the browser", async () => {
+    const close = vi.fn(async () => {});
+    expect(await requestWindowClose(close)).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("closes a clean window straight away, like its red button", async () => {
+    asTauri(true);
+    const h = harness(false);
+    await flush();
+    expect(await requestWindowClose(() => h.win.close())).toBe(true);
+    expect(h.closed).toHaveBeenCalledTimes(1);
+    h.guard.dispose();
+  });
+
+  it("goes through the unsaved-work guard: a window with unsaved work asks first", async () => {
+    asTauri(true);
+    const h = harness(true);
+    await flush();
+    expect(await requestWindowClose(() => h.win.close())).toBe(true);
+    // The guard intercepted the native close request and opened its dialog (`request`).
+    expect(h.request).toHaveBeenCalledTimes(1);
+    expect(h.closed).not.toHaveBeenCalled();
+    h.guard.dispose();
+  });
+
+  it("reports a window that could not be asked", async () => {
+    asTauri(true);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(
+      await requestWindowClose(async () => {
+        throw new Error("no window");
+      }),
+    ).toBe(false);
+    warn.mockRestore();
   });
 });

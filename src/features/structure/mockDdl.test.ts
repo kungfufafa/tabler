@@ -11,7 +11,7 @@ const PG_USERS: TableRef = { schema: "public", name: "users" };
 afterEach(() => resetMockDdl());
 
 describe("mock preview_ddl", () => {
-  it("PostgreSQL: one transactional ALTER per op", async () => {
+  it("PostgreSQL: the clauses of one table share a transactional ALTER", async () => {
     const c = await connect("p-local-pg");
     const ops: DdlOp[] = [
       { op: "renameColumn", table: PG_USERS, name: "nickname", newName: "nick" },
@@ -25,14 +25,14 @@ describe("mock preview_ddl", () => {
       warnings: [],
       statements: [
         'ALTER TABLE "public"."users" RENAME COLUMN "nickname" TO "nick"',
-        'ALTER TABLE "public"."users" ALTER COLUMN "nick" TYPE varchar(40)',
-        'ALTER TABLE "public"."users" ALTER COLUMN "score" DROP DEFAULT',
+        // (the TYPE of one column and the DEFAULT of another are clauses of one statement)
+        'ALTER TABLE "public"."users" ALTER COLUMN "nick" TYPE varchar(40), ALTER COLUMN "score" DROP DEFAULT',
         `COMMENT ON COLUMN "public"."users"."bio" IS 'it''s me'`,
       ],
     });
   });
 
-  it("MySQL: MODIFY COLUMN with the full definition, not transactional, AFTER honoured", async () => {
+  it("MySQL: MODIFY COLUMN with the full definition in one atomic ALTER, AFTER honoured", async () => {
     const c = await connect("p-shop-mysql");
     const t = { schema: "tabler_dev", name: "users" };
     const plan = await ipc.ddl.preview(c, t, [
@@ -54,10 +54,10 @@ describe("mock preview_ddl", () => {
         after: "email",
       },
     ]);
-    expect(plan.transactional).toBe(false);
+    // one statement is all or nothing
+    expect(plan.transactional).toBe(true);
     expect(plan.statements).toEqual([
-      "ALTER TABLE `tabler_dev`.`users` MODIFY COLUMN `email` text NULL",
-      "ALTER TABLE `tabler_dev`.`users` ADD COLUMN `slug` varchar(80) NOT NULL DEFAULT '' COMMENT 'url part' AFTER `email`",
+      "ALTER TABLE `tabler_dev`.`users` MODIFY COLUMN `email` text NULL, ADD COLUMN `slug` varchar(80) NOT NULL DEFAULT '' COMMENT 'url part' AFTER `email`",
     ]);
   });
 
@@ -139,7 +139,8 @@ describe("mock apply_ddl", () => {
       },
     ]);
     expect(result.error).toBeNull();
-    expect(result.executed).toHaveLength(4);
+    // rename, one ALTER for the drop and the add, CREATE INDEX
+    expect(result.executed).toHaveLength(3);
     const meta = await ipc.schema.table(c, PG_USERS);
     const names = meta.columns.map((x) => x.name);
     expect(names).toContain("nick");
@@ -175,8 +176,7 @@ describe("mock apply_ddl", () => {
       { op: "addPrimaryKey", table: PG_USERS, columns: ["id", "email"] },
     ]);
     expect(plan.statements).toEqual([
-      'ALTER TABLE "public"."users" DROP CONSTRAINT "users_pkey"',
-      'ALTER TABLE "public"."users" ADD PRIMARY KEY ("id", "email")',
+      'ALTER TABLE "public"."users" DROP CONSTRAINT "users_pkey", ADD PRIMARY KEY ("id", "email")',
     ]);
     let result = await ipc.ddl.apply(c, PG_USERS, [
       { op: "dropPrimaryKey", table: PG_USERS },
@@ -384,8 +384,7 @@ describe("mock checks, triggers, table options and choices", () => {
     ];
     const plan = await ipc.ddl.preview(c, PG_USERS, ops);
     expect(plan.statements).toEqual([
-      'ALTER TABLE "public"."users" DROP CONSTRAINT "users_balance_check"',
-      'ALTER TABLE "public"."users" ADD CONSTRAINT "score_ok" CHECK (score < 10)',
+      'ALTER TABLE "public"."users" DROP CONSTRAINT "users_balance_check", ADD CONSTRAINT "score_ok" CHECK (score < 10)',
       "CREATE TRIGGER users_audit AFTER DELETE ON users FOR EACH ROW EXECUTE FUNCTION audit()",
     ]);
     expect((await ipc.ddl.apply(c, PG_USERS, ops)).error).toBeNull();
@@ -442,7 +441,9 @@ describe("mock checks, triggers, table options and choices", () => {
 
     const my = await connect("p-shop-mysql");
     const t = { schema: "tabler_dev", name: "users" };
-    const plan = await ipc.ddl.preview(my, t, [{ op: "addIndex", table: t, index }]);
+    // (MySQL cannot index the TEXT column `email` in full: it takes a prefix length)
+    const mine = { ...index, columns: ["email(10)"] };
+    const plan = await ipc.ddl.preview(my, t, [{ op: "addIndex", table: t, index: mine }]);
     expect(plan.statements[0]).not.toContain("INCLUDE");
     expect(plan.warnings).toContain(
       'INCLUDE columns are PostgreSQL-only; those of "users_email_cover" are ignored',

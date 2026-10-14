@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import { toggleBlockCommentSmart } from "./cmExtensions";
 import type { EditorBarHandlers } from "./EditorBar";
 import { dropEditor, getEditorView } from "./editorStates";
+import { EditorMenuExtensions } from "./menuExtensions";
 import type { SqlDialect } from "./scanner";
 import {
   isSplitOpen,
@@ -55,11 +56,13 @@ function selectionText(view: EditorView): string {
  * carries Cut / Copy / Paste / Select All itself.
  */
 function EditorContextMenu({
+  tabId,
   editorKey,
   split,
   handlers,
   children,
 }: {
+  tabId: string;
   editorKey: string;
   split: boolean;
   handlers: EditorPaneHandlers;
@@ -129,11 +132,11 @@ function EditorContextMenu({
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={withView((v) => void toggleLineComment(v))}>
           Toggle Line Comment
-          <Shortcut combo="Mod+/" />
+          <Shortcut action="query.comment-line" />
         </ContextMenuItem>
         <ContextMenuItem onSelect={withView((v) => void toggleBlockCommentSmart(v))}>
           Toggle Block Comment
-          <Shortcut combo="Mod+Alt+/" />
+          <Shortcut action="query.comment-block" />
         </ContextMenuItem>
         <ContextMenuItem onSelect={handlers.format}>
           Beautify SQL
@@ -157,6 +160,7 @@ function EditorContextMenu({
           {split ? "Close Split Pane" : "Split Pane Horizontally"}
           <Shortcut action="query.split" />
         </ContextMenuItem>
+        <EditorMenuExtensions tabId={tabId} />
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -187,7 +191,7 @@ function Pane({
     };
   }, [pane, tabId, editorKey]);
   return (
-    <EditorContextMenu editorKey={editorKey} split={split} handlers={handlers}>
+    <EditorContextMenu tabId={tabId} editorKey={editorKey} split={split} handlers={handlers}>
       <div
         className="relative h-full min-h-0"
         data-pane={pane}

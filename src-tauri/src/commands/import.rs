@@ -1,4 +1,4 @@
-//! Import commands (File ▸ Import ▸ From CSV… / From SQL Dump…). The work happens in
+//! Import commands (File ▸ Import ▸ From CSV… / From JSON… / From SQL Dump…). The work happens in
 //! `crate::import`; these resolve the connection, register the import's cancellation so
 //! `cancel_import` can stop it, and drop cached metadata the import may have changed. A read-only
 //! connection refuses both. A SQL dump runs on a connection of its own, opened like the
@@ -18,12 +18,14 @@ use crate::commands::browse::cached_meta;
 use crate::commands::connections::{connect_password, connect_timeout};
 use crate::drivers::{self, CancelSlot, ConnectTarget, DbSession, request_cancel};
 use crate::error::AppError;
-use crate::import::{preview_csv, preview_dump, run_csv_import, run_sql_import};
+use crate::import::{
+    preview_csv, preview_dump, preview_json, run_csv_import, run_json_import, run_sql_import,
+};
 use crate::state::{AppState, Connection};
 use crate::types::import::{
     CsvImportProgress, CsvImportReport, CsvImportRequest, CsvPreview, CsvPreviewRequest,
-    ImportTarget, SqlDumpPreview, SqlDumpPreviewRequest, SqlImportProgress, SqlImportReport,
-    SqlImportRequest,
+    ImportTarget, JsonImportRequest, JsonPreview, JsonPreviewRequest, SqlDumpPreview,
+    SqlDumpPreviewRequest, SqlImportProgress, SqlImportReport, SqlImportRequest,
 };
 use crate::types::profile::Driver;
 
@@ -145,6 +147,74 @@ pub async fn import_csv(
     report
 }
 
+/// The JSON import's preview: the keys of the first objects as columns, their detected types and
+/// the first rows.
+#[tauri::command]
+pub async fn preview_json_import(req: JsonPreviewRequest) -> Result<JsonPreview, AppError> {
+    tokio::task::spawn_blocking(move || preview_json(&req.path, req.encoding))
+        .await
+        .map_err(|e| AppError::internal(format!("preview task failed: {e}")))?
+}
+
+/// Imports a JSON array of objects (or NDJSON) into a table or a new one, as `import_csv` does.
+#[tauri::command]
+pub async fn import_json(
+    state: State<'_, AppState>,
+    connection_id: Uuid,
+    req: JsonImportRequest,
+    on_progress: Channel<CsvImportProgress>,
+) -> Result<CsvImportReport, AppError> {
+    let conn = state.connection(connection_id).await?;
+    refuse_read_only(&conn)?;
+    let token = CancellationToken::new();
+    let _registered = Registration::new(
+        &req.import_id,
+        Running {
+            connection_id,
+            token: token.clone(),
+            slot: None,
+            session: None,
+        },
+    )?;
+    let session = conn.session().await;
+    let (table, meta) = match &req.target {
+        ImportTarget::Existing { table } => {
+            conn.invalidate(Some(table)).await;
+            (table.clone(), Some(cached_meta(&conn, table).await?))
+        }
+        ImportTarget::Create { table, .. } => (table.clone(), None),
+    };
+    log::info!(
+        "import {} (JSON) into {} started",
+        req.import_id,
+        table.name
+    );
+    let report = run_json_import(
+        session.as_ref(),
+        &req,
+        meta.as_deref(),
+        move |p| {
+            if let Err(e) = on_progress.send(p) {
+                log::debug!("import progress not delivered: {e}");
+            }
+        },
+        token,
+    )
+    .await;
+    conn.invalidate(Some(&table)).await;
+    match &report {
+        Ok(r) => log::info!(
+            "import {} finished: {} of {} objects in {} ms",
+            req.import_id,
+            r.rows_imported,
+            r.rows_read,
+            r.duration_ms
+        ),
+        Err(e) => log::info!("import {} failed: {e}", req.import_id),
+    }
+    report
+}
+
 /// The start of a SQL dump (plain or gzip), split as it will be run.
 #[tauri::command]
 pub async fn preview_sql_dump(
@@ -172,11 +242,33 @@ const DUMP_SESSION_CLOSE: Duration = Duration::from_secs(5);
 /// A new session for a SQL dump, opened like `conn`'s: its profile (bootstrap commands
 /// included), the database it is on now, its SSH tunnel and its password.
 async fn dump_session(state: &AppState, conn: &Connection) -> Result<Arc<dyn DbSession>, AppError> {
+    session_on_database(state, conn, None)
+        .await
+        .map_err(|e| match e {
+            AppError::Connect(m) => {
+                AppError::Connect(format!("cannot open a connection for the import: {m}"))
+            }
+            other => other,
+        })
+}
+
+/// A new session opened like `conn`'s (profile with its bootstrap commands, SSH tunnel,
+/// password) on `database`, or on the database `conn` is on now. The caller closes it. Used by
+/// SQL dumps and by exports that read another PostgreSQL database of the connection.
+pub(crate) async fn session_on_database(
+    state: &AppState,
+    conn: &Connection,
+    database: Option<&str>,
+) -> Result<Arc<dyn DbSession>, AppError> {
     let mut profile = conn.profile.clone();
-    if profile.driver != Driver::Sqlite
-        && let Some(db) = conn.info().await.current_database
-    {
-        profile.database = Some(db);
+    if profile.driver != Driver::Sqlite {
+        let db = match database {
+            Some(db) => Some(db.to_string()),
+            None => conn.info().await.current_database,
+        };
+        if let Some(db) = db {
+            profile.database = Some(db);
+        }
     }
     let host_override = match &conn.tunnel {
         Some(t) if !t.is_up() => {
@@ -200,12 +292,6 @@ async fn dump_session(state: &AppState, conn: &Connection) -> Result<Arc<dyn DbS
     )
     .await
     .map_err(|_| AppError::Timeout)?
-    .map_err(|e| match e {
-        AppError::Connect(m) => {
-            AppError::Connect(format!("cannot open a connection for the import: {m}"))
-        }
-        other => other,
-    })
 }
 
 /// Runs a SQL dump's statements one by one on a session of its own (`dump_session`).

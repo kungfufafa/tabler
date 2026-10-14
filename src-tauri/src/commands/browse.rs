@@ -1,9 +1,10 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tauri::State;
 use uuid::Uuid;
 
+use super::query::{query_limited, query_time_limit};
 use crate::drivers::DbSession;
 use crate::drivers::postgres::decode::text_to_value;
 use crate::error::AppError;
@@ -12,7 +13,9 @@ use crate::sqlgen::select::{
     ROWID_ALIAS, SelectSpec, build_count, build_fetch_cell, build_select, inline_params,
 };
 use crate::state::{AppState, Connection};
-use crate::types::browse::{BrowsePage, BrowseRequest, FilterGroup, RowCount, RowIdentity, RowKey};
+use crate::types::browse::{
+    BrowsePage, BrowseRequest, FilterGroup, RowCount, RowIdentity, RowKey, TracedSql,
+};
 use crate::types::profile::Driver;
 use crate::types::schema::{ColumnMeta, TableMeta, TableRef, ValueKind};
 use crate::types::value::{Value, decode_hex};
@@ -60,11 +63,15 @@ fn decode_rows(driver: Driver, columns: &[&ColumnMeta], rows: Vec<Vec<Value>>) -
         .collect()
 }
 
+/// Loads a page of a table's rows. The load runs under the query time out (Settings ▸ Connections;
+/// `timeout_secs` overrides it, 0 = no limit): a statement still running past it is cancelled on
+/// the server and the call fails with `QUERY_TIMEOUT`.
 #[tauri::command]
 pub async fn browse_table(
     state: State<'_, AppState>,
     connection_id: Uuid,
     req: BrowseRequest,
+    timeout_secs: Option<u32>,
 ) -> Result<BrowsePage, AppError> {
     if req.limit == 0 || req.limit > 10_000 {
         return Err(AppError::InvalidInput(
@@ -73,7 +80,6 @@ pub async fn browse_table(
     }
     let conn = state.connection(connection_id).await?;
     let session = conn.session().await;
-    let driver = session.driver();
     log::debug!(
         "browse_table {}.{} limit={} offset={}",
         req.table.schema.as_deref().unwrap_or(""),
@@ -81,9 +87,31 @@ pub async fn browse_table(
         req.limit,
         req.offset
     );
-    let dialect = session.dialect();
     let meta = cached_meta(&conn, &req.table).await?;
-    let mut identity = identity_for(driver, &meta);
+    let limit = query_time_limit(&state.appdb, timeout_secs);
+    browse_page(session.as_ref(), &meta, &req, limit).await
+}
+
+/// Whether a failed select addressed by `identity` is worth running again addressing the rows by
+/// all their columns: the first attempt only, and only when the server's message is about the
+/// rowid (a table without one reports `no such column: rowid`). Any other failure would fail the
+/// same way and, for a statement that ran into the query time out, wait for the limit again.
+fn retry_by_all_columns(identity: RowIdentity, attempt: u32, error: &AppError) -> bool {
+    identity == RowIdentity::Rowid
+        && attempt == 1
+        && matches!(error, AppError::Db { message, .. } if message.to_lowercase().contains("rowid"))
+}
+
+/// `browse_table` without Tauri state: one page of `meta`'s table, loaded under `limit`.
+pub async fn browse_page(
+    session: &dyn DbSession,
+    meta: &TableMeta,
+    req: &BrowseRequest,
+    limit: Option<Duration>,
+) -> Result<BrowsePage, AppError> {
+    let driver = session.driver();
+    let dialect = session.dialect();
+    let mut identity = identity_for(driver, meta);
 
     let selected: Vec<&ColumnMeta> = match &req.columns {
         Some(names) => names
@@ -114,7 +142,7 @@ pub async fn browse_table(
             pk: &meta.primary_key,
             identity,
         })?;
-        match session.query(&built.sql, &built.params).await {
+        match query_limited(session, &built.sql, &built.params, limit).await {
             Ok(rs) => {
                 let mut rows = rs.rows;
                 let mut row_ids = None;
@@ -148,7 +176,7 @@ pub async fn browse_table(
                 });
             }
             // WITHOUT ROWID tables have no rowid: retry addressing rows by all columns.
-            Err(e) if identity == RowIdentity::Rowid && attempt == 1 => {
+            Err(e) if retry_by_all_columns(identity, attempt, &e) => {
                 log::debug!("rowid select failed ({e}); falling back to all-columns identity");
                 identity = RowIdentity::None;
             }
@@ -177,7 +205,8 @@ fn estimated_count(
 }
 
 /// Counts a table's rows (`filter` applied). An unfiltered table estimated above `estimate_above`
-/// rows (default 500,000) reports the planner estimate, unless `exact` is set.
+/// rows (default 500,000) reports the planner estimate, unless `exact` is set. The count runs
+/// under the query time out (see `browse_table`).
 #[tauri::command]
 pub async fn count_table_rows(
     state: State<'_, AppState>,
@@ -186,6 +215,7 @@ pub async fn count_table_rows(
     filter: Option<FilterGroup>,
     exact: Option<bool>,
     estimate_above: Option<i64>,
+    timeout_secs: Option<u32>,
 ) -> Result<RowCount, AppError> {
     let conn = state.connection(connection_id).await?;
     let session = conn.session().await;
@@ -204,7 +234,8 @@ pub async fn count_table_rows(
         &meta.columns,
         filter.as_ref(),
     )?;
-    let rs = session.query(&built.sql, &built.params).await?;
+    let limit = query_time_limit(&state.appdb, timeout_secs);
+    let rs = query_limited(session.as_ref(), &built.sql, &built.params, limit).await?;
     let count = match rs.rows.first().and_then(|r| r.first()) {
         Some(Value::Int(i)) => *i,
         Some(Value::BigInt(s)) | Some(Value::Decimal(s)) | Some(Value::Text(s)) => {
@@ -236,7 +267,8 @@ fn hex_text(v: Value) -> Option<String> {
     }
 }
 
-/// Fetches one full cell (the inspector's "Load full value" for blobs beyond the preview cap).
+/// Fetches one full cell (the inspector's "Load full value" for blobs beyond the preview cap),
+/// under the query time out (see `browse_table`).
 #[tauri::command]
 pub async fn fetch_cell(
     state: State<'_, AppState>,
@@ -244,19 +276,47 @@ pub async fn fetch_cell(
     table: TableRef,
     key: RowKey,
     column: String,
+    timeout_secs: Option<u32>,
 ) -> Result<Value, AppError> {
     let conn = state.connection(connection_id).await?;
     let session = conn.session().await;
     let meta = cached_meta(&conn, &table).await?;
-    fetch_cell_inner(session.as_ref(), &meta, &column, &key).await
+    let limit = query_time_limit(&state.appdb, timeout_secs);
+    fetch_cell_limited(session.as_ref(), &meta, &column, &key, limit).await
 }
 
-/// `fetch_cell` without Tauri state, for tests.
+/// The statements the connection's session ran for the app since the last call (introspection,
+/// table loads, counts, writes, exports), oldest first, for the console log: the renderer calls
+/// this after each of its own calls and logs what it gets. A connection that is gone has none.
+#[tauri::command]
+pub async fn drain_sql_trace(
+    state: State<'_, AppState>,
+    connection_id: Uuid,
+) -> Result<Vec<TracedSql>, AppError> {
+    let conn = state.connections.read().await.get(&connection_id).cloned();
+    match conn {
+        Some(conn) => Ok(conn.session().await.drain_trace()),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// `fetch_cell` without Tauri state or time limit, for tests.
 pub async fn fetch_cell_inner(
     session: &dyn DbSession,
     meta: &TableMeta,
     column: &str,
     key: &RowKey,
+) -> Result<Value, AppError> {
+    fetch_cell_limited(session, meta, column, key, None).await
+}
+
+/// `fetch_cell` without Tauri state, under `limit`.
+pub async fn fetch_cell_limited(
+    session: &dyn DbSession,
+    meta: &TableMeta,
+    column: &str,
+    key: &RowKey,
+    limit: Option<Duration>,
 ) -> Result<Value, AppError> {
     let col = meta
         .columns
@@ -269,7 +329,7 @@ pub async fn fetch_cell_inner(
         columns: &meta.columns,
     };
     let (sql, params) = build_fetch_cell(&spec, col, key)?;
-    let rs = session.query(&sql, &params).await?;
+    let rs = query_limited(session, &sql, &params, limit).await?;
     fetched_value(
         session.driver(),
         col,
@@ -333,7 +393,9 @@ mod tests {
             "CREATE TABLE files (id INTEGER PRIMARY KEY, name TEXT, data BLOB);
              CREATE VIEW files_v AS SELECT id, name, data FROM files;
              CREATE TABLE cache (key, value);
-             CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);",
+             CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);
+             CREATE TABLE fx3_wr (a TEXT PRIMARY KEY, b TEXT) WITHOUT ROWID;
+             INSERT INTO fx3_wr VALUES ('x', '1'), ('y', '2');",
         )
         .unwrap();
         let big = big_blob();
@@ -350,6 +412,10 @@ mod tests {
         db.execute("INSERT INTO notes VALUES (1, ?1)", [&big])
             .unwrap();
         drop(db);
+        (open_sqlite(&path).await, dir)
+    }
+
+    async fn open_sqlite(path: &std::path::Path) -> Arc<dyn DbSession> {
         let profile = ConnectionProfile {
             id: Uuid::new_v4(),
             name: "fetch".into(),
@@ -370,14 +436,13 @@ mod tests {
             updated_at: String::new(),
             last_connected_at: None,
         };
-        let session = connect(ConnectTarget {
+        connect(ConnectTarget {
             profile: &profile,
             password: None,
             host_override: None,
         })
         .await
-        .unwrap();
-        (session, dir)
+        .unwrap()
     }
 
     async fn meta(session: &dyn DbSession, name: &str) -> TableMeta {
@@ -469,6 +534,133 @@ mod tests {
             fetch_cell_inner(s, &files, "name", &pk(1)).await.unwrap(),
             Value::Text("a".into())
         );
+    }
+
+    fn db_error() -> AppError {
+        AppError::db("no such column: rowid")
+    }
+
+    #[test]
+    fn only_a_missing_rowid_on_the_first_attempt_retries_by_all_columns() {
+        use RowIdentity::{None as NoKey, Pk, Rowid};
+        assert!(retry_by_all_columns(Rowid, 1, &db_error()));
+        // Not twice, and not for a table that was never addressed by its rowid.
+        assert!(!retry_by_all_columns(Rowid, 2, &db_error()));
+        assert!(!retry_by_all_columns(Pk, 1, &db_error()));
+        assert!(!retry_by_all_columns(NoKey, 1, &db_error()));
+        // A statement stopped by the query time out (or by a cancel, a lost connection…) would run
+        // into the limit again, and any other failure of the select fails the same way.
+        for e in [
+            AppError::QueryTimeout { secs: 300 },
+            AppError::Cancelled,
+            AppError::Timeout,
+            AppError::NotConnected,
+            AppError::Io("broken pipe".into()),
+            AppError::db("database is locked"),
+            AppError::db("no such table: main.t"),
+        ] {
+            assert!(!retry_by_all_columns(Rowid, 1, &e), "{e:?}");
+        }
+    }
+
+    fn page_request(table: &str) -> BrowseRequest {
+        BrowseRequest {
+            table: TableRef::new(Some("main"), table),
+            columns: None,
+            filter: None,
+            sort: Vec::new(),
+            limit: 5,
+            offset: 0,
+        }
+    }
+
+    /// A table without a primary key is browsed by its rowid; when the load ran into the query time
+    /// out that is the answer after one wait of the limit, not a second identical select that
+    /// waits for the limit again (and scans the table twice).
+    #[tokio::test]
+    async fn a_page_load_that_hits_the_query_time_out_runs_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("slow.sqlite");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE fx3_slow (a INTEGER);
+             INSERT INTO fx3_slow WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 2000000)
+               SELECT x FROM c;",
+        )
+        .unwrap();
+        drop(db);
+        let session = open_sqlite(&path).await;
+        let meta = meta(session.as_ref(), "fx3_slow").await;
+        assert_eq!(identity_for(Driver::Sqlite, &meta), RowIdentity::Rowid);
+        session.drain_trace();
+
+        let mut req = page_request("fx3_slow");
+        // Sorting a table without an index reads every row.
+        req.sort = vec![crate::types::browse::SortSpec {
+            column: "a".into(),
+            dir: crate::types::browse::SortDir::Desc,
+            nulls: None,
+        }];
+        let started = Instant::now();
+        let err = browse_page(
+            session.as_ref(),
+            &meta,
+            &req,
+            Some(Duration::from_millis(30)),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, AppError::QueryTimeout { .. }),
+            "unexpected {err:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(20));
+        let selects: Vec<_> = session
+            .drain_trace()
+            .into_iter()
+            .filter(|t| t.sql.contains("fx3_slow"))
+            .collect();
+        assert_eq!(
+            selects.len(),
+            1,
+            "the select ran more than once: {selects:#?}"
+        );
+        assert!(selects[0].error.is_some());
+    }
+
+    /// A table the app could not key is addressed by its rowid first; one that has none (WITHOUT
+    /// ROWID) answers `no such column: rowid`, and the page loads once more addressed by all its
+    /// columns.
+    #[tokio::test]
+    async fn a_table_without_a_rowid_loads_addressed_by_all_columns() {
+        let (session, _dir) = sqlite_session().await;
+        let mut meta = meta(session.as_ref(), "fx3_wr").await;
+        meta.primary_key.clear();
+        assert_eq!(identity_for(Driver::Sqlite, &meta), RowIdentity::Rowid);
+        session.drain_trace();
+        let page = browse_page(session.as_ref(), &meta, &page_request("fx3_wr"), None)
+            .await
+            .unwrap();
+        assert_eq!(page.identity, RowIdentity::None);
+        assert_eq!(page.row_ids, None);
+        assert_eq!(page.rows.len(), 2);
+        let trace = session.drain_trace();
+        assert_eq!(trace.len(), 2, "{trace:#?}");
+        assert!(trace[0].error.as_deref().unwrap().contains("rowid"));
+        assert!(trace[1].error.is_none());
+    }
+
+    /// An ordinary page load is untouched, and still returns the rowids of a keyless table.
+    #[tokio::test]
+    async fn a_keyless_sqlite_table_still_loads_with_its_rowids() {
+        let (session, _dir) = sqlite_session().await;
+        let meta = meta(session.as_ref(), "cache").await;
+        let page = browse_page(session.as_ref(), &meta, &page_request("cache"), None)
+            .await
+            .unwrap();
+        assert_eq!(page.identity, RowIdentity::Rowid);
+        assert_eq!(page.row_ids, Some(vec![1, 2, 3]));
+        assert_eq!(page.rows.len(), 3);
     }
 
     fn column(kind: ValueKind, data_type: &str) -> ColumnMeta {

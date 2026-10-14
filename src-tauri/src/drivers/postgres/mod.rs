@@ -21,12 +21,14 @@ use tokio_postgres::{CancelToken, Client, Config};
 
 use crate::drivers::{
     CANCEL_SETTLE_LIMIT, CancelHandle, CancelSlot, ConnectTarget, DbSession, RowChunker, RowSink,
-    ServerInfo, StatementOutcome, TxState, TxStatement, arm_cancel, cancel_requested,
-    cancel_safe_on_stop, check_affected, settle_cancels, tx_effect,
+    ServerInfo, SqlTrace, StatementOutcome, TraceCounts, TxState, TxStatement, arm_cancel,
+    cancel_requested, cancel_safe_on_stop, check_affected, classify_statement, settle_cancels,
+    trace_sql, tx_effect,
 };
 use crate::error::AppError;
 use crate::secrets::CommandPassword;
 use crate::sqlgen::Dialect;
+use crate::types::browse::TracedSql;
 use crate::types::profile::{Driver, SslMode};
 use crate::types::query::{ExecOutcome, ResultSet};
 use crate::types::schema::{
@@ -69,6 +71,8 @@ pub struct PgSession {
     /// once they had to be re-created (they are then SQL-level and no longer listed by
     /// `editor::protocol_statements`).
     kept_statements: std::sync::Mutex<Vec<(String, String)>>,
+    /// The statements this session ran for the app, for the console log (see `SqlTrace`).
+    trace: SqlTrace,
 }
 
 impl PgSession {
@@ -104,6 +108,7 @@ impl PgSession {
             token,
             editor_runs: Mutex::new(()),
             kept_statements: std::sync::Mutex::new(Vec::new()),
+            trace: SqlTrace::default(),
         })
     }
 
@@ -160,6 +165,11 @@ impl PgSession {
         keep
     }
 
+    /// A worker client whose catalog queries are recorded in this session's trace.
+    fn traced<'a>(&'a self, client: &'a Client) -> introspect::Traced<'a> {
+        introspect::Traced::new(client, &self.trace)
+    }
+
     /// Cancels what runs on `client`, which connected with `config` (the editor's or the
     /// pool's).
     fn canceller<'a>(&'a self, client: &Client, config: &'a Config) -> editor::Canceller<'a> {
@@ -177,8 +187,23 @@ pub(crate) async fn run_query(
     sql: &str,
     params: &[Value],
 ) -> Result<ResultSet, AppError> {
+    run_query_checked(client, sql, params, None).await
+}
+
+/// `run_query` for a run that may be cancelled (`DbSession::query_cancellable`): a cancel
+/// requested while the statement was being prepared may have reached the server while it was
+/// idle, where it is ignored, so the statement must not start anyway.
+async fn run_query_checked(
+    client: &Client,
+    sql: &str,
+    params: &[Value],
+    cancel: Option<&CancelSlot>,
+) -> Result<ResultSet, AppError> {
     let (types, bound) = params::bind(params)?;
     let stmt = client.prepare_typed(sql, &types).await?;
+    if cancel.is_some_and(cancel_requested) {
+        return Err(AppError::Cancelled);
+    }
     let columns = stmt.columns().iter().map(decode::result_column).collect();
     let stream = client.query_raw(&stmt, params::as_refs(&bound)).await?;
     futures::pin_mut!(stream);
@@ -200,8 +225,23 @@ pub(crate) async fn run_execute(
     sql: &str,
     params: &[Value],
 ) -> Result<ExecOutcome, AppError> {
+    run_execute_checked(client, sql, params, None).await
+}
+
+/// `run_execute` for a run that may be cancelled (`DbSession::execute_cancellable`): a cancel
+/// requested while the statement was being prepared may have reached the server while it was
+/// idle, where it is ignored, so the statement must not start anyway.
+async fn run_execute_checked(
+    client: &Client,
+    sql: &str,
+    params: &[Value],
+    cancel: Option<&CancelSlot>,
+) -> Result<ExecOutcome, AppError> {
     let (types, bound) = params::bind(params)?;
     let stmt = client.prepare_typed(sql, &types).await?;
+    if cancel.is_some_and(cancel_requested) {
+        return Err(AppError::Cancelled);
+    }
     let has_columns = !stmt.columns().is_empty();
     let columns: Vec<_> = stmt.columns().iter().map(decode::result_column).collect();
     let stream = client.query_raw(&stmt, params::as_refs(&bound)).await?;
@@ -299,42 +339,106 @@ impl DbSession for PgSession {
 
     async fn list_databases(&self) -> Result<Vec<DatabaseInfo>, AppError> {
         let client = self.client().await?;
-        introspect::list_databases(&client).await
+        introspect::list_databases(&self.traced(&client)).await
     }
 
     async fn list_schemas(&self) -> Result<Vec<SchemaInfo>, AppError> {
         let client = self.client().await?;
-        introspect::list_schemas(&client).await
+        introspect::list_schemas(&self.traced(&client)).await
     }
 
     async fn list_tables(&self, schema: &str) -> Result<Vec<TableSummary>, AppError> {
         let client = self.client().await?;
-        introspect::list_tables(&client, schema).await
+        introspect::list_tables(&self.traced(&client), schema).await
     }
 
     async fn table_meta(&self, table: &TableRef) -> Result<TableMeta, AppError> {
         let client = self.client().await?;
-        introspect::table_meta(&client, table).await
+        introspect::table_meta(&self.traced(&client), table).await
     }
 
     async fn view_definition(&self, table: &TableRef) -> Result<Option<String>, AppError> {
         let client = self.client().await?;
-        introspect::view_definition(&client, table).await
+        introspect::view_definition(&self.traced(&client), table).await
     }
 
     async fn completion_metadata(&self) -> Result<CompletionMetadata, AppError> {
         let client = self.client().await?;
-        introspect::completion_metadata(&client).await
+        introspect::completion_metadata(&self.traced(&client)).await
     }
 
     async fn query(&self, sql: &str, params: &[Value]) -> Result<ResultSet, AppError> {
         let client = self.client().await?;
-        run_query(&client, sql, params).await
+        self.trace
+            .run_async(
+                classify_statement(sql, Dialect::Postgres),
+                trace_sql(Dialect::Postgres, sql, params),
+                |rs: &ResultSet| TraceCounts::rows(rs.rows.len()),
+                run_query(&client, sql, params),
+            )
+            .await
+    }
+
+    async fn query_cancellable(
+        &self,
+        sql: &str,
+        params: &[Value],
+        cancel: CancelSlot,
+    ) -> Result<ResultSet, AppError> {
+        let client = self.client().await?;
+        let result = {
+            let _armed = arm_cancel(&cancel, CancelHandle::Postgres(client.cancel_token()))?;
+            self.trace
+                .run_async(
+                    classify_statement(sql, Dialect::Postgres),
+                    trace_sql(Dialect::Postgres, sql, params),
+                    |rs: &ResultSet| TraceCounts::rows(rs.rows.len()),
+                    run_query_checked(&client, sql, params, Some(&cancel)),
+                )
+                .await
+        };
+        if cancel_requested(&cancel) {
+            // The pooled connection goes back to the pool: no late cancel may follow it there.
+            settle(&cancel).await;
+        }
+        result
     }
 
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecOutcome, AppError> {
         let client = self.client().await?;
-        run_execute(&client, sql, params).await
+        self.trace
+            .run_async(
+                classify_statement(sql, Dialect::Postgres),
+                trace_sql(Dialect::Postgres, sql, params),
+                TraceCounts::of_exec,
+                run_execute(&client, sql, params),
+            )
+            .await
+    }
+
+    async fn execute_cancellable(
+        &self,
+        sql: &str,
+        params: &[Value],
+        cancel: CancelSlot,
+    ) -> Result<ExecOutcome, AppError> {
+        let client = self.client().await?;
+        let result = {
+            let _armed = arm_cancel(&cancel, CancelHandle::Postgres(client.cancel_token()))?;
+            self.trace
+                .run_async(
+                    classify_statement(sql, Dialect::Postgres),
+                    trace_sql(Dialect::Postgres, sql, params),
+                    TraceCounts::of_exec,
+                    run_execute_checked(&client, sql, params, Some(&cancel)),
+                )
+                .await
+        };
+        if cancel_requested(&cancel) {
+            // The pooled connection goes back to the pool: no late cancel may follow it there.
+            settle(&cancel).await;
+        }
+        result
     }
 
     async fn transaction(
@@ -345,7 +449,14 @@ impl DbSession for PgSession {
         client.batch_execute("BEGIN").await?;
         let mut out = Vec::with_capacity(statements.len());
         for (i, st) in statements.iter().enumerate() {
-            match run_execute(&client, &st.sql, &st.params)
+            match self
+                .trace
+                .run_async(
+                    classify_statement(&st.sql, Dialect::Postgres),
+                    trace_sql(Dialect::Postgres, &st.sql, &st.params),
+                    TraceCounts::of_exec,
+                    run_execute(&client, &st.sql, &st.params),
+                )
                 .await
                 .and_then(|o| {
                     check_affected(st, &o, i)?;
@@ -443,7 +554,14 @@ impl DbSession for PgSession {
         let client = self.client().await?;
         let result = {
             let _armed = arm_cancel(&cancel, CancelHandle::Postgres(client.cancel_token()))?;
-            self.stream_on(&client, sql, params, sink).await
+            self.trace
+                .run_async(
+                    classify_statement(sql, Dialect::Postgres),
+                    trace_sql(Dialect::Postgres, sql, params),
+                    |rows: &u64| TraceCounts::rows(*rows as usize),
+                    self.stream_on(&client, sql, params, sink),
+                )
+                .await
         };
         if cancel_requested(&cancel) {
             // The pooled connection goes back to the pool: no late cancel may follow it there.
@@ -466,6 +584,14 @@ impl DbSession for PgSession {
 
     fn in_transaction(&self) -> Option<bool> {
         self.tx_state.get()
+    }
+
+    fn drain_trace(&self) -> Vec<TracedSql> {
+        self.trace.drain()
+    }
+
+    fn sql_trace(&self) -> Option<&SqlTrace> {
+        Some(&self.trace)
     }
 
     fn editor_run_lock(&self) -> Option<&Mutex<()>> {

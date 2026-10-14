@@ -13,14 +13,15 @@ import {
 } from "@/lib/ipc";
 import { openExport, type ExportSourceSpec } from "@/features/export";
 import { resultTable } from "@/features/export/resultTable";
-import { commitResultEdits, hasPendingResultEdits } from "@/features/results/commit";
+import { definitionOf } from "@/features/commit/definitions";
+import { commitWorkspace, workspacePendingCount } from "@/features/commit/workspace";
+import { hasPendingResultEdits } from "@/features/results/commit";
 import { confirmRerunDiscard } from "@/features/results/rerunConfirm";
 import { discardRunEdits, pendingForRun, useResultsStore } from "@/features/results/store";
 import { guardExecution } from "@/features/safety/guard";
 import { useConnectionsStore } from "@/stores/connections";
 import { getPrefs } from "@/stores/prefs";
 import {
-  DEFAULT_ROW_LIMIT,
   getQueryTab,
   isBusy,
   updateQueryTab,
@@ -37,7 +38,6 @@ import {
   getEditorState,
   getEditorView,
   markSaved,
-  seedEditor,
 } from "./editorStates";
 import {
   clampRange,
@@ -47,7 +47,8 @@ import {
   type DocRange,
   type Submission,
 } from "./errorPos";
-import { baseName, pickOpenPath, pickSavePath } from "./files";
+import { baseName, pickOpenPath, pickSavePath, readSqlFileGuarded } from "./files";
+import { linkTabToFile, openFileInNewQueryTab } from "./openSql";
 import {
   applyEvent,
   failRun,
@@ -70,17 +71,14 @@ import { changesSchema } from "./schemaChange";
 import { activeEditorKey, splitKey } from "./split";
 import { recordSubmission, unsubstituteRange } from "./submissions";
 
-/** Row cap per statement (matches the backend default). */
-export const MAX_ROWS = DEFAULT_ROW_LIMIT;
-
 /**
  * The cap sent for "No limit": the backend clamps `maxRows` to this (`MAX_ROWS_LIMIT` in
  * `commands/query.rs`), and 0 would mean its default (10,000), not "unlimited".
  */
 export const NO_LIMIT_MAX_ROWS = 1_000_000;
 
-/** The row limits the editor bar offers (null = no limit). */
-export const ROW_LIMITS: readonly (number | null)[] = [null, 100, 1_000, 10_000];
+/** The row limits the editor bar offers (null = no limit, the default of a new tab). */
+export const ROW_LIMITS: readonly (number | null)[] = [null, 100, 300, 500, 1_000, 10_000];
 
 /** `maxRows` of a run for the tab's row limit. */
 export function maxRowsFor(limit: number | null): number {
@@ -476,6 +474,7 @@ export async function formatQuery(tabId: string): Promise<void> {
         language: FORMAT_LANGUAGE[dialect],
         keywordCase: prefs.editorUppercaseKeywords ? "upper" : "lower",
         tabWidth: prefs.editorTabSize,
+        useTabs: prefs.editorIndentWithTabs,
       });
     });
   } catch (e) {
@@ -525,11 +524,26 @@ export async function insertSql(
 /** Saves the buffer to its file (asking for a path the first time, or always with `saveAs`). */
 export async function saveQuery(tabId: string, opts: { saveAs?: boolean } = {}): Promise<boolean> {
   // Results package: with staged edits in an editable result, ⌘S commits them instead of saving
-  // the file (TablePlus); Save As still saves.
-  if (!opts.saveAs && hasPendingResultEdits(tabId)) return commitResultEdits(tabId);
+  // the file (TablePlus) — with every other pending change of the workspace; Save As still saves.
+  if (!opts.saveAs && hasPendingResultEdits(tabId)) {
+    const connectionId = queryTab(tabId)?.connectionId;
+    if (connectionId) return commitWorkspace(connectionId);
+  }
   const info = queryTab(tabId);
   const state = getEditorState(tabId);
   if (!info || !state) return false;
+  // A routine opened from the sidebar, or a New ▸ View / Function / Procedure template: its text
+  // is a pending change of the workspace (not a file), so ⌘S commits it - with every other
+  // pending change, through the Preview SQL and the safe mode; Save As still saves a file.
+  if (!opts.saveAs && definitionOf(tabId)) {
+    if (workspacePendingCount(info.connectionId) === 0) {
+      toast.message("Nothing to commit", {
+        description: "Edit the definition first. Save SQL as… saves it to a file instead.",
+      });
+      return false;
+    }
+    return commitWorkspace(info.connectionId);
+  }
   let path = getQueryTab(tabId).filePath;
   if (!path || opts.saveAs) {
     // A title that already names a .sql file ("users.sql" from "Open in SQL") keeps its extension.
@@ -540,13 +554,15 @@ export async function saveQuery(tabId: string, opts: { saveAs?: boolean } = {}):
   if (!path) return false;
   const text = getEditorState(tabId)?.doc.toString() ?? state.doc.toString();
   try {
-    await ipc.files.writeText(path, text);
+    // A `.sql.gz` path is written compressed.
+    await ipc.sqlFiles.write(path, text);
   } catch (e) {
     toast.error("Could not save the file", { description: toIpcError(e).message });
     return false;
   }
   markSaved(tabId, text);
-  updateQueryTab(tabId, { filePath: path });
+  // Saved: the tab now follows its own file (the head of a big file is a copy no more).
+  updateQueryTab(tabId, { filePath: path, headNotice: null });
   useTabsStore.getState().rename(tabId, baseName(path));
   toast.success(`Saved ${baseName(path)}`);
   return true;
@@ -596,7 +612,7 @@ export async function saveSelectionAs(tabId: string): Promise<boolean> {
   const path = await pickSavePath(`${title}-selection.sql`);
   if (!path) return false;
   try {
-    await ipc.files.writeText(path, text.endsWith("\n") ? text : `${text}\n`);
+    await ipc.sqlFiles.write(path, text.endsWith("\n") ? text : `${text}\n`);
   } catch (e) {
     toast.error("Could not save the file", { description: toIpcError(e).message });
     return false;
@@ -607,7 +623,8 @@ export async function saveSelectionAs(tabId: string): Promise<boolean> {
 
 /**
  * Opens a .sql file: into this tab when it is empty and clean, otherwise into a new query tab (or
- * the tab that already shows that file).
+ * the tab that already shows that file). A big file asks first (`readSqlFileGuarded`): its head
+ * opens in a tab that is NOT linked to the file, so saving can never truncate the original.
  */
 export async function openQueryFile(tabId: string): Promise<void> {
   const info = queryTab(tabId);
@@ -621,30 +638,30 @@ export async function openQueryFile(tabId: string): Promise<void> {
     useTabsStore.getState().activate(already[0]);
     return;
   }
-  let text: string;
+  let file: Awaited<ReturnType<typeof readSqlFileGuarded>>;
   try {
-    text = await ipc.files.readText(path);
+    // `.sql.gz` files open decompressed; a file that is not UTF-8 opens too.
+    file = await readSqlFileGuarded(path, { connectionId: info.connectionId });
   } catch (e) {
     toast.error("Could not open the file", { description: toIpcError(e).message });
     return;
   }
+  // Cancelled, or sent to the SQL import wizard instead.
+  if (!file) return;
+  const text = file.text;
   const state = getEditorState(tabId);
-  const tabs = useTabsStore.getState();
   const reuse = state !== null && state.doc.length === 0 && !info.tab.dirty;
-  let target = tabId;
-  if (reuse) {
-    applyToEditor(tabId, (s) => ({
-      changes: { from: 0, to: s.doc.length, insert: text },
-      selection: EditorSelection.cursor(0),
-      scrollIntoView: true,
-    }));
-    markSaved(tabId, getEditorState(tabId)?.doc ?? text);
-  } else {
-    target = tabs.newQuery(info.connectionId);
-    seedEditor(target, text, { dialect: info.dialect });
+  if (!reuse) {
+    openFileInNewQueryTab(info.connectionId, path, file, info.dialect);
+    return;
   }
-  updateQueryTab(target, { filePath: path });
-  useTabsStore.getState().rename(target, baseName(path));
+  applyToEditor(tabId, (s) => ({
+    changes: { from: 0, to: s.doc.length, insert: text },
+    selection: EditorSelection.cursor(0),
+    scrollIntoView: true,
+  }));
+  markSaved(tabId, getEditorState(tabId)?.doc ?? text);
+  linkTabToFile(tabId, path, file);
 }
 
 /**

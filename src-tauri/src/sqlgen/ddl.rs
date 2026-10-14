@@ -9,6 +9,15 @@
 //! batch see the effect of earlier ones (MySQL `MODIFY COLUMN` needs the complete, current column
 //! definition; PG needs the primary-key constraint name).
 //!
+//! On MySQL and PostgreSQL the ops of one table that are `ALTER TABLE` clauses (add / drop /
+//! modify column, index, key, foreign key and CHECK changes, defaults, nullability) are collected
+//! into a single `ALTER TABLE t a, b, c` (`Planner::alter`), in op order, as TablePlus does: a
+//! failing clause leaves the table untouched, which makes a MySQL plan of one statement
+//! all-or-nothing (`DdlPlan::transactional`). Anything that cannot join (another table, `RENAME`,
+//! comments, `CREATE INDEX` on PostgreSQL, table options, raw SQL) ends the statement, and so
+//! does a clause the server would run out of order or refuse next to an earlier one
+//! (`Touch`, `touches_compatible`).
+//!
 //! SQLite cannot change most column properties in place. Such an op starts a "12-step" rebuild
 //! (sqlite.org/lang_altertable.html#otheralter) and every following op on the same table is
 //! folded into it: create `<t>__tabler_new` from the model, copy the rows (and the
@@ -79,6 +88,14 @@ static MYSQL_LITERAL: LazyLock<Regex> = LazyLock::new(|| {
 static QUOTED_LITERAL: LazyLock<Regex> = LazyLock::new(|| re(r"^'(?:[^'\\]|''|\\.)*'$"));
 static MYSQL_ON_UPDATE: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)\bon update ([a-z_]+(?:\(\d*\))?)"));
+/// `CURRENT_TIMESTAMP[(n)]` and its synonyms `LOCALTIME`, `LOCALTIMESTAMP`, `NOW(n)`: the name
+/// and the call's parentheses when there are any.
+static MYSQL_NOW_CALL: LazyLock<Regex> = LazyLock::new(|| {
+    re(r"(?i)^(current_timestamp|localtime|localtimestamp|now)(\s*\(\s*\d*\s*\))?$")
+});
+/// `datetime` / `timestamp` with their fractional-seconds precision (`datetime(3)`).
+static MYSQL_DATETIME_TYPE: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)^\s*(?:datetime|timestamp)\s*(?:\(\s*(\d+)\s*\))?(?:\s|$)"));
 /// A character set or collation named in a MySQL column type (`ASCII` / `UNICODE` are
 /// shorthands for `CHARACTER SET latin1` / `ucs2`).
 static MYSQL_CHARSET_CLAUSE: LazyLock<Regex> =
@@ -210,16 +227,8 @@ pub fn plan_ddl_with(
         m.constraint_indexes = context.constraint_indexes.clone();
         m.owned_sequences = context.owned_sequences.clone();
     }
-    let mut i = 0;
-    while i < ops.len() {
-        if planner.replace_primary_key(&ops[i], ops.get(i + 1))?
-            || planner.replace_index_or_check(&ops[i], ops.get(i + 1))?
-        {
-            i += 2;
-            continue;
-        }
-        planner.op(&ops[i], &ops[i + 1..])?;
-        i += 1;
+    for (i, op) in ops.iter().enumerate() {
+        planner.op(op, &ops[i + 1..])?;
     }
     planner.finish()
 }
@@ -1113,6 +1122,14 @@ impl Model {
                 .any(|k| k.columns.iter().any(|c| c == name))
     }
 
+    /// Whether a key covers the column: the primary key, any index (also FULLTEXT and
+    /// UNIQUE), a foreign key.
+    fn column_in_key(&self, name: &str) -> bool {
+        self.primary_key.iter().any(|c| c == name)
+            || self.indexes.iter().any(|i| self.index_uses(i, name))
+            || self.fks.iter().any(|f| f.columns.iter().any(|c| c == name))
+    }
+
     /// Clears the primary key; SQLite columns that were NOT NULL only because of it become
     /// nullable again (introspection cannot tell a declared NOT NULL from the key's).
     fn clear_primary_key(&mut self, dialect: Dialect) {
@@ -1335,6 +1352,113 @@ struct Planner {
     sequential: bool,
     /// Triggers dropped so far in the plan.
     dropped_triggers: Vec<String>,
+    /// MySQL / PG: the `ALTER TABLE` that column, key and constraint ops are being collected
+    /// into (see `Planner::alter`).
+    alter: Option<AlterGroup>,
+}
+
+/// What a buffered `ALTER TABLE` clause does to a column; decides which clauses may share one
+/// statement (see `Planner::alter`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Touch {
+    /// `ADD COLUMN`.
+    Added,
+    /// `DROP COLUMN`.
+    Dropped,
+    /// MySQL `MODIFY COLUMN` (restates the whole definition) or `ALTER COLUMN … SET / DROP
+    /// DEFAULT`.
+    Modified,
+    /// PG `ALTER COLUMN … TYPE` (also with `COLLATE`): PG runs it in an earlier phase than the
+    /// other sub-commands, so it never shares a statement with another clause on its column.
+    Retyped,
+    /// PG `ALTER COLUMN … SET / DROP NOT NULL`.
+    NotNull,
+    /// PG `ALTER COLUMN … SET / DROP DEFAULT`.
+    Defaulted,
+    /// Named by a key, foreign key or `AFTER`.
+    Referenced,
+}
+
+/// Whether a clause that does `new` to a column may follow one that did `existing` to it in the
+/// same `ALTER TABLE`. Verified against MySQL 9 and PostgreSQL 17: everything else fails there
+/// (`ADD` then `MODIFY` / `DROP` of the column: unknown column; two `MODIFY`s: unknown column;
+/// `TYPE` then `DROP COLUMN`: no such column) or runs in another order than written.
+fn touches_compatible(existing: Touch, new: Touch) -> bool {
+    use Touch::{Added, Defaulted, Dropped, Modified, NotNull, Referenced};
+    matches!(
+        (existing, new),
+        (Dropped, Added)
+            | (
+                Added | Modified | NotNull | Defaulted | Referenced,
+                Referenced
+            )
+            | (Referenced, Modified | NotNull | Defaulted)
+            | (NotNull, Defaulted)
+            | (Defaulted, NotNull)
+    )
+}
+
+/// One clause of an `ALTER TABLE` (`ADD COLUMN …`, `DROP INDEX …`).
+#[derive(Debug, Default)]
+struct Clause {
+    sql: String,
+    /// The statement this clause is when it ends up alone (MySQL `ADD INDEX` reads better as
+    /// `CREATE INDEX`); `None` for `ALTER TABLE <table> <sql>`.
+    alone: Option<String>,
+    /// The columns it adds, drops, changes or names.
+    cols: Vec<(String, Touch)>,
+    /// Index and constraint names it adds (`true`) or drops (`false`).
+    names: Vec<(String, bool)>,
+    /// A CHECK constraint (its columns are inside the expression and not known).
+    check: bool,
+    /// The expression of the CHECK being added, to tell which dropped columns it names.
+    check_expr: Option<String>,
+    /// PG `ALTER COLUMN … TYPE … USING expr`: the expression may read any column, and PG runs
+    /// type changes before it adds columns and after it drops them.
+    using: bool,
+    /// MySQL `MODIFY COLUMN`: a `MODIFY` / `SET DEFAULT` of the same column earlier in the
+    /// statement is replaced by this one, which restates the whole current definition. (MySQL
+    /// rejects two changes of one column in one statement.)
+    replaces: Option<String>,
+    /// MySQL `DROP COLUMN` of a column that a key still covers (primary, unique, plain or
+    /// FULLTEXT index, foreign key), or of one the plan cannot see (no metadata): the same
+    /// statement cannot add the name again (the key is rebuilt over the new column: 1089 /
+    /// 1171 / 1283), two statements can.
+    keyed_drop: bool,
+    /// A foreign key clause (`ADD CONSTRAINT … FOREIGN KEY` / `DROP FOREIGN KEY`): MySQL
+    /// refuses to drop and add the same constraint name in one statement (1826).
+    fk: bool,
+}
+
+impl Clause {
+    fn new(sql: impl Into<String>) -> Clause {
+        Clause {
+            sql: sql.into(),
+            ..Clause::default()
+        }
+    }
+
+    fn col(mut self, name: &str, touch: Touch) -> Clause {
+        self.cols.push((name.to_string(), touch));
+        self
+    }
+
+    fn name(mut self, name: &str, added: bool) -> Clause {
+        self.names.push((name.to_string(), added));
+        self
+    }
+
+    fn alone(mut self, sql: String) -> Clause {
+        self.alone = Some(sql);
+        self
+    }
+}
+
+/// Consecutive clauses on one table, emitted as one `ALTER TABLE t a, b, c`.
+#[derive(Debug)]
+struct AlterGroup {
+    table: TableRef,
+    clauses: Vec<Clause>,
 }
 
 fn op_table(op: &DdlOp) -> Option<&TableRef> {
@@ -1420,6 +1544,14 @@ fn foldable(op: &DdlOp) -> bool {
             | DdlOp::DisableTrigger { .. }
             | DdlOp::RawSql { .. }
     )
+}
+
+/// Whether two refs spell the same table: same schema as written (none counts as none) and name.
+/// Stricter than `same_table`: ops that share an `ALTER TABLE` must name the table the same way.
+fn identical_table(a: &TableRef, b: &TableRef) -> bool {
+    a.name == b.name
+        && a.schema.as_deref().filter(|s| !s.is_empty())
+            == b.schema.as_deref().filter(|s| !s.is_empty())
 }
 
 fn same_table(a: &TableRef, b: &TableRef) -> bool {
@@ -1774,6 +1906,7 @@ impl Planner {
             rebuilt: false,
             sequential: false,
             dropped_triggers: Vec::new(),
+            alter: None,
         }
     }
 
@@ -1809,7 +1942,164 @@ impl Planner {
         }
     }
 
+    /// Emits a statement of its own (first the `ALTER TABLE` being collected, if any).
     fn push(&mut self, sql: String) {
+        self.flush_alter();
+        self.statements.push(sql);
+    }
+
+    /// Adds `clause` to the `ALTER TABLE` of `table` being collected (MySQL and PostgreSQL run
+    /// `ALTER TABLE t a, b, c` as one statement, so a failing clause leaves the table untouched).
+    /// The collected statement is emitted when something that cannot join arrives: another
+    /// table, any statement of its own (`push`), or a clause that conflicts with one already
+    /// there (`touches_compatible`, the same name added and dropped). Clauses keep the order of
+    /// the ops. SQLite takes one clause per statement.
+    fn alter(&mut self, table: &TableRef, clause: Clause) {
+        if self.dialect == Dialect::Sqlite {
+            let sql = clause
+                .alone
+                .unwrap_or_else(|| format!("ALTER TABLE {} {}", self.qt(table), clause.sql));
+            self.push(sql);
+            return;
+        }
+        let mut replace = None;
+        if let Some(g) = &self.alter {
+            replace = clause.replaces.as_deref().and_then(|name| {
+                g.clauses.iter().position(|o| {
+                    matches!(o.cols.as_slice(), [(c, Touch::Modified)] if same_column(self.dialect, c, name))
+                })
+            });
+            if !identical_table(&g.table, table)
+                || Planner::alter_conflicts(self.dialect, g, &clause, replace)
+            {
+                replace = None;
+                self.flush_alter();
+            }
+        }
+        match self.alter.as_mut() {
+            Some(g) => match replace {
+                Some(i) => g.clauses[i] = clause,
+                None => g.clauses.push(clause),
+            },
+            None => {
+                self.alter = Some(AlterGroup {
+                    table: table.clone(),
+                    clauses: vec![clause],
+                });
+            }
+        }
+    }
+
+    /// Whether `clause` cannot join `group`. `replace` is the clause it would replace.
+    fn alter_conflicts(
+        d: Dialect,
+        group: &AlterGroup,
+        clause: &Clause,
+        replace: Option<usize>,
+    ) -> bool {
+        for (col, new) in &clause.cols {
+            for (i, other) in group.clauses.iter().enumerate() {
+                for (c, existing) in &other.cols {
+                    if same_column(d, col, c)
+                        && Some(i) != replace
+                        && !touches_compatible(*existing, *new)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        let same_name = |a: &str, b: &str| match d {
+            Dialect::Postgres => a == b,
+            Dialect::Mysql | Dialect::Sqlite => a.eq_ignore_ascii_case(b),
+        };
+        // A name dropped and added again is how an edited index or constraint arrives; any
+        // other use of a name that is already in the statement cannot be ordered.
+        for (name, added) in &clause.names {
+            for other in &group.clauses {
+                for (n, was_added) in &other.names {
+                    if same_name(name, n) && !(*added && !*was_added) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if d == Dialect::Mysql {
+            // `DROP COLUMN a, ADD COLUMN a` is refused while a key covers `a`.
+            for (col, new) in &clause.cols {
+                if *new == Touch::Added
+                    && group.clauses.iter().any(|o| {
+                        o.keyed_drop
+                            && o.cols
+                                .iter()
+                                .any(|(c, t)| *t == Touch::Dropped && same_column(d, col, c))
+                    })
+                {
+                    return true;
+                }
+            }
+            // `DROP FOREIGN KEY k, ADD CONSTRAINT k FOREIGN KEY …` is refused too (an index or
+            // CHECK of one name is dropped and added in one statement without trouble).
+            if clause.fk {
+                for (name, added) in &clause.names {
+                    if *added
+                        && group.clauses.iter().any(|o| {
+                            o.fk && o
+                                .names
+                                .iter()
+                                .any(|(n, was_added)| !*was_added && same_name(name, n))
+                        })
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        // A CHECK may name any column: it stays clear of a column whose type changes here.
+        let retypes = |c: &Clause| c.cols.iter().any(|(_, t)| *t == Touch::Retyped);
+        // A USING expression may read any column: it stays clear of added and dropped ones.
+        let reshapes = |c: &Clause| {
+            c.cols
+                .iter()
+                .any(|(_, t)| matches!(t, Touch::Added | Touch::Dropped))
+        };
+        // A CHECK that is added may name a column that a `DROP COLUMN` of the same statement
+        // removes: the server resolves the CHECK against the table without it (MySQL) or runs
+        // the drop pass first (PostgreSQL), so `ADD CONSTRAINT ck CHECK (b > 0), DROP COLUMN b`
+        // fails on both where the two statements in order succeed.
+        let drops_a_column_of = |chk: &Clause, other: &Clause| {
+            chk.check_expr.as_deref().is_some_and(|expr| {
+                other
+                    .cols
+                    .iter()
+                    .any(|(c, t)| *t == Touch::Dropped && mentions_name(expr, c))
+            })
+        };
+        (clause.check && group.clauses.iter().any(retypes))
+            || (retypes(clause) && group.clauses.iter().any(|o| o.check))
+            || (clause.using && group.clauses.iter().any(reshapes))
+            || (reshapes(clause) && group.clauses.iter().any(|o| o.using))
+            || group
+                .clauses
+                .iter()
+                .any(|o| drops_a_column_of(clause, o) || drops_a_column_of(o, clause))
+    }
+
+    /// Emits the `ALTER TABLE` being collected (see `alter`).
+    fn flush_alter(&mut self) {
+        let Some(g) = self.alter.take() else { return };
+        let sql = match g.clauses.as_slice() {
+            [only] if only.alone.is_some() => only.alone.clone().unwrap_or_default(),
+            clauses => format!(
+                "ALTER TABLE {} {}",
+                self.qt(&g.table),
+                clauses
+                    .iter()
+                    .map(|c| c.sql.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
         self.statements.push(sql);
     }
 
@@ -1849,120 +2139,6 @@ impl Planner {
             t.schema = m.table.schema.clone();
         }
         op
-    }
-
-    /// MySQL: a primary-key drop directly followed by a primary-key add on the same table
-    /// becomes one `ALTER TABLE … DROP PRIMARY KEY, ADD PRIMARY KEY (…)`. On its own the drop
-    /// fails whenever an AUTO_INCREMENT column depends on the key (error 1075), which is the
-    /// usual shape of a MySQL table. Returns whether both ops were handled.
-    fn replace_primary_key(
-        &mut self,
-        first: &DdlOp,
-        next: Option<&DdlOp>,
-    ) -> Result<bool, AppError> {
-        let Some(next) = next.filter(|_| self.dialect == Dialect::Mysql) else {
-            return Ok(false);
-        };
-        let drop = self.normalize(first);
-        let add = self.normalize(next);
-        let table = match &drop {
-            DdlOp::DropPrimaryKey { table } => table,
-            DdlOp::DropIndex { table, name } if name == "PRIMARY" => table,
-            _ => return Ok(false),
-        };
-        let DdlOp::AddPrimaryKey {
-            table: add_table,
-            columns,
-        } = &add
-        else {
-            return Ok(false);
-        };
-        if !same_table(table, add_table) {
-            return Ok(false);
-        }
-        validate(self.dialect, first)?;
-        validate(self.dialect, next)?;
-        let sql = format!(
-            "ALTER TABLE {} DROP PRIMARY KEY, ADD PRIMARY KEY ({})",
-            self.qt(table),
-            self.cols(columns)
-        );
-        self.push(sql);
-        if self.is_model(table) {
-            self.update_model(&drop, true)?;
-            self.update_model(&add, true)?;
-        }
-        Ok(true)
-    }
-
-    /// MySQL: an index drop directly followed by an index add on the same table (how the
-    /// structure editor stages an edited index), or a CHECK drop directly followed by a CHECK
-    /// add, becomes one `ALTER TABLE … DROP …, ADD …`. MySQL DDL is not transactional: as two
-    /// statements, a failing add (a UNIQUE index over duplicates, a CHECK the rows violate)
-    /// would leave the original dropped; one ALTER TABLE fails as a whole. Returns whether both
-    /// ops were handled.
-    fn replace_index_or_check(
-        &mut self,
-        first: &DdlOp,
-        next: Option<&DdlOp>,
-    ) -> Result<bool, AppError> {
-        let Some(next) = next.filter(|_| self.dialect == Dialect::Mysql) else {
-            return Ok(false);
-        };
-        let drop = self.normalize(first);
-        let add = self.normalize(next);
-        let (table, sql) = match (&drop, &add) {
-            (
-                DdlOp::DropIndex { table, name },
-                DdlOp::AddIndex {
-                    table: add_table,
-                    index,
-                },
-            ) if same_table(table, add_table) => {
-                validate(self.dialect, first)?;
-                validate(self.dialect, next)?;
-                self.index_warnings(index);
-                let dropped = if name == "PRIMARY" {
-                    "DROP PRIMARY KEY".to_string()
-                } else {
-                    format!("DROP INDEX {}", self.q(name))
-                };
-                let sql = format!(
-                    "ALTER TABLE {} {dropped}, {}",
-                    self.qt(table),
-                    self.mysql_add_index_clause(table, index)
-                );
-                (table, sql)
-            }
-            (
-                DdlOp::DropCheck { table, name },
-                DdlOp::AddCheck {
-                    table: add_table,
-                    check,
-                },
-            ) if same_table(table, add_table) => {
-                validate(self.dialect, first)?;
-                validate(self.dialect, next)?;
-                let sql = format!(
-                    "ALTER TABLE {} DROP CONSTRAINT {}, ADD {}",
-                    self.qt(table),
-                    self.q(name),
-                    self.check_clause(
-                        non_empty(check.name.as_deref()).as_deref(),
-                        &check.expression
-                    )
-                );
-                (table, sql)
-            }
-            _ => return Ok(false),
-        };
-        let on_model = self.is_model(table);
-        self.push(sql);
-        if on_model {
-            self.update_model(&drop, true)?;
-            self.update_model(&add, true)?;
-        }
-        Ok(true)
     }
 
     /// `rest` are the ops after `op` (SQLite looks ahead for a rebuild of the same table).
@@ -2006,6 +2182,7 @@ impl Planner {
             rebuilt: false,
             sequential: false,
             dropped_triggers: Vec::new(),
+            alter: None,
         };
         if sim.update_model(first, true).is_err() {
             return false;
@@ -2032,6 +2209,7 @@ impl Planner {
         if self.pending {
             self.flush()?;
         }
+        self.flush_alter();
         if self.dialect == Dialect::Sqlite && self.rebuilt && self.sequential {
             // They would have to run outside the rebuild's transaction, between the foreign-key
             // toggles; keep the two apart instead.
@@ -2041,7 +2219,10 @@ impl Planner {
         }
         let transactional = match self.dialect {
             Dialect::Postgres => !self.sequential,
-            Dialect::Mysql => false,
+            // DDL commits implicitly on MySQL: statements cannot be rolled back together. One
+            // statement is all or nothing (a failing `ALTER TABLE` leaves the table as it was),
+            // which is why the ops of a table are collected into one (`alter`).
+            Dialect::Mysql => self.statements.len() == 1,
             Dialect::Sqlite => !self.rebuilt && !self.sequential,
         };
         let mut statements = std::mem::take(&mut self.statements);
@@ -2727,12 +2908,15 @@ impl Planner {
                 after,
             } => return self.add_column(table, column, after.as_deref()),
             DdlOp::DropColumn { table, name } => {
-                let sql = format!(
-                    "ALTER TABLE {} DROP COLUMN {}",
-                    self.qt(table),
-                    self.q(name)
-                );
-                self.push(sql);
+                let mut clause =
+                    Clause::new(format!("DROP COLUMN {}", self.q(name))).col(name, Touch::Dropped);
+                // (`update_model` runs after this: the model still has the keys of the column;
+                // without the table's metadata the worst is assumed)
+                clause.keyed_drop = d == Dialect::Mysql
+                    && self
+                        .model_of(table, "")
+                        .map_or(true, |m| m.column_in_key(name));
+                self.alter(table, clause);
             }
             DdlOp::RenameColumn {
                 table,
@@ -2754,17 +2938,15 @@ impl Planner {
                 using,
             } => match d {
                 Dialect::Postgres => {
-                    let mut sql = format!(
-                        "ALTER TABLE {} ALTER COLUMN {} TYPE {}",
-                        self.qt(table),
-                        self.q(name),
-                        new_type.trim()
-                    );
-                    if let Some(u) = non_empty(using.as_deref()) {
+                    let mut sql = format!("ALTER COLUMN {} TYPE {}", self.q(name), new_type.trim());
+                    let using = non_empty(using.as_deref());
+                    if let Some(u) = &using {
                         sql.push_str(" USING ");
-                        sql.push_str(&u);
+                        sql.push_str(u);
                     }
-                    self.push(sql);
+                    let mut clause = Clause::new(sql).col(name, Touch::Retyped);
+                    clause.using = using.is_some();
+                    self.alter(table, clause);
                 }
                 Dialect::Mysql => {
                     if non_empty(using.as_deref()).is_some() {
@@ -2781,12 +2963,11 @@ impl Planner {
             } => match d {
                 Dialect::Postgres => {
                     let sql = format!(
-                        "ALTER TABLE {} ALTER COLUMN {} {} NOT NULL",
-                        self.qt(table),
+                        "ALTER COLUMN {} {} NOT NULL",
                         self.q(name),
                         if *nullable { "DROP" } else { "SET" }
                     );
-                    self.push(sql);
+                    self.alter(table, Clause::new(sql).col(name, Touch::NotNull));
                 }
                 Dialect::Mysql => self.mysql_modify(table, name, op)?,
                 Dialect::Sqlite => return Err(self.need_meta(table, "changing nullability")),
@@ -2806,6 +2987,15 @@ impl Planner {
                 {
                     self.mysql_modify(table, name, op)?;
                 }
+                // MySQL takes one change of a column per statement: when this statement
+                // already changes it, the new default joins that change (it restates the whole
+                // column).
+                Dialect::Mysql
+                    if self.alters_column(table, name)
+                        && self.model_col(table, name, "").is_ok() =>
+                {
+                    self.mysql_modify(table, name, op)?;
+                }
                 Dialect::Postgres | Dialect::Mysql => {
                     let action = match non_empty(default_expr.as_deref()) {
                         Some(e) if d == Dialect::Mysql && !MYSQL_LITERAL.is_match(&e) => {
@@ -2814,12 +3004,14 @@ impl Planner {
                         Some(e) => format!("SET DEFAULT {e}"),
                         None => "DROP DEFAULT".to_string(),
                     };
-                    let sql = format!(
-                        "ALTER TABLE {} ALTER COLUMN {} {action}",
-                        self.qt(table),
-                        self.q(name)
-                    );
-                    self.push(sql);
+                    let touch = if d == Dialect::Mysql {
+                        Touch::Modified
+                    } else {
+                        Touch::Defaulted
+                    };
+                    let clause = Clause::new(format!("ALTER COLUMN {} {action}", self.q(name)))
+                        .col(name, touch);
+                    self.alter(table, clause);
                 }
                 Dialect::Sqlite => return Err(self.need_meta(table, "changing a default")),
             },
@@ -2865,12 +3057,8 @@ impl Planner {
                         Some(c) => self.q(&c),
                         None => "\"default\"".to_string(),
                     };
-                    let sql = format!(
-                        "ALTER TABLE {} ALTER COLUMN {} TYPE {ty} COLLATE {coll}",
-                        self.qt(table),
-                        self.q(name)
-                    );
-                    self.push(sql);
+                    let sql = format!("ALTER COLUMN {} TYPE {ty} COLLATE {coll}", self.q(name));
+                    self.alter(table, Clause::new(sql).col(name, Touch::Retyped));
                 }
                 Dialect::Mysql => self.mysql_modify(table, name, op)?,
                 Dialect::Sqlite => return Err(self.need_meta(table, "changing a collation")),
@@ -2889,27 +3077,27 @@ impl Planner {
                 if d == Dialect::Sqlite {
                     return Err(self.need_meta(table, "adding a CHECK constraint"));
                 }
+                let check_name = non_empty(check.name.as_deref());
                 let sql = format!(
-                    "ALTER TABLE {} ADD {}",
-                    self.qt(table),
-                    self.check_clause(
-                        non_empty(check.name.as_deref()).as_deref(),
-                        &check.expression
-                    )
+                    "ADD {}",
+                    self.check_clause(check_name.as_deref(), &check.expression)
                 );
-                self.push(sql);
+                let mut clause = Clause::new(sql);
+                clause.check = true;
+                clause.check_expr = Some(check.expression.clone());
+                if let Some(n) = &check_name {
+                    clause = clause.name(n, true);
+                }
+                self.alter(table, clause);
             }
             DdlOp::DropCheck { table, name } => {
                 if d == Dialect::Sqlite {
                     return Err(self.need_meta(table, "dropping a CHECK constraint"));
                 }
                 // (MySQL 8.0.19+ and MariaDB; `DROP CHECK` is MySQL-only)
-                let sql = format!(
-                    "ALTER TABLE {} DROP CONSTRAINT {}",
-                    self.qt(table),
-                    self.q(name)
-                );
-                self.push(sql);
+                let clause =
+                    Clause::new(format!("DROP CONSTRAINT {}", self.q(name))).name(name, false);
+                self.alter(table, clause);
             }
             DdlOp::CreateTrigger { name, sql, .. } => {
                 if d == Dialect::Mysql && self.dropped_triggers.iter().any(|t| t == name) {
@@ -2972,6 +3160,20 @@ impl Planner {
             },
             DdlOp::AddIndex { table, index } => {
                 self.index_warnings(index);
+                if d == Dialect::Mysql {
+                    self.mysql_check_index_lengths(table, index)?;
+                    // One clause of the table's ALTER; alone, the statement reads as CREATE INDEX.
+                    let mut clause = Clause::new(self.mysql_add_index_clause(table, index))
+                        .alone(self.index_sql(table, index))
+                        .name(&index.name, true);
+                    for entry in &index.columns {
+                        if !entry.trim().starts_with('(') {
+                            clause = clause.col(entry_base(entry), Touch::Referenced);
+                        }
+                    }
+                    self.alter(table, clause);
+                    return Ok(());
+                }
                 let sql = self.index_sql(table, index);
                 self.push(sql);
                 if d == Dialect::Postgres
@@ -2999,20 +3201,24 @@ impl Planner {
                                     || m.indexes.iter().any(|i| &i.name == name && i.primary)
                             });
                         if constraint {
-                            format!(
-                                "ALTER TABLE {} DROP CONSTRAINT {}",
-                                self.qt(table),
-                                self.q(name)
-                            )
-                        } else {
-                            format!("DROP INDEX {}", d.qualify(table.schema.as_deref(), name))
+                            let clause = Clause::new(format!("DROP CONSTRAINT {}", self.q(name)))
+                                .name(name, false);
+                            self.alter(table, clause);
+                            return Ok(());
                         }
+                        format!("DROP INDEX {}", d.qualify(table.schema.as_deref(), name))
                     }
                     Dialect::Mysql if name == "PRIMARY" => {
-                        format!("ALTER TABLE {} DROP PRIMARY KEY", self.qt(table))
+                        let clause = Clause::new("DROP PRIMARY KEY").name(name, false);
+                        self.alter(table, clause);
+                        return Ok(());
                     }
                     Dialect::Mysql => {
-                        format!("DROP INDEX {} ON {}", self.q(name), self.qt(table))
+                        let clause = Clause::new(format!("DROP INDEX {}", self.q(name)))
+                            .alone(format!("DROP INDEX {} ON {}", self.q(name), self.qt(table)))
+                            .name(name, false);
+                        self.alter(table, clause);
+                        return Ok(());
                     }
                     Dialect::Sqlite => {
                         format!("DROP INDEX {}", d.qualify(table.schema.as_deref(), name))
@@ -3032,57 +3238,61 @@ impl Planner {
                     fk_action(fk.on_update.as_deref())?.as_deref(),
                     fk_action(fk.on_delete.as_deref())?.as_deref(),
                 );
-                let sql = format!("ALTER TABLE {} ADD {clause}", self.qt(table));
-                self.push(sql);
+                let mut add = Clause::new(format!("ADD {clause}"));
+                add.fk = true;
+                if let Some(n) = non_empty(fk.name.as_deref()) {
+                    add = add.name(&n, true);
+                }
+                for c in &fk.columns {
+                    add = add.col(c, Touch::Referenced);
+                }
+                self.alter(table, add);
             }
             DdlOp::DropForeignKey { table, name } => {
                 let sql = match d {
-                    Dialect::Postgres => format!(
-                        "ALTER TABLE {} DROP CONSTRAINT {}",
-                        self.qt(table),
-                        self.q(name)
-                    ),
-                    Dialect::Mysql => format!(
-                        "ALTER TABLE {} DROP FOREIGN KEY {}",
-                        self.qt(table),
-                        self.q(name)
-                    ),
+                    Dialect::Postgres => format!("DROP CONSTRAINT {}", self.q(name)),
+                    Dialect::Mysql => format!("DROP FOREIGN KEY {}", self.q(name)),
                     Dialect::Sqlite => {
                         return Err(self.need_meta(table, "dropping a foreign key"));
                     }
                 };
-                self.push(sql);
+                let mut clause = Clause::new(sql).name(name, false);
+                clause.fk = true;
+                self.alter(table, clause);
             }
             DdlOp::AddPrimaryKey { table, columns } => {
                 if d == Dialect::Sqlite {
                     return Err(self.need_meta(table, "adding a primary key"));
                 }
-                let sql = format!(
-                    "ALTER TABLE {} ADD PRIMARY KEY ({})",
-                    self.qt(table),
-                    self.cols(columns)
-                );
-                self.push(sql);
+                let mut clause = Clause::new(format!("ADD PRIMARY KEY ({})", self.cols(columns)));
+                // (the name the server gives the key, as `update_model` records it)
+                match d {
+                    Dialect::Mysql => clause = clause.name("PRIMARY", true),
+                    Dialect::Postgres => {
+                        clause = clause.name(&format!("{}_pkey", table.name), true)
+                    }
+                    Dialect::Sqlite => {}
+                }
+                for c in columns {
+                    clause = clause.col(c, Touch::Referenced);
+                }
+                self.alter(table, clause);
             }
             DdlOp::DropPrimaryKey { table } => {
-                let sql = match d {
+                let clause = match d {
                     Dialect::Postgres => {
                         let m = self.model_of(table, "dropping the primary key")?;
                         let pk = m.pk_name.clone().ok_or_else(|| {
                             invalid(format!("\"{}\" has no primary key", table.name))
                         })?;
-                        format!(
-                            "ALTER TABLE {} DROP CONSTRAINT {}",
-                            self.qt(table),
-                            self.q(&pk)
-                        )
+                        Clause::new(format!("DROP CONSTRAINT {}", self.q(&pk))).name(&pk, false)
                     }
-                    Dialect::Mysql => format!("ALTER TABLE {} DROP PRIMARY KEY", self.qt(table)),
+                    Dialect::Mysql => Clause::new("DROP PRIMARY KEY").name("PRIMARY", false),
                     Dialect::Sqlite => {
                         return Err(self.need_meta(table, "dropping the primary key"));
                     }
                 };
-                self.push(sql);
+                self.alter(table, clause);
             }
             DdlOp::RawSql { sql } => {
                 let sql = sql.trim().trim_end_matches(';').trim_end().to_string();
@@ -3223,21 +3433,20 @@ impl Planner {
         {
             return Err(self.need_meta(table, "adding a column with a non-constant default"));
         }
-        let mut sql = format!(
-            "ALTER TABLE {} ADD COLUMN {}",
-            self.qt(table),
-            self.column_sql(&col, false)
-        );
+        let mut sql = format!("ADD COLUMN {}", self.column_sql(&col, false));
+        let mut clause = Clause::default();
         match (d, after) {
             (Dialect::Mysql, Some("")) => sql.push_str(" FIRST"),
             (Dialect::Mysql, Some(a)) => {
                 sql.push_str(" AFTER ");
                 sql.push_str(&self.q(a));
+                clause.cols.push((a.to_string(), Touch::Referenced));
             }
             (_, Some(_)) => self.warn("column position (AFTER/FIRST) is MySQL-only; ignored"),
             _ => {}
         }
-        self.push(sql);
+        clause.sql = sql;
+        self.alter(table, clause.col(&col.name, Touch::Added));
         if d == Dialect::Postgres
             && let Some(comment) = &col.comment
         {
@@ -3265,13 +3474,27 @@ impl Planner {
             )));
         }
         let changed = changed_col(Dialect::Mysql, col, op);
-        let sql = format!(
-            "ALTER TABLE {} MODIFY COLUMN {}",
-            self.qt(table),
+        let mut clause = Clause::new(format!(
+            "MODIFY COLUMN {}",
             self.column_sql(&changed, false)
-        );
-        self.push(sql);
+        ))
+        .col(name, Touch::Modified);
+        clause.replaces = Some(name.to_string());
+        self.alter(table, clause);
         Ok(())
+    }
+
+    /// Whether the `ALTER TABLE` being collected already changes column `name` of `table`
+    /// (`MODIFY COLUMN`, `ALTER COLUMN … SET DEFAULT`).
+    fn alters_column(&self, table: &TableRef, name: &str) -> bool {
+        self.alter.as_ref().is_some_and(|g| {
+            identical_table(&g.table, table)
+                && g.clauses.iter().any(|c| {
+                    c.cols
+                        .iter()
+                        .any(|(n, t)| *t == Touch::Modified && same_column(self.dialect, n, name))
+                })
+        })
     }
 
     /// PG identity on / off. Turning it on drops the column's default and makes it NOT NULL
@@ -3428,13 +3651,19 @@ impl Planner {
                     s.push_str(c);
                 }
                 s.push_str(if col.nullable { " NULL" } else { " NOT NULL" });
+                // (a `CURRENT_TIMESTAMP` default or on-update takes the column's precision)
+                let fsp = mysql_fsp(&col.data_type);
+                let fitted = |e: &String| {
+                    fsp.and_then(|n| mysql_now_with_fsp(e, n))
+                        .unwrap_or_else(|| e.clone())
+                };
                 if let Some(e) = &col.default_expr {
                     s.push_str(" DEFAULT ");
-                    s.push_str(e);
+                    s.push_str(&fitted(e));
                 }
                 if let Some(e) = &col.on_update {
                     s.push_str(" ON UPDATE ");
-                    s.push_str(e);
+                    s.push_str(&fitted(e));
                 }
                 if col.auto_increment {
                     s.push_str(" AUTO_INCREMENT");
@@ -3648,6 +3877,43 @@ impl Planner {
             .map(|c| format!(" COMMENT {}", self.lit(&c)))
             .unwrap_or_default();
         (kind, format!("{using}{comment}"))
+    }
+
+    /// MySQL cannot index a TEXT or BLOB column in full (error 1170): a plain index names a prefix
+    /// length for it (`body(10)`). FULLTEXT and SPATIAL indexes take whole columns. Checked here
+    /// so that the Preview refuses the plan before anything is sent.
+    fn mysql_check_index_lengths(
+        &self,
+        table: &TableRef,
+        index: &IndexDef,
+    ) -> Result<(), AppError> {
+        let kind = non_empty(index.method.as_deref()).map(|m| m.to_ascii_uppercase());
+        if matches!(kind.as_deref(), Some("FULLTEXT" | "SPATIAL")) {
+            return Ok(());
+        }
+        let Some(m) = self
+            .model
+            .as_ref()
+            .filter(|m| !m.dropped && same_table(&m.table, table))
+        else {
+            return Ok(());
+        };
+        for entry in &index.columns {
+            let entry = entry.trim();
+            let base = entry_base(entry);
+            if entry[base.len()..].trim_start().starts_with('(') {
+                continue;
+            }
+            if let Some(c) = m.col(base)
+                && mysql_is_blob_or_text(&c.data_type)
+            {
+                return Err(invalid(format!(
+                    "index \"{}\" covers the {} column \"{base}\" in full: MySQL needs a prefix length for it, as in {base}(10)",
+                    index.name, c.data_type
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// MySQL `ADD [UNIQUE|FULLTEXT|SPATIAL] INDEX name (…) …` clause of an `ALTER TABLE`.
@@ -4127,6 +4393,48 @@ fn mysql_is_generated(c: &ColumnMeta) -> bool {
     generated_word || !extra.contains("default_generated")
 }
 
+/// The fractional-seconds precision of a MySQL `datetime(n)` / `timestamp(n)` type (0 when it
+/// names none); `None` for any other type.
+fn mysql_fsp(data_type: &str) -> Option<usize> {
+    MYSQL_DATETIME_TYPE
+        .captures(data_type)
+        .map(|c| c.get(1).and_then(|n| n.as_str().parse().ok()).unwrap_or(0))
+}
+
+/// `CURRENT_TIMESTAMP` (or `LOCALTIME`, `LOCALTIMESTAMP`, `NOW()`) with the precision of the
+/// column it belongs to. MySQL rejects a `DEFAULT` / `ON UPDATE` whose precision differs from the
+/// column's (errors 1067 / 1294: `datetime(3)` takes `CURRENT_TIMESTAMP(3)`, `datetime` takes
+/// `CURRENT_TIMESTAMP`). `None` when `expr` is not such a call or already fits.
+fn mysql_now_with_fsp(expr: &str, fsp: usize) -> Option<String> {
+    let c = MYSQL_NOW_CALL.captures(expr.trim())?;
+    let name = &c[1];
+    let call = c.get(2).is_some();
+    if name.eq_ignore_ascii_case("now") && !call {
+        return None;
+    }
+    let fitted = match (fsp, name.eq_ignore_ascii_case("now")) {
+        (0, true) => format!("{name}()"),
+        (0, false) => name.to_string(),
+        (n, _) => format!("{name}({n})"),
+    };
+    (fitted != expr.trim()).then_some(fitted)
+}
+
+/// MySQL TEXT and BLOB types (`text`, `longblob`, `text(100)`).
+fn mysql_is_blob_or_text(ty: &str) -> bool {
+    matches!(
+        base_type(ty).as_str(),
+        "tinytext"
+            | "text"
+            | "mediumtext"
+            | "longtext"
+            | "tinyblob"
+            | "blob"
+            | "mediumblob"
+            | "longblob"
+    )
+}
+
 /// `expr` wrapped in one pair of parentheses.
 fn parenthesized(expr: &str) -> String {
     let e = expr.trim();
@@ -4243,6 +4551,21 @@ fn skip_quoted(chars: &[char], start: usize) -> usize {
 }
 
 /// Index just past the parenthesised group starting at `start`.
+/// Whether the SQL expression `expr` may name the column `name`: the name, in any case, as a
+/// whole word (a quoted `"b"` or `` `b` `` counts, `bb` and `b2` do not).
+fn mentions_name(expr: &str, name: &str) -> bool {
+    let expr: Vec<char> = expr.to_lowercase().chars().collect();
+    let name: Vec<char> = name.to_lowercase().chars().collect();
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    !name.is_empty()
+        && expr.len() >= name.len()
+        && (0..=expr.len() - name.len()).any(|i| {
+            expr[i..i + name.len()] == name[..]
+                && !i.checked_sub(1).is_some_and(|p| word(expr[p]))
+                && !expr.get(i + name.len()).is_some_and(|&c| word(c))
+        })
+}
+
 fn skip_group(chars: &[char], start: usize) -> usize {
     let mut depth = 0i32;
     let mut i = start;
@@ -5407,13 +5730,10 @@ mod tests {
             p.statements,
             [
                 r#"ALTER TABLE "public"."users" RENAME COLUMN "name" TO "full name""#,
-                r#"ALTER TABLE "public"."users" ALTER COLUMN "age" TYPE integer USING age::integer"#,
-                r#"ALTER TABLE "public"."users" ALTER COLUMN "bio" TYPE text"#,
-                r#"ALTER TABLE "public"."users" ALTER COLUMN "bio" SET NOT NULL"#,
-                r#"ALTER TABLE "public"."users" ALTER COLUMN "age" DROP NOT NULL"#,
-                r#"ALTER TABLE "public"."users" ALTER COLUMN "age" SET DEFAULT 18"#,
-                r#"ALTER TABLE "public"."users" ALTER COLUMN "bio" DROP DEFAULT"#,
-                r#"ALTER TABLE "public"."users" DROP COLUMN "legacy""#,
+                // changing a type never shares a statement with another clause on its column
+                // (PostgreSQL runs it before the others); other columns' clauses follow in order
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "age" TYPE integer USING age::integer, ALTER COLUMN "bio" TYPE text"#,
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "bio" SET NOT NULL, ALTER COLUMN "age" DROP NOT NULL, ALTER COLUMN "age" SET DEFAULT 18, ALTER COLUMN "bio" DROP DEFAULT, DROP COLUMN "legacy""#,
                 r#"COMMENT ON COLUMN "public"."users"."age" IS 'years'"#,
                 r#"COMMENT ON COLUMN "public"."users"."bio" IS NULL"#,
                 r#"COMMENT ON TABLE "public"."users" IS 'people'"#,
@@ -5517,8 +5837,8 @@ mod tests {
         assert_eq!(
             p.statements,
             [
-                r#"ALTER TABLE "public"."users" DROP CONSTRAINT "users_pkey""#,
-                r#"ALTER TABLE "public"."users" ADD PRIMARY KEY ("id", "email")"#,
+                // the swap is one statement; the key dropped again afterwards is a new one
+                r#"ALTER TABLE "public"."users" DROP CONSTRAINT "users_pkey", ADD PRIMARY KEY ("id", "email")"#,
                 r#"ALTER TABLE "public"."users" DROP CONSTRAINT "users_pkey""#,
                 r#"DROP INDEX "public"."users_email_key""#,
             ]
@@ -5757,11 +6077,11 @@ mod tests {
         assert_eq!(
             p.statements,
             [
-                "ALTER TABLE `shop`.`items` ADD COLUMN `price` decimal(10,2) UNSIGNED NOT NULL DEFAULT 0.00 COMMENT 'unit price' AFTER `qty`",
-                "ALTER TABLE `shop`.`items` ADD COLUMN `code` varchar(8) COLLATE ascii_bin NULL FIRST",
+                // two ADD COLUMNs of one table are one statement (MySQL: all or nothing)
+                "ALTER TABLE `shop`.`items` ADD COLUMN `price` decimal(10,2) UNSIGNED NOT NULL DEFAULT 0.00 COMMENT 'unit price' AFTER `qty`, ADD COLUMN `code` varchar(8) COLLATE ascii_bin NULL FIRST",
             ]
         );
-        assert!(!p.transactional);
+        assert!(p.transactional);
     }
 
     #[test]
@@ -5810,14 +6130,11 @@ mod tests {
         assert_eq!(
             p.statements,
             [
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT",
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `qty` bigint UNSIGNED NOT NULL DEFAULT 0 COMMENT 'how many'",
-                // the second change to qty sees the first one
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `qty` bigint UNSIGNED NULL DEFAULT 0 COMMENT 'how many'",
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `name` varchar(50) COLLATE utf8mb4_bin NULL DEFAULT 'it''s' COMMENT 'label'",
-                // a non-text type drops the collation and keeps the (quoted) default
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `name` int NULL DEFAULT 'it''s' COMMENT 'label'",
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `touched_at` timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)",
+                // One statement; MySQL refuses two changes of a column in it, so the later
+                // MODIFY of a column replaces the earlier one. It restates the whole column, so
+                // the second change to qty sees the first one, and a non-text type drops the
+                // name's collation and keeps its (quoted) default.
+                "ALTER TABLE `shop`.`items` MODIFY COLUMN `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT, MODIFY COLUMN `qty` bigint UNSIGNED NULL DEFAULT 0 COMMENT 'how many', MODIFY COLUMN `name` int NULL DEFAULT 'it''s' COMMENT 'label', MODIFY COLUMN `touched_at` timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)",
             ]
         );
         assert_eq!(p.warnings.len(), 1, "{:?}", p.warnings);
@@ -6010,13 +6327,11 @@ mod tests {
                 "ALTER TABLE `shop`.`items` ALTER COLUMN `name` DROP DEFAULT",
                 "ALTER TABLE `shop`.`items` COMMENT = 'stock'",
                 "ALTER TABLE `shop`.`items` COMMENT = ''",
-                "CREATE UNIQUE INDEX `items_name` ON `shop`.`items` (`name`(10)) USING BTREE",
-                "CREATE FULLTEXT INDEX `items_ft` ON `shop`.`items` (`name`)",
-                "DROP INDEX `items_name` ON `shop`.`items`",
-                "ALTER TABLE `shop`.`items` DROP PRIMARY KEY",
-                "ALTER TABLE `shop`.`items` ADD CONSTRAINT `items_cat` FOREIGN KEY (`cat_id`) REFERENCES `shop`.`cats` (`id`) ON UPDATE CASCADE ON DELETE SET NULL",
-                "ALTER TABLE `shop`.`items` DROP FOREIGN KEY `items_cat`",
-                "ALTER TABLE `shop`.`items` ADD PRIMARY KEY (`id`)",
+                // Index, key and foreign-key ops are clauses of one ALTER TABLE; a name added
+                // and dropped again (items_name, items_cat, the primary key) ends the statement.
+                "ALTER TABLE `shop`.`items` ADD UNIQUE INDEX `items_name` (`name`(10)) USING BTREE, ADD FULLTEXT INDEX `items_ft` (`name`)",
+                "ALTER TABLE `shop`.`items` DROP INDEX `items_name`, DROP PRIMARY KEY, ADD CONSTRAINT `items_cat` FOREIGN KEY (`cat_id`) REFERENCES `shop`.`cats` (`id`) ON UPDATE CASCADE ON DELETE SET NULL",
+                "ALTER TABLE `shop`.`items` DROP FOREIGN KEY `items_cat`, ADD PRIMARY KEY (`id`)",
                 "ALTER TABLE `shop`.`items` DROP PRIMARY KEY",
                 "RENAME TABLE `shop`.`items` TO `shop`.`goods`",
                 "TRUNCATE TABLE `shop`.`goods`",
@@ -6171,13 +6486,7 @@ mod tests {
         assert_eq!(
             p.statements,
             [
-                "ALTER TABLE `db`.`d` MODIFY COLUMN `c1` varchar(30) NOT NULL DEFAULT 'TBD (later)' COMMENT 'c'",
-                "ALTER TABLE `db`.`d` MODIFY COLUMN `c2` varchar(30) NOT NULL DEFAULT '''quoted' COMMENT 'c'",
-                "ALTER TABLE `db`.`d` MODIFY COLUMN `c3` varchar(30) NOT NULL DEFAULT 'now' COMMENT 'c'",
-                "ALTER TABLE `db`.`d` MODIFY COLUMN `c4` varchar(30) NOT NULL DEFAULT 'NULL' COMMENT 'c'",
-                "ALTER TABLE `db`.`d` MODIFY COLUMN `c5` varchar(30) NOT NULL DEFAULT 'localtime' COMMENT 'c'",
-                "ALTER TABLE `db`.`d` MODIFY COLUMN `n` int NOT NULL DEFAULT 0 COMMENT 'c'",
-                "ALTER TABLE `db`.`d` MODIFY COLUMN `ts` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'c'",
+                "ALTER TABLE `db`.`d` MODIFY COLUMN `c1` varchar(30) NOT NULL DEFAULT 'TBD (later)' COMMENT 'c', MODIFY COLUMN `c2` varchar(30) NOT NULL DEFAULT '''quoted' COMMENT 'c', MODIFY COLUMN `c3` varchar(30) NOT NULL DEFAULT 'now' COMMENT 'c', MODIFY COLUMN `c4` varchar(30) NOT NULL DEFAULT 'NULL' COMMENT 'c', MODIFY COLUMN `c5` varchar(30) NOT NULL DEFAULT 'localtime' COMMENT 'c', MODIFY COLUMN `n` int NOT NULL DEFAULT 0 COMMENT 'c', MODIFY COLUMN `ts` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'c'"
             ]
         );
     }
@@ -6220,8 +6529,7 @@ mod tests {
         assert_eq!(
             p.statements,
             [
-                "ALTER TABLE `db`.`t` MODIFY COLUMN `ts` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
-                "ALTER TABLE `db`.`t` MODIFY COLUMN `u` varchar(36) NULL DEFAULT (uuid())",
+                "ALTER TABLE `db`.`t` MODIFY COLUMN `ts` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, MODIFY COLUMN `u` varchar(36) NULL DEFAULT (uuid())"
             ]
         );
         let err = plan_ddl(
@@ -6258,11 +6566,9 @@ mod tests {
         );
         assert_eq!(
             p.statements,
+            // (a second default of `name` joins the MODIFY that already changes it)
             [
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `touched_at` timestamp(3) NULL DEFAULT now(3) ON UPDATE CURRENT_TIMESTAMP(3)",
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `name` varchar(50) COLLATE utf8mb4_bin NULL DEFAULT (uuid())",
-                "ALTER TABLE `shop`.`items` ALTER COLUMN `qty` SET DEFAULT 7",
-                "ALTER TABLE `shop`.`items` ALTER COLUMN `name` SET DEFAULT 'x'",
+                "ALTER TABLE `shop`.`items` MODIFY COLUMN `touched_at` timestamp(3) NULL DEFAULT now(3) ON UPDATE CURRENT_TIMESTAMP(3), MODIFY COLUMN `name` varchar(50) COLLATE utf8mb4_bin NULL DEFAULT 'x', ALTER COLUMN `qty` SET DEFAULT 7"
             ]
         );
         // without metadata the expression is parenthesised (MySQL 8.0.13+)
@@ -6277,8 +6583,7 @@ mod tests {
         assert_eq!(
             p.statements,
             [
-                "ALTER TABLE `items` ALTER COLUMN `touched_at` SET DEFAULT (CURRENT_TIMESTAMP)",
-                "ALTER TABLE `items` ALTER COLUMN `name` SET DEFAULT (uuid())",
+                "ALTER TABLE `items` ALTER COLUMN `touched_at` SET DEFAULT (CURRENT_TIMESTAMP), ALTER COLUMN `name` SET DEFAULT (uuid())"
             ]
         );
     }
@@ -7799,9 +8104,7 @@ mod tests {
         assert_eq!(
             p.statements,
             [
-                r#"ALTER TABLE "public"."users" ADD CONSTRAINT "users_name_check" CHECK (length(name) > 1)"#,
-                r#"ALTER TABLE "public"."users" ADD CHECK (name <> '')"#,
-                r#"ALTER TABLE "public"."users" DROP CONSTRAINT "users_email_check""#,
+                r#"ALTER TABLE "public"."users" ADD CONSTRAINT "users_name_check" CHECK (length(name) > 1), ADD CHECK (name <> ''), DROP CONSTRAINT "users_email_check""#,
                 r#"DROP TRIGGER "users_touch" ON "public"."users""#,
                 "CREATE TRIGGER users_touch BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION touch()",
                 r#"CREATE INDEX "users_name_idx" ON "public"."users" ("name")"#,
@@ -8233,8 +8536,7 @@ mod tests {
         assert_eq!(
             p.statements,
             [
-                r#"ALTER TABLE "public"."users" ALTER COLUMN "email" TYPE character varying(255) COLLATE "C""#,
-                r#"ALTER TABLE "public"."users" ALTER COLUMN "name" TYPE text COLLATE "default""#,
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "email" TYPE character varying(255) COLLATE "C", ALTER COLUMN "name" TYPE text COLLATE "default""#,
             ]
         );
         let msg = unsupported(
@@ -8342,14 +8644,11 @@ mod tests {
         assert_eq!(
             p.statements,
             [
-                "ALTER TABLE `shop`.`items` ADD CONSTRAINT `qty_max` CHECK (qty < 1000)",
-                "ALTER TABLE `shop`.`items` DROP CONSTRAINT `items_chk_1`",
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `touched_at` timestamp(3) NULL DEFAULT CURRENT_TIMESTAMP(3)",
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `id` int unsigned NOT NULL",
-                "ALTER TABLE `shop`.`items` MODIFY COLUMN `name` varchar(50) COLLATE utf8mb4_unicode_ci NULL DEFAULT 'it''s'",
+                "ALTER TABLE `shop`.`items` ADD CONSTRAINT `qty_max` CHECK (qty < 1000), DROP CONSTRAINT `items_chk_1`, MODIFY COLUMN `touched_at` timestamp(3) NULL DEFAULT CURRENT_TIMESTAMP(3), MODIFY COLUMN `id` int unsigned NOT NULL, MODIFY COLUMN `name` varchar(50) COLLATE utf8mb4_unicode_ci NULL DEFAULT 'it''s'"
             ]
         );
-        assert!(!p.transactional);
+        // one statement: all or nothing
+        assert!(p.transactional);
         // AUTO_INCREMENT on, with ON UPDATE back on another column; the default goes (MySQL
         // refuses one on an AUTO_INCREMENT column)
         let p = plan(
@@ -8368,14 +8667,18 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(
-            p.statements[0],
-            "ALTER TABLE `shop`.`items` MODIFY COLUMN `qty` int unsigned NOT NULL AUTO_INCREMENT COMMENT 'how many'"
+        assert_eq!(p.statements.len(), 1, "{:?}", p.statements);
+        assert!(
+            p.statements[0].starts_with(
+                "ALTER TABLE `shop`.`items` MODIFY COLUMN `qty` int unsigned NOT NULL AUTO_INCREMENT COMMENT 'how many', MODIFY COLUMN `name` "
+            ),
+            "{}",
+            p.statements[0]
         );
         assert!(
-            p.statements[1].ends_with("ON UPDATE CURRENT_TIMESTAMP"),
+            p.statements[0].ends_with("ON UPDATE CURRENT_TIMESTAMP"),
             "{}",
-            p.statements[1]
+            p.statements[0]
         );
     }
 
@@ -9117,11 +9420,12 @@ mod tests {
         );
         assert_eq!(
             p.statements,
+            // (the index and the check of one table are clauses of one statement)
             [
-                "ALTER TABLE `shop`.`items` DROP INDEX `items_qty`, ADD UNIQUE INDEX `items_qty` (`qty`, `name`(10)) USING BTREE COMMENT 'it''s'",
-                "ALTER TABLE `shop`.`items` DROP CONSTRAINT `qty_positive`, ADD CONSTRAINT `qty_positive` CHECK (qty >= 0)",
+                "ALTER TABLE `shop`.`items` DROP INDEX `items_qty`, ADD UNIQUE INDEX `items_qty` (`qty`, `name`(10)) USING BTREE COMMENT 'it''s', DROP CONSTRAINT `qty_positive`, ADD CONSTRAINT `qty_positive` CHECK (qty >= 0)"
             ]
         );
+        assert!(p.transactional);
         // the model follows: a later op sees the new index
         let p = plan(
             Dialect::Mysql,
@@ -9272,6 +9576,1056 @@ mod tests {
         assert_eq!(
             p.statements,
             [r#"COMMENT ON TABLE "public"."users" IS 'a\b it''s'"#]
+        );
+    }
+
+    // --- grouped ALTER TABLE ----------------------------------------------------------------
+
+    fn add_col(table: &TableRef, name: &str, ty: &str) -> DdlOp {
+        DdlOp::AddColumn {
+            table: table.clone(),
+            column: cdef(name, ty, true),
+            after: None,
+        }
+    }
+
+    fn drop_col(table: &TableRef, name: &str) -> DdlOp {
+        DdlOp::DropColumn {
+            table: table.clone(),
+            name: name.into(),
+        }
+    }
+
+    fn idx(name: &str, columns: &[&str]) -> IndexDef {
+        IndexDef {
+            name: name.into(),
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+            unique: false,
+            method: None,
+            predicate: None,
+            comment: None,
+            include: vec![],
+        }
+    }
+
+    #[test]
+    fn two_added_columns_are_one_statement_on_mysql_and_postgres() {
+        let items = t(Some("shop"), "items");
+        let ops = vec![
+            add_col(&items, "a", "int"),
+            add_col(&items, "b", "text"),
+            drop_col(&items, "old"),
+        ];
+        let p = plan(Dialect::Mysql, None, ops.clone());
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` ADD COLUMN `a` int NULL, ADD COLUMN `b` text NULL, DROP COLUMN `old`"
+            ]
+        );
+        // one statement fails as a whole: nothing to roll back
+        assert!(p.transactional);
+        let p = plan(Dialect::Postgres, None, ops.clone());
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "shop"."items" ADD COLUMN "a" int, ADD COLUMN "b" text, DROP COLUMN "old""#
+            ]
+        );
+        assert!(p.transactional);
+        // SQLite takes one clause per statement
+        let p = plan(Dialect::Sqlite, None, ops);
+        assert_eq!(p.statements.len(), 3, "{:?}", p.statements);
+    }
+
+    #[test]
+    fn ops_on_two_tables_are_two_statements_and_a_mysql_plan_of_two_is_not_atomic() {
+        let a = t(Some("shop"), "a");
+        let b = t(Some("shop"), "b");
+        let p = plan(
+            Dialect::Mysql,
+            None,
+            vec![
+                add_col(&a, "x", "int"),
+                add_col(&a, "y", "int"),
+                add_col(&b, "z", "int"),
+                // back to the first table: a statement of its own, the order is kept
+                add_col(&a, "w", "int"),
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`a` ADD COLUMN `x` int NULL, ADD COLUMN `y` int NULL",
+                "ALTER TABLE `shop`.`b` ADD COLUMN `z` int NULL",
+                "ALTER TABLE `shop`.`a` ADD COLUMN `w` int NULL",
+            ]
+        );
+        assert!(!p.transactional);
+        // a schema-less name is another spelling: it does not share the statement
+        let p = plan(
+            Dialect::Postgres,
+            None,
+            vec![add_col(&a, "x", "int"), add_col(&t(None, "a"), "y", "int")],
+        );
+        assert_eq!(p.statements.len(), 2, "{:?}", p.statements);
+        // MySQL: an empty plan is not "one statement"; one raw statement is
+        assert!(!plan(Dialect::Mysql, None, vec![]).transactional);
+        let p = plan(
+            Dialect::Mysql,
+            None,
+            vec![DdlOp::RawSql {
+                sql: "DROP VIEW v".into(),
+            }],
+        );
+        assert!(p.transactional);
+    }
+
+    #[test]
+    fn drop_then_add_of_a_column_keeps_its_order_in_one_statement() {
+        let items = t(Some("shop"), "items");
+        let ops = vec![drop_col(&items, "a"), add_col(&items, "a", "bigint")];
+        // MySQL without the table's metadata cannot know that no key covers `a` (a key makes
+        // the server refuse the pair in one statement: 1089): two statements, the old plan
+        let p = plan(Dialect::Mysql, None, ops.clone());
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` DROP COLUMN `a`",
+                "ALTER TABLE `shop`.`items` ADD COLUMN `a` bigint NULL",
+            ]
+        );
+        assert!(!p.transactional);
+        // a column no key covers: the pair is one statement
+        let m = my_items();
+        let tbl = t(None, "items");
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![drop_col(&tbl, "qty"), add_col(&tbl, "qty", "bigint")],
+        );
+        assert_eq!(
+            p.statements,
+            ["ALTER TABLE `shop`.`items` DROP COLUMN `qty`, ADD COLUMN `qty` bigint NULL"]
+        );
+        assert!(p.transactional);
+        // PostgreSQL drops the indexes of a dropped column itself: one statement either way
+        let p = plan(Dialect::Postgres, None, ops);
+        assert_eq!(
+            p.statements,
+            [r#"ALTER TABLE "shop"."items" DROP COLUMN "a", ADD COLUMN "a" bigint"#]
+        );
+        // the other way round cannot be one statement (the server drops first): it is two
+        let ops = vec![add_col(&items, "a", "int"), drop_col(&items, "a")];
+        for d in [Dialect::Mysql, Dialect::Postgres] {
+            let p = plan(d, None, ops.clone());
+            assert_eq!(p.statements.len(), 2, "{d:?}: {:?}", p.statements);
+        }
+    }
+
+    /// `items` with keys over its columns: a plain index (`qty`), a composite unique index
+    /// (`name`, `touched_at`) and a foreign key (`owner`); `note` is in no key.
+    fn keyed_items() -> TableMeta {
+        let mut m = my_items();
+        m.columns.push(cm("owner", "int", true));
+        m.columns.push(cm("note", "text", true));
+        m.indexes
+            .push(index("ix_qty", &["qty"], false, false, None));
+        m.indexes.push(index(
+            "ux_pair",
+            &["name(10)", "touched_at"],
+            true,
+            false,
+            None,
+        ));
+        m.foreign_keys = vec![ForeignKeyMeta {
+            name: "fk_owner".into(),
+            columns: vec!["owner".into()],
+            ref_table: t(Some("shop"), "owners"),
+            ref_columns: vec!["id".into()],
+            on_update: "NO ACTION".into(),
+            on_delete: "NO ACTION".into(),
+            definition: None,
+        }];
+        m
+    }
+
+    #[test]
+    fn mysql_a_column_that_a_key_covers_is_dropped_and_added_in_two_statements() {
+        // MySQL refuses `DROP COLUMN a, ADD COLUMN a` while the primary key, an index (also a
+        // composite one) or a foreign key covers `a` (1089 / 1171): the old plan of two
+        // statements is kept for them.
+        let m = keyed_items();
+        let tbl = t(None, "items");
+        for column in ["id", "qty", "name", "touched_at", "owner"] {
+            let p = plan(
+                Dialect::Mysql,
+                Some(&m),
+                vec![drop_col(&tbl, column), add_col(&tbl, column, "bigint")],
+            );
+            assert_eq!(
+                p.statements,
+                [
+                    format!("ALTER TABLE `shop`.`items` DROP COLUMN `{column}`"),
+                    format!("ALTER TABLE `shop`.`items` ADD COLUMN `{column}` bigint NULL"),
+                ],
+                "{column}"
+            );
+            assert!(!p.transactional, "{column}");
+        }
+        // a column of no key: one statement
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![drop_col(&tbl, "note"), add_col(&tbl, "note", "text")],
+        );
+        assert_eq!(
+            p.statements,
+            ["ALTER TABLE `shop`.`items` DROP COLUMN `note`, ADD COLUMN `note` text NULL"]
+        );
+        // the clauses around the pair keep joining their side of it
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                add_col(&tbl, "z", "int"),
+                drop_col(&tbl, "qty"),
+                add_col(&tbl, "qty", "bigint"),
+                add_col(&tbl, "y", "int"),
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` ADD COLUMN `z` int NULL, DROP COLUMN `qty`",
+                "ALTER TABLE `shop`.`items` ADD COLUMN `qty` bigint NULL, ADD COLUMN `y` int NULL",
+            ]
+        );
+        // the key dropped earlier in the plan no longer covers the column
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                DdlOp::DropIndex {
+                    table: tbl.clone(),
+                    name: "ix_qty".into(),
+                },
+                drop_col(&tbl, "qty"),
+                add_col(&tbl, "qty", "bigint"),
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` DROP INDEX `ix_qty`, DROP COLUMN `qty`, ADD COLUMN `qty` bigint NULL"
+            ]
+        );
+        assert!(p.transactional);
+        // PostgreSQL drops the indexes with the column: one statement
+        let p = plan(
+            Dialect::Postgres,
+            Some(&m),
+            vec![drop_col(&tbl, "qty"), add_col(&tbl, "qty", "bigint")],
+        );
+        assert_eq!(p.statements.len(), 1, "{:?}", p.statements);
+    }
+
+    #[test]
+    fn mysql_a_foreign_key_dropped_and_added_under_one_name_is_two_statements() {
+        // `DROP FOREIGN KEY k, ADD CONSTRAINT k FOREIGN KEY …` is refused by MySQL (1826); an
+        // index or CHECK of one name is dropped and added in one statement without trouble.
+        let m = keyed_items();
+        let tbl = t(None, "items");
+        let readd = |name: Option<&str>| {
+            vec![
+                DdlOp::DropForeignKey {
+                    table: tbl.clone(),
+                    name: "fk_owner".into(),
+                },
+                DdlOp::AddForeignKey {
+                    table: tbl.clone(),
+                    fk: FkDef {
+                        name: name.map(str::to_string),
+                        columns: vec!["owner".into()],
+                        ref_table: t(Some("shop"), "owners"),
+                        ref_columns: vec!["id".into()],
+                        on_update: None,
+                        on_delete: Some("CASCADE".into()),
+                    },
+                },
+            ]
+        };
+        let p = plan(Dialect::Mysql, Some(&m), readd(Some("fk_owner")));
+        assert_eq!(p.statements.len(), 2, "{:?}", p.statements);
+        assert_eq!(
+            p.statements[0],
+            "ALTER TABLE `shop`.`items` DROP FOREIGN KEY `fk_owner`"
+        );
+        assert!(
+            p.statements[1].starts_with(
+                "ALTER TABLE `shop`.`items` ADD CONSTRAINT `fk_owner` FOREIGN KEY (`owner`)"
+            ),
+            "{:?}",
+            p.statements
+        );
+        assert!(!p.transactional);
+        // the server names an unnamed key itself, another name is another constraint
+        for name in [None, Some("fk_owner2")] {
+            let p = plan(Dialect::Mysql, Some(&m), readd(name));
+            assert_eq!(p.statements.len(), 1, "{name:?}: {:?}", p.statements);
+            assert!(p.transactional);
+        }
+        // an index of one name: dropped and added in one statement
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                DdlOp::DropIndex {
+                    table: tbl.clone(),
+                    name: "ix_qty".into(),
+                },
+                DdlOp::AddIndex {
+                    table: tbl.clone(),
+                    index: idx("ix_qty", &["qty", "name"]),
+                },
+            ],
+        );
+        assert_eq!(p.statements.len(), 1, "{:?}", p.statements);
+        // PostgreSQL takes the same name dropped and added in one statement
+        let pg = plan(Dialect::Postgres, Some(&m), readd(Some("fk_owner")));
+        assert_eq!(pg.statements.len(), 1, "{:?}", pg.statements);
+    }
+
+    #[test]
+    fn mysql_an_index_on_a_new_column_joins_it_but_a_change_of_it_does_not() {
+        let m = my_items();
+        let tbl = t(None, "items");
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                add_col(&tbl, "code", "varchar(20)"),
+                DdlOp::AddIndex {
+                    table: tbl.clone(),
+                    index: idx("items_code", &["code(10)"]),
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` ADD COLUMN `code` varchar(20) NULL, ADD INDEX `items_code` (`code`(10))"
+            ]
+        );
+        // MODIFY of a column the statement adds is refused by the server: it starts a new one
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                add_col(&tbl, "code", "varchar(20)"),
+                DdlOp::AlterColumnNullable {
+                    table: tbl.clone(),
+                    name: "code".into(),
+                    nullable: false,
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` ADD COLUMN `code` varchar(20) NULL",
+                "ALTER TABLE `shop`.`items` MODIFY COLUMN `code` varchar(20) NOT NULL",
+            ]
+        );
+        assert!(!p.transactional);
+        // an index added and dropped again cannot be ordered inside one statement
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                DdlOp::AddIndex {
+                    table: tbl.clone(),
+                    index: idx("i1", &["qty"]),
+                },
+                DdlOp::DropIndex {
+                    table: tbl.clone(),
+                    name: "i1".into(),
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "CREATE INDEX `i1` ON `shop`.`items` (`qty`)",
+                "DROP INDEX `i1` ON `shop`.`items`",
+            ]
+        );
+    }
+
+    #[test]
+    fn mysql_two_changes_of_a_column_are_one_modify() {
+        // MySQL rejects two MODIFYs of a column in one statement ("Unknown column"): the later
+        // one restates the whole column and replaces the earlier.
+        let m = my_items();
+        let tbl = t(None, "items");
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                DdlOp::AlterColumnNullable {
+                    table: tbl.clone(),
+                    name: "name".into(),
+                    nullable: false,
+                },
+                DdlOp::AlterColumnDefault {
+                    table: tbl.clone(),
+                    name: "qty".into(),
+                    default_expr: Some("5".into()),
+                },
+                DdlOp::AlterColumnType {
+                    table: tbl.clone(),
+                    name: "name".into(),
+                    new_type: "varchar(80)".into(),
+                    using: None,
+                },
+                // a literal default of a column the statement already changes joins that change
+                DdlOp::AlterColumnDefault {
+                    table: tbl.clone(),
+                    name: "name".into(),
+                    default_expr: Some("'z'".into()),
+                },
+                DdlOp::AlterColumnDefault {
+                    table: tbl.clone(),
+                    name: "qty".into(),
+                    default_expr: None,
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` MODIFY COLUMN `name` varchar(80) COLLATE utf8mb4_bin NOT NULL DEFAULT 'z', MODIFY COLUMN `qty` int unsigned NOT NULL COMMENT 'how many'"
+            ]
+        );
+        assert!(p.transactional);
+        // a RENAME ends the statement: later changes see the renamed column
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                DdlOp::AlterColumnNullable {
+                    table: tbl.clone(),
+                    name: "name".into(),
+                    nullable: false,
+                },
+                DdlOp::RenameColumn {
+                    table: tbl.clone(),
+                    name: "name".into(),
+                    new_name: "label".into(),
+                },
+                DdlOp::AlterColumnType {
+                    table: tbl.clone(),
+                    name: "label".into(),
+                    new_type: "text".into(),
+                    using: None,
+                },
+            ],
+        );
+        assert_eq!(p.statements.len(), 3, "{:?}", p.statements);
+        assert!(
+            p.statements[1].contains("RENAME COLUMN"),
+            "{:?}",
+            p.statements
+        );
+        assert!(!p.transactional);
+    }
+
+    #[test]
+    fn pg_type_changes_never_share_a_statement_with_a_clause_on_their_column() {
+        // PostgreSQL runs ALTER COLUMN … TYPE before the other sub-commands, whatever their
+        // order in the statement; so a TYPE and any other clause on one column are separate
+        let users = pg_users();
+        let tbl = t(None, "users");
+        let ty = |name: &str, new_type: &str| DdlOp::AlterColumnType {
+            table: tbl.clone(),
+            name: name.into(),
+            new_type: new_type.into(),
+            using: None,
+        };
+        let default = |name: &str, e: Option<&str>| DdlOp::AlterColumnDefault {
+            table: tbl.clone(),
+            name: name.into(),
+            default_expr: e.map(str::to_string),
+        };
+        let nullable = |name: &str, n: bool| DdlOp::AlterColumnNullable {
+            table: tbl.clone(),
+            name: name.into(),
+            nullable: n,
+        };
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![ty("name", "varchar(40)"), default("name", Some("'x'"))],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "name" TYPE varchar(40)"#,
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "name" SET DEFAULT 'x'"#,
+            ]
+        );
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![default("name", Some("'x'")), ty("name", "varchar(40)")],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "name" SET DEFAULT 'x'"#,
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "name" TYPE varchar(40)"#,
+            ]
+        );
+        // other columns do share it, before and after
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![
+                nullable("name", false),
+                ty("email", "text"),
+                default("name", Some("''")),
+                nullable("created_at", true),
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "name" SET NOT NULL, ALTER COLUMN "email" TYPE text, ALTER COLUMN "name" SET DEFAULT '', ALTER COLUMN "created_at" DROP NOT NULL"#
+            ]
+        );
+        // a nullability and a default of one column are one statement; the same setting twice
+        // is not
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![
+                nullable("name", false),
+                default("name", Some("''")),
+                default("name", Some("'x'")),
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "name" SET NOT NULL, ALTER COLUMN "name" SET DEFAULT ''"#,
+                r#"ALTER TABLE "public"."users" ALTER COLUMN "name" SET DEFAULT 'x'"#,
+            ]
+        );
+        // a USING expression may read any column: it does not share a statement with a column
+        // that is added or dropped
+        let using = DdlOp::AlterColumnType {
+            table: tbl.clone(),
+            name: "name".into(),
+            new_type: "integer".into(),
+            using: Some("length(name)".into()),
+        };
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![using.clone(), add_col(&tbl, "extra", "int")],
+        );
+        assert_eq!(p.statements.len(), 2, "{:?}", p.statements);
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![add_col(&tbl, "extra", "int"), using],
+        );
+        assert_eq!(p.statements.len(), 2, "{:?}", p.statements);
+        // a CHECK may name any column: it stays clear of a type change
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![
+                ty("name", "varchar(40)"),
+                DdlOp::AddCheck {
+                    table: tbl.clone(),
+                    check: check(Some("name_len"), "length(name) < 40"),
+                },
+            ],
+        );
+        assert_eq!(p.statements.len(), 2, "{:?}", p.statements);
+    }
+
+    /// A CHECK added next to the drop of a column it names cannot share one `ALTER TABLE`: both
+    /// servers refuse `ADD CONSTRAINT ck CHECK (b > 0), DROP COLUMN b`.
+    #[test]
+    fn an_added_check_and_a_dropped_column_stay_in_order() {
+        let users = pg_users();
+        let tbl = t(None, "users");
+        let drop_col = |name: &str| DdlOp::DropColumn {
+            table: tbl.clone(),
+            name: name.into(),
+        };
+        let add_check = |name: &str, expr: &str| DdlOp::AddCheck {
+            table: tbl.clone(),
+            check: check(Some(name), expr),
+        };
+        for ops in [
+            vec![add_check("ck_name", "length(name) > 1"), drop_col("name")],
+            vec![drop_col("name"), add_check("ck_name", "length(name) > 1")],
+        ] {
+            let p = plan(Dialect::Postgres, Some(&users), ops);
+            assert_eq!(p.statements.len(), 2, "{:?}", p.statements);
+        }
+        // an edited check (dropped and added again) followed by the drop of its column
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![
+                DdlOp::DropCheck {
+                    table: tbl.clone(),
+                    name: "ck_name".into(),
+                },
+                add_check("ck_name", "length(name) > 2"),
+                drop_col("name"),
+            ],
+        );
+        assert_eq!(p.statements.len(), 2, "{:?}", p.statements);
+        assert!(p.statements[0].contains("DROP CONSTRAINT"));
+        assert!(p.statements[0].contains("ADD CONSTRAINT"));
+        assert!(p.statements[1].ends_with(r#"DROP COLUMN "name""#));
+        // a CHECK that names another column joins the statement
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![add_check("ck_name", "length(name) > 1"), drop_col("email")],
+        );
+        assert_eq!(p.statements.len(), 1, "{:?}", p.statements);
+        // an unnamed CHECK is no different
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![
+                DdlOp::AddCheck {
+                    table: tbl.clone(),
+                    check: check(None, "length(name) > 1"),
+                },
+                drop_col("name"),
+            ],
+        );
+        assert_eq!(p.statements.len(), 2, "{:?}", p.statements);
+        // a dropped check and a dropped column still share one statement
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![
+                DdlOp::DropCheck {
+                    table: tbl.clone(),
+                    name: "ck_name".into(),
+                },
+                drop_col("name"),
+            ],
+        );
+        assert_eq!(p.statements.len(), 1, "{:?}", p.statements);
+        let m = my_items();
+        let tbl = t(None, "items");
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                DdlOp::AddCheck {
+                    table: tbl.clone(),
+                    check: check(Some("ck_qty"), "qty > 0"),
+                },
+                DdlOp::DropColumn {
+                    table: tbl.clone(),
+                    name: "qty".into(),
+                },
+            ],
+        );
+        assert_eq!(p.statements.len(), 2, "{:?}", p.statements);
+    }
+
+    #[test]
+    fn statements_that_cannot_join_end_the_alter() {
+        let users = pg_users();
+        let tbl = t(None, "users");
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![
+                add_col(&tbl, "a", "int"),
+                DdlOp::SetColumnComment {
+                    table: tbl.clone(),
+                    name: "email".into(),
+                    comment: Some("c".into()),
+                },
+                add_col(&tbl, "b", "int"),
+                DdlOp::AddIndex {
+                    table: tbl.clone(),
+                    index: idx("users_b", &["b"]),
+                },
+                add_col(&tbl, "c", "int"),
+                DdlOp::RawSql {
+                    sql: "ANALYZE users".into(),
+                },
+                add_col(&tbl, "d", "int"),
+                DdlOp::RenameTable {
+                    table: tbl.clone(),
+                    new_name: "people".into(),
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."users" ADD COLUMN "a" int"#,
+                r#"COMMENT ON COLUMN "public"."users"."email" IS 'c'"#,
+                r#"ALTER TABLE "public"."users" ADD COLUMN "b" int"#,
+                r#"CREATE INDEX "users_b" ON "public"."users" ("b")"#,
+                r#"ALTER TABLE "public"."users" ADD COLUMN "c" int"#,
+                "ANALYZE users",
+                r#"ALTER TABLE "public"."users" ADD COLUMN "d" int"#,
+                r#"ALTER TABLE "public"."users" RENAME TO "people""#,
+            ]
+        );
+        // MySQL: table options and the table comment end the statement too
+        let m = my_items();
+        let tbl = t(None, "items");
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                add_col(&tbl, "a", "int"),
+                DdlOp::SetTableComment {
+                    table: tbl.clone(),
+                    comment: Some("x".into()),
+                },
+                add_col(&tbl, "b", "int"),
+                DdlOp::AlterTableOptions {
+                    table: tbl.clone(),
+                    options: TableOptions {
+                        engine: Some("InnoDB".into()),
+                        ..TableOptions::default()
+                    },
+                },
+                add_col(&tbl, "c", "int"),
+                DdlOp::CreateTrigger {
+                    table: tbl.clone(),
+                    name: "tr".into(),
+                    sql: "CREATE TRIGGER tr BEFORE INSERT ON items FOR EACH ROW SET NEW.qty = 1"
+                        .into(),
+                },
+            ],
+        );
+        assert_eq!(p.statements.len(), 6, "{:?}", p.statements);
+        assert!(p.statements[0].ends_with("ADD COLUMN `a` int NULL"));
+        assert!(p.statements[2].ends_with("ADD COLUMN `b` int NULL"));
+        assert!(p.statements[4].ends_with("ADD COLUMN `c` int NULL"));
+        assert!(!p.transactional);
+    }
+
+    #[test]
+    fn pg_primary_key_swap_and_edited_checks_are_one_statement() {
+        let users = pg_users();
+        let tbl = t(None, "users");
+        let p = plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![
+                DdlOp::DropPrimaryKey { table: tbl.clone() },
+                DdlOp::AddPrimaryKey {
+                    table: tbl.clone(),
+                    columns: vec!["email".into()],
+                },
+                DdlOp::DropIndex {
+                    table: tbl.clone(),
+                    name: "users_email_key".into(),
+                },
+            ],
+        );
+        // (users_email_key is a plain index here, so it is a statement of its own)
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."users" DROP CONSTRAINT "users_pkey", ADD PRIMARY KEY ("email")"#,
+                r#"DROP INDEX "public"."users_email_key""#,
+            ]
+        );
+        // a key added and dropped in the same plan is two statements (PostgreSQL would run the
+        // drop first)
+        let p = plan(
+            Dialect::Postgres,
+            Some(&meta(
+                t(Some("public"), "k"),
+                vec![cm("a", "int", false)],
+                &[],
+            )),
+            vec![
+                DdlOp::AddPrimaryKey {
+                    table: t(None, "k"),
+                    columns: vec!["a".into()],
+                },
+                DdlOp::DropPrimaryKey {
+                    table: t(None, "k"),
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                r#"ALTER TABLE "public"."k" ADD PRIMARY KEY ("a")"#,
+                r#"ALTER TABLE "public"."k" DROP CONSTRAINT "k_pkey""#,
+            ]
+        );
+    }
+
+    #[test]
+    fn mysql_index_ops_join_other_clauses_but_a_lone_index_keeps_its_own_statement() {
+        let mut m = my_items();
+        m.indexes
+            .push(index("items_qty", &["qty"], false, false, None));
+        let tbl = t(None, "items");
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                DdlOp::DropIndex {
+                    table: tbl.clone(),
+                    name: "items_qty".into(),
+                },
+                add_col(&tbl, "code", "varchar(20)"),
+                DdlOp::AddIndex {
+                    table: tbl.clone(),
+                    index: idx("items_code", &["code"]),
+                },
+                DdlOp::AddForeignKey {
+                    table: tbl.clone(),
+                    fk: FkDef {
+                        name: Some("items_fk".into()),
+                        columns: vec!["code".into()],
+                        ref_table: t(Some("shop"), "codes"),
+                        ref_columns: vec!["code".into()],
+                        on_update: None,
+                        on_delete: None,
+                    },
+                },
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `shop`.`items` DROP INDEX `items_qty`, ADD COLUMN `code` varchar(20) NULL, ADD INDEX `items_code` (`code`), ADD CONSTRAINT `items_fk` FOREIGN KEY (`code`) REFERENCES `shop`.`codes` (`code`)"
+            ]
+        );
+        // dropping the column an index of the statement names is a new statement
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                DdlOp::AddIndex {
+                    table: tbl.clone(),
+                    index: idx("items_name", &["name"]),
+                },
+                drop_col(&tbl, "name"),
+            ],
+        );
+        assert_eq!(p.statements.len(), 2, "{:?}", p.statements);
+    }
+
+    // --- fractional seconds of CURRENT_TIMESTAMP -------------------------------------------
+
+    fn my_stamps() -> TableMeta {
+        let col = |name: &str, ty: &str, default: Option<&str>, extra: &str| {
+            let mut c = cm(name, ty, true);
+            c.kind = ValueKind::Timestamp;
+            c.default_expr = default.map(str::to_string);
+            c.extra = Some(extra.into());
+            c
+        };
+        meta(
+            t(Some("db"), "stamps"),
+            vec![
+                col("plain", "datetime", None, ""),
+                col("ms", "datetime(3)", None, ""),
+                col("us", "timestamp(6)", None, ""),
+                col(
+                    "touched",
+                    "datetime(3)",
+                    Some("CURRENT_TIMESTAMP(3)"),
+                    "DEFAULT_GENERATED on update CURRENT_TIMESTAMP(3)",
+                ),
+            ],
+            &[],
+        )
+    }
+
+    #[test]
+    fn mysql_on_update_and_current_timestamp_defaults_take_the_precision_of_the_column() {
+        let m = my_stamps();
+        let tbl = t(None, "stamps");
+        let on_update = |name: &str, e: Option<&str>| DdlOp::AlterColumnOnUpdate {
+            table: tbl.clone(),
+            name: name.into(),
+            on_update: e.map(str::to_string),
+        };
+        let default = |name: &str, e: &str| DdlOp::AlterColumnDefault {
+            table: tbl.clone(),
+            name: name.into(),
+            default_expr: Some(e.into()),
+        };
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                on_update("us", Some("CURRENT_TIMESTAMP")),
+                on_update("ms", Some("CURRENT_TIMESTAMP")),
+                on_update("plain", Some("CURRENT_TIMESTAMP")),
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `db`.`stamps` MODIFY COLUMN `us` timestamp(6) NULL ON UPDATE CURRENT_TIMESTAMP(6), MODIFY COLUMN `ms` datetime(3) NULL ON UPDATE CURRENT_TIMESTAMP(3), MODIFY COLUMN `plain` datetime NULL ON UPDATE CURRENT_TIMESTAMP"
+            ]
+        );
+        // defaults: CURRENT_TIMESTAMP, LOCALTIME and NOW() all follow the column
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![
+                default("ms", "CURRENT_TIMESTAMP"),
+                default("us", "now()"),
+                default("plain", "CURRENT_TIMESTAMP(6)"),
+            ],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `db`.`stamps` MODIFY COLUMN `ms` datetime(3) NULL DEFAULT CURRENT_TIMESTAMP(3), MODIFY COLUMN `us` timestamp(6) NULL DEFAULT now(6), MODIFY COLUMN `plain` datetime NULL DEFAULT CURRENT_TIMESTAMP"
+            ]
+        );
+        // changing the precision of the type re-emits the matching default and ON UPDATE
+        let ty = |new_type: &str| DdlOp::AlterColumnType {
+            table: tbl.clone(),
+            name: "touched".into(),
+            new_type: new_type.into(),
+            using: None,
+        };
+        let p = plan(Dialect::Mysql, Some(&m), vec![ty("datetime(6)")]);
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `db`.`stamps` MODIFY COLUMN `touched` datetime(6) NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)"
+            ]
+        );
+        let p = plan(Dialect::Mysql, Some(&m), vec![ty("datetime")]);
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `db`.`stamps` MODIFY COLUMN `touched` datetime NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
+            ]
+        );
+        // other types and expressions are left alone
+        let mut other = my_stamps();
+        other.columns[0].data_type = "varchar(20)".into();
+        let p = plan(
+            Dialect::Mysql,
+            Some(&other),
+            vec![DdlOp::AlterColumnNullable {
+                table: tbl.clone(),
+                name: "plain".into(),
+                nullable: false,
+            }],
+        );
+        assert_eq!(
+            p.statements,
+            ["ALTER TABLE `db`.`stamps` MODIFY COLUMN `plain` varchar(20) NOT NULL"]
+        );
+        assert_eq!(mysql_now_with_fsp("(now() + 1)", 3), None);
+        assert_eq!(mysql_now_with_fsp("now", 3), None);
+        assert_eq!(mysql_now_with_fsp("LOCALTIME", 2).unwrap(), "LOCALTIME(2)");
+        assert_eq!(mysql_now_with_fsp("NOW(3)", 0).unwrap(), "NOW()");
+        assert_eq!(mysql_now_with_fsp("current_timestamp(3)", 3), None);
+        assert_eq!(mysql_fsp("DATETIME(2) NOT NULL"), Some(2));
+        assert_eq!(mysql_fsp("timestamp"), Some(0));
+        assert_eq!(mysql_fsp("time(3)"), None);
+        // a new column
+        let mut def = cdef("seen", "datetime(3)", true);
+        def.default_expr = Some("CURRENT_TIMESTAMP".into());
+        def.on_update = Some("CURRENT_TIMESTAMP".into());
+        let p = plan(
+            Dialect::Mysql,
+            None,
+            vec![DdlOp::AddColumn {
+                table: t(Some("db"), "stamps"),
+                column: def,
+                after: None,
+            }],
+        );
+        assert_eq!(
+            p.statements,
+            [
+                "ALTER TABLE `db`.`stamps` ADD COLUMN `seen` datetime(3) NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)"
+            ]
+        );
+    }
+
+    #[test]
+    fn mysql_refuses_a_text_or_blob_index_without_a_prefix_length() {
+        let mut m = my_items();
+        m.columns.push(cm("body", "longtext", true));
+        m.columns.push(cm("raw", "blob", true));
+        let tbl = t(None, "items");
+        let add = |columns: &[&str], method: Option<&str>| DdlOp::AddIndex {
+            table: tbl.clone(),
+            index: IndexDef {
+                method: method.map(str::to_string),
+                ..idx("items_ix", columns)
+            },
+        };
+        let msg = invalid_input(Dialect::Mysql, Some(&m), vec![add(&["name", "body"], None)]);
+        assert!(
+            msg.contains("longtext") && msg.contains("prefix length") && msg.contains("body(10)"),
+            "{msg}"
+        );
+        // a length (with a direction too), a varchar and FULLTEXT are fine
+        let p = plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![add(&["body(10)", "raw(20) DESC"], None)],
+        );
+        assert_eq!(
+            p.statements,
+            ["CREATE INDEX `items_ix` ON `shop`.`items` (`body`(10), `raw`(20) DESC)"]
+        );
+        plan(Dialect::Mysql, Some(&m), vec![add(&["name"], None)]);
+        plan(
+            Dialect::Mysql,
+            Some(&m),
+            vec![add(&["body"], Some("fulltext"))],
+        );
+        // it follows a column added in the same plan, and other databases take TEXT whole
+        let ops = vec![
+            DdlOp::AddColumn {
+                table: tbl.clone(),
+                column: cdef("notes", "text", true),
+                after: None,
+            },
+            add(&["notes"], None),
+        ];
+        assert!(
+            invalid_input(Dialect::Mysql, Some(&m), ops).contains("notes"),
+            "the new column is known to the check"
+        );
+        let users = pg_users();
+        plan(
+            Dialect::Postgres,
+            Some(&users),
+            vec![DdlOp::AddIndex {
+                table: t(None, "users"),
+                index: idx("users_name_ix", &["name"]),
+            }],
         );
     }
 }

@@ -96,15 +96,14 @@ Problems found, and what became of them (the A tests now assert the fixed behavi
    each address of a name that resolves to several itself (`Config::hostaddr`, the name still used
    for TLS / SNI), reports the most telling error (the server's answer, then TLS, then the network)
    and pins the address that worked for the worker pool.
-3. **Limitation (documented, not fixable without vendoring mysql_async).** MySQL `VERIFY-CA` checks
-   the host name too: mysql_async 0.37.1 (`src/io/tls/rustls_io.rs:174`) skips a name mismatch
-   only when the error text contains `NotValidForName`, and rustls 0.23.45 reports
-   `NotValidForNameContext`, displayed as `certificate not valid for name …`. Tabler therefore
-   checks the name against the profile host (also through an SSH tunnel, as `VERIFY-IDENTITY`
-   does) and, when it does not match, explains: `VERIFY-CA: the server certificate is not valid
-for "127.0.0.1", and the MySQL driver cannot skip the host name check. Use VERIFY-IDENTITY with a
-host name the certificate lists, or REQUIRED …`. The connection form says so under SSL mode.
-   Lift this once mysql_async matches the `CertificateError` variants.
+3. **Fixed (wave 3, vendored mysql_async).** MySQL `VERIFY-CA` used to check the host name too:
+   mysql_async 0.37.1 (`src/io/tls/rustls_io.rs`) skipped a name mismatch only when the error text
+   contained `NotValidForName`, and rustls 0.23.45 reports `NotValidForNameContext`, displayed as
+   `certificate not valid for name …`. `src-tauri/vendor/mysql_async` (a `[patch.crates-io]` entry)
+   matches the typed `CertificateError` instead, so `VERIFY-CA` now checks the chain, the validity
+   period and the signatures but not the name; `VERIFY-IDENTITY` still checks the name against the
+   profile host (also through an SSH tunnel) and, when it does not match, says to use a name the
+   certificate lists or `VERIFY-CA`. Lift the patch once upstream matches the variants.
 4. **Fixed.** MySQL key errors were misleading (mysql_async read a non-UTF-8 key as PKCS#1 DER, and
    an encrypted key failed with `No private key found in the file specified`, no path). Both
    drivers now read the Key… / Cert… files through `src-tauri/src/tls_files.rs`: PEM only, the key
@@ -118,7 +117,9 @@ private key`). MySQL gets the parsed material as PEM buffers. The form's SSL hin
    well as the CA file and mysql_async's bundled webpki roots, like PostgreSQL.
 
 `src-tauri/tests/conn2_tls.rs` checks 3 and 4 against a local MySQL's auto-generated
-certificates (Homebrew: `/opt/homebrew/var/mysql`) without Docker.
+certificates (Homebrew: `/opt/homebrew/var/mysql`) without Docker: `VERIFY-CA` to `127.0.0.1` connects
+(the certificate lists no name), `VERIFY-IDENTITY` to it fails with a name error, and `VERIFY-CA` with
+a CA that signed nothing still fails.
 
 ### B. Value changes as CSV import errors
 
