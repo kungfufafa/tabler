@@ -20,6 +20,14 @@ import { DEFAULT_TOOLBAR_ITEMS } from "./toolbarLayout";
 import { Toolbar } from "./Toolbar";
 import { WorkspaceRail } from "./WorkspaceRail";
 
+// macOS's overlay title bar unless a test turns it off (Windows keeps its native title bar).
+const titleBar = vi.hoisted(() => ({ overlay: true }));
+vi.mock("./titleBar", () => ({
+  get overlayTitleBar() {
+    return titleBar.overlay;
+  },
+}));
+
 function info(connectionId: string, patch: Partial<ConnectionInfo> = {}): ConnectionInfo {
   return {
     connectionId,
@@ -69,6 +77,7 @@ function spyAction(id: ActionId) {
 }
 
 beforeEach(() => {
+  titleBar.overlay = true;
   resetPrefsForTests();
   useTabsStore.setState({
     tabs: [],
@@ -217,6 +226,26 @@ describe("Toolbar", () => {
     wrap(<Toolbar launcher />);
     expect(screen.getByText("Tabler")).toBeInTheDocument();
     expect(screen.queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("leaves room for the traffic lights under the macOS overlay title bar", () => {
+    useConnectionsStore.getState().add(info("a"));
+    const { container } = wrap(<Toolbar launcher={false} />);
+    expect(container.querySelector<HTMLElement>("[data-slot=toolbar]")?.style.paddingLeft).toBe(
+      "80px",
+    );
+  });
+
+  it("adds no title strip and no inset under a native title bar (Windows)", () => {
+    titleBar.overlay = false;
+    const launcher = wrap(<Toolbar launcher />);
+    expect(launcher.container).toBeEmptyDOMElement();
+    launcher.unmount();
+    useConnectionsStore.getState().add(info("a"));
+    const { container } = wrap(<Toolbar launcher={false} />);
+    expect(container.querySelector<HTMLElement>("[data-slot=toolbar]")?.style.paddingLeft).toBe(
+      "8px",
+    );
   });
 
   it("enables the action control while the workspace has pending changes, in any of its tabs", () => {

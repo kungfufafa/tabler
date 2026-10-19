@@ -250,11 +250,18 @@ pub mod shell {
 
     /// App / File / Edit / View / Connection / Navigate / Window, TablePlus's menu bar. Edit keeps
     /// the predefined items: they are what makes ⌘C / ⌘V / ⌘Z work in text fields on macOS.
+    /// Elsewhere there is no app menu: Settings and Exit end File, About ends Help.
     pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         let name = app.package_info().name.clone();
-        let quit = MenuItemBuilder::with_id(QUIT_ITEM_ID, format!("Quit {name}"))
+        let quit_label = if cfg!(target_os = "macos") {
+            format!("Quit {name}")
+        } else {
+            "Exit".to_owned()
+        };
+        let quit = MenuItemBuilder::with_id(QUIT_ITEM_ID, quit_label)
             .accelerator("CmdOrCtrl+Q")
             .build(app)?;
+        #[cfg(target_os = "macos")]
         let app_menu = SubmenuBuilder::new(app, &name)
             .about(None)
             .separator()
@@ -296,8 +303,14 @@ pub mod shell {
                     .item(&action_item(app, "import.sql")?)
                     .build()?,
             )
-            .item(&action_item(app, "ui.launcher")?)
-            .build()?;
+            .item(&action_item(app, "ui.launcher")?);
+        #[cfg(not(target_os = "macos"))]
+        let file = file
+            .separator()
+            .item(&action_item(app, "settings.open")?)
+            .separator()
+            .item(&quit);
+        let file = file.build()?;
         // The SQL editor's items, then the data grid's (TablePlus resolves the shared keys by
         // focus; so does the page, see `PLAIN_MENU_ACTIONS`).
         let edit = SubmenuBuilder::new(app, "Edit")
@@ -393,8 +406,23 @@ pub mod shell {
             .build()?;
         // Help ▸ Enable SSH Debug Log / Show Log File (handled natively, see `on_menu_event`).
         let help = crate::tunnel::debug_log::help_menu(app)?;
+        #[cfg(not(target_os = "macos"))]
+        {
+            // Without metadata the predefined About item does nothing outside macOS.
+            let about = tauri::menu::AboutMetadataBuilder::new()
+                .name(Some(name.clone()))
+                .version(Some(app.package_info().version.to_string()))
+                .build();
+            help.append(&PredefinedMenuItem::separator(app)?)?;
+            help.append(&PredefinedMenuItem::about(
+                app,
+                Some(&format!("About {name}")),
+                Some(about),
+            )?)?;
+        }
         MenuBuilder::new(app)
             .items(&[
+                #[cfg(target_os = "macos")]
                 &app_menu,
                 &file,
                 &edit,
@@ -916,6 +944,14 @@ pub fn run() {
             recent::refresh_menu(app.handle());
             #[cfg(target_os = "macos")]
             shell::terminate_guard::install(app.handle());
+            // The main window (built from tauri.conf.json and restored by the window-state
+            // plugin before `setup`) back inside the screen.
+            #[cfg(windows)]
+            if let Some(main) = app.get_webview_window(windows::MAIN_WINDOW)
+                && let Err(e) = windows::fit_to_work_area(&main)
+            {
+                log::warn!("could not fit the main window to the screen: {e}");
+            }
             // The app lock: sleep and screen lock lock every window.
             biometrics::watch_system_lock(app.handle().clone());
             Ok(())

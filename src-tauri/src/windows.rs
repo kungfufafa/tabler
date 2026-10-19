@@ -346,13 +346,111 @@ pub fn open_window<R: Runtime>(
     }
     let built = WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build());
     registry.release(&label);
-    if let Err(e) = built {
-        registry.take_handoff(&label);
-        return Err(e);
+    let window = match built {
+        Ok(window) => window,
+        Err(e) => {
+            registry.take_handoff(&label);
+            return Err(e);
+        }
+    };
+    #[cfg(windows)]
+    if let Err(e) = fit_to_work_area(&window) {
+        log::warn!("could not fit window {label} to the screen: {e}");
     }
+    #[cfg(not(windows))]
+    let _ = window;
     registry.born(&label);
     log::info!("opened window {label}");
     Ok(label)
+}
+
+/// A window's outer frame or a monitor's work area, in physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// How a window that does not sit inside the work area is brought back into it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Fit {
+    /// It fits: moved, same size, so no edge is off screen or under the taskbar.
+    Move { x: i32, y: i32 },
+    /// Too big for the screen: resized to fit and centred (its size once un-maximized), then
+    /// maximized.
+    Maximize(Frame),
+}
+
+/// What it takes to get `window` inside `area`; `None` when it already is.
+pub fn fit_frame(window: Frame, area: Frame) -> Option<Fit> {
+    let offset = |free: u32| i32::try_from(free).unwrap_or(i32::MAX);
+    if window.width > area.width || window.height > area.height {
+        let width = window.width.min(area.width);
+        let height = window.height.min(area.height);
+        return Some(Fit::Maximize(Frame {
+            x: area.x + offset((area.width - width) / 2),
+            y: area.y + offset((area.height - height) / 2),
+            width,
+            height,
+        }));
+    }
+    let x = window
+        .x
+        .clamp(area.x, area.x + offset(area.width - window.width));
+    let y = window
+        .y
+        .clamp(area.y, area.y + offset(area.height - window.height));
+    (x != window.x || y != window.y).then_some(Fit::Move { x, y })
+}
+
+/// Windows: the configured size (1280×820) is taller than a 768 px screen's work area, and a size
+/// saved on a bigger monitor may not fit either, so a window that sticks out of its monitor's work
+/// area (under the taskbar) is moved in, or maximized when it is too big. Call it after the
+/// window-state plugin has restored the window (that happens while it is built); a restored size
+/// that fits is left alone.
+pub fn fit_to_work_area<R: Runtime>(window: &tauri::WebviewWindow<R>) -> tauri::Result<()> {
+    if window.is_maximized()? || window.is_fullscreen()? || window.is_minimized()? {
+        return Ok(());
+    }
+    let Some(monitor) = window.current_monitor()?.or(window.primary_monitor()?) else {
+        return Ok(());
+    };
+    let area = monitor.work_area();
+    let (outer, inner, pos) = (
+        window.outer_size()?,
+        window.inner_size()?,
+        window.outer_position()?,
+    );
+    let frame = Frame {
+        x: pos.x,
+        y: pos.y,
+        width: outer.width,
+        height: outer.height,
+    };
+    let area = Frame {
+        x: area.position.x,
+        y: area.position.y,
+        width: area.size.width,
+        height: area.size.height,
+    };
+    match fit_frame(frame, area) {
+        None => {}
+        Some(Fit::Move { x, y }) => window.set_position(tauri::PhysicalPosition { x, y })?,
+        Some(Fit::Maximize(to)) => {
+            // `set_size` is the inner size: take off the borders, title and menu bars.
+            let bars_width = outer.width.saturating_sub(inner.width);
+            let bars_height = outer.height.saturating_sub(inner.height);
+            window.set_size(tauri::PhysicalSize {
+                width: to.width.saturating_sub(bars_width),
+                height: to.height.saturating_sub(bars_height),
+            })?;
+            window.set_position(tauri::PhysicalPosition { x: to.x, y: to.y })?;
+            window.maximize()?;
+        }
+    }
+    Ok(())
 }
 
 /// Window events the registry follows: focus (menu items act on the focused window) and a window
@@ -585,6 +683,35 @@ mod tests {
         assert_eq!(registry.last_focused().as_deref(), Some("w-2"));
         registry.forget("w-2", &labels(&["main"]));
         assert_eq!(registry.last_focused(), None);
+    }
+
+    #[test]
+    fn fits_windows_into_the_work_area() {
+        let frame = |x, y, width, height| Frame {
+            x,
+            y,
+            width,
+            height,
+        };
+        // 1920×1080 with a 48 px taskbar.
+        let big = frame(0, 0, 1920, 1032);
+        assert_eq!(fit_frame(frame(320, 100, 1296, 880), big), None);
+        // Saved half under the taskbar: moved up, same size.
+        assert_eq!(
+            fit_frame(frame(320, 400, 1296, 880), big),
+            Some(Fit::Move { x: 320, y: 152 })
+        );
+        // Left of a second monitor's work area.
+        assert_eq!(
+            fit_frame(frame(1900, 0, 1296, 880), frame(1920, 0, 1920, 1032)),
+            Some(Fit::Move { x: 1920, y: 0 })
+        );
+        // The default size on a 1366×768 screen (728 px work area): centred at the screen's
+        // height, then maximized.
+        assert_eq!(
+            fit_frame(frame(43, -56, 1296, 880), frame(0, 0, 1366, 728)),
+            Some(Fit::Maximize(frame(35, 0, 1296, 728)))
+        );
     }
     /// A SQLite over SSH copy that goes with a closed window's connection: the window cleanup
     /// must run the same final upload and clean-up as the `disconnect` command (it once left the
