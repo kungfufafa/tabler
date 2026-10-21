@@ -17,7 +17,6 @@ import {
   ArrowUpDown,
   ChevronRight,
   Copy,
-  Database,
   DatabaseBackup,
   Folder,
   FolderInput,
@@ -38,6 +37,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
+import appIcon from "../../../design/app-icon.svg";
 import { EmptyState } from "@/components/EmptyState";
 import { Kbd } from "@/components/Kbd";
 import {
@@ -766,9 +766,8 @@ export function Launcher() {
         {/* As wide as its longest action (at least 240px), so no action is ever cut off. */}
         <aside className="border-border flex min-w-60 shrink-0 flex-col border-r px-3 pb-3">
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-3 py-6 text-center">
-            <div className="bg-brand text-primary-foreground mb-4 flex size-16 items-center justify-center rounded-[18px] shadow-sm">
-              <Database className="size-8" strokeWidth={1.75} />
-            </div>
+            {/* The app icon, as the Dock shows it (its tile has the macOS margin built in). */}
+            <img src={appIcon} alt="" aria-hidden draggable={false} className="mb-2 size-20" />
             <h1 className="text-xl font-semibold tracking-tight">Tabler</h1>
             <p className="text-muted-foreground mt-1 h-4 text-xs">
               {version ? `Version ${version}` : null}
