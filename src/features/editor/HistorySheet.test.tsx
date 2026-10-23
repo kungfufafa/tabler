@@ -18,9 +18,12 @@ const NEWEST = "select count(*) from events_big";
 const UPDATE = "update posts set views = views + 1 where id = 7";
 const USERS = "select * from users limit 50";
 
-beforeAll(() => {
+beforeAll(async () => {
   // jsdom has no layout; the sheet keeps the active option scrolled into view.
   Element.prototype.scrollIntoView ??= () => {};
+  // Load the mock backend before the first call (the transport imports it lazily); on a cold
+  // cache that import alone can outlast the first test's findBy timeout.
+  await import("@/lib/ipc/mock");
 });
 
 beforeEach(() => {

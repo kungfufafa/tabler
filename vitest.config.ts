@@ -11,5 +11,9 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
     css: false,
+    // The dialog and tab integration tests take 2–5 s under a full parallel run on a slower
+    // (Windows) machine, and which one crosses vitest's 5 s default changes from run to run. The
+    // timeout only has to catch a hang.
+    testTimeout: 15_000,
   },
 });
