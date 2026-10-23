@@ -57,7 +57,8 @@ describe("ShortcutsSection (keymap editor)", { timeout: 20_000 }, () => {
       code: "Escape",
     });
     expect(getPrefs().keymapOverrides).toEqual({});
-    fireEvent.click(slot("Go back", "Ctrl+-"));
+    // Alt+← off macOS, where the tests run (⌃- on macOS).
+    fireEvent.click(slot("Go back", "Alt+Left"));
     fireEvent.keyDown(screen.getByLabelText("Go back: type a shortcut"), {
       key: "Backspace",
       code: "Backspace",
@@ -115,7 +116,7 @@ describe("ShortcutsSection (keymap editor)", { timeout: 20_000 }, () => {
     expect(Object.keys(getPrefs().keymapOverrides)).toEqual(["tab.new-query", "tab.next"]);
     fireEvent.click(screen.getByLabelText("Reset New query tab"));
     expect(getPrefs().keymapOverrides).toEqual({
-      "tab.next": ["Mod+Alt+J", "Ctrl+Tab"],
+      "tab.next": ["Mod+Alt+J", "Mod+Tab"],
     });
     fireEvent.click(screen.getByText("Reset All"));
     expect(getPrefs().keymapOverrides).toEqual({});

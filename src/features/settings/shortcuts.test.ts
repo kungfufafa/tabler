@@ -81,7 +81,8 @@ describe("groupShortcuts", () => {
     expect(row("SQL editor", "Uglify SQL")?.keys).toEqual(["Mod+Shift+I"]);
     // ⌘E is "Open SQL editor" in the SQL editor too (TablePlus has no key for Explain).
     expect(row("SQL editor", "Explain")?.keys).toEqual(["Mod+Alt+E"]);
-    expect(row("Global", "Toggle result pane")?.keys).toEqual(["Ctrl+`"]);
+    // ⌃` off macOS, where the tests run, is Ctrl+` (`nonMacKeys`).
+    expect(row("Global", "Toggle result pane")?.keys).toEqual(["Mod+`"]);
   });
 });
 

@@ -3,7 +3,12 @@ import { actions, type ActionId } from "@/features/palette/actions";
 import { comboFromEvent } from "./combo";
 import { findShortcut, type Scope, type ShortcutDef } from "./keymap";
 
-const DIALOGS = "[role='dialog'], [role='alertdialog']";
+/**
+ * Open dialogs only. A Radix dialog that is closing stays mounted with `data-state="closed"` (and
+ * the focus on its button) until its exit animation ends; it must not keep the app's shortcuts:
+ * Esc then ⌘S right away has to commit.
+ */
+const DIALOGS = ":is([role='dialog'], [role='alertdialog']):not([data-state='closed'])";
 
 /**
  * Resolves the keyboard scope from the focused element (`data-scope` attributes, CodeMirror,

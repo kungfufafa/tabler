@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { ActionId } from "@/features/palette/actions";
 import { getPrefs, setPref, usePrefsStore } from "@/stores/prefs";
+import { isMac } from "./combo";
 import {
   EMPTY_OVERRIDES,
   migrateKeymapOverrides,
@@ -33,14 +34,20 @@ export interface ShortcutDef {
    * focus (either pane of a split SQL editor, the SQL Viewer). Remappable like any other binding.
    */
   editorCommand?: boolean;
+  /**
+   * The binding on Windows and Linux when `keys` holds ⌃ (alone or with ⌘): there the Ctrl key is
+   * Mod, so such a combo never fires (see `platformKeymap`). The rule: ⌃⌘X becomes Ctrl+Alt+X and
+   * ⌃X becomes Ctrl+X, unless that is taken.
+   */
+  nonMacKeys?: string;
 }
 
 /**
  * Single source of truth for keyboard shortcuts; the Settings → Shortcuts screen renders this list.
- * The defaults follow TablePlus. When an action has several combos, the first one is its primary
- * shortcut (shown in menus, tooltips and the palette); the others are kept as alternatives.
+ * The defaults follow TablePlus (macOS). When an action has several combos, the first one is its
+ * primary shortcut (shown in menus, tooltips and the palette); the others are kept as alternatives.
  */
-export const KEYMAP: ShortcutDef[] = [
+export const BUILTIN_KEYMAP: readonly ShortcutDef[] = [
   {
     id: "tab.new-query",
     keys: "Mod+T",
@@ -89,10 +96,18 @@ export const KEYMAP: ShortcutDef[] = [
   },
   { id: "tab.next", keys: "Mod+]", scope: "global", label: "Next tab", allowInEditor: true },
   { id: "tab.prev", keys: "Mod+[", scope: "global", label: "Previous tab", allowInEditor: true },
-  { id: "tab.next", keys: "Ctrl+Tab", scope: "global", label: "Next tab", allowInEditor: true },
+  {
+    id: "tab.next",
+    keys: "Ctrl+Tab",
+    nonMacKeys: "Mod+Tab",
+    scope: "global",
+    label: "Next tab",
+    allowInEditor: true,
+  },
   {
     id: "tab.prev",
     keys: "Ctrl+Shift+Tab",
+    nonMacKeys: "Mod+Shift+Tab",
     scope: "global",
     label: "Previous tab",
     allowInEditor: true,
@@ -198,6 +213,7 @@ export const KEYMAP: ShortcutDef[] = [
   {
     id: "view.data",
     keys: "Mod+Ctrl+[",
+    nonMacKeys: "Mod+Alt+[",
     scope: "global",
     label: "Show data",
     notWhileEditing: true,
@@ -205,6 +221,7 @@ export const KEYMAP: ShortcutDef[] = [
   {
     id: "view.structure",
     keys: "Mod+Ctrl+]",
+    nonMacKeys: "Mod+Alt+]",
     scope: "global",
     label: "Show structure",
     notWhileEditing: true,
@@ -319,6 +336,7 @@ export const KEYMAP: ShortcutDef[] = [
   {
     id: "query.toggle-results",
     keys: "Ctrl+`",
+    nonMacKeys: "Mod+`",
     scope: "global",
     label: "Toggle result pane",
     allowInEditor: true,
@@ -380,6 +398,7 @@ export const KEYMAP: ShortcutDef[] = [
   {
     id: "workspace.next",
     keys: "Mod+Ctrl+Right",
+    nonMacKeys: "Mod+Alt+Right",
     scope: "global",
     label: "Select next workspace",
     allowInEditor: true,
@@ -387,6 +406,7 @@ export const KEYMAP: ShortcutDef[] = [
   {
     id: "workspace.prev",
     keys: "Mod+Ctrl+Left",
+    nonMacKeys: "Mod+Alt+Left",
     scope: "global",
     label: "Select previous workspace",
     allowInEditor: true,
@@ -395,6 +415,7 @@ export const KEYMAP: ShortcutDef[] = [
   {
     id: "app.lock",
     keys: "Mod+Ctrl+L",
+    nonMacKeys: "Mod+Alt+L",
     scope: "global",
     label: "Lock Tabler",
     allowInEditor: true,
@@ -409,16 +430,46 @@ export const KEYMAP: ShortcutDef[] = [
     label: "Manage plugins…",
     allowInEditor: true,
   },
-  { id: "plugins.sql-format", keys: "Ctrl+I", scope: "editor", label: "SQL Format (plugin)" },
-  { id: "tab.back", keys: "Ctrl+-", scope: "global", label: "Go back", allowInEditor: true },
+  // Off macOS Ctrl+I is Beautify.
+  {
+    id: "plugins.sql-format",
+    keys: "Ctrl+I",
+    nonMacKeys: "Mod+Alt+I",
+    scope: "editor",
+    label: "SQL Format (plugin)",
+  },
+  // Off macOS Ctrl+- is Decrease font size: back / forward take the browser's Alt+← / Alt+→ (in
+  // the SQL editor too, over CodeMirror's move by syntax).
+  {
+    id: "tab.back",
+    keys: "Ctrl+-",
+    nonMacKeys: "Alt+Left",
+    scope: "global",
+    label: "Go back",
+    allowInEditor: true,
+  },
   {
     id: "tab.forward",
     keys: "Ctrl+Shift+-",
+    nonMacKeys: "Alt+Right",
     scope: "global",
     label: "Go forward",
     allowInEditor: true,
   },
 ];
+
+/**
+ * The built-in keymap of one platform: off macOS every binding with `nonMacKeys` takes it (⌃⌘]
+ * Show structure is Ctrl+Alt+] on Windows, ⌃- Go back is Alt+←).
+ */
+export function platformKeymap(defs: readonly ShortcutDef[], mac: boolean): ShortcutDef[] {
+  return defs.map(({ nonMacKeys, ...def }) =>
+    mac || !nonMacKeys ? def : { ...def, keys: nonMacKeys },
+  );
+}
+
+/** The effective keymap: this platform's built-in bindings, then the user's overrides. */
+export const KEYMAP: ShortcutDef[] = platformKeymap(BUILTIN_KEYMAP, isMac);
 
 const SCOPE_CHAIN: Record<Scope, Scope[]> = {
   global: ["global"],

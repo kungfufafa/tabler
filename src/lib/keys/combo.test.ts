@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { comboFromEvent, formatCombo } from "./combo";
-import { findShortcut } from "./keymap";
+import { BUILTIN_KEYMAP, findShortcut, platformKeymap } from "./keymap";
+
+const MAC = platformKeymap(BUILTIN_KEYMAP, true);
+const PC = platformKeymap(BUILTIN_KEYMAP, false);
 
 const ev = (
   over: Partial<KeyboardEvent>,
@@ -53,7 +56,8 @@ describe("findShortcut", () => {
     expect(findShortcut("Mod+Shift+K", "editor")?.id).toBe("palette.connections");
     expect(findShortcut("Mod+Enter", "editor")?.id).toBe("query.run-current");
     expect(findShortcut("Mod+Shift+Enter", "editor")?.id).toBe("query.run");
-    expect(findShortcut("Mod+Ctrl+]", "grid")?.id).toBe("view.structure");
+    expect(findShortcut("Mod+Ctrl+]", "grid", MAC)?.id).toBe("view.structure");
+    expect(findShortcut("Mod+Alt+]", "grid", PC)?.id).toBe("view.structure");
     expect(findShortcut("Mod+Shift+Z", "grid")?.id).toBe("grid.redo");
     expect(findShortcut("Mod+Shift+Backspace", "grid")?.id).toBe("grid.discard");
     expect(findShortcut("Space", "grid")?.id).toBe("grid.toggle-detail");
@@ -79,8 +83,10 @@ describe("findShortcut", () => {
     expect(findShortcut("Mod+Shift+P", "grid-edit")).toBeUndefined();
     expect(findShortcut("Mod+W", "grid-edit")?.id).toBe("tab.close");
     // Switching the view would unmount the editor before its value is staged.
-    expect(findShortcut("Mod+Ctrl+]", "grid-edit")).toBeUndefined();
-    expect(findShortcut("Mod+Ctrl+[", "grid-edit")).toBeUndefined();
+    expect(findShortcut("Mod+Ctrl+]", "grid-edit", MAC)).toBeUndefined();
+    expect(findShortcut("Mod+Ctrl+[", "grid-edit", MAC)).toBeUndefined();
+    expect(findShortcut("Mod+Alt+]", "grid-edit", PC)).toBeUndefined();
+    expect(findShortcut("Mod+Alt+[", "grid-edit", PC)).toBeUndefined();
   });
 
   it("answers ⇧⌘P and ⇧⌘⌫ from the SQL editor too (workspace-wide), but not from a cell editor", () => {
@@ -110,6 +116,55 @@ describe("findShortcut", () => {
     expect(findShortcut("Mod+Shift+C", "grid")?.id).toBe("grid.copy-cell");
     for (const scope of ["global", "sidebar", "filter", "editor"] as const)
       expect(findShortcut("Mod+Shift+C", scope)?.id, scope).toBe("ui.toggle-console");
+  });
+});
+
+describe("platformKeymap", () => {
+  // ⌃ keys off macOS: Ctrl is Mod there, so a combo holding Ctrl can never fire.
+  const NON_MAC: Record<string, string> = {
+    "tab.next": "Mod+Tab",
+    "tab.prev": "Mod+Shift+Tab",
+    "view.data": "Mod+Alt+[",
+    "view.structure": "Mod+Alt+]",
+    "query.toggle-results": "Mod+`",
+    "workspace.next": "Mod+Alt+Right",
+    "workspace.prev": "Mod+Alt+Left",
+    "app.lock": "Mod+Alt+L",
+    "plugins.sql-format": "Mod+Alt+I",
+    "tab.back": "Alt+Left",
+    "tab.forward": "Alt+Right",
+  };
+
+  it("keeps the macOS keys on macOS", () => {
+    expect(MAC.map((d) => d.keys)).toEqual(BUILTIN_KEYMAP.map((d) => d.keys));
+    expect(MAC.some((d) => "nonMacKeys" in d)).toBe(false);
+  });
+
+  it("gives every ⌃ binding a key that can fire off macOS", () => {
+    for (const [i, d] of PC.entries()) {
+      const builtIn = BUILTIN_KEYMAP[i]!.keys;
+      const holdsCtrl = builtIn.split("+").includes("Ctrl");
+      expect(d.keys, d.id).toBe(holdsCtrl ? NON_MAC[d.id] : builtIn);
+    }
+    // Ctrl+] (what "⌃⌘]" turned into) is Next tab, not Show structure.
+    const ctrlBracket = comboFromEvent(
+      ev({ code: "BracketRight", key: "]", ctrlKey: true }),
+      false,
+    );
+    expect(findShortcut(ctrlBracket, "grid", PC)?.id).toBe("tab.next");
+    const ctrlAltBracket = comboFromEvent(
+      ev({ code: "BracketRight", key: "]", ctrlKey: true, altKey: true }),
+      false,
+    );
+    expect(findShortcut(ctrlAltBracket, "grid", PC)?.id).toBe("view.structure");
+  });
+
+  it("takes no combo another action has in the same scope", () => {
+    for (const id of Object.keys(NON_MAC)) {
+      const d = PC.find((x) => x.id === id && x.keys === NON_MAC[id])!;
+      const clash = PC.find((x) => x.id !== id && x.scope === d.scope && x.keys === d.keys);
+      expect(clash, id).toBeUndefined();
+    }
   });
 });
 

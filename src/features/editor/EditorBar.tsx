@@ -39,7 +39,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ActionId } from "@/features/palette/actions";
 import { formatCount, formatDuration } from "@/lib/format/time";
-import { formatCombo } from "@/lib/keys/combo";
+import { formatCombo, isMac } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { updateQueryTab, useQueryTabField } from "@/stores/queryTabs";
@@ -153,17 +153,25 @@ function ButtonKbd({ action, className }: { action: ActionId; className?: string
   );
 }
 
+/** A ⇧-click, spelled the platform's way. */
+const SHIFT_CLICK = isMac ? "⇧-click" : "Shift+Click";
+
 /** Styles shared by the bar's split buttons (a labelled button + its ⌄ menu). */
 const splitMain = "h-6 gap-1 rounded-r-none px-1.5 text-[11px] font-normal";
 const splitMenu = "h-6 w-4 rounded-l-none px-0";
 
-/** "Line 4, Column 13, Location 40" (+ the selection size) of the pane used last when split. */
+/**
+ * "Line 4, Column 13, Location 40" (+ the selection size) of the pane used last when split. It
+ * truncates before the buttons on the right overflow: their shortcut hints are wider off macOS
+ * ("Ctrl+Enter" for "⌘↩"), which the bar's breakpoints do not account for.
+ */
 function CursorPosition({ tabId }: { tabId: string }) {
   const label = useCursorLabel(useActiveEditorKey(tabId));
   return (
     <span
       data-testid="cursor-position"
-      className="text-muted-foreground shrink-0 px-1 text-[11px] whitespace-nowrap tabular-nums @max-[520px]:hidden"
+      title={label}
+      className="text-muted-foreground min-w-0 truncate px-1 text-[11px] whitespace-nowrap tabular-nums @max-[520px]:hidden"
     >
       {label}
     </span>
@@ -434,7 +442,7 @@ function ExplainButton({ handlers, busy }: { handlers: EditorBarHandlers; busy: 
   return (
     <div className="flex shrink-0 items-center">
       <Tip
-        label="Explain (⇧-click: Explain Analyze, which runs in a rolled-back transaction)"
+        label={`Explain (${SHIFT_CLICK}: Explain Analyze, which runs in a rolled-back transaction)`}
         action="query.explain"
       >
         <Button
@@ -473,7 +481,7 @@ function ExplainButton({ handlers, busy }: { handlers: EditorBarHandlers; busy: 
                 Runs in a rolled-back transaction
               </span>
             </span>
-            <DropdownMenuShortcut>⇧ click</DropdownMenuShortcut>
+            <DropdownMenuShortcut>{SHIFT_CLICK}</DropdownMenuShortcut>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -500,7 +508,7 @@ function FileActions({ handlers }: { handlers: EditorBarHandlers }) {
         />
         <IconButton
           icon={Save}
-          label="Save (⇧-click: Save As…)"
+          label={`Save (${SHIFT_CLICK}: Save As…)`}
           action="query.save"
           onClick={(e) => (e.shiftKey ? handlers.saveAs() : handlers.save())}
         />
