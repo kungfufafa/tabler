@@ -133,13 +133,7 @@ export const SAFE_MODES = [
   "safe",
   "safeNonSelect",
 ] as const satisfies readonly SafeModeLevel[];
-export const SAFE_MODE_LABEL: Record<SafeModeLevel, string> = {
-  silent: "Silent Mode",
-  alert: "Alert Mode 1",
-  alertNonSelect: "Alert Mode 2",
-  safe: "Safe Mode 1",
-  safeNonSelect: "Safe Mode 2",
-};
+export { SAFE_MODE_LABEL } from "@/features/safety/levels";
 
 /** Longest group path (`Clients / Acme / Prod`) the Group field takes. */
 export const GROUP_PATH_MAX = 200;

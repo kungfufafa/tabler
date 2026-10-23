@@ -11,6 +11,7 @@ import {
   tagColorOf,
   tagLabel,
   tagsError,
+  tagShortLabel,
   TAGS_SETTING,
   useCustomTagsStore,
 } from "./tags";
@@ -23,6 +24,18 @@ beforeAll(async () => {
 afterEach(() => {
   resetCustomTags();
   resetMockSettings();
+});
+
+describe("tagShortLabel", () => {
+  it("abbreviates the environments that matter and leaves local unmarked", () => {
+    expect(tagShortLabel("production")).toBe("PROD");
+    expect(tagShortLabel("staging")).toBe("STG");
+    expect(tagShortLabel("development")).toBe("DEV");
+    expect(tagShortLabel("testing")).toBe("TEST");
+    expect(tagShortLabel("local")).toBeNull();
+    expect(tagShortLabel(null)).toBeNull();
+    expect(tagShortLabel("customer-a")).toBe("CUST");
+  });
 });
 
 describe("custom connection tags (b494)", () => {

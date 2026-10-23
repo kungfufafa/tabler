@@ -27,7 +27,7 @@ import { SidebarSearch } from "./SidebarSearch";
 import { SidebarTopBar } from "./SidebarTopBar";
 import { setMatchStrategy, useSidebarPrefs } from "./sidebarPrefs";
 import { useLazySchemaTree } from "./useLazySchemaTree";
-import { useCurrentSchema, useTables, useTreeRows } from "./useSchemaTree";
+import { useCurrentSchema, useSchemas, useTables, useTreeRows } from "./useSchemaTree";
 import { useSidebarSettings } from "./useSidebarSettings";
 
 const PANES: Array<{ id: SidebarPaneId; label: string }> = [
@@ -87,8 +87,17 @@ function ItemsPane({
   const treeRef = useRef<SchemaTreeHandle>(null);
   const connectionId = connection.info.connectionId;
   const lazy = useLazyLoad(connection);
+  const schemas = useSchemas(connectionId);
   const schema = useCurrentSchema(connectionId);
   const tables = useTables(connectionId, lazy ? null : schema);
+  // The tables query waits for a schema, so loading also covers the schema list: otherwise the
+  // tree says "No tables" while the schemas are still on their way.
+  const loading = schemas.isPending || (schema !== null && tables.isPending);
+  const error = tables.isError
+    ? tables.error.message
+    : schemas.isError
+      ? schemas.error.message
+      : null;
   const collapsed = useSidebarPrefs((s) => s.collapsed);
   const showRecent = useSidebarPrefs((s) => s.options.showRecent);
   const showRowCounts = useSidebarPrefs((s) => s.options.showRowCounts);
@@ -159,8 +168,8 @@ function ItemsPane({
         ref={treeRef}
         connectionId={connectionId}
         rows={rows}
-        loading={lazy ? lazyTree.loading : tables.isPending && schema !== null}
-        error={lazy ? lazyTree.error : tables.isError ? tables.error.message : null}
+        loading={lazy ? lazyTree.loading : loading}
+        error={lazy ? lazyTree.error : error}
         search={search}
         pinScope={scope}
         pinned={pinned}

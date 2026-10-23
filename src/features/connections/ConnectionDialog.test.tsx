@@ -506,14 +506,14 @@ describe("ConnectionDialog — TablePlus parity", () => {
     select.focus();
     await user.keyboard("{Enter}");
     expect((await screen.findAllByRole("option")).map((o) => o.textContent)).toEqual([
-      "Silent Mode",
-      "Alert Mode 1",
-      "Alert Mode 2",
-      "Safe Mode 1",
-      "Safe Mode 2",
+      "Silent Mode · No confirmation",
+      "Alert Mode 1 · Confirm every query",
+      "Alert Mode 2 · Confirm queries that change data",
+      "Safe Mode 1 · Password for every query",
+      "Safe Mode 2 · Password for queries that change data",
     ]);
-    await user.click(screen.getByRole("option", { name: "Safe Mode 1" }));
-    expect(within(form).getByText(/Ask for the password before sending/)).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: /^Safe Mode 1/ }));
+    expect(within(form).getByText(/Prompt for password before sending/)).toBeInTheDocument();
     await user.click(within(form).getByRole("button", { name: "Save" }));
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save.mock.calls[0]![0].profile.options.safeMode).toBe("safe");

@@ -102,6 +102,21 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("radiogroup")).toBeNull();
   });
 
+  it("shows the loading skeleton, not an empty schema, while the schemas load", () => {
+    vi.spyOn(ipc.schema, "schemas").mockReturnValue(new Promise(() => {}));
+    const { container } = renderSidebar();
+    expect(container.querySelector('[data-slot="skeleton"]')).not.toBeNull();
+    expect(screen.queryByText("No tables")).toBeNull();
+  });
+
+  it("shows why the tree is empty when the schemas cannot be loaded", async () => {
+    vi.spyOn(ipc.schema, "schemas").mockRejectedValue(new Error("permission denied"));
+    renderSidebar();
+    expect(await screen.findByText("Could not load tables")).toBeInTheDocument();
+    expect(screen.getByText("permission denied")).toBeInTheDocument();
+    expect(screen.queryByText("No tables")).toBeNull();
+  });
+
   it("shows the quick navigation buttons above the pane switch, disabled without a connection", () => {
     const { unmount } = renderSidebar();
     const bar = screen.getByRole("toolbar", { name: "Quick navigation" });

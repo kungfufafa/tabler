@@ -46,6 +46,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { rememberSafeModeLevel } from "@/features/safety/guard";
+import { SAFE_MODE_DESCRIPTION, SAFE_MODE_SUMMARY } from "@/features/safety/levels";
 import { confirmProtectedChange, protectedChanges } from "@/features/safety/setLevel";
 import {
   ipc,
@@ -184,14 +185,6 @@ const SQLCIPHER_LABEL: Record<(typeof SQLCIPHER_COMPATIBILITY)[number], string> 
   "3": "SQLCipher 3",
   "2": "SQLCipher 2",
   "1": "SQLCipher 1",
-};
-
-const SAFE_MODE_HINT: Record<SafeModeLevel, string> = {
-  silent: "Send queries to the server without any warnings",
-  alert: "Warn before sending queries to the server",
-  alertNonSelect: "Warn before sending queries, except SELECT, EXPLAIN and SHOW",
-  safe: "Ask for the password before sending queries to the server",
-  safeNonSelect: "Ask for the password before sending queries, except SELECT, EXPLAIN and SHOW",
 };
 
 const PASSWORD_HINT: Record<Exclude<PasswordMode, "keychain">, string> = {
@@ -1525,19 +1518,20 @@ function AdvancedFields({ form }: { form: Form }) {
   const safeMode = watch("safeMode");
   return (
     <>
-      <Row label="Safe mode" htmlFor={`${uid}-safe`} hint={SAFE_MODE_HINT[safeMode]}>
+      <Row label="Safe mode" htmlFor={`${uid}-safe`} hint={SAFE_MODE_DESCRIPTION[safeMode]}>
         <Controller
           control={control}
           name="safeMode"
           render={({ field }) => (
             <Select value={field.value} onValueChange={(v) => field.onChange(v as SafeModeLevel)}>
-              <SelectTrigger id={`${uid}-safe`} className="w-48">
+              <SelectTrigger id={`${uid}-safe`} className="w-80">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 {SAFE_MODES.map((m) => (
-                  <SelectItem key={m} value={m}>
-                    {SAFE_MODE_LABEL[m]}
+                  <SelectItem key={m} value={m} textValue={SAFE_MODE_LABEL[m]}>
+                    {SAFE_MODE_LABEL[m]}{" "}
+                    <span className="text-muted-foreground">· {SAFE_MODE_SUMMARY[m]}</span>
                   </SelectItem>
                 ))}
               </SelectContent>

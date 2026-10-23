@@ -8,7 +8,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Plus } from "lucide-react";
+import { Lock, Plus } from "lucide-react";
 import {
   ContextMenu,
   ContextMenuCheckboxItem,
@@ -18,7 +18,9 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useDisconnect } from "@/features/connections/useConnections";
+import { cssColor } from "@/features/connections/colors";
+import { tagColorOf, tagLabel, tagShortLabel, useCustomTags } from "@/features/connections/tags";
+import { useDisconnect, useProfiles } from "@/features/connections/useConnections";
 import { actions } from "@/features/palette/actions";
 import { disconnectGuarded } from "@/features/palette/commands";
 import { openProfileInNewWindow } from "@/features/tabs/windowHandoff";
@@ -40,6 +42,8 @@ function RailItem({
   onDisconnect: (connectionId: string) => void;
 }) {
   const conn = useConnectionsStore((s) => s.byId[connectionId]);
+  const profiles = useProfiles();
+  const customTags = useCustomTags();
   const showDatabase = useUiStore((s) => s.railShowDatabase);
   const showConnection = useUiStore((s) => s.railShowConnection);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -52,7 +56,17 @@ function RailItem({
   const database = databaseLabel(info);
   // The database's initials (TablePlus's database icons); the connection's without one.
   const initials = workspaceInitials(database || info.name);
-  const label = database ? `${database} (${info.name})` : info.name;
+  // The environment tag and read-only state on the icon itself: two workspaces of the same
+  // database (local and production) otherwise differ only by colour.
+  const tag = profiles.data?.find((p) => p.id === info.profileId)?.options.tag ?? null;
+  const tagShort = tagShortLabel(tag);
+  const label = [
+    database ? `${database} (${info.name})` : info.name,
+    tagShort && tag ? tagLabel(tag) : null,
+    info.readOnly ? "read-only" : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
   return (
     <ContextMenu>
       <Tooltip>
@@ -81,6 +95,8 @@ function RailItem({
                 aria-hidden
                 className={cn(
                   "relative flex size-8 items-center justify-center rounded-lg text-[11px] font-bold tracking-wide transition-shadow",
+                  // Room for the tag badge hanging under the square.
+                  tagShort && "mb-1",
                   !active && "group-hover/rail:brightness-95 dark:group-hover/rail:brightness-110",
                 )}
                 style={{
@@ -92,6 +108,23 @@ function RailItem({
                 }}
               >
                 {initials}
+                {tagShort && tag && (
+                  <span
+                    data-slot="rail-tag"
+                    style={{ backgroundColor: cssColor(tagColorOf(tag, customTags)) }}
+                    className="ring-sidebar absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-sm px-0.5 text-[7px] leading-[9px] font-bold tracking-normal text-white ring-1"
+                  >
+                    {tagShort}
+                  </span>
+                )}
+                {info.readOnly && (
+                  <span
+                    data-slot="rail-read-only"
+                    className="bg-sidebar text-muted-foreground absolute -top-1 -left-1 flex size-3.5 items-center justify-center rounded-full"
+                  >
+                    <Lock className="size-2.5" />
+                  </span>
+                )}
                 {problem && (
                   <span
                     data-slot="rail-problem"
@@ -132,6 +165,13 @@ function RailItem({
           <span className="font-medium">{database || info.name}</span>
           {database && <span>{info.name}</span>}
           <span className="opacity-70">{serverLabel(info)}</span>
+          {(tag || info.readOnly) && (
+            <span className="opacity-70">
+              {[tag ? tagLabel(tag) : null, info.readOnly ? "Read-only" : null]
+                .filter(Boolean)
+                .join(" · ")}
+            </span>
+          )}
         </TooltipContent>
       </Tooltip>
       <ContextMenuContent className="min-w-44">

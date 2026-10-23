@@ -420,15 +420,15 @@ export function SecuritySection() {
             <SelectTrigger
               id="pref-default-safe-mode"
               size="sm"
-              className="h-7 w-32 rounded-md text-xs"
+              className="h-7 w-72 rounded-md text-xs"
             >
               <SelectValue />
             </SelectTrigger>
             {/* Kept in the dialog's keyboard scope, like the editor font size list. */}
             <SelectContent data-scope="dialog">
               {SAFE_MODE_OPTIONS.map((o) => (
-                <SelectItem key={o.level} value={o.level} className="text-xs">
-                  {o.label}
+                <SelectItem key={o.level} value={o.level} textValue={o.label} className="text-xs">
+                  {o.label} <span className="text-muted-foreground">· {o.summary}</span>
                 </SelectItem>
               ))}
             </SelectContent>

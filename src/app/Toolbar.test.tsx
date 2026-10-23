@@ -305,11 +305,11 @@ describe("Toolbar", () => {
     expect(lock).toHaveAttribute("aria-expanded", "true");
     const radios = within(menu).getAllByRole("menuitemradio");
     expect(radios.map((r) => r.textContent)).toEqual([
-      "Silent ModeSend queries to the server without any warnings",
-      "Alert Mode 1Warn before sending queries to the server",
-      "Alert Mode 2Warn before sending queries to the server, except SELECT/EXPLAIN/SHOW queries",
-      "Safe Mode 1Prompt for password before sending queries to the server",
-      "Safe Mode 2Prompt for password before sending queries to the server, except SELECT/EXPLAIN/SHOW queries",
+      "Silent Mode · No confirmationSend queries to the server without any warnings",
+      "Alert Mode 1 · Confirm every queryWarn before sending queries to the server",
+      "Alert Mode 2 · Confirm queries that change dataWarn before sending queries to the server, except SELECT/EXPLAIN/SHOW queries",
+      "Safe Mode 1 · Password for every queryPrompt for password before sending queries to the server",
+      "Safe Mode 2 · Password for queries that change dataPrompt for password before sending queries to the server, except SELECT/EXPLAIN/SHOW queries",
     ]);
     expect(radios.map((r) => r.getAttribute("aria-checked"))).toEqual([
       "false",

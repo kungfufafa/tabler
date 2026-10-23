@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { SafeModeLevel } from "@/lib/ipc";
 import { SAFE_MODE_LEVELS } from "@/stores/prefs";
-import { effectiveLevel, lowersSafeLevel, SAFE_MODE_LABEL, SAFE_MODE_OPTIONS } from "./levels";
+import {
+  effectiveLevel,
+  lowersSafeLevel,
+  SAFE_MODE_LABEL,
+  SAFE_MODE_OPTIONS,
+  safeModeText,
+} from "./levels";
 import { decide, requestWrites, type GuardDecision } from "./policy";
 
 describe("decide", () => {
@@ -54,6 +60,7 @@ describe("levels", () => {
       "Safe Mode 1",
       "Safe Mode 2",
     ]);
+    expect(safeModeText("alertNonSelect")).toBe("Alert Mode 2 · Confirm queries that change data");
     expect(effectiveLevel(null)).toBe("silent");
     expect(effectiveLevel(undefined)).toBe("silent");
     expect(effectiveLevel("safe")).toBe("safe");

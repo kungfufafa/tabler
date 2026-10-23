@@ -42,6 +42,7 @@ import {
   isPasswordLevel,
   SAFE_MODE_LABEL,
   SAFE_MODE_OPTIONS,
+  safeModeText,
 } from "@/features/safety/levels";
 import { changeSafeModeLevel } from "@/features/safety/setLevel";
 import { useWindowFullscreen } from "@/hooks/useWindowFullscreen";
@@ -114,7 +115,9 @@ function SafeModeLock() {
   // While open the trigger is styled from `aria-expanded`: its `data-state` is the tooltip's.
   return (
     <DropdownMenu>
-      <ToolbarTip label={readOnly ? `${label} · Read-only connection` : label}>
+      <ToolbarTip
+        label={readOnly ? `${safeModeText(level)} · Read-only connection` : safeModeText(level)}
+      >
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
@@ -160,7 +163,9 @@ function SafeModeLock() {
               className="items-start py-1.5"
             >
               <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-[13px] leading-4">{o.label}</span>
+                <span className="text-[13px] leading-4">
+                  {o.label} <span className="text-muted-foreground">· {o.summary}</span>
+                </span>
                 <span className="text-muted-foreground text-[11px] leading-snug">
                   {o.description}
                 </span>

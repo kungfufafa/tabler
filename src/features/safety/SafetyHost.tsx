@@ -18,7 +18,7 @@ import { authenticateOwner } from "@/features/lock/biometric";
 import { ipc, toIpcError } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { usePrefs } from "@/stores/prefs";
-import { SAFE_MODE_LABEL } from "./levels";
+import { safeModeText } from "./levels";
 import {
   abandonSafetyPrompts,
   answerSafetyPrompt,
@@ -49,7 +49,7 @@ function ConnectionLine({ target }: { target: PromptTarget }) {
       <span className="text-foreground min-w-0 truncate font-medium">{target.name}</span>
       {target.tag && <TagPill tag={target.tag} />}
       <span aria-hidden>·</span>
-      <span>{SAFE_MODE_LABEL[target.level]}</span>
+      <span>{safeModeText(target.level)}</span>
     </div>
   );
 }
