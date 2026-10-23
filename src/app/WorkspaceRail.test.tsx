@@ -3,6 +3,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ipc, type ConnectionInfo } from "@/lib/ipc";
+import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
 import { useConnectionsStore } from "@/stores/connections";
 import { useUiStore } from "@/stores/ui";
 import { WorkspaceRail } from "./WorkspaceRail";
@@ -58,6 +59,26 @@ describe("WorkspaceRail database icons", () => {
     expect(buttons[1]).toHaveTextContent("TD");
     expect(buttons[1]).toHaveTextContent("tabler_dev");
     expect(buttons[0]).toHaveAttribute("aria-current", "true");
+  });
+
+  it("marks a tagged, read-only workspace on its icon", async () => {
+    const prod = SEED_PROFILES.find((p) => p.id === "p-prod-pg")!;
+    vi.spyOn(ipc.profiles, "list").mockResolvedValue([prod]);
+    useConnectionsStore.getState().add({ ...info("a", "tabler_dev", prod.id), readOnly: true });
+    renderRail();
+    const button = await within(rail()).findByRole("button", {
+      name: "tabler_dev (Local PG), Production, read-only",
+    });
+    expect(button.querySelector("[data-slot=rail-tag]")).toHaveTextContent("PROD");
+    expect(button.querySelector("[data-slot=rail-read-only]")).not.toBeNull();
+  });
+
+  it("shows no badge for a local workspace", () => {
+    useConnectionsStore.getState().add(info("a", "tabler_dev"));
+    renderRail();
+    const button = within(rail()).getByRole("button", { name: "tabler_dev (Local PG)" });
+    expect(button.querySelector("[data-slot=rail-tag]")).toBeNull();
+    expect(button.querySelector("[data-slot=rail-read-only]")).toBeNull();
   });
 
   it("hides the database or connection name from the right-click menu", () => {

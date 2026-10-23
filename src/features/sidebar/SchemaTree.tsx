@@ -1341,6 +1341,21 @@ export function SchemaTree({
                       ? "Truncate pending: commit to empty it"
                       : (t.comment ?? undefined)
                 }
+                // The name alone, not the icon, pin and row count run together; the rest is a
+                // description for screen readers.
+                aria-label={t.name}
+                aria-description={
+                  [
+                    isPinned ? "Pinned" : null,
+                    mark === "drop"
+                      ? "Delete pending"
+                      : mark === "truncate"
+                        ? "Truncate pending"
+                        : t.comment,
+                  ]
+                    .filter(Boolean)
+                    .join(". ") || undefined
+                }
                 data-active={isActive || undefined}
                 data-pending={mark}
                 aria-expanded={showColumns ? open : undefined}

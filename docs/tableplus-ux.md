@@ -55,10 +55,14 @@ Left → right, after the traffic-light inset:
 ### Workspace rail (far left, 52px)
 
 Shown whenever **a connection is open** (so `+` is always one click away). One button per open
-connection: a rounded
-square tinted with the connection colour holding the driver short label (PG / MY / SQ), the name
-underneath (10px, truncated), the active one highlighted. Click switches the active connection.
-A `+` at the bottom opens the connection manager. Right-click: Disconnect.
+workspace: a rounded square tinted with the connection colour holding the database's initials
+(TablePlus's database icons; the connection's without a database), the database and connection
+names underneath (10px / 9px, truncated; the right-click menu hides either), the active one
+highlighted. Tabler addition: a small badge in the tag's colour under the square for every tag but
+`local` (PROD, STG, DEV, TEST, a custom tag's first four letters) and a lock at its corner for a
+read-only connection, so two workspaces of the same database never differ by colour alone. Click
+switches the active connection. A `+` at the bottom opens the connection manager. Right-click:
+Show Database / Connection Name, Open in New Window, Disconnect.
 
 ### Tab bar (below the toolbar, 28px)
 

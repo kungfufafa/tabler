@@ -1,38 +1,65 @@
 import type { SafeModeLevel } from "@/lib/ipc";
 
-/** TablePlus's safe-mode levels, in its menu order, with its labels and descriptions. */
+/**
+ * TablePlus's safe-mode levels, in its menu order, with its labels and descriptions. `summary` is
+ * Tabler's own plain-language line shown next to the label: the numbered names alone do not say
+ * what a level does.
+ */
 export const SAFE_MODE_OPTIONS = [
   {
     level: "silent",
     label: "Silent Mode",
+    summary: "No confirmation",
     description: "Send queries to the server without any warnings",
   },
   {
     level: "alert",
     label: "Alert Mode 1",
+    summary: "Confirm every query",
     description: "Warn before sending queries to the server",
   },
   {
     level: "alertNonSelect",
     label: "Alert Mode 2",
+    summary: "Confirm queries that change data",
     description: "Warn before sending queries to the server, except SELECT/EXPLAIN/SHOW queries",
   },
   {
     level: "safe",
     label: "Safe Mode 1",
+    summary: "Password for every query",
     description: "Prompt for password before sending queries to the server",
   },
   {
     level: "safeNonSelect",
     label: "Safe Mode 2",
+    summary: "Password for queries that change data",
     description:
       "Prompt for password before sending queries to the server, except SELECT/EXPLAIN/SHOW queries",
   },
-] as const satisfies readonly { level: SafeModeLevel; label: string; description: string }[];
+] as const satisfies readonly {
+  level: SafeModeLevel;
+  label: string;
+  summary: string;
+  description: string;
+}[];
 
 export const SAFE_MODE_LABEL = Object.fromEntries(
   SAFE_MODE_OPTIONS.map((o) => [o.level, o.label]),
 ) as Record<SafeModeLevel, string>;
+
+export const SAFE_MODE_SUMMARY = Object.fromEntries(
+  SAFE_MODE_OPTIONS.map((o) => [o.level, o.summary]),
+) as Record<SafeModeLevel, string>;
+
+export const SAFE_MODE_DESCRIPTION = Object.fromEntries(
+  SAFE_MODE_OPTIONS.map((o) => [o.level, o.description]),
+) as Record<SafeModeLevel, string>;
+
+/** "Alert Mode 2 · Confirm queries that change data": the label with what the level does. */
+export function safeModeText(level: SafeModeLevel): string {
+  return `${SAFE_MODE_LABEL[level]} · ${SAFE_MODE_SUMMARY[level]}`;
+}
 
 /** A profile's level; profiles saved before safe mode existed are silent. */
 export function effectiveLevel(level: SafeModeLevel | null | undefined): SafeModeLevel {

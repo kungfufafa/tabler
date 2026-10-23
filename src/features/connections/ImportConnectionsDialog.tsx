@@ -13,7 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { effectiveLevel, SAFE_MODE_LABEL } from "@/features/safety/levels";
+import { effectiveLevel, safeModeText } from "@/features/safety/levels";
 import { ipc, toIpcError, type ConnectionProfile, type ConnectionsFilePreview } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { DriverBadge, GroupBreadcrumb, TagPill } from "./badges";
@@ -36,7 +36,7 @@ function ImportedBehaviour({ profile }: { profile: ConnectionProfile }) {
       <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
         <span className="inline-flex items-center gap-1">
           <ShieldCheck className="size-3" aria-hidden />
-          {SAFE_MODE_LABEL[effectiveLevel(options.safeMode)]}
+          {safeModeText(effectiveLevel(options.safeMode))}
         </span>
         {options.readOnly && (
           <span className="inline-flex items-center gap-1">

@@ -42,13 +42,13 @@ describe("defaultSafeMode preference", () => {
     await user.keyboard("{Enter}");
     const options = await screen.findAllByRole("option");
     expect(options.map((o) => o.textContent)).toEqual([
-      "Silent Mode",
-      "Alert Mode 1",
-      "Alert Mode 2",
-      "Safe Mode 1",
-      "Safe Mode 2",
+      "Silent Mode · No confirmation",
+      "Alert Mode 1 · Confirm every query",
+      "Alert Mode 2 · Confirm queries that change data",
+      "Safe Mode 1 · Password for every query",
+      "Safe Mode 2 · Password for queries that change data",
     ]);
-    await user.click(screen.getByRole("option", { name: "Safe Mode 2" }));
+    await user.click(screen.getByRole("option", { name: /^Safe Mode 2/ }));
     expect(getPrefs().defaultSafeMode).toBe("safeNonSelect");
     expect(select).toHaveTextContent("Safe Mode 2");
     expect(

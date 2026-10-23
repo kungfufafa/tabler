@@ -127,6 +127,24 @@ export function tagLabel(tag: ConnectionTag): string {
   return isBuiltinTag(tag) ? TAG_LABEL[tag] : tag;
 }
 
+const TAG_SHORT: Record<BuiltinTag, string | null> = {
+  local: null,
+  testing: "TEST",
+  development: "DEV",
+  staging: "STG",
+  production: "PROD",
+};
+
+/**
+ * The few letters a workspace icon shows for a tag ("PROD", a custom tag's first four), or null
+ * for `local` and no tag: a badge only where the environment matters.
+ */
+export function tagShortLabel(tag: ConnectionTag | null | undefined): string | null {
+  if (!tag) return null;
+  if (isBuiltinTag(tag)) return TAG_SHORT[tag];
+  return tag.slice(0, 4).toUpperCase();
+}
+
 /** The tag's colour: a preset name or a hex colour. */
 export function tagColorOf(
   tag: ConnectionTag,
