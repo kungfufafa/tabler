@@ -53,6 +53,7 @@ import { ActionControl } from "./ActionControl";
 import { CustomizeToolbarDialog } from "./CustomizeToolbar";
 import { PanelToggles } from "./PanelToggles";
 import { StatusPill } from "./StatusPill";
+import { overlayTitleBar } from "./titleBar";
 import { ToolbarButton, ToolbarTip } from "./ToolbarButton";
 import { useActionAvailable } from "./useActionAvailable";
 import {
@@ -306,6 +307,7 @@ function Items({ items, text }: { items: readonly ToolbarItemId[]; text: boolean
  * the centred status pill, then Refresh, Open Anything, Show Workspaces, User Management, Metrics
  * Board (once something handles it) and the panel toggles. The empty space drags the window. The
  * traffic lights sit in the left inset (gone in fullscreen). The launcher shows only the title.
+ * Without the overlay title bar (Windows) there is no inset, and the launcher shows no toolbar.
  */
 export function Toolbar({ launcher }: { launcher: boolean }) {
   const fullscreen = useWindowFullscreen();
@@ -313,9 +315,10 @@ export function Toolbar({ launcher }: { launcher: boolean }) {
   const display = usePrefs((p) => p.toolbarDisplay);
   const metrics = useActionAvailable("metrics.open");
   const [customizing, setCustomizing] = useState(false);
-  const inset = fullscreen ? 8 : 80;
+  const inset = overlayTitleBar && !fullscreen ? 80 : 8;
 
   if (launcher) {
+    if (!overlayTitleBar) return null;
     return (
       <header
         data-tauri-drag-region
