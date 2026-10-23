@@ -1,0 +1,65 @@
+name: build
+
+# Installers for macOS and Windows: run it from the Actions tab, or push a `v*` tag.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One .app / .dmg for Apple Silicon and Intel.
+          - os: macos-latest
+            name: macos
+            args: --target universal-apple-darwin
+            bundle: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          # The NSIS setup .exe and the .msi (src-tauri/tauri.windows.conf.json).
+          - os: windows-latest
+            name: windows
+            args: ""
+            bundle: |
+              src-tauri/target/release/bundle/nsis/*.exe
+              src-tauri/target/release/bundle/msi/*.msi
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # rustup picks the channel and components from rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Intel target for the universal macOS build
+        if: matrix.name == 'macos'
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.name }}
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm tauri build ${{ matrix.args }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tabler-${{ matrix.name }}
+          path: ${{ matrix.bundle }}
+          if-no-files-found: error

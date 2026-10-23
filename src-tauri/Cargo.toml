@@ -83,6 +83,11 @@ strip = true
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2"
 
+# SQLCipher's crypto: CommonCrypto on macOS, OpenSSL elsewhere. Windows has no system OpenSSL, so
+# it is built from source and linked in statically (needs Perl and NASM at build time).
+[target.'cfg(windows)'.dependencies]
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
+
 # Touch ID (LocalAuthentication) and the sleep / screen-lock notifications of the app lock
 # (already in the lock via tao / wry).
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -208,6 +208,29 @@ The output is in `src-tauri/target/release/bundle/` (`macos/Tabler.app` and `dmg
 The signing setup and how to check it with `codesign` are in the release checklist,
 [docs/qa-macos.md](docs/qa-macos.md).
 
+### Windows
+
+Needs the Visual Studio C++ build tools and [Strawberry Perl](https://strawberryperl.com) (the
+portable zip is enough). SQLCipher has no system OpenSSL to use on Windows, so OpenSSL is built from
+source and linked in, and its configure script needs a Windows Perl (the one that comes with Git
+does not work). NASM is optional: without it OpenSSL is built without assembly.
+
+```powershell
+$env:OPENSSL_SRC_PERL = "C:\path\to\strawberry-perl\perl\bin\perl.exe"   # unless Strawberry Perl is on PATH
+pnpm tauri build
+```
+
+`src-tauri/tauri.windows.conf.json` switches the bundles to an NSIS setup (`bundle/nsis/*.exe`,
+per-user, no admin rights) and an MSI (`bundle/msi/*.msi`); both download WebView2 when it is
+missing. The builds are not code-signed, so SmartScreen warns on the first run (**More info** →
+**Run anyway**).
+
+### Both platforms from CI
+
+The `build` workflow ([.github/workflows/build.yml](.github/workflows/build.yml)) builds a universal
+macOS DMG (Apple Silicon and Intel) and the Windows installers. Run it from the Actions tab, or push
+a `v*` tag; the installers are attached to the run as artifacts.
+
 ## Troubleshooting
 
 | Problem                                 | Fix                                                                                                                                                                                            |
