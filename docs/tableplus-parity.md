@@ -2,8 +2,7 @@
 
 Tabler copies how TablePlus _behaves_, not how it is built. Everything here comes from TablePlus's
 public docs (docs.tableplus.com), its changelog and maintainer comments on its GitHub issue
-tracker, plus hands-on use. Nothing comes from inspecting the TablePlus app itself (its EULA
-forbids reverse engineering).
+tracker, plus hands-on use.
 
 Legend: ✅ done · 🟡 partial · ⬜ todo. **B1–B4** = implementation batch.
 
