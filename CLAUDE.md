@@ -23,6 +23,10 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
 - `src/components/ui/` is shadcn-generated; do not hand-edit (re-add instead).
 - Pin `tauri = "2"` and `@tauri-apps/*@^2` (3.0 alpha exists). Keep the template's TypeScript version.
 
+## Git
+
+- One branch: `main`. Commit and push straight to `main`; no feature branches, PRs or `claude/*` worktrees (side sessions work in this checkout too).
+
 ## Dev databases
 
 - Homebrew PostgreSQL 17 on 127.0.0.1:5432 and MySQL 9.6 on 127.0.0.1:3306 (both already running); credentials in `.env` (copy from `.env.example`).
