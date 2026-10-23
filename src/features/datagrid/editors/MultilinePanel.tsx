@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { formatCombo } from "@/lib/keys/combo";
 import { cn } from "@/lib/utils";
 import type { EditorExit } from "./registry";
 import { commitTabSoon, isSaveKey } from "./saveKey";
@@ -117,7 +118,8 @@ export function MultilinePanel({
         )}
         style={{ height: FOOTER_H }}
       >
-        {error ?? "↩ save · ⌥↩ new line · esc cancel"}
+        {error ??
+          `${formatCombo("Enter")} save · ${formatCombo("Alt+Enter")} new line · esc cancel`}
       </div>
     </div>,
     document.body,

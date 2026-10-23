@@ -15,6 +15,8 @@ import { Textarea } from "@/components/ui/textarea";
 import type { Paint } from "@/features/charts/scene";
 import { paintVar } from "@/features/charts/svg";
 import type { Dialect } from "@/lib/ipc";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { isNumericKind } from "@/lib/values";
 import { cn } from "@/lib/utils";
 import { BoardSqlEditor } from "./BoardSqlEditor";
@@ -92,7 +94,7 @@ function RefreshField({
         r.mode === "event"
           ? "Runs again when a wired input, dropdown or button fires."
           : r.mode === "none"
-            ? "Runs when the board opens and on Refresh (⌘R)."
+            ? `Runs when the board opens and on Refresh (${formatCombo(shortcutFor("workspace.reload") ?? "Mod+R")}).`
             : undefined
       }
     >

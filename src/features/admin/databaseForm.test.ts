@@ -129,6 +129,6 @@ describe("create database form", () => {
     expect(nameError("  ", [], "database")).toBe("Enter a database name");
     expect(nameError("shop", ["shop"], "database")).toBe("A database named shop already exists");
     expect(nameError("sales", ["shop"], "schema")).toBeNull();
-    expect(currentDatabaseRefusal("app", "drop")).toContain("Switch to another database");
+    expect(currentDatabaseRefusal("app", "drop")).toContain("Switch to another database (Ctrl+K)");
   });
 });

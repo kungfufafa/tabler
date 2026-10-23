@@ -29,6 +29,8 @@ import {
 import { useAction } from "@/features/palette/actions";
 import type { ToolTabProps } from "@/features/tabs/toolTabs";
 import { ipc, toIpcError, type Dialect, type MetricsBoard } from "@/lib/ipc";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { useConnectionsStore } from "@/stores/connections";
 import { DeleteBoardDialog, ExportBoardDialog, ImportPasswordDialog } from "./BoardDialogs";
 import { BoardList } from "./BoardList";
@@ -139,7 +141,7 @@ function BoardView({
           variant="ghost"
           size="icon-sm"
           aria-label="Refresh all"
-          title="Refresh all (⌘R)"
+          title={`Refresh all (${formatCombo(shortcutFor("workspace.reload") ?? "Mod+R")})`}
           onClick={runtime.refreshAll}
         >
           <RefreshCw className={anyRunning ? "animate-spin" : undefined} />

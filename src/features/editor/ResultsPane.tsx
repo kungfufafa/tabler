@@ -527,7 +527,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
           <button
             type="button"
             aria-label="Find in Result"
-            title="Find in Result (⌘F)"
+            title={`Find in Result (${formatCombo(shortcutFor("grid.filter") ?? "Mod+F")})`}
             aria-pressed={findOpen}
             disabled={!activeShown}
             onClick={() => (findOpen ? closeFind(tabId) : openFindHere())}

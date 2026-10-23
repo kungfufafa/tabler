@@ -46,7 +46,7 @@ describe("CellEditor", () => {
     const area = screen.getByRole("textbox", { name: "Edit c" });
     expect(area.tagName).toBe("TEXTAREA");
     expect((area as HTMLTextAreaElement).value).toBe("a\nb");
-    expect(screen.getByText("↩ save · ⌥↩ new line · esc cancel")).toBeInTheDocument();
+    expect(screen.getByText("Enter save · Alt+Enter new line · esc cancel")).toBeInTheDocument();
     fireEvent.keyDown(area, { key: "Enter" });
     expect(onCommit).toHaveBeenCalledWith({ t: "text", v: "a\nb" }, "enter");
   });

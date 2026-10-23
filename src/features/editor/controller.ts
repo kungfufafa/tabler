@@ -19,6 +19,8 @@ import { hasPendingResultEdits } from "@/features/results/commit";
 import { confirmRerunDiscard } from "@/features/results/rerunConfirm";
 import { discardRunEdits, pendingForRun, useResultsStore } from "@/features/results/store";
 import { guardExecution } from "@/features/safety/guard";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { useConnectionsStore } from "@/stores/connections";
 import { getPrefs } from "@/stores/prefs";
 import {
@@ -133,7 +135,9 @@ function clearDiagnostics(tabId: string) {
 }
 
 function busyNotice(): void {
-  toast.message("A query is already running", { description: "Stop it first with ⌘." });
+  toast.message("A query is already running", {
+    description: `Stop it first with ${formatCombo(shortcutFor("query.cancel") ?? "Mod+.")}.`,
+  });
 }
 
 /** SQL about to run, after its query parameters were filled in. */

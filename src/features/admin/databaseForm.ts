@@ -1,4 +1,6 @@
 import type { AdminDdl, CollationOption, DatabaseOptions, Driver } from "@/lib/ipc";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 
 /** What the Create Database dialog holds. Empty strings mean "Default" (the server picks). */
 export interface CreateDatabaseForm {
@@ -95,5 +97,5 @@ export function createDatabaseOp(
 
 /** Message of the refusal to rename / drop the database the connection is using. */
 export function currentDatabaseRefusal(database: string, action: "rename" | "drop"): string {
-  return `${database} is the database this connection is using. Switch to another database (⌘K) to ${action} it.`;
+  return `${database} is the database this connection is using. Switch to another database (${formatCombo(shortcutFor("palette.databases") ?? "Mod+K")}) to ${action} it.`;
 }

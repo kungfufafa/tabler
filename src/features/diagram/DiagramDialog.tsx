@@ -45,6 +45,7 @@ import { Input } from "@/components/ui/input";
 import { compileSearch, isSearching } from "@/features/objects/search";
 import { useAction } from "@/features/palette/actions";
 import { useSchemas } from "@/features/sidebar/useSchemaTree";
+import { formatCombo, isMac } from "@/lib/keys/combo";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore, type TableView } from "@/stores/tabs";
@@ -621,7 +622,7 @@ export function DiagramDialog({
             <Input
               ref={searchRef}
               aria-label="Search tables"
-              placeholder="Search tables (⌘F)"
+              placeholder={`Search tables (${formatCombo("Mod+F")})`}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => {
@@ -768,7 +769,7 @@ export function DiagramDialog({
             variant="ghost"
             size="icon-xs"
             aria-label="Zoom out"
-            title="Zoom out (⌘−)"
+            title={`Zoom out (${formatCombo("Mod+-")})`}
             onClick={() => zoomBy(1 / ZOOM_STEP)}
           >
             <ZoomOut />
@@ -776,7 +777,7 @@ export function DiagramDialog({
           <button
             type="button"
             onClick={actualSize}
-            title="Actual size (⌘0)"
+            title={`Actual size (${formatCombo("Mod+0")})`}
             className="text-muted-foreground hover:text-foreground w-11 text-center text-[11px] tabular-nums"
           >
             {Math.round(view.k * 100)}%
@@ -785,7 +786,7 @@ export function DiagramDialog({
             variant="ghost"
             size="icon-xs"
             aria-label="Zoom in"
-            title="Zoom in (⌘+)"
+            title={`Zoom in (${formatCombo("Mod+=")})`}
             onClick={() => zoomBy(ZOOM_STEP)}
           >
             <ZoomIn />
@@ -803,7 +804,7 @@ export function DiagramDialog({
           </Button>
           <p className="text-muted-foreground ml-auto truncate text-[11px]">
             Click a name to open the table, double-click for its structure · drag cards to move them
-            · drag or scroll to pan, ⌘-scroll or pinch to zoom
+            · drag or scroll to pan, {isMac ? "⌘-scroll" : "Ctrl+scroll"} or pinch to zoom
           </p>
         </div>
       </DialogContent>

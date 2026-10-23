@@ -8,6 +8,8 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Segmented, SettingGroup, SettingRow } from "@/features/settings/controls";
+import { formatCombo, isMac } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import {
   EDITOR_ACCEPT_KEYS,
   HISTORY_RETENTIONS,
@@ -176,13 +178,15 @@ export function NewTabOpensRow() {
  * (the same preferences).
  */
 export function EditorWorkflowSettings() {
+  const runKeys = formatCombo(shortcutFor("query.run-current") ?? "Mod+Enter");
+  const saveKeys = formatCombo(shortcutFor("query.save") ?? "Mod+S");
   return (
     <>
       <SettingGroup title="Editing">
         <SwitchRow
           pref="editorHighlightCurrentQuery"
           label="Highlight current query"
-          description="Tints the statement under the cursor (what ⌘↩ runs)."
+          description={`Tints the statement under the cursor (what ${runKeys} runs).`}
         />
         <SwitchRow pref="editorShowInvisibles" label="Show invisible characters" />
         <SwitchRow pref="editorShowScrollers" label="Show scrollers" />
@@ -191,7 +195,7 @@ export function EditorWorkflowSettings() {
         <SwitchRow
           pref="editorAutoSaveFiles"
           label="Automatically save queries while editing"
-          description="A query tab opened from (or saved to) a .sql file saves to it as you type. Off: ⌘S saves."
+          description={`A query tab opened from (or saved to) a .sql file saves to it as you type. Off: ${saveKeys} saves.`}
         />
       </SettingGroup>
       <SettingGroup title="Autocomplete">
@@ -199,7 +203,7 @@ export function EditorWorkflowSettings() {
           pref="editorDisableSuggestions"
           invert
           label="Suggest while typing"
-          description="Off: completions only open with ⌃Space."
+          description={`Off: completions only open with ${isMac ? "⌃Space" : "Ctrl+Space"}.`}
         />
         <SwitchRow pref="editorCompleteTables" label="Suggest tables and columns" />
         <SwitchRow pref="editorCompleteKeywords" label="Suggest keywords" />
@@ -261,7 +265,7 @@ export function EditorWorkflowSettings() {
         <SwitchRow
           pref="queriesAutoSave"
           label="Auto save favorite"
-          description="The saved query editor saves while you type (no ⌘S)."
+          description={`The saved query editor saves while you type (no ${formatCombo("Mod+S")}).`}
         />
       </SettingGroup>
     </>

@@ -12,6 +12,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import type { Dialect, FkDef, TableRef } from "@/lib/ipc";
+import { isMac } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { CellPopover, ChoiceCell, FlagsCell, PresetMenu, CELL_BUTTON } from "./cells";
@@ -443,7 +444,7 @@ function ColumnRowView({
           aria-pressed={onSelect ? selected : undefined}
           title={
             onSelect
-              ? "Select the column (⌘ / ⇧ for several): Space edits them in the sidebar, Delete drops them"
+              ? `Select the column (${isMac ? "⌘ / ⇧" : "Ctrl / Shift"} for several): Space edits them in the sidebar, Delete drops them`
               : undefined
           }
           className={cn(

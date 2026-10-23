@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ipc, type DdlOp, type Dialect, type TableKind, type TableRef } from "@/lib/ipc";
+import { formatCombo } from "@/lib/keys/combo";
 import { ddlKey } from "./invalidate";
 import { StructureSqlEditor } from "./StructureSqlEditor";
 import { editableViewSql, viewOps } from "./viewEdit";
@@ -63,8 +64,8 @@ export function ViewDefinitionPane({
       <p className="text-muted-foreground text-[11px]">
         {editable
           ? kind === "materializedView" || dialect === "sqlite"
-            ? "Edit the definition and press ⌘S: the view is dropped and created again."
-            : "Edit the definition and press ⌘S: the view is replaced (CREATE OR REPLACE VIEW)."
+            ? `Edit the definition and press ${formatCombo("Mod+S")}: the view is dropped and created again.`
+            : `Edit the definition and press ${formatCombo("Mod+S")}: the view is replaced (CREATE OR REPLACE VIEW).`
           : "The view's definition."}
       </p>
       <StructureSqlEditor
