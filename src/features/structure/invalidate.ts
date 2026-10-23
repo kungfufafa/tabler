@@ -3,6 +3,8 @@ import { toast } from "sonner";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
 import { pendingCount } from "@/features/staging/model";
 import { tableKey, type TableRef } from "@/lib/ipc";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { useTableTabsStore } from "@/stores/tableTabs";
 import { isTableTab, useTabsStore } from "@/stores/tabs";
 
@@ -61,8 +63,7 @@ export function reportHeldTables(held: readonly TableRef[]): void {
   const list =
     names.length <= 3 ? names.join(", ") : `${names.slice(0, 3).join(", ")} +${names.length - 3}`;
   toast.message(`Unsaved edits in ${list}`, {
-    description:
-      "Not reloaded, so the edits stay on their columns. Commit or discard them, then press ⌘R to see the new structure.",
+    description: `Not reloaded, so the edits stay on their columns. Commit or discard them, then press ${formatCombo(shortcutFor("workspace.reload") ?? "Mod+R")} to see the new structure.`,
   });
 }
 

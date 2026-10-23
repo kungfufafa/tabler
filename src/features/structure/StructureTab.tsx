@@ -54,6 +54,8 @@ import {
   type TableMeta,
   type TableRef,
 } from "@/lib/ipc";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
 import { setPref, usePrefs, type StructureColumnOrder } from "@/stores/prefs";
@@ -1005,7 +1007,9 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
                 <Plus /> Column
               </Button>
             </BarTooltip>
-            <BarTooltip label="Add an index (⌘I while the index grid has focus)">
+            <BarTooltip
+              label={`Add an index (${formatCombo(shortcutFor("grid.new-row") ?? "Mod+I")} while the index grid has focus)`}
+            >
               <Button
                 variant="ghost"
                 size="xs"

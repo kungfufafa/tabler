@@ -1,5 +1,7 @@
 import { toast } from "sonner";
 import { ipc, toIpcError } from "@/lib/ipc";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { getPrefs, usePrefsStore } from "@/stores/prefs";
 import { getQueryTab, useQueryTabsStore } from "@/stores/queryTabs";
 import { useTabsStore } from "@/stores/tabs";
@@ -67,7 +69,7 @@ async function writeOnce(tabId: string): Promise<boolean> {
     if (!failed.has(path)) {
       failed.add(path);
       toast.error(`Could not auto-save ${baseName(path)}`, {
-        description: `${toIpcError(e).message} — ⌘S saves (or Save As… elsewhere).`,
+        description: `${toIpcError(e).message} — ${formatCombo(shortcutFor("query.save") ?? "Mod+S")} saves (or Save As… elsewhere).`,
       });
     }
     return false;

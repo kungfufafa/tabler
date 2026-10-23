@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Toggle } from "@/components/ui/toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { CellPos, GridColumn, ViewRow } from "@/features/datagrid/types";
+import { formatCombo } from "@/lib/keys/combo";
 import { cn } from "@/lib/utils";
 import {
   compileQuery,
@@ -311,7 +312,7 @@ export function FindBar({
           variant="ghost"
           size="icon-xs"
           aria-label="Previous Match"
-          title="Previous Match (⇧↩)"
+          title={`Previous Match (${formatCombo("Shift+Enter")})`}
           disabled={matches.length === 0}
           className="text-muted-foreground hover:text-foreground"
           onClick={() => step(-1)}
@@ -368,7 +369,7 @@ export function FindBar({
             size="xs"
             className="h-6 text-[11px]"
             disabled={!canReplace}
-            title={readOnlyReason ?? "Replace every match (⌥↩)"}
+            title={readOnlyReason ?? `Replace every match (${formatCombo("Alt+Enter")})`}
             onClick={replaceAll}
           >
             Replace All

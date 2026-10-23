@@ -46,6 +46,8 @@ import {
   type UserState,
   type UserSummary,
 } from "@/lib/ipc";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { adminKeys } from "./keys";
 import { ErrorLine, Field, NativeSelect } from "./parts";
@@ -967,7 +969,7 @@ function DatabasePrivileges({
         ) : (
           <p className="text-muted-foreground text-[11px]">
             Schema and table privileges of {database} can be edited while this connection uses it
-            (switch with ⌘K).
+            (switch with {formatCombo(shortcutFor("palette.databases") ?? "Mod+K")}).
           </p>
         ))}
       <div className="flex flex-col gap-1">
