@@ -58,12 +58,13 @@ describe("keymap overrides", () => {
     expect(id("Mod+]")).toBe("tab.next");
     expect(id("Mod+Shift+T")).toBe("tab.reopen");
     expect(id("Mod+Shift+\\")).toBe("workspace.show");
-    expect(id("Mod+Ctrl+Right")).toBe("workspace.next");
-    expect(id("Mod+Ctrl+Left")).toBe("workspace.prev");
-    expect(id("Ctrl+-")).toBe("tab.back");
-    expect(id("Ctrl+Shift+-")).toBe("tab.forward");
+    // Tests run off macOS: ⌃⌘→ / ⌃- are Ctrl+Alt+→ / Alt+← there (`nonMacKeys`).
+    expect(id("Mod+Alt+Right")).toBe("workspace.next");
+    expect(id("Mod+Alt+Left")).toBe("workspace.prev");
+    expect(id("Alt+Left")).toBe("tab.back");
+    expect(id("Alt+Right")).toBe("tab.forward");
     // They work while typing SQL too.
-    for (const c of ["Mod+Shift+\\", "Mod+Ctrl+Right", "Ctrl+-", "Mod+]"])
+    for (const c of ["Mod+Shift+\\", "Mod+Alt+Right", "Alt+Left", "Mod+]"])
       expect(findShortcut(c, "editor")?.scope).toBe("global");
   });
 });

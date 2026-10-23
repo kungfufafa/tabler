@@ -388,6 +388,23 @@ describe("Open Anything (buildOpenAnything)", () => {
       expect(sectionsFor("")).toEqual([["objects", undefined, ["backup_log", "users"]]]);
     });
 
+    it("does not match commands through their detail (the connection they act on)", () => {
+      const g = {
+        tables: tableItems([table("posts")], { profileId: "p1", open }),
+        actions: [
+          { ...item("cmd:disconnect", "Disconnect"), detail: "Local Postgres" },
+          { ...item("cmd:backup", "Backup…"), detail: "Local Postgres", keywords: ["dump"] },
+        ],
+      };
+      expect(sectionsFor("pos", g)).toEqual([["objects", undefined, ["posts"]]]);
+      // Their label and keywords still match.
+      expect(sectionsFor("dump", g)).toEqual([["commands", "Commands", ["Backup…"]]]);
+      // > still searches the detail too.
+      expect(sectionsFor(">local", g)).toEqual([
+        ["commands", undefined, ["Backup…", "Disconnect"]],
+      ]);
+    });
+
     it("lists at most five commands", () => {
       const many = {
         actions: Array.from({ length: 9 }, (_, i) => item(`cmd:${i}`, `Export format ${i}`)),

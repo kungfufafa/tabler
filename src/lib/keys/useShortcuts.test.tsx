@@ -117,6 +117,27 @@ describe("resolveScope", () => {
     ).toBe("dialog");
   });
 
+  it("ignores a dialog that is closing (Radix keeps it mounted until its exit animation ends)", () => {
+    expect(
+      resolveScope(
+        html(`<div role="dialog" data-state="closed"><button data-target></button></div>`),
+      ),
+    ).toBe("global");
+    expect(
+      resolveScope(
+        html(`<div role="dialog" data-state="open"><button data-target></button></div>`),
+      ),
+    ).toBe("dialog");
+    // A closing dialog inside an open one still belongs to the open one.
+    expect(
+      resolveScope(
+        html(
+          `<div role="dialog" data-state="open"><div role="alertdialog" data-state="closed"><button data-target></button></div></div>`,
+        ),
+      ),
+    ).toBe("dialog");
+  });
+
   it("falls back to data-scope, then global", () => {
     expect(resolveScope(html(`<div data-scope="grid"><span data-target></span></div>`))).toBe(
       "grid",

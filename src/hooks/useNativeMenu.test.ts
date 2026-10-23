@@ -241,7 +241,8 @@ describe("menuActionAllowed", () => {
       "dialog",
     ] as const) {
       expect(menuActionAllowed("app.lock", scope), scope).toBe(true);
-      expect(findShortcut("Mod+Ctrl+L", scope)?.id, scope).toBe("app.lock");
+      // Ctrl+Alt+L off macOS, where the tests run (`nonMacKeys`).
+      expect(findShortcut("Mod+Alt+L", scope)?.id, scope).toBe("app.lock");
     }
   });
 

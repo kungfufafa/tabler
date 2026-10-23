@@ -61,6 +61,16 @@ pub mod shell {
     /// renderer cannot keep the app from quitting.
     pub const RENDERER_ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
 
+    /// `mac` on macOS, `other` elsewhere: off macOS the Ctrl key is CmdOrCtrl, so a ⌃ accelerator
+    /// takes the renderer keymap's `nonMacKeys` instead (⌃⌘] → Ctrl+Alt+], ⌃- → Alt+Left).
+    const fn mac_or(mac: &'static str, other: &'static str) -> &'static str {
+        if cfg!(target_os = "macos") {
+            mac
+        } else {
+            other
+        }
+    }
+
     /// Menu items that run a renderer action: (action id = menu item id, label, accelerator).
     const MENU_ACTIONS: &[(&str, &str, &str)] = &[
         ("settings.open", "Settings…", "CmdOrCtrl+,"),
@@ -81,8 +91,16 @@ pub mod shell {
             "Switch Connection…",
             "CmdOrCtrl+Shift+K",
         ),
-        ("view.data", "Data", "CmdOrCtrl+Ctrl+["),
-        ("view.structure", "Structure", "CmdOrCtrl+Ctrl+]"),
+        (
+            "view.data",
+            "Data",
+            mac_or("CmdOrCtrl+Ctrl+[", "CmdOrCtrl+Alt+["),
+        ),
+        (
+            "view.structure",
+            "Structure",
+            mac_or("CmdOrCtrl+Ctrl+]", "CmdOrCtrl+Alt+]"),
+        ),
         ("ui.toggle-sidebar", "Toggle Sidebar", "CmdOrCtrl+0"),
         (
             "ui.toggle-inspector",
@@ -102,12 +120,12 @@ pub mod shell {
         (
             "workspace.next",
             "Select Next Workspace",
-            "CmdOrCtrl+Ctrl+Right",
+            mac_or("CmdOrCtrl+Ctrl+Right", "CmdOrCtrl+Alt+Right"),
         ),
         (
             "workspace.prev",
             "Select Previous Workspace",
-            "CmdOrCtrl+Ctrl+Left",
+            mac_or("CmdOrCtrl+Ctrl+Left", "CmdOrCtrl+Alt+Left"),
         ),
         // File: the SQL editor's save items.
         (
@@ -135,8 +153,12 @@ pub mod shell {
         ("grid.columns", "Columns", "CmdOrCtrl+Alt+F"),
         ("grid.filter", "Filters", "CmdOrCtrl+F"),
         // Navigate.
-        ("tab.back", "Back", "Ctrl+-"),
-        ("tab.forward", "Forward", "Ctrl+Shift+-"),
+        ("tab.back", "Back", mac_or("Ctrl+-", "Alt+Left")),
+        (
+            "tab.forward",
+            "Forward",
+            mac_or("Ctrl+Shift+-", "Alt+Right"),
+        ),
         ("tab.next", "Select Next Tab", "CmdOrCtrl+]"),
         ("tab.prev", "Select Previous Tab", "CmdOrCtrl+["),
         ("tab.goto-1", "Tab 1", "CmdOrCtrl+1"),
@@ -151,7 +173,11 @@ pub mod shell {
         ("ui.next-pane", "Select Next Pane", "CmdOrCtrl+Shift+]"),
         ("ui.prev-pane", "Select Previous Pane", "CmdOrCtrl+Shift+["),
         // Window: the app lock (Settings ▸ Security ▸ Passcode).
-        ("app.lock", "Lock Tabler", "CmdOrCtrl+Ctrl+L"),
+        (
+            "app.lock",
+            "Lock Tabler",
+            mac_or("CmdOrCtrl+Ctrl+L", "CmdOrCtrl+Alt+L"),
+        ),
         // Plugins ▸ Manage Plugins… (TablePlus ⌘L).
         ("plugins.manage", "Manage Plugins…", "CmdOrCtrl+L"),
     ];
@@ -703,6 +729,13 @@ pub mod shell {
                     PLAIN_MENU_ACTIONS.iter().all(|(other, _)| other != id),
                     "{id} is listed twice"
                 );
+            }
+            // Off macOS Ctrl is CmdOrCtrl: an accelerator with Ctrl would be a second CmdOrCtrl
+            // (Show Structure's ⌃⌘] read as Next Tab's Ctrl+]).
+            if !cfg!(target_os = "macos") {
+                for (id, _, accel) in MENU_ACTIONS {
+                    assert!(!accel.split('+').any(|p| p == "Ctrl"), "{id}: {accel}");
+                }
             }
             for (i, (id, label)) in PLAIN_MENU_ACTIONS.iter().enumerate() {
                 assert!(!label.is_empty(), "{id}");

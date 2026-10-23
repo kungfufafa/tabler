@@ -330,17 +330,19 @@ const TAG_RANK = 0.25;
 /**
  * Strict match of Open Anything: the label must match by prefix, word starts or as a contiguous
  * substring (see `strictMatch`). With `secondary` (commands), detail and keyword hits that start
- * words count too, below every label hit. A whole-query tag hit ("view", "schema") ranks last.
+ * words count too, below every label hit; `details: false` leaves the detail out (a command's
+ * detail is the connection or schema it acts on, not what it does). A whole-query tag hit ("view",
+ * "schema") ranks last.
  */
 export function matchItemStrict(
   query: string,
   item: PaletteItem,
-  { secondary = false }: { secondary?: boolean } = {},
+  { secondary = false, details = true }: { secondary?: boolean; details?: boolean } = {},
 ): { rank: number; ranges: MatchRange[] } | null {
   const label = strictMatch(query, item.label);
   if (label) return { rank: STRICT_TIER_RANK[label.tier], ranges: label.ranges };
   if (secondary) {
-    for (const text of [item.detail, ...(item.keywords ?? [])]) {
+    for (const text of [details ? item.detail : undefined, ...(item.keywords ?? [])]) {
       if (!text) continue;
       const m = strictMatch(query, text);
       if (m && m.tier !== "substring") return { rank: SECONDARY_RANK, ranges: [] };
@@ -385,12 +387,13 @@ export function rankStrict(
     mru = [],
     limit = Infinity,
     secondary = false,
-  }: { mru?: readonly string[]; limit?: number; secondary?: boolean } = {},
+    details = true,
+  }: { mru?: readonly string[]; limit?: number; secondary?: boolean; details?: boolean } = {},
 ): { items: RankedItem[]; more: number } {
   const recency = new Map(mru.map((k, i) => [k, i]));
   const matched: Array<RankedItem & { rank: number; index: number }> = [];
   items.forEach((item, index) => {
-    const m = matchItemStrict(query, item, { secondary });
+    const m = matchItemStrict(query, item, { secondary, details });
     if (m) matched.push({ item, ranges: m.ranges, rank: m.rank, index });
   });
   matched.sort(
@@ -515,12 +518,14 @@ export function buildOpenAnything(
       showKind: true,
       ...(pending !== undefined ? { loading: pending } : {}),
     });
-  // Features and commands match too, after the objects (never before a table of that name).
+  // Features and commands match too, after the objects (never before a table of that name). Not
+  // through their detail: "pos" (for posts) must not list every command of "Local Postgres".
   if (!empty && normalizeQuery(query).length >= COMMAND_HITS_MIN_QUERY) {
     const commands = rankStrict(gather(["actions"]), query, {
       mru,
       limit: COMMAND_HITS_LIMIT,
       secondary: true,
+      details: false,
     });
     if (commands.items.length > 0)
       sections.push({ id: "commands", heading: COMMANDS_HEADING, ...commands });
