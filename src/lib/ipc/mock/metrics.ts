@@ -2,6 +2,7 @@
 // metrics_delete_board, metrics_export_boards, metrics_import_boards and metrics_run. Boards live
 // in memory (seeded with a demo board on every connection); aggregate queries get made-up numbers
 // that move between refreshes, plain SELECTs run through the mock run_sql over the fixtures.
+import { coreDialect } from "@/features/drivers/catalog";
 import { splitStatements } from "@/features/editor/scanner";
 import { allReads } from "@/features/safety/classify";
 import type { ConnectionInfo } from "../bindings/ConnectionInfo";
@@ -377,7 +378,7 @@ registerMock("metrics_run", async ({ connectionId, queryId, query }) => {
   const list = await mockInvoke<ConnectionInfo[]>("list_connections", {});
   const info = list.find((c) => c.connectionId === connectionId);
   if (!info) mockError("NOT_CONNECTED", "not connected");
-  const driver = info.driver;
+  const driver = coreDialect(info.driver);
   const statements = splitStatements(sql, driver);
   if (statements.length === 0) mockError("INVALID_INPUT", "The query is empty");
   if (statements.length > 1)

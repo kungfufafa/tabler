@@ -16,6 +16,7 @@ use crate::tunnel::{
     PromptClock, PromptEvent, SshPromptPurpose, TunnelAuth, TunnelHandle, TunnelState,
     TunnelStatus, TunnelStatusEvent,
 };
+use crate::types::driver::{Location, SshSupport};
 use crate::types::profile::{
     ConnStatus, ConnectionInfo, ConnectionProfile, ConnectionStatusEvent,
     DEFAULT_CONNECT_TIMEOUT_SECS, Driver, PasswordMode, SshAuth, SshConfig, SshPasswordMode,
@@ -76,12 +77,13 @@ pub fn connect_timeout(profile: &ConnectionProfile) -> Duration {
     )
 }
 
-/// The SSH settings of a profile that connects through a tunnel (SQLite files never do).
+/// The SSH settings of a profile that connects through a tunnel (SQLite files never do: they are
+/// copied over SFTP; cloud services have no SSH).
 pub fn tunnel_config(profile: &ConnectionProfile) -> Option<&SshConfig> {
     profile
         .ssh
         .as_ref()
-        .filter(|_| profile.driver != Driver::Sqlite)
+        .filter(|_| profile.driver.descriptor().ssh == SshSupport::Tunnel)
 }
 
 /// Reads the stored SSH secret the profile's auth method needs (none for the agent), so other
@@ -198,10 +200,7 @@ pub fn forward_target(profile: &ConnectionProfile) -> ForwardTarget {
         .filter(|h| !h.is_empty())
         .unwrap_or(tunnel::LOCAL_HOST)
         .to_string();
-    let port = profile
-        .port
-        .or_else(|| profile.driver.default_port())
-        .unwrap_or(0);
+    let port = profile.port.or_else(|| profile.default_port()).unwrap_or(0);
     ForwardTarget::Tcp { host, port }
 }
 
@@ -464,8 +463,10 @@ pub async fn connect(
         .appdb
         .get_profile(profile_id)?
         .ok_or_else(|| AppError::NotFound(format!("profile {profile_id}")))?;
+    // A driver this build lacks: refused before its script, password command or tunnel run.
+    drivers::registry::ensure_built(&profile)?;
     if let Some(database) = database_override.filter(|d| !d.trim().is_empty())
-        && profile.driver != Driver::Sqlite
+        && profile.driver.descriptor().location != Location::File
     {
         profile.database = Some(database);
     }

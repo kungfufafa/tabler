@@ -584,7 +584,17 @@ pub fn build_backup(
         Driver::Sqlite => Err(AppError::Unsupported(
             "SQLite databases are backed up by copying the database file".into(),
         )),
+        other => Err(no_dump_tools(other)),
     }
+}
+
+/// Backup and Restore run pg_dump / mysqldump and their restore tools: PostgreSQL and MySQL
+/// (SQLite copies its file); the other drivers have none.
+pub fn no_dump_tools(driver: Driver) -> AppError {
+    AppError::Unsupported(format!(
+        "Backup and Restore are not available for {} connections",
+        driver.label()
+    ))
 }
 
 /// psql / pg_restore / mysql loading `file` into `conn.database`.
@@ -650,6 +660,7 @@ pub fn build_restore(
         Driver::Sqlite => Err(AppError::Unsupported(
             "SQLite databases are restored by replacing the database file".into(),
         )),
+        other => Err(no_dump_tools(other)),
     }
 }
 

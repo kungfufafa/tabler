@@ -60,6 +60,7 @@ fn listed_schema(driver: Driver, name: &str) -> bool {
     match driver {
         Driver::Postgres => !(name.starts_with("pg_") || name == "information_schema"),
         Driver::Mysql | Driver::Sqlite => true,
+        other => !other.descriptor().is_system_schema(name),
     }
 }
 
@@ -324,5 +325,28 @@ mod tests {
         assert!(!listed_schema(Driver::Postgres, "pg_toast"));
         assert!(!listed_schema(Driver::Postgres, "information_schema"));
         assert!(listed_schema(Driver::Sqlite, "main"));
+        // The other drivers: their descriptor's system schemas.
+        assert!(listed_schema(Driver::Sqlserver, "dbo"));
+        assert!(!listed_schema(Driver::Sqlserver, "sys"));
+        assert!(!listed_schema(Driver::Cassandra, "system_schema"));
+        assert!(listed_schema(Driver::Cassandra, "shop"));
+    }
+
+    /// The PostgreSQL descriptor's patterns say what the PostgreSQL arm does.
+    #[test]
+    fn the_postgres_descriptor_agrees_with_its_arm() {
+        let pg = Driver::Postgres.descriptor();
+        for name in [
+            "public",
+            "pg_catalog",
+            "pg_toast",
+            "pg_temp_1",
+            "information_schema",
+        ] {
+            assert_eq!(
+                listed_schema(Driver::Postgres, name),
+                !pg.is_system_schema(name)
+            );
+        }
     }
 }

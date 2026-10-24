@@ -1,5 +1,6 @@
 import { toast } from "sonner";
 import { refreshOpenTableTabs } from "@/features/commit/refreshTables";
+import { coreDialect } from "@/features/drivers/catalog";
 import type { RunState } from "@/features/editor/runModel";
 import { charToUtf16 } from "@/features/editor/offsets";
 import { skippedSpans, type SqlDialect } from "@/features/editor/scanner";
@@ -141,7 +142,7 @@ export function finishResultCommit(p: PlannedResult, rows: RowResult[]): void {
   const driver = useConnectionsStore.getState().byId[p.connectionId]?.info.driver ?? "postgres";
   const rerun = p.resultId.startsWith("pin:")
     ? null
-    : rerunOf(getQueryTab(p.tabId).run, p.resultId, driver);
+    : rerunOf(getQueryTab(p.tabId).run, p.resultId, coreDialect(driver));
   if (rerun && rerunHandler)
     toast.message("The result's rows were updated in place", {
       action: { label: "Re-run", onClick: () => rerunHandler?.(p.tabId, rerun) },

@@ -1,5 +1,6 @@
 import { ChevronRight, Folder, Loader2 } from "lucide-react";
 import { Fragment } from "react";
+import { isCoreDriver } from "@/features/drivers/catalog";
 import type { ConnectionTag, Driver, MysqlVersion } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { databaseKind, KIND_SHORT, TINTED, tintStyle } from "./colors";
@@ -26,6 +27,10 @@ export function DriverBadge({
   size?: "md" | "lg";
   className?: string;
 }) {
+  // Drivers beyond the core ones get their own badges with their UI.
+  const label = isCoreDriver(driver)
+    ? KIND_SHORT[databaseKind(driver, mysqlVersion)]
+    : driver.slice(0, 2).toUpperCase();
   return (
     <span
       aria-hidden
@@ -37,11 +42,7 @@ export function DriverBadge({
         className,
       )}
     >
-      {busy ? (
-        <Loader2 className="size-3.5 animate-spin" />
-      ) : (
-        KIND_SHORT[databaseKind(driver, mysqlVersion)]
-      )}
+      {busy ? <Loader2 className="size-3.5 animate-spin" /> : label}
     </span>
   );
 }

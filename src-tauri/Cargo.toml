@@ -14,6 +14,47 @@ edition = "2024"
 name = "tabler_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = ["release-drivers"]
+# The drivers beyond PostgreSQL, MySQL and SQLite that release builds include (each lane's
+# feature is added here once it lands). Every driver's code sits behind its `drv-*` feature, so a
+# build without one compiles none of it and reports the driver as not built.
+release-drivers = []
+all-drivers = [
+    "drv-pg-flavors",
+    "drv-libsql",
+    "drv-d1",
+    "drv-duckdb",
+    "drv-sqlserver",
+    "drv-clickhouse",
+    "drv-snowflake",
+    "drv-bigquery",
+    "drv-vertica",
+    "drv-cassandra",
+    "drv-redis",
+    "drv-mongodb",
+    "drv-elasticsearch",
+    "drv-dynamodb",
+]
+# Transport shared by several drivers (`drivers::common`).
+common-http = []
+common-aws = ["common-http"]
+common-jwt = ["common-http"]
+drv-pg-flavors = []
+drv-libsql = ["common-http"]
+drv-d1 = ["common-http"]
+drv-duckdb = []
+drv-sqlserver = []
+drv-clickhouse = ["common-http"]
+drv-snowflake = []
+drv-bigquery = ["common-jwt"]
+drv-vertica = []
+drv-cassandra = []
+drv-redis = []
+drv-mongodb = []
+drv-elasticsearch = ["common-aws"]
+drv-dynamodb = ["common-aws"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

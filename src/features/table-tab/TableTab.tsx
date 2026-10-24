@@ -32,6 +32,7 @@ import {
   type GridColumn,
   type ViewRow,
 } from "@/features/datagrid/types";
+import { coreDialect } from "@/features/drivers/catalog";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { openExportForActiveTab } from "@/features/export/store";
 import { openImport } from "@/features/import/store";
@@ -801,7 +802,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       pairs:
         pairs.length > 1 ? pairs.map((p) => ({ column: p.local, reference: p.ref })) : undefined,
     });
-    openSqlInNewQueryTab(connectionId, sql, driver, `${table.name} JOIN ${fk.table}`);
+    openSqlInNewQueryTab(connectionId, sql, coreDialect(driver), `${table.name} JOIN ${fk.table}`);
   };
 
   /**

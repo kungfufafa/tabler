@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { coreDialect } from "@/features/drivers/catalog";
 import { ipc, type ConnectionProfile, type Driver, type SafeModeLevel } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { effectiveLevel } from "./levels";
@@ -125,7 +126,7 @@ export async function guardExecution(
   // Not an open connection: the backend refuses the call anyway.
   if (!conn) return true;
   const { info } = conn;
-  const writes = requestWrites(request, info.driver);
+  const writes = requestWrites(request, coreDialect(info.driver));
   const profile = await loadProfile(info.profileId);
   const target = promptTarget(info, profile);
   const decision = decide(target.level, writes, info.readOnly);

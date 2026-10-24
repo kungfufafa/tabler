@@ -27,6 +27,17 @@ fn no_sqlite() -> AppError {
     AppError::InvalidInput("SQLite text is always UTF-8: there is no connection encoding".into())
 }
 
+/// The error for a driver without a connection encoding (`descriptor().encoding` is false).
+fn no_encoding(driver: Driver) -> AppError {
+    match driver {
+        Driver::Sqlite => no_sqlite(),
+        other => AppError::InvalidInput(format!(
+            "{} connections have no connection encoding",
+            other.label()
+        )),
+    }
+}
+
 /// Bound on reading the encoding of a session that is about to be replaced.
 const LIVE_ENCODING_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -35,7 +46,7 @@ async fn read_encoding(session: &dyn DbSession) -> Result<String, AppError> {
     let query = match session.driver() {
         Driver::Postgres => sql::PG_SHOW_CLIENT_ENCODING,
         Driver::Mysql => sql::MYSQL_SHOW_CHARSET,
-        Driver::Sqlite => return Err(no_sqlite()),
+        other => return Err(no_encoding(other)),
     };
     let rows = session.query(query, &[]).await?;
     match rows.rows.first().and_then(|r| r.first()) {
@@ -74,7 +85,8 @@ pub(crate) fn with_live_encoding(
     let own_default = match profile.driver {
         Driver::Mysql => MYSQL_DEFAULT_CHARSET,
         Driver::Postgres => "UTF8",
-        Driver::Sqlite => return profile,
+        // SQLite and the other drivers have no encoding to keep.
+        _ => return profile,
     };
     let Some(live) = live
         .map(|l| l.trim().to_string())
@@ -107,8 +119,8 @@ pub async fn set_connection_encoding(
     encoding: Option<String>,
 ) -> Result<ConnectionInfo, AppError> {
     let conn = state.connection(connection_id).await?;
-    if conn.profile.driver == Driver::Sqlite {
-        return Err(no_sqlite());
+    if !conn.profile.driver.descriptor().encoding {
+        return Err(no_encoding(conn.profile.driver));
     }
     // A new session would drop the SQL editor's open transaction.
     if conn.session().await.in_transaction() == Some(true) {

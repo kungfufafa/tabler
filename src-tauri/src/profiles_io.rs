@@ -880,6 +880,29 @@ mod tests {
     }
 
     #[test]
+    fn a_file_with_another_driver_is_written_with_the_newer_version() {
+        let mut p = payload();
+        for c in &mut p.connections {
+            c.secrets = ExportedSecrets::default();
+        }
+        p.connections[1].profile.driver = Driver::Redis;
+        assert_eq!(p.version(), VERSION_NEW_DRIVERS);
+        let bytes = write_with_iterations(&p, None, "now", FAST).unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope["version"], VERSION_NEW_DRIVERS);
+        assert_eq!(
+            envelope["payload"]["connections"][1]["profile"]["driver"],
+            "redis"
+        );
+        // This build reads it back whole.
+        let ReadOutcome::Opened { payload: back, .. } = read(&bytes, None).unwrap() else {
+            panic!("a plain file opens");
+        };
+        assert_eq!(back.connections, p.connections);
+        assert!(back.skipped.is_empty());
+    }
+
+    #[test]
     fn the_production_cost_round_trips() {
         let p = payload();
         let bytes = write(&p, Some("pw"), "now").unwrap();

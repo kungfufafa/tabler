@@ -2,29 +2,85 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::types::driver::{DriverDescriptor, KindDescriptor, KindId, PgFlavor};
+
+/// The engine a connection is for. The ids are what profiles store and IPC carries: the first
+/// three serialize exactly as before the other drivers existed. Engine facts (ports, labels,
+/// fields) live in the descriptor table of `types::driver`, not in matches on this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
 #[ts(export)]
 pub enum Driver {
+    #[serde(rename = "postgres")]
     Postgres,
+    #[serde(rename = "mysql")]
     Mysql,
+    #[serde(rename = "sqlite")]
     Sqlite,
+    #[serde(rename = "sqlserver")]
+    Sqlserver,
+    #[serde(rename = "libsql")]
+    Libsql,
+    #[serde(rename = "d1")]
+    D1,
+    #[serde(rename = "duckdb")]
+    Duckdb,
+    #[serde(rename = "clickhouse")]
+    Clickhouse,
+    #[serde(rename = "snowflake")]
+    Snowflake,
+    #[serde(rename = "bigquery")]
+    Bigquery,
+    #[serde(rename = "vertica")]
+    Vertica,
+    #[serde(rename = "cassandra")]
+    Cassandra,
+    #[serde(rename = "redis")]
+    Redis,
+    #[serde(rename = "mongodb")]
+    Mongodb,
+    #[serde(rename = "elasticsearch")]
+    Elasticsearch,
+    #[serde(rename = "dynamodb")]
+    Dynamodb,
 }
 
 impl Driver {
+    pub const ALL: [Driver; 16] = [
+        Driver::Postgres,
+        Driver::Mysql,
+        Driver::Sqlite,
+        Driver::Sqlserver,
+        Driver::Libsql,
+        Driver::D1,
+        Driver::Duckdb,
+        Driver::Clickhouse,
+        Driver::Snowflake,
+        Driver::Bigquery,
+        Driver::Vertica,
+        Driver::Cassandra,
+        Driver::Redis,
+        Driver::Mongodb,
+        Driver::Elasticsearch,
+        Driver::Dynamodb,
+    ];
+
     /// PostgreSQL, MySQL / MariaDB or SQLite: the drivers of every Tabler build. A connections
     /// file holding any other one is written with a newer layout version (`profiles_io`).
     pub const fn is_core(self) -> bool {
         matches!(self, Driver::Postgres | Driver::Mysql | Driver::Sqlite)
     }
 
-    pub fn default_port(self) -> Option<u16> {
-        match self {
-            Driver::Postgres => Some(5432),
-            Driver::Mysql => Some(3306),
-            Driver::Sqlite => None,
-        }
+    pub fn descriptor(self) -> &'static DriverDescriptor {
+        crate::types::driver::descriptor(self)
     }
+
+    /// The engine's name ("PostgreSQL", "SQL Server"…).
+    pub fn label(self) -> &'static str {
+        self.descriptor().label
+    }
+
+    // No `default_port` here: a driver's port depends on the profile's flavor and TLS
+    // (CockroachDB is not on 5432), so callers use `ConnectionProfile::default_port`.
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
@@ -300,6 +356,17 @@ pub struct ProfileOptions {
     /// None = the Settings ▸ General default.
     #[ts(optional = nullable)]
     pub lazy_load: Option<bool>,
+    /// The PostgreSQL-compatible engine a `postgres` profile is for (CockroachDB, Greenplum,
+    /// Redshift); None = PostgreSQL. Left out of the JSON when unset, so PostgreSQL profiles are
+    /// stored as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub pg_flavor: Option<PgFlavor>,
+    /// Settings of a driver beyond the common fields, which the driver itself parses (an
+    /// account id, a key file path…). Never holds a secret (`drivers::registry::validate`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub driver_params: Option<DriverParams>,
     /// Option keys this build does not know (a newer Tabler wrote them), kept as they are so a
     /// save here does not drop them. Not in the TS type: the dialog leaves them out of what it
     /// saves and `AppDb::upsert_profile` puts them back.
@@ -338,6 +405,12 @@ impl ProfileOptions {
     }
 }
 
+/// `ProfileOptions::driver_params`: a JSON object each driver reads its own settings from (a
+/// newtype, which serde_json reads and writes as the object itself).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export, type = "Record<string, unknown>")]
+pub struct DriverParams(pub serde_json::Map<String, serde_json::Value>);
+
 /// A saved connection. Never carries secrets: passwords live in the Keychain (see `secrets.rs`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -371,7 +444,36 @@ pub struct ConnectionProfile {
 impl ConnectionProfile {
     /// A MySQL profile that connects through a Unix socket ("Use socket").
     pub fn uses_socket(&self) -> bool {
-        self.driver == Driver::Mysql && self.options.use_socket == Some(true)
+        self.driver.descriptor().socket && self.options.use_socket == Some(true)
+    }
+
+    /// The database of the new-connection picker this profile is for: its driver, or the flavor
+    /// that driver serves (MariaDB, CockroachDB…).
+    pub fn kind(&self) -> KindId {
+        KindId::of(
+            self.driver,
+            self.options.pg_flavor,
+            self.options.mysql_version,
+        )
+    }
+
+    fn kind_descriptor(&self) -> &'static KindDescriptor {
+        self.kind().descriptor()
+    }
+
+    /// The port the profile connects to when it sets none: its flavor's (CockroachDB 26257,
+    /// Redshift 5439), or the driver's TLS port when TLS is on (ClickHouse 8443).
+    pub fn default_port(&self) -> Option<u16> {
+        match self.driver.descriptor().tls_port {
+            Some(port) if self.ssl != SslMode::Disable => Some(port),
+            _ => self.kind_descriptor().default_port,
+        }
+    }
+
+    /// The database a profile that names none ends up on, where the engine has a fixed one
+    /// (`defaultdb` on CockroachDB, `master` on SQL Server…).
+    pub fn default_database(&self) -> Option<&'static str> {
+        self.kind_descriptor().default_database
     }
 }
 

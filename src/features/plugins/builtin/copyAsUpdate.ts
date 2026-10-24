@@ -1,3 +1,4 @@
+import { coreDialect } from "@/features/drivers/catalog";
 import type { Dialect, TableRef, Value } from "@/lib/ipc";
 import { literal, qualify, quoteIdent } from "@/lib/sql/quote";
 import type { BuiltinPlugin, PluginRowData } from "../types";
@@ -54,7 +55,7 @@ export const COPY_AS_UPDATE: BuiltinPlugin = {
           host.notify("Copy as UPDATE Statement", "Select rows of a table first.");
           return;
         }
-        const sql = updateStatements(inv.driver, inv.item, rows);
+        const sql = updateStatements(coreDialect(inv.driver), inv.item, rows);
         if (sql.length === 0) {
           host.notify("Copy as UPDATE Statement", "The selected rows are not saved yet.");
           return;

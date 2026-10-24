@@ -1,4 +1,5 @@
 import { EditorSelection } from "@codemirror/state";
+import { coreDialect } from "@/features/drivers/catalog";
 import { applyToEditor, focusEditor, getEditorState } from "@/features/editor/editorStates";
 import { splitStatements, statementAt } from "@/features/editor/scanner";
 import { activeEditorKey } from "@/features/editor/split";
@@ -23,7 +24,12 @@ export function editorSql(tabId: string): PluginSql | null {
     : undefined;
   const text = state.doc.toString();
   const sel = state.selection.main;
-  const st = statementAt(splitStatements(text, driver ?? "postgres"), text, sel.head, true);
+  const st = statementAt(
+    splitStatements(text, driver ? coreDialect(driver) : "postgres"),
+    text,
+    sel.head,
+    true,
+  );
   return {
     text,
     selected: state.sliceDoc(sel.from, sel.to),

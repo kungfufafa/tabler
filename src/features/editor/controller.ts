@@ -2,6 +2,7 @@ import { toggleLineComment } from "@codemirror/commands";
 import { diagnosticCount, setDiagnostics } from "@codemirror/lint";
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import { toast } from "sonner";
+import { coreDialect } from "@/features/drivers/catalog";
 import {
   ipc,
   isMock,
@@ -98,7 +99,7 @@ export interface ControllerHooks {
 }
 
 export function dialectOf(driver: Driver | undefined): SqlDialect {
-  return driver ?? "postgres";
+  return driver ? coreDialect(driver) : "postgres";
 }
 
 function queryTab(tabId: string) {

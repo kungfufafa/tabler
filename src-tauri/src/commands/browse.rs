@@ -8,6 +8,7 @@ use super::query::{query_limited, query_time_limit};
 use crate::drivers::DbSession;
 use crate::drivers::postgres::decode::text_to_value;
 use crate::error::AppError;
+use crate::sqlgen::Dialect;
 use crate::sqlgen::mutate::TableSpec;
 use crate::sqlgen::select::{
     ROWID_ALIAS, SelectSpec, build_count, build_fetch_cell, build_select, inline_params,
@@ -36,7 +37,7 @@ pub async fn cached_meta(conn: &Connection, table: &TableRef) -> Result<Arc<Tabl
 fn identity_for(driver: Driver, meta: &TableMeta) -> RowIdentity {
     if !meta.primary_key.is_empty() {
         RowIdentity::Pk
-    } else if driver == Driver::Sqlite && meta.kind == crate::types::schema::TableKind::Table {
+    } else if driver.descriptor().rowid && meta.kind == crate::types::schema::TableKind::Table {
         RowIdentity::Rowid
     } else {
         RowIdentity::None
@@ -331,20 +332,20 @@ pub async fn fetch_cell_limited(
     let (sql, params) = build_fetch_cell(&spec, col, key)?;
     let rs = query_limited(session, &sql, &params, limit).await?;
     fetched_value(
-        session.driver(),
+        spec.dialect,
         col,
         rs.rows.into_iter().next().unwrap_or_default(),
     )
 }
 
-/// Decodes the row of a `build_fetch_cell` query (see its result shape). A blob always comes back
-/// whole — the grid's preview cap does not apply — and a NULL stays NULL.
-fn fetched_value(driver: Driver, col: &ColumnMeta, row: Vec<Value>) -> Result<Value, AppError> {
+/// Decodes the row of a `build_fetch_cell` query built for `dialect` (see its result shape). A
+/// blob always comes back whole — the grid's preview cap does not apply — and a NULL stays NULL.
+fn fetched_value(dialect: Dialect, col: &ColumnMeta, row: Vec<Value>) -> Result<Value, AppError> {
     let mut cells = row.into_iter();
     let first = cells.next().unwrap_or(Value::Null);
-    let (value, hex) = match driver {
+    let (value, hex) = match dialect {
         // `<column>, <its hex when the storage class is blob>`: SQLite blobs may sit in any column.
-        Driver::Sqlite => (first, cells.next().unwrap_or(Value::Null)),
+        Dialect::Sqlite => (first, cells.next().unwrap_or(Value::Null)),
         _ if col.kind == ValueKind::Bytes => (Value::Null, first),
         _ => (first, Value::Null),
     };
@@ -361,8 +362,9 @@ fn fetched_value(driver: Driver, col: &ColumnMeta, row: Vec<Value>) -> Result<Va
     if value.as_text().is_some_and(|t| t.len() > FULL_CELL_MAX) {
         return Err(too_large());
     }
-    Ok(match (driver, value) {
-        (Driver::Postgres, Value::Text(text)) => text_to_value(col.kind, &col.data_type, &text),
+    Ok(match (dialect, value) {
+        // The PostgreSQL builder reads every column as `::text`.
+        (Dialect::Postgres, Value::Text(text)) => text_to_value(col.kind, &col.data_type, &text),
         (_, v) => v,
     })
 }
@@ -718,49 +720,49 @@ mod tests {
     }
 
     #[test]
-    fn decodes_fetched_cells_per_engine() {
+    fn decodes_fetched_cells_per_dialect() {
         let bytes = column(ValueKind::Bytes, "bytea");
         let hex = Value::Text("00ff".into());
         let whole = Value::from_bytes_uncapped(&[0, 255]);
-        for driver in [Driver::Postgres, Driver::Mysql] {
+        for dialect in [Dialect::Postgres, Dialect::Mysql] {
             assert_eq!(
-                fetched_value(driver, &bytes, vec![hex.clone()]).unwrap(),
+                fetched_value(dialect, &bytes, vec![hex.clone()]).unwrap(),
                 whole
             );
             assert_eq!(
-                fetched_value(driver, &bytes, vec![Value::Null]).unwrap(),
+                fetched_value(dialect, &bytes, vec![Value::Null]).unwrap(),
                 Value::Null
             );
         }
         // MySQL may hand HEX() back as binary.
         assert_eq!(
-            fetched_value(Driver::Mysql, &bytes, vec![Value::from_bytes(b"00ff")]).unwrap(),
+            fetched_value(Dialect::Mysql, &bytes, vec![Value::from_bytes(b"00ff")]).unwrap(),
             whole
         );
         // SQLite: the second column carries the hex only for blobs, whatever the declared kind.
         let other = column(ValueKind::Other, "");
         let preview = Value::from_bytes(&[0, 255]);
         assert_eq!(
-            fetched_value(Driver::Sqlite, &other, vec![preview, hex]).unwrap(),
+            fetched_value(Dialect::Sqlite, &other, vec![preview, hex]).unwrap(),
             whole
         );
         assert_eq!(
-            fetched_value(Driver::Sqlite, &bytes, vec![Value::Null, Value::Null]).unwrap(),
+            fetched_value(Dialect::Sqlite, &bytes, vec![Value::Null, Value::Null]).unwrap(),
             Value::Null
         );
         assert_eq!(
-            fetched_value(Driver::Sqlite, &other, vec![Value::Int(3), Value::Null]).unwrap(),
+            fetched_value(Dialect::Sqlite, &other, vec![Value::Int(3), Value::Null]).unwrap(),
             Value::Int(3)
         );
         // No row at all reads as NULL.
         assert_eq!(
-            fetched_value(Driver::Sqlite, &other, vec![]).unwrap(),
+            fetched_value(Dialect::Sqlite, &other, vec![]).unwrap(),
             Value::Null
         );
         // PG text is decoded by the column kind.
         let int = column(ValueKind::Int, "integer");
         assert_eq!(
-            fetched_value(Driver::Postgres, &int, vec![Value::Text("42".into())]).unwrap(),
+            fetched_value(Dialect::Postgres, &int, vec![Value::Text("42".into())]).unwrap(),
             Value::Int(42)
         );
     }

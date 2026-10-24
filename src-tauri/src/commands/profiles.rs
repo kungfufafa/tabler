@@ -53,7 +53,7 @@ fn validate(profile: &ConnectionProfile) -> Result<(), AppError> {
     }
     crate::conn_options::check(profile)?;
     match profile.driver {
-        crate::types::profile::Driver::Sqlite => {
+        Driver::Sqlite => {
             if profile
                 .sqlite_path
                 .as_deref()
@@ -66,7 +66,7 @@ fn validate(profile: &ConnectionProfile) -> Result<(), AppError> {
                 ));
             }
         }
-        _ => {
+        Driver::Postgres | Driver::Mysql => {
             // "Use socket" (MySQL) needs no host.
             if !profile.uses_socket() && profile.host.as_deref().unwrap_or("").trim().is_empty() {
                 return Err(AppError::InvalidInput("Host is required".into()));
@@ -83,6 +83,8 @@ fn validate(profile: &ConnectionProfile) -> Result<(), AppError> {
                 ));
             }
         }
+        // The other drivers: their descriptor's fields, then their own checks.
+        _ => drivers::registry::validate(profile)?,
     }
     Ok(())
 }
@@ -347,6 +349,8 @@ pub async fn run_connection_test_with(
     input: ProfileInput,
     prompts: Option<Arc<dyn KeyboardInteractive>>,
 ) -> Result<TestResult, AppError> {
+    // A driver this build lacks: refused before its script, password command or tunnel run.
+    drivers::registry::ensure_built(&input.profile)?;
     validate(&input.profile)?;
     log::info!(
         "test_connection {} ({:?})",
@@ -757,6 +761,38 @@ mod tests {
         p.host = Some("127.0.0.1".into());
         p.user = Some("app".into());
         p
+    }
+
+    #[tokio::test]
+    async fn other_drivers_are_checked_by_their_descriptor() {
+        // The core checks are unchanged: PostgreSQL still needs a user.
+        let mut pg = pg_profile("pg", None);
+        pg.user = None;
+        assert_eq!(validate(&pg).unwrap_err().to_string(), "User is required");
+
+        // Redis needs a host, no user; its profile saves like any other.
+        let mut redis = pg_profile("cache", None);
+        redis.driver = Driver::Redis;
+        redis.user = None;
+        redis.host = None;
+        assert_eq!(
+            validate(&redis).unwrap_err().to_string(),
+            "Host is required"
+        );
+        redis.host = Some("cache.local".into());
+        validate(&redis).unwrap();
+        let state = state();
+        let mut input = sqlite_input("/x.db");
+        input.profile = redis.clone();
+        run_save(&state, &input).await.unwrap();
+        let stored = state.appdb.get_profile(redis.id).unwrap().unwrap();
+        assert_eq!(stored.driver, Driver::Redis);
+
+        let mut d1 = pg_profile("d1", None);
+        d1.driver = Driver::D1;
+        d1.database = Some("analytics".into());
+        let err = validate(&d1).unwrap_err().to_string();
+        assert!(err.contains("accountId is required"), "{err}");
     }
 
     #[tokio::test]
@@ -1236,6 +1272,35 @@ mod tests {
         let result = run_connection_test(&state, input).await.unwrap();
         assert!(!result.ok);
         assert!(result.message.contains("no vpn"), "{}", result.message);
+    }
+
+    /// A profile of a driver this build lacks is refused before its bootstrap script runs.
+    #[tokio::test]
+    async fn test_connection_refuses_a_driver_this_build_lacks_before_its_script() {
+        if drivers::registry::built(Driver::Redis) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let mut input = sqlite_input("/x.db");
+        input.profile.driver = Driver::Redis;
+        input.profile.sqlite_path = None;
+        input.profile.host = Some("127.0.0.1".into());
+        input.profile.options.bootstrap_script =
+            Some(format!("echo ran > \"{}\"", marker.display()));
+        let err = run_connection_test(&state(), input.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "unsupported: Redis is not built into this Tabler"
+        );
+        assert!(!marker.exists());
+        // The script does run here: the refusal is what kept it from running.
+        crate::bootstrap_script::run_for_profile(&input.profile)
+            .await
+            .unwrap();
+        assert!(marker.exists());
     }
 
     #[tokio::test]

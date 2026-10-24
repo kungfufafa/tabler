@@ -1,4 +1,5 @@
-import type { ConnectionProfile } from "@/lib/ipc";
+import { isCoreDriver } from "@/features/drivers/catalog";
+import type { ConnectionProfile, Driver } from "@/lib/ipc";
 import { DRIVER_LABEL } from "./colors";
 import {
   ancestorPaths,
@@ -27,6 +28,7 @@ export const CONNECTION_SORT_LABEL: Record<ConnectionSort, string> = {
 
 const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 const byName = (a: ConnectionProfile, b: ConnectionProfile) => collator.compare(a.name, b.name);
+const driverLabel = (driver: Driver) => (isCoreDriver(driver) ? DRIVER_LABEL[driver] : driver);
 
 /** The connections of one group in the chosen order (stable: ties keep the saved order). */
 export function sortProfiles(
@@ -43,7 +45,7 @@ export function sortProfiles(
       return out.sort((a, b) => compareTags(a.options.tag, b.options.tag) || byName(a, b));
     case "driver":
       return out.sort(
-        (a, b) => collator.compare(DRIVER_LABEL[a.driver], DRIVER_LABEL[b.driver]) || byName(a, b),
+        (a, b) => collator.compare(driverLabel(a.driver), driverLabel(b.driver)) || byName(a, b),
       );
   }
 }

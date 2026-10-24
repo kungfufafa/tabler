@@ -22,12 +22,12 @@ use crate::import::{
     preview_csv, preview_dump, preview_json, run_csv_import, run_json_import, run_sql_import,
 };
 use crate::state::{AppState, Connection};
+use crate::types::driver::Location;
 use crate::types::import::{
     CsvImportProgress, CsvImportReport, CsvImportRequest, CsvPreview, CsvPreviewRequest,
     ImportTarget, JsonImportRequest, JsonPreview, JsonPreviewRequest, SqlDumpPreview,
     SqlDumpPreviewRequest, SqlImportProgress, SqlImportReport, SqlImportRequest,
 };
-use crate::types::profile::Driver;
 
 struct Running {
     connection_id: Uuid,
@@ -261,7 +261,7 @@ pub(crate) async fn session_on_database(
     database: Option<&str>,
 ) -> Result<Arc<dyn DbSession>, AppError> {
     let mut profile = conn.profile.clone();
-    if profile.driver != Driver::Sqlite {
+    if profile.driver.descriptor().location != Location::File {
         let db = match database {
             Some(db) => Some(db.to_string()),
             None => conn.info().await.current_database,

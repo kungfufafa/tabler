@@ -6,6 +6,7 @@ import { TableIcon } from "@/components/TypeIcon";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { coreDialect } from "@/features/drivers/catalog";
 import { invalidateSchema } from "@/features/structure/invalidate";
 import { registerToolTab, type ToolTabProps } from "@/features/tabs/toolTabs";
 import { KIND_LABEL } from "@/features/structure/tableActions";
@@ -368,7 +369,7 @@ export function ItemOverviewTab({ tab, params }: ToolTabProps<OverviewParams>) {
     <ItemOverviewView
       key={`${tab.connectionId}:${params.schema}`}
       connectionId={tab.connectionId}
-      dialect={driver}
+      dialect={coreDialect(driver)}
       schema={params.schema}
     />
   );

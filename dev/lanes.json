@@ -1,0 +1,274 @@
+{
+  "$comment": "The driver lanes: what each one builds and owns. Globs end in /** (a directory) or name a file; a * inside a bindings name stands for any rest. src-tauri/tests/driver_guard.rs reads the rust globs.",
+  "lanes": {
+    "pg-flavors": {
+      "databases": ["CockroachDB", "Greenplum", "Amazon Redshift"],
+      "drivers": [],
+      "kinds": ["cockroachdb", "greenplum", "redshift"],
+      "dialects": ["redshift"],
+      "native": [],
+      "features": ["drv-pg-flavors"],
+      "slot": "s1",
+      "prefixes": ["Cockroach", "Greenplum", "Redshift"],
+      "rust": [
+        "src-tauri/src/drivers/postgres/flavor/imp/**",
+        "src-tauri/src/sqlgen/dialect/redshift.rs",
+        "src-tauri/tests/pg_flavors.rs",
+        "src-tauri/tests/fixtures/pg_flavors/**"
+      ],
+      "ts": ["src/features/drivers/pg-flavors/**", "src/lib/ipc/mock/drivers/pg-flavors/**"],
+      "bindings": [
+        "src/lib/ipc/bindings/Cockroach*.ts",
+        "src/lib/ipc/bindings/Greenplum*.ts",
+        "src/lib/ipc/bindings/Redshift*.ts",
+        "src/lib/ipc/bindings/lex/redshift.json"
+      ],
+      "docs": ["docs/drivers/pg-flavors.md"],
+      "tests": ["drivers::postgres::flavor", "sqlgen::dialect::redshift"]
+    },
+    "sqlite-remote": {
+      "databases": ["LibSQL", "Cloudflare D1"],
+      "drivers": ["libsql", "d1"],
+      "kinds": ["libsql", "d1"],
+      "dialects": [],
+      "native": [],
+      "features": ["drv-libsql", "drv-d1"],
+      "slot": "s1",
+      "prefixes": ["Libsql", "D1"],
+      "rust": [
+        "src-tauri/src/drivers/sqlite_http/**",
+        "src-tauri/tests/libsql.rs",
+        "src-tauri/tests/d1.rs",
+        "src-tauri/tests/fixtures/libsql/**",
+        "src-tauri/tests/fixtures/d1/**"
+      ],
+      "ts": ["src/features/drivers/sqlite-remote/**", "src/lib/ipc/mock/drivers/sqlite-remote/**"],
+      "bindings": ["src/lib/ipc/bindings/Libsql*.ts", "src/lib/ipc/bindings/D1*.ts"],
+      "docs": ["docs/drivers/sqlite-remote.md"],
+      "tests": ["drivers::sqlite_http"]
+    },
+    "duckdb": {
+      "databases": ["DuckDB"],
+      "drivers": ["duckdb"],
+      "kinds": ["duckdb"],
+      "dialects": ["duckdb"],
+      "native": [],
+      "features": ["drv-duckdb"],
+      "slot": "s1",
+      "prefixes": ["Duckdb"],
+      "rust": [
+        "src-tauri/src/drivers/duckdb/**",
+        "src-tauri/src/sqlgen/dialect/duckdb.rs",
+        "src-tauri/tests/duckdb.rs",
+        "src-tauri/tests/fixtures/duckdb/**"
+      ],
+      "ts": ["src/features/drivers/duckdb/**", "src/lib/ipc/mock/drivers/duckdb/**"],
+      "bindings": ["src/lib/ipc/bindings/Duckdb*.ts", "src/lib/ipc/bindings/lex/duckdb.json"],
+      "docs": ["docs/drivers/duckdb.md"],
+      "tests": ["drivers::duckdb", "sqlgen::dialect::duckdb"]
+    },
+    "clickhouse": {
+      "databases": ["ClickHouse"],
+      "drivers": ["clickhouse"],
+      "kinds": ["clickhouse"],
+      "dialects": ["clickhouse"],
+      "native": [],
+      "features": ["drv-clickhouse"],
+      "slot": "s1",
+      "prefixes": ["Clickhouse"],
+      "rust": [
+        "src-tauri/src/drivers/clickhouse/**",
+        "src-tauri/src/sqlgen/dialect/clickhouse.rs",
+        "src-tauri/tests/clickhouse.rs",
+        "src-tauri/tests/fixtures/clickhouse/**"
+      ],
+      "ts": ["src/features/drivers/clickhouse/**", "src/lib/ipc/mock/drivers/clickhouse/**"],
+      "bindings": [
+        "src/lib/ipc/bindings/Clickhouse*.ts",
+        "src/lib/ipc/bindings/lex/clickhouse.json"
+      ],
+      "docs": ["docs/drivers/clickhouse.md"],
+      "tests": ["drivers::clickhouse", "sqlgen::dialect::clickhouse"]
+    },
+    "sqlserver": {
+      "databases": ["SQL Server"],
+      "drivers": ["sqlserver"],
+      "kinds": ["sqlserver"],
+      "dialects": ["tsql"],
+      "native": [],
+      "features": ["drv-sqlserver"],
+      "slot": "s2",
+      "prefixes": ["Mssql"],
+      "rust": [
+        "src-tauri/src/drivers/sqlserver/**",
+        "src-tauri/src/sqlgen/dialect/tsql.rs",
+        "src-tauri/tests/sqlserver.rs",
+        "src-tauri/tests/fixtures/sqlserver/**"
+      ],
+      "ts": ["src/features/drivers/sqlserver/**", "src/lib/ipc/mock/drivers/sqlserver/**"],
+      "bindings": ["src/lib/ipc/bindings/Mssql*.ts", "src/lib/ipc/bindings/lex/tsql.json"],
+      "docs": ["docs/drivers/sqlserver.md"],
+      "tests": ["drivers::sqlserver", "sqlgen::dialect::tsql"]
+    },
+    "snowflake": {
+      "databases": ["Snowflake"],
+      "drivers": ["snowflake"],
+      "kinds": ["snowflake"],
+      "dialects": ["snowflake"],
+      "native": [],
+      "features": ["drv-snowflake"],
+      "slot": "s2",
+      "prefixes": ["Snowflake"],
+      "rust": [
+        "src-tauri/src/drivers/snowflake/**",
+        "src-tauri/src/sqlgen/dialect/snowflake.rs",
+        "src-tauri/tests/snowflake.rs",
+        "src-tauri/tests/fixtures/snowflake/**"
+      ],
+      "ts": ["src/features/drivers/snowflake/**", "src/lib/ipc/mock/drivers/snowflake/**"],
+      "bindings": ["src/lib/ipc/bindings/Snowflake*.ts", "src/lib/ipc/bindings/lex/snowflake.json"],
+      "docs": ["docs/drivers/snowflake.md"],
+      "tests": ["drivers::snowflake", "sqlgen::dialect::snowflake"]
+    },
+    "bigquery": {
+      "databases": ["BigQuery"],
+      "drivers": ["bigquery"],
+      "kinds": ["bigquery"],
+      "dialects": ["bigquery"],
+      "native": [],
+      "features": ["drv-bigquery"],
+      "slot": "s2",
+      "prefixes": ["Bigquery"],
+      "rust": [
+        "src-tauri/src/drivers/bigquery/**",
+        "src-tauri/src/sqlgen/dialect/bigquery.rs",
+        "src-tauri/tests/bigquery.rs",
+        "src-tauri/tests/fixtures/bigquery/**"
+      ],
+      "ts": ["src/features/drivers/bigquery/**", "src/lib/ipc/mock/drivers/bigquery/**"],
+      "bindings": ["src/lib/ipc/bindings/Bigquery*.ts", "src/lib/ipc/bindings/lex/bigquery.json"],
+      "docs": ["docs/drivers/bigquery.md"],
+      "tests": ["drivers::bigquery", "sqlgen::dialect::bigquery"]
+    },
+    "vertica": {
+      "databases": ["Vertica"],
+      "drivers": ["vertica"],
+      "kinds": ["vertica"],
+      "dialects": ["vertica"],
+      "native": [],
+      "features": ["drv-vertica"],
+      "slot": "s2",
+      "prefixes": ["Vertica"],
+      "rust": [
+        "src-tauri/src/drivers/vertica/**",
+        "src-tauri/src/sqlgen/dialect/vertica.rs",
+        "src-tauri/tests/vertica.rs",
+        "src-tauri/tests/fixtures/vertica/**"
+      ],
+      "ts": ["src/features/drivers/vertica/**", "src/lib/ipc/mock/drivers/vertica/**"],
+      "bindings": ["src/lib/ipc/bindings/Vertica*.ts", "src/lib/ipc/bindings/lex/vertica.json"],
+      "docs": ["docs/drivers/vertica.md"],
+      "tests": ["drivers::vertica", "sqlgen::dialect::vertica"]
+    },
+    "dynamodb": {
+      "databases": ["DynamoDB"],
+      "drivers": ["dynamodb"],
+      "kinds": ["dynamodb"],
+      "dialects": [],
+      "native": ["dynamo"],
+      "features": ["drv-dynamodb"],
+      "slot": "s2",
+      "prefixes": ["Dynamo"],
+      "rust": [
+        "src-tauri/src/drivers/dynamodb/**",
+        "src-tauri/src/sqlgen/native/dynamo.rs",
+        "src-tauri/tests/dynamodb.rs",
+        "src-tauri/tests/fixtures/dynamodb/**"
+      ],
+      "ts": ["src/features/drivers/dynamodb/**", "src/lib/ipc/mock/drivers/dynamodb/**"],
+      "bindings": ["src/lib/ipc/bindings/Dynamo*.ts"],
+      "docs": ["docs/drivers/dynamodb.md"],
+      "tests": ["drivers::dynamodb", "sqlgen::native::dynamo"]
+    },
+    "cassandra": {
+      "databases": ["Cassandra", "ScyllaDB"],
+      "drivers": ["cassandra"],
+      "kinds": ["cassandra"],
+      "dialects": ["cql"],
+      "native": [],
+      "features": ["drv-cassandra"],
+      "slot": "s3",
+      "prefixes": ["Cassandra"],
+      "rust": [
+        "src-tauri/src/drivers/cassandra/**",
+        "src-tauri/src/sqlgen/dialect/cql.rs",
+        "src-tauri/tests/cassandra.rs",
+        "src-tauri/tests/fixtures/cassandra/**"
+      ],
+      "ts": ["src/features/drivers/cassandra/**", "src/lib/ipc/mock/drivers/cassandra/**"],
+      "bindings": ["src/lib/ipc/bindings/Cassandra*.ts", "src/lib/ipc/bindings/lex/cql.json"],
+      "docs": ["docs/drivers/cassandra.md"],
+      "tests": ["drivers::cassandra", "sqlgen::dialect::cql"]
+    },
+    "redis": {
+      "databases": ["Redis", "Valkey"],
+      "drivers": ["redis"],
+      "kinds": ["redis"],
+      "dialects": [],
+      "native": ["redis"],
+      "features": ["drv-redis"],
+      "slot": "s3",
+      "prefixes": ["Redis"],
+      "rust": [
+        "src-tauri/src/drivers/redis/**",
+        "src-tauri/src/sqlgen/native/redis.rs",
+        "src-tauri/tests/redis.rs",
+        "src-tauri/tests/fixtures/redis/**"
+      ],
+      "ts": ["src/features/drivers/redis/**", "src/lib/ipc/mock/drivers/redis/**"],
+      "bindings": ["src/lib/ipc/bindings/Redis*.ts"],
+      "docs": ["docs/drivers/redis.md"],
+      "tests": ["drivers::redis", "sqlgen::native::redis"]
+    },
+    "mongodb": {
+      "databases": ["MongoDB"],
+      "drivers": ["mongodb"],
+      "kinds": ["mongodb"],
+      "dialects": [],
+      "native": ["mongo"],
+      "features": ["drv-mongodb"],
+      "slot": "s3",
+      "prefixes": ["Mongo"],
+      "rust": [
+        "src-tauri/src/drivers/mongodb/**",
+        "src-tauri/src/sqlgen/native/mongo.rs",
+        "src-tauri/tests/mongodb.rs",
+        "src-tauri/tests/fixtures/mongodb/**"
+      ],
+      "ts": ["src/features/drivers/mongodb/**", "src/lib/ipc/mock/drivers/mongodb/**"],
+      "bindings": ["src/lib/ipc/bindings/Mongo*.ts"],
+      "docs": ["docs/drivers/mongodb.md"],
+      "tests": ["drivers::mongodb", "sqlgen::native::mongo"]
+    },
+    "elasticsearch": {
+      "databases": ["Elasticsearch", "OpenSearch"],
+      "drivers": ["elasticsearch"],
+      "kinds": ["elasticsearch"],
+      "dialects": [],
+      "native": ["elastic"],
+      "features": ["drv-elasticsearch"],
+      "slot": "s3",
+      "prefixes": ["Elastic"],
+      "rust": [
+        "src-tauri/src/drivers/elasticsearch/**",
+        "src-tauri/src/sqlgen/native/elastic.rs",
+        "src-tauri/tests/elasticsearch.rs",
+        "src-tauri/tests/fixtures/elasticsearch/**"
+      ],
+      "ts": ["src/features/drivers/elasticsearch/**", "src/lib/ipc/mock/drivers/elasticsearch/**"],
+      "bindings": ["src/lib/ipc/bindings/Elastic*.ts"],
+      "docs": ["docs/drivers/elasticsearch.md"],
+      "tests": ["drivers::elasticsearch", "sqlgen::native::elastic"]
+    }
+  }
+}

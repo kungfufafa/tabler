@@ -12,17 +12,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import type { CoreDriver } from "@/features/drivers/catalog";
 import { languageExtension } from "@/features/editor/cmExtensions";
 import { sqlEditorTheme } from "@/features/editor/cmTheme";
-import type { Driver } from "@/lib/ipc";
 
-const EXAMPLE: Record<Driver, string> = {
+const EXAMPLE: Record<CoreDriver, string> = {
   postgres: "SET search_path TO app, public;",
   mysql: "SET SESSION sql_safe_updates = 1;",
   sqlite: "PRAGMA foreign_keys = ON;",
 };
 
-const SCRIPT_EXAMPLE: Record<Driver, string> = {
+const SCRIPT_EXAMPLE: Record<CoreDriver, string> = {
   postgres: "cloud-sql-proxy my-project:region:db --port 5433 &>/tmp/proxy.log &\nsleep 2",
   mysql: "cloud-sql-proxy my-project:region:db --port 3307 &>/tmp/proxy.log &\nsleep 2",
   sqlite: 'rsync -a server:/var/lib/app/app.sqlite "$TABLER_SQLITE_PATH"',
@@ -46,7 +46,7 @@ export function BootstrapCommandsDialog({
   value: string;
   /** The shell script run before connecting. */
   script?: string;
-  driver: Driver;
+  driver: CoreDriver;
   onOpenChange: (open: boolean) => void;
   onSave: (sql: string, script: string) => void;
 }) {

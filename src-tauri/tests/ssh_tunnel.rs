@@ -2085,7 +2085,7 @@ async fn select_one_through_tunnel(driver: Driver, env: &str, sql: &str) {
     let trust = trusting(&server);
     let cfg = ssh_cfg(server.port(), SshAuth::Password, None);
     let target_host = profile.host.clone().unwrap();
-    let target_port = profile.port.or_else(|| driver.default_port()).unwrap();
+    let target_port = profile.port.or_else(|| profile.default_port()).unwrap();
     let tunnel = tokio::time::timeout(
         Duration::from_secs(20),
         open_tunnel(&cfg, password(PASSWORD), target_host, target_port, &trust),

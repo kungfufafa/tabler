@@ -41,7 +41,8 @@ pub fn tool_names(driver: Driver) -> &'static [(&'static str, DumpTool)] {
             ("mysql", DumpTool::Mysql),
             ("mariadb", DumpTool::Mysql),
         ],
-        Driver::Sqlite => &[],
+        // SQLite copies its file; the other drivers have no dump tool.
+        _ => &[],
     }
 }
 

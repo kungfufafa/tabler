@@ -1,3 +1,4 @@
+import { coreDialect } from "@/features/drivers/catalog";
 import { statementTexts } from "@/features/editor/scanner";
 import { guardExecution } from "@/features/safety/guard";
 import { ipc, type StatementResult, type Value } from "@/lib/ipc";
@@ -34,7 +35,9 @@ export async function executeSql(
 ): Promise<ExecResult> {
   const conn = connectionId ? useConnectionsStore.getState().byId[connectionId] : undefined;
   if (!connectionId || !conn) throw new Error("Not connected: open a connection first");
-  const statements = statementTexts(sql, conn.info.driver).filter((s) => s.trim() !== "");
+  const statements = statementTexts(sql, coreDialect(conn.info.driver)).filter(
+    (s) => s.trim() !== "",
+  );
   if (statements.length === 0) throw new Error("Nothing to execute");
   const wait = options.userWait ?? (<T>(p: Promise<T>) => p);
   if (!(await wait(guardExecution(connectionId, { kind: "query", statements }))))

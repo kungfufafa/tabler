@@ -36,6 +36,7 @@ import {
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { coreDialect } from "@/features/drivers/catalog";
 import { useDatabases } from "@/features/sidebar/useSchemaTree";
 import { SqlBlock } from "@/features/structure/SqlBlock";
 import {
@@ -1134,7 +1135,7 @@ function UserFooter({
           ) : preview.data ? (
             <SqlBlock
               sql={preview.data.length > 0 ? `${preview.data.join(";\n")};` : "-- nothing to run"}
-              dialect={driver}
+              dialect={coreDialect(driver)}
             />
           ) : (
             <Loader2 className="text-muted-foreground size-3.5 animate-spin" />

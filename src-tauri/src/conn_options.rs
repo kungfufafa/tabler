@@ -37,7 +37,7 @@ pub fn is_utf8_encoding(name: Option<&str>) -> bool {
 /// it into a read-only server session and the renderer's guards refuse writes up front.
 pub fn effective_read_only(profile: &ConnectionProfile) -> bool {
     profile.options.read_only
-        || (profile.driver != Driver::Sqlite && !is_utf8_encoding(profile.options.encoding()))
+        || (profile.driver.descriptor().encoding && !is_utf8_encoding(profile.options.encoding()))
 }
 
 /// SQLCipher compatibility values (`PRAGMA cipher_compatibility`).
@@ -54,6 +54,8 @@ pub fn check(profile: &ConnectionProfile) -> Result<(), AppError> {
             )),
             _ => Ok(()),
         },
+        // The other drivers check their own options (`drivers::registry::validate`).
+        _ => Ok(()),
     }
 }
 

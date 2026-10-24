@@ -85,6 +85,39 @@ describe("connection form schema", () => {
     });
   });
 
+  it("keeps the PostgreSQL flavor and driver params of an edited profile", () => {
+    const pg = SEED_PROFILES[0]!;
+    const cockroach = {
+      ...pg,
+      port: null,
+      options: {
+        ...pg.options,
+        pgFlavor: "cockroachdb" as const,
+        driverParams: { cluster: "blue-fox-42" },
+      },
+    };
+    const edited = formToProfileInput(
+      { ...profileToForm(cockroach), name: "renamed" },
+      cockroach,
+      cockroach.id,
+    );
+    expect(edited.profile.port).toBeNull();
+    expect(edited.profile.options.pgFlavor).toBe("cockroachdb");
+    expect(edited.profile.options.driverParams).toEqual({ cluster: "blue-fox-42" });
+    // Another driver has neither.
+    const mysql = formToProfileInput(
+      { ...profileToForm(cockroach), driver: "mysql" },
+      cockroach,
+      cockroach.id,
+    );
+    expect(mysql.profile.options.pgFlavor).toBeNull();
+    expect(mysql.profile.options.driverParams).toBeNull();
+    // A new profile has neither.
+    const fresh = formToProfileInput({ ...newProfileForm(15), name: "n", user: "u" }, null, "id-1");
+    expect(fresh.profile.options.pgFlavor).toBeNull();
+    expect(fresh.profile.options.driverParams).toBeNull();
+  });
+
   it("round-trips the SQLite foreign-keys switch (on by default)", () => {
     expect(newProfileForm(15).sqliteForeignKeys).toBe(true);
     const base = { ...DEFAULT_FORM, name: "s", driver: "sqlite" as const, sqlitePath: "/x.db" };

@@ -1,6 +1,7 @@
 use tauri::{AppHandle, State, Webview};
 use uuid::Uuid;
 
+use crate::drivers::registry;
 use crate::error::AppError;
 use crate::shell::QuitState;
 use crate::types::app::AppInfo;
@@ -14,6 +15,8 @@ pub fn app_info(app: AppHandle) -> AppInfo {
         version: app.package_info().version.to_string(),
         platform: std::env::consts::OS.to_string(),
         debug: cfg!(debug_assertions),
+        drivers: Some(registry::built_drivers()),
+        kinds: Some(registry::built_kinds()),
     }
 }
 

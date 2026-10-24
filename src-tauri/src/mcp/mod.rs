@@ -108,6 +108,8 @@ fn std_streams() -> std::io::Result<(std::fs::File, std::fs::File)> {
 /// process exit code.
 pub fn main() -> i32 {
     init_log();
+    // Nobody watches what MCP clients run: drivers open their sessions hardened.
+    crate::drivers::registry::set_unattended();
     // The same TLS provider as the app (see `run`).
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()

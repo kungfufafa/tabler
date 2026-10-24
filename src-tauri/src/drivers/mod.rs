@@ -20,10 +20,39 @@ use crate::types::schema::{
 };
 use crate::types::value::Value;
 
+pub mod common;
 pub mod mysql;
+pub mod native;
 pub mod postgres;
 pub mod redact;
+pub mod registry;
 pub mod sqlite;
+
+// The lane drivers, each built only with its cargo feature (`registry` stands in for the others).
+#[cfg(feature = "drv-bigquery")]
+pub mod bigquery;
+#[cfg(feature = "drv-cassandra")]
+pub mod cassandra;
+#[cfg(feature = "drv-clickhouse")]
+pub mod clickhouse;
+#[cfg(feature = "drv-duckdb")]
+pub mod duckdb;
+#[cfg(feature = "drv-dynamodb")]
+pub mod dynamodb;
+#[cfg(feature = "drv-elasticsearch")]
+pub mod elasticsearch;
+#[cfg(feature = "drv-mongodb")]
+pub mod mongodb;
+#[cfg(feature = "drv-redis")]
+pub mod redis;
+#[cfg(feature = "drv-snowflake")]
+pub mod snowflake;
+#[cfg(any(feature = "drv-libsql", feature = "drv-d1"))]
+pub mod sqlite_http;
+#[cfg(feature = "drv-sqlserver")]
+pub mod sqlserver;
+#[cfg(feature = "drv-vertica")]
+pub mod vertica;
 
 /// Receives rows streamed by `run_statement` / `stream_query`. Returning `Break` from `rows`
 /// stops consumption (row cap reached or export cancelled).
@@ -1003,7 +1032,7 @@ impl ConnectTarget<'_> {
             None => self
                 .profile
                 .port
-                .or_else(|| self.profile.driver.default_port())
+                .or_else(|| self.profile.default_port())
                 .unwrap_or(0),
         }
     }
@@ -1017,15 +1046,9 @@ impl ConnectTarget<'_> {
     }
 }
 
+/// Opens a SQL session for `target`'s profile with its driver (see `registry::connect`).
 pub async fn connect(target: ConnectTarget<'_>) -> Result<Arc<dyn DbSession>, AppError> {
-    match target.profile.driver {
-        // A SQLite profile's password is its SQLCipher encryption key.
-        Driver::Sqlite => Ok(Arc::new(
-            sqlite::LiteSession::open_with_key(target.profile, target.password).await?,
-        )),
-        Driver::Postgres => postgres::connect(target).await,
-        Driver::Mysql => mysql::connect(target).await,
-    }
+    registry::connect(target).await
 }
 
 #[cfg(test)]

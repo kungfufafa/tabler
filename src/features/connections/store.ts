@@ -1,5 +1,7 @@
+import { toast } from "sonner";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { isCoreDriver } from "@/features/drivers/catalog";
 import type { ConnectionProfile } from "@/lib/ipc";
 import { liftPath, normalizePath, rebasePath } from "./groups";
 import { CONNECTION_SORTS, type ConnectionSort } from "./list";
@@ -42,6 +44,11 @@ export function openConnectionDialog(
   profile: ConnectionProfile | null = null,
   prefill: ParsedConnectionUrl | null = null,
 ): void {
+  // The form has the fields of the core drivers only (a newer Tabler may have saved another).
+  if (profile && !isCoreDriver(profile.driver)) {
+    toast.error(`“${profile.name}” cannot be edited in this version of Tabler`);
+    return;
+  }
   useConnectionDialog.setState({ open: true, profile, prefill: profile ? null : prefill });
 }
 

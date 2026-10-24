@@ -22,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { coreDialect } from "@/features/drivers/catalog";
 import { switchDatabase } from "@/features/sidebar/switchDatabase";
 import { useDatabases } from "@/features/sidebar/useSchemaTree";
 import { SqlBlock } from "@/features/structure/SqlBlock";
@@ -41,7 +42,7 @@ import { adminKeys } from "./keys";
 import { ErrorLine, Field, NativeSelect } from "./parts";
 import { errorInfo, runAdminDdl, type AdminErrorInfo } from "./run";
 
-const dialectOf = (driver: Driver): Dialect => driver;
+const dialectOf = (driver: Driver): Dialect => coreDialect(driver);
 
 /** "+" / New Database… of the ⌘K database list: name, encoding, collation (and PG template). */
 export function CreateDatabaseDialog({

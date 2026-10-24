@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import type { CoreDriver } from "@/features/drivers/catalog";
 import type { Driver, MysqlVersion } from "@/lib/ipc";
 import { accentColor, HEX_COLOR, type AccentPreset } from "@/lib/theme";
 import type { BuiltinTag } from "./schema";
@@ -17,7 +18,7 @@ export const DRIVERS = ["postgres", "mysql", "sqlite"] as const satisfies readon
  * The databases of the new-connection picker, TablePlus's list: MariaDB has its own tile and badge
  * although the MySQL driver serves it (a MySQL connection with Ver. ▸ MariaDB).
  */
-export type DatabaseKind = Driver | "mariadb";
+export type DatabaseKind = CoreDriver | "mariadb";
 export const DATABASE_KINDS = [
   "postgres",
   "mysql",
@@ -40,12 +41,12 @@ export const KIND_TINT: Record<DatabaseKind, AccentPreset> = {
 };
 
 /** The database a connection is for: its driver, or MariaDB for a MySQL one set to Ver. ▸ MariaDB. */
-export function databaseKind(driver: Driver, mysqlVersion?: MysqlVersion | null): DatabaseKind {
+export function databaseKind(driver: CoreDriver, mysqlVersion?: MysqlVersion | null): DatabaseKind {
   return driver === "mysql" && mysqlVersion === "mariadb" ? "mariadb" : driver;
 }
 
 /** The driver that serves a database of the picker. */
-export function kindDriver(kind: DatabaseKind): Driver {
+export function kindDriver(kind: DatabaseKind): CoreDriver {
   return kind === "mariadb" ? "mysql" : kind;
 }
 

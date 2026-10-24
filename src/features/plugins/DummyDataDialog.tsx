@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { coreDialect } from "@/features/drivers/catalog";
 import { useTableMeta } from "@/features/table-tab/useTableRows";
 import { tableKey, type Driver } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
@@ -42,7 +43,9 @@ function DummyDataForm({ request }: { request: DummyDataRequest }) {
   const countOk = Number.isInteger(count) && count >= 1 && count <= MAX_DUMMY_ROWS;
   const statements = useMemo(
     () =>
-      meta.data && driver && countOk ? dummyInserts(driver, meta.data, count, seededRng(seed)) : [],
+      meta.data && driver && countOk
+        ? dummyInserts(coreDialect(driver), meta.data, count, seededRng(seed))
+        : [],
     [meta.data, driver, countOk, count, seed],
   );
   const sql = statements.join("\n");

@@ -39,6 +39,11 @@ fn load_profile(state: &AppState, profile_id: Uuid) -> Result<ConnectionProfile,
             "SQLite databases are backed up by copying the database file".into(),
         ));
     }
+    if !profile.driver.is_core() {
+        return Err(args::no_dump_tools(profile.driver));
+    }
+    // A PostgreSQL flavor this build lacks (Redshift) is not dumped as plain PostgreSQL.
+    drivers::registry::ensure_built(&profile)?;
     check_socket(&profile)?;
     Ok(profile)
 }
@@ -126,10 +131,7 @@ async fn route(state: &AppState, profile: &ConnectionProfile) -> Result<Route, A
             .filter(|h| !h.is_empty())
             .unwrap_or(tunnel::LOCAL_HOST)
             .to_string();
-        let port = profile
-            .port
-            .or_else(|| profile.driver.default_port())
-            .unwrap_or(0);
+        let port = profile.port.or_else(|| profile.default_port()).unwrap_or(0);
         return Ok(Route {
             endpoint: Endpoint {
                 host,

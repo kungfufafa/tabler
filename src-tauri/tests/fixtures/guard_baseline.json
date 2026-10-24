@@ -1,0 +1,14 @@
+{
+  "driverCompares": {
+    "src/assistant/context.rs": 1,
+    "src/commands/backup.rs": 4,
+    "src/commands/browse.rs": 1,
+    "src/commands/connections.rs": 1,
+    "src/commands/ddl.rs": 1,
+    "src/commands/export.rs": 2,
+    "src/commands/profiles.rs": 1,
+    "src/mcp/pool.rs": 1,
+    "src/tunnel/sqlite_remote.rs": 1,
+    "src/types/profile.rs": 1
+  }
+}

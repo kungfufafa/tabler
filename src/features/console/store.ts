@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { isCoreDriver } from "@/features/drivers/catalog";
 import { onSqlLog, type Dialect, type SqlLogCategory, type SqlLogEvent } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 
@@ -69,7 +70,7 @@ export const useConsoleStore = create<ConsoleState>()((set) => ({
       at,
       connectionName: info?.name ?? null,
       database: info?.currentDatabase ?? null,
-      ...(info ? { dialect: info.driver } : {}),
+      ...(info && isCoreDriver(info.driver) ? { dialect: info.driver } : {}),
     };
     set((s) => ({ entries: appendCapped(s.entries, entry) }));
   },

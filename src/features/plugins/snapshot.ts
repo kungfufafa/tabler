@@ -4,7 +4,7 @@ import type { PlainValue, PluginSnapshot, SnapshotRow } from "./sandbox/protocol
 import type { PluginInvocation, PluginRowData } from "./types";
 
 /** TablePlus's driver names (`context.driver()`). */
-export const DRIVER_NAMES: Record<Driver, string> = {
+export const DRIVER_NAMES: Partial<Record<Driver, string>> = {
   postgres: "PostgreSQL",
   mysql: "MySQL",
   sqlite: "SQLite",
@@ -47,7 +47,7 @@ export function toSnapshot(
     inv.clickedRow && inv.clickedColumn !== null ? inv.clickedRow.columns[inv.clickedColumn] : null;
   return {
     source: inv.source,
-    driver: inv.driver ? DRIVER_NAMES[inv.driver] : null,
+    driver: inv.driver ? (DRIVER_NAMES[inv.driver] ?? inv.driver) : null,
     connection,
     item: inv.item ? { name: inv.item.name, schema: inv.item.schema, type: inv.item.type } : null,
     clickedRow: inv.clickedRow ? snapshotRow(inv.clickedRow) : null,

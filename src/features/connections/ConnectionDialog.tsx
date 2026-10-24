@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import type { CoreDriver } from "@/features/drivers/catalog";
 import { rememberSafeModeLevel } from "@/features/safety/guard";
 import { SAFE_MODE_DESCRIPTION, SAFE_MODE_SUMMARY } from "@/features/safety/levels";
 import { confirmProtectedChange, protectedChanges } from "@/features/safety/setLevel";
@@ -127,13 +128,16 @@ import {
 
 type Form = UseFormReturn<ConnectionFormValues>;
 
-const DEFAULT_PORT: Record<Driver, string> = { postgres: "5432", mysql: "3306", sqlite: "" };
+const DEFAULT_PORT: Record<CoreDriver, string> = { postgres: "5432", mysql: "3306", sqlite: "" };
 
 /**
  * SSL modes per driver, in menu order: libpq's names for PostgreSQL, MySQL's for MySQL, and the
  * MariaDB / old MySQL driver's three (Ver. ▸ MariaDB or Old MySQL).
  */
-const SSL_MODES: Record<Exclude<Driver, "sqlite"> | "mariadb", ReadonlyArray<[SslMode, string]>> = {
+const SSL_MODES: Record<
+  Exclude<CoreDriver, "sqlite"> | "mariadb",
+  ReadonlyArray<[SslMode, string]>
+> = {
   postgres: [
     ["disable", "disable"],
     ["prefer", "prefer"],
@@ -211,7 +215,7 @@ const PASSWORD_PLACEHOLDER: Record<Exclude<PasswordMode, "keychain">, string> = 
   command: "From the command",
 };
 
-const IAM_COMMAND_EXAMPLE: Record<Exclude<Driver, "sqlite">, string> = {
+const IAM_COMMAND_EXAMPLE: Record<Exclude<CoreDriver, "sqlite">, string> = {
   postgres:
     "aws rds generate-db-auth-token --hostname mydb.abc.us-east-1.rds.amazonaws.com --port 5432 --username app",
   mysql:
@@ -659,7 +663,7 @@ function GeneralFields({
               <Select
                 value={field.value}
                 onValueChange={(v) => {
-                  const next = v as Driver;
+                  const next = v as CoreDriver;
                   const port = getValues("port").trim();
                   field.onChange(next);
                   // Follow the driver unless the port was typed in.
@@ -1010,7 +1014,7 @@ function GeneralFields({
 
 /** The driver toggles of TablePlus's "Other options" menu, as [field, label, hint]. */
 const OTHER_OPTIONS: Record<
-  Exclude<Driver, "sqlite">,
+  Exclude<CoreDriver, "sqlite">,
   ReadonlyArray<
     readonly [
       "mysqlCleartextPlugin" | "mysqlLocalInfile" | "pgDisableChannelBinding",

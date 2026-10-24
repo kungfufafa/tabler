@@ -34,6 +34,7 @@ import { TableIcon } from "@/components/TypeIcon";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { openDiagram } from "@/features/diagram/store";
+import { coreDialect } from "@/features/drivers/catalog";
 import {
   copyLaravelMigrations,
   copyNames,
@@ -483,7 +484,7 @@ export function SchemaTree({
   const ctxFor = (schema: string | null | undefined): ObjectContext =>
     schema ? { ...ctx, schema } : ctx;
   const dialog = (d: ObjectDialog) =>
-    openObjectDialog({ connectionId, dialect: driver, dialog: d });
+    openObjectDialog({ connectionId, dialect: coreDialect(driver), dialog: d });
   /** New ▸ … into `schema` (the sidebar's schema when left out). */
   const newIn = (schema?: string | null) => ({
     newItem: (what: Parameters<typeof runNew>[1]) => runNew(ctxFor(schema), what),
@@ -493,7 +494,7 @@ export function SchemaTree({
   const hasGroups = pinScope !== null;
   const overviewOf = (schema: string | null | undefined) => {
     const s = schema ?? currentSchema;
-    if (s !== null) openItemOverview({ connectionId, dialect: driver, schema: s });
+    if (s !== null) openItemOverview({ connectionId, dialect: coreDialect(driver), schema: s });
   };
 
   if (loading) {

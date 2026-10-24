@@ -1,0 +1,1118 @@
+{
+  "drivers": [
+    {
+      "driver": "postgres",
+      "label": "PostgreSQL",
+      "short": "PG",
+      "family": "sql",
+      "language": "sql",
+      "session": "sql",
+      "dialect": "postgres",
+      "location": "host",
+      "defaultPort": 5432,
+      "tlsPort": null,
+      "ssh": "tunnel",
+      "tls": "libpq",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "password",
+      "secretIsToken": false,
+      "extraSecrets": [],
+      "commandTtlSecs": 600,
+      "required": [
+        "host",
+        "user"
+      ],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": null,
+        "file": null
+      },
+      "encoding": true,
+      "timezone": true,
+      "startup": "sql",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "postgres",
+        "postgresql",
+        "pgsql"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [
+        "pg_*",
+        "information_schema"
+      ],
+      "readOnly": "server",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": null
+    },
+    {
+      "driver": "mysql",
+      "label": "MySQL",
+      "short": "MY",
+      "family": "sql",
+      "language": "sql",
+      "session": "sql",
+      "dialect": "mysql",
+      "location": "host",
+      "defaultPort": 3306,
+      "tlsPort": null,
+      "ssh": "tunnel",
+      "tls": "mysql",
+      "socket": true,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "password",
+      "secretIsToken": false,
+      "extraSecrets": [],
+      "commandTtlSecs": 600,
+      "required": [
+        "host",
+        "user"
+      ],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": null,
+        "file": null
+      },
+      "encoding": true,
+      "timezone": true,
+      "startup": "sql",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "mysql",
+        "mariadb"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [
+        "information_schema",
+        "mysql",
+        "performance_schema",
+        "sys"
+      ],
+      "readOnly": "server",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": null
+    },
+    {
+      "driver": "sqlite",
+      "label": "SQLite",
+      "short": "SQ",
+      "family": "sql",
+      "language": "sql",
+      "session": "sql",
+      "dialect": "sqlite",
+      "location": "file",
+      "defaultPort": null,
+      "tlsPort": null,
+      "ssh": "sftp",
+      "tls": "none",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none"
+      ],
+      "secret": "encryptionKey",
+      "secretIsToken": false,
+      "extraSecrets": [],
+      "commandTtlSecs": 600,
+      "required": [
+        "file"
+      ],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": null,
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "sql",
+      "bootstrapScript": true,
+      "rowid": true,
+      "urlSchemes": [
+        "sqlite",
+        "sqlite3"
+      ],
+      "fileExtensions": [
+        "sqlite",
+        "db",
+        "sqlite3",
+        "db3"
+      ],
+      "systemSchemas": [],
+      "readOnly": "server",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": null
+    },
+    {
+      "driver": "sqlserver",
+      "label": "SQL Server",
+      "short": "MS",
+      "family": "sql",
+      "language": "sql",
+      "session": "sql",
+      "dialect": "tsql",
+      "location": "host",
+      "defaultPort": 1433,
+      "tlsPort": null,
+      "ssh": "tunnel",
+      "tls": "tds",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "password",
+      "secretIsToken": false,
+      "extraSecrets": [],
+      "commandTtlSecs": 3000,
+      "required": [
+        "host"
+      ],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": null,
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "sql",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "sqlserver",
+        "mssql"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [
+        "sys",
+        "INFORMATION_SCHEMA"
+      ],
+      "readOnly": "classifierOnly",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": "drv-sqlserver"
+    },
+    {
+      "driver": "libsql",
+      "label": "LibSQL",
+      "short": "LS",
+      "family": "sql",
+      "language": "sql",
+      "session": "sql",
+      "dialect": "sqlite",
+      "location": "host",
+      "defaultPort": 8080,
+      "tlsPort": 443,
+      "ssh": "tunnel",
+      "tls": "https",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "authToken",
+      "secretIsToken": true,
+      "extraSecrets": [],
+      "commandTtlSecs": 3000,
+      "required": [],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": null,
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "sql",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "libsql"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [],
+      "readOnly": "perRequest",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": "drv-libsql"
+    },
+    {
+      "driver": "d1",
+      "label": "Cloudflare D1",
+      "short": "D1",
+      "family": "sql",
+      "language": "sql",
+      "session": "sql",
+      "dialect": "sqlite",
+      "location": "cloud",
+      "defaultPort": null,
+      "tlsPort": null,
+      "ssh": "none",
+      "tls": "https",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "command"
+      ],
+      "secret": "apiToken",
+      "secretIsToken": true,
+      "extraSecrets": [],
+      "commandTtlSecs": 3000,
+      "required": [
+        "database"
+      ],
+      "requiredParams": [
+        "accountId"
+      ],
+      "labels": {
+        "host": null,
+        "user": "Account ID",
+        "database": null,
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "none",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "d1",
+        "cloudflared1"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [],
+      "readOnly": "classifierOnly",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": "drv-d1"
+    },
+    {
+      "driver": "duckdb",
+      "label": "DuckDB",
+      "short": "DK",
+      "family": "sql",
+      "language": "sql",
+      "session": "sql",
+      "dialect": "duckdb",
+      "location": "file",
+      "defaultPort": null,
+      "tlsPort": null,
+      "ssh": "none",
+      "tls": "none",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none"
+      ],
+      "secret": "encryptionKey",
+      "secretIsToken": false,
+      "extraSecrets": [],
+      "commandTtlSecs": 0,
+      "required": [
+        "file"
+      ],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": null,
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "sql",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "duckdb"
+      ],
+      "fileExtensions": [
+        "duckdb",
+        "ddb"
+      ],
+      "systemSchemas": [
+        "information_schema",
+        "pg_catalog"
+      ],
+      "readOnly": "server",
+      "sharing": "singleProcess",
+      "coreReuse": [],
+      "cargoFeature": "drv-duckdb"
+    },
+    {
+      "driver": "clickhouse",
+      "label": "ClickHouse",
+      "short": "CH",
+      "family": "sql",
+      "language": "sql",
+      "session": "sql",
+      "dialect": "clickhouse",
+      "location": "host",
+      "defaultPort": 8123,
+      "tlsPort": 8443,
+      "ssh": "tunnel",
+      "tls": "onOff",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "password",
+      "secretIsToken": false,
+      "extraSecrets": [],
+      "commandTtlSecs": 600,
+      "required": [
+        "host"
+      ],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": null,
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "none",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "clickhouse"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [
+        "system",
+        "INFORMATION_SCHEMA",
+        "information_schema"
+      ],
+      "readOnly": "perRequest",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": "drv-clickhouse"
+    },
+    {
+      "driver": "snowflake",
+      "label": "Snowflake",
+      "short": "SF",
+      "family": "sql",
+      "language": "sql",
+      "session": "sql",
+      "dialect": "snowflake",
+      "location": "cloud",
+      "defaultPort": null,
+      "tlsPort": null,
+      "ssh": "none",
+      "tls": "https",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "passwordOrToken",
+      "secretIsToken": true,
+      "extraSecrets": [
+        "keyPassphrase"
+      ],
+      "commandTtlSecs": 3000,
+      "required": [
+        "user"
+      ],
+      "requiredParams": [
+        "account"
+      ],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": null,
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "sql",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "snowflake"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [
+        "INFORMATION_SCHEMA"
+      ],
+      "readOnly": "classifierOnly",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": "drv-snowflake"
+    },
+    {
+      "driver": "bigquery",
+      "label": "BigQuery",
+      "short": "BQ",
+      "family": "sql",
+      "language": "sql",
+      "session": "sql",
+      "dialect": "bigquery",
+      "location": "cloud",
+      "defaultPort": null,
+      "tlsPort": null,
+      "ssh": "none",
+      "tls": "https",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "accessToken",
+      "secretIsToken": true,
+      "extraSecrets": [],
+      "commandTtlSecs": 3000,
+      "required": [
+        "database"
+      ],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": "Project",
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "none",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "bigquery"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [],
+      "readOnly": "classifierOnly",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": "drv-bigquery"
+    },
+    {
+      "driver": "vertica",
+      "label": "Vertica",
+      "short": "VE",
+      "family": "sql",
+      "language": "sql",
+      "session": "sql",
+      "dialect": "vertica",
+      "location": "host",
+      "defaultPort": 5433,
+      "tlsPort": null,
+      "ssh": "tunnel",
+      "tls": "libpq",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "password",
+      "secretIsToken": false,
+      "extraSecrets": [],
+      "commandTtlSecs": 600,
+      "required": [
+        "host",
+        "user",
+        "database"
+      ],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": null,
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "sql",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "vertica"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [
+        "v_catalog",
+        "v_monitor",
+        "v_internal",
+        "v_func",
+        "v_txtindex"
+      ],
+      "readOnly": "server",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": "drv-vertica"
+    },
+    {
+      "driver": "cassandra",
+      "label": "Cassandra",
+      "short": "CA",
+      "family": "wideColumn",
+      "language": "cql",
+      "session": "sql",
+      "dialect": "cql",
+      "location": "host",
+      "defaultPort": 9042,
+      "tlsPort": null,
+      "ssh": "tunnel",
+      "tls": "onOff",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "password",
+      "secretIsToken": false,
+      "extraSecrets": [],
+      "commandTtlSecs": 600,
+      "required": [
+        "host"
+      ],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": "Keyspace",
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "sql",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "cassandra"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [
+        "system",
+        "system_*"
+      ],
+      "readOnly": "classifierOnly",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": "drv-cassandra"
+    },
+    {
+      "driver": "redis",
+      "label": "Redis",
+      "short": "RE",
+      "family": "keyValue",
+      "language": "redisCli",
+      "session": "native",
+      "dialect": null,
+      "location": "host",
+      "defaultPort": 6379,
+      "tlsPort": null,
+      "ssh": "tunnel",
+      "tls": "onOff",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "password",
+      "secretIsToken": false,
+      "extraSecrets": [],
+      "commandTtlSecs": 600,
+      "required": [
+        "host"
+      ],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": "DB index",
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "commands",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "redis",
+        "rediss"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [],
+      "readOnly": "classifierOnly",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": "drv-redis"
+    },
+    {
+      "driver": "mongodb",
+      "label": "MongoDB",
+      "short": "MO",
+      "family": "document",
+      "language": "mongoShell",
+      "session": "native",
+      "dialect": null,
+      "location": "host",
+      "defaultPort": 27017,
+      "tlsPort": null,
+      "ssh": "tunnel",
+      "tls": "onOff",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "password",
+      "secretIsToken": false,
+      "extraSecrets": [],
+      "commandTtlSecs": 600,
+      "required": [],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": null,
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "none",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "mongodb",
+        "mongodb+srv"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [],
+      "readOnly": "classifierOnly",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": "drv-mongodb"
+    },
+    {
+      "driver": "elasticsearch",
+      "label": "Elasticsearch",
+      "short": "ES",
+      "family": "search",
+      "language": "esConsole",
+      "session": "native",
+      "dialect": null,
+      "location": "host",
+      "defaultPort": 9200,
+      "tlsPort": null,
+      "ssh": "tunnel",
+      "tls": "https",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "passwordOrToken",
+      "secretIsToken": true,
+      "extraSecrets": [],
+      "commandTtlSecs": 3000,
+      "required": [],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": null,
+        "database": null,
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "none",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "elasticsearch"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [],
+      "readOnly": "classifierOnly",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": "drv-elasticsearch"
+    },
+    {
+      "driver": "dynamodb",
+      "label": "DynamoDB",
+      "short": "DY",
+      "family": "document",
+      "language": "partiql",
+      "session": "native",
+      "dialect": null,
+      "location": "cloud",
+      "defaultPort": null,
+      "tlsPort": null,
+      "ssh": "none",
+      "tls": "https",
+      "socket": false,
+      "passwordModes": [
+        "keychain",
+        "ask",
+        "none",
+        "command"
+      ],
+      "secret": "secretAccessKey",
+      "secretIsToken": true,
+      "extraSecrets": [
+        "sessionToken"
+      ],
+      "commandTtlSecs": 600,
+      "required": [
+        "database"
+      ],
+      "requiredParams": [],
+      "labels": {
+        "host": null,
+        "user": "Access key ID",
+        "database": "Region",
+        "file": null
+      },
+      "encoding": false,
+      "timezone": false,
+      "startup": "none",
+      "bootstrapScript": true,
+      "rowid": false,
+      "urlSchemes": [
+        "dynamodb"
+      ],
+      "fileExtensions": [],
+      "systemSchemas": [],
+      "readOnly": "classifierOnly",
+      "sharing": "independent",
+      "coreReuse": [],
+      "cargoFeature": "drv-dynamodb"
+    }
+  ],
+  "kinds": [
+    {
+      "kind": "postgres",
+      "driver": "postgres",
+      "label": "PostgreSQL",
+      "short": "PG",
+      "tint": "blue",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": 5432,
+      "defaultDatabase": "postgres",
+      "defaultUser": null,
+      "backup": true,
+      "cargoFeature": null
+    },
+    {
+      "kind": "cockroachdb",
+      "driver": "postgres",
+      "label": "CockroachDB",
+      "short": "CR",
+      "tint": "purple",
+      "pgFlavor": "cockroachdb",
+      "mysqlVersion": null,
+      "defaultPort": 26257,
+      "defaultDatabase": "defaultdb",
+      "defaultUser": "root",
+      "backup": false,
+      "cargoFeature": "drv-pg-flavors"
+    },
+    {
+      "kind": "greenplum",
+      "driver": "postgres",
+      "label": "Greenplum",
+      "short": "GP",
+      "tint": "green",
+      "pgFlavor": "greenplum",
+      "mysqlVersion": null,
+      "defaultPort": 5432,
+      "defaultDatabase": "postgres",
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-pg-flavors"
+    },
+    {
+      "kind": "redshift",
+      "driver": "postgres",
+      "label": "Amazon Redshift",
+      "short": "RS",
+      "tint": "red",
+      "pgFlavor": "redshift",
+      "mysqlVersion": null,
+      "defaultPort": 5439,
+      "defaultDatabase": "dev",
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-pg-flavors"
+    },
+    {
+      "kind": "mysql",
+      "driver": "mysql",
+      "label": "MySQL",
+      "short": "MY",
+      "tint": "orange",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": 3306,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": true,
+      "cargoFeature": null
+    },
+    {
+      "kind": "mariadb",
+      "driver": "mysql",
+      "label": "MariaDB",
+      "short": "MA",
+      "tint": "purple",
+      "pgFlavor": null,
+      "mysqlVersion": "mariadb",
+      "defaultPort": 3306,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": true,
+      "cargoFeature": null
+    },
+    {
+      "kind": "sqlite",
+      "driver": "sqlite",
+      "label": "SQLite",
+      "short": "SQ",
+      "tint": "teal",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": null,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": true,
+      "cargoFeature": null
+    },
+    {
+      "kind": "libsql",
+      "driver": "libsql",
+      "label": "LibSQL",
+      "short": "LS",
+      "tint": "teal",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": 8080,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-libsql"
+    },
+    {
+      "kind": "d1",
+      "driver": "d1",
+      "label": "Cloudflare D1",
+      "short": "D1",
+      "tint": "orange",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": null,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-d1"
+    },
+    {
+      "kind": "duckdb",
+      "driver": "duckdb",
+      "label": "DuckDB",
+      "short": "DK",
+      "tint": "yellow",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": null,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-duckdb"
+    },
+    {
+      "kind": "sqlserver",
+      "driver": "sqlserver",
+      "label": "SQL Server",
+      "short": "MS",
+      "tint": "red",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": 1433,
+      "defaultDatabase": "master",
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-sqlserver"
+    },
+    {
+      "kind": "clickhouse",
+      "driver": "clickhouse",
+      "label": "ClickHouse",
+      "short": "CH",
+      "tint": "yellow",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": 8123,
+      "defaultDatabase": "default",
+      "defaultUser": "default",
+      "backup": false,
+      "cargoFeature": "drv-clickhouse"
+    },
+    {
+      "kind": "snowflake",
+      "driver": "snowflake",
+      "label": "Snowflake",
+      "short": "SF",
+      "tint": "blue",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": null,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-snowflake"
+    },
+    {
+      "kind": "bigquery",
+      "driver": "bigquery",
+      "label": "BigQuery",
+      "short": "BQ",
+      "tint": "blue",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": null,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-bigquery"
+    },
+    {
+      "kind": "vertica",
+      "driver": "vertica",
+      "label": "Vertica",
+      "short": "VE",
+      "tint": "gray",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": 5433,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-vertica"
+    },
+    {
+      "kind": "cassandra",
+      "driver": "cassandra",
+      "label": "Cassandra",
+      "short": "CA",
+      "tint": "teal",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": 9042,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-cassandra"
+    },
+    {
+      "kind": "redis",
+      "driver": "redis",
+      "label": "Redis",
+      "short": "RE",
+      "tint": "red",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": 6379,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-redis"
+    },
+    {
+      "kind": "mongodb",
+      "driver": "mongodb",
+      "label": "MongoDB",
+      "short": "MO",
+      "tint": "green",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": 27017,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-mongodb"
+    },
+    {
+      "kind": "elasticsearch",
+      "driver": "elasticsearch",
+      "label": "Elasticsearch",
+      "short": "ES",
+      "tint": "yellow",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": 9200,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-elasticsearch"
+    },
+    {
+      "kind": "dynamodb",
+      "driver": "dynamodb",
+      "label": "DynamoDB",
+      "short": "DY",
+      "tint": "purple",
+      "pgFlavor": null,
+      "mysqlVersion": null,
+      "defaultPort": null,
+      "defaultDatabase": null,
+      "defaultUser": null,
+      "backup": false,
+      "cargoFeature": "drv-dynamodb"
+    }
+  ]
+}

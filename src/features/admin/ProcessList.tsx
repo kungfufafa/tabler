@@ -384,7 +384,7 @@ function ProcessTableRow({
   );
 }
 
-const KILL_TEXT: Record<Driver, Record<KillScope, string>> = {
+const KILL_TEXT: Partial<Record<Driver, Record<KillScope, string>>> = {
   postgres: {
     query:
       "pg_cancel_backend asks each session to stop its running statement; the sessions stay connected.",
@@ -423,7 +423,7 @@ function KillConfirm({
         <AlertDialogHeader>
           <AlertDialogTitle className="text-sm">{title}</AlertDialogTitle>
           <AlertDialogDescription className="text-xs">
-            {KILL_TEXT[driver][scope]}
+            {KILL_TEXT[driver]?.[scope]}
           </AlertDialogDescription>
         </AlertDialogHeader>
         {own.length > 0 && (

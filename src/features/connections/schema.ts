@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { coreDriver } from "@/features/drivers/catalog";
 import type {
   ConnectionProfile,
   MysqlVersion,
@@ -364,7 +365,8 @@ export function profileToForm(p: ConnectionProfile): ConnectionFormValues {
         : "blue",
     tag: p.options.tag,
     group: p.group ?? "",
-    driver: p.driver,
+    // The dialog opens core profiles only (`openConnectionDialog`).
+    driver: coreDriver(p.driver),
     host: p.host ?? "",
     port: p.port ? String(p.port) : "",
     user: p.user ?? "",
@@ -498,6 +500,10 @@ export function formToProfileInput(
       pgParams: postgres && v.pgParams.trim() !== "" ? v.pgParams.trim() : null,
       // Not on the form (a link's `lazyload`, the sidebar's own toggle): editing keeps it.
       lazyLoad: existing?.options.lazyLoad ?? null,
+      // Not on the form yet either: a CockroachDB or Redshift profile must not turn into plain
+      // PostgreSQL (and lose its default port) when it is edited here.
+      pgFlavor: postgres ? (existing?.options.pgFlavor ?? null) : null,
+      driverParams: existing?.driver === v.driver ? (existing.options.driverParams ?? null) : null,
     },
     sortOrder: existing?.sortOrder ?? 0,
     createdAt: existing?.createdAt ?? "",

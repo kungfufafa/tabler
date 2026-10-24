@@ -7,10 +7,19 @@ pub mod conn_options;
 pub mod ddl;
 pub mod definition;
 pub mod diagram;
+pub mod dialect;
 pub mod explain;
 #[cfg(test)]
 mod golden;
 pub mod mutate;
+// Command and document builders of the native stores, each with its driver's feature.
+#[cfg(any(
+    feature = "drv-redis",
+    feature = "drv-mongodb",
+    feature = "drv-elasticsearch",
+    feature = "drv-dynamodb"
+))]
+pub mod native;
 pub mod objects;
 pub mod quote;
 pub mod security;
@@ -18,5 +27,6 @@ pub mod select;
 pub mod split;
 pub mod transfer;
 
+pub use dialect::SqlDialect;
 pub use quote::Dialect;
 pub use select::BuiltSql;

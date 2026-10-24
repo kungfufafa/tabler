@@ -26,6 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { coreDialect } from "@/features/drivers/catalog";
 import { useAction } from "@/features/palette/actions";
 import type { ToolTabProps } from "@/features/tabs/toolTabs";
 import { ipc, toIpcError, type Dialect, type MetricsBoard } from "@/lib/ipc";
@@ -330,7 +331,7 @@ export function MetricsBoardTab({ tab, params }: ToolTabProps<MetricsParams>) {
         <BoardView
           key={`${connectionId}:${shown.id}`}
           connectionId={connectionId}
-          dialect={info.driver}
+          dialect={coreDialect(info.driver)}
           board={shown}
           editing={editing}
           setEditing={setEditing}

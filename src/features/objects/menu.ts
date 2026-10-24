@@ -30,6 +30,7 @@ import {
   Workflow,
   type LucideIcon,
 } from "lucide-react";
+import { coreDialect } from "@/features/drivers/catalog";
 import type { Driver } from "@/lib/ipc";
 import {
   isMatchStrategy,
@@ -109,7 +110,7 @@ export function newEntries(
     ["procedure", "Procedure", Workflow],
   ];
   for (const [kind, label, icon] of kinds)
-    if (supportsNewObject(driver, kind))
+    if (supportsNewObject(coreDialect(driver), kind))
       out.push({
         kind: "item",
         id: `new-${kind}`,

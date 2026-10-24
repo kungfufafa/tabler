@@ -10,6 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { coreDialect } from "@/features/drivers/catalog";
 import { runNew, type ObjectContext } from "@/features/objects/actions";
 import { plusMenu, settingsEntries } from "@/features/objects/menu";
 import { DropdownMenuEntries } from "@/features/objects/MenuEntries";
@@ -156,7 +157,7 @@ export function SidebarFooter({ connection }: { connection: OpenConnection }) {
       </div>
       <TableDialogs
         connectionId={connectionId}
-        dialect={driver}
+        dialect={coreDialect(driver)}
         state={dialog}
         onClose={() => setDialog(null)}
       />

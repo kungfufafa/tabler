@@ -1,4 +1,5 @@
-import type { ConnectionProfile, Driver, SafeModeLevel, SslMode } from "@/lib/ipc";
+import type { CoreDriver } from "@/features/drivers/catalog";
+import type { ConnectionProfile, SafeModeLevel, SslMode } from "@/lib/ipc";
 import { ACCENT_PRESETS, isHexColor, type AccentPreset } from "@/lib/theme";
 import { parseHex } from "./colors";
 import {
@@ -28,7 +29,7 @@ import {
  * `operator`) + `value`, or a raw condition in `condition` / `raw` / `query`.
  */
 
-const SCHEMES: Record<string, Driver> = {
+const SCHEMES: Record<string, CoreDriver> = {
   postgres: "postgres",
   postgresql: "postgres",
   pgsql: "postgres",

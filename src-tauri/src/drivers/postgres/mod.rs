@@ -5,6 +5,7 @@
 mod connect;
 pub mod decode;
 mod editor;
+pub mod flavor;
 mod introspect;
 pub mod params;
 

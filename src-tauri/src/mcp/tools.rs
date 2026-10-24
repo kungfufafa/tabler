@@ -19,6 +19,7 @@ use crate::sqlgen::Dialect;
 use crate::sqlgen::ddl::create_table_sql_with;
 use crate::sqlgen::split::split_statements;
 use crate::state::AppState;
+use crate::types::driver::Location;
 use crate::types::history::NewHistoryEntry;
 use crate::types::profile::{ConnectionProfile, Driver};
 use crate::types::query::{ExplainMode, QueryEvent, ResultColumn, RunOptions, StatementKind};
@@ -308,11 +309,17 @@ fn opt_u32(args: &Json, key: &str) -> Result<Option<u32>, Fail> {
 
 // ----- connections -----------------------------------------------------------------------------
 
-fn dialect_of(driver: Driver) -> Dialect {
+/// The SQL dialect `run_query` classifies a profile's statements with, before it connects: the
+/// core drivers only (the MCP gate has no classifier for the others yet).
+fn dialect_of(driver: Driver) -> Result<Dialect, Fail> {
     match driver {
-        Driver::Postgres => Dialect::Postgres,
-        Driver::Mysql => Dialect::Mysql,
-        Driver::Sqlite => Dialect::Sqlite,
+        Driver::Postgres => Ok(Dialect::Postgres),
+        Driver::Mysql => Ok(Dialect::Mysql),
+        Driver::Sqlite => Ok(Dialect::Sqlite),
+        other => Err(format!(
+            "MCP clients cannot run SQL on {} connections yet.",
+            other.label()
+        )),
     }
 }
 
@@ -379,8 +386,8 @@ pub fn resolve(
 }
 
 fn database_label(p: &ConnectionProfile) -> Option<String> {
-    match p.driver {
-        Driver::Sqlite => p.sqlite_path.clone(),
+    match p.driver.descriptor().location {
+        Location::File => p.sqlite_path.clone(),
         _ => p.database.clone().filter(|d| !d.trim().is_empty()),
     }
 }
@@ -861,7 +868,7 @@ async fn run_query(
         .unwrap_or(DEFAULT_ROWS)
         .clamp(1, MAX_ROWS);
     let database = opt_str(args, "database")?;
-    let dialect = dialect_of(profile.driver);
+    let dialect = dialect_of(profile.driver)?;
     let total = split_statements(sql, dialect).len();
     if total == 0 {
         return Err("There is no SQL statement to run.".into());

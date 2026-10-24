@@ -464,7 +464,12 @@ describe("Toolbar", () => {
   });
 
   it("the menu's Edit Connection… opens the connection's form", async () => {
-    const profile = { id: "p-a", name: "Conn a", options: {} } as ConnectionProfile;
+    const profile = {
+      id: "p-a",
+      name: "Conn a",
+      driver: "postgres",
+      options: {},
+    } as ConnectionProfile;
     vi.mocked(ipc.profiles.list).mockResolvedValue([profile]);
     useConnectionsStore.getState().add(info("a"));
     useConnectionDialog.setState({ open: false, profile: null, prefill: null });

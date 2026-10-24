@@ -66,10 +66,8 @@ pub struct SchemaContext {
 
 fn engine_name(driver: Driver, mariadb: bool) -> &'static str {
     match driver {
-        Driver::Postgres => "PostgreSQL",
         Driver::Mysql if mariadb => "MariaDB",
-        Driver::Mysql => "MySQL",
-        Driver::Sqlite => "SQLite",
+        driver => driver.label(),
     }
 }
 

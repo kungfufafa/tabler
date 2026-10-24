@@ -32,6 +32,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { coreDialect } from "@/features/drivers/catalog";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { bumpGeneration, openWorkspaceSheet, useCommitGeneration } from "@/features/commit/store";
 import { commitWorkspace, workspacePendingCount } from "@/features/commit/workspace";
@@ -180,8 +181,8 @@ function focusedColumn(view: StructureView): string | null {
 export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }> }) {
   const { connectionId, table } = tab;
   const qc = useQueryClient();
-  const dialect: Dialect = useConnectionsStore(
-    (s) => s.byId[connectionId]?.info.driver ?? "postgres",
+  const dialect: Dialect = useConnectionsStore((s) =>
+    coreDialect(s.byId[connectionId]?.info.driver ?? "postgres"),
   );
   const readOnlyConnection = useConnectionsStore(
     (s) => s.byId[connectionId]?.info.readOnly ?? false,

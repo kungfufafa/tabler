@@ -1,5 +1,6 @@
 // Mock handlers for run_sql, cancel_query, explain, list_history, delete_history, clear_history,
 // read_text_file and write_text_file. They run against the same fixture data as browse_table.
+import { coreDialect } from "@/features/drivers/catalog";
 import { utf16ToChar } from "@/features/editor/offsets";
 import { splitStatements } from "@/features/editor/scanner";
 import type { ColumnMeta } from "../bindings/ColumnMeta";
@@ -335,7 +336,7 @@ interface Exec {
   notices: string[];
 }
 
-const DATA_TYPES: Record<Driver, Partial<Record<ValueKind, string>>> = {
+const DATA_TYPES: Partial<Record<Driver, Partial<Record<ValueKind, string>>>> = {
   postgres: {
     int: "int4",
     bigInt: "int8",
@@ -374,7 +375,7 @@ function resultColumn(
   kind: ValueKind,
   table: string | null = null,
 ): ResultColumn {
-  return { name, dataType: DATA_TYPES[driver][kind] ?? "text", kind, nullable: null, table };
+  return { name, dataType: DATA_TYPES[driver]?.[kind] ?? "text", kind, nullable: null, table };
 }
 
 /**
@@ -950,7 +951,7 @@ registerMock("run_sql", async ({ connectionId, queryId, sql, options, onEvent })
   const began = performance.now();
   const results: StatementResult[] = [];
   try {
-    const statements = splitStatements(text, info.driver);
+    const statements = splitStatements(text, coreDialect(info.driver));
     for (let index = 0; index < statements.length; index++) {
       const st = statements[index]!;
       const stmtSql = text.slice(st.start, st.end);
@@ -1049,7 +1050,7 @@ registerMock("explain", async ({ connectionId, sql, mode, queryId }) => {
   };
   const t0 = performance.now();
   try {
-    const st = splitStatements(text, info.driver)[0];
+    const st = splitStatements(text, coreDialect(info.driver))[0];
     if (!st) mockError("INVALID_INPUT", "nothing to explain");
     const stmtSql = text.slice(st.start, st.end);
     const leadAt = stmtSql.search(/\S/);

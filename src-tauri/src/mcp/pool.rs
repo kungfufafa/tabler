@@ -27,6 +27,7 @@ use crate::drivers::{self, ConnectTarget, DbSession, ServerInfo};
 use crate::error::AppError;
 use crate::state::AppState;
 use crate::tunnel::{TunnelHandle, sqlite_remote};
+use crate::types::driver::Location;
 use crate::types::profile::{ConnectionProfile, Driver, PasswordMode, SshAuth, SshPasswordMode};
 
 /// Connections unused this long are closed.
@@ -147,7 +148,7 @@ impl Pool {
     ) -> Result<Lease, AppError> {
         let database = database
             .map(str::trim)
-            .filter(|d| !d.is_empty() && profile.driver != Driver::Sqlite)
+            .filter(|d| !d.is_empty() && profile.driver.descriptor().location != Location::File)
             .map(str::to_string);
         let key = Key {
             profile_id: profile.id,
@@ -323,6 +324,8 @@ pub fn check_unattended(profile: &ConnectionProfile) -> Result<(), AppError> {
 }
 
 async fn open(state: &AppState, key: &Key, profile: &ConnectionProfile) -> Result<Entry, AppError> {
+    // A driver this build lacks: refused before its script, password command or tunnel run.
+    drivers::registry::ensure_built(profile)?;
     let profile = effective_profile(profile, key.database.as_deref(), key.writable)?;
     check_unattended(&profile)?;
     crate::bootstrap_script::run_for_profile(&profile).await?;
@@ -531,6 +534,34 @@ mod tests {
         let missing = sqlite_profile("/nonexistent/dir/x.sqlite");
         assert!(pool.get(&missing, None, false).await.is_err());
         assert_eq!(pool.open_count(), 0);
+    }
+
+    /// A profile of a driver this build lacks is refused before its bootstrap script runs.
+    #[tokio::test]
+    async fn refuses_a_driver_this_build_lacks_before_its_script() {
+        if drivers::registry::built(Driver::Redis) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let mut redis = sqlite_profile("/x");
+        redis.driver = Driver::Redis;
+        redis.sqlite_path = None;
+        redis.host = Some("127.0.0.1".into());
+        redis.options.bootstrap_script = Some(format!("echo ran > \"{}\"", marker.display()));
+        let pool = Pool::new(state());
+        let err = pool.get(&redis, None, false).await.err().unwrap();
+        assert_eq!(
+            err.to_string(),
+            "unsupported: Redis is not built into this Tabler"
+        );
+        assert!(!marker.exists());
+        assert_eq!(pool.open_count(), 0);
+        // The script does run here: the refusal is what kept it from running.
+        crate::bootstrap_script::run_for_profile(&redis)
+            .await
+            .unwrap();
+        assert!(marker.exists());
     }
 
     #[test]

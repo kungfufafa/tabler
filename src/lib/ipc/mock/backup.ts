@@ -96,7 +96,7 @@ export const MOCK_BINARIES: Record<"postgres" | "mysql", DumpBinary[]> = {
 
 registerMock("backup_list_binaries", ({ driver }) => {
   const d = driver as Driver;
-  return d === "sqlite" ? [] : MOCK_BINARIES[d];
+  return d === "postgres" || d === "mysql" ? MOCK_BINARIES[d] : [];
 });
 
 async function profileOf(profileId: unknown): Promise<ConnectionProfile> {
