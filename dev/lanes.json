@@ -1,5 +1,5 @@
 {
-  "$comment": "The driver lanes: what each one builds and owns. Globs end in /** (a directory) or name a file; a * inside a bindings name stands for any rest. src-tauri/tests/driver_guard.rs reads the rust globs.",
+  "$comment": "The driver lanes: what each one builds and owns (docs/drivers/README.md). Globs end in /** (a directory) or name a file; a * inside a bindings name stands for any rest. src-tauri/tests/driver_guard.rs reads the rust globs, src-tauri/tests/manifest_features.rs the test files, and dev/scripts/lane*.mjs everything. tests are the lib test filters of `lane.mjs <lane> test`; env the variables of the lane real-server suites; smoke the shared vitest files every `lane.mjs <lane> ts` runs too.",
   "lanes": {
     "pg-flavors": {
       "databases": ["CockroachDB", "Greenplum", "Amazon Redshift"],
@@ -24,7 +24,8 @@
         "src/lib/ipc/bindings/lex/redshift.json"
       ],
       "docs": ["docs/drivers/pg-flavors.md"],
-      "tests": ["drivers::postgres::flavor", "sqlgen::dialect::redshift"]
+      "tests": ["drivers::postgres::flavor", "sqlgen::dialect::redshift"],
+      "env": ["TABLER_TEST_CRDB_URL", "TABLER_TEST_GREENPLUM_URL", "TABLER_TEST_REDSHIFT_URL"]
     },
     "sqlite-remote": {
       "databases": ["LibSQL", "Cloudflare D1"],
@@ -45,7 +46,8 @@
       "ts": ["src/features/drivers/sqlite-remote/**", "src/lib/ipc/mock/drivers/sqlite-remote/**"],
       "bindings": ["src/lib/ipc/bindings/Libsql*.ts", "src/lib/ipc/bindings/D1*.ts"],
       "docs": ["docs/drivers/sqlite-remote.md"],
-      "tests": ["drivers::sqlite_http"]
+      "tests": ["drivers::sqlite_http"],
+      "env": ["TABLER_TEST_LIBSQL_URL", "TABLER_TEST_D1_URL"]
     },
     "duckdb": {
       "databases": ["DuckDB"],
@@ -65,7 +67,8 @@
       "ts": ["src/features/drivers/duckdb/**", "src/lib/ipc/mock/drivers/duckdb/**"],
       "bindings": ["src/lib/ipc/bindings/Duckdb*.ts", "src/lib/ipc/bindings/lex/duckdb.json"],
       "docs": ["docs/drivers/duckdb.md"],
-      "tests": ["drivers::duckdb", "sqlgen::dialect::duckdb"]
+      "tests": ["drivers::duckdb", "sqlgen::dialect::duckdb"],
+      "env": ["TABLER_TEST_DUCKDB_PATH"]
     },
     "clickhouse": {
       "databases": ["ClickHouse"],
@@ -88,7 +91,8 @@
         "src/lib/ipc/bindings/lex/clickhouse.json"
       ],
       "docs": ["docs/drivers/clickhouse.md"],
-      "tests": ["drivers::clickhouse", "sqlgen::dialect::clickhouse"]
+      "tests": ["drivers::clickhouse", "sqlgen::dialect::clickhouse"],
+      "env": ["TABLER_TEST_CLICKHOUSE_URL"]
     },
     "sqlserver": {
       "databases": ["SQL Server"],
@@ -108,7 +112,8 @@
       "ts": ["src/features/drivers/sqlserver/**", "src/lib/ipc/mock/drivers/sqlserver/**"],
       "bindings": ["src/lib/ipc/bindings/Mssql*.ts", "src/lib/ipc/bindings/lex/tsql.json"],
       "docs": ["docs/drivers/sqlserver.md"],
-      "tests": ["drivers::sqlserver", "sqlgen::dialect::tsql"]
+      "tests": ["drivers::sqlserver", "sqlgen::dialect::tsql"],
+      "env": ["TABLER_TEST_SQLSERVER_URL"]
     },
     "snowflake": {
       "databases": ["Snowflake"],
@@ -128,7 +133,8 @@
       "ts": ["src/features/drivers/snowflake/**", "src/lib/ipc/mock/drivers/snowflake/**"],
       "bindings": ["src/lib/ipc/bindings/Snowflake*.ts", "src/lib/ipc/bindings/lex/snowflake.json"],
       "docs": ["docs/drivers/snowflake.md"],
-      "tests": ["drivers::snowflake", "sqlgen::dialect::snowflake"]
+      "tests": ["drivers::snowflake", "sqlgen::dialect::snowflake"],
+      "env": ["TABLER_TEST_SNOWFLAKE_URL"]
     },
     "bigquery": {
       "databases": ["BigQuery"],
@@ -148,7 +154,8 @@
       "ts": ["src/features/drivers/bigquery/**", "src/lib/ipc/mock/drivers/bigquery/**"],
       "bindings": ["src/lib/ipc/bindings/Bigquery*.ts", "src/lib/ipc/bindings/lex/bigquery.json"],
       "docs": ["docs/drivers/bigquery.md"],
-      "tests": ["drivers::bigquery", "sqlgen::dialect::bigquery"]
+      "tests": ["drivers::bigquery", "sqlgen::dialect::bigquery"],
+      "env": ["TABLER_TEST_BIGQUERY_URL"]
     },
     "vertica": {
       "databases": ["Vertica"],
@@ -168,7 +175,8 @@
       "ts": ["src/features/drivers/vertica/**", "src/lib/ipc/mock/drivers/vertica/**"],
       "bindings": ["src/lib/ipc/bindings/Vertica*.ts", "src/lib/ipc/bindings/lex/vertica.json"],
       "docs": ["docs/drivers/vertica.md"],
-      "tests": ["drivers::vertica", "sqlgen::dialect::vertica"]
+      "tests": ["drivers::vertica", "sqlgen::dialect::vertica"],
+      "env": ["TABLER_TEST_VERTICA_URL"]
     },
     "dynamodb": {
       "databases": ["DynamoDB"],
@@ -188,7 +196,8 @@
       "ts": ["src/features/drivers/dynamodb/**", "src/lib/ipc/mock/drivers/dynamodb/**"],
       "bindings": ["src/lib/ipc/bindings/Dynamo*.ts"],
       "docs": ["docs/drivers/dynamodb.md"],
-      "tests": ["drivers::dynamodb", "sqlgen::native::dynamo"]
+      "tests": ["drivers::dynamodb", "sqlgen::native::dynamo"],
+      "env": ["TABLER_TEST_DYNAMODB_URL"]
     },
     "cassandra": {
       "databases": ["Cassandra", "ScyllaDB"],
@@ -208,7 +217,8 @@
       "ts": ["src/features/drivers/cassandra/**", "src/lib/ipc/mock/drivers/cassandra/**"],
       "bindings": ["src/lib/ipc/bindings/Cassandra*.ts", "src/lib/ipc/bindings/lex/cql.json"],
       "docs": ["docs/drivers/cassandra.md"],
-      "tests": ["drivers::cassandra", "sqlgen::dialect::cql"]
+      "tests": ["drivers::cassandra", "sqlgen::dialect::cql"],
+      "env": ["TABLER_TEST_CASSANDRA_URL"]
     },
     "redis": {
       "databases": ["Redis", "Valkey"],
@@ -228,7 +238,8 @@
       "ts": ["src/features/drivers/redis/**", "src/lib/ipc/mock/drivers/redis/**"],
       "bindings": ["src/lib/ipc/bindings/Redis*.ts"],
       "docs": ["docs/drivers/redis.md"],
-      "tests": ["drivers::redis", "sqlgen::native::redis"]
+      "tests": ["drivers::redis", "sqlgen::native::redis"],
+      "env": ["TABLER_TEST_REDIS_URL"]
     },
     "mongodb": {
       "databases": ["MongoDB"],
@@ -248,7 +259,8 @@
       "ts": ["src/features/drivers/mongodb/**", "src/lib/ipc/mock/drivers/mongodb/**"],
       "bindings": ["src/lib/ipc/bindings/Mongo*.ts"],
       "docs": ["docs/drivers/mongodb.md"],
-      "tests": ["drivers::mongodb", "sqlgen::native::mongo"]
+      "tests": ["drivers::mongodb", "sqlgen::native::mongo"],
+      "env": ["TABLER_TEST_MONGODB_URL"]
     },
     "elasticsearch": {
       "databases": ["Elasticsearch", "OpenSearch"],
@@ -268,7 +280,16 @@
       "ts": ["src/features/drivers/elasticsearch/**", "src/lib/ipc/mock/drivers/elasticsearch/**"],
       "bindings": ["src/lib/ipc/bindings/Elastic*.ts"],
       "docs": ["docs/drivers/elasticsearch.md"],
-      "tests": ["drivers::elasticsearch", "sqlgen::native::elastic"]
+      "tests": ["drivers::elasticsearch", "sqlgen::native::elastic"],
+      "env": ["TABLER_TEST_ELASTICSEARCH_URL"]
     }
-  }
+  },
+  "smoke": [
+    "src/features/drivers/catalog.test.tsx",
+    "src/features/drivers/guard.test.ts",
+    "src/features/connections/ConnectionDialog.test.tsx",
+    "src/features/connections/schema.test.ts",
+    "src/features/connections/url.test.ts",
+    "src/features/safety/classify.test.ts"
+  ]
 }

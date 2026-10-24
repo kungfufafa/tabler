@@ -43,6 +43,7 @@ jobs:
           pnpm lint
           pnpm format:check
           pnpm test
+          pnpm test:lanes
 
       - name: Rust — fmt, clippy, tests
         # Integration tests self-skip while the TABLER_TEST_* URLs are unset.
@@ -54,6 +55,41 @@ jobs:
       - name: Generated TypeScript bindings are committed
         # `cargo test` rewrote src/lib/ipc/bindings; a diff means a ts-rs type changed without
         # its binding being committed.
+        run: git diff --exit-code -- src/lib/ipc/bindings
+
+  features:
+    # The builds the job above never makes: without the optional drivers, and with every driver
+    # lane (dev/lanes.json) at once, DuckDB's C++ included. A lane must build on its own and next
+    # to all the others.
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Rust without the optional drivers — clippy, lib tests
+        run: |
+          cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --no-default-features -- -D warnings
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --lib
+
+      - name: Bindings are the same without the optional drivers
+        run: git diff --exit-code -- src/lib/ipc/bindings
+
+      - name: Rust with every driver — clippy, lib tests
+        run: |
+          cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --all-features --lib
+
+      - name: Shared bindings are the same with every driver
+        # A lane's own bindings (`<Prefix>*.ts`, `lex/<d>.json`) are new, untracked files until it
+        # lands, which `git diff` leaves out; the shared ones must not change.
         run: git diff --exit-code -- src/lib/ipc/bindings
 
   check-windows:
@@ -95,6 +131,7 @@ jobs:
           pnpm lint
           pnpm format:check
           pnpm test
+          pnpm test:lanes
 
       # rusqlite builds the vendored OpenSSL here (SQLCipher), with `perl` from PATH unless
       # OPENSSL_SRC_PERL says otherwise. Under bash that is Git's MSYS perl, which cannot build

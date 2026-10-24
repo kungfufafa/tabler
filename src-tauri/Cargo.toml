@@ -179,6 +179,65 @@ mysql_async = { version = "0.37", default-features = false, features = ["default
 [dev-dependencies]
 tempfile = "3"
 
+# The real-server suites of the driver lanes (dev/lanes.json) are built only with their lane's
+# feature: a build without it skips them instead of parsing them, so a lane's unfinished suite
+# never breaks `cargo test` or `clippy --all-targets` of the other builds.
+[[test]]
+name = "pg_flavors"
+required-features = ["drv-pg-flavors"]
+
+[[test]]
+name = "libsql"
+required-features = ["drv-libsql"]
+
+[[test]]
+name = "d1"
+required-features = ["drv-d1"]
+
+[[test]]
+name = "duckdb"
+required-features = ["drv-duckdb"]
+
+[[test]]
+name = "clickhouse"
+required-features = ["drv-clickhouse"]
+
+[[test]]
+name = "sqlserver"
+required-features = ["drv-sqlserver"]
+
+[[test]]
+name = "snowflake"
+required-features = ["drv-snowflake"]
+
+[[test]]
+name = "bigquery"
+required-features = ["drv-bigquery"]
+
+[[test]]
+name = "vertica"
+required-features = ["drv-vertica"]
+
+[[test]]
+name = "dynamodb"
+required-features = ["drv-dynamodb"]
+
+[[test]]
+name = "cassandra"
+required-features = ["drv-cassandra"]
+
+[[test]]
+name = "redis"
+required-features = ["drv-redis"]
+
+[[test]]
+name = "mongodb"
+required-features = ["drv-mongodb"]
+
+[[test]]
+name = "elasticsearch"
+required-features = ["drv-elasticsearch"]
+
 # mysql_async 0.37.1, vendored: its rustls verifier never skips the host name check because it
 # looks for the text "NotValidForName" in an error rustls 0.23 words differently, so MySQL
 # VERIFY-CA behaved like VERIFY-IDENTITY. The patch matches the typed error (see
