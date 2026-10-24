@@ -1,7 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { writeClipboard } from "@/features/datagrid/clipboard";
-import { dialectOf, insertSql, runQuery } from "@/features/editor/controller";
+import { requireCoreDialect } from "@/features/drivers/catalog";
+import { insertSql, runQuery } from "@/features/editor/controller";
 import { HISTORY_KEY } from "@/features/editor/historyGroups";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
@@ -31,7 +32,8 @@ export function insertIntoEditor(connection: OpenConnection, sql: string): strin
     void insertSql(active.id, sql);
     return active.id;
   }
-  return openSqlInNewQueryTab(connectionId, sql, dialectOf(driver), "Assistant");
+  // The assistant chats about core connections only (`AssistantPanel`).
+  return openSqlInNewQueryTab(connectionId, sql, requireCoreDialect(driver), "Assistant");
 }
 
 /**
@@ -40,7 +42,7 @@ export function insertIntoEditor(connection: OpenConnection, sql: string): strin
  */
 export function runInNewTab(qc: QueryClient, connection: OpenConnection, sql: string): string {
   const { connectionId, driver } = connection.info;
-  const tabId = openSqlInNewQueryTab(connectionId, sql, dialectOf(driver), "Assistant");
+  const tabId = openSqlInNewQueryTab(connectionId, sql, requireCoreDialect(driver), "Assistant");
   useUiStore.getState().setView("workspace");
   void runQuery(tabId, "auto", hooks(qc, connectionId));
   return tabId;

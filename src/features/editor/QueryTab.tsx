@@ -3,6 +3,7 @@ import { Info } from "lucide-react";
 import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { useGroupRef, usePanelRef, type Layout } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { NotAvailable } from "@/features/drivers/NotAvailable";
 import { actions, useAction } from "@/features/palette/actions";
 import { openAddToQueries } from "@/features/queries/dialogStore";
 import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
@@ -32,6 +33,7 @@ import {
 } from "./controller";
 import { focusEditor, getEditorState, syncDirty } from "./editorStates";
 import { HISTORY_KEY } from "./historyGroups";
+import type { SqlDialect } from "./scanner";
 import { EditorBar } from "./EditorBar";
 import { EditorPanes, type EditorPaneHandlers } from "./EditorPanes";
 import { changeEditorFontSize } from "./editorSettings";
@@ -81,14 +83,26 @@ const isCollapsedLayout = (layout: Layout) => (layout.results ?? 100) < 0.01;
  * the editor and its bar.
  */
 export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
+  const driver = useConnectionsStore((s) => s.byId[tab.connectionId]?.info.driver);
+  const dialect = dialectOf(driver);
+  if (dialect) return <QueryTabView tab={tab} dialect={dialect} />;
+  // A driver beyond the core ones: the core lexers must not split or classify its statements.
+  return driver ? <NotAvailable driver={driver} what="The SQL editor" /> : null;
+}
+
+function QueryTabView({
+  tab,
+  dialect,
+}: {
+  tab: Extract<Tab, { kind: "query" }>;
+  dialect: SqlDialect;
+}) {
   const tabId = tab.id;
   const qc = useQueryClient();
   const isActive = useTabsStore((s) => s.activeId === tabId);
-  const driver = useConnectionsStore((s) => s.byId[tab.connectionId]?.info.driver);
   const currentDatabase = useConnectionsStore(
     (s) => s.byId[tab.connectionId]?.info.currentDatabase ?? null,
   );
-  const dialect = dialectOf(driver);
   const busy = useQueryTabBusy(tabId);
   const historyOpen = useQueryTabField(tabId, "historyOpen");
   const layout = useQueryTabField(tabId, "layout");

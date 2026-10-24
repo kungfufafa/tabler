@@ -2,7 +2,7 @@ import { EditorSelection } from "@codemirror/state";
 import { toast } from "sonner";
 import { openCreateSchema } from "@/features/admin/store";
 import { markDefinition } from "@/features/commit/definitions";
-import { coreDialect } from "@/features/drivers/catalog";
+import { coreDialect, notAvailableFor, requireCoreDialect } from "@/features/drivers/catalog";
 import { applyToEditor } from "@/features/editor/editorStates";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { openExportTables } from "@/features/export/store";
@@ -86,8 +86,9 @@ export function openTableTab(
 /** Opens a routine's definition in a new SQL tab titled with its name. */
 export async function openRoutine(ctx: ObjectContext, r: RoutineSummary): Promise<void> {
   try {
+    const dialect = requireCoreDialect(ctx.driver);
     const sql = await ipc.objects.routineDefinition(ctx.connectionId, routineRef(r));
-    const id = openSqlInNewQueryTab(ctx.connectionId, sql, coreDialect(ctx.driver), r.name);
+    const id = openSqlInNewQueryTab(ctx.connectionId, sql, dialect, r.name);
     // ⌘S in this tab drops and recreates the routine (TablePlus), instead of saving a file.
     markDefinition(id, { drop: routineRef(r) });
     showWorkspace();
@@ -99,8 +100,9 @@ export async function openRoutine(ctx: ObjectContext, r: RoutineSummary): Promis
 /** Opens a sequence's CREATE SEQUENCE text in a new SQL tab. */
 export async function openSequence(ctx: ObjectContext, s: SequenceSummary): Promise<void> {
   try {
+    const dialect = requireCoreDialect(ctx.driver);
     const sql = await ipc.objects.sequenceDefinition(ctx.connectionId, refOf(s));
-    openSqlInNewQueryTab(ctx.connectionId, sql, coreDialect(ctx.driver), s.name);
+    openSqlInNewQueryTab(ctx.connectionId, sql, dialect, s.name);
     showWorkspace();
   } catch (e) {
     failed(`Could not open ${s.name}`, e);
@@ -109,8 +111,10 @@ export async function openSequence(ctx: ObjectContext, s: SequenceSummary): Prom
 
 /** New ▸ View… / Function… …: a SQL tab with the template, its placeholder name selected. */
 export function openNewObject(ctx: ObjectContext, kind: NewObjectKind): string {
-  const t = newObjectTemplate(coreDialect(ctx.driver), kind, ctx.schema);
-  const id = openSqlInNewQueryTab(ctx.connectionId, t.sql, coreDialect(ctx.driver), t.title);
+  // The New ▸ menu offers these for the core dialects only (`newEntries`).
+  const dialect = requireCoreDialect(ctx.driver);
+  const t = newObjectTemplate(dialect, kind, ctx.schema);
+  const id = openSqlInNewQueryTab(ctx.connectionId, t.sql, dialect, t.title);
   applyToEditor(id, () => ({ selection: EditorSelection.range(t.from, t.to) }));
   // ⌘S in the template's tab creates the object (instead of asking to save a file).
   markDefinition(id, { drop: null });
@@ -127,12 +131,16 @@ export function runNew(ctx: ObjectContext, what: NewTarget, createTable?: () => 
   switch (what) {
     case "table":
       if (createTable) createTable();
-      else
-        openObjectDialog({
-          connectionId: ctx.connectionId,
-          dialect: coreDialect(ctx.driver),
-          dialog: { kind: "createTable", schema: ctx.schema },
-        });
+      else {
+        const dialect = coreDialect(ctx.driver);
+        if (!dialect) toast.error(notAvailableFor(ctx.driver, "Creating a table"));
+        else
+          openObjectDialog({
+            connectionId: ctx.connectionId,
+            dialect,
+            dialog: { kind: "createTable", schema: ctx.schema },
+          });
+      }
       return;
     case "schema":
       openCreateSchema(ctx.connectionId);
@@ -215,11 +223,12 @@ export async function copyLaravelMigrations(
 ): Promise<void> {
   if (tables.length === 0) return;
   try {
+    const dialect = requireCoreDialect(ctx.driver);
     const metas = await Promise.all(
       tables.map((t) => ipc.schema.table(ctx.connectionId, refOf(t))),
     );
     copyText(
-      laravelMigrations(metas, coreDialect(ctx.driver)),
+      laravelMigrations(metas, dialect),
       tables.length > 1 ? `Copied ${tables.length} Laravel migrations` : "Copied Laravel migration",
     );
   } catch (e) {

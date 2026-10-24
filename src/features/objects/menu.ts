@@ -109,8 +109,10 @@ export function newEntries(
     ["function", "Function", SquareFunction],
     ["procedure", "Procedure", Workflow],
   ];
+  // Their templates are a core dialect's: none for other drivers.
+  const dialect = coreDialect(driver);
   for (const [kind, label, icon] of kinds)
-    if (supportsNewObject(coreDialect(driver), kind))
+    if (dialect && supportsNewObject(dialect, kind))
       out.push({
         kind: "item",
         id: `new-${kind}`,

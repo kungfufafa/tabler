@@ -13,15 +13,19 @@ export type GuardDecision =
   /** Never: the connection is read-only and the request writes. */
   | "blocked";
 
-/** Whether `request` may change the server: commits always do; queries unless all are READs. */
-export function requestWrites(request: GuardRequest, dialect: Dialect): boolean {
+/**
+ * Whether `request` may change the server: commits always do; queries unless all are READs. With
+ * no dialect (a driver beyond the core ones, whose SQL the core classifier cannot read) every
+ * query counts as a write.
+ */
+export function requestWrites(request: GuardRequest, dialect: Dialect | null): boolean {
   switch (request.kind) {
     case "commit":
       return true;
     case "operation":
       return request.write;
     case "query":
-      return !allReads(request.statements, dialect);
+      return dialect === null || !allReads(request.statements, dialect);
   }
 }
 

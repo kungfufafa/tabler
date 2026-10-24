@@ -126,6 +126,7 @@ export async function guardExecution(
   // Not an open connection: the backend refuses the call anyway.
   if (!conn) return true;
   const { info } = conn;
+  // Another driver's statements all count as writes: the core classifier cannot read them.
   const writes = requestWrites(request, coreDialect(info.driver));
   const profile = await loadProfile(info.profileId);
   const target = promptTarget(info, profile);

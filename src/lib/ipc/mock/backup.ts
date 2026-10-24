@@ -7,7 +7,6 @@ import type { BackupLogLine } from "../bindings/BackupLogLine";
 import type { BackupTarget } from "../bindings/BackupTarget";
 import type { ConnectionInfo } from "../bindings/ConnectionInfo";
 import type { ConnectionProfile } from "../bindings/ConnectionProfile";
-import type { Driver } from "../bindings/Driver";
 import type { DumpBinary } from "../bindings/DumpBinary";
 import type { DumpTool } from "../bindings/DumpTool";
 import type { ParsedVersion } from "../bindings/ParsedVersion";
@@ -94,10 +93,10 @@ export const MOCK_BINARIES: Record<"postgres" | "mysql", DumpBinary[]> = {
   ],
 };
 
-registerMock("backup_list_binaries", ({ driver }) => {
-  const d = driver as Driver;
-  return d === "postgres" || d === "mysql" ? MOCK_BINARIES[d] : [];
-});
+/** The dump tools by driver id (SQLite and the other drivers have none). */
+const BINARIES_BY_DRIVER = new Map<unknown, DumpBinary[]>(Object.entries(MOCK_BINARIES));
+
+registerMock("backup_list_binaries", ({ driver }) => BINARIES_BY_DRIVER.get(driver) ?? []);
 
 async function profileOf(profileId: unknown): Promise<ConnectionProfile> {
   return mockInvoke<ConnectionProfile>("get_profile", { id: profileId });

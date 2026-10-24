@@ -26,7 +26,7 @@ import { coreDialect } from "@/features/drivers/catalog";
 import { switchDatabase } from "@/features/sidebar/switchDatabase";
 import { useDatabases } from "@/features/sidebar/useSchemaTree";
 import { SqlBlock } from "@/features/structure/SqlBlock";
-import { ipc, type Dialect, type Driver } from "@/lib/ipc";
+import { ipc, type Driver } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import {
   collationsFor,
@@ -41,8 +41,6 @@ import {
 import { adminKeys } from "./keys";
 import { ErrorLine, Field, NativeSelect } from "./parts";
 import { errorInfo, runAdminDdl, type AdminErrorInfo } from "./run";
-
-const dialectOf = (driver: Driver): Dialect => coreDialect(driver);
 
 /** "+" / New Database… of the ⌘K database list: name, encoding, collation (and PG template). */
 export function CreateDatabaseDialog({
@@ -239,7 +237,7 @@ export function CreateDatabaseDialog({
               ) : preview.isError ? (
                 <ErrorLine error={errorInfo(preview.error)} />
               ) : preview.data ? (
-                <SqlBlock sql={preview.data.join(";\n")} dialect={dialectOf(driver)} />
+                <SqlBlock sql={preview.data.join(";\n")} dialect={coreDialect(driver)} />
               ) : (
                 <Loader2 className="text-muted-foreground size-3.5 animate-spin" />
               )}

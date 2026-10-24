@@ -20,6 +20,7 @@ import {
   profileKeys,
   withHostKeyTrust,
 } from "@/features/connections/useConnections";
+import { notAvailableFor } from "@/features/drivers/catalog";
 import { dialectOf } from "@/features/editor/controller";
 import { baseName, readSqlFileGuarded } from "@/features/editor/files";
 import { openFileInNewQueryTab } from "@/features/editor/openSql";
@@ -372,7 +373,14 @@ export async function openSqlFile(connectionId: string, path: string): Promise<v
   // Cancelled, or handed to the SQL import wizard.
   if (!file) return;
   const conn = useConnectionsStore.getState().byId[connectionId];
-  openFileInNewQueryTab(connectionId, path, file, dialectOf(conn?.info.driver));
+  const dialect = dialectOf(conn?.info.driver);
+  if (!dialect) {
+    toast.error("Could not open the file", {
+      description: conn ? notAvailableFor(conn.info.driver, "The SQL editor") : undefined,
+    });
+    return;
+  }
+  openFileInNewQueryTab(connectionId, path, file, dialect);
   useConnectionsStore.getState().setActive(connectionId);
   useUiStore.getState().setView("workspace");
 }

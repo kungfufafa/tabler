@@ -24,8 +24,12 @@ const highlighter = tagHighlighter([
   { tag: [tags.lineComment, tags.blockComment], class: "text-(--syn-comment) italic" },
 ]);
 
-/** Splits `code` into highlighted segments, one array per line. */
-export function highlightSql(dialect: Dialect, code: string): Segment[][] {
+/**
+ * Splits `code` into highlighted segments, one array per line. Without a dialect (a connection of
+ * a driver beyond the core ones) the lines stay plain.
+ */
+export function highlightSql(dialect: Dialect | null, code: string): Segment[][] {
+  if (!dialect) return plainLines(code);
   const lines: Segment[][] = [[]];
   try {
     const tree = DIALECTS[dialect].language.parser.parse(code);
@@ -37,7 +41,11 @@ export function highlightSql(dialect: Dialect, code: string): Segment[][] {
       () => lines.push([]),
     );
   } catch {
-    return code.split("\n").map((text) => [{ text, cls: "" }]);
+    return plainLines(code);
   }
   return lines;
+}
+
+function plainLines(code: string): Segment[][] {
+  return code.split("\n").map((text) => [{ text, cls: "" }]);
 }

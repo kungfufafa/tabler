@@ -1,5 +1,7 @@
+import { coreDialect } from "@/features/drivers/catalog";
 import type { BrowsePage } from "../bindings/BrowsePage";
 import type { ConnectionInfo } from "../bindings/ConnectionInfo";
+import type { Dialect } from "../bindings/Dialect";
 import type { AdminResult } from "../bindings/AdminResult";
 import type { ExplainResult } from "../bindings/ExplainResult";
 import type { RowCount } from "../bindings/RowCount";
@@ -17,8 +19,6 @@ import { observeMock, registerMock } from "./transport";
  * facade drains them after the call and logs them in the console. Commands that run no SQL (the
  * mock's cached table structure, SQLite's database list) record nothing.
  */
-
-type Dialect = "postgres" | "mysql" | "sqlite";
 
 const dialects = new Map<string, Dialect>();
 const queues = new Map<string, TracedSql[]>();
@@ -458,7 +458,9 @@ function record(connectionId: string, statements: readonly Statement[]): void {
 observeMock((cmd, args, result) => {
   if (cmd === "connect") {
     const info = result as ConnectionInfo;
-    dialects.set(info.connectionId, info.driver as Dialect);
+    // Another driver's connection records nothing here.
+    const dialect = coreDialect(info.driver);
+    if (dialect) dialects.set(info.connectionId, dialect);
     return;
   }
   if (cmd === "disconnect") {

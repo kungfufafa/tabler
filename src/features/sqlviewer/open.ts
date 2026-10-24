@@ -1,3 +1,4 @@
+import { coreDialect } from "@/features/drivers/catalog";
 import type { SqlDialect } from "@/features/editor/scanner";
 import { findToolTab, openToolTab } from "@/features/tabs/toolTabs";
 import type { Driver } from "@/lib/ipc";
@@ -29,9 +30,13 @@ export function keepsViewerTab(params: SqlViewerParams | null): boolean {
   return restoreViewerParams(params) !== null;
 }
 
-/** The highlighting a new viewer starts with: the active connection's, else PostgreSQL. */
+/**
+ * The highlighting a new viewer starts with: the active connection's, else PostgreSQL. The viewer
+ * has the core dialects only, so another driver's connection starts it on PostgreSQL too (its
+ * Dialect menu changes it; nothing runs from a viewer).
+ */
 export function defaultDialect(driver: Driver | null | undefined): SqlDialect {
-  return driver === "mysql" || driver === "sqlite" ? driver : "postgres";
+  return (driver ? coreDialect(driver) : null) ?? "postgres";
 }
 
 /**

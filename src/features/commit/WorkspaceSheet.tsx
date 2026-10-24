@@ -10,6 +10,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { coreDialect } from "@/features/drivers/catalog";
 import { describeOp, unstageObjectOp, type PendingObjectOp } from "@/features/objects/pendingOps";
 import { SqlBlock } from "@/features/structure/SqlBlock";
 import {
@@ -44,7 +45,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
  * Why the changes cannot all run in one transaction on `dialect`: only when `sources` holds a part
  * that is not a data edit (structure, a definition, an item operation) does DDL come into it.
  */
-function nonAtomicNote(dialect: Dialect, sources: readonly WorkspaceSource[]): string {
+function nonAtomicNote(dialect: Dialect | null, sources: readonly WorkspaceSource[]): string {
   const ddl = sources.some(
     (s) => s.kind === "ddl" || s.kind === "definition" || s.kind === "object",
   );
@@ -98,7 +99,7 @@ function Failure({
 }: {
   failure: CommitFailure;
   atomic: boolean;
-  dialect: Dialect;
+  dialect: Dialect | null;
 }) {
   const statement =
     failure.statementIndex !== null ? failure.sql[failure.statementIndex] : undefined;
@@ -131,7 +132,13 @@ function Failure({
  * MySQL dropped the routine a definition replaces before its new text failed: what became of the
  * old version (put back, or its text when it could not be).
  */
-function RestoreOutcome({ restore, dialect }: { restore: DefinitionRestore; dialect: Dialect }) {
+function RestoreOutcome({
+  restore,
+  dialect,
+}: {
+  restore: DefinitionRestore;
+  dialect: Dialect | null;
+}) {
   return (
     <div className="flex flex-col gap-2" data-testid="restore-outcome">
       {restore.restored ? (
@@ -190,7 +197,7 @@ function Statements({
 }: {
   plan: GroupPlan | undefined;
   loading: boolean;
-  dialect: Dialect;
+  dialect: Dialect | null;
 }) {
   if (loading) return <Loader2 className="text-muted-foreground size-3.5 animate-spin" />;
   if (plan?.error) return <p className="text-error text-xs">{plan.error.message}</p>;
@@ -215,7 +222,7 @@ function OpItem({
 }: {
   op: PendingObjectOp;
   plan: GroupPlan | undefined;
-  dialect: Dialect;
+  dialect: Dialect | null;
   disabled: boolean;
   onRemove: () => void;
 }) {
@@ -290,7 +297,8 @@ export function WorkspaceSheet() {
   const { dialect, name } = useConnectionsStore(
     useShallow((s) => {
       const c = connectionId ? s.byId[connectionId] : undefined;
-      return { dialect: (c?.info.driver ?? "postgres") as Dialect, name: c?.info.name ?? "" };
+      // Null for a driver beyond the core ones: its SQL shows plain.
+      return { dialect: c ? coreDialect(c.info.driver) : "postgres", name: c?.info.name ?? "" };
     }),
   );
   const { sources, problems } = useWorkspaceSources(connectionId);
@@ -311,7 +319,8 @@ export function WorkspaceSheet() {
 
   const atomic =
     plan?.atomic ??
-    (dialect !== "mysql" || sources.every((s) => s.kind === "rows" || s.kind === "results"));
+    (dialect !== null &&
+      (dialect !== "mysql" || sources.every((s) => s.kind === "rows" || s.kind === "results")));
   const mine = failure && failure.connectionId === connectionId ? failure : null;
   const total = sources.reduce((n, s) => n + s.count, 0);
   const tabs = new Set(sources.map((s) => (s.kind === "object" ? "ops" : s.tabId))).size;

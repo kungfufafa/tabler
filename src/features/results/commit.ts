@@ -140,9 +140,11 @@ export function finishResultCommit(p: PlannedResult, rows: RowResult[]): void {
   // The table was written: its open table tabs (a split view, another tab) reload too.
   refreshOpenTableTabs(p.connectionId, p.target.table);
   const driver = useConnectionsStore.getState().byId[p.connectionId]?.info.driver ?? "postgres";
-  const rerun = p.resultId.startsWith("pin:")
-    ? null
-    : rerunOf(getQueryTab(p.tabId).run, p.resultId, coreDialect(driver));
+  const dialect = coreDialect(driver);
+  const rerun =
+    p.resultId.startsWith("pin:") || !dialect
+      ? null
+      : rerunOf(getQueryTab(p.tabId).run, p.resultId, dialect);
   if (rerun && rerunHandler)
     toast.message("The result's rows were updated in place", {
       action: { label: "Re-run", onClick: () => rerunHandler?.(p.tabId, rerun) },

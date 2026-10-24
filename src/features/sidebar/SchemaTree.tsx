@@ -483,8 +483,11 @@ export function SchemaTree({
   /** The context of a row of `schema` (a lazy-loaded tree lists several schemas). */
   const ctxFor = (schema: string | null | undefined): ObjectContext =>
     schema ? { ...ctx, schema } : ctx;
-  const dialog = (d: ObjectDialog) =>
-    openObjectDialog({ connectionId, dialect: coreDialect(driver), dialog: d });
+  // The object dialogs and Item Overview generate a core dialect's SQL: none for other drivers.
+  const dialect = coreDialect(driver);
+  const dialog = (d: ObjectDialog) => {
+    if (dialect) openObjectDialog({ connectionId, dialect, dialog: d });
+  };
   /** New ▸ … into `schema` (the sidebar's schema when left out). */
   const newIn = (schema?: string | null) => ({
     newItem: (what: Parameters<typeof runNew>[1]) => runNew(ctxFor(schema), what),
@@ -494,7 +497,7 @@ export function SchemaTree({
   const hasGroups = pinScope !== null;
   const overviewOf = (schema: string | null | undefined) => {
     const s = schema ?? currentSchema;
-    if (s !== null) openItemOverview({ connectionId, dialect: coreDialect(driver), schema: s });
+    if (s !== null && dialect) openItemOverview({ connectionId, dialect, schema: s });
   };
 
   if (loading) {

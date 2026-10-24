@@ -60,7 +60,6 @@ import {
   ipc,
   type BrowsePage,
   type Conjunction,
-  type Dialect,
   type RowKey,
   type SortSpec,
   type Value,
@@ -101,8 +100,6 @@ import {
 } from "./tableViewMemory";
 import { rowKeys, useRowCount, useTableMeta, useTableRows } from "./useTableRows";
 
-const DIALECT: Record<string, Dialect> = { postgres: "postgres", mysql: "mysql", sqlite: "sqlite" };
-
 const NULL: Value = { t: "null" };
 
 /** `valuesEqual` with a fast path for scalars (bulk edit compares whole columns). */
@@ -127,6 +124,9 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   const qc = useQueryClient();
   const connection = useConnectionsStore((s) => s.byId[connectionId]);
   const driver = connection?.info.driver ?? "postgres";
+  // Null for a driver beyond the core ones: no filter bar or Generate JOIN (their operators and
+  // SQL are the core dialects'), and no table context for the copy formats.
+  const dialect = coreDialect(driver);
   const isActive = useTabsStore((s) => s.activeId === tab.id);
   const openTable = useTabsStore((s) => s.openTable);
   const setView = useTabsStore((s) => s.setView);
@@ -789,9 +789,9 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
    */
   const generateJoin = (column: GridColumn, chosen?: FkRef) => {
     const fk = chosen ?? column.fk ?? fksOf(column)[0];
-    if (!fk) return;
+    if (!fk || !dialect) return;
     const pairs = fkPairs(fk, column.name);
-    const sql = joinSql(DIALECT[driver] ?? "postgres", {
+    const sql = joinSql(dialect, {
       table,
       column: pairs[0]?.local ?? column.name,
       references: {
@@ -802,7 +802,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       pairs:
         pairs.length > 1 ? pairs.map((p) => ({ column: p.local, reference: p.ref })) : undefined,
     });
-    openSqlInNewQueryTab(connectionId, sql, coreDialect(driver), `${table.name} JOIN ${fk.table}`);
+    openSqlInNewQueryTab(connectionId, sql, dialect, `${table.name} JOIN ${fk.table}`);
   };
 
   /**
@@ -931,13 +931,13 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
 
   return (
     <div ref={rootRef} className="flex h-full min-h-0 flex-col">
-      {state.filtersVisible && (
+      {state.filtersVisible && dialect && (
         <FilterBar
           columns={meta.data.columns}
           rows={draft.rows.length > 0 ? draft.rows : [starterRow]}
           conjunction={draft.conjunction}
           dirty={draftDirty}
-          dialect={DIALECT[driver] ?? "postgres"}
+          dialect={dialect}
           sql={page?.sql ?? null}
           onChange={(r, c) => setDraft({ rows: r, conjunction: c })}
           onApply={applyFilters}
@@ -982,15 +982,16 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             onSelectionChange={setSelectedRows}
             onOpenFk={openFk}
             onFocusFilters={state.filtersVisible ? focusFilters : undefined}
-            copyContext={{
-              dialect: DIALECT[driver] ?? "postgres",
-              schema: meta.data.table.schema,
-              table: meta.data.table.name,
-              mysqlLongLat: mysqlLongLat(
-                DIALECT[driver] ?? "postgres",
-                connection?.info.serverVersion ?? "",
-              ),
-            }}
+            copyContext={
+              dialect
+                ? {
+                    dialect,
+                    schema: meta.data.table.schema,
+                    table: meta.data.table.name,
+                    mysqlLongLat: mysqlLongLat(dialect, connection?.info.serverVersion ?? ""),
+                  }
+                : undefined
+            }
             editable={editable && !!page}
             readOnlyNotice={editable ? undefined : "This table is read-only"}
             active={isActive}
@@ -1001,7 +1002,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             onSelectedRowsChange={setSelectedIdx}
             rowNumbers={rowNumbers}
             onRefresh={refresh}
-            onGenerateJoin={generateJoin}
+            onGenerateJoin={dialect ? generateJoin : undefined}
             onImport={editable ? (kind) => openImport({ connectionId, kind, table }) : undefined}
             onExportPage={() => openExportCurrentPage(connectionId, table, tab.id)}
             quickLookKey

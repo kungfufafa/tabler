@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { coreDialect } from "@/features/drivers/catalog";
+import { requireCoreDialect } from "@/features/drivers/catalog";
 import { ipc, type Dialect, type TableSummary } from "@/lib/ipc";
 import { resetMockDdl } from "@/lib/ipc/mock/ddl";
 import { useConnectionsStore } from "@/stores/connections";
@@ -48,7 +48,7 @@ async function setup(
       <TooltipProvider>
         <Harness
           connectionId={info.connectionId}
-          dialect={coreDialect(info.driver)}
+          dialect={requireCoreDialect(info.driver)}
           initial={initial(tables)}
         />
       </TooltipProvider>

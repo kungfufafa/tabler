@@ -1,8 +1,8 @@
+import { coreDialect } from "@/features/drivers/catalog";
 import { useConnectionsStore } from "@/stores/connections";
 import { getPrefs } from "@/stores/prefs";
 import { useTabsStore } from "@/stores/tabs";
 import { seedEditor } from "./editorStates";
-import type { SqlDialect } from "./scanner";
 
 /**
  * "Command + T should open: SQL Query Editor tab / Empty tab" (TablePlus). A SQL Query Editor tab
@@ -79,10 +79,10 @@ export function newTabScript(connectionId: string): string | null {
 export function openNewQueryTab(connectionId: string): string {
   const script = newTabScript(connectionId);
   const id = useTabsStore.getState().newQuery(connectionId);
-  if (script) {
-    const driver = useConnectionsStore.getState().byId[connectionId]?.info.driver;
-    seedEditor(id, script, { dialect: (driver ?? "postgres") as SqlDialect });
-  }
+  const driver = useConnectionsStore.getState().byId[connectionId]?.info.driver;
+  // A connection without a core dialect has no SQL editor to start the script in.
+  const dialect = driver ? coreDialect(driver) : "postgres";
+  if (script && dialect) seedEditor(id, script, { dialect });
   return id;
 }
 

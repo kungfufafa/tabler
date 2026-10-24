@@ -11,7 +11,8 @@ export const HIGHLIGHT_MAX_CHARS = 20_000;
  */
 export function consoleSegments(sql: string, dialect: Dialect | null | undefined): Segment[] {
   if (sql.length > HIGHLIGHT_MAX_CHARS) return [{ text: sql, cls: "" }];
-  const lines = highlightSql(dialect ?? "postgres", sql);
+  // Unknown (the connection was not open): PostgreSQL; null (another driver's SQL): plain.
+  const lines = highlightSql(dialect === undefined ? "postgres" : dialect, sql);
   const out: Segment[] = [];
   lines.forEach((line, i) => {
     if (i > 0) out.push({ text: "\n", cls: "" });

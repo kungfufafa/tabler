@@ -9,6 +9,7 @@ import { useNativeMenu } from "@/hooks/useNativeMenu";
 import { useTheme } from "@/hooks/useTheme";
 import { KeyboardProvider } from "@/lib/keys/useShortcuts";
 import { installActiveSync } from "@/stores/activeSync";
+import { loadAppInfo } from "@/stores/appInfo";
 
 function GlobalEffects() {
   useTheme();
@@ -17,6 +18,8 @@ function GlobalEffects() {
   useNativeMenu();
   // The visible tab and the active connection (sidebar, status bar, banner, ⌘T) never drift apart.
   useEffect(() => installActiveSync(), []);
+  // The drivers and databases this build has (the new-connection picker's tiles).
+  useEffect(() => void loadAppInfo(), []);
   return null;
 }
 

@@ -24,6 +24,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { coreDialect } from "@/features/drivers/catalog";
+import { NotAvailable } from "@/features/drivers/NotAvailable";
 import { formatCombo } from "@/lib/keys/combo";
 import {
   ipc,
@@ -73,7 +75,12 @@ export function AssistantPanel() {
       </div>
     );
   }
-  return <AssistantChat key={connection.info.connectionId} connection={connection} />;
+  // Its context and its SQL are a core dialect's.
+  const dialect = coreDialect(connection.info.driver);
+  if (!dialect) return <NotAvailable driver={connection.info.driver} what="The assistant" />;
+  return (
+    <AssistantChat key={connection.info.connectionId} connection={connection} dialect={dialect} />
+  );
 }
 
 /** What the next message is about: the connection's schema and the active tab's table. */
@@ -118,9 +125,8 @@ function useProviderSettings(agent: Agent) {
   );
 }
 
-function AssistantChat({ connection }: { connection: OpenConnection }) {
+function AssistantChat({ connection, dialect }: { connection: OpenConnection; dialect: Dialect }) {
   const connectionId = connection.info.connectionId;
-  const dialect = connection.info.driver as Dialect;
   const conversation = useConversation(connectionId);
   const custom = useAgentsStore((s) => s.custom);
   const selectedId = useAgentsStore((s) => s.selectedId);

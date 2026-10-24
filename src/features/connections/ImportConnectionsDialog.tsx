@@ -346,6 +346,7 @@ export function ImportConnectionsDialog({
                     <DriverBadge
                       driver={c.profile.driver}
                       mysqlVersion={c.profile.options.mysqlVersion}
+                      pgFlavor={c.profile.options.pgFlavor}
                       color={c.profile.color}
                     />
                     <div className="min-w-0 flex-1">

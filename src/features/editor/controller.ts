@@ -98,7 +98,12 @@ export interface ControllerHooks {
   onSchemaChanged?: () => void;
 }
 
-export function dialectOf(driver: Driver | undefined): SqlDialect {
+/**
+ * The dialect the SQL editor reads a connection's SQL in: its driver's (PostgreSQL while the
+ * connection is unknown); null for a driver beyond the core ones, which the core lexers must not
+ * split or classify.
+ */
+export function dialectOf(driver: Driver | undefined): SqlDialect | null {
   return driver ? coreDialect(driver) : "postgres";
 }
 
@@ -106,7 +111,10 @@ function queryTab(tabId: string) {
   const tab = useTabsStore.getState().tabs.find((t) => t.id === tabId);
   if (!tab || tab.kind !== "query") return null;
   const connection = useConnectionsStore.getState().byId[tab.connectionId];
-  return { tab, connectionId: tab.connectionId, dialect: dialectOf(connection?.info.driver) };
+  const dialect = dialectOf(connection?.info.driver);
+  // No SQL editor for such a connection (`QueryTab` says so): nothing to run, format or save.
+  if (!dialect) return null;
+  return { tab, connectionId: tab.connectionId, dialect };
 }
 
 export type RunTarget = "auto" | "current" | Submission;

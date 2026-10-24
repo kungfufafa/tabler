@@ -45,7 +45,14 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import type { CoreDriver } from "@/features/drivers/catalog";
+import {
+  CORE_DRIVERS,
+  isCoreDriver,
+  isCoreKind,
+  KIND_DESCRIPTORS,
+  visibleKinds,
+  type CoreDriver,
+} from "@/features/drivers/catalog";
 import { rememberSafeModeLevel } from "@/features/safety/guard";
 import { SAFE_MODE_DESCRIPTION, SAFE_MODE_SUMMARY } from "@/features/safety/levels";
 import { confirmProtectedChange, protectedChanges } from "@/features/safety/setLevel";
@@ -67,13 +74,13 @@ import { shortcutFor } from "@/lib/keys/keymap";
 import { SECRET_STORE } from "@/lib/platform";
 import { ACCENT_PRESETS } from "@/lib/theme";
 import { cn } from "@/lib/utils";
+import { useAppInfo } from "@/stores/appInfo";
 import { getPrefs } from "@/stores/prefs";
 import { DriverBadge } from "./badges";
 import { BootstrapCommandsDialog } from "./BootstrapCommandsDialog";
 import {
   accentColor,
   cssColor,
-  DATABASE_KINDS,
   databaseKind,
   DRIVER_LABEL,
   DRIVERS,
@@ -412,9 +419,12 @@ function DriverPicker({
   onConfirm: (kind: DatabaseKind) => void;
 }) {
   const tiles = useRef(new Map<DatabaseKind, HTMLButtonElement>());
+  // The databases this build has; the form has the fields of the core ones only (the others
+  // bring theirs with their driver).
+  const kinds = visibleKinds(useAppInfo()).filter(isCoreKind);
   return (
     <div role="radiogroup" aria-label="Database" className="grid grid-cols-4 gap-3">
-      {DATABASE_KINDS.map((d, i) => (
+      {kinds.map((d, i) => (
         <button
           key={d}
           ref={(el) => {
@@ -441,8 +451,7 @@ function DriverPicker({
                   : 0;
             if (step === 0) return;
             e.preventDefault();
-            const next =
-              DATABASE_KINDS[(i + step + DATABASE_KINDS.length) % DATABASE_KINDS.length]!;
+            const next = kinds[(i + step + kinds.length) % kinds.length]!;
             onChange(next);
             tiles.current.get(next)?.focus();
           }}
@@ -456,7 +465,8 @@ function DriverPicker({
         >
           <DriverBadge
             driver={kindDriver(d)}
-            mysqlVersion={d === "mariadb" ? "mariadb" : null}
+            mysqlVersion={KIND_DESCRIPTORS[d].mysqlVersion}
+            pgFlavor={KIND_DESCRIPTORS[d].pgFlavor}
             color={KIND_TINT[d]}
             size="lg"
           />
@@ -663,7 +673,8 @@ function GeneralFields({
               <Select
                 value={field.value}
                 onValueChange={(v) => {
-                  const next = v as CoreDriver;
+                  const next = CORE_DRIVERS.find((d) => d === v);
+                  if (!next) return;
                   const port = getValues("port").trim();
                   field.onChange(next);
                   // Follow the driver unless the port was typed in.
@@ -1767,11 +1778,13 @@ export function ConnectionDialog({
 
   const pickDriver = (kind: DatabaseKind) => {
     const d = kindDriver(kind);
+    // The picker offers the core databases only.
+    if (!isCoreDriver(d)) return;
     form.setValue("driver", d);
     form.setValue("port", DEFAULT_PORT[d]);
     // MariaDB is the MySQL driver with Ver. ▸ MariaDB (and its SSL mode names).
     if (d === "mysql") {
-      const version = kind === "mariadb" ? "mariadb" : "default";
+      const version = KIND_DESCRIPTORS[kind].mysqlVersion ?? "default";
       form.setValue("mysqlVersion", version);
       form.setValue("ssl", sslForVersion(form.getValues("ssl"), version));
     }

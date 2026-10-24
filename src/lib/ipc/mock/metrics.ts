@@ -378,7 +378,9 @@ registerMock("metrics_run", async ({ connectionId, queryId, query }) => {
   const list = await mockInvoke<ConnectionInfo[]>("list_connections", {});
   const info = list.find((c) => c.connectionId === connectionId);
   if (!info) mockError("NOT_CONNECTED", "not connected");
-  const driver = coreDialect(info.driver);
+  const driver =
+    coreDialect(info.driver) ??
+    mockError("UNSUPPORTED", "unsupported: the mock runs core SQL only");
   const statements = splitStatements(sql, driver);
   if (statements.length === 0) mockError("INVALID_INPUT", "The query is empty");
   if (statements.length > 1)

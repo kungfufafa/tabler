@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { coreDialect } from "@/features/drivers/catalog";
+import { NotAvailable } from "@/features/drivers/NotAvailable";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { bumpGeneration, openWorkspaceSheet, useCommitGeneration } from "@/features/commit/store";
 import { commitWorkspace, workspacePendingCount } from "@/features/commit/workspace";
@@ -179,11 +180,22 @@ function focusedColumn(view: StructureView): string | null {
  * and applies them.
  */
 export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }> }) {
+  const driver = useConnectionsStore((s) => s.byId[tab.connectionId]?.info.driver ?? "postgres");
+  // Its edits are planned as a core dialect's DDL.
+  const dialect = coreDialect(driver);
+  if (!dialect) return <NotAvailable driver={driver} what="The structure editor" />;
+  return <StructureTabView tab={tab} dialect={dialect} />;
+}
+
+function StructureTabView({
+  tab,
+  dialect,
+}: {
+  tab: Extract<Tab, { kind: "structure" }>;
+  dialect: Dialect;
+}) {
   const { connectionId, table } = tab;
   const qc = useQueryClient();
-  const dialect: Dialect = useConnectionsStore((s) =>
-    coreDialect(s.byId[connectionId]?.info.driver ?? "postgres"),
-  );
   const readOnlyConnection = useConnectionsStore(
     (s) => s.byId[connectionId]?.info.readOnly ?? false,
   );

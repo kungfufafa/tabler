@@ -201,7 +201,8 @@ export async function restoreWorkspaceTabs(
         skipped.push(t.title);
         continue;
       }
-      seedEditor(id, content.doc, { dialect });
+      // A connection without a core dialect keeps the text, though it has no SQL editor to show.
+      seedEditor(id, content.doc, dialect ? { dialect } : undefined);
       markSaved(id, content.saved);
       const cursor = clampCursor(t.cursor, content.doc.length);
       if (cursor > 0) applyToEditor(id, () => ({ selection: EditorSelection.cursor(cursor) }));

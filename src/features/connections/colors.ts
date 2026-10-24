@@ -1,54 +1,43 @@
 import type { CSSProperties } from "react";
-import type { CoreDriver } from "@/features/drivers/catalog";
-import type { Driver, MysqlVersion } from "@/lib/ipc";
-import { accentColor, HEX_COLOR, type AccentPreset } from "@/lib/theme";
+import { CORE_DRIVERS, DESCRIPTORS, KIND_DESCRIPTORS, mapRecord } from "@/features/drivers/catalog";
+import type { DatabaseKind, Driver } from "@/lib/ipc";
+import { ACCENT_PRESETS, accentColor, HEX_COLOR, type AccentPreset } from "@/lib/theme";
 import type { BuiltinTag } from "./schema";
 
 export { ACCENT_PRESETS, type AccentPreset } from "@/lib/theme";
 export { ACCENT_CSS, accentColor } from "@/lib/theme";
 
-export const DRIVER_LABEL = {
-  postgres: "PostgreSQL",
-  mysql: "MySQL / MariaDB",
-  sqlite: "SQLite",
-} as const;
-export const DRIVER_SHORT = { postgres: "PG", mysql: "MY", sqlite: "SQ" } as const;
-export const DRIVERS = ["postgres", "mysql", "sqlite"] as const satisfies readonly Driver[];
 /**
  * The databases of the new-connection picker, TablePlus's list: MariaDB has its own tile and badge
- * although the MySQL driver serves it (a MySQL connection with Ver. ▸ MariaDB).
+ * although the MySQL driver serves it (a MySQL connection with Ver. ▸ MariaDB), and so do the
+ * PostgreSQL flavors.
  */
-export type DatabaseKind = CoreDriver | "mariadb";
-export const DATABASE_KINDS = [
-  "postgres",
-  "mysql",
-  "mariadb",
-  "sqlite",
-] as const satisfies readonly DatabaseKind[];
-export const KIND_LABEL: Record<DatabaseKind, string> = {
-  postgres: "PostgreSQL",
-  mysql: "MySQL",
-  mariadb: "MariaDB",
-  sqlite: "SQLite",
+export type { DatabaseKind } from "@/lib/ipc";
+export { databaseKind, kindDriver } from "@/features/drivers/catalog";
+
+/**
+ * The name of each driver (the form's Driver select, the launcher's sort); MySQL's names both
+ * databases it serves.
+ */
+export const DRIVER_LABEL: Readonly<Record<Driver, string>> = {
+  ...mapRecord(DESCRIPTORS, (d) => d.label),
+  mysql: "MySQL / MariaDB",
 };
-export const KIND_SHORT: Record<DatabaseKind, string> = { ...DRIVER_SHORT, mariadb: "MA" };
+/** The connection form's Driver choices. */
+export const DRIVERS = CORE_DRIVERS;
+export const KIND_LABEL: Readonly<Record<DatabaseKind, string>> = mapRecord(
+  KIND_DESCRIPTORS,
+  (k) => k.label,
+);
+export const KIND_SHORT: Readonly<Record<DatabaseKind, string>> = mapRecord(
+  KIND_DESCRIPTORS,
+  (k) => k.short,
+);
 /** Tile colour of each database in the new-connection picker. */
-export const KIND_TINT: Record<DatabaseKind, AccentPreset> = {
-  postgres: "blue",
-  mysql: "orange",
-  mariadb: "purple",
-  sqlite: "teal",
-};
-
-/** The database a connection is for: its driver, or MariaDB for a MySQL one set to Ver. ▸ MariaDB. */
-export function databaseKind(driver: CoreDriver, mysqlVersion?: MysqlVersion | null): DatabaseKind {
-  return driver === "mysql" && mysqlVersion === "mariadb" ? "mariadb" : driver;
-}
-
-/** The driver that serves a database of the picker. */
-export function kindDriver(kind: DatabaseKind): CoreDriver {
-  return kind === "mariadb" ? "mysql" : kind;
-}
+export const KIND_TINT: Readonly<Record<DatabaseKind, AccentPreset>> = mapRecord(
+  KIND_DESCRIPTORS,
+  (k) => ACCENT_PRESETS.find((p) => p === k.tint) ?? "blue",
+);
 
 /** The five built-in tags' names and TablePlus's colours (custom tags: see `tags.ts`). */
 export const TAG_LABEL: Record<BuiltinTag, string> = {

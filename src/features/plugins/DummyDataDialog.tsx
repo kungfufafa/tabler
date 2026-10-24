@@ -14,7 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { coreDialect } from "@/features/drivers/catalog";
 import { useTableMeta } from "@/features/table-tab/useTableRows";
-import { tableKey, type Driver } from "@/lib/ipc";
+import { tableKey } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { DUMMY_DATA, dummyInserts, MAX_DUMMY_ROWS, seededRng } from "./builtin/dummyData";
 import { PluginCancelled } from "./execute";
@@ -33,9 +33,9 @@ function DummyDataForm({ request }: { request: DummyDataRequest }) {
     [request.table.schema, request.table.name],
   );
   const meta = useTableMeta(request.connectionId, table);
-  const driver = useConnectionsStore(
-    (s) => s.byId[request.connectionId]?.info.driver ?? null,
-  ) as Driver | null;
+  const driver = useConnectionsStore((s) => s.byId[request.connectionId]?.info.driver ?? null);
+  // The INSERTs are a core dialect's: none for a driver beyond the core ones.
+  const dialect = driver ? coreDialect(driver) : null;
   const [countText, setCountText] = useState("10");
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 2 ** 31));
   const [busy, setBusy] = useState(false);
@@ -43,10 +43,10 @@ function DummyDataForm({ request }: { request: DummyDataRequest }) {
   const countOk = Number.isInteger(count) && count >= 1 && count <= MAX_DUMMY_ROWS;
   const statements = useMemo(
     () =>
-      meta.data && driver && countOk
-        ? dummyInserts(coreDialect(driver), meta.data, count, seededRng(seed))
+      meta.data && dialect && countOk
+        ? dummyInserts(dialect, meta.data, count, seededRng(seed))
         : [],
-    [meta.data, driver, countOk, count, seed],
+    [meta.data, dialect, countOk, count, seed],
   );
   const sql = statements.join("\n");
 

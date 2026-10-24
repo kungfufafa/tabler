@@ -1,23 +1,14 @@
 import { cssColor } from "@/features/connections/colors";
 import { tagColorOf } from "@/features/connections/tags";
-import { isCoreDriver, type CoreDriver } from "@/features/drivers/catalog";
+import { CORE_DRIVERS, DESCRIPTORS, driverLabel, mapRecord } from "@/features/drivers/catalog";
 import type { ConnectionInfo, ConnectionTag, Driver } from "@/lib/ipc";
 import { accentColor, type AccentPreset } from "@/lib/theme";
 
 /** Two-letter badge of a driver (workspace rail). */
-export const DRIVER_SHORT: Partial<Record<Driver, string>> = {
-  postgres: "PG",
-  mysql: "MY",
-  sqlite: "SQ",
-};
-
-const DRIVER_NAME: Record<CoreDriver, string> = {
-  postgres: "PostgreSQL",
-  mysql: "MySQL",
-  sqlite: "SQLite",
-};
-
-const driverName = (driver: Driver) => (isCoreDriver(driver) ? DRIVER_NAME[driver] : driver);
+export const DRIVER_SHORT: Readonly<Record<Driver, string>> = mapRecord(
+  DESCRIPTORS,
+  (d) => d.short,
+);
 
 /** TablePlus's tag labels and colours (local green, testing blue, …, production red). */
 export const TAG_STYLE: Record<ConnectionTag, { label: string; color: AccentPreset }> = {
@@ -46,11 +37,11 @@ export function serverLabel(info: Pick<ConnectionInfo, "driver" | "serverVersion
     const name =
       product === "mariadb"
         ? "MariaDB"
-        : (Object.values(DRIVER_NAME).find((n) => n.toLowerCase() === product) ?? named[1]!);
+        : (CORE_DRIVERS.map(driverLabel).find((n) => n.toLowerCase() === product) ?? named[1]!);
     return `${name} ${named[2]}`;
   }
   const number = /^v?(\d[\w.]*)/.exec(raw)?.[1];
-  return number ? `${driverName(info.driver)} ${number}` : driverName(info.driver);
+  return number ? `${driverLabel(info.driver)} ${number}` : driverLabel(info.driver);
 }
 
 /** The database segment: SQLite reports its file path, which shows as the file name. */

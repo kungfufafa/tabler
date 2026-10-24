@@ -917,6 +917,7 @@ export function Launcher() {
                           <DriverBadge
                             driver={dragging.profile.driver}
                             mysqlVersion={dragging.profile.options.mysqlVersion}
+                            pgFlavor={dragging.profile.options.pgFlavor}
                             color={dragging.profile.color}
                           />
                           <span className="truncate text-[13px] font-semibold">

@@ -22,14 +22,12 @@ export function editorSql(tabId: string): PluginSql | null {
   const driver = tab
     ? useConnectionsStore.getState().byId[tab.connectionId]?.info.driver
     : undefined;
+  // A connection without a core dialect has no SQL editor (and no core lexer may split its text).
+  const dialect = driver ? coreDialect(driver) : "postgres";
+  if (!dialect) return null;
   const text = state.doc.toString();
   const sel = state.selection.main;
-  const st = statementAt(
-    splitStatements(text, driver ? coreDialect(driver) : "postgres"),
-    text,
-    sel.head,
-    true,
-  );
+  const st = statementAt(splitStatements(text, dialect), text, sel.head, true);
   return {
     text,
     selected: state.sliceDoc(sel.from, sel.to),

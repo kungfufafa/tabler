@@ -27,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { coreDialect } from "@/features/drivers/catalog";
+import { NotAvailable } from "@/features/drivers/NotAvailable";
 import { useAction } from "@/features/palette/actions";
 import type { ToolTabProps } from "@/features/tabs/toolTabs";
 import { ipc, toIpcError, type Dialect, type MetricsBoard } from "@/lib/ipc";
@@ -315,6 +316,9 @@ export function MetricsBoardTab({ tab, params }: ToolTabProps<MetricsParams>) {
         Not connected.
       </div>
     );
+  // Its queries are split and classified by a core dialect.
+  const dialect = coreDialect(info.driver);
+  if (!dialect) return <NotAvailable driver={info.driver} what="Metrics boards" />;
 
   return (
     <div data-slot="metrics-board" className="bg-background flex h-full min-h-0">
@@ -331,7 +335,7 @@ export function MetricsBoardTab({ tab, params }: ToolTabProps<MetricsParams>) {
         <BoardView
           key={`${connectionId}:${shown.id}`}
           connectionId={connectionId}
-          dialect={coreDialect(info.driver)}
+          dialect={dialect}
           board={shown}
           editing={editing}
           setEditing={setEditing}

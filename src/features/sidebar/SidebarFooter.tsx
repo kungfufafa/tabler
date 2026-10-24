@@ -112,6 +112,7 @@ export function SidebarFooter({ connection }: { connection: OpenConnection }) {
   const currentSchema = useCurrentSchema(connection.info.connectionId);
   const [dialog, setDialog] = useState<TableDialogState | null>(null);
   const { driver, readOnly, connectionId } = connection.info;
+  const dialect = coreDialect(driver);
   const ctx: ObjectContext = {
     connectionId,
     driver,
@@ -126,7 +127,12 @@ export function SidebarFooter({ connection }: { connection: OpenConnection }) {
     settingItems,
     {
       newItem: (what) =>
-        runNew(ctx, what, () => setDialog({ kind: "create", schema: currentSchema })),
+        runNew(
+          ctx,
+          what,
+          // Without the dialog (another driver), New ▸ Table… says it is not available.
+          dialect ? () => setDialog({ kind: "create", schema: currentSchema }) : undefined,
+        ),
     },
     newQueryCombo,
   );
@@ -155,12 +161,15 @@ export function SidebarFooter({ connection }: { connection: OpenConnection }) {
         {/* Lazy load lists the schemas in the tree itself. */}
         {!lazy && <SchemaPicker connection={connection} />}
       </div>
-      <TableDialogs
-        connectionId={connectionId}
-        dialect={coreDialect(driver)}
-        state={dialog}
-        onClose={() => setDialog(null)}
-      />
+      {/* Their SQL is a core dialect's: none for other drivers. */}
+      {dialect && (
+        <TableDialogs
+          connectionId={connectionId}
+          dialect={dialect}
+          state={dialog}
+          onClose={() => setDialog(null)}
+        />
+      )}
     </div>
   );
 }

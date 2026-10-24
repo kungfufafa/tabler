@@ -87,6 +87,7 @@ export function ConnectionRow({
           <DriverBadge
             driver={profile.driver}
             mysqlVersion={profile.options.mysqlVersion}
+            pgFlavor={profile.options.pgFlavor}
             color={profile.color}
             busy={connecting}
           />

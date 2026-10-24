@@ -21,7 +21,6 @@ import {
 } from "@/features/editor/cmExtensions";
 import { changeEditorFontSize } from "@/features/editor/editorSettings";
 import { baseName } from "@/features/editor/files";
-import type { SqlDialect } from "@/features/editor/scanner";
 import { useAction, type ActionId } from "@/features/palette/actions";
 import { shortcutFor, useKeymapVersion } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
@@ -182,7 +181,8 @@ export function SqlViewer({ viewerKey, active, onOpenPath, notice }: SqlViewerPr
   useAction("query.font-smaller", active ? fontSmaller : null);
 
   const changeDialect = (value: string) => {
-    const next = value as SqlDialect;
+    const next = DIALECTS.find((d) => d === value);
+    if (!next) return;
     patchDoc(viewerKey, { dialect: next });
     setViewerDialect(viewerKey, next);
     focusViewer(viewerKey);

@@ -80,6 +80,7 @@ export function ConnectionList({
                   <DriverBadge
                     driver={p.driver}
                     mysqlVersion={p.options.mysqlVersion}
+                    pgFlavor={p.options.pgFlavor}
                     color={p.color}
                     className="size-5 rounded text-[8px]"
                   />

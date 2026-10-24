@@ -1,4 +1,4 @@
-import { coreDialect } from "@/features/drivers/catalog";
+import { requireCoreDialect } from "@/features/drivers/catalog";
 import { statementTexts } from "@/features/editor/scanner";
 import { guardExecution } from "@/features/safety/guard";
 import { ipc, type StatementResult, type Value } from "@/lib/ipc";
@@ -35,9 +35,9 @@ export async function executeSql(
 ): Promise<ExecResult> {
   const conn = connectionId ? useConnectionsStore.getState().byId[connectionId] : undefined;
   if (!connectionId || !conn) throw new Error("Not connected: open a connection first");
-  const statements = statementTexts(sql, coreDialect(conn.info.driver)).filter(
-    (s) => s.trim() !== "",
-  );
+  // Split and classified by a core dialect only: another driver's SQL is refused here.
+  const dialect = requireCoreDialect(conn.info.driver, "Running SQL from a plugin");
+  const statements = statementTexts(sql, dialect).filter((s) => s.trim() !== "");
   if (statements.length === 0) throw new Error("Nothing to execute");
   const wait = options.userWait ?? (<T>(p: Promise<T>) => p);
   if (!(await wait(guardExecution(connectionId, { kind: "query", statements }))))

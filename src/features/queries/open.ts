@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { notAvailableFor } from "@/features/drivers/catalog";
 import { dialectOf, insertSql, runQuery } from "@/features/editor/controller";
 import { HISTORY_KEY } from "@/features/editor/historyGroups";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
@@ -18,10 +19,18 @@ function hooks(qc: QueryClient, connectionId: string) {
   };
 }
 
-/** "Open in New Tab": a new query tab of the connection, titled after the query. */
-export function openSavedQuery(connection: OpenConnection, query: SavedQuery): string {
+/**
+ * "Open in New Tab": a new query tab of the connection, titled after the query; null when the
+ * connection has no SQL editor (a driver beyond the core ones).
+ */
+export function openSavedQuery(connection: OpenConnection, query: SavedQuery): string | null {
   const { connectionId, driver } = connection.info;
-  const tabId = openSqlInNewQueryTab(connectionId, query.sql, dialectOf(driver), query.name);
+  const dialect = dialectOf(driver);
+  if (!dialect) {
+    toast.error(notAvailableFor(driver, "The SQL editor"));
+    return null;
+  }
+  const tabId = openSqlInNewQueryTab(connectionId, query.sql, dialect, query.name);
   useUiStore.getState().setView("workspace");
   return tabId;
 }
@@ -33,7 +42,7 @@ export function runSavedQuery(
   query: SavedQuery,
 ): void {
   const tabId = openSavedQuery(connection, query);
-  void runQuery(tabId, "auto", hooks(qc, connection.info.connectionId));
+  if (tabId) void runQuery(tabId, "auto", hooks(qc, connection.info.connectionId));
 }
 
 /**

@@ -3,14 +3,14 @@ import type { Dialect } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { highlightSql } from "./sqlHighlight";
 
-/** Read-only, syntax-highlighted SQL (selectable, wraps long lines). */
+/** Read-only, syntax-highlighted SQL (selectable, wraps long lines); plain without a dialect. */
 export function SqlBlock({
   sql,
   dialect,
   className,
 }: {
   sql: string;
-  dialect: Dialect;
+  dialect: Dialect | null;
   className?: string;
 }) {
   const lines = useMemo(() => highlightSql(dialect, sql), [dialect, sql]);

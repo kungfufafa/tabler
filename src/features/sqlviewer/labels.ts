@@ -8,7 +8,7 @@ export const DIALECT_LABELS: Record<SqlDialect, string> = {
   sqlite: "SQLite",
 };
 
-export const DIALECTS = Object.keys(DIALECT_LABELS) as SqlDialect[];
+export const DIALECTS = ["postgres", "mysql", "sqlite"] as const satisfies readonly SqlDialect[];
 
 /** "report.sql", "dump-head.sql" for the head of a big file, or "Untitled" for a buffer without a file. */
 export function viewerTitle(doc: Pick<ViewerDoc, "path" | "headOf"> | undefined): string {

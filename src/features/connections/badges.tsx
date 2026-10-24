@@ -1,7 +1,6 @@
 import { ChevronRight, Folder, Loader2 } from "lucide-react";
 import { Fragment } from "react";
-import { isCoreDriver } from "@/features/drivers/catalog";
-import type { ConnectionTag, Driver, MysqlVersion } from "@/lib/ipc";
+import type { ConnectionTag, Driver, MysqlVersion, PgFlavor } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { databaseKind, KIND_SHORT, TINTED, tintStyle } from "./colors";
 import { GROUP_ICONS, isGroupImage, splitPath, type GroupIconId } from "./groups";
@@ -9,11 +8,13 @@ import { tagColorOf, tagLabel, useCustomTags } from "./tags";
 
 /**
  * Rounded square with the database's short label (PG / MY / MA / SQ), tinted with a connection
- * colour. `mysqlVersion`: a MySQL connection set to Ver. ▸ MariaDB reads MA.
+ * colour. `mysqlVersion`: a MySQL connection set to Ver. ▸ MariaDB reads MA; `pgFlavor`: a
+ * PostgreSQL one for CockroachDB reads CR.
  */
 export function DriverBadge({
   driver,
   mysqlVersion,
+  pgFlavor,
   color,
   busy = false,
   size = "md",
@@ -21,16 +22,14 @@ export function DriverBadge({
 }: {
   driver: Driver;
   mysqlVersion?: MysqlVersion | null;
+  pgFlavor?: PgFlavor | null;
   color: string | null | undefined;
   /** Shows a spinner instead of the label (connecting). */
   busy?: boolean;
   size?: "md" | "lg";
   className?: string;
 }) {
-  // Drivers beyond the core ones get their own badges with their UI.
-  const label = isCoreDriver(driver)
-    ? KIND_SHORT[databaseKind(driver, mysqlVersion)]
-    : driver.slice(0, 2).toUpperCase();
+  const label = KIND_SHORT[databaseKind(driver, mysqlVersion, pgFlavor)];
   return (
     <span
       aria-hidden

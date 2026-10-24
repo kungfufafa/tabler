@@ -1,3 +1,10 @@
+import {
+  CORE_DRIVERS,
+  CORE_KINDS,
+  isCoreKind,
+  KIND_DESCRIPTORS,
+  kindOf,
+} from "@/features/drivers/catalog";
 import type { ApplyRequest } from "../bindings/ApplyRequest";
 import type { ApplyResult } from "../bindings/ApplyResult";
 import type { BrowsePage } from "../bindings/BrowsePage";
@@ -54,13 +61,33 @@ function sshOf(p: ConnectionProfile) {
   return p.driver === "sqlite" ? null : p.ssh;
 }
 
+/**
+ * Mirrors `registry::ensure_built`: a database this build lacks (the mock has the core ones) is
+ * refused before its script, password command or tunnel would run.
+ */
+function ensureBuilt(p: ConnectionProfile): void {
+  const kind = kindOf(p);
+  if (!isCoreKind(kind))
+    mockError(
+      "UNSUPPORTED",
+      `unsupported: ${KIND_DESCRIPTORS[kind].label} is not built into this Tabler`,
+    );
+}
+
 function conn(connectionId: string) {
   const c = connections.get(connectionId);
   if (!c) mockError("NOT_CONNECTED", "not connected");
   return c;
 }
 
-registerMock("app_info", () => ({ version: "0.1.0", platform: "mock", debug: true }));
+// The mock is a build of the core drivers (their databases in the picker's order).
+registerMock("app_info", () => ({
+  version: "0.1.0",
+  platform: "mock",
+  debug: true,
+  drivers: [...CORE_DRIVERS],
+  kinds: [...CORE_KINDS],
+}));
 // The browser has no app to quit; `beforeunload` guards the tab instead.
 registerMock("quit_app", () => undefined);
 registerMock("set_unsaved", () => undefined);
@@ -152,6 +179,7 @@ registerMock("test_connection", async ({ input }) => {
     message,
     tunnelUsed: profile.ssh !== null,
   });
+  ensureBuilt(profile);
   try {
     mockBootstrapScript(profile);
   } catch (err) {
@@ -195,6 +223,7 @@ registerMock("test_connection", async ({ input }) => {
 registerMock("connect", async ({ profileId, password, databaseOverride }) => {
   const p = profiles.get(profileId as string) ?? mockError("NOT_FOUND", `profile ${profileId}`);
   await new Promise((r) => setTimeout(r, 250));
+  ensureBuilt(p);
   if (p.options.passwordMode === "ask") {
     const typed = typeof password === "string" ? password : sessionPasswords.get(p.id);
     if (typed === undefined)

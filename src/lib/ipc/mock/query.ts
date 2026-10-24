@@ -925,8 +925,16 @@ async function execute(
 
 // --- commands ------------------------------------------------------------------------
 
+/** The dialect the mock splits a connection's SQL with: it runs the core dialects only. */
+function mockDialect(info: ConnectionInfo) {
+  return (
+    coreDialect(info.driver) ?? mockError("UNSUPPORTED", "unsupported: the mock runs core SQL only")
+  );
+}
+
 registerMock("run_sql", async ({ connectionId, queryId, sql, options, onEvent }) => {
   const info = await connectionInfo(connectionId);
+  const dialect = mockDialect(info);
   const text = String(sql ?? "");
   const opts = {
     maxRows: 10_000,
@@ -951,7 +959,7 @@ registerMock("run_sql", async ({ connectionId, queryId, sql, options, onEvent })
   const began = performance.now();
   const results: StatementResult[] = [];
   try {
-    const statements = splitStatements(text, coreDialect(info.driver));
+    const statements = splitStatements(text, dialect);
     for (let index = 0; index < statements.length; index++) {
       const st = statements[index]!;
       const stmtSql = text.slice(st.start, st.end);
@@ -1034,6 +1042,7 @@ registerMock("cancel_query", ({ queryId }) => {
 
 registerMock("explain", async ({ connectionId, sql, mode, queryId }) => {
   const info = await connectionInfo(connectionId);
+  const dialect = mockDialect(info);
   const text = String(sql ?? "");
   const run: Running = { cancelled: false };
   const id = queryId ? String(queryId) : crypto.randomUUID();
@@ -1050,7 +1059,7 @@ registerMock("explain", async ({ connectionId, sql, mode, queryId }) => {
   };
   const t0 = performance.now();
   try {
-    const st = splitStatements(text, coreDialect(info.driver))[0];
+    const st = splitStatements(text, dialect)[0];
     if (!st) mockError("INVALID_INPUT", "nothing to explain");
     const stmtSql = text.slice(st.start, st.end);
     const leadAt = stmtSql.search(/\S/);

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { isCoreDriver } from "@/features/drivers/catalog";
+import { coreDialect } from "@/features/drivers/catalog";
 import { onSqlLog, type Dialect, type SqlLogCategory, type SqlLogEvent } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 
@@ -33,8 +33,11 @@ export interface ConsoleEntry extends SqlLogEvent {
   /** The connection's name and current database when it was logged (null: not open then). */
   connectionName: string | null;
   database: string | null;
-  /** The connection's SQL dialect, for the syntax highlighting (absent: not open then). */
-  dialect?: Dialect;
+  /**
+   * The connection's SQL dialect, for the syntax highlighting (absent: not open then; null: a
+   * driver beyond the core ones, shown plain).
+   */
+  dialect?: Dialect | null;
 }
 
 interface ConsoleState {
@@ -70,7 +73,7 @@ export const useConsoleStore = create<ConsoleState>()((set) => ({
       at,
       connectionName: info?.name ?? null,
       database: info?.currentDatabase ?? null,
-      ...(info && isCoreDriver(info.driver) ? { dialect: info.driver } : {}),
+      ...(info ? { dialect: coreDialect(info.driver) } : {}),
     };
     set((s) => ({ entries: appendCapped(s.entries, entry) }));
   },
