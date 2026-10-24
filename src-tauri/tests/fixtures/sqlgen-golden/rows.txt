@@ -1,0 +1,395 @@
+# Row addressing (row_key_where) and full-cell fetches (build_fetch_cell) per dialect and key.
+# Written by sqlgen::golden from the core code; never edited by hand.
+
+## postgres
+key {"kind":"pk","value":{"id":{"t":"int","v":7}}}
+  where: "\"id\" = $1::bigint"
+  suffix: ""
+  params: [{"t":"int","v":7}]
+  fetch name
+    sql: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE \"id\" = $1::bigint LIMIT 1"
+    params: [{"t":"int","v":7}]
+    preview: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE \"id\" = 7::bigint LIMIT 1"
+  fetch data
+    sql: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE \"id\" = $1::bigint LIMIT 1"
+    params: [{"t":"int","v":7}]
+    preview: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE \"id\" = 7::bigint LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE \"id\" = $1::bigint LIMIT 1"
+    params: [{"t":"int","v":7}]
+    preview: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE \"id\" = 7::bigint LIMIT 1"
+key {"kind":"pk","value":{"id":{"t":"int","v":7},"name":{"t":"text","v":"a'b"}}}
+  where: "\"id\" = $1::bigint AND \"name\" = $2::character varying"
+  suffix: ""
+  params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+  fetch name
+    sql: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE \"id\" = $1::bigint AND \"name\" = $2::character varying LIMIT 1"
+    params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+    preview: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE \"id\" = 7::bigint AND \"name\" = 'a''b'::character varying LIMIT 1"
+  fetch data
+    sql: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE \"id\" = $1::bigint AND \"name\" = $2::character varying LIMIT 1"
+    params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+    preview: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE \"id\" = 7::bigint AND \"name\" = 'a''b'::character varying LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE \"id\" = $1::bigint AND \"name\" = $2::character varying LIMIT 1"
+    params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+    preview: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE \"id\" = 7::bigint AND \"name\" = 'a''b'::character varying LIMIT 1"
+key {"kind":"pk","value":{"id":{"t":"null"}}}
+  where: "\"id\" IS NULL"
+  suffix: ""
+  fetch name
+    sql: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE \"id\" IS NULL LIMIT 1"
+  fetch data
+    sql: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE \"id\" IS NULL LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE \"id\" IS NULL LIMIT 1"
+key {"kind":"pk","value":{"code":{"t":"text","v":"x"}}}
+  where: "\"code\" = $1::character varying"
+  suffix: ""
+  params: [{"t":"text","v":"x"}]
+  fetch name
+    sql: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE \"code\" = $1::character varying LIMIT 1"
+    params: [{"t":"text","v":"x"}]
+    preview: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE \"code\" = 'x'::character varying LIMIT 1"
+  fetch data
+    sql: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE \"code\" = $1::character varying LIMIT 1"
+    params: [{"t":"text","v":"x"}]
+    preview: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE \"code\" = 'x'::character varying LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE \"code\" = $1::character varying LIMIT 1"
+    params: [{"t":"text","v":"x"}]
+    preview: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE \"code\" = 'x'::character varying LIMIT 1"
+key {"kind":"pk","value":{}}
+  error INVALID_INPUT "row key is empty"
+  fetch name
+    error INVALID_INPUT "row key is empty"
+  fetch data
+    error INVALID_INPUT "row key is empty"
+  fetch payload
+    error INVALID_INPUT "row key is empty"
+key {"kind":"pk","value":{"nope":{"t":"int","v":1}}}
+  error INVALID_INPUT "unknown column \"nope\""
+  fetch name
+    error INVALID_INPUT "unknown column \"nope\""
+  fetch data
+    error INVALID_INPUT "unknown column \"nope\""
+  fetch payload
+    error INVALID_INPUT "unknown column \"nope\""
+key {"kind":"rowid","value":42}
+  where: "rowid = $1"
+  suffix: ""
+  params: [{"t":"int","v":42}]
+  fetch name
+    sql: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE rowid = $1 LIMIT 1"
+    params: [{"t":"int","v":42}]
+    preview: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE rowid = 42 LIMIT 1"
+  fetch data
+    sql: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE rowid = $1 LIMIT 1"
+    params: [{"t":"int","v":42}]
+    preview: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE rowid = 42 LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE rowid = $1 LIMIT 1"
+    params: [{"t":"int","v":42}]
+    preview: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE rowid = 42 LIMIT 1"
+key {"kind":"rowid","value":9007199254740993}
+  where: "rowid = $1"
+  suffix: ""
+  params: [{"t":"bigInt","v":"9007199254740993"}]
+  fetch name
+    sql: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE rowid = $1 LIMIT 1"
+    params: [{"t":"bigInt","v":"9007199254740993"}]
+    preview: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE rowid = 9007199254740993 LIMIT 1"
+  fetch data
+    sql: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE rowid = $1 LIMIT 1"
+    params: [{"t":"bigInt","v":"9007199254740993"}]
+    preview: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE rowid = 9007199254740993 LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE rowid = $1 LIMIT 1"
+    params: [{"t":"bigInt","v":"9007199254740993"}]
+    preview: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE rowid = 9007199254740993 LIMIT 1"
+key {"kind":"allColumns","value":{"age":{"t":"null"},"name":{"t":"text","v":"x"},"payload":{"t":"json","v":"{\"a\": 1}"},"price":{"t":"decimal","v":"1.50"},"tags":{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}}}
+  where: "ctid = (SELECT ctid FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM $1::text AND \"name\"::text IS NOT DISTINCT FROM $2::text AND \"payload\"::text IS NOT DISTINCT FROM $3::text AND \"price\"::text IS NOT DISTINCT FROM $4::text AND \"tags\"::text IS NOT DISTINCT FROM $5::text LIMIT 1)"
+  suffix: ""
+  params: [{"t":"null"},{"t":"text","v":"x"},{"t":"text","v":"{\"a\": 1}"},{"t":"text","v":"1.50"},{"t":"text","v":"{\"a\",\"b c\"}"}]
+  fetch name
+    sql: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM $1::text AND \"name\"::text IS NOT DISTINCT FROM $2::text AND \"payload\"::text IS NOT DISTINCT FROM $3::text AND \"price\"::text IS NOT DISTINCT FROM $4::text AND \"tags\"::text IS NOT DISTINCT FROM $5::text LIMIT 1"
+    params: [{"t":"null"},{"t":"text","v":"x"},{"t":"text","v":"{\"a\": 1}"},{"t":"text","v":"1.50"},{"t":"text","v":"{\"a\",\"b c\"}"}]
+    preview: "SELECT \"name\"::text FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM NULL::text AND \"name\"::text IS NOT DISTINCT FROM 'x'::text AND \"payload\"::text IS NOT DISTINCT FROM '{\"a\": 1}'::text AND \"price\"::text IS NOT DISTINCT FROM '1.50'::text AND \"tags\"::text IS NOT DISTINCT FROM '{\"a\",\"b c\"}'::text LIMIT 1"
+  fetch data
+    sql: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM $1::text AND \"name\"::text IS NOT DISTINCT FROM $2::text AND \"payload\"::text IS NOT DISTINCT FROM $3::text AND \"price\"::text IS NOT DISTINCT FROM $4::text AND \"tags\"::text IS NOT DISTINCT FROM $5::text LIMIT 1"
+    params: [{"t":"null"},{"t":"text","v":"x"},{"t":"text","v":"{\"a\": 1}"},{"t":"text","v":"1.50"},{"t":"text","v":"{\"a\",\"b c\"}"}]
+    preview: "SELECT encode(\"data\", 'hex') FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM NULL::text AND \"name\"::text IS NOT DISTINCT FROM 'x'::text AND \"payload\"::text IS NOT DISTINCT FROM '{\"a\": 1}'::text AND \"price\"::text IS NOT DISTINCT FROM '1.50'::text AND \"tags\"::text IS NOT DISTINCT FROM '{\"a\",\"b c\"}'::text LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM $1::text AND \"name\"::text IS NOT DISTINCT FROM $2::text AND \"payload\"::text IS NOT DISTINCT FROM $3::text AND \"price\"::text IS NOT DISTINCT FROM $4::text AND \"tags\"::text IS NOT DISTINCT FROM $5::text LIMIT 1"
+    params: [{"t":"null"},{"t":"text","v":"x"},{"t":"text","v":"{\"a\": 1}"},{"t":"text","v":"1.50"},{"t":"text","v":"{\"a\",\"b c\"}"}]
+    preview: "SELECT \"payload\"::text FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM NULL::text AND \"name\"::text IS NOT DISTINCT FROM 'x'::text AND \"payload\"::text IS NOT DISTINCT FROM '{\"a\": 1}'::text AND \"price\"::text IS NOT DISTINCT FROM '1.50'::text AND \"tags\"::text IS NOT DISTINCT FROM '{\"a\",\"b c\"}'::text LIMIT 1"
+key {"kind":"allColumns","value":{}}
+  error INVALID_INPUT "row key is empty"
+  fetch name
+    error INVALID_INPUT "row key is empty"
+  fetch data
+    error INVALID_INPUT "row key is empty"
+  fetch payload
+    error INVALID_INPUT "row key is empty"
+
+## mysql
+key {"kind":"pk","value":{"id":{"t":"int","v":7}}}
+  where: "`id` = ?"
+  suffix: ""
+  params: [{"t":"int","v":7}]
+  fetch name
+    sql: "SELECT `name` FROM `app`.`users` WHERE `id` = ? LIMIT 1"
+    params: [{"t":"int","v":7}]
+    preview: "SELECT `name` FROM `app`.`users` WHERE `id` = 7 LIMIT 1"
+  fetch data
+    sql: "SELECT HEX(`data`) FROM `app`.`users` WHERE `id` = ? LIMIT 1"
+    params: [{"t":"int","v":7}]
+    preview: "SELECT HEX(`data`) FROM `app`.`users` WHERE `id` = 7 LIMIT 1"
+  fetch payload
+    sql: "SELECT `payload` FROM `app`.`users` WHERE `id` = ? LIMIT 1"
+    params: [{"t":"int","v":7}]
+    preview: "SELECT `payload` FROM `app`.`users` WHERE `id` = 7 LIMIT 1"
+key {"kind":"pk","value":{"id":{"t":"int","v":7},"name":{"t":"text","v":"a'b"}}}
+  where: "`id` = ? AND `name` = ?"
+  suffix: ""
+  params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+  fetch name
+    sql: "SELECT `name` FROM `app`.`users` WHERE `id` = ? AND `name` = ? LIMIT 1"
+    params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+    preview: "SELECT `name` FROM `app`.`users` WHERE `id` = 7 AND `name` = 'a\\'b' LIMIT 1"
+  fetch data
+    sql: "SELECT HEX(`data`) FROM `app`.`users` WHERE `id` = ? AND `name` = ? LIMIT 1"
+    params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+    preview: "SELECT HEX(`data`) FROM `app`.`users` WHERE `id` = 7 AND `name` = 'a\\'b' LIMIT 1"
+  fetch payload
+    sql: "SELECT `payload` FROM `app`.`users` WHERE `id` = ? AND `name` = ? LIMIT 1"
+    params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+    preview: "SELECT `payload` FROM `app`.`users` WHERE `id` = 7 AND `name` = 'a\\'b' LIMIT 1"
+key {"kind":"pk","value":{"id":{"t":"null"}}}
+  where: "`id` IS NULL"
+  suffix: ""
+  fetch name
+    sql: "SELECT `name` FROM `app`.`users` WHERE `id` IS NULL LIMIT 1"
+  fetch data
+    sql: "SELECT HEX(`data`) FROM `app`.`users` WHERE `id` IS NULL LIMIT 1"
+  fetch payload
+    sql: "SELECT `payload` FROM `app`.`users` WHERE `id` IS NULL LIMIT 1"
+key {"kind":"pk","value":{"code":{"t":"text","v":"x"}}}
+  where: "`code` = ?"
+  suffix: ""
+  params: [{"t":"text","v":"x"}]
+  fetch name
+    sql: "SELECT `name` FROM `app`.`users` WHERE `code` = ? LIMIT 1"
+    params: [{"t":"text","v":"x"}]
+    preview: "SELECT `name` FROM `app`.`users` WHERE `code` = 'x' LIMIT 1"
+  fetch data
+    sql: "SELECT HEX(`data`) FROM `app`.`users` WHERE `code` = ? LIMIT 1"
+    params: [{"t":"text","v":"x"}]
+    preview: "SELECT HEX(`data`) FROM `app`.`users` WHERE `code` = 'x' LIMIT 1"
+  fetch payload
+    sql: "SELECT `payload` FROM `app`.`users` WHERE `code` = ? LIMIT 1"
+    params: [{"t":"text","v":"x"}]
+    preview: "SELECT `payload` FROM `app`.`users` WHERE `code` = 'x' LIMIT 1"
+key {"kind":"pk","value":{}}
+  error INVALID_INPUT "row key is empty"
+  fetch name
+    error INVALID_INPUT "row key is empty"
+  fetch data
+    error INVALID_INPUT "row key is empty"
+  fetch payload
+    error INVALID_INPUT "row key is empty"
+key {"kind":"pk","value":{"nope":{"t":"int","v":1}}}
+  error INVALID_INPUT "unknown column \"nope\""
+  fetch name
+    error INVALID_INPUT "unknown column \"nope\""
+  fetch data
+    error INVALID_INPUT "unknown column \"nope\""
+  fetch payload
+    error INVALID_INPUT "unknown column \"nope\""
+key {"kind":"rowid","value":42}
+  where: "rowid = ?"
+  suffix: ""
+  params: [{"t":"int","v":42}]
+  fetch name
+    sql: "SELECT `name` FROM `app`.`users` WHERE rowid = ? LIMIT 1"
+    params: [{"t":"int","v":42}]
+    preview: "SELECT `name` FROM `app`.`users` WHERE rowid = 42 LIMIT 1"
+  fetch data
+    sql: "SELECT HEX(`data`) FROM `app`.`users` WHERE rowid = ? LIMIT 1"
+    params: [{"t":"int","v":42}]
+    preview: "SELECT HEX(`data`) FROM `app`.`users` WHERE rowid = 42 LIMIT 1"
+  fetch payload
+    sql: "SELECT `payload` FROM `app`.`users` WHERE rowid = ? LIMIT 1"
+    params: [{"t":"int","v":42}]
+    preview: "SELECT `payload` FROM `app`.`users` WHERE rowid = 42 LIMIT 1"
+key {"kind":"rowid","value":9007199254740993}
+  where: "rowid = ?"
+  suffix: ""
+  params: [{"t":"bigInt","v":"9007199254740993"}]
+  fetch name
+    sql: "SELECT `name` FROM `app`.`users` WHERE rowid = ? LIMIT 1"
+    params: [{"t":"bigInt","v":"9007199254740993"}]
+    preview: "SELECT `name` FROM `app`.`users` WHERE rowid = 9007199254740993 LIMIT 1"
+  fetch data
+    sql: "SELECT HEX(`data`) FROM `app`.`users` WHERE rowid = ? LIMIT 1"
+    params: [{"t":"bigInt","v":"9007199254740993"}]
+    preview: "SELECT HEX(`data`) FROM `app`.`users` WHERE rowid = 9007199254740993 LIMIT 1"
+  fetch payload
+    sql: "SELECT `payload` FROM `app`.`users` WHERE rowid = ? LIMIT 1"
+    params: [{"t":"bigInt","v":"9007199254740993"}]
+    preview: "SELECT `payload` FROM `app`.`users` WHERE rowid = 9007199254740993 LIMIT 1"
+key {"kind":"allColumns","value":{"age":{"t":"null"},"name":{"t":"text","v":"x"},"payload":{"t":"json","v":"{\"a\": 1}"},"price":{"t":"decimal","v":"1.50"},"tags":{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}}}
+  where: "`age` <=> ? AND `name` <=> ? AND `payload` <=> ? AND `price` <=> ? AND `tags` <=> ?"
+  suffix: " LIMIT 1"
+  params: [{"t":"null"},{"t":"text","v":"x"},{"t":"json","v":"{\"a\": 1}"},{"t":"decimal","v":"1.50"},{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}]
+  fetch name
+    sql: "SELECT `name` FROM `app`.`users` WHERE `age` <=> ? AND `name` <=> ? AND `payload` <=> ? AND `price` <=> ? AND `tags` <=> ? LIMIT 1"
+    params: [{"t":"null"},{"t":"text","v":"x"},{"t":"json","v":"{\"a\": 1}"},{"t":"decimal","v":"1.50"},{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}]
+    preview: "SELECT `name` FROM `app`.`users` WHERE `age` <=> NULL AND `name` <=> 'x' AND `payload` <=> '{\"a\": 1}' AND `price` <=> 1.50 AND `tags` <=> '{\"a\",\"b c\"}' LIMIT 1"
+  fetch data
+    sql: "SELECT HEX(`data`) FROM `app`.`users` WHERE `age` <=> ? AND `name` <=> ? AND `payload` <=> ? AND `price` <=> ? AND `tags` <=> ? LIMIT 1"
+    params: [{"t":"null"},{"t":"text","v":"x"},{"t":"json","v":"{\"a\": 1}"},{"t":"decimal","v":"1.50"},{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}]
+    preview: "SELECT HEX(`data`) FROM `app`.`users` WHERE `age` <=> NULL AND `name` <=> 'x' AND `payload` <=> '{\"a\": 1}' AND `price` <=> 1.50 AND `tags` <=> '{\"a\",\"b c\"}' LIMIT 1"
+  fetch payload
+    sql: "SELECT `payload` FROM `app`.`users` WHERE `age` <=> ? AND `name` <=> ? AND `payload` <=> ? AND `price` <=> ? AND `tags` <=> ? LIMIT 1"
+    params: [{"t":"null"},{"t":"text","v":"x"},{"t":"json","v":"{\"a\": 1}"},{"t":"decimal","v":"1.50"},{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}]
+    preview: "SELECT `payload` FROM `app`.`users` WHERE `age` <=> NULL AND `name` <=> 'x' AND `payload` <=> '{\"a\": 1}' AND `price` <=> 1.50 AND `tags` <=> '{\"a\",\"b c\"}' LIMIT 1"
+key {"kind":"allColumns","value":{}}
+  error INVALID_INPUT "row key is empty"
+  fetch name
+    error INVALID_INPUT "row key is empty"
+  fetch data
+    error INVALID_INPUT "row key is empty"
+  fetch payload
+    error INVALID_INPUT "row key is empty"
+
+## sqlite
+key {"kind":"pk","value":{"id":{"t":"int","v":7}}}
+  where: "\"id\" = ?1"
+  suffix: ""
+  params: [{"t":"int","v":7}]
+  fetch name
+    sql: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE \"id\" = ?1 LIMIT 1"
+    params: [{"t":"int","v":7}]
+    preview: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE \"id\" = 7 LIMIT 1"
+  fetch data
+    sql: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE \"id\" = ?1 LIMIT 1"
+    params: [{"t":"int","v":7}]
+    preview: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE \"id\" = 7 LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE \"id\" = ?1 LIMIT 1"
+    params: [{"t":"int","v":7}]
+    preview: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE \"id\" = 7 LIMIT 1"
+key {"kind":"pk","value":{"id":{"t":"int","v":7},"name":{"t":"text","v":"a'b"}}}
+  where: "\"id\" = ?1 AND \"name\" = ?2"
+  suffix: ""
+  params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+  fetch name
+    sql: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE \"id\" = ?1 AND \"name\" = ?2 LIMIT 1"
+    params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+    preview: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE \"id\" = 7 AND \"name\" = 'a''b' LIMIT 1"
+  fetch data
+    sql: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE \"id\" = ?1 AND \"name\" = ?2 LIMIT 1"
+    params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+    preview: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE \"id\" = 7 AND \"name\" = 'a''b' LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE \"id\" = ?1 AND \"name\" = ?2 LIMIT 1"
+    params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+    preview: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE \"id\" = 7 AND \"name\" = 'a''b' LIMIT 1"
+key {"kind":"pk","value":{"id":{"t":"null"}}}
+  where: "\"id\" IS NULL"
+  suffix: ""
+  fetch name
+    sql: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE \"id\" IS NULL LIMIT 1"
+  fetch data
+    sql: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE \"id\" IS NULL LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE \"id\" IS NULL LIMIT 1"
+key {"kind":"pk","value":{"code":{"t":"text","v":"x"}}}
+  where: "\"code\" = ?1"
+  suffix: ""
+  params: [{"t":"text","v":"x"}]
+  fetch name
+    sql: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE \"code\" = ?1 LIMIT 1"
+    params: [{"t":"text","v":"x"}]
+    preview: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE \"code\" = 'x' LIMIT 1"
+  fetch data
+    sql: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE \"code\" = ?1 LIMIT 1"
+    params: [{"t":"text","v":"x"}]
+    preview: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE \"code\" = 'x' LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE \"code\" = ?1 LIMIT 1"
+    params: [{"t":"text","v":"x"}]
+    preview: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE \"code\" = 'x' LIMIT 1"
+key {"kind":"pk","value":{}}
+  error INVALID_INPUT "row key is empty"
+  fetch name
+    error INVALID_INPUT "row key is empty"
+  fetch data
+    error INVALID_INPUT "row key is empty"
+  fetch payload
+    error INVALID_INPUT "row key is empty"
+key {"kind":"pk","value":{"nope":{"t":"int","v":1}}}
+  error INVALID_INPUT "unknown column \"nope\""
+  fetch name
+    error INVALID_INPUT "unknown column \"nope\""
+  fetch data
+    error INVALID_INPUT "unknown column \"nope\""
+  fetch payload
+    error INVALID_INPUT "unknown column \"nope\""
+key {"kind":"rowid","value":42}
+  where: "rowid = ?1"
+  suffix: ""
+  params: [{"t":"int","v":42}]
+  fetch name
+    sql: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE rowid = ?1 LIMIT 1"
+    params: [{"t":"int","v":42}]
+    preview: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE rowid = 42 LIMIT 1"
+  fetch data
+    sql: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE rowid = ?1 LIMIT 1"
+    params: [{"t":"int","v":42}]
+    preview: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE rowid = 42 LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE rowid = ?1 LIMIT 1"
+    params: [{"t":"int","v":42}]
+    preview: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE rowid = 42 LIMIT 1"
+key {"kind":"rowid","value":9007199254740993}
+  where: "rowid = ?1"
+  suffix: ""
+  params: [{"t":"bigInt","v":"9007199254740993"}]
+  fetch name
+    sql: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE rowid = ?1 LIMIT 1"
+    params: [{"t":"bigInt","v":"9007199254740993"}]
+    preview: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE rowid = 9007199254740993 LIMIT 1"
+  fetch data
+    sql: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE rowid = ?1 LIMIT 1"
+    params: [{"t":"bigInt","v":"9007199254740993"}]
+    preview: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE rowid = 9007199254740993 LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE rowid = ?1 LIMIT 1"
+    params: [{"t":"bigInt","v":"9007199254740993"}]
+    preview: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE rowid = 9007199254740993 LIMIT 1"
+key {"kind":"allColumns","value":{"age":{"t":"null"},"name":{"t":"text","v":"x"},"payload":{"t":"json","v":"{\"a\": 1}"},"price":{"t":"decimal","v":"1.50"},"tags":{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}}}
+  where: "rowid = (SELECT rowid FROM \"app\".\"users\" WHERE \"age\" IS ?1 AND \"name\" IS ?2 AND \"payload\" IS ?3 AND \"price\" IS ?4 AND \"tags\" IS ?5 LIMIT 1)"
+  suffix: ""
+  params: [{"t":"null"},{"t":"text","v":"x"},{"t":"json","v":"{\"a\": 1}"},{"t":"decimal","v":"1.50"},{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}]
+  fetch name
+    sql: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE \"age\" IS ?1 AND \"name\" IS ?2 AND \"payload\" IS ?3 AND \"price\" IS ?4 AND \"tags\" IS ?5 LIMIT 1"
+    params: [{"t":"null"},{"t":"text","v":"x"},{"t":"json","v":"{\"a\": 1}"},{"t":"decimal","v":"1.50"},{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}]
+    preview: "SELECT \"name\", CASE WHEN typeof(\"name\") = 'blob' THEN hex(\"name\") END FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS 'x' AND \"payload\" IS '{\"a\": 1}' AND \"price\" IS 1.50 AND \"tags\" IS '{\"a\",\"b c\"}' LIMIT 1"
+  fetch data
+    sql: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE \"age\" IS ?1 AND \"name\" IS ?2 AND \"payload\" IS ?3 AND \"price\" IS ?4 AND \"tags\" IS ?5 LIMIT 1"
+    params: [{"t":"null"},{"t":"text","v":"x"},{"t":"json","v":"{\"a\": 1}"},{"t":"decimal","v":"1.50"},{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}]
+    preview: "SELECT \"data\", CASE WHEN typeof(\"data\") = 'blob' THEN hex(\"data\") END FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS 'x' AND \"payload\" IS '{\"a\": 1}' AND \"price\" IS 1.50 AND \"tags\" IS '{\"a\",\"b c\"}' LIMIT 1"
+  fetch payload
+    sql: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE \"age\" IS ?1 AND \"name\" IS ?2 AND \"payload\" IS ?3 AND \"price\" IS ?4 AND \"tags\" IS ?5 LIMIT 1"
+    params: [{"t":"null"},{"t":"text","v":"x"},{"t":"json","v":"{\"a\": 1}"},{"t":"decimal","v":"1.50"},{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}]
+    preview: "SELECT \"payload\", CASE WHEN typeof(\"payload\") = 'blob' THEN hex(\"payload\") END FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS 'x' AND \"payload\" IS '{\"a\": 1}' AND \"price\" IS 1.50 AND \"tags\" IS '{\"a\",\"b c\"}' LIMIT 1"
+key {"kind":"allColumns","value":{}}
+  error INVALID_INPUT "row key is empty"
+  fetch name
+    error INVALID_INPUT "row key is empty"
+  fetch data
+    error INVALID_INPUT "row key is empty"
+  fetch payload
+    error INVALID_INPUT "row key is empty"

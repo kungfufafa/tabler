@@ -1,0 +1,4842 @@
+# The editor's statement splitter (char offsets, 1-based line) and the code-only view of each statement of the corpus, per dialect.
+# Written by sqlgen::golden from the core code; never edited by hand.
+"SELECT 1"
+  split postgres:
+    0..8 line 1 "SELECT 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"  select * from users where id = 1  "
+  split postgres:
+    2..34 line 1 "select * from users where id = 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "  select * from users where id = 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"(SELECT 1) UNION (SELECT 2)"
+  split postgres:
+    0..27 line 1 "(SELECT 1) UNION (SELECT 2)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "(SELECT 1) UNION (SELECT 2)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT * FROM users;"
+  split postgres:
+    0..19 line 1 "SELECT * FROM users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT * FROM users;"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1; SELECT 2;"
+  split postgres:
+    0..8 line 1 "SELECT 1"
+    10..18 line 1 "SELECT 2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1; SELECT 2;"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1; DELETE FROM users"
+  split postgres:
+    0..8 line 1 "SELECT 1"
+    10..27 line 1 "DELETE FROM users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1; DELETE FROM users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"-- delete everything\nSELECT 1"
+  split postgres:
+    21..29 line 2 "SELECT 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " \nSELECT 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"/* DROP TABLE users; */ SELECT 1 /* trailing */"
+  split postgres:
+    24..47 line 1 "SELECT 1 /* trailing */"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "  SELECT 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 -- DROP TABLE users"
+  split postgres:
+    0..28 line 1 "SELECT 1 -- DROP TABLE users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 'DROP TABLE users; DELETE FROM x' AS s"
+  split postgres:
+    0..45 line 1 "SELECT 'DROP TABLE users; DELETE FROM x' AS s"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   AS s"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT \"delete\" FROM \"insert\""
+  split postgres:
+    0..29 line 1 "SELECT \"delete\" FROM \"insert\""
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   FROM  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT * INTO backup_users FROM users"
+  split postgres:
+    0..37 line 1 "SELECT * INTO backup_users FROM users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT * INTO backup_users FROM users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT id FROM users FOR UPDATE"
+  split postgres:
+    0..31 line 1 "SELECT id FROM users FOR UPDATE"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT id FROM users FOR UPDATE"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"VALUES (1, 2), (3, 4)"
+  split postgres:
+    0..21 line 1 "VALUES (1, 2), (3, 4)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "VALUES (1, 2), (3, 4)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"TABLE users"
+  split postgres:
+    0..11 line 1 "TABLE users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "TABLE users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SHOW TABLES"
+  split postgres:
+    0..11 line 1 "SHOW TABLES"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SHOW TABLES"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"show search_path"
+  split postgres:
+    0..16 line 1 "show search_path"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "show search_path"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"WITH a AS (SELECT 1) SELECT * FROM a"
+  split postgres:
+    0..36 line 1 "WITH a AS (SELECT 1) SELECT * FROM a"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH a AS (SELECT 1) SELECT * FROM a"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"WITH RECURSIVE t(n) AS (VALUES (1) UNION ALL SELECT n + 1 FROM t WHERE n < 5) SELECT * FROM t"
+  split postgres:
+    0..93 line 1 "WITH RECURSIVE t(n) AS (VALUES (1) UNION ALL SELECT n + 1 FROM t WHERE n < 5) SELECT * FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH RECURSIVE t(n) AS (VALUES (1) UNION ALL SELECT n + 1 FROM t WHERE n < 5) SELECT * FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"WITH gone AS (DELETE FROM users RETURNING *) SELECT * FROM gone"
+  split postgres:
+    0..63 line 1 "WITH gone AS (DELETE FROM users RETURNING *) SELECT * FROM gone"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH gone AS (DELETE FROM users RETURNING *) SELECT * FROM gone"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"WITH a AS (SELECT 1) UPDATE users SET name = 'x'"
+  split postgres:
+    0..48 line 1 "WITH a AS (SELECT 1) UPDATE users SET name = 'x'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH a AS (SELECT 1) UPDATE users SET name =  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"WITH a AS (SELECT 1) INSERT INTO t SELECT * FROM a"
+  split postgres:
+    0..50 line 1 "WITH a AS (SELECT 1) INSERT INTO t SELECT * FROM a"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH a AS (SELECT 1) INSERT INTO t SELECT * FROM a"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"WITH a AS (SELECT 'INSERT INTO x' AS s) SELECT s FROM a"
+  split postgres:
+    0..55 line 1 "WITH a AS (SELECT 'INSERT INTO x' AS s) SELECT s FROM a"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH a AS (SELECT   AS s) SELECT s FROM a"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"WITH a AS (SELECT 1 /* UPDATE */) SELECT updated_at FROM a"
+  split postgres:
+    0..58 line 1 "WITH a AS (SELECT 1 /* UPDATE */) SELECT updated_at FROM a"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH a AS (SELECT 1  ) SELECT updated_at FROM a"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"WITH a AS (SELECT 1) SELECT * FROM a FOR UPDATE"
+  split postgres:
+    0..47 line 1 "WITH a AS (SELECT 1) SELECT * FROM a FOR UPDATE"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH a AS (SELECT 1) SELECT * FROM a FOR UPDATE"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"EXPLAIN SELECT * FROM users"
+  split postgres:
+    0..27 line 1 "EXPLAIN SELECT * FROM users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "EXPLAIN SELECT * FROM users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"EXPLAIN DELETE FROM users"
+  split postgres:
+    0..25 line 1 "EXPLAIN DELETE FROM users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "EXPLAIN DELETE FROM users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"EXPLAIN ANALYZE SELECT * FROM users"
+  split postgres:
+    0..35 line 1 "EXPLAIN ANALYZE SELECT * FROM users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "EXPLAIN ANALYZE SELECT * FROM users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"EXPLAIN ANALYZE DELETE FROM users"
+  split postgres:
+    0..33 line 1 "EXPLAIN ANALYZE DELETE FROM users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "EXPLAIN ANALYZE DELETE FROM users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"explain analyse verbose update users set a = 1"
+  split postgres:
+    0..46 line 1 "explain analyse verbose update users set a = 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "explain analyse verbose update users set a = 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"EXPLAIN (ANALYZE, BUFFERS) SELECT 1"
+  split postgres:
+    0..35 line 1 "EXPLAIN (ANALYZE, BUFFERS) SELECT 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "EXPLAIN (ANALYZE, BUFFERS) SELECT 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"EXPLAIN (ANALYZE true, FORMAT JSON) INSERT INTO t VALUES (1)"
+  split postgres:
+    0..60 line 1 "EXPLAIN (ANALYZE true, FORMAT JSON) INSERT INTO t VALUES (1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "EXPLAIN (ANALYZE true, FORMAT JSON) INSERT INTO t VALUES (1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"EXPLAIN (FORMAT JSON) INSERT INTO t VALUES (1)"
+  split postgres:
+    0..46 line 1 "EXPLAIN (FORMAT JSON) INSERT INTO t VALUES (1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "EXPLAIN (FORMAT JSON) INSERT INTO t VALUES (1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"EXPLAIN ANALYZE WITH d AS (DELETE FROM t RETURNING 1) SELECT * FROM d"
+  split postgres:
+    0..69 line 1 "EXPLAIN ANALYZE WITH d AS (DELETE FROM t RETURNING 1) SELECT * FROM d"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "EXPLAIN ANALYZE WITH d AS (DELETE FROM t RETURNING 1) SELECT * FROM d"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"EXPLAIN FORMAT=JSON SELECT 1"
+  split postgres:
+    0..28 line 1 "EXPLAIN FORMAT=JSON SELECT 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "EXPLAIN FORMAT=JSON SELECT 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"EXPLAIN ANALYZE FORMAT=TREE SELECT 1"
+  split postgres:
+    0..36 line 1 "EXPLAIN ANALYZE FORMAT=TREE SELECT 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "EXPLAIN ANALYZE FORMAT=TREE SELECT 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"EXPLAIN QUERY PLAN SELECT * FROM users"
+  split postgres:
+    0..38 line 1 "EXPLAIN QUERY PLAN SELECT * FROM users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "EXPLAIN QUERY PLAN SELECT * FROM users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"DESCRIBE users"
+  split postgres:
+    0..14 line 1 "DESCRIBE users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "DESCRIBE users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"desc users"
+  split postgres:
+    0..10 line 1 "desc users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "desc users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"DESC ANALYZE DELETE FROM users"
+  split postgres:
+    0..30 line 1 "DESC ANALYZE DELETE FROM users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "DESC ANALYZE DELETE FROM users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"USE tabler_dev"
+  split postgres:
+    0..14 line 1 "USE tabler_dev"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "USE tabler_dev"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"PRAGMA table_info(users)"
+  split postgres:
+    0..24 line 1 "PRAGMA table_info(users)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "PRAGMA table_info(users)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"PRAGMA main.table_info('users')"
+  split postgres:
+    0..31 line 1 "PRAGMA main.table_info('users')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "PRAGMA main.table_info( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"PRAGMA foreign_keys"
+  split postgres:
+    0..19 line 1 "PRAGMA foreign_keys"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "PRAGMA foreign_keys"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"PRAGMA foreign_keys = ON"
+  split postgres:
+    0..24 line 1 "PRAGMA foreign_keys = ON"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "PRAGMA foreign_keys = ON"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"PRAGMA journal_mode(WAL)"
+  split postgres:
+    0..24 line 1 "PRAGMA journal_mode(WAL)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "PRAGMA journal_mode(WAL)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"PRAGMA optimize"
+  split postgres:
+    0..15 line 1 "PRAGMA optimize"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "PRAGMA optimize"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"PRAGMA wal_checkpoint(TRUNCATE)"
+  split postgres:
+    0..31 line 1 "PRAGMA wal_checkpoint(TRUNCATE)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "PRAGMA wal_checkpoint(TRUNCATE)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"INSERT INTO users (name) VALUES ('a')"
+  split postgres:
+    0..37 line 1 "INSERT INTO users (name) VALUES ('a')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "INSERT INTO users (name) VALUES ( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"UPDATE users SET name = 'SELECT'"
+  split postgres:
+    0..32 line 1 "UPDATE users SET name = 'SELECT'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "UPDATE users SET name =  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"DELETE FROM users"
+  split postgres:
+    0..17 line 1 "DELETE FROM users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "DELETE FROM users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE"
+  split postgres:
+    0..60 line 1 "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE TABLE t (id int)"
+  split postgres:
+    0..23 line 1 "CREATE TABLE t (id int)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE TABLE t (id int)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"DROP TABLE users"
+  split postgres:
+    0..16 line 1 "DROP TABLE users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "DROP TABLE users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER TABLE users ADD COLUMN x int"
+  split postgres:
+    0..34 line 1 "ALTER TABLE users ADD COLUMN x int"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER TABLE users ADD COLUMN x int"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"TRUNCATE users"
+  split postgres:
+    0..14 line 1 "TRUNCATE users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "TRUNCATE users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SET search_path = public"
+  split postgres:
+    0..24 line 1 "SET search_path = public"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SET search_path = public"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"BEGIN"
+  split postgres:
+    0..5 line 1 "BEGIN"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "BEGIN"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CALL do_things()"
+  split postgres:
+    0..16 line 1 "CALL do_things()"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CALL do_things()"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ANALYZE users"
+  split postgres:
+    0..13 line 1 "ANALYZE users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ANALYZE users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+""
+  split postgres: nothing
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: ""
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"   \n  "
+  split postgres: nothing
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "   \n  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"-- only a comment"
+  split postgres: nothing
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+";;"
+  split postgres: nothing
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: ";;"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\d users"
+  split postgres:
+    0..8 line 1 "\\d users"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\d users"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 # DROP"
+  split postgres:
+    0..15 line 1 "SELECT 1 # DROP"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1 # DROP"
+  code_only mysql: "SELECT 1  "
+  code_only sqlite: same as postgres
+"# a MySQL comment\nSELECT 1"
+  split postgres:
+    0..26 line 1 "# a MySQL comment\nSELECT 1"
+  split mysql:
+    18..26 line 2 "SELECT 1"
+  split sqlite: same as postgres
+  code_only postgres: "# a MySQL comment\nSELECT 1"
+  code_only mysql: " \nSELECT 1"
+  code_only sqlite: same as postgres
+"WITH a AS (SELECT 1 # x\n) DELETE FROM t"
+  split postgres:
+    0..39 line 1 "WITH a AS (SELECT 1 # x\n) DELETE FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH a AS (SELECT 1 # x\n) DELETE FROM t"
+  code_only mysql: "WITH a AS (SELECT 1  \n) DELETE FROM t"
+  code_only sqlite: same as postgres
+"WITH a AS (SELECT 1 # DELETE\n) SELECT * FROM a"
+  split postgres:
+    0..46 line 1 "WITH a AS (SELECT 1 # DELETE\n) SELECT * FROM a"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH a AS (SELECT 1 # DELETE\n) SELECT * FROM a"
+  code_only mysql: "WITH a AS (SELECT 1  \n) SELECT * FROM a"
+  code_only sqlite: same as postgres
+"WITH a AS (SELECT 1--1 ) DELETE FROM t"
+  split postgres:
+    0..38 line 1 "WITH a AS (SELECT 1--1 ) DELETE FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH a AS (SELECT 1 "
+  code_only mysql: "WITH a AS (SELECT 1--1 ) DELETE FROM t"
+  code_only sqlite: same as postgres
+"SELECT `delete` FROM `update`"
+  split postgres:
+    0..29 line 1 "SELECT `delete` FROM `update`"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT `delete` FROM `update`"
+  code_only mysql: "SELECT   FROM  "
+  code_only sqlite: same as mysql
+"SELECT [delete] FROM [update]"
+  split postgres:
+    0..29 line 1 "SELECT [delete] FROM [update]"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT [delete] FROM [update]"
+  code_only mysql: same as postgres
+  code_only sqlite: "SELECT   FROM  "
+"SELECT '\\'; DELETE FROM t; -- '"
+  split postgres:
+    0..10 line 1 "SELECT '\\'"
+    12..25 line 1 "DELETE FROM t"
+  split mysql:
+    0..31 line 1 "SELECT '\\'; DELETE FROM t; -- '"
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  ; DELETE FROM t;  "
+  code_only mysql: "SELECT  "
+  code_only sqlite: same as postgres
+"SELECT 'it''s'; SELECT 2"
+  split postgres:
+    0..14 line 1 "SELECT 'it''s'"
+    16..24 line 1 "SELECT 2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  ; SELECT 2"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT $$; DELETE FROM t; $$"
+  split postgres:
+    0..28 line 1 "SELECT $$; DELETE FROM t; $$"
+  split mysql:
+    0..9 line 1 "SELECT $$"
+    11..24 line 1 "DELETE FROM t"
+    26..28 line 1 "$$"
+  split sqlite: same as mysql
+  code_only postgres: "SELECT  "
+  code_only mysql: "SELECT $$; DELETE FROM t; $$"
+  code_only sqlite: same as mysql
+"SELECT $body$ DROP $body$ AS s"
+  split postgres:
+    0..30 line 1 "SELECT $body$ DROP $body$ AS s"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   AS s"
+  code_only mysql: "SELECT $body$ DROP $body$ AS s"
+  code_only sqlite: same as mysql
+"SELECT E'\\'; DROP TABLE t; --'"
+  split postgres:
+    0..30 line 1 "SELECT E'\\'; DROP TABLE t; --'"
+  split mysql: same as postgres
+  split sqlite:
+    0..11 line 1 "SELECT E'\\'"
+    13..25 line 1 "DROP TABLE t"
+  code_only postgres: "SELECT E "
+  code_only mysql: same as postgres
+  code_only sqlite: "SELECT E ; DROP TABLE t;  "
+"/* outer /* inner */ DELETE */ SELECT 1"
+  split postgres:
+    31..39 line 1 "SELECT 1"
+  split mysql:
+    21..39 line 1 "DELETE */ SELECT 1"
+  split sqlite: same as mysql
+  code_only postgres: "  SELECT 1"
+  code_only mysql: "  DELETE */ SELECT 1"
+  code_only sqlite: same as mysql
+"/*!40101 SET NAMES utf8 */"
+  split postgres: nothing
+  split mysql:
+    0..26 line 1 "/*!40101 SET NAMES utf8 */"
+  split sqlite: same as postgres
+  code_only postgres: " "
+  code_only mysql: "   40101 SET NAMES utf8 */"
+  code_only sqlite: same as postgres
+"SELECT /*+ MAX_EXECUTION_TIME(1000) */ * FROM t"
+  split postgres:
+    0..47 line 1 "SELECT /*+ MAX_EXECUTION_TIME(1000) */ * FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   * FROM t"
+  code_only mysql: "SELECT     MAX_EXECUTION_TIME(1000) */ * FROM t"
+  code_only sqlite: same as postgres
+"SELECT 1 /*! INTO OUTFILE '/tmp/x' */"
+  split postgres:
+    0..37 line 1 "SELECT 1 /*! INTO OUTFILE '/tmp/x' */"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  "
+  code_only mysql: "SELECT 1     INTO OUTFILE   */"
+  code_only sqlite: same as postgres
+"SELECT 1 /*M! INTO OUTFILE '/tmp/x' */"
+  split postgres:
+    0..38 line 1 "SELECT 1 /*M! INTO OUTFILE '/tmp/x' */"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1; /*M!100100 DELETE FROM t */"
+  split postgres:
+    0..8 line 1 "SELECT 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1;  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 /*M!100100 , 2 */"
+  split postgres:
+    0..26 line 1 "SELECT 1 /*M!100100 , 2 */"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 /*M! DELETE FROM t */"
+  split postgres:
+    0..30 line 1 "SELECT 1 /*M! DELETE FROM t */"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 /*M! ' */; DELETE FROM t; -- '"
+  split postgres:
+    0..18 line 1 "SELECT 1 /*M! ' */"
+    20..33 line 1 "DELETE FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  ; DELETE FROM t;  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 /*!99999 ' */; DELETE FROM t; -- '"
+  split postgres:
+    0..22 line 1 "SELECT 1 /*!99999 ' */"
+    24..37 line 1 "DELETE FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  ; DELETE FROM t;  "
+  code_only mysql: "SELECT 1    99999  "
+  code_only sqlite: same as postgres
+"SELECT 1 /*+ ' */; DELETE FROM t; -- '"
+  split postgres:
+    0..17 line 1 "SELECT 1 /*+ ' */"
+    19..32 line 1 "DELETE FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  ; DELETE FROM t;  "
+  code_only mysql: "SELECT 1      "
+  code_only sqlite: same as postgres
+"SELECT set_config('default_transaction_read_only', 'off', false)"
+  split postgres:
+    0..64 line 1 "SELECT set_config('default_transaction_read_only', 'off', false)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT set_config( ,  , false)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select pg_catalog.set_config ('search_path', 'public', false)"
+  split postgres:
+    0..61 line 1 "select pg_catalog.set_config ('search_path', 'public', false)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select pg_catalog.set_config ( ,  , false)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT \"set_config\"('default_transaction_read_only', 'off', false)"
+  split postgres:
+    0..66 line 1 "SELECT \"set_config\"('default_transaction_read_only', 'off', false)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  ( ,  , false)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"EXPLAIN ANALYZE SELECT set_config('a.b', 'c', false)"
+  split postgres:
+    0..52 line 1 "EXPLAIN ANALYZE SELECT set_config('a.b', 'c', false)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "EXPLAIN ANALYZE SELECT set_config( ,  , false)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT current_setting('default_transaction_read_only')"
+  split postgres:
+    0..55 line 1 "SELECT current_setting('default_transaction_read_only')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT current_setting( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 'set_config(' AS s, set_config_name FROM t"
+  split postgres:
+    0..49 line 1 "SELECT 'set_config(' AS s, set_config_name FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   AS s, set_config_name FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT '\\'' AS a, \"\\\"; DELETE FROM t; -- \" AS b"
+  split postgres:
+    0..47 line 1 "SELECT '\\'' AS a, \"\\\"; DELETE FROM t; -- \" AS b"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  "
+  code_only mysql: "SELECT   AS a,   AS b"
+  code_only sqlite: same as postgres
+"SELECT 'a\\''; DELETE FROM t; -- '"
+  split postgres:
+    0..33 line 1 "SELECT 'a\\''; DELETE FROM t; -- '"
+  split mysql:
+    0..12 line 1 "SELECT 'a\\''"
+    14..27 line 1 "DELETE FROM t"
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  "
+  code_only mysql: "SELECT  ; DELETE FROM t;  "
+  code_only sqlite: same as postgres
+"SELECT 1 --x\r; DELETE FROM t"
+  split postgres:
+    0..12 line 1 "SELECT 1 --x"
+    15..28 line 1 "DELETE FROM t"
+  split mysql: same as postgres
+  split sqlite:
+    0..28 line 1 "SELECT 1 --x\r; DELETE FROM t"
+  code_only postgres: "SELECT 1  \r; DELETE FROM t"
+  code_only mysql: "SELECT 1 --x\r; DELETE FROM t"
+  code_only sqlite: "SELECT 1  "
+"WITH x AS (-- c\r DELETE FROM t RETURNING 1) SELECT count(*) FROM x"
+  split postgres:
+    0..66 line 1 "WITH x AS (-- c\r DELETE FROM t RETURNING 1) SELECT count(*) FROM x"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH x AS ( \r DELETE FROM t RETURNING 1) SELECT count(*) FROM x"
+  code_only mysql: "WITH x AS ( "
+  code_only sqlite: same as mysql
+"SELECT 1 -- x\r; DELETE FROM t"
+  split postgres:
+    0..13 line 1 "SELECT 1 -- x"
+    16..29 line 1 "DELETE FROM t"
+  split mysql:
+    0..29 line 1 "SELECT 1 -- x\r; DELETE FROM t"
+  split sqlite: same as mysql
+  code_only postgres: "SELECT 1  \r; DELETE FROM t"
+  code_only mysql: "SELECT 1  "
+  code_only sqlite: same as mysql
+"SELECT 1 AS €$$; DELETE FROM users; SELECT 3 AS a$$"
+  split postgres:
+    0..51 line 1 "SELECT 1 AS €$$; DELETE FROM users; SELECT 3 AS a$$"
+  split mysql:
+    0..15 line 1 "SELECT 1 AS €$$"
+    17..34 line 1 "DELETE FROM users"
+    36..51 line 1 "SELECT 3 AS a$$"
+  split sqlite: same as mysql
+  code_only postgres: "SELECT 1 AS € "
+  code_only mysql: "SELECT 1 AS €$$; DELETE FROM users; SELECT 3 AS a$$"
+  code_only sqlite: same as mysql
+"SELECT €e'\\'; DELETE FROM t; --'"
+  split postgres:
+    0..32 line 1 "SELECT €e'\\'; DELETE FROM t; --'"
+  split mysql: same as postgres
+  split sqlite:
+    0..12 line 1 "SELECT €e'\\'"
+    14..27 line 1 "DELETE FROM t"
+  code_only postgres: "SELECT €e "
+  code_only mysql: same as postgres
+  code_only sqlite: "SELECT €e ; DELETE FROM t;  "
+"create rule r as on insert to t do also (insert into a values (1); insert into b values (2)); select 1"
+  split postgres:
+    0..92 line 1 "create rule r as on insert to t do also (insert into a values (1); insert into b values (2))"
+    94..102 line 1 "select 1"
+  split mysql:
+    0..65 line 1 "create rule r as on insert to t do also (insert into a values (1)"
+    67..92 line 1 "insert into b values (2))"
+    94..102 line 1 "select 1"
+  split sqlite: same as mysql
+  code_only postgres: "create rule r as on insert to t do also (insert into a values (1); insert into b values (2)); select 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"create rule r as on insert to t do also (insert into a values (1); insert into b values (2))"
+  split postgres:
+    0..92 line 1 "create rule r as on insert to t do also (insert into a values (1); insert into b values (2))"
+  split mysql:
+    0..65 line 1 "create rule r as on insert to t do also (insert into a values (1)"
+    67..92 line 1 "insert into b values (2))"
+  split sqlite: same as mysql
+  code_only postgres: "create rule r as on insert to t do also (insert into a values (1); insert into b values (2))"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1"
+  split postgres:
+    0..8 line 1 "select 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select '(' as a; select $$($$ /* ( */; select 1); select 2 -- (\n;select 3"
+  split postgres:
+    0..15 line 1 "select '(' as a"
+    17..37 line 1 "select $$($$ /* ( */"
+    39..48 line 1 "select 1)"
+    50..63 line 1 "select 2 -- ("
+    65..73 line 2 "select 3"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select   as a; select    ; select 1); select 2  \n;select 3"
+  code_only mysql: "select   as a; select $$($$  ; select 1); select 2  \n;select 3"
+  code_only sqlite: same as mysql
+"select '(' as a"
+  split postgres:
+    0..15 line 1 "select '(' as a"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select   as a"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select $$($$ /* ( */"
+  split postgres:
+    0..20 line 1 "select $$($$ /* ( */"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select    "
+  code_only mysql: "select $$($$  "
+  code_only sqlite: same as mysql
+"select 1)"
+  split postgres:
+    0..9 line 1 "select 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 2 -- ("
+  split postgres:
+    0..13 line 1 "select 2 -- ("
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 2  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 3"
+  split postgres:
+    0..8 line 1 "select 3"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 3"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select (1; select 2)"
+  split postgres:
+    0..20 line 1 "select (1; select 2)"
+  split mysql:
+    0..9 line 1 "select (1"
+    11..20 line 1 "select 2)"
+  split sqlite: same as mysql
+  code_only postgres: "select (1; select 2)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1;\nselect 2 ;  \n\n  update users set name = name where false;"
+  split postgres:
+    0..8 line 1 "select 1"
+    10..18 line 2 "select 2"
+    26..66 line 4 "update users set name = name where false"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1;\nselect 2 ;  \n\n  update users set name = name where false;"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 2"
+  split postgres:
+    0..8 line 1 "select 2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 2"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"update users set name = name where false"
+  split postgres:
+    0..40 line 1 "update users set name = name where false"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "update users set name = name where false"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+" ;; ;\n"
+  split postgres: nothing
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " ;; ;\n"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"-- just a comment\n"
+  split postgres: nothing
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " \n"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"/* block */ ; -- trailing"
+  split postgres: nothing
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "  ;  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1; -- done"
+  split postgres:
+    0..8 line 1 "select 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1;  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1 -- note\n;"
+  split postgres:
+    0..16 line 1 "select 1 -- note"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1  \n;"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1 -- note"
+  split postgres:
+    0..16 line 1 "select 1 -- note"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"-- first\n/* second */\nselect 1;"
+  split postgres:
+    22..30 line 3 "select 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " \n \nselect 1;"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select /* ; */ 1 -- x;\n + 2;"
+  split postgres:
+    0..27 line 1 "select /* ; */ 1 -- x;\n + 2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select   1  \n + 2;"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select /* ; */ 1 -- x;\n + 2"
+  split postgres:
+    0..27 line 1 "select /* ; */ 1 -- x;\n + 2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select   1  \n + 2"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 'a;b', 'it''s;'; select 2"
+  split postgres:
+    0..22 line 1 "select 'a;b', 'it''s;'"
+    24..32 line 1 "select 2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  ,  ; select 2"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 'a;b', 'it''s;'"
+  split postgres:
+    0..22 line 1 "select 'a;b', 'it''s;'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  ,  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select \"x;y\" from t; select 3"
+  split postgres:
+    0..19 line 1 "select \"x;y\" from t"
+    21..29 line 1 "select 3"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select   from t; select 3"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select \"x;y\" from t"
+  split postgres:
+    0..19 line 1 "select \"x;y\" from t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select   from t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select `a;b` from t; select 1"
+  split postgres:
+    0..9 line 1 "select `a"
+    10..19 line 1 "b` from t"
+    21..29 line 1 "select 1"
+  split mysql:
+    0..19 line 1 "select `a;b` from t"
+    21..29 line 1 "select 1"
+  split sqlite: same as mysql
+  code_only postgres: "select `a;b` from t; select 1"
+  code_only mysql: "select   from t; select 1"
+  code_only sqlite: same as mysql
+"select `a;b` from t"
+  split postgres:
+    0..9 line 1 "select `a"
+    10..19 line 1 "b` from t"
+  split mysql:
+    0..19 line 1 "select `a;b` from t"
+  split sqlite: same as mysql
+  code_only postgres: "select `a;b` from t"
+  code_only mysql: "select   from t"
+  code_only sqlite: same as mysql
+"select [a;b] from t; select 1"
+  split postgres:
+    0..9 line 1 "select [a"
+    10..19 line 1 "b] from t"
+    21..29 line 1 "select 1"
+  split mysql: same as postgres
+  split sqlite:
+    0..19 line 1 "select [a;b] from t"
+    21..29 line 1 "select 1"
+  code_only postgres: "select [a;b] from t; select 1"
+  code_only mysql: same as postgres
+  code_only sqlite: "select   from t; select 1"
+"select [a;b] from t"
+  split postgres:
+    0..9 line 1 "select [a"
+    10..19 line 1 "b] from t"
+  split mysql: same as postgres
+  split sqlite:
+    0..19 line 1 "select [a;b] from t"
+  code_only postgres: "select [a;b] from t"
+  code_only mysql: same as postgres
+  code_only sqlite: "select   from t"
+"select 'a\\';b'; select 2"
+  split postgres:
+    0..11 line 1 "select 'a\\'"
+    12..24 line 1 "b'; select 2"
+  split mysql:
+    0..14 line 1 "select 'a\\';b'"
+    16..24 line 1 "select 2"
+  split sqlite: same as postgres
+  code_only postgres: "select  ;b "
+  code_only mysql: "select  ; select 2"
+  code_only sqlite: same as postgres
+"select 'a\\';b'"
+  split postgres:
+    0..11 line 1 "select 'a\\'"
+    12..14 line 1 "b'"
+  split mysql:
+    0..14 line 1 "select 'a\\';b'"
+  split sqlite: same as postgres
+  code_only postgres: "select  ;b "
+  code_only mysql: "select  "
+  code_only sqlite: same as postgres
+"select \"a\\\";b\"; select 2"
+  split postgres:
+    0..11 line 1 "select \"a\\\""
+    12..24 line 1 "b\"; select 2"
+  split mysql:
+    0..14 line 1 "select \"a\\\";b\""
+    16..24 line 1 "select 2"
+  split sqlite: same as postgres
+  code_only postgres: "select  ;b "
+  code_only mysql: "select  ; select 2"
+  code_only sqlite: same as postgres
+"select \"a\\\";b\""
+  split postgres:
+    0..11 line 1 "select \"a\\\""
+    12..14 line 1 "b\""
+  split mysql:
+    0..14 line 1 "select \"a\\\";b\""
+  split sqlite: same as postgres
+  code_only postgres: "select  ;b "
+  code_only mysql: "select  "
+  code_only sqlite: same as postgres
+"select 'a\\'; select 2"
+  split postgres:
+    0..11 line 1 "select 'a\\'"
+    13..21 line 1 "select 2"
+  split mysql:
+    0..21 line 1 "select 'a\\'; select 2"
+  split sqlite: same as postgres
+  code_only postgres: "select  ; select 2"
+  code_only mysql: "select  "
+  code_only sqlite: same as postgres
+"select 'a\\'"
+  split postgres:
+    0..11 line 1 "select 'a\\'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select E'a\\';b'; select 2"
+  split postgres:
+    0..15 line 1 "select E'a\\';b'"
+    17..25 line 1 "select 2"
+  split mysql: same as postgres
+  split sqlite:
+    0..12 line 1 "select E'a\\'"
+    13..25 line 1 "b'; select 2"
+  code_only postgres: "select E ; select 2"
+  code_only mysql: same as postgres
+  code_only sqlite: "select E ;b "
+"select E'a\\';b'"
+  split postgres:
+    0..15 line 1 "select E'a\\';b'"
+  split mysql: same as postgres
+  split sqlite:
+    0..12 line 1 "select E'a\\'"
+    13..15 line 1 "b'"
+  code_only postgres: "select E "
+  code_only mysql: same as postgres
+  code_only sqlite: "select E ;b "
+"select e'\\\\'; select 2"
+  split postgres:
+    0..12 line 1 "select e'\\\\'"
+    14..22 line 1 "select 2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select e ; select 2"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select e'\\\\'"
+  split postgres:
+    0..12 line 1 "select e'\\\\'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select e "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select date'2020-01-01'; select 2"
+  split postgres:
+    0..23 line 1 "select date'2020-01-01'"
+    25..33 line 1 "select 2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select date ; select 2"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select date'2020-01-01'"
+  split postgres:
+    0..23 line 1 "select date'2020-01-01'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select date "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1 /* ; */; select 2 -- ;\n; select 3"
+  split postgres:
+    0..16 line 1 "select 1 /* ; */"
+    18..31 line 1 "select 2 -- ;"
+    34..42 line 2 "select 3"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1  ; select 2  \n; select 3"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1 /* ; */"
+  split postgres:
+    0..16 line 1 "select 1 /* ; */"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 2 -- ;"
+  split postgres:
+    0..13 line 1 "select 2 -- ;"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 2  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"/* a /* b */ ; */ select 1; select 2"
+  split postgres:
+    18..26 line 1 "select 1"
+    28..36 line 1 "select 2"
+  split mysql:
+    15..26 line 1 "*/ select 1"
+    28..36 line 1 "select 2"
+  split sqlite: same as mysql
+  code_only postgres: "  select 1; select 2"
+  code_only mysql: "  ; */ select 1; select 2"
+  code_only sqlite: same as mysql
+"/* a /* b */ select 1; select 2"
+  split postgres: nothing
+  split mysql:
+    13..21 line 1 "select 1"
+    23..31 line 1 "select 2"
+  split sqlite: same as mysql
+  code_only postgres: " "
+  code_only mysql: "  select 1; select 2"
+  code_only sqlite: same as mysql
+"select 1 # ; x\n; select 2"
+  split postgres:
+    0..10 line 1 "select 1 #"
+    13..14 line 1 "x"
+    17..25 line 2 "select 2"
+  split mysql:
+    0..14 line 1 "select 1 # ; x"
+    17..25 line 2 "select 2"
+  split sqlite: same as postgres
+  code_only postgres: "select 1 # ; x\n; select 2"
+  code_only mysql: "select 1  \n; select 2"
+  code_only sqlite: same as postgres
+"select 1 # ; x"
+  split postgres:
+    0..10 line 1 "select 1 #"
+    13..14 line 1 "x"
+  split mysql:
+    0..14 line 1 "select 1 # ; x"
+  split sqlite: same as postgres
+  code_only postgres: "select 1 # ; x"
+  code_only mysql: "select 1  "
+  code_only sqlite: same as postgres
+"select 1--1; select 2"
+  split postgres:
+    0..21 line 1 "select 1--1; select 2"
+  split mysql:
+    0..11 line 1 "select 1--1"
+    13..21 line 1 "select 2"
+  split sqlite: same as postgres
+  code_only postgres: "select 1 "
+  code_only mysql: "select 1--1; select 2"
+  code_only sqlite: same as postgres
+"select 1--1"
+  split postgres:
+    0..11 line 1 "select 1--1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1 "
+  code_only mysql: "select 1--1"
+  code_only sqlite: same as postgres
+"/*!40101 SET NAMES utf8 */;\nselect 1;"
+  split postgres:
+    28..36 line 2 "select 1"
+  split mysql:
+    0..26 line 1 "/*!40101 SET NAMES utf8 */"
+    28..36 line 2 "select 1"
+  split sqlite: same as postgres
+  code_only postgres: " ;\nselect 1;"
+  code_only mysql: "   40101 SET NAMES utf8 */;\nselect 1;"
+  code_only sqlite: same as postgres
+"create function f() returns int as $$ begin; return 1; end; $$ language plpgsql;\nselect f();"
+  split postgres:
+    0..79 line 1 "create function f() returns int as $$ begin; return 1; end; $$ language plpgsql"
+    81..91 line 2 "select f()"
+  split mysql:
+    0..43 line 1 "create function f() returns int as $$ begin"
+    45..53 line 1 "return 1"
+    55..58 line 1 "end"
+    60..79 line 1 "$$ language plpgsql"
+    81..91 line 2 "select f()"
+  split sqlite: same as mysql
+  code_only postgres: "create function f() returns int as   language plpgsql;\nselect f();"
+  code_only mysql: "create function f() returns int as $$ begin; return 1; end; $$ language plpgsql;\nselect f();"
+  code_only sqlite: same as mysql
+"create function f() returns int as $$ begin; return 1; end; $$ language plpgsql"
+  split postgres:
+    0..79 line 1 "create function f() returns int as $$ begin; return 1; end; $$ language plpgsql"
+  split mysql:
+    0..43 line 1 "create function f() returns int as $$ begin"
+    45..53 line 1 "return 1"
+    55..58 line 1 "end"
+    60..79 line 1 "$$ language plpgsql"
+  split sqlite: same as mysql
+  code_only postgres: "create function f() returns int as   language plpgsql"
+  code_only mysql: "create function f() returns int as $$ begin; return 1; end; $$ language plpgsql"
+  code_only sqlite: same as mysql
+"select f()"
+  split postgres:
+    0..10 line 1 "select f()"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select f()"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"do $body$ declare x text := '$$;'; begin end $body$; select $1, a$b from t; select 2"
+  split postgres:
+    0..51 line 1 "do $body$ declare x text := '$$;'; begin end $body$"
+    53..74 line 1 "select $1, a$b from t"
+    76..84 line 1 "select 2"
+  split mysql:
+    0..33 line 1 "do $body$ declare x text := '$$;'"
+    35..51 line 1 "begin end $body$"
+    53..74 line 1 "select $1, a$b from t"
+    76..84 line 1 "select 2"
+  split sqlite: same as mysql
+  code_only postgres: "do  ; select $1, a$b from t; select 2"
+  code_only mysql: "do $body$ declare x text :=  ; begin end $body$; select $1, a$b from t; select 2"
+  code_only sqlite: same as mysql
+"do $body$ declare x text := '$$;'; begin end $body$"
+  split postgres:
+    0..51 line 1 "do $body$ declare x text := '$$;'; begin end $body$"
+  split mysql:
+    0..33 line 1 "do $body$ declare x text := '$$;'"
+    35..51 line 1 "begin end $body$"
+  split sqlite: same as mysql
+  code_only postgres: "do  "
+  code_only mysql: "do $body$ declare x text :=  ; begin end $body$"
+  code_only sqlite: same as mysql
+"select $1, a$b from t"
+  split postgres:
+    0..21 line 1 "select $1, a$b from t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select $1, a$b from t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select $x$ ; abc"
+  split postgres:
+    0..16 line 1 "select $x$ ; abc"
+  split mysql:
+    0..10 line 1 "select $x$"
+    13..16 line 1 "abc"
+  split sqlite: same as mysql
+  code_only postgres: "select  "
+  code_only mysql: "select $x$ ; abc"
+  code_only sqlite: same as mysql
+"CREATE TRIGGER trg AFTER INSERT ON t BEGIN\n  UPDATE t SET a = CASE WHEN new.a > 0 THEN 1 ELSE 0 END;\n  INSERT INTO log VALUES (1);\nEND;\nselect 1;"
+  split postgres:
+    0..99 line 1 "CREATE TRIGGER trg AFTER INSERT ON t BEGIN\n  UPDATE t SET a = CASE WHEN new.a > 0 THEN 1 ELSE 0 END"
+    103..129 line 3 "INSERT INTO log VALUES (1)"
+    131..134 line 4 "END"
+    136..144 line 5 "select 1"
+  split mysql:
+    0..134 line 1 "CREATE TRIGGER trg AFTER INSERT ON t BEGIN\n  UPDATE t SET a = CASE WHEN new.a > 0 THEN 1 ELSE 0 END;\n  INSERT INTO log VALUES (1);\nEND"
+    136..144 line 5 "select 1"
+  split sqlite: same as mysql
+  code_only postgres: "CREATE TRIGGER trg AFTER INSERT ON t BEGIN\n  UPDATE t SET a = CASE WHEN new.a > 0 THEN 1 ELSE 0 END;\n  INSERT INTO log VALUES (1);\nEND;\nselect 1;"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE TRIGGER trg AFTER INSERT ON t BEGIN\n  UPDATE t SET a = CASE WHEN new.a > 0 THEN 1 ELSE 0 END;\n  INSERT INTO log VALUES (1);\nEND"
+  split postgres:
+    0..99 line 1 "CREATE TRIGGER trg AFTER INSERT ON t BEGIN\n  UPDATE t SET a = CASE WHEN new.a > 0 THEN 1 ELSE 0 END"
+    103..129 line 3 "INSERT INTO log VALUES (1)"
+    131..134 line 4 "END"
+  split mysql:
+    0..134 line 1 "CREATE TRIGGER trg AFTER INSERT ON t BEGIN\n  UPDATE t SET a = CASE WHEN new.a > 0 THEN 1 ELSE 0 END;\n  INSERT INTO log VALUES (1);\nEND"
+  split sqlite: same as mysql
+  code_only postgres: "CREATE TRIGGER trg AFTER INSERT ON t BEGIN\n  UPDATE t SET a = CASE WHEN new.a > 0 THEN 1 ELSE 0 END;\n  INSERT INTO log VALUES (1);\nEND"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"create temp trigger if not exists x before delete on t begin select raise(abort, 'no'); end; select 2"
+  split postgres:
+    0..86 line 1 "create temp trigger if not exists x before delete on t begin select raise(abort, 'no')"
+    88..91 line 1 "end"
+    93..101 line 1 "select 2"
+  split mysql:
+    0..91 line 1 "create temp trigger if not exists x before delete on t begin select raise(abort, 'no'); end"
+    93..101 line 1 "select 2"
+  split sqlite: same as mysql
+  code_only postgres: "create temp trigger if not exists x before delete on t begin select raise(abort,  ); end; select 2"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"create temp trigger if not exists x before delete on t begin select raise(abort, 'no'); end"
+  split postgres:
+    0..86 line 1 "create temp trigger if not exists x before delete on t begin select raise(abort, 'no')"
+    88..91 line 1 "end"
+  split mysql:
+    0..91 line 1 "create temp trigger if not exists x before delete on t begin select raise(abort, 'no'); end"
+  split sqlite: same as mysql
+  code_only postgres: "create temp trigger if not exists x before delete on t begin select raise(abort,  ); end"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE DEFINER=`root`@`localhost` PROCEDURE p(IN n INT)\nBEGIN\n  DECLARE i INT DEFAULT 0;\n  IF n > 0 THEN SELECT 1; END IF;\n  WHILE i < n DO SET i = i + 1; END WHILE;\n  CASE n WHEN 1 THEN SELECT 'one'; ELSE SELECT 'many'; END CASE;\n  lbl: BEGIN SELECT 2; END lbl;\n  REPEAT SET i = i - 1; UNTIL i = 0 END REPEAT;\nEND;\nCALL p(3);"
+  split postgres:
+    0..87 line 1 "CREATE DEFINER=`root`@`localhost` PROCEDURE p(IN n INT)\nBEGIN\n  DECLARE i INT DEFAULT 0"
+    91..113 line 4 "IF n > 0 THEN SELECT 1"
+    115..121 line 4 "END IF"
+    125..153 line 5 "WHILE i < n DO SET i = i + 1"
+    155..164 line 5 "END WHILE"
+    168..199 line 6 "CASE n WHEN 1 THEN SELECT 'one'"
+    201..219 line 6 "ELSE SELECT 'many'"
+    221..229 line 6 "END CASE"
+    233..252 line 7 "lbl: BEGIN SELECT 2"
+    254..261 line 7 "END lbl"
+    265..285 line 8 "REPEAT SET i = i - 1"
+    287..309 line 8 "UNTIL i = 0 END REPEAT"
+    311..314 line 9 "END"
+    316..325 line 10 "CALL p(3)"
+  split mysql:
+    0..314 line 1 "CREATE DEFINER=`root`@`localhost` PROCEDURE p(IN n INT)\nBEGIN\n  DECLARE i INT DEFAULT 0;\n  IF n > 0 THEN SELECT 1; END IF;\n  WHILE i < n DO SET i = i + 1; END WHILE;\n  CASE n WHEN 1 THEN SELECT 'one'; ELSE SELECT 'many'; END CASE;\n  lbl: BEGIN SELECT 2; END lbl;\n  REPEAT SET i = i - 1; UNTIL i = 0 END REPEAT;\nEND"
+    316..325 line 10 "CALL p(3)"
+  split sqlite: same as mysql
+  code_only postgres: "CREATE DEFINER=`root`@`localhost` PROCEDURE p(IN n INT)\nBEGIN\n  DECLARE i INT DEFAULT 0;\n  IF n > 0 THEN SELECT 1; END IF;\n  WHILE i < n DO SET i = i + 1; END WHILE;\n  CASE n WHEN 1 THEN SELECT  ; ELSE SELECT  ; END CASE;\n  lbl: BEGIN SELECT 2; END lbl;\n  REPEAT SET i = i - 1; UNTIL i = 0 END REPEAT;\nEND;\nCALL p(3);"
+  code_only mysql: "CREATE DEFINER= @  PROCEDURE p(IN n INT)\nBEGIN\n  DECLARE i INT DEFAULT 0;\n  IF n > 0 THEN SELECT 1; END IF;\n  WHILE i < n DO SET i = i + 1; END WHILE;\n  CASE n WHEN 1 THEN SELECT  ; ELSE SELECT  ; END CASE;\n  lbl: BEGIN SELECT 2; END lbl;\n  REPEAT SET i = i - 1; UNTIL i = 0 END REPEAT;\nEND;\nCALL p(3);"
+  code_only sqlite: same as mysql
+"END REPEAT;\nEND"
+  split postgres:
+    0..10 line 1 "END REPEAT"
+    12..15 line 2 "END"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "END REPEAT;\nEND"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CALL p(3)"
+  split postgres:
+    0..9 line 1 "CALL p(3)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CALL p(3)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"BEGIN; select case when 1 then 2 end; COMMIT;"
+  split postgres:
+    0..5 line 1 "BEGIN"
+    7..36 line 1 "select case when 1 then 2 end"
+    38..44 line 1 "COMMIT"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "BEGIN; select case when 1 then 2 end; COMMIT;"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select case when 1 then 2 end"
+  split postgres:
+    0..29 line 1 "select case when 1 then 2 end"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select case when 1 then 2 end"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"COMMIT"
+  split postgres:
+    0..6 line 1 "COMMIT"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "COMMIT"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"BEGIN TRANSACTION; select 1; END;"
+  split postgres:
+    0..17 line 1 "BEGIN TRANSACTION"
+    19..27 line 1 "select 1"
+    29..32 line 1 "END"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "BEGIN TRANSACTION; select 1; END;"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"BEGIN TRANSACTION"
+  split postgres:
+    0..17 line 1 "BEGIN TRANSACTION"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "BEGIN TRANSACTION"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"END"
+  split postgres:
+    0..3 line 1 "END"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "END"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"create table t (\"begin\" int); select 1"
+  split postgres:
+    0..28 line 1 "create table t (\"begin\" int)"
+    30..38 line 1 "select 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "create table t (  int); select 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"create table t (\"begin\" int)"
+  split postgres:
+    0..28 line 1 "create table t (\"begin\" int)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "create table t (  int)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE FUNCTION add(a int, b int) RETURNS int LANGUAGE sql\nBEGIN ATOMIC\n  SELECT a + b;\nEND;\nselect add(1, 2);"
+  split postgres:
+    0..91 line 1 "CREATE FUNCTION add(a int, b int) RETURNS int LANGUAGE sql\nBEGIN ATOMIC\n  SELECT a + b;\nEND"
+    93..109 line 5 "select add(1, 2)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE FUNCTION add(a int, b int) RETURNS int LANGUAGE sql\nBEGIN ATOMIC\n  SELECT a + b;\nEND;\nselect add(1, 2);"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE FUNCTION add(a int, b int) RETURNS int LANGUAGE sql\nBEGIN ATOMIC\n  SELECT a + b;\nEND"
+  split postgres:
+    0..91 line 1 "CREATE FUNCTION add(a int, b int) RETURNS int LANGUAGE sql\nBEGIN ATOMIC\n  SELECT a + b;\nEND"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE FUNCTION add(a int, b int) RETURNS int LANGUAGE sql\nBEGIN ATOMIC\n  SELECT a + b;\nEND"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select add(1, 2)"
+  split postgres:
+    0..16 line 1 "select add(1, 2)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select add(1, 2)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"create function f(x int) returns int language sql return case when x > 0 then 1 else 0 end; select 1"
+  split postgres:
+    0..90 line 1 "create function f(x int) returns int language sql return case when x > 0 then 1 else 0 end"
+    92..100 line 1 "select 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "create function f(x int) returns int language sql return case when x > 0 then 1 else 0 end; select 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"create function f(x int) returns int language sql return case when x > 0 then 1 else 0 end"
+  split postgres:
+    0..90 line 1 "create function f(x int) returns int language sql return case when x > 0 then 1 else 0 end"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "create function f(x int) returns int language sql return case when x > 0 then 1 else 0 end"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"BEGIN NOT ATOMIC SELECT 1; SELECT 2; END; SELECT 3"
+  split postgres:
+    0..25 line 1 "BEGIN NOT ATOMIC SELECT 1"
+    27..35 line 1 "SELECT 2"
+    37..40 line 1 "END"
+    42..50 line 1 "SELECT 3"
+  split mysql:
+    0..40 line 1 "BEGIN NOT ATOMIC SELECT 1; SELECT 2; END"
+    42..50 line 1 "SELECT 3"
+  split sqlite: same as postgres
+  code_only postgres: "BEGIN NOT ATOMIC SELECT 1; SELECT 2; END; SELECT 3"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"BEGIN NOT ATOMIC SELECT 1; SELECT 2; END"
+  split postgres:
+    0..25 line 1 "BEGIN NOT ATOMIC SELECT 1"
+    27..35 line 1 "SELECT 2"
+    37..40 line 1 "END"
+  split mysql:
+    0..40 line 1 "BEGIN NOT ATOMIC SELECT 1; SELECT 2; END"
+  split sqlite: same as postgres
+  code_only postgres: "BEGIN NOT ATOMIC SELECT 1; SELECT 2; END"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 3"
+  split postgres:
+    0..8 line 1 "SELECT 3"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 3"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"DELIMITER $$\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND$$\nDELIMITER ;\nCALL p();\nselect 'x';"
+  split postgres:
+    0..79 line 1 "DELIMITER $$\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND$$\nDELIMITER"
+    82..90 line 8 "CALL p()"
+    92..102 line 9 "select 'x'"
+  split mysql:
+    13..67 line 2 "CREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND"
+    82..90 line 8 "CALL p()"
+    92..102 line 9 "select 'x'"
+  split sqlite:
+    0..50 line 1 "DELIMITER $$\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1"
+    54..62 line 5 "SELECT 2"
+    64..79 line 6 "END$$\nDELIMITER"
+    82..90 line 8 "CALL p()"
+    92..102 line 9 "select 'x'"
+  code_only postgres: "DELIMITER  \nDELIMITER ;\nCALL p();\nselect  ;"
+  code_only mysql: "DELIMITER $$\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND$$\nDELIMITER ;\nCALL p();\nselect  ;"
+  code_only sqlite: same as mysql
+"CREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND"
+  split postgres:
+    0..37 line 1 "CREATE PROCEDURE p()\nBEGIN\n  SELECT 1"
+    41..49 line 4 "SELECT 2"
+    51..54 line 5 "END"
+  split mysql:
+    0..54 line 1 "CREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND"
+  split sqlite: same as mysql
+  code_only postgres: "CREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CALL p()"
+  split postgres:
+    0..8 line 1 "CALL p()"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CALL p()"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 'x'"
+  split postgres:
+    0..10 line 1 "select 'x'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"delimiter //\nselect 1; select 2//\nselect 3 //"
+  split postgres:
+    0..21 line 1 "delimiter //\nselect 1"
+    23..45 line 2 "select 2//\nselect 3 //"
+  split mysql:
+    13..31 line 2 "select 1; select 2"
+    34..42 line 3 "select 3"
+  split sqlite: same as postgres
+  code_only postgres: "delimiter //\nselect 1; select 2//\nselect 3 //"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1; select 2"
+  split postgres:
+    0..8 line 1 "select 1"
+    10..18 line 1 "select 2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1; select 2"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select delimiter from t; select 1"
+  split postgres:
+    0..23 line 1 "select delimiter from t"
+    25..33 line 1 "select 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select delimiter from t; select 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select delimiter from t"
+  split postgres:
+    0..23 line 1 "select delimiter from t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select delimiter from t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1;\n\\d users\nselect 2;\n  \\timing on\n"
+  split postgres:
+    0..8 line 1 "select 1"
+    10..18 line 2 "\\d users"
+    19..27 line 3 "select 2"
+    31..41 line 4 "\\timing on"
+  split mysql:
+    0..8 line 1 "select 1"
+    10..27 line 2 "\\d users\nselect 2"
+    31..41 line 4 "\\timing on"
+  split sqlite: same as mysql
+  code_only postgres: "select 1;\n\\d users\nselect 2;\n  \\timing on\n"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\timing on"
+  split postgres:
+    0..10 line 1 "\\timing on"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\timing on"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1\n\\g\nselect 2"
+  split postgres:
+    0..8 line 1 "select 1"
+    9..11 line 2 "\\g"
+    12..20 line 3 "select 2"
+  split mysql:
+    0..20 line 1 "select 1\n\\g\nselect 2"
+  split sqlite: same as mysql
+  code_only postgres: "select 1\n\\g\nselect 2"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\g"
+  split postgres:
+    0..2 line 1 "\\g"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\g"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1 \\ 2; select 3"
+  split postgres:
+    0..12 line 1 "select 1 \\ 2"
+    14..22 line 1 "select 3"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1 \\ 2; select 3"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1 \\ 2"
+  split postgres:
+    0..12 line 1 "select 1 \\ 2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1 \\ 2"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 'héllo';\r\nselect 'wörld' ;\r\n\r\nselect 3"
+  split postgres:
+    0..14 line 1 "select 'héllo'"
+    17..31 line 2 "select 'wörld'"
+    37..45 line 4 "select 3"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  ;\r\nselect   ;\r\n\r\nselect 3"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 'héllo'"
+  split postgres:
+    0..14 line 1 "select 'héllo'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 'wörld'"
+  split postgres:
+    0..14 line 1 "select 'wörld'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1 -- c;\r\n; select 2"
+  split postgres:
+    0..14 line 1 "select 1 -- c;"
+    18..26 line 2 "select 2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1  \r\n; select 2"
+  code_only mysql: "select 1  \n; select 2"
+  code_only sqlite: same as mysql
+"select 1 -- c;"
+  split postgres:
+    0..14 line 1 "select 1 -- c;"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 'abc"
+  split postgres:
+    0..11 line 1 "select 'abc"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select \"abc"
+  split postgres:
+    0..11 line 1 "select \"abc"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"/* abc"
+  split postgres: nothing
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select $$abc"
+  split postgres:
+    0..12 line 1 "select $$abc"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  "
+  code_only mysql: "select $$abc"
+  code_only sqlite: same as mysql
+"select `x"
+  split postgres:
+    0..9 line 1 "select `x"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select `x"
+  code_only mysql: "select  "
+  code_only sqlite: same as mysql
+"select [x"
+  split postgres:
+    0..9 line 1 "select [x"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select [x"
+  code_only mysql: same as postgres
+  code_only sqlite: "select  "
+"--"
+  split postgres: nothing
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"-"
+  split postgres:
+    0..1 line 1 "-"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "-"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"$"
+  split postgres:
+    0..1 line 1 "$"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "$"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"e'"
+  split postgres:
+    0..2 line 1 "e'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "e "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"DELIMITER"
+  split postgres:
+    0..9 line 1 "DELIMITER"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "DELIMITER"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"DELIMITER "
+  split postgres:
+    0..9 line 1 "DELIMITER"
+  split mysql: nothing
+  split sqlite: same as postgres
+  code_only postgres: "DELIMITER "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\"
+  split postgres:
+    0..1 line 1 "\\"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"  -- c\n/* x */ (SELECT 1)"
+  split postgres:
+    15..25 line 2 "(SELECT 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "   \n  (SELECT 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT"
+  split postgres:
+    0..6 line 1 "SELECT"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"start transaction read only"
+  split postgres:
+    0..27 line 1 "start transaction read only"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "start transaction read only"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"START"
+  split postgres:
+    0..5 line 1 "START"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "START"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"TRANSACTION"
+  split postgres:
+    0..11 line 1 "TRANSACTION"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "TRANSACTION"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"rollback to savepoint a"
+  split postgres:
+    0..23 line 1 "rollback to savepoint a"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "rollback to savepoint a"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ROLLBACK"
+  split postgres:
+    0..8 line 1 "ROLLBACK"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ROLLBACK"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"TO"
+  split postgres:
+    0..2 line 1 "TO"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "TO"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SAVEPOINT"
+  split postgres:
+    0..9 line 1 "SAVEPOINT"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SAVEPOINT"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"  "
+  split postgres: nothing
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"# c\nshow tables"
+  split postgres:
+    0..15 line 1 "# c\nshow tables"
+  split mysql:
+    4..15 line 2 "show tables"
+  split sqlite: same as postgres
+  code_only postgres: "# c\nshow tables"
+  code_only mysql: " \nshow tables"
+  code_only sqlite: same as postgres
+"SHOW"
+  split postgres:
+    0..4 line 1 "SHOW"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SHOW"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"DELIMITER //\nSELECT * FROM t; INSERT INTO t VALUES (42) //"
+  split postgres:
+    0..28 line 1 "DELIMITER //\nSELECT * FROM t"
+    30..58 line 2 "INSERT INTO t VALUES (42) //"
+  split mysql:
+    13..55 line 2 "SELECT * FROM t; INSERT INTO t VALUES (42)"
+  split sqlite: same as postgres
+  code_only postgres: "DELIMITER //\nSELECT * FROM t; INSERT INTO t VALUES (42) //"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT * FROM t; INSERT INTO t VALUES (42)"
+  split postgres:
+    0..15 line 1 "SELECT * FROM t"
+    17..42 line 1 "INSERT INTO t VALUES (42)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT * FROM t; INSERT INTO t VALUES (42)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1;"
+  split postgres:
+    0..8 line 1 "select 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1;"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 'a;b'"
+  split postgres:
+    0..12 line 1 "select 'a;b'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END"
+  split postgres:
+    0..35 line 1 "CREATE PROCEDURE p() BEGIN SELECT 1"
+    37..45 line 1 "SELECT 2"
+    47..50 line 1 "END"
+  split mysql:
+    0..50 line 1 "CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END"
+  split sqlite: same as mysql
+  code_only postgres: "CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 'a\\'; insert into t values (1); select '"
+  split postgres:
+    0..11 line 1 "select 'a\\'"
+    13..37 line 1 "insert into t values (1)"
+    39..47 line 1 "select '"
+  split mysql:
+    0..47 line 1 "select 'a\\'; insert into t values (1); select '"
+  split sqlite: same as postgres
+  code_only postgres: "select  ; insert into t values (1); select  "
+  code_only mysql: "select  "
+  code_only sqlite: same as postgres
+"select * from log where op = 'UPDATE' -- delete\n"
+  split postgres:
+    0..47 line 1 "select * from log where op = 'UPDATE' -- delete"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select * from log where op =    \n"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"FROM"
+  split postgres:
+    0..4 line 1 "FROM"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "FROM"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"LOG"
+  split postgres:
+    0..3 line 1 "LOG"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "LOG"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"WHERE"
+  split postgres:
+    0..5 line 1 "WHERE"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WHERE"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"OP"
+  split postgres:
+    0..2 line 1 "OP"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "OP"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select \"update\", $x$delete$x$, E'it\\'s insert' /* call */ from t"
+  split postgres:
+    0..64 line 1 "select \"update\", $x$delete$x$, E'it\\'s insert' /* call */ from t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  ,  , E    from t"
+  code_only mysql: "select  , $x$delete$x$, E    from t"
+  code_only sqlite: "select  , $x$delete$x$, E s insert "
+"E"
+  split postgres:
+    0..1 line 1 "E"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "E"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"T"
+  split postgres:
+    0..1 line 1 "T"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "T"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select `delete`, 'a\\'update', x # insert"
+  split postgres:
+    0..40 line 1 "select `delete`, 'a\\'update', x # insert"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select `delete`,  update "
+  code_only mysql: "select  ,  , x  "
+  code_only sqlite: "select  ,  update "
+"X"
+  split postgres:
+    0..1 line 1 "X"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "X"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select /*!50000 sql_no_cache */ 1"
+  split postgres:
+    0..33 line 1 "select /*!50000 sql_no_cache */ 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select   1"
+  code_only mysql: "select    50000 sql_no_cache */ 1"
+  code_only sqlite: same as postgres
+"50000"
+  split postgres:
+    0..5 line 1 "50000"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "50000"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SQL_NO_CACHE"
+  split postgres:
+    0..12 line 1 "SQL_NO_CACHE"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SQL_NO_CACHE"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"1"
+  split postgres:
+    0..1 line 1 "1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select [delete] from t"
+  split postgres:
+    0..22 line 1 "select [delete] from t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select [delete] from t"
+  code_only mysql: same as postgres
+  code_only sqlite: "select   from t"
+"select /* x"
+  split postgres:
+    0..11 line 1 "select /* x"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select $a$ x"
+  split postgres:
+    0..12 line 1 "select $a$ x"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  "
+  code_only mysql: "select $a$ x"
+  code_only sqlite: same as mysql
+"postgres"
+  split postgres:
+    0..8 line 1 "postgres"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "postgres"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"mysql"
+  split postgres:
+    0..5 line 1 "mysql"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "mysql"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"sqlite"
+  split postgres:
+    0..6 line 1 "sqlite"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "sqlite"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"../../../src/features/safety/classify.cases.json"
+  split postgres:
+    0..48 line 1 "../../../src/features/safety/classify.cases.json"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "../../../src/features/safety/classify.cases.json"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"read"
+  split postgres:
+    0..4 line 1 "read"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "read"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"write"
+  split postgres:
+    0..5 line 1 "write"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "write"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"DELETE FROM t"
+  split postgres:
+    0..13 line 1 "DELETE FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "DELETE FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 'abc"
+  split postgres:
+    0..11 line 1 "SELECT 'abc"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 /* DELETE"
+  split postgres:
+    0..18 line 1 "SELECT 1 /* DELETE"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT $x$ ; DROP"
+  split postgres:
+    0..17 line 1 "SELECT $x$ ; DROP"
+  split mysql:
+    0..10 line 1 "SELECT $x$"
+    13..17 line 1 "DROP"
+  split sqlite: same as mysql
+  code_only postgres: "SELECT  "
+  code_only mysql: "SELECT $x$ ; DROP"
+  code_only sqlite: same as mysql
+"SELECT setval('s', 1)"
+  split postgres:
+    0..21 line 1 "SELECT setval('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT setval( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT nextval('s')"
+  split postgres:
+    0..19 line 1 "SELECT nextval('s')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT nextval( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_catalog.setval('s', 1)"
+  split postgres:
+    0..32 line 1 "SELECT pg_catalog.setval('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_catalog.setval( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()"
+  split postgres:
+    0..84 line 1 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_cancel_backend(42)"
+  split postgres:
+    0..28 line 1 "SELECT pg_cancel_backend(42)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_cancel_backend(42)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_reload_conf()"
+  split postgres:
+    0..23 line 1 "SELECT pg_reload_conf()"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_reload_conf()"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_switch_wal()"
+  split postgres:
+    0..22 line 1 "SELECT pg_switch_wal()"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_switch_wal()"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_create_restore_point('x')"
+  split postgres:
+    0..35 line 1 "SELECT pg_create_restore_point('x')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_create_restore_point( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_advisory_lock(1)"
+  split postgres:
+    0..26 line 1 "SELECT pg_advisory_lock(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_advisory_lock(1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_advisory_xact_lock_shared(1, 2)"
+  split postgres:
+    0..41 line 1 "SELECT pg_advisory_xact_lock_shared(1, 2)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_advisory_xact_lock_shared(1, 2)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_try_advisory_lock(1)"
+  split postgres:
+    0..30 line 1 "SELECT pg_try_advisory_lock(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_try_advisory_lock(1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_try_advisory_lock_shared(1)"
+  split postgres:
+    0..37 line 1 "SELECT pg_try_advisory_lock_shared(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_try_advisory_lock_shared(1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_try_advisory_xact_lock_shared(1, 2)"
+  split postgres:
+    0..45 line 1 "SELECT pg_try_advisory_xact_lock_shared(1, 2)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_try_advisory_xact_lock_shared(1, 2)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_advisory_unlock_shared(1)"
+  split postgres:
+    0..35 line 1 "SELECT pg_advisory_unlock_shared(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_advisory_unlock_shared(1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_advisory_unlock_all()"
+  split postgres:
+    0..31 line 1 "SELECT pg_advisory_unlock_all()"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_advisory_unlock_all()"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT lo_unlink(1234)"
+  split postgres:
+    0..22 line 1 "SELECT lo_unlink(1234)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT lo_unlink(1234)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT lo_import('/etc/passwd')"
+  split postgres:
+    0..31 line 1 "SELECT lo_import('/etc/passwd')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT lo_import( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT lo_from_bytea(0, 'x'::bytea)"
+  split postgres:
+    0..35 line 1 "SELECT lo_from_bytea(0, 'x'::bytea)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT lo_from_bytea(0,  ::bytea)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT dblink_exec('dbname=x', 'DELETE FROM t')"
+  split postgres:
+    0..47 line 1 "SELECT dblink_exec('dbname=x', 'DELETE FROM t')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT dblink_exec( ,  )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT dblink_connect('c', 'dbname=x')"
+  split postgres:
+    0..38 line 1 "SELECT dblink_connect('c', 'dbname=x')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT dblink_connect( ,  )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_sleep(100)"
+  split postgres:
+    0..20 line 1 "SELECT pg_sleep(100)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_sleep(100)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT * FROM pg_sleep_for('5 minutes')"
+  split postgres:
+    0..39 line 1 "SELECT * FROM pg_sleep_for('5 minutes')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT * FROM pg_sleep_for( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select a, NextVal  ('s') from t"
+  split postgres:
+    0..31 line 1 "select a, NextVal  ('s') from t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select a, NextVal  ( ) from t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT setval/* x */('s', 1)"
+  split postgres:
+    0..28 line 1 "SELECT setval/* x */('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT setval ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1; SELECT nextval('s')"
+  split postgres:
+    0..8 line 1 "SELECT 1"
+    10..29 line 1 "SELECT nextval('s')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1; SELECT nextval( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT \"setval\"('s', 1)"
+  split postgres:
+    0..23 line 1 "SELECT \"setval\"('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_catalog.\"nextval\"('s')"
+  split postgres:
+    0..32 line 1 "SELECT pg_catalog.\"nextval\"('s')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_catalog. ( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT GET_LOCK('a', 10)"
+  split postgres:
+    0..24 line 1 "SELECT GET_LOCK('a', 10)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT GET_LOCK( , 10)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT get_lock('a', 10)"
+  split postgres:
+    0..24 line 1 "SELECT get_lock('a', 10)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT get_lock( , 10)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT RELEASE_LOCK('a')"
+  split postgres:
+    0..24 line 1 "SELECT RELEASE_LOCK('a')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT RELEASE_LOCK( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT RELEASE_ALL_LOCKS()"
+  split postgres:
+    0..26 line 1 "SELECT RELEASE_ALL_LOCKS()"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT RELEASE_ALL_LOCKS()"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT SLEEP(100000)"
+  split postgres:
+    0..20 line 1 "SELECT SLEEP(100000)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT SLEEP(100000)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT BENCHMARK(100000000, MD5('x'))"
+  split postgres:
+    0..37 line 1 "SELECT BENCHMARK(100000000, MD5('x'))"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT BENCHMARK(100000000, MD5( ))"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT /*!50000 SLEEP(5) */ 1"
+  split postgres:
+    0..29 line 1 "SELECT /*!50000 SLEEP(5) */ 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   1"
+  code_only mysql: "SELECT    50000 SLEEP(5) */ 1"
+  code_only sqlite: same as postgres
+"SELECT NEXTVAL(s)"
+  split postgres:
+    0..17 line 1 "SELECT NEXTVAL(s)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT NEXTVAL(s)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT SETVAL(s, 10)"
+  split postgres:
+    0..20 line 1 "SELECT SETVAL(s, 10)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT SETVAL(s, 10)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT NEXT VALUE FOR s"
+  split postgres:
+    0..23 line 1 "SELECT NEXT VALUE FOR s"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT NEXT VALUE FOR s"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT `sleep`(1)"
+  split postgres:
+    0..17 line 1 "SELECT `sleep`(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT `sleep`(1)"
+  code_only mysql: "SELECT  (1)"
+  code_only sqlite: same as mysql
+"SELECT 1 FROM t WHERE SLEEP(1) = 0"
+  split postgres:
+    0..34 line 1 "SELECT 1 FROM t WHERE SLEEP(1) = 0"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1 FROM t WHERE SLEEP(1) = 0"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT load_extension('x')"
+  split postgres:
+    0..26 line 1 "SELECT load_extension('x')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT load_extension( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"pg_advisory_lock"
+  split postgres:
+    0..16 line 1 "pg_advisory_lock"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "pg_advisory_lock"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"pg_advisory_lock_shared"
+  split postgres:
+    0..23 line 1 "pg_advisory_lock_shared"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "pg_advisory_lock_shared"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"pg_advisory_xact_lock"
+  split postgres:
+    0..21 line 1 "pg_advisory_xact_lock"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "pg_advisory_xact_lock"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"pg_advisory_xact_lock_shared"
+  split postgres:
+    0..28 line 1 "pg_advisory_xact_lock_shared"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "pg_advisory_xact_lock_shared"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"pg_try_advisory_lock"
+  split postgres:
+    0..20 line 1 "pg_try_advisory_lock"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "pg_try_advisory_lock"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"pg_try_advisory_lock_shared"
+  split postgres:
+    0..27 line 1 "pg_try_advisory_lock_shared"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "pg_try_advisory_lock_shared"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"pg_try_advisory_xact_lock"
+  split postgres:
+    0..25 line 1 "pg_try_advisory_xact_lock"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "pg_try_advisory_xact_lock"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"pg_try_advisory_xact_lock_shared"
+  split postgres:
+    0..32 line 1 "pg_try_advisory_xact_lock_shared"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "pg_try_advisory_xact_lock_shared"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"pg_advisory_unlock"
+  split postgres:
+    0..18 line 1 "pg_advisory_unlock"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "pg_advisory_unlock"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"pg_advisory_unlock_shared"
+  split postgres:
+    0..25 line 1 "pg_advisory_unlock_shared"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "pg_advisory_unlock_shared"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"1, 2"
+  split postgres:
+    0..4 line 1 "1, 2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "1, 2"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 AS pg_try_advisory_lock_shared, pg_advisory_unlock_shared FROM t"
+  split postgres:
+    0..73 line 1 "SELECT 1 AS pg_try_advisory_lock_shared, pg_advisory_unlock_shared FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1 AS pg_try_advisory_lock_shared, pg_advisory_unlock_shared FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 'setval(1)'"
+  split postgres:
+    0..18 line 1 "SELECT 'setval(1)'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 'it''s nextval(1)' AS t"
+  split postgres:
+    0..30 line 1 "SELECT 'it''s nextval(1)' AS t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   AS t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 -- nextval(1)"
+  split postgres:
+    0..22 line 1 "SELECT 1 -- nextval(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"/* pg_sleep(5) */ SELECT 1"
+  split postgres:
+    18..26 line 1 "SELECT 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "  SELECT 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 AS nextval"
+  split postgres:
+    0..19 line 1 "SELECT 1 AS nextval"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1 AS nextval"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT nextval FROM t"
+  split postgres:
+    0..21 line 1 "SELECT nextval FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT nextval FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT \"nextval\" FROM t"
+  split postgres:
+    0..23 line 1 "SELECT \"nextval\" FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 'x' AS \"setval\""
+  split postgres:
+    0..22 line 1 "SELECT 'x' AS \"setval\""
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   AS  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT $$setval(1)$$"
+  split postgres:
+    0..20 line 1 "SELECT $$setval(1)$$"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  "
+  code_only mysql: "SELECT $$setval(1)$$"
+  code_only sqlite: same as mysql
+"SELECT $f$ pg_terminate_backend(1) $f$"
+  split postgres:
+    0..38 line 1 "SELECT $f$ pg_terminate_backend(1) $f$"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  "
+  code_only mysql: "SELECT $f$ pg_terminate_backend(1) $f$"
+  code_only sqlite: same as mysql
+"SELECT E'nextval(\\'s\\')'"
+  split postgres:
+    0..24 line 1 "SELECT E'nextval(\\'s\\')'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT E "
+  code_only mysql: same as postgres
+  code_only sqlite: "SELECT E s\\ "
+"SELECT my_nextval(1), setvalue(2), sleeping(3)"
+  split postgres:
+    0..46 line 1 "SELECT my_nextval(1), setvalue(2), sleeping(3)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT my_nextval(1), setvalue(2), sleeping(3)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT currval('s'), lastval(), count(*) FROM t"
+  split postgres:
+    0..47 line 1 "SELECT currval('s'), lastval(), count(*) FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT currval( ), lastval(), count(*) FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT * FROM t WHERE next value = 1"
+  split postgres:
+    0..36 line 1 "SELECT * FROM t WHERE next value = 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT * FROM t WHERE next value = 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT now(), pg_backend_pid(), pg_is_in_recovery()"
+  split postgres:
+    0..51 line 1 "SELECT now(), pg_backend_pid(), pg_is_in_recovery()"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT now(), pg_backend_pid(), pg_is_in_recovery()"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 'GET_LOCK(1)'"
+  split postgres:
+    0..20 line 1 "SELECT 'GET_LOCK(1)'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 # SLEEP(5)"
+  split postgres:
+    0..19 line 1 "SELECT 1 # SLEEP(5)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1 # SLEEP(5)"
+  code_only mysql: "SELECT 1  "
+  code_only sqlite: same as postgres
+"SELECT 1 -- SLEEP(5)\n"
+  split postgres:
+    0..20 line 1 "SELECT 1 -- SLEEP(5)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  \n"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 /* BENCHMARK(1, 1) */"
+  split postgres:
+    0..30 line 1 "SELECT 1 /* BENCHMARK(1, 1) */"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT sleep FROM t"
+  split postgres:
+    0..19 line 1 "SELECT sleep FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT sleep FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT `sleep` FROM t"
+  split postgres:
+    0..21 line 1 "SELECT `sleep` FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT `sleep` FROM t"
+  code_only mysql: "SELECT   FROM t"
+  code_only sqlite: same as mysql
+"SELECT IS_FREE_LOCK('a'), NOW()"
+  split postgres:
+    0..31 line 1 "SELECT IS_FREE_LOCK('a'), NOW()"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT IS_FREE_LOCK( ), NOW()"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 'load_extension(1)'"
+  split postgres:
+    0..26 line 1 "SELECT 'load_extension(1)'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 AS sleep"
+  split postgres:
+    0..17 line 1 "SELECT 1 AS sleep"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1 AS sleep"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT next value for FROM t"
+  split postgres:
+    0..28 line 1 "SELECT next value for FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT next value for FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_terminate_backend(1)"
+  split postgres:
+    0..30 line 1 "SELECT pg_terminate_backend(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_terminate_backend(1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT SLEEP(1)"
+  split postgres:
+    0..15 line 1 "SELECT SLEEP(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT SLEEP(1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT\"set_config\"('a', 'b', false)"
+  split postgres:
+    0..35 line 1 "SELECT\"set_config\"('a', 'b', false)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT ( ,  , false)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT SLEEP/*!*/(100000)"
+  split postgres:
+    0..25 line 1 "SELECT SLEEP/*!*/(100000)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT SLEEP (100000)"
+  code_only mysql: "SELECT SLEEP   */(100000)"
+  code_only sqlite: same as postgres
+"SELECT /*!50000 GET_LOCK*/('a', 10)"
+  split postgres:
+    0..35 line 1 "SELECT /*!50000 GET_LOCK*/('a', 10)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  ( , 10)"
+  code_only mysql: "SELECT    50000 GET_LOCK*/( , 10)"
+  code_only sqlite: same as postgres
+"SELECT /*!SLEEP*/(1)"
+  split postgres:
+    0..20 line 1 "SELECT /*!SLEEP*/(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  (1)"
+  code_only mysql: "SELECT    SLEEP*/(1)"
+  code_only sqlite: same as postgres
+"SELECT /*!50000SLEEP*/(1)"
+  split postgres:
+    0..25 line 1 "SELECT /*!50000SLEEP*/(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  (1)"
+  code_only mysql: "SELECT    50000SLEEP*/(1)"
+  code_only sqlite: same as postgres
+"SELECT /*!50000 SETVAL*/(s, 10)"
+  split postgres:
+    0..31 line 1 "SELECT /*!50000 SETVAL*/(s, 10)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  (s, 10)"
+  code_only mysql: "SELECT    50000 SETVAL*/(s, 10)"
+  code_only sqlite: same as postgres
+"SELECT /*!50000 NEXTVAL*/(s)"
+  split postgres:
+    0..28 line 1 "SELECT /*!50000 NEXTVAL*/(s)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  (s)"
+  code_only mysql: "SELECT    50000 NEXTVAL*/(s)"
+  code_only sqlite: same as postgres
+"SELECT /*!50000 BENCHMARK*/ (1000, 1)"
+  split postgres:
+    0..37 line 1 "SELECT /*!50000 BENCHMARK*/ (1000, 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   (1000, 1)"
+  code_only mysql: "SELECT    50000 BENCHMARK*/ (1000, 1)"
+  code_only sqlite: same as postgres
+"SELECT SLEEP/*!50000*/(1)"
+  split postgres:
+    0..25 line 1 "SELECT SLEEP/*!50000*/(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT SLEEP (1)"
+  code_only mysql: "SELECT SLEEP   50000*/(1)"
+  code_only sqlite: same as postgres
+"SELECT SLEEP /*!*/ /*!*/ (1)"
+  split postgres:
+    0..28 line 1 "SELECT SLEEP /*!*/ /*!*/ (1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT SLEEP     (1)"
+  code_only mysql: "SELECT SLEEP    */    */ (1)"
+  code_only sqlite: same as postgres
+"SELECT /*!SLEEP*//**/(1)"
+  split postgres:
+    0..24 line 1 "SELECT /*!SLEEP*//**/(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   (1)"
+  code_only mysql: "SELECT    SLEEP*/ (1)"
+  code_only sqlite: same as postgres
+"SELECT /*!50000 SLEEP/**/(1) */ 1"
+  split postgres:
+    0..33 line 1 "SELECT /*!50000 SLEEP/**/(1) */ 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   1"
+  code_only mysql: "SELECT    50000 SLEEP (1) */ 1"
+  code_only sqlite: "SELECT  (1) */ 1"
+"SELECT /*!50000 `sleep`*/(1)"
+  split postgres:
+    0..28 line 1 "SELECT /*!50000 `sleep`*/(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  (1)"
+  code_only mysql: "SELECT    50000  */(1)"
+  code_only sqlite: same as postgres
+"SELECT /*!SLEEP(1)*/ 1"
+  split postgres:
+    0..22 line 1 "SELECT /*!SLEEP(1)*/ 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   1"
+  code_only mysql: "SELECT    SLEEP(1)*/ 1"
+  code_only sqlite: same as postgres
+"SELECT /*M!100000 SLEEP*/(1)"
+  split postgres:
+    0..28 line 1 "SELECT /*M!100000 SLEEP*/(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  (1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT /*M!100100SLEEP*/(1)"
+  split postgres:
+    0..27 line 1 "SELECT /*M!100100SLEEP*/(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  (1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT /*M!SLEEP*/(1)"
+  split postgres:
+    0..21 line 1 "SELECT /*M!SLEEP*/(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  (1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT /*M!100000 SETVAL*/(s, 10)"
+  split postgres:
+    0..33 line 1 "SELECT /*M!100000 SETVAL*/(s, 10)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  (s, 10)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT /*+ SLEEP*/(1)"
+  split postgres:
+    0..21 line 1 "SELECT /*+ SLEEP*/(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  (1)"
+  code_only mysql: "SELECT     SLEEP*/(1)"
+  code_only sqlite: same as postgres
+"SELECT NEXT /*!*/ VALUE FOR s"
+  split postgres:
+    0..29 line 1 "SELECT NEXT /*!*/ VALUE FOR s"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT NEXT   VALUE FOR s"
+  code_only mysql: "SELECT NEXT    */ VALUE FOR s"
+  code_only sqlite: same as postgres
+"SELECT /*!50000NEXT*/ VALUE FOR s"
+  split postgres:
+    0..33 line 1 "SELECT /*!50000NEXT*/ VALUE FOR s"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   VALUE FOR s"
+  code_only mysql: "SELECT    50000NEXT*/ VALUE FOR s"
+  code_only sqlite: same as postgres
+"SELECT NEXT VALUE/*!*/ FOR s"
+  split postgres:
+    0..28 line 1 "SELECT NEXT VALUE/*!*/ FOR s"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT NEXT VALUE  FOR s"
+  code_only mysql: "SELECT NEXT VALUE   */ FOR s"
+  code_only sqlite: same as postgres
+"SELECT a */*SLEEP(1)*/ b FROM t"
+  split postgres:
+    0..31 line 1 "SELECT a */*SLEEP(1)*/ b FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT a *  b FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 2 */* x */ 3, sleep FROM t"
+  split postgres:
+    0..33 line 1 "SELECT 2 */* x */ 3, sleep FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 2 *  3, sleep FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT sleep /*!*/ FROM t"
+  split postgres:
+    0..25 line 1 "SELECT sleep /*!*/ FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT sleep   FROM t"
+  code_only mysql: "SELECT sleep    */ FROM t"
+  code_only sqlite: same as postgres
+"SELECT /*!50000 sleep*/ FROM t"
+  split postgres:
+    0..30 line 1 "SELECT /*!50000 sleep*/ FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   FROM t"
+  code_only mysql: "SELECT    50000 sleep*/ FROM t"
+  code_only sqlite: same as postgres
+"SELECT SLEEP_TIME/*!*/(1)"
+  split postgres:
+    0..25 line 1 "SELECT SLEEP_TIME/*!*/(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT SLEEP_TIME (1)"
+  code_only mysql: "SELECT SLEEP_TIME   */(1)"
+  code_only sqlite: same as postgres
+"SELECT /*!50000 1*/, sleeping(1)"
+  split postgres:
+    0..32 line 1 "SELECT /*!50000 1*/, sleeping(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  , sleeping(1)"
+  code_only mysql: "SELECT    50000 1*/, sleeping(1)"
+  code_only sqlite: same as postgres
+"SELECT 1 /* GET_LOCK(1, 1) */"
+  split postgres:
+    0..29 line 1 "SELECT 1 /* GET_LOCK(1, 1) */"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT /*!50000 SLEEP*/(1)"
+  split postgres:
+    0..26 line 1 "SELECT /*!50000 SLEEP*/(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  (1)"
+  code_only mysql: "SELECT    50000 SLEEP*/(1)"
+  code_only sqlite: same as postgres
+"SELECT U&\"set\\0076al\"('s', 1)"
+  split postgres:
+    0..29 line 1 "SELECT U&\"set\\0076al\"('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT u&\"SET\\0056AL\"('s', 1)"
+  split postgres:
+    0..29 line 1 "SELECT u&\"SET\\0056AL\"('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT u& ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"pg_\\+000074erminate_backend\"(1)"
+  split postgres:
+    0..41 line 1 "SELECT U&\"pg_\\+000074erminate_backend\"(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& (1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"pg_terminate_backend\"(1)"
+  split postgres:
+    0..34 line 1 "SELECT U&\"pg_terminate_backend\"(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& (1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_catalog.U&\"set\\0076al\"('s', 1)"
+  split postgres:
+    0..40 line 1 "SELECT pg_catalog.U&\"set\\0076al\"('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_catalog.U& ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"nextval\" ('s')"
+  split postgres:
+    0..24 line 1 "SELECT U&\"nextval\" ('s')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U&  ( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT * FROM U&\"pg_s\\006ceep\"(100)"
+  split postgres:
+    0..35 line 1 "SELECT * FROM U&\"pg_s\\006ceep\"(100)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT * FROM U& (100)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"pg_advisory_l\\006fck\"(1)"
+  split postgres:
+    0..34 line 1 "SELECT U&\"pg_advisory_l\\006fck\"(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& (1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"set\\zval\"('s', 1)"
+  split postgres:
+    0..27 line 1 "SELECT U&\"set\\zval\"('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"set\\00\"('s', 1)"
+  split postgres:
+    0..25 line 1 "SELECT U&\"set\\00\"('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"\\D800\"('s', 1)"
+  split postgres:
+    0..24 line 1 "SELECT U&\"\\D800\"('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"set!0076al\" UESCAPE '!'('s', 1)"
+  split postgres:
+    0..41 line 1 "SELECT U&\"set!0076al\" UESCAPE '!'('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U&  UESCAPE  ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"set!0076al\" UESCAPE $$!$$('s', 1)"
+  split postgres:
+    0..43 line 1 "SELECT U&\"set!0076al\" UESCAPE $$!$$('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U&  UESCAPE  ( , 1)"
+  code_only mysql: "SELECT U&  UESCAPE $$!$$( , 1)"
+  code_only sqlite: same as mysql
+"SELECT U&\"set!0076al\" UESCAPE $e$!$e$('s', 1)"
+  split postgres:
+    0..45 line 1 "SELECT U&\"set!0076al\" UESCAPE $e$!$e$('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U&  UESCAPE  ( , 1)"
+  code_only mysql: "SELECT U&  UESCAPE $e$!$e$( , 1)"
+  code_only sqlite: same as mysql
+"SELECT U&\"set!0076al\" UESCAPE E'!'('s', 1)"
+  split postgres:
+    0..42 line 1 "SELECT U&\"set!0076al\" UESCAPE E'!'('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U&  UESCAPE E ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"set!0076al\" uescape '!' ('s', 1)"
+  split postgres:
+    0..42 line 1 "SELECT U&\"set!0076al\" uescape '!' ('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U&  uescape   ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"set!0076al\" /* c */ UESCAPE -- d\n '!'\n''('s', 1)"
+  split postgres:
+    0..58 line 1 "SELECT U&\"set!0076al\" /* c */ UESCAPE -- d\n '!'\n''('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U&    UESCAPE  \n  \n ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"set\\0076al\" UESCAPE '!'('s', 1)"
+  split postgres:
+    0..41 line 1 "SELECT U&\"set\\0076al\" UESCAPE '!'('s', 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U&  UESCAPE  ( , 1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"d\\0061ta\" FROM t"
+  split postgres:
+    0..26 line 1 "SELECT U&\"d\\0061ta\" FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U&  FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"abs\"(1), U&\"l\\0065ngth\"('abc'), U&\"\\D83D\\DE00\"(1)"
+  split postgres:
+    0..59 line 1 "SELECT U&\"abs\"(1), U&\"l\\0065ngth\"('abc'), U&\"\\D83D\\DE00\"(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& (1), U& ( ), U& (1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&'set\\0076al(1)'"
+  split postgres:
+    0..24 line 1 "SELECT U&'set\\0076al(1)'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"x\" UESCAPE '!' FROM t"
+  split postgres:
+    0..31 line 1 "SELECT U&\"x\" UESCAPE '!' FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U&  UESCAPE   FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"d\\0061ta\", count(U&\"\\0061\")  FROM t"
+  split postgres:
+    0..45 line 1 "SELECT U&\"d\\0061ta\", count(U&\"\\0061\")  FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& , count(U& )  FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT menu&\"x\"(1)"
+  split postgres:
+    0..18 line 1 "SELECT menu&\"x\"(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT menu& (1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U & \"x\" FROM t"
+  split postgres:
+    0..21 line 1 "SELECT U & \"x\" FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U &   FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"plain"
+  split postgres:
+    0..5 line 1 "plain"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "plain"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"set\\0076al"
+  split postgres:
+    0..10 line 1 "set\\0076al"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "set\\0076al"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"setval"
+  split postgres:
+    0..6 line 1 "setval"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "setval"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\+000073etval"
+  split postgres:
+    0..13 line 1 "\\+000073etval"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\+000073etval"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"a\\\\b"
+  split postgres:
+    0..4 line 1 "a\\\\b"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "a\\\\b"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"a\\b"
+  split postgres:
+    0..3 line 1 "a\\b"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "a\\b"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\0041\\+000042"
+  split postgres:
+    0..13 line 1 "\\0041\\+000042"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\0041\\+000042"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"AB"
+  split postgres:
+    0..2 line 1 "AB"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "AB"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\00e9"
+  split postgres:
+    0..5 line 1 "\\00e9"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\00e9"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"é"
+  split postgres:
+    0..1 line 1 "é"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "é"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\D83D\\DE00"
+  split postgres:
+    0..10 line 1 "\\D83D\\DE00"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\D83D\\DE00"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"😀"
+  split postgres:
+    0..1 line 1 "😀"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "😀"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\+01F600"
+  split postgres:
+    0..8 line 1 "\\+01F600"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\+01F600"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\z"
+  split postgres:
+    0..2 line 1 "\\z"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\z"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\12"
+  split postgres:
+    0..3 line 1 "\\12"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\12"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\00zz"
+  split postgres:
+    0..5 line 1 "\\00zz"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\00zz"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\+0000"
+  split postgres:
+    0..6 line 1 "\\+0000"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\+0000"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\+110000"
+  split postgres:
+    0..8 line 1 "\\+110000"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\+110000"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\D83D"
+  split postgres:
+    0..5 line 1 "\\D83D"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\D83D"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\D83Dx"
+  split postgres:
+    0..6 line 1 "\\D83Dx"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\D83Dx"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\DE00"
+  split postgres:
+    0..5 line 1 "\\DE00"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\DE00"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\D83D\\0041"
+  split postgres:
+    0..10 line 1 "\\D83D\\0041"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\D83D\\0041"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT [load_extension]('x')"
+  split postgres:
+    0..28 line 1 "SELECT [load_extension]('x')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT [load_extension]( )"
+  code_only mysql: same as postgres
+  code_only sqlite: "SELECT  ( )"
+"SELECT \"load_extension\"('x')"
+  split postgres:
+    0..28 line 1 "SELECT \"load_extension\"('x')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  ( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT `load_extension`('x')"
+  split postgres:
+    0..28 line 1 "SELECT `load_extension`('x')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT `load_extension`( )"
+  code_only mysql: "SELECT  ( )"
+  code_only sqlite: same as mysql
+"SELECT [load_extension] ('x', 'y')"
+  split postgres:
+    0..34 line 1 "SELECT [load_extension] ('x', 'y')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT [load_extension] ( ,  )"
+  code_only mysql: same as postgres
+  code_only sqlite: "SELECT   ( ,  )"
+"SELECT 1 WHERE [LOAD_EXTENSION](1)"
+  split postgres:
+    0..34 line 1 "SELECT 1 WHERE [LOAD_EXTENSION](1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1 WHERE [LOAD_EXTENSION](1)"
+  code_only mysql: same as postgres
+  code_only sqlite: "SELECT 1 WHERE  (1)"
+"SELECT [load_extension] FROM t"
+  split postgres:
+    0..30 line 1 "SELECT [load_extension] FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT [load_extension] FROM t"
+  code_only mysql: same as postgres
+  code_only sqlite: "SELECT   FROM t"
+"SELECT [a b](1), [length]('x')"
+  split postgres:
+    0..30 line 1 "SELECT [a b](1), [length]('x')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT [a b](1), [length]( )"
+  code_only mysql: same as postgres
+  code_only sqlite: "SELECT  (1),  ( )"
+"SELECT 1 AS [load_extension]"
+  split postgres:
+    0..28 line 1 "SELECT 1 AS [load_extension]"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1 AS [load_extension]"
+  code_only mysql: same as postgres
+  code_only sqlite: "SELECT 1 AS  "
+"SELECT 1 /*!50000INTO*/ OUTFILE '/tmp/x'"
+  split postgres:
+    0..40 line 1 "SELECT 1 /*!50000INTO*/ OUTFILE '/tmp/x'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1   OUTFILE  "
+  code_only mysql: "SELECT 1    50000INTO*/ OUTFILE  "
+  code_only sqlite: same as postgres
+"SELECT 1 /*!50000 INTO*/ OUTFILE '/tmp/x'"
+  split postgres:
+    0..41 line 1 "SELECT 1 /*!50000 INTO*/ OUTFILE '/tmp/x'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1   OUTFILE  "
+  code_only mysql: "SELECT 1    50000 INTO*/ OUTFILE  "
+  code_only sqlite: same as postgres
+"SELECT 1 /*M!100100INTO*/ DUMPFILE '/tmp/x'"
+  split postgres:
+    0..43 line 1 "SELECT 1 /*M!100100INTO*/ DUMPFILE '/tmp/x'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1   DUMPFILE  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"WITH x AS (SELECT 1) /*!50000DELETE*/ FROM t"
+  split postgres:
+    0..44 line 1 "WITH x AS (SELECT 1) /*!50000DELETE*/ FROM t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH x AS (SELECT 1)   FROM t"
+  code_only mysql: "WITH x AS (SELECT 1)    50000DELETE*/ FROM t"
+  code_only sqlite: same as postgres
+"WITH x AS (SELECT 1) /*!50000UPDATE*/ t SET a = 1"
+  split postgres:
+    0..49 line 1 "WITH x AS (SELECT 1) /*!50000UPDATE*/ t SET a = 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "WITH x AS (SELECT 1)   t SET a = 1"
+  code_only mysql: "WITH x AS (SELECT 1)    50000UPDATE*/ t SET a = 1"
+  code_only sqlite: same as postgres
+"/*!50000DELETE*/ FROM t"
+  split postgres:
+    17..23 line 1 "FROM t"
+  split mysql:
+    0..23 line 1 "/*!50000DELETE*/ FROM t"
+  split sqlite: same as postgres
+  code_only postgres: "  FROM t"
+  code_only mysql: "   50000DELETE*/ FROM t"
+  code_only sqlite: same as postgres
+"/*!*/ SELECT 1"
+  split postgres:
+    6..14 line 1 "SELECT 1"
+  split mysql:
+    0..14 line 1 "/*!*/ SELECT 1"
+  split sqlite: same as postgres
+  code_only postgres: "  SELECT 1"
+  code_only mysql: "   */ SELECT 1"
+  code_only sqlite: same as postgres
+"/*!*/SELECT 1"
+  split postgres:
+    5..13 line 1 "SELECT 1"
+  split mysql:
+    0..13 line 1 "/*!*/SELECT 1"
+  split sqlite: same as postgres
+  code_only postgres: " SELECT 1"
+  code_only mysql: "   */SELECT 1"
+  code_only sqlite: same as postgres
+"SELECT/*!*/ 1"
+  split postgres:
+    0..13 line 1 "SELECT/*!*/ 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  1"
+  code_only mysql: "SELECT   */ 1"
+  code_only sqlite: same as postgres
+"SELECT 1 /*!50000 FROM t*/"
+  split postgres:
+    0..26 line 1 "SELECT 1 /*!50000 FROM t*/"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  "
+  code_only mysql: "SELECT 1    50000 FROM t*/"
+  code_only sqlite: same as postgres
+"SELECT 1 /*+ MAX_EXECUTION_TIME(1000) */"
+  split postgres:
+    0..40 line 1 "SELECT 1 /*+ MAX_EXECUTION_TIME(1000) */"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  "
+  code_only mysql: "SELECT 1     MAX_EXECUTION_TIME(1000) */"
+  code_only sqlite: same as postgres
+"SELECT U&\"set\\005fconfig\"('default_transaction_read_only', 'off', false)"
+  split postgres:
+    0..72 line 1 "SELECT U&\"set\\005fconfig\"('default_transaction_read_only', 'off', false)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& ( ,  , false)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"set!005fconfig\" UESCAPE '!'('a', 'b', false)"
+  split postgres:
+    0..54 line 1 "SELECT U&\"set!005fconfig\" UESCAPE '!'('a', 'b', false)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U&  UESCAPE  ( ,  , false)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_catalog.U&\"\\+000073et_config\"('a', 'b', false)"
+  split postgres:
+    0..56 line 1 "SELECT pg_catalog.U&\"\\+000073et_config\"('a', 'b', false)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_catalog.U& ( ,  , false)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"set\\zconfig\"('a', 'b', false)"
+  split postgres:
+    0..39 line 1 "SELECT U&\"set\\zconfig\"('a', 'b', false)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& ( ,  , false)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT U&\"l\\0065ngth\"('abc')"
+  split postgres:
+    0..28 line 1 "SELECT U&\"l\\0065ngth\"('abc')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U& ( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 'héllo' AS ünïcode FROM tàble"
+  split postgres:
+    0..36 line 1 "SELECT 'héllo' AS ünïcode FROM tàble"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   AS ünïcode FROM tàble"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"UPDATE tàble SET ü = 'é'"
+  split postgres:
+    0..24 line 1 "UPDATE tàble SET ü = 'é'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "UPDATE tàble SET ü =  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 1 --x\r, pg_sleep(100)"
+  split postgres:
+    0..28 line 1 "SELECT 1 --x\r, pg_sleep(100)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  \r, pg_sleep(100)"
+  code_only mysql: "SELECT 1 --x\r, pg_sleep(100)"
+  code_only sqlite: "SELECT 1  "
+"SELECT 1 --x\r; SELECT pg_sleep(100)"
+  split postgres:
+    0..12 line 1 "SELECT 1 --x"
+    15..35 line 1 "SELECT pg_sleep(100)"
+  split mysql: same as postgres
+  split sqlite:
+    0..35 line 1 "SELECT 1 --x\r; SELECT pg_sleep(100)"
+  code_only postgres: "SELECT 1  \r; SELECT pg_sleep(100)"
+  code_only mysql: "SELECT 1 --x\r; SELECT pg_sleep(100)"
+  code_only sqlite: "SELECT 1  "
+"SELECT U&\"setval\" --UESCAPE\r ('s', 1)(s, 1)"
+  split postgres:
+    0..43 line 1 "SELECT U&\"setval\" --UESCAPE\r ('s', 1)(s, 1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT U&   \r ( , 1)(s, 1)"
+  code_only mysql: "SELECT U&  --UESCAPE\r ( , 1)(s, 1)"
+  code_only sqlite: "SELECT U&   "
+"SELECT 1 -- x\r, pg_sleep(100)"
+  split postgres:
+    0..29 line 1 "SELECT 1 -- x\r, pg_sleep(100)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  \r, pg_sleep(100)"
+  code_only mysql: "SELECT 1  "
+  code_only sqlite: same as mysql
+"SELECT 1 -- x\r, sleep(100)"
+  split postgres:
+    0..26 line 1 "SELECT 1 -- x\r, sleep(100)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  \r, sleep(100)"
+  code_only mysql: "SELECT 1  "
+  code_only sqlite: same as mysql
+"SELECT 1 --x, pg_sleep(100)"
+  split postgres:
+    0..27 line 1 "SELECT 1 --x, pg_sleep(100)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1  "
+  code_only mysql: "SELECT 1 --x, pg_sleep(100)"
+  code_only sqlite: same as postgres
+"SELECT 1 AS €$$, pg_sleep(100) AS a$$"
+  split postgres:
+    0..37 line 1 "SELECT 1 AS €$$, pg_sleep(100) AS a$$"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1 AS € "
+  code_only mysql: "SELECT 1 AS €$$, pg_sleep(100) AS a$$"
+  code_only sqlite: same as mysql
+"SELECT 1 AS —$$, setval('s', 1) AS a$$"
+  split postgres:
+    0..38 line 1 "SELECT 1 AS —$$, setval('s', 1) AS a$$"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1 AS — "
+  code_only mysql: "SELECT 1 AS —$$, setval( , 1) AS a$$"
+  code_only sqlite: same as mysql
+"SELECT 1 AS 😀$$, pg_sleep(100) AS a$$"
+  split postgres:
+    0..37 line 1 "SELECT 1 AS 😀$$, pg_sleep(100) AS a$$"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT 1 AS 😀 "
+  code_only mysql: "SELECT 1 AS 😀$$, pg_sleep(100) AS a$$"
+  code_only sqlite: same as mysql
+"SELECT 'x' AS é, $$pg_sleep(100)$$"
+  split postgres:
+    0..34 line 1 "SELECT 'x' AS é, $$pg_sleep(100)$$"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT   AS é,  "
+  code_only mysql: "SELECT   AS é, $$pg_sleep(100)$$"
+  code_only sqlite: same as mysql
+"SELECT €e'\\', pg_sleep(100), '"
+  split postgres:
+    0..30 line 1 "SELECT €e'\\', pg_sleep(100), '"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT €e "
+  code_only mysql: same as postgres
+  code_only sqlite: "SELECT €e , pg_sleep(100),  "
+"SELECT pg_logical_slot_get_changes('s', NULL, NULL)"
+  split postgres:
+    0..51 line 1 "SELECT pg_logical_slot_get_changes('s', NULL, NULL)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_logical_slot_get_changes( , NULL, NULL)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_logical_slot_get_binary_changes('s', NULL, NULL)"
+  split postgres:
+    0..58 line 1 "SELECT pg_logical_slot_get_binary_changes('s', NULL, NULL)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_logical_slot_get_binary_changes( , NULL, NULL)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_copy_logical_replication_slot('a', 'b')"
+  split postgres:
+    0..49 line 1 "SELECT pg_copy_logical_replication_slot('a', 'b')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_copy_logical_replication_slot( ,  )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_copy_physical_replication_slot('a', 'b')"
+  split postgres:
+    0..50 line 1 "SELECT pg_copy_physical_replication_slot('a', 'b')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_copy_physical_replication_slot( ,  )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_replication_origin_create('o')"
+  split postgres:
+    0..40 line 1 "SELECT pg_replication_origin_create('o')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_replication_origin_create( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_replication_origin_drop('o')"
+  split postgres:
+    0..38 line 1 "SELECT pg_replication_origin_drop('o')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_replication_origin_drop( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_replication_origin_advance('o', '0/1')"
+  split postgres:
+    0..48 line 1 "SELECT pg_replication_origin_advance('o', '0/1')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_replication_origin_advance( ,  )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_stat_statements_reset()"
+  split postgres:
+    0..33 line 1 "SELECT pg_stat_statements_reset()"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_stat_statements_reset()"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT pg_log_backend_memory_contexts(1)"
+  split postgres:
+    0..40 line 1 "SELECT pg_log_backend_memory_contexts(1)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT pg_log_backend_memory_contexts(1)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT dblink_connect_u('c', 'dbname=x')"
+  split postgres:
+    0..40 line 1 "SELECT dblink_connect_u('c', 'dbname=x')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT dblink_connect_u( ,  )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER 'app'@'%' IDENTIFIED BY 'hunter2' WITH MAX_QUERIES_PER_HOUR 5"
+  split postgres:
+    0..73 line 1 "CREATE USER 'app'@'%' IDENTIFIED BY 'hunter2' WITH MAX_QUERIES_PER_HOUR 5"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER  @  IDENTIFIED BY   WITH MAX_QUERIES_PER_HOUR 5"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER 'app'@'%' IDENTIFIED BY '********' WITH MAX_QUERIES_PER_HOUR 5"
+  split postgres:
+    0..74 line 1 "CREATE USER 'app'@'%' IDENTIFIED BY '********' WITH MAX_QUERIES_PER_HOUR 5"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER  @  IDENTIFIED BY   WITH MAX_QUERIES_PER_HOUR 5"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER USER 'app'@'%' IDENTIFIED BY 'hunter2'"
+  split postgres:
+    0..44 line 1 "ALTER USER 'app'@'%' IDENTIFIED BY 'hunter2'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER USER  @  IDENTIFIED BY  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER USER 'app'@'%' IDENTIFIED BY '********'"
+  split postgres:
+    0..45 line 1 "ALTER USER 'app'@'%' IDENTIFIED BY '********'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER USER  @  IDENTIFIED BY  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE ROLE \"app\" WITH LOGIN PASSWORD 'hunter2'"
+  split postgres:
+    0..47 line 1 "CREATE ROLE \"app\" WITH LOGIN PASSWORD 'hunter2'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE ROLE   WITH LOGIN PASSWORD  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE ROLE \"app\" WITH LOGIN PASSWORD '********'"
+  split postgres:
+    0..48 line 1 "CREATE ROLE \"app\" WITH LOGIN PASSWORD '********'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE ROLE   WITH LOGIN PASSWORD  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER ROLE \"app\" WITH PASSWORD E'it''s \\\\ hunter2'"
+  split postgres:
+    0..50 line 1 "ALTER ROLE \"app\" WITH PASSWORD E'it''s \\\\ hunter2'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER ROLE   WITH PASSWORD E "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER ROLE \"app\" WITH PASSWORD '********'"
+  split postgres:
+    0..41 line 1 "ALTER ROLE \"app\" WITH PASSWORD '********'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER ROLE   WITH PASSWORD  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER ROLE app PASSWORD 'SCRAM-SHA-256$4096:c2FsdA==$c3RvcmVk:c2VydmVy'"
+  split postgres:
+    0..71 line 1 "ALTER ROLE app PASSWORD 'SCRAM-SHA-256$4096:c2FsdA==$c3RvcmVk:c2VydmVy'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER ROLE app PASSWORD  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER ROLE app PASSWORD '********'"
+  split postgres:
+    0..34 line 1 "ALTER ROLE app PASSWORD '********'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER ROLE app PASSWORD  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER u IDENTIFIED WITH caching_sha2_password BY 'pw1'"
+  split postgres:
+    0..60 line 1 "CREATE USER u IDENTIFIED WITH caching_sha2_password BY 'pw1'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER u IDENTIFIED WITH caching_sha2_password BY  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER u IDENTIFIED WITH caching_sha2_password BY '********'"
+  split postgres:
+    0..65 line 1 "CREATE USER u IDENTIFIED WITH caching_sha2_password BY '********'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER u IDENTIFIED WITH caching_sha2_password BY  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER USER u IDENTIFIED BY 'new1' REPLACE 'old1'"
+  split postgres:
+    0..48 line 1 "ALTER USER u IDENTIFIED BY 'new1' REPLACE 'old1'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER USER u IDENTIFIED BY   REPLACE  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER USER u IDENTIFIED BY '********' REPLACE '********'"
+  split postgres:
+    0..56 line 1 "ALTER USER u IDENTIFIED BY '********' REPLACE '********'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER USER u IDENTIFIED BY   REPLACE  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER u IDENTIFIED VIA mysql_native_password USING PASSWORD('pw1')"
+  split postgres:
+    0..72 line 1 "CREATE USER u IDENTIFIED VIA mysql_native_password USING PASSWORD('pw1')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER u IDENTIFIED VIA mysql_native_password USING PASSWORD( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER u IDENTIFIED VIA mysql_native_password USING PASSWORD('********')"
+  split postgres:
+    0..77 line 1 "CREATE USER u IDENTIFIED VIA mysql_native_password USING PASSWORD('********')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER u IDENTIFIED VIA mysql_native_password USING PASSWORD( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SET PASSWORD FOR 'u'@'h' = 'pw1'"
+  split postgres:
+    0..32 line 1 "SET PASSWORD FOR 'u'@'h' = 'pw1'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SET PASSWORD FOR  @  =  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SET PASSWORD FOR 'u'@'h' = '********'"
+  split postgres:
+    0..37 line 1 "SET PASSWORD FOR 'u'@'h' = '********'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SET PASSWORD FOR  @  =  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SET PASSWORD = PASSWORD(\"pw1\")"
+  split postgres:
+    0..30 line 1 "SET PASSWORD = PASSWORD(\"pw1\")"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SET PASSWORD = PASSWORD( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SET PASSWORD = PASSWORD('********')"
+  split postgres:
+    0..35 line 1 "SET PASSWORD = PASSWORD('********')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SET PASSWORD = PASSWORD( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CHANGE MASTER TO MASTER_PASSWORD='pw1', MASTER_USER='r'"
+  split postgres:
+    0..55 line 1 "CHANGE MASTER TO MASTER_PASSWORD='pw1', MASTER_USER='r'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CHANGE MASTER TO MASTER_PASSWORD= , MASTER_USER= "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CHANGE MASTER TO MASTER_PASSWORD='********', MASTER_USER='r'"
+  split postgres:
+    0..60 line 1 "CHANGE MASTER TO MASTER_PASSWORD='********', MASTER_USER='r'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CHANGE MASTER TO MASTER_PASSWORD= , MASTER_USER= "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER USER u IDENTIFIED BY _utf8mb4'pw1'"
+  split postgres:
+    0..40 line 1 "ALTER USER u IDENTIFIED BY _utf8mb4'pw1'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER USER u IDENTIFIED BY _utf8mb4 "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER USER u IDENTIFIED BY '********'"
+  split postgres:
+    0..37 line 1 "ALTER USER u IDENTIFIED BY '********'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER USER u IDENTIFIED BY  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE ROLE r WITH ENCRYPTED PASSWORD $$pw1$$"
+  split postgres:
+    0..45 line 1 "CREATE ROLE r WITH ENCRYPTED PASSWORD $$pw1$$"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE ROLE r WITH ENCRYPTED PASSWORD  "
+  code_only mysql: "CREATE ROLE r WITH ENCRYPTED PASSWORD $$pw1$$"
+  code_only sqlite: same as mysql
+"CREATE ROLE r WITH ENCRYPTED PASSWORD '********'"
+  split postgres:
+    0..48 line 1 "CREATE ROLE r WITH ENCRYPTED PASSWORD '********'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE ROLE r WITH ENCRYPTED PASSWORD  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER MAPPING FOR u SERVER s OPTIONS (user 'u', password 'pw1')"
+  split postgres:
+    0..69 line 1 "CREATE USER MAPPING FOR u SERVER s OPTIONS (user 'u', password 'pw1')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER MAPPING FOR u SERVER s OPTIONS (user  , password  )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER MAPPING FOR u SERVER s OPTIONS (user 'u', password '********')"
+  split postgres:
+    0..74 line 1 "CREATE USER MAPPING FOR u SERVER s OPTIONS (user 'u', password '********')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER MAPPING FOR u SERVER s OPTIONS (user  , password  )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"PRAGMA key = 'pw1'"
+  split postgres:
+    0..18 line 1 "PRAGMA key = 'pw1'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "PRAGMA key =  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"PRAGMA key = '********'"
+  split postgres:
+    0..23 line 1 "PRAGMA key = '********'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "PRAGMA key =  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"PRAGMA rekey('pw1')"
+  split postgres:
+    0..19 line 1 "PRAGMA rekey('pw1')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "PRAGMA rekey( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"PRAGMA rekey('********')"
+  split postgres:
+    0..24 line 1 "PRAGMA rekey('********')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "PRAGMA rekey( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"pw1"
+  split postgres:
+    0..3 line 1 "pw1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "pw1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"new1"
+  split postgres:
+    0..4 line 1 "new1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "new1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 'password', password FROM users WHERE name = 'x'"
+  split postgres:
+    0..55 line 1 "SELECT 'password', password FROM users WHERE name = 'x'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT  , password FROM users WHERE name =  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT * FROM users ORDER BY 'x'"
+  split postgres:
+    0..32 line 1 "SELECT * FROM users ORDER BY 'x'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT * FROM users ORDER BY  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER ROLE r SET password_encryption = 'scram-sha-256'"
+  split postgres:
+    0..54 line 1 "ALTER ROLE r SET password_encryption = 'scram-sha-256'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER ROLE r SET password_encryption =  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT rolpassword FROM pg_authid WHERE rolname = 'x'"
+  split postgres:
+    0..53 line 1 "SELECT rolpassword FROM pg_authid WHERE rolname = 'x'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT rolpassword FROM pg_authid WHERE rolname =  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"UPDATE t SET \"password\" = 'x' WHERE id = $1"
+  split postgres:
+    0..43 line 1 "UPDATE t SET \"password\" = 'x' WHERE id = $1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "UPDATE t SET   =   WHERE id = $1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER u IDENTIFIED BY RANDOM PASSWORD"
+  split postgres:
+    0..43 line 1 "CREATE USER u IDENTIFIED BY RANDOM PASSWORD"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER u IDENTIFIED BY RANDOM PASSWORD"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER ROLE r PASSWORD NULL"
+  split postgres:
+    0..26 line 1 "ALTER ROLE r PASSWORD NULL"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER ROLE r PASSWORD NULL"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"-- IDENTIFIED BY 'x'\nSELECT 1"
+  split postgres:
+    21..29 line 2 "SELECT 1"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " \nSELECT 1"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"PRAGMA table_info('t')"
+  split postgres:
+    0..22 line 1 "PRAGMA table_info('t')"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "PRAGMA table_info( )"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT * FROM t WHERE key = 'k'"
+  split postgres:
+    0..31 line 1 "SELECT * FROM t WHERE key = 'k'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT * FROM t WHERE key =  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT 'a PASSWORD ''x'' b' /* PASSWORD 'y' */ -- PASSWORD 'z'"
+  split postgres:
+    0..62 line 1 "SELECT 'a PASSWORD ''x'' b' /* PASSWORD 'y' */ -- PASSWORD 'z'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT      "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER a IDENTIFIED BY 'pw1'; CREATE USER b IDENTIFIED BY 'pw2'; SELECT 'ok'"
+  split postgres:
+    0..33 line 1 "CREATE USER a IDENTIFIED BY 'pw1'"
+    35..68 line 1 "CREATE USER b IDENTIFIED BY 'pw2'"
+    70..81 line 1 "SELECT 'ok'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER a IDENTIFIED BY  ; CREATE USER b IDENTIFIED BY  ; SELECT  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER a IDENTIFIED BY '********'; CREATE USER b IDENTIFIED BY '********'; SELECT 'ok'"
+  split postgres:
+    0..38 line 1 "CREATE USER a IDENTIFIED BY '********'"
+    40..78 line 1 "CREATE USER b IDENTIFIED BY '********'"
+    80..91 line 1 "SELECT 'ok'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER a IDENTIFIED BY  ; CREATE USER b IDENTIFIED BY  ; SELECT  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"/*!50000 CREATE USER u IDENTIFIED BY 'pw1' */"
+  split postgres: nothing
+  split mysql:
+    0..45 line 1 "/*!50000 CREATE USER u IDENTIFIED BY 'pw1' */"
+  split sqlite: same as postgres
+  code_only postgres: " "
+  code_only mysql: "   50000 CREATE USER u IDENTIFIED BY   */"
+  code_only sqlite: same as postgres
+"/*!50000 CREATE USER u IDENTIFIED BY '********' */"
+  split postgres: nothing
+  split mysql:
+    0..50 line 1 "/*!50000 CREATE USER u IDENTIFIED BY '********' */"
+  split sqlite: same as postgres
+  code_only postgres: " "
+  code_only mysql: "   50000 CREATE USER u IDENTIFIED BY   */"
+  code_only sqlite: same as postgres
+"'a\\\\''b'"
+  split postgres:
+    0..8 line 1 "'a\\\\''b'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"'a\\''b'"
+  split postgres:
+    0..7 line 1 "'a\\''b'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " "
+  code_only mysql: " b "
+  code_only sqlite: same as postgres
+"IDENTIFIED BY '********'"
+  split postgres:
+    0..24 line 1 "IDENTIFIED BY '********'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "IDENTIFIED BY  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER 'a\\'@'%' IDENTIFIED BY 'pw1'"
+  split postgres:
+    0..40 line 1 "CREATE USER 'a\\'@'%' IDENTIFIED BY 'pw1'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER  @  IDENTIFIED BY  "
+  code_only mysql: "CREATE USER  % pw1 "
+  code_only sqlite: same as postgres
+"ALTER USER 'u'@'%' IDENTIFIED BY 'it''s \\\\ x'"
+  split postgres:
+    0..45 line 1 "ALTER USER 'u'@'%' IDENTIFIED BY 'it''s \\\\ x'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER USER  @  IDENTIFIED BY  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"it''s \\\\ x"
+  split postgres:
+    0..10 line 1 "it''s \\\\ x"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "it s \\\\ x"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"it's \\ x"
+  split postgres:
+    0..8 line 1 "it's \\ x"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "it "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"ALTER ROLE r PASSWORD $q$p'w$q$"
+  split postgres:
+    0..31 line 1 "ALTER ROLE r PASSWORD $q$p'w$q$"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "ALTER ROLE r PASSWORD  "
+  code_only mysql: "ALTER ROLE r PASSWORD $q$p "
+  code_only sqlite: same as mysql
+"p'w"
+  split postgres:
+    0..3 line 1 "p'w"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "p "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE USER 'u'@'%' IDENTIFIED BY '********'"
+  split postgres:
+    0..44 line 1 "CREATE USER 'u'@'%' IDENTIFIED BY '********'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE USER  @  IDENTIFIED BY  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"hunter2"
+  split postgres:
+    0..7 line 1 "hunter2"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "hunter2"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"it's"
+  split postgres:
+    0..4 line 1 "it's"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "it "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"a\\"
+  split postgres:
+    0..2 line 1 "a\\"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "a\\"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"a\\'b"
+  split postgres:
+    0..4 line 1 "a\\'b"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "a\\ "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"say \"hi\""
+  split postgres:
+    0..8 line 1 "say \"hi\""
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "say  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"$tag$x$tag$"
+  split postgres:
+    0..11 line 1 "$tag$x$tag$"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " "
+  code_only mysql: "$tag$x$tag$"
+  code_only sqlite: same as mysql
+"日本語pw"
+  split postgres:
+    0..5 line 1 "日本語pw"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "日本語pw"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"pw;DROP USER x"
+  split postgres:
+    0..2 line 1 "pw"
+    3..14 line 1 "DROP USER x"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "pw;DROP USER x"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"--pw"
+  split postgres: nothing
+  split mysql:
+    0..4 line 1 "--pw"
+  split sqlite: same as postgres
+  code_only postgres: " "
+  code_only mysql: "--pw"
+  code_only sqlite: same as postgres
+"/*pw*/"
+  split postgres: nothing
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"p%w_d"
+  split postgres:
+    0..5 line 1 "p%w_d"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "p%w_d"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"''"
+  split postgres:
+    0..2 line 1 "''"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: " "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"\\\\"
+  split postgres:
+    0..2 line 1 "\\\\"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "\\\\"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"app"
+  split postgres:
+    0..3 line 1 "app"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "app"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"%"
+  split postgres:
+    0..1 line 1 "%"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "%"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"back\\"
+  split postgres:
+    0..5 line 1 "back\\"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "back\\"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"local_host"
+  split postgres:
+    0..10 line 1 "local_host"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "local_host"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select * from big"
+  split postgres:
+    0..17 line 1 "select * from big"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select * from big"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"  with x as (select 1) select * from x"
+  split postgres:
+    2..38 line 1 "with x as (select 1) select * from x"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "  with x as (select 1) select * from x"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"show variables"
+  split postgres:
+    0..14 line 1 "show variables"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "show variables"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"call p()"
+  split postgres:
+    0..8 line 1 "call p()"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "call p()"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"fetch 100 from c"
+  split postgres:
+    0..16 line 1 "fetch 100 from c"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "fetch 100 from c"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"insert into t select 1 returning id"
+  split postgres:
+    0..35 line 1 "insert into t select 1 returning id"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "insert into t select 1 returning id"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"with d as (delete from t returning *) select * from d"
+  split postgres:
+    0..53 line 1 "with d as (delete from t returning *) select * from d"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "with d as (delete from t returning *) select * from d"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select * from t for update"
+  split postgres:
+    0..26 line 1 "select * from t for update"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select * from t for update"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"SELECT * FROM events_big; INSERT INTO t VALUES (2)"
+  split postgres:
+    0..24 line 1 "SELECT * FROM events_big"
+    26..50 line 1 "INSERT INTO t VALUES (2)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "SELECT * FROM events_big; INSERT INTO t VALUES (2)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"A RETURNING B"
+  split postgres:
+    0..13 line 1 "A RETURNING B"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "A RETURNING B"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"RETURNING"
+  split postgres:
+    0..9 line 1 "RETURNING"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "RETURNING"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"XRETURNING"
+  split postgres:
+    0..10 line 1 "XRETURNING"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "XRETURNING"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"RETURNING_X"
+  split postgres:
+    0..11 line 1 "RETURNING_X"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "RETURNING_X"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"10 rows"
+  split postgres:
+    0..7 line 1 "10 rows"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "10 rows"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select * from audit_log where action = 'UPDATE'"
+  split postgres:
+    0..47 line 1 "select * from audit_log where action = 'UPDATE'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select * from audit_log where action =  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select * from t where op <> 'DELETE'"
+  split postgres:
+    0..36 line 1 "select * from t where op <> 'DELETE'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select * from t where op <>  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1 -- delete later\nfrom t"
+  split postgres:
+    0..31 line 1 "select 1 -- delete later\nfrom t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1  \nfrom t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select 1 /* insert */ from t"
+  split postgres:
+    0..28 line 1 "select 1 /* insert */ from t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select 1   from t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select \"update\" from t"
+  split postgres:
+    0..22 line 1 "select \"update\" from t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select   from t"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"select `delete` from t"
+  split postgres:
+    0..22 line 1 "select `delete` from t"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select `delete` from t"
+  code_only mysql: "select   from t"
+  code_only sqlite: same as mysql
+"select $$call$$"
+  split postgres:
+    0..15 line 1 "select $$call$$"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select  "
+  code_only mysql: "select $$call$$"
+  code_only sqlite: same as mysql
+"select 'x' from t where a = 1 for update"
+  split postgres:
+    0..40 line 1 "select 'x' from t where a = 1 for update"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "select   from t where a = 1 for update"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"with d as (delete from t where n = 'a' returning *) select * from d"
+  split postgres:
+    0..67 line 1 "with d as (delete from t where n = 'a' returning *) select * from d"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "with d as (delete from t where n =   returning *) select * from d"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"XX000"
+  split postgres:
+    0..5 line 1 "XX000"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "XX000"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"begin"
+  split postgres:
+    0..5 line 1 "begin"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "begin"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"commit"
+  split postgres:
+    0..6 line 1 "commit"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "commit"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"abort"
+  split postgres:
+    0..5 line 1 "abort"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "abort"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"rollback work to a"
+  split postgres:
+    0..18 line 1 "rollback work to a"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "rollback work to a"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"commit prepared 'x'"
+  split postgres:
+    0..19 line 1 "commit prepared 'x'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "commit prepared  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"commit and chain"
+  split postgres:
+    0..16 line 1 "commit and chain"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "commit and chain"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"commit and no chain"
+  split postgres:
+    0..19 line 1 "commit and no chain"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "commit and no chain"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"prepare transaction 'x'"
+  split postgres:
+    0..23 line 1 "prepare transaction 'x'"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "prepare transaction  "
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"create table t (a int)"
+  split postgres:
+    0..22 line 1 "create table t (a int)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "create table t (a int)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"create temporary table t (a int)"
+  split postgres:
+    0..32 line 1 "create temporary table t (a int)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "create temporary table t (a int)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"BEGIN NOT ATOMIC SELECT 1; END"
+  split postgres:
+    0..25 line 1 "BEGIN NOT ATOMIC SELECT 1"
+    27..30 line 1 "END"
+  split mysql:
+    0..30 line 1 "BEGIN NOT ATOMIC SELECT 1; END"
+  split sqlite: same as postgres
+  code_only postgres: "BEGIN NOT ATOMIC SELECT 1; END"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"25P01"
+  split postgres:
+    0..5 line 1 "25P01"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "25P01"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"rollback and chain"
+  split postgres:
+    0..18 line 1 "rollback and chain"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "rollback and chain"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"42000"
+  split postgres:
+    0..5 line 1 "42000"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "42000"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"CREATE TABLE t2 (id int,)"
+  split postgres:
+    0..25 line 1 "CREATE TABLE t2 (id int,)"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "CREATE TABLE t2 (id int,)"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"drop table"
+  split postgres:
+    0..10 line 1 "drop table"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "drop table"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres
+"42S01"
+  split postgres:
+    0..5 line 1 "42S01"
+  split mysql: same as postgres
+  split sqlite: same as postgres
+  code_only postgres: "42S01"
+  code_only mysql: same as postgres
+  code_only sqlite: same as postgres

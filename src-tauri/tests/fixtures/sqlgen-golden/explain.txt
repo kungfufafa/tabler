@@ -1,0 +1,45 @@
+# EXPLAIN wrapping, Explain Analyze transactions, parameter limits and cancel notices per dialect.
+# Written by sqlgen::golden from the core code; never edited by hand.
+late cancel notice => "Cancel was requested, but the server completed the statement: its results and changes stand."
+
+## postgres
+wrap_explain Plan mariadb false => "EXPLAIN (VERBOSE, COSTS, FORMAT TEXT) SELECT * FROM t WHERE a = ';'" offset 38
+wrap_explain Plan mariadb true => "EXPLAIN (VERBOSE, COSTS, FORMAT TEXT) SELECT * FROM t WHERE a = ';'" offset 38
+wrap_explain Analyze mariadb false => "EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT TEXT) SELECT * FROM t WHERE a = ';'" offset 49
+wrap_explain Analyze mariadb true => "EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT TEXT) SELECT * FROM t WHERE a = ';'" offset 49
+analyze_wrapper in_tx null writes false => as is
+analyze_wrapper in_tx null writes true => error UNSUPPORTED "unsupported: Explain Analyze would really run this statement and its transaction state is unknown; run it in an explicit transaction instead"
+analyze_wrapper in_tx false writes false => "BEGIN" then ["ROLLBACK"]
+analyze_wrapper in_tx false writes true => "BEGIN" then ["ROLLBACK"]
+analyze_wrapper in_tx true writes false => "SAVEPOINT tabler_explain" then ["ROLLBACK TO SAVEPOINT tabler_explain","RELEASE SAVEPOINT tabler_explain"]
+analyze_wrapper in_tx true writes true => "SAVEPOINT tabler_explain" then ["ROLLBACK TO SAVEPOINT tabler_explain","RELEASE SAVEPOINT tabler_explain"]
+max_params => 60000
+cap_cancel_notice 1000 => "Stopped at the row limit (1000 rows): the rest of the statement was cancelled on the server, so it did not finish and any changes it made were rolled back."
+
+## mysql
+wrap_explain Plan mariadb false => "EXPLAIN FORMAT=TREE SELECT * FROM t WHERE a = ';'" offset 20
+wrap_explain Plan mariadb true => "EXPLAIN FORMAT=JSON SELECT * FROM t WHERE a = ';'" offset 20
+wrap_explain Analyze mariadb false => "EXPLAIN ANALYZE SELECT * FROM t WHERE a = ';'" offset 16
+wrap_explain Analyze mariadb true => "ANALYZE FORMAT=JSON SELECT * FROM t WHERE a = ';'" offset 20
+analyze_wrapper in_tx null writes false => as is
+analyze_wrapper in_tx null writes true => error UNSUPPORTED "unsupported: Explain Analyze would really run this statement and its transaction state is unknown; run it in an explicit transaction instead"
+analyze_wrapper in_tx false writes false => "START TRANSACTION" then ["ROLLBACK"]
+analyze_wrapper in_tx false writes true => "START TRANSACTION" then ["ROLLBACK"]
+analyze_wrapper in_tx true writes false => "SAVEPOINT tabler_explain" then ["ROLLBACK TO SAVEPOINT tabler_explain","RELEASE SAVEPOINT tabler_explain"]
+analyze_wrapper in_tx true writes true => "SAVEPOINT tabler_explain" then ["ROLLBACK TO SAVEPOINT tabler_explain","RELEASE SAVEPOINT tabler_explain"]
+max_params => 60000
+cap_cancel_notice 1000 => "Stopped at the row limit (1000 rows): the rest of the statement was cancelled on the server, so it did not finish and changes it made to transactional tables were rolled back."
+
+## sqlite
+wrap_explain Plan mariadb false => "EXPLAIN QUERY PLAN SELECT * FROM t WHERE a = ';'" offset 19
+wrap_explain Plan mariadb true => "EXPLAIN QUERY PLAN SELECT * FROM t WHERE a = ';'" offset 19
+wrap_explain Analyze mariadb false => "EXPLAIN QUERY PLAN SELECT * FROM t WHERE a = ';'" offset 19
+wrap_explain Analyze mariadb true => "EXPLAIN QUERY PLAN SELECT * FROM t WHERE a = ';'" offset 19
+analyze_wrapper in_tx null writes false => as is
+analyze_wrapper in_tx null writes true => as is
+analyze_wrapper in_tx false writes false => as is
+analyze_wrapper in_tx false writes true => as is
+analyze_wrapper in_tx true writes false => as is
+analyze_wrapper in_tx true writes true => as is
+max_params => 32000
+cap_cancel_notice 1000 => "Stopped at the row limit (1000 rows): the rest of the statement was cancelled on the server, so it did not finish and any changes it made were rolled back."

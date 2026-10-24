@@ -1,0 +1,87 @@
+# Password literals masked in the SQL trace, per dialect, for the statements of the corpus that one dialect changes.
+# Written by sqlgen::golden from the core code; never edited by hand.
+"CREATE USER 'app'@'%' IDENTIFIED BY 'hunter2' WITH MAX_QUERIES_PER_HOUR 5"
+  redact postgres: "CREATE USER 'app'@'%' IDENTIFIED BY '********' WITH MAX_QUERIES_PER_HOUR 5" secrets ["hunter2"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"ALTER USER 'app'@'%' IDENTIFIED BY 'hunter2'"
+  redact postgres: "ALTER USER 'app'@'%' IDENTIFIED BY '********'" secrets ["hunter2"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"CREATE ROLE \"app\" WITH LOGIN PASSWORD 'hunter2'"
+  redact postgres: "CREATE ROLE \"app\" WITH LOGIN PASSWORD '********'" secrets ["hunter2"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"ALTER ROLE \"app\" WITH PASSWORD E'it''s \\\\ hunter2'"
+  redact postgres: "ALTER ROLE \"app\" WITH PASSWORD '********'" secrets ["it''s \\\\ hunter2","it's \\ hunter2"]
+  redact mysql: same as postgres
+  redact sqlite: "ALTER ROLE \"app\" WITH PASSWORD '********'" secrets ["it''s \\\\ hunter2","it's \\\\ hunter2"]
+"ALTER ROLE app PASSWORD 'SCRAM-SHA-256$4096:c2FsdA==$c3RvcmVk:c2VydmVy'"
+  redact postgres: "ALTER ROLE app PASSWORD '********'" secrets ["SCRAM-SHA-256$4096:c2FsdA==$c3RvcmVk:c2VydmVy"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"CREATE USER u IDENTIFIED WITH caching_sha2_password BY 'pw1'"
+  redact postgres: "CREATE USER u IDENTIFIED WITH caching_sha2_password BY '********'" secrets ["pw1"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"ALTER USER u IDENTIFIED BY 'new1' REPLACE 'old1'"
+  redact postgres: "ALTER USER u IDENTIFIED BY '********' REPLACE '********'" secrets ["new1","old1"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"CREATE USER u IDENTIFIED VIA mysql_native_password USING PASSWORD('pw1')"
+  redact postgres: "CREATE USER u IDENTIFIED VIA mysql_native_password USING PASSWORD('********')" secrets ["pw1"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"SET PASSWORD FOR 'u'@'h' = 'pw1'"
+  redact postgres: "SET PASSWORD FOR 'u'@'h' = '********'" secrets ["pw1"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"SET PASSWORD = PASSWORD(\"pw1\")"
+  redact postgres: "SET PASSWORD = PASSWORD(\"pw1\")" secrets []
+  redact mysql: "SET PASSWORD = PASSWORD('********')" secrets ["pw1"]
+  redact sqlite: same as postgres
+"CHANGE MASTER TO MASTER_PASSWORD='pw1', MASTER_USER='r'"
+  redact postgres: "CHANGE MASTER TO MASTER_PASSWORD='********', MASTER_USER='r'" secrets ["pw1"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"ALTER USER u IDENTIFIED BY _utf8mb4'pw1'"
+  redact postgres: "ALTER USER u IDENTIFIED BY '********'" secrets ["pw1"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"CREATE ROLE r WITH ENCRYPTED PASSWORD $$pw1$$"
+  redact postgres: "CREATE ROLE r WITH ENCRYPTED PASSWORD '********'" secrets ["pw1"]
+  redact mysql: "CREATE ROLE r WITH ENCRYPTED PASSWORD $$pw1$$" secrets []
+  redact sqlite: same as mysql
+"CREATE USER MAPPING FOR u SERVER s OPTIONS (user 'u', password 'pw1')"
+  redact postgres: "CREATE USER MAPPING FOR u SERVER s OPTIONS (user 'u', password '********')" secrets ["pw1"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"PRAGMA key = 'pw1'"
+  redact postgres: "PRAGMA key = '********'" secrets ["pw1"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"PRAGMA rekey('pw1')"
+  redact postgres: "PRAGMA rekey('********')" secrets ["pw1"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"CREATE USER a IDENTIFIED BY 'pw1'; CREATE USER b IDENTIFIED BY 'pw2'; SELECT 'ok'"
+  redact postgres: "CREATE USER a IDENTIFIED BY '********'; CREATE USER b IDENTIFIED BY '********'; SELECT 'ok'" secrets ["pw1","pw2"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"/*!50000 CREATE USER u IDENTIFIED BY 'pw1' */"
+  redact postgres: "/*!50000 CREATE USER u IDENTIFIED BY 'pw1' */" secrets []
+  redact mysql: "/*!50000 CREATE USER u IDENTIFIED BY '********' */" secrets ["pw1"]
+  redact sqlite: same as postgres
+"CREATE USER 'a\\'@'%' IDENTIFIED BY 'pw1'"
+  redact postgres: "CREATE USER 'a\\'@'%' IDENTIFIED BY '********'" secrets ["pw1"]
+  redact mysql: same as postgres
+  redact sqlite: same as postgres
+"ALTER USER 'u'@'%' IDENTIFIED BY 'it''s \\\\ x'"
+  redact postgres: "ALTER USER 'u'@'%' IDENTIFIED BY '********'" secrets ["it''s \\\\ x","it's \\\\ x"]
+  redact mysql: "ALTER USER 'u'@'%' IDENTIFIED BY '********'" secrets ["it''s \\\\ x","it's \\ x"]
+  redact sqlite: same as postgres
+"ALTER ROLE r PASSWORD $q$p'w$q$"
+  redact postgres: "ALTER ROLE r PASSWORD '********'" secrets ["p'w"]
+  redact mysql: "ALTER ROLE r PASSWORD $q$p'w$q$" secrets []
+  redact sqlite: same as mysql
+unchanged in every dialect: 559 of 580

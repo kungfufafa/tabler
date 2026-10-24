@@ -1,0 +1,556 @@
+# UPDATE / INSERT / DELETE of staged edits, with and without RETURNING, and server expressions per dialect.
+# Written by sqlgen::golden from the core code; never edited by hand.
+
+## postgres server expressions
+now Timestamp => "NOW()"
+now Date => "NOW()"
+now Time => "NOW()"
+currentTimestamp Timestamp => "CURRENT_TIMESTAMP"
+currentTimestamp Date => "CURRENT_TIMESTAMP"
+currentTimestamp Time => "CURRENT_TIMESTAMP"
+currentDate Timestamp => "CURRENT_DATE"
+currentDate Date => "CURRENT_DATE"
+currentDate Time => "CURRENT_DATE"
+currentTime Timestamp => "CURRENT_TIME"
+currentTime Date => "CURRENT_TIME"
+currentTime Time => "CURRENT_TIME"
+localTimestamp Timestamp => "LOCALTIMESTAMP"
+localTimestamp Date => "LOCALTIMESTAMP"
+localTimestamp Time => "LOCALTIMESTAMP"
+default Timestamp => "DEFAULT"
+default Date => "DEFAULT"
+default Time => "DEFAULT"
+now(0) Timestamp => "CURRENT_TIMESTAMP(0)"
+now(0) Date => "CURRENT_TIMESTAMP(0)"
+now(0) Time => "CURRENT_TIMESTAMP(0)"
+now(6) Timestamp => "CURRENT_TIMESTAMP(6)"
+now(6) Date => "CURRENT_TIMESTAMP(6)"
+now(6) Time => "CURRENT_TIMESTAMP(6)"
+currentTimestamp(0) Timestamp => "CURRENT_TIMESTAMP(0)"
+currentTimestamp(0) Date => "CURRENT_TIMESTAMP(0)"
+currentTimestamp(0) Time => "CURRENT_TIMESTAMP(0)"
+currentTimestamp(6) Timestamp => "CURRENT_TIMESTAMP(6)"
+currentTimestamp(6) Date => "CURRENT_TIMESTAMP(6)"
+currentTimestamp(6) Time => "CURRENT_TIMESTAMP(6)"
+currentTime(0) Timestamp => "CURRENT_TIME(0)"
+currentTime(0) Date => "CURRENT_TIME(0)"
+currentTime(0) Time => "CURRENT_TIME(0)"
+currentTime(6) Timestamp => "CURRENT_TIME(6)"
+currentTime(6) Date => "CURRENT_TIME(6)"
+currentTime(6) Time => "CURRENT_TIME(6)"
+localTimestamp(0) Timestamp => "LOCALTIMESTAMP(0)"
+localTimestamp(0) Date => "LOCALTIMESTAMP(0)"
+localTimestamp(0) Time => "LOCALTIMESTAMP(0)"
+localTimestamp(6) Timestamp => "LOCALTIMESTAMP(6)"
+localTimestamp(6) Date => "LOCALTIMESTAMP(6)"
+localTimestamp(6) Time => "LOCALTIMESTAMP(6)"
+now(7) Timestamp => error INVALID_INPUT "a time precision is 0 to 6 digits, not 7"
+now(7) Date => error INVALID_INPUT "a time precision is 0 to 6 digits, not 7"
+now(7) Time => error INVALID_INPUT "a time precision is 0 to 6 digits, not 7"
+
+## postgres update
+name and age by pk, returning false
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = $1::integer, \"name\" = $2::character varying WHERE \"id\" = $3::bigint"
+  params: [{"t":"int","v":30},{"t":"text","v":"Bob"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = 30::integer, \"name\" = 'Bob'::character varying WHERE \"id\" = 7::bigint"
+name and age by pk, returning true
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = $1::integer, \"name\" = $2::character varying WHERE \"id\" = $3::bigint RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+  params: [{"t":"int","v":30},{"t":"text","v":"Bob"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = 30::integer, \"name\" = 'Bob'::character varying WHERE \"id\" = 7::bigint RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+DEFAULT
+  sql: "UPDATE \"app\".\"users\" SET \"price\" = DEFAULT WHERE \"id\" = $1::bigint"
+  params: [{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"price\" = DEFAULT WHERE \"id\" = 7::bigint"
+json, array and bytes by rowid, returning false
+  sql: "UPDATE \"app\".\"users\" SET \"data\" = $1::bytea, \"payload\" = $2::jsonb, \"tags\" = $3::text[] WHERE rowid = $4"
+  params: [{"t":"bytes","v":{"base64":"AAE=","len":2,"truncated":false}},{"t":"json","v":"{\"a\": 1}"},{"t":"array","v":[{"t":"text","v":"a"}]},{"t":"int","v":42}]
+  preview: "UPDATE \"app\".\"users\" SET \"data\" = '\\x0001'::bytea::bytea, \"payload\" = '{\"a\": 1}'::jsonb, \"tags\" = '{\"a\"}'::text[] WHERE rowid = 42"
+json, array and bytes by rowid, returning true
+  sql: "UPDATE \"app\".\"users\" SET \"data\" = $1::bytea, \"payload\" = $2::jsonb, \"tags\" = $3::text[] WHERE rowid = $4 RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+  params: [{"t":"bytes","v":{"base64":"AAE=","len":2,"truncated":false}},{"t":"json","v":"{\"a\": 1}"},{"t":"array","v":[{"t":"text","v":"a"}]},{"t":"int","v":42}]
+  preview: "UPDATE \"app\".\"users\" SET \"data\" = '\\x0001'::bytea::bytea, \"payload\" = '{\"a\": 1}'::jsonb, \"tags\" = '{\"a\"}'::text[] WHERE rowid = 42 RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+NULL by every column, returning false
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = $1::character varying WHERE ctid = (SELECT ctid FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM $2::text AND \"name\"::text IS NOT DISTINCT FROM $3::text LIMIT 1)"
+  params: [{"t":"null"},{"t":"null"},{"t":"text","v":"x"}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = NULL::character varying WHERE ctid = (SELECT ctid FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM NULL::text AND \"name\"::text IS NOT DISTINCT FROM 'x'::text LIMIT 1)"
+NULL by every column, returning true
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = $1::character varying WHERE ctid = (SELECT ctid FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM $2::text AND \"name\"::text IS NOT DISTINCT FROM $3::text LIMIT 1) RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+  params: [{"t":"null"},{"t":"null"},{"t":"text","v":"x"}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = NULL::character varying WHERE ctid = (SELECT ctid FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM NULL::text AND \"name\"::text IS NOT DISTINCT FROM 'x'::text LIMIT 1) RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+server expressions
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = DEFAULT, \"created\" = CURRENT_TIMESTAMP(3), \"name\" = $1::character varying WHERE \"id\" = $2::bigint"
+  params: [{"t":"text","v":"x"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = DEFAULT, \"created\" = CURRENT_TIMESTAMP(3), \"name\" = 'x'::character varying WHERE \"id\" = 7::bigint"
+no changes
+  error INVALID_INPUT "update has no changed columns"
+unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+
+## postgres insert
+three columns, returning false
+  sql: "INSERT INTO \"app\".\"users\" (\"id\", \"name\", \"payload\") VALUES ($1::bigint, $2::character varying, $3::jsonb)"
+  params: [{"t":"int","v":1},{"t":"text","v":"a"},{"t":"json","v":"{}"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"id\", \"name\", \"payload\") VALUES (1::bigint, 'a'::character varying, '{}'::jsonb)"
+no columns, returning false
+  sql: "INSERT INTO \"app\".\"users\" DEFAULT VALUES"
+three columns, returning true
+  sql: "INSERT INTO \"app\".\"users\" (\"id\", \"name\", \"payload\") VALUES ($1::bigint, $2::character varying, $3::jsonb) RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+  params: [{"t":"int","v":1},{"t":"text","v":"a"},{"t":"json","v":"{}"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"id\", \"name\", \"payload\") VALUES (1::bigint, 'a'::character varying, '{}'::jsonb) RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+no columns, returning true
+  sql: "INSERT INTO \"app\".\"users\" DEFAULT VALUES RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+DEFAULT is left out
+  sql: "INSERT INTO \"app\".\"users\" (\"name\") VALUES ($1::character varying)"
+  params: [{"t":"text","v":"x"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"name\") VALUES ('x'::character varying)"
+server expressions
+  sql: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (CURRENT_TIMESTAMP, $1::character varying)"
+  params: [{"t":"text","v":"x"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (CURRENT_TIMESTAMP, 'x'::character varying)"
+unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+
+## postgres delete
+key {"kind":"pk","value":{"id":{"t":"int","v":7}}}
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"id\" = $1::bigint"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE \"id\" = 7::bigint"
+key {"kind":"pk","value":{"id":{"t":"int","v":7},"name":{"t":"text","v":"a'b"}}}
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"id\" = $1::bigint AND \"name\" = $2::character varying"
+  params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE \"id\" = 7::bigint AND \"name\" = 'a''b'::character varying"
+key {"kind":"pk","value":{"id":{"t":"null"}}}
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"id\" IS NULL"
+key {"kind":"pk","value":{"code":{"t":"text","v":"x"}}}
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"code\" = $1::character varying"
+  params: [{"t":"text","v":"x"}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE \"code\" = 'x'::character varying"
+key {"kind":"pk","value":{}}
+  error INVALID_INPUT "row key is empty"
+key {"kind":"pk","value":{"nope":{"t":"int","v":1}}}
+  error INVALID_INPUT "unknown column \"nope\""
+key {"kind":"rowid","value":42}
+  sql: "DELETE FROM \"app\".\"users\" WHERE rowid = $1"
+  params: [{"t":"int","v":42}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE rowid = 42"
+key {"kind":"rowid","value":9007199254740993}
+  sql: "DELETE FROM \"app\".\"users\" WHERE rowid = $1"
+  params: [{"t":"bigInt","v":"9007199254740993"}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE rowid = 9007199254740993"
+key {"kind":"allColumns","value":{"age":{"t":"null"},"name":{"t":"text","v":"x"},"payload":{"t":"json","v":"{\"a\": 1}"},"price":{"t":"decimal","v":"1.50"},"tags":{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}}}
+  sql: "DELETE FROM \"app\".\"users\" WHERE ctid = (SELECT ctid FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM $1::text AND \"name\"::text IS NOT DISTINCT FROM $2::text AND \"payload\"::text IS NOT DISTINCT FROM $3::text AND \"price\"::text IS NOT DISTINCT FROM $4::text AND \"tags\"::text IS NOT DISTINCT FROM $5::text LIMIT 1)"
+  params: [{"t":"null"},{"t":"text","v":"x"},{"t":"text","v":"{\"a\": 1}"},{"t":"text","v":"1.50"},{"t":"text","v":"{\"a\",\"b c\"}"}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE ctid = (SELECT ctid FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM NULL::text AND \"name\"::text IS NOT DISTINCT FROM 'x'::text AND \"payload\"::text IS NOT DISTINCT FROM '{\"a\": 1}'::text AND \"price\"::text IS NOT DISTINCT FROM '1.50'::text AND \"tags\"::text IS NOT DISTINCT FROM '{\"a\",\"b c\"}'::text LIMIT 1)"
+key {"kind":"allColumns","value":{}}
+  error INVALID_INPUT "row key is empty"
+
+## postgres staged changes
+ordered => ["d1","d2","u1","u2","i1"]
+delete d1, returning false, affects 1
+  sql: "DELETE FROM \"app\".\"users\" WHERE rowid = $1"
+  params: [{"t":"int","v":3}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE rowid = 3"
+delete d1, returning true, affects 1
+  sql: "DELETE FROM \"app\".\"users\" WHERE rowid = $1"
+  params: [{"t":"int","v":3}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE rowid = 3"
+delete d2, returning false, affects 1
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"id\" = $1::bigint"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE \"id\" = 7::bigint"
+delete d2, returning true, affects 1
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"id\" = $1::bigint"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE \"id\" = 7::bigint"
+update u1, returning false, affects 1
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = $1::character varying WHERE \"id\" = $2::bigint"
+  params: [{"t":"text","v":"changed"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'changed'::character varying WHERE \"id\" = 7::bigint"
+update u1, returning true, affects 1
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = $1::character varying WHERE \"id\" = $2::bigint RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+  params: [{"t":"text","v":"changed"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'changed'::character varying WHERE \"id\" = 7::bigint RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+update u2, returning false, affects 1
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = $1::integer, \"created\" = LOCALTIMESTAMP WHERE ctid = (SELECT ctid FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM $2::text AND \"name\"::text IS NOT DISTINCT FROM $3::text LIMIT 1)"
+  params: [{"t":"int","v":1},{"t":"null"},{"t":"text","v":"x"}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = 1::integer, \"created\" = LOCALTIMESTAMP WHERE ctid = (SELECT ctid FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM NULL::text AND \"name\"::text IS NOT DISTINCT FROM 'x'::text LIMIT 1)"
+update u2, returning true, affects 1
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = $1::integer, \"created\" = LOCALTIMESTAMP WHERE ctid = (SELECT ctid FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM $2::text AND \"name\"::text IS NOT DISTINCT FROM $3::text LIMIT 1) RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+  params: [{"t":"int","v":1},{"t":"null"},{"t":"text","v":"x"}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = 1::integer, \"created\" = LOCALTIMESTAMP WHERE ctid = (SELECT ctid FROM \"app\".\"users\" WHERE \"age\"::text IS NOT DISTINCT FROM NULL::text AND \"name\"::text IS NOT DISTINCT FROM 'x'::text LIMIT 1) RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+insert i1, returning false, affects 1
+  sql: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (NOW(), $1::character varying)"
+  params: [{"t":"text","v":"new"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (NOW(), 'new'::character varying)"
+insert i1, returning true, affects 1
+  sql: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (NOW(), $1::character varying) RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+  params: [{"t":"text","v":"new"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (NOW(), 'new'::character varying) RETURNING \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\""
+
+## mysql server expressions
+now Timestamp => "NOW()"
+now Date => "NOW()"
+now Time => "NOW()"
+currentTimestamp Timestamp => "CURRENT_TIMESTAMP"
+currentTimestamp Date => "CURRENT_TIMESTAMP"
+currentTimestamp Time => "CURRENT_TIMESTAMP"
+currentDate Timestamp => "CURRENT_DATE"
+currentDate Date => "CURRENT_DATE"
+currentDate Time => "CURRENT_DATE"
+currentTime Timestamp => "CURRENT_TIME"
+currentTime Date => "CURRENT_TIME"
+currentTime Time => "CURRENT_TIME"
+localTimestamp Timestamp => "LOCALTIMESTAMP"
+localTimestamp Date => "LOCALTIMESTAMP"
+localTimestamp Time => "LOCALTIMESTAMP"
+default Timestamp => "DEFAULT"
+default Date => "DEFAULT"
+default Time => "DEFAULT"
+now(0) Timestamp => "NOW(0)"
+now(0) Date => "NOW(0)"
+now(0) Time => "NOW(0)"
+now(6) Timestamp => "NOW(6)"
+now(6) Date => "NOW(6)"
+now(6) Time => "NOW(6)"
+currentTimestamp(0) Timestamp => "CURRENT_TIMESTAMP(0)"
+currentTimestamp(0) Date => "CURRENT_TIMESTAMP(0)"
+currentTimestamp(0) Time => "CURRENT_TIMESTAMP(0)"
+currentTimestamp(6) Timestamp => "CURRENT_TIMESTAMP(6)"
+currentTimestamp(6) Date => "CURRENT_TIMESTAMP(6)"
+currentTimestamp(6) Time => "CURRENT_TIMESTAMP(6)"
+currentTime(0) Timestamp => "CURRENT_TIME(0)"
+currentTime(0) Date => "CURRENT_TIME(0)"
+currentTime(0) Time => "CURRENT_TIME(0)"
+currentTime(6) Timestamp => "CURRENT_TIME(6)"
+currentTime(6) Date => "CURRENT_TIME(6)"
+currentTime(6) Time => "CURRENT_TIME(6)"
+localTimestamp(0) Timestamp => "LOCALTIMESTAMP(0)"
+localTimestamp(0) Date => "LOCALTIMESTAMP(0)"
+localTimestamp(0) Time => "LOCALTIMESTAMP(0)"
+localTimestamp(6) Timestamp => "LOCALTIMESTAMP(6)"
+localTimestamp(6) Date => "LOCALTIMESTAMP(6)"
+localTimestamp(6) Time => "LOCALTIMESTAMP(6)"
+now(7) Timestamp => error INVALID_INPUT "a time precision is 0 to 6 digits, not 7"
+now(7) Date => error INVALID_INPUT "a time precision is 0 to 6 digits, not 7"
+now(7) Time => error INVALID_INPUT "a time precision is 0 to 6 digits, not 7"
+
+## mysql update
+name and age by pk, returning false
+  sql: "UPDATE `app`.`users` SET `age` = ?, `name` = ? WHERE `id` = ?"
+  params: [{"t":"int","v":30},{"t":"text","v":"Bob"},{"t":"int","v":7}]
+  preview: "UPDATE `app`.`users` SET `age` = 30, `name` = 'Bob' WHERE `id` = 7"
+name and age by pk, returning true
+  sql: "UPDATE `app`.`users` SET `age` = ?, `name` = ? WHERE `id` = ?"
+  params: [{"t":"int","v":30},{"t":"text","v":"Bob"},{"t":"int","v":7}]
+  preview: "UPDATE `app`.`users` SET `age` = 30, `name` = 'Bob' WHERE `id` = 7"
+DEFAULT
+  sql: "UPDATE `app`.`users` SET `price` = DEFAULT WHERE `id` = ?"
+  params: [{"t":"int","v":7}]
+  preview: "UPDATE `app`.`users` SET `price` = DEFAULT WHERE `id` = 7"
+json, array and bytes by rowid, returning false
+  sql: "UPDATE `app`.`users` SET `data` = ?, `payload` = ?, `tags` = ? WHERE rowid = ?"
+  params: [{"t":"bytes","v":{"base64":"AAE=","len":2,"truncated":false}},{"t":"json","v":"{\"a\": 1}"},{"t":"array","v":[{"t":"text","v":"a"}]},{"t":"int","v":42}]
+  preview: "UPDATE `app`.`users` SET `data` = X'0001', `payload` = '{\"a\": 1}', `tags` = '{\"a\"}' WHERE rowid = 42"
+json, array and bytes by rowid, returning true
+  sql: "UPDATE `app`.`users` SET `data` = ?, `payload` = ?, `tags` = ? WHERE rowid = ?"
+  params: [{"t":"bytes","v":{"base64":"AAE=","len":2,"truncated":false}},{"t":"json","v":"{\"a\": 1}"},{"t":"array","v":[{"t":"text","v":"a"}]},{"t":"int","v":42}]
+  preview: "UPDATE `app`.`users` SET `data` = X'0001', `payload` = '{\"a\": 1}', `tags` = '{\"a\"}' WHERE rowid = 42"
+NULL by every column, returning false
+  sql: "UPDATE `app`.`users` SET `name` = ? WHERE `age` <=> ? AND `name` <=> ? LIMIT 1"
+  params: [{"t":"null"},{"t":"null"},{"t":"text","v":"x"}]
+  preview: "UPDATE `app`.`users` SET `name` = NULL WHERE `age` <=> NULL AND `name` <=> 'x' LIMIT 1"
+NULL by every column, returning true
+  sql: "UPDATE `app`.`users` SET `name` = ? WHERE `age` <=> ? AND `name` <=> ? LIMIT 1"
+  params: [{"t":"null"},{"t":"null"},{"t":"text","v":"x"}]
+  preview: "UPDATE `app`.`users` SET `name` = NULL WHERE `age` <=> NULL AND `name` <=> 'x' LIMIT 1"
+server expressions
+  sql: "UPDATE `app`.`users` SET `age` = DEFAULT, `created` = NOW(3), `name` = ? WHERE `id` = ?"
+  params: [{"t":"text","v":"x"},{"t":"int","v":7}]
+  preview: "UPDATE `app`.`users` SET `age` = DEFAULT, `created` = NOW(3), `name` = 'x' WHERE `id` = 7"
+no changes
+  error INVALID_INPUT "update has no changed columns"
+unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+
+## mysql insert
+three columns, returning false
+  sql: "INSERT INTO `app`.`users` (`id`, `name`, `payload`) VALUES (?, ?, ?)"
+  params: [{"t":"int","v":1},{"t":"text","v":"a"},{"t":"json","v":"{}"}]
+  preview: "INSERT INTO `app`.`users` (`id`, `name`, `payload`) VALUES (1, 'a', '{}')"
+no columns, returning false
+  sql: "INSERT INTO `app`.`users` () VALUES ()"
+three columns, returning true
+  sql: "INSERT INTO `app`.`users` (`id`, `name`, `payload`) VALUES (?, ?, ?)"
+  params: [{"t":"int","v":1},{"t":"text","v":"a"},{"t":"json","v":"{}"}]
+  preview: "INSERT INTO `app`.`users` (`id`, `name`, `payload`) VALUES (1, 'a', '{}')"
+no columns, returning true
+  sql: "INSERT INTO `app`.`users` () VALUES ()"
+DEFAULT is left out
+  sql: "INSERT INTO `app`.`users` (`name`) VALUES (?)"
+  params: [{"t":"text","v":"x"}]
+  preview: "INSERT INTO `app`.`users` (`name`) VALUES ('x')"
+server expressions
+  sql: "INSERT INTO `app`.`users` (`created`, `name`) VALUES (CURRENT_TIMESTAMP, ?)"
+  params: [{"t":"text","v":"x"}]
+  preview: "INSERT INTO `app`.`users` (`created`, `name`) VALUES (CURRENT_TIMESTAMP, 'x')"
+unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+
+## mysql delete
+key {"kind":"pk","value":{"id":{"t":"int","v":7}}}
+  sql: "DELETE FROM `app`.`users` WHERE `id` = ?"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM `app`.`users` WHERE `id` = 7"
+key {"kind":"pk","value":{"id":{"t":"int","v":7},"name":{"t":"text","v":"a'b"}}}
+  sql: "DELETE FROM `app`.`users` WHERE `id` = ? AND `name` = ?"
+  params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+  preview: "DELETE FROM `app`.`users` WHERE `id` = 7 AND `name` = 'a\\'b'"
+key {"kind":"pk","value":{"id":{"t":"null"}}}
+  sql: "DELETE FROM `app`.`users` WHERE `id` IS NULL"
+key {"kind":"pk","value":{"code":{"t":"text","v":"x"}}}
+  sql: "DELETE FROM `app`.`users` WHERE `code` = ?"
+  params: [{"t":"text","v":"x"}]
+  preview: "DELETE FROM `app`.`users` WHERE `code` = 'x'"
+key {"kind":"pk","value":{}}
+  error INVALID_INPUT "row key is empty"
+key {"kind":"pk","value":{"nope":{"t":"int","v":1}}}
+  error INVALID_INPUT "unknown column \"nope\""
+key {"kind":"rowid","value":42}
+  sql: "DELETE FROM `app`.`users` WHERE rowid = ?"
+  params: [{"t":"int","v":42}]
+  preview: "DELETE FROM `app`.`users` WHERE rowid = 42"
+key {"kind":"rowid","value":9007199254740993}
+  sql: "DELETE FROM `app`.`users` WHERE rowid = ?"
+  params: [{"t":"bigInt","v":"9007199254740993"}]
+  preview: "DELETE FROM `app`.`users` WHERE rowid = 9007199254740993"
+key {"kind":"allColumns","value":{"age":{"t":"null"},"name":{"t":"text","v":"x"},"payload":{"t":"json","v":"{\"a\": 1}"},"price":{"t":"decimal","v":"1.50"},"tags":{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}}}
+  sql: "DELETE FROM `app`.`users` WHERE `age` <=> ? AND `name` <=> ? AND `payload` <=> ? AND `price` <=> ? AND `tags` <=> ? LIMIT 1"
+  params: [{"t":"null"},{"t":"text","v":"x"},{"t":"json","v":"{\"a\": 1}"},{"t":"decimal","v":"1.50"},{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}]
+  preview: "DELETE FROM `app`.`users` WHERE `age` <=> NULL AND `name` <=> 'x' AND `payload` <=> '{\"a\": 1}' AND `price` <=> 1.50 AND `tags` <=> '{\"a\",\"b c\"}' LIMIT 1"
+key {"kind":"allColumns","value":{}}
+  error INVALID_INPUT "row key is empty"
+
+## mysql staged changes
+ordered => ["d1","d2","u1","u2","i1"]
+delete d1, returning false, affects 1
+  sql: "DELETE FROM `app`.`users` WHERE rowid = ?"
+  params: [{"t":"int","v":3}]
+  preview: "DELETE FROM `app`.`users` WHERE rowid = 3"
+delete d1, returning true, affects 1
+  sql: "DELETE FROM `app`.`users` WHERE rowid = ?"
+  params: [{"t":"int","v":3}]
+  preview: "DELETE FROM `app`.`users` WHERE rowid = 3"
+delete d2, returning false, affects 1
+  sql: "DELETE FROM `app`.`users` WHERE `id` = ?"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM `app`.`users` WHERE `id` = 7"
+delete d2, returning true, affects 1
+  sql: "DELETE FROM `app`.`users` WHERE `id` = ?"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM `app`.`users` WHERE `id` = 7"
+update u1, returning false, affects 1
+  sql: "UPDATE `app`.`users` SET `name` = ? WHERE `id` = ?"
+  params: [{"t":"text","v":"changed"},{"t":"int","v":7}]
+  preview: "UPDATE `app`.`users` SET `name` = 'changed' WHERE `id` = 7"
+update u1, returning true, affects 1
+  sql: "UPDATE `app`.`users` SET `name` = ? WHERE `id` = ?"
+  params: [{"t":"text","v":"changed"},{"t":"int","v":7}]
+  preview: "UPDATE `app`.`users` SET `name` = 'changed' WHERE `id` = 7"
+update u2, returning false, affects 1
+  sql: "UPDATE `app`.`users` SET `age` = ?, `created` = LOCALTIMESTAMP WHERE `age` <=> ? AND `name` <=> ? LIMIT 1"
+  params: [{"t":"int","v":1},{"t":"null"},{"t":"text","v":"x"}]
+  preview: "UPDATE `app`.`users` SET `age` = 1, `created` = LOCALTIMESTAMP WHERE `age` <=> NULL AND `name` <=> 'x' LIMIT 1"
+update u2, returning true, affects 1
+  sql: "UPDATE `app`.`users` SET `age` = ?, `created` = LOCALTIMESTAMP WHERE `age` <=> ? AND `name` <=> ? LIMIT 1"
+  params: [{"t":"int","v":1},{"t":"null"},{"t":"text","v":"x"}]
+  preview: "UPDATE `app`.`users` SET `age` = 1, `created` = LOCALTIMESTAMP WHERE `age` <=> NULL AND `name` <=> 'x' LIMIT 1"
+insert i1, returning false, affects 1
+  sql: "INSERT INTO `app`.`users` (`created`, `name`) VALUES (NOW(), ?)"
+  params: [{"t":"text","v":"new"}]
+  preview: "INSERT INTO `app`.`users` (`created`, `name`) VALUES (NOW(), 'new')"
+insert i1, returning true, affects 1
+  sql: "INSERT INTO `app`.`users` (`created`, `name`) VALUES (NOW(), ?)"
+  params: [{"t":"text","v":"new"}]
+  preview: "INSERT INTO `app`.`users` (`created`, `name`) VALUES (NOW(), 'new')"
+
+## sqlite server expressions
+now Timestamp => "CURRENT_TIMESTAMP"
+now Date => "CURRENT_DATE"
+now Time => "CURRENT_TIME"
+currentTimestamp Timestamp => "CURRENT_TIMESTAMP"
+currentTimestamp Date => "CURRENT_TIMESTAMP"
+currentTimestamp Time => "CURRENT_TIMESTAMP"
+currentDate Timestamp => "CURRENT_DATE"
+currentDate Date => "CURRENT_DATE"
+currentDate Time => "CURRENT_DATE"
+currentTime Timestamp => "CURRENT_TIME"
+currentTime Date => "CURRENT_TIME"
+currentTime Time => "CURRENT_TIME"
+localTimestamp Timestamp => "datetime('now', 'localtime')"
+localTimestamp Date => "datetime('now', 'localtime')"
+localTimestamp Time => "datetime('now', 'localtime')"
+default Timestamp => "DEFAULT"
+default Date => "DEFAULT"
+default Time => "DEFAULT"
+now(0) Timestamp => "CURRENT_TIMESTAMP"
+now(0) Date => "CURRENT_DATE"
+now(0) Time => "CURRENT_TIME"
+now(6) Timestamp => "CURRENT_TIMESTAMP"
+now(6) Date => "CURRENT_DATE"
+now(6) Time => "CURRENT_TIME"
+currentTimestamp(0) Timestamp => "CURRENT_TIMESTAMP"
+currentTimestamp(0) Date => "CURRENT_TIMESTAMP"
+currentTimestamp(0) Time => "CURRENT_TIMESTAMP"
+currentTimestamp(6) Timestamp => "CURRENT_TIMESTAMP"
+currentTimestamp(6) Date => "CURRENT_TIMESTAMP"
+currentTimestamp(6) Time => "CURRENT_TIMESTAMP"
+currentTime(0) Timestamp => "CURRENT_TIME"
+currentTime(0) Date => "CURRENT_TIME"
+currentTime(0) Time => "CURRENT_TIME"
+currentTime(6) Timestamp => "CURRENT_TIME"
+currentTime(6) Date => "CURRENT_TIME"
+currentTime(6) Time => "CURRENT_TIME"
+localTimestamp(0) Timestamp => "datetime('now', 'localtime')"
+localTimestamp(0) Date => "datetime('now', 'localtime')"
+localTimestamp(0) Time => "datetime('now', 'localtime')"
+localTimestamp(6) Timestamp => "datetime('now', 'localtime')"
+localTimestamp(6) Date => "datetime('now', 'localtime')"
+localTimestamp(6) Time => "datetime('now', 'localtime')"
+now(7) Timestamp => error INVALID_INPUT "a time precision is 0 to 6 digits, not 7"
+now(7) Date => error INVALID_INPUT "a time precision is 0 to 6 digits, not 7"
+now(7) Time => error INVALID_INPUT "a time precision is 0 to 6 digits, not 7"
+
+## sqlite update
+name and age by pk, returning false
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = ?1, \"name\" = ?2 WHERE \"id\" = ?3"
+  params: [{"t":"int","v":30},{"t":"text","v":"Bob"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = 30, \"name\" = 'Bob' WHERE \"id\" = 7"
+name and age by pk, returning true
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = ?1, \"name\" = ?2 WHERE \"id\" = ?3 RETURNING *"
+  params: [{"t":"int","v":30},{"t":"text","v":"Bob"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = 30, \"name\" = 'Bob' WHERE \"id\" = 7 RETURNING *"
+DEFAULT
+  error UNSUPPORTED "unsupported: SQLite cannot SET a column to DEFAULT; enter the value explicitly"
+json, array and bytes by rowid, returning false
+  sql: "UPDATE \"app\".\"users\" SET \"data\" = ?1, \"payload\" = ?2, \"tags\" = ?3 WHERE rowid = ?4"
+  params: [{"t":"bytes","v":{"base64":"AAE=","len":2,"truncated":false}},{"t":"json","v":"{\"a\": 1}"},{"t":"array","v":[{"t":"text","v":"a"}]},{"t":"int","v":42}]
+  preview: "UPDATE \"app\".\"users\" SET \"data\" = X'0001', \"payload\" = '{\"a\": 1}', \"tags\" = '{\"a\"}' WHERE rowid = 42"
+json, array and bytes by rowid, returning true
+  sql: "UPDATE \"app\".\"users\" SET \"data\" = ?1, \"payload\" = ?2, \"tags\" = ?3 WHERE rowid = ?4 RETURNING *"
+  params: [{"t":"bytes","v":{"base64":"AAE=","len":2,"truncated":false}},{"t":"json","v":"{\"a\": 1}"},{"t":"array","v":[{"t":"text","v":"a"}]},{"t":"int","v":42}]
+  preview: "UPDATE \"app\".\"users\" SET \"data\" = X'0001', \"payload\" = '{\"a\": 1}', \"tags\" = '{\"a\"}' WHERE rowid = 42 RETURNING *"
+NULL by every column, returning false
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = ?1 WHERE rowid = (SELECT rowid FROM \"app\".\"users\" WHERE \"age\" IS ?2 AND \"name\" IS ?3 LIMIT 1)"
+  params: [{"t":"null"},{"t":"null"},{"t":"text","v":"x"}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = NULL WHERE rowid = (SELECT rowid FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS 'x' LIMIT 1)"
+NULL by every column, returning true
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = ?1 WHERE rowid = (SELECT rowid FROM \"app\".\"users\" WHERE \"age\" IS ?2 AND \"name\" IS ?3 LIMIT 1) RETURNING *"
+  params: [{"t":"null"},{"t":"null"},{"t":"text","v":"x"}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = NULL WHERE rowid = (SELECT rowid FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS 'x' LIMIT 1) RETURNING *"
+server expressions
+  error UNSUPPORTED "unsupported: SQLite cannot SET a column to DEFAULT; enter the value explicitly"
+no changes
+  error INVALID_INPUT "update has no changed columns"
+unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+
+## sqlite insert
+three columns, returning false
+  sql: "INSERT INTO \"app\".\"users\" (\"id\", \"name\", \"payload\") VALUES (?1, ?2, ?3)"
+  params: [{"t":"int","v":1},{"t":"text","v":"a"},{"t":"json","v":"{}"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"id\", \"name\", \"payload\") VALUES (1, 'a', '{}')"
+no columns, returning false
+  sql: "INSERT INTO \"app\".\"users\" DEFAULT VALUES"
+three columns, returning true
+  sql: "INSERT INTO \"app\".\"users\" (\"id\", \"name\", \"payload\") VALUES (?1, ?2, ?3) RETURNING *"
+  params: [{"t":"int","v":1},{"t":"text","v":"a"},{"t":"json","v":"{}"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"id\", \"name\", \"payload\") VALUES (1, 'a', '{}') RETURNING *"
+no columns, returning true
+  sql: "INSERT INTO \"app\".\"users\" DEFAULT VALUES RETURNING *"
+DEFAULT is left out
+  sql: "INSERT INTO \"app\".\"users\" (\"name\") VALUES (?1)"
+  params: [{"t":"text","v":"x"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"name\") VALUES ('x')"
+server expressions
+  sql: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (CURRENT_TIMESTAMP, ?1)"
+  params: [{"t":"text","v":"x"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (CURRENT_TIMESTAMP, 'x')"
+unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+
+## sqlite delete
+key {"kind":"pk","value":{"id":{"t":"int","v":7}}}
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"id\" = ?1"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE \"id\" = 7"
+key {"kind":"pk","value":{"id":{"t":"int","v":7},"name":{"t":"text","v":"a'b"}}}
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"id\" = ?1 AND \"name\" = ?2"
+  params: [{"t":"int","v":7},{"t":"text","v":"a'b"}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE \"id\" = 7 AND \"name\" = 'a''b'"
+key {"kind":"pk","value":{"id":{"t":"null"}}}
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"id\" IS NULL"
+key {"kind":"pk","value":{"code":{"t":"text","v":"x"}}}
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"code\" = ?1"
+  params: [{"t":"text","v":"x"}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE \"code\" = 'x'"
+key {"kind":"pk","value":{}}
+  error INVALID_INPUT "row key is empty"
+key {"kind":"pk","value":{"nope":{"t":"int","v":1}}}
+  error INVALID_INPUT "unknown column \"nope\""
+key {"kind":"rowid","value":42}
+  sql: "DELETE FROM \"app\".\"users\" WHERE rowid = ?1"
+  params: [{"t":"int","v":42}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE rowid = 42"
+key {"kind":"rowid","value":9007199254740993}
+  sql: "DELETE FROM \"app\".\"users\" WHERE rowid = ?1"
+  params: [{"t":"bigInt","v":"9007199254740993"}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE rowid = 9007199254740993"
+key {"kind":"allColumns","value":{"age":{"t":"null"},"name":{"t":"text","v":"x"},"payload":{"t":"json","v":"{\"a\": 1}"},"price":{"t":"decimal","v":"1.50"},"tags":{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}}}
+  sql: "DELETE FROM \"app\".\"users\" WHERE rowid = (SELECT rowid FROM \"app\".\"users\" WHERE \"age\" IS ?1 AND \"name\" IS ?2 AND \"payload\" IS ?3 AND \"price\" IS ?4 AND \"tags\" IS ?5 LIMIT 1)"
+  params: [{"t":"null"},{"t":"text","v":"x"},{"t":"json","v":"{\"a\": 1}"},{"t":"decimal","v":"1.50"},{"t":"array","v":[{"t":"text","v":"a"},{"t":"text","v":"b c"}]}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE rowid = (SELECT rowid FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS 'x' AND \"payload\" IS '{\"a\": 1}' AND \"price\" IS 1.50 AND \"tags\" IS '{\"a\",\"b c\"}' LIMIT 1)"
+key {"kind":"allColumns","value":{}}
+  error INVALID_INPUT "row key is empty"
+
+## sqlite staged changes
+ordered => ["d1","d2","u1","u2","i1"]
+delete d1, returning false, affects 1
+  sql: "DELETE FROM \"app\".\"users\" WHERE rowid = ?1"
+  params: [{"t":"int","v":3}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE rowid = 3"
+delete d1, returning true, affects 1
+  sql: "DELETE FROM \"app\".\"users\" WHERE rowid = ?1"
+  params: [{"t":"int","v":3}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE rowid = 3"
+delete d2, returning false, affects 1
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"id\" = ?1"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE \"id\" = 7"
+delete d2, returning true, affects 1
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"id\" = ?1"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE \"id\" = 7"
+update u1, returning false, affects 1
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = ?1 WHERE \"id\" = ?2"
+  params: [{"t":"text","v":"changed"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'changed' WHERE \"id\" = 7"
+update u1, returning true, affects 1
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = ?1 WHERE \"id\" = ?2 RETURNING *"
+  params: [{"t":"text","v":"changed"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'changed' WHERE \"id\" = 7 RETURNING *"
+update u2, returning false, affects 1
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = ?1, \"created\" = datetime('now', 'localtime') WHERE rowid = (SELECT rowid FROM \"app\".\"users\" WHERE \"age\" IS ?2 AND \"name\" IS ?3 LIMIT 1)"
+  params: [{"t":"int","v":1},{"t":"null"},{"t":"text","v":"x"}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = 1, \"created\" = datetime('now', 'localtime') WHERE rowid = (SELECT rowid FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS 'x' LIMIT 1)"
+update u2, returning true, affects 1
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = ?1, \"created\" = datetime('now', 'localtime') WHERE rowid = (SELECT rowid FROM \"app\".\"users\" WHERE \"age\" IS ?2 AND \"name\" IS ?3 LIMIT 1) RETURNING *"
+  params: [{"t":"int","v":1},{"t":"null"},{"t":"text","v":"x"}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = 1, \"created\" = datetime('now', 'localtime') WHERE rowid = (SELECT rowid FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS 'x' LIMIT 1) RETURNING *"
+insert i1, returning false, affects 1
+  sql: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (CURRENT_TIMESTAMP, ?1)"
+  params: [{"t":"text","v":"new"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (CURRENT_TIMESTAMP, 'new')"
+insert i1, returning true, affects 1
+  sql: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (CURRENT_TIMESTAMP, ?1) RETURNING *"
+  params: [{"t":"text","v":"new"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (CURRENT_TIMESTAMP, 'new') RETURNING *"

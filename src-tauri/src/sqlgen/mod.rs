@@ -8,6 +8,8 @@ pub mod ddl;
 pub mod definition;
 pub mod diagram;
 pub mod explain;
+#[cfg(test)]
+mod golden;
 pub mod mutate;
 pub mod objects;
 pub mod quote;

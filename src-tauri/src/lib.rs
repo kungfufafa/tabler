@@ -33,6 +33,8 @@ pub mod recent;
 pub mod secrets;
 pub mod sqlgen;
 pub mod state;
+#[cfg(test)]
+pub mod testkit;
 pub mod tls_files;
 pub mod tunnel;
 pub mod types;

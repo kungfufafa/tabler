@@ -1,0 +1,921 @@
+# Browse SELECTs, WHERE bodies of every filter operator, counts and their helpers per dialect.
+# Written by sqlgen::golden from the core code; never edited by hand.
+
+## helpers
+escape_like "plain" => "plain"; escape_glob => "plain"
+escape_like "50%_off" => "50!%!_off"; escape_glob => "50%_off"
+escape_like "a!b" => "a!!b"; escape_glob => "a!b"
+escape_like "*?[x]" => "*?[x]"; escape_glob => "[*][?][[]x]"
+escape_like "" => ""; escape_glob => ""
+pg_cast_type "integer" => "integer"
+pg_cast_type "character varying(5)" => "character varying"
+pg_cast_type "character(5)" => "bpchar"
+pg_cast_type "char" => "bpchar"
+pg_cast_type "bit(8)" => "bit varying"
+pg_cast_type "bit" => "bit varying"
+pg_cast_type "bit varying(3)" => "bit varying"
+pg_cast_type "interval day to second(3)" => "interval"
+pg_cast_type "numeric(10,2)[]" => "numeric[]"
+pg_cast_type "character varying(5)[][]" => "character varying[][]"
+pg_cast_type "\"My(Type)\"(4)" => "\"My(Type)\""
+pg_cast_type "  timestamp(3)   with time zone  " => "timestamp with time zone"
+
+## postgres conditions
+age Eq [{"t":"int","v":18}]
+  sql: "\"age\" = $1::integer"
+  params: [{"t":"int","v":18}]
+  preview: "\"age\" = 18::integer"
+any column Eq [{"t":"int","v":18}]
+  sql: "(COALESCE(\"id\"::text, '') = $1::text OR COALESCE(\"name\"::text, '') = $1::text OR COALESCE(\"age\"::text, '') = $1::text OR COALESCE(\"status\"::text, '') = $1::text OR COALESCE(\"price\"::text, '') = $1::text OR COALESCE(\"payload\"::text, '') = $1::text OR COALESCE(\"code\"::text, '') = $1::text OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') = $1::text OR COALESCE(\"created\"::text, '') = $1::text OR COALESCE(\"tags\"::text, '') = $1::text)"
+  params: [{"t":"text","v":"18"}]
+  preview: "(COALESCE(\"id\"::text, '') = '18'::text OR COALESCE(\"name\"::text, '') = '18'::text OR COALESCE(\"age\"::text, '') = '18'::text OR COALESCE(\"status\"::text, '') = '18'::text OR COALESCE(\"price\"::text, '') = '18'::text OR COALESCE(\"payload\"::text, '') = '18'::text OR COALESCE(\"code\"::text, '') = '18'::text OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') = '18'::text OR COALESCE(\"created\"::text, '') = '18'::text OR COALESCE(\"tags\"::text, '') = '18'::text)"
+age Ne [{"t":"int","v":18}]
+  sql: "\"age\" <> $1::integer"
+  params: [{"t":"int","v":18}]
+  preview: "\"age\" <> 18::integer"
+any column Ne [{"t":"int","v":18}]
+  sql: "(COALESCE(\"id\"::text, '') <> $1::text AND COALESCE(\"name\"::text, '') <> $1::text AND COALESCE(\"age\"::text, '') <> $1::text AND COALESCE(\"status\"::text, '') <> $1::text AND COALESCE(\"price\"::text, '') <> $1::text AND COALESCE(\"payload\"::text, '') <> $1::text AND COALESCE(\"code\"::text, '') <> $1::text AND COALESCE(\"Odd \"\"Name\"\"\"::text, '') <> $1::text AND COALESCE(\"created\"::text, '') <> $1::text AND COALESCE(\"tags\"::text, '') <> $1::text)"
+  params: [{"t":"text","v":"18"}]
+  preview: "(COALESCE(\"id\"::text, '') <> '18'::text AND COALESCE(\"name\"::text, '') <> '18'::text AND COALESCE(\"age\"::text, '') <> '18'::text AND COALESCE(\"status\"::text, '') <> '18'::text AND COALESCE(\"price\"::text, '') <> '18'::text AND COALESCE(\"payload\"::text, '') <> '18'::text AND COALESCE(\"code\"::text, '') <> '18'::text AND COALESCE(\"Odd \"\"Name\"\"\"::text, '') <> '18'::text AND COALESCE(\"created\"::text, '') <> '18'::text AND COALESCE(\"tags\"::text, '') <> '18'::text)"
+age Gt [{"t":"int","v":18}]
+  sql: "\"age\" > $1::integer"
+  params: [{"t":"int","v":18}]
+  preview: "\"age\" > 18::integer"
+any column Gt [{"t":"int","v":18}]
+  sql: "(COALESCE(\"id\"::text, '') > $1::text OR COALESCE(\"name\"::text, '') > $1::text OR COALESCE(\"age\"::text, '') > $1::text OR COALESCE(\"status\"::text, '') > $1::text OR COALESCE(\"price\"::text, '') > $1::text OR COALESCE(\"payload\"::text, '') > $1::text OR COALESCE(\"code\"::text, '') > $1::text OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') > $1::text OR COALESCE(\"created\"::text, '') > $1::text OR COALESCE(\"tags\"::text, '') > $1::text)"
+  params: [{"t":"text","v":"18"}]
+  preview: "(COALESCE(\"id\"::text, '') > '18'::text OR COALESCE(\"name\"::text, '') > '18'::text OR COALESCE(\"age\"::text, '') > '18'::text OR COALESCE(\"status\"::text, '') > '18'::text OR COALESCE(\"price\"::text, '') > '18'::text OR COALESCE(\"payload\"::text, '') > '18'::text OR COALESCE(\"code\"::text, '') > '18'::text OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') > '18'::text OR COALESCE(\"created\"::text, '') > '18'::text OR COALESCE(\"tags\"::text, '') > '18'::text)"
+age Lt [{"t":"int","v":18}]
+  sql: "\"age\" < $1::integer"
+  params: [{"t":"int","v":18}]
+  preview: "\"age\" < 18::integer"
+any column Lt [{"t":"int","v":18}]
+  sql: "(COALESCE(\"id\"::text, '') < $1::text OR COALESCE(\"name\"::text, '') < $1::text OR COALESCE(\"age\"::text, '') < $1::text OR COALESCE(\"status\"::text, '') < $1::text OR COALESCE(\"price\"::text, '') < $1::text OR COALESCE(\"payload\"::text, '') < $1::text OR COALESCE(\"code\"::text, '') < $1::text OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') < $1::text OR COALESCE(\"created\"::text, '') < $1::text OR COALESCE(\"tags\"::text, '') < $1::text)"
+  params: [{"t":"text","v":"18"}]
+  preview: "(COALESCE(\"id\"::text, '') < '18'::text OR COALESCE(\"name\"::text, '') < '18'::text OR COALESCE(\"age\"::text, '') < '18'::text OR COALESCE(\"status\"::text, '') < '18'::text OR COALESCE(\"price\"::text, '') < '18'::text OR COALESCE(\"payload\"::text, '') < '18'::text OR COALESCE(\"code\"::text, '') < '18'::text OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') < '18'::text OR COALESCE(\"created\"::text, '') < '18'::text OR COALESCE(\"tags\"::text, '') < '18'::text)"
+age Ge [{"t":"int","v":18}]
+  sql: "\"age\" >= $1::integer"
+  params: [{"t":"int","v":18}]
+  preview: "\"age\" >= 18::integer"
+any column Ge [{"t":"int","v":18}]
+  sql: "(COALESCE(\"id\"::text, '') >= $1::text OR COALESCE(\"name\"::text, '') >= $1::text OR COALESCE(\"age\"::text, '') >= $1::text OR COALESCE(\"status\"::text, '') >= $1::text OR COALESCE(\"price\"::text, '') >= $1::text OR COALESCE(\"payload\"::text, '') >= $1::text OR COALESCE(\"code\"::text, '') >= $1::text OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') >= $1::text OR COALESCE(\"created\"::text, '') >= $1::text OR COALESCE(\"tags\"::text, '') >= $1::text)"
+  params: [{"t":"text","v":"18"}]
+  preview: "(COALESCE(\"id\"::text, '') >= '18'::text OR COALESCE(\"name\"::text, '') >= '18'::text OR COALESCE(\"age\"::text, '') >= '18'::text OR COALESCE(\"status\"::text, '') >= '18'::text OR COALESCE(\"price\"::text, '') >= '18'::text OR COALESCE(\"payload\"::text, '') >= '18'::text OR COALESCE(\"code\"::text, '') >= '18'::text OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') >= '18'::text OR COALESCE(\"created\"::text, '') >= '18'::text OR COALESCE(\"tags\"::text, '') >= '18'::text)"
+age Le [{"t":"int","v":18}]
+  sql: "\"age\" <= $1::integer"
+  params: [{"t":"int","v":18}]
+  preview: "\"age\" <= 18::integer"
+any column Le [{"t":"int","v":18}]
+  sql: "(COALESCE(\"id\"::text, '') <= $1::text OR COALESCE(\"name\"::text, '') <= $1::text OR COALESCE(\"age\"::text, '') <= $1::text OR COALESCE(\"status\"::text, '') <= $1::text OR COALESCE(\"price\"::text, '') <= $1::text OR COALESCE(\"payload\"::text, '') <= $1::text OR COALESCE(\"code\"::text, '') <= $1::text OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') <= $1::text OR COALESCE(\"created\"::text, '') <= $1::text OR COALESCE(\"tags\"::text, '') <= $1::text)"
+  params: [{"t":"text","v":"18"}]
+  preview: "(COALESCE(\"id\"::text, '') <= '18'::text OR COALESCE(\"name\"::text, '') <= '18'::text OR COALESCE(\"age\"::text, '') <= '18'::text OR COALESCE(\"status\"::text, '') <= '18'::text OR COALESCE(\"price\"::text, '') <= '18'::text OR COALESCE(\"payload\"::text, '') <= '18'::text OR COALESCE(\"code\"::text, '') <= '18'::text OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') <= '18'::text OR COALESCE(\"created\"::text, '') <= '18'::text OR COALESCE(\"tags\"::text, '') <= '18'::text)"
+name Like [{"t":"text","v":"%bo_b%"}]
+  sql: "\"name\"::text LIKE $1"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "\"name\"::text LIKE '%bo_b%'"
+any column Like [{"t":"text","v":"%bo_b%"}]
+  sql: "(COALESCE(\"id\"::text, '') LIKE $1 OR COALESCE(\"name\"::text, '') LIKE $1 OR COALESCE(\"age\"::text, '') LIKE $1 OR COALESCE(\"status\"::text, '') LIKE $1 OR COALESCE(\"price\"::text, '') LIKE $1 OR COALESCE(\"payload\"::text, '') LIKE $1 OR COALESCE(\"code\"::text, '') LIKE $1 OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE $1 OR COALESCE(\"created\"::text, '') LIKE $1 OR COALESCE(\"tags\"::text, '') LIKE $1)"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "(COALESCE(\"id\"::text, '') LIKE '%bo_b%' OR COALESCE(\"name\"::text, '') LIKE '%bo_b%' OR COALESCE(\"age\"::text, '') LIKE '%bo_b%' OR COALESCE(\"status\"::text, '') LIKE '%bo_b%' OR COALESCE(\"price\"::text, '') LIKE '%bo_b%' OR COALESCE(\"payload\"::text, '') LIKE '%bo_b%' OR COALESCE(\"code\"::text, '') LIKE '%bo_b%' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE '%bo_b%' OR COALESCE(\"created\"::text, '') LIKE '%bo_b%' OR COALESCE(\"tags\"::text, '') LIKE '%bo_b%')"
+name NotLike [{"t":"text","v":"%bo_b%"}]
+  sql: "\"name\"::text NOT LIKE $1"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "\"name\"::text NOT LIKE '%bo_b%'"
+any column NotLike [{"t":"text","v":"%bo_b%"}]
+  sql: "(COALESCE(\"id\"::text, '') NOT LIKE $1 AND COALESCE(\"name\"::text, '') NOT LIKE $1 AND COALESCE(\"age\"::text, '') NOT LIKE $1 AND COALESCE(\"status\"::text, '') NOT LIKE $1 AND COALESCE(\"price\"::text, '') NOT LIKE $1 AND COALESCE(\"payload\"::text, '') NOT LIKE $1 AND COALESCE(\"code\"::text, '') NOT LIKE $1 AND COALESCE(\"Odd \"\"Name\"\"\"::text, '') NOT LIKE $1 AND COALESCE(\"created\"::text, '') NOT LIKE $1 AND COALESCE(\"tags\"::text, '') NOT LIKE $1)"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "(COALESCE(\"id\"::text, '') NOT LIKE '%bo_b%' AND COALESCE(\"name\"::text, '') NOT LIKE '%bo_b%' AND COALESCE(\"age\"::text, '') NOT LIKE '%bo_b%' AND COALESCE(\"status\"::text, '') NOT LIKE '%bo_b%' AND COALESCE(\"price\"::text, '') NOT LIKE '%bo_b%' AND COALESCE(\"payload\"::text, '') NOT LIKE '%bo_b%' AND COALESCE(\"code\"::text, '') NOT LIKE '%bo_b%' AND COALESCE(\"Odd \"\"Name\"\"\"::text, '') NOT LIKE '%bo_b%' AND COALESCE(\"created\"::text, '') NOT LIKE '%bo_b%' AND COALESCE(\"tags\"::text, '') NOT LIKE '%bo_b%')"
+id In [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  sql: "\"id\" IN ($1::bigint, $2::bigint, $3::bigint)"
+  params: [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  preview: "\"id\" IN (1::bigint, 2::bigint, 3::bigint)"
+any column In [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  sql: "(COALESCE(\"id\"::text, '') IN ($1::text, $2::text, $3::text) OR COALESCE(\"name\"::text, '') IN ($1::text, $2::text, $3::text) OR COALESCE(\"age\"::text, '') IN ($1::text, $2::text, $3::text) OR COALESCE(\"status\"::text, '') IN ($1::text, $2::text, $3::text) OR COALESCE(\"price\"::text, '') IN ($1::text, $2::text, $3::text) OR COALESCE(\"payload\"::text, '') IN ($1::text, $2::text, $3::text) OR COALESCE(\"code\"::text, '') IN ($1::text, $2::text, $3::text) OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') IN ($1::text, $2::text, $3::text) OR COALESCE(\"created\"::text, '') IN ($1::text, $2::text, $3::text) OR COALESCE(\"tags\"::text, '') IN ($1::text, $2::text, $3::text))"
+  params: [{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"}]
+  preview: "(COALESCE(\"id\"::text, '') IN ('1'::text, '2'::text, '3'::text) OR COALESCE(\"name\"::text, '') IN ('1'::text, '2'::text, '3'::text) OR COALESCE(\"age\"::text, '') IN ('1'::text, '2'::text, '3'::text) OR COALESCE(\"status\"::text, '') IN ('1'::text, '2'::text, '3'::text) OR COALESCE(\"price\"::text, '') IN ('1'::text, '2'::text, '3'::text) OR COALESCE(\"payload\"::text, '') IN ('1'::text, '2'::text, '3'::text) OR COALESCE(\"code\"::text, '') IN ('1'::text, '2'::text, '3'::text) OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') IN ('1'::text, '2'::text, '3'::text) OR COALESCE(\"created\"::text, '') IN ('1'::text, '2'::text, '3'::text) OR COALESCE(\"tags\"::text, '') IN ('1'::text, '2'::text, '3'::text))"
+id NotIn [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  sql: "\"id\" NOT IN ($1::bigint, $2::bigint, $3::bigint)"
+  params: [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  preview: "\"id\" NOT IN (1::bigint, 2::bigint, 3::bigint)"
+any column NotIn [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  sql: "(COALESCE(\"id\"::text, '') NOT IN ($1::text, $2::text, $3::text) AND COALESCE(\"name\"::text, '') NOT IN ($1::text, $2::text, $3::text) AND COALESCE(\"age\"::text, '') NOT IN ($1::text, $2::text, $3::text) AND COALESCE(\"status\"::text, '') NOT IN ($1::text, $2::text, $3::text) AND COALESCE(\"price\"::text, '') NOT IN ($1::text, $2::text, $3::text) AND COALESCE(\"payload\"::text, '') NOT IN ($1::text, $2::text, $3::text) AND COALESCE(\"code\"::text, '') NOT IN ($1::text, $2::text, $3::text) AND COALESCE(\"Odd \"\"Name\"\"\"::text, '') NOT IN ($1::text, $2::text, $3::text) AND COALESCE(\"created\"::text, '') NOT IN ($1::text, $2::text, $3::text) AND COALESCE(\"tags\"::text, '') NOT IN ($1::text, $2::text, $3::text))"
+  params: [{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"}]
+  preview: "(COALESCE(\"id\"::text, '') NOT IN ('1'::text, '2'::text, '3'::text) AND COALESCE(\"name\"::text, '') NOT IN ('1'::text, '2'::text, '3'::text) AND COALESCE(\"age\"::text, '') NOT IN ('1'::text, '2'::text, '3'::text) AND COALESCE(\"status\"::text, '') NOT IN ('1'::text, '2'::text, '3'::text) AND COALESCE(\"price\"::text, '') NOT IN ('1'::text, '2'::text, '3'::text) AND COALESCE(\"payload\"::text, '') NOT IN ('1'::text, '2'::text, '3'::text) AND COALESCE(\"code\"::text, '') NOT IN ('1'::text, '2'::text, '3'::text) AND COALESCE(\"Odd \"\"Name\"\"\"::text, '') NOT IN ('1'::text, '2'::text, '3'::text) AND COALESCE(\"created\"::text, '') NOT IN ('1'::text, '2'::text, '3'::text) AND COALESCE(\"tags\"::text, '') NOT IN ('1'::text, '2'::text, '3'::text))"
+name IsNull []
+  sql: "\"name\" IS NULL"
+any column IsNull []
+  sql: "(\"id\" IS NULL OR \"name\" IS NULL OR \"age\" IS NULL OR \"status\" IS NULL OR \"price\" IS NULL OR \"payload\" IS NULL OR \"code\" IS NULL OR \"Odd \"\"Name\"\"\" IS NULL OR \"created\" IS NULL OR \"tags\" IS NULL)"
+name IsNotNull []
+  sql: "\"name\" IS NOT NULL"
+any column IsNotNull []
+  sql: "(\"id\" IS NOT NULL OR \"name\" IS NOT NULL OR \"age\" IS NOT NULL OR \"status\" IS NOT NULL OR \"price\" IS NOT NULL OR \"payload\" IS NOT NULL OR \"code\" IS NOT NULL OR \"Odd \"\"Name\"\"\" IS NOT NULL OR \"created\" IS NOT NULL OR \"tags\" IS NOT NULL)"
+price Between [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  sql: "\"price\" BETWEEN $1::numeric AND $2::numeric"
+  params: [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  preview: "\"price\" BETWEEN 1.50::numeric AND 9.99::numeric"
+any column Between [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  sql: "(COALESCE(\"id\"::text, '') BETWEEN $1::text AND $2::text OR COALESCE(\"name\"::text, '') BETWEEN $1::text AND $2::text OR COALESCE(\"age\"::text, '') BETWEEN $1::text AND $2::text OR COALESCE(\"status\"::text, '') BETWEEN $1::text AND $2::text OR COALESCE(\"price\"::text, '') BETWEEN $1::text AND $2::text OR COALESCE(\"payload\"::text, '') BETWEEN $1::text AND $2::text OR COALESCE(\"code\"::text, '') BETWEEN $1::text AND $2::text OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') BETWEEN $1::text AND $2::text OR COALESCE(\"created\"::text, '') BETWEEN $1::text AND $2::text OR COALESCE(\"tags\"::text, '') BETWEEN $1::text AND $2::text)"
+  params: [{"t":"text","v":"1.50"},{"t":"text","v":"9.99"}]
+  preview: "(COALESCE(\"id\"::text, '') BETWEEN '1.50'::text AND '9.99'::text OR COALESCE(\"name\"::text, '') BETWEEN '1.50'::text AND '9.99'::text OR COALESCE(\"age\"::text, '') BETWEEN '1.50'::text AND '9.99'::text OR COALESCE(\"status\"::text, '') BETWEEN '1.50'::text AND '9.99'::text OR COALESCE(\"price\"::text, '') BETWEEN '1.50'::text AND '9.99'::text OR COALESCE(\"payload\"::text, '') BETWEEN '1.50'::text AND '9.99'::text OR COALESCE(\"code\"::text, '') BETWEEN '1.50'::text AND '9.99'::text OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') BETWEEN '1.50'::text AND '9.99'::text OR COALESCE(\"created\"::text, '') BETWEEN '1.50'::text AND '9.99'::text OR COALESCE(\"tags\"::text, '') BETWEEN '1.50'::text AND '9.99'::text)"
+price NotBetween [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  sql: "\"price\" NOT BETWEEN $1::numeric AND $2::numeric"
+  params: [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  preview: "\"price\" NOT BETWEEN 1.50::numeric AND 9.99::numeric"
+any column NotBetween [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  sql: "(COALESCE(\"id\"::text, '') NOT BETWEEN $1::text AND $2::text AND COALESCE(\"name\"::text, '') NOT BETWEEN $1::text AND $2::text AND COALESCE(\"age\"::text, '') NOT BETWEEN $1::text AND $2::text AND COALESCE(\"status\"::text, '') NOT BETWEEN $1::text AND $2::text AND COALESCE(\"price\"::text, '') NOT BETWEEN $1::text AND $2::text AND COALESCE(\"payload\"::text, '') NOT BETWEEN $1::text AND $2::text AND COALESCE(\"code\"::text, '') NOT BETWEEN $1::text AND $2::text AND COALESCE(\"Odd \"\"Name\"\"\"::text, '') NOT BETWEEN $1::text AND $2::text AND COALESCE(\"created\"::text, '') NOT BETWEEN $1::text AND $2::text AND COALESCE(\"tags\"::text, '') NOT BETWEEN $1::text AND $2::text)"
+  params: [{"t":"text","v":"1.50"},{"t":"text","v":"9.99"}]
+  preview: "(COALESCE(\"id\"::text, '') NOT BETWEEN '1.50'::text AND '9.99'::text AND COALESCE(\"name\"::text, '') NOT BETWEEN '1.50'::text AND '9.99'::text AND COALESCE(\"age\"::text, '') NOT BETWEEN '1.50'::text AND '9.99'::text AND COALESCE(\"status\"::text, '') NOT BETWEEN '1.50'::text AND '9.99'::text AND COALESCE(\"price\"::text, '') NOT BETWEEN '1.50'::text AND '9.99'::text AND COALESCE(\"payload\"::text, '') NOT BETWEEN '1.50'::text AND '9.99'::text AND COALESCE(\"code\"::text, '') NOT BETWEEN '1.50'::text AND '9.99'::text AND COALESCE(\"Odd \"\"Name\"\"\"::text, '') NOT BETWEEN '1.50'::text AND '9.99'::text AND COALESCE(\"created\"::text, '') NOT BETWEEN '1.50'::text AND '9.99'::text AND COALESCE(\"tags\"::text, '') NOT BETWEEN '1.50'::text AND '9.99'::text)"
+name Contains [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\"::text LIKE $1 ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "\"name\"::text LIKE '%50!%!_off*[x]?!!%' ESCAPE '!'"
+any column Contains [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(\"id\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE $1 ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(\"id\"::text, '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!')"
+name NotContains [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\"::text NOT LIKE $1 ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "\"name\"::text NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!'"
+any column NotContains [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(\"id\"::text, '') NOT LIKE $1 ESCAPE '!' AND COALESCE(\"name\"::text, '') NOT LIKE $1 ESCAPE '!' AND COALESCE(\"age\"::text, '') NOT LIKE $1 ESCAPE '!' AND COALESCE(\"status\"::text, '') NOT LIKE $1 ESCAPE '!' AND COALESCE(\"price\"::text, '') NOT LIKE $1 ESCAPE '!' AND COALESCE(\"payload\"::text, '') NOT LIKE $1 ESCAPE '!' AND COALESCE(\"code\"::text, '') NOT LIKE $1 ESCAPE '!' AND COALESCE(\"Odd \"\"Name\"\"\"::text, '') NOT LIKE $1 ESCAPE '!' AND COALESCE(\"created\"::text, '') NOT LIKE $1 ESCAPE '!' AND COALESCE(\"tags\"::text, '') NOT LIKE $1 ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(\"id\"::text, '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"name\"::text, '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"age\"::text, '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"status\"::text, '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"price\"::text, '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"payload\"::text, '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"code\"::text, '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"Odd \"\"Name\"\"\"::text, '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"created\"::text, '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"tags\"::text, '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!')"
+name ContainsCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\"::text ILIKE $1 ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "\"name\"::text ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!'"
+any column ContainsCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(\"id\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"name\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"age\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"status\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"price\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"payload\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"code\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"created\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"tags\"::text, '') ILIKE $1 ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(\"id\"::text, '') ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"name\"::text, '') ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"age\"::text, '') ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"status\"::text, '') ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"price\"::text, '') ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"payload\"::text, '') ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"code\"::text, '') ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"created\"::text, '') ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"tags\"::text, '') ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!')"
+name NotContainsCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\"::text NOT ILIKE $1 ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "\"name\"::text NOT ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!'"
+any column NotContainsCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(\"id\"::text, '') NOT ILIKE $1 ESCAPE '!' AND COALESCE(\"name\"::text, '') NOT ILIKE $1 ESCAPE '!' AND COALESCE(\"age\"::text, '') NOT ILIKE $1 ESCAPE '!' AND COALESCE(\"status\"::text, '') NOT ILIKE $1 ESCAPE '!' AND COALESCE(\"price\"::text, '') NOT ILIKE $1 ESCAPE '!' AND COALESCE(\"payload\"::text, '') NOT ILIKE $1 ESCAPE '!' AND COALESCE(\"code\"::text, '') NOT ILIKE $1 ESCAPE '!' AND COALESCE(\"Odd \"\"Name\"\"\"::text, '') NOT ILIKE $1 ESCAPE '!' AND COALESCE(\"created\"::text, '') NOT ILIKE $1 ESCAPE '!' AND COALESCE(\"tags\"::text, '') NOT ILIKE $1 ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(\"id\"::text, '') NOT ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"name\"::text, '') NOT ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"age\"::text, '') NOT ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"status\"::text, '') NOT ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"price\"::text, '') NOT ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"payload\"::text, '') NOT ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"code\"::text, '') NOT ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"Odd \"\"Name\"\"\"::text, '') NOT ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"created\"::text, '') NOT ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(\"tags\"::text, '') NOT ILIKE '%50!%!_off*[x]?!!%' ESCAPE '!')"
+name HasPrefix [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\"::text LIKE $1 ESCAPE '!'"
+  params: [{"t":"text","v":"50!%!_off*[x]?!!%"}]
+  preview: "\"name\"::text LIKE '50!%!_off*[x]?!!%' ESCAPE '!'"
+any column HasPrefix [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(\"id\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE $1 ESCAPE '!')"
+  params: [{"t":"text","v":"50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(\"id\"::text, '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!')"
+name HasSuffix [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\"::text LIKE $1 ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!"}]
+  preview: "\"name\"::text LIKE '%50!%!_off*[x]?!!' ESCAPE '!'"
+any column HasSuffix [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(\"id\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE $1 ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!"}]
+  preview: "(COALESCE(\"id\"::text, '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!')"
+name HasPrefixCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\"::text ILIKE $1 ESCAPE '!'"
+  params: [{"t":"text","v":"50!%!_off*[x]?!!%"}]
+  preview: "\"name\"::text ILIKE '50!%!_off*[x]?!!%' ESCAPE '!'"
+any column HasPrefixCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(\"id\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"name\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"age\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"status\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"price\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"payload\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"code\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"created\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"tags\"::text, '') ILIKE $1 ESCAPE '!')"
+  params: [{"t":"text","v":"50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(\"id\"::text, '') ILIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"name\"::text, '') ILIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"age\"::text, '') ILIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"status\"::text, '') ILIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"price\"::text, '') ILIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"payload\"::text, '') ILIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"code\"::text, '') ILIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') ILIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"created\"::text, '') ILIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(\"tags\"::text, '') ILIKE '50!%!_off*[x]?!!%' ESCAPE '!')"
+name HasSuffixCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\"::text ILIKE $1 ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!"}]
+  preview: "\"name\"::text ILIKE '%50!%!_off*[x]?!!' ESCAPE '!'"
+any column HasSuffixCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(\"id\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"name\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"age\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"status\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"price\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"payload\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"code\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"created\"::text, '') ILIKE $1 ESCAPE '!' OR COALESCE(\"tags\"::text, '') ILIKE $1 ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!"}]
+  preview: "(COALESCE(\"id\"::text, '') ILIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"name\"::text, '') ILIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"age\"::text, '') ILIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"status\"::text, '') ILIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"price\"::text, '') ILIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"payload\"::text, '') ILIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"code\"::text, '') ILIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') ILIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"created\"::text, '') ILIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(\"tags\"::text, '') ILIKE '%50!%!_off*[x]?!!' ESCAPE '!')"
+name Ilike [{"t":"text","v":"%bo_b%"}]
+  sql: "\"name\"::text ILIKE $1"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "\"name\"::text ILIKE '%bo_b%'"
+any column Ilike [{"t":"text","v":"%bo_b%"}]
+  sql: "(COALESCE(\"id\"::text, '') ILIKE $1 OR COALESCE(\"name\"::text, '') ILIKE $1 OR COALESCE(\"age\"::text, '') ILIKE $1 OR COALESCE(\"status\"::text, '') ILIKE $1 OR COALESCE(\"price\"::text, '') ILIKE $1 OR COALESCE(\"payload\"::text, '') ILIKE $1 OR COALESCE(\"code\"::text, '') ILIKE $1 OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') ILIKE $1 OR COALESCE(\"created\"::text, '') ILIKE $1 OR COALESCE(\"tags\"::text, '') ILIKE $1)"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "(COALESCE(\"id\"::text, '') ILIKE '%bo_b%' OR COALESCE(\"name\"::text, '') ILIKE '%bo_b%' OR COALESCE(\"age\"::text, '') ILIKE '%bo_b%' OR COALESCE(\"status\"::text, '') ILIKE '%bo_b%' OR COALESCE(\"price\"::text, '') ILIKE '%bo_b%' OR COALESCE(\"payload\"::text, '') ILIKE '%bo_b%' OR COALESCE(\"code\"::text, '') ILIKE '%bo_b%' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') ILIKE '%bo_b%' OR COALESCE(\"created\"::text, '') ILIKE '%bo_b%' OR COALESCE(\"tags\"::text, '') ILIKE '%bo_b%')"
+payload JsonContains [{"t":"text","v":"{\"a\":1}"}]
+  sql: "\"payload\"::jsonb @> $1::jsonb"
+  params: [{"t":"text","v":"{\"a\":1}"}]
+  preview: "\"payload\"::jsonb @> '{\"a\":1}'::jsonb"
+any column JsonContains [{"t":"text","v":"{\"a\":1}"}]
+  sql: "\"payload\"::jsonb @> $1::jsonb"
+  params: [{"t":"text","v":"{\"a\":1}"}]
+  preview: "\"payload\"::jsonb @> '{\"a\":1}'::jsonb"
+payload JsonNotContains [{"t":"text","v":"{\"a\":1}"}]
+  sql: "NOT (\"payload\"::jsonb @> $1::jsonb)"
+  params: [{"t":"text","v":"{\"a\":1}"}]
+  preview: "NOT (\"payload\"::jsonb @> '{\"a\":1}'::jsonb)"
+any column JsonNotContains [{"t":"text","v":"{\"a\":1}"}]
+  sql: "NOT (\"payload\"::jsonb @> $1::jsonb)"
+  params: [{"t":"text","v":"{\"a\":1}"}]
+  preview: "NOT (\"payload\"::jsonb @> '{\"a\":1}'::jsonb)"
+empty IN
+  sql: "1 = 0"
+empty NOT IN
+  sql: "1 = 1"
+any column, empty IN
+  sql: "(1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0)"
+any column IN, values bound once where they can repeat
+  sql: "(COALESCE(\"id\"::text, '') IN ($1::text, $2::text) OR COALESCE(\"name\"::text, '') IN ($1::text, $2::text) OR COALESCE(\"age\"::text, '') IN ($1::text, $2::text) OR COALESCE(\"status\"::text, '') IN ($1::text, $2::text) OR COALESCE(\"price\"::text, '') IN ($1::text, $2::text) OR COALESCE(\"payload\"::text, '') IN ($1::text, $2::text) OR COALESCE(\"code\"::text, '') IN ($1::text, $2::text) OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') IN ($1::text, $2::text) OR COALESCE(\"created\"::text, '') IN ($1::text, $2::text) OR COALESCE(\"tags\"::text, '') IN ($1::text, $2::text))"
+  params: [{"t":"text","v":"a"},{"t":"text","v":"2"}]
+  preview: "(COALESCE(\"id\"::text, '') IN ('a'::text, '2'::text) OR COALESCE(\"name\"::text, '') IN ('a'::text, '2'::text) OR COALESCE(\"age\"::text, '') IN ('a'::text, '2'::text) OR COALESCE(\"status\"::text, '') IN ('a'::text, '2'::text) OR COALESCE(\"price\"::text, '') IN ('a'::text, '2'::text) OR COALESCE(\"payload\"::text, '') IN ('a'::text, '2'::text) OR COALESCE(\"code\"::text, '') IN ('a'::text, '2'::text) OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') IN ('a'::text, '2'::text) OR COALESCE(\"created\"::text, '') IN ('a'::text, '2'::text) OR COALESCE(\"tags\"::text, '') IN ('a'::text, '2'::text))"
+BETWEEN with one value
+  error INVALID_INPUT "filter on \"price\" needs 2 value(s)"
+unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+= NULL
+  sql: "\"age\" = $1::integer"
+  params: [{"t":"null"}]
+  preview: "\"age\" = NULL::integer"
+domain column
+  sql: "\"code\" = $1::character varying"
+  params: [{"t":"text","v":"x"}]
+  preview: "\"code\" = 'x'::character varying"
+timestamptz column
+  sql: "\"created\" > $1::timestamp with time zone"
+  params: [{"t":"timestampTz","v":"2024-01-01 00:00:00+00"}]
+  preview: "\"created\" > '2024-01-01 00:00:00+00'::timestamp with time zone"
+array column
+  sql: "\"tags\" = $1::text[]"
+  params: [{"t":"text","v":"{a,b}"}]
+  preview: "\"tags\" = '{a,b}'::text[]"
+enum column
+  sql: "\"status\" <> $1::user_status"
+  params: [{"t":"text","v":"gone"}]
+  preview: "\"status\" <> 'gone'::user_status"
+quoted name
+  sql: "\"Odd \"\"Name\"\"\" = $1::text"
+  params: [{"t":"text","v":"y"}]
+  preview: "\"Odd \"\"Name\"\"\" = 'y'::text"
+bytes column
+  sql: "\"data\" IS NULL"
+pattern on bytes
+  sql: "\"data\"::text LIKE $1 ESCAPE '!'"
+  params: [{"t":"text","v":"%ab%"}]
+  preview: "\"data\"::text LIKE '%ab%' ESCAPE '!'"
+JSON contains on a text column
+  error INVALID_INPUT "JSON contains needs a json / jsonb column; \"name\" is not one"
+pattern without a value
+  error INVALID_INPUT "filter on \"name\" needs a value"
+raw fragment
+  sql: "(age > 1)"
+blank raw fragment
+  where: none
+nested groups
+  sql: "(\"status\" = $1::user_status AND \"age\" >= $2::integer) OR \"name\"::text LIKE $3 OR (age > 1) OR (COALESCE(\"id\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE $4 ESCAPE '!')"
+  params: [{"t":"text","v":"active"},{"t":"int","v":18},{"t":"text","v":"%bob%"},{"t":"text","v":"%x%"}]
+  preview: "(\"status\" = 'active'::user_status AND \"age\" >= 18::integer) OR \"name\"::text LIKE '%bob%' OR (age > 1) OR (COALESCE(\"id\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE '%x%' ESCAPE '!')"
+empty group
+  where: none
+IN with 32001 values
+  32001 params, 500918 bytes, sha256 ddb863792d0e59886897d454e3db99c303bc7e5e4610eba880023a0a5643e5b6
+any column IN with 6001 values
+  6001 params, 769412 bytes, sha256 2bb022fcd52563bdbdb0da143b8d7d7517222691eb96722c3892f0cb51178bcc
+
+## postgres select
+all columns
+  sql: "SELECT \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\"\nFROM \"app\".\"users\" ORDER BY \"id\" ASC\nLIMIT 200 OFFSET 400"
+subset, two sorts, nested filter, no schema
+  sql: "SELECT \"name\"::text AS \"name\", \"age\"::text AS \"age\"\nFROM \"users\"\nWHERE (\"status\" = $1::user_status AND \"age\" >= $2::integer) OR \"name\"::text LIKE $3 OR (age > 1) OR (COALESCE(\"id\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE $4 ESCAPE '!') ORDER BY \"name\" DESC NULLS LAST, \"age\" ASC NULLS FIRST\nLIMIT 50 OFFSET 0"
+  params: [{"t":"text","v":"active"},{"t":"int","v":18},{"t":"text","v":"%bob%"},{"t":"text","v":"%x%"}]
+  preview: "SELECT \"name\"::text AS \"name\", \"age\"::text AS \"age\"\nFROM \"users\"\nWHERE (\"status\" = 'active'::user_status AND \"age\" >= 18::integer) OR \"name\"::text LIKE '%bob%' OR (age > 1) OR (COALESCE(\"id\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE '%x%' ESCAPE '!') ORDER BY \"name\" DESC NULLS LAST, \"age\" ASC NULLS FIRST\nLIMIT 50 OFFSET 0"
+sort [{"column":"age","dir":"asc","nulls":null}]
+  sql: "SELECT \"id\"::text AS \"id\"\nFROM \"app\".\"users\" ORDER BY \"age\" ASC\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"asc","nulls":"first"}]
+  sql: "SELECT \"id\"::text AS \"id\"\nFROM \"app\".\"users\" ORDER BY \"age\" ASC NULLS FIRST\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"asc","nulls":"last"}]
+  sql: "SELECT \"id\"::text AS \"id\"\nFROM \"app\".\"users\" ORDER BY \"age\" ASC NULLS LAST\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"desc","nulls":null}]
+  sql: "SELECT \"id\"::text AS \"id\"\nFROM \"app\".\"users\" ORDER BY \"age\" DESC\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"desc","nulls":"first"}]
+  sql: "SELECT \"id\"::text AS \"id\"\nFROM \"app\".\"users\" ORDER BY \"age\" DESC NULLS FIRST\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"desc","nulls":"last"}]
+  sql: "SELECT \"id\"::text AS \"id\"\nFROM \"app\".\"users\" ORDER BY \"age\" DESC NULLS LAST\nLIMIT 100 OFFSET 0"
+sort [{"column":"status","dir":"asc","nulls":null},{"column":"Odd \"Name\"","dir":"desc","nulls":null}]
+  sql: "SELECT \"id\"::text AS \"id\"\nFROM \"app\".\"users\" ORDER BY \"status\" ASC, \"Odd \"\"Name\"\"\" DESC\nLIMIT 100 OFFSET 0"
+pk ["id"] identity Pk
+  sql: "SELECT \"name\"::text AS \"name\"\nFROM \"app\".\"users\" ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+pk ["id","name"] identity Pk
+  sql: "SELECT \"name\"::text AS \"name\"\nFROM \"app\".\"users\" ORDER BY \"id\" ASC, \"name\" ASC\nLIMIT 100 OFFSET 0"
+pk [] identity Rowid
+  sql: "SELECT \"name\"::text AS \"name\"\nFROM \"app\".\"users\"\nLIMIT 100 OFFSET 0"
+pk [] identity None
+  sql: "SELECT \"name\"::text AS \"name\"\nFROM \"app\".\"users\"\nLIMIT 100 OFFSET 0"
+pk ["id"] identity Rowid
+  sql: "SELECT \"name\"::text AS \"name\"\nFROM \"app\".\"users\" ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+pk [] identity Pk
+  sql: "SELECT \"name\"::text AS \"name\"\nFROM \"app\".\"users\"\nLIMIT 100 OFFSET 0"
+all columns, any column contains
+  sql: "SELECT \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\"\nFROM \"app\".\"users\"\nWHERE (COALESCE(\"id\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE $1 ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE $1 ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+  params: [{"t":"text","v":"%x%"}]
+  preview: "SELECT \"id\"::text AS \"id\", \"name\"::text AS \"name\", \"age\"::text AS \"age\", \"status\"::text AS \"status\", \"price\"::text AS \"price\", \"payload\"::text AS \"payload\", \"data\"::text AS \"data\", \"geom\"::text AS \"geom\", \"code\"::text AS \"code\", \"Odd \"\"Name\"\"\"::text AS \"Odd \"\"Name\"\"\", \"created\"::text AS \"created\", \"tags\"::text AS \"tags\"\nFROM \"app\".\"users\"\nWHERE (COALESCE(\"id\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE '%x%' ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+unknown selected column
+  error INVALID_INPUT "unknown column \"nope\""
+empty selection
+  error INVALID_INPUT "no columns to select"
+unknown sort column
+  error INVALID_INPUT "unknown column \"nope\""
+
+## postgres count
+no filter
+  sql: "SELECT count(*) FROM \"app\".\"users\""
+nested filter, no schema
+  sql: "SELECT count(*) FROM \"users\" WHERE (\"status\" = $1::user_status AND \"age\" >= $2::integer) OR \"name\"::text LIKE $3 OR (age > 1) OR (COALESCE(\"id\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE $4 ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE $4 ESCAPE '!')"
+  params: [{"t":"text","v":"active"},{"t":"int","v":18},{"t":"text","v":"%bob%"},{"t":"text","v":"%x%"}]
+  preview: "SELECT count(*) FROM \"users\" WHERE (\"status\" = 'active'::user_status AND \"age\" >= 18::integer) OR \"name\"::text LIKE '%bob%' OR (age > 1) OR (COALESCE(\"id\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"name\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"age\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"status\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"price\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"payload\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"code\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"Odd \"\"Name\"\"\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"created\"::text, '') LIKE '%x%' ESCAPE '!' OR COALESCE(\"tags\"::text, '') LIKE '%x%' ESCAPE '!')"
+
+## mysql conditions
+age Eq [{"t":"int","v":18}]
+  sql: "`age` = ?"
+  params: [{"t":"int","v":18}]
+  preview: "`age` = 18"
+any column Eq [{"t":"int","v":18}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') = ? OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') = ? OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') = ? OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') = ? OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') = ? OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') = ? OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') = ? OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') = ? OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') = ? OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') = ?)"
+  params: [{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') = '18' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') = '18' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') = '18' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') = '18' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') = '18' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') = '18' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') = '18' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') = '18' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') = '18' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') = '18')"
+age Ne [{"t":"int","v":18}]
+  sql: "`age` <> ?"
+  params: [{"t":"int","v":18}]
+  preview: "`age` <> 18"
+any column Ne [{"t":"int","v":18}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') <> ? AND COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') <> ? AND COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') <> ? AND COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') <> ? AND COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') <> ? AND COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') <> ? AND COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') <> ? AND COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') <> ? AND COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') <> ? AND COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') <> ?)"
+  params: [{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') <> '18' AND COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') <> '18' AND COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') <> '18' AND COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') <> '18' AND COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') <> '18' AND COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') <> '18' AND COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') <> '18' AND COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') <> '18' AND COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') <> '18' AND COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') <> '18')"
+age Gt [{"t":"int","v":18}]
+  sql: "`age` > ?"
+  params: [{"t":"int","v":18}]
+  preview: "`age` > 18"
+any column Gt [{"t":"int","v":18}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') > ? OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') > ? OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') > ? OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') > ? OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') > ? OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') > ? OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') > ? OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') > ? OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') > ? OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') > ?)"
+  params: [{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') > '18' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') > '18' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') > '18' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') > '18' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') > '18' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') > '18' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') > '18' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') > '18' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') > '18' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') > '18')"
+age Lt [{"t":"int","v":18}]
+  sql: "`age` < ?"
+  params: [{"t":"int","v":18}]
+  preview: "`age` < 18"
+any column Lt [{"t":"int","v":18}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') < ? OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') < ? OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') < ? OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') < ? OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') < ? OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') < ? OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') < ? OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') < ? OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') < ? OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') < ?)"
+  params: [{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') < '18' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') < '18' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') < '18' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') < '18' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') < '18' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') < '18' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') < '18' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') < '18' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') < '18' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') < '18')"
+age Ge [{"t":"int","v":18}]
+  sql: "`age` >= ?"
+  params: [{"t":"int","v":18}]
+  preview: "`age` >= 18"
+any column Ge [{"t":"int","v":18}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') >= ? OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') >= ? OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') >= ? OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') >= ? OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') >= ? OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') >= ? OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') >= ? OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') >= ? OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') >= ? OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') >= ?)"
+  params: [{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') >= '18' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') >= '18' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') >= '18' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') >= '18' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') >= '18' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') >= '18' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') >= '18' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') >= '18' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') >= '18' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') >= '18')"
+age Le [{"t":"int","v":18}]
+  sql: "`age` <= ?"
+  params: [{"t":"int","v":18}]
+  preview: "`age` <= 18"
+any column Le [{"t":"int","v":18}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') <= ? OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') <= ? OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') <= ? OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') <= ? OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') <= ? OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') <= ? OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') <= ? OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') <= ? OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') <= ? OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') <= ?)"
+  params: [{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"},{"t":"text","v":"18"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') <= '18' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') <= '18' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') <= '18' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') <= '18' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') <= '18' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') <= '18' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') <= '18' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') <= '18' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') <= '18' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') <= '18')"
+name Like [{"t":"text","v":"%bo_b%"}]
+  sql: "`name` LIKE ?"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "`name` LIKE '%bo_b%'"
+any column Like [{"t":"text","v":"%bo_b%"}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE ?)"
+  params: [{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%bo_b%' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%bo_b%' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%bo_b%' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%bo_b%' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%bo_b%' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%bo_b%' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%bo_b%' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%bo_b%' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%bo_b%' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%bo_b%')"
+name NotLike [{"t":"text","v":"%bo_b%"}]
+  sql: "`name` NOT LIKE ?"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "`name` NOT LIKE '%bo_b%'"
+any column NotLike [{"t":"text","v":"%bo_b%"}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? AND COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? AND COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? AND COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? AND COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? AND COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? AND COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? AND COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? AND COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? AND COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ?)"
+  params: [{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"},{"t":"text","v":"%bo_b%"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%bo_b%')"
+id In [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  sql: "`id` IN (?, ?, ?)"
+  params: [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  preview: "`id` IN (1, 2, 3)"
+any column In [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?, ?) OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?, ?) OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?, ?) OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?, ?) OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?, ?) OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?, ?) OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?, ?) OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?, ?) OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?, ?) OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?, ?))"
+  params: [{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') IN ('1', '2', '3') OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') IN ('1', '2', '3') OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') IN ('1', '2', '3') OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') IN ('1', '2', '3') OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') IN ('1', '2', '3') OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') IN ('1', '2', '3') OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') IN ('1', '2', '3') OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') IN ('1', '2', '3') OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') IN ('1', '2', '3') OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') IN ('1', '2', '3'))"
+id NotIn [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  sql: "`id` NOT IN (?, ?, ?)"
+  params: [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  preview: "`id` NOT IN (1, 2, 3)"
+any column NotIn [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') NOT IN (?, ?, ?) AND COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') NOT IN (?, ?, ?) AND COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') NOT IN (?, ?, ?) AND COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') NOT IN (?, ?, ?) AND COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') NOT IN (?, ?, ?) AND COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') NOT IN (?, ?, ?) AND COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') NOT IN (?, ?, ?) AND COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') NOT IN (?, ?, ?) AND COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') NOT IN (?, ?, ?) AND COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') NOT IN (?, ?, ?))"
+  params: [{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"},{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') NOT IN ('1', '2', '3'))"
+name IsNull []
+  sql: "`name` IS NULL"
+any column IsNull []
+  sql: "(`id` IS NULL OR `name` IS NULL OR `age` IS NULL OR `status` IS NULL OR `price` IS NULL OR `payload` IS NULL OR `code` IS NULL OR `Odd \"Name\"` IS NULL OR `created` IS NULL OR `tags` IS NULL)"
+name IsNotNull []
+  sql: "`name` IS NOT NULL"
+any column IsNotNull []
+  sql: "(`id` IS NOT NULL OR `name` IS NOT NULL OR `age` IS NOT NULL OR `status` IS NOT NULL OR `price` IS NOT NULL OR `payload` IS NOT NULL OR `code` IS NOT NULL OR `Odd \"Name\"` IS NOT NULL OR `created` IS NOT NULL OR `tags` IS NOT NULL)"
+price Between [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  sql: "`price` BETWEEN ? AND ?"
+  params: [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  preview: "`price` BETWEEN 1.50 AND 9.99"
+any column Between [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN ? AND ? OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN ? AND ? OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN ? AND ? OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN ? AND ? OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN ? AND ? OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN ? AND ? OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN ? AND ? OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN ? AND ? OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN ? AND ? OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN ? AND ?)"
+  params: [{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') BETWEEN '1.50' AND '9.99')"
+price NotBetween [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  sql: "`price` NOT BETWEEN ? AND ?"
+  params: [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  preview: "`price` NOT BETWEEN 1.50 AND 9.99"
+any column NotBetween [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN ? AND ? AND COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN ? AND ? AND COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN ? AND ? AND COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN ? AND ? AND COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN ? AND ? AND COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN ? AND ? AND COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN ? AND ? AND COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN ? AND ? AND COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN ? AND ? AND COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN ? AND ?)"
+  params: [{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"},{"t":"text","v":"1.50"},{"t":"text","v":"9.99"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') NOT BETWEEN '1.50' AND '9.99')"
+name Contains [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "`name` LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "`name` LIKE '%50!%!_off*[x]?!!%' ESCAPE '!'"
+any column Contains [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!')"
+name NotContains [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "`name` NOT LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "`name` NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!'"
+any column NotContains [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE ? ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!')"
+name ContainsCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "CAST(`name` AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "CAST(`name` AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!%' ESCAPE '!'"
+any column ContainsCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!%' ESCAPE '!')"
+name NotContainsCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "CAST(`name` AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin NOT LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "CAST(`name` AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!'"
+any column NotContainsCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE ? ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"},{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!')"
+name HasPrefix [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "`name` LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"50!%!_off*[x]?!!%"}]
+  preview: "`name` LIKE '50!%!_off*[x]?!!%' ESCAPE '!'"
+any column HasPrefix [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!')"
+  params: [{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!')"
+name HasSuffix [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "`name` LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!"}]
+  preview: "`name` LIKE '%50!%!_off*[x]?!!' ESCAPE '!'"
+any column HasSuffix [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!')"
+name HasPrefixCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "CAST(`name` AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"50!%!_off*[x]?!!%"}]
+  preview: "CAST(`name` AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin LIKE '50!%!_off*[x]?!!%' ESCAPE '!'"
+any column HasPrefixCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!')"
+  params: [{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"},{"t":"text","v":"50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '50!%!_off*[x]?!!%' ESCAPE '!')"
+name HasSuffixCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "CAST(`name` AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!"}]
+  preview: "CAST(`name` AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!' ESCAPE '!'"
+any column HasSuffixCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE ? ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"},{"t":"text","v":"%50!%!_off*[x]?!!"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') COLLATE utf8mb4_bin LIKE '%50!%!_off*[x]?!!' ESCAPE '!')"
+name Ilike [{"t":"text","v":"%bo_b%"}]
+  error INVALID_INPUT "ILIKE is a PostgreSQL operator"
+any column Ilike [{"t":"text","v":"%bo_b%"}]
+  error INVALID_INPUT "ILIKE is a PostgreSQL operator"
+payload JsonContains [{"t":"text","v":"{\"a\":1}"}]
+  error INVALID_INPUT "JSON contains works on PostgreSQL json / jsonb columns only"
+any column JsonContains [{"t":"text","v":"{\"a\":1}"}]
+  error INVALID_INPUT "JSON contains works on PostgreSQL json / jsonb columns only"
+payload JsonNotContains [{"t":"text","v":"{\"a\":1}"}]
+  error INVALID_INPUT "JSON contains works on PostgreSQL json / jsonb columns only"
+any column JsonNotContains [{"t":"text","v":"{\"a\":1}"}]
+  error INVALID_INPUT "JSON contains works on PostgreSQL json / jsonb columns only"
+empty IN
+  sql: "1 = 0"
+empty NOT IN
+  sql: "1 = 1"
+any column, empty IN
+  sql: "(1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0)"
+any column IN, values bound once where they can repeat
+  sql: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?) OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?) OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?) OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?) OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?) OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?) OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?) OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?) OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?) OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') IN (?, ?))"
+  params: [{"t":"text","v":"a"},{"t":"text","v":"2"},{"t":"text","v":"a"},{"t":"text","v":"2"},{"t":"text","v":"a"},{"t":"text","v":"2"},{"t":"text","v":"a"},{"t":"text","v":"2"},{"t":"text","v":"a"},{"t":"text","v":"2"},{"t":"text","v":"a"},{"t":"text","v":"2"},{"t":"text","v":"a"},{"t":"text","v":"2"},{"t":"text","v":"a"},{"t":"text","v":"2"},{"t":"text","v":"a"},{"t":"text","v":"2"},{"t":"text","v":"a"},{"t":"text","v":"2"}]
+  preview: "(COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') IN ('a', '2') OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') IN ('a', '2') OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') IN ('a', '2') OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') IN ('a', '2') OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') IN ('a', '2') OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') IN ('a', '2') OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') IN ('a', '2') OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') IN ('a', '2') OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') IN ('a', '2') OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') IN ('a', '2'))"
+BETWEEN with one value
+  error INVALID_INPUT "filter on \"price\" needs 2 value(s)"
+unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+= NULL
+  sql: "`age` = ?"
+  params: [{"t":"null"}]
+  preview: "`age` = NULL"
+domain column
+  sql: "`code` = ?"
+  params: [{"t":"text","v":"x"}]
+  preview: "`code` = 'x'"
+timestamptz column
+  sql: "`created` > ?"
+  params: [{"t":"timestampTz","v":"2024-01-01 00:00:00+00"}]
+  preview: "`created` > '2024-01-01 00:00:00+00'"
+array column
+  sql: "`tags` = ?"
+  params: [{"t":"text","v":"{a,b}"}]
+  preview: "`tags` = '{a,b}'"
+enum column
+  sql: "`status` <> ?"
+  params: [{"t":"text","v":"gone"}]
+  preview: "`status` <> 'gone'"
+quoted name
+  sql: "`Odd \"Name\"` = ?"
+  params: [{"t":"text","v":"y"}]
+  preview: "`Odd \"Name\"` = 'y'"
+bytes column
+  sql: "`data` IS NULL"
+pattern on bytes
+  sql: "`data` LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%ab%"}]
+  preview: "`data` LIKE '%ab%' ESCAPE '!'"
+JSON contains on a text column
+  error INVALID_INPUT "JSON contains works on PostgreSQL json / jsonb columns only"
+pattern without a value
+  error INVALID_INPUT "filter on \"name\" needs a value"
+raw fragment
+  sql: "(age > 1)"
+blank raw fragment
+  where: none
+nested groups
+  sql: "(`status` = ? AND `age` >= ?) OR `name` LIKE ? OR (age > 1) OR (COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!')"
+  params: [{"t":"text","v":"active"},{"t":"int","v":18},{"t":"text","v":"%bob%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"}]
+  preview: "(`status` = 'active' AND `age` >= 18) OR `name` LIKE '%bob%' OR (age > 1) OR (COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!')"
+empty group
+  where: none
+IN with 32001 values
+  32001 params, 96011 bytes, sha256 d503921c272afdd202d912d61e846d640a9d8a1e26e99267981383f99749c45d
+any column IN with 6001 values
+  error INVALID_INPUT "the filter needs 60010 values, more than one query can bind (60000): use fewer values or filter one column instead of Any column"
+
+## mysql select
+all columns
+  sql: "SELECT `id`, `name`, `age`, `status`, `price`, `payload`, `data`, `geom`, `code`, `Odd \"Name\"`, `created`, `tags`\nFROM `app`.`users` ORDER BY `id` ASC\nLIMIT 200 OFFSET 400"
+subset, two sorts, nested filter, no schema
+  sql: "SELECT `name`, `age`\nFROM `users`\nWHERE (`status` = ? AND `age` >= ?) OR `name` LIKE ? OR (age > 1) OR (COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!') ORDER BY (`name` IS NULL) ASC, `name` DESC, (`age` IS NULL) DESC, `age` ASC\nLIMIT 50 OFFSET 0"
+  params: [{"t":"text","v":"active"},{"t":"int","v":18},{"t":"text","v":"%bob%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"}]
+  preview: "SELECT `name`, `age`\nFROM `users`\nWHERE (`status` = 'active' AND `age` >= 18) OR `name` LIKE '%bob%' OR (age > 1) OR (COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!') ORDER BY (`name` IS NULL) ASC, `name` DESC, (`age` IS NULL) DESC, `age` ASC\nLIMIT 50 OFFSET 0"
+sort [{"column":"age","dir":"asc","nulls":null}]
+  sql: "SELECT `id`\nFROM `app`.`users` ORDER BY `age` ASC\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"asc","nulls":"first"}]
+  sql: "SELECT `id`\nFROM `app`.`users` ORDER BY (`age` IS NULL) DESC, `age` ASC\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"asc","nulls":"last"}]
+  sql: "SELECT `id`\nFROM `app`.`users` ORDER BY (`age` IS NULL) ASC, `age` ASC\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"desc","nulls":null}]
+  sql: "SELECT `id`\nFROM `app`.`users` ORDER BY `age` DESC\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"desc","nulls":"first"}]
+  sql: "SELECT `id`\nFROM `app`.`users` ORDER BY (`age` IS NULL) DESC, `age` DESC\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"desc","nulls":"last"}]
+  sql: "SELECT `id`\nFROM `app`.`users` ORDER BY (`age` IS NULL) ASC, `age` DESC\nLIMIT 100 OFFSET 0"
+sort [{"column":"status","dir":"asc","nulls":null},{"column":"Odd \"Name\"","dir":"desc","nulls":null}]
+  sql: "SELECT `id`\nFROM `app`.`users` ORDER BY `status` ASC, `Odd \"Name\"` DESC\nLIMIT 100 OFFSET 0"
+pk ["id"] identity Pk
+  sql: "SELECT `name`\nFROM `app`.`users` ORDER BY `id` ASC\nLIMIT 100 OFFSET 0"
+pk ["id","name"] identity Pk
+  sql: "SELECT `name`\nFROM `app`.`users` ORDER BY `id` ASC, `name` ASC\nLIMIT 100 OFFSET 0"
+pk [] identity Rowid
+  sql: "SELECT `name`\nFROM `app`.`users`\nLIMIT 100 OFFSET 0"
+pk [] identity None
+  sql: "SELECT `name`\nFROM `app`.`users`\nLIMIT 100 OFFSET 0"
+pk ["id"] identity Rowid
+  sql: "SELECT `name`\nFROM `app`.`users` ORDER BY `id` ASC\nLIMIT 100 OFFSET 0"
+pk [] identity Pk
+  sql: "SELECT `name`\nFROM `app`.`users`\nLIMIT 100 OFFSET 0"
+all columns, any column contains
+  sql: "SELECT `id`, `name`, `age`, `status`, `price`, `payload`, `data`, `geom`, `code`, `Odd \"Name\"`, `created`, `tags`\nFROM `app`.`users`\nWHERE (COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!') ORDER BY `id` ASC\nLIMIT 100 OFFSET 0"
+  params: [{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"}]
+  preview: "SELECT `id`, `name`, `age`, `status`, `price`, `payload`, `data`, `geom`, `code`, `Odd \"Name\"`, `created`, `tags`\nFROM `app`.`users`\nWHERE (COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!') ORDER BY `id` ASC\nLIMIT 100 OFFSET 0"
+unknown selected column
+  error INVALID_INPUT "unknown column \"nope\""
+empty selection
+  error INVALID_INPUT "no columns to select"
+unknown sort column
+  error INVALID_INPUT "unknown column \"nope\""
+
+## mysql count
+no filter
+  sql: "SELECT count(*) FROM `app`.`users`"
+nested filter, no schema
+  sql: "SELECT count(*) FROM `users` WHERE (`status` = ? AND `age` >= ?) OR `name` LIKE ? OR (age > 1) OR (COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE ? ESCAPE '!')"
+  params: [{"t":"text","v":"active"},{"t":"int","v":18},{"t":"text","v":"%bob%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"}]
+  preview: "SELECT count(*) FROM `users` WHERE (`status` = 'active' AND `age` >= 18) OR `name` LIKE '%bob%' OR (age > 1) OR (COALESCE(CAST(`id` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`name` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`age` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`status` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`price` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`payload` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`code` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`Odd \"Name\"` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`created` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(`tags` AS CHAR CHARACTER SET utf8mb4), '') LIKE '%x%' ESCAPE '!')"
+
+## sqlite conditions
+age Eq [{"t":"int","v":18}]
+  sql: "\"age\" = ?1"
+  params: [{"t":"int","v":18}]
+  preview: "\"age\" = 18"
+any column Eq [{"t":"int","v":18}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') = ?1 OR COALESCE(CAST(\"name\" AS TEXT), '') = ?1 OR COALESCE(CAST(\"age\" AS TEXT), '') = ?1 OR COALESCE(CAST(\"status\" AS TEXT), '') = ?1 OR COALESCE(CAST(\"price\" AS TEXT), '') = ?1 OR COALESCE(CAST(\"payload\" AS TEXT), '') = ?1 OR COALESCE(CAST(\"code\" AS TEXT), '') = ?1 OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') = ?1 OR COALESCE(CAST(\"created\" AS TEXT), '') = ?1 OR COALESCE(CAST(\"tags\" AS TEXT), '') = ?1)"
+  params: [{"t":"text","v":"18"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') = '18' OR COALESCE(CAST(\"name\" AS TEXT), '') = '18' OR COALESCE(CAST(\"age\" AS TEXT), '') = '18' OR COALESCE(CAST(\"status\" AS TEXT), '') = '18' OR COALESCE(CAST(\"price\" AS TEXT), '') = '18' OR COALESCE(CAST(\"payload\" AS TEXT), '') = '18' OR COALESCE(CAST(\"code\" AS TEXT), '') = '18' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') = '18' OR COALESCE(CAST(\"created\" AS TEXT), '') = '18' OR COALESCE(CAST(\"tags\" AS TEXT), '') = '18')"
+age Ne [{"t":"int","v":18}]
+  sql: "\"age\" <> ?1"
+  params: [{"t":"int","v":18}]
+  preview: "\"age\" <> 18"
+any column Ne [{"t":"int","v":18}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') <> ?1 AND COALESCE(CAST(\"name\" AS TEXT), '') <> ?1 AND COALESCE(CAST(\"age\" AS TEXT), '') <> ?1 AND COALESCE(CAST(\"status\" AS TEXT), '') <> ?1 AND COALESCE(CAST(\"price\" AS TEXT), '') <> ?1 AND COALESCE(CAST(\"payload\" AS TEXT), '') <> ?1 AND COALESCE(CAST(\"code\" AS TEXT), '') <> ?1 AND COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') <> ?1 AND COALESCE(CAST(\"created\" AS TEXT), '') <> ?1 AND COALESCE(CAST(\"tags\" AS TEXT), '') <> ?1)"
+  params: [{"t":"text","v":"18"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') <> '18' AND COALESCE(CAST(\"name\" AS TEXT), '') <> '18' AND COALESCE(CAST(\"age\" AS TEXT), '') <> '18' AND COALESCE(CAST(\"status\" AS TEXT), '') <> '18' AND COALESCE(CAST(\"price\" AS TEXT), '') <> '18' AND COALESCE(CAST(\"payload\" AS TEXT), '') <> '18' AND COALESCE(CAST(\"code\" AS TEXT), '') <> '18' AND COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') <> '18' AND COALESCE(CAST(\"created\" AS TEXT), '') <> '18' AND COALESCE(CAST(\"tags\" AS TEXT), '') <> '18')"
+age Gt [{"t":"int","v":18}]
+  sql: "\"age\" > ?1"
+  params: [{"t":"int","v":18}]
+  preview: "\"age\" > 18"
+any column Gt [{"t":"int","v":18}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') > ?1 OR COALESCE(CAST(\"name\" AS TEXT), '') > ?1 OR COALESCE(CAST(\"age\" AS TEXT), '') > ?1 OR COALESCE(CAST(\"status\" AS TEXT), '') > ?1 OR COALESCE(CAST(\"price\" AS TEXT), '') > ?1 OR COALESCE(CAST(\"payload\" AS TEXT), '') > ?1 OR COALESCE(CAST(\"code\" AS TEXT), '') > ?1 OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') > ?1 OR COALESCE(CAST(\"created\" AS TEXT), '') > ?1 OR COALESCE(CAST(\"tags\" AS TEXT), '') > ?1)"
+  params: [{"t":"text","v":"18"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') > '18' OR COALESCE(CAST(\"name\" AS TEXT), '') > '18' OR COALESCE(CAST(\"age\" AS TEXT), '') > '18' OR COALESCE(CAST(\"status\" AS TEXT), '') > '18' OR COALESCE(CAST(\"price\" AS TEXT), '') > '18' OR COALESCE(CAST(\"payload\" AS TEXT), '') > '18' OR COALESCE(CAST(\"code\" AS TEXT), '') > '18' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') > '18' OR COALESCE(CAST(\"created\" AS TEXT), '') > '18' OR COALESCE(CAST(\"tags\" AS TEXT), '') > '18')"
+age Lt [{"t":"int","v":18}]
+  sql: "\"age\" < ?1"
+  params: [{"t":"int","v":18}]
+  preview: "\"age\" < 18"
+any column Lt [{"t":"int","v":18}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') < ?1 OR COALESCE(CAST(\"name\" AS TEXT), '') < ?1 OR COALESCE(CAST(\"age\" AS TEXT), '') < ?1 OR COALESCE(CAST(\"status\" AS TEXT), '') < ?1 OR COALESCE(CAST(\"price\" AS TEXT), '') < ?1 OR COALESCE(CAST(\"payload\" AS TEXT), '') < ?1 OR COALESCE(CAST(\"code\" AS TEXT), '') < ?1 OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') < ?1 OR COALESCE(CAST(\"created\" AS TEXT), '') < ?1 OR COALESCE(CAST(\"tags\" AS TEXT), '') < ?1)"
+  params: [{"t":"text","v":"18"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') < '18' OR COALESCE(CAST(\"name\" AS TEXT), '') < '18' OR COALESCE(CAST(\"age\" AS TEXT), '') < '18' OR COALESCE(CAST(\"status\" AS TEXT), '') < '18' OR COALESCE(CAST(\"price\" AS TEXT), '') < '18' OR COALESCE(CAST(\"payload\" AS TEXT), '') < '18' OR COALESCE(CAST(\"code\" AS TEXT), '') < '18' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') < '18' OR COALESCE(CAST(\"created\" AS TEXT), '') < '18' OR COALESCE(CAST(\"tags\" AS TEXT), '') < '18')"
+age Ge [{"t":"int","v":18}]
+  sql: "\"age\" >= ?1"
+  params: [{"t":"int","v":18}]
+  preview: "\"age\" >= 18"
+any column Ge [{"t":"int","v":18}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') >= ?1 OR COALESCE(CAST(\"name\" AS TEXT), '') >= ?1 OR COALESCE(CAST(\"age\" AS TEXT), '') >= ?1 OR COALESCE(CAST(\"status\" AS TEXT), '') >= ?1 OR COALESCE(CAST(\"price\" AS TEXT), '') >= ?1 OR COALESCE(CAST(\"payload\" AS TEXT), '') >= ?1 OR COALESCE(CAST(\"code\" AS TEXT), '') >= ?1 OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') >= ?1 OR COALESCE(CAST(\"created\" AS TEXT), '') >= ?1 OR COALESCE(CAST(\"tags\" AS TEXT), '') >= ?1)"
+  params: [{"t":"text","v":"18"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') >= '18' OR COALESCE(CAST(\"name\" AS TEXT), '') >= '18' OR COALESCE(CAST(\"age\" AS TEXT), '') >= '18' OR COALESCE(CAST(\"status\" AS TEXT), '') >= '18' OR COALESCE(CAST(\"price\" AS TEXT), '') >= '18' OR COALESCE(CAST(\"payload\" AS TEXT), '') >= '18' OR COALESCE(CAST(\"code\" AS TEXT), '') >= '18' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') >= '18' OR COALESCE(CAST(\"created\" AS TEXT), '') >= '18' OR COALESCE(CAST(\"tags\" AS TEXT), '') >= '18')"
+age Le [{"t":"int","v":18}]
+  sql: "\"age\" <= ?1"
+  params: [{"t":"int","v":18}]
+  preview: "\"age\" <= 18"
+any column Le [{"t":"int","v":18}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') <= ?1 OR COALESCE(CAST(\"name\" AS TEXT), '') <= ?1 OR COALESCE(CAST(\"age\" AS TEXT), '') <= ?1 OR COALESCE(CAST(\"status\" AS TEXT), '') <= ?1 OR COALESCE(CAST(\"price\" AS TEXT), '') <= ?1 OR COALESCE(CAST(\"payload\" AS TEXT), '') <= ?1 OR COALESCE(CAST(\"code\" AS TEXT), '') <= ?1 OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') <= ?1 OR COALESCE(CAST(\"created\" AS TEXT), '') <= ?1 OR COALESCE(CAST(\"tags\" AS TEXT), '') <= ?1)"
+  params: [{"t":"text","v":"18"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') <= '18' OR COALESCE(CAST(\"name\" AS TEXT), '') <= '18' OR COALESCE(CAST(\"age\" AS TEXT), '') <= '18' OR COALESCE(CAST(\"status\" AS TEXT), '') <= '18' OR COALESCE(CAST(\"price\" AS TEXT), '') <= '18' OR COALESCE(CAST(\"payload\" AS TEXT), '') <= '18' OR COALESCE(CAST(\"code\" AS TEXT), '') <= '18' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') <= '18' OR COALESCE(CAST(\"created\" AS TEXT), '') <= '18' OR COALESCE(CAST(\"tags\" AS TEXT), '') <= '18')"
+name Like [{"t":"text","v":"%bo_b%"}]
+  sql: "\"name\" LIKE ?1"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "\"name\" LIKE '%bo_b%'"
+any column Like [{"t":"text","v":"%bo_b%"}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') LIKE ?1 OR COALESCE(CAST(\"name\" AS TEXT), '') LIKE ?1 OR COALESCE(CAST(\"age\" AS TEXT), '') LIKE ?1 OR COALESCE(CAST(\"status\" AS TEXT), '') LIKE ?1 OR COALESCE(CAST(\"price\" AS TEXT), '') LIKE ?1 OR COALESCE(CAST(\"payload\" AS TEXT), '') LIKE ?1 OR COALESCE(CAST(\"code\" AS TEXT), '') LIKE ?1 OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') LIKE ?1 OR COALESCE(CAST(\"created\" AS TEXT), '') LIKE ?1 OR COALESCE(CAST(\"tags\" AS TEXT), '') LIKE ?1)"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') LIKE '%bo_b%' OR COALESCE(CAST(\"name\" AS TEXT), '') LIKE '%bo_b%' OR COALESCE(CAST(\"age\" AS TEXT), '') LIKE '%bo_b%' OR COALESCE(CAST(\"status\" AS TEXT), '') LIKE '%bo_b%' OR COALESCE(CAST(\"price\" AS TEXT), '') LIKE '%bo_b%' OR COALESCE(CAST(\"payload\" AS TEXT), '') LIKE '%bo_b%' OR COALESCE(CAST(\"code\" AS TEXT), '') LIKE '%bo_b%' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') LIKE '%bo_b%' OR COALESCE(CAST(\"created\" AS TEXT), '') LIKE '%bo_b%' OR COALESCE(CAST(\"tags\" AS TEXT), '') LIKE '%bo_b%')"
+name NotLike [{"t":"text","v":"%bo_b%"}]
+  sql: "\"name\" NOT LIKE ?1"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "\"name\" NOT LIKE '%bo_b%'"
+any column NotLike [{"t":"text","v":"%bo_b%"}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') NOT LIKE ?1 AND COALESCE(CAST(\"name\" AS TEXT), '') NOT LIKE ?1 AND COALESCE(CAST(\"age\" AS TEXT), '') NOT LIKE ?1 AND COALESCE(CAST(\"status\" AS TEXT), '') NOT LIKE ?1 AND COALESCE(CAST(\"price\" AS TEXT), '') NOT LIKE ?1 AND COALESCE(CAST(\"payload\" AS TEXT), '') NOT LIKE ?1 AND COALESCE(CAST(\"code\" AS TEXT), '') NOT LIKE ?1 AND COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') NOT LIKE ?1 AND COALESCE(CAST(\"created\" AS TEXT), '') NOT LIKE ?1 AND COALESCE(CAST(\"tags\" AS TEXT), '') NOT LIKE ?1)"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(\"name\" AS TEXT), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(\"age\" AS TEXT), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(\"status\" AS TEXT), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(\"price\" AS TEXT), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(\"payload\" AS TEXT), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(\"code\" AS TEXT), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(\"created\" AS TEXT), '') NOT LIKE '%bo_b%' AND COALESCE(CAST(\"tags\" AS TEXT), '') NOT LIKE '%bo_b%')"
+id In [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  sql: "\"id\" IN (?1, ?2, ?3)"
+  params: [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  preview: "\"id\" IN (1, 2, 3)"
+any column In [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') IN (?1, ?2, ?3) OR COALESCE(CAST(\"name\" AS TEXT), '') IN (?1, ?2, ?3) OR COALESCE(CAST(\"age\" AS TEXT), '') IN (?1, ?2, ?3) OR COALESCE(CAST(\"status\" AS TEXT), '') IN (?1, ?2, ?3) OR COALESCE(CAST(\"price\" AS TEXT), '') IN (?1, ?2, ?3) OR COALESCE(CAST(\"payload\" AS TEXT), '') IN (?1, ?2, ?3) OR COALESCE(CAST(\"code\" AS TEXT), '') IN (?1, ?2, ?3) OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') IN (?1, ?2, ?3) OR COALESCE(CAST(\"created\" AS TEXT), '') IN (?1, ?2, ?3) OR COALESCE(CAST(\"tags\" AS TEXT), '') IN (?1, ?2, ?3))"
+  params: [{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') IN ('1', '2', '3') OR COALESCE(CAST(\"name\" AS TEXT), '') IN ('1', '2', '3') OR COALESCE(CAST(\"age\" AS TEXT), '') IN ('1', '2', '3') OR COALESCE(CAST(\"status\" AS TEXT), '') IN ('1', '2', '3') OR COALESCE(CAST(\"price\" AS TEXT), '') IN ('1', '2', '3') OR COALESCE(CAST(\"payload\" AS TEXT), '') IN ('1', '2', '3') OR COALESCE(CAST(\"code\" AS TEXT), '') IN ('1', '2', '3') OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') IN ('1', '2', '3') OR COALESCE(CAST(\"created\" AS TEXT), '') IN ('1', '2', '3') OR COALESCE(CAST(\"tags\" AS TEXT), '') IN ('1', '2', '3'))"
+id NotIn [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  sql: "\"id\" NOT IN (?1, ?2, ?3)"
+  params: [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  preview: "\"id\" NOT IN (1, 2, 3)"
+any column NotIn [{"t":"int","v":1},{"t":"int","v":2},{"t":"int","v":3}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') NOT IN (?1, ?2, ?3) AND COALESCE(CAST(\"name\" AS TEXT), '') NOT IN (?1, ?2, ?3) AND COALESCE(CAST(\"age\" AS TEXT), '') NOT IN (?1, ?2, ?3) AND COALESCE(CAST(\"status\" AS TEXT), '') NOT IN (?1, ?2, ?3) AND COALESCE(CAST(\"price\" AS TEXT), '') NOT IN (?1, ?2, ?3) AND COALESCE(CAST(\"payload\" AS TEXT), '') NOT IN (?1, ?2, ?3) AND COALESCE(CAST(\"code\" AS TEXT), '') NOT IN (?1, ?2, ?3) AND COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') NOT IN (?1, ?2, ?3) AND COALESCE(CAST(\"created\" AS TEXT), '') NOT IN (?1, ?2, ?3) AND COALESCE(CAST(\"tags\" AS TEXT), '') NOT IN (?1, ?2, ?3))"
+  params: [{"t":"text","v":"1"},{"t":"text","v":"2"},{"t":"text","v":"3"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(\"name\" AS TEXT), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(\"age\" AS TEXT), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(\"status\" AS TEXT), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(\"price\" AS TEXT), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(\"payload\" AS TEXT), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(\"code\" AS TEXT), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(\"created\" AS TEXT), '') NOT IN ('1', '2', '3') AND COALESCE(CAST(\"tags\" AS TEXT), '') NOT IN ('1', '2', '3'))"
+name IsNull []
+  sql: "\"name\" IS NULL"
+any column IsNull []
+  sql: "(\"id\" IS NULL OR \"name\" IS NULL OR \"age\" IS NULL OR \"status\" IS NULL OR \"price\" IS NULL OR \"payload\" IS NULL OR \"code\" IS NULL OR \"Odd \"\"Name\"\"\" IS NULL OR \"created\" IS NULL OR \"tags\" IS NULL)"
+name IsNotNull []
+  sql: "\"name\" IS NOT NULL"
+any column IsNotNull []
+  sql: "(\"id\" IS NOT NULL OR \"name\" IS NOT NULL OR \"age\" IS NOT NULL OR \"status\" IS NOT NULL OR \"price\" IS NOT NULL OR \"payload\" IS NOT NULL OR \"code\" IS NOT NULL OR \"Odd \"\"Name\"\"\" IS NOT NULL OR \"created\" IS NOT NULL OR \"tags\" IS NOT NULL)"
+price Between [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  sql: "\"price\" BETWEEN ?1 AND ?2"
+  params: [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  preview: "\"price\" BETWEEN 1.50 AND 9.99"
+any column Between [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') BETWEEN ?1 AND ?2 OR COALESCE(CAST(\"name\" AS TEXT), '') BETWEEN ?1 AND ?2 OR COALESCE(CAST(\"age\" AS TEXT), '') BETWEEN ?1 AND ?2 OR COALESCE(CAST(\"status\" AS TEXT), '') BETWEEN ?1 AND ?2 OR COALESCE(CAST(\"price\" AS TEXT), '') BETWEEN ?1 AND ?2 OR COALESCE(CAST(\"payload\" AS TEXT), '') BETWEEN ?1 AND ?2 OR COALESCE(CAST(\"code\" AS TEXT), '') BETWEEN ?1 AND ?2 OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') BETWEEN ?1 AND ?2 OR COALESCE(CAST(\"created\" AS TEXT), '') BETWEEN ?1 AND ?2 OR COALESCE(CAST(\"tags\" AS TEXT), '') BETWEEN ?1 AND ?2)"
+  params: [{"t":"text","v":"1.50"},{"t":"text","v":"9.99"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(\"name\" AS TEXT), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(\"age\" AS TEXT), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(\"status\" AS TEXT), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(\"price\" AS TEXT), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(\"payload\" AS TEXT), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(\"code\" AS TEXT), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(\"created\" AS TEXT), '') BETWEEN '1.50' AND '9.99' OR COALESCE(CAST(\"tags\" AS TEXT), '') BETWEEN '1.50' AND '9.99')"
+price NotBetween [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  sql: "\"price\" NOT BETWEEN ?1 AND ?2"
+  params: [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  preview: "\"price\" NOT BETWEEN 1.50 AND 9.99"
+any column NotBetween [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') NOT BETWEEN ?1 AND ?2 AND COALESCE(CAST(\"name\" AS TEXT), '') NOT BETWEEN ?1 AND ?2 AND COALESCE(CAST(\"age\" AS TEXT), '') NOT BETWEEN ?1 AND ?2 AND COALESCE(CAST(\"status\" AS TEXT), '') NOT BETWEEN ?1 AND ?2 AND COALESCE(CAST(\"price\" AS TEXT), '') NOT BETWEEN ?1 AND ?2 AND COALESCE(CAST(\"payload\" AS TEXT), '') NOT BETWEEN ?1 AND ?2 AND COALESCE(CAST(\"code\" AS TEXT), '') NOT BETWEEN ?1 AND ?2 AND COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') NOT BETWEEN ?1 AND ?2 AND COALESCE(CAST(\"created\" AS TEXT), '') NOT BETWEEN ?1 AND ?2 AND COALESCE(CAST(\"tags\" AS TEXT), '') NOT BETWEEN ?1 AND ?2)"
+  params: [{"t":"text","v":"1.50"},{"t":"text","v":"9.99"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(\"name\" AS TEXT), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(\"age\" AS TEXT), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(\"status\" AS TEXT), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(\"price\" AS TEXT), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(\"payload\" AS TEXT), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(\"code\" AS TEXT), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(\"created\" AS TEXT), '') NOT BETWEEN '1.50' AND '9.99' AND COALESCE(CAST(\"tags\" AS TEXT), '') NOT BETWEEN '1.50' AND '9.99')"
+name Contains [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "instr(\"name\", ?1) > 0"
+  params: [{"t":"text","v":"50%_off*[x]?!"}]
+  preview: "instr(\"name\", '50%_off*[x]?!') > 0"
+any column Contains [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(instr(COALESCE(CAST(\"id\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"name\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"age\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"status\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"price\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"payload\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"code\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"created\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"tags\" AS TEXT), ''), ?1) > 0)"
+  params: [{"t":"text","v":"50%_off*[x]?!"}]
+  preview: "(instr(COALESCE(CAST(\"id\" AS TEXT), ''), '50%_off*[x]?!') > 0 OR instr(COALESCE(CAST(\"name\" AS TEXT), ''), '50%_off*[x]?!') > 0 OR instr(COALESCE(CAST(\"age\" AS TEXT), ''), '50%_off*[x]?!') > 0 OR instr(COALESCE(CAST(\"status\" AS TEXT), ''), '50%_off*[x]?!') > 0 OR instr(COALESCE(CAST(\"price\" AS TEXT), ''), '50%_off*[x]?!') > 0 OR instr(COALESCE(CAST(\"payload\" AS TEXT), ''), '50%_off*[x]?!') > 0 OR instr(COALESCE(CAST(\"code\" AS TEXT), ''), '50%_off*[x]?!') > 0 OR instr(COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), ''), '50%_off*[x]?!') > 0 OR instr(COALESCE(CAST(\"created\" AS TEXT), ''), '50%_off*[x]?!') > 0 OR instr(COALESCE(CAST(\"tags\" AS TEXT), ''), '50%_off*[x]?!') > 0)"
+name NotContains [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "instr(\"name\", ?1) = 0"
+  params: [{"t":"text","v":"50%_off*[x]?!"}]
+  preview: "instr(\"name\", '50%_off*[x]?!') = 0"
+any column NotContains [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(instr(COALESCE(CAST(\"id\" AS TEXT), ''), ?1) = 0 AND instr(COALESCE(CAST(\"name\" AS TEXT), ''), ?1) = 0 AND instr(COALESCE(CAST(\"age\" AS TEXT), ''), ?1) = 0 AND instr(COALESCE(CAST(\"status\" AS TEXT), ''), ?1) = 0 AND instr(COALESCE(CAST(\"price\" AS TEXT), ''), ?1) = 0 AND instr(COALESCE(CAST(\"payload\" AS TEXT), ''), ?1) = 0 AND instr(COALESCE(CAST(\"code\" AS TEXT), ''), ?1) = 0 AND instr(COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), ''), ?1) = 0 AND instr(COALESCE(CAST(\"created\" AS TEXT), ''), ?1) = 0 AND instr(COALESCE(CAST(\"tags\" AS TEXT), ''), ?1) = 0)"
+  params: [{"t":"text","v":"50%_off*[x]?!"}]
+  preview: "(instr(COALESCE(CAST(\"id\" AS TEXT), ''), '50%_off*[x]?!') = 0 AND instr(COALESCE(CAST(\"name\" AS TEXT), ''), '50%_off*[x]?!') = 0 AND instr(COALESCE(CAST(\"age\" AS TEXT), ''), '50%_off*[x]?!') = 0 AND instr(COALESCE(CAST(\"status\" AS TEXT), ''), '50%_off*[x]?!') = 0 AND instr(COALESCE(CAST(\"price\" AS TEXT), ''), '50%_off*[x]?!') = 0 AND instr(COALESCE(CAST(\"payload\" AS TEXT), ''), '50%_off*[x]?!') = 0 AND instr(COALESCE(CAST(\"code\" AS TEXT), ''), '50%_off*[x]?!') = 0 AND instr(COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), ''), '50%_off*[x]?!') = 0 AND instr(COALESCE(CAST(\"created\" AS TEXT), ''), '50%_off*[x]?!') = 0 AND instr(COALESCE(CAST(\"tags\" AS TEXT), ''), '50%_off*[x]?!') = 0)"
+name ContainsCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\" LIKE ?1 ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "\"name\" LIKE '%50!%!_off*[x]?!!%' ESCAPE '!'"
+any column ContainsCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"name\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"age\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"status\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"price\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"payload\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"code\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"created\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"tags\" AS TEXT), '') LIKE ?1 ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"name\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"age\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"status\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"price\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"payload\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"code\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"created\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"tags\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!%' ESCAPE '!')"
+name NotContainsCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\" NOT LIKE ?1 ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "\"name\" NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!'"
+any column NotContainsCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') NOT LIKE ?1 ESCAPE '!' AND COALESCE(CAST(\"name\" AS TEXT), '') NOT LIKE ?1 ESCAPE '!' AND COALESCE(CAST(\"age\" AS TEXT), '') NOT LIKE ?1 ESCAPE '!' AND COALESCE(CAST(\"status\" AS TEXT), '') NOT LIKE ?1 ESCAPE '!' AND COALESCE(CAST(\"price\" AS TEXT), '') NOT LIKE ?1 ESCAPE '!' AND COALESCE(CAST(\"payload\" AS TEXT), '') NOT LIKE ?1 ESCAPE '!' AND COALESCE(CAST(\"code\" AS TEXT), '') NOT LIKE ?1 ESCAPE '!' AND COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') NOT LIKE ?1 ESCAPE '!' AND COALESCE(CAST(\"created\" AS TEXT), '') NOT LIKE ?1 ESCAPE '!' AND COALESCE(CAST(\"tags\" AS TEXT), '') NOT LIKE ?1 ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(\"name\" AS TEXT), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(\"age\" AS TEXT), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(\"status\" AS TEXT), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(\"price\" AS TEXT), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(\"payload\" AS TEXT), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(\"code\" AS TEXT), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(\"created\" AS TEXT), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!' AND COALESCE(CAST(\"tags\" AS TEXT), '') NOT LIKE '%50!%!_off*[x]?!!%' ESCAPE '!')"
+name HasPrefix [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\" GLOB ?1"
+  params: [{"t":"text","v":"50%_off[*][[]x][?]!*"}]
+  preview: "\"name\" GLOB '50%_off[*][[]x][?]!*'"
+any column HasPrefix [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"name\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"age\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"status\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"price\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"payload\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"code\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"created\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"tags\" AS TEXT), '') GLOB ?1)"
+  params: [{"t":"text","v":"50%_off[*][[]x][?]!*"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') GLOB '50%_off[*][[]x][?]!*' OR COALESCE(CAST(\"name\" AS TEXT), '') GLOB '50%_off[*][[]x][?]!*' OR COALESCE(CAST(\"age\" AS TEXT), '') GLOB '50%_off[*][[]x][?]!*' OR COALESCE(CAST(\"status\" AS TEXT), '') GLOB '50%_off[*][[]x][?]!*' OR COALESCE(CAST(\"price\" AS TEXT), '') GLOB '50%_off[*][[]x][?]!*' OR COALESCE(CAST(\"payload\" AS TEXT), '') GLOB '50%_off[*][[]x][?]!*' OR COALESCE(CAST(\"code\" AS TEXT), '') GLOB '50%_off[*][[]x][?]!*' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') GLOB '50%_off[*][[]x][?]!*' OR COALESCE(CAST(\"created\" AS TEXT), '') GLOB '50%_off[*][[]x][?]!*' OR COALESCE(CAST(\"tags\" AS TEXT), '') GLOB '50%_off[*][[]x][?]!*')"
+name HasSuffix [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\" GLOB ?1"
+  params: [{"t":"text","v":"*50%_off[*][[]x][?]!"}]
+  preview: "\"name\" GLOB '*50%_off[*][[]x][?]!'"
+any column HasSuffix [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"name\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"age\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"status\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"price\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"payload\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"code\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"created\" AS TEXT), '') GLOB ?1 OR COALESCE(CAST(\"tags\" AS TEXT), '') GLOB ?1)"
+  params: [{"t":"text","v":"*50%_off[*][[]x][?]!"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') GLOB '*50%_off[*][[]x][?]!' OR COALESCE(CAST(\"name\" AS TEXT), '') GLOB '*50%_off[*][[]x][?]!' OR COALESCE(CAST(\"age\" AS TEXT), '') GLOB '*50%_off[*][[]x][?]!' OR COALESCE(CAST(\"status\" AS TEXT), '') GLOB '*50%_off[*][[]x][?]!' OR COALESCE(CAST(\"price\" AS TEXT), '') GLOB '*50%_off[*][[]x][?]!' OR COALESCE(CAST(\"payload\" AS TEXT), '') GLOB '*50%_off[*][[]x][?]!' OR COALESCE(CAST(\"code\" AS TEXT), '') GLOB '*50%_off[*][[]x][?]!' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') GLOB '*50%_off[*][[]x][?]!' OR COALESCE(CAST(\"created\" AS TEXT), '') GLOB '*50%_off[*][[]x][?]!' OR COALESCE(CAST(\"tags\" AS TEXT), '') GLOB '*50%_off[*][[]x][?]!')"
+name HasPrefixCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\" LIKE ?1 ESCAPE '!'"
+  params: [{"t":"text","v":"50!%!_off*[x]?!!%"}]
+  preview: "\"name\" LIKE '50!%!_off*[x]?!!%' ESCAPE '!'"
+any column HasPrefixCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"name\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"age\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"status\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"price\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"payload\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"code\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"created\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"tags\" AS TEXT), '') LIKE ?1 ESCAPE '!')"
+  params: [{"t":"text","v":"50!%!_off*[x]?!!%"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"name\" AS TEXT), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"age\" AS TEXT), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"status\" AS TEXT), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"price\" AS TEXT), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"payload\" AS TEXT), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"code\" AS TEXT), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"created\" AS TEXT), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!' OR COALESCE(CAST(\"tags\" AS TEXT), '') LIKE '50!%!_off*[x]?!!%' ESCAPE '!')"
+name HasSuffixCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "\"name\" LIKE ?1 ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!"}]
+  preview: "\"name\" LIKE '%50!%!_off*[x]?!!' ESCAPE '!'"
+any column HasSuffixCase [{"t":"text","v":"50%_off*[x]?!"}]
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"name\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"age\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"status\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"price\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"payload\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"code\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"created\" AS TEXT), '') LIKE ?1 ESCAPE '!' OR COALESCE(CAST(\"tags\" AS TEXT), '') LIKE ?1 ESCAPE '!')"
+  params: [{"t":"text","v":"%50!%!_off*[x]?!!"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(\"name\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(\"age\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(\"status\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(\"price\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(\"payload\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(\"code\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(\"created\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!' OR COALESCE(CAST(\"tags\" AS TEXT), '') LIKE '%50!%!_off*[x]?!!' ESCAPE '!')"
+name Ilike [{"t":"text","v":"%bo_b%"}]
+  error INVALID_INPUT "ILIKE is a PostgreSQL operator"
+any column Ilike [{"t":"text","v":"%bo_b%"}]
+  error INVALID_INPUT "ILIKE is a PostgreSQL operator"
+payload JsonContains [{"t":"text","v":"{\"a\":1}"}]
+  error INVALID_INPUT "JSON contains works on PostgreSQL json / jsonb columns only"
+any column JsonContains [{"t":"text","v":"{\"a\":1}"}]
+  error INVALID_INPUT "JSON contains works on PostgreSQL json / jsonb columns only"
+payload JsonNotContains [{"t":"text","v":"{\"a\":1}"}]
+  error INVALID_INPUT "JSON contains works on PostgreSQL json / jsonb columns only"
+any column JsonNotContains [{"t":"text","v":"{\"a\":1}"}]
+  error INVALID_INPUT "JSON contains works on PostgreSQL json / jsonb columns only"
+empty IN
+  sql: "1 = 0"
+empty NOT IN
+  sql: "1 = 1"
+any column, empty IN
+  sql: "(1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0 OR 1 = 0)"
+any column IN, values bound once where they can repeat
+  sql: "(COALESCE(CAST(\"id\" AS TEXT), '') IN (?1, ?2) OR COALESCE(CAST(\"name\" AS TEXT), '') IN (?1, ?2) OR COALESCE(CAST(\"age\" AS TEXT), '') IN (?1, ?2) OR COALESCE(CAST(\"status\" AS TEXT), '') IN (?1, ?2) OR COALESCE(CAST(\"price\" AS TEXT), '') IN (?1, ?2) OR COALESCE(CAST(\"payload\" AS TEXT), '') IN (?1, ?2) OR COALESCE(CAST(\"code\" AS TEXT), '') IN (?1, ?2) OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') IN (?1, ?2) OR COALESCE(CAST(\"created\" AS TEXT), '') IN (?1, ?2) OR COALESCE(CAST(\"tags\" AS TEXT), '') IN (?1, ?2))"
+  params: [{"t":"text","v":"a"},{"t":"text","v":"2"}]
+  preview: "(COALESCE(CAST(\"id\" AS TEXT), '') IN ('a', '2') OR COALESCE(CAST(\"name\" AS TEXT), '') IN ('a', '2') OR COALESCE(CAST(\"age\" AS TEXT), '') IN ('a', '2') OR COALESCE(CAST(\"status\" AS TEXT), '') IN ('a', '2') OR COALESCE(CAST(\"price\" AS TEXT), '') IN ('a', '2') OR COALESCE(CAST(\"payload\" AS TEXT), '') IN ('a', '2') OR COALESCE(CAST(\"code\" AS TEXT), '') IN ('a', '2') OR COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), '') IN ('a', '2') OR COALESCE(CAST(\"created\" AS TEXT), '') IN ('a', '2') OR COALESCE(CAST(\"tags\" AS TEXT), '') IN ('a', '2'))"
+BETWEEN with one value
+  error INVALID_INPUT "filter on \"price\" needs 2 value(s)"
+unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+= NULL
+  sql: "\"age\" = ?1"
+  params: [{"t":"null"}]
+  preview: "\"age\" = NULL"
+domain column
+  sql: "\"code\" = ?1"
+  params: [{"t":"text","v":"x"}]
+  preview: "\"code\" = 'x'"
+timestamptz column
+  sql: "\"created\" > ?1"
+  params: [{"t":"timestampTz","v":"2024-01-01 00:00:00+00"}]
+  preview: "\"created\" > '2024-01-01 00:00:00+00'"
+array column
+  sql: "\"tags\" = ?1"
+  params: [{"t":"text","v":"{a,b}"}]
+  preview: "\"tags\" = '{a,b}'"
+enum column
+  sql: "\"status\" <> ?1"
+  params: [{"t":"text","v":"gone"}]
+  preview: "\"status\" <> 'gone'"
+quoted name
+  sql: "\"Odd \"\"Name\"\"\" = ?1"
+  params: [{"t":"text","v":"y"}]
+  preview: "\"Odd \"\"Name\"\"\" = 'y'"
+bytes column
+  sql: "\"data\" IS NULL"
+pattern on bytes
+  sql: "instr(\"data\", ?1) > 0"
+  params: [{"t":"text","v":"ab"}]
+  preview: "instr(\"data\", 'ab') > 0"
+JSON contains on a text column
+  error INVALID_INPUT "JSON contains works on PostgreSQL json / jsonb columns only"
+pattern without a value
+  error INVALID_INPUT "filter on \"name\" needs a value"
+raw fragment
+  sql: "(age > 1)"
+blank raw fragment
+  where: none
+nested groups
+  sql: "(\"status\" = ?1 AND \"age\" >= ?2) OR \"name\" LIKE ?3 OR (age > 1) OR (instr(COALESCE(CAST(\"id\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"name\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"age\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"status\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"price\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"payload\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"code\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"created\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"tags\" AS TEXT), ''), ?4) > 0)"
+  params: [{"t":"text","v":"active"},{"t":"int","v":18},{"t":"text","v":"%bob%"},{"t":"text","v":"x"}]
+  preview: "(\"status\" = 'active' AND \"age\" >= 18) OR \"name\" LIKE '%bob%' OR (age > 1) OR (instr(COALESCE(CAST(\"id\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"name\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"age\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"status\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"price\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"payload\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"code\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"created\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"tags\" AS TEXT), ''), 'x') > 0)"
+empty group
+  where: none
+IN with 32001 values
+  error INVALID_INPUT "the filter needs 32001 values, more than one query can bind (32000): use fewer values"
+any column IN with 6001 values
+  6001 params, 409432 bytes, sha256 7026e8bdd7bef441bb0b4287bb6738bf1dfb6990ccd24799f8a719a205bb9a04
+
+## sqlite select
+all columns
+  sql: "SELECT \"id\", \"name\", \"age\", \"status\", \"price\", \"payload\", \"data\", \"geom\", \"code\", \"Odd \"\"Name\"\"\", \"created\", \"tags\"\nFROM \"app\".\"users\" ORDER BY \"id\" ASC\nLIMIT 200 OFFSET 400"
+subset, two sorts, nested filter, no schema
+  sql: "SELECT \"name\", \"age\"\nFROM \"users\"\nWHERE (\"status\" = ?1 AND \"age\" >= ?2) OR \"name\" LIKE ?3 OR (age > 1) OR (instr(COALESCE(CAST(\"id\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"name\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"age\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"status\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"price\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"payload\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"code\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"created\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"tags\" AS TEXT), ''), ?4) > 0) ORDER BY \"name\" DESC NULLS LAST, \"age\" ASC NULLS FIRST\nLIMIT 50 OFFSET 0"
+  params: [{"t":"text","v":"active"},{"t":"int","v":18},{"t":"text","v":"%bob%"},{"t":"text","v":"x"}]
+  preview: "SELECT \"name\", \"age\"\nFROM \"users\"\nWHERE (\"status\" = 'active' AND \"age\" >= 18) OR \"name\" LIKE '%bob%' OR (age > 1) OR (instr(COALESCE(CAST(\"id\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"name\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"age\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"status\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"price\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"payload\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"code\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"created\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"tags\" AS TEXT), ''), 'x') > 0) ORDER BY \"name\" DESC NULLS LAST, \"age\" ASC NULLS FIRST\nLIMIT 50 OFFSET 0"
+sort [{"column":"age","dir":"asc","nulls":null}]
+  sql: "SELECT \"id\"\nFROM \"app\".\"users\" ORDER BY \"age\" ASC\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"asc","nulls":"first"}]
+  sql: "SELECT \"id\"\nFROM \"app\".\"users\" ORDER BY \"age\" ASC NULLS FIRST\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"asc","nulls":"last"}]
+  sql: "SELECT \"id\"\nFROM \"app\".\"users\" ORDER BY \"age\" ASC NULLS LAST\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"desc","nulls":null}]
+  sql: "SELECT \"id\"\nFROM \"app\".\"users\" ORDER BY \"age\" DESC\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"desc","nulls":"first"}]
+  sql: "SELECT \"id\"\nFROM \"app\".\"users\" ORDER BY \"age\" DESC NULLS FIRST\nLIMIT 100 OFFSET 0"
+sort [{"column":"age","dir":"desc","nulls":"last"}]
+  sql: "SELECT \"id\"\nFROM \"app\".\"users\" ORDER BY \"age\" DESC NULLS LAST\nLIMIT 100 OFFSET 0"
+sort [{"column":"status","dir":"asc","nulls":null},{"column":"Odd \"Name\"","dir":"desc","nulls":null}]
+  sql: "SELECT \"id\"\nFROM \"app\".\"users\" ORDER BY \"status\" ASC, \"Odd \"\"Name\"\"\" DESC\nLIMIT 100 OFFSET 0"
+pk ["id"] identity Pk
+  sql: "SELECT \"name\"\nFROM \"app\".\"users\" ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+pk ["id","name"] identity Pk
+  sql: "SELECT \"name\"\nFROM \"app\".\"users\" ORDER BY \"id\" ASC, \"name\" ASC\nLIMIT 100 OFFSET 0"
+pk [] identity Rowid
+  sql: "SELECT \"name\", rowid AS \"_tabler_rowid\"\nFROM \"app\".\"users\" ORDER BY rowid ASC\nLIMIT 100 OFFSET 0"
+pk [] identity None
+  sql: "SELECT \"name\"\nFROM \"app\".\"users\"\nLIMIT 100 OFFSET 0"
+pk ["id"] identity Rowid
+  sql: "SELECT \"name\", rowid AS \"_tabler_rowid\"\nFROM \"app\".\"users\" ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+pk [] identity Pk
+  sql: "SELECT \"name\"\nFROM \"app\".\"users\"\nLIMIT 100 OFFSET 0"
+all columns, any column contains
+  sql: "SELECT \"id\", \"name\", \"age\", \"status\", \"price\", \"payload\", \"data\", \"geom\", \"code\", \"Odd \"\"Name\"\"\", \"created\", \"tags\"\nFROM \"app\".\"users\"\nWHERE (instr(COALESCE(CAST(\"id\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"name\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"age\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"status\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"price\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"payload\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"code\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"created\" AS TEXT), ''), ?1) > 0 OR instr(COALESCE(CAST(\"tags\" AS TEXT), ''), ?1) > 0) ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+  params: [{"t":"text","v":"x"}]
+  preview: "SELECT \"id\", \"name\", \"age\", \"status\", \"price\", \"payload\", \"data\", \"geom\", \"code\", \"Odd \"\"Name\"\"\", \"created\", \"tags\"\nFROM \"app\".\"users\"\nWHERE (instr(COALESCE(CAST(\"id\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"name\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"age\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"status\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"price\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"payload\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"code\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"created\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"tags\" AS TEXT), ''), 'x') > 0) ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+unknown selected column
+  error INVALID_INPUT "unknown column \"nope\""
+empty selection
+  error INVALID_INPUT "no columns to select"
+unknown sort column
+  error INVALID_INPUT "unknown column \"nope\""
+
+## sqlite count
+no filter
+  sql: "SELECT count(*) FROM \"app\".\"users\""
+nested filter, no schema
+  sql: "SELECT count(*) FROM \"users\" WHERE (\"status\" = ?1 AND \"age\" >= ?2) OR \"name\" LIKE ?3 OR (age > 1) OR (instr(COALESCE(CAST(\"id\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"name\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"age\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"status\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"price\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"payload\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"code\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"created\" AS TEXT), ''), ?4) > 0 OR instr(COALESCE(CAST(\"tags\" AS TEXT), ''), ?4) > 0)"
+  params: [{"t":"text","v":"active"},{"t":"int","v":18},{"t":"text","v":"%bob%"},{"t":"text","v":"x"}]
+  preview: "SELECT count(*) FROM \"users\" WHERE (\"status\" = 'active' AND \"age\" >= 18) OR \"name\" LIKE '%bob%' OR (age > 1) OR (instr(COALESCE(CAST(\"id\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"name\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"age\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"status\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"price\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"payload\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"code\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"Odd \"\"Name\"\"\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"created\" AS TEXT), ''), 'x') > 0 OR instr(COALESCE(CAST(\"tags\" AS TEXT), ''), 'x') > 0)"

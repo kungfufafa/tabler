@@ -1,0 +1,2322 @@
+# Per statement and dialect: Safe Mode class, side-effect function call, cancel-safe at the row cap, single statement, and the transaction after it succeeded / failed / failed to parse (MySQL 1064).
+# Written by sqlgen::golden from the core code; never edited by hand.
+"SELECT 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"  select * from users where id = 1  "
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"(SELECT 1) UNION (SELECT 2)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT * FROM users;"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1; SELECT 2;"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"SELECT 1; DELETE FROM users"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"-- delete everything\nSELECT 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"/* DROP TABLE users; */ SELECT 1 /* trailing */"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 -- DROP TABLE users"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 'DROP TABLE users; DELETE FROM x' AS s"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT \"delete\" FROM \"insert\""
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT * INTO backup_users FROM users"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT id FROM users FOR UPDATE"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"VALUES (1, 2), (3, 4)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"TABLE users"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SHOW TABLES"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"show search_path"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"WITH a AS (SELECT 1) SELECT * FROM a"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"WITH RECURSIVE t(n) AS (VALUES (1) UNION ALL SELECT n + 1 FROM t WHERE n < 5) SELECT * FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"WITH gone AS (DELETE FROM users RETURNING *) SELECT * FROM gone"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"WITH a AS (SELECT 1) UPDATE users SET name = 'x'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"WITH a AS (SELECT 1) INSERT INTO t SELECT * FROM a"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"WITH a AS (SELECT 'INSERT INTO x' AS s) SELECT s FROM a"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"WITH a AS (SELECT 1 /* UPDATE */) SELECT updated_at FROM a"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"WITH a AS (SELECT 1) SELECT * FROM a FOR UPDATE"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"EXPLAIN SELECT * FROM users"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"EXPLAIN DELETE FROM users"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"EXPLAIN ANALYZE SELECT * FROM users"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"EXPLAIN ANALYZE DELETE FROM users"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"explain analyse verbose update users set a = 1"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"EXPLAIN (ANALYZE, BUFFERS) SELECT 1"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"EXPLAIN (ANALYZE true, FORMAT JSON) INSERT INTO t VALUES (1)"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"EXPLAIN (FORMAT JSON) INSERT INTO t VALUES (1)"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"EXPLAIN ANALYZE WITH d AS (DELETE FROM t RETURNING 1) SELECT * FROM d"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"EXPLAIN FORMAT=JSON SELECT 1"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"EXPLAIN ANALYZE FORMAT=TREE SELECT 1"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"EXPLAIN QUERY PLAN SELECT * FROM users"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"DESCRIBE users"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"desc users"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"DESC ANALYZE DELETE FROM users"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"USE tabler_dev"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"PRAGMA table_info(users)"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"PRAGMA main.table_info('users')"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"PRAGMA foreign_keys"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"PRAGMA foreign_keys = ON"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"PRAGMA journal_mode(WAL)"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"PRAGMA optimize"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"PRAGMA wal_checkpoint(TRUNCATE)"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"INSERT INTO users (name) VALUES ('a')"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"UPDATE users SET name = 'SELECT'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"DELETE FROM users"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE TABLE t (id int)"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"DROP TABLE users"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER TABLE users ADD COLUMN x int"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"TRUNCATE users"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SET search_path = public"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"BEGIN"
+  postgres: write, side effect no, cancel-safe no, single yes, tx open/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx open/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx open/same/same
+"CALL do_things()"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ANALYZE users"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+""
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"   \n  "
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"-- only a comment"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+";;"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\d users"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SELECT 1 # DROP"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"# a MySQL comment\nSELECT 1"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+"WITH a AS (SELECT 1 # x\n) DELETE FROM t"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"WITH a AS (SELECT 1 # DELETE\n) SELECT * FROM a"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"WITH a AS (SELECT 1--1 ) DELETE FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT `delete` FROM `update`"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT [delete] FROM [update]"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT '\\'; DELETE FROM t; -- '"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"SELECT 'it''s'; SELECT 2"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"SELECT $$; DELETE FROM t; $$"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"SELECT $body$ DROP $body$ AS s"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT E'\\'; DROP TABLE t; --'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"/* outer /* inner */ DELETE */ SELECT 1"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"/*!40101 SET NAMES utf8 */"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SELECT /*+ MAX_EXECUTION_TIME(1000) */ * FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /*! INTO OUTFILE '/tmp/x' */"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /*M! INTO OUTFILE '/tmp/x' */"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1; /*M!100100 DELETE FROM t */"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /*M!100100 , 2 */"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /*M! DELETE FROM t */"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /*M! ' */; DELETE FROM t; -- '"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"SELECT 1 /*!99999 ' */; DELETE FROM t; -- '"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"SELECT 1 /*+ ' */; DELETE FROM t; -- '"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"SELECT set_config('default_transaction_read_only', 'off', false)"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select pg_catalog.set_config ('search_path', 'public', false)"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT \"set_config\"('default_transaction_read_only', 'off', false)"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"EXPLAIN ANALYZE SELECT set_config('a.b', 'c', false)"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SELECT current_setting('default_transaction_read_only')"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 'set_config(' AS s, set_config_name FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT '\\'' AS a, \"\\\"; DELETE FROM t; -- \" AS b"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 'a\\''; DELETE FROM t; -- '"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 --x\r; DELETE FROM t"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"WITH x AS (-- c\r DELETE FROM t RETURNING 1) SELECT count(*) FROM x"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 -- x\r; DELETE FROM t"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 AS €$$; DELETE FROM users; SELECT 3 AS a$$"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"SELECT €e'\\'; DELETE FROM t; --'"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"create rule r as on insert to t do also (insert into a values (1); insert into b values (2)); select 1"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"create rule r as on insert to t do also (insert into a values (1); insert into b values (2))"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select '(' as a; select $$($$ /* ( */; select 1); select 2 -- (\n;select 3"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select '(' as a"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select $$($$ /* ( */"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 2 -- ("
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 3"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select (1; select 2)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select 1;\nselect 2 ;  \n\n  update users set name = name where false;"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select 2"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"update users set name = name where false"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+" ;; ;\n"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"-- just a comment\n"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"/* block */ ; -- trailing"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select 1; -- done"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 1 -- note\n;"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 1 -- note"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"-- first\n/* second */\nselect 1;"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select /* ; */ 1 -- x;\n + 2;"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select /* ; */ 1 -- x;\n + 2"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 'a;b', 'it''s;'; select 2"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select 'a;b', 'it''s;'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select \"x;y\" from t; select 3"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select \"x;y\" from t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select `a;b` from t; select 1"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select `a;b` from t"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select [a;b] from t; select 1"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select [a;b] from t"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 'a\\';b'; select 2"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select 'a\\';b'"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select \"a\\\";b\"; select 2"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select \"a\\\";b\""
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select 'a\\'; select 2"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select 'a\\'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select E'a\\';b'; select 2"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select E'a\\';b'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select e'\\\\'; select 2"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select e'\\\\'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select date'2020-01-01'; select 2"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select date'2020-01-01'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 1 /* ; */; select 2 -- ;\n; select 3"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select 1 /* ; */"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 2 -- ;"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"/* a /* b */ ; */ select 1; select 2"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"/* a /* b */ select 1; select 2"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select 1 # ; x\n; select 2"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select 1 # ; x"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select 1--1; select 2"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 1--1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"/*!40101 SET NAMES utf8 */;\nselect 1;"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"create function f() returns int as $$ begin; return 1; end; $$ language plpgsql;\nselect f();"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"create function f() returns int as $$ begin; return 1; end; $$ language plpgsql"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select f()"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"do $body$ declare x text := '$$;'; begin end $body$; select $1, a$b from t; select 2"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"do $body$ declare x text := '$$;'; begin end $body$"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select $1, a$b from t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select $x$ ; abc"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"CREATE TRIGGER trg AFTER INSERT ON t BEGIN\n  UPDATE t SET a = CASE WHEN new.a > 0 THEN 1 ELSE 0 END;\n  INSERT INTO log VALUES (1);\nEND;\nselect 1;"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"CREATE TRIGGER trg AFTER INSERT ON t BEGIN\n  UPDATE t SET a = CASE WHEN new.a > 0 THEN 1 ELSE 0 END;\n  INSERT INTO log VALUES (1);\nEND"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"create temp trigger if not exists x before delete on t begin select raise(abort, 'no'); end; select 2"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"create temp trigger if not exists x before delete on t begin select raise(abort, 'no'); end"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE DEFINER=`root`@`localhost` PROCEDURE p(IN n INT)\nBEGIN\n  DECLARE i INT DEFAULT 0;\n  IF n > 0 THEN SELECT 1; END IF;\n  WHILE i < n DO SET i = i + 1; END WHILE;\n  CASE n WHEN 1 THEN SELECT 'one'; ELSE SELECT 'many'; END CASE;\n  lbl: BEGIN SELECT 2; END lbl;\n  REPEAT SET i = i - 1; UNTIL i = 0 END REPEAT;\nEND;\nCALL p(3);"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"END REPEAT;\nEND"
+  postgres: write, side effect no, cancel-safe no, single no, tx closed/closed/closed
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/closed
+  sqlite: write, side effect no, cancel-safe no, single no, tx closed/closed/closed
+"CALL p(3)"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"BEGIN; select case when 1 then 2 end; COMMIT;"
+  postgres: write, side effect no, cancel-safe no, single no, tx open/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx open/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx open/same/same
+"select case when 1 then 2 end"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"COMMIT"
+  postgres: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  sqlite: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+"BEGIN TRANSACTION; select 1; END;"
+  postgres: write, side effect no, cancel-safe no, single no, tx open/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx open/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx open/same/same
+"BEGIN TRANSACTION"
+  postgres: write, side effect no, cancel-safe no, single yes, tx open/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx open/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx open/same/same
+"END"
+  postgres: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  sqlite: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+"create table t (\"begin\" int); select 1"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"create table t (\"begin\" int)"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE FUNCTION add(a int, b int) RETURNS int LANGUAGE sql\nBEGIN ATOMIC\n  SELECT a + b;\nEND;\nselect add(1, 2);"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"CREATE FUNCTION add(a int, b int) RETURNS int LANGUAGE sql\nBEGIN ATOMIC\n  SELECT a + b;\nEND"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select add(1, 2)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"create function f(x int) returns int language sql return case when x > 0 then 1 else 0 end; select 1"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"create function f(x int) returns int language sql return case when x > 0 then 1 else 0 end"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"BEGIN NOT ATOMIC SELECT 1; SELECT 2; END; SELECT 3"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"BEGIN NOT ATOMIC SELECT 1; SELECT 2; END"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"SELECT 3"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"DELIMITER $$\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND$$\nDELIMITER ;\nCALL p();\nselect 'x';"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"CREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CALL p()"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select 'x'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"delimiter //\nselect 1; select 2//\nselect 3 //"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select 1; select 2"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select delimiter from t; select 1"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select delimiter from t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 1;\n\\d users\nselect 2;\n  \\timing on\n"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"\\timing on"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select 1\n\\g\nselect 2"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"\\g"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select 1 \\ 2; select 3"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select 1 \\ 2"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 'héllo';\r\nselect 'wörld' ;\r\n\r\nselect 3"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select 'héllo'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 'wörld'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 1 -- c;\r\n; select 2"
+  postgres: read, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single no, tx same/same/same
+"select 1 -- c;"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 'abc"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select \"abc"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"/* abc"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select $$abc"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select `x"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select [x"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"--"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"-"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"$"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"e'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"DELIMITER"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"DELIMITER "
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"  -- c\n/* x */ (SELECT 1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"start transaction read only"
+  postgres: write, side effect no, cancel-safe no, single yes, tx open/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx open/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx open/same/same
+"START"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"TRANSACTION"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"rollback to savepoint a"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ROLLBACK"
+  postgres: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  sqlite: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+"TO"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SAVEPOINT"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"  "
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"# c\nshow tables"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SHOW"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"DELIMITER //\nSELECT * FROM t; INSERT INTO t VALUES (42) //"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"SELECT * FROM t; INSERT INTO t VALUES (42)"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select 1;"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 'a;b'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select 'a\\'; insert into t values (1); select '"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"select * from log where op = 'UPDATE' -- delete\n"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"FROM"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"LOG"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"WHERE"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"OP"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select \"update\", $x$delete$x$, E'it\\'s insert' /* call */ from t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"E"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"T"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select `delete`, 'a\\'update', x # insert"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"X"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select /*!50000 sql_no_cache */ 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"50000"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SQL_NO_CACHE"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"1"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select [delete] from t"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select /* x"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select $a$ x"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"postgres"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"mysql"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"sqlite"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"../../../src/features/safety/classify.cases.json"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"read"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"write"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"DELETE FROM t"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SELECT 'abc"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /* DELETE"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT $x$ ; DROP"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"SELECT setval('s', 1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT nextval('s')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_catalog.setval('s', 1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_cancel_backend(42)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_reload_conf()"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_switch_wal()"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_create_restore_point('x')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_advisory_lock(1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_advisory_xact_lock_shared(1, 2)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_try_advisory_lock(1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_try_advisory_lock_shared(1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_try_advisory_xact_lock_shared(1, 2)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_advisory_unlock_shared(1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_advisory_unlock_all()"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT lo_unlink(1234)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT lo_import('/etc/passwd')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT lo_from_bytea(0, 'x'::bytea)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT dblink_exec('dbname=x', 'DELETE FROM t')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT dblink_connect('c', 'dbname=x')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_sleep(100)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT * FROM pg_sleep_for('5 minutes')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"select a, NextVal  ('s') from t"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT setval/* x */('s', 1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1; SELECT nextval('s')"
+  postgres: read, side effect yes, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect yes, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe no, single no, tx same/same/same
+"SELECT \"setval\"('s', 1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_catalog.\"nextval\"('s')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT GET_LOCK('a', 10)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT get_lock('a', 10)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT RELEASE_LOCK('a')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT RELEASE_ALL_LOCKS()"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT SLEEP(100000)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT BENCHMARK(100000000, MD5('x'))"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!50000 SLEEP(5) */ 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT NEXTVAL(s)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT SETVAL(s, 10)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT NEXT VALUE FOR s"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT `sleep`(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 FROM t WHERE SLEEP(1) = 0"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT load_extension('x')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"pg_advisory_lock"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"pg_advisory_lock_shared"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"pg_advisory_xact_lock"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"pg_advisory_xact_lock_shared"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"pg_try_advisory_lock"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"pg_try_advisory_lock_shared"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"pg_try_advisory_xact_lock"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"pg_try_advisory_xact_lock_shared"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"pg_advisory_unlock"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"pg_advisory_unlock_shared"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"1, 2"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SELECT 1 AS pg_try_advisory_lock_shared, pg_advisory_unlock_shared FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 'setval(1)'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 'it''s nextval(1)' AS t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 -- nextval(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"/* pg_sleep(5) */ SELECT 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 AS nextval"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT nextval FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT \"nextval\" FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 'x' AS \"setval\""
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT $$setval(1)$$"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT $f$ pg_terminate_backend(1) $f$"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT E'nextval(\\'s\\')'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT my_nextval(1), setvalue(2), sleeping(3)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT currval('s'), lastval(), count(*) FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT * FROM t WHERE next value = 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT now(), pg_backend_pid(), pg_is_in_recovery()"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 'GET_LOCK(1)'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 # SLEEP(5)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 -- SLEEP(5)\n"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /* BENCHMARK(1, 1) */"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT sleep FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT `sleep` FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT IS_FREE_LOCK('a'), NOW()"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 'load_extension(1)'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 AS sleep"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT next value for FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_terminate_backend(1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT SLEEP(1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT\"set_config\"('a', 'b', false)"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT SLEEP/*!*/(100000)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!50000 GET_LOCK*/('a', 10)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!SLEEP*/(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!50000SLEEP*/(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!50000 SETVAL*/(s, 10)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!50000 NEXTVAL*/(s)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!50000 BENCHMARK*/ (1000, 1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT SLEEP/*!50000*/(1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT SLEEP /*!*/ /*!*/ (1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!SLEEP*//**/(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!50000 SLEEP/**/(1) */ 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!50000 `sleep`*/(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!SLEEP(1)*/ 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*M!100000 SLEEP*/(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*M!100100SLEEP*/(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*M!SLEEP*/(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*M!100000 SETVAL*/(s, 10)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*+ SLEEP*/(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT NEXT /*!*/ VALUE FOR s"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!50000NEXT*/ VALUE FOR s"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT NEXT VALUE/*!*/ FOR s"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT a */*SLEEP(1)*/ b FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 2 */* x */ 3, sleep FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT sleep /*!*/ FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!50000 sleep*/ FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT SLEEP_TIME/*!*/(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!50000 1*/, sleeping(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /* GET_LOCK(1, 1) */"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT /*!50000 SLEEP*/(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set\\0076al\"('s', 1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT u&\"SET\\0056AL\"('s', 1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"pg_\\+000074erminate_backend\"(1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"pg_terminate_backend\"(1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_catalog.U&\"set\\0076al\"('s', 1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"nextval\" ('s')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT * FROM U&\"pg_s\\006ceep\"(100)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"pg_advisory_l\\006fck\"(1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set\\zval\"('s', 1)"
+  postgres: write, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set\\00\"('s', 1)"
+  postgres: write, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"\\D800\"('s', 1)"
+  postgres: write, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set!0076al\" UESCAPE '!'('s', 1)"
+  postgres: write, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set!0076al\" UESCAPE $$!$$('s', 1)"
+  postgres: write, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set!0076al\" UESCAPE $e$!$e$('s', 1)"
+  postgres: write, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set!0076al\" UESCAPE E'!'('s', 1)"
+  postgres: write, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set!0076al\" uescape '!' ('s', 1)"
+  postgres: write, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set!0076al\" /* c */ UESCAPE -- d\n '!'\n''('s', 1)"
+  postgres: write, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set\\0076al\" UESCAPE '!'('s', 1)"
+  postgres: write, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"d\\0061ta\" FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"abs\"(1), U&\"l\\0065ngth\"('abc'), U&\"\\D83D\\DE00\"(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&'set\\0076al(1)'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"x\" UESCAPE '!' FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"d\\0061ta\", count(U&\"\\0061\")  FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT menu&\"x\"(1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U & \"x\" FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"plain"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"set\\0076al"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"setval"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\+000073etval"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"a\\\\b"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"a\\b"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\0041\\+000042"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"AB"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\00e9"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"é"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\D83D\\DE00"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"😀"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\+01F600"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\z"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\12"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\00zz"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\+0000"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\+110000"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\D83D"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\D83Dx"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\DE00"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\D83D\\0041"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SELECT [load_extension]('x')"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT \"load_extension\"('x')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT `load_extension`('x')"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT [load_extension] ('x', 'y')"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 WHERE [LOAD_EXTENSION](1)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT [load_extension] FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT [a b](1), [length]('x')"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 AS [load_extension]"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /*!50000INTO*/ OUTFILE '/tmp/x'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /*!50000 INTO*/ OUTFILE '/tmp/x'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /*M!100100INTO*/ DUMPFILE '/tmp/x'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"WITH x AS (SELECT 1) /*!50000DELETE*/ FROM t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"WITH x AS (SELECT 1) /*!50000UPDATE*/ t SET a = 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"/*!50000DELETE*/ FROM t"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"/*!*/ SELECT 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"/*!*/SELECT 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT/*!*/ 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /*!50000 FROM t*/"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 /*+ MAX_EXECUTION_TIME(1000) */"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set\\005fconfig\"('default_transaction_read_only', 'off', false)"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set!005fconfig\" UESCAPE '!'('a', 'b', false)"
+  postgres: write, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_catalog.U&\"\\+000073et_config\"('a', 'b', false)"
+  postgres: write, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"set\\zconfig\"('a', 'b', false)"
+  postgres: write, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"l\\0065ngth\"('abc')"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 'héllo' AS ünïcode FROM tàble"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"UPDATE tàble SET ü = 'é'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SELECT 1 --x\r, pg_sleep(100)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 --x\r; SELECT pg_sleep(100)"
+  postgres: read, side effect yes, cancel-safe no, single no, tx same/same/same
+  mysql: read, side effect yes, cancel-safe no, single no, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT U&\"setval\" --UESCAPE\r ('s', 1)(s, 1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 -- x\r, pg_sleep(100)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 -- x\r, sleep(100)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 --x, pg_sleep(100)"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 AS €$$, pg_sleep(100) AS a$$"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 AS —$$, setval('s', 1) AS a$$"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT 1 AS 😀$$, pg_sleep(100) AS a$$"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT 'x' AS é, $$pg_sleep(100)$$"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT €e'\\', pg_sleep(100), '"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_logical_slot_get_changes('s', NULL, NULL)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_logical_slot_get_binary_changes('s', NULL, NULL)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_copy_logical_replication_slot('a', 'b')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_copy_physical_replication_slot('a', 'b')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_replication_origin_create('o')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_replication_origin_drop('o')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_replication_origin_advance('o', '0/1')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_stat_statements_reset()"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT pg_log_backend_memory_contexts(1)"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"SELECT dblink_connect_u('c', 'dbname=x')"
+  postgres: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect yes, cancel-safe yes, single yes, tx same/same/same
+"CREATE USER 'app'@'%' IDENTIFIED BY 'hunter2' WITH MAX_QUERIES_PER_HOUR 5"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE USER 'app'@'%' IDENTIFIED BY '********' WITH MAX_QUERIES_PER_HOUR 5"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER USER 'app'@'%' IDENTIFIED BY 'hunter2'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER USER 'app'@'%' IDENTIFIED BY '********'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE ROLE \"app\" WITH LOGIN PASSWORD 'hunter2'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE ROLE \"app\" WITH LOGIN PASSWORD '********'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER ROLE \"app\" WITH PASSWORD E'it''s \\\\ hunter2'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER ROLE \"app\" WITH PASSWORD '********'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER ROLE app PASSWORD 'SCRAM-SHA-256$4096:c2FsdA==$c3RvcmVk:c2VydmVy'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER ROLE app PASSWORD '********'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE USER u IDENTIFIED WITH caching_sha2_password BY 'pw1'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE USER u IDENTIFIED WITH caching_sha2_password BY '********'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER USER u IDENTIFIED BY 'new1' REPLACE 'old1'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER USER u IDENTIFIED BY '********' REPLACE '********'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE USER u IDENTIFIED VIA mysql_native_password USING PASSWORD('pw1')"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE USER u IDENTIFIED VIA mysql_native_password USING PASSWORD('********')"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SET PASSWORD FOR 'u'@'h' = 'pw1'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SET PASSWORD FOR 'u'@'h' = '********'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SET PASSWORD = PASSWORD(\"pw1\")"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SET PASSWORD = PASSWORD('********')"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CHANGE MASTER TO MASTER_PASSWORD='pw1', MASTER_USER='r'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CHANGE MASTER TO MASTER_PASSWORD='********', MASTER_USER='r'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER USER u IDENTIFIED BY _utf8mb4'pw1'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER USER u IDENTIFIED BY '********'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE ROLE r WITH ENCRYPTED PASSWORD $$pw1$$"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE ROLE r WITH ENCRYPTED PASSWORD '********'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE USER MAPPING FOR u SERVER s OPTIONS (user 'u', password 'pw1')"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE USER MAPPING FOR u SERVER s OPTIONS (user 'u', password '********')"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"PRAGMA key = 'pw1'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"PRAGMA key = '********'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"PRAGMA rekey('pw1')"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"PRAGMA rekey('********')"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"pw1"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"new1"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SELECT 'password', password FROM users WHERE name = 'x'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT * FROM users ORDER BY 'x'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"ALTER ROLE r SET password_encryption = 'scram-sha-256'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"SELECT rolpassword FROM pg_authid WHERE rolname = 'x'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"UPDATE t SET \"password\" = 'x' WHERE id = $1"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE USER u IDENTIFIED BY RANDOM PASSWORD"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER ROLE r PASSWORD NULL"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"-- IDENTIFIED BY 'x'\nSELECT 1"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"PRAGMA table_info('t')"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"SELECT * FROM t WHERE key = 'k'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"SELECT 'a PASSWORD ''x'' b' /* PASSWORD 'y' */ -- PASSWORD 'z'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"CREATE USER a IDENTIFIED BY 'pw1'; CREATE USER b IDENTIFIED BY 'pw2'; SELECT 'ok'"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"CREATE USER a IDENTIFIED BY '********'; CREATE USER b IDENTIFIED BY '********'; SELECT 'ok'"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"/*!50000 CREATE USER u IDENTIFIED BY 'pw1' */"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"/*!50000 CREATE USER u IDENTIFIED BY '********' */"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"'a\\\\''b'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"'a\\''b'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"IDENTIFIED BY '********'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE USER 'a\\'@'%' IDENTIFIED BY 'pw1'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER USER 'u'@'%' IDENTIFIED BY 'it''s \\\\ x'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"it''s \\\\ x"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"it's \\ x"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"ALTER ROLE r PASSWORD $q$p'w$q$"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"p'w"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE USER 'u'@'%' IDENTIFIED BY '********'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"hunter2"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"it's"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"a\\"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"a\\'b"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"say \"hi\""
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"$tag$x$tag$"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"日本語pw"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"pw;DROP USER x"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"--pw"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"/*pw*/"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"p%w_d"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"''"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"\\\\"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"app"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"%"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"back\\"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"local_host"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select * from big"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"  with x as (select 1) select * from x"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"show variables"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"call p()"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"fetch 100 from c"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"insert into t select 1 returning id"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"with d as (delete from t returning *) select * from d"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select * from t for update"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"SELECT * FROM events_big; INSERT INTO t VALUES (2)"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single no, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"A RETURNING B"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"RETURNING"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"XRETURNING"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"RETURNING_X"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"10 rows"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"select * from audit_log where action = 'UPDATE'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select * from t where op <> 'DELETE'"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 1 -- delete later\nfrom t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 1 /* insert */ from t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select \"update\" from t"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select `delete` from t"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select $$call$$"
+  postgres: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe yes, single yes, tx same/same/same
+"select 'x' from t where a = 1 for update"
+  postgres: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: read, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: read, side effect no, cancel-safe no, single yes, tx same/same/same
+"with d as (delete from t where n = 'a' returning *) select * from d"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"XX000"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"begin"
+  postgres: write, side effect no, cancel-safe no, single yes, tx open/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx open/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx open/same/same
+"commit"
+  postgres: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  sqlite: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+"abort"
+  postgres: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  sqlite: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+"rollback work to a"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"commit prepared 'x'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"commit and chain"
+  postgres: write, side effect no, cancel-safe no, single yes, tx open/closed/closed
+  mysql: write, side effect no, cancel-safe no, single yes, tx open/closed/closed
+  sqlite: write, side effect no, cancel-safe no, single yes, tx open/closed/closed
+"commit and no chain"
+  postgres: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  sqlite: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+"prepare transaction 'x'"
+  postgres: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+  sqlite: write, side effect no, cancel-safe no, single yes, tx closed/closed/closed
+"create table t (a int)"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"create temporary table t (a int)"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"BEGIN NOT ATOMIC SELECT 1; END"
+  postgres: write, side effect no, cancel-safe no, single no, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single no, tx same/same/same
+"25P01"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"rollback and chain"
+  postgres: write, side effect no, cancel-safe no, single yes, tx open/closed/closed
+  mysql: write, side effect no, cancel-safe no, single yes, tx open/closed/closed
+  sqlite: write, side effect no, cancel-safe no, single yes, tx open/closed/closed
+"42000"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"CREATE TABLE t2 (id int,)"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"drop table"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx closed/closed/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
+"42S01"
+  postgres: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  mysql: write, side effect no, cancel-safe no, single yes, tx same/same/same
+  sqlite: write, side effect no, cancel-safe no, single yes, tx same/same/same
