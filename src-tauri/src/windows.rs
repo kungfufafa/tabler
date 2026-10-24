@@ -354,8 +354,8 @@ pub fn open_window<R: Runtime>(
         }
     };
     #[cfg(windows)]
-    if let Err(e) = fit_to_work_area(&window) {
-        log::warn!("could not fit window {label} to the screen: {e}");
+    if let Err(e) = own_title_bar(&window).and_then(|()| fit_to_work_area(&window)) {
+        log::warn!("could not set up window {label}: {e}");
     }
     #[cfg(not(windows))]
     let _ = window;
@@ -403,6 +403,18 @@ pub fn fit_frame(window: Frame, area: Frame) -> Option<Fit> {
         .y
         .clamp(area.y, area.y + offset(area.height - window.height));
     (x != window.x || y != window.y).then_some(Fit::Move { x, y })
+}
+
+/// Windows: like TablePlus for Windows, the toolbar is the title bar (it drags the window and holds
+/// the minimize / maximize / close buttons) and there is no menu bar: the toolbar's ⋮ button pops
+/// the menu up (`popup_app_menu`). The hidden menu keeps its accelerators. Call it before
+/// `fit_to_work_area`, which measures the window's frame.
+#[cfg(windows)]
+pub fn own_title_bar<R: Runtime>(window: &tauri::WebviewWindow<R>) -> tauri::Result<()> {
+    window.set_decorations(false)?;
+    // The drop shadow and the resize border an undecorated window has none of otherwise.
+    window.set_shadow(true)?;
+    window.hide_menu()
 }
 
 /// Windows: the configured size (1280×820) is taller than a 768 px screen's work area, and a size

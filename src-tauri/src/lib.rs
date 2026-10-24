@@ -919,7 +919,17 @@ pub fn run() {
         .menu(shell::build_menu)
         .on_menu_event(|app, event| shell::on_menu_event(app, event.id().as_ref()))
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_window_state::Builder::new().build())
+        .plugin(
+            // Not the decorations: the app sets those itself (off on Windows, `own_title_bar`),
+            // and a saved "undecorated" would leave a build without its own window buttons with
+            // none at all.
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        - tauri_plugin_window_state::StateFlags::DECORATIONS,
+                )
+                .build(),
+        )
         .plugin(
             // The SSH client's debug records go to the log while Help ▸ Enable SSH Debug Log is on.
             tunnel::debug_log::configure(tauri_plugin_log::Builder::new().level(log_level)).build(),
@@ -948,9 +958,10 @@ pub fn run() {
             // plugin before `setup`) back inside the screen.
             #[cfg(windows)]
             if let Some(main) = app.get_webview_window(windows::MAIN_WINDOW)
-                && let Err(e) = windows::fit_to_work_area(&main)
+                && let Err(e) =
+                    windows::own_title_bar(&main).and_then(|()| windows::fit_to_work_area(&main))
             {
-                log::warn!("could not fit the main window to the screen: {e}");
+                log::warn!("could not set up the main window: {e}");
             }
             // The app lock: sleep and screen lock lock every window.
             biometrics::watch_system_lock(app.handle().clone());
@@ -1058,6 +1069,7 @@ pub fn run() {
             commands::settings::set_setting,
             commands::decoder::set_geometry_wkt,
             commands::menu::set_menu_accelerators,
+            commands::menu::popup_app_menu,
             commands::recent::recent_list,
             commands::recent::recent_add,
             commands::recent::recent_clear,

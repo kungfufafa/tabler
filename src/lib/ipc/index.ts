@@ -735,6 +735,11 @@ export const ipc = {
      */
     setAccelerators: (accelerators: Record<string, string | null>) =>
       invoke<void>("set_menu_accelerators", { accelerators }),
+    /**
+     * Windows (no menu bar): the app menu as a popup at `x`, `y` in the window (CSS pixels), for
+     * the toolbar's ⋮ button.
+     */
+    popup: (x: number, y: number) => invoke<void>("popup_app_menu", { x, y }),
   },
 
   // File ▸ Open Recent: what was opened last (shared by every window); the native submenu follows.

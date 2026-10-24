@@ -47,15 +47,17 @@ import {
 import { changeSafeModeLevel } from "@/features/safety/setLevel";
 import { useWindowFullscreen } from "@/hooks/useWindowFullscreen";
 import { toIpcError, type ConnectionProfile, type SafeModeLevel } from "@/lib/ipc";
+import { cn } from "@/lib/utils";
 import { useActiveConnection } from "@/stores/connections";
 import { setPref, usePrefs } from "@/stores/prefs";
 import { ActionControl } from "./ActionControl";
 import { CustomizeToolbarDialog } from "./CustomizeToolbar";
 import { PanelToggles } from "./PanelToggles";
 import { StatusPill } from "./StatusPill";
-import { overlayTitleBar } from "./titleBar";
+import { overlayTitleBar, ownTitleBar } from "./titleBar";
 import { ToolbarButton, ToolbarTip } from "./ToolbarButton";
 import { useActionAvailable } from "./useActionAvailable";
+import { AppMenuButton, WindowControls } from "./WindowControls";
 import {
   splitAtStatus,
   TOOLBAR_DISPLAY_LABEL,
@@ -301,13 +303,30 @@ function Items({ items, text }: { items: readonly ToolbarItemId[]; text: boolean
 }
 
 /**
+ * The left items with the ⋮ app menu when the toolbar is the title bar (Windows): after the
+ * sidebar toggle when that comes first, as in TablePlus for Windows, else at the very start.
+ */
+function LeftItems({ items, text }: { items: readonly ToolbarItemId[]; text: boolean }) {
+  if (!ownTitleBar) return <Items items={items} text={text} />;
+  const afterSidebar = items[0] === "sidebar";
+  return (
+    <>
+      {afterSidebar && <ToolbarItem id="sidebar" text={text} />}
+      <AppMenuButton />
+      <Items items={afterSidebar ? items.slice(1) : items} text={text} />
+    </>
+  );
+}
+
+/**
  * TablePlus's single toolbar row in the macOS title bar, customisable like Safari's (right-click
  * ▸ Customize Toolbar…, Icon Only / Icon and Text; the `toolbarItems` preference). The default
  * set: sidebar toggle, the staged-changes action control, the safe-mode lock, Databases / SQL,
  * the centred status pill, then Refresh, Open Anything, Show Workspaces, User Management, Metrics
  * Board (once something handles it) and the panel toggles. The empty space drags the window. The
  * traffic lights sit in the left inset (gone in fullscreen). The launcher shows only the title.
- * Without the overlay title bar (Windows) there is no inset, and the launcher shows no toolbar.
+ * On Windows the toolbar is the title bar without an inset: the ⋮ app menu on the left, the window
+ * buttons on the right, and the launcher shows just those two. Linux shows no launcher toolbar.
  */
 export function Toolbar({ launcher }: { launcher: boolean }) {
   const fullscreen = useWindowFullscreen();
@@ -318,6 +337,18 @@ export function Toolbar({ launcher }: { launcher: boolean }) {
   const inset = overlayTitleBar && !fullscreen ? 80 : 8;
 
   if (launcher) {
+    if (ownTitleBar)
+      return (
+        <header
+          data-tauri-drag-region
+          data-slot="toolbar"
+          className="bg-surface-2 dark:bg-background flex h-10 shrink-0 items-center pl-2"
+        >
+          <AppMenuButton />
+          <div data-tauri-drag-region className="h-full flex-1" />
+          <WindowControls />
+        </header>
+      );
     if (!overlayTitleBar) return null;
     return (
       <header
@@ -347,7 +378,10 @@ export function Toolbar({ launcher }: { launcher: boolean }) {
             data-tauri-drag-region
             data-slot="toolbar"
             data-display={display}
-            className="border-border bg-surface-2 flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b pr-2"
+            className={cn(
+              "border-border bg-surface-2 flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b",
+              !ownTitleBar && "pr-2",
+            )}
             style={{ paddingLeft: inset }}
           >
             {rows.status ? (
@@ -357,7 +391,7 @@ export function Toolbar({ launcher }: { launcher: boolean }) {
                   data-tauri-drag-region
                   className="flex h-full min-w-fit flex-1 basis-0 items-center gap-1.5"
                 >
-                  <Items items={rows.left} text={text} />
+                  <LeftItems items={rows.left} text={text} />
                 </div>
                 <StatusPill />
                 <div
@@ -372,9 +406,10 @@ export function Toolbar({ launcher }: { launcher: boolean }) {
                 data-tauri-drag-region
                 className="flex h-full min-w-0 flex-1 items-center gap-1.5"
               >
-                <Items items={rows.left} text={text} />
+                <LeftItems items={rows.left} text={text} />
               </div>
             )}
+            {ownTitleBar && <WindowControls className="ml-1" />}
           </header>
         </ContextMenuTrigger>
         <ContextMenuContent className="min-w-44">

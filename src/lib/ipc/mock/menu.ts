@@ -10,3 +10,11 @@ registerMock("set_menu_accelerators", ({ accelerators }) => {
     mockMenuAccelerators.set(id, accelerator);
   return null;
 });
+
+/** Where the app menu was last popped up (the browser has no native menu to show). */
+export const mockMenuPopups: { x: number; y: number }[] = [];
+
+registerMock("popup_app_menu", ({ x, y }) => {
+  mockMenuPopups.push({ x: x as number, y: y as number });
+  return null;
+});

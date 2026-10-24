@@ -52,6 +52,14 @@ Left → right, after the traffic-light inset:
    Everything is `data-tauri-drag-region` where empty. In the launcher (no workspace) the toolbar
    shows only the traffic-light inset, the title "Tabler" and nothing else.
 
+**Windows** follows TablePlus for Windows instead: the window has no native title bar and no menu
+bar (the backend turns the decorations off and hides the menu, whose accelerators keep working). The
+toolbar is the title bar: a **⋮** button after the sidebar toggle pops the whole app menu up (File,
+Edit, View, Connection, Plugins, Navigate, Window, Help), and **minimize / maximize-restore / close**
+sit flush at its right end (close turns red on hover). The empty toolbar drags the window and a
+double-click maximizes it. The launcher keeps a bare toolbar with just ⋮ and the window buttons.
+Linux keeps its native title and menu bars.
+
 ### Workspace rail (far left, 52px)
 
 Shown whenever **a connection is open** (so `+` is always one click away). One button per open

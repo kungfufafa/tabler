@@ -163,7 +163,7 @@ export function NewTabOpensRow() {
   return (
     <SelectRow
       pref="newTabOpens"
-      label="Command + T should open"
+      label={`${isMac ? "Command" : "Ctrl"} + T should open`}
       description="A SQL Query Editor tab brings back the connection's most recent script when none of its query tabs is open; an empty tab never does."
       values={NEW_TAB_OPENS}
       labels={NEW_TAB_LABELS}

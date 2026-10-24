@@ -20,11 +20,15 @@ import { DEFAULT_TOOLBAR_ITEMS } from "./toolbarLayout";
 import { Toolbar } from "./Toolbar";
 import { WorkspaceRail } from "./WorkspaceRail";
 
-// macOS's overlay title bar unless a test turns it off (Windows keeps its native title bar).
-const titleBar = vi.hoisted(() => ({ overlay: true }));
+// macOS's overlay title bar unless a test turns it off (Linux keeps its native title bar,
+// Windows draws its own: `own`).
+const titleBar = vi.hoisted(() => ({ overlay: true, own: false }));
 vi.mock("./titleBar", () => ({
   get overlayTitleBar() {
     return titleBar.overlay;
+  },
+  get ownTitleBar() {
+    return titleBar.own;
   },
 }));
 
@@ -78,6 +82,7 @@ function spyAction(id: ActionId) {
 
 beforeEach(() => {
   titleBar.overlay = true;
+  titleBar.own = false;
   resetPrefsForTests();
   useTabsStore.setState({
     tabs: [],
@@ -236,7 +241,7 @@ describe("Toolbar", () => {
     );
   });
 
-  it("adds no title strip and no inset under a native title bar (Windows)", () => {
+  it("adds no title strip and no inset under a native title bar (Linux)", () => {
     titleBar.overlay = false;
     const launcher = wrap(<Toolbar launcher />);
     expect(launcher.container).toBeEmptyDOMElement();
@@ -246,6 +251,30 @@ describe("Toolbar", () => {
     expect(container.querySelector<HTMLElement>("[data-slot=toolbar]")?.style.paddingLeft).toBe(
       "8px",
     );
+  });
+
+  it("is the title bar on Windows: the app menu after the sidebar toggle, the window buttons last", () => {
+    titleBar.overlay = false;
+    titleBar.own = true;
+    const popup = vi.spyOn(ipc.menu, "popup").mockResolvedValue();
+    const launcher = wrap(<Toolbar launcher />);
+    expect(screen.getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Menu",
+      "Minimize",
+      "Maximize",
+      "Close",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Menu" }));
+    expect(popup).toHaveBeenCalledTimes(1);
+    launcher.unmount();
+    useConnectionsStore.getState().add(info("a"));
+    const { container } = wrap(<Toolbar launcher={false} />);
+    expect(container.querySelector<HTMLElement>("[data-slot=toolbar]")?.style.paddingLeft).toBe(
+      "8px",
+    );
+    const labels = screen.getAllByRole("button").map((b) => b.getAttribute("aria-label"));
+    expect(labels.slice(0, 2)).toEqual(["Toggle sidebar", "Menu"]);
+    expect(labels.slice(-3)).toEqual(["Minimize", "Maximize", "Close"]);
   });
 
   it("enables the action control while the workspace has pending changes, in any of its tabs", () => {
