@@ -20,6 +20,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
+use crate::process::NoWindow as _;
+
 /// A byte stream an SSH session can run over.
 pub trait SshStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> SshStream for T {}
@@ -188,6 +190,7 @@ fn split_program(command: &str) -> (&str, &str) {
 /// stdin / stdout as the transport. Its stderr goes to the log (and `StderrTail`).
 pub fn command(command: &str) -> io::Result<(BoxedStream, AbortOnDrop, StderrTail)> {
     let mut child = proxy_process(command)
+        .no_window()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

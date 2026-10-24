@@ -55,3 +55,64 @@ jobs:
         # `cargo test` rewrote src/lib/ipc/bindings; a diff means a ts-rs type changed without
         # its binding being committed.
         run: git diff --exit-code -- src/lib/ipc/bindings
+
+  check-windows:
+    # The same checks on Windows, which build.yml also ships.
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # LF files as in the repository: prettier expects LF, and CRLF copies would make every
+      # generated binding differ from what `cargo test` writes.
+      - run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Renderer — typecheck, lint, format, tests
+        run: |
+          pnpm typecheck
+          pnpm lint
+          pnpm format:check
+          pnpm test
+
+      # rusqlite builds the vendored OpenSSL here (SQLCipher), with `perl` from PATH unless
+      # OPENSSL_SRC_PERL says otherwise. Under bash that is Git's MSYS perl, which cannot build
+      # it; under pwsh Strawberry Perl comes first, as in build.yml. (Get-Command, not
+      # `(where.exe perl)[0]`: a single match is a string, and [0] its first letter.)
+      - name: Perl for the vendored OpenSSL
+        shell: pwsh
+        run: echo "OPENSSL_SRC_PERL=$((Get-Command perl.exe).Source)" >> $env:GITHUB_ENV
+
+      - name: Rust — fmt, clippy, tests
+        # The password command and bootstrap script tests written for sh run through the login
+        # shell: Git Bash is it here (the cmd.exe default has tests of its own).
+        env:
+          SHELL: 'C:\Program Files\Git\bin\bash.exe'
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          pnpm clippy
+          pnpm test:rs
+
+      - name: Generated TypeScript bindings are committed
+        run: git diff --exit-code -- src/lib/ipc/bindings

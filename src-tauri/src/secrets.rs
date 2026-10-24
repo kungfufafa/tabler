@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::appdb::AppDb;
 use crate::error::AppError;
+use crate::process::NoWindow as _;
 use crate::types::profile::{ConnectionProfile, PasswordMode, SecretStatus};
 
 const SERVICE: &str = "tabler";
@@ -206,18 +207,111 @@ const OUTPUT_LIMIT: usize = 64 * 1024;
 /// its output may take to arrive.
 const OUTPUT_DRAIN: Duration = Duration::from_secs(2);
 
+/// The shell that runs password commands and bootstrap scripts (and the MCP clients' CLIs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LoginShell {
+    /// `<shell> -l -c <command>` (see [`shell_flags`]).
+    Posix(String),
+    /// Windows' command interpreter: `<cmd> /D /S /C "<command>"`. `/D` skips its AutoRun
+    /// commands; `/S` makes it drop only the outer quotes and run the rest as typed.
+    #[cfg(windows)]
+    Cmd(String),
+}
+
 /// The user's login shell (`$SHELL`), else the platform's default one.
-fn login_shell() -> String {
-    std::env::var("SHELL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            if cfg!(target_os = "macos") {
-                "/bin/zsh".into()
+pub(crate) fn login_shell() -> LoginShell {
+    login_shell_from(std::env::var("SHELL").ok().as_deref())
+}
+
+/// [`login_shell`] for the given `$SHELL`.
+#[cfg(not(windows))]
+fn login_shell_from(shell: Option<&str>) -> LoginShell {
+    LoginShell::Posix(
+        shell
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                if cfg!(target_os = "macos") {
+                    "/bin/zsh".into()
+                } else {
+                    "/bin/sh".into()
+                }
+            }),
+    )
+}
+
+/// [`login_shell`] for the given `$SHELL`, which counts only when it names a program that exists:
+/// Git Bash exports an MSYS path (`/usr/bin/bash`) that Windows cannot start. Without one, the
+/// command interpreter (`%ComSpec%`, else `cmd.exe`) runs the command, which is also what the
+/// `.cmd` shims of `aws`, `gcloud` and `az` need.
+#[cfg(windows)]
+fn login_shell_from(shell: Option<&str>) -> LoginShell {
+    match shell {
+        Some(shell) if is_existing_program(shell) => {
+            if is_cmd(shell) {
+                LoginShell::Cmd(shell.to_string())
             } else {
-                "/bin/sh".into()
+                LoginShell::Posix(shell.to_string())
             }
-        })
+        }
+        _ => LoginShell::Cmd(
+            std::env::var("ComSpec")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "cmd.exe".into()),
+        ),
+    }
+}
+
+/// A full Windows path (drive or UNC) to a file.
+#[cfg(windows)]
+fn is_existing_program(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    path.is_absolute() && path.is_file()
+}
+
+/// Whether `shell` is cmd itself (a `$SHELL` naming it), which takes `/C`, not `-c`.
+#[cfg(windows)]
+fn is_cmd(shell: &str) -> bool {
+    std::path::Path::new(shell)
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case("cmd"))
+}
+
+impl LoginShell {
+    /// The shell's program, as error messages name it.
+    pub(crate) fn program(&self) -> &str {
+        match self {
+            LoginShell::Posix(shell) => shell,
+            #[cfg(windows)]
+            LoginShell::Cmd(cmd) => cmd,
+        }
+    }
+
+    /// A process that runs `script` in this shell, without a console window. cmd runs only the
+    /// first line of what `/C` gets, so a script of several lines is refused there rather than
+    /// cut short.
+    pub(crate) fn command(&self, script: &str) -> Result<tokio::process::Command, AppError> {
+        let mut cmd = tokio::process::Command::new(self.program());
+        match self {
+            LoginShell::Posix(shell) => {
+                cmd.args(shell_flags(shell)).arg(script);
+            }
+            #[cfg(windows)]
+            LoginShell::Cmd(_) => {
+                if script.contains(['\n', '\r']) {
+                    return Err(AppError::InvalidInput(
+                        "cmd.exe runs only one line: join the commands with &".into(),
+                    ));
+                }
+                // As typed: Rust would quote it again, and cmd does not undo that.
+                cmd.raw_arg(format!("/D /S /C \"{script}\""));
+            }
+        }
+        cmd.no_window();
+        Ok(cmd)
+    }
 }
 
 /// The flags that make `shell` run a command: `-l -c` (a login shell, so the PATH and AWS profile
@@ -353,29 +447,39 @@ async fn read_capped(mut pipe: impl tokio::io::AsyncRead + Unpin) -> (Vec<u8>, b
 
 /// Runs the password command of a "Command Line (IAM authentication)" profile through the user's
 /// login shell (`$SHELL -l -c <command>`, so the PATH and AWS profile of their shell setup apply;
-/// see [`shell_flags`]) with the app's environment, no stdin and a `timeout`, in a process group
-/// of its own that is killed when the shell ends or times out. The password is the last non-empty
-/// line of its output, trimmed (a login script that prints a greeting cannot corrupt it); it is
-/// never stored. A failure carries the command's stderr.
+/// see [`shell_flags`]; on Windows cmd unless `$SHELL` names a program, see [`login_shell_from`])
+/// with the app's environment, no stdin and a `timeout`, in a process group of its own that is
+/// killed when the shell ends or times out. The password is the last non-empty line of its
+/// output, trimmed (a login script that prints a greeting cannot corrupt it); it is never stored.
+/// A failure carries the command's stderr.
 pub async fn run_password_command(command: &str, timeout: Duration) -> Result<String, AppError> {
+    run_password_command_in(&login_shell(), command, timeout).await
+}
+
+/// [`run_password_command`] through `shell`.
+async fn run_password_command_in(
+    shell: &LoginShell,
+    command: &str,
+    timeout: Duration,
+) -> Result<String, AppError> {
     let command = command.trim();
     if command.is_empty() {
         return Err(AppError::InvalidInput(
             "Enter the command that prints the password (Command Line mode)".into(),
         ));
     }
-    let shell = login_shell();
-    let mut cmd = tokio::process::Command::new(&shell);
-    cmd.args(shell_flags(&shell))
-        .arg(command)
-        .stdin(Stdio::null())
+    let mut cmd = shell.command(command)?;
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     #[cfg(unix)]
     cmd.process_group(0);
     let mut child = cmd.spawn().map_err(|e| {
-        AppError::Connect(format!("cannot run the password command ({shell}): {e}"))
+        AppError::Connect(format!(
+            "cannot run the password command ({}): {e}",
+            shell.program()
+        ))
     })?;
     let mut group = ProcessGroup::of(&child);
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
@@ -520,12 +624,23 @@ impl Drop for OutputFile {
 }
 
 /// Runs a connection's bootstrap CLI script (b546) before connecting: `$SHELL -l -c <script>`
-/// (the login shell, as for password commands; see [`shell_flags`]) with `env` added, no stdin
-/// and a `timeout`, in a process group of its own. Its output (stdout and stderr) goes to a
-/// temporary file, so what it starts in the background (a proxy, a port forward) can keep
-/// running and writing after the script ends. A script that fails (non-zero exit) or times out
-/// has its whole process group killed, and the error carries the end of its output.
+/// (the login shell, as for password commands; see [`shell_flags`] and [`login_shell_from`])
+/// with `env` added, no stdin and a `timeout`, in a process group of its own. Its output (stdout
+/// and stderr) goes to a temporary file, so what it starts in the background (a proxy, a port
+/// forward) can keep running and writing after the script ends. A script that fails (non-zero
+/// exit) or times out has its whole process group killed, and the error carries the end of its
+/// output.
 pub async fn run_bootstrap_script(
+    script: &str,
+    env: &[(&str, String)],
+    timeout: Duration,
+) -> Result<(), AppError> {
+    run_bootstrap_script_in(&login_shell(), script, env, timeout).await
+}
+
+/// [`run_bootstrap_script`] through `shell`.
+async fn run_bootstrap_script_in(
+    shell: &LoginShell,
     script: &str,
     env: &[(&str, String)],
     timeout: Duration,
@@ -534,15 +649,12 @@ pub async fn run_bootstrap_script(
     if script.is_empty() {
         return Ok(());
     }
+    let mut cmd = shell.command(script)?;
     let (output, file) = OutputFile::create()?;
     let err_file = file
         .try_clone()
         .map_err(|e| AppError::Io(format!("bootstrap script output: {e}")))?;
-    let shell = login_shell();
-    let mut cmd = tokio::process::Command::new(&shell);
-    cmd.args(shell_flags(&shell))
-        .arg(script)
-        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+    cmd.envs(env.iter().map(|(k, v)| (*k, v.as_str())))
         .stdin(Stdio::null())
         .stdout(Stdio::from(file))
         .stderr(Stdio::from(err_file))
@@ -550,7 +662,10 @@ pub async fn run_bootstrap_script(
     #[cfg(unix)]
     cmd.process_group(0);
     let mut child = cmd.spawn().map_err(|e| {
-        AppError::Connect(format!("cannot run the bootstrap script ({shell}): {e}"))
+        AppError::Connect(format!(
+            "cannot run the bootstrap script ({}): {e}",
+            shell.program()
+        ))
     })?;
     // Killed on timeout, failure or when the connect waiting for it is given up (dropped).
     let mut group = ProcessGroup::of(&child);
@@ -942,6 +1057,117 @@ mod tests {
             .unwrap();
     }
 
+    /// Windows without a `$SHELL` it can start: cmd.
+    #[cfg(windows)]
+    fn cmd() -> LoginShell {
+        let shell = login_shell_from(None);
+        assert!(matches!(shell, LoginShell::Cmd(_)), "{shell:?}");
+        shell
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_takes_shell_only_when_it_names_a_program() {
+        let cmd = cmd();
+        assert!(is_cmd(cmd.program()), "{cmd:?}");
+        // Empty, Git Bash's MSYS path, a bare name, a file that is not there: cmd.
+        for shell in ["", "  ", "/usr/bin/bash", "bash", r"C:\nowhere\bash.exe"] {
+            assert_eq!(login_shell_from(Some(shell)), cmd, "{shell}");
+        }
+        // A program that exists: that shell, with the POSIX flags.
+        let dir = tempfile::tempdir().unwrap();
+        let bash = dir.path().join("bash.exe");
+        std::fs::write(&bash, b"").unwrap();
+        let bash = bash.to_string_lossy().into_owned();
+        assert_eq!(
+            login_shell_from(Some(&bash)),
+            LoginShell::Posix(bash.clone())
+        );
+        // `$SHELL` naming cmd itself gets cmd's flags.
+        let own = dir.path().join("CMD.EXE");
+        std::fs::write(&own, b"").unwrap();
+        let own = own.to_string_lossy().into_owned();
+        assert_eq!(login_shell_from(Some(&own)), LoginShell::Cmd(own.clone()));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn cmd_runs_password_commands_as_typed() {
+        let t = PASSWORD_COMMAND_TIMEOUT;
+        assert_eq!(
+            run_password_command_in(&cmd(), "echo tabler", t)
+                .await
+                .unwrap(),
+            "tabler"
+        );
+        // `"` and `&` reach cmd unchanged: `&` separates commands, a quoted one is text.
+        assert_eq!(
+            run_password_command_in(&cmd(), r#"echo one& echo "two & three""#, t)
+                .await
+                .unwrap(),
+            r#""two & three""#
+        );
+        // A quoted program in a folder with a space (a `.cmd` shim under Program Files).
+        let dir = tempfile::tempdir().unwrap();
+        let tools = dir.path().join("Cloud SDK");
+        std::fs::create_dir(&tools).unwrap();
+        let shim = tools.join("token.cmd");
+        std::fs::write(&shim, "@echo off\r\necho tok-%1\r\n").unwrap();
+        assert_eq!(
+            run_password_command_in(&cmd(), &format!("\"{}\" abc", shim.display()), t)
+                .await
+                .unwrap(),
+            "tok-abc"
+        );
+        let err = run_password_command_in(&cmd(), "echo token expired 1>&2& exit /b 3", t)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("exit status 3"), "{msg}");
+        assert!(msg.contains("token expired"), "{msg}");
+        // cmd would run the first line only.
+        let err = run_password_command_in(&cmd(), "echo a\necho b", t)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "INVALID_INPUT");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn cmd_runs_bootstrap_scripts() {
+        let t = BOOTSTRAP_SCRIPT_TIMEOUT;
+        run_bootstrap_script_in(&cmd(), "echo ok", &[], t)
+            .await
+            .unwrap();
+        // The connection's variables.
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let script = format!("echo %TABLER_CONNECTION%>\"{}\"", marker.display());
+        run_bootstrap_script_in(&cmd(), &script, &[("TABLER_CONNECTION", "prod".into())], t)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "prod");
+        // A failure aborts with the end of its output (stdout and stderr).
+        let err = run_bootstrap_script_in(
+            &cmd(),
+            "echo starting& echo proxy: port in use 1>&2& exit /b 3",
+            &[],
+            t,
+        )
+        .await
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exit status 3") && msg.contains("proxy: port in use"),
+            "{msg}"
+        );
+        assert!(msg.contains("starting"), "{msg}");
+        let err = run_bootstrap_script_in(&cmd(), "echo a\necho b", &[], t)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "INVALID_INPUT");
+    }
+
     /// A source of `len` bytes that is never in memory, counting what is read from it: the end
     /// of a script's output must be found without reading the rest.
     struct Endless {
@@ -1100,6 +1326,23 @@ mod tests {
         assert_eq!(shell_flags("/bin/csh"), ["-c"]);
         assert_eq!(shell_flags("/bin/tcsh"), ["-c"]);
         assert_eq!(shell_flags("-tcsh"), ["-c"]);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_login_shell_is_shell_else_the_platform_default() {
+        assert_eq!(
+            login_shell_from(Some("/opt/homebrew/bin/fish")),
+            LoginShell::Posix("/opt/homebrew/bin/fish".into())
+        );
+        let default = if cfg!(target_os = "macos") {
+            "/bin/zsh"
+        } else {
+            "/bin/sh"
+        };
+        for shell in [None, Some(""), Some("  ")] {
+            assert_eq!(login_shell_from(shell), LoginShell::Posix(default.into()));
+        }
     }
 
     fn counting(

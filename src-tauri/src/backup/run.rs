@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::AppError;
+use crate::process::NoWindow as _;
 use crate::types::backup::{BackupEvent, BackupLogLine, BackupLogStream};
 
 use super::args::{CLEARED_ENV, Invocation, StdinSource, StdoutSink};
@@ -549,7 +550,7 @@ pub async fn run(
     }
 
     let mut cmd = Command::new(&inv.program);
-    cmd.args(&inv.args);
+    cmd.no_window().args(&inv.args);
     for key in CLEARED_ENV {
         cmd.env_remove(key);
     }

@@ -13,6 +13,7 @@ use std::time::Duration;
 use serde_json::{Value as Json, json};
 
 use crate::error::AppError;
+use crate::secrets::login_shell;
 use crate::types::mcp::{McpCliResult, McpClient, McpClientStatus, McpConfigPreview, McpInfo};
 
 use super::config::merge_server;
@@ -284,51 +285,24 @@ fn create_temp(dir: &Path, target: &Path) -> std::io::Result<(PathBuf, std::fs::
     Ok((tmp, file))
 }
 
-/// The user's login shell and the flags that make it run one command (as for password commands).
-fn login_shell() -> (String, &'static [&'static str]) {
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            if cfg!(target_os = "macos") {
-                "/bin/zsh".into()
-            } else {
-                "/bin/sh".into()
-            }
-        });
-    let name = Path::new(&shell)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .trim_start_matches('-')
-        .to_string();
-    let flags: &'static [&'static str] = if matches!(name.as_str(), "csh" | "tcsh") {
-        &["-c"]
-    } else {
-        &["-l", "-c"]
-    };
-    (shell, flags)
-}
-
 struct Output {
     success: bool,
     text: String,
 }
 
-/// Runs `script` through the login shell, without stdin, bounded by `timeout`.
+/// Runs `script` through the login shell (the one password commands use, cmd on Windows unless
+/// `$SHELL` names a program), without stdin, bounded by `timeout`.
 async fn run_shell(script: &str, timeout: Duration) -> Result<Output, AppError> {
-    let (shell, flags) = login_shell();
-    let mut cmd = tokio::process::Command::new(&shell);
-    cmd.args(flags)
-        .arg(script)
-        .stdin(Stdio::null())
+    let shell = login_shell();
+    let mut cmd = shell.command(script)?;
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let out = tokio::time::timeout(timeout, cmd.output())
         .await
         .map_err(|_| AppError::Timeout)?
-        .map_err(|e| AppError::Io(format!("cannot run {shell}: {e}")))?;
+        .map_err(|e| AppError::Io(format!("cannot run {}: {e}", shell.program())))?;
     let mut text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
     if !err.is_empty() {

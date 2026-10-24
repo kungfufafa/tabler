@@ -6,6 +6,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::process::NoWindow as _;
 use crate::types::backup::{DumpBinary, DumpTool};
 use crate::types::profile::Driver;
 
@@ -182,6 +183,7 @@ pub const VERSION_TIMEOUT: Duration = Duration::from_secs(4);
 /// Runs `<path> --version` and returns its combined output; None when it does not run.
 pub async fn version_output(path: &Path) -> Option<String> {
     let run = tokio::process::Command::new(path)
+        .no_window()
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true)

@@ -87,6 +87,9 @@ tauri-plugin-window-state = "2"
 # it is built from source and linked in statically (needs Perl and NASM at build time).
 [target.'cfg(windows)'.dependencies]
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
+# The SSH tunnel's check for a wildcard listener on a pinned port: a dual-stack `[::]` probe
+# needs IPV6_V6ONLY off (already in the lock via tokio).
+socket2 = "0.6"
 
 # Touch ID (LocalAuthentication) and the sleep / screen-lock notifications of the app lock
 # (already in the lock via tao / wry).

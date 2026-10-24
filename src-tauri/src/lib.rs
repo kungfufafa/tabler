@@ -26,6 +26,7 @@ pub mod metrics;
 pub mod objects;
 pub mod passcode;
 pub mod plugins;
+pub mod process;
 pub mod profiles_io;
 pub mod query_files;
 pub mod recent;

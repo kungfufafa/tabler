@@ -10,6 +10,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::error::AppError;
+use crate::process::NoWindow as _;
 
 /// The formulae the window offers: PostgreSQL's client library and tools (`libpq`), a server
 /// version's full install (`postgresql@17`), MySQL's client (`mysql-client`, `mysql-client@8.4`)
@@ -83,6 +84,7 @@ pub fn write_script(dir: &Path, formula: &str) -> Result<PathBuf, AppError> {
 /// Opens the script in a new Terminal window, where it runs.
 pub async fn open_in_terminal(script: &Path) -> Result<(), AppError> {
     let status = tokio::process::Command::new("/usr/bin/open")
+        .no_window()
         .arg("-a")
         .arg("Terminal")
         .arg(script)

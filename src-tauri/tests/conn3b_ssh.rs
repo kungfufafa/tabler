@@ -507,20 +507,24 @@ async fn proxy_command_and_proxy_jump_from_ssh_config() {
     target.trust_in(&trust);
     bastion.trust_in(&trust);
 
-    // ProxyCommand: the session runs over nc's stdio.
-    let tunnel = open_tunnel(
-        &ssh_cfg("viacmd", 0),
-        password_auth(),
-        LOCALHOST.into(),
-        echo,
-        &trust,
-    )
-    .await
-    .expect("tunnel through ProxyCommand");
-    round_trip(tunnel.local_port()).await;
-    assert_eq!(target.forwards(), 1);
-    assert_eq!(bastion.forwards(), 0);
-    tunnel.close().await;
+    // ProxyCommand: the session runs over nc's stdio (a Unix nc).
+    #[cfg(unix)]
+    {
+        let tunnel = open_tunnel(
+            &ssh_cfg("viacmd", 0),
+            password_auth(),
+            LOCALHOST.into(),
+            echo,
+            &trust,
+        )
+        .await
+        .expect("tunnel through ProxyCommand");
+        round_trip(tunnel.local_port()).await;
+        assert_eq!(target.forwards(), 1);
+        assert_eq!(bastion.forwards(), 0);
+        tunnel.close().await;
+    }
+    let before_jump = target.forwards();
 
     // ProxyJump: the bastion forwards to the target, which forwards to the database.
     let tunnel = open_tunnel(
@@ -534,7 +538,7 @@ async fn proxy_command_and_proxy_jump_from_ssh_config() {
     .expect("tunnel through the jump host");
     round_trip(tunnel.local_port()).await;
     assert_eq!(bastion.forwards(), 1);
-    assert_eq!(target.forwards(), 2);
+    assert_eq!(target.forwards(), before_jump + 1);
     tunnel.close().await;
 
     // An unknown jump-host key stops the connect before the target is reached.
@@ -625,17 +629,21 @@ async fn proxy_command_tokens_never_reach_the_shell() {
     refused(&err, "SSH host alias");
 
     // A token the command does not use is not looked at (the user is not in this command): the
-    // connect goes on, and fails later, in the handshake with the command that exits at once.
-    let err = connect("plainuser", &evil_user).await;
-    assert!(
-        !matches!(&err, AppError::Tunnel(m) if m.contains("cannot be used")),
-        "{err:?}"
-    );
-    assert!(
-        matches!(&err, AppError::Tunnel(m) if m.contains("ProxyCommand")),
-        "{err:?}"
-    );
-    assert!(!mark("pwned-user").exists());
+    // connect goes on, and fails later, in the handshake with the command that exits at once
+    // (Unix `true`).
+    #[cfg(unix)]
+    {
+        let err = connect("plainuser", &evil_user).await;
+        assert!(
+            !matches!(&err, AppError::Tunnel(m) if m.contains("cannot be used")),
+            "{err:?}"
+        );
+        assert!(
+            matches!(&err, AppError::Tunnel(m) if m.contains("ProxyCommand")),
+            "{err:?}"
+        );
+        assert!(!mark("pwned-user").exists());
+    }
 }
 
 // ----- "Ask every time" -------------------------------------------------------------------------

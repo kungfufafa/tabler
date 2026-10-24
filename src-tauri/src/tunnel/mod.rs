@@ -11,9 +11,10 @@
 //! tunnel (or another process) that would otherwise be able to bind the freed port.
 //!
 //! The listener never shares its port: it is bound without `SO_REUSEADDR` (see [`bind_local`]),
-//! so on macOS/BSD a pinned port cannot take loopback traffic away from another program that
-//! listens on the wildcard address of that port. And it only serves this app: a connection from
-//! any other program on the Mac is refused ([`peer`]).
+//! so on macOS/BSD (and, through a probe of the wildcard address, on Windows) a pinned port
+//! cannot take loopback traffic away from another program that listens on the wildcard address
+//! of that port. And it only serves this app: a connection from any other program on the Mac is
+//! refused ([`peer`]).
 //!
 //! `~/.ssh/config` decides how the SSH server is reached ([`transport`]): directly, through
 //! `ProxyJump` hosts (one SSH session per hop, each running over a `direct-tcpip` channel of the
@@ -1067,9 +1068,18 @@ pub async fn open_tunnel_to(
 /// Without the flag, though, a pinned port is also refused while connections of an earlier tunnel
 /// on it are still closing down (TIME_WAIT), which would break an immediate reconnect. So when a
 /// pinned port is busy, it is reused only if nothing answers on it, i.e. no program listens there.
+///
+/// Windows binds `127.0.0.1:P` next to a wildcard listener even without the flag, so there the
+/// wildcard address is checked first ([`wildcard_taken`]).
 async fn bind_local(port: u16) -> Result<TcpListener, AppError> {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let cannot_listen = |e: &dyn Display| AppError::Tunnel(format!("cannot listen on {addr}: {e}"));
+    #[cfg(windows)]
+    if port != 0 && wildcard_taken(port) {
+        return Err(cannot_listen(
+            &"the port is already in use (another program listens on it)",
+        ));
+    }
     let in_use = match listen_local(addr, false) {
         Ok(listener) => return Ok(listener),
         Err(e) if port != 0 && e.kind() == io::ErrorKind::AddrInUse => e,
@@ -1092,6 +1102,24 @@ async fn bind_local(port: u16) -> Result<TcpListener, AppError> {
     {
         Err(cannot_listen(&in_use))
     }
+}
+
+/// Whether another socket holds `port` on a wildcard address that also takes IPv4 loopback
+/// connections: `0.0.0.0`, or a dual-stack `[::]`. Windows lets the tunnel bind `127.0.0.1:P`
+/// next to it and then hands every loopback connection to the tunnel. A second bind of the same
+/// wildcard address is refused, though, so that is the probe (bound, never listening: no firewall
+/// prompt). Connecting would be slow: Windows reports a refused loopback connect after ~2 s.
+#[cfg(windows)]
+fn wildcard_taken(port: u16) -> bool {
+    let taken =
+        |bound: io::Result<()>| matches!(bound, Err(e) if e.kind() == io::ErrorKind::AddrInUse);
+    let v4 = || TcpSocket::new_v4()?.bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)));
+    let dual_stack = || {
+        let socket = TcpSocket::new_v6()?;
+        socket2::SockRef::from(&socket).set_only_v6(false)?;
+        socket.bind(SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)))
+    };
+    taken(v4()) || taken(dual_stack())
 }
 
 fn listen_local(addr: SocketAddr, reuse_addr: bool) -> io::Result<TcpListener> {
@@ -2226,6 +2254,41 @@ mod tests {
         drop(first);
         let again = bind_local(port).await.unwrap();
         assert_eq!(again.local_addr().unwrap().port(), port);
+    }
+
+    /// Windows binds 127.0.0.1:P next to a socket on the wildcard address of P and then hands the
+    /// loopback connections to the tunnel, so such a port is refused. An IPv6-only socket takes
+    /// no IPv4 connections and is left alone.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_pinned_port_held_on_a_wildcard_address_is_refused() {
+        use socket2::{Domain, Socket, Type};
+        let hold = |any: SocketAddr, only_v6: bool| {
+            let socket = Socket::new(Domain::for_address(any), Type::STREAM, None).unwrap();
+            if any.is_ipv6() {
+                socket.set_only_v6(only_v6).unwrap();
+            }
+            // Bound only: listening on a wildcard address would ask for a firewall rule.
+            socket.bind(&any.into()).unwrap();
+            let port = socket.local_addr().unwrap().as_socket().unwrap().port();
+            (socket, port)
+        };
+        let v4_any = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
+        let v6_any = SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0));
+        for any in [v4_any, v6_any] {
+            let (socket, port) = hold(any, false);
+            let err = bind_local(port).await.unwrap_err();
+            assert!(
+                matches!(&err, AppError::Tunnel(m) if m.contains("cannot listen") && m.contains("in use")),
+                "{any}: {err:?}"
+            );
+            drop(socket);
+            let free = bind_local(port).await.unwrap();
+            assert_eq!(free.local_addr().unwrap().port(), port);
+        }
+        let (_v6_only, port) = hold(v6_any, true);
+        let pinned = bind_local(port).await.unwrap();
+        assert_eq!(pinned.local_addr().unwrap().port(), port);
     }
 
     #[test]

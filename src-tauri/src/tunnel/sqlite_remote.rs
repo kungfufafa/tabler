@@ -327,25 +327,157 @@ pub trait RemoteHost: Send + Sync {
     }
 }
 
-/// The size and modification time of the database file and its `-wal`.
+/// How old a file's modification time must be before a write cannot keep it: a stamp taken
+/// earlier records a digest as well (git's "racily clean" index entries).
+const RACY_MARGIN: Duration = Duration::from_secs(2);
+/// SQLite's lock bytes (`PENDING_BYTE` to the end of the shared range). They never hold data,
+/// and on Windows another handle cannot read them while the driver writes a file over 1 GB.
+const LOCK_BYTES: std::ops::Range<u64> = 0x4000_0000..0x4000_0200;
+
+/// The database file and its `-wal`, as far as a change to upload goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct LocalStamp {
-    db: Option<(SystemTime, u64)>,
-    wal: Option<(SystemTime, u64)>,
+    db: Option<FileStamp>,
+    wal: Option<FileStamp>,
 }
 
-fn file_stamp(path: &Path) -> Option<(SystemTime, u64)> {
+impl LocalStamp {
+    fn same_times(&self, other: &LocalStamp) -> bool {
+        let times = |f: Option<FileStamp>| f.map(|f| (f.modified, f.len));
+        times(self.db) == times(other.db) && times(self.wal) == times(other.wal)
+    }
+
+    fn has_digest(&self) -> bool {
+        [self.db, self.wal]
+            .iter()
+            .any(|f| f.is_some_and(|f| f.digest.is_some()))
+    }
+}
+
+/// Size and modification time. SQLite rewrites pages in place, so a write in the same clock
+/// tick as the stamp (Windows: down to ~16 ms) keeps both: a stamp that becomes the synced one
+/// while the time is that recent also holds a digest of the contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    modified: SystemTime,
+    len: u64,
+    digest: Option<[u8; 32]>,
+}
+
+impl FileStamp {
+    /// Whether a write at `now` could still keep the time (a time ahead of the clock too).
+    fn recent(&self, now: SystemTime) -> bool {
+        now.duration_since(self.modified)
+            .ok()
+            .is_none_or(|age| age < RACY_MARGIN)
+    }
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
     let meta = std::fs::metadata(path).ok()?;
-    Some((meta.modified().ok()?, meta.len()))
+    Some(FileStamp {
+        modified: meta.modified().ok()?,
+        len: meta.len(),
+        digest: None,
+    })
 }
 
-fn local_stamp(db: &Path) -> LocalStamp {
+fn wal_path(db: &Path) -> PathBuf {
     let mut wal = db.as_os_str().to_owned();
     wal.push("-wal");
+    PathBuf::from(wal)
+}
+
+/// Sizes and times only (the watcher takes one every interval).
+fn local_stamp(db: &Path) -> LocalStamp {
     LocalStamp {
         db: file_stamp(db),
-        wal: file_stamp(Path::new(&wal)),
+        wal: file_stamp(&wal_path(db)),
     }
+}
+
+/// SHA-256 of a file; a database file without its lock bytes. `None`: it could not be read.
+fn digest(path: &Path, db: bool) -> Option<[u8; 32]> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut ctx = aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA256);
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut hash = |from: &mut dyn Read| -> Option<()> {
+        loop {
+            match from.read(&mut buf) {
+                Ok(0) => return Some(()),
+                Ok(n) => ctx.update(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return None,
+            }
+        }
+    };
+    if db {
+        // `take` keeps every read short of the lock bytes.
+        hash(&mut (&mut file).take(LOCK_BYTES.start))?;
+        file.seek(SeekFrom::Start(LOCK_BYTES.end)).ok()?;
+    }
+    hash(&mut file)?;
+    ctx.finish().as_ref().try_into().ok()
+}
+
+/// The stamp a sync keeps: sizes and times, plus a digest of each file whose time is recent.
+/// Reads those files.
+fn stamp_to_keep(db: &Path) -> LocalStamp {
+    // Taken before the files' times, so that "recent" errs on the side of a digest.
+    let now = SystemTime::now();
+    let mut stamp = local_stamp(db);
+    if let Some(f) = stamp.db.as_mut().filter(|f| f.recent(now)) {
+        f.digest = digest(db, true);
+    }
+    if let Some(f) = stamp.wal.as_mut().filter(|f| f.recent(now)) {
+        f.digest = digest(&wal_path(db), false);
+    }
+    stamp
+}
+
+async fn synced_stamp(db: &Path) -> LocalStamp {
+    let path = db.to_path_buf();
+    tokio::task::spawn_blocking(move || stamp_to_keep(&path))
+        .await
+        .unwrap_or_else(|_| local_stamp(db))
+}
+
+/// Whether the copy, found with sizes and times `now`, is still as `synced`: `Some` with the
+/// stamp to keep, `None` when it changed. Same sizes and times are trusted unless `synced` holds
+/// digests: then the contents are compared, on a blocking thread, and once the times are no
+/// longer recent the stamp is kept without them (a later write changes the time).
+async fn same_as_synced(db: &Path, now: LocalStamp, synced: LocalStamp) -> Option<LocalStamp> {
+    if !now.same_times(&synced) {
+        return None;
+    }
+    if !synced.has_digest() {
+        return Some(synced);
+    }
+    let db = db.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        // Taken before reading: a write after it gets a later time, one before it is read.
+        let at = SystemTime::now();
+        let mut keep = synced;
+        for (file, path, is_db) in [
+            (&mut keep.db, db.clone(), true),
+            (&mut keep.wal, wal_path(&db), false),
+        ] {
+            let Some(f) = file.as_mut() else { continue };
+            let Some(expected) = f.digest else { continue };
+            if digest(&path, is_db) != Some(expected) {
+                return None;
+            }
+            if !f.recent(at) {
+                f.digest = None;
+            }
+        }
+        Some(keep)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 struct Link {
@@ -506,7 +638,7 @@ impl RemoteSqlite {
             sync: tokio::sync::Mutex::new(SyncState {
                 link,
                 remote: stamp,
-                synced: local_stamp(&local_path),
+                synced: synced_stamp(&local_path).await,
                 conflicted: false,
             }),
             connection_id: Mutex::new(None),
@@ -573,13 +705,17 @@ impl RemoteSqlite {
             ));
         }
         let mut sync = self.sync.lock().await;
-        let local = local_stamp(&self.local_path);
-        if !force && local == sync.synced && !sync.conflicted {
-            return Ok(SqliteSshSync {
-                uploaded: false,
-                conflict: false,
-            });
+        if !force && !sync.conflicted {
+            let now = local_stamp(&self.local_path);
+            if let Some(keep) = same_as_synced(&self.local_path, now, sync.synced).await {
+                sync.synced = keep;
+                return Ok(SqliteSshSync {
+                    uploaded: false,
+                    conflict: false,
+                });
+            }
         }
+        let local = synced_stamp(&self.local_path).await;
         let snapshot_path = self.dir.join(".upload.sqlite");
         let (db, out) = (self.local_path.clone(), snapshot_path.clone());
         let key = self.host.cipher().await;
@@ -674,6 +810,23 @@ impl RemoteSqlite {
         }
     }
 
+    /// Whether the copy (sizes and times `now`) changed since it was last synced. The lock is not
+    /// held while contents are compared.
+    async fn changed(&self, now: LocalStamp) -> bool {
+        let synced = self.sync.lock().await.synced;
+        let Some(keep) = same_as_synced(&self.local_path, now, synced).await else {
+            return true;
+        };
+        if keep != synced {
+            let mut sync = self.sync.lock().await;
+            // Unless a sync replaced it meanwhile.
+            if sync.synced == synced {
+                sync.synced = keep;
+            }
+        }
+        false
+    }
+
     /// Starts uploading changes as they happen (only when changes go back).
     fn watch(self: &Arc<Self>) {
         if !self.upload {
@@ -695,9 +848,8 @@ impl RemoteSqlite {
                 }
                 let Some(me) = me.upgrade() else { break };
                 let now = local_stamp(&me.local_path);
-                let synced = me.sync.lock().await.synced;
                 // Uploaded once the copy has stopped changing for one interval.
-                if now != synced && seen == Some(now) {
+                if me.changed(now).await && seen == Some(now) {
                     me.sync_and_report().await;
                     seen = None;
                 } else {
@@ -713,10 +865,8 @@ impl RemoteSqlite {
         self.stop.cancel();
         let mut keep = false;
         if self.upload {
-            let pending = {
-                let sync = self.sync.lock().await;
-                sync.conflicted || local_stamp(&self.local_path) != sync.synced
-            };
+            let conflicted = self.sync.lock().await.conflicted;
+            let pending = conflicted || self.changed(local_stamp(&self.local_path)).await;
             if pending {
                 let done = self.sync_and_report().await;
                 keep = !done.uploaded;
@@ -1056,5 +1206,115 @@ mod tests {
         assert!(before.db.is_some() && before.wal.is_none());
         std::fs::write(dir.path().join("a.db-wal"), b"wal").unwrap();
         assert_ne!(local_stamp(&db), before);
+    }
+
+    fn set_modified(path: &Path, time: SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+    }
+
+    /// Regression (Windows): an INSERT right after the download rewrote a page in place within the
+    /// same clock tick, so neither size nor modification time changed and nothing was uploaded.
+    #[tokio::test]
+    async fn a_change_that_keeps_size_and_time_is_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("a.db");
+        std::fs::write(&db, b"page 1").unwrap();
+        let synced = synced_stamp(&db).await;
+        let stamped = synced.db.unwrap();
+        assert!(
+            stamped.digest.is_some(),
+            "a recent time comes with a digest"
+        );
+        assert!(synced.wal.is_none());
+        assert!(
+            same_as_synced(&db, local_stamp(&db), synced)
+                .await
+                .is_some()
+        );
+
+        std::fs::write(&db, b"page 2").unwrap();
+        set_modified(&db, stamped.modified);
+        let now = local_stamp(&db);
+        assert!(now.same_times(&synced));
+        assert_eq!(same_as_synced(&db, now, synced).await, None);
+    }
+
+    /// The watcher compares every second whatever the size: a time old enough that any later
+    /// write changes it is trusted, and the file is not read.
+    #[tokio::test]
+    async fn an_old_time_is_trusted_without_reading_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("a.db");
+        std::fs::write(&db, b"page 1").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(60);
+        set_modified(&db, old);
+        let synced = synced_stamp(&db).await;
+        assert_eq!(synced.db.unwrap().digest, None);
+        assert_eq!(synced, local_stamp(&db));
+
+        // Contents are not compared: a rewrite that puts the old time back goes unseen (a real
+        // write would have changed the time).
+        std::fs::write(&db, b"page 2").unwrap();
+        set_modified(&db, old);
+        assert_eq!(
+            same_as_synced(&db, local_stamp(&db), synced).await,
+            Some(synced)
+        );
+        assert!(
+            same_as_synced(&db, LocalStamp::default(), synced)
+                .await
+                .is_none()
+        );
+    }
+
+    /// A digest taken while the time was recent is checked once more and then dropped when the
+    /// time no longer is.
+    #[tokio::test]
+    async fn a_digest_is_dropped_once_the_time_is_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("a.db");
+        std::fs::write(&db, b"page 1").unwrap();
+        std::fs::write(wal_path(&db), b"wal").unwrap();
+        set_modified(&db, SystemTime::now() - Duration::from_secs(60));
+        // Ahead of the clock counts as recent, however slow the test runs.
+        set_modified(
+            &wal_path(&db),
+            SystemTime::now() + Duration::from_secs(3600),
+        );
+        // As if stamped while the times were recent.
+        let mut synced = local_stamp(&db);
+        for (f, path, is_db) in [
+            (&mut synced.db, db.clone(), true),
+            (&mut synced.wal, wal_path(&db), false),
+        ] {
+            f.as_mut().unwrap().digest = digest(&path, is_db);
+        }
+        assert!(synced.db.unwrap().digest.is_some() && synced.wal.unwrap().digest.is_some());
+
+        let keep = same_as_synced(&db, local_stamp(&db), synced).await.unwrap();
+        assert!(keep.same_times(&synced));
+        assert_eq!(keep.db.unwrap().digest, None, "an old time: no digest");
+        assert_eq!(keep.wal, synced.wal, "a recent time keeps its digest");
+
+        // A changed -wal behind the same size and time is still seen.
+        std::fs::write(wal_path(&db), b"WAL").unwrap();
+        set_modified(&wal_path(&db), synced.wal.unwrap().modified);
+        assert_eq!(same_as_synced(&db, local_stamp(&db), keep).await, None);
+    }
+
+    /// The lock bytes start at 1 GB: a smaller database is digested whole.
+    #[test]
+    fn a_database_under_1_gb_is_digested_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("a.db");
+        std::fs::write(&db, b"SQLite format 3\0").unwrap();
+        assert_eq!(digest(&db, true), digest(&db, false));
+        assert!(digest(&db, true).is_some());
+        assert_eq!(digest(&dir.path().join("missing.db"), true), None);
     }
 }

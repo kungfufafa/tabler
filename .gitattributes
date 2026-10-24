@@ -1,0 +1,5 @@
+# Files that tools write with LF (ts-rs bindings from `cargo test`, vitest snapshots, the Rust
+# test fixtures): LF in the working tree too, so a run leaves no line-ending changes behind.
+src/lib/ipc/bindings/** text eol=lf
+**/__snapshots__/*.snap text eol=lf
+src-tauri/tests/fixtures/** text eol=lf
