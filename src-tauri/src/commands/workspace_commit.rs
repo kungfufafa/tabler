@@ -375,8 +375,9 @@ enum Previous {
     /// Its `CREATE` text, as `SHOW CREATE` prints it.
     Text(String),
     /// The server would not show it (a routine of another definer, no `SHOW_ROUTINE`: the
-    /// `Create Procedure` column is NULL): it could not be put back.
-    Unreadable(ErrorPayload),
+    /// `Create Procedure` column is NULL): it could not be put back. Boxed because the payload is
+    /// big, more so in builds where serde_json keeps key order (bson asks for it: drv-mongodb).
+    Unreadable(Box<ErrorPayload>),
 }
 
 /// ER_SP_DOES_NOT_EXIST
@@ -388,16 +389,16 @@ async fn read_previous(session: &dyn DbSession, routine: &RoutineRef) -> Previou
     match objects::routine_definition(session, routine).await {
         Ok(script) => match create_statement(Dialect::Mysql, &script) {
             Some(create) => Previous::Text(create),
-            None => Previous::Unreadable(
+            None => Previous::Unreadable(Box::new(
                 AppError::internal(format!("unexpected definition text of {}", routine.name))
                     .to_payload(),
-            ),
+            )),
         },
         Err(AppError::Db {
             vendor_code: Some(MYSQL_NO_SUCH_ROUTINE),
             ..
         }) => Previous::Absent,
-        Err(e) => Previous::Unreadable(e.to_payload()),
+        Err(e) => Previous::Unreadable(Box::new(e.to_payload())),
     }
 }
 
@@ -481,7 +482,7 @@ pub async fn run_mysql_replacement(
             let outcome = DdlResult {
                 executed: Vec::new(),
                 failed_index: None,
-                error: Some(unreadable_routine(routine, cause)),
+                error: Some(unreadable_routine(routine, *cause)),
                 duration_ms: 0,
             };
             return (outcome, None);

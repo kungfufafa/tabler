@@ -37,21 +37,21 @@ all-drivers = [
     "drv-dynamodb",
 ]
 # Transport shared by several drivers (`drivers::common`).
-common-http = []
-common-aws = ["common-http"]
+common-http = ["dep:bytes", "dep:percent-encoding"]
+common-aws = ["common-http", "dep:hex"]
 common-jwt = ["common-http"]
 drv-pg-flavors = []
 drv-libsql = ["common-http"]
 drv-d1 = ["common-http"]
-drv-duckdb = []
-drv-sqlserver = []
+drv-duckdb = ["dep:duckdb"]
+drv-sqlserver = ["dep:tiberius", "tokio-util/compat"]
 drv-clickhouse = ["common-http"]
-drv-snowflake = []
+drv-snowflake = ["dep:snowflake-connector-rs"]
 drv-bigquery = ["common-jwt"]
-drv-vertica = []
-drv-cassandra = []
-drv-redis = []
-drv-mongodb = []
+drv-vertica = ["dep:tokio-rustls", "dep:md-5", "dep:bytes", "dep:hex"]
+drv-cassandra = ["dep:scylla", "dep:num-bigint", "dep:bigdecimal", "dep:bytes"]
+drv-redis = ["dep:redis", "dep:tokio-rustls", "dep:bytes"]
+drv-mongodb = ["dep:mongodb", "dep:percent-encoding"]
 drv-elasticsearch = ["common-aws"]
 drv-dynamodb = ["common-aws"]
 
@@ -105,6 +105,36 @@ libc = "0.2"
 # `system-proxy`: the macOS System Settings proxy (a Finder-launched app has no HTTPS_PROXY).
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "system-proxy"] }
 
+# The drivers beyond PostgreSQL, MySQL and SQLite. Every crate here is optional and only `drv-*`
+# or `common-*` features turn it on, so a default build compiles none of them. TLS is rustls on
+# aws-lc-rs throughout: no ring, OpenSSL or native-tls (tests/manifest_features.rs guards that).
+# Versions are the newest release at least 14 days old when added; an `=` pin keeps a later
+# resolve from taking a newer release before anyone has checked it.
+# SQL Server (TDS 8 with rustls, NTLM on Windows, SQL Browser for named instances).
+tiberius = { version = "0.13", optional = true, default-features = false, features = ["tds80", "rustls", "winauth", "sql-browser-tokio", "chrono"] }
+# DuckDB from its bundled C++ sources (no system library), with JSON and Parquet. The build
+# script of libduckdb-sys pulls in ureq with rustls on ring; that stays in the build script and
+# never reaches the app (`cargo tree -e normal,features -i rustls` shows no "ring").
+duckdb = { version = "=1.10506.0", optional = true, default-features = false, features = ["bundled", "json", "parquet"] }
+# Snowflake over REST, with key-pair (JWT) sign-in.
+snowflake-connector-rs = { version = "=1.1.0", optional = true, default-features = false, features = ["key-pair-auth"] }
+# Cassandra and ScyllaDB; varint and decimal values decode into num-bigint and bigdecimal.
+scylla = { version = "1.9", optional = true, features = ["rustls-023", "num-bigint-04", "bigdecimal-04"] }
+num-bigint = { version = "0.4", optional = true }
+bigdecimal = { version = "0.4", optional = true }
+# Redis and Valkey: the async client only; the driver wraps TLS itself with tokio-rustls.
+redis = { version = "=1.7.1", optional = true, default-features = false, features = ["tokio-comp"] }
+# MongoDB: its default `rustls-tls` uses ring, so aws-lc-rs is chosen explicitly.
+mongodb = { version = "3.9.1", optional = true, default-features = false, features = ["compat-3-0-0", "rustls-tls-aws-lc", "dns-resolver"] }
+# TLS streams on the app's rustls config (Redis, Vertica); already in the lock.
+tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["tls12", "logging"] }
+# Vertica's MD5 password hash (SHA-512 comes from aws-lc-rs); already in the lock.
+md-5 = { version = "0.11", optional = true }
+# Already in the lock through other crates; direct for the drivers that use them.
+bytes = { version = "1", optional = true }
+percent-encoding = { version = "2", optional = true }
+hex = { version = "0.4", optional = true }
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.dev]
@@ -113,6 +143,11 @@ incremental = true
 # Compile dependencies with light optimization in dev: faster runtime, compiled once.
 [profile.dev.package."*"]
 opt-level = 1
+
+# DuckDB's C++ compiled with debug info (`/Z7` on MSVC) makes the test binaries too big to link
+# comfortably in 16 GB; nobody steps through DuckDB itself.
+[profile.dev.package.libduckdb-sys]
+debug = false
 
 [profile.release]
 codegen-units = 1
