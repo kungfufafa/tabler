@@ -63,12 +63,24 @@ import {
 } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
+import { SECRET_STORE } from "@/lib/platform";
 import { ACCENT_PRESETS } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { getPrefs } from "@/stores/prefs";
 import { DriverBadge } from "./badges";
 import { BootstrapCommandsDialog } from "./BootstrapCommandsDialog";
-import { accentColor, cssColor, DRIVER_LABEL, DRIVER_TINT, DRIVERS } from "./colors";
+import {
+  accentColor,
+  cssColor,
+  DATABASE_KINDS,
+  databaseKind,
+  DRIVER_LABEL,
+  DRIVERS,
+  KIND_LABEL,
+  KIND_TINT,
+  kindDriver,
+  type DatabaseKind,
+} from "./colors";
 import { CustomColorSwatch } from "./CustomColorSwatch";
 import { EditTagsDialog } from "./EditTagsDialog";
 import { GroupCombobox } from "./GroupCombobox";
@@ -383,7 +395,7 @@ function SslFileButton({
 }
 
 /**
- * New connection, step 1: three big driver tiles. A click selects, a double-click or ↩ (or the
+ * New connection, step 1: one big tile per database (TablePlus's list; MariaDB apart from MySQL). A click selects, a double-click or ↩ (or the
  * dialog's Create button) goes on to the form; ←/→ move between the tiles.
  */
 function DriverPicker({
@@ -391,14 +403,14 @@ function DriverPicker({
   onChange,
   onConfirm,
 }: {
-  value: Driver;
-  onChange: (driver: Driver) => void;
-  onConfirm: (driver: Driver) => void;
+  value: DatabaseKind;
+  onChange: (kind: DatabaseKind) => void;
+  onConfirm: (kind: DatabaseKind) => void;
 }) {
-  const tiles = useRef(new Map<Driver, HTMLButtonElement>());
+  const tiles = useRef(new Map<DatabaseKind, HTMLButtonElement>());
   return (
-    <div role="radiogroup" aria-label="Database driver" className="grid grid-cols-3 gap-3">
-      {DRIVERS.map((d, i) => (
+    <div role="radiogroup" aria-label="Database" className="grid grid-cols-4 gap-3">
+      {DATABASE_KINDS.map((d, i) => (
         <button
           key={d}
           ref={(el) => {
@@ -425,7 +437,8 @@ function DriverPicker({
                   : 0;
             if (step === 0) return;
             e.preventDefault();
-            const next = DRIVERS[(i + step + DRIVERS.length) % DRIVERS.length]!;
+            const next =
+              DATABASE_KINDS[(i + step + DATABASE_KINDS.length) % DATABASE_KINDS.length]!;
             onChange(next);
             tiles.current.get(next)?.focus();
           }}
@@ -437,8 +450,13 @@ function DriverPicker({
               : "border-border hover:border-border-strong hover:bg-row-hover",
           )}
         >
-          <DriverBadge driver={d} color={DRIVER_TINT[d]} size="lg" />
-          <span className="text-[13px] font-medium">{DRIVER_LABEL[d]}</span>
+          <DriverBadge
+            driver={kindDriver(d)}
+            mysqlVersion={d === "mariadb" ? "mariadb" : null}
+            color={KIND_TINT[d]}
+            size="lg"
+          />
+          <span className="text-[13px] font-medium">{KIND_LABEL[d]}</span>
         </button>
       ))}
     </div>
@@ -784,7 +802,7 @@ function GeneralFields({
                   ? "Stored in Keychain — leave empty to keep"
                   : clearPassword
                     ? "The stored password is removed on save"
-                    : "Stored in the macOS Keychain"
+                    : `Stored in the ${SECRET_STORE}`
             }
           >
             <div className="flex items-center gap-2">
@@ -1690,7 +1708,7 @@ export function ConnectionDialog({
     [storedGroups.data, profiles.data],
   );
   const [step, setStep] = useState<"driver" | "form">("form");
-  const [pickedDriver, setPickedDriver] = useState<Driver>("postgres");
+  const [pickedDriver, setPickedDriver] = useState<DatabaseKind>("postgres");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [bootstrapOpen, setBootstrapOpen] = useState(false);
   const [tagsOpen, setTagsOpen] = useState(false);
@@ -1736,13 +1754,23 @@ export function ConnectionDialog({
   const sqlite = driver === "sqlite";
   const testResult = test.isSuccess ? test.data : undefined;
   const testError = test.isError ? test.error : null;
-  const title = profile ? `Edit ${profile.name}` : `New ${DRIVER_LABEL[driver]} connection`;
+  const mysqlVersion = form.watch("mysqlVersion");
+  const title = profile
+    ? `Edit ${profile.name}`
+    : `New ${KIND_LABEL[databaseKind(driver, mysqlVersion)]} connection`;
 
   const buildInput = (values: ConnectionFormValues) => formToProfileInput(values, profile, id);
 
-  const pickDriver = (d: Driver) => {
+  const pickDriver = (kind: DatabaseKind) => {
+    const d = kindDriver(kind);
     form.setValue("driver", d);
     form.setValue("port", DEFAULT_PORT[d]);
+    // MariaDB is the MySQL driver with Ver. ▸ MariaDB (and its SSL mode names).
+    if (d === "mysql") {
+      const version = kind === "mariadb" ? "mariadb" : "default";
+      form.setValue("mysqlVersion", version);
+      form.setValue("ssl", sslForVersion(form.getValues("ssl"), version));
+    }
     setStep("form");
   };
 
@@ -1856,7 +1884,7 @@ export function ConnectionDialog({
       <DialogContent
         className={cn(
           "flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0",
-          step === "driver" ? "sm:max-w-md" : "sm:max-w-[600px]",
+          step === "driver" ? "sm:max-w-lg" : "sm:max-w-[600px]",
         )}
         showCloseButton
       >
@@ -1890,11 +1918,15 @@ export function ConnectionDialog({
         ) : (
           <form onSubmit={submit(true)} className="flex min-h-0 flex-1 flex-col">
             <DialogHeader className="border-border shrink-0 flex-row items-center gap-3 border-b py-3.5 pr-12 pl-5">
-              <DriverBadge driver={driver} color={form.watch("color")} />
+              <DriverBadge
+                driver={driver}
+                mysqlVersion={mysqlVersion}
+                color={form.watch("color")}
+              />
               <div className="flex min-w-0 flex-col gap-1">
                 <DialogTitle className="truncate">{title}</DialogTitle>
                 <DialogDescription className="text-xs">
-                  Credentials are stored in the macOS Keychain, never in plain files.
+                  Credentials are stored in the {SECRET_STORE}, never in plain files.
                 </DialogDescription>
               </div>
               {profile === null && (

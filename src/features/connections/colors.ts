@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import type { Driver } from "@/lib/ipc";
+import type { Driver, MysqlVersion } from "@/lib/ipc";
 import { accentColor, HEX_COLOR, type AccentPreset } from "@/lib/theme";
 import type { BuiltinTag } from "./schema";
 
@@ -13,12 +13,41 @@ export const DRIVER_LABEL = {
 } as const;
 export const DRIVER_SHORT = { postgres: "PG", mysql: "MY", sqlite: "SQ" } as const;
 export const DRIVERS = ["postgres", "mysql", "sqlite"] as const satisfies readonly Driver[];
-/** Tile colour of each driver in the new-connection driver picker. */
-export const DRIVER_TINT: Record<Driver, AccentPreset> = {
+/**
+ * The databases of the new-connection picker, TablePlus's list: MariaDB has its own tile and badge
+ * although the MySQL driver serves it (a MySQL connection with Ver. ▸ MariaDB).
+ */
+export type DatabaseKind = Driver | "mariadb";
+export const DATABASE_KINDS = [
+  "postgres",
+  "mysql",
+  "mariadb",
+  "sqlite",
+] as const satisfies readonly DatabaseKind[];
+export const KIND_LABEL: Record<DatabaseKind, string> = {
+  postgres: "PostgreSQL",
+  mysql: "MySQL",
+  mariadb: "MariaDB",
+  sqlite: "SQLite",
+};
+export const KIND_SHORT: Record<DatabaseKind, string> = { ...DRIVER_SHORT, mariadb: "MA" };
+/** Tile colour of each database in the new-connection picker. */
+export const KIND_TINT: Record<DatabaseKind, AccentPreset> = {
   postgres: "blue",
   mysql: "orange",
+  mariadb: "purple",
   sqlite: "teal",
 };
+
+/** The database a connection is for: its driver, or MariaDB for a MySQL one set to Ver. ▸ MariaDB. */
+export function databaseKind(driver: Driver, mysqlVersion?: MysqlVersion | null): DatabaseKind {
+  return driver === "mysql" && mysqlVersion === "mariadb" ? "mariadb" : driver;
+}
+
+/** The driver that serves a database of the picker. */
+export function kindDriver(kind: DatabaseKind): Driver {
+  return kind === "mariadb" ? "mysql" : kind;
+}
 
 /** The five built-in tags' names and TablePlus's colours (custom tags: see `tags.ts`). */
 export const TAG_LABEL: Record<BuiltinTag, string> = {

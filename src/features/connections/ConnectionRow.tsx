@@ -84,7 +84,12 @@ export function ConnectionRow({
             drag.isDragging && "opacity-50",
           )}
         >
-          <DriverBadge driver={profile.driver} color={profile.color} busy={connecting} />
+          <DriverBadge
+            driver={profile.driver}
+            mysqlVersion={profile.options.mysqlVersion}
+            color={profile.color}
+            busy={connecting}
+          />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
               <span className="truncate text-[13px] leading-4 font-semibold">{profile.name}</span>

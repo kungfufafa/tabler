@@ -1,20 +1,25 @@
 import { ChevronRight, Folder, Loader2 } from "lucide-react";
 import { Fragment } from "react";
-import type { ConnectionTag, Driver } from "@/lib/ipc";
+import type { ConnectionTag, Driver, MysqlVersion } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
-import { DRIVER_SHORT, TINTED, tintStyle } from "./colors";
+import { databaseKind, KIND_SHORT, TINTED, tintStyle } from "./colors";
 import { GROUP_ICONS, isGroupImage, splitPath, type GroupIconId } from "./groups";
 import { tagColorOf, tagLabel, useCustomTags } from "./tags";
 
-/** Rounded square with the driver's short label (PG / MY / SQ), tinted with a connection colour. */
+/**
+ * Rounded square with the database's short label (PG / MY / MA / SQ), tinted with a connection
+ * colour. `mysqlVersion`: a MySQL connection set to Ver. ▸ MariaDB reads MA.
+ */
 export function DriverBadge({
   driver,
+  mysqlVersion,
   color,
   busy = false,
   size = "md",
   className,
 }: {
   driver: Driver;
+  mysqlVersion?: MysqlVersion | null;
   color: string | null | undefined;
   /** Shows a spinner instead of the label (connecting). */
   busy?: boolean;
@@ -32,7 +37,11 @@ export function DriverBadge({
         className,
       )}
     >
-      {busy ? <Loader2 className="size-3.5 animate-spin" /> : DRIVER_SHORT[driver]}
+      {busy ? (
+        <Loader2 className="size-3.5 animate-spin" />
+      ) : (
+        KIND_SHORT[databaseKind(driver, mysqlVersion)]
+      )}
     </span>
   );
 }

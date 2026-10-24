@@ -916,6 +916,7 @@ export function Launcher() {
                         <div className="bg-popover border-border flex h-9 w-56 items-center gap-2 rounded-md border px-2 shadow-md">
                           <DriverBadge
                             driver={dragging.profile.driver}
+                            mysqlVersion={dragging.profile.options.mysqlVersion}
                             color={dragging.profile.color}
                           />
                           <span className="truncate text-[13px] font-semibold">

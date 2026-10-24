@@ -93,14 +93,27 @@ describe("ConnectionDialog — new connection", () => {
     const tiles = within(picker).getAllByRole("radio");
     expect(tiles.map((t) => t.textContent)).toEqual([
       "PGPostgreSQL",
-      "MYMySQL / MariaDB",
+      "MYMySQL",
+      "MAMariaDB",
       "SQSQLite",
     ]);
     expect(tiles[0]).toHaveAttribute("aria-checked", "true");
-    await user.dblClick(within(picker).getByRole("radio", { name: /MySQL/ }));
-    const form = await screen.findByRole("dialog", { name: "New MySQL / MariaDB connection" });
+    await user.dblClick(within(picker).getByRole("radio", { name: "MySQL" }));
+    const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
+    expect(within(form).getByLabelText("Ver.")).toHaveTextContent("Default");
     expect(within(form).getByLabelText("Port")).toHaveValue("3306");
     expect(within(form).getByLabelText("Name")).toHaveFocus();
+  });
+
+  it("MariaDB has its own tile: the MySQL driver set to Ver. ▸ MariaDB", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    const picker = await screen.findByRole("dialog", { name: "New connection" });
+    await user.dblClick(within(picker).getByRole("radio", { name: "MariaDB" }));
+    const form = await screen.findByRole("dialog", { name: "New MariaDB connection" });
+    expect(within(form).getByLabelText("Driver")).toHaveTextContent("MySQL");
+    expect(within(form).getByLabelText("Ver.")).toHaveTextContent("MariaDB");
+    expect(within(form).getByLabelText("Port")).toHaveValue("3306");
   });
 
   it("the picker works from the keyboard: → selects the next tile, ↩ creates", async () => {
@@ -108,7 +121,7 @@ describe("ConnectionDialog — new connection", () => {
     renderDialog();
     const picker = await screen.findByRole("dialog", { name: "New connection" });
     expect(within(picker).getByRole("radio", { name: /PostgreSQL/ })).toHaveFocus();
-    await user.keyboard("{ArrowRight}{ArrowRight}");
+    await user.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}");
     expect(within(picker).getByRole("radio", { name: /SQLite/ })).toHaveFocus();
     expect(within(picker).getByRole("radio", { name: /SQLite/ })).toHaveAttribute(
       "aria-checked",
@@ -167,7 +180,7 @@ describe("ConnectionDialog — form", () => {
     const { onOpenChange } = renderDialog({
       prefill: parseConnectionUrl("mysql://root@127.0.0.1/shop?name=Shop%20copy"),
     });
-    const form = await screen.findByRole("dialog", { name: "New MySQL / MariaDB connection" });
+    const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
     await user.type(within(form).getByLabelText("Database"), "{Enter}");
     await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
     const saved = await save.mock.results[0]!.value;
@@ -229,7 +242,7 @@ describe("ConnectionDialog — form", () => {
   it("edits an existing profile in place: tag, colour and driver as selects/swatches", async () => {
     renderDialog({ profile: STAGING });
     const form = await screen.findByRole("dialog", { name: "Edit Staging via SSH" });
-    expect(within(form).queryByRole("radiogroup", { name: "Database driver" })).toBeNull();
+    expect(within(form).queryByRole("radiogroup", { name: "Database" })).toBeNull();
     expect(within(form).getByLabelText("Tag")).toHaveTextContent("Staging");
     expect(within(form).getByLabelText("Driver")).toHaveTextContent("PostgreSQL");
     expect(within(form).getByRole("radio", { name: "purple" })).toHaveAttribute(
@@ -349,7 +362,7 @@ describe("ConnectionDialog — TablePlus parity", () => {
     const { onOpenChange, onSaved } = renderDialog({
       prefill: parseConnectionUrl("mysql://root@127.0.0.1/shop?name=Shop"),
     });
-    const form = await screen.findByRole("dialog", { name: "New MySQL / MariaDB connection" });
+    const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
     await user.click(within(form).getByRole("button", { name: "Test" }));
     expect(await within(form).findByRole("status")).toHaveTextContent(/MySQL 9\.6\.0/);
     expect(save).toHaveBeenCalledTimes(1);
@@ -615,7 +628,7 @@ describe("ConnectionDialog — groups", () => {
     const picker = await screen.findByRole("dialog", { name: "New connection" });
     await user.click(within(picker).getByRole("radio", { name: /MySQL/ }));
     await user.click(within(picker).getByRole("button", { name: "Create" }));
-    const form = await screen.findByRole("dialog", { name: "New MySQL / MariaDB connection" });
+    const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
     expect(within(form).getByLabelText("Group")).toHaveValue("Clients / Acme");
     expect(within(form).getByLabelText("Port")).toHaveValue("3306");
     await user.type(within(form).getByLabelText("Name"), "Acme");
@@ -876,7 +889,7 @@ describe("ConnectionDialog — Import from URL, Ver. and timeout", () => {
     const { onOpenChange } = renderDialog({
       prefill: parseConnectionUrl("mysql://app@db.example.com/shop"),
     });
-    const form = await screen.findByRole("dialog", { name: "New MySQL / MariaDB connection" });
+    const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
     await user.click(within(form).getByRole("button", { name: "Import from URL…" }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(useConnectionDialog.getState().urlOpen).toBe(true);
@@ -948,7 +961,7 @@ describe("ConnectionDialog — Import from URL, Ver. and timeout", () => {
   it("a new connection starts with the preference's timeout, 60 by default", async () => {
     const user = userEvent.setup();
     renderDialog({ prefill: parseConnectionUrl("mysql://app@db.example.com/shop") });
-    const form = await screen.findByRole("dialog", { name: "New MySQL / MariaDB connection" });
+    const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
     await user.click(within(form).getByRole("button", { name: "Advanced" }));
     expect(within(form).getByLabelText("Connect timeout")).toHaveValue("60");
   });

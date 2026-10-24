@@ -137,7 +137,7 @@ describe("Launcher", () => {
       await user.click(screen.getByRole("button", { name: /Create a new connection/ }));
       expect(useConnectionDialog.getState()).toMatchObject({ open: true, profile: null });
       const form = await screen.findByRole("dialog");
-      expect(within(form).getByRole("radiogroup", { name: "Database driver" })).toBeVisible();
+      expect(within(form).getByRole("radiogroup", { name: "Database" })).toBeVisible();
     });
 
     it("New connection from URL… validates inline, then opens the form prefilled", async () => {

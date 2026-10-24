@@ -304,7 +304,11 @@ export function ImportConnectionsDialog({
                       checked={selected.has(c.profile.id)}
                       onCheckedChange={(v) => toggle(c.profile.id, v === true)}
                     />
-                    <DriverBadge driver={c.profile.driver} color={c.profile.color} />
+                    <DriverBadge
+                      driver={c.profile.driver}
+                      mysqlVersion={c.profile.options.mysqlVersion}
+                      color={c.profile.color}
+                    />
                     <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 items-center gap-1.5">
                         <span className="truncate text-[13px] font-semibold">{c.profile.name}</span>

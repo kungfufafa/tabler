@@ -79,6 +79,7 @@ export function ConnectionList({
                 >
                   <DriverBadge
                     driver={p.driver}
+                    mysqlVersion={p.options.mysqlVersion}
                     color={p.color}
                     className="size-5 rounded text-[8px]"
                   />
