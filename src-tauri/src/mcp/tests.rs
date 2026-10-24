@@ -410,6 +410,34 @@ async fn list_connections_hides_production_and_never_shows_passwords() {
     );
 }
 
+/// Regression: one saved connection this build cannot read (a newer Tabler saved it) made every
+/// tool fail.
+#[tokio::test]
+async fn a_connection_saved_by_a_newer_build_leaves_the_others_usable() {
+    let f = fixture(enabled()).await;
+    let (future, _) = crate::appdb::newer::insert_profile(&f.appdb, "Analytics");
+    let (body, err) = f.call("list_connections", json!({})).await;
+    assert!(!err, "{body}");
+    let names: Vec<&str> = body["connections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Shop", "Shop RO", "Shop safe", "twin", "Twin"]);
+    let (body, err) = f.call("list_tables", json!({ "connection": "Shop" })).await;
+    assert!(!err, "{body}");
+    // It is out of reach, by name and by id.
+    for wanted in ["Analytics".to_string(), future.to_string()] {
+        let (body, err) = f.call("list_tables", json!({ "connection": wanted })).await;
+        assert!(err);
+        assert!(
+            body.as_str().unwrap().contains("No saved connection"),
+            "{body}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn connections_are_found_by_name_or_id() {
     let f = fixture(enabled()).await;

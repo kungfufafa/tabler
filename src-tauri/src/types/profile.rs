@@ -12,6 +12,12 @@ pub enum Driver {
 }
 
 impl Driver {
+    /// PostgreSQL, MySQL / MariaDB or SQLite: the drivers of every Tabler build. A connections
+    /// file holding any other one is written with a newer layout version (`profiles_io`).
+    pub const fn is_core(self) -> bool {
+        matches!(self, Driver::Postgres | Driver::Mysql | Driver::Sqlite)
+    }
+
     pub fn default_port(self) -> Option<u16> {
         match self {
             Driver::Postgres => Some(5432),
@@ -294,6 +300,12 @@ pub struct ProfileOptions {
     /// None = the Settings ▸ General default.
     #[ts(optional = nullable)]
     pub lazy_load: Option<bool>,
+    /// Option keys this build does not know (a newer Tabler wrote them), kept as they are so a
+    /// save here does not drop them. Not in the TS type: the dialog leaves them out of what it
+    /// saves and `AppDb::upsert_profile` puts them back.
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub unknown: serde_json::Map<String, serde_json::Value>,
 }
 
 impl ProfileOptions {
@@ -450,6 +462,19 @@ pub struct ImportPreviewItem {
     pub has_ssh_secrets: bool,
 }
 
+/// A connection of a `.tablerconnections` file that this build cannot read: a newer Tabler wrote
+/// it (a driver or an option value this one does not know). The preview lists it; it is never
+/// imported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SkippedConnection {
+    /// Its name in the file ("" when it has none).
+    pub name: String,
+    /// Why it cannot be read.
+    pub reason: String,
+}
+
 /// What `inspect_connections_file` found. An encrypted file read without its password comes
 /// back with `needs_password` and no connections.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -460,6 +485,8 @@ pub struct ConnectionsFilePreview {
     pub needs_password: bool,
     pub groups: Vec<String>,
     pub connections: Vec<ImportPreviewItem>,
+    /// The file's connections this build cannot read (not in `connections`).
+    pub skipped: Vec<SkippedConnection>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

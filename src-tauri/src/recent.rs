@@ -218,14 +218,22 @@ fn find_submenu<R: Runtime>(items: Vec<MenuItemKind<R>>, id: &str) -> Option<Sub
     None
 }
 
+/// The submenu's rows from the stored list and the saved connections. A connection this build
+/// cannot read (saved by a newer Tabler) is left out; the others still show.
+fn stored_rows(db: &AppDb) -> (Vec<MenuRow>, Vec<MenuRow>) {
+    let profiles = db.list_profiles().unwrap_or_else(|e| {
+        log::warn!("Open Recent without its connections: {e}");
+        Vec::new()
+    });
+    menu_rows(&load(db), &profiles)
+}
+
 /// Rebuilds File ▸ Open Recent from the stored list and the saved connections' current names.
 pub fn refresh_menu<R: Runtime>(app: &AppHandle<R>) {
     let Some(state) = app.try_state::<crate::state::AppState>() else {
         return;
     };
-    let items = load(&state.appdb);
-    let profiles = state.appdb.list_profiles().unwrap_or_default();
-    let (connections, files) = menu_rows(&items, &profiles);
+    let (connections, files) = stored_rows(&state.appdb);
     let Some(menu) = app.menu() else {
         return;
     };
@@ -381,6 +389,34 @@ mod tests {
         db.set_setting(SETTINGS_KEY, &serde_json::json!("nope"))
             .unwrap();
         assert!(load(&db).is_empty());
+    }
+
+    /// Regression: one saved connection this build cannot read (a newer Tabler saved it) emptied
+    /// the whole menu.
+    #[test]
+    fn a_connection_saved_by_a_newer_build_leaves_the_others_in_the_menu() {
+        let db = AppDb::open_in_memory().unwrap();
+        let mine = db.upsert_profile(&profile(Uuid::new_v4(), "Mine")).unwrap();
+        let (future, raw) = crate::appdb::newer::insert_profile(&db, "Analytics");
+        let path = abs("/q.sql");
+        for entry in [
+            RecentEntry::Connection {
+                profile_id: mine.id,
+            },
+            RecentEntry::Connection { profile_id: future },
+            file(&path),
+        ] {
+            update(&db, |items| items.push(&entry)).unwrap();
+        }
+        let (connections, files) = stored_rows(&db);
+        assert_eq!(
+            connections,
+            vec![(format!("recent.connection:{}", mine.id), "Mine".to_string())]
+        );
+        assert_eq!(files.len(), 1);
+        // The list keeps the entry (a newer build still lists it) and the row is untouched.
+        assert_eq!(load(&db).connections, vec![future, mine.id]);
+        assert_eq!(crate::appdb::newer::raw_data(&db, future), raw);
     }
 
     #[test]

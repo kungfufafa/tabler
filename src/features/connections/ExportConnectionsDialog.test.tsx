@@ -144,6 +144,7 @@ describe("ExportConnectionsDialog", () => {
         hasPassword: false,
         hasSshSecrets: false,
       })),
+      skipped: [],
     });
     const importConnections = vi.spyOn(ipc.profiles, "importConnections").mockResolvedValue([]);
     const user = userEvent.setup();
@@ -190,6 +191,7 @@ describe("ExportConnectionsDialog", () => {
         hasPassword: false,
         hasSshSecrets: false,
       })),
+      skipped: [],
     });
     const importConnections = vi.spyOn(ipc.profiles, "importConnections").mockResolvedValue([]);
     const user = userEvent.setup();
@@ -216,6 +218,66 @@ describe("ExportConnectionsDialog", () => {
         ["f-rds"],
       ),
     );
+  });
+
+  // A file a newer Tabler wrote can hold connections this version cannot read (a database it
+  // does not support yet): they are listed apart, and the others still import.
+  it("lists the connections it cannot read and imports the others", async () => {
+    const pg = SEED_PROFILES.find((p) => p.id === "p-local-pg")!;
+    vi.spyOn(ipc.profiles, "inspectConnectionsFile").mockResolvedValue({
+      encrypted: false,
+      needsPassword: false,
+      groups: [],
+      connections: [
+        {
+          profile: { ...pg, id: "f-plain", name: "Plain" },
+          duplicateName: false,
+          hasPassword: false,
+          hasSshSecrets: false,
+        },
+      ],
+      skipped: [
+        {
+          name: "Analytics",
+          reason: "uses the futuredb driver, which this version of Tabler does not have",
+        },
+        { name: "", reason: "was saved by a newer version of Tabler (unknown variant)" },
+      ],
+    });
+    const importConnections = vi.spyOn(ipc.profiles, "importConnections").mockResolvedValue([]);
+    const user = userEvent.setup();
+    wrap(<ImportConnectionsDialog path={PATH} onClose={() => {}} />);
+    const items = await screen.findByRole("list", { name: "Connections in the file" });
+    expect(within(items).getAllByRole("listitem")).toHaveLength(1);
+    const skipped = screen.getByRole("group", { name: "Connections that cannot be imported" });
+    expect(skipped).toHaveTextContent("2 connections need a newer version of Tabler");
+    const [analytics, unnamed] = within(skipped).getAllByRole("listitem");
+    expect(analytics).toHaveTextContent(
+      "Analytics uses the futuredb driver, which this version of Tabler does not have",
+    );
+    expect(unnamed).toHaveTextContent("Unnamed connection was saved by a newer version");
+    expect(screen.getByText("1 connection selected")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import" }));
+    await vi.waitFor(() =>
+      expect(importConnections).toHaveBeenCalledWith(PATH, null, ["f-plain"], []),
+    );
+  });
+
+  it("says so when it can read none of the file's connections", async () => {
+    vi.spyOn(ipc.profiles, "inspectConnectionsFile").mockResolvedValue({
+      encrypted: false,
+      needsPassword: false,
+      groups: [],
+      connections: [],
+      skipped: [{ name: "Analytics", reason: "uses the futuredb driver" }],
+    });
+    wrap(<ImportConnectionsDialog path={PATH} onClose={() => {}} />);
+    const skipped = await screen.findByRole("group", {
+      name: "Connections that cannot be imported",
+    });
+    expect(skipped).toHaveTextContent("1 connection needs a newer version of Tabler");
+    expect(screen.queryByText("The file has no connections.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
   });
 
   it("exports password commands only with the passwords; the mock import drops unkept ones", async () => {

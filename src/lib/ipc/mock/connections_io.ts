@@ -248,7 +248,8 @@ registerMock("export_connections", async ({ request }) => {
 
 registerMock("inspect_connections_file", ({ path, password }): ConnectionsFilePreview => {
   const { file, locked } = openFile(path, password);
-  if (locked) return { encrypted: true, needsPassword: true, groups: [], connections: [] };
+  if (locked)
+    return { encrypted: true, needsPassword: true, groups: [], connections: [], skipped: [] };
   const names = [...mockProfiles.values()].map((p) => p.name);
   return {
     encrypted: file.password !== null,
@@ -260,6 +261,8 @@ registerMock("inspect_connections_file", ({ path, password }): ConnectionsFilePr
       hasPassword: c.password !== null,
       hasSshSecrets: c.sshSecrets,
     })),
+    // Mock files only hold connections this build reads.
+    skipped: [],
   };
 });
 

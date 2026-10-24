@@ -198,6 +198,7 @@ export type { SslNegotiation } from "./bindings/SslNegotiation";
 export type { ExportConnectionsRequest } from "./bindings/ExportConnectionsRequest";
 export type { ConnectionsFilePreview } from "./bindings/ConnectionsFilePreview";
 export type { ImportPreviewItem } from "./bindings/ImportPreviewItem";
+export type { SkippedConnection } from "./bindings/SkippedConnection";
 export type { TableKind } from "./bindings/TableKind";
 export type { ValueKind } from "./bindings/ValueKind";
 export type { FilterNode } from "./bindings/FilterNode";

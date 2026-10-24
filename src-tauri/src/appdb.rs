@@ -159,6 +159,16 @@ fn saved_keyword(keyword: Option<&str>) -> Result<Option<String>, AppError> {
     Ok(Some(k.to_string()))
 }
 
+/// A stored profile. A row that does not decode was saved by a newer Tabler (a driver or an
+/// option value this build does not know): `Unsupported`, and the row stays as it is.
+fn decode_profile(name: &str, data: &str) -> Result<ConnectionProfile, AppError> {
+    serde_json::from_str(data).map_err(|e| {
+        AppError::Unsupported(format!(
+            "the connection {name:?} was saved by a newer Tabler ({e})"
+        ))
+    })
+}
+
 fn parse_uuid(s: Option<String>) -> Option<Uuid> {
     s.and_then(|s| Uuid::parse_str(&s).ok())
 }
@@ -255,39 +265,51 @@ impl AppDb {
 
     // ----- profiles ---------------------------------------------------------
 
+    /// The saved profiles, in list order. A row this build cannot read (see `decode_profile`)
+    /// is logged and left out, never changed: one such row must not break the launcher, Open
+    /// Recent, Export Connections or the MCP tools.
     pub fn list_profiles(&self) -> Result<Vec<ConnectionProfile>, AppError> {
         let conn = self.lock();
         let mut stmt = conn
-            .prepare("SELECT data FROM profiles ORDER BY sort_order, lower(name)")
+            .prepare("SELECT id, name, data FROM profiles ORDER BY sort_order, lower(name)")
             .map_err(|e| AppError::AppDb(e.to_string()))?;
         let rows = stmt
-            .query_map([], |r| r.get::<_, String>(0))
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
             .map_err(|e| AppError::AppDb(e.to_string()))?;
         let mut out = Vec::new();
         for row in rows {
-            let data = row.map_err(|e| AppError::AppDb(e.to_string()))?;
-            out.push(serde_json::from_str(&data)?);
+            let (id, name, data) = row.map_err(|e| AppError::AppDb(e.to_string()))?;
+            match decode_profile(&name, &data) {
+                Ok(profile) => out.push(profile),
+                Err(e) => log::warn!("profile {id} left out of the list: {e}"),
+            }
         }
         Ok(out)
     }
 
+    /// One saved profile; `Unsupported` for a row this build cannot read.
     pub fn get_profile(&self, id: Uuid) -> Result<Option<ConnectionProfile>, AppError> {
         let conn = self.lock();
-        let data: Option<String> = conn
+        let row: Option<(String, String)> = conn
             .query_row(
-                "SELECT data FROM profiles WHERE id = ?1",
+                "SELECT name, data FROM profiles WHERE id = ?1",
                 params![id.to_string()],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
             .map_err(|e| AppError::AppDb(e.to_string()))?;
-        match data {
-            Some(d) => Ok(Some(serde_json::from_str(&d)?)),
-            None => Ok(None),
-        }
+        row.map(|(name, data)| decode_profile(&name, &data))
+            .transpose()
     }
 
-    /// Inserts or updates a profile, filling timestamps. Returns the stored profile.
+    /// Inserts or updates a profile, filling timestamps. Returns the stored profile. Only the
+    /// profile's own row changes; a row this build cannot read is never overwritten.
     pub fn upsert_profile(
         &self,
         profile: &ConnectionProfile,
@@ -301,6 +323,13 @@ impl AppDb {
                 p.last_connected_at = old.last_connected_at.clone();
                 if p.sort_order == 0 {
                     p.sort_order = old.sort_order;
+                }
+                // Option keys of a newer build: the dialog does not know them and saves without
+                // them, so the stored ones are kept.
+                for (key, value) in &old.options.unknown {
+                    if !p.options.unknown.contains_key(key) {
+                        p.options.unknown.insert(key.clone(), value.clone());
+                    }
                 }
             }
             None => {
@@ -811,6 +840,50 @@ impl AppDb {
     }
 }
 
+/// Profile rows as a newer Tabler writes them, for the tests of everything that lists profiles.
+#[cfg(test)]
+pub(crate) mod newer {
+    use super::*;
+
+    /// Stores a profile with a driver and an option this build does not know, `data` verbatim
+    /// (sort order 0: first in the list). Returns its id and `data`.
+    pub fn insert_profile(db: &AppDb, name: &str) -> (Uuid, String) {
+        let id = Uuid::new_v4();
+        let data = serde_json::json!({
+            "id": id,
+            "name": name,
+            "driver": "futuredb",
+            "host": "db.example.com",
+            "options": { "tag": "staging", "futureOption": { "nested": [1, 2] } },
+            "sortOrder": 0,
+            "createdAt": "2030-01-01T00:00:00.000Z",
+            "updatedAt": "2030-01-01T00:00:00.000Z",
+        })
+        .to_string();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO profiles (id, name, driver, data, sort_order, created_at, updated_at)
+                 VALUES (?1, ?2, 'futuredb', ?3, 0, '2030', '2030')",
+                params![id.to_string(), name, data],
+            )
+        })
+        .unwrap();
+        (id, data)
+    }
+
+    /// The `data` of a profile row, as stored.
+    pub fn raw_data(db: &AppDb, id: Uuid) -> String {
+        db.with_conn(|c| {
+            c.query_row(
+                "SELECT data FROM profiles WHERE id = ?1",
+                params![id.to_string()],
+                |r| r.get(0),
+            )
+        })
+        .unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -866,6 +939,109 @@ mod tests {
         );
         assert!(db.delete_profile(a.id).unwrap());
         assert!(db.get_profile(a.id).unwrap().is_none());
+    }
+
+    /// A row a newer Tabler saved (a driver this build lacks): left out of the list, refused by
+    /// id, and never rewritten by what this build does to the other profiles.
+    #[test]
+    fn a_profile_saved_by_a_newer_build_is_skipped_and_left_alone() {
+        let db = AppDb::open_in_memory().unwrap();
+        let a = db.upsert_profile(&profile("a")).unwrap();
+        let (future, raw) = newer::insert_profile(&db, "Analytics");
+        let b = db.upsert_profile(&profile("b")).unwrap();
+        let names = |db: &AppDb| {
+            db.list_profiles()
+                .unwrap()
+                .into_iter()
+                .map(|p| p.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&db), ["a", "b"]);
+        let err = db.get_profile(future).unwrap_err();
+        assert_eq!(err.code(), "UNSUPPORTED");
+        assert!(err.to_string().contains("\"Analytics\""), "{err}");
+        assert!(err.to_string().contains("newer Tabler"), "{err}");
+
+        // Whatever happens to the other profiles leaves the row byte for byte.
+        let mut edited = a.clone();
+        edited.name = "a2".into();
+        db.upsert_profile(&edited).unwrap();
+        db.upsert_profile(&profile("c")).unwrap();
+        db.reorder_profiles(&[b.id, a.id]).unwrap();
+        db.touch_last_connected(b.id).unwrap();
+        assert!(db.delete_profile(b.id).unwrap());
+        assert_eq!(names(&db), ["a2", "c"]);
+        assert_eq!(newer::raw_data(&db, future), raw);
+
+        // A save over it from this build is refused instead of dropping what it cannot read.
+        let mut clash = profile("clash");
+        clash.id = future;
+        assert_eq!(db.upsert_profile(&clash).unwrap_err().code(), "UNSUPPORTED");
+        assert_eq!(newer::raw_data(&db, future), raw);
+    }
+
+    /// Option keys of a newer build come along: they decode into `unknown`, are written back as
+    /// they were, and survive a save from the dialog, which leaves them out.
+    #[test]
+    fn unknown_option_keys_survive_a_save_without_them() {
+        let options: ProfileOptions =
+            serde_json::from_value(serde_json::json!({ "readOnly": true, "futureOption": 1 }))
+                .unwrap();
+        assert!(options.read_only);
+        assert_eq!(
+            options.unknown.get("futureOption"),
+            Some(&serde_json::json!(1))
+        );
+        let written = serde_json::to_value(&options).unwrap();
+        assert_eq!(written["futureOption"], 1);
+        assert_eq!(written["readOnly"], true);
+        assert_eq!(
+            serde_json::from_value::<ProfileOptions>(written).unwrap(),
+            options
+        );
+        // Known keys never land in `unknown`.
+        assert!(ProfileOptions::default().unknown.is_empty());
+        let known: ProfileOptions =
+            serde_json::from_value(serde_json::to_value(ProfileOptions::default()).unwrap())
+                .unwrap();
+        assert!(known.unknown.is_empty());
+
+        let db = AppDb::open_in_memory().unwrap();
+        let mut p = profile("lite");
+        p.options = options;
+        let stored = db.upsert_profile(&p).unwrap();
+        // The dialog's save: the profile as the renderer has it, minus the key it does not know.
+        let mut json = serde_json::to_value(&stored).unwrap();
+        json["options"]
+            .as_object_mut()
+            .unwrap()
+            .remove("futureOption");
+        let mut from_dialog: ConnectionProfile = serde_json::from_value(json).unwrap();
+        assert!(from_dialog.options.unknown.is_empty());
+        from_dialog.options.read_only = false;
+        let saved = db.upsert_profile(&from_dialog).unwrap();
+        assert!(!saved.options.read_only);
+        assert_eq!(
+            saved.options.unknown.get("futureOption"),
+            Some(&serde_json::json!(1))
+        );
+        assert_eq!(db.get_profile(p.id).unwrap().unwrap(), saved);
+        assert!(newer_key_in(&db, p.id, 1));
+
+        // A value that is sent wins over the stored one.
+        let mut newer_value = saved.clone();
+        newer_value
+            .options
+            .unknown
+            .insert("futureOption".into(), serde_json::json!(2));
+        db.upsert_profile(&newer_value).unwrap();
+        assert!(newer_key_in(&db, p.id, 2));
+    }
+
+    /// The stored row's `options.futureOption` is `value`.
+    fn newer_key_in(db: &AppDb, id: Uuid, value: i64) -> bool {
+        let data: serde_json::Value = serde_json::from_str(&newer::raw_data(db, id)).unwrap();
+        data["options"]["futureOption"] == value
     }
 
     fn entry(profile: Option<Uuid>, sql: &str, success: bool) -> NewHistoryEntry {

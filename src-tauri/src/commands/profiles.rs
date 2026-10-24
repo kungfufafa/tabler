@@ -151,9 +151,17 @@ pub async fn save_profile(
     state: State<'_, AppState>,
     input: ProfileInput,
 ) -> Result<ConnectionProfile, AppError> {
+    run_save(&state, &input).await
+}
+
+/// The body of [`save_profile`], callable without a Tauri runtime.
+pub async fn run_save(
+    state: &AppState,
+    input: &ProfileInput,
+) -> Result<ConnectionProfile, AppError> {
     validate(&input.profile)?;
     let stored = state.appdb.upsert_profile(&input.profile)?;
-    store_secrets(&state, &input).await?;
+    store_secrets(state, input).await?;
     Ok(stored)
 }
 
@@ -565,6 +573,7 @@ pub async fn run_export(state: &AppState, req: ExportConnectionsRequest) -> Resu
     let payload = Payload {
         groups: profiles_io::export_groups(&stored_group_records(state)?, &req.groups, &used),
         connections,
+        skipped: Vec::new(),
     };
     let count = payload.connections.len();
     // The key derivation takes a moment: off the async workers.
@@ -616,12 +625,14 @@ pub async fn inspect_file(
             needs_password: true,
             groups: Vec::new(),
             connections: Vec::new(),
+            skipped: Vec::new(),
         },
         ReadOutcome::Opened { payload, encrypted } => ConnectionsFilePreview {
             encrypted,
             needs_password: false,
             connections: profiles_io::preview(&payload, &state.appdb.list_profiles()?),
             groups: payload.group_paths(),
+            skipped: payload.skipped,
         },
     })
 }
@@ -885,6 +896,100 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(only_beta.len(), 1);
+    }
+
+    /// Regression: one saved connection this build cannot read (a newer Tabler saved it) broke
+    /// Export Connections and the import preview. A file holding one imports the others.
+    #[tokio::test]
+    async fn connections_saved_by_a_newer_build_do_not_stop_export_or_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("team.tablerconnections");
+        let path = path.to_string_lossy().into_owned();
+        let state = state();
+        let alpha = state
+            .appdb
+            .upsert_profile(&pg_profile("Alpha", None))
+            .unwrap();
+        let (future, raw) = crate::appdb::newer::insert_profile(&state.appdb, "Analytics");
+        let request = ExportConnectionsRequest {
+            profile_ids: vec![alpha.id, future],
+            groups: vec![],
+            include_passwords: false,
+            include_ssh_secrets: false,
+            file_password: None,
+            path: path.clone(),
+        };
+        assert_eq!(run_export(&state, request).await.unwrap(), 1);
+        let preview = inspect_file(&state, &path, None).await.unwrap();
+        assert_eq!(preview.connections.len(), 1);
+        assert!(preview.connections[0].duplicate_name);
+        assert!(preview.skipped.is_empty());
+
+        // The same file as a newer Tabler writes it, with a connection of a driver it adds.
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut unknown = file["payload"]["connections"][0].clone();
+        unknown["profile"]["id"] = serde_json::json!(Uuid::new_v4());
+        unknown["profile"]["name"] = "Analytics".into();
+        unknown["profile"]["driver"] = "futuredb".into();
+        file["payload"]["connections"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, unknown);
+        file["version"] = profiles_io::VERSION_NEW_DRIVERS.into();
+        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+        let preview = inspect_file(&state, &path, None).await.unwrap();
+        assert_eq!(preview.connections.len(), 1);
+        assert_eq!(preview.connections[0].profile.id, alpha.id);
+        assert_eq!(preview.skipped.len(), 1);
+        assert_eq!(preview.skipped[0].name, "Analytics");
+        assert!(
+            preview.skipped[0].reason.contains("futuredb"),
+            "{}",
+            preview.skipped[0].reason
+        );
+        let imported = run_import(&state, &path, None, &[alpha.id], &[])
+            .await
+            .unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].name, "Alpha");
+        assert_eq!(state.appdb.list_profiles().unwrap().len(), 2);
+        assert_eq!(crate::appdb::newer::raw_data(&state.appdb, future), raw);
+    }
+
+    /// The connection dialog saves the profile as the renderer knows it: option keys a newer
+    /// Tabler wrote are not in it, and they stay stored.
+    #[tokio::test]
+    async fn a_save_from_the_dialog_keeps_option_keys_it_does_not_know() {
+        let state = state();
+        let mut p = pg_profile("Alpha", None);
+        p.options
+            .unknown
+            .insert("futureOption".into(), serde_json::json!(1));
+        let stored = state.appdb.upsert_profile(&p).unwrap();
+        // What the dialog sends: the fields it knows (changed), without `futureOption`.
+        let mut sent = serde_json::to_value(ProfileInput {
+            profile: stored,
+            password: None,
+            ssh_password: None,
+            ssh_passphrase: None,
+            clear_password: false,
+        })
+        .unwrap();
+        sent["profile"]["options"]
+            .as_object_mut()
+            .unwrap()
+            .remove("futureOption");
+        sent["profile"]["name"] = "Alpha 2".into();
+        let input: ProfileInput = serde_json::from_value(sent).unwrap();
+        assert!(input.profile.options.unknown.is_empty());
+        let saved = run_save(&state, &input).await.unwrap();
+        assert_eq!(saved.name, "Alpha 2");
+        assert_eq!(
+            saved.options.unknown.get("futureOption"),
+            Some(&serde_json::json!(1))
+        );
+        assert_eq!(state.appdb.get_profile(p.id).unwrap().unwrap(), saved);
     }
 
     /// Group images (TablePlus: a group takes an image of the user's own): they live in the

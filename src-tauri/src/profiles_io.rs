@@ -23,13 +23,21 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::types::profile::{ConnectionProfile, ImportPreviewItem, PasswordMode};
+use crate::types::profile::{
+    ConnectionProfile, Driver, ImportPreviewItem, PasswordMode, SkippedConnection,
+};
 
 /// `format` of every connections file.
 pub const FORMAT: &str = "tabler-connections";
-/// File layout version written by this build (files from newer builds are refused). Version 2
-/// stores groups as `{ path, icon }` records; version 1 stored plain names.
+/// File layout version written by this build (also [`VERSION_NEW_DRIVERS`]; files of later
+/// layouts are refused). Version 2 stores groups as `{ path, icon }` records; version 1 stored
+/// plain names.
 pub const VERSION: u32 = 2;
+/// The version of a file holding a connection of a driver beyond PostgreSQL, MySQL and SQLite.
+/// Same layout as [`VERSION`]: builds that fail on a driver they do not know (those from before
+/// connections were read one by one) refuse it as newer, and this build reads it, skipping the
+/// connections it cannot read.
+pub const VERSION_NEW_DRIVERS: u32 = VERSION + 1;
 /// The file name extension (without the dot).
 pub const FILE_EXTENSION: &str = "tablerconnections";
 
@@ -100,11 +108,14 @@ pub struct GroupRecord {
 
 /// What a file carries: the connections and the groups (empty groups included).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "RawPayload")]
 pub struct Payload {
-    #[serde(default, deserialize_with = "groups_of_any_version")]
     pub groups: Vec<GroupRecord>,
     pub connections: Vec<ExportedConnection>,
+    /// The file's connections this build cannot read (a newer Tabler wrote them): listed by the
+    /// preview, never imported, never written.
+    #[serde(skip)]
+    pub skipped: Vec<SkippedConnection>,
 }
 
 impl Payload {
@@ -115,6 +126,61 @@ impl Payload {
     /// The paths of the file's groups, in file order.
     pub fn group_paths(&self) -> Vec<String> {
         self.groups.iter().map(|g| g.path.clone()).collect()
+    }
+
+    /// The layout version the file is written with (see [`VERSION_NEW_DRIVERS`]).
+    fn version(&self) -> u32 {
+        if self.connections.iter().all(|c| c.profile.driver.is_core()) {
+            VERSION
+        } else {
+            VERSION_NEW_DRIVERS
+        }
+    }
+}
+
+/// A payload as read: each connection is decoded on its own, so one this build cannot read is
+/// skipped instead of failing the whole file.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPayload {
+    #[serde(default, deserialize_with = "groups_of_any_version")]
+    groups: Vec<GroupRecord>,
+    connections: Vec<Value>,
+}
+
+impl From<RawPayload> for Payload {
+    fn from(raw: RawPayload) -> Payload {
+        let mut connections = Vec::new();
+        let mut skipped = Vec::new();
+        for value in &raw.connections {
+            match ExportedConnection::deserialize(value) {
+                Ok(c) => connections.push(c),
+                Err(e) => skipped.push(skipped_connection(&value["profile"], &e)),
+            }
+        }
+        Payload {
+            groups: raw.groups,
+            connections,
+            skipped,
+        }
+    }
+}
+
+/// What the preview says about a connection this build cannot read: its name, and its driver
+/// when that is what this build lacks.
+fn skipped_connection(profile: &Value, e: &serde_json::Error) -> SkippedConnection {
+    let name = profile.get("name").and_then(Value::as_str);
+    let driver = profile.get("driver").and_then(Value::as_str);
+    let known = |d: &str| Driver::deserialize(&Value::String(d.into())).is_ok();
+    let reason = match driver {
+        Some(d) if !known(d) => {
+            format!("uses the {d} driver, which this version of Tabler does not have")
+        }
+        _ => format!("was saved by a newer version of Tabler ({e})"),
+    };
+    SkippedConnection {
+        name: name.unwrap_or_default().to_string(),
+        reason,
     }
 }
 
@@ -359,7 +425,7 @@ fn write_with_iterations(
     let password = password.filter(|p| !p.is_empty());
     let mut envelope = Envelope {
         format: FORMAT.into(),
-        version: VERSION,
+        version: payload.version(),
         exported_at: exported_at.into(),
         payload: None,
         encrypted: None,
@@ -411,7 +477,7 @@ pub fn read(bytes: &[u8], password: Option<&str>) -> Result<ReadOutcome, AppErro
     if envelope.format != FORMAT {
         return Err(not_a_file());
     }
-    if envelope.version > VERSION {
+    if envelope.version > VERSION_NEW_DRIVERS {
         return Err(AppError::InvalidInput(
             "This connections file was made by a newer version of Tabler".into(),
         ));
@@ -608,6 +674,7 @@ mod tests {
                     secrets: ExportedSecrets::default(),
                 },
             ],
+            skipped: Vec::new(),
         }
     }
 
@@ -722,6 +789,94 @@ mod tests {
         }
         let newer = br#"{"format":"tabler-connections","version":99,"payload":{"connections":[]}}"#;
         assert!(read(newer, None).unwrap_err().to_string().contains("newer"));
+    }
+
+    /// A file a newer Tabler wrote: the connections this build cannot read (a driver or an option
+    /// value it does not know) are listed as skipped, the others import with the option keys this
+    /// build does not know.
+    #[test]
+    fn a_file_with_unknown_connections_imports_the_rest() {
+        let known = profile("Staging", false);
+        let mut known_json = serde_json::to_value(&known).unwrap();
+        known_json["options"]["futureOption"] = serde_json::json!({ "on": true });
+        let unknown_driver = profile("Analytics", false);
+        let mut unknown_driver_json = serde_json::to_value(&unknown_driver).unwrap();
+        unknown_driver_json["driver"] = "futuredb".into();
+        let mut unknown_value = serde_json::to_value(profile("Odd", false)).unwrap();
+        unknown_value["options"]["safeMode"] = "futureLevel".into();
+        let file = serde_json::json!({
+            "format": FORMAT,
+            "version": VERSION_NEW_DRIVERS,
+            "payload": {
+                "groups": [{ "path": "Staging", "icon": "server" }],
+                "connections": [
+                    { "profile": unknown_driver_json },
+                    { "profile": known_json, "secrets": { "password": "pw" } },
+                    { "profile": unknown_value },
+                    42,
+                ],
+            },
+        });
+        let ReadOutcome::Opened { payload, .. } =
+            read(&serde_json::to_vec(&file).unwrap(), None).unwrap()
+        else {
+            panic!("a plain file opens without a password");
+        };
+        // The sealed payload of an encrypted file decodes the same way.
+        assert_eq!(
+            serde_json::from_value::<Payload>(file["payload"].clone()).unwrap(),
+            payload
+        );
+        assert_eq!(payload.groups, [group("Staging", Some("server"))]);
+        assert_eq!(payload.connections.len(), 1);
+        let only = &payload.connections[0];
+        assert_eq!(only.profile.name, "Staging");
+        assert_eq!(only.secrets.password.as_deref(), Some("pw"));
+        assert_eq!(
+            only.profile.options.unknown["futureOption"],
+            serde_json::json!({ "on": true })
+        );
+        let names: Vec<&str> = payload.skipped.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Analytics", "Odd", ""]);
+        let reasons: Vec<&str> = payload.skipped.iter().map(|s| s.reason.as_str()).collect();
+        assert_eq!(
+            reasons[0],
+            "uses the futuredb driver, which this version of Tabler does not have"
+        );
+        assert!(reasons[1].starts_with("was saved by a newer version of Tabler ("));
+        assert!(reasons[1].contains("futureLevel"), "{}", reasons[1]);
+        assert!(reasons[2].starts_with("was saved by a newer version of Tabler ("));
+
+        // Only what can be read is previewed and imported, option keys and all.
+        assert_eq!(preview(&payload, &[]).len(), 1);
+        let planned = plan_import(&payload, &[unknown_driver.id, known.id], &[]);
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].0.name, "Staging");
+        assert_eq!(
+            planned[0].0.options.unknown["futureOption"],
+            serde_json::json!({ "on": true })
+        );
+
+        // Exported again by this build, the keys travel on (sealed too); the skipped ones do not.
+        let bytes = write_with_iterations(&payload, Some("file pw"), "now", FAST).unwrap();
+        let ReadOutcome::Opened { payload: back, .. } = read(&bytes, Some("file pw")).unwrap()
+        else {
+            panic!("the password opens it");
+        };
+        assert_eq!(back.connections, payload.connections);
+        assert!(back.skipped.is_empty());
+    }
+
+    #[test]
+    fn files_for_new_drivers_read_and_later_layouts_are_refused() {
+        // Only PostgreSQL, MySQL and SQLite: the version every build reads.
+        assert_eq!(payload().version(), VERSION);
+        let file = |version: u32| {
+            format!(r#"{{"format":"{FORMAT}","version":{version},"payload":{{"connections":[]}}}}"#)
+        };
+        assert!(read(file(VERSION_NEW_DRIVERS).as_bytes(), None).is_ok());
+        let err = read(file(VERSION_NEW_DRIVERS + 1).as_bytes(), None).unwrap_err();
+        assert!(err.to_string().contains("newer version"), "{err}");
     }
 
     #[test]

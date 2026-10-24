@@ -14,7 +14,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { effectiveLevel, safeModeText } from "@/features/safety/levels";
-import { ipc, toIpcError, type ConnectionProfile, type ConnectionsFilePreview } from "@/lib/ipc";
+import {
+  ipc,
+  toIpcError,
+  type ConnectionProfile,
+  type ConnectionsFilePreview,
+  type SkippedConnection,
+} from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { DriverBadge, GroupBreadcrumb, TagPill } from "./badges";
 import { groupKeys } from "./groups";
@@ -103,6 +109,35 @@ function ImportedPasswordCommand({
   );
 }
 
+/**
+ * The file's connections this version cannot read: a newer Tabler wrote them (a database it does
+ * not support yet, or a setting it does not know). Listed so none goes missing unnoticed; they
+ * are not imported.
+ */
+function SkippedConnections({ skipped }: { skipped: SkippedConnection[] }) {
+  const count = skipped.length === 1 ? "1 connection needs" : `${skipped.length} connections need`;
+  return (
+    <div
+      role="group"
+      aria-label="Connections that cannot be imported"
+      className="border-warning/40 bg-warning/5 rounded-md border px-2.5 py-2 text-[11px]"
+    >
+      <div className="text-warning flex items-center gap-1 font-medium">
+        <TriangleAlert className="size-3 shrink-0" aria-hidden />
+        {count} a newer version of Tabler and will not be imported
+      </div>
+      <ul className="mt-1 flex max-h-28 flex-col gap-0.5 overflow-y-auto">
+        {skipped.map((s, i) => (
+          <li key={i}>
+            <span className="font-semibold">{s.name.trim() || "Unnamed connection"}</span>{" "}
+            <span className="text-muted-foreground">{s.reason}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 const fileName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 
 type Phase =
@@ -117,7 +152,8 @@ type Phase =
  * safe-mode level, Read-only, startup SQL and password command shown) and imports the ticked ones
  * as new connections. Their passwords go to the Keychain; a password command only when its "Keep
  * this password command" box is ticked; their groups (nested, with their icons) merge into the
- * saved groups by path.
+ * saved groups by path. Connections the file holds that this version cannot read are listed
+ * apart and left out.
  */
 export function ImportConnectionsDialog({
   path,
@@ -207,6 +243,7 @@ export function ImportConnectionsDialog({
   };
 
   const items = phase.kind === "preview" ? phase.preview.connections : [];
+  const skipped = phase.kind === "preview" ? phase.preview.skipped : [];
   const allChecked = items.length > 0 && items.every((c) => selected.has(c.profile.id));
   const someChecked = items.some((c) => selected.has(c.profile.id));
   const toggleIn =
@@ -277,7 +314,9 @@ export function ImportConnectionsDialog({
 
         {phase.kind === "preview" &&
           (items.length === 0 ? (
-            <p className="text-muted-foreground py-4 text-xs">The file has no connections.</p>
+            skipped.length === 0 && (
+              <p className="text-muted-foreground py-4 text-xs">The file has no connections.</p>
+            )
           ) : (
             <div className="flex min-h-0 flex-col gap-2">
               <label className="text-muted-foreground flex items-center gap-2 px-1 text-xs">
@@ -348,6 +387,7 @@ export function ImportConnectionsDialog({
               </ul>
             </div>
           ))}
+        {skipped.length > 0 && <SkippedConnections skipped={skipped} />}
 
         <DialogFooter>
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
