@@ -670,13 +670,18 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::sync::Mutex as StdMutex;
 
+    #[cfg(unix)]
     use flate2::read::GzDecoder;
 
     use super::*;
+    #[cfg(unix)]
     use crate::types::backup::DumpTool;
 
+    // The tests that run a fake tool use /bin/sh, so they and these helpers are Unix-only.
+    #[cfg(unix)]
     fn script(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("fake_tool.sh");
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -688,6 +693,7 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
     fn inv(program: PathBuf, stdin: StdinSource, stdout: StdoutSink) -> Invocation {
         Invocation {
             program,
@@ -701,12 +707,14 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn collector() -> (Emit, Arc<StdMutex<Vec<BackupEvent>>>) {
         let events = Arc::new(StdMutex::new(Vec::new()));
         let sink = Arc::clone(&events);
         (Arc::new(move |e| sink.lock().unwrap().push(e)), events)
     }
 
+    #[cfg(unix)]
     fn log_text(events: &[BackupEvent]) -> Vec<String> {
         events
             .iter()

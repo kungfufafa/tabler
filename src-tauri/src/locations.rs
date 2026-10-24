@@ -750,6 +750,18 @@ mod tests {
         let live = rusqlite::Connection::open(cloud.join(DB_FILE)).unwrap();
         live.execute_batch("PRAGMA journal_mode = WAL; INSERT INTO t VALUES ('more');")
             .unwrap();
+        // Windows cannot rename a file this process holds open, and what a sync client brings
+        // from the other computer is not held open here: closed without its checkpoint, the
+        // connection leaves the -wal and -shm files behind.
+        #[cfg(windows)]
+        {
+            live.set_db_config(
+                rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+                true,
+            )
+            .unwrap();
+            drop(live);
+        }
         assert!(cloud.join("tabler.sqlite-wal").exists());
 
         move_app_db(&PendingMove {
@@ -771,6 +783,36 @@ mod tests {
             .query_row("SELECT count(*) FROM t", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 2);
+        #[cfg(unix)]
+        drop(live);
+    }
+
+    /// On Windows a database open on this computer cannot be set aside: the replace fails and
+    /// leaves the target as it was.
+    #[cfg(windows)]
+    #[test]
+    fn a_replace_of_a_database_open_here_fails_and_leaves_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let default = tmp.path().join("default");
+        let cloud = tmp.path().join("cloud");
+        std::fs::create_dir_all(&default).unwrap();
+        std::fs::create_dir_all(&cloud).unwrap();
+        make_db(&default, "mine");
+        make_db(&cloud, "theirs");
+        let live = rusqlite::Connection::open(cloud.join(DB_FILE)).unwrap();
+        live.execute_batch("PRAGMA journal_mode = WAL; INSERT INTO t VALUES ('more');")
+            .unwrap();
+
+        let err = move_app_db(&PendingMove {
+            from: default.clone(),
+            to: cloud.clone(),
+            replace: true,
+        })
+        .unwrap_err();
+        assert!(matches!(err, AppError::Io(_)), "{err:?}");
+        assert_eq!(marker(&cloud), "theirs");
+        assert!(backups_in(&cloud).is_empty(), "{:?}", backups_in(&cloud));
+        assert!(!cloud.join(".tabler.sqlite.moving").exists());
         drop(live);
     }
 

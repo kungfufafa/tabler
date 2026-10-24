@@ -245,14 +245,54 @@ fn shorten(text: &str) -> String {
 /// The process group of a running password command: its shell and everything the shell started
 /// (the other members of a pipeline, background jobs). Killed by [`ProcessGroup::kill`] once the
 /// shell has ended or timed out, and when dropped (the connect waiting for it was given up), so
-/// nothing of the command outlives it.
-struct ProcessGroup(Option<i32>);
+/// nothing of the command outlives it. On Windows, which has no process groups, it is a job
+/// object: the processes the shell starts join it too.
+struct ProcessGroup(Option<GroupId>);
+
+/// The group id, which is the pid of the shell leading it.
+#[cfg(unix)]
+type GroupId = i32;
+
+/// The job object.
+#[cfg(windows)]
+type GroupId = std::os::windows::io::OwnedHandle;
 
 impl ProcessGroup {
-    fn kill(&mut self) {
-        if let Some(pgid) = self.0.take() {
-            kill_process_group(pgid);
+    /// The group of `child`, a shell spawned in a process group of its own.
+    #[cfg(unix)]
+    fn of(child: &tokio::process::Child) -> ProcessGroup {
+        ProcessGroup(child.id().and_then(|id| i32::try_from(id).ok()))
+    }
+
+    /// A new job object holding `child`, which joins right after its start (long before a shell
+    /// gets to start anything); what it starts then joins too. Without a job (it could not be
+    /// made) only the shell itself is killed.
+    #[cfg(windows)]
+    fn of(child: &tokio::process::Child) -> ProcessGroup {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        // SAFETY: creates an unnamed job with default security; NULL on failure.
+        let job = unsafe { win32::CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            return ProcessGroup(None);
         }
+        // SAFETY: `job` is a new handle that nothing else owns.
+        let job = unsafe { OwnedHandle::from_raw_handle(job) };
+        let joined = child.raw_handle().is_some_and(|process| {
+            // SAFETY: both handles are open (`child` has not been waited for yet).
+            unsafe { win32::AssignProcessToJobObject(job.as_raw_handle(), process) != 0 }
+        });
+        ProcessGroup(joined.then_some(job))
+    }
+
+    fn kill(&mut self) {
+        if let Some(group) = self.0.take() {
+            kill_process_group(group);
+        }
+    }
+
+    /// Lets the processes of the group run on.
+    fn release(&mut self) {
+        self.0 = None;
     }
 }
 
@@ -273,8 +313,24 @@ fn kill_process_group(pgid: i32) {
     let _ = unsafe { killpg(pgid, SIGKILL) };
 }
 
-#[cfg(not(unix))]
-fn kill_process_group(_pgid: i32) {}
+#[cfg(windows)]
+fn kill_process_group(job: std::os::windows::io::OwnedHandle) {
+    use std::os::windows::io::AsRawHandle;
+    // SAFETY: ends the processes of a job this module created; the handle is closed on drop.
+    let _ = unsafe { win32::TerminateJobObject(job.as_raw_handle(), 1) };
+}
+
+/// The job object calls (kernel32, which every Windows program links).
+#[cfg(windows)]
+mod win32 {
+    use std::ffi::c_void;
+
+    unsafe extern "system" {
+        pub fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> *mut c_void;
+        pub fn AssignProcessToJobObject(job: *mut c_void, process: *mut c_void) -> i32;
+        pub fn TerminateJobObject(job: *mut c_void, exit_code: u32) -> i32;
+    }
+}
 
 /// Reads `pipe` to its end, keeping the first [`OUTPUT_LIMIT`] bytes; `true` when there was more.
 async fn read_capped(mut pipe: impl tokio::io::AsyncRead + Unpin) -> (Vec<u8>, bool) {
@@ -321,8 +377,7 @@ pub async fn run_password_command(command: &str, timeout: Duration) -> Result<St
     let mut child = cmd.spawn().map_err(|e| {
         AppError::Connect(format!("cannot run the password command ({shell}): {e}"))
     })?;
-    // The shell leads its own group: the group id is its pid.
-    let mut group = ProcessGroup(child.id().and_then(|id| i32::try_from(id).ok()));
+    let mut group = ProcessGroup::of(&child);
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
         return Err(AppError::internal(
             "the password command has no output pipes",
@@ -498,7 +553,7 @@ pub async fn run_bootstrap_script(
         AppError::Connect(format!("cannot run the bootstrap script ({shell}): {e}"))
     })?;
     // Killed on timeout, failure or when the connect waiting for it is given up (dropped).
-    let mut group = ProcessGroup(child.id().and_then(|id| i32::try_from(id).ok()));
+    let mut group = ProcessGroup::of(&child);
     let status = match tokio::time::timeout(timeout, child.wait()).await {
         Ok(status) => status,
         Err(_) => {
@@ -530,7 +585,7 @@ pub async fn run_bootstrap_script(
         }));
     }
     // Success: what it started in the background is the point of the script (a proxy…).
-    group.0 = None;
+    group.release();
     Ok(())
 }
 
@@ -692,7 +747,9 @@ mod tests {
     }
 
     /// Regression: a timeout killed only the shell, so the rest of a pipeline (`sleep 30 | cat`)
-    /// kept running; the whole process group goes now.
+    /// kept running; the whole process group goes now. (Unix pids and `ps`; the Windows job
+    /// object has its own tests below.)
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_timed_out_pipeline_is_killed_entirely() {
         let dir = tempfile::tempdir().unwrap();
@@ -775,7 +832,8 @@ mod tests {
     }
 
     /// A proxy started in the background keeps running after the script ends; a script that
-    /// times out is killed with everything it started.
+    /// times out is killed with everything it started. (Unix pids and `ps`, as above.)
+    #[cfg(unix)]
     #[tokio::test]
     async fn bootstrap_background_jobs_survive_but_timeouts_kill_the_group() {
         let dir = tempfile::tempdir().unwrap();
@@ -822,6 +880,66 @@ mod tests {
             !alive(&pid),
             "the background job of a timed-out script still runs"
         );
+    }
+
+    /// `cmd` (the shell) running `ping` (what the shell started), in a group, with `ping`'s
+    /// output: the pipe stays open while `ping` runs.
+    #[cfg(windows)]
+    async fn ping_in_a_group(
+        count: u32,
+    ) -> (
+        tokio::process::Child,
+        ProcessGroup,
+        tokio::process::ChildStdout,
+    ) {
+        use tokio::io::AsyncReadExt as _;
+        let mut child = tokio::process::Command::new("cmd")
+            .args(["/d", "/c", &format!("ping -n {count} 127.0.0.1")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let group = ProcessGroup::of(&child);
+        assert!(group.0.is_some(), "no job object");
+        let mut stdout = child.stdout.take().unwrap();
+        // `ping` is running once it has printed something.
+        assert!(stdout.read(&mut [0u8; 64]).await.unwrap() > 0);
+        (child, group, stdout)
+    }
+
+    /// Windows: killing the group (a timeout, a failed script) also ends what the shell started.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn killing_the_group_ends_what_the_shell_started() {
+        use tokio::io::AsyncReadExt as _;
+        let (_child, mut group, mut stdout) = ping_in_a_group(30).await;
+        group.kill();
+        let closed =
+            tokio::time::timeout(Duration::from_secs(5), stdout.read_to_end(&mut Vec::new())).await;
+        assert!(closed.is_ok(), "ping still runs");
+    }
+
+    /// Windows: a released group (a bootstrap script that succeeded) leaves what the shell
+    /// started running after the shell is gone.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_released_group_keeps_what_the_shell_started() {
+        use tokio::io::AsyncReadExt as _;
+        // About three more seconds of pings.
+        let (mut child, mut group, mut stdout) = ping_in_a_group(4).await;
+        group.release();
+        drop(group);
+        child.kill().await.unwrap();
+        let mut out = Vec::new();
+        let early =
+            tokio::time::timeout(Duration::from_secs(1), stdout.read_to_end(&mut out)).await;
+        assert!(early.is_err(), "ping was killed with the shell");
+        // It then ends on its own.
+        tokio::time::timeout(Duration::from_secs(10), stdout.read_to_end(&mut out))
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     /// A source of `len` bytes that is never in memory, counting what is read from it: the end

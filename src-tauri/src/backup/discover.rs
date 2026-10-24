@@ -44,9 +44,20 @@ pub fn tool_names(driver: Driver) -> &'static [(&'static str, DumpTool)] {
     }
 }
 
+/// A file name without the platform's executable suffix (`pg_dump.exe` on Windows, in any case);
+/// elsewhere the suffix is empty and the name is unchanged.
+fn without_exe_suffix(name: &str) -> &str {
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let cut = name.len().saturating_sub(suffix.len());
+    match name.get(cut..) {
+        Some(end) if cut > 0 && end.eq_ignore_ascii_case(suffix) => &name[..cut],
+        _ => name,
+    }
+}
+
 /// The tool a file name stands for, among the driver's tools.
 pub fn tool_for_file(driver: Driver, path: &Path) -> Option<DumpTool> {
-    let name = path.file_name()?.to_str()?;
+    let name = without_exe_suffix(path.file_name()?.to_str()?);
     tool_names(driver)
         .iter()
         .find(|(n, _)| *n == name)
@@ -152,7 +163,7 @@ pub fn find_binaries(dirs: &[PathBuf], driver: Driver) -> Vec<(DumpTool, PathBuf
     let mut out = Vec::new();
     for dir in dirs {
         for (name, tool) in tool_names(driver) {
-            let path = dir.join(name);
+            let path = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
             if !is_executable(&path) {
                 continue;
             }
@@ -234,8 +245,11 @@ pub async fn discover(root: &Path, path_env: Option<&OsStr>, driver: Driver) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The binary-probing tests run shell scripts, so they and their helpers are Unix-only.
+    #[cfg(unix)]
     use crate::types::backup::{ParsedVersion, VersionFlavor};
 
+    #[cfg(unix)]
     fn touch_exe(path: &Path, script: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, script).unwrap();
@@ -260,34 +274,31 @@ mod tests {
         ] {
             std::fs::create_dir_all(root.path().join(d)).unwrap();
         }
-        let rel = |p: &PathBuf| {
-            p.strip_prefix(root.path())
-                .unwrap()
-                .to_string_lossy()
-                .into_owned()
-        };
-        let pg: Vec<String> = expand_pattern(root.path(), "/opt/homebrew/opt/postgresql@*/bin")
+        // Compared as paths: the matches use the platform's separator (`\` on Windows).
+        let rel = |p: &PathBuf| p.strip_prefix(root.path()).unwrap().to_path_buf();
+        let paths = |list: &[&str]| list.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let pg: Vec<PathBuf> = expand_pattern(root.path(), "/opt/homebrew/opt/postgresql@*/bin")
             .iter()
             .map(rel)
             .collect();
         assert_eq!(
             pg,
-            [
+            paths(&[
                 "opt/homebrew/opt/postgresql@17/bin",
                 "opt/homebrew/opt/postgresql@16/bin",
                 "opt/homebrew/opt/postgresql@9.6/bin",
-            ]
+            ])
         );
-        let my: Vec<String> = expand_pattern(root.path(), "/opt/homebrew/opt/mysql*/bin")
+        let my: Vec<PathBuf> = expand_pattern(root.path(), "/opt/homebrew/opt/mysql*/bin")
             .iter()
             .map(rel)
             .collect();
         assert_eq!(
             my,
-            [
+            paths(&[
                 "opt/homebrew/opt/mysql-client@8.0/bin",
                 "opt/homebrew/opt/mysql/bin"
-            ]
+            ])
         );
         assert!(expand_pattern(root.path(), "/nope/*/bin").is_empty());
     }
@@ -297,14 +308,16 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let brew = root.path().join("opt/homebrew/bin");
         std::fs::create_dir_all(&brew).unwrap();
-        let path_env = std::env::join_paths([
-            Path::new("/custom/bin"),
-            brew.as_path(),
-            Path::new("relative/bin"),
-        ])
-        .unwrap();
+        // An absolute folder that does not exist (Windows ones start with a drive).
+        let custom = Path::new(if cfg!(windows) {
+            r"C:\custom\bin"
+        } else {
+            "/custom/bin"
+        });
+        let path_env =
+            std::env::join_paths([custom, brew.as_path(), Path::new("relative/bin")]).unwrap();
         let dirs = search_dirs(root.path(), Some(&path_env));
-        assert_eq!(dirs[0], Path::new("/custom/bin"));
+        assert_eq!(dirs[0], custom);
         assert_eq!(dirs[1], brew);
         assert_eq!(dirs.iter().filter(|d| **d == brew).count(), 1);
         assert!(!dirs.iter().any(|d| d.ends_with("relative/bin")));
@@ -339,6 +352,34 @@ mod tests {
             Some(DumpTool::Mysqldump)
         );
         assert_eq!(tool_for_file(Driver::Postgres, Path::new("/x/mysql")), None);
+    }
+
+    /// Windows installs the tools as `pg_dump.exe`, `mysqldump.exe`…
+    #[cfg(windows)]
+    #[test]
+    fn finds_windows_binaries_by_their_exe_name() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("PostgreSQL/17/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("pg_dump.exe"), "").unwrap();
+        // Without the suffix it is not a program Windows runs.
+        std::fs::write(bin.join("psql"), "").unwrap();
+        assert_eq!(
+            find_binaries(std::slice::from_ref(&bin), Driver::Postgres),
+            vec![(DumpTool::PgDump, bin.join("pg_dump.exe"))]
+        );
+        assert_eq!(
+            tool_for_file(Driver::Mysql, Path::new(r"C:\MySQL\bin\mysqldump.exe")),
+            Some(DumpTool::Mysqldump)
+        );
+        assert_eq!(
+            tool_for_file(Driver::Postgres, Path::new(r"C:\pg\bin\pg_restore.EXE")),
+            Some(DumpTool::PgRestore)
+        );
+        assert_eq!(
+            tool_for_file(Driver::Postgres, Path::new(r"C:\x\.exe")),
+            None
+        );
     }
 
     #[cfg(unix)]

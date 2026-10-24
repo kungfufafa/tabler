@@ -276,6 +276,15 @@ mod tests {
         RecentEntry::File { path: path.into() }
     }
 
+    /// `path` as an absolute path of this platform: unchanged, or on drive C: on Windows.
+    fn abs(path: &str) -> String {
+        if cfg!(windows) {
+            format!("C:{}", path.replace('/', "\\"))
+        } else {
+            path.to_string()
+        }
+    }
+
     #[test]
     fn keeps_the_newest_ten_of_each_without_duplicates() {
         let mut items = RecentItems::default();
@@ -297,10 +306,12 @@ mod tests {
             items.connections.iter().filter(|id| **id == ids[5]).count(),
             1
         );
-        items.push(&file("/a/one.sql")).unwrap();
-        items.push(&file("/a/two.sql")).unwrap();
-        items.push(&file(" /a/one.sql ")).unwrap();
-        assert_eq!(items.files, vec!["/a/one.sql", "/a/two.sql"]);
+        items.push(&file(&abs("/a/one.sql"))).unwrap();
+        items.push(&file(&abs("/a/two.sql"))).unwrap();
+        items
+            .push(&file(&format!(" {} ", abs("/a/one.sql"))))
+            .unwrap();
+        assert_eq!(items.files, vec![abs("/a/one.sql"), abs("/a/two.sql")]);
     }
 
     #[test]
@@ -360,7 +371,7 @@ mod tests {
             items.push(&RecentEntry::Connection { profile_id: id })
         })
         .unwrap();
-        let items = update(&db, |items| items.push(&file("/q.sql"))).unwrap();
+        let items = update(&db, |items| items.push(&file(&abs("/q.sql")))).unwrap();
         assert_eq!(load(&db), items);
         assert_eq!(items.connections, vec![id]);
         // A bad entry leaves the stored list alone.

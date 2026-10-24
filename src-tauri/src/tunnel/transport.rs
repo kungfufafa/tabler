@@ -6,8 +6,10 @@
 //! connect timeout dropping the future): russh's session task otherwise keeps waiting on the
 //! stream. Once the tunnel is up it is disarmed and the session owns the transport.
 
+#[cfg(unix)]
 use std::ffi::OsString;
 use std::io;
+#[cfg(unix)]
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
@@ -99,6 +101,7 @@ impl StderrTail {
 }
 
 /// What `PATH` is when the app was started without one (what a Finder / Dock launch has).
+#[cfg(unix)]
 const DEFAULT_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// The `PATH` of a `ProxyCommand`: `base` (the app's own, the system default when it has none)
@@ -106,6 +109,7 @@ const DEFAULT_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 /// `tailscale`) and are missing from the minimal `PATH` of an app started from Finder or the
 /// Dock: Homebrew's, `/usr/local/bin` and the user's `~/.local/bin` and `~/bin`. Each folder is
 /// added only when it is not there already; the existing order is kept.
+#[cfg(unix)]
 fn proxy_path(base: Option<OsString>, home: Option<PathBuf>) -> OsString {
     let mut dirs: Vec<PathBuf> = base
         .iter()
@@ -135,12 +139,13 @@ fn proxy_path(base: Option<OsString>, home: Option<PathBuf>) -> OsString {
         .unwrap_or_else(|_| DEFAULT_PATH.into())
 }
 
-/// Runs `command` (a `ProxyCommand`, tokens expanded) through `/bin/sh -c "exec …"` like OpenSSH,
-/// and returns its stdin / stdout as the transport. Its stderr goes to the log (and `StderrTail`).
-/// The shell is not a login shell (its profile output would corrupt the SSH byte stream); the
-/// helpers that live outside the GUI `PATH` are found through [`proxy_path`] instead.
-pub fn command(command: &str) -> io::Result<(BoxedStream, AbortOnDrop, StderrTail)> {
-    let mut child = Command::new("/bin/sh")
+/// The process of a `ProxyCommand`: `/bin/sh -c "exec …"` like OpenSSH. The shell is not a login
+/// shell (its profile output would corrupt the SSH byte stream); the helpers that live outside
+/// the GUI `PATH` are found through [`proxy_path`] instead.
+#[cfg(unix)]
+fn proxy_process(command: &str) -> Command {
+    let mut process = Command::new("/bin/sh");
+    process
         .env(
             "PATH",
             proxy_path(
@@ -149,7 +154,40 @@ pub fn command(command: &str) -> io::Result<(BoxedStream, AbortOnDrop, StderrTai
             ),
         )
         .arg("-c")
-        .arg(format!("exec {command}"))
+        .arg(format!("exec {command}"));
+    process
+}
+
+/// Windows has no `/bin/sh`: the command is started directly, as Win32-OpenSSH does (the
+/// process killed on abort is then the proxy itself, as after `exec`). Its first word is the
+/// program, the rest its command line as written. An app started from the Start menu already
+/// has the user's whole `PATH`.
+#[cfg(windows)]
+fn proxy_process(command: &str) -> Command {
+    let (program, args) = split_program(command);
+    let mut process = Command::new(program);
+    if !args.is_empty() {
+        process.raw_arg(args);
+    }
+    process
+}
+
+/// A command line split the way Windows reads it: the program is its first word, or what is
+/// between the quotes it starts with (`"C:\Program Files\…\x.exe" -a`); then its arguments.
+#[cfg(windows)]
+fn split_program(command: &str) -> (&str, &str) {
+    let command = command.trim();
+    let (program, args) = match command.strip_prefix('"') {
+        Some(quoted) => quoted.split_once('"').unwrap_or((quoted, "")),
+        None => command.split_once([' ', '\t']).unwrap_or((command, "")),
+    };
+    (program, args.trim_start())
+}
+
+/// Runs `command` (a `ProxyCommand`, tokens expanded; see [`proxy_process`]) and returns its
+/// stdin / stdout as the transport. Its stderr goes to the log (and `StderrTail`).
+pub fn command(command: &str) -> io::Result<(BoxedStream, AbortOnDrop, StderrTail)> {
+    let mut child = proxy_process(command)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -244,10 +282,17 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    /// Echoes its stdin to its stdout as it comes.
+    #[cfg(unix)]
+    const ECHO: &str = "cat";
+    #[cfg(windows)]
+    const ECHO: &str = "powershell -NoProfile -Command \
+                        \"[Console]::OpenStandardInput().CopyTo([Console]::OpenStandardOutput())\"";
+
     #[tokio::test]
     async fn proxy_command_stdio_is_the_stream() {
-        // `cat` echoes what the SSH client would send: the stream is the command's stdio.
-        let (mut stream, guard, _tail) = command("cat").unwrap();
+        // `ECHO` echoes what the SSH client would send: the stream is the command's stdio.
+        let (mut stream, guard, _tail) = command(ECHO).unwrap();
         stream.write_all(b"SSH-2.0-test\r\n").await.unwrap();
         stream.flush().await.unwrap();
         let mut buf = [0u8; 14];
@@ -256,6 +301,7 @@ mod tests {
         guard.disarm();
     }
 
+    #[cfg(unix)]
     #[test]
     fn proxy_path_adds_the_usual_tool_folders_after_the_existing_ones() {
         let path = proxy_path(Some("/usr/bin:/bin".into()), Some("/Users/me".into()));
@@ -272,6 +318,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn proxy_path_keeps_the_order_and_adds_no_duplicates() {
         let path = proxy_path(
@@ -288,6 +335,7 @@ mod tests {
         assert_eq!(again, path);
     }
 
+    #[cfg(unix)]
     #[test]
     fn proxy_path_works_without_a_path() {
         let expected = format!(
@@ -310,9 +358,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn the_proxy_command_runs_with_the_extended_path() {
-        let (_stream, guard, tail) = command("printf '%s\\n' \"$PATH\" >&2").unwrap();
+    /// What the proxy command wrote to stderr, once it wrote something (at most five seconds).
+    async fn stderr_said(tail: &StderrTail) -> String {
         let mut said = String::new();
         for _ in 0..100 {
             said = tail.text();
@@ -321,6 +368,14 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+        said
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_proxy_command_runs_with_the_extended_path() {
+        let (_stream, guard, tail) = command("printf '%s\\n' \"$PATH\" >&2").unwrap();
+        let said = stderr_said(&tail).await;
         guard.disarm();
         let expected = proxy_path(
             std::env::var_os("PATH"),
@@ -332,11 +387,50 @@ mod tests {
         }
     }
 
+    /// Windows: the command runs without a shell, with the app's `PATH` as it is.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn the_proxy_command_runs_with_the_apps_path() {
+        let (_stream, guard, tail) =
+            command("powershell -NoProfile -Command \"[Console]::Error.WriteLine($env:PATH)\"")
+                .unwrap();
+        let said = stderr_said(&tail).await;
+        guard.disarm();
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        assert_eq!(said, path.to_string_lossy().trim());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_command_lines_split_into_program_and_arguments() {
+        assert_eq!(
+            split_program("  ssh.exe -W %h:%p bastion "),
+            ("ssh.exe", "-W %h:%p bastion")
+        );
+        assert_eq!(
+            split_program(r#""C:\Program Files\proxy\p.exe"  -a "b c""#),
+            (r"C:\Program Files\proxy\p.exe", r#"-a "b c""#)
+        );
+        assert_eq!(split_program("cloudflared"), ("cloudflared", ""));
+        assert_eq!(split_program("\"unclosed quote"), ("unclosed quote", ""));
+    }
+
     #[tokio::test]
     async fn aborting_kills_the_proxy_command_and_keeps_its_stderr() {
+        #[cfg(unix)]
         let (mut stream, guard, tail) =
             command("echo 'no route to bastion' >&2; sleep 30").unwrap();
+        #[cfg(unix)]
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // PowerShell takes a while to start: the abort comes once it has said its line.
+        #[cfg(windows)]
+        let (mut stream, guard, tail) = command(
+            "powershell -NoProfile -Command \
+             \"[Console]::Error.WriteLine('no route to bastion'); Start-Sleep 30\"",
+        )
+        .unwrap();
+        #[cfg(windows)]
+        stderr_said(&tail).await;
         drop(guard);
         let mut buf = Vec::new();
         // The killed command's stdout reaches EOF instead of waiting 30 s.

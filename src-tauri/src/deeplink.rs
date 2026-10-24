@@ -365,10 +365,22 @@ mod tests {
             classify("TABLER://connection/00000000-0000-0000-0000-000000000001"),
             Some(OpenRequest::Url { .. })
         ));
+        // File URLs of Windows paths carry the drive.
+        let (file_url, file_path) = if cfg!(windows) {
+            (
+                "file:///C:/Users/me/My%20Data/app.sqlite",
+                r"C:\Users\me\My Data\app.sqlite",
+            )
+        } else {
+            (
+                "file:///Users/me/My%20Data/app.sqlite",
+                "/Users/me/My Data/app.sqlite",
+            )
+        };
         assert_eq!(
-            classify("file:///Users/me/My%20Data/app.sqlite"),
+            classify(file_url),
             Some(OpenRequest::File {
-                path: "/Users/me/My Data/app.sqlite".into()
+                path: file_path.into()
             })
         );
         assert_eq!(classify("https://example.com"), None);

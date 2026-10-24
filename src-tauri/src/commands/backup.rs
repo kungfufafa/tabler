@@ -693,7 +693,13 @@ mod tests {
     async fn only_known_tools_run() {
         assert!(tool_info(Driver::Postgres, "/bin/sh").await.is_err());
         assert!(tool_info(Driver::Postgres, "pg_dump").await.is_err());
-        let missing = tool_info(Driver::Mysql, "/nonexistent/mysqldump").await;
+        // An absolute path to a tool that is not there (on Windows: a drive and `.exe`).
+        let missing = if cfg!(windows) {
+            r"C:\nonexistent\mysqldump.exe"
+        } else {
+            "/nonexistent/mysqldump"
+        };
+        let missing = tool_info(Driver::Mysql, missing).await;
         assert!(matches!(missing, Err(AppError::NotFound(_))));
     }
 }

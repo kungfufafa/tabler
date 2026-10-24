@@ -33,9 +33,11 @@ use tabler_lib::error::AppError;
 use tabler_lib::secrets::{Backend, SecretKind, Secrets};
 use tabler_lib::state::{AppState, Connection};
 use tabler_lib::tunnel::{
-    AppHostKeys, ForwardTarget, MemoryHostKeys, PendingHostKey, TunnelAuth, TunnelHandle,
-    TunnelStatus, accept_pending_host_key, open_tunnel, open_tunnel_to, trust_host_key,
+    AppHostKeys, MemoryHostKeys, PendingHostKey, TunnelAuth, TunnelHandle, TunnelStatus,
+    accept_pending_host_key, open_tunnel, trust_host_key,
 };
+#[cfg(unix)]
+use tabler_lib::tunnel::{ForwardTarget, open_tunnel_to};
 use tabler_lib::types::profile::{
     ConnStatus, ConnectionInfo, ConnectionProfile, Driver, ProfileInput, ProfileOptions, SshAuth,
     SshConfig, SslMode, TunnelInfo,
@@ -357,6 +359,13 @@ impl server::Handler for ServerHandler {
     ) -> Result<(), Self::Error> {
         self.forwards.fetch_add(1, Ordering::SeqCst);
         let path = socket_path.to_string();
+        // Unix sockets only exist on Unix test hosts; elsewhere the channel is refused.
+        #[cfg(not(unix))]
+        {
+            let _ = (channel, path);
+            reply.reject(ChannelOpenFailure::ConnectFailed).await;
+        }
+        #[cfg(unix)]
         tokio::spawn(async move {
             match tokio::net::UnixStream::connect(&path).await {
                 Ok(mut unix) => {
@@ -372,6 +381,7 @@ impl server::Handler for ServerHandler {
 }
 
 /// Unix socket echo server at `path`.
+#[cfg(unix)]
 fn start_unix_echo(path: &Path) {
     let listener = tokio::net::UnixListener::bind(path).unwrap();
     tokio::spawn(async move {
@@ -1066,6 +1076,7 @@ async fn unreachable_target_reports_a_forwarding_error() {
 
 /// MySQL "Use socket" over SSH: the tunnel forwards its local port to a Unix socket on the SSH
 /// server, trying the usual places in turn when no path was typed.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn socket_target_forwards_to_the_servers_unix_socket() {
     let server = SshServer::start(random_key().public_key().clone()).await;

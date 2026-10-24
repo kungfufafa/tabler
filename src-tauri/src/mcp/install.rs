@@ -497,9 +497,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let real = dir.path().join("tabler");
         std::fs::write(&real, b"").unwrap();
-        let link = dir.path().join("link");
         #[cfg(unix)]
         {
+            let link = dir.path().join("link");
             std::os::unix::fs::symlink(&real, &link).unwrap();
             assert_eq!(executable(&link), std::fs::canonicalize(&real).unwrap());
         }

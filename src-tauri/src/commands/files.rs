@@ -94,6 +94,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn refuses_devices_and_directories() {
         // /dev/zero reports a size of 0 and never ends.
@@ -103,6 +104,22 @@ mod tests {
                 .unwrap_err();
             assert!(err.to_string().contains("not a regular file"), "{err}");
         }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn refuses_devices_and_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = read_binary_file_inner(&dir.path().to_string_lossy(), BINARY_FILE_MAX)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not a regular file"), "{err}");
+        // Windows cannot even read the metadata of a device such as NUL.
+        assert!(
+            read_binary_file_inner(r"\\.\NUL", BINARY_FILE_MAX)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
