@@ -80,6 +80,33 @@ Every classifier is default-deny: a statement or command it does not know is a w
 - Read-only is ClassifierOnly and default-deny (plan §5.3). `count` is Costly.
 - Browsing pages with the driver's paging state through `table_source()`.
 
+## Phase A status
+
+Done, in the lane's own files (nothing calls them yet; `entry.rs` is untouched):
+
+- **`sqlgen/dialect/cql.rs`**: the spec. Strings take no backslash escapes, `$$` bodies have no tags, `//` and flat `/* */` comments. Reads are `SELECT`, `DESCRIBE` / `DESC`, `LIST`, `USE` and cqlsh's `CONSISTENCY`, `SERIAL`, `TRACING`, `PAGING`, `EXPAND`, which the session handles itself and the server refuses. Everything else writes. `hooks.split` is `split_cql`, which keeps `BEGIN [UNLOGGED | COUNTER] BATCH … APPLY BATCH` as one statement. Server expressions are `now()` for timeuuid, `toTimestamp(now())` and `toDate(now())`. Redaction covers `PASSWORD` (also `HASHED PASSWORD` and `$…$` values) and cqlsh `LOGIN user '…'`, tested in `redacts_passwords_and_cqlsh_login`. Also here: DDL text rebuilt from `system_schema` (`create_table`, `create_view`, `create_index`, `create_trigger`, `map_literal`, `describe_table`).
+- **`sqlgen/portable/gen/cql.rs`**: the complete generated suite (`check()` and `fuzz(3000)`), with the engine's read corpus, write forms (batches, LWTs, `USING TTL` / `TIMESTAMP`, DDL, roles, Cassandra 5 identities, ScyllaDB `PRUNE`, cqlsh file commands), CQL-only contexts and fuzz atoms. Its fixture `tests/fixtures/classify-generated/cql.json` is blessed. The red-team review is still to come.
+- **`drivers/cassandra/values.rs`**: decoders from `CqlValue` to `Value`, total over every CQL type. Integers beyond 2^53 become `BigInt`, varint is exact, and decimals are exact text (negative values and any 32-bit scale, so `1E-2147483647` stays short). Timestamps are UTC text with milliseconds over all of `i64`. Dates cover the whole 2^31-offset range. Times are nanoseconds, durations use the `1y2mo3d…` form, inet and empty values become `Other`, and collections, tuples, UDTs and vectors become JSON in `toJson()`'s shape: a map key whose JSON is already a string (text, uuid, timestamp, inet, blob `0x…`) stays as it is, and any other key (a number, a tuple) is quoted, as Cassandra's `MapType` does. `result_column` builds a `ResultColumn` from a `ColumnSpec`.
+- **`drivers/cassandra/types.rs`**: a parser of `system_schema` type texts (`frozen<map<text, frozen<list<int>>>>`, quoted UDTs, `vector<float, 3>`, custom classes) that never fails, plus `ValueKind`s and type texts of result types.
+- **`drivers/cassandra/catalog.rs`**: the `system` / `system_schema` queries (no aliases) and their parsers:
+  - keyspaces as databases, with the system and DSE ones hidden;
+  - tables and materialized views;
+  - columns in key order: partition, then clustering by position, then static and regular by name, with `pk_ordinal` and `extra`;
+  - indexes (secondary, SAI, SASI, custom, ScyllaDB local JSON targets) and triggers;
+  - table options and the rebuilt DDL, with a server `DESCRIBE` text winning when there is one;
+  - size estimates (saturating), the local node, peers, ScyllaDB's version, completion and UDTs.
+- **`drivers/cassandra/cursor.rs`**: the paging state as the grid's cursor (`cql1.<base64url>`), bound by a fingerprint to the statement and values that made it. A cursor from another filter or sort is refused.
+- **`drivers/cassandra/cqlsh.rs`**: a strict parser of the cqlsh session commands (`CONSISTENCY`, `SERIAL CONSISTENCY`, `TRACING`, `PAGING`, `EXPAND`), giving the driver's `Consistency` levels. A statement counts as one of them only when it is exactly that command (one trailing `;` is allowed, as in cqlsh), a command followed by other text is refused, and anything else goes to the server.
+- **`drivers/cassandra/testing.rs`**: cell builders and the `system_schema` rows of a Cassandra 4.1 table.
+
+Left for Phase B:
+
+- `entry.rs` (open, validate, util), `CassandraParams`, the `DbSession` and `TableSource` implementations.
+- The encoder from `Value` back to `CqlValue` for binds.
+- The select, count, fetch and change hooks (AND-only filters, `LIMIT` before `ALLOW FILTERING`, LWT `IF EXISTS` edits, counter deltas, batches).
+- Running the cqlsh commands in the session, cancel, consistency, tracing, the renderer (whose splitter must keep batches whole too), the mock, and the real-server suite.
+- `lane.mjs cassandra bindings` once the tree builds: `src/lib/ipc/bindings/lex/cql.json` is still F4's, without the cqlsh inspections.
+
 ## Definition of done (this lane)
 
 Beyond the shared list in [README.md](README.md#definition-of-done-v1):
