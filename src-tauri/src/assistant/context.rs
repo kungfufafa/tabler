@@ -11,10 +11,12 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::drivers::DbSession;
+use crate::error::AppError;
 use crate::export::structure::pg_table_context;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::ddl::create_table_sql_with;
 use crate::types::assistant::AssistantContextPreview;
+use crate::types::caps::Feature;
 use crate::types::profile::Driver;
 use crate::types::schema::{TableKind, TableRef};
 
@@ -111,10 +113,10 @@ fn cut(s: &str, max: usize) -> (&str, bool) {
 /// (tables) or the view definition. Structure only.
 async fn table_ddl(
     session: &dyn DbSession,
+    dialect: Dialect,
     table: &TableRef,
-) -> Result<CurrentTable, crate::error::AppError> {
+) -> Result<CurrentTable, AppError> {
     let meta = session.table_meta(table).await?;
-    let dialect = session.dialect();
     let ddl = if let Some(ddl) = meta.ddl.as_deref().filter(|d| !d.trim().is_empty()) {
         ddl.to_string()
     } else {
@@ -156,13 +158,15 @@ async fn table_ddl(
 }
 
 /// Reads the structure of `schema` (or the connection's default) and of `table`. Failures are
-/// collected in `warning`: the request still goes, with what could be read.
+/// collected in `warning`: the request still goes, with what could be read. A session without
+/// the Assistant is refused.
 pub async fn gather(
     session: &dyn DbSession,
     facts: &ServerFacts,
     schema: Option<&str>,
     table: Option<&TableRef>,
-) -> SchemaContext {
+) -> Result<SchemaContext, AppError> {
+    let dialect = session.core_dialect(Feature::Assistant)?;
     let mut warnings: Vec<String> = Vec::new();
     let completion = match session.completion_metadata().await {
         Ok(c) => Some(c),
@@ -217,7 +221,7 @@ pub async fn gather(
     }
 
     let current = match table {
-        Some(t) => match table_ddl(session, t).await {
+        Some(t) => match table_ddl(session, dialect, t).await {
             Ok(c) => Some(c),
             Err(e) => {
                 warnings.push(format!("structure of {}: {e}", t.name));
@@ -227,9 +231,9 @@ pub async fn gather(
         None => None,
     };
 
-    SchemaContext {
+    Ok(SchemaContext {
         engine: engine_name(session.driver(), session.is_mariadb()),
-        dialect: session.dialect(),
+        dialect,
         server_version: facts.server_version.clone(),
         database: facts.current_database.clone(),
         schema,
@@ -241,7 +245,7 @@ pub async fn gather(
                 warnings.join("; ")
             )
         }),
-    }
+    })
 }
 
 impl SchemaContext {

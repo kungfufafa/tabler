@@ -1658,8 +1658,8 @@ mod tests {
         fn driver(&self) -> crate::types::profile::Driver {
             crate::types::profile::Driver::Mysql
         }
-        fn dialect(&self) -> Dialect {
-            Dialect::Mysql
+        fn dialect(&self) -> crate::sqlgen::SqlDialect {
+            crate::sqlgen::SqlDialect::Mysql
         }
         async fn server_info(&self) -> Result<crate::drivers::ServerInfo, AppError> {
             unsupported()

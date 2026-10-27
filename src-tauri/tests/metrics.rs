@@ -157,7 +157,7 @@ fn query(parts: &[&str], values: Vec<Value>) -> MetricsQuery {
 }
 
 async fn run(session: &dyn DbSession, q: &MetricsQuery) -> MetricsResult {
-    let prepared = metrics::prepare(session.dialect(), q).expect("prepare");
+    let prepared = metrics::prepare(session.dialect().core().unwrap(), q).expect("prepare");
     metrics::run(
         session,
         &prepared,
@@ -219,7 +219,7 @@ async fn postgres_caps_rows_and_refuses_writes() {
     assert_eq!(r.rows.len(), MAX_ROWS);
     assert!(r.truncated);
     let write = query(&["CREATE TABLE metrics_never (id int)"], vec![]);
-    assert!(metrics::prepare(pg.dialect(), &write).is_err());
+    assert!(metrics::prepare(pg.dialect().core().unwrap(), &write).is_err());
 }
 
 async fn open_pg() -> Option<Arc<dyn DbSession>> {
@@ -242,7 +242,7 @@ async fn mysql_binds_parameters() {
     assert_eq!(r.rows[0][0].as_text().as_deref(), Some("42"));
     assert_eq!(r.rows[0][1], Value::Text("%o'k%".into()));
     let write = query(&["DELETE FROM metrics_never"], vec![]);
-    assert!(metrics::prepare(my.dialect(), &write).is_err());
+    assert!(metrics::prepare(my.dialect().core().unwrap(), &write).is_err());
 }
 
 #[tokio::test]
@@ -267,12 +267,12 @@ async fn sqlite_binds_numbered_parameters() {
     assert_eq!(r.rows[0][1], Value::Text("x".into()));
     assert_eq!(r.rows[0][2], Value::Int(3));
     let write = query(&["DELETE FROM metrics_never"], vec![]);
-    assert!(metrics::prepare(lite.dialect(), &write).is_err());
+    assert!(metrics::prepare(lite.dialect().core().unwrap(), &write).is_err());
 }
 
 /// Runs `q` under a one second limit; returns the error and how long it took.
 async fn run_limited(session: &dyn DbSession, q: &MetricsQuery) -> (String, Duration) {
-    let prepared = metrics::prepare(session.dialect(), q).expect("prepare");
+    let prepared = metrics::prepare(session.dialect().core().unwrap(), q).expect("prepare");
     let started = Instant::now();
     let err = metrics::run_with_timeout(
         session,
@@ -314,7 +314,8 @@ async fn postgres_refuses_functions_that_change_the_server() {
         "SELECT pg_terminate_backend(pg_backend_pid())",
         "SELECT setval('metrics_never_seq', 1)",
     ] {
-        let err = metrics::prepare(pg.dialect(), &query(&[sql], vec![])).unwrap_err();
+        let err =
+            metrics::prepare(pg.dialect().core().unwrap(), &query(&[sql], vec![])).unwrap_err();
         assert_eq!(err.to_string(), metrics::SIDE_EFFECT_REFUSED, "{sql}");
     }
 }
@@ -339,7 +340,7 @@ async fn postgres_refuses_a_call_written_as_a_unicode_escaped_name() {
             allow_writes: true,
             ..query(&[sql], vec![])
         };
-        let prepared = metrics::prepare(pg.dialect(), &allowed).expect("prepare");
+        let prepared = metrics::prepare(pg.dialect().core().unwrap(), &allowed).expect("prepare");
         let ran = metrics::run(
             pg.as_ref(),
             &prepared,
@@ -350,7 +351,7 @@ async fn postgres_refuses_a_call_written_as_a_unicode_escaped_name() {
         ran.unwrap_or_else(|e| panic!("{sql}: {e}"));
         // ... so the object does not run it unless it may change data.
         assert!(
-            metrics::prepare(pg.dialect(), &query(&[sql], vec![])).is_err(),
+            metrics::prepare(pg.dialect().core().unwrap(), &query(&[sql], vec![])).is_err(),
             "{sql}"
         );
     }
@@ -365,7 +366,8 @@ async fn postgres_refuses_a_call_written_as_a_unicode_escaped_name() {
         r#"SELECT U&"pg_terminate_backend"(pg_backend_pid())"#,
         r#"SELECT U&"pg_advisory_l\006fck"(7770005)"#,
     ] {
-        let err = metrics::prepare(pg.dialect(), &query(&[sql], vec![])).unwrap_err();
+        let err =
+            metrics::prepare(pg.dialect().core().unwrap(), &query(&[sql], vec![])).unwrap_err();
         assert_eq!(err.to_string(), metrics::SIDE_EFFECT_REFUSED, "{sql}");
     }
 }
@@ -389,7 +391,8 @@ async fn postgres_refuses_a_call_hidden_by_a_carriage_return_or_a_non_ascii_name
         let result = run(pg.as_ref(), &allowed).await;
         assert_eq!(result.columns.len(), 2, "{sql}");
         // ... so a board that may not change data refuses it.
-        let err = metrics::prepare(pg.dialect(), &query(&[sql], vec![])).unwrap_err();
+        let err =
+            metrics::prepare(pg.dialect().core().unwrap(), &query(&[sql], vec![])).unwrap_err();
         assert_eq!(err.to_string(), metrics::SIDE_EFFECT_REFUSED, "{sql}");
     }
     // The CR ends the comment: `+ 1` is code.
@@ -408,7 +411,7 @@ async fn postgres_refuses_a_call_hidden_by_a_carriage_return_or_a_non_ascii_name
         "SELECT 1 AS €$$; DELETE FROM fx3_metrics_never; SELECT 3 AS a$$",
     ] {
         assert!(
-            metrics::prepare(pg.dialect(), &query(&[sql], vec![])).is_err(),
+            metrics::prepare(pg.dialect().core().unwrap(), &query(&[sql], vec![])).is_err(),
             "{sql}"
         );
     }
@@ -436,20 +439,22 @@ async fn mysql_refuses_a_call_hidden_by_an_executable_comment() {
         assert_eq!(r.rows.len(), 1, "{sql}");
         assert_eq!(r.rows[0][0].as_text().as_deref(), Some("0"), "{sql}");
         // ... so the object does not run it unless it may change data.
-        let err = metrics::prepare(my.dialect(), &query(&[sql], vec![])).unwrap_err();
+        let err =
+            metrics::prepare(my.dialect().core().unwrap(), &query(&[sql], vec![])).unwrap_err();
         assert_eq!(err.to_string(), metrics::SIDE_EFFECT_REFUSED, "{sql}");
     }
     // `/*!50000INTO*/ OUTFILE` is a SELECT ... INTO OUTFILE for the server: it answers with a
     // file error (never a syntax error), and for a read-only object it is refused as a write.
     // The directory does not exist, so no file is ever written.
     let outfile = "SELECT 1 /*!50000INTO*/ OUTFILE '/mqh_no_such_dir/out.txt'";
-    let err = metrics::prepare(my.dialect(), &query(&[outfile], vec![])).unwrap_err();
+    let err =
+        metrics::prepare(my.dialect().core().unwrap(), &query(&[outfile], vec![])).unwrap_err();
     assert_eq!(err.to_string(), metrics::WRITE_REFUSED);
     let allowed = MetricsQuery {
         allow_writes: true,
         ..query(&[outfile], vec![])
     };
-    let prepared = metrics::prepare(my.dialect(), &allowed).expect("prepare");
+    let prepared = metrics::prepare(my.dialect().core().unwrap(), &allowed).expect("prepare");
     let ran = metrics::run(
         my.as_ref(),
         &prepared,
@@ -479,7 +484,8 @@ async fn mysql_cancels_a_read_past_its_timeout() {
     let r = run(my.as_ref(), &query(&["SELECT 1 AS one"], vec![])).await;
     assert_eq!(r.rows[0][0].as_text().as_deref(), Some("1"));
     for sql in ["SELECT GET_LOCK('metrics_never', 1)", "SELECT SLEEP(1)"] {
-        let err = metrics::prepare(my.dialect(), &query(&[sql], vec![])).unwrap_err();
+        let err =
+            metrics::prepare(my.dialect().core().unwrap(), &query(&[sql], vec![])).unwrap_err();
         assert_eq!(err.to_string(), metrics::SIDE_EFFECT_REFUSED, "{sql}");
     }
 }

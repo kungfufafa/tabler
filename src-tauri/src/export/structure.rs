@@ -353,11 +353,12 @@ fn own_partitions<'a>(tables: &'a [ScriptTable<'_>], i: usize) -> Vec<&'a PgPart
 /// script then has what `TableMeta` says.
 pub async fn context_for(
     session: &dyn DbSession,
+    dialect: Dialect,
     meta: &TableMeta,
     structure: bool,
     several: bool,
 ) -> PgTableContext {
-    if session.dialect() != Dialect::Postgres || is_view(meta.kind) || !(structure || several) {
+    if dialect != Dialect::Postgres || is_view(meta.kind) || !(structure || several) {
         return PgTableContext::default();
     }
     match pg_table_context(session, &meta.table, structure).await {

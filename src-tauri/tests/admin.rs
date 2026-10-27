@@ -139,7 +139,9 @@ async fn kill_a_sleeper(
         }
     }
     let id = target.expect("the sleeping session is listed");
-    let out = admin::kill(session.as_ref(), &[id], KillScope::Query).await;
+    let out = admin::kill(session.as_ref(), &[id], KillScope::Query)
+        .await
+        .unwrap();
     assert!(out[0].ok, "{out:?}");
     let result = tokio::time::timeout(Duration::from_secs(10), sleeper)
         .await
@@ -148,7 +150,9 @@ async fn kill_a_sleeper(
     // PG reports the cancel as an error; MySQL's SLEEP() just returns 1 early.
     assert_eq!(result.is_err(), fails, "{result:?}");
     // An unknown process.
-    let out = admin::kill(session.as_ref(), &[2_000_000_000], KillScope::Query).await;
+    let out = admin::kill(session.as_ref(), &[2_000_000_000], KillScope::Query)
+        .await
+        .unwrap();
     assert!(!out[0].ok && out[0].message.is_some(), "{out:?}");
 }
 
@@ -261,7 +265,7 @@ async fn postgres_admin() {
         edited: Some(state.clone()),
         password: Some(r"it's a \ secret".into()),
     };
-    let preview = admin::preview_user(s.dialect(), &create).unwrap();
+    let preview = admin::preview_user(s.dialect().core().unwrap(), &create).unwrap();
     assert!(preview.iter().all(|p| !p.contains("secret")), "{preview:?}");
     let r = admin::apply_user(s, &create).await.unwrap();
     assert!(r.error.is_none(), "{:?}", r.error);

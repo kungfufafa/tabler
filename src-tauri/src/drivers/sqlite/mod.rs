@@ -20,7 +20,7 @@ use crate::drivers::{
     classify_statement, settle_cancels_blocking, trace_sql,
 };
 use crate::error::AppError;
-use crate::sqlgen::Dialect;
+use crate::sqlgen::{Dialect, SqlDialect};
 use crate::types::browse::TracedSql;
 use crate::types::profile::{ConnectionProfile, Driver, PasswordMode};
 use crate::types::query::{ExecOutcome, ResultSet};
@@ -296,8 +296,8 @@ impl DbSession for LiteSession {
         Driver::Sqlite
     }
 
-    fn dialect(&self) -> Dialect {
-        Dialect::Sqlite
+    fn dialect(&self) -> SqlDialect {
+        SqlDialect::Sqlite
     }
 
     async fn server_info(&self) -> Result<ServerInfo, AppError> {

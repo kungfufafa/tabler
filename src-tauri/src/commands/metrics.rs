@@ -8,6 +8,7 @@ use crate::drivers::CancelSlot;
 use crate::error::AppError;
 use crate::metrics;
 use crate::state::AppState;
+use crate::types::caps::Feature;
 use crate::types::metrics::{
     MetricsBoard, MetricsBoardInput, MetricsImport, MetricsQuery, MetricsResult,
 };
@@ -143,9 +144,9 @@ pub async fn metrics_run(
 ) -> Result<MetricsResult, AppError> {
     let conn = state.connection(connection_id).await?;
     let session = conn.session().await;
-    let dialect = session.dialect();
+    let dialect = session.core_dialect(Feature::Metrics)?;
     let prepared = metrics::prepare(dialect, &query)?;
-    crate::commands::safety::refuse_read_only_run(&conn, &prepared.sql, dialect, None)?;
+    crate::commands::safety::refuse_read_only_run(&conn, &prepared.sql, dialect.into(), None)?;
     let slot = CancelSlot::default();
     let _running = Running::register(&state, connection_id, query_id, slot.clone())?;
     let result = metrics::run_with_timeout(

@@ -35,6 +35,7 @@ use crate::drivers::{CancelSlot, DbSession, RowSink, contains_word, lock_editor_
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::split::{code_only, is_meta_command, leading_keywords, split_statements};
+use crate::types::caps::Feature;
 use crate::types::import::{
     SqlDumpPreview, SqlImportError, SqlImportProgress, SqlImportReport, SqlImportRequest,
     TextEncoding,
@@ -691,7 +692,7 @@ pub async fn run_sql_import(
     cancel: CancellationToken,
 ) -> Result<SqlImportReport, AppError> {
     let started = Instant::now();
-    let dialect = session.dialect();
+    let dialect = session.core_dialect(Feature::ImportSqlDump)?;
     let bytes = Arc::new(AtomicU64::new(0));
     let (read, total_bytes, _) = open_dump(&req.path, bytes.clone())?;
     let mut text = Some(DumpText::new(read));

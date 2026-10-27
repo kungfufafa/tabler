@@ -26,7 +26,7 @@ use crate::drivers::{
 };
 use crate::error::AppError;
 use crate::secrets::CommandPassword;
-use crate::sqlgen::Dialect;
+use crate::sqlgen::{Dialect, SqlDialect};
 use crate::types::browse::TracedSql;
 use crate::types::profile::Driver;
 use crate::types::query::{ExecOutcome, ResultSet, StatementKind};
@@ -258,8 +258,8 @@ impl DbSession for MySession {
         Driver::Mysql
     }
 
-    fn dialect(&self) -> Dialect {
-        Dialect::Mysql
+    fn dialect(&self) -> SqlDialect {
+        SqlDialect::Mysql
     }
 
     async fn server_info(&self) -> Result<ServerInfo, AppError> {

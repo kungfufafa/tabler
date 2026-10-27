@@ -26,6 +26,7 @@ use crate::sqlgen::transfer::{
     InsertTarget, create_import_table, import_type_sql, mysql_warning_guard, mysql_warning_text,
     pg_sync_sequence,
 };
+use crate::types::caps::Feature;
 use crate::types::import::{
     CsvColumn, CsvFormat, CsvImportFailure, CsvImportProgress, CsvImportReport, CsvImportRequest,
     CsvPreview, CsvSkippedRow, ImportPhase, ImportTarget, ImportType, InsertMode, TextEncoding,
@@ -667,7 +668,7 @@ async fn import_in_chunks(
     cancel: CancellationToken,
     chunk_cells: usize,
 ) -> Result<CsvImportReport, AppError> {
-    let plan = plan(session.dialect(), req, meta)?;
+    let plan = plan(session.core_dialect(Feature::ImportCsv)?, req, meta)?;
     let open = |bytes: Arc<AtomicU64>| {
         let (delimiter, quote, encoding) = resolve_format(&req.path, &req.format)?;
         let (reader, total) = open_reader(&req.path, delimiter, quote, encoding, bytes)?;
@@ -713,7 +714,8 @@ pub(crate) async fn import_records(
     chunk_cells: usize,
 ) -> Result<CsvImportReport, AppError> {
     let started = Instant::now();
-    let dialect = session.dialect();
+    // The plan's statements are spelled for the dialect the CSV or JSON import planned it in.
+    let dialect = plan.dialect;
     let insert_columns: Vec<(String, String)> = plan
         .columns
         .iter()

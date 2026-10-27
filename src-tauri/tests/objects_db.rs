@@ -115,7 +115,7 @@ async fn count(session: &Arc<dyn DbSession>, sql: &str) -> i64 {
 
 async fn run(session: &Arc<dyn DbSession>, op: ObjectOp) -> DdlResult {
     let plan = plan_op(session.as_ref(), &op).await.expect("plan");
-    let result = match session.dialect() {
+    let result = match session.dialect().core().unwrap() {
         Dialect::Mysql => run_mysql_plan(session.as_ref(), &plan).await,
         _ => apply_plan(session.as_ref(), &plan).await,
     };

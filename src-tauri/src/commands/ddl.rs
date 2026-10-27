@@ -20,6 +20,7 @@ use crate::sqlgen::ddl::{
     plan_ddl_with, session_toggle,
 };
 use crate::state::{AppState, Connection};
+use crate::types::caps::Feature;
 use crate::types::ddl::{DdlOp, DdlPlan, DdlResult};
 use crate::types::profile::{ConnectionProfile, Driver};
 use crate::types::query::ExecOutcome;
@@ -67,12 +68,13 @@ pub async fn plan_on(
     meta: Option<&TableMeta>,
     ops: &[DdlOp],
 ) -> Result<DdlPlan, AppError> {
+    let dialect = session.core_dialect(Feature::StructureEdit)?;
     let mut context = PlanContext::default();
-    if session.dialect() == Dialect::Mysql {
+    if dialect == Dialect::Mysql {
         // comments and defaults are spelled for how this session reads backslashes
         context.mysql_mode = mysql_literal_mode(session).await?;
     }
-    if session.dialect() == Dialect::Postgres
+    if dialect == Dialect::Postgres
         && let Some(meta) = meta
     {
         if ops.iter().any(|op| matches!(op, DdlOp::DropIndex { .. })) {
@@ -90,7 +92,7 @@ pub async fn plan_on(
             context.owned_sequences = pg_owned_sequences(session, &meta.table).await?;
         }
     }
-    plan_ddl_with(session.dialect(), meta, ops, &context)
+    plan_ddl_with(dialect, meta, ops, &context)
 }
 
 /// PG: the sequences owned by a column of `table` besides its identity: `(column, sequence)`.
@@ -223,7 +225,7 @@ pub async fn get_table_ddl(
     if let Some(ddl) = meta.ddl.as_deref().filter(|d| !d.trim().is_empty()) {
         return Ok(ddl.to_string());
     }
-    let dialect = session.dialect();
+    let dialect = session.core_dialect(Feature::TableDdl)?;
     match meta.kind {
         TableKind::View | TableKind::MaterializedView | TableKind::SystemView => {
             let definition = session
@@ -579,8 +581,8 @@ fn transactional_batch(dialect: Dialect, statements: &[String]) -> (Vec<TxStatem
 /// Runs one statement of a sequential plan. MySQL runs it on one pooled connection after
 /// bounding its metadata-lock wait (the pool resets session variables when the connection is
 /// returned; DDL commits implicitly, so the surrounding transaction changes nothing else).
-async fn execute_one(session: &dyn DbSession, sql: &str) -> Result<(), AppError> {
-    if session.dialect() == Dialect::Mysql {
+async fn execute_one(session: &dyn DbSession, dialect: Dialect, sql: &str) -> Result<(), AppError> {
+    if dialect == Dialect::Mysql {
         let batch = vec![
             TxStatement::new(
                 format!("SET SESSION lock_wait_timeout = {DDL_LOCK_TIMEOUT_SECS}"),
@@ -596,8 +598,12 @@ async fn execute_one(session: &dyn DbSession, sql: &str) -> Result<(), AppError>
 
 /// Explains a failure to get a lock in time: usually an open transaction, very often the SQL
 /// editor's own, holds a lock on the table.
-pub(crate) fn explain_lock_wait(session: &dyn DbSession, payload: &mut ErrorPayload) {
-    let lock_wait = match session.dialect() {
+pub(crate) fn explain_lock_wait(
+    session: &dyn DbSession,
+    dialect: Dialect,
+    payload: &mut ErrorPayload,
+) {
+    let lock_wait = match dialect {
         // lock_not_available ("canceling statement due to lock timeout")
         Dialect::Postgres => payload.sqlstate.as_deref() == Some("55P03"),
         // ER_LOCK_WAIT_TIMEOUT
@@ -631,17 +637,30 @@ pub(crate) fn explain_lock_wait(session: &dyn DbSession, payload: &mut ErrorPayl
 /// block, and plans on one session do not interleave. When a sequential plan fails, its open
 /// block is rolled back and the connection settings it toggles (`PRAGMA foreign_keys`,
 /// `legacy_alter_table`) are restored. Failures are reported in the result, never as `Err`.
+/// The plans are the core planners' (structure, object operations, definitions): a session
+/// without the core generators runs none.
 pub async fn apply_plan(session: &dyn DbSession, plan: &DdlPlan) -> DdlResult {
     let started = Instant::now();
-    let mut result = run_plan(session, plan).await;
+    let dialect = match session.core_dialect(Feature::StructureEdit) {
+        Ok(dialect) => dialect,
+        Err(e) => {
+            return DdlResult {
+                executed: Vec::new(),
+                failed_index: None,
+                error: Some(e.to_payload()),
+                duration_ms: 0,
+            };
+        }
+    };
+    let mut result = run_plan(session, dialect, plan).await;
     result.duration_ms = started.elapsed().as_millis() as u64;
     if let Some(payload) = result.error.as_mut() {
-        explain_lock_wait(session, payload);
+        explain_lock_wait(session, dialect, payload);
     }
     result
 }
 
-async fn run_plan(session: &dyn DbSession, plan: &DdlPlan) -> DdlResult {
+async fn run_plan(session: &dyn DbSession, dialect: Dialect, plan: &DdlPlan) -> DdlResult {
     let done = |executed: Vec<String>, failed_index: Option<usize>, error| DdlResult {
         executed,
         failed_index,
@@ -653,7 +672,7 @@ async fn run_plan(session: &dyn DbSession, plan: &DdlPlan) -> DdlResult {
     }
 
     if plan.transactional {
-        let (batch, offset) = transactional_batch(session.dialect(), &plan.statements);
+        let (batch, offset) = transactional_batch(dialect, &plan.statements);
         return match session.transaction(batch).await {
             Ok(_) => done(plan.statements.clone(), None, None),
             Err(err) => {
@@ -670,7 +689,7 @@ async fn run_plan(session: &dyn DbSession, plan: &DdlPlan) -> DdlResult {
     }
 
     // SQLite: keep other plans' toggles out of this one's.
-    let lock = (session.dialect() == Dialect::Sqlite).then(|| plan_lock(session));
+    let lock = (dialect == Dialect::Sqlite).then(|| plan_lock(session));
     let _serialized = match &lock {
         Some(lock) => Some(lock.lock().await),
         None => None,
@@ -711,7 +730,7 @@ async fn run_plan(session: &dyn DbSession, plan: &DdlPlan) -> DdlResult {
             }
         }
         let sql = &plan.statements[index];
-        match execute_one(session, sql).await {
+        match execute_one(session, dialect, sql).await {
             Ok(()) => {
                 if first_word_is(sql, "BEGIN") {
                     block_start = Some(executed.len());
@@ -740,6 +759,7 @@ async fn run_plan(session: &dyn DbSession, plan: &DdlPlan) -> DdlResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sqlgen::SqlDialect;
     use crate::types::profile::ProfileOptions;
     use crate::types::query::{ResultColumn, ResultSet};
     use crate::types::schema::ValueKind;
@@ -895,20 +915,26 @@ mod tests {
         assert!(guard_violation(&AppError::db("bad JSON path: '$x'")).is_none());
     }
 
-    /// A session that only logs what runs, yielding at every call (SQLite-flavoured unless
-    /// `dialect` says otherwise). `fail` makes every transaction fail with that error.
+    /// A session that only logs what runs, yielding at every call (a SQLite one unless
+    /// `session` names its driver and dialect). `fail` makes every transaction fail with that
+    /// error.
     #[derive(Default)]
     struct Recorder {
         log: Mutex<Vec<String>>,
-        dialect: Option<Dialect>,
+        session: Option<(Driver, SqlDialect)>,
         in_tx: Option<bool>,
         fail: Option<AppError>,
     }
 
     impl Recorder {
         fn of(dialect: Dialect) -> Recorder {
+            let driver = match dialect {
+                Dialect::Postgres => Driver::Postgres,
+                Dialect::Mysql => Driver::Mysql,
+                Dialect::Sqlite => Driver::Sqlite,
+            };
             Recorder {
-                dialect: Some(dialect),
+                session: Some((driver, dialect.into())),
                 ..Recorder::default()
             }
         }
@@ -922,14 +948,11 @@ mod tests {
     #[async_trait::async_trait]
     impl DbSession for Recorder {
         fn driver(&self) -> Driver {
-            match self.dialect() {
-                Dialect::Postgres => Driver::Postgres,
-                Dialect::Mysql => Driver::Mysql,
-                Dialect::Sqlite => Driver::Sqlite,
-            }
+            self.session.map_or(Driver::Sqlite, |(driver, _)| driver)
         }
-        fn dialect(&self) -> Dialect {
-            self.dialect.unwrap_or(Dialect::Sqlite)
+        fn dialect(&self) -> SqlDialect {
+            self.session
+                .map_or(SqlDialect::Sqlite, |(_, dialect)| dialect)
         }
         async fn server_info(&self) -> Result<crate::drivers::ServerInfo, AppError> {
             unimplemented!()
@@ -1011,6 +1034,26 @@ mod tests {
         }
         fn in_transaction(&self) -> Option<bool> {
             self.in_tx
+        }
+    }
+
+    /// Plans come from the core planners: a session of an extension dialect, or of a driver
+    /// beyond the core three, runs none of them.
+    #[tokio::test]
+    async fn no_plan_runs_without_the_core_generators() {
+        for session in [
+            (Driver::Postgres, SqlDialect::Redshift),
+            (Driver::Libsql, SqlDialect::Sqlite),
+        ] {
+            let recorder = Recorder {
+                session: Some(session),
+                ..Recorder::default()
+            };
+            let result = apply_plan(&recorder, &rebuild_plan()).await;
+            let error = result.error.expect("refused");
+            assert_eq!(error.code, "UNSUPPORTED", "{session:?}");
+            assert!(result.executed.is_empty());
+            assert!(recorder.log.lock().unwrap().is_empty());
         }
     }
 
@@ -1170,7 +1213,7 @@ mod tests {
             (Dialect::Sqlite, payload(None, Some(19)), false),
         ];
         for (dialect, mut p, hinted) in cases {
-            explain_lock_wait(&Recorder::of(dialect), &mut p);
+            explain_lock_wait(&Recorder::of(dialect), dialect, &mut p);
             assert_eq!(p.hint.is_some(), hinted, "{dialect:?} {p:?}");
             if hinted {
                 assert!(p.hint.unwrap().contains("Another session"));
@@ -1181,7 +1224,7 @@ mod tests {
             ..Recorder::of(Dialect::Mysql)
         };
         let mut p = payload(None, Some(1205));
-        explain_lock_wait(&editor, &mut p);
+        explain_lock_wait(&editor, Dialect::Mysql, &mut p);
         assert!(
             p.hint
                 .unwrap()

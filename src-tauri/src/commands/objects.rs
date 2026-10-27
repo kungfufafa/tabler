@@ -112,9 +112,9 @@ pub async fn apply_object_op(
     let session = conn.session().await;
     let plan = objects::plan_op(session.as_ref(), &op).await?;
     log::info!("apply_object_op {} statement(s)", plan.statements.len());
-    let result = match session.dialect() {
+    let result = match session.core_dialect(objects::op_feature(&op))? {
         Dialect::Mysql => objects::run_mysql_plan(session.as_ref(), &plan).await,
-        _ => apply_plan(session.as_ref(), &plan).await,
+        Dialect::Postgres | Dialect::Sqlite => apply_plan(session.as_ref(), &plan).await,
     };
     conn.invalidate(None).await;
     if let Some(err) = &result.error {

@@ -781,7 +781,7 @@ async fn fetch_full_cell_by_all_columns_key() {
         .await?;
         let meta = s.table_meta(&TableRef::new(Some(&db), &table)).await?;
         let spec = TableSpec {
-            dialect: s.dialect(),
+            dialect: s.dialect().core().unwrap(),
             table: &meta.table,
             columns: &meta.columns,
         };

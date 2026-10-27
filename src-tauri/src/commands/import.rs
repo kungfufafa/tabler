@@ -22,6 +22,7 @@ use crate::import::{
     preview_csv, preview_dump, preview_json, run_csv_import, run_json_import, run_sql_import,
 };
 use crate::state::{AppState, Connection};
+use crate::types::caps::Feature;
 use crate::types::driver::Location;
 use crate::types::import::{
     CsvImportProgress, CsvImportReport, CsvImportRequest, CsvPreview, CsvPreviewRequest,
@@ -222,7 +223,10 @@ pub async fn preview_sql_dump(
     connection_id: Uuid,
     req: SqlDumpPreviewRequest,
 ) -> Result<SqlDumpPreview, AppError> {
-    let dialect = state.session(connection_id).await?.dialect();
+    let dialect = state
+        .session(connection_id)
+        .await?
+        .core_dialect(Feature::ImportSqlDump)?;
     tokio::task::spawn_blocking(move || preview_dump(&req.path, dialect))
         .await
         .map_err(|e| AppError::internal(format!("preview task failed: {e}")))?

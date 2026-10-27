@@ -53,6 +53,7 @@ use crate::sqlgen::select::{SelectSpec, build_select};
 use crate::sqlgen::split::{is_meta_command, leading_keywords, split_statements};
 use crate::sqlgen::transfer::{default_time_zone, script_table};
 use crate::types::browse::{FilterGroup, RowIdentity, SortDir, SortSpec};
+use crate::types::caps::Feature;
 use crate::types::export::{
     ExportFormat, ExportProgress, ExportRequest, ExportResult, ExportSource,
 };
@@ -723,8 +724,10 @@ async fn stream_export(
 /// Streams a planned export into `out` (the statement's rows, or the rows held) and returns
 /// the rows written. `progress` gets the rows written so far, throttled. Fails with `Cancelled`
 /// once `cancel` fires.
+#[allow(clippy::too_many_arguments)]
 async fn stream_plan<O: RowOut + Send>(
     session: &dyn DbSession,
+    dialect: Dialect,
     plan: &Plan<'_>,
     out: O,
     max_rows: Option<u64>,
@@ -732,7 +735,6 @@ async fn stream_plan<O: RowOut + Send>(
     progress: &mut (dyn FnMut(u64) + Send),
     export_id: &str,
 ) -> Result<u64, AppError> {
-    let dialect = session.dialect();
     let (planned, blob_hex) = match plan {
         Plan::Query(query) => (query.columns.clone(), query.blob_hex.clone()),
         Plan::Rows { .. } => (None, Vec::new()),
@@ -825,8 +827,8 @@ async fn blocking<T: Send + 'static>(
 /// Whether INSERTs read geographic WKT back with `axis-order=long-lat`: MySQL 8 and later (not
 /// 5.7, not MariaDB, which take no such option) read a geographic SRS's WKT latitude first, while
 /// the spatial decoder writes MySQL's storage order (longitude first). Asked once per export.
-pub(crate) async fn mysql_long_lat(session: &dyn DbSession) -> bool {
-    if session.dialect() != Dialect::Mysql {
+pub(crate) async fn mysql_long_lat(session: &dyn DbSession, dialect: Dialect) -> bool {
+    if dialect != Dialect::Mysql {
         return false;
     }
     match session.server_info().await {
@@ -844,8 +846,7 @@ pub(crate) async fn mysql_long_lat(session: &dyn DbSession) -> bool {
 /// (see `time_zone_header`): MySQL's `@@session.time_zone`, as an offset (`+07:00`) when it is
 /// `SYSTEM`; PostgreSQL's `TimeZone` setting. `None` for SQLite (no session zone) and when the
 /// server does not say (the script then assumes the dialect's default zone).
-pub(crate) async fn session_time_zone(session: &dyn DbSession) -> Option<String> {
-    let dialect = session.dialect();
+pub(crate) async fn session_time_zone(session: &dyn DbSession, dialect: Dialect) -> Option<String> {
     let read = match dialect {
         Dialect::Sqlite => return None,
         Dialect::Postgres => read_pg_zone(session).await,
@@ -928,6 +929,21 @@ fn is_view(kind: TableKind) -> bool {
     )
 }
 
+/// The core dialect an export of `format` writes with: a SQL script needs Export SQL, the
+/// other formats Export Tables.
+pub(crate) fn export_dialect(
+    session: &dyn DbSession,
+    format: &ExportFormat,
+) -> Result<Dialect, AppError> {
+    session.core_dialect(match format {
+        ExportFormat::SqlInsert { .. } => Feature::ExportSql,
+        ExportFormat::Csv { .. }
+        | ExportFormat::Json { .. }
+        | ExportFormat::Xlsx { .. }
+        | ExportFormat::Html => Feature::ExportTables,
+    })
+}
+
 /// Runs one export on `session`: plans the statement, streams it into the chosen format on a
 /// temporary file, then moves the file into place. `meta` is the table's metadata for table
 /// exports (fetched when `None`). Cancelling `cancel` stops the export with
@@ -940,7 +956,7 @@ pub async fn run_export(
     cancel: CancellationToken,
 ) -> Result<ExportResult, AppError> {
     let started = Instant::now();
-    let dialect = session.dialect();
+    let dialect = export_dialect(session, &req.format)?;
     let dest = validate_target(&req.path)?;
     let fetched;
     let table_meta: Option<&TableMeta> = match (&req.source, meta) {
@@ -992,7 +1008,7 @@ pub async fn run_export(
     // The INSERTs' timestamps are written as the exporting session read them: the script sets
     // that session time zone first (and puts the previous one back at its end).
     let zone = if content && script.is_some() {
-        session_time_zone(session).await
+        session_time_zone(session, dialect).await
     } else {
         None
     };
@@ -1001,7 +1017,7 @@ pub async fn run_export(
     let mut creates_table = false;
     let layout = match (script, table_meta) {
         (Some(s), Some(meta)) if (s.drop_table || s.structure) && !is_view(meta.kind) => {
-            let context = context_for(session, meta, s.structure, false).await;
+            let context = context_for(session, dialect, meta, s.structure, false).await;
             creates_table = true;
             Some(script_layout(
                 dialect,
@@ -1024,7 +1040,8 @@ pub async fn run_export(
             "nothing to export: include the table structure or its content".into(),
         ));
     }
-    let long_lat = matches!(spec, FormatSpec::Insert { .. }) && mysql_long_lat(session).await;
+    let long_lat =
+        matches!(spec, FormatSpec::Insert { .. }) && mysql_long_lat(session, dialect).await;
     if let FormatSpec::Insert {
         overriding_system_value,
         table,
@@ -1086,6 +1103,7 @@ pub async fn run_export(
         };
         stream_plan(
             session,
+            dialect,
             &plan,
             &mut writer,
             req.max_rows,

@@ -31,6 +31,7 @@ use crate::sqlgen::definition::{
     create_statement, definition_plan, qualify_routine, without_definer,
 };
 use crate::state::{AppState, Connection};
+use crate::types::caps::Feature;
 use crate::types::ddl::{DdlPlan, DdlResult};
 use crate::types::mutate::{
     ApplyRequest, DefinitionRestore, GroupPlan, GroupResult, GroupStatus, WorkspaceGroup,
@@ -139,9 +140,11 @@ async fn plan_group(
             created: None,
             replaces: None,
         },
-        WorkspaceGroup::Definition { drop, sql } => {
-            plan_definition(session.dialect(), drop.as_ref(), sql)?
-        }
+        WorkspaceGroup::Definition { drop, sql } => plan_definition(
+            session.core_dialect(Feature::WorkspaceCommit)?,
+            drop.as_ref(),
+            sql,
+        )?,
     })
 }
 
@@ -211,11 +214,11 @@ fn fail_batch(
 /// inside the batch, so a failing COMMIT is rolled back by the driver.
 async fn run_batch(
     session: &dyn DbSession,
+    dialect: Dialect,
     groups: &[PlannedGroup],
     in_batch: &[usize],
     results: &mut [GroupResult],
 ) -> Result<(), ErrorPayload> {
-    let dialect = session.dialect();
     let structure = in_batch
         .iter()
         .any(|&g| matches!(groups[g], PlannedGroup::Plan { .. }));
@@ -275,7 +278,7 @@ async fn run_batch(
         }
         Err(err) => {
             let mut payload = err.to_payload();
-            explain_lock_wait(session, &mut payload);
+            explain_lock_wait(session, dialect, &mut payload);
             // A batch of one statement failed at that statement.
             let single = (origins.iter().flatten().count() == 1)
                 .then(|| origins.iter().flatten().next().copied())
@@ -288,14 +291,29 @@ async fn run_batch(
     }
 }
 
-/// Runs planned groups (see the module docs). Never fails: the outcome says what happened.
+/// Runs planned groups (see the module docs). Never fails: the outcome says what happened. A
+/// session without the workspace commit runs none of them.
 pub async fn run_workspace(session: &dyn DbSession, groups: &[PlannedGroup]) -> WorkspaceResult {
     let started = Instant::now();
-    let atomic = is_atomic(session.dialect(), groups);
     let mut results: Vec<GroupResult> = groups
         .iter()
         .map(|g| group_result(GroupStatus::NotRun, g.sql()))
         .collect();
+    let dialect = match session.core_dialect(Feature::WorkspaceCommit) {
+        Ok(dialect) => dialect,
+        Err(e) => {
+            return WorkspaceResult {
+                success: false,
+                // Nothing ran: "All changes were reverted" is what stayed.
+                atomic: true,
+                groups: results,
+                failed_group: None,
+                error: Some(e.to_payload()),
+                duration_ms: 0,
+            };
+        }
+    };
+    let atomic = is_atomic(dialect, groups);
     let order = run_order(groups);
     let finish = |mut results: Vec<GroupResult>, error: Option<ErrorPayload>, atomic: bool| {
         for (r, g) in results.iter_mut().zip(groups) {
@@ -315,7 +333,9 @@ pub async fn run_workspace(session: &dyn DbSession, groups: &[PlannedGroup]) -> 
     };
 
     if atomic {
-        let error = run_batch(session, groups, &order, &mut results).await.err();
+        let error = run_batch(session, dialect, groups, &order, &mut results)
+            .await
+            .err();
         return finish(results, error, true);
     }
 
@@ -326,7 +346,7 @@ pub async fn run_workspace(session: &dyn DbSession, groups: &[PlannedGroup]) -> 
         .filter(|&g| matches!(groups[g], PlannedGroup::Rows { .. }))
         .collect();
     if !rows.is_empty()
-        && let Err(payload) = run_batch(session, groups, &rows, &mut results).await
+        && let Err(payload) = run_batch(session, dialect, groups, &rows, &mut results).await
     {
         // The data transaction rolled back and the structure never ran: nothing stayed, which is
         // what "atomic" tells the renderer ("All changes were reverted").
@@ -344,10 +364,10 @@ pub async fn run_workspace(session: &dyn DbSession, groups: &[PlannedGroup]) -> 
             continue;
         };
         let (outcome, restore) = match replaces {
-            Some(routine) if session.dialect() == Dialect::Mysql => {
+            Some(routine) if dialect == Dialect::Mysql => {
                 run_mysql_replacement(session, plan, routine).await
             }
-            _ if *object && session.dialect() == Dialect::Mysql => {
+            _ if *object && dialect == Dialect::Mysql => {
                 (objects::run_mysql_plan(session, plan).await, None)
             }
             _ => (apply_plan(session, plan).await, None),
@@ -563,7 +583,10 @@ pub async fn preview_workspace_changes(
     groups: Vec<WorkspaceGroup>,
 ) -> Result<WorkspacePlan, AppError> {
     let conn = state.connection(connection_id).await?;
-    let dialect = conn.session().await.dialect();
+    let dialect = conn
+        .session()
+        .await
+        .core_dialect(Feature::WorkspaceCommit)?;
     let planned = plan_all(&conn, &groups).await;
     let atomic = planned.iter().all(Result::is_ok) && atomic_for(dialect, planned.iter().flatten());
     let groups = planned
@@ -750,7 +773,7 @@ mod tests {
                 statements,
                 columns: meta.columns.clone(),
                 driver: Driver::Sqlite,
-                dialect: Dialect::Sqlite,
+                dialect: Dialect::Sqlite.into(),
             },
             req,
         }
@@ -829,7 +852,7 @@ mod tests {
                     Dialect::Postgres => Driver::Postgres,
                     Dialect::Sqlite => Driver::Sqlite,
                 },
-                dialect,
+                dialect: dialect.into(),
             },
             req: ApplyRequest {
                 table: TableRef::new(None, "t"),

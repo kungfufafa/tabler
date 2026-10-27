@@ -14,6 +14,7 @@ use crate::sqlgen::objects::{
     self, AggregateInfo, CloneSource, SequenceInfo, SerialSource, mysql_routine_script,
     mysql_show_create, pg_routine_script,
 };
+use crate::types::caps::Feature;
 use crate::types::ddl::{DdlPlan, DdlResult};
 use crate::types::objects::{
     DatabaseItems, ObjectOp, ObjectTarget, OverviewItem, RoutineKind, RoutineRef, RoutineSummary,
@@ -227,7 +228,8 @@ pub async fn list_routines(
     schema: &str,
 ) -> Result<Vec<RoutineSummary>, AppError> {
     let params = [Value::Text(schema.to_string())];
-    let rows = match session.dialect() {
+    let dialect = session.core_dialect(Feature::Routines)?;
+    let rows = match dialect {
         Dialect::Postgres => pg_query_with_kind(session, pg_routines_sql, &params).await?,
         Dialect::Mysql => {
             session
@@ -240,7 +242,7 @@ pub async fn list_routines(
         }
         Dialect::Sqlite => return Ok(Vec::new()),
     };
-    let from_row = match session.dialect() {
+    let from_row = match dialect {
         Dialect::Postgres => routine_from_pg_row,
         _ => routine_from_mysql_row,
     };
@@ -286,7 +288,7 @@ pub async fn routine_definition(
     session: &dyn DbSession,
     r: &RoutineRef,
 ) -> Result<String, AppError> {
-    match session.dialect() {
+    match session.core_dialect(Feature::Routines)? {
         Dialect::Postgres => {
             let row = pg_find_routine(
                 session,
@@ -374,7 +376,7 @@ pub async fn list_sequences(
     session: &dyn DbSession,
     schema: &str,
 ) -> Result<Vec<SequenceSummary>, AppError> {
-    if session.dialect() != Dialect::Postgres {
+    if session.core_dialect(Feature::Sequences)? != Dialect::Postgres {
         return Ok(Vec::new());
     }
     let rs = session
@@ -392,7 +394,7 @@ pub async fn sequence_definition(
     session: &dyn DbSession,
     sequence: &TableRef,
 ) -> Result<String, AppError> {
-    if session.dialect() != Dialect::Postgres {
+    if session.core_dialect(Feature::Sequences)? != Dialect::Postgres {
         return Err(AppError::Unsupported(
             "sequences are listed for PostgreSQL only".into(),
         ));
@@ -448,7 +450,7 @@ pub async fn sequence_definition(
 /// PostgreSQL's system schemas (`information_schema`, `pg_catalog`, `pg_toast`), which
 /// `list_schemas` leaves out; the sidebar adds them when "Show System Schemas" is on.
 pub async fn system_schemas(session: &dyn DbSession) -> Result<Vec<SchemaInfo>, AppError> {
-    if session.dialect() != Dialect::Postgres {
+    if session.core_dialect(Feature::StructureView)? != Dialect::Postgres {
         return Ok(Vec::new());
     }
     let rs = session
@@ -565,7 +567,7 @@ pub async fn database_items(
     session: &dyn DbSession,
     include_system: bool,
 ) -> Result<DatabaseItems, AppError> {
-    match session.dialect() {
+    match session.core_dialect(Feature::StructureView)? {
         Dialect::Postgres => {
             let tables = session
                 .query(&pg_database_tables_sql(include_system), &[])
@@ -767,7 +769,7 @@ pub async fn item_overview(
     schema: &str,
 ) -> Result<Vec<OverviewItem>, AppError> {
     let params = [Value::Text(schema.to_string())];
-    match session.dialect() {
+    match session.core_dialect(Feature::StructureView)? {
         Dialect::Postgres => Ok(session
             .query(PG_OVERVIEW_SQL, &params)
             .await?
@@ -916,8 +918,12 @@ async fn pg_serial_sources(session: &dyn DbSession, source: &TableRef) -> Vec<Se
 
 /// Names a clone's new sequences / indexes must not take: PG relations of the schema, SQLite
 /// `sqlite_master` entries of the schema.
-async fn taken_names(session: &dyn DbSession, schema: Option<&str>) -> Vec<String> {
-    let rows = match session.dialect() {
+async fn taken_names(
+    session: &dyn DbSession,
+    dialect: Dialect,
+    schema: Option<&str>,
+) -> Vec<String> {
+    let rows = match dialect {
         Dialect::Postgres => session
             .query(
                 "SELECT c.relname::text FROM pg_catalog.pg_class c \
@@ -969,7 +975,7 @@ async fn sqlite_indexes(
 /// them; a clone reads the source table's columns, serial sequences (PG), indexes and stored
 /// `CREATE TABLE` (SQLite); a MySQL comment reads the session's `sql_mode`.
 pub async fn plan_op(session: &dyn DbSession, op: &ObjectOp) -> Result<DdlPlan, AppError> {
-    let d = session.dialect();
+    let d = session.core_dialect(op_feature(op))?;
     match op {
         ObjectOp::DropTables {
             tables,
@@ -1047,7 +1053,7 @@ pub async fn plan_op(session: &dyn DbSession, op: &ObjectOp) -> Result<DdlPlan, 
             let taken = if serials.is_empty() && indexes.is_empty() {
                 Vec::new()
             } else {
-                taken_names(session, source.schema.as_deref()).await
+                taken_names(session, d, source.schema.as_deref()).await
             };
             let src = CloneSource {
                 columns: &columns,
@@ -1075,6 +1081,18 @@ pub async fn plan_op(session: &dyn DbSession, op: &ObjectOp) -> Result<DdlPlan, 
             let mode = crate::admin::mysql_literal_mode(session).await?;
             objects::set_comment(d, target, comment.as_deref(), mode)
         }
+    }
+}
+
+/// The feature an operation needs.
+pub fn op_feature(op: &ObjectOp) -> Feature {
+    match op {
+        ObjectOp::DropTables { .. } => Feature::DropTable,
+        ObjectOp::TruncateTables { .. } => Feature::TruncateTable,
+        ObjectOp::CloneTable { .. } => Feature::CreateTable,
+        ObjectOp::DropRoutines { .. } => Feature::Routines,
+        ObjectOp::DropSequences { .. } => Feature::Sequences,
+        ObjectOp::SetComment { .. } => Feature::StructureEdit,
     }
 }
 

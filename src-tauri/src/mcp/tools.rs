@@ -17,8 +17,9 @@ use crate::error::{AppError, ErrorPayload};
 use crate::export::structure::pg_table_context;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::ddl::create_table_sql_with;
-use crate::sqlgen::split::split_statements;
+use crate::sqlgen::sql::split_statements;
 use crate::state::AppState;
+use crate::types::caps::Feature;
 use crate::types::driver::Location;
 use crate::types::history::NewHistoryEntry;
 use crate::types::profile::{ConnectionProfile, Driver};
@@ -585,7 +586,7 @@ async fn table_ddl(session: &dyn DbSession, meta: &TableMeta) -> Result<String, 
     if let Some(ddl) = meta.ddl.as_deref().filter(|d| !d.trim().is_empty()) {
         return Ok(ddl.to_string());
     }
-    let dialect = session.dialect();
+    let dialect = session.core_dialect(Feature::TableDdl)?;
     match meta.kind {
         TableKind::View | TableKind::MaterializedView | TableKind::SystemView => {
             let definition = session
@@ -869,7 +870,7 @@ async fn run_query(
         .clamp(1, MAX_ROWS);
     let database = opt_str(args, "database")?;
     let dialect = dialect_of(profile.driver)?;
-    let total = split_statements(sql, dialect).len();
+    let total = split_statements(dialect, sql).len();
     if total == 0 {
         return Err("There is no SQL statement to run.".into());
     }

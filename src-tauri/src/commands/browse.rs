@@ -8,17 +8,15 @@ use super::query::{query_limited, query_time_limit};
 use crate::drivers::DbSession;
 use crate::drivers::postgres::decode::text_to_value;
 use crate::error::AppError;
-use crate::sqlgen::Dialect;
-use crate::sqlgen::mutate::TableSpec;
-use crate::sqlgen::select::{
-    ROWID_ALIAS, SelectSpec, build_count, build_fetch_cell, build_select, inline_params,
-};
+use crate::sqlgen::SqlDialect;
+use crate::sqlgen::select::ROWID_ALIAS;
+use crate::sqlgen::sql::{self, ColumnForm, FetchForm, SelectQuery, TableTarget};
 use crate::state::{AppState, Connection};
 use crate::types::browse::{
     BrowsePage, BrowseRequest, FilterGroup, RowCount, RowIdentity, RowKey, TracedSql,
 };
 use crate::types::profile::Driver;
-use crate::types::schema::{ColumnMeta, TableMeta, TableRef, ValueKind};
+use crate::types::schema::{ColumnMeta, TableMeta, TableRef};
 use crate::types::value::{Value, decode_hex};
 
 /// Table metadata from the per-connection cache (fetching it on a miss).
@@ -44,9 +42,18 @@ fn identity_for(driver: Driver, meta: &TableMeta) -> RowIdentity {
     }
 }
 
-/// PG rows arrive as text (sqlgen casts every column); decode them by the column's kind.
-fn decode_rows(driver: Driver, columns: &[&ColumnMeta], rows: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
-    if driver != Driver::Postgres {
+/// Columns the select of `dialect` reads as text (PG casts every column, a spec may project
+/// some) arrive as text; decode them by the column's kind.
+fn decode_rows(
+    dialect: SqlDialect,
+    columns: &[&ColumnMeta],
+    rows: Vec<Vec<Value>>,
+) -> Vec<Vec<Value>> {
+    let as_text: Vec<bool> = columns
+        .iter()
+        .map(|c| sql::column_form(dialect, c) != ColumnForm::Native)
+        .collect();
+    if !as_text.contains(&true) {
         return rows;
     }
     rows.into_iter()
@@ -54,7 +61,7 @@ fn decode_rows(driver: Driver, columns: &[&ColumnMeta], rows: Vec<Vec<Value>>) -
             row.into_iter()
                 .enumerate()
                 .map(|(i, v)| match (columns.get(i), v) {
-                    (Some(col), Value::Text(text)) => {
+                    (Some(col), Value::Text(text)) if as_text[i] => {
                         text_to_value(col.kind, &col.data_type, &text)
                     }
                     (_, v) => v,
@@ -131,18 +138,20 @@ pub async fn browse_page(
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let built = build_select(&SelectSpec {
+        let built = sql::select(
             dialect,
-            table: &meta.table,
-            columns: &meta.columns,
-            selected: req.columns.as_deref(),
-            filter: req.filter.as_ref(),
-            sort: &req.sort,
-            limit: req.limit,
-            offset: req.offset,
-            pk: &meta.primary_key,
-            identity,
-        })?;
+            &SelectQuery {
+                table: &meta.table,
+                columns: &meta.columns,
+                selected: req.columns.as_deref(),
+                filter: req.filter.as_ref(),
+                sort: &req.sort,
+                limit: req.limit,
+                offset: req.offset,
+                pk: &meta.primary_key,
+                identity,
+            },
+        )?;
         match query_limited(session, &built.sql, &built.params, limit).await {
             Ok(rs) => {
                 let mut rows = rs.rows;
@@ -163,7 +172,7 @@ pub async fn browse_page(
                         row_ids = Some(ids);
                     }
                 }
-                let rows = decode_rows(driver, &selected, rows);
+                let rows = decode_rows(dialect, &selected, rows);
                 return Ok(BrowsePage {
                     columns: selected.iter().map(|c| (*c).clone()).collect(),
                     rows,
@@ -172,7 +181,7 @@ pub async fn browse_page(
                     row_ids,
                     offset: req.offset,
                     limit: req.limit,
-                    sql: inline_params(dialect, &built.sql, &built.params),
+                    sql: sql::inline_params(dialect, &built.sql, &built.params),
                     duration_ms: started.elapsed().as_millis() as u64,
                 });
             }
@@ -229,7 +238,7 @@ pub async fn count_table_rows(
     ) {
         return Ok(estimate);
     }
-    let built = build_count(
+    let built = sql::count(
         session.dialect(),
         &meta.table,
         &meta.columns,
@@ -324,30 +333,31 @@ pub async fn fetch_cell_limited(
         .iter()
         .find(|c| c.name == column)
         .ok_or_else(|| AppError::InvalidInput(format!("unknown column \"{column}\"")))?;
-    let spec = TableSpec {
-        dialect: session.dialect(),
+    let dialect = session.dialect();
+    let target = TableTarget {
         table: &meta.table,
         columns: &meta.columns,
     };
-    let (sql, params) = build_fetch_cell(&spec, col, key)?;
-    let rs = query_limited(session, &sql, &params, limit).await?;
-    fetched_value(
-        spec.dialect,
-        col,
-        rs.rows.into_iter().next().unwrap_or_default(),
-    )
+    let (query, params) = sql::fetch_cell(dialect, &target, col, key)?;
+    let rs = query_limited(session, &query, &params, limit).await?;
+    fetched_value(dialect, col, rs.rows.into_iter().next().unwrap_or_default())
 }
 
-/// Decodes the row of a `build_fetch_cell` query built for `dialect` (see its result shape). A
-/// blob always comes back whole — the grid's preview cap does not apply — and a NULL stays NULL.
-fn fetched_value(dialect: Dialect, col: &ColumnMeta, row: Vec<Value>) -> Result<Value, AppError> {
+/// Decodes the row of a `sql::fetch_cell` query built for `dialect` (its `fetch_form`). A blob
+/// always comes back whole — the grid's preview cap does not apply — and a NULL stays NULL.
+fn fetched_value(
+    dialect: impl Into<SqlDialect>,
+    col: &ColumnMeta,
+    row: Vec<Value>,
+) -> Result<Value, AppError> {
+    let form = sql::fetch_form(dialect, col);
     let mut cells = row.into_iter();
     let first = cells.next().unwrap_or(Value::Null);
-    let (value, hex) = match dialect {
+    let (value, hex) = match form {
         // `<column>, <its hex when the storage class is blob>`: SQLite blobs may sit in any column.
-        Dialect::Sqlite => (first, cells.next().unwrap_or(Value::Null)),
-        _ if col.kind == ValueKind::Bytes => (Value::Null, first),
-        _ => (first, Value::Null),
+        FetchForm::ValueAndHex => (first, cells.next().unwrap_or(Value::Null)),
+        FetchForm::Hex => (Value::Null, first),
+        FetchForm::Native | FetchForm::Text => (first, Value::Null),
     };
     if !hex.is_null() {
         let hex =
@@ -362,9 +372,9 @@ fn fetched_value(dialect: Dialect, col: &ColumnMeta, row: Vec<Value>) -> Result<
     if value.as_text().is_some_and(|t| t.len() > FULL_CELL_MAX) {
         return Err(too_large());
     }
-    Ok(match (dialect, value) {
-        // The PostgreSQL builder reads every column as `::text`.
-        (Dialect::Postgres, Value::Text(text)) => text_to_value(col.kind, &col.data_type, &text),
+    Ok(match (form, value) {
+        // The PostgreSQL builder reads every column as `::text` (a spec, those it projects).
+        (FetchForm::Text, Value::Text(text)) => text_to_value(col.kind, &col.data_type, &text),
         (_, v) => v,
     })
 }
@@ -375,8 +385,9 @@ mod tests {
 
     use super::*;
     use crate::drivers::{ConnectTarget, connect};
+    use crate::sqlgen::Dialect;
     use crate::types::profile::{ConnectionProfile, ProfileOptions, SslMode};
-    use crate::types::schema::TableKind;
+    use crate::types::schema::{TableKind, ValueKind};
     use crate::types::value::BYTES_PREVIEW_CAP;
 
     fn big_blob() -> Vec<u8> {

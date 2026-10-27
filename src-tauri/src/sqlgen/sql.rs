@@ -231,10 +231,8 @@ pub fn calls_side_effect_function(d: impl Into<SqlDialect>, sql: &str) -> bool {
 
 /// `sql` with the passwords it carries masked, for the trace.
 pub fn redact(d: impl Into<SqlDialect>, sql: &str) -> Redaction {
-    match d.into().resolve() {
-        DialectRef::Core(dialect) => redact_secrets(sql, dialect),
-        DialectRef::Ext(spec) => portable::redact::redact(spec.lex, spec.knobs.redact, sql),
-    }
+    // `redact_secrets` sends an extension dialect to `portable::redact` itself.
+    redact_secrets(sql, d)
 }
 
 /// Bind parameters one statement may carry.

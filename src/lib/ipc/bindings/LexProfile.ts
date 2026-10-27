@@ -9,6 +9,12 @@ import type { Reading } from "./Reading";
  * server. A block comment holding a `/*`, or a line comment holding a line break other than LF
  * or CRLF (a lone CR, VT, FF, NEL, U+2028, U+2029), makes the text a write and more than one
  * statement whatever the profile says (`Scan::ambiguous`); the renderer's mirror does the same.
+ * So does a literal opener that lexers may read differently because they class the characters
+ * around it differently: with `dollar_quotes`, a `$` of code that may open a body (a run of tag
+ * characters, ASCII letters, digits, `_` or any non-ASCII ones, then another `$` follow it) after
+ * a non-ASCII character, with a non-ASCII character in that run, or in a word that starts with a
+ * digit (`a\u{A0}$$`, `$\u{A0}$`, `$a\u{A0}b$`, `1$$`); with `e_strings`, an `E'…'` string after
+ * a non-ASCII character, and a number glued to `E'` (`1E'…'`).
  */
 export type LexProfile = { 
 /**

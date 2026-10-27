@@ -11,8 +11,10 @@ use async_trait::async_trait;
 
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
+use crate::sqlgen::dialect::{DialectRef, SqlDialect};
 use crate::sqlgen::split::leading_keywords;
 use crate::types::browse::{TraceCategory, TracedSql};
+use crate::types::caps::Feature;
 use crate::types::profile::{ConnectionProfile, Driver};
 use crate::types::query::{ExecOutcome, ResultColumn, ResultSet, ServerNotice, StatementKind};
 use crate::types::schema::{
@@ -162,13 +164,14 @@ impl From<&str> for TraceSql {
 /// The text a trace entry shows for `sql` run with `params`: the parameters inlined (for display
 /// only: the statement itself ran with bound parameters), the passwords it carries masked
 /// (`redact::redact_secrets`: the console log must never show one), then capped.
-pub fn trace_sql(dialect: Dialect, sql: &str, params: &[Value]) -> TraceSql {
+pub fn trace_sql(dialect: impl Into<SqlDialect>, sql: &str, params: &[Value]) -> TraceSql {
+    let dialect = dialect.into();
     let text = if params.is_empty() {
         sql.trim().to_string()
     } else {
-        crate::sqlgen::select::inline_params(dialect, sql.trim(), params)
+        crate::sqlgen::sql::inline_params(dialect, sql.trim(), params)
     };
-    let redacted = redact::redact_secrets(&text, dialect);
+    let redacted = crate::sqlgen::sql::redact(dialect, &text);
     TraceSql {
         text: cap_trace_text(redacted.sql),
         secrets: redacted.secrets,
@@ -176,7 +179,7 @@ pub fn trace_sql(dialect: Dialect, sql: &str, params: &[Value]) -> TraceSql {
 }
 
 /// `trace_sql`'s text, for the introspection statements, which carry no password.
-pub fn trace_text(dialect: Dialect, sql: &str, params: &[Value]) -> String {
+pub fn trace_text(dialect: impl Into<SqlDialect>, sql: &str, params: &[Value]) -> String {
     trace_sql(dialect, sql, params).text
 }
 
@@ -225,7 +228,8 @@ const CATALOG_WORDS: [&str; 26] = [
 /// Whether a statement the app ran reads or changes the schema (DDL, `PRAGMA`, `SHOW`, a read of
 /// the catalogs) rather than rows. A judgement from the statement text, for the paths that run
 /// whatever SQL they are given; introspection functions state their category themselves.
-pub fn classify_statement(sql: &str, dialect: Dialect) -> TraceCategory {
+pub fn classify_statement(sql: &str, dialect: impl Into<SqlDialect>) -> TraceCategory {
+    let dialect = dialect.into();
     let first = leading_keywords(sql, 1);
     if matches!(
         first.first().map(String::as_str),
@@ -248,10 +252,15 @@ pub fn classify_statement(sql: &str, dialect: Dialect) -> TraceCategory {
     ) {
         return TraceCategory::Structure;
     }
-    let code = crate::sqlgen::split::code_only(sql, dialect).to_uppercase();
-    if CATALOG_WORDS.iter().any(|w| code.contains(w))
-        || (dialect == Dialect::Mysql && code.contains("MYSQL."))
-    {
+    let code = crate::sqlgen::sql::code_only(dialect, sql).to_uppercase();
+    let catalog = match dialect.resolve() {
+        DialectRef::Core(core) => {
+            CATALOG_WORDS.iter().any(|w| code.contains(w))
+                || (core == Dialect::Mysql && code.contains("MYSQL."))
+        }
+        DialectRef::Ext(spec) => spec.knobs.catalog_words.iter().any(|w| code.contains(w)),
+    };
+    if catalog {
         TraceCategory::Structure
     } else {
         TraceCategory::Data
@@ -669,7 +678,15 @@ impl RowSink for CollectSink {
 /// error (`None` when it succeeded); used by the PostgreSQL and MySQL editor sessions, which
 /// cannot observe the server's flag directly.
 /// `Some(true)`: a transaction is open afterwards; `Some(false)`: none is; `None`: unchanged.
-pub fn tx_effect(sql: &str, dialect: Dialect, error: Option<&AppError>) -> Option<bool> {
+pub fn tx_effect(
+    sql: &str,
+    dialect: impl Into<SqlDialect>,
+    error: Option<&AppError>,
+) -> Option<bool> {
+    let (mysql, implicit_commit) = match dialect.into().resolve() {
+        DialectRef::Core(core) => (core == Dialect::Mysql, false),
+        DialectRef::Ext(spec) => (false, (spec.knobs.implicit_commit)(sql)),
+    };
     let succeeded = error.is_none();
     let kw = leading_keywords(sql, 4);
     let w = |i: usize| kw.get(i).map(String::as_str).unwrap_or("");
@@ -693,7 +710,7 @@ pub fn tx_effect(sql: &str, dialect: Dialect, error: Option<&AppError>) -> Optio
         // have been parsed: a statement with a syntax error leaves the transaction open.
         "CREATE" | "ALTER" | "DROP" | "RENAME" | "TRUNCATE" | "GRANT" | "REVOKE" | "LOCK"
         | "UNLOCK" | "ANALYZE" | "OPTIMIZE" | "REPAIR"
-            if dialect == Dialect::Mysql =>
+            if mysql =>
         {
             let temporary = matches!(w(0), "CREATE" | "DROP") && w(1) == "TEMPORARY";
             if temporary || error.is_some_and(is_mysql_parse_error) {
@@ -702,6 +719,9 @@ pub fn tx_effect(sql: &str, dialect: Dialect, error: Option<&AppError>) -> Optio
                 Some(false)
             }
         }
+        // An extension dialect's own implicit commits (its spec names them); whether a failed
+        // one still committed is unknown.
+        _ if implicit_commit => succeeded.then_some(false),
         _ => None,
     }
 }
@@ -780,7 +800,8 @@ pub fn contains_word(upper: &str, word: &str) -> bool {
 /// (`cap_cancel_notice`). The word checks look at code only (not at string literals, quoted
 /// identifiers or comments) and are otherwise deliberately coarse: a false positive only costs
 /// draining.
-pub fn cancel_safe_on_stop(sql: &str, dialect: Dialect) -> bool {
+pub fn cancel_safe_on_stop(sql: &str, dialect: impl Into<SqlDialect>) -> bool {
+    let dialect = dialect.into();
     let first = leading_keywords(sql, 1);
     if !matches!(
         first.first().map(String::as_str),
@@ -788,10 +809,10 @@ pub fn cancel_safe_on_stop(sql: &str, dialect: Dialect) -> bool {
     ) {
         return false;
     }
-    if !crate::sqlgen::split::is_single_statement(sql, dialect) {
+    if !crate::sqlgen::sql::is_single_statement(dialect, sql) {
         return false;
     }
-    let upper = crate::sqlgen::split::code_only(sql, dialect).to_uppercase();
+    let upper = crate::sqlgen::sql::code_only(dialect, sql).to_uppercase();
     !["INSERT", "UPDATE", "DELETE", "MERGE", "CALL"]
         .iter()
         .any(|w| contains_word(&upper, w))
@@ -804,10 +825,15 @@ pub const LATE_CANCEL_NOTICE: &str =
 
 /// Notice added when a statement stopped at the row cap was cancelled on the server and the
 /// server confirmed it: the statement did not finish, so whatever it changed was undone.
-pub fn cap_cancel_notice(rows: u64, dialect: Dialect) -> String {
-    let undone = match dialect {
-        Dialect::Mysql => "changes it made to transactional tables were rolled back",
-        _ => "any changes it made were rolled back",
+pub fn cap_cancel_notice(rows: u64, dialect: impl Into<SqlDialect>) -> String {
+    let undone = match dialect.into().resolve() {
+        DialectRef::Core(Dialect::Mysql) => {
+            "changes it made to transactional tables were rolled back"
+        }
+        DialectRef::Core(Dialect::Postgres | Dialect::Sqlite) => {
+            "any changes it made were rolled back"
+        }
+        DialectRef::Ext(spec) => spec.knobs.cancel_notice,
     };
     format!(
         "Stopped at the row limit ({rows} rows): the rest of the statement was cancelled on the \
@@ -826,7 +852,9 @@ pub struct ServerInfo {
 #[async_trait]
 pub trait DbSession: Send + Sync {
     fn driver(&self) -> Driver;
-    fn dialect(&self) -> Dialect;
+    /// The SQL the session speaks. Shared code builds it through the `sqlgen::sql` facade; the
+    /// core-only generators take `core_dialect` instead.
+    fn dialect(&self) -> SqlDialect;
 
     async fn server_info(&self) -> Result<ServerInfo, AppError>;
     async fn ping(&self) -> Result<(), AppError>;
@@ -965,6 +993,36 @@ pub trait DbSession: Send + Sync {
     fn is_mariadb(&self) -> bool {
         false
     }
+}
+
+impl dyn DbSession + '_ {
+    /// The core dialect of the session, for core-only feature `f` (the DDL planner, exports,
+    /// administration…): the only way into the core SQL generators besides the `sqlgen::sql`
+    /// facade. Refused unless the dialect is a core one and the driver is a core driver or its
+    /// descriptor lets it reuse `f` (`core_reuse`): an extension dialect would otherwise fall
+    /// into a core generator's "else" branch.
+    pub fn core_dialect(&self, f: Feature) -> Result<Dialect, AppError> {
+        let driver = self.driver();
+        core_dialect_for(driver, driver.descriptor().core_reuse, self.dialect(), f)
+    }
+}
+
+/// `core_dialect` with the driver's `core_reuse` list given.
+fn core_dialect_for(
+    driver: Driver,
+    core_reuse: &[Feature],
+    dialect: SqlDialect,
+    f: Feature,
+) -> Result<Dialect, AppError> {
+    match dialect.core() {
+        Some(core) if driver.is_core() || core_reuse.contains(&f) => Ok(core),
+        Some(_) => Err(not_offered(driver.label(), f)),
+        None => Err(not_offered(dialect.label(), f)),
+    }
+}
+
+fn not_offered(name: &str, f: Feature) -> AppError {
+    AppError::Unsupported(format!("{name} connections do not offer {f:?}"))
 }
 
 /// One statement of a transaction. `expect_affected` makes the driver roll back when the
@@ -1535,5 +1593,152 @@ mod tests {
         assert!(is_dml("  insert into t values (1)"));
         assert!(is_dml("UPDATE t SET a = 1"));
         assert!(!is_dml("create table t (a int)"));
+    }
+
+    #[test]
+    fn core_dialect_needs_a_core_dialect_and_driver() {
+        let none: &[Feature] = &[];
+        // The core drivers get every core-only feature of their own dialect.
+        for (driver, dialect) in [
+            (Driver::Postgres, Dialect::Postgres),
+            (Driver::Mysql, Dialect::Mysql),
+            (Driver::Sqlite, Dialect::Sqlite),
+        ] {
+            for f in [Feature::StructureEdit, Feature::Users, Feature::ExportSql] {
+                assert_eq!(
+                    core_dialect_for(driver, none, dialect.into(), f).unwrap(),
+                    dialect
+                );
+            }
+        }
+        let unsupported = |r: Result<Dialect, AppError>| match r {
+            Err(AppError::Unsupported(m)) => m,
+            other => panic!("{other:?}"),
+        };
+        // An extension dialect, even on a core driver (Redshift is a PostgreSQL flavor).
+        assert_eq!(
+            unsupported(core_dialect_for(
+                Driver::Postgres,
+                none,
+                SqlDialect::Redshift,
+                Feature::StructureEdit
+            )),
+            "Redshift SQL connections do not offer StructureEdit"
+        );
+        // A driver beyond the core three that speaks a core dialect: only what its descriptor
+        // lets it reuse.
+        assert_eq!(
+            unsupported(core_dialect_for(
+                Driver::Libsql,
+                none,
+                SqlDialect::Sqlite,
+                Feature::Backup
+            )),
+            "LibSQL connections do not offer Backup"
+        );
+        let reuse = &[Feature::Diagram];
+        assert_eq!(
+            core_dialect_for(Driver::Libsql, reuse, SqlDialect::Sqlite, Feature::Diagram).unwrap(),
+            Dialect::Sqlite
+        );
+        assert!(
+            core_dialect_for(Driver::Libsql, reuse, SqlDialect::Sqlite, Feature::Users).is_err()
+        );
+        // An allowlist never opens a core generator to an extension dialect.
+        assert!(
+            core_dialect_for(Driver::Duckdb, reuse, SqlDialect::Duckdb, Feature::Diagram).is_err()
+        );
+        // Every descriptor of v1 reuses nothing: no other driver reaches a core generator.
+        for driver in Driver::ALL.into_iter().filter(|d| !d.is_core()) {
+            let core = [SqlDialect::Postgres, SqlDialect::Mysql, SqlDialect::Sqlite];
+            for dialect in core {
+                assert!(
+                    core_dialect_for(
+                        driver,
+                        driver.descriptor().core_reuse,
+                        dialect,
+                        Feature::Diagram
+                    )
+                    .is_err(),
+                    "{driver:?}"
+                );
+            }
+        }
+    }
+
+    /// The helpers keep the core dialects' behaviour and read an extension dialect's spec.
+    #[test]
+    fn the_trace_and_editor_helpers_read_an_extension_spec() {
+        use crate::sqlgen::dialect::DialectSpec;
+        use crate::sqlgen::dialect::spec::SqlKnobs;
+        use crate::sqlgen::dialect::testing::override_spec;
+        use crate::sqlgen::portable::testing::ANSI_TEST;
+
+        fn commits(sql: &str) -> bool {
+            leading_keywords(sql, 1)
+                .first()
+                .is_some_and(|w| w == "CREATE")
+        }
+        let spec: &'static DialectSpec = Box::leak(Box::new(DialectSpec {
+            knobs: SqlKnobs {
+                implicit_commit: commits,
+                catalog_words: &["V_CATALOG"],
+                cancel_notice: "what it changed stays changed",
+                ..ANSI_TEST.knobs
+            },
+            ..ANSI_TEST
+        }));
+        let _vertica = override_spec(SqlDialect::Vertica, spec);
+        let v = SqlDialect::Vertica;
+        // The catalog words are the spec's, not the core ones.
+        assert_eq!(
+            classify_statement("SELECT * FROM v_catalog.tables", v),
+            TraceCategory::Structure
+        );
+        assert_eq!(
+            classify_statement("SELECT * FROM pg_catalog.pg_class", v),
+            TraceCategory::Data
+        );
+        assert_eq!(
+            classify_statement("SELECT 'v_catalog' FROM t", v),
+            TraceCategory::Data
+        );
+        assert_eq!(
+            classify_statement("CREATE TABLE t (a int)", v),
+            TraceCategory::Structure
+        );
+        // Its implicit commits close the transaction once they ran.
+        assert_eq!(tx_effect("create table t (a int)", v, None), Some(false));
+        let failed = AppError::db("no");
+        assert_eq!(tx_effect("create table t (a int)", v, Some(&failed)), None);
+        assert_eq!(tx_effect("insert into t values (1)", v, None), None);
+        assert_eq!(tx_effect("begin", v, None), Some(true));
+        assert_eq!(tx_effect("commit", v, None), Some(false));
+        // MySQL's implicit commits are MySQL's only.
+        assert_eq!(tx_effect("drop table t", v, None), None);
+        assert_eq!(tx_effect("drop table t", Dialect::Mysql, None), Some(false));
+        // The row-cap notice ends with the spec's words.
+        assert!(
+            cap_cancel_notice(3, v)
+                .ends_with("so it did not finish and what it changed stays changed.")
+        );
+        assert!(
+            cap_cancel_notice(3, Dialect::Postgres)
+                .ends_with("any changes it made were rolled back.")
+        );
+        // Single statements by the spec's splitter; code only by its lexer.
+        assert!(cancel_safe_on_stop("SELECT 'a;b' FROM t", v));
+        assert!(!cancel_safe_on_stop("SELECT 1; SELECT 2", v));
+        assert!(!cancel_safe_on_stop(
+            "WITH d AS (DELETE FROM t) SELECT 1",
+            v
+        ));
+        // Passwords masked by the spec's rules; parameters inlined with its literals.
+        let shown = trace_sql(v, "ALTER USER u IDENTIFIED BY 'hunter2'", &[]);
+        assert!(!shown.text.contains("hunter2"), "{}", shown.text);
+        assert_eq!(
+            trace_text(v, "SELECT ? FROM t", &[Value::Text("it's".into())]),
+            "SELECT 'it''s' FROM t"
+        );
     }
 }

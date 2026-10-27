@@ -9,6 +9,7 @@ use crate::drivers::DbSession;
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::diagram::{col, diagram_query, on_delete_action};
+use crate::types::caps::Feature;
 use crate::types::diagram::{DiagramColumn, DiagramRelation, DiagramSchema, DiagramTable};
 use crate::types::schema::{TableKind, TableRef};
 use crate::types::value::Value;
@@ -18,7 +19,7 @@ pub async fn schema_relations(
     session: &dyn DbSession,
     schema: &str,
 ) -> Result<DiagramSchema, AppError> {
-    let dialect = session.dialect();
+    let dialect = session.core_dialect(Feature::Diagram)?;
     let built = diagram_query(dialect, schema);
     let rows = session.query(&built.sql, &built.params).await?.rows;
     Ok(assemble(dialect, schema, &rows))

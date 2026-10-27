@@ -17,12 +17,12 @@ use crate::drivers::{
     is_dml, lock_editor_runs, request_cancel,
 };
 use crate::error::{AppError, ErrorPayload, ErrorPos};
-use crate::sqlgen::Dialect;
-use crate::sqlgen::explain::{analyze_wrapper, explain_offset, wrap_explain};
-use crate::sqlgen::split::{
-    SplitStatement, code_only, is_meta_command, is_single_statement, leading_keywords,
-    split_statements,
+use crate::sqlgen::dialect::DialectRef;
+use crate::sqlgen::split::{SplitStatement, is_meta_command, leading_keywords};
+use crate::sqlgen::sql::{
+    analyze_wrapper, code_only, explain_offset, is_single_statement, split_statements, wrap_explain,
 };
+use crate::sqlgen::{Dialect, SqlDialect};
 use crate::state::{AppState, Connection};
 use crate::types::history::NewHistoryEntry;
 use crate::types::query::{
@@ -158,7 +158,7 @@ fn locate_error(
     full_sql: &str,
     exec_sql: &str,
     shift: usize,
-    dialect: Dialect,
+    dialect: SqlDialect,
 ) -> (AppError, Option<usize>) {
     let mut relative = None;
     if let AppError::Db {
@@ -167,7 +167,9 @@ fn locate_error(
     {
         let raw = match position.as_ref() {
             Some(pos) => Some(pos.offset as usize),
-            None if dialect == Dialect::Mysql => mysql_error_offset(message, exec_sql),
+            None if matches!(dialect.resolve(), DialectRef::Core(Dialect::Mysql)) => {
+                mysql_error_offset(message, exec_sql)
+            }
             None => None,
         };
         *position = None;
@@ -187,7 +189,7 @@ fn statement_error(
     full_sql: &str,
     exec_sql: &str,
     shift: usize,
-    dialect: Dialect,
+    dialect: SqlDialect,
 ) -> ErrorPayload {
     let (err, relative) = locate_error(err, st, full_sql, exec_sql, shift, dialect);
     let mut payload = err.with_statement_index(index).to_payload();
@@ -204,8 +206,8 @@ fn statement_error(
 /// EXPLAIN must wrap exactly one statement: the servers run every statement of a multi-statement
 /// text (MySQL always allows them), so wrapping a custom-`DELIMITER` block such as
 /// `SELECT …; INSERT …` would show the SELECT's plan and silently execute the INSERT.
-fn check_explainable(sql: &str, dialect: Dialect) -> Result<(), AppError> {
-    if is_single_statement(sql, dialect) {
+fn check_explainable(sql: &str, dialect: impl Into<SqlDialect>) -> Result<(), AppError> {
+    if is_single_statement(dialect, sql) {
         Ok(())
     } else {
         Err(AppError::InvalidInput(
@@ -226,14 +228,14 @@ fn meta_command_error() -> AppError {
 /// identifiers or comments) holds a data-modifying `INSERT` / `UPDATE` / `DELETE` / `MERGE`.
 /// Deliberately coarse (`… FOR UPDATE` counts): it only decides whether an Explain Analyze may run
 /// when the transaction state is unknown.
-pub fn analyze_writes(sql: &str, dialect: Dialect) -> bool {
+pub fn analyze_writes(sql: &str, dialect: impl Into<SqlDialect>) -> bool {
     if is_dml(sql) {
         return true;
     }
     if leading_keywords(sql, 1).first().map(String::as_str) != Some("WITH") {
         return false;
     }
-    let code = code_only(sql, dialect).to_uppercase();
+    let code = code_only(dialect, sql).to_uppercase();
     ["INSERT", "UPDATE", "DELETE", "MERGE"]
         .iter()
         .any(|w| contains_word(&code, w))
@@ -317,7 +319,10 @@ async fn run_around_explain(
 /// takes that for the implicitly committing `ANALYZE TABLE`). `None` when unknown.
 async fn transaction_state(session: &dyn DbSession, traced: bool) -> Option<bool> {
     let tracked = session.in_transaction();
-    if session.dialect() != Dialect::Mysql {
+    if !matches!(
+        session.dialect().resolve(),
+        DialectRef::Core(Dialect::Mysql)
+    ) {
         return tracked;
     }
     let mariadb = session.is_mariadb();
@@ -554,7 +559,7 @@ async fn run_statements(
     let dialect = session.dialect();
     let mariadb = session.is_mariadb();
     let max_rows = effective_max_rows(options.max_rows);
-    let statements = split_statements(sql, dialect);
+    let statements = split_statements(dialect, sql);
     let mut results = Vec::with_capacity(statements.len());
     // Err: cancelled while waiting for another run; the first statement reports it.
     let editor = lock_editor_runs(session, cancel).await;
@@ -572,11 +577,16 @@ async fn run_statements(
         });
         let started_at = now_rfc3339();
         let started = Instant::now();
+        // A dialect without this EXPLAIN fails the statement (`refused`).
+        let mut refused = None;
         let (exec_sql, shift) = match options.explain {
-            Some(mode) => (
-                wrap_explain(dialect, &st.sql, mode, mariadb),
-                explain_offset(dialect, mode, mariadb),
-            ),
+            Some(mode) => match wrap_explain(dialect, &st.sql, mode, mariadb) {
+                Ok(exec_sql) => (exec_sql, explain_offset(dialect, mode, mariadb)),
+                Err(e) => {
+                    refused = Some(e);
+                    (st.sql.clone(), 0)
+                }
+            },
             None => (st.sql.clone(), 0),
         };
 
@@ -595,6 +605,8 @@ async fn run_statements(
         } else if options.explain.is_some()
             && let Err(e) = check_explainable(&st.sql, dialect)
         {
+            Err(e)
+        } else if let Some(e) = refused {
             Err(e)
         } else {
             let statement = async {
@@ -693,7 +705,7 @@ async fn run_statements(
 
 /// The plan as plain text: one-column plans (PostgreSQL, MySQL tree, MariaDB JSON) joined by
 /// newlines; SQLite's `EXPLAIN QUERY PLAN` rows rendered as an indented tree.
-fn plan_text(dialect: Dialect, set: &ResultSet) -> Option<String> {
+fn plan_text(dialect: impl Into<SqlDialect>, set: &ResultSet) -> Option<String> {
     let cell_text = |v: &Value| match v {
         Value::Text(s) | Value::Json(s) => s.clone(),
         other => other.as_text().unwrap_or_default(),
@@ -706,7 +718,7 @@ fn plan_text(dialect: Dialect, set: &ResultSet) -> Option<String> {
             .collect();
         return Some(lines.join("\n"));
     }
-    if dialect == Dialect::Sqlite {
+    if matches!(dialect.into().resolve(), DialectRef::Core(Dialect::Sqlite)) {
         let idx = |name: &str| set.columns.iter().position(|c| c.name == name);
         let (id_i, parent_i, detail_i) = (idx("id")?, idx("parent")?, idx("detail")?);
         let int = |v: &Value| match v {
@@ -748,7 +760,7 @@ pub async fn explain_limited(
     limit: Option<Duration>,
 ) -> Result<ExplainResult, AppError> {
     let dialect = session.dialect();
-    let statements = split_statements(sql, dialect);
+    let statements = split_statements(dialect, sql);
     let st = statements
         .first()
         .ok_or_else(|| AppError::InvalidInput("there is no statement to explain".into()))?;
@@ -757,7 +769,7 @@ pub async fn explain_limited(
     }
     check_explainable(&st.sql, dialect)?;
     let mariadb = session.is_mariadb();
-    let exec_sql = wrap_explain(dialect, &st.sql, mode, mariadb);
+    let exec_sql = wrap_explain(dialect, &st.sql, mode, mariadb)?;
     let shift = explain_offset(dialect, mode, mariadb);
     let mut sink = CollectSink::default();
     let _editor = lock_editor_runs(session, cancel).await?;
@@ -981,7 +993,7 @@ pub async fn explain(
         let limit = query_time_limit(&state.appdb, timeout_secs);
         explain_limited(session.as_ref(), &sql, mode, &slot, limit).await
     };
-    let statement = split_statements(&sql, session.dialect())
+    let statement = split_statements(session.dialect(), &sql)
         .into_iter()
         .next()
         .map(|s| s.sql)
@@ -1468,7 +1480,8 @@ mod tests {
 
     /// Records the statements run on the editor; `fail` makes statements containing it fail.
     struct Recorder {
-        dialect: Dialect,
+        driver: Driver,
+        dialect: SqlDialect,
         in_tx: Option<bool>,
         fail: Option<&'static str>,
         /// The user cancels while a statement containing this runs.
@@ -1483,7 +1496,12 @@ mod tests {
     impl Recorder {
         fn new(dialect: Dialect, in_tx: Option<bool>) -> Recorder {
             Recorder {
-                dialect,
+                driver: match dialect {
+                    Dialect::Postgres => Driver::Postgres,
+                    Dialect::Mysql => Driver::Mysql,
+                    Dialect::Sqlite => Driver::Sqlite,
+                },
+                dialect: dialect.into(),
                 in_tx,
                 fail: None,
                 cancel_during: None,
@@ -1500,14 +1518,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl DbSession for Recorder {
-        fn driver(&self) -> crate::types::profile::Driver {
-            match self.dialect {
-                Dialect::Postgres => Driver::Postgres,
-                Dialect::Mysql => Driver::Mysql,
-                Dialect::Sqlite => Driver::Sqlite,
-            }
+        fn driver(&self) -> Driver {
+            self.driver
         }
-        fn dialect(&self) -> Dialect {
+        fn dialect(&self) -> SqlDialect {
             self.dialect
         }
         async fn server_info(&self) -> Result<crate::drivers::ServerInfo, AppError> {
@@ -1620,6 +1634,35 @@ mod tests {
     }
 
     const PG_ANALYZE: &str = "EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT TEXT) DELETE FROM t";
+
+    /// An extension dialect explains as its spec says: the plan form it has, and an Analyze it
+    /// has not refused before anything runs.
+    #[tokio::test]
+    async fn an_extension_dialect_explains_as_its_spec_says() {
+        use crate::sqlgen::dialect::testing::override_spec;
+        use crate::sqlgen::portable::testing::ANSI_TEST;
+
+        let _vertica = override_spec(SqlDialect::Vertica, &ANSI_TEST);
+        let mut session = Recorder::new(Dialect::Postgres, Some(false));
+        session.driver = Driver::Vertica;
+        session.dialect = SqlDialect::Vertica;
+        let slot = CancelSlot::default();
+        let err = explain_inner(&session, "DELETE FROM t", ExplainMode::Analyze, &slot)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Unsupported(_)), "{err:?}");
+        let options = RunOptions {
+            explain: Some(ExplainMode::Analyze),
+            ..RunOptions::default()
+        };
+        let (results, _) = run(&session, "DELETE FROM t", options).await;
+        assert_eq!(results[0].error.as_ref().unwrap().code, "UNSUPPORTED");
+        assert!(session.log().is_empty());
+        explain_inner(&session, "SELECT 1", ExplainMode::Plan, &slot)
+            .await
+            .unwrap();
+        assert_eq!(session.log(), ["EXPLAIN SELECT 1"]);
+    }
 
     #[tokio::test]
     async fn explain_analyze_runs_in_a_rolled_back_transaction() {

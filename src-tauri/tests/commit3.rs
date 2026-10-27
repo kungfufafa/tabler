@@ -117,7 +117,7 @@ fn pk(id: i64) -> RowKey {
 /// The row edits of `table` as a planned group (what `plan_rows` builds from the metadata).
 async fn rows(s: &dyn DbSession, table: &TableRef, changes: Vec<StagedChange>) -> PlannedGroup {
     let meta = s.table_meta(table).await.expect("table meta");
-    let dialect = s.dialect();
+    let dialect = s.dialect().core().unwrap();
     let spec = TableSpec {
         dialect,
         table: &meta.table,
@@ -147,7 +147,7 @@ async fn rows(s: &dyn DbSession, table: &TableRef, changes: Vec<StagedChange>) -
             statements,
             columns: meta.columns.clone(),
             driver: s.driver(),
-            dialect,
+            dialect: dialect.into(),
         },
         req,
     }

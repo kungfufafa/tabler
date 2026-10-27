@@ -129,7 +129,7 @@ async fn scalar(s: &dyn DbSession, sql: &str) -> Option<String> {
 
 async fn try_run(s: &dyn DbSession, op: &ObjectOp) -> DdlResult {
     let plan = plan_op(s, op).await.expect("plan");
-    match s.dialect() {
+    match s.dialect().core().unwrap() {
         Dialect::Mysql => run_mysql_plan(s, &plan).await,
         _ => apply_plan(s, &plan).await,
     }

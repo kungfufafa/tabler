@@ -31,8 +31,8 @@ use super::structure::{ScriptTable, closing_text, context_for, same_table, scrip
 use super::writer::{FormatSpec, HtmlWriter, RowWriter, SqlScript};
 use super::xlsx::XlsxWriter;
 use super::{
-    FileOut, Plan, blocking, file_out, mysql_long_lat, replaced_count, session_time_zone,
-    stream_plan, sync_file, table_query,
+    FileOut, Plan, blocking, export_dialect, file_out, mysql_long_lat, replaced_count,
+    session_time_zone, stream_plan, sync_file, table_query,
 };
 
 /// Longest file name stem (bytes) of a per-table file.
@@ -199,6 +199,7 @@ fn table_heading(table: &TableRef) -> String {
 #[allow(clippy::too_many_arguments)]
 async fn write_sql_rows<W: Write + Send>(
     session: &dyn DbSession,
+    dialect: Dialect,
     meta: &TableMeta,
     batch_size: u32,
     mysql_long_lat: bool,
@@ -207,7 +208,6 @@ async fn write_sql_rows<W: Write + Send>(
     on_rows: &mut (dyn FnMut(u64) + Send),
     export_id: &str,
 ) -> Result<u64, AppError> {
-    let dialect = session.dialect();
     let query = table_query(dialect, meta, None, None, &[], None, 0, true)?;
     let spec = FormatSpec::Insert {
         dialect,
@@ -219,6 +219,7 @@ async fn write_sql_rows<W: Write + Send>(
     let mut writer = RowWriter::new(spec, &mut *out);
     let rows = stream_plan(
         session,
+        dialect,
         &Plan::Query(query),
         &mut writer,
         None,
@@ -247,7 +248,7 @@ pub async fn run_export_tables(
     cancel: CancellationToken,
 ) -> Result<ExportTablesResult, AppError> {
     let started = Instant::now();
-    let dialect: Dialect = session.dialect();
+    let dialect = export_dialect(session, &req.format)?;
     if metas.len() != req.tables.len() {
         return Err(AppError::internal(
             "table metadata does not match the request",
@@ -326,9 +327,9 @@ pub async fn run_export_tables(
         match &req.format {
             ExportFormat::SqlInsert { .. } => {
                 let script = script.unwrap_or_default();
-                let long_lat = script.content && mysql_long_lat(session).await;
+                let long_lat = script.content && mysql_long_lat(session, dialect).await;
                 let zone = if script.content {
-                    session_time_zone(session).await
+                    session_time_zone(session, dialect).await
                 } else {
                     None
                 };
@@ -345,7 +346,8 @@ pub async fn run_export_tables(
                     }
                     let meta = metas[i].as_ref();
                     let context =
-                        context_for(session, meta, script.structure, order.len() > 1).await;
+                        context_for(session, dialect, meta, script.structure, order.len() > 1)
+                            .await;
                     tables.push(ScriptTable { meta, context });
                 }
                 let layout = script_layout(dialect, &tables, script, wants_header, zone.as_deref());
@@ -358,6 +360,7 @@ pub async fn run_export_tables(
                         let mut on_rows = |rows: u64| report(i, rows, base + rows);
                         write_sql_rows(
                             session,
+                            dialect,
                             &metas[i],
                             batch_size,
                             long_lat,
@@ -387,6 +390,7 @@ pub async fn run_export_tables(
                     let mut on_rows = |rows: u64| report(i, rows, base + rows);
                     let rows = stream_plan(
                         session,
+                        dialect,
                         &Plan::Query(query),
                         &mut book,
                         None,
@@ -423,6 +427,7 @@ pub async fn run_export_tables(
                     let mut on_rows = |rows: u64| report(i, rows, base + rows);
                     let rows = stream_plan(
                         session,
+                        dialect,
                         &Plan::Query(query),
                         &mut page,
                         None,
@@ -454,6 +459,7 @@ pub async fn run_export_tables(
                 let mut on_rows = |rows: u64| report(i, rows, base + rows);
                 let rows = stream_plan(
                     session,
+                    dialect,
                     &Plan::Query(query),
                     &mut writer,
                     None,

@@ -9,9 +9,9 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::secrets::{SecretKind, Secrets};
-use crate::sqlgen::Dialect;
-use crate::sqlgen::classify;
-use crate::sqlgen::split::{is_meta_command, split_statements};
+use crate::sqlgen::SqlDialect;
+use crate::sqlgen::split::is_meta_command;
+use crate::sqlgen::sql::{split_statements, writes};
 use crate::state::{AppState, Connection};
 use crate::types::query::ExplainMode;
 
@@ -68,20 +68,21 @@ pub async fn verify_connection_password(
 /// is run (`explain`).
 pub fn run_writes(
     sql: &str,
-    dialect: Dialect,
+    dialect: impl Into<SqlDialect>,
     explain: Option<ExplainMode>,
     first_only: bool,
 ) -> bool {
     if explain == Some(ExplainMode::Plan) {
         return false;
     }
-    let statements = split_statements(sql, dialect);
+    let dialect = dialect.into();
+    let statements = split_statements(dialect, sql);
     let take = if first_only { 1 } else { statements.len() };
     statements
         .iter()
         .take(take)
         .filter(|st| !is_meta_command(&st.sql))
-        .any(|st| classify::writes(&st.sql, dialect))
+        .any(|st| writes(dialect, &st.sql))
 }
 
 fn refuse(read_only: bool, writes: impl FnOnce() -> bool) -> Result<(), AppError> {
@@ -96,7 +97,7 @@ fn refuse(read_only: bool, writes: impl FnOnce() -> bool) -> Result<(), AppError
 pub fn refuse_read_only_run(
     conn: &Connection,
     sql: &str,
-    dialect: Dialect,
+    dialect: SqlDialect,
     explain: Option<ExplainMode>,
 ) -> Result<(), AppError> {
     refuse(conn.profile.options.read_only, || {
@@ -108,7 +109,7 @@ pub fn refuse_read_only_run(
 pub fn refuse_read_only_explain(
     conn: &Connection,
     sql: &str,
-    dialect: Dialect,
+    dialect: SqlDialect,
     mode: ExplainMode,
 ) -> Result<(), AppError> {
     refuse(conn.profile.options.read_only, || {
@@ -121,6 +122,7 @@ mod tests {
     use super::*;
     use crate::appdb::AppDb;
     use crate::secrets::Backend;
+    use crate::sqlgen::Dialect;
 
     #[test]
     fn constant_time_eq_compares_whole_strings() {

@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::drivers::DbSession;
 use crate::error::AppError;
+use crate::types::caps::Feature;
 use crate::types::import::{
     CsvColumn, CsvImportProgress, CsvImportReport, JsonImportRequest, JsonPreview, TextEncoding,
 };
@@ -181,7 +182,13 @@ async fn json_import_in_chunks(
             "the mapping names more columns than the file has keys".into(),
         ));
     }
-    let plan = plan_for(session.dialect(), &req.target, &req.mapping, req.mode, meta)?;
+    let plan = plan_for(
+        session.core_dialect(Feature::ImportJson)?,
+        &req.target,
+        &req.mapping,
+        req.mode,
+        meta,
+    )?;
     let ignored = Arc::new(Mutex::new(IgnoredKeys::default()));
     let open = |bytes: Arc<AtomicU64>| {
         let encoding = resolve_encoding(&req.path, req.encoding)?;

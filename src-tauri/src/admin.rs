@@ -15,12 +15,14 @@ use crate::sqlgen::admin::{
     PG_DATABASE_PRIVILEGES, PG_ENCODINGS, PG_SCHEMA_PRIVILEGES, PG_TABLE_PRIVILEGES, PgPassword,
     SCRAM_SALT_LEN, UserSqlContext,
 };
+use crate::sqlgen::dialect::DialectRef;
 use crate::sqlgen::quote::MysqlLiteralMode;
 use crate::types::admin::{
     AdminDdl, AdminResult, CollationOption, DatabaseOptions, EncodingOption, KillOutcome,
     KillScope, ObjectPrivileges, ProcessRow, ResourceLimits, RoleAttributes, UserChange,
     UserDetail, UserRef, UserState, UserSummary,
 };
+use crate::types::caps::Feature;
 use crate::types::value::Value;
 
 // --- cells ----------------------------------------------------------------------------------
@@ -67,7 +69,7 @@ fn non_empty(s: Option<String>) -> Option<String> {
 
 /// Encodings, collations and templates for the Create Database dialog.
 pub async fn database_options(session: &dyn DbSession) -> Result<DatabaseOptions, AppError> {
-    match session.dialect() {
+    match session.core_dialect(Feature::CreateDatabase)? {
         Dialect::Postgres => {
             let collations = session.query(admin_sql::PG_COLLATIONS, &[]).await?;
             let templates = session.query(admin_sql::PG_TEMPLATES, &[]).await?;
@@ -248,6 +250,17 @@ fn scrub(e: AppError, secrets: &[String]) -> AppError {
     }
 }
 
+/// The feature a database / schema change needs.
+pub fn ddl_feature(op: &AdminDdl) -> Feature {
+    match op {
+        AdminDdl::CreateDatabase { .. } => Feature::CreateDatabase,
+        AdminDdl::RenameDatabase { .. } => Feature::RenameDatabase,
+        AdminDdl::DropDatabase { .. } => Feature::DropDatabase,
+        AdminDdl::CreateSchema { .. } => Feature::CreateSchema,
+        AdminDdl::DropSchema { .. } => Feature::DropSchema,
+    }
+}
+
 /// The statement a database / schema change runs.
 pub fn preview_ddl(dialect: Dialect, op: &AdminDdl) -> Result<Vec<String>, AppError> {
     Ok(vec![admin_sql::admin_ddl_sql(dialect, op)?])
@@ -255,7 +268,7 @@ pub fn preview_ddl(dialect: Dialect, op: &AdminDdl) -> Result<Vec<String>, AppEr
 
 /// Runs one database / schema change.
 pub async fn apply_ddl(session: &dyn DbSession, op: &AdminDdl) -> Result<AdminResult, AppError> {
-    let sql = admin_sql::admin_ddl_sql(session.dialect(), op)?;
+    let sql = admin_sql::admin_ddl_sql(session.core_dialect(ddl_feature(op))?, op)?;
     Ok(run_sequential(session, &[AdminStatement::plain(sql)], &[]).await)
 }
 
@@ -333,7 +346,7 @@ pub fn mysql_process_rows(rows: &[Vec<Value>]) -> Vec<ProcessRow> {
 }
 
 pub async fn list_processes(session: &dyn DbSession) -> Result<Vec<ProcessRow>, AppError> {
-    let dialect = session.dialect();
+    let dialect = session.core_dialect(Feature::ProcessList)?;
     let rs = session
         .query(admin_sql::process_list_sql(dialect)?, &[])
         .await?;
@@ -343,9 +356,14 @@ pub async fn list_processes(session: &dyn DbSession) -> Result<Vec<ProcessRow>, 
     })
 }
 
-/// Kills each process in turn; one failure does not stop the others.
-pub async fn kill(session: &dyn DbSession, ids: &[i64], scope: KillScope) -> Vec<KillOutcome> {
-    let dialect = session.dialect();
+/// Kills each process in turn; one failure does not stop the others. A session without Kill
+/// Process is refused before any.
+pub async fn kill(
+    session: &dyn DbSession,
+    ids: &[i64],
+    scope: KillScope,
+) -> Result<Vec<KillOutcome>, AppError> {
+    let dialect = session.core_dialect(Feature::KillProcess)?;
     let mut out = Vec::with_capacity(ids.len());
     for &id in ids {
         let result = match admin_sql::kill_sql(dialect, id, scope) {
@@ -374,7 +392,7 @@ pub async fn kill(session: &dyn DbSession, ids: &[i64], scope: KillScope) -> Vec
             },
         });
     }
-    out
+    Ok(out)
 }
 
 // --- users ----------------------------------------------------------------------------------
@@ -383,7 +401,7 @@ pub async fn list_users(
     session: &dyn DbSession,
     include_nologin: bool,
 ) -> Result<Vec<UserSummary>, AppError> {
-    match session.dialect() {
+    match session.core_dialect(Feature::Users)? {
         Dialect::Postgres => {
             let rs = session.query(admin_sql::PG_LIST_ROLES, &[]).await?;
             Ok(rs
@@ -524,7 +542,7 @@ pub fn mysql_db_rows(rows: &[Vec<Value>]) -> Vec<ObjectPrivileges> {
 /// Loads an account for the User Management window.
 pub async fn load_user(session: &dyn DbSession, user: &UserRef) -> Result<UserDetail, AppError> {
     let name = Value::Text(user.name.clone());
-    match session.dialect() {
+    match session.core_dialect(Feature::Users)? {
         Dialect::Postgres => {
             let params = [name];
             let attrs = session
@@ -594,7 +612,10 @@ pub async fn load_user(session: &dyn DbSession, user: &UserRef) -> Result<UserDe
 /// startup SQL, so the one answering stands for the one that executes. Other dialects: the
 /// default (unused).
 pub async fn mysql_literal_mode(session: &dyn DbSession) -> Result<MysqlLiteralMode, AppError> {
-    if session.dialect() != Dialect::Mysql {
+    if !matches!(
+        session.dialect().resolve(),
+        DialectRef::Core(Dialect::Mysql)
+    ) {
         return Ok(MysqlLiteralMode::default());
     }
     let rs = session.query(MysqlLiteralMode::QUERY, &[]).await?;
@@ -623,7 +644,7 @@ pub async fn user_context(
     change: &UserChange,
 ) -> Result<UserSqlContext, AppError> {
     let mut ctx = UserSqlContext::default();
-    match session.dialect() {
+    match session.core_dialect(Feature::Users)? {
         Dialect::Mysql => {
             ctx.mysql_mode = mysql_literal_mode(session).await?;
             if let Some(o) = &change.original {
@@ -675,10 +696,11 @@ pub async fn preview_user_on(
     session: &dyn DbSession,
     change: &UserChange,
 ) -> Result<Vec<String>, AppError> {
+    let dialect = session.core_dialect(Feature::Users)?;
     let mut ctx = user_context(session, change).await?;
     // The password is masked in the preview: no need to derive a verifier for it.
     ctx.pg_password = PgPassword::Plain;
-    Ok(admin_sql::user_statements(session.dialect(), change, &ctx)?
+    Ok(admin_sql::user_statements(dialect, change, &ctx)?
         .into_iter()
         .map(|s| s.display)
         .collect())
@@ -690,7 +712,7 @@ pub async fn apply_user(
     session: &dyn DbSession,
     change: &UserChange,
 ) -> Result<AdminResult, AppError> {
-    let dialect = session.dialect();
+    let dialect = session.core_dialect(Feature::Users)?;
     let ctx = user_context(session, change).await?;
     let statements = admin_sql::user_statements(dialect, change, &ctx)?;
     let secrets = admin_sql::secret_forms(change.password.as_deref(), &statements);

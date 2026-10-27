@@ -20,8 +20,9 @@
 //! which the trace cannot know: a statement with a backslash is read both ways, so a literal that
 //! one of the readings finds is masked.
 
-use crate::sqlgen::Dialect;
 use crate::sqlgen::admin::PASSWORD_MASK;
+use crate::sqlgen::dialect::DialectRef;
+use crate::sqlgen::{Dialect, SqlDialect, portable};
 
 /// A statement with its secrets masked, and what the masked literals said.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -36,8 +37,13 @@ pub struct Redaction {
 /// The mask in a bare form (`********`), which is not a secret to look for in a message.
 const MASK_BODY: &str = "********";
 
-/// `sql` with the password literals masked. Fast for the statements that cannot hold one.
-pub fn redact_secrets(sql: &str, dialect: Dialect) -> Redaction {
+/// `sql` with the password literals masked. Fast for the statements that cannot hold one. An
+/// extension dialect is read with its spec's lexer and password keywords (`portable::redact`).
+pub fn redact_secrets(sql: &str, dialect: impl Into<SqlDialect>) -> Redaction {
+    let dialect = match dialect.into().resolve() {
+        DialectRef::Core(core) => core,
+        DialectRef::Ext(spec) => return portable::redact::redact(spec.lex, spec.knobs.redact, sql),
+    };
     if !may_carry_secret(sql) {
         return Redaction {
             sql: sql.to_string(),

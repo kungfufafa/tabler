@@ -8,6 +8,7 @@ use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::ddl::{MYSQL_COLLATIONS_SQL, MYSQL_ENGINES_SQL, PG_USER_TYPES_SQL};
 use crate::state::AppState;
+use crate::types::caps::Feature;
 use crate::types::schema::{
     CharsetInfo, CompletionMetadata, DatabaseInfo, SchemaInfo, StructureChoices, TableMeta,
     TableRef, TableSummary, UserTypeInfo,
@@ -117,7 +118,7 @@ pub async fn get_structure_choices(
 
 async fn structure_choices(session: &dyn DbSession) -> Result<StructureChoices, AppError> {
     let mut out = StructureChoices::default();
-    match session.dialect() {
+    match session.core_dialect(Feature::StructureEdit)? {
         Dialect::Postgres => {
             let rows = session.query(PG_USER_TYPES_SQL, &[]).await?.rows;
             out.user_types = rows

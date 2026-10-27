@@ -8,8 +8,9 @@ use crate::commands::browse::cached_meta;
 use crate::drivers::TxStatement;
 use crate::drivers::postgres::decode::text_to_value;
 use crate::error::{AppError, ErrorPayload};
-use crate::sqlgen::mutate::{TableSpec, build_change, ordered};
-use crate::sqlgen::select::inline_params;
+use crate::sqlgen::SqlDialect;
+use crate::sqlgen::mutate::ordered;
+use crate::sqlgen::sql::{self, ColumnForm, TableTarget};
 use crate::state::{AppState, Connection};
 use crate::types::mutate::{ApplyRequest, ApplyResult, RowResult};
 use crate::types::profile::Driver;
@@ -23,7 +24,7 @@ pub struct PlannedRows {
     pub statements: Vec<(usize, TxStatement)>,
     pub columns: Vec<ColumnMeta>,
     pub driver: Driver,
-    pub dialect: crate::sqlgen::Dialect,
+    pub dialect: SqlDialect,
 }
 
 impl PlannedRows {
@@ -31,7 +32,7 @@ impl PlannedRows {
     pub fn sql(&self) -> Vec<String> {
         self.statements
             .iter()
-            .map(|(_, st)| inline_params(self.dialect, &st.sql, &st.params))
+            .map(|(_, st)| sql::inline_params(self.dialect, &st.sql, &st.params))
             .collect()
     }
 
@@ -46,7 +47,7 @@ impl PlannedRows {
                     row_id: change.row_id().to_string(),
                     op: change.op_name().to_string(),
                     affected: outcome.affected,
-                    returned: returned_row(self.driver, &self.columns, outcome),
+                    returned: returned_row(self.dialect, &self.columns, outcome),
                     error: None,
                 }
             })
@@ -86,8 +87,7 @@ pub async fn plan_rows(conn: &Connection, req: &ApplyRequest) -> Result<PlannedR
     let session = conn.session().await;
     let meta = cached_meta(conn, &req.table).await?;
     let dialect = session.dialect();
-    let spec = TableSpec {
-        dialect,
+    let target = TableTarget {
         table: &meta.table,
         columns: &meta.columns,
     };
@@ -98,7 +98,7 @@ pub async fn plan_rows(conn: &Connection, req: &ApplyRequest) -> Result<PlannedR
             .iter()
             .position(|c| std::ptr::eq(c, change))
             .unwrap_or(0);
-        let (built, expect) = build_change(&spec, change, req.returning)?;
+        let (built, expect) = sql::change(dialect, &target, change, req.returning)?;
         let mut st = TxStatement::new(built.sql, built.params);
         st.expect_affected = expect;
         out.push((index, st));
@@ -130,7 +130,7 @@ pub async fn preview_changes(
 }
 
 fn returned_row(
-    driver: Driver,
+    dialect: SqlDialect,
     columns: &[ColumnMeta],
     outcome: &ExecOutcome,
 ) -> Option<BTreeMap<String, Value>> {
@@ -139,11 +139,14 @@ fn returned_row(
     let mut map = BTreeMap::new();
     for (i, rc) in rs.columns.iter().enumerate() {
         let v = row.get(i).cloned().unwrap_or(Value::Null);
-        let v = match (driver, v, columns.iter().find(|c| c.name == rc.name)) {
-            (Driver::Postgres, Value::Text(text), Some(col)) => {
+        // RETURNING lists the columns as the select does (PG: as text).
+        let v = match (v, columns.iter().find(|c| c.name == rc.name)) {
+            (Value::Text(text), Some(col))
+                if sql::column_form(dialect, col) != ColumnForm::Native =>
+            {
                 text_to_value(col.kind, &col.data_type, &text)
             }
-            (_, v, _) => v,
+            (v, _) => v,
         };
         map.insert(rc.name.clone(), v);
     }

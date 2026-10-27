@@ -136,14 +136,23 @@ async fn gather_context(
         current_database: info.current_database.clone(),
     };
     let session = conn.session().await;
-    context::gather(
+    match context::gather(
         session.as_ref(),
         &facts,
         req.schema.as_deref(),
         req.table.as_ref(),
     )
     .await
-    .render()
+    {
+        Ok(context) => context.render(),
+        Err(e) => AssistantContextPreview {
+            text: String::new(),
+            summary: "no database context".into(),
+            tables: 0,
+            truncated: false,
+            warning: Some(format!("Could not read the structure: {e}")),
+        },
+    }
 }
 
 fn host_of(url: &str) -> String {
@@ -556,7 +565,9 @@ mod tests {
             current_database: Some("main".into()),
         };
         let table = TableRef::new(Some("main"), "customers");
-        let ctx = context::gather(session.as_ref(), &facts, None, Some(&table)).await;
+        let ctx = context::gather(session.as_ref(), &facts, None, Some(&table))
+            .await
+            .unwrap();
         assert_eq!(ctx.dialect, Dialect::Sqlite);
         let preview = ctx.render();
         assert_eq!(preview.warning, None);

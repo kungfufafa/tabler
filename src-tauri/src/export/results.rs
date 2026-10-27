@@ -31,7 +31,7 @@ use super::tables::{file_extension, file_stem};
 use super::writer::{FormatSpec, HtmlWriter, RowWriter, SqlScript, UNTITLED_TABLE};
 use super::xlsx::XlsxWriter;
 use super::{
-    FileOut, Plan, blocking, check_rows, file_out, mysql_long_lat, replaced_count,
+    FileOut, Plan, blocking, check_rows, export_dialect, file_out, mysql_long_lat, replaced_count,
     session_time_zone, stream_plan, sync_file,
 };
 
@@ -131,7 +131,7 @@ pub async fn run_export_results(
     cancel: CancellationToken,
 ) -> Result<ExportResultsResult, AppError> {
     let started = Instant::now();
-    let dialect = session.dialect();
+    let dialect = export_dialect(session, &req.format)?;
     let outputs = plan_result_files(
         req.layout,
         &req.target,
@@ -199,8 +199,8 @@ pub async fn run_export_results(
         match &req.format {
             ExportFormat::SqlInsert { .. } => {
                 let script = script.unwrap_or_default();
-                let long_lat = mysql_long_lat(session).await;
-                let zone = session_time_zone(session).await;
+                let long_lat = mysql_long_lat(session, dialect).await;
+                let zone = session_time_zone(session, dialect).await;
                 let mut out = Encoded::new(
                     Compressed::new(out, script.gzip),
                     text_encoding,
@@ -229,6 +229,7 @@ pub async fn run_export_results(
                     let mut writer = RowWriter::new(spec, &mut out);
                     let rows = stream_plan(
                         session,
+                        dialect,
                         &Plan::Rows {
                             columns: &item.columns,
                             rows: &item.rows,
@@ -267,6 +268,7 @@ pub async fn run_export_results(
                     let mut on_rows = |rows: u64| report(i, rows, base + rows);
                     let rows = stream_plan(
                         session,
+                        dialect,
                         &Plan::Rows {
                             columns: &item.columns,
                             rows: &item.rows,
@@ -308,6 +310,7 @@ pub async fn run_export_results(
                     let mut on_rows = |rows: u64| report(i, rows, base + rows);
                     let rows = stream_plan(
                         session,
+                        dialect,
                         &Plan::Rows {
                             columns: &item.columns,
                             rows: &item.rows,
@@ -340,6 +343,7 @@ pub async fn run_export_results(
                 let mut on_rows = |rows: u64| report(i, rows, base + rows);
                 let rows = stream_plan(
                     session,
+                    dialect,
                     &Plan::Rows {
                         columns: &item.columns,
                         rows: &item.rows,

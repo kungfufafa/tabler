@@ -36,7 +36,7 @@ pub async fn admin_preview_ddl(
     op: AdminDdl,
 ) -> Result<Vec<String>, AppError> {
     let session = state.session(connection_id).await?;
-    admin::preview_ddl(session.dialect(), &op)
+    admin::preview_ddl(session.core_dialect(admin::ddl_feature(&op))?, &op)
 }
 
 /// Creates / renames / drops a database or a schema. The database the connection uses cannot
@@ -95,7 +95,7 @@ pub async fn admin_kill_processes(
     let conn = state.connection(connection_id).await?;
     writable(&conn)?;
     let session = conn.session().await;
-    let outcomes = admin::kill(session.as_ref(), &ids, scope).await;
+    let outcomes = admin::kill(session.as_ref(), &ids, scope).await?;
     log::info!(
         "admin kill {scope:?}: {} of {} done",
         outcomes.iter().filter(|o| o.ok).count(),

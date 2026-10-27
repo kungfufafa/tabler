@@ -28,7 +28,7 @@ use crate::drivers::{
 };
 use crate::error::AppError;
 use crate::secrets::CommandPassword;
-use crate::sqlgen::Dialect;
+use crate::sqlgen::{Dialect, SqlDialect};
 use crate::types::browse::TracedSql;
 use crate::types::profile::{Driver, SslMode};
 use crate::types::query::{ExecOutcome, ResultSet};
@@ -270,8 +270,8 @@ impl DbSession for PgSession {
         Driver::Postgres
     }
 
-    fn dialect(&self) -> Dialect {
-        Dialect::Postgres
+    fn dialect(&self) -> SqlDialect {
+        SqlDialect::Postgres
     }
 
     async fn server_info(&self) -> Result<ServerInfo, AppError> {

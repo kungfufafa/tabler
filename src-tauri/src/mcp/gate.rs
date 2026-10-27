@@ -11,8 +11,9 @@
 use std::collections::{BTreeSet, HashSet};
 
 use crate::commands::safety::run_writes;
-use crate::sqlgen::Dialect;
+use crate::sqlgen::dialect::DialectRef;
 use crate::sqlgen::split::{code_only, split_statements};
+use crate::sqlgen::{Dialect, SqlDialect};
 use crate::types::profile::{ConnectionProfile, ConnectionTag, SafeModeLevel};
 
 use super::prefs::McpPrefs;
@@ -241,10 +242,23 @@ enum DatabaseSwitch {
 /// common disguised forms early, with a clear message. What it cannot read is caught after the run
 /// (`tools::run_query` asks the session which database it is on, and closes a session that moved
 /// instead of pooling it).
-fn database_switch(sql: &str, dialect: Dialect) -> DatabaseSwitch {
-    if dialect != Dialect::Mysql {
-        return DatabaseSwitch::No;
-    }
+fn database_switch(sql: &str, dialect: impl Into<SqlDialect>) -> DatabaseSwitch {
+    let dialect = dialect.into();
+    let mysql = match dialect.resolve() {
+        DialectRef::Core(Dialect::Mysql) => Dialect::Mysql,
+        DialectRef::Core(Dialect::Postgres | Dialect::Sqlite) => return DatabaseSwitch::No,
+        // An extension dialect: the statements its spec reads as switching the database.
+        DialectRef::Ext(spec) => {
+            let switches = crate::sqlgen::sql::split_statements(dialect, sql)
+                .iter()
+                .any(|statement| (spec.knobs.switch_db)(&statement.sql));
+            return if switches {
+                DatabaseSwitch::Yes
+            } else {
+                DatabaseSwitch::No
+            };
+        }
+    };
     let no_backslash = sql.replace('\\', " ");
     let mut seen: HashSet<String> = HashSet::new();
     for text in [sql, no_backslash.as_str()] {
@@ -262,7 +276,7 @@ fn database_switch(sql: &str, dialect: Dialect) -> DatabaseSwitch {
                 if seen.contains(&reading) {
                     continue;
                 }
-                if has_use_statement(&reading, dialect) {
+                if has_use_statement(&reading, mysql) {
                     return DatabaseSwitch::Yes;
                 }
                 seen.insert(reading);
@@ -278,8 +292,9 @@ pub fn check_query(
     profile: &ConnectionProfile,
     prefs: &McpPrefs,
     sql: &str,
-    dialect: Dialect,
+    dialect: impl Into<SqlDialect>,
 ) -> Result<(), String> {
+    let dialect = dialect.into();
     match database_switch(sql, dialect) {
         DatabaseSwitch::No => {}
         DatabaseSwitch::Yes => return Err(USE_REFUSED.to_string()),
@@ -660,6 +675,33 @@ mod tests {
             assert!(check_query(&p, &pr, "USE other", dialect).is_ok());
             assert!(check_query(&p, &pr, "SELECT 1; USE other", dialect).is_ok());
         }
+    }
+
+    #[test]
+    fn an_extension_dialect_switches_databases_as_its_spec_says() {
+        use crate::sqlgen::dialect::testing::override_spec;
+        use crate::sqlgen::portable::testing::ANSI_TEST;
+
+        let _vertica = override_spec(SqlDialect::Vertica, &ANSI_TEST);
+        let v = SqlDialect::Vertica;
+        let p = profile(None, None, false);
+        let pr = prefs(false, false);
+        // The spec's `switch_db` reads each statement its splitter finds.
+        assert_eq!(
+            database_switch("SELECT 1; USE other", v),
+            DatabaseSwitch::Yes
+        );
+        assert_eq!(
+            check_query(&p, &pr, "use other", v).unwrap_err(),
+            USE_REFUSED
+        );
+        assert_eq!(
+            database_switch("SELECT 'x; USE other'", v),
+            DatabaseSwitch::No
+        );
+        assert!(check_query(&p, &pr, "SELECT 1; SELECT 2", v).is_ok());
+        // Its classifier decides the writes.
+        assert!(check_query(&p, &pr, "DELETE FROM t", v).is_err());
     }
 
     #[test]

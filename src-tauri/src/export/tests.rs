@@ -11,6 +11,7 @@ use crate::drivers::{
     CancelHandle, RowChunker, ServerInfo, StatementOutcome, TxStatement, arm_cancel,
     cancel_requested,
 };
+use crate::sqlgen::SqlDialect;
 use crate::types::browse::SortSpec;
 use crate::types::export::{
     CsvQuote, ExportLayout, ExportResultItem, ExportResultsRequest, ExportTablesRequest,
@@ -26,7 +27,8 @@ type Set = (Vec<ResultColumn>, Vec<Vec<Value>>);
 
 /// Streams canned result sets; records the statements it was asked to run.
 struct FakeSession {
-    dialect: Dialect,
+    driver: Driver,
+    dialect: SqlDialect,
     sets: Vec<Set>,
     meta: Option<TableMeta>,
     /// Never delivers anything; waits until the cancel slot is cancelled.
@@ -43,7 +45,12 @@ struct FakeSession {
 impl FakeSession {
     fn new(dialect: Dialect, sets: Vec<Set>) -> FakeSession {
         FakeSession {
-            dialect,
+            driver: match dialect {
+                Dialect::Postgres => Driver::Postgres,
+                Dialect::Mysql => Driver::Mysql,
+                Dialect::Sqlite => Driver::Sqlite,
+            },
+            dialect: dialect.into(),
             sets,
             meta: None,
             block_until_cancel: false,
@@ -77,13 +84,9 @@ fn unsupported<T>() -> Result<T, AppError> {
 #[async_trait]
 impl DbSession for FakeSession {
     fn driver(&self) -> Driver {
-        match self.dialect {
-            Dialect::Postgres => Driver::Postgres,
-            Dialect::Mysql => Driver::Mysql,
-            Dialect::Sqlite => Driver::Sqlite,
-        }
+        self.driver
     }
-    fn dialect(&self) -> Dialect {
+    fn dialect(&self) -> SqlDialect {
         self.dialect
     }
     async fn server_info(&self) -> Result<ServerInfo, AppError> {
@@ -379,6 +382,33 @@ async fn sql_export_writes_csv_and_reports_progress() {
     // The statement is streamed without its terminator; no temporary file is left behind.
     assert_eq!(fake.last_sql(), "select id, name from t");
     assert_eq!(files_in(dir.path()), ["out.csv"]);
+}
+
+/// Exports are written by the core generators: a session of an extension dialect, or of a driver
+/// beyond the core three, is refused before anything runs or is written.
+#[tokio::test]
+async fn sessions_without_the_core_generators_export_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("out.csv");
+    for (driver, dialect) in [
+        (Driver::Postgres, SqlDialect::Redshift),
+        (Driver::Libsql, SqlDialect::Sqlite),
+    ] {
+        let fake = FakeSession {
+            driver,
+            dialect,
+            ..FakeSession::new(Dialect::Sqlite, vec![id_name_set(3)])
+        };
+        for format in [csv_format(), insert_format("t", 100)] {
+            let req = request(sql_source("select id, name from t"), format, &dest, None);
+            let err = run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+                .await
+                .unwrap_err();
+            assert!(matches!(err, AppError::Unsupported(_)), "{err:?}");
+        }
+        assert!(fake.seen.lock().unwrap().is_empty());
+    }
+    assert!(files_in(dir.path()).is_empty());
 }
 
 #[tokio::test]
@@ -2448,7 +2478,7 @@ fn text(s: &str) -> Value {
 async fn the_time_zone_is_read_from_the_exporting_session() {
     let zone = |dialect: Dialect, row: Vec<Value>| {
         let fake = FakeSession::new(dialect, vec![]).with_zone(row);
-        async move { session_time_zone(&fake).await }
+        async move { session_time_zone(&fake, dialect).await }
     };
     // MySQL: the session's own zone, or (SYSTEM) the server clock's offset from UTC.
     assert_eq!(
@@ -2479,7 +2509,7 @@ async fn the_time_zone_is_read_from_the_exporting_session() {
     // SQLite has none; a server that cannot say leaves it to the script's default.
     assert_eq!(zone(Dialect::Sqlite, vec![text("UTC")]).await, None);
     let mute = FakeSession::new(Dialect::Mysql, vec![]);
-    assert_eq!(session_time_zone(&mute).await, None);
+    assert_eq!(session_time_zone(&mute, Dialect::Mysql).await, None);
     assert_eq!(offset_from_timediff("07:00:00"), Some("+07:00".into()));
     assert_eq!(offset_from_timediff("-03:00:00"), Some("-03:00".into()));
     assert_eq!(offset_from_timediff("-838:59:59"), None);

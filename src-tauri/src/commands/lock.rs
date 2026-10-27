@@ -11,6 +11,7 @@ use crate::passcode;
 use crate::secrets::SecretKind;
 use crate::sqlgen::security;
 use crate::state::AppState;
+use crate::types::caps::Feature;
 use crate::types::security::{PasscodeStatus, SessionDetails};
 
 async fn blocking<T: Send + 'static>(
@@ -118,7 +119,7 @@ pub async fn session_details(
     connection_id: Uuid,
 ) -> Result<SessionDetails, AppError> {
     let session = state.session(connection_id).await?;
-    let dialect = session.dialect();
+    let dialect = session.core_dialect(Feature::SessionDetails)?;
     let mut details = SessionDetails::default();
     let mut first_error = None;
     if let Some(sql) = security::tls_sql(dialect) {
