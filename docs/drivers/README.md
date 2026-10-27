@@ -38,7 +38,7 @@ MariaDB and SingleStore stay `mysql` with `mysql_version`. The PostgreSQL flavor
 
 Per lane (the exact globs are in `dev/lanes.json`):
 
-- **Rust**, all behind the lane's features: `src-tauri/src/drivers/<id>/**` (pg-flavors: `drivers/postgres/flavor/imp/**`; sqlite-remote: `drivers/sqlite_http/**`), its `sqlgen/dialect/<d>.rs` (SQL lanes) or `sqlgen/native/<x>.rs` (native stores), its real-server suite `src-tauri/tests/<id>.rs` and `src-tauri/tests/fixtures/<id>/**`.
+- **Rust**, all behind the lane's features: `src-tauri/src/drivers/<id>/**` (pg-flavors: `drivers/postgres/flavor/imp/**`; sqlite-remote: `drivers/sqlite_http/**`), its `sqlgen/dialect/<d>.rs` with its generated classifier suite `sqlgen/portable/gen/<d>.rs` and fixture `src-tauri/tests/fixtures/classify-generated/<d>.json` (SQL lanes) or `sqlgen/native/<x>.rs` (native stores), its real-server suite `src-tauri/tests/<id>.rs` and `src-tauri/tests/fixtures/<id>/**`.
 - **Renderer**: `src/features/drivers/<lane>/**` (an `index.ts` exporting a `LaneModule`, the form, URL handling, dialect or console, the views and their tests, `classify.cases.json`) and `src/lib/ipc/mock/drivers/<lane>/**` (a `MockDriver` with its own data model).
 - **Generated**: `src/lib/ipc/bindings/<Prefix>*.ts` and `src/lib/ipc/bindings/lex/<d>.json`, written only by `lane.mjs <lane> bindings`.
 - **Docs**: `docs/drivers/<lane>.md`.
@@ -49,6 +49,7 @@ The stubs a lane replaces:
 | ---------------------------- | ---------- | ------------------------------------------------------------ |
 | `drivers/<id>/entry.rs`      | F2, F6     | `open` → "not implemented yet" becomes the real driver       |
 | `sqlgen/dialect/<d>.rs`      | F4         | a conservative `SPEC` with `ddl: None` becomes the real spec |
+| `sqlgen/portable/gen/<d>.rs` | F4a        | a placeholder becomes the complete generated suite           |
 | `sqlgen/native/<x>.rs`       | F2         | an empty file becomes the builders                           |
 | renderer and mock `index.ts` | F9a        | empty modules become the real ones                           |
 | `src-tauri/tests/<id>.rs`    | F3b        | one ignored test becomes the real suite                      |
@@ -105,6 +106,21 @@ Each driver declares a `ReadOnlyMode` in its caps, and the backend enforces it (
 - **ClassifierOnly**: only Tabler's classifier stands between the user and a write. Classifiers are allow-lists and default-deny: anything unknown is a write. T-SQL lexes as `terminator_optional` (any write keyword anywhere makes the batch a write); `OPENQUERY`, `OPENROWSET`, `OPENDATASOURCE`, `EXEC`, `SELECT … INTO`, Snowflake `SYSTEM$…`, `EXECUTE IMMEDIATE` and `CALL` are writes; ClickHouse allows only the table functions `numbers`, `zeros`, `values`, `generateRandom`, `view`, `merge`, `null`; DuckDB file and extension statements (`read_*`, `glob`, `COPY`, `ATTACH`, `INSTALL`, `LOAD`, `EXPORT` / `IMPORT DATABASE`) are writes.
 
 MCP: native stores (Redis, MongoDB, Elasticsearch, DynamoDB) are refused in v1; an extension SQL dialect is offered only when its caps grant `Mcp`. Safe Mode confirms token or command secrets with the app passcode (or the typed connection name when no passcode is set); core profiles keep their password prompt. Each lane's brief has its engine's row of the table.
+
+## Classifier hardening
+
+Where the server cannot refuse a write (ClassifierOnly, Safe Mode, plugins, MCP), the portable classifier (`sqlgen::portable::classify` over the dialect's `LEX` and `RULES`) decides, so a write it calls a read is a safety bug. Its rules are lexical: files and remote sources named where a table goes (a DuckDB replacement scan, a ClickHouse dictionary) are the engine's to refuse, through the hardening in the read-only contract. The generated tests (`src-tauri/src/sqlgen/portable/gen/`, `cargo test --lib sqlgen::portable::generated::<d>::`) check per spec:
+
+- **Active contexts.** Every write keyword (`writes`) and write call (`write_calls`), in three spellings, is a write wherever it is code: at the start, after another statement, in a query, glued to numbers, strings, quoted names, parentheses, dollar bodies and comments, past a quote that a reading of backslashes ends a string at, in subqueries, CTEs and set operations, in qualified names, after unusual whitespace; calls also through a quoted or qualified name and with a comment or line break before the `(`. Without terminators (T-SQL), a write keyword after the first word also makes the text several statements.
+- **Inert contexts.** No write counts inside any string, quoted-name, dollar-body or comment form the lexer profile has, and the text stays one statement.
+- **Default-deny.** Text that starts with no statement the rules know is a write.
+- **Corpus.** Ordinary reads of the engine (joins, CTEs, window functions, subqueries, UNION, the allowed table functions, the rules' words inside strings and names) stay reads, also re-spaced, re-cased and next to another read, and they start with every read keyword (`queries`, `inspections`); the write forms the word lists do not spell (`SELECT … INTO`, `EXPLAIN ANALYZE` of a write, file readers, table functions outside the allow-list) are writes.
+- **Fuzz** (fixed seed). Random scripts over the dialect's vocabulary never panic or hang; a write word the scanner reads as code makes a SELECT a write; a script is a write when one of its statements is; splitting neither loses nor duplicates text.
+- **Agreement and fixture.** The spec's `classify` and `portable::classify::with` (the renderer's) agree on every case. A sample of the cases and fuzz splits is `src-tauri/tests/fixtures/classify-generated/<d>.json`, which the renderer's portable classifier runs too; `TABLER_BLESS=1` rewrites it (review the diff).
+
+The foundation owns the machinery (`gen/mod.rs`, `dialect/lex.rs`, splitting, the classification engine) and the suites of its test specs, `gen/ansi.rs` (the worked example) and `gen/tsql_like.rs`, with their fixtures. Each SQL lane owns its `gen/<d>.rs`, a placeholder that runs only the shared contexts and a short fuzz, and its fixture; it fixes what its suite finds in its own `RULES`, `LEX` and `SPEC`, and sends a bug of the shared machinery to the lead.
+
+**A SQL lane's driver lands only with its generated suite complete**: every write keyword, write call and read starter of its spec in every shared context and in the contexts only its grammar has, an engine-realistic read corpus, its write forms and fuzz atoms, `suite().check()` and `suite().fuzz(…)` in place of the placeholder, and its fixture blessed. Then a red-team review (someone other than the lane trying to get a write classified as a read) must pass, with each finding fixed and kept as a case. Each SQL lane's brief lists its known hard cases.
 
 ## Features and the commands that require them
 
@@ -211,7 +227,7 @@ node dev/scripts/gates.mjs ts               # tsc without lane diagnostics, esli
 4. **Grid.** Paging (offset or cursor), sort (when `caps.data.sort`), filter operators plus the raw filter kind; counts follow the count mode; fetch cell works.
 5. **Editor or console.** Runs and streams with a row cap. Cancel works (on the server where the engine can, otherwise client-side, declared in the caps). Statements split the way the engine does.
 6. **Edits** (the staged preview is what is applied) wherever the engine allows; otherwise EditRows is off. Partial applies follow the TxMode.
-7. **Safety.** Read-only enforced in the backend; Safe Mode prompts come from the classifier, whose case file the TS mirror shares; the MCP gate respects the caps.
+7. **Safety.** Read-only enforced in the backend; Safe Mode prompts come from the classifier, whose case file the TS mirror shares; the MCP gate respects the caps. SQL lanes: the generated classifier suite is complete and its red-team review passed (see Classifier hardening).
 8. **Mock and URLs.** The mock story works in `vite --mode mock` with `?mockDrivers=<id>`; URL import and format round-trip for the engine's schemes.
 9. **Tests.** Unit tests of value mapping (2^53+1 → BigInt, decimals as strings, timestamps as text, nested → Json), quoting and injection, classifier cases; a fake-server or embedded test covering connect, list, browse with paging, count, fetch, a commit with one failing change, a console run, a cancel and a timeout.
 10. **Lead checks.** `lane.mjs <lane> clippy`, `test-all`, `ts` and `bindings` are clean; no `#![allow(dead_code)]` is left in the lane's `mod.rs`; the brief lists the limits; no file outside the lane's globs was touched.

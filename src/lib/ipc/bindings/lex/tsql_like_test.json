@@ -1,0 +1,110 @@
+{
+  "lex": {
+    "identQuotes": [
+      [
+        "[",
+        "]"
+      ],
+      [
+        "\"",
+        "\""
+      ]
+    ],
+    "stringQuotes": [
+      "'"
+    ],
+    "readings": [
+      {
+        "stringBackslash": false,
+        "identBackslash": false
+      }
+    ],
+    "eStrings": false,
+    "dollarQuotes": false,
+    "dollarTags": false,
+    "tripleQuotes": false,
+    "rawPrefixes": false,
+    "bytePrefixes": false,
+    "hashComments": false,
+    "slashSlashComments": false,
+    "nestedBlockComments": true,
+    "dashCommentNeedsSpace": false,
+    "batchSeparator": "GO",
+    "terminatorOptional": true,
+    "beginEndBodies": true
+  },
+  "classify": {
+    "queries": [
+      "SELECT",
+      "WITH"
+    ],
+    "inspections": [
+      "USE"
+    ],
+    "writes": [
+      "INTO",
+      "INSERT",
+      "UPDATE",
+      "DELETE",
+      "MERGE",
+      "CREATE",
+      "DROP",
+      "ALTER",
+      "ADD",
+      "TRUNCATE",
+      "EXEC",
+      "EXECUTE",
+      "GRANT",
+      "REVOKE",
+      "DENY",
+      "BACKUP",
+      "RESTORE",
+      "DBCC",
+      "KILL",
+      "SHUTDOWN",
+      "BULK",
+      "SET",
+      "DECLARE",
+      "BEGIN",
+      "COMMIT",
+      "ROLLBACK",
+      "SAVE",
+      "WAITFOR",
+      "RECONFIGURE",
+      "CHECKPOINT",
+      "RAISERROR",
+      "THROW",
+      "PRINT",
+      "OPEN",
+      "CLOSE",
+      "DEALLOCATE",
+      "GOTO",
+      "RETURN",
+      "WHILE",
+      "IF",
+      "ENABLE",
+      "DISABLE",
+      "UPDATETEXT",
+      "WRITETEXT",
+      "READTEXT",
+      "SETUSER",
+      "REVERT",
+      "BREAK",
+      "CONTINUE",
+      "RECEIVE",
+      "SEND",
+      "MOVE",
+      "GET",
+      "CONVERSATION",
+      "RENAME"
+    ],
+    "writeCalls": [
+      "OPENQUERY",
+      "OPENROWSET",
+      "OPENDATASOURCE",
+      "XP_*",
+      "SP_*"
+    ],
+    "tableFunctions": null
+  }
+}

@@ -1,0 +1,520 @@
+# Browse SELECT, COUNT with every filter, and fetch of one cell (portable builders).
+# Written by sqlgen::portable::golden; never edited by hand.
+
+## ansi: select
+all columns, first page
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\" ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+two columns, third page
+  sql: "SELECT \"name\", \"geom\"\nFROM \"app\".\"users\" ORDER BY \"id\" ASC\nLIMIT 50 OFFSET 200"
+sorted with NULLs first and last
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\" ORDER BY \"name\" DESC NULLS FIRST, \"age\" ASC NULLS LAST, \"price\" ASC\nLIMIT 100 OFFSET 0"
+no primary key, rowid identity asked
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nLIMIT 100 OFFSET 0"
+sort on an unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+no columns
+  error INVALID_INPUT "no columns to select"
+
+## ansi: filters
+eq on age
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE \"age\" = ?"
+  params: [{"t":"int","v":18}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE \"age\" = 18"
+ne on age
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE \"age\" <> ?"
+  params: [{"t":"int","v":18}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE \"age\" <> 18"
+gt on age
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE \"age\" > ?"
+  params: [{"t":"int","v":18}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE \"age\" > 18"
+lt on age
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE \"age\" < ?"
+  params: [{"t":"int","v":18}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE \"age\" < 18"
+ge on age
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE \"age\" >= ?"
+  params: [{"t":"int","v":18}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE \"age\" >= 18"
+le on age
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE \"age\" <= ?"
+  params: [{"t":"int","v":18}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE \"age\" <= 18"
+like on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE ?"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE '%bo_b%'"
+notLike on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) NOT LIKE ?"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) NOT LIKE '%bo_b%'"
+in on id
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE \"id\" IN (?, ?)"
+  params: [{"t":"int","v":1},{"t":"int","v":2}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE \"id\" IN (1, 2)"
+notIn on id
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE \"id\" NOT IN (?, ?)"
+  params: [{"t":"int","v":1},{"t":"int","v":2}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE \"id\" NOT IN (1, 2)"
+isNull on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE \"name\" IS NULL"
+isNotNull on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE \"name\" IS NOT NULL"
+between on price
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE \"price\" BETWEEN ? AND ?"
+  params: [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE \"price\" BETWEEN 1.50 AND 9.99"
+notBetween on price
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE \"price\" NOT BETWEEN ? AND ?"
+  params: [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE \"price\" NOT BETWEEN 1.50 AND 9.99"
+contains on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off[x]!!\\%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE '%50!%!_off[x]!!\\%' ESCAPE '!'"
+notContains on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) NOT LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off[x]!!\\%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) NOT LIKE '%50!%!_off[x]!!\\%' ESCAPE '!'"
+containsCase on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) LIKE LOWER(?) ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off[x]!!\\%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) LIKE LOWER('%50!%!_off[x]!!\\%') ESCAPE '!'"
+notContainsCase on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) NOT LIKE LOWER(?) ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off[x]!!\\%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) NOT LIKE LOWER('%50!%!_off[x]!!\\%') ESCAPE '!'"
+hasPrefix on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"50!%!_off[x]!!\\%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE '50!%!_off[x]!!\\%' ESCAPE '!'"
+hasSuffix on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off[x]!!\\"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE '%50!%!_off[x]!!\\' ESCAPE '!'"
+hasPrefixCase on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) LIKE LOWER(?) ESCAPE '!'"
+  params: [{"t":"text","v":"50!%!_off[x]!!\\%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) LIKE LOWER('50!%!_off[x]!!\\%') ESCAPE '!'"
+hasSuffixCase on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) LIKE LOWER(?) ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off[x]!!\\"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) LIKE LOWER('%50!%!_off[x]!!\\') ESCAPE '!'"
+ilike on name
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) LIKE LOWER(?)"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) LIKE LOWER('%bo_b%')"
+jsonContains on payload
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE JSON_CONTAINS(\"payload\", ?)"
+  params: [{"t":"text","v":"{\"a\":1}"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE JSON_CONTAINS(\"payload\", '{\"a\":1}')"
+jsonNotContains on payload
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE NOT (JSON_CONTAINS(\"payload\", ?))"
+  params: [{"t":"text","v":"{\"a\":1}"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE NOT (JSON_CONTAINS(\"payload\", '{\"a\":1}'))"
+in, empty list
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE 1 = 0"
+not in, empty list
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE 1 = 1"
+json contains on a non-JSON column
+  error INVALID_INPUT "JSON contains needs a JSON column; \"name\" is not one"
+between with one value
+  error INVALID_INPUT "filter on \"age\" needs 2 value(s)"
+contains on a binary column
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"data\" AS VARCHAR) LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%x%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"data\" AS VARCHAR) LIKE '%x%' ESCAPE '!'"
+unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+nested groups, raw SQL and any column
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE (\"age\" >= ? AND \"name\" IS NOT NULL) OR (age > 1) OR (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE ? ESCAPE '!')"
+  params: [{"t":"int","v":18},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE (\"age\" >= 18 AND \"name\" IS NOT NULL) OR (age > 1) OR (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE '%x%' ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE '%x%' ESCAPE '!')"
+any column equals
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE (COALESCE(CAST(\"id\" AS VARCHAR), '') = ? OR COALESCE(CAST(\"name\" AS VARCHAR), '') = ? OR COALESCE(CAST(\"age\" AS VARCHAR), '') = ? OR COALESCE(CAST(\"price\" AS VARCHAR), '') = ? OR COALESCE(CAST(\"payload\" AS VARCHAR), '') = ? OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') = ? OR COALESCE(CAST(\"created\" AS VARCHAR), '') = ?)"
+  params: [{"t":"text","v":"7"},{"t":"text","v":"7"},{"t":"text","v":"7"},{"t":"text","v":"7"},{"t":"text","v":"7"},{"t":"text","v":"7"},{"t":"text","v":"7"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE (COALESCE(CAST(\"id\" AS VARCHAR), '') = '7' OR COALESCE(CAST(\"name\" AS VARCHAR), '') = '7' OR COALESCE(CAST(\"age\" AS VARCHAR), '') = '7' OR COALESCE(CAST(\"price\" AS VARCHAR), '') = '7' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') = '7' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') = '7' OR COALESCE(CAST(\"created\" AS VARCHAR), '') = '7')"
+any column in
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE (COALESCE(CAST(\"id\" AS VARCHAR), '') IN (?, ?) OR COALESCE(CAST(\"name\" AS VARCHAR), '') IN (?, ?) OR COALESCE(CAST(\"age\" AS VARCHAR), '') IN (?, ?) OR COALESCE(CAST(\"price\" AS VARCHAR), '') IN (?, ?) OR COALESCE(CAST(\"payload\" AS VARCHAR), '') IN (?, ?) OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') IN (?, ?) OR COALESCE(CAST(\"created\" AS VARCHAR), '') IN (?, ?))"
+  params: [{"t":"text","v":"a"},{"t":"text","v":"b"},{"t":"text","v":"a"},{"t":"text","v":"b"},{"t":"text","v":"a"},{"t":"text","v":"b"},{"t":"text","v":"a"},{"t":"text","v":"b"},{"t":"text","v":"a"},{"t":"text","v":"b"},{"t":"text","v":"a"},{"t":"text","v":"b"},{"t":"text","v":"a"},{"t":"text","v":"b"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE (COALESCE(CAST(\"id\" AS VARCHAR), '') IN ('a', 'b') OR COALESCE(CAST(\"name\" AS VARCHAR), '') IN ('a', 'b') OR COALESCE(CAST(\"age\" AS VARCHAR), '') IN ('a', 'b') OR COALESCE(CAST(\"price\" AS VARCHAR), '') IN ('a', 'b') OR COALESCE(CAST(\"payload\" AS VARCHAR), '') IN ('a', 'b') OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') IN ('a', 'b') OR COALESCE(CAST(\"created\" AS VARCHAR), '') IN ('a', 'b'))"
+any column not contains
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE (COALESCE(CAST(\"id\" AS VARCHAR), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(\"name\" AS VARCHAR), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(\"age\" AS VARCHAR), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(\"price\" AS VARCHAR), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(\"payload\" AS VARCHAR), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') NOT LIKE ? ESCAPE '!' AND COALESCE(CAST(\"created\" AS VARCHAR), '') NOT LIKE ? ESCAPE '!')"
+  params: [{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"},{"t":"text","v":"%x%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE (COALESCE(CAST(\"id\" AS VARCHAR), '') NOT LIKE '%x%' ESCAPE '!' AND COALESCE(CAST(\"name\" AS VARCHAR), '') NOT LIKE '%x%' ESCAPE '!' AND COALESCE(CAST(\"age\" AS VARCHAR), '') NOT LIKE '%x%' ESCAPE '!' AND COALESCE(CAST(\"price\" AS VARCHAR), '') NOT LIKE '%x%' ESCAPE '!' AND COALESCE(CAST(\"payload\" AS VARCHAR), '') NOT LIKE '%x%' ESCAPE '!' AND COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') NOT LIKE '%x%' ESCAPE '!' AND COALESCE(CAST(\"created\" AS VARCHAR), '') NOT LIKE '%x%' ESCAPE '!')"
+any column JSON contains
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE JSON_CONTAINS(\"payload\", ?)"
+  params: [{"t":"text","v":"{}"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE JSON_CONTAINS(\"payload\", '{}')"
+IN past the parameter limit
+  error INVALID_INPUT "the filter needs 1200 values, more than one query can bind (1000): use fewer values or filter one column instead of Any column"
+
+## ansi: fetch cell
+name by pk
+  sql: "SELECT \"name\" FROM \"app\".\"users\" WHERE \"id\" = ? LIMIT 1"
+  params: [{"t":"int","v":7}]
+  preview: "SELECT \"name\" FROM \"app\".\"users\" WHERE \"id\" = 7 LIMIT 1"
+data by pk
+  sql: "SELECT \"data\" FROM \"app\".\"users\" WHERE \"id\" = ? LIMIT 1"
+  params: [{"t":"int","v":7}]
+  preview: "SELECT \"data\" FROM \"app\".\"users\" WHERE \"id\" = 7 LIMIT 1"
+geom by pk
+  sql: "SELECT \"geom\" FROM \"app\".\"users\" WHERE \"id\" = ? LIMIT 1"
+  params: [{"t":"int","v":7}]
+  preview: "SELECT \"geom\" FROM \"app\".\"users\" WHERE \"id\" = 7 LIMIT 1"
+name by pk with NULL
+  sql: "SELECT \"name\" FROM \"app\".\"users\" WHERE \"id\" IS NULL LIMIT 1"
+data by pk with NULL
+  sql: "SELECT \"data\" FROM \"app\".\"users\" WHERE \"id\" IS NULL LIMIT 1"
+geom by pk with NULL
+  sql: "SELECT \"geom\" FROM \"app\".\"users\" WHERE \"id\" IS NULL LIMIT 1"
+name by empty pk
+  error INVALID_INPUT "row key is empty"
+data by empty pk
+  error INVALID_INPUT "row key is empty"
+geom by empty pk
+  error INVALID_INPUT "row key is empty"
+name by pk on an unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+data by pk on an unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+geom by pk on an unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+name by pk on a shortened column
+  sql: "SELECT \"name\" FROM \"app\".\"users\" WHERE \"geom\" = ? LIMIT 1"
+  params: [{"t":"text","v":"POINT (1 2)"}]
+  preview: "SELECT \"name\" FROM \"app\".\"users\" WHERE \"geom\" = 'POINT (1 2)' LIMIT 1"
+data by pk on a shortened column
+  sql: "SELECT \"data\" FROM \"app\".\"users\" WHERE \"geom\" = ? LIMIT 1"
+  params: [{"t":"text","v":"POINT (1 2)"}]
+  preview: "SELECT \"data\" FROM \"app\".\"users\" WHERE \"geom\" = 'POINT (1 2)' LIMIT 1"
+geom by pk on a shortened column
+  sql: "SELECT \"geom\" FROM \"app\".\"users\" WHERE \"geom\" = ? LIMIT 1"
+  params: [{"t":"text","v":"POINT (1 2)"}]
+  preview: "SELECT \"geom\" FROM \"app\".\"users\" WHERE \"geom\" = 'POINT (1 2)' LIMIT 1"
+name by rowid
+  error UNSUPPORTED "unsupported: ANSI test has no row id: rows are addressed by their primary key"
+data by rowid
+  error UNSUPPORTED "unsupported: ANSI test has no row id: rows are addressed by their primary key"
+geom by rowid
+  error UNSUPPORTED "unsupported: ANSI test has no row id: rows are addressed by their primary key"
+name by all columns
+  sql: "SELECT \"name\" FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS NOT DISTINCT FROM ? AND \"price\" IS NOT DISTINCT FROM ? LIMIT 1"
+  params: [{"t":"text","v":"x"},{"t":"decimal","v":"1.50"}]
+  preview: "SELECT \"name\" FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS NOT DISTINCT FROM 'x' AND \"price\" IS NOT DISTINCT FROM 1.50 LIMIT 1"
+data by all columns
+  sql: "SELECT \"data\" FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS NOT DISTINCT FROM ? AND \"price\" IS NOT DISTINCT FROM ? LIMIT 1"
+  params: [{"t":"text","v":"x"},{"t":"decimal","v":"1.50"}]
+  preview: "SELECT \"data\" FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS NOT DISTINCT FROM 'x' AND \"price\" IS NOT DISTINCT FROM 1.50 LIMIT 1"
+geom by all columns
+  sql: "SELECT \"geom\" FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS NOT DISTINCT FROM ? AND \"price\" IS NOT DISTINCT FROM ? LIMIT 1"
+  params: [{"t":"text","v":"x"},{"t":"decimal","v":"1.50"}]
+  preview: "SELECT \"geom\" FROM \"app\".\"users\" WHERE \"age\" IS NULL AND \"name\" IS NOT DISTINCT FROM 'x' AND \"price\" IS NOT DISTINCT FROM 1.50 LIMIT 1"
+
+## tsql: select
+all columns, first page
+  sql: "SELECT CONVERT(NVARCHAR(MAX), [id]) AS [id], CONVERT(NVARCHAR(MAX), [name]) AS [name], CONVERT(NVARCHAR(MAX), [age]) AS [age], CONVERT(NVARCHAR(MAX), [price]) AS [price], CONVERT(NVARCHAR(MAX), [payload]) AS [payload], [data], [geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), [Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), [created]) AS [created]\nFROM [app].[users] ORDER BY [id] ASC\nOFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY"
+two columns, third page
+  sql: "SELECT CONVERT(NVARCHAR(MAX), [name]) AS [name], [geom].STAsText() AS [geom]\nFROM [app].[users] ORDER BY [id] ASC\nOFFSET 200 ROWS FETCH NEXT 50 ROWS ONLY"
+sorted with NULLs first and last
+  sql: "SELECT CONVERT(NVARCHAR(MAX), [id]) AS [id], CONVERT(NVARCHAR(MAX), [name]) AS [name], CONVERT(NVARCHAR(MAX), [age]) AS [age], CONVERT(NVARCHAR(MAX), [price]) AS [price], CONVERT(NVARCHAR(MAX), [payload]) AS [payload], [data], [geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), [Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), [created]) AS [created]\nFROM [app].[users] ORDER BY CASE WHEN [name] IS NULL THEN 1 ELSE 0 END DESC, [name] DESC, CASE WHEN [age] IS NULL THEN 1 ELSE 0 END ASC, [age] ASC, [price] ASC\nOFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY"
+no primary key, rowid identity asked
+  sql: "SELECT CONVERT(NVARCHAR(MAX), [id]) AS [id], CONVERT(NVARCHAR(MAX), [name]) AS [name], CONVERT(NVARCHAR(MAX), [age]) AS [age], CONVERT(NVARCHAR(MAX), [price]) AS [price], CONVERT(NVARCHAR(MAX), [payload]) AS [payload], [data], [geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), [Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), [created]) AS [created]\nFROM [app].[users] ORDER BY (SELECT NULL)\nOFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY"
+sort on an unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+no columns
+  error INVALID_INPUT "no columns to select"
+
+## tsql: filters
+eq on age
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [age] = @P1"
+  params: [{"t":"int","v":18}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [age] = 18"
+ne on age
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [age] <> @P1"
+  params: [{"t":"int","v":18}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [age] <> 18"
+gt on age
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [age] > @P1"
+  params: [{"t":"int","v":18}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [age] > 18"
+lt on age
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [age] < @P1"
+  params: [{"t":"int","v":18}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [age] < 18"
+ge on age
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [age] >= @P1"
+  params: [{"t":"int","v":18}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [age] >= 18"
+le on age
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [age] <= @P1"
+  params: [{"t":"int","v":18}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [age] <= 18"
+like on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [name]) LIKE @P1"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [name]) LIKE N'%bo_b%'"
+notLike on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [name]) NOT LIKE @P1"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [name]) NOT LIKE N'%bo_b%'"
+in on id
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [id] IN (@P1, @P2)"
+  params: [{"t":"int","v":1},{"t":"int","v":2}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [id] IN (1, 2)"
+notIn on id
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [id] NOT IN (@P1, @P2)"
+  params: [{"t":"int","v":1},{"t":"int","v":2}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [id] NOT IN (1, 2)"
+isNull on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [name] IS NULL"
+isNotNull on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [name] IS NOT NULL"
+between on price
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [price] BETWEEN @P1 AND @P2"
+  params: [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [price] BETWEEN 1.50 AND 9.99"
+notBetween on price
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [price] NOT BETWEEN @P1 AND @P2"
+  params: [{"t":"decimal","v":"1.50"},{"t":"decimal","v":"9.99"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE [price] NOT BETWEEN 1.50 AND 9.99"
+contains on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [name]) LIKE @P1 ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off![x]!!\\%"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [name]) LIKE N'%50!%!_off![x]!!\\%' ESCAPE '!'"
+notContains on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [name]) NOT LIKE @P1 ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off![x]!!\\%"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [name]) NOT LIKE N'%50!%!_off![x]!!\\%' ESCAPE '!'"
+containsCase on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE LOWER(CONVERT(NVARCHAR(MAX), [name])) LIKE LOWER(@P1) ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off![x]!!\\%"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE LOWER(CONVERT(NVARCHAR(MAX), [name])) LIKE LOWER(N'%50!%!_off![x]!!\\%') ESCAPE '!'"
+notContainsCase on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE LOWER(CONVERT(NVARCHAR(MAX), [name])) NOT LIKE LOWER(@P1) ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off![x]!!\\%"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE LOWER(CONVERT(NVARCHAR(MAX), [name])) NOT LIKE LOWER(N'%50!%!_off![x]!!\\%') ESCAPE '!'"
+hasPrefix on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [name]) LIKE @P1 ESCAPE '!'"
+  params: [{"t":"text","v":"50!%!_off![x]!!\\%"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [name]) LIKE N'50!%!_off![x]!!\\%' ESCAPE '!'"
+hasSuffix on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [name]) LIKE @P1 ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off![x]!!\\"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [name]) LIKE N'%50!%!_off![x]!!\\' ESCAPE '!'"
+hasPrefixCase on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE LOWER(CONVERT(NVARCHAR(MAX), [name])) LIKE LOWER(@P1) ESCAPE '!'"
+  params: [{"t":"text","v":"50!%!_off![x]!!\\%"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE LOWER(CONVERT(NVARCHAR(MAX), [name])) LIKE LOWER(N'50!%!_off![x]!!\\%') ESCAPE '!'"
+hasSuffixCase on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE LOWER(CONVERT(NVARCHAR(MAX), [name])) LIKE LOWER(@P1) ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off![x]!!\\"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE LOWER(CONVERT(NVARCHAR(MAX), [name])) LIKE LOWER(N'%50!%!_off![x]!!\\') ESCAPE '!'"
+ilike on name
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE LOWER(CONVERT(NVARCHAR(MAX), [name])) LIKE LOWER(@P1)"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE LOWER(CONVERT(NVARCHAR(MAX), [name])) LIKE LOWER(N'%bo_b%')"
+jsonContains on payload
+  error INVALID_INPUT "Transact-SQL has no JSON contains"
+jsonNotContains on payload
+  error INVALID_INPUT "Transact-SQL has no JSON contains"
+in, empty list
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE 1 = 0"
+not in, empty list
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE 1 = 1"
+json contains on a non-JSON column
+  error INVALID_INPUT "Transact-SQL has no JSON contains"
+between with one value
+  error INVALID_INPUT "filter on \"age\" needs 2 value(s)"
+contains on a binary column
+  error UNSUPPORTED "unsupported: Transact-SQL: \"data\" cannot be matched as text"
+unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+nested groups, raw SQL and any column
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE ([age] >= @P1 AND [name] IS NOT NULL) OR (age > 1) OR (COALESCE(CONVERT(NVARCHAR(MAX), [id]), '') LIKE @P2 ESCAPE '!' OR COALESCE(CONVERT(NVARCHAR(MAX), [name]), '') LIKE @P2 ESCAPE '!' OR COALESCE(CONVERT(NVARCHAR(MAX), [age]), '') LIKE @P2 ESCAPE '!' OR COALESCE(CONVERT(NVARCHAR(MAX), [price]), '') LIKE @P2 ESCAPE '!' OR COALESCE(CONVERT(NVARCHAR(MAX), [payload]), '') LIKE @P2 ESCAPE '!' OR COALESCE(CONVERT(NVARCHAR(MAX), [Odd \"Name\" ]]]), '') LIKE @P2 ESCAPE '!' OR COALESCE(CONVERT(NVARCHAR(MAX), [created]), '') LIKE @P2 ESCAPE '!')"
+  params: [{"t":"int","v":18},{"t":"text","v":"%x%"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE ([age] >= 18 AND [name] IS NOT NULL) OR (age > 1) OR (COALESCE(CONVERT(NVARCHAR(MAX), [id]), '') LIKE N'%x%' ESCAPE '!' OR COALESCE(CONVERT(NVARCHAR(MAX), [name]), '') LIKE N'%x%' ESCAPE '!' OR COALESCE(CONVERT(NVARCHAR(MAX), [age]), '') LIKE N'%x%' ESCAPE '!' OR COALESCE(CONVERT(NVARCHAR(MAX), [price]), '') LIKE N'%x%' ESCAPE '!' OR COALESCE(CONVERT(NVARCHAR(MAX), [payload]), '') LIKE N'%x%' ESCAPE '!' OR COALESCE(CONVERT(NVARCHAR(MAX), [Odd \"Name\" ]]]), '') LIKE N'%x%' ESCAPE '!' OR COALESCE(CONVERT(NVARCHAR(MAX), [created]), '') LIKE N'%x%' ESCAPE '!')"
+any column equals
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE (COALESCE(CONVERT(NVARCHAR(MAX), [id]), '') = @P1 OR COALESCE(CONVERT(NVARCHAR(MAX), [name]), '') = @P1 OR COALESCE(CONVERT(NVARCHAR(MAX), [age]), '') = @P1 OR COALESCE(CONVERT(NVARCHAR(MAX), [price]), '') = @P1 OR COALESCE(CONVERT(NVARCHAR(MAX), [payload]), '') = @P1 OR COALESCE(CONVERT(NVARCHAR(MAX), [Odd \"Name\" ]]]), '') = @P1 OR COALESCE(CONVERT(NVARCHAR(MAX), [created]), '') = @P1)"
+  params: [{"t":"text","v":"7"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE (COALESCE(CONVERT(NVARCHAR(MAX), [id]), '') = N'7' OR COALESCE(CONVERT(NVARCHAR(MAX), [name]), '') = N'7' OR COALESCE(CONVERT(NVARCHAR(MAX), [age]), '') = N'7' OR COALESCE(CONVERT(NVARCHAR(MAX), [price]), '') = N'7' OR COALESCE(CONVERT(NVARCHAR(MAX), [payload]), '') = N'7' OR COALESCE(CONVERT(NVARCHAR(MAX), [Odd \"Name\" ]]]), '') = N'7' OR COALESCE(CONVERT(NVARCHAR(MAX), [created]), '') = N'7')"
+any column in
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE (COALESCE(CONVERT(NVARCHAR(MAX), [id]), '') IN (@P1, @P2) OR COALESCE(CONVERT(NVARCHAR(MAX), [name]), '') IN (@P1, @P2) OR COALESCE(CONVERT(NVARCHAR(MAX), [age]), '') IN (@P1, @P2) OR COALESCE(CONVERT(NVARCHAR(MAX), [price]), '') IN (@P1, @P2) OR COALESCE(CONVERT(NVARCHAR(MAX), [payload]), '') IN (@P1, @P2) OR COALESCE(CONVERT(NVARCHAR(MAX), [Odd \"Name\" ]]]), '') IN (@P1, @P2) OR COALESCE(CONVERT(NVARCHAR(MAX), [created]), '') IN (@P1, @P2))"
+  params: [{"t":"text","v":"a"},{"t":"text","v":"b"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE (COALESCE(CONVERT(NVARCHAR(MAX), [id]), '') IN (N'a', N'b') OR COALESCE(CONVERT(NVARCHAR(MAX), [name]), '') IN (N'a', N'b') OR COALESCE(CONVERT(NVARCHAR(MAX), [age]), '') IN (N'a', N'b') OR COALESCE(CONVERT(NVARCHAR(MAX), [price]), '') IN (N'a', N'b') OR COALESCE(CONVERT(NVARCHAR(MAX), [payload]), '') IN (N'a', N'b') OR COALESCE(CONVERT(NVARCHAR(MAX), [Odd \"Name\" ]]]), '') IN (N'a', N'b') OR COALESCE(CONVERT(NVARCHAR(MAX), [created]), '') IN (N'a', N'b'))"
+any column not contains
+  sql: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE (COALESCE(CONVERT(NVARCHAR(MAX), [id]), '') NOT LIKE @P1 ESCAPE '!' AND COALESCE(CONVERT(NVARCHAR(MAX), [name]), '') NOT LIKE @P1 ESCAPE '!' AND COALESCE(CONVERT(NVARCHAR(MAX), [age]), '') NOT LIKE @P1 ESCAPE '!' AND COALESCE(CONVERT(NVARCHAR(MAX), [price]), '') NOT LIKE @P1 ESCAPE '!' AND COALESCE(CONVERT(NVARCHAR(MAX), [payload]), '') NOT LIKE @P1 ESCAPE '!' AND COALESCE(CONVERT(NVARCHAR(MAX), [Odd \"Name\" ]]]), '') NOT LIKE @P1 ESCAPE '!' AND COALESCE(CONVERT(NVARCHAR(MAX), [created]), '') NOT LIKE @P1 ESCAPE '!')"
+  params: [{"t":"text","v":"%x%"}]
+  preview: "SELECT COUNT_BIG(*) FROM [app].[users] WHERE (COALESCE(CONVERT(NVARCHAR(MAX), [id]), '') NOT LIKE N'%x%' ESCAPE '!' AND COALESCE(CONVERT(NVARCHAR(MAX), [name]), '') NOT LIKE N'%x%' ESCAPE '!' AND COALESCE(CONVERT(NVARCHAR(MAX), [age]), '') NOT LIKE N'%x%' ESCAPE '!' AND COALESCE(CONVERT(NVARCHAR(MAX), [price]), '') NOT LIKE N'%x%' ESCAPE '!' AND COALESCE(CONVERT(NVARCHAR(MAX), [payload]), '') NOT LIKE N'%x%' ESCAPE '!' AND COALESCE(CONVERT(NVARCHAR(MAX), [Odd \"Name\" ]]]), '') NOT LIKE N'%x%' ESCAPE '!' AND COALESCE(CONVERT(NVARCHAR(MAX), [created]), '') NOT LIKE N'%x%' ESCAPE '!')"
+any column JSON contains
+  error INVALID_INPUT "Transact-SQL has no JSON contains"
+IN past the parameter limit
+  sql: "8546 characters"
+
+## tsql: fetch cell
+name by pk
+  sql: "SELECT TOP (1) CONVERT(NVARCHAR(MAX), [name]) FROM [app].[users] WHERE [id] = @P1"
+  params: [{"t":"int","v":7}]
+  preview: "SELECT TOP (1) CONVERT(NVARCHAR(MAX), [name]) FROM [app].[users] WHERE [id] = 7"
+data by pk
+  sql: "SELECT TOP (1) [data] FROM [app].[users] WHERE [id] = @P1"
+  params: [{"t":"int","v":7}]
+  preview: "SELECT TOP (1) [data] FROM [app].[users] WHERE [id] = 7"
+geom by pk
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot be loaded whole"
+name by pk with NULL
+  sql: "SELECT TOP (1) CONVERT(NVARCHAR(MAX), [name]) FROM [app].[users] WHERE [id] IS NULL"
+data by pk with NULL
+  sql: "SELECT TOP (1) [data] FROM [app].[users] WHERE [id] IS NULL"
+geom by pk with NULL
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot be loaded whole"
+name by empty pk
+  error INVALID_INPUT "row key is empty"
+data by empty pk
+  error INVALID_INPUT "row key is empty"
+geom by empty pk
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot be loaded whole"
+name by pk on an unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+data by pk on an unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+geom by pk on an unknown column
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot be loaded whole"
+name by pk on a shortened column
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot identify a row"
+data by pk on a shortened column
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot identify a row"
+geom by pk on a shortened column
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot be loaded whole"
+name by rowid
+  error UNSUPPORTED "unsupported: Transact-SQL has no row id: rows are addressed by their primary key"
+data by rowid
+  error UNSUPPORTED "unsupported: Transact-SQL has no row id: rows are addressed by their primary key"
+geom by rowid
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot be loaded whole"
+name by all columns
+  sql: "SELECT TOP (1) CONVERT(NVARCHAR(MAX), [name]) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [age]) IS NULL AND (CONVERT(NVARCHAR(MAX), [name]) = @P1 OR (CONVERT(NVARCHAR(MAX), [name]) IS NULL AND @P1 IS NULL)) AND (CONVERT(NVARCHAR(MAX), [price]) = @P2 OR (CONVERT(NVARCHAR(MAX), [price]) IS NULL AND @P2 IS NULL))"
+  params: [{"t":"text","v":"x"},{"t":"decimal","v":"1.50"}]
+  preview: "SELECT TOP (1) CONVERT(NVARCHAR(MAX), [name]) FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [age]) IS NULL AND (CONVERT(NVARCHAR(MAX), [name]) = N'x' OR (CONVERT(NVARCHAR(MAX), [name]) IS NULL AND N'x' IS NULL)) AND (CONVERT(NVARCHAR(MAX), [price]) = 1.50 OR (CONVERT(NVARCHAR(MAX), [price]) IS NULL AND 1.50 IS NULL))"
+data by all columns
+  sql: "SELECT TOP (1) [data] FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [age]) IS NULL AND (CONVERT(NVARCHAR(MAX), [name]) = @P1 OR (CONVERT(NVARCHAR(MAX), [name]) IS NULL AND @P1 IS NULL)) AND (CONVERT(NVARCHAR(MAX), [price]) = @P2 OR (CONVERT(NVARCHAR(MAX), [price]) IS NULL AND @P2 IS NULL))"
+  params: [{"t":"text","v":"x"},{"t":"decimal","v":"1.50"}]
+  preview: "SELECT TOP (1) [data] FROM [app].[users] WHERE CONVERT(NVARCHAR(MAX), [age]) IS NULL AND (CONVERT(NVARCHAR(MAX), [name]) = N'x' OR (CONVERT(NVARCHAR(MAX), [name]) IS NULL AND N'x' IS NULL)) AND (CONVERT(NVARCHAR(MAX), [price]) = 1.50 OR (CONVERT(NVARCHAR(MAX), [price]) IS NULL AND 1.50 IS NULL))"
+geom by all columns
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot be loaded whole"
+
+## variants: placeholder styles
+Dollar
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = $1 AND \"id\" IN ($2, $3) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE $4 ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE $4 ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE $4 ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE $4 ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE $4 ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE $4 ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE $4 ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+  params: [{"t":"int","v":18},{"t":"int","v":1},{"t":"int","v":2},{"t":"text","v":"%it's%"}]
+  preview: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = 18 AND \"id\" IN (1, 2) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+Question
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = ? AND \"id\" IN (?, ?) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE ? ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE ? ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+  params: [{"t":"int","v":18},{"t":"int","v":1},{"t":"int","v":2},{"t":"text","v":"%it's%"},{"t":"text","v":"%it's%"},{"t":"text","v":"%it's%"},{"t":"text","v":"%it's%"},{"t":"text","v":"%it's%"},{"t":"text","v":"%it's%"},{"t":"text","v":"%it's%"}]
+  preview: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = 18 AND \"id\" IN (1, 2) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+QuestionNumbered
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = ?1 AND \"id\" IN (?2, ?3) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE ?4 ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE ?4 ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE ?4 ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE ?4 ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE ?4 ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE ?4 ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE ?4 ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+  params: [{"t":"int","v":18},{"t":"int","v":1},{"t":"int","v":2},{"t":"text","v":"%it's%"}]
+  preview: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = 18 AND \"id\" IN (1, 2) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+AtP
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = @P1 AND \"id\" IN (@P2, @P3) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE @P4 ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE @P4 ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE @P4 ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE @P4 ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE @P4 ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE @P4 ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE @P4 ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+  params: [{"t":"int","v":18},{"t":"int","v":1},{"t":"int","v":2},{"t":"text","v":"%it's%"}]
+  preview: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = 18 AND \"id\" IN (1, 2) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+AtName
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = @p1 AND \"id\" IN (@p2, @p3) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE @p4 ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE @p4 ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE @p4 ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE @p4 ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE @p4 ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE @p4 ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE @p4 ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+  params: [{"t":"int","v":18},{"t":"int","v":1},{"t":"int","v":2},{"t":"text","v":"%it's%"}]
+  preview: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = 18 AND \"id\" IN (1, 2) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+Colon
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = :1 AND \"id\" IN (:2, :3) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE :4 ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE :4 ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE :4 ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE :4 ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE :4 ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE :4 ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE :4 ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+  params: [{"t":"int","v":18},{"t":"int","v":1},{"t":"int","v":2},{"t":"text","v":"%it's%"}]
+  preview: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = 18 AND \"id\" IN (1, 2) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+Typed
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = {p1:int} AND \"id\" IN ({p2:bigint}, {p3:bigint}) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE {p4:String} ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE {p4:String} ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE {p4:String} ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE {p4:String} ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE {p4:String} ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE {p4:String} ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE {p4:String} ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+  params: [{"t":"int","v":18},{"t":"int","v":1},{"t":"int","v":2},{"t":"text","v":"%it's%"}]
+  preview: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nWHERE \"age\" = 18 AND \"id\" IN (1, 2) AND (COALESCE(CAST(\"id\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"name\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"age\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"price\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"payload\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"Odd \"\"Name\"\" ]\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!' OR COALESCE(CAST(\"created\" AS VARCHAR), '') LIKE '%it''s%' ESCAPE '!') ORDER BY \"id\" ASC\nLIMIT 100 OFFSET 0"
+
+## variants: paging and limit one
+LimitOffset, no order, offset 0
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nLIMIT 100 OFFSET 0"
+LimitOffset, no order, offset 100
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nLIMIT 100 OFFSET 100"
+OffsetFetch, no order, offset 0
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\" ORDER BY (SELECT NULL)\nOFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY"
+OffsetFetch, no order, offset 100
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\" ORDER BY (SELECT NULL)\nOFFSET 100 ROWS FETCH NEXT 100 ROWS ONLY"
+LimitOnly, no order, offset 0
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\"\nLIMIT 100"
+LimitOnly, no order, offset 100
+  error UNSUPPORTED "unsupported: ANSI test cannot skip rows: only the first page can be read this way"
+limit one: Limit
+  sql: "SELECT \"age\" FROM \"app\".\"users\" WHERE \"id\" = ? LIMIT 1"
+  params: [{"t":"int","v":7}]
+  preview: "SELECT \"age\" FROM \"app\".\"users\" WHERE \"id\" = 7 LIMIT 1"
+limit one: Top
+  sql: "SELECT TOP (1) CONVERT(NVARCHAR(MAX), [age]) FROM [app].[users] WHERE [id] = @P1"
+  params: [{"t":"int","v":7}]
+  preview: "SELECT TOP (1) CONVERT(NVARCHAR(MAX), [age]) FROM [app].[users] WHERE [id] = 7"
+
+## variants: NULL ordering
+Native
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\" ORDER BY \"name\" ASC NULLS LAST\nLIMIT 100 OFFSET 0"
+NullFlag
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\"\nFROM \"app\".\"users\" ORDER BY CASE WHEN \"name\" IS NULL THEN 1 ELSE 0 END ASC, \"name\" ASC\nLIMIT 100 OFFSET 0"
+Unsupported
+  error INVALID_INPUT "ANSI test cannot sort NULLs first or last"
+
+## variants: case-insensitive matching
+Ilike: containsCase
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) ILIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off[x]!!\\%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) ILIKE '%50!%!_off[x]!!\\%' ESCAPE '!'"
+Ilike: ilike
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) ILIKE ?"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) ILIKE '%bo_b%'"
+Ilike: contains
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off[x]!!\\%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE '%50!%!_off[x]!!\\%' ESCAPE '!'"
+LowerLike: containsCase
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) LIKE LOWER(?) ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off[x]!!\\%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) LIKE LOWER('%50!%!_off[x]!!\\%') ESCAPE '!'"
+LowerLike: ilike
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) LIKE LOWER(?)"
+  params: [{"t":"text","v":"%bo_b%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE LOWER(CAST(\"name\" AS VARCHAR)) LIKE LOWER('%bo_b%')"
+LowerLike: contains
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off[x]!!\\%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE '%50!%!_off[x]!!\\%' ESCAPE '!'"
+Unsupported: containsCase
+  error INVALID_INPUT "ANSI test has no case-insensitive match"
+Unsupported: ilike
+  error INVALID_INPUT "ANSI test has no case-insensitive match"
+Unsupported: contains
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE ? ESCAPE '!'"
+  params: [{"t":"text","v":"%50!%!_off[x]!!\\%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE '%50!%!_off[x]!!\\%' ESCAPE '!'"
+LIKE without an ESCAPE clause
+  sql: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE ?"
+  params: [{"t":"text","v":"50\\%\\\\%"}]
+  preview: "SELECT count(*) FROM \"app\".\"users\" WHERE CAST(\"name\" AS VARCHAR) LIKE '50\\%\\\\%'"
+
+## variants: rowid locator
+select with rowid
+  sql: "SELECT \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\", rowid AS \"_tabler_rowid\"\nFROM \"app\".\"users\" ORDER BY rowid ASC\nLIMIT 100 OFFSET 0"
+fetch by rowid
+  sql: "SELECT \"name\" FROM \"app\".\"users\" WHERE rowid = ? LIMIT 1"
+  params: [{"t":"int","v":9}]
+  preview: "SELECT \"name\" FROM \"app\".\"users\" WHERE rowid = 9 LIMIT 1"
+
+## injection
+ansi
+  sql: "SELECT \"a\"\"b]c\"\nFROM \"s\"\"]`\".\"t\"\"; DROP TABLE x; --]\"\nWHERE \"a\"\"b]c\" = ?\nLIMIT 100 OFFSET 0"
+  params: [{"t":"text","v":"1' OR '1'='1"}]
+  preview: "SELECT \"a\"\"b]c\"\nFROM \"s\"\"]`\".\"t\"\"; DROP TABLE x; --]\"\nWHERE \"a\"\"b]c\" = '1'' OR ''1''=''1'\nLIMIT 100 OFFSET 0"
+tsql
+  sql: "SELECT CONVERT(NVARCHAR(MAX), [a\"b]]c]) AS [a\"b]]c]\nFROM [s\"]]`].[t\"; DROP TABLE x; --]]]\nWHERE [a\"b]]c] = @P1 ORDER BY (SELECT NULL)\nOFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY"
+  params: [{"t":"text","v":"1' OR '1'='1"}]
+  preview: "SELECT CONVERT(NVARCHAR(MAX), [a\"b]]c]) AS [a\"b]]c]\nFROM [s\"]]`].[t\"; DROP TABLE x; --]]]\nWHERE [a\"b]]c] = N'1'' OR ''1''=''1' ORDER BY (SELECT NULL)\nOFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY"

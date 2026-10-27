@@ -12,7 +12,7 @@
 | Cargo features    | `drv-pg-flavors`                                                                                           |
 | Home slot         | `s1`                                                                                                       |
 | Bindings prefix   | `Cockroach*`, `Greenplum*`, `Redshift*`                                                                    |
-| Lib test filters  | `drivers::postgres::flavor`, `sqlgen::dialect::redshift`                                                   |
+| Lib test filters  | `drivers::postgres::flavor`, `sqlgen::dialect::redshift`, `sqlgen::portable::generated::redshift::`        |
 | Real-server suite | `tests/pg_flavors.rs` with `TABLER_TEST_CRDB_URL`, `TABLER_TEST_GREENPLUM_URL`, `TABLER_TEST_REDSHIFT_URL` |
 
 ## Owned files
@@ -21,8 +21,10 @@ Everything the lane may change (dev/lanes.json is authoritative):
 
 - `src-tauri/src/drivers/postgres/flavor/imp/**`
 - `src-tauri/src/sqlgen/dialect/redshift.rs`
+- `src-tauri/src/sqlgen/portable/gen/redshift.rs`
 - `src-tauri/tests/pg_flavors.rs`
 - `src-tauri/tests/fixtures/pg_flavors/**`
+- `src-tauri/tests/fixtures/classify-generated/redshift.json`
 - `src/features/drivers/pg-flavors/**`
 - `src/lib/ipc/mock/drivers/pg-flavors/**`
 - `src/lib/ipc/bindings/Cockroach*.ts`
@@ -98,6 +100,12 @@ Every classifier is default-deny: a statement or command it does not know is a w
 - Redshift's text projection is per column: `::varchar(65535)` fails on GEOMETRY and HLLSKETCH and truncates SUPER, so such columns are not editable and not fetched whole (critique D3).
 - PostgreSQL keeps its own TLS; the lane's tests use `fake_pg`, which F8b moves to a `#[cfg(test)] pub(crate)` module (critique A12, B4).
 - Redshift: no keep-alive (`keepalive_secs: None`) and a free `ping` (plan §5.2).
+
+## Definition of done (this lane)
+
+Beyond the shared list in [README.md](README.md#definition-of-done-v1):
+
+- **Classifier hardening (blocks landing).** `src-tauri/src/sqlgen/portable/gen/redshift.rs` is complete and `src-tauri/tests/fixtures/classify-generated/redshift.json` blessed, as [Classifier hardening](README.md#classifier-hardening) requires: every write keyword, write call and read starter of `dialect::redshift::SPEC` in every shared context and in the contexts only this grammar has, an engine-realistic read corpus, its write forms and fuzz atoms, `suite().check()` and `suite().fuzz(…)` in place of the placeholder. Then a red-team review passes, each finding fixed and kept as a case. Known hard cases: `UNLOAD ('SELECT …') TO 's3://…'` (a write whose query is a string) and `COPY … FROM 's3://…'`; `CALL`; `pg_terminate_backend` / `pg_cancel_backend` / `set_config`; `CREATE TEMP TABLE … AS` and `SELECT … INTO`; dollar-quoted bodies as inert contexts. CockroachDB and Greenplum use the core PostgreSQL classifier, which this suite does not cover.
 
 ## Research notes
 

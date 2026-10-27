@@ -2,18 +2,18 @@
 
 > Seeded by the foundation (step F3b) from the driver plan and the research notes. The lane keeps it current and turns it into the driver's final doc before it lands: what works, the limits, how it was tested. Rules, tooling and the definition of done are in [README.md](README.md).
 
-|                   |                                                  |
-| ----------------- | ------------------------------------------------ |
-| Lane              | `duckdb`                                         |
-| Databases         | DuckDB                                           |
-| Drivers           | `duckdb`                                         |
-| Picker kinds      | `duckdb`                                         |
-| SQL dialect       | `duckdb`                                         |
-| Cargo features    | `drv-duckdb`                                     |
-| Home slot         | `s1`                                             |
-| Bindings prefix   | `Duckdb*`                                        |
-| Lib test filters  | `drivers::duckdb`, `sqlgen::dialect::duckdb`     |
-| Real-server suite | `tests/duckdb.rs` with `TABLER_TEST_DUCKDB_PATH` |
+|                   |                                                                                       |
+| ----------------- | ------------------------------------------------------------------------------------- |
+| Lane              | `duckdb`                                                                              |
+| Databases         | DuckDB                                                                                |
+| Drivers           | `duckdb`                                                                              |
+| Picker kinds      | `duckdb`                                                                              |
+| SQL dialect       | `duckdb`                                                                              |
+| Cargo features    | `drv-duckdb`                                                                          |
+| Home slot         | `s1`                                                                                  |
+| Bindings prefix   | `Duckdb*`                                                                             |
+| Lib test filters  | `drivers::duckdb`, `sqlgen::dialect::duckdb`, `sqlgen::portable::generated::duckdb::` |
+| Real-server suite | `tests/duckdb.rs` with `TABLER_TEST_DUCKDB_PATH`                                      |
 
 ## Owned files
 
@@ -21,8 +21,10 @@ Everything the lane may change (dev/lanes.json is authoritative):
 
 - `src-tauri/src/drivers/duckdb/**`
 - `src-tauri/src/sqlgen/dialect/duckdb.rs`
+- `src-tauri/src/sqlgen/portable/gen/duckdb.rs`
 - `src-tauri/tests/duckdb.rs`
 - `src-tauri/tests/fixtures/duckdb/**`
+- `src-tauri/tests/fixtures/classify-generated/duckdb.json`
 - `src/features/drivers/duckdb/**`
 - `src/lib/ipc/mock/drivers/duckdb/**`
 - `src/lib/ipc/bindings/Duckdb*.ts`
@@ -62,6 +64,12 @@ Seeded from the plan (§5.2). The values in force are the descriptors in `src-ta
 
 Every classifier is default-deny: a statement or command it does not know is a write. The read-only mode in the caps (`Server`, `PerRequest` or `ClassifierOnly`) must say what the session really enforces.
 
+**The engine, not the classifier, stops file reads named as tables.** The portable classifier (`sqlgen::portable::classify` with the rules in `sqlgen/dialect/duckdb.rs`) only knows the plain spellings: calls of `read_*()`, `glob()` and the other scanners in `write_calls`, a table function outside `table_functions`, and `COPY`, `ATTACH`, `INSTALL`, `LOAD`, `EXPORT` / `IMPORT DATABASE`. A replacement scan (`FROM 'x.csv'`, `FROM "C:/x.csv"`, `FROM x."/path"`, or `FROM data.csv`, whose parts the binder joins into a path when no table has that name) classifies as a read. So the lane must:
+
+- open read-only sessions, unattended ones (`registry::unattended`, the MCP process) and plugin-origin ones with `SET enable_external_access = false` followed by `SET lock_configuration = true`, so no later statement can turn access back on, with extension autoload and autoinstall off;
+- report `ReadOnlyMode::Server` with `safety.hardened` for those sessions, and never for a session without these settings;
+- test it: in a hardened session `SELECT * FROM 'x.csv'`, `SELECT * FROM data.csv` and `SET enable_external_access = true` must fail.
+
 ## What to implement
 
 - `entry.rs` (Phase B): `open`, `validate`, `util`, `util_kind` (plan §2.5). `<Prefix>Params` (`#[serde(rename_all = "camelCase", default)]`, ts-exported) parsed from `options.driver_params`.
@@ -74,10 +82,16 @@ Every classifier is default-deny: a statement or command it does not know is a w
 
 - The first build compiles DuckDB's C++ (minutes): run it with `--heavy`, which holds every slot. Dev builds compile libduckdb-sys without debug info (critique C4). DuckDB lands last and becomes default-on then (plan A28, §6.1 step 13), when default builds on this machine move to a short target folder (critique C5).
 - The module `drivers::duckdb` shadows the `duckdb` crate in parent scopes: refer to the crate as `::duckdb::…` (critique optional 2).
-- Local files and remote sources: classify `read_*`, `glob`, `COPY`, `ATTACH`, `INSTALL`, `LOAD` and `EXPORT` / `IMPORT DATABASE` as writes, so a plugin's `context.execute` cannot read files silently (critique D5).
+- Local files and remote sources: classify `read_*`, `glob`, `COPY`, `ATTACH`, `INSTALL`, `LOAD` and `EXPORT` / `IMPORT DATABASE` as writes (critique D5). Files named where a table goes are left to the engine (lead decision, F4a): the hardened settings above, not the classifier, keep a plugin's `context.execute` and MCP from reading them.
 - One engine per file: the lane keeps one process-wide instance per canonical path and refuses a different configuration; the MCP pool keys SingleProcess drivers by file (critique D9, F5).
-- Unattended (MCP) and read-only sessions are hardened: `enable_external_access=false`, `lock_configuration=true`, extension autoload and autoinstall off; the file-lock error says to close the file in Tabler or open it read-only (plan §5.3).
+- Unattended (MCP), plugin-origin and read-only sessions are hardened: `enable_external_access=false`, then `lock_configuration=true`, extension autoload and autoinstall off; the file-lock error says to close the file in Tabler or open it read-only (plan §5.3).
 - `dev/fixtures/sample.duckdb` and its script live in the shared `dev/fixtures`: a change request to the lead.
+
+## Definition of done (this lane)
+
+Beyond the shared list in [README.md](README.md#definition-of-done-v1):
+
+- **Classifier hardening (blocks landing).** `src-tauri/src/sqlgen/portable/gen/duckdb.rs` is complete and `src-tauri/tests/fixtures/classify-generated/duckdb.json` blessed, as [Classifier hardening](README.md#classifier-hardening) requires: every write keyword, write call and read starter of `dialect::duckdb::SPEC` in every shared context and in the contexts only this grammar has, an engine-realistic read corpus, its write forms and fuzz atoms, `suite().check()` and `suite().fuzz(…)` in place of the placeholder. Then a red-team review passes, each finding fixed and kept as a case. Known hard cases: the engine hardening, which the classifier cannot replace (a test that a replacement scan such as `FROM 'x.csv'` fails in a read-only, MCP and plugin session: `SET enable_external_access = false` then `SET lock_configuration = true`, and that `SET` cannot undo it); `read_*`, `glob` and the other scanners as calls anywhere; table functions outside `table_functions`; `COPY`, `ATTACH` / `DETACH`, `INSTALL`, `LOAD`, `EXPORT` / `IMPORT DATABASE`; `PIVOT_WIDER` / `PIVOT_LONGER`, `PIVOT` / `UNPIVOT`, `FROM`-first queries and `SUMMARIZE` as reads.
 
 ## Research notes
 

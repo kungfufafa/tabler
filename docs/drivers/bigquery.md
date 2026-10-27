@@ -2,18 +2,18 @@
 
 > Seeded by the foundation (step F3b) from the driver plan and the research notes. The lane keeps it current and turns it into the driver's final doc before it lands: what works, the limits, how it was tested. Rules, tooling and the definition of done are in [README.md](README.md).
 
-|                   |                                                     |
-| ----------------- | --------------------------------------------------- |
-| Lane              | `bigquery`                                          |
-| Databases         | BigQuery                                            |
-| Drivers           | `bigquery`                                          |
-| Picker kinds      | `bigquery`                                          |
-| SQL dialect       | `bigquery`                                          |
-| Cargo features    | `drv-bigquery`                                      |
-| Home slot         | `s2`                                                |
-| Bindings prefix   | `Bigquery*`                                         |
-| Lib test filters  | `drivers::bigquery`, `sqlgen::dialect::bigquery`    |
-| Real-server suite | `tests/bigquery.rs` with `TABLER_TEST_BIGQUERY_URL` |
+|                   |                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| Lane              | `bigquery`                                                                                  |
+| Databases         | BigQuery                                                                                    |
+| Drivers           | `bigquery`                                                                                  |
+| Picker kinds      | `bigquery`                                                                                  |
+| SQL dialect       | `bigquery`                                                                                  |
+| Cargo features    | `drv-bigquery`                                                                              |
+| Home slot         | `s2`                                                                                        |
+| Bindings prefix   | `Bigquery*`                                                                                 |
+| Lib test filters  | `drivers::bigquery`, `sqlgen::dialect::bigquery`, `sqlgen::portable::generated::bigquery::` |
+| Real-server suite | `tests/bigquery.rs` with `TABLER_TEST_BIGQUERY_URL`                                         |
 
 ## Owned files
 
@@ -21,8 +21,10 @@ Everything the lane may change (dev/lanes.json is authoritative):
 
 - `src-tauri/src/drivers/bigquery/**`
 - `src-tauri/src/sqlgen/dialect/bigquery.rs`
+- `src-tauri/src/sqlgen/portable/gen/bigquery.rs`
 - `src-tauri/tests/bigquery.rs`
 - `src-tauri/tests/fixtures/bigquery/**`
+- `src-tauri/tests/fixtures/classify-generated/bigquery.json`
 - `src/features/drivers/bigquery/**`
 - `src/lib/ipc/mock/drivers/bigquery/**`
 - `src/lib/ipc/bindings/Bigquery*.ts`
@@ -76,6 +78,12 @@ Every classifier is default-deny: a statement or command it does not know is a w
 - Read-only counts as ClassifierOnly until a recorded test shows `DELETE` failing under the `bigquery.readonly` scope; only then may the caps report Server (critique D6). `EXECUTE IMMEDIATE` and `CALL` are writes (critique D4).
 - Costs: browse through the free `tabledata.list` (cursor), `count` Costly, `maximumBytesBilled` 1 GiB by default (editable; empty means unlimited, with a warning), no keep-alive and a free `ping` (plan §1.5 Q8). Row edits are off in v1.
 - The service-account key is a file path in params (`keyFilePath`), never stored (plan A18).
+
+## Definition of done (this lane)
+
+Beyond the shared list in [README.md](README.md#definition-of-done-v1):
+
+- **Classifier hardening (blocks landing).** `src-tauri/src/sqlgen/portable/gen/bigquery.rs` is complete and `src-tauri/tests/fixtures/classify-generated/bigquery.json` blessed, as [Classifier hardening](README.md#classifier-hardening) requires: every write keyword, write call and read starter of `dialect::bigquery::SPEC` in every shared context and in the contexts only this grammar has, an engine-realistic read corpus, its write forms and fuzz atoms, `suite().check()` and `suite().fuzz(…)` in place of the placeholder. Then a red-team review passes, each finding fixed and kept as a case. Known hard cases: `EXECUTE IMMEDIATE` with the statement in a string; `CALL`; scripting (`DECLARE`, `SET`, `BEGIN … END`, `IF`, `LOOP`, `WHILE`, `FOR … IN`, `BEGIN TRANSACTION`) as writes; `EXTERNAL_QUERY`; `EXPORT DATA` and `LOAD DATA`; its string and name forms (triple-quoted, raw and bytes strings, backtick names with dots and dashes) as inert contexts.
 
 ## Research notes
 

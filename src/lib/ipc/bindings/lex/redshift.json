@@ -1,0 +1,70 @@
+{
+  "lex": {
+    "identQuotes": [
+      [
+        "\"",
+        "\""
+      ]
+    ],
+    "stringQuotes": [
+      "'"
+    ],
+    "readings": [
+      {
+        "stringBackslash": false,
+        "identBackslash": false
+      },
+      {
+        "stringBackslash": true,
+        "identBackslash": false
+      }
+    ],
+    "eStrings": true,
+    "dollarQuotes": true,
+    "dollarTags": true,
+    "tripleQuotes": false,
+    "rawPrefixes": false,
+    "bytePrefixes": false,
+    "hashComments": false,
+    "slashSlashComments": false,
+    "nestedBlockComments": true,
+    "dashCommentNeedsSpace": false,
+    "batchSeparator": null,
+    "terminatorOptional": false,
+    "beginEndBodies": false
+  },
+  "classify": {
+    "queries": [
+      "SELECT",
+      "WITH",
+      "VALUES"
+    ],
+    "inspections": [
+      "SHOW",
+      "EXPLAIN"
+    ],
+    "writes": [
+      "INTO",
+      "INSERT",
+      "UPDATE",
+      "DELETE",
+      "MERGE",
+      "CREATE",
+      "DROP",
+      "ALTER",
+      "TRUNCATE",
+      "COPY",
+      "UNLOAD",
+      "CALL",
+      "GRANT",
+      "REVOKE",
+      "VACUUM"
+    ],
+    "writeCalls": [
+      "PG_TERMINATE_BACKEND",
+      "PG_CANCEL_BACKEND",
+      "SET_CONFIG"
+    ],
+    "tableFunctions": null
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "lex": {
+    "identQuotes": [
+      [
+        "\"",
+        "\""
+      ]
+    ],
+    "stringQuotes": [
+      "'"
+    ],
+    "readings": [
+      {
+        "stringBackslash": true,
+        "identBackslash": false
+      }
+    ],
+    "eStrings": false,
+    "dollarQuotes": true,
+    "dollarTags": false,
+    "tripleQuotes": false,
+    "rawPrefixes": false,
+    "bytePrefixes": false,
+    "hashComments": false,
+    "slashSlashComments": true,
+    "nestedBlockComments": false,
+    "dashCommentNeedsSpace": false,
+    "batchSeparator": null,
+    "terminatorOptional": false,
+    "beginEndBodies": true
+  },
+  "classify": {
+    "queries": [
+      "SELECT",
+      "WITH"
+    ],
+    "inspections": [
+      "SHOW",
+      "DESCRIBE",
+      "DESC",
+      "EXPLAIN",
+      "LIST",
+      "LS",
+      "USE"
+    ],
+    "writes": [
+      "INTO",
+      "INSERT",
+      "UPDATE",
+      "DELETE",
+      "MERGE",
+      "CREATE",
+      "DROP",
+      "ALTER",
+      "TRUNCATE",
+      "UNDROP",
+      "CALL",
+      "EXECUTE"
+    ],
+    "writeCalls": [
+      "SYSTEM$*"
+    ],
+    "tableFunctions": null
+  }
+}

@@ -2,18 +2,18 @@
 
 > Seeded by the foundation (step F3b) from the driver plan and the research notes. The lane keeps it current and turns it into the driver's final doc before it lands: what works, the limits, how it was tested. Rules, tooling and the definition of done are in [README.md](README.md).
 
-|                   |                                                         |
-| ----------------- | ------------------------------------------------------- |
-| Lane              | `clickhouse`                                            |
-| Databases         | ClickHouse                                              |
-| Drivers           | `clickhouse`                                            |
-| Picker kinds      | `clickhouse`                                            |
-| SQL dialect       | `clickhouse`                                            |
-| Cargo features    | `drv-clickhouse`                                        |
-| Home slot         | `s1`                                                    |
-| Bindings prefix   | `Clickhouse*`                                           |
-| Lib test filters  | `drivers::clickhouse`, `sqlgen::dialect::clickhouse`    |
-| Real-server suite | `tests/clickhouse.rs` with `TABLER_TEST_CLICKHOUSE_URL` |
+|                   |                                                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------------------- |
+| Lane              | `clickhouse`                                                                                      |
+| Databases         | ClickHouse                                                                                        |
+| Drivers           | `clickhouse`                                                                                      |
+| Picker kinds      | `clickhouse`                                                                                      |
+| SQL dialect       | `clickhouse`                                                                                      |
+| Cargo features    | `drv-clickhouse`                                                                                  |
+| Home slot         | `s1`                                                                                              |
+| Bindings prefix   | `Clickhouse*`                                                                                     |
+| Lib test filters  | `drivers::clickhouse`, `sqlgen::dialect::clickhouse`, `sqlgen::portable::generated::clickhouse::` |
+| Real-server suite | `tests/clickhouse.rs` with `TABLER_TEST_CLICKHOUSE_URL`                                           |
 
 ## Owned files
 
@@ -21,8 +21,10 @@ Everything the lane may change (dev/lanes.json is authoritative):
 
 - `src-tauri/src/drivers/clickhouse/**`
 - `src-tauri/src/sqlgen/dialect/clickhouse.rs`
+- `src-tauri/src/sqlgen/portable/gen/clickhouse.rs`
 - `src-tauri/tests/clickhouse.rs`
 - `src-tauri/tests/fixtures/clickhouse/**`
+- `src-tauri/tests/fixtures/classify-generated/clickhouse.json`
 - `src/features/drivers/clickhouse/**`
 - `src/lib/ipc/mock/drivers/clickhouse/**`
 - `src/lib/ipc/bindings/Clickhouse*.ts`
@@ -56,11 +58,16 @@ Seeded from the plan (§5.2). The values in force are the descriptors in `src-ta
 
 ## Read-only and hardening
 
-| Engine     | When read-only                                                                                                                                                                                                               | When unattended (MCP) |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| ClickHouse | `readonly=2` per request; the classifier refuses table functions `file`, `url`, `s3`, `s3Cluster`, `remote`, `remoteSecure`, `mysql`, `postgresql`, `jdbc`, `odbc`, `hdfs`, `azureBlobStorage`, `gcs`, `executable`, `input` | same                  |
+| Engine     | When read-only                                                                                                        | When unattended (MCP) |
+| ---------- | --------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| ClickHouse | `readonly=2` per request; the classifier allows only the table functions of its allow-list and calls `file()` a write | same                  |
 
 Every classifier is default-deny: a statement or command it does not know is a write. The read-only mode in the caps (`Server`, `PerRequest` or `ClassifierOnly`) must say what the session really enforces.
+
+**The engine, not the classifier, has the last word on reads.** The portable classifier (`sqlgen::portable::classify` with the rules in `sqlgen/dialect/clickhouse.rs`) only knows the plain spellings: a table function outside the allow-list where a table goes, a call of `file()` anywhere, and `INTO` (`INTO OUTFILE`). What else a SELECT may reach (the server's files, other servers through dictionaries or engines of existing tables) is the server's to refuse. So the lane must:
+
+- send `readonly=2` with every request of a read-only or unattended (`registry::unattended`, the MCP process) session, and report `ReadOnlyMode::PerRequest` with `safety.hardened` only when it does;
+- test it: under `readonly=2` an `INSERT`, a `CREATE` and an `ALTER … UPDATE` must fail, and the brief's limits must say that the server's grants on sources (`FILE`, `URL`, `REMOTE`, `S3`…) decide what a read may reach.
 
 ## What to implement
 
@@ -76,6 +83,12 @@ Every classifier is default-deny: a statement or command it does not know is a w
 - Read-only is `readonly=2` on every request (plan §5.3). The classifier allows only the table functions `numbers`, `zeros`, `values`, `generateRandom`, `view`, `merge` and `null`; every other one (`url`, `s3`, `file`, `remote`, `mysql`, `iceberg*`, `deltaLake*`, `cluster`…) is a write (critique D4, D5).
 - The affected-rows guard: the pre-count before an edit is best-effort (check-then-act), so edits use primary-key identity only, with EditWithoutKey and all-columns edits off; a key that is not unique refuses the edit (critique D1).
 - ClickHouse 23.3 or later (lightweight DELETE); UPDATE from 25.7, otherwise an `ALTER UPDATE` mutation behind a warning (plan §1.5 Q18).
+
+## Definition of done (this lane)
+
+Beyond the shared list in [README.md](README.md#definition-of-done-v1):
+
+- **Classifier hardening (blocks landing).** `src-tauri/src/sqlgen/portable/gen/clickhouse.rs` is complete and `src-tauri/tests/fixtures/classify-generated/clickhouse.json` blessed, as [Classifier hardening](README.md#classifier-hardening) requires: every write keyword, write call and read starter of `dialect::clickhouse::SPEC` in every shared context and in the contexts only this grammar has, an engine-realistic read corpus, its write forms and fuzz atoms, `suite().check()` and `suite().fuzz(…)` in place of the placeholder. Then a red-team review passes, each finding fixed and kept as a case. Known hard cases: `file()` as a scalar call anywhere, not only where a table goes; the table-function allow-list (`numbers`, `zeros`, `values`, `generateRandom`, `view`, `merge`, `null`), with every other function in a table position (`url`, `s3`, `remote`, `cluster`, `iceberg*`, `deltaLake*`, the `*Cluster` forms), also qualified, quoted, in a join or a subquery, a write; `INTO OUTFILE`; `SYSTEM …`, `KILL …`, `OPTIMIZE …`; mutations (`ALTER TABLE … UPDATE` / `DELETE`, lightweight `DELETE FROM`). What a SELECT reaches through dictionaries or table engines is `readonly=2`'s to refuse.
 
 ## Research notes
 

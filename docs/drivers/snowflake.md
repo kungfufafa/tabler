@@ -2,18 +2,18 @@
 
 > Seeded by the foundation (step F3b) from the driver plan and the research notes. The lane keeps it current and turns it into the driver's final doc before it lands: what works, the limits, how it was tested. Rules, tooling and the definition of done are in [README.md](README.md).
 
-|                   |                                                       |
-| ----------------- | ----------------------------------------------------- |
-| Lane              | `snowflake`                                           |
-| Databases         | Snowflake                                             |
-| Drivers           | `snowflake`                                           |
-| Picker kinds      | `snowflake`                                           |
-| SQL dialect       | `snowflake`                                           |
-| Cargo features    | `drv-snowflake`                                       |
-| Home slot         | `s2`                                                  |
-| Bindings prefix   | `Snowflake*`                                          |
-| Lib test filters  | `drivers::snowflake`, `sqlgen::dialect::snowflake`    |
-| Real-server suite | `tests/snowflake.rs` with `TABLER_TEST_SNOWFLAKE_URL` |
+|                   |                                                                                                |
+| ----------------- | ---------------------------------------------------------------------------------------------- |
+| Lane              | `snowflake`                                                                                    |
+| Databases         | Snowflake                                                                                      |
+| Drivers           | `snowflake`                                                                                    |
+| Picker kinds      | `snowflake`                                                                                    |
+| SQL dialect       | `snowflake`                                                                                    |
+| Cargo features    | `drv-snowflake`                                                                                |
+| Home slot         | `s2`                                                                                           |
+| Bindings prefix   | `Snowflake*`                                                                                   |
+| Lib test filters  | `drivers::snowflake`, `sqlgen::dialect::snowflake`, `sqlgen::portable::generated::snowflake::` |
+| Real-server suite | `tests/snowflake.rs` with `TABLER_TEST_SNOWFLAKE_URL`                                          |
 
 ## Owned files
 
@@ -21,8 +21,10 @@ Everything the lane may change (dev/lanes.json is authoritative):
 
 - `src-tauri/src/drivers/snowflake/**`
 - `src-tauri/src/sqlgen/dialect/snowflake.rs`
+- `src-tauri/src/sqlgen/portable/gen/snowflake.rs`
 - `src-tauri/tests/snowflake.rs`
 - `src-tauri/tests/fixtures/snowflake/**`
+- `src-tauri/tests/fixtures/classify-generated/snowflake.json`
 - `src/features/drivers/snowflake/**`
 - `src/lib/ipc/mock/drivers/snowflake/**`
 - `src/lib/ipc/bindings/Snowflake*.ts`
@@ -76,6 +78,12 @@ Every classifier is default-deny: a statement or command it does not know is a w
 - The private key is a file path in params (`privateKeyPath`) with its passphrase in the new `KeyPassphrase` secret (plan A18, A19). A PAT can be longer than the 1,280 characters Windows Credential Manager keeps: store it through `set_secret` (UTF-8 bytes) or fail with a clear error (critique D8).
 - Costs: `count` is Costly (estimate, exact only on click), no keep-alive, and a `ping` that never resumes a warehouse (plan §1.5 Q8). One database per session: switching database reconnects.
 - snowflake-connector-rs `=1.1.0` brings rsa 0.9 (RUSTSEC-2023-0071, key-pair signing only): keep the audit note.
+
+## Definition of done (this lane)
+
+Beyond the shared list in [README.md](README.md#definition-of-done-v1):
+
+- **Classifier hardening (blocks landing).** `src-tauri/src/sqlgen/portable/gen/snowflake.rs` is complete and `src-tauri/tests/fixtures/classify-generated/snowflake.json` blessed, as [Classifier hardening](README.md#classifier-hardening) requires: every write keyword, write call and read starter of `dialect::snowflake::SPEC` in every shared context and in the contexts only this grammar has, an engine-realistic read corpus, its write forms and fuzz atoms, `suite().check()` and `suite().fuzz(…)` in place of the placeholder. Then a red-team review passes, each finding fixed and kept as a case. Known hard cases: untagged `$$…$$` strings (there is no `$tag$` form, so a `$` elsewhere opens nothing) as an inert context, and a write keyword right after one; `SYSTEM$…` calls, which the scanner must read as one name (`SYSTEM$CANCEL_ALL_QUERIES(…)`, also qualified and with a space before the `(`); `EXECUTE IMMEDIATE` with the statement in a string or a `$$` body; `CALL`; `SELECT … INTO`.
 
 ## Research notes
 

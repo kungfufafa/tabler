@@ -2,18 +2,18 @@
 
 > Seeded by the foundation (step F3b) from the driver plan and the research notes. The lane keeps it current and turns it into the driver's final doc before it lands: what works, the limits, how it was tested. Rules, tooling and the definition of done are in [README.md](README.md).
 
-|                   |                                                       |
-| ----------------- | ----------------------------------------------------- |
-| Lane              | `cassandra`                                           |
-| Databases         | Cassandra, ScyllaDB                                   |
-| Drivers           | `cassandra`                                           |
-| Picker kinds      | `cassandra`                                           |
-| SQL dialect       | `cql`                                                 |
-| Cargo features    | `drv-cassandra`                                       |
-| Home slot         | `s3`                                                  |
-| Bindings prefix   | `Cassandra*`                                          |
-| Lib test filters  | `drivers::cassandra`, `sqlgen::dialect::cql`          |
-| Real-server suite | `tests/cassandra.rs` with `TABLER_TEST_CASSANDRA_URL` |
+|                   |                                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| Lane              | `cassandra`                                                                        |
+| Databases         | Cassandra, ScyllaDB                                                                |
+| Drivers           | `cassandra`                                                                        |
+| Picker kinds      | `cassandra`                                                                        |
+| SQL dialect       | `cql`                                                                              |
+| Cargo features    | `drv-cassandra`                                                                    |
+| Home slot         | `s3`                                                                               |
+| Bindings prefix   | `Cassandra*`                                                                       |
+| Lib test filters  | `drivers::cassandra`, `sqlgen::dialect::cql`, `sqlgen::portable::generated::cql::` |
+| Real-server suite | `tests/cassandra.rs` with `TABLER_TEST_CASSANDRA_URL`                              |
 
 ## Owned files
 
@@ -21,8 +21,10 @@ Everything the lane may change (dev/lanes.json is authoritative):
 
 - `src-tauri/src/drivers/cassandra/**`
 - `src-tauri/src/sqlgen/dialect/cql.rs`
+- `src-tauri/src/sqlgen/portable/gen/cql.rs`
 - `src-tauri/tests/cassandra.rs`
 - `src-tauri/tests/fixtures/cassandra/**`
+- `src-tauri/tests/fixtures/classify-generated/cql.json`
 - `src/features/drivers/cassandra/**`
 - `src/lib/ipc/mock/drivers/cassandra/**`
 - `src/lib/ipc/bindings/Cassandra*.ts`
@@ -77,6 +79,12 @@ Every classifier is default-deny: a statement or command it does not know is a w
 - Writes prove their count with lightweight transactions (`IF EXISTS`); without one EditRows is off (plan A13). Counter columns are not editable.
 - Read-only is ClassifierOnly and default-deny (plan §5.3). `count` is Costly.
 - Browsing pages with the driver's paging state through `table_source()`.
+
+## Definition of done (this lane)
+
+Beyond the shared list in [README.md](README.md#definition-of-done-v1):
+
+- **Classifier hardening (blocks landing).** `src-tauri/src/sqlgen/portable/gen/cql.rs` is complete and `src-tauri/tests/fixtures/classify-generated/cql.json` blessed, as [Classifier hardening](README.md#classifier-hardening) requires: every write keyword, write call and read starter of `dialect::cql::SPEC` in every shared context and in the contexts only this grammar has, an engine-realistic read corpus, its write forms and fuzz atoms, `suite().check()` and `suite().fuzz(…)` in place of the placeholder. Then a red-team review passes, each finding fixed and kept as a case. Known hard cases: `BEGIN [UNLOGGED | COUNTER] BATCH … APPLY BATCH` as one write; lightweight transactions (`INSERT … IF NOT EXISTS`, `UPDATE … IF …`, `DELETE … IF EXISTS`); `USING TTL` / `TIMESTAMP` writes; `$$…$$` strings as an inert context; `SELECT … ALLOW FILTERING`, `SELECT JSON` and `DESCRIBE` / `LIST` as reads.
 
 ## Research notes
 

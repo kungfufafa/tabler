@@ -1,0 +1,222 @@
+# UPDATE / INSERT / DELETE of staged edits (portable builders): rows by key only.
+# Written by sqlgen::portable::golden; never edited by hand.
+
+## ansi: changes
+update by pk
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = ?, \"price\" = ? WHERE \"id\" = ?"
+  params: [{"t":"text","v":"Bob"},{"t":"null"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'Bob', \"price\" = NULL WHERE \"id\" = 7"
+update by pk, returning
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = ?, \"price\" = ? WHERE \"id\" = ? RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+  params: [{"t":"text","v":"Bob"},{"t":"null"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'Bob', \"price\" = NULL WHERE \"id\" = 7 RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+update with DEFAULT and a clock
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = DEFAULT, \"created\" = CURRENT_TIMESTAMP(3), \"name\" = DEFAULT WHERE \"id\" = ?"
+  params: [{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = DEFAULT, \"created\" = CURRENT_TIMESTAMP(3), \"name\" = DEFAULT WHERE \"id\" = 7"
+update with DEFAULT and a clock, returning
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = DEFAULT, \"created\" = CURRENT_TIMESTAMP(3), \"name\" = DEFAULT WHERE \"id\" = ? RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+  params: [{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = DEFAULT, \"created\" = CURRENT_TIMESTAMP(3), \"name\" = DEFAULT WHERE \"id\" = 7 RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+update by a two-column key with NULL
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = ? WHERE \"id\" = ? AND \"name\" IS NULL"
+  params: [{"t":"int","v":3},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = 3 WHERE \"id\" = 7 AND \"name\" IS NULL"
+update by a two-column key with NULL, returning
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = ? WHERE \"id\" = ? AND \"name\" IS NULL RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+  params: [{"t":"int","v":3},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = 3 WHERE \"id\" = 7 AND \"name\" IS NULL RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+update by rowid
+  error UNSUPPORTED "unsupported: ANSI test has no row id: rows are addressed by their primary key"
+update by rowid, returning
+  error UNSUPPORTED "unsupported: ANSI test has no row id: rows are addressed by their primary key"
+update by all columns
+  error UNSUPPORTED "unsupported: ANSI test: a row of a table without a primary key cannot be edited"
+update by all columns, returning
+  error UNSUPPORTED "unsupported: ANSI test: a row of a table without a primary key cannot be edited"
+update with no change
+  error INVALID_INPUT "update has no changed columns"
+update with no change, returning
+  error INVALID_INPUT "update has no changed columns"
+update of a shortened column
+  sql: "UPDATE \"app\".\"users\" SET \"geom\" = ? WHERE \"id\" = ?"
+  params: [{"t":"text","v":"POINT (1 2)"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"geom\" = 'POINT (1 2)' WHERE \"id\" = 7"
+update of a shortened column, returning
+  sql: "UPDATE \"app\".\"users\" SET \"geom\" = ? WHERE \"id\" = ? RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+  params: [{"t":"text","v":"POINT (1 2)"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"geom\" = 'POINT (1 2)' WHERE \"id\" = 7 RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+update of an unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+update of an unknown column, returning
+  error INVALID_INPUT "unknown column \"nope\""
+insert
+  sql: "INSERT INTO \"app\".\"users\" (\"data\", \"name\") VALUES (?, ?)"
+  params: [{"t":"bytes","v":{"base64":"AP8=","len":2,"truncated":false}},{"t":"text","v":"it's"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"data\", \"name\") VALUES (X'00ff', 'it''s')"
+insert, returning
+  sql: "INSERT INTO \"app\".\"users\" (\"data\", \"name\") VALUES (?, ?) RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+  params: [{"t":"bytes","v":{"base64":"AP8=","len":2,"truncated":false}},{"t":"text","v":"it's"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"data\", \"name\") VALUES (X'00ff', 'it''s') RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+insert with a clock
+  sql: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (CURRENT_TIMESTAMP(3), ?)"
+  params: [{"t":"text","v":"x"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (CURRENT_TIMESTAMP(3), 'x')"
+insert with a clock, returning
+  sql: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (CURRENT_TIMESTAMP(3), ?) RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+  params: [{"t":"text","v":"x"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"created\", \"name\") VALUES (CURRENT_TIMESTAMP(3), 'x') RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+insert of defaults only
+  sql: "INSERT INTO \"app\".\"users\" DEFAULT VALUES"
+insert of defaults only, returning
+  sql: "INSERT INTO \"app\".\"users\" DEFAULT VALUES RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+insert of a shortened column
+  sql: "INSERT INTO \"app\".\"users\" (\"geom\") VALUES (?)"
+  params: [{"t":"text","v":"POINT (1 2)"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"geom\") VALUES ('POINT (1 2)')"
+insert of a shortened column, returning
+  sql: "INSERT INTO \"app\".\"users\" (\"geom\") VALUES (?) RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+  params: [{"t":"text","v":"POINT (1 2)"}]
+  preview: "INSERT INTO \"app\".\"users\" (\"geom\") VALUES ('POINT (1 2)') RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+delete by pk
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"id\" = ?"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE \"id\" = 7"
+delete by pk, returning
+  sql: "DELETE FROM \"app\".\"users\" WHERE \"id\" = ?"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM \"app\".\"users\" WHERE \"id\" = 7"
+delete by all columns
+  error UNSUPPORTED "unsupported: ANSI test: a row of a table without a primary key cannot be edited"
+delete by all columns, returning
+  error UNSUPPORTED "unsupported: ANSI test: a row of a table without a primary key cannot be edited"
+delete by an empty key
+  error INVALID_INPUT "row key is empty"
+delete by an empty key, returning
+  error INVALID_INPUT "row key is empty"
+
+## tsql: changes
+update by pk
+  sql: "UPDATE [app].[users] SET [name] = @P1, [price] = @P2 WHERE [id] = @P3"
+  params: [{"t":"text","v":"Bob"},{"t":"null"},{"t":"int","v":7}]
+  preview: "UPDATE [app].[users] SET [name] = N'Bob', [price] = NULL WHERE [id] = 7"
+update by pk, returning
+  sql: "UPDATE [app].[users] SET [name] = @P1, [price] = @P2 OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] WHERE [id] = @P3"
+  params: [{"t":"text","v":"Bob"},{"t":"null"},{"t":"int","v":7}]
+  preview: "UPDATE [app].[users] SET [name] = N'Bob', [price] = NULL OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] WHERE [id] = 7"
+update with DEFAULT and a clock
+  sql: "UPDATE [app].[users] SET [age] = DEFAULT, [created] = CURRENT_TIMESTAMP(3), [name] = DEFAULT WHERE [id] = @P1"
+  params: [{"t":"int","v":7}]
+  preview: "UPDATE [app].[users] SET [age] = DEFAULT, [created] = CURRENT_TIMESTAMP(3), [name] = DEFAULT WHERE [id] = 7"
+update with DEFAULT and a clock, returning
+  sql: "UPDATE [app].[users] SET [age] = DEFAULT, [created] = CURRENT_TIMESTAMP(3), [name] = DEFAULT OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] WHERE [id] = @P1"
+  params: [{"t":"int","v":7}]
+  preview: "UPDATE [app].[users] SET [age] = DEFAULT, [created] = CURRENT_TIMESTAMP(3), [name] = DEFAULT OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] WHERE [id] = 7"
+update by a two-column key with NULL
+  sql: "UPDATE [app].[users] SET [age] = @P1 WHERE [id] = @P2 AND [name] IS NULL"
+  params: [{"t":"int","v":3},{"t":"int","v":7}]
+  preview: "UPDATE [app].[users] SET [age] = 3 WHERE [id] = 7 AND [name] IS NULL"
+update by a two-column key with NULL, returning
+  sql: "UPDATE [app].[users] SET [age] = @P1 OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] WHERE [id] = @P2 AND [name] IS NULL"
+  params: [{"t":"int","v":3},{"t":"int","v":7}]
+  preview: "UPDATE [app].[users] SET [age] = 3 OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] WHERE [id] = 7 AND [name] IS NULL"
+update by rowid
+  error UNSUPPORTED "unsupported: Transact-SQL has no row id: rows are addressed by their primary key"
+update by rowid, returning
+  error UNSUPPORTED "unsupported: Transact-SQL has no row id: rows are addressed by their primary key"
+update by all columns
+  error UNSUPPORTED "unsupported: Transact-SQL: a row of a table without a primary key cannot be edited"
+update by all columns, returning
+  error UNSUPPORTED "unsupported: Transact-SQL: a row of a table without a primary key cannot be edited"
+update with no change
+  error INVALID_INPUT "update has no changed columns"
+update with no change, returning
+  error INVALID_INPUT "update has no changed columns"
+update of a shortened column
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot be edited"
+update of a shortened column, returning
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot be edited"
+update of an unknown column
+  error INVALID_INPUT "unknown column \"nope\""
+update of an unknown column, returning
+  error INVALID_INPUT "unknown column \"nope\""
+insert
+  sql: "INSERT INTO [app].[users] ([data], [name]) VALUES (@P1, @P2)"
+  params: [{"t":"bytes","v":{"base64":"AP8=","len":2,"truncated":false}},{"t":"text","v":"it's"}]
+  preview: "INSERT INTO [app].[users] ([data], [name]) VALUES (0x00ff, N'it''s')"
+insert, returning
+  sql: "INSERT INTO [app].[users] ([data], [name]) OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] VALUES (@P1, @P2)"
+  params: [{"t":"bytes","v":{"base64":"AP8=","len":2,"truncated":false}},{"t":"text","v":"it's"}]
+  preview: "INSERT INTO [app].[users] ([data], [name]) OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] VALUES (0x00ff, N'it''s')"
+insert with a clock
+  sql: "INSERT INTO [app].[users] ([created], [name]) VALUES (CURRENT_TIMESTAMP(3), @P1)"
+  params: [{"t":"text","v":"x"}]
+  preview: "INSERT INTO [app].[users] ([created], [name]) VALUES (CURRENT_TIMESTAMP(3), N'x')"
+insert with a clock, returning
+  sql: "INSERT INTO [app].[users] ([created], [name]) OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] VALUES (CURRENT_TIMESTAMP(3), @P1)"
+  params: [{"t":"text","v":"x"}]
+  preview: "INSERT INTO [app].[users] ([created], [name]) OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] VALUES (CURRENT_TIMESTAMP(3), N'x')"
+insert of defaults only
+  sql: "INSERT INTO [app].[users] DEFAULT VALUES"
+insert of defaults only, returning
+  sql: "INSERT INTO [app].[users] OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] DEFAULT VALUES"
+insert of a shortened column
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot be edited"
+insert of a shortened column, returning
+  error UNSUPPORTED "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot be edited"
+delete by pk
+  sql: "DELETE FROM [app].[users] WHERE [id] = @P1"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM [app].[users] WHERE [id] = 7"
+delete by pk, returning
+  sql: "DELETE FROM [app].[users] WHERE [id] = @P1"
+  params: [{"t":"int","v":7}]
+  preview: "DELETE FROM [app].[users] WHERE [id] = 7"
+delete by all columns
+  error UNSUPPORTED "unsupported: Transact-SQL: a row of a table without a primary key cannot be edited"
+delete by all columns, returning
+  error UNSUPPORTED "unsupported: Transact-SQL: a row of a table without a primary key cannot be edited"
+delete by an empty key
+  error INVALID_INPUT "row key is empty"
+delete by an empty key, returning
+  error INVALID_INPUT "row key is empty"
+
+## variants
+SET DEFAULT unsupported
+  error UNSUPPORTED "unsupported: ANSI test cannot SET a column to DEFAULT; enter the value explicitly"
+insert of defaults only unsupported
+  error UNSUPPORTED "unsupported: ANSI test cannot insert a row of defaults only; enter at least one value"
+server expression unsupported
+  error UNSUPPORTED "unsupported: ANSI test has no currentTimestamp for \"created\""
+update by rowid with a rowid locator
+  sql: "UPDATE \"app\".\"users\" SET \"age\" = ? WHERE rowid = ?"
+  params: [{"t":"int","v":1},{"t":"int","v":42}]
+  preview: "UPDATE \"app\".\"users\" SET \"age\" = 1 WHERE rowid = 42"
+Dollar
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = $1 WHERE \"id\" = $2"
+  params: [{"t":"text","v":"a"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'a' WHERE \"id\" = 7"
+Question
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = ? WHERE \"id\" = ?"
+  params: [{"t":"text","v":"a"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'a' WHERE \"id\" = 7"
+QuestionNumbered
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = ?1 WHERE \"id\" = ?2"
+  params: [{"t":"text","v":"a"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'a' WHERE \"id\" = 7"
+AtP
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = @P1 WHERE \"id\" = @P2"
+  params: [{"t":"text","v":"a"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'a' WHERE \"id\" = 7"
+AtName
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = @p1 WHERE \"id\" = @p2"
+  params: [{"t":"text","v":"a"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'a' WHERE \"id\" = 7"
+Colon
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = :1 WHERE \"id\" = :2"
+  params: [{"t":"text","v":"a"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'a' WHERE \"id\" = 7"
+Typed
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = {p1:nvarchar(50)} WHERE \"id\" = {p2:bigint}"
+  params: [{"t":"text","v":"a"},{"t":"int","v":7}]
+  preview: "UPDATE \"app\".\"users\" SET \"name\" = 'a' WHERE \"id\" = 7"

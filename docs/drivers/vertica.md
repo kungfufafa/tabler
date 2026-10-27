@@ -2,18 +2,18 @@
 
 > Seeded by the foundation (step F3b) from the driver plan and the research notes. The lane keeps it current and turns it into the driver's final doc before it lands: what works, the limits, how it was tested. Rules, tooling and the definition of done are in [README.md](README.md).
 
-|                   |                                                   |
-| ----------------- | ------------------------------------------------- |
-| Lane              | `vertica`                                         |
-| Databases         | Vertica                                           |
-| Drivers           | `vertica`                                         |
-| Picker kinds      | `vertica`                                         |
-| SQL dialect       | `vertica`                                         |
-| Cargo features    | `drv-vertica`                                     |
-| Home slot         | `s2`                                              |
-| Bindings prefix   | `Vertica*`                                        |
-| Lib test filters  | `drivers::vertica`, `sqlgen::dialect::vertica`    |
-| Real-server suite | `tests/vertica.rs` with `TABLER_TEST_VERTICA_URL` |
+|                   |                                                                                          |
+| ----------------- | ---------------------------------------------------------------------------------------- |
+| Lane              | `vertica`                                                                                |
+| Databases         | Vertica                                                                                  |
+| Drivers           | `vertica`                                                                                |
+| Picker kinds      | `vertica`                                                                                |
+| SQL dialect       | `vertica`                                                                                |
+| Cargo features    | `drv-vertica`                                                                            |
+| Home slot         | `s2`                                                                                     |
+| Bindings prefix   | `Vertica*`                                                                               |
+| Lib test filters  | `drivers::vertica`, `sqlgen::dialect::vertica`, `sqlgen::portable::generated::vertica::` |
+| Real-server suite | `tests/vertica.rs` with `TABLER_TEST_VERTICA_URL`                                        |
 
 ## Owned files
 
@@ -21,8 +21,10 @@ Everything the lane may change (dev/lanes.json is authoritative):
 
 - `src-tauri/src/drivers/vertica/**`
 - `src-tauri/src/sqlgen/dialect/vertica.rs`
+- `src-tauri/src/sqlgen/portable/gen/vertica.rs`
 - `src-tauri/tests/vertica.rs`
 - `src-tauri/tests/fixtures/vertica/**`
+- `src-tauri/tests/fixtures/classify-generated/vertica.json`
 - `src/features/drivers/vertica/**`
 - `src/lib/ipc/mock/drivers/vertica/**`
 - `src/lib/ipc/bindings/Vertica*.ts`
@@ -75,6 +77,12 @@ Every classifier is default-deny: a statement or command it does not know is a w
 - A driver of its own (not a PostgreSQL flavor): the wire protocol looks like PostgreSQL's but the session differs (plan §1.5 Q1). TLS through tokio-rustls, MD5 through md-5 and SHA-512 through aws-lc-rs.
 - Read-only: `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` (plan §5.3).
 - No Vertica server runs on Windows: the tests use a scripted byte-stream fake (the `fake_pg` pattern) and hash vectors checked against vertica-python.
+
+## Definition of done (this lane)
+
+Beyond the shared list in [README.md](README.md#definition-of-done-v1):
+
+- **Classifier hardening (blocks landing).** `src-tauri/src/sqlgen/portable/gen/vertica.rs` is complete and `src-tauri/tests/fixtures/classify-generated/vertica.json` blessed, as [Classifier hardening](README.md#classifier-hardening) requires: every write keyword, write call and read starter of `dialect::vertica::SPEC` in every shared context and in the contexts only this grammar has, an engine-realistic read corpus, its write forms and fuzz atoms, `suite().check()` and `suite().fuzz(…)` in place of the placeholder. Then a red-team review passes, each finding fixed and kept as a case. Known hard cases: dollar-quoted strings (`$$…$$` and `$tag$…$tag$`) as inert contexts and glued to a write keyword; the meta-functions that change state: the deny-list of `write_calls` becomes an allow-list of the safe ones, so an unlisted meta-function is a write (a new rules field is a request to the lead); `COPY`, `EXPORT TO …`, `SELECT … INTO`.
 
 ## Research notes
 

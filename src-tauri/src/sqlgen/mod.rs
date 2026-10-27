@@ -21,10 +21,14 @@ pub mod mutate;
 ))]
 pub mod native;
 pub mod objects;
+// Builders of the extension dialects, reached through `sql`.
+pub mod portable;
 pub mod quote;
 pub mod security;
 pub mod select;
 pub mod split;
+// The live-SQL facade over every dialect.
+pub mod sql;
 pub mod transfer;
 
 pub use dialect::SqlDialect;

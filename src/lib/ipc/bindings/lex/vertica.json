@@ -1,0 +1,122 @@
+{
+  "lex": {
+    "identQuotes": [
+      [
+        "\"",
+        "\""
+      ]
+    ],
+    "stringQuotes": [
+      "'"
+    ],
+    "readings": [
+      {
+        "stringBackslash": false,
+        "identBackslash": false
+      },
+      {
+        "stringBackslash": true,
+        "identBackslash": false
+      }
+    ],
+    "eStrings": true,
+    "dollarQuotes": true,
+    "dollarTags": true,
+    "tripleQuotes": false,
+    "rawPrefixes": false,
+    "bytePrefixes": false,
+    "hashComments": false,
+    "slashSlashComments": false,
+    "nestedBlockComments": false,
+    "dashCommentNeedsSpace": false,
+    "batchSeparator": null,
+    "terminatorOptional": false,
+    "beginEndBodies": false
+  },
+  "classify": {
+    "queries": [
+      "SELECT",
+      "WITH"
+    ],
+    "inspections": [
+      "SHOW",
+      "EXPLAIN"
+    ],
+    "writes": [
+      "INTO",
+      "INSERT",
+      "UPDATE",
+      "DELETE",
+      "MERGE",
+      "CREATE",
+      "DROP",
+      "ALTER",
+      "TRUNCATE",
+      "COPY",
+      "EXPORT",
+      "GRANT",
+      "REVOKE"
+    ],
+    "writeCalls": [
+      "CLOSE_*",
+      "INTERRUPT_STATEMENT",
+      "CANCEL_*",
+      "ANALYZE_STATISTICS*",
+      "ANALYZE_EXTERNAL_ROW_COUNT",
+      "PURGE*",
+      "DROP_*",
+      "MAKE_AHM_NOW",
+      "ADVANCE_EPOCH",
+      "SET_*",
+      "CLEAR_*",
+      "RESET_*",
+      "DO_TM_TASK",
+      "EXPORT_*",
+      "IMPORT_*",
+      "START_*",
+      "STOP_*",
+      "SHUTDOWN*",
+      "COPY_*",
+      "MOVE_*",
+      "SWAP_*",
+      "PARTITION_TABLE",
+      "PARTITION_PROJECTION",
+      "REBALANCE_*",
+      "RESHARD_*",
+      "REFRESH*",
+      "ENABLE_*",
+      "DISABLE_*",
+      "REENABLE_*",
+      "DESIGNER_*",
+      "MARK_DESIGN_KSAFE",
+      "RETIRE_*",
+      "RESTORE_*",
+      "ALTER_*",
+      "ENFORCE_*",
+      "MEASURE_LOCATION_PERFORMANCE",
+      "FLUSH_*",
+      "INSTALL_*",
+      "PROMOTE_*",
+      "DEMOTE_*",
+      "SANDBOX_*",
+      "UNSANDBOX_*",
+      "MIGRATE_*",
+      "SYNC_CATALOG",
+      "CLEAN_*",
+      "COMPACT_STORAGE",
+      "FINISH_FETCHING_FILES",
+      "BACKGROUND_DEPOT_WARMING",
+      "RELOAD_*",
+      "REALIGN_*",
+      "RELEASE_*",
+      "RESTRICT_*",
+      "RESERVE_*",
+      "CHANGE_*",
+      "SAVE_*",
+      "HURRY_SERVICE",
+      "NOTIFY",
+      "LDAP_LINK_*"
+    ],
+    "tableFunctions": null
+  }
+}

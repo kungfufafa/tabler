@@ -13,8 +13,10 @@
       "rust": [
         "src-tauri/src/drivers/postgres/flavor/imp/**",
         "src-tauri/src/sqlgen/dialect/redshift.rs",
+        "src-tauri/src/sqlgen/portable/gen/redshift.rs",
         "src-tauri/tests/pg_flavors.rs",
-        "src-tauri/tests/fixtures/pg_flavors/**"
+        "src-tauri/tests/fixtures/pg_flavors/**",
+        "src-tauri/tests/fixtures/classify-generated/redshift.json"
       ],
       "ts": ["src/features/drivers/pg-flavors/**", "src/lib/ipc/mock/drivers/pg-flavors/**"],
       "bindings": [
@@ -24,7 +26,11 @@
         "src/lib/ipc/bindings/lex/redshift.json"
       ],
       "docs": ["docs/drivers/pg-flavors.md"],
-      "tests": ["drivers::postgres::flavor", "sqlgen::dialect::redshift"],
+      "tests": [
+        "drivers::postgres::flavor",
+        "sqlgen::dialect::redshift",
+        "sqlgen::portable::generated::redshift::"
+      ],
       "env": ["TABLER_TEST_CRDB_URL", "TABLER_TEST_GREENPLUM_URL", "TABLER_TEST_REDSHIFT_URL"]
     },
     "sqlite-remote": {
@@ -61,13 +67,19 @@
       "rust": [
         "src-tauri/src/drivers/duckdb/**",
         "src-tauri/src/sqlgen/dialect/duckdb.rs",
+        "src-tauri/src/sqlgen/portable/gen/duckdb.rs",
         "src-tauri/tests/duckdb.rs",
-        "src-tauri/tests/fixtures/duckdb/**"
+        "src-tauri/tests/fixtures/duckdb/**",
+        "src-tauri/tests/fixtures/classify-generated/duckdb.json"
       ],
       "ts": ["src/features/drivers/duckdb/**", "src/lib/ipc/mock/drivers/duckdb/**"],
       "bindings": ["src/lib/ipc/bindings/Duckdb*.ts", "src/lib/ipc/bindings/lex/duckdb.json"],
       "docs": ["docs/drivers/duckdb.md"],
-      "tests": ["drivers::duckdb", "sqlgen::dialect::duckdb"],
+      "tests": [
+        "drivers::duckdb",
+        "sqlgen::dialect::duckdb",
+        "sqlgen::portable::generated::duckdb::"
+      ],
       "env": ["TABLER_TEST_DUCKDB_PATH"]
     },
     "clickhouse": {
@@ -82,8 +94,10 @@
       "rust": [
         "src-tauri/src/drivers/clickhouse/**",
         "src-tauri/src/sqlgen/dialect/clickhouse.rs",
+        "src-tauri/src/sqlgen/portable/gen/clickhouse.rs",
         "src-tauri/tests/clickhouse.rs",
-        "src-tauri/tests/fixtures/clickhouse/**"
+        "src-tauri/tests/fixtures/clickhouse/**",
+        "src-tauri/tests/fixtures/classify-generated/clickhouse.json"
       ],
       "ts": ["src/features/drivers/clickhouse/**", "src/lib/ipc/mock/drivers/clickhouse/**"],
       "bindings": [
@@ -91,7 +105,11 @@
         "src/lib/ipc/bindings/lex/clickhouse.json"
       ],
       "docs": ["docs/drivers/clickhouse.md"],
-      "tests": ["drivers::clickhouse", "sqlgen::dialect::clickhouse"],
+      "tests": [
+        "drivers::clickhouse",
+        "sqlgen::dialect::clickhouse",
+        "sqlgen::portable::generated::clickhouse::"
+      ],
       "env": ["TABLER_TEST_CLICKHOUSE_URL"]
     },
     "sqlserver": {
@@ -106,13 +124,19 @@
       "rust": [
         "src-tauri/src/drivers/sqlserver/**",
         "src-tauri/src/sqlgen/dialect/tsql.rs",
+        "src-tauri/src/sqlgen/portable/gen/tsql.rs",
         "src-tauri/tests/sqlserver.rs",
-        "src-tauri/tests/fixtures/sqlserver/**"
+        "src-tauri/tests/fixtures/sqlserver/**",
+        "src-tauri/tests/fixtures/classify-generated/tsql.json"
       ],
       "ts": ["src/features/drivers/sqlserver/**", "src/lib/ipc/mock/drivers/sqlserver/**"],
       "bindings": ["src/lib/ipc/bindings/Mssql*.ts", "src/lib/ipc/bindings/lex/tsql.json"],
       "docs": ["docs/drivers/sqlserver.md"],
-      "tests": ["drivers::sqlserver", "sqlgen::dialect::tsql"],
+      "tests": [
+        "drivers::sqlserver",
+        "sqlgen::dialect::tsql",
+        "sqlgen::portable::generated::tsql::"
+      ],
       "env": ["TABLER_TEST_SQLSERVER_URL"]
     },
     "snowflake": {
@@ -127,13 +151,19 @@
       "rust": [
         "src-tauri/src/drivers/snowflake/**",
         "src-tauri/src/sqlgen/dialect/snowflake.rs",
+        "src-tauri/src/sqlgen/portable/gen/snowflake.rs",
         "src-tauri/tests/snowflake.rs",
-        "src-tauri/tests/fixtures/snowflake/**"
+        "src-tauri/tests/fixtures/snowflake/**",
+        "src-tauri/tests/fixtures/classify-generated/snowflake.json"
       ],
       "ts": ["src/features/drivers/snowflake/**", "src/lib/ipc/mock/drivers/snowflake/**"],
       "bindings": ["src/lib/ipc/bindings/Snowflake*.ts", "src/lib/ipc/bindings/lex/snowflake.json"],
       "docs": ["docs/drivers/snowflake.md"],
-      "tests": ["drivers::snowflake", "sqlgen::dialect::snowflake"],
+      "tests": [
+        "drivers::snowflake",
+        "sqlgen::dialect::snowflake",
+        "sqlgen::portable::generated::snowflake::"
+      ],
       "env": ["TABLER_TEST_SNOWFLAKE_URL"]
     },
     "bigquery": {
@@ -148,13 +178,19 @@
       "rust": [
         "src-tauri/src/drivers/bigquery/**",
         "src-tauri/src/sqlgen/dialect/bigquery.rs",
+        "src-tauri/src/sqlgen/portable/gen/bigquery.rs",
         "src-tauri/tests/bigquery.rs",
-        "src-tauri/tests/fixtures/bigquery/**"
+        "src-tauri/tests/fixtures/bigquery/**",
+        "src-tauri/tests/fixtures/classify-generated/bigquery.json"
       ],
       "ts": ["src/features/drivers/bigquery/**", "src/lib/ipc/mock/drivers/bigquery/**"],
       "bindings": ["src/lib/ipc/bindings/Bigquery*.ts", "src/lib/ipc/bindings/lex/bigquery.json"],
       "docs": ["docs/drivers/bigquery.md"],
-      "tests": ["drivers::bigquery", "sqlgen::dialect::bigquery"],
+      "tests": [
+        "drivers::bigquery",
+        "sqlgen::dialect::bigquery",
+        "sqlgen::portable::generated::bigquery::"
+      ],
       "env": ["TABLER_TEST_BIGQUERY_URL"]
     },
     "vertica": {
@@ -169,13 +205,19 @@
       "rust": [
         "src-tauri/src/drivers/vertica/**",
         "src-tauri/src/sqlgen/dialect/vertica.rs",
+        "src-tauri/src/sqlgen/portable/gen/vertica.rs",
         "src-tauri/tests/vertica.rs",
-        "src-tauri/tests/fixtures/vertica/**"
+        "src-tauri/tests/fixtures/vertica/**",
+        "src-tauri/tests/fixtures/classify-generated/vertica.json"
       ],
       "ts": ["src/features/drivers/vertica/**", "src/lib/ipc/mock/drivers/vertica/**"],
       "bindings": ["src/lib/ipc/bindings/Vertica*.ts", "src/lib/ipc/bindings/lex/vertica.json"],
       "docs": ["docs/drivers/vertica.md"],
-      "tests": ["drivers::vertica", "sqlgen::dialect::vertica"],
+      "tests": [
+        "drivers::vertica",
+        "sqlgen::dialect::vertica",
+        "sqlgen::portable::generated::vertica::"
+      ],
       "env": ["TABLER_TEST_VERTICA_URL"]
     },
     "dynamodb": {
@@ -211,13 +253,15 @@
       "rust": [
         "src-tauri/src/drivers/cassandra/**",
         "src-tauri/src/sqlgen/dialect/cql.rs",
+        "src-tauri/src/sqlgen/portable/gen/cql.rs",
         "src-tauri/tests/cassandra.rs",
-        "src-tauri/tests/fixtures/cassandra/**"
+        "src-tauri/tests/fixtures/cassandra/**",
+        "src-tauri/tests/fixtures/classify-generated/cql.json"
       ],
       "ts": ["src/features/drivers/cassandra/**", "src/lib/ipc/mock/drivers/cassandra/**"],
       "bindings": ["src/lib/ipc/bindings/Cassandra*.ts", "src/lib/ipc/bindings/lex/cql.json"],
       "docs": ["docs/drivers/cassandra.md"],
-      "tests": ["drivers::cassandra", "sqlgen::dialect::cql"],
+      "tests": ["drivers::cassandra", "sqlgen::dialect::cql", "sqlgen::portable::generated::cql::"],
       "env": ["TABLER_TEST_CASSANDRA_URL"]
     },
     "redis": {

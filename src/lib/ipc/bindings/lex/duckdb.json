@@ -1,0 +1,99 @@
+{
+  "lex": {
+    "identQuotes": [
+      [
+        "\"",
+        "\""
+      ]
+    ],
+    "stringQuotes": [
+      "'"
+    ],
+    "readings": [
+      {
+        "stringBackslash": false,
+        "identBackslash": false
+      }
+    ],
+    "eStrings": true,
+    "dollarQuotes": true,
+    "dollarTags": true,
+    "tripleQuotes": false,
+    "rawPrefixes": false,
+    "bytePrefixes": false,
+    "hashComments": false,
+    "slashSlashComments": false,
+    "nestedBlockComments": true,
+    "dashCommentNeedsSpace": false,
+    "batchSeparator": null,
+    "terminatorOptional": false,
+    "beginEndBodies": false
+  },
+  "classify": {
+    "queries": [
+      "SELECT",
+      "WITH",
+      "VALUES",
+      "TABLE",
+      "FROM",
+      "PIVOT",
+      "UNPIVOT",
+      "PIVOT_WIDER",
+      "PIVOT_LONGER"
+    ],
+    "inspections": [
+      "SHOW",
+      "DESCRIBE",
+      "DESC",
+      "SUMMARIZE",
+      "EXPLAIN",
+      "USE"
+    ],
+    "writes": [
+      "INTO",
+      "INSERT",
+      "UPDATE",
+      "DELETE",
+      "MERGE",
+      "CREATE",
+      "DROP",
+      "ALTER",
+      "TRUNCATE",
+      "COPY",
+      "ATTACH",
+      "DETACH",
+      "INSTALL",
+      "LOAD",
+      "EXPORT",
+      "IMPORT",
+      "CHECKPOINT",
+      "VACUUM",
+      "CALL",
+      "PRAGMA",
+      "SET",
+      "RESET"
+    ],
+    "writeCalls": [
+      "READ_*",
+      "GLOB",
+      "SNIFF_CSV",
+      "PARQUET_*",
+      "ICEBERG_*",
+      "DELTA_*",
+      "SQLITE_*",
+      "POSTGRES_*",
+      "MYSQL_*",
+      "QUERY",
+      "QUERY_TABLE"
+    ],
+    "tableFunctions": [
+      "RANGE",
+      "GENERATE_SERIES",
+      "UNNEST",
+      "DUCKDB_*",
+      "PRAGMA_*",
+      "JSON_EACH",
+      "JSON_TREE"
+    ]
+  }
+}

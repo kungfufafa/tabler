@@ -1,0 +1,139 @@
+# Splitting, Safe Mode classes, trace redaction and EXPLAIN (portable builders).
+# Written by sqlgen::portable::golden; never edited by hand.
+
+## ansi
+"SELECT 1"
+  split: ["SELECT 1"@0..8:1]
+  class: read
+"SELECT 1; DELETE FROM t"
+  split: ["SELECT 1"@0..8:1, "DELETE FROM t"@10..23:1]
+  class: write
+"SELECT 1 DELETE FROM t"
+  split: ["SELECT 1 DELETE FROM t"@0..22:1]
+  class: write
+"SELECT * FROM [delete] WHERE \"a]\" = 'x;y'"
+  split: ["SELECT * FROM [delete] WHERE \"a]\" = 'x;y'"@0..41:1]
+  class: write
+"SELECT * INTO t2 FROM t"
+  split: ["SELECT * INTO t2 FROM t"@0..23:1]
+  class: write
+"WITH a AS (SELECT 1) SELECT * FROM a;"
+  split: ["WITH a AS (SELECT 1) SELECT * FROM a"@0..36:1]
+  class: read
+"EXPLAIN ANALYZE UPDATE t SET a = 1"
+  split: ["EXPLAIN ANALYZE UPDATE t SET a = 1"@0..34:1]
+  class: write
+"SELECT 'it\\'s; DELETE FROM t'"
+  split: ["SELECT 'it\\'s"@0..13:1, "DELETE FROM t'"@15..29:1]
+  class: write
+"SELECT $$; DROP TABLE t$$"
+  split: ["SELECT $$; DROP TABLE t$$"@0..25:1]
+  class: read
+"SELECT 1 /* a /* b */ DELETE FROM t */"
+  split: ["SELECT 1 /* a /* b */ DELETE FROM t */"@0..38:1]
+  class: write
+"SELECT * FROM OPENQUERY(srv, 'DELETE FROM t')"
+  split: ["SELECT * FROM OPENQUERY(srv, 'DELETE FROM t')"@0..45:1]
+  class: write
+"SELECT * FROM generate_series(1, 3), read_parquet('x')"
+  split: ["SELECT * FROM generate_series(1, 3), read_parquet('x')"@0..54:1]
+  class: write
+"SELECT * FROM t, remote_rows('x')"
+  split: ["SELECT * FROM t, remote_rows('x')"@0..33:1]
+  class: write
+"BEGIN SELECT 1; SELECT 2; END; SELECT 3"
+  split: ["BEGIN SELECT 1; SELECT 2; END"@0..29:1, "SELECT 3"@31..39:1]
+  class: write
+"SELECT 1\nGO\nSELECT 2\ngo 3\n"
+  split: ["SELECT 1\nGO\nSELECT 2\ngo 3"@0..25:1]
+  class: read
+"CREATE USER u PASSWORD 'p''w'; ALTER USER u IDENTIFIED WITH sha2 BY 'x\\'y'"
+  split: ["CREATE USER u PASSWORD 'p''w'"@0..29:1, "ALTER USER u IDENTIFIED WITH sha2 BY 'x\\'y'"@31..74:1]
+  class: write
+  redacted: "CREATE USER u PASSWORD '********'; ALTER USER u IDENTIFIED WITH sha2 BY '********'" ["p'w","'p''w'","x\\","'x\\'","x'y","'x\\'y'"]
+""
+  split: []
+  class: write
+"-- only a comment"
+  split: []
+  class: write
+
+## ansi: explain
+Plan: "EXPLAIN SELECT 1" (offset 8)
+Analyze: error UNSUPPORTED "unsupported: ANSI test: Explain Analyze is not available"
+analyze in_tx=Some(false) writes=false: None
+analyze in_tx=Some(false) writes=true: error UNSUPPORTED "unsupported: ANSI test: Explain Analyze would really run this statement, and its changes could not be undone here; use Explain instead"
+analyze in_tx=Some(true) writes=false: None
+analyze in_tx=Some(true) writes=true: error UNSUPPORTED "unsupported: ANSI test: Explain Analyze would really run this statement, and its changes could not be undone here; use Explain instead"
+analyze in_tx=None writes=false: None
+analyze in_tx=None writes=true: error UNSUPPORTED "unsupported: ANSI test: Explain Analyze would really run this statement, and its changes could not be undone here; use Explain instead"
+
+## tsql
+"SELECT 1"
+  split: ["SELECT 1"@0..8:1]
+  class: read
+"SELECT 1; DELETE FROM t"
+  split: ["SELECT 1; DELETE FROM t"@0..23:1]
+  class: write
+"SELECT 1 DELETE FROM t"
+  split: ["SELECT 1 DELETE FROM t"@0..22:1]
+  class: write
+"SELECT * FROM [delete] WHERE \"a]\" = 'x;y'"
+  split: ["SELECT * FROM [delete] WHERE \"a]\" = 'x;y'"@0..41:1]
+  class: read
+"SELECT * INTO t2 FROM t"
+  split: ["SELECT * INTO t2 FROM t"@0..23:1]
+  class: write
+"WITH a AS (SELECT 1) SELECT * FROM a;"
+  split: ["WITH a AS (SELECT 1) SELECT * FROM a;"@0..37:1]
+  class: read
+"EXPLAIN ANALYZE UPDATE t SET a = 1"
+  split: ["EXPLAIN ANALYZE UPDATE t SET a = 1"@0..34:1]
+  class: write
+"SELECT 'it\\'s; DELETE FROM t'"
+  split: ["SELECT 'it\\'s; DELETE FROM t'"@0..29:1]
+  class: write
+"SELECT $$; DROP TABLE t$$"
+  split: ["SELECT $$; DROP TABLE t$$"@0..25:1]
+  class: write
+"SELECT 1 /* a /* b */ DELETE FROM t */"
+  split: ["SELECT 1 /* a /* b */ DELETE FROM t */"@0..38:1]
+  class: write
+"SELECT * FROM OPENQUERY(srv, 'DELETE FROM t')"
+  split: ["SELECT * FROM OPENQUERY(srv, 'DELETE FROM t')"@0..45:1]
+  class: write
+"SELECT * FROM generate_series(1, 3), read_parquet('x')"
+  split: ["SELECT * FROM generate_series(1, 3), read_parquet('x')"@0..54:1]
+  class: read
+"SELECT * FROM t, remote_rows('x')"
+  split: ["SELECT * FROM t, remote_rows('x')"@0..33:1]
+  class: read
+"BEGIN SELECT 1; SELECT 2; END; SELECT 3"
+  split: ["BEGIN SELECT 1; SELECT 2; END; SELECT 3"@0..39:1]
+  class: write
+"SELECT 1\nGO\nSELECT 2\ngo 3\n"
+  split: ["SELECT 1"@0..8:1, "SELECT 2"@12..20:3]
+  class: read
+"CREATE USER u PASSWORD 'p''w'; ALTER USER u IDENTIFIED WITH sha2 BY 'x\\'y'"
+  split: ["CREATE USER u PASSWORD 'p''w'; ALTER USER u IDENTIFIED WITH sha2 BY 'x\\'y'"@0..74:1]
+  class: write
+""
+  split: []
+  class: write
+"-- only a comment"
+  split: []
+  class: write
+
+## tsql: explain
+Plan: "EXPLAIN SELECT 1" (offset 8)
+Analyze: error UNSUPPORTED "unsupported: Transact-SQL: Explain Analyze is not available"
+analyze in_tx=Some(false) writes=false: None
+analyze in_tx=Some(false) writes=true: error UNSUPPORTED "unsupported: Transact-SQL: Explain Analyze would really run this statement, and its changes could not be undone here; use Explain instead"
+analyze in_tx=Some(true) writes=false: None
+analyze in_tx=Some(true) writes=true: error UNSUPPORTED "unsupported: Transact-SQL: Explain Analyze would really run this statement, and its changes could not be undone here; use Explain instead"
+analyze in_tx=None writes=false: None
+analyze in_tx=None writes=true: error UNSUPPORTED "unsupported: Transact-SQL: Explain Analyze would really run this statement, and its changes could not be undone here; use Explain instead"
+
+## variant: an analyze transaction
+analyze in_tx=Some(false) writes=true: Some(("BEGIN", ["ROLLBACK"]))
+analyze in_tx=Some(true) writes=true: error UNSUPPORTED "unsupported: ANSI test: Explain Analyze would really run this statement, and its changes could not be undone here; use Explain instead"

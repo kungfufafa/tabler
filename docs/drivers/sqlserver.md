@@ -2,18 +2,18 @@
 
 > Seeded by the foundation (step F3b) from the driver plan and the research notes. The lane keeps it current and turns it into the driver's final doc before it lands: what works, the limits, how it was tested. Rules, tooling and the definition of done are in [README.md](README.md).
 
-|                   |                                                       |
-| ----------------- | ----------------------------------------------------- |
-| Lane              | `sqlserver`                                           |
-| Databases         | SQL Server                                            |
-| Drivers           | `sqlserver`                                           |
-| Picker kinds      | `sqlserver`                                           |
-| SQL dialect       | `tsql`                                                |
-| Cargo features    | `drv-sqlserver`                                       |
-| Home slot         | `s2`                                                  |
-| Bindings prefix   | `Mssql*`                                              |
-| Lib test filters  | `drivers::sqlserver`, `sqlgen::dialect::tsql`         |
-| Real-server suite | `tests/sqlserver.rs` with `TABLER_TEST_SQLSERVER_URL` |
+|                   |                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| Lane              | `sqlserver`                                                                          |
+| Databases         | SQL Server                                                                           |
+| Drivers           | `sqlserver`                                                                          |
+| Picker kinds      | `sqlserver`                                                                          |
+| SQL dialect       | `tsql`                                                                               |
+| Cargo features    | `drv-sqlserver`                                                                      |
+| Home slot         | `s2`                                                                                 |
+| Bindings prefix   | `Mssql*`                                                                             |
+| Lib test filters  | `drivers::sqlserver`, `sqlgen::dialect::tsql`, `sqlgen::portable::generated::tsql::` |
+| Real-server suite | `tests/sqlserver.rs` with `TABLER_TEST_SQLSERVER_URL`                                |
 
 ## Owned files
 
@@ -21,8 +21,10 @@ Everything the lane may change (dev/lanes.json is authoritative):
 
 - `src-tauri/src/drivers/sqlserver/**`
 - `src-tauri/src/sqlgen/dialect/tsql.rs`
+- `src-tauri/src/sqlgen/portable/gen/tsql.rs`
 - `src-tauri/tests/sqlserver.rs`
 - `src-tauri/tests/fixtures/sqlserver/**`
+- `src-tauri/tests/fixtures/classify-generated/tsql.json`
 - `src/features/drivers/sqlserver/**`
 - `src/lib/ipc/mock/drivers/sqlserver/**`
 - `src/lib/ipc/bindings/Mssql*.ts`
@@ -77,6 +79,12 @@ Every classifier is default-deny: a statement or command it does not know is a w
 - The text projection is per column: `CONVERT(NVARCHAR(MAX), e)` mangles varbinary, which it reads as UTF-16 (critique D3).
 - Integrated (Windows) authentication works on Windows only; Entra tokens come through Command mode.
 - tiberius is built without native-tls or vendored OpenSSL (`tests/manifest_features.rs` guards it).
+
+## Definition of done (this lane)
+
+Beyond the shared list in [README.md](README.md#definition-of-done-v1):
+
+- **Classifier hardening (blocks landing).** `src-tauri/src/sqlgen/portable/gen/tsql.rs` is complete and `src-tauri/tests/fixtures/classify-generated/tsql.json` blessed, as [Classifier hardening](README.md#classifier-hardening) requires: every write keyword, write call and read starter of `dialect::tsql::SPEC` in every shared context and in the contexts only this grammar has, an engine-realistic read corpus, its write forms and fuzz atoms, `suite().check()` and `suite().fuzz(…)` in place of the placeholder. Then a red-team review passes, each finding fixed and kept as a case. `RULES` must stay equal to `portable::testing::TSQL_RULES` (the renderer's T-SQL cases run against `TSQL_LIKE_TEST`, whose suite `gen/tsql_like.rs` is the foundation's), so a rule change is a request to the lead. Known hard cases: batches without terminators (a write keyword anywhere makes the batch a write, and `SELECT 1 DELETE FROM t` is two statements); `GO` (alone on its line, with a count, and inside strings, `[names]` and comments, where it separates nothing); `OPENQUERY`, `OPENROWSET` and `OPENDATASOURCE` with the DML inside a string; `EXEC` / `EXECUTE` of a procedure or of a string (`EXEC('DELETE …')`, `sp_executesql`) and the `xp_` / `sp_` procedures; `SELECT … INTO`.
 
 ## Research notes
 
