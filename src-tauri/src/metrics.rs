@@ -1610,7 +1610,8 @@ mod tests {
 
     /// A session whose statement ignores the first `ignore` cancel requests (a lost cancel) and
     /// otherwise runs for `runs`. Its plain `execute` fails: a write must take the cancellable
-    /// path.
+    /// path. It keeps time with tokio's clock, which its tests pause: the time limit, the cancel
+    /// retries and the statement's polling then come in the same order on a busy machine too.
     struct Stubborn {
         runs: Duration,
         ignore: usize,
@@ -1635,7 +1636,7 @@ mod tests {
                 cancel,
                 crate::drivers::CancelHandle::Mysql { conn_id: 1 },
             )?;
-            let started = Instant::now();
+            let started = tokio::time::Instant::now();
             loop {
                 if self.cancels() > self.ignore {
                     return Err(AppError::Cancelled);
@@ -1782,7 +1783,7 @@ mod tests {
         .await
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_cancel_that_was_lost_is_sent_again() {
         // The first two cancel requests do nothing; the statement would run for eight seconds.
         let session = Stubborn::new(Duration::from_secs(8), 2);
@@ -1796,7 +1797,7 @@ mod tests {
         assert_eq!(session.cancels(), 3);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_write_takes_the_cancellable_path_and_is_cancelled_at_its_limit() {
         // `Stubborn::execute` fails, so an uncancellable write would show that error instead.
         let session = Stubborn::new(Duration::from_secs(60), 0);
@@ -1811,7 +1812,7 @@ mod tests {
         assert_eq!(session.cancels(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_write_that_finishes_after_its_limit_reports_what_it_did() {
         // The cancel never takes (it came too late): the write ran to its end.
         let session = Stubborn::new(Duration::from_millis(250), usize::MAX);
@@ -1820,7 +1821,7 @@ mod tests {
         assert!(session.cancels() >= 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_read_that_answers_after_its_limit_is_a_timeout() {
         // MySQL's killed `SLEEP()` answers instead of failing.
         let session = Stubborn::new(Duration::from_millis(250), usize::MAX);
@@ -1831,7 +1832,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_statement_within_its_limit_is_never_cancelled() {
         let session = Stubborn::new(Duration::from_millis(5), 0);
         let prepared = prepare(
