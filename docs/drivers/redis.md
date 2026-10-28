@@ -286,6 +286,100 @@ Version gates: SCAN TYPE and SET KEEPTTL need 6.0+, COPY 6.2+, COMMAND DOCS 7.0+
 - redis 1.8.0 was released on 2026-10-23 (the day of this research). Pin 1.7.x and expect fast minor-version churn (seven minors in four months).
 - MULTI/EXEC has no rollback: a failing command inside EXEC leaves the earlier ones applied. The commit UI must report per-command errors instead of claiming the batch was atomic.
 
+## Phase A status
+
+Phase A was limited to codecs, builders and the fake, because the native session arrives with F6. Nothing here is wired into `entry.rs` yet.
+
+**Done** (`src-tauri/src/drivers/redis/`, `src-tauri/src/sqlgen/native/redis.rs`):
+
+- `cli.rs`: the redis-cli tokenizer. It is `sdssplitargs` exactly: `"…"` takes escapes and `\xHH`, `'…'` is literal except `\'`, a quote can open mid-word, and a closing quote must be followed by a space. Arguments come out as bytes. The console splitter breaks at line ends and `;` outside quotes, so a quoted value may hold both; offsets are in characters.
+- `classify.rs`: the read/write classifier, default-deny.
+  - The static allow-list covers the core read commands (with subcommand rules for `OBJECT`, `MEMORY`, `XINFO`, `COMMAND`, `PUBSUB`) and the read commands of RedisJSON, TimeSeries, Bloom and Search.
+  - `ServerReads` parses `COMMAND` / `COMMAND INFO` in RESP2 and RESP3, including subcommand entries. It adds a command flagged `readonly` unless it is also `admin`, `may_replicate`, `noscript` or `blocking`. A command that lists subcommands reads only through a listed read subcommand, whatever its own flags; a module's `*.CONFIG` and `*.DEBUG` commands and internal `_…` commands stay writes.
+  - A never-read list wins over the server's flags: `EVAL*`, `FCALL*`, `SCRIPT`, `FUNCTION`, `CONFIG`, `CLIENT`, `DEBUG`, `SHUTDOWN`, `MULTI`/`EXEC`/`WATCH`, `HELLO`, `AUTH`, `KEYS`, pub/sub, replication. Module commands that run the user's code are on it too, because their `readonly` flag describes only the keys they declare: RedisGears (`RG.*`), triggers and functions (`TFCALL`, `TFCALLASYNC`, `TFUNCTION`) and RedisAI's script, DAG and model runs (`AI.SCRIPTEXECUTE`, `AI.DAGEXECUTE[_RO]`, …).
+  - Static rules also win over the flags: `SORT`, `GEORADIUS` and `GEORADIUSBYMEMBER` read unless they `STORE` (or `STOREDIST`), so a server that flags them `readonly` cannot make the storing forms reads. A typed name with a `|` (`object|encoding`, the form subcommand entries are kept in) never matches the server's list.
+  - `SELECT` is a read, since it changes only the console's own connection, like `USE`. `XREAD … BLOCK` is a write. A line that cannot be tokenized is a write.
+  - `refused_in_console` names the commands the console must not run: blocking pops, `XREAD… BLOCK`, `WAIT`, pub/sub, `MONITOR`, `HELLO`/`AUTH`/`QUIT`/`RESET`, `CLIENT REPLY|TRACKING|CACHING`.
+- `values.rs`: total over every `redis::Value` variant in RESP2 and RESP3.
+  - nil becomes NULL; integers beyond 2^53 become `BigInt`; a big number keeps its digits.
+  - UTF-8 strings are text, anything else is bytes. Keys are never truncated.
+  - Doubles are floats; `inf` and `nan` become `Other`.
+  - A server error inside a reply becomes `Other{ty:"error"}`.
+  - Nested replies become JSON: binary as `{"$base64":…}`, a map with non-text keys as pairs, exact integers.
+  - A string preview that may be cut becomes `Bytes{truncated, len}`, which the grid does not edit until the whole value is loaded: saving a prefix with `SET … XX KEEPTTL` would drop the rest. The `GETRANGE` read counts as the whole value only when its length equals `STRLEN`'s, or, when `STRLEN` failed (an ACL that allows only `GETRANGE`), when it stopped short of the cap. A `STRLEN` that disagrees with the read (a write between the two) keeps it a preview.
+  - TTL is in seconds from `PTTL`, rounded the way Redis's `TTL` rounds.
+- `keys.rs`: key types, plus the columns of a `dbN` table: `key`, `type`, `ttl`, `size`, `memory`, `value`. **The primary key is `(key, type)`**, so `RowKey::Pk` carries the type. A plan then knows how to write the value, and the apply can prove the key was not replaced (see below). Previews of strings and containers are capped and ranged (`GETRANGE`, `LRANGE`, `SSCAN`, `HSCAN`, `ZRANGE … WITHSCORES`, `XREVRANGE`); a RedisJSON document is read whole with `JSON.GET` (see Limits). Module types show without a preview.
+- `scan.rs`:
+  - Cursors are validated decimal `String`s; `next_token` is `None` at 0.
+  - `parse_scan` reads the replies of `SCAN`, `HSCAN`, `SSCAN` and `ZSCAN`. Keys are deduplicated within a page.
+  - The filter bar maps onto `MATCH` globs. Equals is an exact key, read with `TYPE` + `PTTL` and never a SCAN. Contains, prefix and suffix are escaped literals; the `…Case` variants match either ASCII case with `[aA]`. `Like`/`Ilike` map `%`→`*` and `_`→`?`. The raw filter is the glob as typed. A type equality becomes `SCAN … TYPE`, or a filter after the `TYPE` round before 6.0.
+  - A page is built from two pipelined rounds (`TYPE`+`PTTL`, then size, preview and optional `MEMORY USAGE`). Keys that are gone are dropped; failed replies become NULL cells.
+- `info.rs`:
+  - parses `INFO` and the keyspace lines;
+  - identifies the product (Valkey, Dragonfly, Garnet, KeyDB, Memurai or Redis) and its compatible version;
+  - derives the gates `KEEPTTL`, `UNLINK`, `COPY` and `SCAN TYPE` from that version;
+  - reads `CONFIG GET databases` in both reply shapes, falling back to 16 and to the highest `dbN` in the keyspace, capped at 4096;
+  - builds the sidebar's databases, its single schema, and one table per database with key counts.
+- `reply.rs`: console replies as grids.
+  - A scalar is one `value` cell; an array is `(#, value)` rows numbered from 1.
+  - A RESP3 map, or RESP2 pairs (`HGETALL`, `CONFIG GET`, `XINFO STREAM`, `MEMORY STATS`, `HRANDFIELD … WITHVALUES`), is `(field, value)`.
+  - `… WITHSCORES` and `ZPOPMIN`/`ZPOPMAX` are `(member, score)` in both protocols.
+  - The SCAN family gives its items, with the next cursor as a notice. `INFO` gives `(section, field, value)`.
+  - The row cap is applied.
+- `errors.rs`: a server error keeps redis-cli's text. Bad credentials (`WRONGPASS`, `NOAUTH`, the pre-6 `ERR invalid password` forms) map to `Auth`; timeouts to `Timeout`; a dropped connection to `NotConnected`; a refused connection to `Connect`. `NOPERM`, `READONLY`, `BUSY`, `LOADING`, `OOM` and the cluster redirects get hints.
+- `sqlgen/native/redis.rs`: every command as an argv plus the reply it expects (`Expect::Ok` / `Int(n)` / `Bytes(…)` with the failure message).
+  - `Command::text` quotes each argument so that the redis-cli tokenizer reads it back byte for byte. A fuzz test checks the round trip.
+  - Read builders: SCAN, sizes, previews, `INFO`, `CONFIG GET`, `COMMAND`, `CLIENT ID`/`KILL`.
+  - Edit builders: `SET … XX KEEPTTL` (before 6.0, an atomic `EVAL` that keeps the TTL), `SET … NX [PX]`, `PEXPIRE`/`PERSIST`, `RENAMENX`, `UNLINK`/`DEL`, `COPY`, `FLUSHDB ASYNC`, and `JSON.SET`.
+  - New keys of every type, with checked scores and stream ids, and the container edits: hash, list (replace or delete at an index, a delete through a unique marker), set, zset and stream.
+  - A `Guard` is what the apply proves under `WATCH`, before `MULTI`: `Guard::checks` gives the reads to send and the reply each must get (`TYPE` for `Type`, `EXISTS` = 0 for `Absent`, or its own `Checks`). Redis runs the rest of a transaction after a command fails, so every change of several commands is guarded where a failed command would let the next one do harm:
+    - a new key is `Absent` unless it is one command that refuses an existing key itself (`SET … NX [PX]`, `JSON.SET … NX` without a TTL). `HSET`, `RPUSH`, `SADD`, `ZADD` and `XADD` would add to the key that is there, and the `PEXPIRE` after a refused `JSON.SET … NX` would set its TTL;
+    - a hash field rename (`HSETNX` + `HDEL`) checks that the old field still holds the loaded value (`HGET`) and the new name is free (`HEXISTS`), a set member rename (`SADD` + `SREM`) the same with `SISMEMBER`, and both refuse a rename to the same name;
+    - a list edit by position (`LSET`, or `LSET` + `LREM` of a marker) checks that the position still holds the loaded element (`LINDEX`), since a push or pop elsewhere shifts it.
+  - The builders that need a guard return `Guarded { guard, commands }`; `Guarded::edit(change)` makes it a plan's `KeyEdit`.
+  - `plan_change` / `plan_changes` turn `StagedChange`s into a `KeyEdit` per change, each with a `Guard`: the type for updates and deletes, the rule above for inserts. An update writes the value, then the TTL, then renames last, so a retry repeats only idempotent writes.
+  - NULL, `DEFAULT`, server expressions, read-only columns, TTL ≤ 0 and value edits of containers are refused.
+  - `preview` prints `WATCH`, then `MULTI … EXEC` per guarded change.
+- `testing.rs`: an in-process RESP2/RESP3 server (tokio). It implements:
+  - `HELLO`, ACL `AUTH`, `SELECT`, `SCAN` (MATCH/COUNT/TYPE, uneven pages), expiry and every key type;
+  - `MULTI`/`EXEC`/`WATCH` with Redis semantics (no rollback, a nil EXEC);
+  - `CLIENT ID`/`KILL` and `DEBUG SLEEP` for cancel tests;
+  - `INFO`/`CONFIG`/`COMMAND`;
+  - version gates (5.0 lacks `HELLO`, `KEEPTTL`, `SCAN TYPE`, `COPY`), a product name, and a refused `CONFIG`.
+- `tests.rs`: the codecs against the fake through redis-rs's own client.
+  - The handshake in both protocols with an ACL user; bad credentials.
+  - Introspection, with the fallbacks for managed services and old servers.
+  - Browsing every type page by page, with RESP2 and RESP3 giving identical rows.
+  - Every filter kind, including an exact key that sends no SCAN.
+  - A commit with failing changes: a refused rename after its TTL edit applied, a type guard, an insert onto an existing key. Also a WATCH conflict (nil EXEC), container edits, the console in both protocols, a cancel through `CLIENT KILL ID`, and a response timeout.
+  - Through the `MULTI` path of the apply: a RedisJSON insert with a TTL onto an existing RedisJSON key and onto a hash leaves both keys and their (absent) TTLs as they were and sends none of its writes; hash and set renames onto existing names, from stale or missing fields and members, and list edits at shifted positions are refused before `MULTI` and change nothing.
+- Checks: `lane.mjs redis clippy --snapshot` is clean; `test-all --snapshot` passes 1140 lib tests, 77 of them the lane's.
+
+**Left for Phase B** (after F6 and F10):
+
+- `entry.rs`: `open` builds its own TCP or TLS stream (tokio-rustls through `tls_client::rustls_config`, SNI from `ConnectTarget::tls_host`) and hands it to `MultiplexedConnection::new_with_config`.
+  - Use one connection per database index for grid reads, plus a dedicated console connection where `SELECT`, `MULTI` and `WATCH` persist.
+  - Set `AsyncConnectionConfig`'s response timeout. redis-rs 1.x gives up after **500 ms** by default (connect: 1 s), which breaks long SCANs and console commands.
+  - Read replies with `ConnectionLike::req_packed_command(s)`. `query_async` turns the errors nested in an EXEC reply into one `Err`, which loses the per-change results.
+- `NativeSession` and `TableSource`:
+  - `browse` uses `scan::*`, `count` uses `DBSIZE` (or 1/0 for an exact key), and `fetch_cell` reads the whole value with `GET` or whole containers.
+  - `plan_changes` uses `sqlgen::native::redis::plan_changes` and `preview`.
+  - `apply_changes` follows `tests.rs::apply`: `WATCH` the guard's key, send `Guard::checks` and compare each reply with its `Expect` (the first mismatch is the change's error and nothing else is sent), then `MULTI … EXEC`, one `RowResult` per change. Its TxMode is Batch: "no rollback on command errors". The per-type editor applies its container edits the same way.
+  - Decide whether to cap the RedisJSON preview (for example a third round that reads `JSON.DEBUG MEMORY` or `MEMORY USAGE` first and skips `JSON.GET` above a threshold), or keep it under Limits.
+  - The console uses `split_console`, `classify_line` (with `ServerReads` from `COMMAND` at connect), `refused_in_console`, `reply::shape` and the row cap.
+  - `definition()` and `call`/`call_kind` serve the per-type inspector and the server info. Cancel is `CancelHandle::Custom`, sending `CLIENT KILL ID` from another connection.
+  - Caps: ReadOnlyMode `ClassifierOnly`, `hardened` for MCP refusal.
+  - Sorting can only reorder the current page; decide whether to set `caps.data.sort`.
+- The renderer (key browser, per-type inspector, console mode, New key dialog), the mock, the URL schemes (`redis`, `rediss`), bindings, and the real-server suite `tests/redis.rs`.
+
 ## Limits
 
 _The lane lists here what v1 does not do, before it lands (definition of done, item 10)._
+
+- Standalone servers only: no Cluster (MOVED/ASK are errors with a hint) and no Sentinel.
+- The console does not run blocking commands, pub/sub, `MONITOR`, or commands that change the connection itself.
+- Grid edits change the value of strings and RedisJSON documents only. Container elements are edited in the per-type editor, and module types are read-only.
+- The value preview of a RedisJSON key reads the whole document (`JSON.GET`), because RedisJSON has no ranged read of a document: a page of large documents is slow and loads every document whole, unlike strings and containers, which are always read ranged.
+- Sorting reorders only the loaded page: SCAN has no order, and it may return a key twice or return empty pages.
+- `KEYS` is classified as a write (it blocks the server). Read-only connections use SCAN through the key browser.
+- Redis error codes are words, so they stay in the message text; `vendor_code` stays empty.
