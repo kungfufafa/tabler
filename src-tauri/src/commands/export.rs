@@ -16,9 +16,10 @@ use crate::commands::import::session_on_database;
 use crate::drivers::DbSession;
 use crate::error::AppError;
 use crate::export::results::run_export_results;
-use crate::export::run_export;
 use crate::export::tables::run_export_tables;
+use crate::export::{export_dialect, run_export};
 use crate::state::{AppState, Connection};
+use crate::types::caps::Feature;
 use crate::types::export::{
     ExportProgress, ExportRequest, ExportResult, ExportResultsRequest, ExportResultsResult,
     ExportSource, ExportTablesProgress, ExportTablesRequest, ExportTablesResult,
@@ -73,7 +74,17 @@ pub async fn export_database_tables(
     connection_id: Uuid,
     database: Option<String>,
 ) -> Result<Vec<TableSummary>, AppError> {
+    export_database_tables_on(&state, connection_id, database).await
+}
+
+/// The body of [`export_database_tables`], callable without a Tauri runtime.
+pub(crate) async fn export_database_tables_on(
+    state: &AppState,
+    connection_id: Uuid,
+    database: Option<String>,
+) -> Result<Vec<TableSummary>, AppError> {
     let conn = state.connection(connection_id).await?;
+    conn.session_for(Feature::ExportTables).await?;
     let driver = conn.profile.driver;
     if driver == Driver::Mysql {
         let db = match database {
@@ -86,7 +97,7 @@ pub async fn export_database_tables(
         };
         return conn.session().await.list_tables(&db).await;
     }
-    let (session, temporary) = database_session(&state, &conn, database.as_deref()).await?;
+    let (session, temporary) = database_session(state, &conn, database.as_deref()).await?;
     let listed = async {
         let mut out = Vec::new();
         for schema in session.list_schemas().await? {
@@ -148,13 +159,25 @@ pub async fn export_data(
     req: ExportRequest,
     on_progress: Channel<ExportProgress>,
 ) -> Result<ExportResult, AppError> {
+    export_data_on(&state, connection_id, req, on_progress).await
+}
+
+/// The body of [`export_data`], callable without a Tauri runtime.
+pub(crate) async fn export_data_on(
+    state: &AppState,
+    connection_id: Uuid,
+    req: ExportRequest,
+    on_progress: Channel<ExportProgress>,
+) -> Result<ExportResult, AppError> {
     if req.export_id.trim().is_empty() {
         return Err(AppError::InvalidInput("exportId is required".into()));
     }
     let token = CancellationToken::new();
-    let _running = RunningExport::register(&state, &req.export_id, token.clone())?;
+    let _running = RunningExport::register(state, &req.export_id, token.clone())?;
     let conn = state.connection(connection_id).await?;
     let session = conn.session().await;
+    // Refused before the table is read (`run_export` asks again).
+    export_dialect(session.as_ref(), &req.format)?;
     let meta = match &req.source {
         ExportSource::Table { table, .. } => Some(cached_meta(&conn, table).await?),
         ExportSource::Sql { .. } | ExportSource::Rows { .. } => None,
@@ -195,13 +218,26 @@ pub async fn export_tables(
     req: ExportTablesRequest,
     on_progress: Channel<ExportTablesProgress>,
 ) -> Result<ExportTablesResult, AppError> {
+    export_tables_on(&state, connection_id, req, on_progress).await
+}
+
+/// The body of [`export_tables`], callable without a Tauri runtime.
+pub(crate) async fn export_tables_on(
+    state: &AppState,
+    connection_id: Uuid,
+    req: ExportTablesRequest,
+    on_progress: Channel<ExportTablesProgress>,
+) -> Result<ExportTablesResult, AppError> {
     if req.export_id.trim().is_empty() {
         return Err(AppError::InvalidInput("exportId is required".into()));
     }
     let token = CancellationToken::new();
-    let _running = RunningExport::register(&state, &req.export_id, token.clone())?;
+    let _running = RunningExport::register(state, &req.export_id, token.clone())?;
     let conn = state.connection(connection_id).await?;
-    let (session, temporary) = database_session(&state, &conn, req.database.as_deref()).await?;
+    // Refused before anything is read or another database is opened.
+    conn.session_for(Feature::ExportTables).await?;
+    export_dialect(conn.session().await.as_ref(), &req.format)?;
+    let (session, temporary) = database_session(state, &conn, req.database.as_deref()).await?;
     log::info!(
         "export {} started: {} tables{}",
         req.export_id,

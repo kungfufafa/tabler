@@ -11,12 +11,16 @@ use async_trait::async_trait;
 
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
+use crate::sqlgen::dialect::spec::ExplainForm;
 use crate::sqlgen::dialect::{DialectRef, SqlDialect};
 use crate::sqlgen::split::leading_keywords;
 use crate::types::browse::{TraceCategory, TracedSql};
-use crate::types::caps::Feature;
+use crate::types::caps::{Feature, SessionCaps};
+use crate::types::driver::Flavor;
 use crate::types::profile::{ConnectionProfile, Driver};
-use crate::types::query::{ExecOutcome, ResultColumn, ResultSet, ServerNotice, StatementKind};
+use crate::types::query::{
+    ExecOutcome, ExplainMode, ResultColumn, ResultSet, ServerNotice, StatementKind,
+};
 use crate::types::schema::{
     CompletionMetadata, DatabaseInfo, SchemaInfo, TableMeta, TableRef, TableSummary,
 };
@@ -28,6 +32,7 @@ pub mod native;
 pub mod postgres;
 pub mod redact;
 pub mod registry;
+pub mod sharing;
 pub mod sqlite;
 
 // The lane drivers, each built only with its cargo feature (`registry` stands in for the others).
@@ -993,15 +998,39 @@ pub trait DbSession: Send + Sync {
     fn is_mariadb(&self) -> bool {
         false
     }
+
+    /// The server family the session found, when its driver serves several.
+    fn flavor(&self) -> Option<Flavor> {
+        self.is_mariadb().then_some(Flavor::Mariadb)
+    }
+
+    /// What the session can do: every feature for a core driver on its core dialect, otherwise
+    /// `SessionCaps::minimal` until the driver says more. The backend refuses what they lack
+    /// (`require`, `core_dialect`) before anything reaches the server.
+    fn capabilities(&self) -> SessionCaps {
+        SessionCaps::base(self.driver(), self.dialect(), self.flavor())
+    }
+
+    /// The session's own EXPLAIN of `mode`, where its server differs from its dialect's
+    /// (`sqlgen::sql::wrap_explain` otherwise).
+    fn explain_form(&self, _mode: ExplainMode) -> Option<ExplainForm> {
+        None
+    }
 }
 
 impl dyn DbSession + '_ {
+    /// Refuses feature `f` when the session's caps lack it, before the caller sends anything.
+    pub fn require(&self, f: Feature) -> Result<(), AppError> {
+        self.capabilities().require(f)
+    }
+
     /// The core dialect of the session, for core-only feature `f` (the DDL planner, exports,
     /// administration…): the only way into the core SQL generators besides the `sqlgen::sql`
-    /// facade. Refused unless the dialect is a core one and the driver is a core driver or its
-    /// descriptor lets it reuse `f` (`core_reuse`): an extension dialect would otherwise fall
-    /// into a core generator's "else" branch.
+    /// facade. Refused unless the session's caps grant `f`, the dialect is a core one and the
+    /// driver is a core driver or its descriptor lets it reuse `f` (`core_reuse`): an extension
+    /// dialect would otherwise fall into a core generator's "else" branch.
     pub fn core_dialect(&self, f: Feature) -> Result<Dialect, AppError> {
+        self.require(f)?;
         let driver = self.driver();
         core_dialect_for(driver, driver.descriptor().core_reuse, self.dialect(), f)
     }
@@ -1049,13 +1078,21 @@ impl TxStatement {
     }
 }
 
-/// Shared check used by every driver inside `transaction`.
+/// Shared check used by every driver inside `transaction`, before it commits. An outcome whose
+/// count the server did not report (`affected_unknown`) cannot pass a guard: a driver that
+/// cannot prove its counts checks its own way first or offers no keyless edits (README of
+/// `docs/drivers`).
 pub fn check_affected(
     st: &TxStatement,
     outcome: &ExecOutcome,
     index: usize,
 ) -> Result<(), AppError> {
     match st.expect_affected {
+        Some(n) if outcome.affected_unknown => Err(AppError::db(format!(
+            "expected to affect {n} row(s), but the server cannot confirm how many rows the \
+             statement changed, so it was rolled back"
+        ))
+        .with_statement_index(index)),
         Some(n) if outcome.affected != n => Err(AppError::db(format!(
             "expected to affect {n} row(s) but matched {}; the row may have been changed or deleted by someone else",
             outcome.affected
@@ -1664,6 +1701,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn check_affected_refuses_an_unconfirmed_count() {
+        let guarded = TxStatement::new("DELETE FROM t WHERE id = 1", Vec::new()).expecting(1);
+        let exact = ExecOutcome {
+            affected: 1,
+            ..ExecOutcome::default()
+        };
+        check_affected(&guarded, &exact, 0).unwrap();
+        // A count the server did not confirm never passes a guard, whatever it says.
+        let unknown = ExecOutcome {
+            affected: 1,
+            affected_unknown: true,
+            ..ExecOutcome::default()
+        };
+        let err = check_affected(&guarded, &unknown, 3).unwrap_err();
+        assert!(err.to_string().contains("cannot confirm"), "{err}");
+        assert_eq!(err.to_payload().statement_index, Some(3));
+        // Without a guard nothing is checked.
+        let plain = TxStatement::new("INSERT INTO t VALUES (1)", Vec::new());
+        check_affected(&plain, &unknown, 0).unwrap();
+        // A wrong count is still the old error.
+        let wrong = ExecOutcome {
+            affected: 2,
+            ..ExecOutcome::default()
+        };
+        let err = check_affected(&guarded, &wrong, 0).unwrap_err();
+        assert!(err.to_string().contains("matched 2"), "{err}");
+        // The flag is left out of the JSON unless set, and absent reads as false.
+        assert!(
+            serde_json::to_value(&exact)
+                .unwrap()
+                .get("affectedUnknown")
+                .is_none()
+        );
+        let back: ExecOutcome = serde_json::from_value(
+            serde_json::json!({ "affected": 1, "lastInsertId": null, "rows": null }),
+        )
+        .unwrap();
+        assert!(!back.affected_unknown);
+        assert_eq!(
+            serde_json::to_value(&unknown).unwrap()["affectedUnknown"],
+            serde_json::json!(true)
+        );
     }
 
     /// The helpers keep the core dialects' behaviour and read an extension dialect's spec.

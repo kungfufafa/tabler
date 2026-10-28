@@ -10,6 +10,7 @@
 use crate::drivers::redact::{Redaction, redact_secrets};
 use crate::error::AppError;
 use crate::sqlgen::classify::StatementClass;
+use crate::sqlgen::dialect::spec::ExplainForm;
 use crate::sqlgen::dialect::{DialectRef, SqlDialect, ensure_built};
 use crate::sqlgen::mutate::TableSpec;
 use crate::sqlgen::select::{BuiltSql, SelectSpec};
@@ -160,6 +161,18 @@ pub fn explain_offset(d: impl Into<SqlDialect>, mode: ExplainMode, mariadb: bool
         DialectRef::Core(dialect) => explain::explain_offset(dialect, mode, mariadb),
         DialectRef::Ext(spec) => portable::explain::explain_offset(spec, mode),
     }
+}
+
+/// `wrap_explain` with a session's own EXPLAIN (`DbSession::explain_form`, where its server
+/// differs from its dialect): the statement and the characters put before it. `engine` names
+/// the server in a refusal.
+pub fn wrap_explain_form(
+    form: ExplainForm,
+    engine: &str,
+    sql: &str,
+    mode: ExplainMode,
+) -> Result<(String, usize), AppError> {
+    portable::explain::wrap_form(form, engine, sql, mode)
 }
 
 /// What an executing Explain Analyze runs in so that its changes are undone.
@@ -313,6 +326,26 @@ mod tests {
     use crate::types::mutate::ServerExpr;
 
     const CORE: [Dialect; 3] = [Dialect::Postgres, Dialect::Mysql, Dialect::Sqlite];
+
+    #[test]
+    fn a_sessions_own_explain_form() {
+        let form = ExplainForm::Prefix("EXPLAIN (DISTSQL)");
+        assert_eq!(
+            wrap_explain_form(form, "CockroachDB", "SELECT 1 ;", ExplainMode::Plan).unwrap(),
+            ("EXPLAIN (DISTSQL) SELECT 1".to_string(), 18)
+        );
+        let refused = wrap_explain_form(
+            ExplainForm::Unsupported,
+            "CockroachDB",
+            "SELECT 1",
+            ExplainMode::Analyze,
+        )
+        .unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "unsupported: CockroachDB: Explain Analyze is not available"
+        );
+    }
 
     /// The facade's result and the core builder's are the same.
     fn same<T: Debug>(facade: T, core: T) {

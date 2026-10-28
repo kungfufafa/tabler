@@ -30,6 +30,8 @@ use crate::error::AppError;
 use crate::secrets::CommandPassword;
 use crate::sqlgen::{Dialect, SqlDialect};
 use crate::types::browse::TracedSql;
+use crate::types::caps::SessionCaps;
+use crate::types::driver::{Flavor, PgFlavor};
 use crate::types::profile::{Driver, SslMode};
 use crate::types::query::{ExecOutcome, ResultSet};
 use crate::types::schema::{
@@ -74,6 +76,10 @@ pub struct PgSession {
     kept_statements: std::sync::Mutex<Vec<(String, String)>>,
     /// The statements this session ran for the app, for the console log (see `SqlTrace`).
     trace: SqlTrace,
+    /// The engine the profile says the server is (`ProfileOptions::pg_flavor`).
+    profile_flavor: Option<PgFlavor>,
+    /// The engine `server_info` found the server to be; it overrides the profile's.
+    found_flavor: std::sync::OnceLock<PgFlavor>,
 }
 
 impl PgSession {
@@ -110,7 +116,26 @@ impl PgSession {
             editor_runs: Mutex::new(()),
             kept_statements: std::sync::Mutex::new(Vec::new()),
             trace: SqlTrace::default(),
+            profile_flavor: profile.options.pg_flavor,
+            found_flavor: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Remembers the engine a `version()` names (once), and refuses one these sessions cannot
+    /// serve.
+    fn note_version(&self, version: &str) -> Result<(), AppError> {
+        let found = flavor::detect(version);
+        if let Some(found) = found
+            && self.found_flavor.set(found).is_ok()
+            && self.profile_flavor != Some(found)
+        {
+            log::info!(
+                "the server is {:?}, not {:?} as its profile says",
+                found,
+                self.profile_flavor
+            );
+        }
+        flavor::refuse_unsupported(found, self.dialect())
     }
 
     /// A worker client from the pool (session init already applied by the `post_create` hook).
@@ -261,6 +286,7 @@ async fn run_execute_checked(
             rows,
             truncated: false,
         }),
+        affected_unknown: false,
     })
 }
 
@@ -282,11 +308,29 @@ impl DbSession for PgSession {
                 &[],
             )
             .await?;
+        let version: String = row.try_get(0)?;
+        self.note_version(&version)?;
         Ok(ServerInfo {
-            version: row.try_get(0)?,
+            version,
             current_database: row.try_get(1)?,
             current_user: row.try_get(2)?,
         })
+    }
+
+    fn flavor(&self) -> Option<Flavor> {
+        self.found_flavor
+            .get()
+            .copied()
+            .or(self.profile_flavor)
+            .map(flavor::session_flavor)
+    }
+
+    fn capabilities(&self) -> SessionCaps {
+        flavor::adjust_caps(SessionCaps::base(
+            Driver::Postgres,
+            self.dialect(),
+            self.flavor(),
+        ))
     }
 
     /// Checks the pool, and keeps the editor connection alive when it is idle (no editor run

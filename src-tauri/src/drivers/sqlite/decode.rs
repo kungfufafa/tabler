@@ -313,6 +313,7 @@ pub fn run_execute(
                 rows: out,
                 truncated: false,
             }),
+            affected_unknown: false,
         })
     } else {
         let affected = stmt.execute(rusqlite::params_from_iter(bound.iter()))? as u64;
@@ -320,6 +321,7 @@ pub fn run_execute(
             affected,
             last_insert_id: Some(conn.last_insert_rowid().to_string()),
             rows: None,
+            affected_unknown: false,
         })
     }
 }

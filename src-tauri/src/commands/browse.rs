@@ -15,6 +15,7 @@ use crate::state::{AppState, Connection};
 use crate::types::browse::{
     BrowsePage, BrowseRequest, FilterGroup, RowCount, RowIdentity, RowKey, TracedSql,
 };
+use crate::types::caps::Feature;
 use crate::types::profile::Driver;
 use crate::types::schema::{ColumnMeta, TableMeta, TableRef};
 use crate::types::value::{Value, decode_hex};
@@ -87,7 +88,17 @@ pub async fn browse_table(
         ));
     }
     let conn = state.connection(connection_id).await?;
-    let session = conn.session().await;
+    let limit = query_time_limit(&state.appdb, timeout_secs);
+    browse_rows(&conn, &req, limit).await
+}
+
+/// The body of [`browse_table`] on an open connection, under `limit`.
+pub(crate) async fn browse_rows(
+    conn: &Connection,
+    req: &BrowseRequest,
+    limit: Option<Duration>,
+) -> Result<BrowsePage, AppError> {
+    let session = conn.session_for(Feature::StructureView).await?;
     log::debug!(
         "browse_table {}.{} limit={} offset={}",
         req.table.schema.as_deref().unwrap_or(""),
@@ -95,9 +106,8 @@ pub async fn browse_table(
         req.limit,
         req.offset
     );
-    let meta = cached_meta(&conn, &req.table).await?;
-    let limit = query_time_limit(&state.appdb, timeout_secs);
-    browse_page(session.as_ref(), &meta, &req, limit).await
+    let meta = cached_meta(conn, &req.table).await?;
+    browse_page(session.as_ref(), &meta, req, limit).await
 }
 
 /// Whether a failed select addressed by `identity` is worth running again addressing the rows by
@@ -228,23 +238,41 @@ pub async fn count_table_rows(
     timeout_secs: Option<u32>,
 ) -> Result<RowCount, AppError> {
     let conn = state.connection(connection_id).await?;
-    let session = conn.session().await;
-    let meta = cached_meta(&conn, &table).await?;
-    if let Some(estimate) = estimated_count(
-        &meta,
-        filter.is_some(),
+    let limit = query_time_limit(&state.appdb, timeout_secs);
+    count_rows(
+        &conn,
+        &table,
+        filter.as_ref(),
         exact.unwrap_or(false),
         estimate_above.unwrap_or(DEFAULT_ESTIMATE_ABOVE),
-    ) {
+        limit,
+    )
+    .await
+}
+
+/// The body of [`count_table_rows`] on an open connection, under `limit`. An exact count (asked
+/// for, or with no estimate to give) needs `ExactCount`: on some engines it scans, and bills, the
+/// whole table.
+pub(crate) async fn count_rows(
+    conn: &Connection,
+    table: &TableRef,
+    filter: Option<&FilterGroup>,
+    exact: bool,
+    estimate_above: i64,
+    limit: Option<Duration>,
+) -> Result<RowCount, AppError> {
+    let session = conn.session().await;
+    // A filtered count is never estimated. Otherwise whether there is an estimate to give is
+    // known only from the table's structure (read here, or cached by the grid).
+    if exact || filter.is_some() {
+        session.require(Feature::ExactCount)?;
+    }
+    let meta = cached_meta(conn, table).await?;
+    if let Some(estimate) = estimated_count(&meta, filter.is_some(), exact, estimate_above) {
         return Ok(estimate);
     }
-    let built = sql::count(
-        session.dialect(),
-        &meta.table,
-        &meta.columns,
-        filter.as_ref(),
-    )?;
-    let limit = query_time_limit(&state.appdb, timeout_secs);
+    session.require(Feature::ExactCount)?;
+    let built = sql::count(session.dialect(), &meta.table, &meta.columns, filter)?;
     let rs = query_limited(session.as_ref(), &built.sql, &built.params, limit).await?;
     let count = match rs.rows.first().and_then(|r| r.first()) {
         Some(Value::Int(i)) => *i,
@@ -289,10 +317,21 @@ pub async fn fetch_cell(
     timeout_secs: Option<u32>,
 ) -> Result<Value, AppError> {
     let conn = state.connection(connection_id).await?;
-    let session = conn.session().await;
-    let meta = cached_meta(&conn, &table).await?;
     let limit = query_time_limit(&state.appdb, timeout_secs);
-    fetch_cell_limited(session.as_ref(), &meta, &column, &key, limit).await
+    fetch_cell_on(&conn, &table, &key, &column, limit).await
+}
+
+/// The body of [`fetch_cell`] on an open connection, under `limit`.
+pub(crate) async fn fetch_cell_on(
+    conn: &Connection,
+    table: &TableRef,
+    key: &RowKey,
+    column: &str,
+    limit: Option<Duration>,
+) -> Result<Value, AppError> {
+    let session = conn.session_for(Feature::StructureView).await?;
+    let meta = cached_meta(conn, table).await?;
+    fetch_cell_limited(session.as_ref(), &meta, column, key, limit).await
 }
 
 /// The statements the connection's session ran for the app since the last call (introspection,

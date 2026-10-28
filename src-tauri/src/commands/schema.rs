@@ -7,7 +7,7 @@ use crate::drivers::DbSession;
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::ddl::{MYSQL_COLLATIONS_SQL, MYSQL_ENGINES_SQL, PG_USER_TYPES_SQL};
-use crate::state::AppState;
+use crate::state::{AppState, Connection};
 use crate::types::caps::Feature;
 use crate::types::schema::{
     CharsetInfo, CompletionMetadata, DatabaseInfo, SchemaInfo, StructureChoices, TableMeta,
@@ -53,12 +53,20 @@ pub async fn get_table(
     refresh: Option<bool>,
 ) -> Result<TableMeta, AppError> {
     let conn = state.connection(connection_id).await?;
-    if !refresh.unwrap_or(false)
-        && let Some(meta) = conn.schema_cache.read().await.get(&table)
-    {
+    table_on(&conn, table, refresh.unwrap_or(false)).await
+}
+
+/// The body of [`get_table`] on an open connection.
+pub(crate) async fn table_on(
+    conn: &Connection,
+    table: TableRef,
+    refresh: bool,
+) -> Result<TableMeta, AppError> {
+    let session = conn.session_for(Feature::StructureView).await?;
+    if !refresh && let Some(meta) = conn.schema_cache.read().await.get(&table) {
         return Ok((**meta).clone());
     }
-    let meta = conn.session().await.table_meta(&table).await?;
+    let meta = session.table_meta(&table).await?;
     conn.schema_cache
         .write()
         .await
@@ -72,10 +80,18 @@ pub async fn get_view_definition(
     connection_id: Uuid,
     table: TableRef,
 ) -> Result<Option<String>, AppError> {
-    state
-        .session(connection_id)
+    let conn = state.connection(connection_id).await?;
+    view_definition_on(&conn, &table).await
+}
+
+/// The body of [`get_view_definition`] on an open connection.
+pub(crate) async fn view_definition_on(
+    conn: &Connection,
+    table: &TableRef,
+) -> Result<Option<String>, AppError> {
+    conn.session_for(Feature::ViewDefinition)
         .await?
-        .view_definition(&table)
+        .view_definition(table)
         .await
 }
 
@@ -116,7 +132,9 @@ pub async fn get_structure_choices(
     structure_choices(session.as_ref()).await
 }
 
-async fn structure_choices(session: &dyn DbSession) -> Result<StructureChoices, AppError> {
+pub(crate) async fn structure_choices(
+    session: &dyn DbSession,
+) -> Result<StructureChoices, AppError> {
     let mut out = StructureChoices::default();
     match session.core_dialect(Feature::StructureEdit)? {
         Dialect::Postgres => {

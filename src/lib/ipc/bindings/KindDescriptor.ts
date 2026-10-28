@@ -3,6 +3,7 @@ import type { DatabaseKind } from "./DatabaseKind";
 import type { Driver } from "./Driver";
 import type { MysqlVersion } from "./MysqlVersion";
 import type { PgFlavor } from "./PgFlavor";
+import type { SqlDialectId } from "./SqlDialectId";
 
 /**
  * The fixed facts of a database of the picker.
@@ -11,7 +12,11 @@ export type KindDescriptor = { kind: DatabaseKind, driver: Driver, label: string
 /**
  * Tile colour (an accent preset name).
  */
-tint: string, pgFlavor: PgFlavor | null, mysqlVersion: MysqlVersion | null, defaultPort: number | null, defaultDatabase: string | null, defaultUser: string | null, 
+tint: string, pgFlavor: PgFlavor | null, mysqlVersion: MysqlVersion | null, 
+/**
+ * The SQL its sessions speak (Redshift's own, not its driver's); None for native stores.
+ */
+dialect: SqlDialectId | null, defaultPort: number | null, defaultDatabase: string | null, defaultUser: string | null, 
 /**
  * Backup and Restore are offered.
  */

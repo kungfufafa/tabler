@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::sqlgen::SqlDialect;
+use crate::types::caps::SessionCaps;
 use crate::types::driver::{DriverDescriptor, KindDescriptor, KindId, PgFlavor};
 
 /// The engine a connection is for. The ids are what profiles store and IPC carries: the first
@@ -475,6 +477,12 @@ impl ConnectionProfile {
     pub fn default_database(&self) -> Option<&'static str> {
         self.kind_descriptor().default_database
     }
+
+    /// The SQL the profile's sessions speak, known before connecting: its kind's (a Redshift
+    /// profile is the PostgreSQL driver speaking Redshift SQL). None for a native store.
+    pub fn sql_dialect(&self) -> Option<SqlDialect> {
+        self.kind_descriptor().dialect
+    }
 }
 
 /// Payload of `save_profile` / `test_connection`: the profile plus any secrets being set.
@@ -533,6 +541,10 @@ pub struct ConnectionInfo {
     pub tunnel: Option<TunnelInfo>,
     #[serde(default)]
     pub read_only: bool,
+    /// What the session can do, as it reported at connect (absent from older payloads).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub capabilities: Option<SessionCaps>,
 }
 
 /// Payload of `export_connections` ("Export Connections ▸ …"): which profiles go to `path`, and

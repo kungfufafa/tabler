@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use crate::biometrics::{self, EVENT_SYSTEM_LOCK};
+use crate::drivers::DbSession;
 use crate::error::AppError;
 use crate::passcode;
 use crate::secrets::SecretKind;
@@ -119,6 +120,13 @@ pub async fn session_details(
     connection_id: Uuid,
 ) -> Result<SessionDetails, AppError> {
     let session = state.session(connection_id).await?;
+    session_details_of(session.as_ref()).await
+}
+
+/// The body of [`session_details`] on a session.
+pub(crate) async fn session_details_of(
+    session: &dyn DbSession,
+) -> Result<SessionDetails, AppError> {
     let dialect = session.core_dialect(Feature::SessionDetails)?;
     let mut details = SessionDetails::default();
     let mut first_error = None;

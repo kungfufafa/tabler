@@ -801,6 +801,7 @@ mod tests {
             current_user: None,
             tunnel: None,
             read_only: false,
+            capabilities: None,
         };
         let status = tokio::sync::watch::channel(ConnStatus::Connected);
         let conn = Arc::new(Connection {

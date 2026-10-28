@@ -109,7 +109,7 @@ pub enum Family {
 }
 
 /// What the editor (or console) of a connection speaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub enum QueryLanguage {
@@ -258,7 +258,7 @@ pub enum StartupKind {
 
 /// How a read-only profile is enforced: by the server for the whole session, on every request,
 /// or only by Tabler's statement classifier (which refuses anything it does not know is a read).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub enum ReadOnlyMode {
@@ -366,6 +366,8 @@ pub struct KindDescriptor {
     pub tint: &'static str,
     pub pg_flavor: Option<PgFlavor>,
     pub mysql_version: Option<MysqlVersion>,
+    /// The SQL its sessions speak (Redshift's own, not its driver's); None for native stores.
+    pub dialect: Option<SqlDialect>,
     pub default_port: Option<u16>,
     pub default_database: Option<&'static str>,
     pub default_user: Option<&'static str>,
@@ -779,6 +781,7 @@ const fn plain_kind(
         tint,
         pg_flavor: None,
         mysql_version: None,
+        dialect: driver.dialect,
         default_port: driver.default_port,
         default_database,
         default_user,
@@ -828,6 +831,7 @@ pub static KINDS: [KindDescriptor; 20] = [
         label: "Amazon Redshift",
         short: "RS",
         pg_flavor: Some(PgFlavor::Redshift),
+        dialect: Some(SqlDialect::Redshift),
         default_port: Some(5439),
         cargo_feature: PG_FLAVORS,
         ..plain_kind(KindId::Redshift, &POSTGRES, "red", Some("dev"), None)
@@ -874,6 +878,7 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+    use crate::types::caps::SessionCaps;
     use crate::types::profile::{ConnectionProfile, ProfileOptions, SslMode};
 
     /// The ids profiles store and IPC carries: changing one strands every saved connection.
@@ -1018,6 +1023,14 @@ mod tests {
             if k.pg_flavor.is_none() {
                 assert_eq!(k.cargo_feature, k.driver.descriptor().cargo_feature);
             }
+            // A kind speaks its driver's SQL, except Redshift, which has its own.
+            let own = (k.kind == KindId::Redshift).then_some(SqlDialect::Redshift);
+            assert_eq!(
+                k.dialect,
+                own.or(k.driver.descriptor().dialect),
+                "{:?}",
+                k.kind
+            );
         }
     }
 
@@ -1141,20 +1154,29 @@ mod tests {
     fn export_bindings_driver_catalog() {
         /// A JSON object in the order of its entries (serde_json's own map sorts the keys, and
         /// the kinds' order is the picker's).
-        struct Keyed<K, V: 'static>(Vec<(K, &'static V)>);
+        struct Keyed<K, V>(Vec<(K, V)>);
         impl<K: Serialize, V: Serialize> Serialize for Keyed<K, V> {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 serializer.collect_map(self.0.iter().map(|(k, v)| (k, v)))
             }
         }
         #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
         struct Catalog {
-            drivers: Keyed<Driver, DriverDescriptor>,
-            kinds: Keyed<KindId, KindDescriptor>,
+            drivers: Keyed<Driver, &'static DriverDescriptor>,
+            kinds: Keyed<KindId, &'static KindDescriptor>,
+            /// What a connection can do before its session says (`SessionCaps::for_driver`).
+            base_caps: Keyed<Driver, SessionCaps>,
         }
         let catalog = Catalog {
             drivers: Keyed(Driver::ALL.iter().map(|d| (*d, descriptor(*d))).collect()),
             kinds: Keyed(KINDS.iter().map(|k| (k.kind, k)).collect()),
+            base_caps: Keyed(
+                Driver::ALL
+                    .iter()
+                    .map(|d| (*d, SessionCaps::for_driver(*d)))
+                    .collect(),
+            ),
         };
         let json = serde_json::to_string_pretty(&catalog).unwrap();
         let text = format!(
@@ -1164,12 +1186,14 @@ mod tests {
              import type {{ Driver }} from \"./Driver\";\n\
              import type {{ DriverDescriptor }} from \"./DriverDescriptor\";\n\
              import type {{ KindDescriptor }} from \"./KindDescriptor\";\n\
+             import type {{ SessionCaps }} from \"./SessionCaps\";\n\
              \n\
              /**\n * The facts of every driver and of every database of the new-connection picker \
-             (in its order).\n */\n\
+             (in its order), and the caps a connection of each driver starts from.\n */\n\
              export const DRIVER_CATALOG = {json} satisfies {{\n  \
              drivers: Record<Driver, DriverDescriptor>;\n  \
-             kinds: Record<DatabaseKind, KindDescriptor>;\n}};\n"
+             kinds: Record<DatabaseKind, KindDescriptor>;\n  \
+             baseCaps: Record<Driver, SessionCaps>;\n}};\n"
         );
         let dir = std::env::var("TS_RS_EXPORT_DIR").unwrap_or_else(|_| "./bindings".into());
         std::fs::create_dir_all(&dir).unwrap();

@@ -37,6 +37,26 @@ pub fn explain_offset(spec: &DialectSpec, mode: ExplainMode) -> usize {
     explain_prefix(spec, mode).map_or(0, |p| p.chars().count() + 1)
 }
 
+/// One statement in a given EXPLAIN (a session's own, where its server differs from its
+/// dialect), and the characters put before it. `engine` names the server in a refusal.
+pub fn wrap_form(
+    form: ExplainForm,
+    engine: &str,
+    sql: &str,
+    mode: ExplainMode,
+) -> Result<(String, usize), AppError> {
+    match form {
+        ExplainForm::Prefix(prefix) => Ok((
+            format!("{prefix} {}", strip_terminator(sql)),
+            prefix.chars().count() + 1,
+        )),
+        ExplainForm::Unsupported => Err(AppError::Unsupported(format!(
+            "{engine}: {} is not available",
+            mode_name(mode)
+        ))),
+    }
+}
+
 /// What an executing Explain Analyze runs in so that its changes are undone (see
 /// `sqlgen::explain::analyze_wrapper`): the dialect's `analyze_tx` around it when no transaction
 /// is open. These dialects have no savepoint form, so inside a transaction, or with the state

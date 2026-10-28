@@ -20,10 +20,12 @@ use crate::error::{AppError, ErrorPayload, ErrorPos};
 use crate::sqlgen::dialect::DialectRef;
 use crate::sqlgen::split::{SplitStatement, is_meta_command, leading_keywords};
 use crate::sqlgen::sql::{
-    analyze_wrapper, code_only, explain_offset, is_single_statement, split_statements, wrap_explain,
+    analyze_wrapper, code_only, explain_offset, is_single_statement, split_statements,
+    wrap_explain, wrap_explain_form,
 };
 use crate::sqlgen::{Dialect, SqlDialect};
 use crate::state::{AppState, Connection};
+use crate::types::caps::Feature;
 use crate::types::history::NewHistoryEntry;
 use crate::types::query::{
     DEFAULT_MAX_ROWS, ExplainMode, ExplainResult, QueryEvent, ResultColumn, ResultSet, RunOptions,
@@ -557,7 +559,6 @@ async fn run_statements(
     let time_limit =
         (options.timeout_secs > 0).then(|| Duration::from_secs(options.timeout_secs.into()));
     let dialect = session.dialect();
-    let mariadb = session.is_mariadb();
     let max_rows = effective_max_rows(options.max_rows);
     let statements = split_statements(dialect, sql);
     let mut results = Vec::with_capacity(statements.len());
@@ -580,8 +581,8 @@ async fn run_statements(
         // A dialect without this EXPLAIN fails the statement (`refused`).
         let mut refused = None;
         let (exec_sql, shift) = match options.explain {
-            Some(mode) => match wrap_explain(dialect, &st.sql, mode, mariadb) {
-                Ok(exec_sql) => (exec_sql, explain_offset(dialect, mode, mariadb)),
+            Some(mode) => match explain_text(session, &st.sql, mode) {
+                Ok(explained) => explained,
                 Err(e) => {
                     refused = Some(e);
                     (st.sql.clone(), 0)
@@ -740,6 +741,39 @@ fn plan_text(dialect: impl Into<SqlDialect>, set: &ResultSet) -> Option<String> 
     None
 }
 
+/// The feature an EXPLAIN of `mode` needs.
+pub fn explain_feature(mode: ExplainMode) -> Feature {
+    match mode {
+        ExplainMode::Plan => Feature::Explain,
+        ExplainMode::Analyze => Feature::ExplainAnalyze,
+    }
+}
+
+/// What a run of editor text needs from the session: the editor, and the EXPLAIN it asks for.
+pub fn require_run(session: &dyn DbSession, explain: Option<ExplainMode>) -> Result<(), AppError> {
+    session.require(Feature::Editor)?;
+    match explain {
+        Some(mode) => session.require(explain_feature(mode)),
+        None => Ok(()),
+    }
+}
+
+/// The EXPLAIN of one statement and the characters it puts before it: the session's own form
+/// where its server has one (`DbSession::explain_form`), its dialect's otherwise.
+fn explain_text(
+    session: &dyn DbSession,
+    sql: &str,
+    mode: ExplainMode,
+) -> Result<(String, usize), AppError> {
+    if let Some(form) = session.explain_form(mode) {
+        return wrap_explain_form(form, session.capabilities().engine(), sql, mode);
+    }
+    let dialect = session.dialect();
+    let mariadb = session.is_mariadb();
+    let exec_sql = wrap_explain(dialect, sql, mode, mariadb)?;
+    Ok((exec_sql, explain_offset(dialect, mode, mariadb)))
+}
+
 /// EXPLAINs the first statement of `sql` on the editor connection.
 pub async fn explain_inner(
     session: &dyn DbSession,
@@ -759,6 +793,7 @@ pub async fn explain_limited(
     cancel: &CancelSlot,
     limit: Option<Duration>,
 ) -> Result<ExplainResult, AppError> {
+    session.require(explain_feature(mode))?;
     let dialect = session.dialect();
     let statements = split_statements(dialect, sql);
     let st = statements
@@ -768,9 +803,7 @@ pub async fn explain_limited(
         return Err(meta_command_error());
     }
     check_explainable(&st.sql, dialect)?;
-    let mariadb = session.is_mariadb();
-    let exec_sql = wrap_explain(dialect, &st.sql, mode, mariadb)?;
-    let shift = explain_offset(dialect, mode, mariadb);
+    let (exec_sql, shift) = explain_text(session, &st.sql, mode)?;
     let mut sink = CollectSink::default();
     let _editor = lock_editor_runs(session, cancel).await?;
     let started = Instant::now();
@@ -901,13 +934,26 @@ pub async fn run_sql(
     options: Option<RunOptions>,
     on_event: Channel<QueryEvent>,
 ) -> Result<Vec<StatementResult>, AppError> {
+    run_sql_on(&state, connection_id, query_id, sql, options, on_event).await
+}
+
+/// The body of [`run_sql`], callable without a Tauri runtime.
+pub(crate) async fn run_sql_on(
+    state: &AppState,
+    connection_id: Uuid,
+    query_id: String,
+    sql: String,
+    options: Option<RunOptions>,
+    on_event: Channel<QueryEvent>,
+) -> Result<Vec<StatementResult>, AppError> {
     let options = options.unwrap_or_default();
     let conn = state.connection(connection_id).await?;
     let session = conn.session().await;
+    require_run(session.as_ref(), options.explain)?;
     crate::commands::safety::refuse_read_only_run(&conn, &sql, session.dialect(), options.explain)?;
     let slot = CancelSlot::default();
     let results = {
-        let _active = ActiveQuery::register(&state, connection_id, query_id, slot.clone())?;
+        let _active = ActiveQuery::register(state, connection_id, query_id, slot.clone())?;
         let mut emit = move |event: QueryEvent| {
             if let Err(e) = on_event.send(event) {
                 log::debug!("run_sql: event channel closed: {e}");
@@ -929,7 +975,7 @@ pub async fn run_sql(
         .iter()
         .map(|r| history_entry(&conn, r, source))
         .collect();
-    record_history(&state, &conn, rows).await;
+    record_history(state, &conn, rows).await;
     Ok(results)
 }
 
@@ -976,7 +1022,7 @@ pub async fn explain(
     timeout_secs: Option<u32>,
 ) -> Result<ExplainResult, AppError> {
     let conn = state.connection(connection_id).await?;
-    let session = conn.session().await;
+    let session = conn.session_for(explain_feature(mode)).await?;
     crate::commands::safety::refuse_read_only_explain(&conn, &sql, session.dialect(), mode)?;
     let slot = CancelSlot::default();
     let started_at = now_rfc3339();
@@ -1523,6 +1569,12 @@ mod tests {
         }
         fn dialect(&self) -> SqlDialect {
             self.dialect
+        }
+        /// Every feature, also on an extension dialect: these tests are about what runs once
+        /// the caps allow it (`commands::caps_tests` refuses).
+        fn capabilities(&self) -> crate::types::caps::SessionCaps {
+            crate::types::caps::SessionCaps::base(self.driver, self.dialect, None)
+                .with(&Feature::ALL)
         }
         async fn server_info(&self) -> Result<crate::drivers::ServerInfo, AppError> {
             Ok(Default::default())

@@ -377,6 +377,7 @@ async fn list_connections_hides_production_and_never_shows_passwords() {
     assert_eq!(shop["tag"], "development");
     assert_eq!(shop["safeMode"], "Silent Mode");
     assert_eq!(shop["canChangeData"], false);
+    assert_eq!(shop["readOnlyMode"], "server");
     assert_eq!(shop["database"], json!(f.path));
     assert_eq!(body["connections"][2]["safeMode"], "Safe Mode 1");
     assert!(body["note"].as_str().unwrap().contains("only read"));

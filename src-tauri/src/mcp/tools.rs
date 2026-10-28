@@ -15,14 +15,15 @@ use crate::commands::query::{explain_inner, run_sql_inner};
 use crate::drivers::{CancelSlot, DbSession, request_cancel};
 use crate::error::{AppError, ErrorPayload};
 use crate::export::structure::pg_table_context;
-use crate::sqlgen::Dialect;
 use crate::sqlgen::ddl::create_table_sql_with;
+use crate::sqlgen::dialect::DialectRef;
 use crate::sqlgen::sql::split_statements;
+use crate::sqlgen::{Dialect, SqlDialect};
 use crate::state::AppState;
-use crate::types::caps::Feature;
+use crate::types::caps::{Feature, SessionCaps};
 use crate::types::driver::Location;
 use crate::types::history::NewHistoryEntry;
-use crate::types::profile::{ConnectionProfile, Driver};
+use crate::types::profile::ConnectionProfile;
 use crate::types::query::{ExplainMode, QueryEvent, ResultColumn, RunOptions, StatementKind};
 use crate::types::schema::{TableKind, TableMeta, TableRef};
 use crate::types::value::Value;
@@ -310,18 +311,16 @@ fn opt_u32(args: &Json, key: &str) -> Result<Option<u32>, Fail> {
 
 // ----- connections -----------------------------------------------------------------------------
 
-/// The SQL dialect `run_query` classifies a profile's statements with, before it connects: the
-/// core drivers only (the MCP gate has no classifier for the others yet).
-fn dialect_of(driver: Driver) -> Result<Dialect, Fail> {
-    match driver {
-        Driver::Postgres => Ok(Dialect::Postgres),
-        Driver::Mysql => Ok(Dialect::Mysql),
-        Driver::Sqlite => Ok(Dialect::Sqlite),
-        other => Err(format!(
-            "MCP clients cannot run SQL on {} connections yet.",
-            other.label()
-        )),
-    }
+/// The SQL dialect `run_query` classifies a profile's statements with, before it connects: its
+/// kind's (a Redshift profile speaks Redshift SQL). A native store has none, and MCP clients run
+/// nothing on it.
+fn dialect_of(profile: &ConnectionProfile) -> Result<SqlDialect, Fail> {
+    profile.sql_dialect().ok_or_else(|| {
+        format!(
+            "{} is not a SQL database: MCP clients cannot run queries on it.",
+            profile.driver.label()
+        )
+    })
 }
 
 fn hidden_message(p: &ConnectionProfile) -> String {
@@ -412,6 +411,9 @@ fn list_connections(profiles: &[ConnectionProfile], prefs: &McpPrefs) -> ToolOut
                 "database": database_label(p),
                 "safeMode": level_label(safe_mode(p)),
                 "readOnly": p.options.read_only,
+                // What keeps a read-only connection from writing: the server, every request, or
+                // only Tabler's statement classifier.
+                "readOnlyMode": SessionCaps::for_profile(p).safety.read_only,
                 "canChangeData": gate::session_writable(p, prefs),
             })
         })
@@ -444,10 +446,17 @@ async fn lease(
     database: Option<&str>,
 ) -> Result<Lease, Fail> {
     let writable = gate::session_writable(profile, prefs);
-    ctx.pool
+    let lease = ctx
+        .pool
         .get(profile, database, writable)
         .await
-        .map_err(|e| format!("Could not connect to \u{201c}{}\u{201d}: {e}", profile.name))
+        .map_err(|e| format!("Could not connect to \u{201c}{}\u{201d}: {e}", profile.name))?;
+    // Every tool needs the session to offer MCP; one that does not is not kept open.
+    if let Err(e) = lease.session.require(Feature::Mcp) {
+        ctx.pool.discard(lease).await;
+        return Err(e.to_string());
+    }
+    Ok(lease)
 }
 
 /// Ends a call's use of the connection; a connection-level failure drops it, so the next call
@@ -728,6 +737,7 @@ async fn describe_table(ctx: &Ctx, prefs: &McpPrefs, args: &Json) -> Result<Tool
     let lease = lease(ctx, prefs, &profile, opt_str(args, "database")?).await?;
     let s = lease.session.clone();
     let result = async {
+        s.require(Feature::StructureView)?;
         let (schema, name) = match (schema, table.split_once('.')) {
             (Some(schema), _) => (schema, table.clone()),
             (None, Some((schema, name))) if !schema.is_empty() && !name.is_empty() => {
@@ -869,7 +879,7 @@ async fn run_query(
         .unwrap_or(DEFAULT_ROWS)
         .clamp(1, MAX_ROWS);
     let database = opt_str(args, "database")?;
-    let dialect = dialect_of(profile.driver)?;
+    let dialect = dialect_of(&profile)?;
     let total = split_statements(dialect, sql).len();
     if total == 0 {
         return Err("There is no SQL statement to run.".into());
@@ -887,6 +897,25 @@ async fn run_query(
     }
     let lease = lease(ctx, prefs, &profile, database).await?;
     let session = lease.session.clone();
+    // The gate read the statements as the profile's kind speaks; a session that speaks otherwise
+    // (a server that turned out to be another engine) does not run them.
+    let refused = if session.dialect() != dialect {
+        Some(format!(
+            "\u{201c}{}\u{201d} speaks {}, not {} as its connection says: MCP clients cannot run \
+             SQL on it.",
+            profile.name,
+            session.dialect().label(),
+            dialect.label()
+        ))
+    } else {
+        crate::commands::query::require_run(session.as_ref(), None)
+            .err()
+            .map(|e| e.to_string())
+    };
+    if let Some(refused) = refused {
+        ctx.pool.discard(lease).await;
+        return Err(refused);
+    }
     cancel.attach(session.clone());
     let current_db = lease
         .server
@@ -913,10 +942,11 @@ async fn run_query(
     // prediction covers (version-conditional comments, `NO_BACKSLASH_ESCAPES`…). So ask the
     // session where it is now, as the statements ran it: if it is not where it opened, the
     // connection is closed rather than pooled for the next call.
-    let ended_on = if dialect == Dialect::Mysql {
-        session_database(session.as_ref()).await
-    } else {
-        Some(lease.server.current_database.clone())
+    let ended_on = match dialect.resolve() {
+        DialectRef::Core(Dialect::Mysql) => session_database(session.as_ref()).await,
+        DialectRef::Core(Dialect::Postgres | Dialect::Sqlite) | DialectRef::Ext(_) => {
+            Some(lease.server.current_database.clone())
+        }
     };
     let moved_to = match &ended_on {
         Some(now) if *now != lease.server.current_database => Some(now.clone()),

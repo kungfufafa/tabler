@@ -20,6 +20,7 @@ use crate::drivers::{self, ConnectTarget, DbSession};
 use crate::error::AppError;
 use crate::sqlgen::conn_options as sql;
 use crate::state::AppState;
+use crate::types::caps::Feature;
 use crate::types::profile::{ConnectionInfo, ConnectionProfile, Driver};
 use crate::types::value::Value;
 
@@ -106,7 +107,15 @@ pub async fn get_connection_encoding(
     state: State<'_, AppState>,
     connection_id: Uuid,
 ) -> Result<String, AppError> {
-    let session = state.session(connection_id).await?;
+    connection_encoding_on(&state, connection_id).await
+}
+
+/// The body of [`get_connection_encoding`], callable without a Tauri runtime.
+pub(crate) async fn connection_encoding_on(
+    state: &AppState,
+    connection_id: Uuid,
+) -> Result<String, AppError> {
+    let session = state.session_for(connection_id, Feature::Encoding).await?;
     read_encoding(&*session).await
 }
 
@@ -118,7 +127,20 @@ pub async fn set_connection_encoding(
     connection_id: Uuid,
     encoding: Option<String>,
 ) -> Result<ConnectionInfo, AppError> {
+    set_connection_encoding_on(&state, connection_id, encoding).await
+}
+
+/// The body of [`set_connection_encoding`], callable without a Tauri runtime.
+pub(crate) async fn set_connection_encoding_on(
+    state: &AppState,
+    connection_id: Uuid,
+    encoding: Option<String>,
+) -> Result<ConnectionInfo, AppError> {
     let conn = state.connection(connection_id).await?;
+    // The new session opens before the old one closes: a driver whose engine opens a file once
+    // per process grants this only when that second session shares the instance
+    // (`drivers::sharing`).
+    conn.caps().await.require(Feature::Encoding)?;
     if !conn.profile.driver.descriptor().encoding {
         return Err(no_encoding(conn.profile.driver));
     }
@@ -152,7 +174,7 @@ pub async fn set_connection_encoding(
         Some(t) => Some(t.connect_addr()),
         None => None,
     };
-    let password = connect_password(&state, &profile, None).await?;
+    let password = connect_password(state, &profile, None).await?;
     let attempt = Instant::now();
     let opened = async {
         let session = tokio::time::timeout(
@@ -173,6 +195,7 @@ pub async fn set_connection_encoding(
         Some(t) => t.explain_error(e, attempt),
         None => e,
     })?;
+    let capabilities = session.capabilities();
     let old = std::mem::replace(&mut *conn.session.write().await, session);
     old.close().await;
     conn.invalidate(None).await;
@@ -187,6 +210,7 @@ pub async fn set_connection_encoding(
     // The profile clone carries the new encoding (or the profile's own after a reset): a session
     // that is not UTF-8 is read-only, the profile's own setting otherwise.
     info.read_only = effective_read_only(&profile);
+    info.capabilities = Some(capabilities);
     Ok(info.clone())
 }
 

@@ -10,9 +10,12 @@
 //!   refused (its copy lives in the app).
 //!
 //! A connection MCP clients may not write to is opened read-only on the server
-//! (`gate::session_writable`), so read-only and writable sessions of one profile are kept apart.
+//! (`gate::session_writable`), so read-only and writable sessions of one profile are kept apart,
+//! except for an engine that opens a file once per process (DuckDB): there one entry per file
+//! holds whichever session the last call needed.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -36,10 +39,29 @@ pub const IDLE_CLOSE: Duration = Duration::from_secs(5 * 60);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct Key {
-    profile_id: Uuid,
-    database: Option<String>,
-    writable: bool,
+enum Key {
+    Profile {
+        profile_id: Uuid,
+        database: Option<String>,
+        writable: bool,
+    },
+    /// An engine that opens a file once per process (`drivers::sharing`): every profile, and
+    /// the read-only and writable sessions, of one file share one entry, which a call with other
+    /// settings replaces.
+    File(PathBuf),
+}
+
+impl Key {
+    fn of(profile: &ConnectionProfile, database: Option<String>, writable: bool) -> Key {
+        match drivers::sharing::file_key(profile) {
+            Some(file) => Key::File(file),
+            None => Key::Profile {
+                profile_id: profile.id,
+                database,
+                writable,
+            },
+        }
+    }
 }
 
 /// One open connection.
@@ -150,11 +172,7 @@ impl Pool {
             .map(str::trim)
             .filter(|d| !d.is_empty() && profile.driver.descriptor().location != Location::File)
             .map(str::to_string);
-        let key = Key {
-            profile_id: profile.id,
-            database: database.clone(),
-            writable,
-        };
+        let key = Key::of(profile, database.clone(), writable);
         let slot = self.slot(&key);
         let mut guard = slot.lock().await;
         // The profile may have been edited since: a connection opened from older settings goes.
@@ -172,7 +190,9 @@ impl Pool {
         let entry = match guard.as_ref() {
             Some(e) => e.clone(),
             None => {
-                let opened = Arc::new(open(&self.state, &key, profile).await?);
+                let opened = Arc::new(
+                    open(&self.state, &key, profile, database.as_deref(), writable).await?,
+                );
                 *guard = Some(opened.clone());
                 opened
             }
@@ -180,6 +200,29 @@ impl Pool {
         entry.in_use.fetch_add(1, Ordering::SeqCst);
         entry.touch();
         Ok(Lease { entry })
+    }
+
+    /// Puts `session` in the pool as the connection of `profile` (with `database` and
+    /// `writable`), as `get` would open it, for tests that need a session no server gives.
+    #[cfg(test)]
+    pub(crate) async fn insert_for_test(
+        &self,
+        profile: &ConnectionProfile,
+        database: Option<&str>,
+        writable: bool,
+        session: Arc<dyn DbSession>,
+    ) {
+        let key = Key::of(profile, database.map(str::to_string), writable);
+        let entry = Entry {
+            key: key.clone(),
+            profile: effective_profile(profile, database, writable).unwrap(),
+            session,
+            server: ServerInfo::default(),
+            tunnel: None,
+            in_use: AtomicUsize::new(0),
+            last_used: Mutex::new(Instant::now()),
+        };
+        *self.slot(&key).lock().await = Some(Arc::new(entry));
     }
 
     /// Drops the connection (after a connection-level failure), so the next call reconnects.
@@ -323,10 +366,16 @@ pub fn check_unattended(profile: &ConnectionProfile) -> Result<(), AppError> {
     Ok(())
 }
 
-async fn open(state: &AppState, key: &Key, profile: &ConnectionProfile) -> Result<Entry, AppError> {
+async fn open(
+    state: &AppState,
+    key: &Key,
+    profile: &ConnectionProfile,
+    database: Option<&str>,
+    writable: bool,
+) -> Result<Entry, AppError> {
     // A driver this build lacks: refused before its script, password command or tunnel run.
     drivers::registry::ensure_built(profile)?;
-    let profile = effective_profile(profile, key.database.as_deref(), key.writable)?;
+    let profile = effective_profile(profile, database, writable)?;
     check_unattended(&profile)?;
     crate::bootstrap_script::run_for_profile(&profile).await?;
     if profile.driver == Driver::Sqlite {
@@ -562,6 +611,26 @@ mod tests {
             .await
             .unwrap();
         assert!(marker.exists());
+    }
+
+    /// An engine that opens a file once per process gets one entry per file, whatever the profile,
+    /// database or mode; every other profile one per profile, database and mode.
+    #[test]
+    fn single_process_files_share_one_entry() {
+        let (_dir, path) = sqlite_file();
+        let mut duck = sqlite_profile(&path);
+        duck.driver = Driver::Duckdb;
+        let mut other = duck.clone();
+        other.id = Uuid::new_v4();
+        let key = Key::of(&duck, None, false);
+        assert!(matches!(key, Key::File(_)));
+        assert_eq!(Key::of(&other, Some("x".into()), true), key);
+        let lite = sqlite_profile(&path);
+        assert_ne!(Key::of(&lite, None, false), Key::of(&lite, None, true));
+        assert_ne!(
+            Key::of(&lite, None, false),
+            Key::of(&sqlite_profile(&path), None, false)
+        );
     }
 
     #[test]

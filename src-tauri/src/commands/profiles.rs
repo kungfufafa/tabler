@@ -352,6 +352,14 @@ pub async fn run_connection_test_with(
     // A driver this build lacks: refused before its script, password command or tunnel run.
     drivers::registry::ensure_built(&input.profile)?;
     validate(&input.profile)?;
+    // An engine that opens a file once per process: testing a file that is open here would open
+    // it a second time, with the dialog's settings.
+    if let Some(holder) = state.file_holder(&input.profile).await {
+        return Err(drivers::sharing::file_in_use(
+            &input.profile,
+            &holder.profile.name,
+        ));
+    }
     log::info!(
         "test_connection {} ({:?})",
         input.profile.name,

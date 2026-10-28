@@ -21,7 +21,7 @@ use futures::FutureExt as _;
 use tauri::State;
 use uuid::Uuid;
 
-use crate::commands::ddl::{DDL_LOCK_TIMEOUT_SECS, apply_plan, explain_lock_wait, plan_for};
+use crate::commands::ddl::{DDL_LOCK_TIMEOUT_SECS, apply_core_plan, explain_lock_wait, plan_for};
 use crate::commands::mutate::{PlannedRows, plan_rows};
 use crate::drivers::{DbSession, TxStatement};
 use crate::error::{AppError, ErrorPayload};
@@ -370,7 +370,9 @@ pub async fn run_workspace(session: &dyn DbSession, groups: &[PlannedGroup]) -> 
             _ if *object && dialect == Dialect::Mysql => {
                 (objects::run_mysql_plan(session, plan).await, None)
             }
-            _ => (apply_plan(session, plan).await, None),
+            // Each group was refused at planning without its own feature (only structure
+            // changes need StructureEdit).
+            _ => (apply_core_plan(session, dialect, plan).await, None),
         };
         let r = &mut results[g];
         r.restore = restore;
@@ -429,7 +431,7 @@ async fn run_statement_plan(session: &dyn DbSession, sql: &str) -> DdlResult {
         warnings: Vec::new(),
         transactional: false,
     };
-    apply_plan(session, &plan).await
+    apply_core_plan(session, Dialect::Mysql, &plan).await
 }
 
 /// Creates `previous` again where the old routine lived (qualified with its schema: the pooled
@@ -485,7 +487,7 @@ fn unreadable_routine(routine: &RoutineRef, cause: ErrorPayload) -> ErrorPayload
     payload
 }
 
-/// Runs the DROP and the CREATE of a MySQL definition (`plan`) as `apply_plan` would, after
+/// Runs the DROP and the CREATE of a MySQL definition (`plan`) as `apply_core_plan` would, after
 /// reading the old version of `routine`. MySQL commits the DROP on its own, so a CREATE that then
 /// fails (a syntax error, a definer the account cannot assume…) would lose the routine for good:
 /// the old version is created again from what was read, and the outcome says how that went (a
@@ -510,7 +512,7 @@ pub async fn run_mysql_replacement(
         Previous::Absent => None,
         Previous::Text(text) => Some(text),
     };
-    let mut outcome = apply_plan(session, plan).await;
+    let mut outcome = apply_core_plan(session, Dialect::Mysql, plan).await;
     // Only a failure after the DROP ran has something to undo.
     let Some(text) = previous.filter(|_| outcome.error.is_some() && !outcome.executed.is_empty())
     else {
@@ -583,11 +585,19 @@ pub async fn preview_workspace_changes(
     groups: Vec<WorkspaceGroup>,
 ) -> Result<WorkspacePlan, AppError> {
     let conn = state.connection(connection_id).await?;
+    preview_workspace_on(&conn, &groups).await
+}
+
+/// The body of [`preview_workspace_changes`] on an open connection.
+pub(crate) async fn preview_workspace_on(
+    conn: &Connection,
+    groups: &[WorkspaceGroup],
+) -> Result<WorkspacePlan, AppError> {
     let dialect = conn
         .session()
         .await
         .core_dialect(Feature::WorkspaceCommit)?;
-    let planned = plan_all(&conn, &groups).await;
+    let planned = plan_all(conn, groups).await;
     let atomic = planned.iter().all(Result::is_ok) && atomic_for(dialect, planned.iter().flatten());
     let groups = planned
         .into_iter()
@@ -619,11 +629,21 @@ pub async fn apply_workspace_changes(
     groups: Vec<WorkspaceGroup>,
 ) -> Result<WorkspaceResult, AppError> {
     let conn = state.connection(connection_id).await?;
+    apply_workspace_on(&conn, &groups).await
+}
+
+/// The body of [`apply_workspace_changes`] on an open connection.
+pub(crate) async fn apply_workspace_on(
+    conn: &Connection,
+    groups: &[WorkspaceGroup],
+) -> Result<WorkspaceResult, AppError> {
     if conn.profile.options.read_only {
         return Err(AppError::Unsupported("this connection is read-only".into()));
     }
+    // Planning reads the tables' structure: refused before that.
+    conn.session_for(Feature::WorkspaceCommit).await?;
     let started = Instant::now();
-    let planned = plan_all(&conn, &groups).await;
+    let planned = plan_all(conn, groups).await;
     // Nothing runs while a group cannot be planned.
     if let Some(bad) = planned.iter().position(Result::is_err) {
         let results = planned

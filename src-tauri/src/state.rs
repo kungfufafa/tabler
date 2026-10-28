@@ -10,6 +10,7 @@ use crate::appdb::AppDb;
 use crate::drivers::{CancelSlot, DbSession};
 use crate::error::AppError;
 use crate::secrets::Secrets;
+use crate::types::caps::{Feature, SessionCaps};
 use crate::types::profile::{ConnStatus, ConnectionInfo, ConnectionProfile};
 use crate::types::schema::{TableMeta, TableRef};
 
@@ -47,6 +48,19 @@ pub struct Connection {
 impl Connection {
     pub async fn session(&self) -> Arc<dyn DbSession> {
         self.session.read().await.clone()
+    }
+
+    /// What the connection's session can do now.
+    pub async fn caps(&self) -> SessionCaps {
+        self.session().await.capabilities()
+    }
+
+    /// The session, once its caps grant `f`: a command that needs `f` asks for its session this
+    /// way, so it is refused before it sends anything.
+    pub async fn session_for(&self, f: Feature) -> Result<Arc<dyn DbSession>, AppError> {
+        let session = self.session().await;
+        session.require(f)?;
+        Ok(session)
     }
 
     pub async fn info(&self) -> ConnectionInfo {
@@ -164,6 +178,22 @@ impl AppState {
         Ok(self.connection(id).await?.session().await)
     }
 
+    /// `Connection::session_for` of an open connection.
+    pub async fn session_for(&self, id: Uuid, f: Feature) -> Result<Arc<dyn DbSession>, AppError> {
+        self.connection(id).await?.session_for(f).await
+    }
+
+    /// An open connection that has the file of `profile` open, for an engine that opens a file
+    /// once per process (`drivers::sharing`); None for every other engine.
+    pub async fn file_holder(&self, profile: &ConnectionProfile) -> Option<Arc<Connection>> {
+        let key = crate::drivers::sharing::file_key(profile)?;
+        let conns = self.connections.read().await;
+        conns
+            .values()
+            .find(|c| crate::drivers::sharing::file_key(&c.profile).as_ref() == Some(&key))
+            .cloned()
+    }
+
     /// A new lease of the SSH tunnel an open connection of `profile` uses (same SSH settings and
     /// database host), while that tunnel is up: a second workspace of the profile goes through
     /// it. The tunnel closes with its last connection.
@@ -230,6 +260,7 @@ mod tests {
             current_user: None,
             tunnel: None,
             read_only: false,
+            capabilities: None,
         };
         Arc::new(Connection {
             id,

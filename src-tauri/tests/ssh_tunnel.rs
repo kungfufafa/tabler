@@ -1702,6 +1702,7 @@ fn connection_info(profile: &ConnectionProfile, local_port: u16) -> ConnectionIn
         current_user: None,
         tunnel: Some(TunnelInfo { local_port }),
         read_only: false,
+        capabilities: None,
     }
 }
 

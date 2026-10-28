@@ -146,5 +146,6 @@ pub async fn run_execute<Q: Queryable>(
             .filter(|id| *id != 0)
             .map(|id| id.to_string()),
         rows: collected.first,
+        affected_unknown: false,
     })
 }

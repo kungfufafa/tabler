@@ -4,11 +4,11 @@
 use tauri::State;
 use uuid::Uuid;
 
-use crate::commands::ddl::apply_plan;
+use crate::commands::ddl::apply_core_plan;
 use crate::error::AppError;
 use crate::objects;
 use crate::sqlgen::Dialect;
-use crate::state::AppState;
+use crate::state::{AppState, Connection};
 use crate::types::ddl::{DdlPlan, DdlResult};
 use crate::types::objects::{
     DatabaseItems, ObjectOp, OverviewItem, RoutineRef, RoutineSummary, SequenceSummary,
@@ -106,15 +106,26 @@ pub async fn apply_object_op(
     op: ObjectOp,
 ) -> Result<DdlResult, AppError> {
     let conn = state.connection(connection_id).await?;
+    apply_object_op_on(&conn, &op).await
+}
+
+/// The body of [`apply_object_op`] on an open connection. The operation needs its own feature
+/// only (`objects::op_feature`), as its preview does.
+pub(crate) async fn apply_object_op_on(
+    conn: &Connection,
+    op: &ObjectOp,
+) -> Result<DdlResult, AppError> {
     if conn.profile.options.read_only {
         return Err(AppError::Unsupported("this connection is read-only".into()));
     }
     let session = conn.session().await;
-    let plan = objects::plan_op(session.as_ref(), &op).await?;
+    let plan = objects::plan_op(session.as_ref(), op).await?;
     log::info!("apply_object_op {} statement(s)", plan.statements.len());
-    let result = match session.core_dialect(objects::op_feature(&op))? {
+    let result = match session.core_dialect(objects::op_feature(op))? {
         Dialect::Mysql => objects::run_mysql_plan(session.as_ref(), &plan).await,
-        Dialect::Postgres | Dialect::Sqlite => apply_plan(session.as_ref(), &plan).await,
+        d @ (Dialect::Postgres | Dialect::Sqlite) => {
+            apply_core_plan(session.as_ref(), d, &plan).await
+        }
     };
     conn.invalidate(None).await;
     if let Some(err) = &result.error {

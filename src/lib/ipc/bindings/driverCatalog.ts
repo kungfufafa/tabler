@@ -3,9 +3,10 @@ import type { DatabaseKind } from "./DatabaseKind";
 import type { Driver } from "./Driver";
 import type { DriverDescriptor } from "./DriverDescriptor";
 import type { KindDescriptor } from "./KindDescriptor";
+import type { SessionCaps } from "./SessionCaps";
 
 /**
- * The facts of every driver and of every database of the new-connection picker (in its order).
+ * The facts of every driver and of every database of the new-connection picker (in its order), and the caps a connection of each driver starts from.
  */
 export const DRIVER_CATALOG = {
   "drivers": {
@@ -851,6 +852,7 @@ export const DRIVER_CATALOG = {
       "tint": "blue",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": "postgres",
       "defaultPort": 5432,
       "defaultDatabase": "postgres",
       "defaultUser": null,
@@ -865,6 +867,7 @@ export const DRIVER_CATALOG = {
       "tint": "purple",
       "pgFlavor": "cockroachdb",
       "mysqlVersion": null,
+      "dialect": "postgres",
       "defaultPort": 26257,
       "defaultDatabase": "defaultdb",
       "defaultUser": "root",
@@ -879,6 +882,7 @@ export const DRIVER_CATALOG = {
       "tint": "green",
       "pgFlavor": "greenplum",
       "mysqlVersion": null,
+      "dialect": "postgres",
       "defaultPort": 5432,
       "defaultDatabase": "postgres",
       "defaultUser": null,
@@ -893,6 +897,7 @@ export const DRIVER_CATALOG = {
       "tint": "red",
       "pgFlavor": "redshift",
       "mysqlVersion": null,
+      "dialect": "redshift",
       "defaultPort": 5439,
       "defaultDatabase": "dev",
       "defaultUser": null,
@@ -907,6 +912,7 @@ export const DRIVER_CATALOG = {
       "tint": "orange",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": "mysql",
       "defaultPort": 3306,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -921,6 +927,7 @@ export const DRIVER_CATALOG = {
       "tint": "purple",
       "pgFlavor": null,
       "mysqlVersion": "mariadb",
+      "dialect": "mysql",
       "defaultPort": 3306,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -935,6 +942,7 @@ export const DRIVER_CATALOG = {
       "tint": "teal",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": "sqlite",
       "defaultPort": null,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -949,6 +957,7 @@ export const DRIVER_CATALOG = {
       "tint": "teal",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": "sqlite",
       "defaultPort": 8080,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -963,6 +972,7 @@ export const DRIVER_CATALOG = {
       "tint": "orange",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": "sqlite",
       "defaultPort": null,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -977,6 +987,7 @@ export const DRIVER_CATALOG = {
       "tint": "yellow",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": "duckdb",
       "defaultPort": null,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -991,6 +1002,7 @@ export const DRIVER_CATALOG = {
       "tint": "red",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": "tsql",
       "defaultPort": 1433,
       "defaultDatabase": "master",
       "defaultUser": null,
@@ -1005,6 +1017,7 @@ export const DRIVER_CATALOG = {
       "tint": "yellow",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": "clickhouse",
       "defaultPort": 8123,
       "defaultDatabase": "default",
       "defaultUser": "default",
@@ -1019,6 +1032,7 @@ export const DRIVER_CATALOG = {
       "tint": "blue",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": "snowflake",
       "defaultPort": null,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -1033,6 +1047,7 @@ export const DRIVER_CATALOG = {
       "tint": "blue",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": "bigquery",
       "defaultPort": null,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -1047,6 +1062,7 @@ export const DRIVER_CATALOG = {
       "tint": "gray",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": "vertica",
       "defaultPort": 5433,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -1061,6 +1077,7 @@ export const DRIVER_CATALOG = {
       "tint": "teal",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": "cql",
       "defaultPort": 9042,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -1075,6 +1092,7 @@ export const DRIVER_CATALOG = {
       "tint": "red",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": null,
       "defaultPort": 6379,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -1089,6 +1107,7 @@ export const DRIVER_CATALOG = {
       "tint": "green",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": null,
       "defaultPort": 27017,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -1103,6 +1122,7 @@ export const DRIVER_CATALOG = {
       "tint": "yellow",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": null,
       "defaultPort": 9200,
       "defaultDatabase": null,
       "defaultUser": null,
@@ -1117,14 +1137,926 @@ export const DRIVER_CATALOG = {
       "tint": "purple",
       "pgFlavor": null,
       "mysqlVersion": null,
+      "dialect": null,
       "defaultPort": null,
       "defaultDatabase": null,
       "defaultUser": null,
       "backup": false,
       "cargoFeature": "drv-dynamodb"
     }
+  },
+  "baseCaps": {
+    "postgres": {
+      "driver": "postgres",
+      "flavor": null,
+      "dialect": "postgres",
+      "language": "sql",
+      "features": [
+        "editor",
+        "explain",
+        "explainAnalyze",
+        "cancelOnServer",
+        "format",
+        "editRows",
+        "insertRows",
+        "deleteRows",
+        "editWithoutKey",
+        "returning",
+        "serverExpressions",
+        "exactCount",
+        "copyAsInsert",
+        "workspaceCommit",
+        "structureView",
+        "structureEdit",
+        "createTable",
+        "dropTable",
+        "truncateTable",
+        "renameTable",
+        "tableDdl",
+        "viewDefinition",
+        "routines",
+        "sequences",
+        "triggers",
+        "diagram",
+        "switchDatabase",
+        "createDatabase",
+        "dropDatabase",
+        "renameDatabase",
+        "createSchema",
+        "dropSchema",
+        "processList",
+        "killProcess",
+        "users",
+        "exportTables",
+        "exportSql",
+        "importCsv",
+        "importJson",
+        "importSqlDump",
+        "backup",
+        "restore",
+        "encoding",
+        "timezone",
+        "startupCommands",
+        "sessionDetails",
+        "metrics",
+        "assistant",
+        "mcp",
+        "laravelMigration",
+        "dummyData"
+      ],
+      "namespaces": {
+        "databases": true,
+        "schemas": "schemas",
+        "defaultSchema": "public",
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "estimate",
+        "sort": true,
+        "filterOps": [
+          "eq",
+          "ne",
+          "gt",
+          "lt",
+          "ge",
+          "le",
+          "like",
+          "notLike",
+          "in",
+          "notIn",
+          "isNull",
+          "isNotNull",
+          "between",
+          "notBetween",
+          "contains",
+          "notContains",
+          "containsCase",
+          "notContainsCase",
+          "hasPrefix",
+          "hasSuffix",
+          "hasPrefixCase",
+          "hasSuffixCase",
+          "ilike",
+          "jsonContains",
+          "jsonNotContains"
+        ],
+        "rawFilter": "sqlWhere",
+        "transactions": "atomic",
+        "affected": "exact",
+        "defaultKeyword": true,
+        "serverExprs": [
+          "now",
+          "currentTimestamp",
+          "currentDate",
+          "currentTime",
+          "localTimestamp",
+          "default"
+        ],
+        "maxParams": 60000
+      },
+      "safety": {
+        "readOnly": "server",
+        "hardened": false,
+        "confirm": "password"
+      },
+      "session": {
+        "keepaliveSecs": 30,
+        "pingBilled": false
+      }
+    },
+    "mysql": {
+      "driver": "mysql",
+      "flavor": null,
+      "dialect": "mysql",
+      "language": "sql",
+      "features": [
+        "editor",
+        "explain",
+        "explainAnalyze",
+        "cancelOnServer",
+        "format",
+        "editRows",
+        "insertRows",
+        "deleteRows",
+        "editWithoutKey",
+        "returning",
+        "serverExpressions",
+        "exactCount",
+        "copyAsInsert",
+        "workspaceCommit",
+        "structureView",
+        "structureEdit",
+        "createTable",
+        "dropTable",
+        "truncateTable",
+        "renameTable",
+        "tableDdl",
+        "viewDefinition",
+        "routines",
+        "sequences",
+        "triggers",
+        "diagram",
+        "switchDatabase",
+        "createDatabase",
+        "dropDatabase",
+        "renameDatabase",
+        "createSchema",
+        "dropSchema",
+        "processList",
+        "killProcess",
+        "users",
+        "exportTables",
+        "exportSql",
+        "importCsv",
+        "importJson",
+        "importSqlDump",
+        "backup",
+        "restore",
+        "encoding",
+        "timezone",
+        "startupCommands",
+        "sessionDetails",
+        "metrics",
+        "assistant",
+        "mcp",
+        "laravelMigration",
+        "dummyData"
+      ],
+      "namespaces": {
+        "databases": true,
+        "schemas": "databaseIsSchema",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "estimate",
+        "sort": true,
+        "filterOps": [
+          "eq",
+          "ne",
+          "gt",
+          "lt",
+          "ge",
+          "le",
+          "like",
+          "notLike",
+          "in",
+          "notIn",
+          "isNull",
+          "isNotNull",
+          "between",
+          "notBetween",
+          "contains",
+          "notContains",
+          "containsCase",
+          "notContainsCase",
+          "hasPrefix",
+          "hasSuffix",
+          "hasPrefixCase",
+          "hasSuffixCase"
+        ],
+        "rawFilter": "sqlWhere",
+        "transactions": "atomic",
+        "affected": "exact",
+        "defaultKeyword": true,
+        "serverExprs": [
+          "now",
+          "currentTimestamp",
+          "currentDate",
+          "currentTime",
+          "localTimestamp",
+          "default"
+        ],
+        "maxParams": 60000
+      },
+      "safety": {
+        "readOnly": "server",
+        "hardened": false,
+        "confirm": "password"
+      },
+      "session": {
+        "keepaliveSecs": 30,
+        "pingBilled": false
+      }
+    },
+    "sqlite": {
+      "driver": "sqlite",
+      "flavor": null,
+      "dialect": "sqlite",
+      "language": "sql",
+      "features": [
+        "editor",
+        "explain",
+        "explainAnalyze",
+        "cancelOnServer",
+        "format",
+        "editRows",
+        "insertRows",
+        "deleteRows",
+        "editWithoutKey",
+        "returning",
+        "serverExpressions",
+        "exactCount",
+        "copyAsInsert",
+        "workspaceCommit",
+        "structureView",
+        "structureEdit",
+        "createTable",
+        "dropTable",
+        "truncateTable",
+        "renameTable",
+        "tableDdl",
+        "viewDefinition",
+        "routines",
+        "sequences",
+        "triggers",
+        "diagram",
+        "switchDatabase",
+        "createDatabase",
+        "dropDatabase",
+        "renameDatabase",
+        "createSchema",
+        "dropSchema",
+        "processList",
+        "killProcess",
+        "users",
+        "exportTables",
+        "exportSql",
+        "importCsv",
+        "importJson",
+        "importSqlDump",
+        "backup",
+        "restore",
+        "encoding",
+        "timezone",
+        "startupCommands",
+        "sessionDetails",
+        "metrics",
+        "assistant",
+        "mcp",
+        "laravelMigration",
+        "dummyData"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "schemas",
+        "defaultSchema": "main",
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "exact",
+        "sort": true,
+        "filterOps": [
+          "eq",
+          "ne",
+          "gt",
+          "lt",
+          "ge",
+          "le",
+          "like",
+          "notLike",
+          "in",
+          "notIn",
+          "isNull",
+          "isNotNull",
+          "between",
+          "notBetween",
+          "contains",
+          "notContains",
+          "containsCase",
+          "notContainsCase",
+          "hasPrefix",
+          "hasSuffix",
+          "hasPrefixCase",
+          "hasSuffixCase"
+        ],
+        "rawFilter": "sqlWhere",
+        "transactions": "atomic",
+        "affected": "exact",
+        "defaultKeyword": false,
+        "serverExprs": [
+          "now",
+          "currentTimestamp",
+          "currentDate",
+          "currentTime",
+          "localTimestamp",
+          "default"
+        ],
+        "maxParams": 32000
+      },
+      "safety": {
+        "readOnly": "server",
+        "hardened": false,
+        "confirm": "password"
+      },
+      "session": {
+        "keepaliveSecs": 30,
+        "pingBilled": false
+      }
+    },
+    "sqlserver": {
+      "driver": "sqlserver",
+      "flavor": null,
+      "dialect": "tsql",
+      "language": "sql",
+      "features": [
+        "editor",
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "password"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    },
+    "libsql": {
+      "driver": "libsql",
+      "flavor": null,
+      "dialect": "sqlite",
+      "language": "sql",
+      "features": [
+        "editor",
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "passcode"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    },
+    "d1": {
+      "driver": "d1",
+      "flavor": null,
+      "dialect": "sqlite",
+      "language": "sql",
+      "features": [
+        "editor",
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "passcode"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    },
+    "duckdb": {
+      "driver": "duckdb",
+      "flavor": null,
+      "dialect": "duckdb",
+      "language": "sql",
+      "features": [
+        "editor",
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "password"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    },
+    "clickhouse": {
+      "driver": "clickhouse",
+      "flavor": null,
+      "dialect": "clickhouse",
+      "language": "sql",
+      "features": [
+        "editor",
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "password"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    },
+    "snowflake": {
+      "driver": "snowflake",
+      "flavor": null,
+      "dialect": "snowflake",
+      "language": "sql",
+      "features": [
+        "editor",
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "passcode"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    },
+    "bigquery": {
+      "driver": "bigquery",
+      "flavor": null,
+      "dialect": "bigquery",
+      "language": "sql",
+      "features": [
+        "editor",
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "passcode"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    },
+    "vertica": {
+      "driver": "vertica",
+      "flavor": null,
+      "dialect": "vertica",
+      "language": "sql",
+      "features": [
+        "editor",
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "password"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    },
+    "cassandra": {
+      "driver": "cassandra",
+      "flavor": null,
+      "dialect": "cql",
+      "language": "cql",
+      "features": [
+        "editor",
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "password"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    },
+    "redis": {
+      "driver": "redis",
+      "flavor": null,
+      "dialect": null,
+      "language": "redisCli",
+      "features": [
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "password"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    },
+    "mongodb": {
+      "driver": "mongodb",
+      "flavor": null,
+      "dialect": null,
+      "language": "mongoShell",
+      "features": [
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "password"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    },
+    "elasticsearch": {
+      "driver": "elasticsearch",
+      "flavor": null,
+      "dialect": null,
+      "language": "esConsole",
+      "features": [
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "passcode"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    },
+    "dynamodb": {
+      "driver": "dynamodb",
+      "flavor": null,
+      "dialect": null,
+      "language": "partiql",
+      "features": [
+        "structureView"
+      ],
+      "namespaces": {
+        "databases": false,
+        "schemas": "single",
+        "defaultSchema": null,
+        "labels": {
+          "database": "Database",
+          "schema": "Schema",
+          "table": "Table",
+          "tables": "Tables"
+        }
+      },
+      "data": {
+        "paging": "offset",
+        "count": "none",
+        "sort": false,
+        "filterOps": [],
+        "rawFilter": null,
+        "transactions": "none",
+        "affected": "unknown",
+        "defaultKeyword": false,
+        "serverExprs": [],
+        "maxParams": 0
+      },
+      "safety": {
+        "readOnly": "classifierOnly",
+        "hardened": false,
+        "confirm": "passcode"
+      },
+      "session": {
+        "keepaliveSecs": null,
+        "pingBilled": false
+      }
+    }
   }
 } satisfies {
   drivers: Record<Driver, DriverDescriptor>;
   kinds: Record<DatabaseKind, KindDescriptor>;
+  baseCaps: Record<Driver, SessionCaps>;
 };

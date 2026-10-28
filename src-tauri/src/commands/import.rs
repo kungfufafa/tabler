@@ -96,8 +96,19 @@ pub async fn import_csv(
     req: CsvImportRequest,
     on_progress: Channel<CsvImportProgress>,
 ) -> Result<CsvImportReport, AppError> {
+    import_csv_on(&state, connection_id, req, on_progress).await
+}
+
+/// The body of [`import_csv`], callable without a Tauri runtime.
+pub(crate) async fn import_csv_on(
+    state: &AppState,
+    connection_id: Uuid,
+    req: CsvImportRequest,
+    on_progress: Channel<CsvImportProgress>,
+) -> Result<CsvImportReport, AppError> {
     let conn = state.connection(connection_id).await?;
     refuse_read_only(&conn)?;
+    let session = conn.session_for(Feature::ImportCsv).await?;
     let token = CancellationToken::new();
     let _registered = Registration::new(
         &req.import_id,
@@ -108,7 +119,6 @@ pub async fn import_csv(
             session: None,
         },
     )?;
-    let session = conn.session().await;
     let (table, meta) = match &req.target {
         ImportTarget::Existing { table } => {
             // The structure as it is now: the import must not bind against stale columns.
@@ -165,8 +175,19 @@ pub async fn import_json(
     req: JsonImportRequest,
     on_progress: Channel<CsvImportProgress>,
 ) -> Result<CsvImportReport, AppError> {
+    import_json_on(&state, connection_id, req, on_progress).await
+}
+
+/// The body of [`import_json`], callable without a Tauri runtime.
+pub(crate) async fn import_json_on(
+    state: &AppState,
+    connection_id: Uuid,
+    req: JsonImportRequest,
+    on_progress: Channel<CsvImportProgress>,
+) -> Result<CsvImportReport, AppError> {
     let conn = state.connection(connection_id).await?;
     refuse_read_only(&conn)?;
+    let session = conn.session_for(Feature::ImportJson).await?;
     let token = CancellationToken::new();
     let _registered = Registration::new(
         &req.import_id,
@@ -177,7 +198,6 @@ pub async fn import_json(
             session: None,
         },
     )?;
-    let session = conn.session().await;
     let (table, meta) = match &req.target {
         ImportTarget::Existing { table } => {
             conn.invalidate(Some(table)).await;
@@ -223,6 +243,15 @@ pub async fn preview_sql_dump(
     connection_id: Uuid,
     req: SqlDumpPreviewRequest,
 ) -> Result<SqlDumpPreview, AppError> {
+    preview_sql_dump_on(&state, connection_id, req).await
+}
+
+/// The body of [`preview_sql_dump`], callable without a Tauri runtime.
+pub(crate) async fn preview_sql_dump_on(
+    state: &AppState,
+    connection_id: Uuid,
+    req: SqlDumpPreviewRequest,
+) -> Result<SqlDumpPreview, AppError> {
     let dialect = state
         .session(connection_id)
         .await?
@@ -258,7 +287,10 @@ async fn dump_session(state: &AppState, conn: &Connection) -> Result<Arc<dyn DbS
 
 /// A new session opened like `conn`'s (profile with its bootstrap commands, SSH tunnel,
 /// password) on `database`, or on the database `conn` is on now. The caller closes it. Used by
-/// SQL dumps and by exports that read another PostgreSQL database of the connection.
+/// SQL dumps and by exports that read another PostgreSQL database of the connection. Callers
+/// check their feature first (`ImportSqlDump`, `ExportTables`): a driver whose engine opens a
+/// file once per process grants it only when this second session shares the instance
+/// (`drivers::sharing`).
 pub(crate) async fn session_on_database(
     state: &AppState,
     conn: &Connection,
@@ -306,8 +338,20 @@ pub async fn import_sql_dump(
     req: SqlImportRequest,
     on_progress: Channel<SqlImportProgress>,
 ) -> Result<SqlImportReport, AppError> {
+    import_sql_dump_on(&state, connection_id, req, on_progress).await
+}
+
+/// The body of [`import_sql_dump`], callable without a Tauri runtime.
+pub(crate) async fn import_sql_dump_on(
+    state: &AppState,
+    connection_id: Uuid,
+    req: SqlImportRequest,
+    on_progress: Channel<SqlImportProgress>,
+) -> Result<SqlImportReport, AppError> {
     let conn = state.connection(connection_id).await?;
     refuse_read_only(&conn)?;
+    // Refused before the dump's own session opens.
+    conn.session_for(Feature::ImportSqlDump).await?;
     let token = CancellationToken::new();
     let slot = CancelSlot::default();
     let registered = Registration::new(
@@ -319,7 +363,7 @@ pub async fn import_sql_dump(
             session: None,
         },
     )?;
-    let session = dump_session(&state, &conn).await?;
+    let session = dump_session(state, &conn).await?;
     registered.set_session(session.clone());
     log::info!("import {} (SQL dump) started", req.import_id);
     let report = run_sql_import(

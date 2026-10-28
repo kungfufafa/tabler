@@ -8,4 +8,9 @@ export type ExecOutcome = { affected: number, lastInsertId: string | null,
 /**
  * Rows produced by `RETURNING` (or a SELECT run through execute).
  */
-rows: ResultSet | null, };
+rows: ResultSet | null, 
+/**
+ * The server did not say how many rows the statement touched (`affected` is then only a
+ * guess): the affected-rows guard refuses such an outcome (`check_affected`).
+ */
+affectedUnknown?: boolean, };

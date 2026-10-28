@@ -142,13 +142,23 @@ pub async fn metrics_run(
     query_id: String,
     query: MetricsQuery,
 ) -> Result<MetricsResult, AppError> {
+    metrics_run_on(&state, connection_id, query_id, query).await
+}
+
+/// The body of [`metrics_run`], callable without a Tauri runtime.
+pub(crate) async fn metrics_run_on(
+    state: &AppState,
+    connection_id: Uuid,
+    query_id: String,
+    query: MetricsQuery,
+) -> Result<MetricsResult, AppError> {
     let conn = state.connection(connection_id).await?;
     let session = conn.session().await;
     let dialect = session.core_dialect(Feature::Metrics)?;
     let prepared = metrics::prepare(dialect, &query)?;
     crate::commands::safety::refuse_read_only_run(&conn, &prepared.sql, dialect.into(), None)?;
     let slot = CancelSlot::default();
-    let _running = Running::register(&state, connection_id, query_id, slot.clone())?;
+    let _running = Running::register(state, connection_id, query_id, slot.clone())?;
     let result = metrics::run_with_timeout(
         session.as_ref(),
         &prepared,

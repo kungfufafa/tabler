@@ -24,6 +24,7 @@ use crate::types::backup::{
     BackupEvent, BackupJobKind, BackupJobRequest, BackupJobResult, BackupTarget, DumpBinary,
     RestoreFileInfo,
 };
+use crate::types::caps::Feature;
 use crate::types::profile::{ConnStatus, ConnectionProfile, Driver, ProfileOptions, SslMode};
 
 /// Bound on closing a temporary session (MySQL waits for its pooled connections).
@@ -95,6 +96,29 @@ async fn live_connection(state: &AppState, profile_id: Uuid) -> Option<Arc<Conne
         .values()
         .find(|c| c.profile.id == profile_id && *c.status.borrow() == ConnStatus::Connected)
         .cloned()
+}
+
+/// Refuses a backup or restore (`feature`) the profile's server does not offer, before any tool,
+/// tunnel or session runs: by the open connection's caps when one is up (a PostgreSQL flavor
+/// found at connect has none), otherwise by the profile's kind.
+async fn require_backup(
+    state: &AppState,
+    profile: &ConnectionProfile,
+    feature: Feature,
+) -> Result<(), AppError> {
+    if let Some(conn) = live_connection(state, profile.id).await {
+        return conn.caps().await.require(feature);
+    }
+    let kind = profile.kind().descriptor();
+    if kind.backup {
+        Ok(())
+    } else {
+        Err(AppError::Unsupported(format!(
+            "{}: {} is not available",
+            kind.label,
+            feature.label()
+        )))
+    }
 }
 
 /// Where a binary (or a temporary session) reaches the profile's server.
@@ -199,8 +223,17 @@ pub async fn backup_inspect_target(
     state: State<'_, AppState>,
     profile_id: Uuid,
 ) -> Result<BackupTarget, AppError> {
-    let profile = load_profile(&state, profile_id)?;
-    if let Some(conn) = live_connection(&state, profile_id).await {
+    backup_inspect_target_on(&state, profile_id).await
+}
+
+/// The body of [`backup_inspect_target`], callable without a Tauri runtime.
+pub(crate) async fn backup_inspect_target_on(
+    state: &AppState,
+    profile_id: Uuid,
+) -> Result<BackupTarget, AppError> {
+    let profile = load_profile(state, profile_id)?;
+    require_backup(state, &profile, Feature::Backup).await?;
+    if let Some(conn) = live_connection(state, profile_id).await {
         let info = conn.info().await;
         let databases = conn.session().await.list_databases().await?;
         return Ok(BackupTarget {
@@ -213,8 +246,13 @@ pub async fn backup_inspect_target(
             live: true,
         });
     }
-    let password = connect_password(&state, &profile, None).await?;
-    let route = route(&state, &profile).await?;
+    // A temporary session next to an open one of the same file (an engine that opens a file once
+    // per process) only where its driver shares the instance.
+    if let Some(holder) = state.file_holder(&profile).await {
+        drivers::sharing::ensure_second_session(&holder.caps().await, Feature::Backup)?;
+    }
+    let password = connect_password(state, &profile, None).await?;
+    let route = route(state, &profile).await?;
     let opened = tokio::time::timeout(
         connect_timeout(&profile),
         drivers::connect(ConnectTarget {
@@ -235,6 +273,8 @@ pub async fn backup_inspect_target(
     };
     let read = async {
         let server = session.server_info().await?;
+        // What the server turned out to be (a PostgreSQL flavor) may offer no backups.
+        session.require(Feature::Backup)?;
         let databases = session.list_databases().await?;
         Ok::<_, AppError>((server, databases))
     }
@@ -343,9 +383,23 @@ pub async fn backup_run(
     req: BackupJobRequest,
     on_event: Channel<BackupEvent>,
 ) -> Result<BackupJobResult, AppError> {
+    backup_run_on(&state, req, on_event).await
+}
+
+/// The body of [`backup_run`], callable without a Tauri runtime.
+pub(crate) async fn backup_run_on(
+    state: &AppState,
+    req: BackupJobRequest,
+    on_event: Channel<BackupEvent>,
+) -> Result<BackupJobResult, AppError> {
     let (_job, cancel) = crate::backup::register_job(&req.job_id)?;
-    let profile = load_profile(&state, req.profile_id)?;
+    let profile = load_profile(state, req.profile_id)?;
     refuse_read_only_restore(req.kind, &profile.options)?;
+    let feature = match req.kind {
+        BackupJobKind::Backup => Feature::Backup,
+        BackupJobKind::Restore => Feature::Restore,
+    };
+    require_backup(state, &profile, feature).await?;
     let tool = tool_info(profile.driver, &req.binary_path).await?;
     let (output, restore_file) = match req.kind {
         BackupJobKind::Backup => (Some(backup_destination(&req.path)?), None),
@@ -360,8 +414,8 @@ pub async fn backup_run(
         }
     };
     let (socket, cleartext_password) = mysql_transport(&profile)?;
-    let password = connect_password(&state, &profile, None).await?;
-    let route = route(&state, &profile).await?;
+    let password = connect_password(state, &profile, None).await?;
+    let route = route(state, &profile).await?;
     let conn = ConnParams {
         driver: profile.driver,
         endpoint: route.endpoint.clone(),

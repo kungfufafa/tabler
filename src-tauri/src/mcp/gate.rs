@@ -14,6 +14,8 @@ use crate::commands::safety::run_writes;
 use crate::sqlgen::dialect::DialectRef;
 use crate::sqlgen::split::{code_only, split_statements};
 use crate::sqlgen::{Dialect, SqlDialect};
+use crate::types::caps::SessionCaps;
+use crate::types::driver::ReadOnlyMode;
 use crate::types::profile::{ConnectionProfile, ConnectionTag, SafeModeLevel};
 
 use super::prefs::McpPrefs;
@@ -53,11 +55,20 @@ pub fn level_label(level: SafeModeLevel) -> &'static str {
 }
 
 impl WriteBlock {
-    pub fn message(self, name: &str) -> String {
+    /// Why writes are refused on the connection named `name`, whose read-only mode is `mode`.
+    pub fn message(self, name: &str, mode: ReadOnlyMode) -> String {
         match self {
-            WriteBlock::ReadOnly => {
-                format!("\u{201c}{name}\u{201d} is read-only: MCP clients can only read from it.")
-            }
+            WriteBlock::ReadOnly => match mode {
+                ReadOnlyMode::Server | ReadOnlyMode::PerRequest => format!(
+                    "\u{201c}{name}\u{201d} is read-only: MCP clients can only read from it."
+                ),
+                // Nothing but the classifier stands behind the setting there.
+                ReadOnlyMode::ClassifierOnly => format!(
+                    "\u{201c}{name}\u{201d} is read-only: MCP clients can only read from it. Its \
+                     server does not enforce that, so Tabler refuses every statement it cannot \
+                     tell is a read."
+                ),
+            },
             WriteBlock::PrefOff => {
                 "MCP clients can only read: \u{201c}Allow MCP clients to change \
                  data\u{201d} is off in Tabler \u{25b8} Settings \u{25b8} MCP Server."
@@ -303,7 +314,10 @@ pub fn check_query(
     match write_block(profile, prefs) {
         Some(block) if run_writes(sql, dialect, None, false) => Err(format!(
             "Refused: this statement changes data or the server. {}",
-            block.message(&profile.name)
+            block.message(
+                &profile.name,
+                SessionCaps::for_profile(profile).safety.read_only
+            )
         )),
         _ => Ok(()),
     }
@@ -702,6 +716,30 @@ mod tests {
         assert!(check_query(&p, &pr, "SELECT 1; SELECT 2", v).is_ok());
         // Its classifier decides the writes.
         assert!(check_query(&p, &pr, "DELETE FROM t", v).is_err());
+    }
+
+    #[test]
+    fn the_read_only_message_says_when_only_the_classifier_enforces_it() {
+        use crate::sqlgen::dialect::testing::override_spec;
+        use crate::sqlgen::portable::testing::ANSI_TEST;
+
+        let pr = prefs(true, false);
+        let core = check_query(
+            &profile(None, None, true),
+            &pr,
+            "DELETE FROM t",
+            Dialect::Sqlite,
+        )
+        .unwrap_err();
+        assert!(
+            core.ends_with("is read-only: MCP clients can only read from it."),
+            "{core}"
+        );
+        let _vertica = override_spec(SqlDialect::Vertica, &ANSI_TEST);
+        let mut vertica = profile(None, None, true);
+        vertica.driver = crate::types::profile::Driver::Vertica;
+        let err = check_query(&vertica, &pr, "DELETE FROM t", SqlDialect::Vertica).unwrap_err();
+        assert!(err.contains("Its server does not enforce that"), "{err}");
     }
 
     #[test]

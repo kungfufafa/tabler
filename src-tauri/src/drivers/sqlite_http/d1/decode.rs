@@ -209,6 +209,7 @@ pub fn exec_outcome(sql: &str, result: &RawResult) -> ExecOutcome {
             .as_ref()
             .filter(|r| !r.columns.is_empty())
             .map(|r| result_set(r, None, None)),
+        affected_unknown: false,
     }
 }
 

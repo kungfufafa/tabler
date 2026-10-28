@@ -16,6 +16,7 @@ use crate::tunnel::{
     PromptClock, PromptEvent, SshPromptPurpose, TunnelAuth, TunnelHandle, TunnelState,
     TunnelStatus, TunnelStatusEvent,
 };
+use crate::types::caps::Feature;
 use crate::types::driver::{Location, SshSupport};
 use crate::types::profile::{
     ConnStatus, ConnectionInfo, ConnectionProfile, ConnectionStatusEvent,
@@ -470,6 +471,16 @@ pub async fn connect(
     {
         profile.database = Some(database);
     }
+    // An engine that opens a file once per process: another workspace of the file shares the
+    // open one's instance, which takes the same settings only.
+    if let Some(holder) = state.file_holder(&profile).await
+        && !drivers::sharing::may_share(&holder.profile, &profile)
+    {
+        return Err(drivers::sharing::file_in_use(
+            &profile,
+            &holder.profile.name,
+        ));
+    }
     // Before anything else: the "Bootstrap CLI script" may put the file in place or start a proxy.
     crate::bootstrap_script::run_for_profile(&profile).await?;
     // SQLite over SSH: the remote file is downloaded first; the driver opens the local copy.
@@ -532,6 +543,7 @@ pub async fn connect(
         tunnel: tunnel_port.map(|local_port| TunnelInfo { local_port }),
         // A profile with an encoding other than UTF-8 is read-only (see `conn_options`).
         read_only: crate::conn_options::effective_read_only(&profile),
+        capabilities: Some(session.capabilities()),
     };
     let (status_tx, _) = watch::channel(ConnStatus::Connected);
     let conn = Arc::new(Connection {
@@ -632,7 +644,20 @@ pub async fn switch_database(
     connection_id: Uuid,
     database: String,
 ) -> Result<ConnectionInfo, AppError> {
+    switch_database_on(&state, connection_id, database).await
+}
+
+/// The body of [`switch_database`], callable without a Tauri runtime.
+pub(crate) async fn switch_database_on(
+    state: &AppState,
+    connection_id: Uuid,
+    database: String,
+) -> Result<ConnectionInfo, AppError> {
     let conn = state.connection(connection_id).await?;
+    // The new session opens before the old one closes: a driver whose engine opens a file once
+    // per process grants this only when that second session shares the instance
+    // (`drivers::sharing`).
+    conn.caps().await.require(Feature::SwitchDatabase)?;
     let mut profile = conn.profile.clone();
     profile.database = Some(database);
     let host_override = match &conn.tunnel {
@@ -652,7 +677,7 @@ pub async fn switch_database(
     let current = conn.session().await;
     let profile = with_live_encoding(profile, live_encoding(&*current).await);
     drop(current);
-    let password = connect_password(&state, &profile, None).await?;
+    let password = connect_password(state, &profile, None).await?;
     let attempt = Instant::now();
     let (session, server) = open_session(&profile, password.as_deref(), host_override)
         .await
@@ -660,6 +685,7 @@ pub async fn switch_database(
             Some(t) => t.explain_error(e, attempt),
             None => e,
         })?;
+    let capabilities = session.capabilities();
     let old = std::mem::replace(&mut *conn.session.write().await, session);
     old.close().await;
     conn.invalidate(None).await;
@@ -668,6 +694,7 @@ pub async fn switch_database(
     info.current_database = server.current_database;
     info.current_user = server.current_user;
     info.read_only = crate::conn_options::effective_read_only(&profile);
+    info.capabilities = Some(capabilities);
     Ok(info.clone())
 }
 

@@ -19,6 +19,7 @@ use crate::sqlgen::ddl::{
     PlanContext, create_table_sql_with, is_fk_check, is_fk_toggle, pg_owned_sequences_sql,
     plan_ddl_with, session_toggle,
 };
+use crate::sqlgen::dialect::{DialectRef, DialectSpec, ensure_built};
 use crate::state::{AppState, Connection};
 use crate::types::caps::Feature;
 use crate::types::ddl::{DdlOp, DdlPlan, DdlResult};
@@ -36,13 +37,56 @@ const FK_GUARD_MARKER: &str = "tabler-fk-violations:";
 /// ALTER, so the wait must stay short.
 pub const DDL_LOCK_TIMEOUT_SECS: u64 = 5;
 
-/// Plans `ops` against fresh metadata of `table` (when given).
+/// The feature a structure change needs.
+pub fn op_feature(op: &DdlOp) -> Feature {
+    match op {
+        DdlOp::CreateTable { .. } => Feature::CreateTable,
+        DdlOp::DropTable { .. } => Feature::DropTable,
+        DdlOp::TruncateTable { .. } => Feature::TruncateTable,
+        DdlOp::RenameTable { .. } => Feature::RenameTable,
+        DdlOp::CreateTrigger { .. }
+        | DdlOp::DropTrigger { .. }
+        | DdlOp::EnableTrigger { .. }
+        | DdlOp::DisableTrigger { .. } => Feature::Triggers,
+        DdlOp::AddColumn { .. }
+        | DdlOp::DropColumn { .. }
+        | DdlOp::RenameColumn { .. }
+        | DdlOp::AlterColumnType { .. }
+        | DdlOp::AlterColumnNullable { .. }
+        | DdlOp::AlterColumnDefault { .. }
+        | DdlOp::SetColumnComment { .. }
+        | DdlOp::AlterColumnAutoIncrement { .. }
+        | DdlOp::AlterColumnOnUpdate { .. }
+        | DdlOp::AlterColumnCollation { .. }
+        | DdlOp::SetTableComment { .. }
+        | DdlOp::AlterTableOptions { .. }
+        | DdlOp::AddIndex { .. }
+        | DdlOp::DropIndex { .. }
+        | DdlOp::AddForeignKey { .. }
+        | DdlOp::DropForeignKey { .. }
+        | DdlOp::AddPrimaryKey { .. }
+        | DdlOp::DropPrimaryKey { .. }
+        | DdlOp::AddCheck { .. }
+        | DdlOp::DropCheck { .. }
+        | DdlOp::RawSql { .. } => Feature::StructureEdit,
+    }
+}
+
+/// Refuses `ops` when the session lacks a feature one of them needs.
+fn require_ops(session: &dyn DbSession, ops: &[DdlOp]) -> Result<(), AppError> {
+    let features: Vec<Feature> = ops.iter().map(op_feature).collect();
+    session.capabilities().require_all(&features)
+}
+
+/// Plans `ops` against fresh metadata of `table` (when given); refused before the table is read
+/// when the session lacks a feature the changes need.
 pub(crate) async fn plan_for(
     conn: &Connection,
     table: Option<&TableRef>,
     ops: &[DdlOp],
 ) -> Result<DdlPlan, AppError> {
     let session = conn.session().await;
+    require_ops(session.as_ref(), ops)?;
     let meta = match table {
         Some(t) => {
             conn.invalidate(Some(t)).await;
@@ -68,7 +112,10 @@ pub async fn plan_on(
     meta: Option<&TableMeta>,
     ops: &[DdlOp],
 ) -> Result<DdlPlan, AppError> {
-    let dialect = session.core_dialect(Feature::StructureEdit)?;
+    let dialect = match session.dialect().resolve() {
+        DialectRef::Core(_) => session.core_dialect(Feature::StructureEdit)?,
+        DialectRef::Ext(spec) => return plan_ext(session, spec, meta, ops),
+    };
     let mut context = PlanContext::default();
     if dialect == Dialect::Mysql {
         // comments and defaults are spelled for how this session reads backslashes
@@ -93,6 +140,28 @@ pub async fn plan_on(
         }
     }
     plan_ddl_with(dialect, meta, ops, &context)
+}
+
+/// The structure changes of an extension dialect, planned by its lane (`DialectSpec::ddl`). They
+/// need `StructureEdit` and each change's own feature; a dialect without a planner has its
+/// tables edited outside Tabler.
+fn plan_ext(
+    session: &dyn DbSession,
+    spec: &'static DialectSpec,
+    meta: Option<&TableMeta>,
+    ops: &[DdlOp],
+) -> Result<DdlPlan, AppError> {
+    session.require(Feature::StructureEdit)?;
+    require_ops(session, ops)?;
+    let spec = ensure_built(spec)?;
+    let planner = spec.ddl.ok_or_else(|| {
+        AppError::Unsupported(format!(
+            "{}: {} is not available",
+            spec.label,
+            Feature::StructureEdit.label()
+        ))
+    })?;
+    planner.plan(meta, ops)
 }
 
 /// PG: the sequences owned by a column of `table` besides its identity: `(column, sequence)`.
@@ -218,10 +287,15 @@ pub async fn get_table_ddl(
     table: TableRef,
 ) -> Result<String, AppError> {
     let conn = state.connection(connection_id).await?;
-    let session = conn.session().await;
+    table_ddl_on(&conn, &table).await
+}
+
+/// The body of [`get_table_ddl`] on an open connection.
+pub(crate) async fn table_ddl_on(conn: &Connection, table: &TableRef) -> Result<String, AppError> {
+    let session = conn.session_for(Feature::TableDdl).await?;
     // Always describe the current structure, not a cached one.
-    conn.invalidate(Some(&table)).await;
-    let meta = cached_meta(&conn, &table).await?;
+    conn.invalidate(Some(table)).await;
+    let meta = cached_meta(conn, table).await?;
     if let Some(ddl) = meta.ddl.as_deref().filter(|d| !d.trim().is_empty()) {
         return Ok(ddl.to_string());
     }
@@ -637,27 +711,93 @@ pub(crate) fn explain_lock_wait(
 /// block, and plans on one session do not interleave. When a sequential plan fails, its open
 /// block is rolled back and the connection settings it toggles (`PRAGMA foreign_keys`,
 /// `legacy_alter_table`) are restored. Failures are reported in the result, never as `Err`.
-/// The plans are the core planners' (structure, object operations, definitions): a session
-/// without the core generators runs none.
+/// This is the structure editor's executor: the session needs `StructureEdit`. The core
+/// planners' other plans (object operations, definitions) run through `apply_core_plan`.
 pub async fn apply_plan(session: &dyn DbSession, plan: &DdlPlan) -> DdlResult {
-    let started = Instant::now();
-    let dialect = match session.core_dialect(Feature::StructureEdit) {
-        Ok(dialect) => dialect,
-        Err(e) => {
-            return DdlResult {
-                executed: Vec::new(),
-                failed_index: None,
-                error: Some(e.to_payload()),
-                duration_ms: 0,
-            };
-        }
+    let refused = |e: AppError| DdlResult {
+        executed: Vec::new(),
+        failed_index: None,
+        error: Some(e.to_payload()),
+        duration_ms: 0,
     };
+    match session.dialect().resolve() {
+        DialectRef::Core(_) => match session.core_dialect(Feature::StructureEdit) {
+            Ok(dialect) => apply_core_plan(session, dialect, plan).await,
+            Err(e) => refused(e),
+        },
+        // An extension dialect's plan comes from its lane's planner (`plan_ext`).
+        DialectRef::Ext(_) => {
+            if let Err(e) = session.require(Feature::StructureEdit) {
+                return refused(e);
+            }
+            let started = Instant::now();
+            let mut result = run_ext_plan(session, plan).await;
+            result.duration_ms = started.elapsed().as_millis() as u64;
+            result
+        }
+    }
+}
+
+/// Runs a core planner's plan (see `apply_plan`) on `dialect`, which the caller got from
+/// `core_dialect` with the plan's own feature: dropping or truncating from the object menu
+/// needs `DropTable` or `TruncateTable`, not `StructureEdit` (a PostgreSQL flavor has no
+/// structure editor but keeps those).
+pub(crate) async fn apply_core_plan(
+    session: &dyn DbSession,
+    dialect: Dialect,
+    plan: &DdlPlan,
+) -> DdlResult {
+    let started = Instant::now();
     let mut result = run_plan(session, dialect, plan).await;
     result.duration_ms = started.elapsed().as_millis() as u64;
     if let Some(payload) = result.error.as_mut() {
         explain_lock_wait(session, dialect, payload);
     }
     result
+}
+
+/// Runs an extension dialect's plan: in one `DbSession::transaction` when the planner says it is
+/// transactional (all or nothing), otherwise statement by statement, stopping at the first
+/// failure (what ran before it stays done).
+async fn run_ext_plan(session: &dyn DbSession, plan: &DdlPlan) -> DdlResult {
+    let done = |executed: Vec<String>, failed_index: Option<usize>, error| DdlResult {
+        executed,
+        failed_index,
+        error,
+        duration_ms: 0,
+    };
+    if plan.statements.is_empty() {
+        return done(Vec::new(), None, None);
+    }
+    if plan.transactional {
+        let batch = plan
+            .statements
+            .iter()
+            .map(|s| TxStatement::new(s.clone(), Vec::new()))
+            .collect();
+        return match session.transaction(batch).await {
+            Ok(_) => done(plan.statements.clone(), None, None),
+            Err(err) => {
+                let mut payload = err.to_payload();
+                let failed_index = payload
+                    .statement_index
+                    .filter(|&i| i < plan.statements.len())
+                    .or((plan.statements.len() == 1).then_some(0));
+                payload.statement_index = failed_index;
+                done(Vec::new(), failed_index, Some(payload))
+            }
+        };
+    }
+    let mut executed = Vec::with_capacity(plan.statements.len());
+    for (i, sql) in plan.statements.iter().enumerate() {
+        if let Err(err) = session.execute(sql, &[]).await {
+            let mut payload = err.to_payload();
+            payload.statement_index = Some(i);
+            return done(executed, Some(i), Some(payload));
+        }
+        executed.push(sql.clone());
+    }
+    done(executed, None, None)
 }
 
 async fn run_plan(session: &dyn DbSession, dialect: Dialect, plan: &DdlPlan) -> DdlResult {
@@ -839,14 +979,11 @@ mod tests {
     #[test]
     fn foreign_key_check_rows_are_an_error() {
         let clean = ExecOutcome {
-            affected: 0,
-            last_insert_id: None,
             rows: Some(ResultSet::default()),
+            ..ExecOutcome::default()
         };
         assert!(check_outcome("PRAGMA foreign_key_check(\"t\")", &clean).is_ok());
         let dirty = ExecOutcome {
-            affected: 0,
-            last_insert_id: None,
             rows: Some(ResultSet {
                 columns: vec![ResultColumn {
                     name: "table".into(),
@@ -859,6 +996,7 @@ mod tests {
                 rows: vec![vec![Value::Text("child".into())]],
                 truncated: false,
             }),
+            ..ExecOutcome::default()
         };
         let err = check_outcome("PRAGMA foreign_key_check(\"t\")", &dirty).unwrap_err();
         assert!(err.to_string().contains("1 row(s)"), "{err}");
@@ -994,11 +1132,7 @@ mod tests {
         }
         async fn execute(&self, sql: &str, _params: &[Value]) -> Result<ExecOutcome, AppError> {
             self.record(sql.to_string()).await;
-            Ok(ExecOutcome {
-                affected: 0,
-                last_insert_id: None,
-                rows: None,
-            })
+            Ok(ExecOutcome::default())
         }
         async fn transaction(
             &self,
@@ -1055,6 +1189,148 @@ mod tests {
             assert!(result.executed.is_empty());
             assert!(recorder.log.lock().unwrap().is_empty());
         }
+    }
+
+    /// The extension tests' planner: one statement per change, in one transaction unless a
+    /// change is raw SQL.
+    struct TestPlanner;
+
+    impl crate::sqlgen::dialect::ddl::DdlPlanner for TestPlanner {
+        fn plan(&self, meta: Option<&TableMeta>, ops: &[DdlOp]) -> Result<DdlPlan, AppError> {
+            let table = meta.map_or("(new)", |m| m.table.name.as_str());
+            Ok(DdlPlan {
+                statements: ops
+                    .iter()
+                    .map(|op| match op {
+                        DdlOp::RawSql { sql } => sql.clone(),
+                        other => format!("ALTER [{table}] {:?}", op_feature(other)),
+                    })
+                    .collect(),
+                warnings: Vec::new(),
+                transactional: !ops.iter().any(|op| matches!(op, DdlOp::RawSql { .. })),
+            })
+        }
+
+        fn create_table(&self, _meta: &TableMeta) -> Result<String, AppError> {
+            Err(AppError::Unsupported("not in these tests".into()))
+        }
+
+        fn drop_table(
+            &self,
+            _table: &TableRef,
+            _kind: TableKind,
+            _cascade: bool,
+        ) -> Result<String, AppError> {
+            Err(AppError::Unsupported("not in these tests".into()))
+        }
+    }
+
+    static TEST_PLANNER: TestPlanner = TestPlanner;
+
+    fn op(value: serde_json::Value) -> DdlOp {
+        serde_json::from_value(value).unwrap()
+    }
+
+    /// An extension dialect's structure changes come from its lane's planner, behind
+    /// `StructureEdit` and each change's own feature; they run in one transaction when the plan
+    /// says so, statement by statement otherwise. The core arm never sees them.
+    #[tokio::test]
+    async fn an_extension_dialect_plans_and_runs_with_its_own_planner() {
+        use crate::sqlgen::dialect::testing::override_spec;
+        use crate::sqlgen::portable::testing::TSQL_LIKE_TEST;
+        use crate::testkit::FakeSession;
+        use crate::types::caps::SessionCaps;
+
+        let t = serde_json::json!({ "schema": "dbo", "name": "t" });
+        let drop_t = op(serde_json::json!({
+            "op": "dropTable", "table": t, "ifExists": false, "cascade": false
+        }));
+        let rename = op(serde_json::json!({ "op": "renameTable", "table": t, "newName": "u" }));
+        let raw = op(serde_json::json!({ "op": "rawSql", "sql": "EXEC sp_x" }));
+        let edits = SessionCaps::minimal(Driver::Sqlserver).with(&[
+            Feature::StructureEdit,
+            Feature::DropTable,
+            Feature::RenameTable,
+        ]);
+
+        // Without a planner the dialect's tables cannot be altered.
+        let _plain = override_spec(SqlDialect::Tsql, &TSQL_LIKE_TEST);
+        let fake = FakeSession::new(edits.clone());
+        let err = plan_on(&fake, None, std::slice::from_ref(&drop_t))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "UNSUPPORTED");
+        assert_eq!(
+            err.to_string(),
+            "unsupported: Transact-SQL: editing the structure is not available"
+        );
+        drop(_plain);
+
+        let with_planner: &'static DialectSpec = Box::leak(Box::new(DialectSpec {
+            ddl: Some(&TEST_PLANNER),
+            ..TSQL_LIKE_TEST
+        }));
+        let _tsql = override_spec(SqlDialect::Tsql, with_planner);
+        // Refused before anything runs: no StructureEdit, or a change whose feature is missing.
+        for (caps, ops, missing) in [
+            (
+                edits.clone().without(&[Feature::StructureEdit]),
+                vec![drop_t.clone()],
+                Feature::StructureEdit,
+            ),
+            (
+                edits.clone().without(&[Feature::DropTable]),
+                vec![rename.clone(), drop_t.clone()],
+                Feature::DropTable,
+            ),
+        ] {
+            let fake = FakeSession::new(caps);
+            let err = plan_on(&fake, None, &ops).await.unwrap_err();
+            assert_eq!(err.code(), "UNSUPPORTED", "{missing:?}");
+            assert!(err.to_string().contains(missing.label()), "{err}");
+            assert!(fake.calls().is_empty(), "{missing:?}");
+        }
+
+        // A transactional plan runs as one transaction; a failure undoes all of it.
+        let fake = FakeSession::new(edits.clone());
+        let plan = plan_on(&fake, None, &[rename.clone(), drop_t.clone()])
+            .await
+            .unwrap();
+        assert_eq!(
+            plan.statements,
+            ["ALTER [(new)] RenameTable", "ALTER [(new)] DropTable"]
+        );
+        assert!(plan.transactional);
+        let result = apply_plan(&fake, &plan).await;
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert_eq!(result.executed, plan.statements);
+        assert_eq!(fake.calls(), plan.statements);
+        let fake = FakeSession::new(edits.clone()).failing("DropTable");
+        let result = apply_plan(&fake, &plan).await;
+        assert!(result.executed.is_empty());
+        assert_eq!(result.failed_index, Some(1));
+        assert_eq!(result.error.unwrap().statement_index, Some(1));
+
+        // Otherwise statement by statement, stopping at the first failure; what ran stays done.
+        let fake = FakeSession::new(edits.clone()).failing("sp_x");
+        let plan = plan_on(&fake, None, &[rename.clone(), raw, drop_t])
+            .await
+            .unwrap();
+        assert!(!plan.transactional);
+        let result = apply_plan(&fake, &plan).await;
+        assert_eq!(result.executed, ["ALTER [(new)] RenameTable"]);
+        assert_eq!(result.failed_index, Some(1));
+        assert_eq!(
+            fake.calls(),
+            ["ALTER [(new)] RenameTable", "EXEC sp_x"],
+            "nothing after the failure"
+        );
+
+        // Applying needs StructureEdit too.
+        let fake = FakeSession::new(edits.without(&[Feature::StructureEdit]));
+        let result = apply_plan(&fake, &plan).await;
+        assert_eq!(result.error.unwrap().code, "UNSUPPORTED");
+        assert!(fake.calls().is_empty());
     }
 
     /// The toggles around a rebuild used to be jobs of their own: work queued on the

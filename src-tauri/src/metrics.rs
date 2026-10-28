@@ -1724,8 +1724,7 @@ mod tests {
             self.statement(&cancel).await?;
             Ok(crate::types::query::ExecOutcome {
                 affected: 3,
-                last_insert_id: None,
-                rows: None,
+                ..Default::default()
             })
         }
         async fn transaction(

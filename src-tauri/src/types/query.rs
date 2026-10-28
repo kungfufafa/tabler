@@ -87,6 +87,11 @@ pub struct ExecOutcome {
     pub last_insert_id: Option<String>,
     /// Rows produced by `RETURNING` (or a SELECT run through execute).
     pub rows: Option<ResultSet>,
+    /// The server did not say how many rows the statement touched (`affected` is then only a
+    /// guess): the affected-rows guard refuses such an outcome (`check_affected`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub affected_unknown: bool,
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -5,6 +5,8 @@ pub mod app;
 pub mod assistant;
 pub mod backup;
 pub mod browse;
+#[cfg(test)]
+mod caps_tests;
 pub mod conn_extras;
 pub mod connections;
 pub mod ddl;

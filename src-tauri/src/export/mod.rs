@@ -929,19 +929,22 @@ fn is_view(kind: TableKind) -> bool {
     )
 }
 
-/// The core dialect an export of `format` writes with: a SQL script needs Export SQL, the
-/// other formats Export Tables.
+/// The core dialect an export of `format` writes with: every export needs Export Tables, and a
+/// SQL script Export SQL besides (the same for one table, several or a result).
 pub(crate) fn export_dialect(
     session: &dyn DbSession,
     format: &ExportFormat,
 ) -> Result<Dialect, AppError> {
-    session.core_dialect(match format {
-        ExportFormat::SqlInsert { .. } => Feature::ExportSql,
+    match format {
+        ExportFormat::SqlInsert { .. } => {
+            session.require(Feature::ExportTables)?;
+            session.core_dialect(Feature::ExportSql)
+        }
         ExportFormat::Csv { .. }
         | ExportFormat::Json { .. }
         | ExportFormat::Xlsx { .. }
-        | ExportFormat::Html => Feature::ExportTables,
-    })
+        | ExportFormat::Html => session.core_dialect(Feature::ExportTables),
+    }
 }
 
 /// Runs one export on `session`: plans the statement, streams it into the chosen format on a

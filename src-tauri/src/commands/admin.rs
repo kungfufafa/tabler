@@ -5,6 +5,7 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::admin;
+use crate::drivers::DbSession;
 use crate::error::AppError;
 use crate::state::{AppState, Connection};
 use crate::types::admin::{
@@ -36,7 +37,15 @@ pub async fn admin_preview_ddl(
     op: AdminDdl,
 ) -> Result<Vec<String>, AppError> {
     let session = state.session(connection_id).await?;
-    admin::preview_ddl(session.core_dialect(admin::ddl_feature(&op))?, &op)
+    preview_ddl_on(session.as_ref(), &op)
+}
+
+/// The body of [`admin_preview_ddl`] on a session.
+pub(crate) fn preview_ddl_on(
+    session: &dyn DbSession,
+    op: &AdminDdl,
+) -> Result<Vec<String>, AppError> {
+    admin::preview_ddl(session.core_dialect(admin::ddl_feature(op))?, op)
 }
 
 /// Creates / renames / drops a database or a schema. The database the connection uses cannot

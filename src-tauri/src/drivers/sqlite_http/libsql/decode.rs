@@ -137,6 +137,7 @@ pub fn exec_outcome(sql: &str, result: &StmtResult) -> ExecOutcome {
             .then(|| result.last_insert_rowid.clone())
             .flatten(),
         rows: (!result.cols.is_empty()).then(|| result_set(result, None, None)),
+        affected_unknown: false,
     }
 }
 
