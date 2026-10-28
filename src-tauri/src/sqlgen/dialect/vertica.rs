@@ -7,10 +7,11 @@
 //!
 //! Vertica's meta-functions change the cluster from a plain `SELECT` (`SELECT CLOSE_SESSION(…)`,
 //! `SELECT DROP_PARTITIONS(…)`), and so do its machine-learning trainers (`SELECT
-//! LINEAR_REG('model', …)` creates a model). `write_calls` lists them by name and family. The
-//! portable rules have no allow-list of calls yet, so an unknown function stays a read;
-//! `SAFE_META_FUNCTIONS` is the allow-list of the read-only ones, ready for that rules field (a
-//! change request).
+//! LINEAR_REG('model', …)` creates a model). `write_calls` lists them by name and family, so an
+//! unknown function stays a read. An allow-list of calls is no way out: a meta-function is called
+//! like any other function, so every query calling a built-in it does not name, or a function of
+//! the user's, would be a write (docs/drivers/vertica.md, Limits). `SAFE_META_FUNCTIONS` lists
+//! the read-only meta-functions, tested to stay reads.
 //!
 //! The statements the driver sends for itself (session setup, EXPORT_OBJECTS, kills) are built
 //! here too.
@@ -200,9 +201,8 @@ const WRITE_CALLS: &[&str] = &[
     "UPGRADE_MODEL",
 ];
 
-/// Meta-functions that only read (the allow-list a rules field for calls would take): what
-/// Tabler itself and users call to look at the cluster. None of them is in `write_calls`
-/// (tested), and each stays a read.
+/// Meta-functions that only read: what Tabler itself and users call to look at the cluster. None
+/// of them is in `write_calls` (tested), and each stays a read.
 pub const SAFE_META_FUNCTIONS: &[&str] = &[
     "DATA_COLLECTOR_HELP",
     "DESCRIBE_LOAD_BALANCE_DECISION",

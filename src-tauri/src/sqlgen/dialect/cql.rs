@@ -205,9 +205,10 @@ pub static SPEC: DialectSpec = DialectSpec {
             RedactRule {
                 keyword: "PASSWORD",
             },
-            // cqlsh's `LOGIN user 'password'`.
-            RedactRule { keyword: "LOGIN" },
         ],
+        // cqlsh's `LOGIN user 'password'`, at the start of a statement only: `WHERE login =
+        // 'bob'` and `WITH LOGIN = true` are no command.
+        redact_commands: &["LOGIN"],
         cancel_notice: "what it changed before it stopped stays changed (Cassandra has no \
                         transactions)",
         ..SqlKnobs::ANSI
@@ -516,13 +517,23 @@ mod tests {
 
     #[test]
     fn redacts_passwords_and_cqlsh_login() {
-        let redact =
-            |sql: &str| crate::sqlgen::portable::redact::redact(&LEX, SPEC.knobs.redact, sql);
+        let redact = |sql: &str| crate::sqlgen::portable::redact::redact_spec(&SPEC, sql);
         let r = redact("LOGIN alice 'se''cret'");
         assert_eq!(r.sql, "LOGIN alice '********'");
         assert_eq!(r.secrets, ["se'cret", "'se''cret'"]);
+        assert_eq!(
+            redact("SELECT * FROM t WHERE k = 1; LOGIN 'alice' 'pw'").sql,
+            "SELECT * FROM t WHERE k = 1; LOGIN 'alice' '********'"
+        );
         // cqlsh prompts for the password when the line has none.
         assert_eq!(redact("LOGIN alice").sql, "LOGIN alice");
+        // LOGIN is the command only at the start of a statement.
+        for sql in [
+            "SELECT * FROM users WHERE login = 'bob' ALLOW FILTERING",
+            "UPDATE users SET login = 'bob' WHERE k = 1",
+        ] {
+            assert_eq!(redact(sql).sql, sql, "{sql}");
+        }
         assert_eq!(
             redact("CREATE ROLE r WITH PASSWORD = 'x' AND LOGIN = true").sql,
             "CREATE ROLE r WITH PASSWORD = '********' AND LOGIN = true"
@@ -546,7 +557,9 @@ mod tests {
             r.sql,
             "CREATE ROLE r WITH PASSWORD = '********' AND LOGIN = true"
         );
-        assert!(r.secrets.contains(&"$$pw$$".to_string()));
+        assert_eq!(r.secrets, ["pw", "$$pw$$"]);
+        let r = redact("ALTER ROLE r WITH PASSWORD = $$p'w$$");
+        assert_eq!(r.secrets, ["p'w", "$$p'w$$"]);
         // A password word in a string, a name or a comment masks nothing.
         for sql in [
             "SELECT 'password' FROM t",

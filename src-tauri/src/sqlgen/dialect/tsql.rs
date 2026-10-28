@@ -112,6 +112,18 @@ pub static RULES: ClassifyRules = ClassifyRules {
         "CONVERSATION",
         // Azure Synapse RENAME OBJECT.
         "RENAME",
+        // Table hints that take update or exclusive locks, or hold shared ones to the end of
+        // the transaction or over a whole page or table (`WITH (UPDLOCK)`, the old form
+        // `FROM t (HOLDLOCK)`): locks a read-only session should not hold, as PostgreSQL's
+        // `FOR UPDATE` takes. Words of hints only, so a batch naming one is a write.
+        "UPDLOCK",
+        "XLOCK",
+        "HOLDLOCK",
+        "SERIALIZABLE",
+        "REPEATABLEREAD",
+        "TABLOCK",
+        "TABLOCKX",
+        "PAGLOCK",
     ],
     // These run a statement hidden in a string, or reach other servers and the file system.
     write_calls: &["OPENQUERY", "OPENROWSET", "OPENDATASOURCE", "XP_*", "SP_*"],
@@ -258,7 +270,16 @@ pub static SPEC: DialectSpec = DialectSpec {
             "DATABASEPROPERTYEX",
             "HAS_DBACCESS",
         ],
-        side_effect_functions: &["OPENQUERY", "OPENROWSET", "OPENDATASOURCE", "XP_*", "SP_*"],
+        // `NEXT VALUE FOR s` advances a sequence: a read to Safe Mode, like `nextval('s')` in
+        // the core dialects, which the Metrics Board refuses too.
+        side_effect_functions: &[
+            "OPENQUERY",
+            "OPENROWSET",
+            "OPENDATASOURCE",
+            "XP_*",
+            "SP_*",
+            "NEXT VALUE FOR",
+        ],
         redact: &[
             RedactRule {
                 keyword: "PASSWORD",
@@ -454,6 +475,64 @@ mod tests {
                 !crate::sqlgen::portable::split::is_single_statement(&LEX, &RULES, sql),
                 "{sql:?}"
             );
+        }
+    }
+
+    /// Locking hints take locks a read-only session should not hold, as PostgreSQL's FOR UPDATE
+    /// does, so they write; hints that take no more than a read's locks stay reads.
+    #[test]
+    fn locking_hints_are_writes() {
+        for sql in [
+            "SELECT * FROM t WITH (UPDLOCK) WHERE id = 1",
+            "SELECT * FROM t WITH (UPDLOCK, ROWLOCK)",
+            "SELECT * FROM t WITH (XLOCK)",
+            "SELECT * FROM t WITH (HOLDLOCK)",
+            "SELECT * FROM t WITH (TABLOCKX)",
+            "SELECT * FROM t WITH (TABLOCK)",
+            "SELECT * FROM t WITH (PAGLOCK)",
+            "SELECT * FROM t WITH (SERIALIZABLE)",
+            "SELECT * FROM t WITH (REPEATABLEREAD)",
+            "SELECT * FROM t WITH (NOLOCK, updlock)",
+            // The old form, without WITH.
+            "SELECT * FROM t (UPDLOCK)",
+            "SELECT * FROM t AS a (HOLDLOCK) JOIN u WITH (NOLOCK) ON a.id = u.id",
+            "WITH c AS (SELECT * FROM t WITH (XLOCK)) SELECT * FROM c",
+            "SELECT * FROM t WHERE id IN (SELECT id FROM u WITH (UPDLOCK))",
+        ] {
+            assert_eq!(classify_tsql(sql), StatementClass::Write, "{sql}");
+        }
+        for sql in [
+            "SELECT * FROM t WITH (NOLOCK)",
+            "SELECT * FROM t WITH (READPAST, ROWLOCK, INDEX(ix))",
+            "SELECT * FROM t WITH (READCOMMITTEDLOCK, NOWAIT)",
+            "SELECT [updlock], 'HOLDLOCK' FROM t -- XLOCK",
+        ] {
+            assert_eq!(classify_tsql(sql), StatementClass::Read, "{sql}");
+        }
+    }
+
+    /// `NEXT VALUE FOR` advances a sequence, and follows the core dialects' `nextval('s')`: a
+    /// read to Safe Mode, refused where side-effect calls are (the Metrics Board).
+    #[test]
+    fn next_value_for_is_a_side_effect_of_a_read() {
+        use crate::sqlgen::sql::calls_side_effect_function;
+        for sql in [
+            "SELECT NEXT VALUE FOR s",
+            "SELECT next value for dbo.s",
+            "SELECT @x = NEXT VALUE FOR s",
+            "WITH c AS (SELECT NEXT VALUE FOR s AS n) SELECT n FROM c",
+            "SELECT NEXT /* c */ VALUE\nFOR s",
+            "SELECT NEXT VALUE FOR s OVER (ORDER BY id) FROM t",
+        ] {
+            assert_eq!(classify_tsql(sql), StatementClass::Read, "{sql}");
+            assert!(calls_side_effect_function(SqlDialect::Tsql, sql), "{sql}");
+        }
+        for sql in [
+            "SELECT * FROM t ORDER BY id OFFSET 1 ROWS FETCH NEXT 1 ROWS ONLY",
+            "SELECT 'NEXT VALUE FOR s', [next] FROM t",
+            "SELECT next_value FROM t",
+        ] {
+            assert!(!calls_side_effect_function(SqlDialect::Tsql, sql), "{sql}");
         }
     }
 

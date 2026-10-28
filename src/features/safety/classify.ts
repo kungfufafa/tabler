@@ -6,14 +6,15 @@ import type { Dialect } from "@/lib/ipc";
  * the shared cases in `classify.cases.json`.
  *
  * READ: SELECT / VALUES / TABLE (unless they hold an `INTO`), SHOW, USE <db>, EXPLAIN / DESCRIBE /
- * DESC (an EXPLAIN ANALYZE is classified by the statement it runs), WITH … without a
- * data-modifying keyword, and SQLite PRAGMAs that only read. Everything else, including empty and
- * unknown statements, is a WRITE, and so is any statement that calls `set_config(…)` (it changes
- * settings, `default_transaction_read_only` too). Comments, strings and quoted identifiers are
- * ignored, so `-- delete` or `'DROP'` change nothing; a `;` outside them starts another statement
- * (all of them must be reads). The text is read under every quoting / comment mode the server may
- * be in, and is a READ only under all of them. The check is deliberately coarse in the safe
- * direction: a doubtful statement is a WRITE (`WITH … FOR UPDATE` asks too).
+ * DESC (an EXPLAIN ANALYZE is classified by the statement it runs, an EXPLAIN of a PRAGMA as the
+ * PRAGMA, which SQLite applies while preparing it), WITH … without a data-modifying keyword, and
+ * SQLite PRAGMAs that only read. Everything else, including empty and unknown statements, is a
+ * WRITE, and so is any statement that calls `set_config(…)` (it changes settings,
+ * `default_transaction_read_only` too). Comments, strings and quoted identifiers are ignored, so
+ * `-- delete` or `'DROP'` change nothing; a `;` outside them starts another statement (all of them
+ * must be reads). The text is read under every quoting / comment mode the server may be in, and is
+ * a READ only under all of them. The check is deliberately coarse in the safe direction: a doubtful
+ * statement is a WRITE (`WITH … FOR UPDATE` asks too).
  */
 export type StatementClass = "read" | "write";
 
@@ -339,8 +340,11 @@ function classifyExplain(tokens: Token[]): StatementClass {
       break;
     }
   }
-  // A plain EXPLAIN only plans; EXPLAIN ANALYZE runs the statement.
-  return analyze ? classifyTokens(tokens.slice(i)) : "read";
+  // A plain EXPLAIN only plans; EXPLAIN ANALYZE runs the statement. SQLite applies a setting
+  // PRAGMA while it prepares it, so `EXPLAIN [QUERY PLAN] PRAGMA query_only = 0` changes the
+  // setting: it is the PRAGMA. A lone `pragma` is a table to MySQL's EXPLAIN / DESCRIBE.
+  const pragma = tokens[i]?.text === "PRAGMA" && tokens.length > i + 1;
+  return analyze || pragma ? classifyTokens(tokens.slice(i)) : "read";
 }
 
 function classifyPragma(tokens: Token[]): StatementClass {

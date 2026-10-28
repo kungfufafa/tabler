@@ -101,9 +101,9 @@ Left for Phase B:
 
 Requests to the lead (shared files):
 
-- The scanner folds case with Unicode rules (`Scan::upper`), so `ſelect 1`, `wıth 1` and `uſe x` classify as reads while SQL Server runs them as procedure calls. Read keywords should match in ASCII only (`gen/tsql.rs` keeps the case, ignored until then).
-- `SELECT NEXT VALUE FOR s` advances a sequence and classifies as a read; no single word of `RULES` can catch it (`NEXT` and `VALUE` occur in reads). A two-word rule, or a knob for it.
-- Locking hints (`WITH (UPDLOCK)`, `XLOCK`, `HOLDLOCK`, `TABLOCKX`) take locks a read-only session should not; PostgreSQL's `FOR UPDATE` is a write for the same reason.
+- Done (F6d): the scanner folded case with Unicode rules (`Scan::upper`), so `ſelect 1`, `wıth 1` and `uſe x` classified as reads while SQL Server runs them as procedure calls. Keywords now match in ASCII only (`gen/tsql.rs` runs the case); the deny-lists also match a name upper-cased by Unicode rules.
+- Done (F6d): `SELECT NEXT VALUE FOR s` advances a sequence. It follows the core dialects' `nextval('s')`: a read to Safe Mode, and in `side_effect_functions` (an entry of several words is a phrase), so the Metrics Board refuses it.
+- Done (F6d): locking hints (`WITH (UPDLOCK)`, `XLOCK`, `HOLDLOCK`, `TABLOCKX`) take locks a read-only session should not; PostgreSQL's `FOR UPDATE` is a write for the same reason. `UPDLOCK`, `XLOCK`, `HOLDLOCK`, `SERIALIZABLE`, `REPEATABLEREAD`, `TABLOCK`, `TABLOCKX` and `PAGLOCK` are words of `writes` (in `TSQL_RULES` too), so `WITH (…)` and the old `FROM t (…)` form write.
 - A NULL bind parameter of unknown type goes as `nvarchar`, which no binary column takes: the portable builders could write `NULL` in SET and VALUES, or pass the column's kind with each parameter (`decode::to_param` takes it).
 - `lane.mjs <lane> test <filters>` ignores the filters (`parseArgs` returns `opts.rest`, always empty, over the positional ones).
 

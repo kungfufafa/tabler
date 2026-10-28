@@ -123,7 +123,13 @@
     { "sql": "SELECT 1.e0read_text('x')", "class": "write" },
     { "sql": "SELECT 1e5, 0x1F FROM t", "class": "read" },
     { "sql": "SELECT 1.5, 1.e5, t.a FROM t", "class": "read" },
-    { "sql": "SELECT sleep(1)", "class": "read" }
+    { "sql": "SELECT sleep(1)", "class": "read" },
+    { "sql": "ſelect 1", "class": "write" },
+    { "sql": "wıth a AS (SELECT 1) SELECT * FROM a", "class": "write" },
+    { "sql": "uſe other", "class": "write" },
+    { "sql": "SELECT load_fıle('/etc/passwd')", "class": "write" },
+    { "sql": "SELECT * ınto t2 FROM t", "class": "write" },
+    { "sql": "SELECT 'ſelect', \"wıth\" FROM t", "class": "read" }
   ],
   "split": [
     { "sql": "SELECT 1; SELECT 2", "statements": ["SELECT 1", "SELECT 2"] },

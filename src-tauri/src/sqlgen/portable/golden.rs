@@ -888,7 +888,7 @@ fn statements_golden() {
                 StatementClass::Write => "write",
             };
             g.line(format!("  class: {class}"));
-            let r = redact::redact(spec.lex, spec.knobs.redact, sql);
+            let r = redact::redact_spec(&spec, sql);
             if r.sql != *sql {
                 g.line(format!("  redacted: {} {}", q(&r.sql), js(&r.secrets)));
             }

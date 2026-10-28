@@ -96,7 +96,15 @@
       "MOVE",
       "GET",
       "CONVERSATION",
-      "RENAME"
+      "RENAME",
+      "UPDLOCK",
+      "XLOCK",
+      "HOLDLOCK",
+      "SERIALIZABLE",
+      "REPEATABLEREAD",
+      "TABLOCK",
+      "TABLOCKX",
+      "PAGLOCK"
     ],
     "writeCalls": [
       "OPENQUERY",

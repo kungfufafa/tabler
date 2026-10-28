@@ -56,6 +56,12 @@
     { "sql": "SELECT 1.5, 1.e5, t.a FROM t", "class": "read" },
     { "sql": "SELECT DATEADD(day, 1, GETDATE())", "class": "read" },
     { "sql": "SELECT @@ROWCOUNT, GETDATE()", "class": "read" },
+    { "sql": "SELECT * FROM t WITH (UPDLOCK, ROWLOCK)", "class": "write" },
+    { "sql": "SELECT * FROM t (HOLDLOCK)", "class": "write" },
+    { "sql": "SELECT * FROM t WITH (NOLOCK, READPAST)", "class": "read" },
+    { "sql": "ſelect 1", "class": "write" },
+    { "sql": "WıTH x AS (SELECT 1) SELECT 1", "class": "write" },
+    { "sql": "Uſe shop", "class": "write" },
     { "sql": "", "class": "write" },
     { "sql": "GO", "class": "write" }
   ],

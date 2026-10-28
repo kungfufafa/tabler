@@ -19,6 +19,10 @@
 //!   a word that starts like a name counts as a keyword or callee too (`hidden_words`). So does
 //!   each suffix of a word right after a number and a `.`: the scanner reads `1.e5DELETE` as `1`,
 //!   `.`, `E5DELETE`, where those servers read the number `1.e5` and then `DELETE`;
+//! - keywords match in ASCII only, as servers read them: `ſelect 1` (long s) starts with a name,
+//!   not SELECT, so it is unknown and a write. The words of `writes` and `write_calls` also match
+//!   with every letter upper-cased by Unicode rules, since a server may look a function up that
+//!   way (`spellings`);
 //! - the text is read under every `Reading` of the dialect and is a read only under all of them;
 //! - a comment a server may end elsewhere than the scanner (`Scan::ambiguous`: a block comment
 //!   holding `/*`, a line comment holding a lone CR or another line break than LF) makes the
@@ -30,6 +34,7 @@
 //! `UESCAPE 'c'`) may spell any function: as a callee it is on every deny-list and on no
 //! allow-list.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use crate::sqlgen::classify::StatementClass;
@@ -91,17 +96,36 @@ fn in_number(code: &[Code], i: usize) -> bool {
 /// (`in_number`), every suffix after its first character that starts like a name, since the
 /// server may end the number before any of them (`1e0DELETE`, `0xINTO`, `1.e5DELETE`).
 fn hidden_words(code: &[Code], i: usize) -> impl Iterator<Item = &str> {
-    let w = code[i].word().unwrap_or_default();
-    let number = in_number(code, i);
+    suffixes(code[i].word().unwrap_or_default(), in_number(code, i))
+}
+
+/// The suffixes of `w` after its first character that start like a name, when `number`.
+fn suffixes(w: &str, number: bool) -> impl Iterator<Item = &str> {
     w.char_indices()
         .skip(1)
         .filter(move |&(_, c)| number && is_ident_start(c))
         .map(move |(i, _)| &w[i..])
 }
 
-/// The word at `i` and the words it may hide.
-fn spellings(code: &[Code], i: usize) -> impl Iterator<Item = &str> {
-    code[i].word().into_iter().chain(hidden_words(code, i))
+/// The word at `i` and the words it may hide, for the deny-lists (`writes`, `write_calls`, the
+/// side-effect functions). Keywords match in ASCII only (`Scan::upper`), but a server may look a
+/// function's name up with Unicode case rules (`ſystem$x` as `SYSTEM$X`), so a word with other
+/// letters also counts with them upper-cased that way: no spelling hides a listed write.
+fn spellings(code: &[Code], i: usize) -> impl Iterator<Item = Cow<'_, str>> {
+    let folded = code[i].word().filter(|w| !w.is_ascii()).map(|w| {
+        let w = w.to_uppercase();
+        let mut all: Vec<String> = suffixes(&w, in_number(code, i))
+            .map(str::to_owned)
+            .collect();
+        all.push(w);
+        all
+    });
+    code[i]
+        .word()
+        .into_iter()
+        .chain(hidden_words(code, i))
+        .map(Cow::Borrowed)
+        .chain(folded.into_iter().flatten().map(Cow::Owned))
 }
 
 /// Whether the token at `i` names an entry of `list`: a quoted name, or a word that is one or may
@@ -110,7 +134,7 @@ fn names_listed(code: &[Code], i: usize, list: &[&str]) -> bool {
     match &code[i] {
         Code::Name(n) => listed(list, n),
         Code::AnyName => !list.is_empty(),
-        _ => spellings(code, i).any(|s| listed(list, s)),
+        _ => spellings(code, i).any(|s| listed(list, &s)),
     }
 }
 
@@ -239,7 +263,7 @@ fn unicode_name(scan: &Scan, toks: &[Token], i: usize) -> Option<usize> {
 }
 
 fn has_word(code: &[Code], words: &[&str]) -> bool {
-    (0..code.len()).any(|i| spellings(code, i).any(|s| listed(words, s)))
+    (0..code.len()).any(|i| spellings(code, i).any(|s| listed(words, &s)))
 }
 
 fn reads(lex: &LexProfile, rules: &ClassifyRules, code: &[Code]) -> bool {
@@ -477,13 +501,29 @@ fn ends_from_list(code: &[Code], i: usize, w: &str) -> bool {
 }
 
 /// Whether `sql` calls a function of `names` (upper case, `PREFIX*` allowed) under any reading:
-/// the Metrics Board's check of `SqlKnobs::side_effect_functions`. A comment a server may end
+/// the Metrics Board's check of `SqlKnobs::side_effect_functions`. An entry of several words
+/// (T-SQL's `NEXT VALUE FOR`) is those words in a row, not a call. A comment a server may end
 /// elsewhere could hide a call, so it counts as one.
 pub fn calls_listed_function(lex: &LexProfile, names: &[&str], sql: &str) -> bool {
     !names.is_empty()
         && lex.readings.iter().any(|&r| {
             let scan = scan(lex, r, sql);
-            scan.ambiguous || calls(&code_of(&scan, 0..scan.tokens.len()), names)
+            let code = code_of(&scan, 0..scan.tokens.len());
+            scan.ambiguous || calls(&code, names) || names.iter().any(|n| says(&code, n))
+        })
+}
+
+/// Whether `code` holds the words of `phrase` (several, upper case) in a row; the first may be
+/// hidden after a number like any word.
+fn says(code: &[Code], phrase: &str) -> bool {
+    let words: Vec<&str> = phrase.split(' ').collect();
+    words.len() > 1
+        && (0..code.len()).any(|i| {
+            spellings(code, i).any(|s| s == words[0])
+                && words[1..]
+                    .iter()
+                    .enumerate()
+                    .all(|(k, w)| code.get(i + 1 + k).and_then(Code::word) == Some(*w))
         })
 }
 

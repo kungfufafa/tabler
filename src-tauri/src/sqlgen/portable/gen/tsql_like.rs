@@ -50,7 +50,8 @@ const READS: &[&str] = &[
 ];
 
 /// Writes beyond the rules' words: statements after a `GO` that the rules do not know, procedure
-/// calls with no EXEC, calls that reach other servers, and text a comment rule may split.
+/// calls with no EXEC, calls that reach other servers, text a comment rule may split, and
+/// locking hints.
 const WRITES: &[&str] = &[
     "SELECT 1\nGO\nsp_configure 'xp_cmdshell', 1",
     "SELECT 1\nGO\nmy_proc 1",
@@ -66,6 +67,8 @@ const WRITES: &[&str] = &[
     "SELECT 1 /* /* */ DELETE FROM t */",
     "SELECT 1 -- c\rDELETE FROM t",
     "SELECT xp_cmdshell('dir')",
+    "SELECT * FROM t WITH (UPDLOCK, ROWLOCK)",
+    "SELECT * FROM t (HOLDLOCK)",
 ];
 
 fn suite() -> Suite {

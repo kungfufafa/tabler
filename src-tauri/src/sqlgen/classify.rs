@@ -3,7 +3,8 @@
 //! `src/features/safety/classify.cases.json`.
 //!
 //! READ: `SELECT` / `VALUES` / `TABLE` (unless they hold an `INTO`), `SHOW`, `USE <db>`,
-//! `EXPLAIN` / `DESCRIBE` / `DESC` (an EXPLAIN ANALYZE is classified by the statement it runs),
+//! `EXPLAIN` / `DESCRIBE` / `DESC` (an EXPLAIN ANALYZE is classified by the statement it runs,
+//! an EXPLAIN of a PRAGMA as the PRAGMA, which SQLite applies while preparing it),
 //! `WITH …` without a data-modifying keyword, and SQLite PRAGMAs that only read. Everything else,
 //! including empty and unknown statements, is a WRITE, and so is any statement that calls
 //! `set_config(…)` (it changes settings, `default_transaction_read_only` too). Comments, strings
@@ -610,8 +611,11 @@ fn classify_explain(tokens: &[Token]) -> StatementClass {
             break;
         }
     }
-    // A plain EXPLAIN only plans; EXPLAIN ANALYZE runs the statement.
-    if analyze {
+    // A plain EXPLAIN only plans; EXPLAIN ANALYZE runs the statement. SQLite applies a setting
+    // PRAGMA while it prepares it, so `EXPLAIN [QUERY PLAN] PRAGMA query_only = 0` changes the
+    // setting: it is the PRAGMA. A lone `pragma` is a table to MySQL's EXPLAIN / DESCRIBE.
+    let pragma = tokens.get(i).is_some_and(|t| t.is("PRAGMA")) && tokens.len() > i + 1;
+    if analyze || pragma {
         classify_tokens(&tokens[i..])
     } else {
         StatementClass::Read
@@ -886,6 +890,33 @@ mod tests {
             classify("SELECT $x$ ; DROP", Dialect::Postgres),
             StatementClass::Read
         );
+    }
+
+    /// SQLite applies a setting PRAGMA while it prepares the statement, under EXPLAIN too: the
+    /// EXPLAIN turns `query_only` off and the INSERT after it goes through. So it is a write.
+    #[test]
+    fn sqlite_applies_a_pragma_it_only_explains() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE t (a); PRAGMA query_only = 1")
+            .unwrap();
+        assert!(db.execute("INSERT INTO t VALUES (1)", []).is_err());
+        for sql in [
+            "EXPLAIN PRAGMA query_only = 0",
+            "EXPLAIN QUERY PLAN PRAGMA query_only = 0",
+        ] {
+            db.execute_batch("PRAGMA query_only = 1").unwrap();
+            let mut stmt = db.prepare(sql).unwrap();
+            let mut rows = stmt.query([]).unwrap();
+            while rows.next().unwrap().is_some() {}
+            drop(rows);
+            drop(stmt);
+            assert!(db.execute("INSERT INTO t VALUES (1)", []).is_ok(), "{sql}");
+            assert_eq!(
+                classify(sql, Dialect::Sqlite),
+                StatementClass::Write,
+                "{sql}"
+            );
+        }
     }
 
     #[test]

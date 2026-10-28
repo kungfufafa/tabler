@@ -226,8 +226,14 @@ pub struct SqlKnobs {
     /// Catalog names that mark a read as introspection in the trace (upper case).
     pub catalog_words: &'static [&'static str],
     /// Functions a read calls that change the server or wait (the Metrics Board refuses them).
+    /// An entry of several words is those words in a row (T-SQL `NEXT VALUE FOR`).
     pub side_effect_functions: &'static [&'static str],
     pub redact: &'static [RedactRule],
+    /// Commands that carry a password after their first argument (cqlsh's `LOGIN user
+    /// 'password'`), upper case: the string literal after the word, quoted name or string that
+    /// follows one is masked, only where the command starts a statement, so a column of that name
+    /// (`WHERE login = 'bob'`) keeps its literal.
+    pub redact_commands: &'static [&'static str],
     /// The end of the row-cap cancel notice: what became of the statement's changes.
     pub cancel_notice: &'static str,
 }
@@ -261,6 +267,7 @@ impl SqlKnobs {
         catalog_words: &[],
         side_effect_functions: &[],
         redact: &[],
+        redact_commands: &[],
         cancel_notice: "any changes it made were rolled back",
     };
 }

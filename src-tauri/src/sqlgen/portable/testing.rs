@@ -176,6 +176,14 @@ pub static TSQL_RULES: ClassifyRules = ClassifyRules {
         "GET",
         "CONVERSATION",
         "RENAME",
+        "UPDLOCK",
+        "XLOCK",
+        "HOLDLOCK",
+        "SERIALIZABLE",
+        "REPEATABLEREAD",
+        "TABLOCK",
+        "TABLOCKX",
+        "PAGLOCK",
     ],
     write_calls: &["OPENQUERY", "OPENROWSET", "OPENDATASOURCE", "XP_*", "SP_*"],
     table_functions: None,
@@ -420,6 +428,28 @@ mod cases {
             &["SLEEP"],
             "SELECT 1 -- x\r'\n, sleep(1) --'"
         ));
+        // A server may look a name up with Unicode case rules (`ſ` is an `s` to them).
+        assert!(calls_listed_function(
+            &ANSI_LEX,
+            &["SLEEP"],
+            "SELECT ſleep(1)"
+        ));
+        // An entry of several words is those words in a row, wherever they are code.
+        let next = ["NEXT VALUE FOR"];
+        for sql in [
+            "SELECT NEXT VALUE FOR s",
+            "SELECT @x = next /* c */ value\nFOR dbo.s",
+            "SELECT 1NEXT VALUE FOR s",
+        ] {
+            assert!(calls_listed_function(&TSQL_LEX, &next, sql), "{sql:?}");
+        }
+        for sql in [
+            "SELECT 'NEXT VALUE FOR s', [next] FROM t",
+            "SELECT * FROM t ORDER BY a OFFSET 1 ROWS FETCH NEXT 1 ROWS ONLY",
+            "SELECT next, value FROM t",
+        ] {
+            assert!(!calls_listed_function(&TSQL_LEX, &next, sql), "{sql:?}");
+        }
     }
 
     #[test]

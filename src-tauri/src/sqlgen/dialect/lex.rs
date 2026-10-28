@@ -213,8 +213,11 @@ impl Scan {
         self.chars[t.start..t.end].iter().collect()
     }
 
+    /// The text in upper case, ASCII letters only: servers match keywords in ASCII, so `ſelect`
+    /// (long s) or `wıth` (dotless i) is a name to them, not SELECT or WITH (SQL Server runs a
+    /// name at the start of a batch as a procedure).
     pub fn upper(&self, t: &Token) -> String {
-        self.text(t).to_uppercase()
+        self.text(t).to_ascii_uppercase()
     }
 
     /// Whether `t` is the punctuation character `c`.

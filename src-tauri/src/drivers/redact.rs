@@ -42,7 +42,7 @@ const MASK_BODY: &str = "********";
 pub fn redact_secrets(sql: &str, dialect: impl Into<SqlDialect>) -> Redaction {
     let dialect = match dialect.into().resolve() {
         DialectRef::Core(core) => core,
-        DialectRef::Ext(spec) => return portable::redact::redact(spec.lex, spec.knobs.redact, sql),
+        DialectRef::Ext(spec) => return portable::redact::redact_spec(spec, sql),
     };
     if !may_carry_secret(sql) {
         return Redaction {

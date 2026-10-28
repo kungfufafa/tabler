@@ -168,6 +168,10 @@ const WRITES: &[&str] = &[
     "SELECT * FROM t WAITFOR DELAY '00:00:01'",
     "SELECT * FROM t; DROP TABLE t",
     "SELECT * FROM t OPTION (RECOMPILE) DELETE FROM t",
+    // Locking hints, also in the old form without WITH.
+    "SELECT * FROM dbo.Orders WITH (UPDLOCK, ROWLOCK) WHERE Id = 1",
+    "SELECT * FROM dbo.Orders o WITH (NOLOCK) JOIN dbo.Stock s WITH (XLOCK) ON s.Id = o.Id",
+    "SELECT * FROM dbo.Orders (HOLDLOCK)",
     "SELECT * FROM sys.dm_exec_sessions\nKILL 52",
     "WITH c AS (SELECT * FROM t) DELETE FROM c",
     ";WITH c AS (SELECT 1 AS a) UPDATE c SET a = 2",
@@ -517,13 +521,10 @@ fn procedure_calls_start_a_batch() {
     assert_eq!((SPEC.classify)("SELECT 1 sp_who"), Read);
 }
 
-/// Red-team finding in the shared scanner, a change request to the lead: `Scan::upper` folds
-/// case with Unicode rules, so `ſelect` (long s), `wıth` (dotless i) and `uſe` read as SELECT,
-/// WITH and USE, while SQL Server takes such a word as the name of a procedure and runs it (at
-/// the start of a batch). A read keyword should only match in ASCII. Ignored until the scanner
-/// is fixed.
+/// Red-team finding in the shared scanner: `ſelect` (long s), `wıth` (dotless i) and `uſe`
+/// upper-case to SELECT, WITH and USE by Unicode rules, while SQL Server takes such a word as the
+/// name of a procedure and runs it (at the start of a batch). Read keywords match in ASCII only.
 #[test]
-#[ignore = "shared scanner: read keywords match through Unicode case folding (change request)"]
 fn read_keywords_match_in_ascii_only() {
     use crate::sqlgen::classify::StatementClass::Write;
     for sql in [
