@@ -3,7 +3,7 @@
 //
 //   node dev/scripts/lane.mjs <lane> check          cargo check --all-targets, the lane's features only
 //   node dev/scripts/lane.mjs <lane> clippy         cargo clippy --all-targets -- -D warnings
-//   node dev/scripts/lane.mjs <lane> test [filter…] lib tests: the lane's filters, or the ones given
+//   node dev/scripts/lane.mjs <lane> test [filter…] [-- --nocapture] lib tests: the lane's filters, or the ones given
 //   node dev/scripts/lane.mjs <lane> test-all       every lib test, with the lane's features
 //   node dev/scripts/lane.mjs <lane> it             the lane's real-server suites (loads .env)
 //   node dev/scripts/lane.mjs <lane> bindings       exports the bindings in the slot, copies the lane's
@@ -55,7 +55,7 @@ const CARGO_COMMANDS = ["check", "clippy", "test", "test-all", "it", "bindings"]
 const BINDINGS_DIR = "src/lib/ipc/bindings";
 
 function parseArgs(argv) {
-  const opts = { rest: [], heavy: false, snapshot: false, slot: null, jobs: null };
+  const opts = { heavy: false, snapshot: false, slot: null, jobs: null };
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -123,8 +123,11 @@ async function cargo(lanes, lane, command, opts) {
         label,
       });
     case "test": {
-      const filters = opts.rest.length ? opts.rest : lane.tests;
-      return run("cargo", ["test", ...base, "--lib", "--", ...skip, ...filters], {
+      // After `--`, words starting with - go to the test binary (--nocapture, --exact).
+      const flags = opts.rest.filter((a) => a.startsWith("-"));
+      const names = opts.rest.filter((a) => !a.startsWith("-"));
+      const filters = names.length ? names : lane.tests;
+      return run("cargo", ["test", ...base, "--lib", "--", ...skip, ...flags, ...filters], {
         cwd,
         env,
         label,
