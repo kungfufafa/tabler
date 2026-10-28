@@ -145,7 +145,7 @@ pub(crate) async fn set_connection_encoding_on(
         return Err(no_encoding(conn.profile.driver));
     }
     // A new session would drop the SQL editor's open transaction.
-    if conn.session().await.in_transaction() == Some(true) {
+    if conn.session().await?.in_transaction() == Some(true) {
         return Err(AppError::InvalidInput(
             "The SQL editor has an open transaction: commit or roll it back first".into(),
         ));
@@ -196,7 +196,7 @@ pub(crate) async fn set_connection_encoding_on(
         None => e,
     })?;
     let capabilities = session.capabilities();
-    let old = std::mem::replace(&mut *conn.session.write().await, session);
+    let old = std::mem::replace(&mut *conn.session.write().await, session.into());
     old.close().await;
     conn.invalidate(None).await;
     log::info!(

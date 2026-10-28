@@ -126,7 +126,7 @@ pub async fn plan_rows(conn: &Connection, req: &ApplyRequest) -> Result<PlannedR
     if conn.profile.options.read_only {
         return Err(AppError::Unsupported("this connection is read-only".into()));
     }
-    let session = conn.session().await;
+    let session = conn.session().await?;
     let caps = session.capabilities();
     caps.require_all(&change_features(req))?;
     let returning = req.returning && caps.has(Feature::Returning);

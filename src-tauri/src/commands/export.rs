@@ -42,7 +42,7 @@ async fn database_session(
         Some(db) if conn.profile.driver == Driver::Postgres && current.as_deref() != Some(db) => {
             Ok((session_on_database(state, conn, Some(db)).await?, true))
         }
-        _ => Ok((conn.session().await, false)),
+        _ => Ok((conn.session().await?, false)),
     }
 }
 
@@ -95,7 +95,7 @@ pub(crate) async fn export_database_tables_on(
                 .current_database
                 .ok_or_else(|| AppError::InvalidInput("choose a database".into()))?,
         };
-        return conn.session().await.list_tables(&db).await;
+        return conn.session().await?.list_tables(&db).await;
     }
     let (session, temporary) = database_session(state, &conn, database.as_deref()).await?;
     let listed = async {
@@ -175,7 +175,7 @@ pub(crate) async fn export_data_on(
     let token = CancellationToken::new();
     let _running = RunningExport::register(state, &req.export_id, token.clone())?;
     let conn = state.connection(connection_id).await?;
-    let session = conn.session().await;
+    let session = conn.session().await?;
     // Refused before the table is read (`run_export` asks again).
     export_dialect(session.as_ref(), &req.format)?;
     let meta = match &req.source {
@@ -236,7 +236,7 @@ pub(crate) async fn export_tables_on(
     let conn = state.connection(connection_id).await?;
     // Refused before anything is read or another database is opened.
     conn.session_for(Feature::ExportTables).await?;
-    export_dialect(conn.session().await.as_ref(), &req.format)?;
+    export_dialect(conn.session().await?.as_ref(), &req.format)?;
     let (session, temporary) = database_session(state, &conn, req.database.as_deref()).await?;
     log::info!(
         "export {} started: {} tables{}",
@@ -303,7 +303,7 @@ pub async fn export_results(
     let token = CancellationToken::new();
     let _running = RunningExport::register(&state, &req.export_id, token.clone())?;
     let conn = state.connection(connection_id).await?;
-    let session = conn.session().await;
+    let session = conn.session().await?;
     log::info!(
         "export {} started: {} results",
         req.export_id,

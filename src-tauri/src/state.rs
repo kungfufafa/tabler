@@ -7,7 +7,7 @@ use tokio::sync::{RwLock, watch};
 use uuid::Uuid;
 
 use crate::appdb::AppDb;
-use crate::drivers::{CancelSlot, DbSession};
+use crate::drivers::{CancelSlot, DbSession, Session};
 use crate::error::AppError;
 use crate::secrets::Secrets;
 use crate::types::caps::{Feature, SessionCaps};
@@ -37,7 +37,8 @@ pub struct AppState {
 pub struct Connection {
     pub id: Uuid,
     pub profile: ConnectionProfile,
-    pub session: RwLock<Arc<dyn DbSession>>,
+    /// SQL or native; replaced in place by a database switch or an encoding change.
+    pub session: RwLock<Session>,
     pub info: RwLock<ConnectionInfo>,
     pub schema_cache: RwLock<HashMap<TableRef, Arc<TableMeta>>>,
     pub status: watch::Sender<ConnStatus>,
@@ -46,21 +47,29 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub async fn session(&self) -> Arc<dyn DbSession> {
+    /// The SQL session: a command that builds SQL asks for it this way, so a store that speaks
+    /// no SQL is refused (`Unsupported`) before anything is sent.
+    pub async fn session(&self) -> Result<Arc<dyn DbSession>, AppError> {
+        self.session.read().await.sql()
+    }
+
+    /// The session whatever its kind, for what every session does (ping, close, introspection).
+    pub async fn any_session(&self) -> Session {
         self.session.read().await.clone()
     }
 
     /// What the connection's session can do now.
     pub async fn caps(&self) -> SessionCaps {
-        self.session().await.capabilities()
+        self.any_session().await.capabilities()
     }
 
-    /// The session, once its caps grant `f`: a command that needs `f` asks for its session this
-    /// way, so it is refused before it sends anything.
+    /// The SQL session, once its caps grant `f`: a command that needs `f` asks for its session
+    /// this way, so it is refused before it sends anything (for a missing feature first, then a
+    /// store that speaks no SQL for having no SQL session).
     pub async fn session_for(&self, f: Feature) -> Result<Arc<dyn DbSession>, AppError> {
-        let session = self.session().await;
-        session.require(f)?;
-        Ok(session)
+        let session = self.any_session().await;
+        session.capabilities().require(f)?;
+        session.sql()
     }
 
     pub async fn info(&self) -> ConnectionInfo {
@@ -156,7 +165,7 @@ impl AppState {
             crate::assistant::context_cache::forget(conn.id);
         }
         futures::future::join_all(conns.iter().map(|c| async move {
-            c.session().await.close().await;
+            c.any_session().await.close().await;
         }))
         .await;
         self.session_passwords
@@ -175,7 +184,7 @@ impl AppState {
     }
 
     pub async fn session(&self, id: Uuid) -> Result<Arc<dyn DbSession>, AppError> {
-        Ok(self.connection(id).await?.session().await)
+        self.connection(id).await?.session().await
     }
 
     /// `Connection::session_for` of an open connection.
@@ -265,7 +274,7 @@ mod tests {
         Arc::new(Connection {
             id,
             profile: profile.clone(),
-            session: RwLock::new(session),
+            session: RwLock::new(session.into()),
             info: RwLock::new(info),
             schema_cache: RwLock::new(HashMap::new()),
             status: watch::channel(ConnStatus::Connected).0,
@@ -301,7 +310,7 @@ mod tests {
         assert!(state.remove_connection(Uuid::new_v4()).await.is_none());
         assert_eq!(state.session_password(other).as_deref(), Some("other"));
         for conn in [a, b, c] {
-            conn.session().await.close().await;
+            conn.any_session().await.close().await;
         }
     }
 
@@ -320,7 +329,7 @@ mod tests {
             open(&sqlite_profile(pid, &path_str)).await,
             open(&sqlite_profile(other, &path_str)).await,
         );
-        let session = a.session().await;
+        let session = a.session().await.unwrap();
         session
             .query("PRAGMA journal_mode = WAL", &[])
             .await
@@ -350,7 +359,8 @@ mod tests {
         assert!(state.connections.read().await.is_empty());
         assert_eq!(state.session_password(pid), None);
         // The sessions are closed: further queries fail.
-        assert!(a.session().await.execute("SELECT 1", &[]).await.is_err());
+        let closed = a.session().await.unwrap();
+        assert!(closed.execute("SELECT 1", &[]).await.is_err());
         // The row survived: it is in the main file.
         let conn = rusqlite::Connection::open(&path).unwrap();
         let v: String = conn.query_row("SELECT v FROM t", [], |r| r.get(0)).unwrap();

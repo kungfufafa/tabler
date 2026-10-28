@@ -85,7 +85,7 @@ pub(crate) async fn plan_for(
     table: Option<&TableRef>,
     ops: &[DdlOp],
 ) -> Result<DdlPlan, AppError> {
-    let session = conn.session().await;
+    let session = conn.session().await?;
     require_ops(session.as_ref(), ops)?;
     let meta = match table {
         Some(t) => {
@@ -258,7 +258,7 @@ pub async fn apply_ddl(
         plan.statements.len(),
         plan.transactional
     );
-    let session = conn.session().await;
+    let session = conn.session().await?;
     let result = apply_plan(session.as_ref(), &plan).await;
     conn.invalidate(None).await;
     match (&result.error, result.failed_index) {

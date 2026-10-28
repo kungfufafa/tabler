@@ -118,7 +118,7 @@ pub(crate) async fn apply_object_op_on(
     if conn.profile.options.read_only {
         return Err(AppError::Unsupported("this connection is read-only".into()));
     }
-    let session = conn.session().await;
+    let session = conn.session().await?;
     let plan = objects::plan_op(session.as_ref(), op).await?;
     log::info!("apply_object_op {} statement(s)", plan.statements.len());
     let result = match session.core_dialect(objects::op_feature(op))? {

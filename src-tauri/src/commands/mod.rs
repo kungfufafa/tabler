@@ -23,6 +23,8 @@ pub mod mcp;
 pub mod menu;
 pub mod metrics;
 pub mod mutate;
+#[cfg(test)]
+mod native_tests;
 pub mod objects;
 pub mod plugins;
 pub mod profiles;

@@ -948,7 +948,7 @@ pub(crate) async fn run_sql_on(
 ) -> Result<Vec<StatementResult>, AppError> {
     let options = options.unwrap_or_default();
     let conn = state.connection(connection_id).await?;
-    let session = conn.session().await;
+    let session = conn.session().await?;
     require_run(session.as_ref(), options.explain)?;
     crate::commands::safety::refuse_read_only_run(&conn, &sql, session.dialect(), options.explain)?;
     let slot = CancelSlot::default();

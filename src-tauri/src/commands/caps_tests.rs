@@ -16,7 +16,7 @@ use crate::commands::{
     lock, metrics, mutate, objects as objects_cmd, query, schema, workspace_commit,
 };
 use crate::drivers::postgres::flavor;
-use crate::drivers::{CancelSlot, DbSession};
+use crate::drivers::{CancelSlot, DbSession, Session};
 use crate::error::AppError;
 use crate::mcp::gate::session_writable;
 use crate::mcp::prefs::{McpPrefs, PREFS_KEY};
@@ -309,7 +309,7 @@ async fn fixture(caps: &SessionCaps) -> Fixture {
     let conn = Arc::new(Connection {
         id,
         profile: profile.clone(),
-        session: RwLock::new(session),
+        session: RwLock::new(session.into()),
         info: RwLock::new(ConnectionInfo {
             connection_id: id,
             profile_id: profile.id,
@@ -342,7 +342,7 @@ impl Fixture {
     /// Gives the connection, and the MCP pool's connection of the profile, a new fake session.
     async fn use_session(&self, caps: SessionCaps) -> Arc<FakeSession> {
         let fake = Arc::new(FakeSession::new(caps));
-        *self.conn.session.write().await = fake.clone();
+        *self.conn.session.write().await = Session::Sql(fake.clone());
         self.ctx
             .pool
             .insert_for_test(&self.profile, None, self.writable, fake.clone())
@@ -457,7 +457,7 @@ async fn run(call: Call, f: &Fixture) -> Result<(), AppError> {
     let state = f.state.as_ref();
     let conn = f.conn.as_ref();
     let id = conn.id;
-    let session = conn.session().await;
+    let session = conn.session().await?;
     let s = session.as_ref();
     let t = table();
     let one = json!(Value::Int(1));

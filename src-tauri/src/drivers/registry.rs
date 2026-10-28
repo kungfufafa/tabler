@@ -1,16 +1,20 @@
 //! The drivers this build has, and the one place that hands a profile to its driver. Every
 //! driver beyond PostgreSQL, MySQL and SQLite sits behind a cargo feature (`drv-*`); for each one
-//! a pair of shim functions below calls into its module when the feature is on and answers
-//! [`not_built`] (or has nothing to check) when it is off, so no other code needs a `cfg`.
+//! a module of shim functions below calls into its `entry` module when the feature is on and
+//! answers [`not_built`] (or has nothing to check) when it is off, so no other code needs a `cfg`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Map, Value};
 
+use crate::drivers::native::{CallKind, unknown_call};
+use crate::drivers::session::{Session, not_sql};
 use crate::drivers::{ConnectTarget, DbSession, mysql, postgres, sqlite};
 use crate::error::AppError;
-use crate::types::driver::{DriverDescriptor, KINDS, KindDescriptor, KindId, ProfileField};
+use crate::types::driver::{
+    DriverDescriptor, KINDS, KindDescriptor, KindId, ProfileField, SessionKind,
+};
 use crate::types::profile::{ConnectionProfile, Driver, PasswordMode};
 
 /// The lane features, and whether this build has each.
@@ -84,13 +88,6 @@ pub fn ensure_built(profile: &ConnectionProfile) -> Result<(), AppError> {
     }
 }
 
-fn not_sql(driver: Driver) -> AppError {
-    AppError::Unsupported(format!(
-        "{} is not a SQL database: it has no SQL session",
-        driver.label()
-    ))
-}
-
 static UNATTENDED: AtomicBool = AtomicBool::new(false);
 
 /// Marks this process as the MCP server (`tabler --mcp`), where nobody watches what runs: drivers
@@ -110,29 +107,93 @@ pub struct UtilInput<'a> {
     pub secret: Option<&'a str>,
 }
 
-/// Opens a SQL session for `target`'s profile.
+/// Opens the session of `target`'s profile: a SQL session, or a native store's for the drivers
+/// that speak no SQL.
+pub async fn open(target: ConnectTarget<'_>) -> Result<Session, AppError> {
+    ensure_built(target.profile)?;
+    match target.profile.driver {
+        // A SQLite profile's password is its SQLCipher encryption key.
+        Driver::Sqlite => Ok(Session::Sql(Arc::new(
+            sqlite::LiteSession::open_with_key(target.profile, target.password).await?,
+        ))),
+        Driver::Postgres => postgres::connect(target).await.map(Session::Sql),
+        Driver::Mysql => mysql::connect(target).await.map(Session::Sql),
+        Driver::Sqlserver => sqlserver_lane::open(target).await,
+        Driver::Libsql => libsql_lane::open(target).await,
+        Driver::D1 => d1_lane::open(target).await,
+        Driver::Duckdb => duckdb_lane::open(target).await,
+        Driver::Clickhouse => clickhouse_lane::open(target).await,
+        Driver::Snowflake => snowflake_lane::open(target).await,
+        Driver::Bigquery => bigquery_lane::open(target).await,
+        Driver::Vertica => vertica_lane::open(target).await,
+        Driver::Cassandra => cassandra_lane::open(target).await,
+        Driver::Redis => redis_lane::open(target).await,
+        Driver::Mongodb => mongodb_lane::open(target).await,
+        Driver::Elasticsearch => elasticsearch_lane::open(target).await,
+        Driver::Dynamodb => dynamodb_lane::open(target).await,
+    }
+}
+
+/// Opens a SQL session for `target`'s profile, for a caller that builds SQL. A store that speaks
+/// no SQL is refused before anything is opened.
 pub async fn connect(target: ConnectTarget<'_>) -> Result<Arc<dyn DbSession>, AppError> {
     ensure_built(target.profile)?;
     let driver = target.profile.driver;
-    match driver {
-        // A SQLite profile's password is its SQLCipher encryption key.
-        Driver::Sqlite => Ok(Arc::new(
-            sqlite::LiteSession::open_with_key(target.profile, target.password).await?,
-        )),
-        Driver::Postgres => postgres::connect(target).await,
-        Driver::Mysql => mysql::connect(target).await,
-        Driver::Redis | Driver::Mongodb | Driver::Elasticsearch | Driver::Dynamodb => {
+    if driver.descriptor().session == SessionKind::Native {
+        return Err(not_sql(driver));
+    }
+    match open(target).await? {
+        Session::Sql(session) => Ok(session),
+        // A driver that opened the other kind of session: never used.
+        native @ Session::Native(_) => {
+            native.close().await;
             Err(not_sql(driver))
         }
-        Driver::Sqlserver => open_sqlserver(target).await,
-        Driver::Libsql => open_libsql(target).await,
-        Driver::D1 => open_d1(target).await,
-        Driver::Duckdb => open_duckdb(target).await,
-        Driver::Clickhouse => open_clickhouse(target).await,
-        Driver::Snowflake => open_snowflake(target).await,
-        Driver::Bigquery => open_bigquery(target).await,
-        Driver::Vertica => open_vertica(target).await,
-        Driver::Cassandra => open_cassandra(target).await,
+    }
+}
+
+/// A call of the connection form, where no session exists yet (DuckDB's "New…", the D1 and
+/// BigQuery pickers, the Snowflake probe). The core drivers have none.
+pub async fn util(input: UtilInput<'_>, method: &str, args: Value) -> Result<Value, AppError> {
+    ensure_built(input.profile)?;
+    match input.profile.driver {
+        driver @ (Driver::Postgres | Driver::Mysql | Driver::Sqlite) => {
+            Err(unknown_call(driver, method))
+        }
+        Driver::Sqlserver => sqlserver_lane::util(input, method, args).await,
+        Driver::Libsql => libsql_lane::util(input, method, args).await,
+        Driver::D1 => d1_lane::util(input, method, args).await,
+        Driver::Duckdb => duckdb_lane::util(input, method, args).await,
+        Driver::Clickhouse => clickhouse_lane::util(input, method, args).await,
+        Driver::Snowflake => snowflake_lane::util(input, method, args).await,
+        Driver::Bigquery => bigquery_lane::util(input, method, args).await,
+        Driver::Vertica => vertica_lane::util(input, method, args).await,
+        Driver::Cassandra => cassandra_lane::util(input, method, args).await,
+        Driver::Redis => redis_lane::util(input, method, args).await,
+        Driver::Mongodb => mongodb_lane::util(input, method, args).await,
+        Driver::Elasticsearch => elasticsearch_lane::util(input, method, args).await,
+        Driver::Dynamodb => dynamodb_lane::util(input, method, args).await,
+    }
+}
+
+/// Whether `util(method)` of `driver` only reads (a read-only profile may make it); anything
+/// unknown, and every call of a driver this build lacks, changes something.
+pub fn util_kind(driver: Driver, method: &str) -> CallKind {
+    match driver {
+        Driver::Postgres | Driver::Mysql | Driver::Sqlite => CallKind::Write,
+        Driver::Sqlserver => sqlserver_lane::util_kind(method),
+        Driver::Libsql => libsql_lane::util_kind(method),
+        Driver::D1 => d1_lane::util_kind(method),
+        Driver::Duckdb => duckdb_lane::util_kind(method),
+        Driver::Clickhouse => clickhouse_lane::util_kind(method),
+        Driver::Snowflake => snowflake_lane::util_kind(method),
+        Driver::Bigquery => bigquery_lane::util_kind(method),
+        Driver::Vertica => vertica_lane::util_kind(method),
+        Driver::Cassandra => cassandra_lane::util_kind(method),
+        Driver::Redis => redis_lane::util_kind(method),
+        Driver::Mongodb => mongodb_lane::util_kind(method),
+        Driver::Elasticsearch => elasticsearch_lane::util_kind(method),
+        Driver::Dynamodb => dynamodb_lane::util_kind(method),
     }
 }
 
@@ -181,19 +242,19 @@ pub fn validate(profile: &ConnectionProfile) -> Result<(), AppError> {
     match profile.driver {
         // Returned above.
         Driver::Postgres | Driver::Mysql | Driver::Sqlite => Ok(()),
-        Driver::Sqlserver => validate_sqlserver(profile),
-        Driver::Libsql => validate_libsql(profile),
-        Driver::D1 => validate_d1(profile),
-        Driver::Duckdb => validate_duckdb(profile),
-        Driver::Clickhouse => validate_clickhouse(profile),
-        Driver::Snowflake => validate_snowflake(profile),
-        Driver::Bigquery => validate_bigquery(profile),
-        Driver::Vertica => validate_vertica(profile),
-        Driver::Cassandra => validate_cassandra(profile),
-        Driver::Redis => validate_redis(profile),
-        Driver::Mongodb => validate_mongodb(profile),
-        Driver::Elasticsearch => validate_elasticsearch(profile),
-        Driver::Dynamodb => validate_dynamodb(profile),
+        Driver::Sqlserver => sqlserver_lane::validate(profile),
+        Driver::Libsql => libsql_lane::validate(profile),
+        Driver::D1 => d1_lane::validate(profile),
+        Driver::Duckdb => duckdb_lane::validate(profile),
+        Driver::Clickhouse => clickhouse_lane::validate(profile),
+        Driver::Snowflake => snowflake_lane::validate(profile),
+        Driver::Bigquery => bigquery_lane::validate(profile),
+        Driver::Vertica => vertica_lane::validate(profile),
+        Driver::Cassandra => cassandra_lane::validate(profile),
+        Driver::Redis => redis_lane::validate(profile),
+        Driver::Mongodb => mongodb_lane::validate(profile),
+        Driver::Elasticsearch => elasticsearch_lane::validate(profile),
+        Driver::Dynamodb => dynamodb_lane::validate(profile),
     }
 }
 
@@ -314,110 +375,98 @@ fn url_has_password(s: &str) -> bool {
     }
 }
 
-/// The two shims of a lane SQL driver: its `entry` module (a path under `crate::drivers`) when
-/// its feature is on, else [`not_built`] and no checks of its own.
-macro_rules! sql_lane {
-    ($feature:literal, $driver:ident, $open:ident, $validate:ident, $($entry:ident)::+) => {
-        #[cfg(feature = $feature)]
-        async fn $open(target: ConnectTarget<'_>) -> Result<Arc<dyn DbSession>, AppError> {
-            crate::drivers::$($entry)::+::open(target).await
-        }
+/// The shims of a lane, in a module of their own: `open`, `validate`, `util` and `util_kind` of
+/// its `entry` module (a path under `crate::drivers`) when its feature is on; otherwise
+/// [`not_built`], no checks of its own and no call it knows.
+macro_rules! lane {
+    ($feature:literal, $driver:ident, $shim:ident, $($entry:ident)::+) => {
+        mod $shim {
+            use super::*;
 
-        #[cfg(not(feature = $feature))]
-        async fn $open(_target: ConnectTarget<'_>) -> Result<Arc<dyn DbSession>, AppError> {
-            Err(not_built(Driver::$driver))
-        }
+            #[cfg(feature = $feature)]
+            pub(super) async fn open(target: ConnectTarget<'_>) -> Result<Session, AppError> {
+                crate::drivers::$($entry)::+::open(target).await
+            }
 
-        lane_validate!($feature, $validate, $($entry)::+);
+            #[cfg(not(feature = $feature))]
+            pub(super) async fn open(_target: ConnectTarget<'_>) -> Result<Session, AppError> {
+                Err(not_built(Driver::$driver))
+            }
+
+            #[cfg(feature = $feature)]
+            pub(super) fn validate(profile: &ConnectionProfile) -> Result<(), AppError> {
+                crate::drivers::$($entry)::+::validate(profile)
+            }
+
+            #[cfg(not(feature = $feature))]
+            pub(super) fn validate(_profile: &ConnectionProfile) -> Result<(), AppError> {
+                Ok(())
+            }
+
+            #[cfg(feature = $feature)]
+            pub(super) async fn util(
+                input: UtilInput<'_>,
+                method: &str,
+                args: Value,
+            ) -> Result<Value, AppError> {
+                crate::drivers::$($entry)::+::util(input, method, args).await
+            }
+
+            #[cfg(not(feature = $feature))]
+            pub(super) async fn util(
+                _input: UtilInput<'_>,
+                _method: &str,
+                _args: Value,
+            ) -> Result<Value, AppError> {
+                Err(not_built(Driver::$driver))
+            }
+
+            #[cfg(feature = $feature)]
+            pub(super) fn util_kind(method: &str) -> CallKind {
+                crate::drivers::$($entry)::+::util_kind(method)
+            }
+
+            #[cfg(not(feature = $feature))]
+            pub(super) fn util_kind(_method: &str) -> CallKind {
+                CallKind::Write
+            }
+        }
     };
 }
 
-/// The validate shim of a lane.
-macro_rules! lane_validate {
-    ($feature:literal, $validate:ident, $($entry:ident)::+) => {
-        #[cfg(feature = $feature)]
-        fn $validate(profile: &ConnectionProfile) -> Result<(), AppError> {
-            crate::drivers::$($entry)::+::validate(profile)
-        }
-
-        #[cfg(not(feature = $feature))]
-        fn $validate(_profile: &ConnectionProfile) -> Result<(), AppError> {
-            Ok(())
-        }
-    };
-}
-
-sql_lane!(
-    "drv-sqlserver",
-    Sqlserver,
-    open_sqlserver,
-    validate_sqlserver,
-    sqlserver::entry
-);
-sql_lane!(
+lane!("drv-sqlserver", Sqlserver, sqlserver_lane, sqlserver::entry);
+lane!(
     "drv-libsql",
     Libsql,
-    open_libsql,
-    validate_libsql,
+    libsql_lane,
     sqlite_http::libsql::entry
 );
-sql_lane!("drv-d1", D1, open_d1, validate_d1, sqlite_http::d1::entry);
-sql_lane!(
-    "drv-duckdb",
-    Duckdb,
-    open_duckdb,
-    validate_duckdb,
-    duckdb::entry
-);
-sql_lane!(
+lane!("drv-d1", D1, d1_lane, sqlite_http::d1::entry);
+lane!("drv-duckdb", Duckdb, duckdb_lane, duckdb::entry);
+lane!(
     "drv-clickhouse",
     Clickhouse,
-    open_clickhouse,
-    validate_clickhouse,
+    clickhouse_lane,
     clickhouse::entry
 );
-sql_lane!(
-    "drv-snowflake",
-    Snowflake,
-    open_snowflake,
-    validate_snowflake,
-    snowflake::entry
-);
-sql_lane!(
-    "drv-bigquery",
-    Bigquery,
-    open_bigquery,
-    validate_bigquery,
-    bigquery::entry
-);
-sql_lane!(
-    "drv-vertica",
-    Vertica,
-    open_vertica,
-    validate_vertica,
-    vertica::entry
-);
-sql_lane!(
-    "drv-cassandra",
-    Cassandra,
-    open_cassandra,
-    validate_cassandra,
-    cassandra::entry
-);
-// The native stores open no SQL session; only their checks are wired for now.
-lane_validate!("drv-redis", validate_redis, redis::entry);
-lane_validate!("drv-mongodb", validate_mongodb, mongodb::entry);
-lane_validate!(
+lane!("drv-snowflake", Snowflake, snowflake_lane, snowflake::entry);
+lane!("drv-bigquery", Bigquery, bigquery_lane, bigquery::entry);
+lane!("drv-vertica", Vertica, vertica_lane, vertica::entry);
+lane!("drv-cassandra", Cassandra, cassandra_lane, cassandra::entry);
+lane!("drv-redis", Redis, redis_lane, redis::entry);
+lane!("drv-mongodb", Mongodb, mongodb_lane, mongodb::entry);
+lane!(
     "drv-elasticsearch",
-    validate_elasticsearch,
+    Elasticsearch,
+    elasticsearch_lane,
     elasticsearch::entry
 );
-lane_validate!("drv-dynamodb", validate_dynamodb, dynamodb::entry);
+lane!("drv-dynamodb", Dynamodb, dynamodb_lane, dynamodb::entry);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::driver::{PgFlavor, SessionKind};
+    use crate::types::driver::PgFlavor;
     use crate::types::profile::{DriverParams, MysqlVersion, ProfileOptions, SslMode};
 
     fn profile(driver: Driver) -> ConnectionProfile {
@@ -664,5 +713,78 @@ mod tests {
             mongo.options.driver_params = params(bad.clone());
             assert!(validate(&mongo).is_err(), "{bad}");
         }
+    }
+
+    #[tokio::test]
+    async fn open_gives_the_core_drivers_a_sql_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lite = profile(Driver::Sqlite);
+        lite.sqlite_path = Some(dir.path().join("a.sqlite").to_string_lossy().into_owned());
+        let session = open(ConnectTarget {
+            profile: &lite,
+            password: None,
+            host_override: None,
+        })
+        .await
+        .unwrap();
+        assert!(matches!(session, Session::Sql(_)));
+        assert_eq!(session.driver(), Driver::Sqlite);
+        let sql = session.sql().unwrap();
+        sql.execute("CREATE TABLE t (x)", &[]).await.unwrap();
+        session.close().await;
+        assert!(sql.execute("SELECT 1", &[]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn open_refuses_a_driver_this_build_lacks() {
+        for d in Driver::ALL.into_iter().filter(|d| !built(*d)) {
+            let mut p = profile(d);
+            p.host = Some("127.0.0.1".into());
+            p.port = Some(1);
+            let err = open(ConnectTarget {
+                profile: &p,
+                password: None,
+                host_override: None,
+            })
+            .await
+            .err()
+            .expect("no session");
+            assert_eq!(err.to_string(), not_built(d).to_string());
+        }
+    }
+
+    /// The form's calls: the core drivers know none, a driver this build lacks is refused, and
+    /// a call nobody knows changes something.
+    #[tokio::test]
+    async fn util_reaches_only_a_built_lane() {
+        for d in Driver::ALL {
+            let p = profile(d);
+            let input = UtilInput {
+                profile: &p,
+                secret: None,
+            };
+            let err = util(input, "no-such-call", Value::Null)
+                .await
+                .expect_err("nobody knows it");
+            assert_eq!(err.code(), "UNSUPPORTED", "{d:?}");
+            let text = err.to_string();
+            if built(d) {
+                assert!(text.contains(d.label()), "{text}");
+            } else {
+                assert_eq!(text, not_built(d).to_string());
+            }
+            assert_eq!(util_kind(d, "no-such-call"), CallKind::Write, "{d:?}");
+        }
+        let core = UtilInput {
+            profile: &profile(Driver::Mysql),
+            secret: None,
+        };
+        assert_eq!(
+            util(core, "probe", Value::Null)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "unsupported: MySQL: unknown call \u{201c}probe\u{201d}"
+        );
     }
 }

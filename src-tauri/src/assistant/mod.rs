@@ -135,15 +135,17 @@ async fn gather_context(
         server_version: info.server_version.clone(),
         current_database: info.current_database.clone(),
     };
-    let session = conn.session().await;
-    match context::gather(
-        session.as_ref(),
-        &facts,
-        req.schema.as_deref(),
-        req.table.as_ref(),
-    )
-    .await
-    {
+    let gathered = async {
+        let session = conn.session().await?;
+        context::gather(
+            session.as_ref(),
+            &facts,
+            req.schema.as_deref(),
+            req.table.as_ref(),
+        )
+        .await
+    };
+    match gathered.await {
         Ok(context) => context.render(),
         Err(e) => AssistantContextPreview {
             text: String::new(),

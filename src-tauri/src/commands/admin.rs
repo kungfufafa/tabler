@@ -65,7 +65,7 @@ pub async fn admin_apply_ddl(
             "{name} is the database this connection is using: switch to another database first"
         )));
     }
-    let session = conn.session().await;
+    let session = conn.session().await?;
     let result = admin::apply_ddl(session.as_ref(), &op).await?;
     if matches!(op, AdminDdl::DropSchema { .. }) {
         conn.invalidate(None).await;
@@ -103,7 +103,7 @@ pub async fn admin_kill_processes(
 ) -> Result<Vec<KillOutcome>, AppError> {
     let conn = state.connection(connection_id).await?;
     writable(&conn)?;
-    let session = conn.session().await;
+    let session = conn.session().await?;
     let outcomes = admin::kill(session.as_ref(), &ids, scope).await?;
     log::info!(
         "admin kill {scope:?}: {} of {} done",
@@ -155,7 +155,7 @@ pub async fn admin_apply_user(
 ) -> Result<AdminResult, AppError> {
     let conn = state.connection(connection_id).await?;
     writable(&conn)?;
-    let session = conn.session().await;
+    let session = conn.session().await?;
     let result = admin::apply_user(session.as_ref(), &change).await?;
     log::info!(
         "admin users: {} statement(s) in {} ms{}",

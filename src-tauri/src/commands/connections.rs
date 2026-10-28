@@ -7,7 +7,7 @@ use tokio::sync::{RwLock, watch};
 use uuid::Uuid;
 
 use super::conn_extras::{live_encoding, with_live_encoding};
-use crate::drivers::{self, ConnectTarget};
+use crate::drivers::{self, ConnectTarget, Session};
 use crate::error::AppError;
 use crate::secrets::{self, SecretKind};
 use crate::state::{AppState, Connection};
@@ -313,14 +313,15 @@ pub async fn command_password(profile: &ConnectionProfile) -> Result<String, App
     secrets::run_password_command(command, secrets::PASSWORD_COMMAND_TIMEOUT).await
 }
 
+/// Opens the connection's session, SQL or native.
 async fn open_session(
     profile: &ConnectionProfile,
     password: Option<&str>,
     host_override: Option<(String, u16)>,
-) -> Result<(Arc<dyn drivers::DbSession>, crate::drivers::ServerInfo), AppError> {
+) -> Result<(Session, crate::drivers::ServerInfo), AppError> {
     let session = tokio::time::timeout(
         connect_timeout(profile),
-        drivers::connect(ConnectTarget {
+        drivers::open(ConnectTarget {
             profile,
             password,
             host_override,
@@ -337,7 +338,7 @@ const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Closes a connection's driver session so its pools stop opening new connections.
 async fn close_session(conn: &Connection) {
-    let session = conn.session().await;
+    let session = conn.any_session().await;
     if tokio::time::timeout(SESSION_CLOSE_TIMEOUT, session.close())
         .await
         .is_err()
@@ -351,7 +352,7 @@ const HOLDER_PING_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Whether a connection's database session still answers.
 async fn session_alive(conn: &Connection) -> bool {
-    let session = conn.session().await;
+    let session = conn.any_session().await;
     matches!(
         tokio::time::timeout(HOLDER_PING_TIMEOUT, session.ping()).await,
         Ok(Ok(()))
@@ -584,7 +585,7 @@ pub async fn disconnect(
     // The profile's last connection also forgets its "Ask every time" password.
     let conn = state.remove_connection(connection_id).await;
     if let Some(conn) = conn {
-        conn.session().await.close().await;
+        conn.any_session().await.close().await;
         // Marked before the tunnel closes so the tunnel watcher does not report a lost connection.
         conn.status.send_replace(ConnStatus::Disconnected);
         if let Some(t) = &conn.tunnel {
@@ -618,7 +619,7 @@ pub async fn ping(
         Some(t) if !t.is_up() => Err(AppError::Tunnel(
             t.message.unwrap_or_else(|| "the SSH session ended".into()),
         )),
-        _ => conn.session().await.ping().await,
+        _ => conn.any_session().await.ping().await,
     };
     match result {
         Ok(()) => {
@@ -673,10 +674,12 @@ pub(crate) async fn switch_database_on(
         None => None,
     };
     // View Using Encoding… changed the open session only: the new one keeps its encoding (a
-    // session that cannot be asked keeps the profile's own).
-    let current = conn.session().await;
-    let profile = with_live_encoding(profile, live_encoding(&*current).await);
-    drop(current);
+    // session that cannot be asked keeps the profile's own; a native store has none).
+    let live = match conn.session().await {
+        Ok(current) => live_encoding(&*current).await,
+        Err(_) => None,
+    };
+    let profile = with_live_encoding(profile, live);
     let password = connect_password(state, &profile, None).await?;
     let attempt = Instant::now();
     let (session, server) = open_session(&profile, password.as_deref(), host_override)

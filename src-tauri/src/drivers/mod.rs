@@ -1,5 +1,6 @@
-//! Database drivers behind one trait. Each driver owns its connections; commands only see
-//! `Arc<dyn DbSession>`.
+//! Database drivers behind one trait per kind of session: `DbSession` for SQL, and
+//! `native::NativeSession` for the stores that speak none, joined in `Session`. Each driver owns
+//! its connections; commands only see those traits.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -9,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
+use crate::drivers::native::{CallKind, TableSource};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::dialect::spec::ExplainForm;
@@ -32,8 +34,11 @@ pub mod native;
 pub mod postgres;
 pub mod redact;
 pub mod registry;
+pub mod session;
 pub mod sharing;
 pub mod sqlite;
+
+pub use session::Session;
 
 // The lane drivers, each built only with its cargo feature (`registry` stands in for the others).
 #[cfg(feature = "drv-bigquery")]
@@ -1016,6 +1021,26 @@ pub trait DbSession: Send + Sync {
     fn explain_form(&self, _mode: ExplainMode) -> Option<ExplainForm> {
         None
     }
+
+    /// The session's own reader of table rows, for an engine that pages them through its API
+    /// rather than with SELECT (BigQuery, Cassandra); `None` reads them with SQL.
+    fn table_source(&self) -> Option<&dyn TableSource> {
+        None
+    }
+
+    /// A call of the driver's own (`session_call`), for what it offers beyond SQL.
+    async fn call(
+        &self,
+        method: &str,
+        _args: serde_json::Value,
+    ) -> Result<serde_json::Value, AppError> {
+        Err(native::unknown_call(self.driver(), method))
+    }
+
+    /// Whether `call(method)` only reads; anything unknown changes something.
+    fn call_kind(&self, _method: &str) -> CallKind {
+        CallKind::Write
+    }
 }
 
 impl dyn DbSession + '_ {
@@ -1144,6 +1169,11 @@ impl ConnectTarget<'_> {
 /// Opens a SQL session for `target`'s profile with its driver (see `registry::connect`).
 pub async fn connect(target: ConnectTarget<'_>) -> Result<Arc<dyn DbSession>, AppError> {
     registry::connect(target).await
+}
+
+/// Opens the session of `target`'s profile, SQL or native (see `registry::open`).
+pub async fn open(target: ConnectTarget<'_>) -> Result<Session, AppError> {
+    registry::open(target).await
 }
 
 #[cfg(test)]

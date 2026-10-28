@@ -2,18 +2,17 @@
 //! handed over; until then it only reports that the driver is not implemented, and the lane's
 //! other work goes in other files of this module.
 
-use std::sync::Arc;
-
 use crate::drivers::native::CallKind;
 use crate::drivers::registry::UtilInput;
-use crate::drivers::{ConnectTarget, DbSession};
+use crate::drivers::{ConnectTarget, Session};
 use crate::error::AppError;
 use crate::types::profile::{ConnectionProfile, Driver};
 
 const DRIVER: Driver = Driver::Mongodb;
 
-/// Opens a session on the profile's server.
-pub async fn open(_target: ConnectTarget<'_>) -> Result<Arc<dyn DbSession>, AppError> {
+/// Opens a session on the profile's server: `Session::Sql` for a SQL engine, `Session::Native`
+/// for a store that speaks no SQL.
+pub async fn open(_target: ConnectTarget<'_>) -> Result<Session, AppError> {
     Err(AppError::Unsupported(format!(
         "{} driver: not implemented yet",
         DRIVER.label()

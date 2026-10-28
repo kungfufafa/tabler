@@ -1636,7 +1636,7 @@ async fn lost_tunnel_session_never_reaches_another_tunnel() {
     let conn = Arc::new(Connection {
         id: info.connection_id,
         profile: profile_a.clone(),
-        session: RwLock::new(session.clone()),
+        session: RwLock::new(session.clone().into()),
         info: RwLock::new(info),
         schema_cache: RwLock::new(HashMap::new()),
         status: watch::channel(ConnStatus::Connected).0,
@@ -1736,7 +1736,7 @@ async fn register_connection(
     let conn = Arc::new(Connection {
         id: info.connection_id,
         profile: profile.clone(),
-        session: RwLock::new(session),
+        session: RwLock::new(session.into()),
         info: RwLock::new(info),
         schema_cache: RwLock::new(HashMap::new()),
         status: watch::channel(ConnStatus::Connected).0,
@@ -1783,7 +1783,7 @@ async fn a_second_workspace_shares_the_profiles_pinned_tunnel() {
     shared.close().await;
     assert!(!conn.tunnel.as_ref().unwrap().is_up());
     assert!(state.shared_tunnel(&other_db).await.is_none());
-    conn.session().await.close().await;
+    conn.any_session().await.close().await;
 }
 
 /// Regression: Reconnect (connect the profile again, then disconnect the old connection) always
@@ -1838,7 +1838,7 @@ async fn reconnect_releases_the_pinned_port_of_a_lost_session() {
     release_pinned_port(&state, profile_a.id, pinned).await;
     assert!(!conn.tunnel.as_ref().unwrap().is_up());
     assert_eq!(*conn.status.borrow(), ConnStatus::Disconnected);
-    assert!(conn.session().await.ping().await.is_err());
+    assert!(conn.any_session().await.ping().await.is_err());
     let fresh = open_profile_tunnel(&state, &profile_a, password(PASSWORD))
         .await
         .unwrap()
@@ -1850,7 +1850,7 @@ async fn reconnect_releases_the_pinned_port_of_a_lost_session() {
     // A session that died while the connection still counts as connected (a ping that hung or
     // has not run yet): the health check finds out.
     let conn = register_connection(&state, &profile_a, dir.path()).await;
-    conn.session().await.close().await;
+    conn.any_session().await.close().await;
     release_pinned_port(&state, profile_a.id, pinned).await;
     assert!(!conn.tunnel.as_ref().unwrap().is_up());
     let fresh = open_profile_tunnel(&state, &profile_a, password(PASSWORD))

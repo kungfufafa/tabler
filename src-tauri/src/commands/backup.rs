@@ -235,7 +235,7 @@ pub(crate) async fn backup_inspect_target_on(
     require_backup(state, &profile, Feature::Backup).await?;
     if let Some(conn) = live_connection(state, profile_id).await {
         let info = conn.info().await;
-        let databases = conn.session().await.list_databases().await?;
+        let databases = conn.session().await?.list_databases().await?;
         return Ok(BackupTarget {
             profile_id,
             driver: profile.driver,

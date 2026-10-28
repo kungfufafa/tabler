@@ -532,7 +532,7 @@ async fn close_connection(state: &crate::state::AppState, connection_id: Uuid) {
     let Some(conn) = state.remove_connection(connection_id).await else {
         return;
     };
-    conn.session().await.close().await;
+    conn.any_session().await.close().await;
     conn.status.send_replace(ConnStatus::Disconnected);
     if let Some(t) = &conn.tunnel {
         t.close().await;
@@ -807,7 +807,7 @@ mod tests {
         let conn = Arc::new(Connection {
             id,
             profile: profile.clone(),
-            session: tokio::sync::RwLock::new(session),
+            session: tokio::sync::RwLock::new(session.into()),
             info: tokio::sync::RwLock::new(info),
             schema_cache: tokio::sync::RwLock::new(Default::default()),
             status: status.0,

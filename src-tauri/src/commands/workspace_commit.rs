@@ -573,9 +573,9 @@ where
 async fn plan_all(
     conn: &Connection,
     groups: &[WorkspaceGroup],
-) -> Vec<Result<PlannedGroup, AppError>> {
-    let session = conn.session().await;
-    plan_each(groups, |g| plan_group(conn, session.as_ref(), g)).await
+) -> Result<Vec<Result<PlannedGroup, AppError>>, AppError> {
+    let session = conn.session().await?;
+    Ok(plan_each(groups, |g| plan_group(conn, session.as_ref(), g)).await)
 }
 
 #[tauri::command]
@@ -595,9 +595,9 @@ pub(crate) async fn preview_workspace_on(
 ) -> Result<WorkspacePlan, AppError> {
     let dialect = conn
         .session()
-        .await
+        .await?
         .core_dialect(Feature::WorkspaceCommit)?;
-    let planned = plan_all(conn, groups).await;
+    let planned = plan_all(conn, groups).await?;
     let atomic = planned.iter().all(Result::is_ok) && atomic_for(dialect, planned.iter().flatten());
     let groups = planned
         .into_iter()
@@ -643,7 +643,7 @@ pub(crate) async fn apply_workspace_on(
     // Planning reads the tables' structure: refused before that.
     conn.session_for(Feature::WorkspaceCommit).await?;
     let started = Instant::now();
-    let planned = plan_all(conn, groups).await;
+    let planned = plan_all(conn, groups).await?;
     // Nothing runs while a group cannot be planned.
     if let Some(bad) = planned.iter().position(Result::is_err) {
         let results = planned
@@ -675,7 +675,7 @@ pub(crate) async fn apply_workspace_on(
         });
     }
     let planned: Vec<PlannedGroup> = planned.into_iter().flatten().collect();
-    let session = conn.session().await;
+    let session = conn.session().await?;
     log::info!(
         "apply_workspace_changes: {} group(s), {} statement(s)",
         planned.len(),

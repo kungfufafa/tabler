@@ -153,7 +153,7 @@ pub(crate) async fn metrics_run_on(
     query: MetricsQuery,
 ) -> Result<MetricsResult, AppError> {
     let conn = state.connection(connection_id).await?;
-    let session = conn.session().await;
+    let session = conn.session().await?;
     let dialect = session.core_dialect(Feature::Metrics)?;
     let prepared = metrics::prepare(dialect, &query)?;
     crate::commands::safety::refuse_read_only_run(&conn, &prepared.sql, dialect.into(), None)?;

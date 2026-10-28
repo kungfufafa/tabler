@@ -25,7 +25,7 @@ pub async fn cached_meta(conn: &Connection, table: &TableRef) -> Result<Arc<Tabl
     if let Some(meta) = conn.schema_cache.read().await.get(table) {
         return Ok(meta.clone());
     }
-    let meta = Arc::new(conn.session().await.table_meta(table).await?);
+    let meta = Arc::new(conn.any_session().await.table_meta(table).await?);
     conn.schema_cache
         .write()
         .await
@@ -261,7 +261,7 @@ pub(crate) async fn count_rows(
     estimate_above: i64,
     limit: Option<Duration>,
 ) -> Result<RowCount, AppError> {
-    let session = conn.session().await;
+    let session = conn.session().await?;
     // A filtered count is never estimated. Otherwise whether there is an estimate to give is
     // known only from the table's structure (read here, or cached by the grid).
     if exact || filter.is_some() {
@@ -344,7 +344,7 @@ pub async fn drain_sql_trace(
 ) -> Result<Vec<TracedSql>, AppError> {
     let conn = state.connections.read().await.get(&connection_id).cloned();
     match conn {
-        Some(conn) => Ok(conn.session().await.drain_trace()),
+        Some(conn) => Ok(conn.any_session().await.drain_trace()),
         None => Ok(Vec::new()),
     }
 }
