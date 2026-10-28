@@ -79,6 +79,33 @@ Every classifier is default-deny: a statement or command it does not know is a w
 - The text projection is per column: `CONVERT(NVARCHAR(MAX), e)` mangles varbinary, which it reads as UTF-16 (critique D3).
 - Integrated (Windows) authentication works on Windows only; Entra tokens come through Command mode.
 - tiberius is built without native-tls or vendored OpenSSL (`tests/manifest_features.rs` guards it).
+- Columns reach the grid in their own type; only money (tiberius reads it as a float: `CONVERT(NVARCHAR(40), e, 2)`), hierarchyid and the spatial types (`e.ToString()`, spatial lossy since WKT drops the SRID) and the 2025 `json` / `vector` types are projected as text. Pattern filters compare `CONVERT(NVARCHAR(MAX), e) COLLATE Latin1_General_100_BIN2` (datetime with style 121, money with style 2), so the plain variants are case-sensitive and the `…Case` ones are not, as the portable builders mean them.
+- Encryption follows the SSL mode: Disable encrypts the login only, Prefer if possible, Require and the Verify modes always; Prefer and Require take any certificate (a default SQL Server certificate is self-signed), the Verify modes check it against the system roots plus the CA file, under the server's name. `strict` (driver param) is TDS 8.0. Never a fallback to plain text.
+- Transactions use the TDS transaction manager, and each statement's count comes from `@@ROWCOUNT` sent after it (`tsql::counted`), since the DONE counts tiberius sums include those of triggers.
+
+## Phase A status
+
+Done (2026-10-28, after the verifier's round 1; `lane.mjs sqlserver clippy --snapshot` clean, `test --snapshot` 56 passed and 1 ignored, `test-all --snapshot` 1119 passed and 1 ignored):
+
+- `sqlgen/dialect/tsql.rs`: the spec as above, T-SQL clocks (`SYSDATETIME()`, `SYSDATETIMEOFFSET()` for datetimeoffset), `switches_database` (a `USE` anywhere in a batch, not `USE HINT` / `USE PLAN`), redaction of `PASSWORD`, `OLD_PASSWORD`, `MEDIAPASSWORD`, `RMTPASSWORD`, `PROVSTR`, `SECRET`, `KEY_SOURCE` and the passphrase functions, `side_effect_functions`, and the driver's own statements (`SESSION_SETUP`, `TRANCOUNT`, `ROLLBACK_IF_OPEN`, `counted`, `use_database`, `kill`, `showplan`, `object_name`), with goldens of the builders (brackets, `N''`, `@P`, OFFSET/FETCH, TOP (1), OUTPUT INSERTED, GO batches).
+- `sqlgen/portable/gen/tsql.rs`: the complete suite (82 reads, 110 write forms, 43 contexts of T-SQL's own beside the shared ones, 14 inert ones, fuzz atoms, 3,000 fuzz runs) and its blessed fixture. Forms that only write at the start of a batch (a procedure without EXEC, a cursor FETCH, a label) are written after a `GO` line, since later in a batch they are a column alias or a syntax error.
+- `drivers/sqlserver`: `params` (`MssqlParams`, `MssqlAuth`), `connect` (config from the profile, `Endpoint` for tunnels, SQL Browser, one redirect, session setup), `conn` (one actor per connection, `Stop` per statement, Attention cancel, streaming with back-pressure, transactions), `decode` (every `ColumnData`: integers past 2^53, money, decimals, datetime rounding, datetime2 and time by scale, datetimeoffset in its offset, GUIDs, XML, sql_variant; impossible values become `Other`; typed bind parameters), `introspect` (`sys.*` queries and parsers: server, databases, schemas, tables with sizes, columns with alias / identity / computed / temporal, indexes with INCLUDE and filters, foreign keys, checks, triggers, definitions, completion, processes), `errors`, and `testing`: a scripted TDS server over an in-memory pipe that the actor's tests run against (login, parameters, cancel before the answer and between rows, a caller that stops listening, server errors with their line, counts, commit, rollback on a count or an error, a lost connection, a broken connection that drops its socket at once, a close behind a full queue, nvarchar with an unpaired surrogate read as U+FFFD through `connect::session_options`). Row counts come from `sys.partitions` alone in TABLES and TABLE (one shared subquery), sizes from `sys.allocation_units` joined per unit type, so LOB and row-overflow data do not multiply the count.
+
+Left for Phase B:
+
+- `entry.rs`: `open` (an `Endpoint` from `ConnectTarget`, the Command password as the Entra token, a pool of `Conn`s plus the editor's, server info from `SERVER_INFO`), `validate` (`MssqlParams::from_driver_params`, the user unless integrated / Entra), `util`, `util_kind`.
+- `DbSession`: introspection through `introspect`, traced; `query` / `stream_query` with `Mode::Rpc`; the editor splits with `portable::split` over `LEX` (the classifier's own splitter) and sends each GO batch whole with `Mode::Batch`, repeating it for `GO n`; at the row cap a single read is stopped (`Stop`), anything else drained (drop the receiver); `in_transaction` from `TRANCOUNT`; cancel as `CancelHandle::Custom` over `Stop`; `switch_database` with `use_database` (a new connection on Azure SQL Database); Explain through `showplan` batches; caps (ClassifierOnly, `Mcp` only after the red-team review), `list_processes` / `kill_processes` (`PROCESSES`, `kill`), routines and sequences.
+- The DDL planner and CREATE TABLE text from the catalog (`table_ddl`), which `ddl: None` leaves off for now.
+- Renderer (form, `sqlserver://` / `mssql://` and ADO / JDBC strings), mock driver, bindings (`MssqlParams`, `MssqlAuth`, `lex/tsql.json`), the real-server suite.
+- To verify on a real server: `@@ROWCOUNT` after a statement whose AFTER or INSTEAD OF trigger writes; the TEXTSIZE tiberius' login leaves; `SESSION_SETUP` on Azure Synapse; whether a batch takes an ODBC `{call p}` escape (then `CALL` must be a write word).
+
+Requests to the lead (shared files):
+
+- The scanner folds case with Unicode rules (`Scan::upper`), so `ſelect 1`, `wıth 1` and `uſe x` classify as reads while SQL Server runs them as procedure calls. Read keywords should match in ASCII only (`gen/tsql.rs` keeps the case, ignored until then).
+- `SELECT NEXT VALUE FOR s` advances a sequence and classifies as a read; no single word of `RULES` can catch it (`NEXT` and `VALUE` occur in reads). A two-word rule, or a knob for it.
+- Locking hints (`WITH (UPDLOCK)`, `XLOCK`, `HOLDLOCK`, `TABLOCKX`) take locks a read-only session should not; PostgreSQL's `FOR UPDATE` is a write for the same reason.
+- A NULL bind parameter of unknown type goes as `nvarchar`, which no binary column takes: the portable builders could write `NULL` in SET and VALUES, or pass the column's kind with each parameter (`decode::to_param` takes it).
+- `lane.mjs <lane> test <filters>` ignores the filters (`parseArgs` returns `opts.rest`, always empty, over the positional ones).
 
 ## Definition of done (this lane)
 
@@ -172,4 +199,11 @@ No. SQL Server speaks TDS, not the PostgreSQL, MySQL or SQLite protocols, so non
 
 ## Limits
 
-_The lane lists here what v1 does not do, before it lands (definition of done, item 10)._
+_The lane lists here what v1 does not do, before it lands (definition of done, item 10)._ So far (Phase A):
+
+- TCP only: no named pipes, shared memory or LocalDB. A named instance is found through SQL Browser (UDP 1434), so not over SSH; give the port there. A redirect to another host (Azure SQL's gateway) is refused over SSH.
+- Windows and integrated authentication in the Windows build only (NTLM through SSPI; no Kerberos); no interactive Entra ID or MFA: an Entra token comes from the Command password.
+- rustls speaks TLS 1.2 and 1.3 only: a server without TLS 1.2 (SQL Server 2014 and older without the update) cannot be reached.
+- No PRINT or RAISERROR output and no row counts per statement inside a batch (tiberius does not report them); a batch's errors arrive after its result sets.
+- Money values above about 900 billion lose digits where they are not projected as text (results of the editor); an alias type of money is not projected.
+- A query that calls a user function with side effects (a CLR function with EXTERNAL_ACCESS, an extended procedure called from a function) is a read to the classifier, which cannot see into functions.
