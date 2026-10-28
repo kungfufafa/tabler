@@ -275,6 +275,36 @@ describe("process list", () => {
     );
   });
 
+  it("keeps string ids exact and sorts them as numbers", async () => {
+    // A MySQL thread id past 2^53, which a JS number would round.
+    const big = "18446744073709551615";
+    vi.spyOn(ipc.admin, "processes").mockResolvedValue([
+      proc(100),
+      proc(9),
+      { ...proc(1), id: big, query: "select sleep(60)" },
+    ]);
+    const kill = vi
+      .spyOn(ipc.admin, "kill")
+      .mockResolvedValue([{ id: big, ok: true, message: null }]);
+    setup("mysql");
+    act(() => openProcessList("c1"));
+    const dialog = await screen.findByRole("dialog", { name: "Running Queries" });
+    const ids = () =>
+      [...dialog.querySelectorAll<HTMLElement>("[data-process]")].map((r) => r.dataset.process);
+    await waitFor(() => expect(ids()).toEqual(["9", "100", big]));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Id" }));
+    expect(ids()).toEqual([big, "100", "9"]);
+
+    fireEvent.click(dialog.querySelector(`[data-process="${big}"]`) as HTMLElement);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Kill Query" }));
+    const confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Kill Query" }));
+    await waitFor(() => expect(kill).toHaveBeenCalledWith("c1", [big], "query"));
+    expect(guard.calls).toEqual([
+      ["c1", { kind: "operation", label: `Kill the query of process ${big}`, write: true }],
+    ]);
+  });
+
   it("filters by database and sorts by a column", async () => {
     vi.spyOn(ipc.admin, "processes").mockResolvedValue([
       proc(1, { durationMs: 10 }),

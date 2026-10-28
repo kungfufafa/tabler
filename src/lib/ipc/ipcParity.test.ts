@@ -30,6 +30,13 @@ describe("IPC parity", () => {
     expect([...new Set(invoked)].sort()).toEqual([...commands].sort());
   });
 
+  it("names the command of every facade call literally", () => {
+    // A call this test cannot read (a computed name, a generic with parentheses) would escape
+    // both checks.
+    const calls = facade.match(/\binvoke\s*[<(]/g) ?? [];
+    expect(invoked.length).toBe(calls.length);
+  });
+
   it("has a mock for every command the facade calls", () => {
     const missing = invoked.filter((cmd) => mockHandler(cmd) === undefined);
     expect(missing).toEqual([]);
