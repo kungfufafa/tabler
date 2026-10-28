@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 
 use crate::drivers::native::{CallKind, TableSource};
 use crate::error::AppError;
@@ -16,6 +17,7 @@ use crate::sqlgen::Dialect;
 use crate::sqlgen::dialect::spec::ExplainForm;
 use crate::sqlgen::dialect::{DialectRef, SqlDialect};
 use crate::sqlgen::split::leading_keywords;
+use crate::types::admin::{KillOutcome, KillScope, ProcessRow};
 use crate::types::browse::{TraceCategory, TracedSql};
 use crate::types::caps::{Feature, SessionCaps};
 use crate::types::driver::Flavor;
@@ -375,6 +377,17 @@ pub enum CancelHandle {
     /// driver when the cancel request is done. The ticket is released when the last clone of
     /// this handle is dropped, i.e. once `DbSession::cancel` returns.
     Pending(Box<CancelHandle>, Arc<CancelTicket>),
+    /// Every other driver's way of stopping what runs (a job cancel request, a second connection
+    /// that kills the first…): the core ones above are the only other variants there will be.
+    Custom(Arc<dyn CancelAction>),
+}
+
+/// How a driver stops the statement its `CancelHandle::Custom` was armed for.
+pub trait CancelAction: Send + Sync {
+    /// Sends the cancel request. Never fails because nothing was running.
+    fn fire(&self) -> BoxFuture<'static, Result<(), AppError>>;
+    /// What it does, for logs (`"job cancel"`).
+    fn label(&self) -> &'static str;
 }
 
 impl CancelHandle {
@@ -387,6 +400,22 @@ impl CancelHandle {
     }
 }
 
+/// Cancels the handles every driver cancels the same way: `Custom` fires its action and
+/// `Requested` does nothing, also when `request_cancel` handed them out (`Pending`). `None` for
+/// the core drivers' own handles. A driver's `cancel` starts with it.
+pub async fn cancel_portable(handle: CancelHandle) -> Option<Result<(), AppError>> {
+    // The ticket (if any) is released once the action has fired.
+    let (handle, _ticket) = handle.into_parts();
+    match handle {
+        CancelHandle::Custom(action) => Some(action.fire().await),
+        CancelHandle::Requested => Some(Ok(())),
+        CancelHandle::Postgres(_)
+        | CancelHandle::Mysql { .. }
+        | CancelHandle::Sqlite(_)
+        | CancelHandle::Pending(..) => None,
+    }
+}
+
 impl std::fmt::Debug for CancelHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -395,6 +424,7 @@ impl std::fmt::Debug for CancelHandle {
             CancelHandle::Sqlite(_) => f.write_str("CancelHandle::Sqlite"),
             CancelHandle::Requested => f.write_str("CancelHandle::Requested"),
             CancelHandle::Pending(inner, _) => write!(f, "CancelHandle::Pending({inner:?})"),
+            CancelHandle::Custom(action) => write!(f, "CancelHandle::Custom({})", action.label()),
         }
     }
 }
@@ -563,7 +593,15 @@ pub async fn lock_editor_runs<'a>(
     session: &'a dyn DbSession,
     cancel: &CancelSlot,
 ) -> Result<Option<EditorRunGuard<'a>>, AppError> {
-    let Some(lock) = session.editor_run_lock() else {
+    lock_runs(session.editor_run_lock(), cancel).await
+}
+
+/// `lock_editor_runs` on any run lock (a native store's `console_lock`).
+pub async fn lock_runs<'a>(
+    lock: Option<&'a tokio::sync::Mutex<()>>,
+    cancel: &CancelSlot,
+) -> Result<Option<EditorRunGuard<'a>>, AppError> {
+    let Some(lock) = lock else {
         return Ok(None);
     };
     let acquire = lock.lock();
@@ -1040,6 +1078,24 @@ pub trait DbSession: Send + Sync {
     /// Whether `call(method)` only reads; anything unknown changes something.
     fn call_kind(&self, _method: &str) -> CallKind {
         CallKind::Write
+    }
+
+    /// The server's sessions, for an engine whose process list is not the core one of its
+    /// dialect (`None`: `admin::list_processes` reads it with the core SQL).
+    async fn list_processes(&self) -> Option<Result<Vec<ProcessRow>, AppError>> {
+        None
+    }
+
+    /// Kills the processes `ids` (as the session's `list_processes` gave them), one outcome per
+    /// id; `None` kills them with the core SQL.
+    async fn kill_processes(&self, _ids: &[String], _scope: KillScope) -> Option<Vec<KillOutcome>> {
+        None
+    }
+
+    /// The server's own DDL of a table (`SHOW CREATE`, `GET_DDL`); `None` builds it from the
+    /// table's structure.
+    async fn table_ddl(&self, _table: &TableRef) -> Option<Result<String, AppError>> {
+        None
     }
 }
 
@@ -1530,6 +1586,52 @@ mod tests {
         assert!(settle_cancels(&slot, Duration::from_secs(5)).await);
         assert!(started.elapsed() >= Duration::from_millis(40));
         release.await.unwrap();
+    }
+
+    /// Counts its fires; the ticket of the request is still held while it fires.
+    struct Counted(Arc<std::sync::atomic::AtomicUsize>, CancelSlot);
+
+    impl CancelAction for Counted {
+        fn fire(&self) -> BoxFuture<'static, Result<(), AppError>> {
+            let (fired, slot) = (self.0.clone(), self.1.clone());
+            Box::pin(async move {
+                assert_eq!(slot.cancels_in_flight(), 1);
+                fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        }
+
+        fn label(&self) -> &'static str {
+            "counted"
+        }
+    }
+
+    #[tokio::test]
+    async fn portable_handles_cancel_alike_for_every_driver() {
+        let fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let slot = CancelSlot::default();
+        let action = Arc::new(Counted(fired.clone(), slot.clone()));
+        let armed = arm_cancel(&slot, CancelHandle::Custom(action)).unwrap();
+        let handle = request_cancel(&slot).unwrap();
+        assert_eq!(
+            format!("{handle:?}"),
+            "CancelHandle::Pending(CancelHandle::Custom(counted))"
+        );
+        drop(armed);
+        assert!(cancel_portable(handle).await.unwrap().is_ok());
+        assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(slot.cancels_in_flight(), 0, "the ticket goes once it fired");
+
+        assert!(matches!(
+            cancel_portable(CancelHandle::Requested).await,
+            Some(Ok(()))
+        ));
+        // The core drivers' own handles are theirs to cancel.
+        assert!(
+            cancel_portable(CancelHandle::Mysql { conn_id: 1 })
+                .await
+                .is_none()
+        );
     }
 
     #[test]

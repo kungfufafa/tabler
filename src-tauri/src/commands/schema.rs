@@ -20,7 +20,11 @@ pub async fn list_databases(
     state: State<'_, AppState>,
     connection_id: Uuid,
 ) -> Result<Vec<DatabaseInfo>, AppError> {
-    state.session(connection_id).await?.list_databases().await
+    state
+        .any_session(connection_id)
+        .await?
+        .list_databases()
+        .await
 }
 
 #[tauri::command]
@@ -28,7 +32,7 @@ pub async fn list_schemas(
     state: State<'_, AppState>,
     connection_id: Uuid,
 ) -> Result<Vec<SchemaInfo>, AppError> {
-    state.session(connection_id).await?.list_schemas().await
+    state.any_session(connection_id).await?.list_schemas().await
 }
 
 #[tauri::command]
@@ -38,7 +42,7 @@ pub async fn list_tables(
     schema: String,
 ) -> Result<Vec<TableSummary>, AppError> {
     state
-        .session(connection_id)
+        .any_session(connection_id)
         .await?
         .list_tables(&schema)
         .await
@@ -62,7 +66,7 @@ pub(crate) async fn table_on(
     table: TableRef,
     refresh: bool,
 ) -> Result<TableMeta, AppError> {
-    let session = conn.session_for(Feature::StructureView).await?;
+    let session = conn.any_session_for(Feature::StructureView).await?;
     if !refresh && let Some(meta) = conn.schema_cache.read().await.get(&table) {
         return Ok((**meta).clone());
     }
@@ -89,7 +93,7 @@ pub(crate) async fn view_definition_on(
     conn: &Connection,
     table: &TableRef,
 ) -> Result<Option<String>, AppError> {
-    conn.session_for(Feature::ViewDefinition)
+    conn.any_session_for(Feature::ViewDefinition)
         .await?
         .view_definition(table)
         .await
@@ -101,7 +105,7 @@ pub async fn get_completion_metadata(
     connection_id: Uuid,
 ) -> Result<CompletionMetadata, AppError> {
     state
-        .session(connection_id)
+        .any_session(connection_id)
         .await?
         .completion_metadata()
         .await

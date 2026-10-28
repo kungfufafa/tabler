@@ -11,4 +11,9 @@ rowIds: Array<number> | null, offset: number, limit: number,
 /**
  * The SELECT that was executed (placeholders inlined for display).
  */
-sql: string, durationMs: number, };
+sql: string, durationMs: number, 
+/**
+ * Where the next page starts, for a table paged by cursor; `None` after the last page (and
+ * always for a table paged by offset).
+ */
+nextCursor?: string | null, };

@@ -731,6 +731,20 @@ function userName(change: UserChange): string {
 export const ipc = {
   appInfo: () => invoke<AppInfo>("app_info"),
 
+  /**
+   * Calls `method` of the connection's driver, for what it offers beyond its SQL or console. A
+   * read-only connection refuses a call the driver does not say only reads; a caller whose call
+   * may write awaits `guardExecution` first.
+   */
+  sessionCall: <T = unknown>(connectionId: string, method: string, args: unknown = null) =>
+    invoke<T>("session_call", { connectionId, method, args }),
+  /**
+   * Calls `method` of the driver of the profile being edited, before any session exists (a
+   * database picker, a probe), with the secret the dialog would connect with.
+   */
+  driverUtil: <T = unknown>(input: ProfileInput, method: string, args: unknown = null) =>
+    invoke<T>("driver_util", { input, method, args }),
+
   app: {
     /** Quits for real (the renderer already handled unsaved work); skips the exit guard. */
     quit: () => invoke<void>("quit_app"),
@@ -1573,7 +1587,7 @@ export const ipc = {
     /** Not logged: Running Queries refreshes every 2 s. */
     processes: (connectionId: string) =>
       invoke<ProcessRow[]>("admin_list_processes", { connectionId }),
-    kill: (connectionId: string, ids: number[], scope: KillScope) =>
+    kill: (connectionId: string, ids: string[], scope: KillScope) =>
       logged(
         connectionId,
         "query",

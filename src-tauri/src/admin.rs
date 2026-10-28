@@ -279,7 +279,7 @@ pub fn pg_process_rows(rows: &[Vec<Value>]) -> Vec<ProcessRow> {
     rows.iter()
         .filter_map(|r| {
             Some(ProcessRow {
-                id: int(r, 0)?,
+                id: int(r, 0)?.to_string(),
                 user: cell(r, 1),
                 database: cell(r, 2),
                 application: non_empty(cell(r, 3)),
@@ -313,7 +313,7 @@ pub fn mysql_process_rows(rows: &[Vec<Value>]) -> Vec<ProcessRow> {
         .iter()
         .filter_map(|r| {
             Some(ProcessRow {
-                id: int(r, 0)?,
+                id: int(r, 0)?.to_string(),
                 user: cell(r, 1),
                 database: cell(r, 3),
                 application: None,
@@ -345,7 +345,13 @@ pub fn mysql_process_rows(rows: &[Vec<Value>]) -> Vec<ProcessRow> {
     out
 }
 
+/// The server's sessions: the driver's own list where it has one (`DbSession::list_processes`),
+/// otherwise the core one of the session's dialect.
 pub async fn list_processes(session: &dyn DbSession) -> Result<Vec<ProcessRow>, AppError> {
+    session.require(Feature::ProcessList)?;
+    if let Some(rows) = session.list_processes().await {
+        return rows;
+    }
     let dialect = session.core_dialect(Feature::ProcessList)?;
     let rs = session
         .query(admin_sql::process_list_sql(dialect)?, &[])
@@ -356,17 +362,29 @@ pub async fn list_processes(session: &dyn DbSession) -> Result<Vec<ProcessRow>, 
     })
 }
 
+/// A core process id (PG `pid`, MySQL thread `Id`) as `list_processes` gave it.
+fn process_id(id: &str) -> Result<i64, AppError> {
+    id.parse()
+        .map_err(|_| AppError::InvalidInput(format!("invalid process id {id}")))
+}
+
 /// Kills each process in turn; one failure does not stop the others. A session without Kill
-/// Process is refused before any.
+/// Process is refused before any. The driver kills its own where it can
+/// (`DbSession::kill_processes`).
 pub async fn kill(
     session: &dyn DbSession,
-    ids: &[i64],
+    ids: &[String],
     scope: KillScope,
 ) -> Result<Vec<KillOutcome>, AppError> {
+    session.require(Feature::KillProcess)?;
+    if let Some(outcomes) = session.kill_processes(ids, scope).await {
+        return Ok(outcomes);
+    }
     let dialect = session.core_dialect(Feature::KillProcess)?;
     let mut out = Vec::with_capacity(ids.len());
-    for &id in ids {
-        let result = match admin_sql::kill_sql(dialect, id, scope) {
+    for id in ids {
+        let sql = process_id(id).and_then(|n| admin_sql::kill_sql(dialect, n, scope));
+        let result = match sql {
             Err(e) => Err(e),
             Ok(sql) if dialect == Dialect::Postgres => session.query(&sql, &[]).await.map(|rs| {
                 // `pg_cancel_backend` / `pg_terminate_backend` say false for an unknown pid.
@@ -376,17 +394,17 @@ pub async fn kill(
         };
         out.push(match result {
             Ok(true) => KillOutcome {
-                id,
+                id: id.clone(),
                 ok: true,
                 message: None,
             },
             Ok(false) => KillOutcome {
-                id,
+                id: id.clone(),
                 ok: false,
                 message: Some("No such process: it may have ended already".into()),
             },
             Err(e) => KillOutcome {
-                id,
+                id: id.clone(),
                 ok: false,
                 message: Some(e.to_string()),
             },
@@ -773,7 +791,7 @@ mod tests {
         ];
         let out = pg_process_rows(&rows);
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].id, 101);
+        assert_eq!(out[0].id, "101");
         assert_eq!(out[0].client.as_deref(), Some("10.0.0.5:51234"));
         assert_eq!(out[0].duration_ms, Some(1500));
         assert_eq!(out[0].wait_event.as_deref(), Some("Lock: relation"));
@@ -815,8 +833,8 @@ mod tests {
         ];
         let out = mysql_process_rows(&rows);
         assert_eq!(
-            out.iter().map(|p| p.id).collect::<Vec<_>>(),
-            [7, 8, 9, 10, 11]
+            out.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            ["7", "8", "9", "10", "11"]
         );
         assert!(out[0].current && out[0].own);
         assert!(out[1].own, "same account from the same host");

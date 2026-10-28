@@ -670,7 +670,7 @@ async fn run(call: Call, f: &Fixture) -> Result<(), AppError> {
         )
         .map(drop),
         Call::ListProcesses => crate::admin::list_processes(s).await.map(drop),
-        Call::Kill => crate::admin::kill(s, &[1], KillScope::Query)
+        Call::Kill => crate::admin::kill(s, &["1".to_string()], KillScope::Query)
             .await
             .map(drop),
         Call::ListUsers => crate::admin::list_users(s, false).await.map(drop),

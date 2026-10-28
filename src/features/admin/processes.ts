@@ -70,18 +70,35 @@ function sortValue(row: ProcessRow, column: ProcessColumnId): string | number | 
 
 const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 
+/**
+ * Process ids in their numeric order (PG pids, MySQL thread ids, which may pass 2^53): fewer
+ * digits first, then digit by digit. Ids that are not numbers (other engines name theirs) sort as
+ * text.
+ */
+export function compareIds(a: string, b: string): number {
+  const digits = /^\d+$/;
+  if (digits.test(a) && digits.test(b)) {
+    const x = a.replace(/^0+(?=\d)/, "");
+    const y = b.replace(/^0+(?=\d)/, "");
+    return x.length - y.length || (x < y ? -1 : x > y ? 1 : 0);
+  }
+  return collator.compare(a, b);
+}
+
 /** Sorted copy; empty values last whatever the direction, ties by id. */
 export function sortProcesses(rows: readonly ProcessRow[], sort: ProcessSort): ProcessRow[] {
   return [...rows].sort((a, b) => {
     const va = sortValue(a, sort.column);
     const vb = sortValue(b, sort.column);
-    if (va === null || va === "") return vb === null || vb === "" ? a.id - b.id : 1;
+    if (va === null || va === "") return vb === null || vb === "" ? compareIds(a.id, b.id) : 1;
     if (vb === null || vb === "") return -1;
     const cmp =
-      typeof va === "number" && typeof vb === "number"
-        ? va - vb
-        : collator.compare(String(va), String(vb));
-    return (sort.desc ? -cmp : cmp) || a.id - b.id;
+      sort.column === "id"
+        ? compareIds(a.id, b.id)
+        : typeof va === "number" && typeof vb === "number"
+          ? va - vb
+          : collator.compare(String(va), String(vb));
+    return (sort.desc ? -cmp : cmp) || compareIds(a.id, b.id);
   });
 }
 
@@ -130,7 +147,7 @@ export function formatDuration(ms: number | null): string {
 export function cellText(row: ProcessRow, column: ProcessColumnId): string {
   switch (column) {
     case "id":
-      return String(row.id);
+      return row.id;
     case "duration":
       return formatDuration(row.durationMs);
     case "query":
@@ -145,12 +162,12 @@ export function cellText(row: ProcessRow, column: ProcessColumnId): string {
 
 /** Ids picked with a click: plain = only it, ⌘ = toggle, ⇧ = range from the anchor. */
 export function clickSelection(
-  ordered: readonly number[],
-  selected: ReadonlySet<number>,
-  anchor: number | null,
-  id: number,
+  ordered: readonly string[],
+  selected: ReadonlySet<string>,
+  anchor: string | null,
+  id: string,
   mods: { toggle: boolean; range: boolean },
-): Set<number> {
+): Set<string> {
   if (mods.range && anchor !== null) {
     const from = ordered.indexOf(anchor);
     const to = ordered.indexOf(id);
@@ -170,9 +187,9 @@ export function clickSelection(
 
 /** Summary of a kill run for the toast. */
 export function killSummary(
-  outcomes: ReadonlyArray<{ id: number; ok: boolean; message: string | null }>,
+  outcomes: ReadonlyArray<{ id: string; ok: boolean; message: string | null }>,
   scope: "query" | "connection",
-): { ok: number; failed: Array<{ id: number; message: string }>; title: string } {
+): { ok: number; failed: Array<{ id: string; message: string }>; title: string } {
   const ok = outcomes.filter((o) => o.ok).length;
   const failed = outcomes
     .filter((o) => !o.ok)

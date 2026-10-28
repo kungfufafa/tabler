@@ -219,7 +219,7 @@ describe("databases", () => {
 
 function proc(id: number, patch: Partial<ProcessRow> = {}): ProcessRow {
   return {
-    id,
+    id: String(id),
     user: "app",
     database: "shop",
     application: "psql",
@@ -244,8 +244,8 @@ describe("process list", () => {
       proc(12, { database: "app" }),
     ]);
     const kill = vi.spyOn(ipc.admin, "kill").mockResolvedValue([
-      { id: 10, ok: true, message: null },
-      { id: 11, ok: true, message: null },
+      { id: "10", ok: true, message: null },
+      { id: "11", ok: true, message: null },
     ]);
     setup();
     act(() => openProcessList("c1"));
@@ -266,7 +266,7 @@ describe("process list", () => {
     expect(confirm).toHaveTextContent("Kill the queries of 2 processes?");
     expect(within(confirm).getByRole("alert")).toHaveTextContent("Tabler's own session");
     fireEvent.click(within(confirm).getByRole("button", { name: "Kill Query" }));
-    await waitFor(() => expect(kill).toHaveBeenCalledWith("c1", [10, 11], "query"));
+    await waitFor(() => expect(kill).toHaveBeenCalledWith("c1", ["10", "11"], "query"));
     expect(guard.calls).toEqual([
       ["c1", { kind: "operation", label: "Kill the query of 2 processes", write: true }],
     ]);

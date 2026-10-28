@@ -9,6 +9,7 @@ pub mod browse;
 mod caps_tests;
 pub mod conn_extras;
 pub mod connections;
+pub mod console;
 pub mod ddl;
 pub mod decoder;
 pub mod deeplink;
@@ -23,6 +24,7 @@ pub mod mcp;
 pub mod menu;
 pub mod metrics;
 pub mod mutate;
+pub mod native;
 #[cfg(test)]
 mod native_tests;
 pub mod objects;

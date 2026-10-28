@@ -138,10 +138,8 @@ pub async fn open(target: ConnectTarget<'_>) -> Result<Session, AppError> {
 /// no SQL is refused before anything is opened.
 pub async fn connect(target: ConnectTarget<'_>) -> Result<Arc<dyn DbSession>, AppError> {
     ensure_built(target.profile)?;
+    ensure_sql(target.profile)?;
     let driver = target.profile.driver;
-    if driver.descriptor().session == SessionKind::Native {
-        return Err(not_sql(driver));
-    }
     match open(target).await? {
         Session::Sql(session) => Ok(session),
         // A driver that opened the other kind of session: never used.
@@ -149,6 +147,15 @@ pub async fn connect(target: ConnectTarget<'_>) -> Result<Arc<dyn DbSession>, Ap
             native.close().await;
             Err(not_sql(driver))
         }
+    }
+}
+
+/// Refuses a profile of a store that speaks no SQL, for a caller that only takes SQL sessions
+/// (`connect`, the MCP pool): before its bootstrap script, password command or tunnel run.
+pub fn ensure_sql(profile: &ConnectionProfile) -> Result<(), AppError> {
+    match profile.driver.descriptor().session {
+        SessionKind::Native => Err(not_sql(profile.driver)),
+        SessionKind::Sql => Ok(()),
     }
 }
 
@@ -751,6 +758,23 @@ mod tests {
             .expect("no session");
             assert_eq!(err.to_string(), not_built(d).to_string());
         }
+    }
+
+    /// Only the SQL drivers open a session for a SQL-only caller, built or not.
+    #[test]
+    fn ensure_sql_refuses_the_native_stores() {
+        for d in Driver::ALL {
+            let native = d.descriptor().session == SessionKind::Native;
+            match ensure_sql(&profile(d)) {
+                Ok(()) => assert!(!native, "{d:?}"),
+                Err(e) => {
+                    assert!(native, "{d:?}");
+                    assert_eq!(e.to_string(), not_sql(d).to_string());
+                }
+            }
+        }
+        assert!(ensure_sql(&profile(Driver::Redis)).is_err());
+        assert!(ensure_sql(&profile(Driver::Postgres)).is_ok());
     }
 
     /// The form's calls: the core drivers know none, a driver this build lacks is refused, and

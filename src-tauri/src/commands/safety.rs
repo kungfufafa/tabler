@@ -7,9 +7,11 @@ use std::hint::black_box;
 use tauri::State;
 use uuid::Uuid;
 
+use crate::drivers::native::{CallKind, NativeSession};
 use crate::error::AppError;
 use crate::secrets::{SecretKind, Secrets};
 use crate::sqlgen::SqlDialect;
+use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::split::is_meta_command;
 use crate::sqlgen::sql::{split_statements, writes};
 use crate::state::{AppState, Connection};
@@ -115,6 +117,27 @@ pub fn refuse_read_only_explain(
     refuse(conn.profile.options.read_only, || {
         run_writes(sql, dialect, Some(mode), true)
     })
+}
+
+/// `run_sql` on a store that speaks no SQL: refuses the whole run on a read-only connection when
+/// any command writes, as the store classifies it (a command it does not know writes).
+pub fn refuse_read_only_console(
+    conn: &Connection,
+    store: &dyn NativeSession,
+    text: &str,
+) -> Result<(), AppError> {
+    refuse(conn.profile.options.read_only, || {
+        store
+            .split_console(text)
+            .iter()
+            .any(|c| store.classify_console(&c.sql) == StatementClass::Write)
+    })
+}
+
+/// `session_call` and `driver_util`: refuses a call that may change something (`CallKind::Write`,
+/// which is what a driver says of a call it does not know) on a read-only connection.
+pub fn refuse_read_only_call(read_only: bool, kind: CallKind) -> Result<(), AppError> {
+    refuse(read_only, || kind == CallKind::Write)
 }
 
 #[cfg(test)]

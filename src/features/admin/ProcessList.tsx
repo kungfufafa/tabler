@@ -74,8 +74,8 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
   const [hideIdle, setHideIdle] = useState(false);
   const [database, setDatabase] = useState<string | null>(null);
   const [sort, setSort] = useState<ProcessSort>({ column: "id", desc: false });
-  const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
-  const [anchor, setAnchor] = useState<number | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [anchor, setAnchor] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<KillScope | null>(null);
   const [killing, setKilling] = useState(false);
 
@@ -99,7 +99,7 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
   const picked = rows.filter((r) => selected.has(r.id));
   const focused = rows.find((r) => r.id === anchor) ?? null;
 
-  const onRowClick = (e: MouseEvent, id: number) => {
+  const onRowClick = (e: MouseEvent, id: string) => {
     const toggle = isMac ? e.metaKey : e.ctrlKey;
     setSelected(clickSelection(ids, selected, anchor, id, { toggle, range: e.shiftKey }));
     if (!e.shiftKey) setAnchor(id);

@@ -133,7 +133,7 @@ async fn kill_a_sleeper(
         target = rows
             .iter()
             .find(|r| r.query.as_deref().is_some_and(|q| q.contains(&marker)) && !r.current)
-            .map(|r| r.id);
+            .map(|r| r.id.clone());
         if target.is_some() {
             break;
         }
@@ -150,7 +150,7 @@ async fn kill_a_sleeper(
     // PG reports the cancel as an error; MySQL's SLEEP() just returns 1 early.
     assert_eq!(result.is_err(), fails, "{result:?}");
     // An unknown process.
-    let out = admin::kill(session.as_ref(), &[2_000_000_000], KillScope::Query)
+    let out = admin::kill(session.as_ref(), &["2000000000".into()], KillScope::Query)
         .await
         .unwrap();
     assert!(!out[0].ok && out[0].message.is_some(), "{out:?}");

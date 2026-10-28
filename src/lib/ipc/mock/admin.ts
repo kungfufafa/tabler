@@ -317,7 +317,7 @@ function seedProcesses(driver: Driver, me: ConnectionInfo): MockProcess[] {
       query: string | null,
       own = false,
     ): MockProcess => ({
-      id,
+      id: String(id),
       user,
       client: host,
       database,
@@ -378,7 +378,7 @@ function seedProcesses(driver: Driver, me: ConnectionInfo): MockProcess[] {
     query: string,
     extra: Partial<MockProcess> = {},
   ): MockProcess => ({
-    id,
+    id: String(id),
     user,
     database,
     application,
@@ -471,7 +471,7 @@ registerMock("admin_list_processes", async ({ connectionId }) => {
   const listing: ProcessRow =
     c.driver === "mysql"
       ? {
-          id: 17,
+          id: "17",
           user: c.currentUser,
           database: c.currentDatabase,
           application: null,
@@ -487,7 +487,7 @@ registerMock("admin_list_processes", async ({ connectionId }) => {
           own: true,
         }
       : {
-          id: 48100,
+          id: "48100",
           user: c.currentUser,
           database: c.currentDatabase,
           application: "tabler",
@@ -511,7 +511,7 @@ registerMock("admin_list_processes", async ({ connectionId }) => {
       startedAt: c.driver === "mysql" ? null : new Date(since).toISOString(),
     };
   });
-  return [listing, ...rows].sort((a, b) => a.id - b.id);
+  return [listing, ...rows].sort((a, b) => Number(a.id) - Number(b.id));
 });
 
 registerMock("admin_kill_processes", async ({ connectionId, ids, scope }) => {
@@ -519,7 +519,7 @@ registerMock("admin_kill_processes", async ({ connectionId, ids, scope }) => {
   if (c.readOnly) mockError("UNSUPPORTED", "unsupported: this connection is read-only");
   const list = processes.get(c.driver) ?? [];
   const outcomes: KillOutcome[] = [];
-  for (const id of ids as number[]) {
+  for (const id of ids as string[]) {
     const i = list.findIndex((p) => p.id === id);
     const p = list[i];
     if (!p) {

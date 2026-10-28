@@ -1,23 +1,25 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use tauri::State;
 use uuid::Uuid;
 
 use crate::commands::browse::cached_meta;
-use crate::drivers::TxStatement;
+use crate::drivers::native::{NativePlan, NativeSession};
 use crate::drivers::postgres::decode::text_to_value;
+use crate::drivers::{Session, TxStatement};
 use crate::error::{AppError, ErrorPayload};
 use crate::sqlgen::SqlDialect;
 use crate::sqlgen::mutate::ordered;
 use crate::sqlgen::sql::{self, ColumnForm, TableTarget};
 use crate::state::{AppState, Connection};
 use crate::types::browse::RowKey;
-use crate::types::caps::Feature;
+use crate::types::caps::{Feature, TxMode};
 use crate::types::mutate::{ApplyRequest, ApplyResult, RowResult, ServerExpr, StagedChange};
 use crate::types::profile::Driver;
 use crate::types::query::ExecOutcome;
-use crate::types::schema::ColumnMeta;
+use crate::types::schema::{ColumnMeta, TableMeta};
 use crate::types::value::Value;
 
 /// A request planned against the table's cached metadata: its statements in execution order,
@@ -51,6 +53,39 @@ impl PlannedRows {
                     affected: outcome.affected,
                     returned: returned_row(self.dialect, &self.columns, outcome),
                     error: None,
+                }
+            })
+            .collect()
+    }
+
+    /// One result per statement after a session that applies changes one by one (`TxMode` other
+    /// than `Atomic` and `DataOnly`) stopped at `failed`: the statements before it were applied
+    /// and say so with no error, so the renderer unstages their changes; `failed` carries
+    /// `payload` and the ones after it were not sent. When the failure has no statement every
+    /// change keeps the error (none is known to be applied).
+    pub fn partial_results(
+        &self,
+        req: &ApplyRequest,
+        failed: Option<usize>,
+        payload: &ErrorPayload,
+    ) -> Vec<RowResult> {
+        let not_sent =
+            AppError::InvalidInput("not applied: an earlier change failed".into()).to_payload();
+        self.statements
+            .iter()
+            .enumerate()
+            .map(|(i, (index, _))| {
+                let change = &req.changes[*index];
+                RowResult {
+                    row_id: change.row_id().to_string(),
+                    op: change.op_name().to_string(),
+                    affected: 0,
+                    returned: None,
+                    error: match failed {
+                        Some(f) if i < f => None,
+                        Some(f) if i > f => Some(not_sent.clone()),
+                        _ => Some(payload.clone()),
+                    },
                 }
             })
             .collect()
@@ -156,13 +191,25 @@ pub async fn plan_rows(conn: &Connection, req: &ApplyRequest) -> Result<PlannedR
     })
 }
 
-async fn plan(
-    state: &AppState,
-    connection_id: Uuid,
+/// Plans a request on a store that speaks no SQL, with the same refusals as `plan_rows`: the
+/// store's own plan, whose preview is what its `apply_changes` sends.
+pub async fn plan_native(
+    conn: &Connection,
+    store: &dyn NativeSession,
     req: &ApplyRequest,
-) -> Result<PlannedRows, AppError> {
-    let conn = state.connection(connection_id).await?;
-    plan_rows(&conn, req).await
+) -> Result<(Arc<TableMeta>, NativePlan), AppError> {
+    if conn.profile.options.read_only {
+        return Err(AppError::Unsupported("this connection is read-only".into()));
+    }
+    store.capabilities().require_all(&change_features(req))?;
+    let meta = cached_meta(conn, &req.table).await?;
+    let plan = store.plan_changes(&meta, req)?;
+    Ok((meta, plan))
+}
+
+/// The preview text of a store's plan, in its order.
+fn native_preview(plan: &NativePlan) -> Vec<String> {
+    plan.preview.iter().map(|(_, text)| text.clone()).collect()
 }
 
 #[tauri::command]
@@ -171,7 +218,21 @@ pub async fn preview_changes(
     connection_id: Uuid,
     req: ApplyRequest,
 ) -> Result<Vec<String>, AppError> {
-    Ok(plan(&state, connection_id, &req).await?.sql())
+    preview_changes_on(&state, connection_id, &req).await
+}
+
+/// The body of [`preview_changes`], callable without a Tauri runtime.
+pub(crate) async fn preview_changes_on(
+    state: &AppState,
+    connection_id: Uuid,
+    req: &ApplyRequest,
+) -> Result<Vec<String>, AppError> {
+    let conn = state.connection(connection_id).await?;
+    if let Session::Native(store) = conn.any_session().await {
+        let (_, plan) = plan_native(&conn, store.as_ref(), req).await?;
+        return Ok(native_preview(&plan));
+    }
+    Ok(plan_rows(&conn, req).await?.sql())
 }
 
 fn returned_row(
@@ -204,8 +265,49 @@ pub async fn apply_changes(
     connection_id: Uuid,
     req: ApplyRequest,
 ) -> Result<ApplyResult, AppError> {
+    apply_changes_on(&state, connection_id, req).await
+}
+
+/// Applies a request on a store that speaks no SQL: the store reports each change's outcome, so
+/// after a partial failure the renderer unstages the changes that were applied.
+async fn apply_native(
+    conn: &Connection,
+    store: &dyn NativeSession,
+    req: &ApplyRequest,
+) -> Result<ApplyResult, AppError> {
     let started = Instant::now();
-    let planned = plan(&state, connection_id, &req).await?;
+    let (meta, plan) = plan_native(conn, store, req).await?;
+    if req.changes.is_empty() {
+        return Ok(ApplyResult {
+            success: true,
+            results: vec![],
+            sql: native_preview(&plan),
+            error: None,
+            duration_ms: 0,
+        });
+    }
+    log::info!(
+        "apply_changes {} change(s) on {}",
+        req.changes.len(),
+        req.table.name
+    );
+    let mut result = store.apply_changes(&meta, req, plan).await;
+    result.duration_ms = started.elapsed().as_millis() as u64;
+    Ok(result)
+}
+
+/// The body of [`apply_changes`], callable without a Tauri runtime.
+pub(crate) async fn apply_changes_on(
+    state: &AppState,
+    connection_id: Uuid,
+    req: ApplyRequest,
+) -> Result<ApplyResult, AppError> {
+    let conn = state.connection(connection_id).await?;
+    if let Session::Native(store) = conn.any_session().await {
+        return apply_native(&conn, store.as_ref(), &req).await;
+    }
+    let started = Instant::now();
+    let planned = plan_rows(&conn, &req).await?;
     let sql = planned.sql();
     if planned.statements.is_empty() {
         return Ok(ApplyResult {
@@ -241,7 +343,14 @@ pub async fn apply_changes(
         }),
         Err(err) => {
             let payload = err.to_payload();
-            let results = planned.failed_results(&req, payload.statement_index, &payload);
+            let results = match session.capabilities().data.transactions {
+                TxMode::Atomic | TxMode::DataOnly => {
+                    planned.failed_results(&req, payload.statement_index, &payload)
+                }
+                TxMode::Batch | TxMode::Sequential | TxMode::None => {
+                    planned.partial_results(&req, payload.statement_index, &payload)
+                }
+            };
             Ok(ApplyResult {
                 success: false,
                 results,

@@ -135,6 +135,11 @@ pub struct BrowseRequest {
     pub sort: Vec<SortSpec>,
     pub limit: u32,
     pub offset: u64,
+    /// The page after the one whose `next_cursor` this is, for a table paged by cursor
+    /// (`Paging::Cursor`); `None` asks for the first. Tables paged by offset ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
 }
 
 /// How rows of a table can be addressed for updates/deletes.
@@ -165,6 +170,11 @@ pub struct BrowsePage {
     /// The SELECT that was executed (placeholders inlined for display).
     pub sql: String,
     pub duration_ms: u64,
+    /// Where the next page starts, for a table paged by cursor; `None` after the last page (and
+    /// always for a table paged by offset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

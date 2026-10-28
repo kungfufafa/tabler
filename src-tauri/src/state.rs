@@ -67,9 +67,15 @@ impl Connection {
     /// this way, so it is refused before it sends anything (for a missing feature first, then a
     /// store that speaks no SQL for having no SQL session).
     pub async fn session_for(&self, f: Feature) -> Result<Arc<dyn DbSession>, AppError> {
+        self.any_session_for(f).await?.sql()
+    }
+
+    /// The session whatever its kind, once its caps grant `f`: a command that both kinds serve
+    /// (structure, the grid) asks for its session this way.
+    pub async fn any_session_for(&self, f: Feature) -> Result<Session, AppError> {
         let session = self.any_session().await;
         session.capabilities().require(f)?;
-        session.sql()
+        Ok(session)
     }
 
     pub async fn info(&self) -> ConnectionInfo {
@@ -185,6 +191,11 @@ impl AppState {
 
     pub async fn session(&self, id: Uuid) -> Result<Arc<dyn DbSession>, AppError> {
         self.connection(id).await?.session().await
+    }
+
+    /// `Connection::any_session` of an open connection.
+    pub async fn any_session(&self, id: Uuid) -> Result<Session, AppError> {
+        Ok(self.connection(id).await?.any_session().await)
     }
 
     /// `Connection::session_for` of an open connection.

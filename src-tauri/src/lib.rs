@@ -1035,6 +1035,8 @@ pub fn run() {
             commands::query::run_sql,
             commands::query::cancel_query,
             commands::query::explain,
+            commands::native::session_call,
+            commands::native::driver_util,
             commands::safety::verify_connection_password,
             commands::history::list_history,
             commands::history::delete_history,

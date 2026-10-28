@@ -6,9 +6,10 @@
  */
 export type ProcessRow = { 
 /**
- * PG `pid` / MySQL `Id`.
+ * PG `pid` / MySQL `Id` (a string: other engines name theirs, and MySQL ids can pass
+ * 2^53).
  */
-id: number, user: string | null, database: string | null, application: string | null, client: string | null, 
+id: string, user: string | null, database: string | null, application: string | null, client: string | null, 
 /**
  * PG `state` (active, idle, idle in transaction…) / MySQL `State`.
  */

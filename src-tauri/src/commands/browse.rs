@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 use tauri::State;
 use uuid::Uuid;
 
-use super::query::{query_limited, query_time_limit};
-use crate::drivers::DbSession;
+use super::query::{query_limited, query_time_limit, timed_out_as_error, with_timeout_by};
 use crate::drivers::postgres::decode::text_to_value;
+use crate::drivers::{CancelSlot, DbSession, Session};
 use crate::error::AppError;
 use crate::sqlgen::SqlDialect;
 use crate::sqlgen::select::ROWID_ALIAS;
@@ -98,7 +98,7 @@ pub(crate) async fn browse_rows(
     req: &BrowseRequest,
     limit: Option<Duration>,
 ) -> Result<BrowsePage, AppError> {
-    let session = conn.session_for(Feature::StructureView).await?;
+    let session = conn.any_session_for(Feature::StructureView).await?;
     log::debug!(
         "browse_table {}.{} limit={} offset={}",
         req.table.schema.as_deref().unwrap_or(""),
@@ -107,7 +107,32 @@ pub(crate) async fn browse_rows(
         req.offset
     );
     let meta = cached_meta(conn, &req.table).await?;
-    browse_page(session.as_ref(), &meta, req, limit).await
+    // A store (or an engine) that reads its rows through its own API, by offset or by cursor.
+    if let Some(source) = session.table_source() {
+        return source_limited(&session, limit, |slot| source.browse(&meta, req, slot)).await;
+    }
+    browse_page(session.sql()?.as_ref(), &meta, req, limit).await
+}
+
+/// A read of a `TableSource` under the query time out, like `query_limited`: past `limit` it is
+/// cancelled through the session and fails with `QueryTimeout`.
+async fn source_limited<T, F>(
+    session: &Session,
+    limit: Option<Duration>,
+    read: impl FnOnce(CancelSlot) -> F,
+) -> Result<T, AppError>
+where
+    F: std::future::Future<Output = Result<T, AppError>>,
+{
+    let slot = CancelSlot::default();
+    let (result, expired) = with_timeout_by(
+        |handle| session.cancel(handle),
+        &slot,
+        limit,
+        read(slot.clone()),
+    )
+    .await;
+    timed_out_as_error(result, expired, limit)
 }
 
 /// Whether a failed select addressed by `identity` is worth running again addressing the rows by
@@ -193,6 +218,7 @@ pub async fn browse_page(
                     limit: req.limit,
                     sql: sql::inline_params(dialect, &built.sql, &built.params),
                     duration_ms: started.elapsed().as_millis() as u64,
+                    next_cursor: None,
                 });
             }
             // WITHOUT ROWID tables have no rowid: retry addressing rows by all columns.
@@ -261,16 +287,21 @@ pub(crate) async fn count_rows(
     estimate_above: i64,
     limit: Option<Duration>,
 ) -> Result<RowCount, AppError> {
-    let session = conn.session().await?;
+    let any = conn.any_session().await;
     // A filtered count is never estimated. Otherwise whether there is an estimate to give is
     // known only from the table's structure (read here, or cached by the grid).
     if exact || filter.is_some() {
-        session.require(Feature::ExactCount)?;
+        any.capabilities().require(Feature::ExactCount)?;
     }
     let meta = cached_meta(conn, table).await?;
+    // A source counts its own way: an estimate of its own unless asked for an exact count.
+    if let Some(source) = any.table_source() {
+        return source_limited(&any, limit, |slot| source.count(&meta, filter, exact, slot)).await;
+    }
     if let Some(estimate) = estimated_count(&meta, filter.is_some(), exact, estimate_above) {
         return Ok(estimate);
     }
+    let session = any.sql()?;
     session.require(Feature::ExactCount)?;
     let built = sql::count(session.dialect(), &meta.table, &meta.columns, filter)?;
     let rs = query_limited(session.as_ref(), &built.sql, &built.params, limit).await?;
@@ -329,9 +360,23 @@ pub(crate) async fn fetch_cell_on(
     column: &str,
     limit: Option<Duration>,
 ) -> Result<Value, AppError> {
-    let session = conn.session_for(Feature::StructureView).await?;
+    let session = conn.any_session_for(Feature::StructureView).await?;
     let meta = cached_meta(conn, table).await?;
-    fetch_cell_limited(session.as_ref(), &meta, column, key, limit).await
+    if let Some(source) = session.table_source() {
+        // A source's fetch takes no cancel handle: past the limit it is dropped.
+        let fetch = source.fetch_cell(&meta, key, column);
+        return match limit {
+            Some(limit) => {
+                tokio::time::timeout(limit, fetch)
+                    .await
+                    .unwrap_or(Err(AppError::QueryTimeout {
+                        secs: limit.as_secs() as u32,
+                    }))
+            }
+            None => fetch.await,
+        };
+    }
+    fetch_cell_limited(session.sql()?.as_ref(), &meta, column, key, limit).await
 }
 
 /// The statements the connection's session ran for the app since the last call (introspection,
@@ -623,6 +668,7 @@ mod tests {
             sort: Vec::new(),
             limit: 5,
             offset: 0,
+            cursor: None,
         }
     }
 

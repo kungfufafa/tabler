@@ -98,8 +98,9 @@ pub struct AdminResult {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct ProcessRow {
-    /// PG `pid` / MySQL `Id`.
-    pub id: i64,
+    /// PG `pid` / MySQL `Id` (a string: other engines name theirs, and MySQL ids can pass
+    /// 2^53).
+    pub id: String,
     pub user: Option<String>,
     pub database: Option<String>,
     pub application: Option<String>,
@@ -136,7 +137,7 @@ pub enum KillScope {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct KillOutcome {
-    pub id: i64,
+    pub id: String,
     pub ok: bool,
     /// Why it failed (permission denied, no such process…).
     pub message: Option<String>,

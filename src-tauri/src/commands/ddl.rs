@@ -293,6 +293,10 @@ pub async fn get_table_ddl(
 /// The body of [`get_table_ddl`] on an open connection.
 pub(crate) async fn table_ddl_on(conn: &Connection, table: &TableRef) -> Result<String, AppError> {
     let session = conn.session_for(Feature::TableDdl).await?;
+    // The server's own DDL, where the driver reads it.
+    if let Some(ddl) = session.table_ddl(table).await {
+        return ddl;
+    }
     // Always describe the current structure, not a cached one.
     conn.invalidate(Some(table)).await;
     let meta = cached_meta(conn, table).await?;

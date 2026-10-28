@@ -7,4 +7,9 @@ export type BrowseRequest = { table: TableRef,
 /**
  * Subset of columns to fetch; `None` = all.
  */
-columns: Array<string> | null, filter: FilterGroup | null, sort: Array<SortSpec>, limit: number, offset: number, };
+columns: Array<string> | null, filter: FilterGroup | null, sort: Array<SortSpec>, limit: number, offset: number, 
+/**
+ * The page after the one whose `next_cursor` this is, for a table paged by cursor
+ * (`Paging::Cursor`); `None` asks for the first. Tables paged by offset ignore it.
+ */
+cursor?: string | null, };

@@ -171,6 +171,18 @@ MCP reads `run_query`'s statements before it connects, with the SQL of the profi
 
 **Affected rows.** `ExecOutcome.affected_unknown` marks a count the server did not confirm. `check_affected` refuses it for a statement that expects a count, so the duplicate-row guard never passes unchecked.
 
+**Partial applies.** A session whose `data.transactions` is not `Atomic` or `DataOnly` (Batch, Sequential, None) reports each change of a failed `apply_changes`: a `RowResult` without an error was applied, and the renderer unstages it so a retry does not apply it twice. A native store's `apply_changes` reports its own; for a SQL session the changes before the failed statement count as applied and those after it come back "not applied".
+
+**Native stores.** A native session has no SQL view, so every command that builds SQL refuses it (`Connection::session`). What both kinds serve goes through `Connection::any_session`:
+
+- the sidebar's introspection, `get_table`, and `get_view_definition` (the store's `definition`);
+- `browse_table`, `count_table_rows` and `fetch_cell`, through the session's `TableSource` (a SQL session may have one too: BigQuery, Cassandra), with `BrowseRequest.cursor` / `BrowsePage.next_cursor` for cursor paging;
+- `preview_changes` and `apply_changes`, through the store's own plan (`plan_changes`, then `apply_changes` on that plan);
+- `run_sql`, which runs the text in the store's console (`commands/console.rs`): the editor's events, time out, Stop and history, and on a read-only connection only commands its `classify_console` calls reads;
+- `session_call` (an open connection) and `driver_util` (the connection form, before any session), the driver's own calls; a read-only profile makes only those its `call_kind` / `util_kind` calls reads.
+
+`admin_list_processes`, `admin_kill_processes` and `get_table_ddl` ask the SQL session's own hooks (`list_processes`, `kill_processes`, `table_ddl`) before the core SQL. Process ids are strings. A driver cancels through `CancelHandle::Custom` and starts its `cancel` with `cancel_portable`.
+
 ## Building and testing in isolation
 
 Run everything from the repository root (so `.cargo/config.toml` applies), with Node only (`pnpm` is not needed; where it is installed, `pnpm lane`, `pnpm lane:commit`, `pnpm gates` and `pnpm test:lanes`, the tooling's own tests, are the same commands):

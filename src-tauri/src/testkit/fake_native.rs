@@ -1,17 +1,22 @@
 //! A native store that reaches no server: two collections of documents (`orders`, `users`) in
-//! memory, keyed by `_id`, with a line-per-command console and one read and one write call. Like
-//! `FakeSession` it records every call that would reach a server in its `SqlTrace`, so a test can
-//! prove that a refused command sent nothing.
+//! memory, keyed by `_id` and paged by cursor, with a line-per-command console (whose `wait`
+//! runs until its `CancelHandle::Custom` fires), commits applied like a MULTI … EXEC batch, and
+//! one read and one write call. Like `FakeSession` it records every call that would reach a
+//! server in its `SqlTrace`, so a test can prove that a refused command sent nothing.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use serde_json::json;
 
 use crate::drivers::native::{CallKind, NativePlan, NativeSession, TableSource, unknown_call};
-use crate::drivers::{CancelHandle, CancelSlot, RowSink, ServerInfo, SqlTrace, StatementOutcome};
+use crate::drivers::{
+    CancelAction, CancelHandle, CancelSlot, RowSink, ServerInfo, SqlTrace, StatementOutcome,
+    arm_cancel, cancel_portable,
+};
 use crate::error::AppError;
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::split::SplitStatement;
@@ -34,6 +39,30 @@ pub struct FakeStore {
     trace: SqlTrace,
     collections: Mutex<BTreeMap<String, Vec<Doc>>>,
     closed: AtomicBool,
+    wake: Arc<Wake>,
+}
+
+/// What the console's `wait` waits for: its cancel request.
+#[derive(Default)]
+struct Wake {
+    fired: AtomicUsize,
+    notify: tokio::sync::Notify,
+}
+
+/// The store's own cancel request (`CancelHandle::Custom`), as a driver whose server has no
+/// cancel of its own would send one.
+struct FakeCancel(Arc<Wake>);
+
+impl CancelAction for FakeCancel {
+    fn fire(&self) -> BoxFuture<'static, Result<(), AppError>> {
+        self.0.fired.fetch_add(1, Ordering::SeqCst);
+        self.0.notify.notify_one();
+        Box::pin(async { Ok(()) })
+    }
+
+    fn label(&self) -> &'static str {
+        "fake cancel"
+    }
 }
 
 fn doc(id: i64, name: &str) -> Doc {
@@ -77,7 +106,13 @@ impl FakeStore {
             trace: SqlTrace::default(),
             collections: Mutex::new(collections),
             closed: AtomicBool::new(false),
+            wake: Arc::default(),
         }
+    }
+
+    /// How many cancel requests the console's `wait` received.
+    pub fn cancels_fired(&self) -> usize {
+        self.wake.fired.load(Ordering::SeqCst)
     }
 
     /// What reached the "server", oldest first (the trace is not drained).
@@ -173,11 +208,19 @@ impl TableSource for FakeStore {
     ) -> Result<BrowsePage, AppError> {
         self.touch(format!("browse {}", meta.table.name));
         self.open()?;
-        let rows = self
-            .docs(&meta.table.name)
-            .into_iter()
-            .skip(req.offset as usize)
-            .take(req.limit as usize)
+        // The cursor is where the page starts; without one the offset is.
+        let start = match &req.cursor {
+            Some(cursor) => cursor
+                .parse()
+                .map_err(|_| AppError::InvalidInput(format!("not a cursor: {cursor}")))?,
+            None => req.offset as usize,
+        };
+        let docs = self.docs(&meta.table.name);
+        let end = docs.len().min(start.saturating_add(req.limit as usize));
+        let rows = docs
+            .iter()
+            .take(end)
+            .skip(start)
             .map(|d| {
                 meta.columns
                     .iter()
@@ -195,6 +238,7 @@ impl TableSource for FakeStore {
             limit: req.limit,
             sql: format!("find {}", meta.table.name),
             duration_ms: 0,
+            next_cursor: (end < docs.len()).then(|| end.to_string()),
         })
     }
 
@@ -258,9 +302,9 @@ impl NativeSession for FakeStore {
         self.closed.store(true, Ordering::SeqCst);
     }
 
-    async fn cancel(&self, _handle: CancelHandle) -> Result<(), AppError> {
+    async fn cancel(&self, handle: CancelHandle) -> Result<(), AppError> {
         self.touch("cancel");
-        Ok(())
+        cancel_portable(handle).await.unwrap_or(Ok(()))
     }
 
     fn sql_trace(&self) -> Option<&SqlTrace> {
@@ -349,7 +393,8 @@ impl NativeSession for FakeStore {
         })
     }
 
-    /// Applies each change on its own: one that fails keeps its error, the others are applied.
+    /// Applies the changes as one MULTI … EXEC batch: one that fails keeps its error, the others
+    /// are applied.
     async fn apply_changes(
         &self,
         meta: &TableMeta,
@@ -361,6 +406,7 @@ impl NativeSession for FakeStore {
             .downcast::<Vec<StagedChange>>()
             .map(|b| *b)
             .unwrap_or_default();
+        self.touch("MULTI");
         let results: Vec<RowResult> = changes
             .iter()
             .map(|change| {
@@ -377,6 +423,7 @@ impl NativeSession for FakeStore {
                 }
             })
             .collect();
+        self.touch("EXEC");
         let error = results.iter().find_map(|r| r.error.clone());
         ApplyResult {
             success: error.is_none(),
@@ -408,22 +455,22 @@ impl NativeSession for FakeStore {
         out
     }
 
-    /// `find` and `count` read; everything else (`del`, unknown commands) writes.
+    /// `find`, `count` and `wait` read; everything else (`del`, unknown commands) writes.
     fn classify_console(&self, command: &str) -> StatementClass {
         match command.split_whitespace().next() {
-            Some("find" | "count") => StatementClass::Read,
+            Some("find" | "count" | "wait") => StatementClass::Read,
             _ => StatementClass::Write,
         }
     }
 
-    /// `find <collection>` streams its documents, `count <collection>` gives one row, and
-    /// `del <collection> <_id>` deletes a document.
+    /// `find <collection>` streams its documents, `count <collection>` gives one row,
+    /// `del <collection> <_id>` deletes a document and `wait` runs until it is cancelled.
     async fn run_console(
         &self,
         command: &str,
         max_rows: usize,
         sink: &mut dyn RowSink,
-        _cancel: CancelSlot,
+        cancel: CancelSlot,
     ) -> Result<StatementOutcome, AppError> {
         self.touch(command);
         self.open()?;
@@ -469,6 +516,12 @@ impl NativeSession for FakeStore {
                     row_count: 1,
                     ..StatementOutcome::default()
                 })
+            }
+            ["wait"] => {
+                let action = Arc::new(FakeCancel(self.wake.clone()));
+                let _armed = arm_cancel(&cancel, CancelHandle::Custom(action))?;
+                self.wake.notify.notified().await;
+                Err(AppError::Cancelled)
             }
             ["del", collection, id] => {
                 let id: i64 = id

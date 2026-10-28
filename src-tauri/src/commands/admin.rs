@@ -98,7 +98,7 @@ pub async fn admin_list_processes(
 pub async fn admin_kill_processes(
     state: State<'_, AppState>,
     connection_id: Uuid,
-    ids: Vec<i64>,
+    ids: Vec<String>,
     scope: KillScope,
 ) -> Result<Vec<KillOutcome>, AppError> {
     let conn = state.connection(connection_id).await?;

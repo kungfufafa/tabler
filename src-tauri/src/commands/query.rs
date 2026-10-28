@@ -12,11 +12,13 @@ use tauri::State;
 use tauri::ipc::Channel;
 use uuid::Uuid;
 
+use crate::commands::console;
 use crate::drivers::{
-    CancelSlot, CollectSink, DbSession, RowSink, StatementOutcome, cancel_requested, contains_word,
-    is_dml, lock_editor_runs, request_cancel,
+    CancelHandle, CancelSlot, CollectSink, DbSession, RowSink, Session, StatementOutcome,
+    cancel_requested, contains_word, is_dml, lock_editor_runs, request_cancel,
 };
 use crate::error::{AppError, ErrorPayload, ErrorPos};
+use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::dialect::DialectRef;
 use crate::sqlgen::split::{SplitStatement, is_meta_command, leading_keywords};
 use crate::sqlgen::sql::{
@@ -40,11 +42,11 @@ const EXPLAIN_MAX_ROWS: usize = 100_000;
 /// Longer statements are stored truncated in the history.
 const HISTORY_SQL_MAX_CHARS: usize = 100_000;
 
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-fn effective_max_rows(requested: u32) -> usize {
+pub(crate) fn effective_max_rows(requested: u32) -> usize {
     match requested {
         0 => DEFAULT_MAX_ROWS as usize,
         n => n.min(MAX_ROWS_LIMIT) as usize,
@@ -52,12 +54,25 @@ fn effective_max_rows(requested: u32) -> usize {
 }
 
 /// Forwards one statement's result sets and row chunks as `QueryEvent`s.
-struct EventSink<'a> {
+pub(crate) struct EventSink<'a> {
     index: usize,
-    sets: u32,
-    rows: u64,
-    first_columns: Option<Vec<ResultColumn>>,
+    pub(crate) sets: u32,
+    pub(crate) rows: u64,
+    pub(crate) first_columns: Option<Vec<ResultColumn>>,
     emit: &'a mut (dyn FnMut(QueryEvent) + Send),
+}
+
+impl<'a> EventSink<'a> {
+    /// The sink of statement `index`, before anything arrived.
+    pub(crate) fn new(index: usize, emit: &'a mut (dyn FnMut(QueryEvent) + Send)) -> Self {
+        EventSink {
+            index,
+            sets: 0,
+            rows: 0,
+            first_columns: None,
+            emit,
+        }
+    }
 }
 
 impl RowSink for EventSink<'_> {
@@ -506,6 +521,21 @@ pub(crate) async fn with_timeout<T>(
     limit: Option<Duration>,
     statement: impl Future<Output = Result<T, AppError>>,
 ) -> (Result<T, AppError>, bool) {
+    with_timeout_by(|handle| session.cancel(handle), cancel, limit, statement).await
+}
+
+/// `with_timeout` for a session of either kind: `cancel_with` sends the cancel request of the
+/// handle the statement armed (`Session::cancel`).
+pub(crate) async fn with_timeout_by<T, C, F>(
+    cancel_with: C,
+    cancel: &CancelSlot,
+    limit: Option<Duration>,
+    statement: impl Future<Output = Result<T, AppError>>,
+) -> (Result<T, AppError>, bool)
+where
+    C: FnOnce(CancelHandle) -> F,
+    F: Future<Output = Result<(), AppError>>,
+{
     let Some(limit) = limit else {
         return (statement.await, false);
     };
@@ -516,7 +546,7 @@ pub(crate) async fn with_timeout<T>(
     }
     let cancel_now = async {
         if let Some(handle) = request_cancel(cancel)
-            && let Err(e) = session.cancel(handle).await
+            && let Err(e) = cancel_with(handle).await
         {
             log::warn!("query time out: cancelling the statement failed: {e}");
         }
@@ -948,9 +978,20 @@ pub(crate) async fn run_sql_on(
 ) -> Result<Vec<StatementResult>, AppError> {
     let options = options.unwrap_or_default();
     let conn = state.connection(connection_id).await?;
-    let session = conn.session().await?;
-    require_run(session.as_ref(), options.explain)?;
-    crate::commands::safety::refuse_read_only_run(&conn, &sql, session.dialect(), options.explain)?;
+    let session = conn.any_session().await;
+    match &session {
+        Session::Sql(session) => {
+            require_run(session.as_ref(), options.explain)?;
+            crate::commands::safety::refuse_read_only_run(
+                &conn,
+                &sql,
+                session.dialect(),
+                options.explain,
+            )?;
+        }
+        // A store that speaks no SQL runs the text in its console.
+        Session::Native(store) => console::check_console(&conn, store.as_ref(), &sql, &options)?,
+    }
     let slot = CancelSlot::default();
     let results = {
         let _active = ActiveQuery::register(state, connection_id, query_id, slot.clone())?;
@@ -959,11 +1000,25 @@ pub(crate) async fn run_sql_on(
                 log::debug!("run_sql: event channel closed: {e}");
             }
         };
-        run_sql_inner(session.as_ref(), &sql, &options, &slot, &mut emit).await
+        match &session {
+            Session::Sql(session) => {
+                run_sql_inner(session.as_ref(), &sql, &options, &slot, &mut emit).await
+            }
+            Session::Native(store) => {
+                console::run_console_inner(store.as_ref(), &sql, &options, &slot, &mut emit).await
+            }
+        }
     };
     // Browsing, counts and cell fetches read the cached metadata: DDL from the editor makes it
-    // stale (also when it failed partway; dropping the cache only costs a re-read).
-    if results.iter().any(|r| changes_schema(&r.sql)) {
+    // stale (also when it failed partway; dropping the cache only costs a re-read). A console
+    // write may have made or dropped a collection.
+    let stale = match &session {
+        Session::Sql(_) => results.iter().any(|r| changes_schema(&r.sql)),
+        Session::Native(store) => results
+            .iter()
+            .any(|r| store.classify_console(&r.sql) == StatementClass::Write),
+    };
+    if stale {
         conn.invalidate(None).await;
     }
     let source = if options.explain.is_some() {
@@ -987,6 +1042,15 @@ pub async fn cancel_query(
     connection_id: Uuid,
     query_id: String,
 ) -> Result<(), AppError> {
+    cancel_query_on(&state, connection_id, query_id).await
+}
+
+/// The body of [`cancel_query`], callable without a Tauri runtime.
+pub(crate) async fn cancel_query_on(
+    state: &AppState,
+    connection_id: Uuid,
+    query_id: String,
+) -> Result<(), AppError> {
     let slot = state
         .active_queries
         .lock()
@@ -999,13 +1063,13 @@ pub async fn cancel_query(
     // While the statement still runs, every call returns its live handle again, so a cancel
     // that failed (network, server busy) can simply be retried.
     if let Some(handle) = request_cancel(&slot) {
-        let session = match state.session(connection_id).await {
-            Ok(session) => session,
+        let conn = match state.connection(connection_id).await {
+            Ok(conn) => conn,
             // Disconnecting: closing the session stops the statement itself.
             Err(AppError::NotConnected) => return Ok(()),
             Err(e) => return Err(e),
         };
-        session.cancel(handle).await?;
+        conn.any_session().await.cancel(handle).await?;
     }
     Ok(())
 }

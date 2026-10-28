@@ -756,7 +756,7 @@ pub fn parse_processes(
             let id = int(r, 0)?;
             let program = non_empty(r, 3);
             Some(ProcessRow {
-                id,
+                id: id.to_string(),
                 user: non_empty(r, 1),
                 database: text(r, 2),
                 own: program.as_deref() == Some(application),

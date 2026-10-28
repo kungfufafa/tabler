@@ -25,6 +25,7 @@ import "./mcp";
 import "./assistant";
 import "./metrics";
 import "./workspace";
+import "./native";
 import "./trace";
 
 export { mockEmit, mockInvoke, mockListen, registerMock, setMockLatency } from "./transport";
