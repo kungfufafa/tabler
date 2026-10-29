@@ -234,9 +234,10 @@ pub fn active_contexts(lex: &LexProfile, rules: &ClassifyRules) -> Vec<Context> 
             ));
         }
         if lex.raw_prefixes {
+            // A backslash keeps the quote after it in a raw string too.
             out.push(ctx(
-                format!("glued to a raw {q}string{q}"),
-                format!("SELECT r{q}a\\{q}"),
+                format!("glued to a raw {q}string{q} past \\{q}"),
+                format!("SELECT r{q}a\\{q}{q}"),
                 " t",
             ));
         }
@@ -543,6 +544,11 @@ pub fn inert_contexts(lex: &LexProfile) -> Vec<Context> {
                     format!(" t{q} FROM x"),
                 ));
             }
+            out.push(ctx(
+                format!("in a raw {q}string{q} past \\{q}"),
+                format!("SELECT r{q}a\\{q} "),
+                format!(" t{q} FROM x"),
+            ));
         }
         if lex.byte_prefixes {
             out.push(ctx(

@@ -223,8 +223,11 @@ fn is_word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-/// Line breaks PartiQL keeps inside a `--` comment that other lexers may end it at.
-const OTHER_BREAKS: [char; 5] = ['\u{b}', '\u{c}', '\u{85}', '\u{2028}', '\u{2029}'];
+/// Line breaks PartiQL keeps inside a `--` comment that other lexers may end it at (Unicode's,
+/// and the file, group and record separators that Python's `splitlines` ends lines at too).
+const OTHER_BREAKS: [char; 8] = [
+    '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}', '\u{2029}',
+];
 
 /// The comment starting at `i`, as PartiQL's lexer reads it (PartiQLTokens.g4: `--` up to `\r`
 /// or `\n`, `/* … */` without nesting): where it ends, and whether another lexer could end it
@@ -1925,6 +1928,9 @@ mod tests {
             "-- x\u{c}SELECT * FROM t /*\nDELETE FROM t WHERE pk = 'a' --*/",
             "-- x\u{2029}SELECT * FROM t /*\nDELETE FROM t WHERE pk = 'a' --*/",
             "SELECT * FROM t -- x\u{2028}; DELETE FROM t WHERE pk = 'a'",
+            "-- x\u{1c}DELETE FROM t WHERE pk = 'a' --\nSELECT * FROM t",
+            "SELECT * FROM t -- x\u{1d}; DELETE FROM t WHERE pk = 'a'",
+            "SELECT * FROM t -- x\u{1e}; DELETE FROM t WHERE pk = 'a'",
             // Nested block comments (SQL nests them, PartiQL does not).
             "/* /* */ SELECT 1 */ DELETE FROM t WHERE pk = 'a'",
             "SELECT * FROM t /* /* */ ; DELETE FROM t WHERE pk = 'a' -- */",
@@ -1987,7 +1993,8 @@ mod tests {
                 }
                 continue;
             }
-            if ch.is_whitespace() {
+            // A lexer that ends a comment at a break skips the break like a space.
+            if ch.is_whitespace() || breaks.contains(&ch) {
                 i += 1;
                 continue;
             }
@@ -2036,11 +2043,12 @@ mod tests {
     #[test]
     fn partiql_reads_are_reads_to_every_lexer() {
         let atoms = [
-            "SELECT", "DELETE", " ", "\n", "\r", "\r\n", "\u{2028}", "\u{85}", ";", "'", "\"",
-            "''", "--", "/*", "*/", "`", "\\", "x", "*", "FROM t", "{", "}",
+            "SELECT", "DELETE", " ", "\n", "\r", "\r\n", "\u{2028}", "\u{85}", "\u{1e}", ";", "'",
+            "\"", "''", "--", "/*", "*/", "`", "\\", "x", "*", "FROM t", "{", "}",
         ];
         let all_breaks = [
-            '\n', '\r', '\u{b}', '\u{c}', '\u{85}', '\u{2028}', '\u{2029}',
+            '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}',
+            '\u{2029}',
         ];
         let breaks: [&[char]; 3] = [&['\n'], &['\n', '\r'], &all_breaks];
         let mut seed: u64 = 0xd1a0;

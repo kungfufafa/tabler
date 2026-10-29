@@ -1,30 +1,41 @@
 //! Keeps passwords out of the SQL trace for the extension dialects: the string literal after a
-//! password keyword of the dialect (`SqlKnobs::redact`), or after the first argument of a command
-//! that starts a statement (`SqlKnobs::redact_commands`), becomes the mask the core redaction uses
-//! (`sqlgen::admin::PASSWORD_MASK`). Statements are read the way the dialect's scanner reads them,
+//! password keyword of the dialect (`SqlKnobs::redact`, also as a named argument: `token := '…'`,
+//! `password => '…'`), after the first argument of a command that starts a statement
+//! (`SqlKnobs::redact_commands`), or in a function's secret argument (`SqlKnobs::redact_calls`)
+//! becomes the mask the core redaction uses (`sqlgen::admin::PASSWORD_MASK`). A `‘…’` quoted
+//! name counts as a string: ClickHouse reads it as one, and the profile lists it with the name
+//! quotes only because its closing quote differs. Statements are read the way the dialect's scanner reads them,
 //! under every reading of backslashes; where the readings end a literal in different places, the
 //! mask covers the longest of them (`'x\'y'` is masked whole, not only up to `\'`).
 
 use crate::drivers::redact::Redaction;
 use crate::sqlgen::admin::PASSWORD_MASK;
 use crate::sqlgen::dialect::lex::{LexProfile, Scan, Token, TokenKind, scan};
-use crate::sqlgen::dialect::spec::{DialectSpec, RedactRule};
+use crate::sqlgen::dialect::spec::{DialectSpec, RedactCall, RedactRule};
 
 /// Words that may stand between a password keyword and its literal.
 const LINKS: &[&str] = &["BY", "AS", "WITH", "USING"];
 
 /// `sql` with the literals after `rules`' keywords masked. Fast when no keyword is mentioned.
 pub fn redact(lex: &LexProfile, rules: &[RedactRule], sql: &str) -> Redaction {
-    redact_with(lex, rules, &[], sql)
+    redact_with(lex, rules, &[], &[], sql)
 }
 
 /// `sql` with the passwords a statement of `spec`'s dialect carries masked: after its password
-/// keywords and in its commands (`SqlKnobs::redact`, `SqlKnobs::redact_commands`).
+/// keywords, in its commands and in its functions' secret arguments (`SqlKnobs::redact`,
+/// `SqlKnobs::redact_commands`, `SqlKnobs::redact_calls`).
 pub fn redact_spec(spec: &DialectSpec, sql: &str) -> Redaction {
-    redact_with(spec.lex, spec.knobs.redact, spec.knobs.redact_commands, sql)
+    let k = &spec.knobs;
+    redact_with(spec.lex, k.redact, k.redact_commands, k.redact_calls, sql)
 }
 
-fn redact_with(lex: &LexProfile, rules: &[RedactRule], commands: &[&str], sql: &str) -> Redaction {
+fn redact_with(
+    lex: &LexProfile,
+    rules: &[RedactRule],
+    commands: &[&str],
+    calls: &[RedactCall],
+    sql: &str,
+) -> Redaction {
     let mut redaction = Redaction {
         sql: sql.to_string(),
         secrets: Vec::new(),
@@ -32,7 +43,8 @@ fn redact_with(lex: &LexProfile, rules: &[RedactRule], commands: &[&str], sql: &
     let mut keywords = rules
         .iter()
         .map(|r| r.keyword)
-        .chain(commands.iter().copied());
+        .chain(commands.iter().copied())
+        .chain(calls.iter().map(|c| c.function));
     if !keywords.any(|k| mentions(sql, k)) {
         return redaction;
     }
@@ -40,7 +52,7 @@ fn redact_with(lex: &LexProfile, rules: &[RedactRule], commands: &[&str], sql: &
     let mut spans: Vec<(usize, usize)> = Vec::new();
     for &reading in lex.readings {
         let scan = scan(lex, reading, sql);
-        for span in secret_literals(&scan, rules, commands) {
+        for span in secret_literals(&scan, rules, commands, calls) {
             let raw: String = chars[span.0..span.1].iter().collect();
             for form in [unquoted(&raw, reading.string_backslash), raw] {
                 if !form.is_empty() && !redaction.secrets.contains(&form) {
@@ -81,10 +93,15 @@ fn mentions(sql: &str, keyword: &str) -> bool {
         .any(|w| w.eq_ignore_ascii_case(keyword.as_bytes()))
 }
 
-/// The spans of the string literals that follow a keyword of `rules`, or the first argument of a
-/// command of `commands` that starts a statement. A literal that is already the mask is left
-/// alone.
-fn secret_literals(scan: &Scan, rules: &[RedactRule], commands: &[&str]) -> Vec<(usize, usize)> {
+/// The spans of the string literals that follow a keyword of `rules`, the first argument of a
+/// command of `commands` that starts a statement, or stand in the secret argument of a call of
+/// `calls`. A literal that is already the mask is left alone.
+fn secret_literals(
+    scan: &Scan,
+    rules: &[RedactRule],
+    commands: &[&str],
+    calls: &[RedactCall],
+) -> Vec<(usize, usize)> {
     let code: Vec<usize> = (0..scan.tokens.len())
         .filter(|&i| !matches!(scan.tokens[i].kind, TokenKind::Space | TokenKind::Comment))
         .collect();
@@ -104,11 +121,18 @@ fn secret_literals(scan: &Scan, rules: &[RedactRule], commands: &[&str]) -> Vec<
                     user.kind,
                     TokenKind::Word | TokenKind::Ident | TokenKind::Str
                 )
-                && secret.kind == TokenKind::Str
+                && is_literal(scan, &secret)
             {
                 keep(scan, secret, &mut out);
             }
             continue;
+        }
+        if let Some(call) = calls.iter().find(|c| c.function == word)
+            && code
+                .get(k + 1)
+                .is_some_and(|&j| scan.is_punct(&scan.tokens[j], '('))
+        {
+            argument_literals(scan, &code[k + 2..], call.argument, &mut out);
         }
         if !rules.iter().any(|r| r.keyword == word) {
             continue;
@@ -117,11 +141,12 @@ fn secret_literals(scan: &Scan, rules: &[RedactRule], commands: &[&str]) -> Vec<
         for &j in &code[k + 1..] {
             let n = scan.tokens[j];
             match n.kind {
-                TokenKind::Str => {
+                _ if is_literal(scan, &n) => {
                     keep(scan, n, &mut out);
                     break;
                 }
-                TokenKind::Punct if scan.is_punct(&n, '=') || scan.is_punct(&n, '(') => {}
+                // `=`, `(`, and the named-argument arrows `:=` and `=>`.
+                TokenKind::Punct if ['=', '(', ':', '>'].iter().any(|&c| scan.is_punct(&n, c)) => {}
                 TokenKind::Word if LINKS.contains(&scan.upper(&n).as_str()) => {}
                 TokenKind::Word | TokenKind::Ident if other_words == 0 => other_words += 1,
                 _ => break,
@@ -130,6 +155,33 @@ fn secret_literals(scan: &Scan, rules: &[RedactRule], commands: &[&str]) -> Vec<
     }
     out.sort_unstable();
     out
+}
+
+/// Whether `t` is a string literal, or a `‘…’` quoted name (ClickHouse's other string).
+fn is_literal(scan: &Scan, t: &Token) -> bool {
+    t.kind == TokenKind::Str || (t.kind == TokenKind::Ident && scan.chars[t.start] == '\u{2018}')
+}
+
+/// Keeps the literals of the argument number `argument` (1-based) of the call whose arguments
+/// `args` (indexes of code tokens) follow its `(`.
+fn argument_literals(scan: &Scan, args: &[usize], argument: usize, out: &mut Vec<(usize, usize)>) {
+    let mut depth = 0usize;
+    let mut at = 1;
+    for &j in args {
+        let t = scan.tokens[j];
+        if scan.is_punct(&t, '(') {
+            depth += 1;
+        } else if scan.is_punct(&t, ')') {
+            if depth == 0 {
+                return;
+            }
+            depth -= 1;
+        } else if depth == 0 && scan.is_punct(&t, ',') {
+            at += 1;
+        } else if at == argument && is_literal(scan, &t) {
+            keep(scan, t, out);
+        }
+    }
 }
 
 /// Adds the span of the literal `n` unless it is the mask already or in `out`.
@@ -142,10 +194,14 @@ fn keep(scan: &Scan, n: Token, out: &mut Vec<(usize, usize)>) {
 
 /// The text of a literal as written (`N'p''w'`, `'p\'w'`, `$$p'w$$`): prefix and quotes removed,
 /// doubled quotes undone, and backslash escapes undone when the reading has them. A dollar-quoted
-/// body is the text between its tags, which takes no escapes and may hold quotes.
+/// body is the text between its tags, which takes no escapes and may hold quotes, and so is a
+/// `‘…’` string.
 fn unquoted(raw: &str, backslash: bool) -> String {
     if let Some(body) = dollar_body(raw) {
         return body.to_string();
+    }
+    if let Some(body) = raw.strip_prefix('\u{2018}') {
+        return body.strip_suffix('\u{2019}').unwrap_or(body).to_string();
     }
     let chars: Vec<char> = raw.chars().collect();
     let Some(open) = chars.iter().position(|c| matches!(c, '\'' | '"')) else {
@@ -255,6 +311,87 @@ mod tests {
         assert_eq!(
             redact_spec(&spec, "SELECT 1; CREATE USER u PASSWORD 'x'").sql,
             "SELECT 1; CREATE USER u PASSWORD '********'"
+        );
+    }
+
+    /// A named argument (`token := '…'`, `password => '…'`) keeps its password out too: the
+    /// redactor used to stop at the `:` or the `>`.
+    #[test]
+    fn a_named_argument_is_masked() {
+        let rules = ANSI_TEST.knobs.redact;
+        for (sql, masked) in [
+            (
+                "SELECT serve('srv:1', password := 'pw1')",
+                "SELECT serve('srv:1', password := '********')",
+            ),
+            (
+                "CALL f(x => 1, password => 'pw2')",
+                "CALL f(x => 1, password => '********')",
+            ),
+        ] {
+            let r = redact(&ANSI_LEX, rules, sql);
+            assert_eq!(r.sql, masked);
+        }
+    }
+
+    /// ClickHouse reads `‘…’` as a string, which the profile can only list with the name quotes
+    /// (its closing quote differs): after a password keyword it is the secret.
+    #[test]
+    fn a_unicode_quoted_string_is_masked() {
+        let lex = LexProfile {
+            ident_quotes: &[('"', '"'), ('\u{2018}', '\u{2019}')],
+            ..ANSI_LEX
+        };
+        let r = redact(
+            &lex,
+            ANSI_TEST.knobs.redact,
+            "CREATE USER u IDENTIFIED BY \u{2018}s'cret\u{2019}",
+        );
+        assert_eq!(r.sql, "CREATE USER u IDENTIFIED BY '********'");
+        assert!(r.secrets.contains(&"s'cret".to_string()), "{:?}", r.secrets);
+        // A double-quoted name is a name.
+        let sql = "CREATE USER u IDENTIFIED WITH \"plugin\"";
+        assert_eq!(redact(&lex, ANSI_TEST.knobs.redact, sql).sql, sql);
+    }
+
+    /// A function's secret argument is masked by position, whatever the arguments before it
+    /// hold; other arguments and other functions keep their text.
+    #[test]
+    fn a_secret_argument_is_masked_by_position() {
+        use crate::sqlgen::dialect::spec::RedactCall;
+        let spec = ansi_with(|k| {
+            k.redact_calls = &[RedactCall {
+                function: "ENCRYPT",
+                argument: 2,
+            }]
+        });
+        for (sql, masked) in [
+            (
+                "SELECT encrypt('value', 'pass''phrase')",
+                "SELECT encrypt('value', '********')",
+            ),
+            (
+                "SELECT s.ENCRYPT(f('a', 'b'), 'k' || 'ey', 'aad') FROM t",
+                "SELECT s.ENCRYPT(f('a', 'b'), '********' || '********', 'aad') FROM t",
+            ),
+            (
+                "SELECT ENCRYPT (v, /* c */ 'k'), DECRYPT(v, 'x')",
+                "SELECT ENCRYPT (v, /* c */ '********'), DECRYPT(v, 'x')",
+            ),
+        ] {
+            assert_eq!(redact_spec(&spec, sql).sql, masked, "{sql}");
+        }
+        for sql in [
+            "SELECT encrypt('value')",
+            "SELECT encrypt",
+            "SELECT 'encrypt(1, 2)'",
+            "SELECT encrypt(v, k)",
+        ] {
+            assert_eq!(redact_spec(&spec, sql).sql, sql, "{sql}");
+        }
+        assert_eq!(
+            redact_spec(&spec, "SELECT encrypt(v, 'k')").secrets,
+            ["k", "'k'"]
         );
     }
 }

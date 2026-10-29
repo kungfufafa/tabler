@@ -20,7 +20,7 @@
     "dollarQuotes": false,
     "dollarTags": false,
     "tripleQuotes": true,
-    "rawPrefixes": false,
+    "rawPrefixes": true,
     "bytePrefixes": true,
     "hashComments": true,
     "slashSlashComments": false,

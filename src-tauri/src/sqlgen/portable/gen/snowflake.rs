@@ -365,6 +365,118 @@ const WRITES: &[&str] = &[
     "SELECT $a$, 1; DELETE FROM t; SELECT $a$",
     "SELECT 1DELETE FROM t",
     "SELECT 1e0SYSTEM$WAIT(1)",
+    // The holes the shared classifier closed in F8c. A method call where a table goes is
+    // checked by its method: a model's method is user code.
+    "SELECT * FROM TABLE(m!PREDICT(1))",
+    "SELECT * FROM t, TABLE(m!PREDICT(t.a))",
+    "SELECT * FROM TABLE(db.s.m!PREDICT(1))",
+    "SELECT * FROM t JOIN TABLE(\"m\"!\"predict\"(t.a)) p ON true",
+    "SELECT * FROM TABLE(m ! PREDICT_TABLE(t.a) OVER (PARTITION BY t.b))",
+    // A quoted name matches the allow-list only on its exact text: Snowflake resolves another
+    // case or Unicode spelling to a user object.
+    "SELECT * FROM TABLE(\"flatten\"(1))",
+    "SELECT * FROM TABLE(\"\u{FB02}atten\"(1))",
+    "SELECT * FROM TABLE(\"Result_Scan\"('q'))",
+    "SELECT * FROM TABLE(\"re\u{17F}ult_scan\"('q'))",
+    "SELECT * FROM TABLE(INFORMATION_SCHEMA.\"query_history\"())",
+    "SELECT f.value FROM t, LATERAL \"flatten\"(input => t.v) f",
+    // Quoted, the keywords of the list are names of user objects, even in upper case.
+    "SELECT * FROM TABLE(\"VALUES\"())",
+    "SELECT * FROM TABLE(\"TABLE\"())",
+    "SELECT * FROM \"VALUES\"(1)",
+    "SELECT * FROM TABLE(\"SEMANTIC_VIEW\"())",
+    // A namespaced function (INFORMATION_SCHEMA, the SNOWFLAKE database's, a service method)
+    // called unqualified or through another schema resolves through the session's schema and
+    // search path to the user's object of that name.
+    "SELECT * FROM TABLE(QUERY_HISTORY())",
+    "SELECT * FROM TABLE(LOGIN_HISTORY())",
+    "SELECT * FROM TABLE(TAG_REFERENCES('t', 'table'))",
+    "SELECT * FROM TABLE(CORTEX_SEARCH_REFRESH_HISTORY())",
+    "SELECT * FROM TABLE(myschema.QUERY_HISTORY())",
+    "SELECT * FROM t1 JOIN TABLE(myschema.QUERY_HISTORY()) q ON true",
+    "SELECT * FROM TABLE(db.public.TASK_HISTORY())",
+    "SELECT * FROM t, TABLE(BIND_VALUES('q'))",
+    "SELECT * FROM TABLE(public.GET_LINEAGE('x'))",
+    "SELECT * FROM TABLE(core.GET_CONTACTS('t1', 'TABLE'))",
+    "SELECT * FROM TABLE(GET_AI_RECORD_TRACE('db', 's', 'a', 'r'))",
+    "SELECT * FROM TABLE(DATA_QUALITY_MONITORING_RESULTS(REF_ENTITY_NAME => 't'))",
+    "SELECT * FROM TABLE(CUMULATIVE_PRIVACY_LOSSES('x'))",
+    "SELECT * FROM TABLE(GET_JOB_HISTORY())",
+    "SELECT * FROM TABLE(TAG_REFERENCES_WITH_LINEAGE('x'))",
+    "SELECT * FROM TABLE(SPCS_GET_LOGS())",
+    "SELECT * FROM TABLE(s.SPCS_GET_LOGS())",
+    // A qualified call of a built-in without a namespace names a schema object, so only the
+    // user's: a function that predates the built-in (behavior change 1430), or a procedure if
+    // one may take the name.
+    "SELECT * FROM TABLE(s.FLATTEN(input => x))",
+    "SELECT f.value FROM t, LATERAL s.FLATTEN(input => t.v) f",
+    "SELECT * FROM TABLE(s.RESULT_SCAN('q'))",
+    "SELECT * FROM TABLE(s.GENERATOR(ROWCOUNT => 1))",
+    "SELECT * FROM TABLE(s.CORTEX_SEARCH_DATA_SCAN(SERVICE_NAME => 'c'))",
+    "SELECT * FROM TABLE(s.MODEL_MONITOR_DRIFT_METRIC('m'))",
+    "SELECT * FROM t PIVOT (s.SUM(amount) FOR month IN ('JAN')) AS p",
+    "SELECT * FROM s.SEMANTIC_VIEW(sv DIMENSIONS a)",
+    // A stage (`@`), and GET or START chained by the flow operator.
+    "SELECT $1 FROM @stage/file.csv",
+    "SHOW TABLES ->> GET @s/f.csv file:///tmp/",
+    "SELECT 1 ->> START TRANSACTION",
+    // A comment, quote or `$$` opener in an unquoted stage path, which Snowflake may read as
+    // part of the path: the `@` before it writes.
+    "SELECT $1 FROM @s//x ->> DELETE FROM t",
+    "SELECT $1 FROM @~//x ->> DELETE FROM t",
+    "SELECT $1 FROM @%t//x ->> DELETE FROM t",
+    "SELECT $1 FROM @\"s\"//x ->> DELETE FROM t",
+    "SELECT $1 FROM @s/a--b ->> DELETE FROM t",
+    "SELECT $1 FROM @s/*.csv ->> DELETE FROM t --*/",
+    "SELECT $1 FROM @s/a'b ->> DELETE FROM t --'",
+    "SELECT $1 FROM @s/a\"b ->> DELETE FROM t --\"",
+    "SELECT $1 FROM @s/$$x ->> DELETE FROM t ->> SELECT $$ $$",
+    "SELECT $1 FROM @\"s\"/$$ ->> DELETE FROM t ->> SELECT $$ $$",
+    "SELECT $1 FROM @~/a.$$x ->> DELETE FROM t ->> SELECT $$ $$",
+    "SELECT $1 FROM @%t/$$x ->> DELETE FROM t ->> SELECT $$ $$",
+    "SELECT $1 FROM @db.s.st/$$x ->> DELETE FROM t ->> SELECT $$ $$",
+    // Two statements in one request (which MULTI_STATEMENT_COUNT = 1 also refuses).
+    "SELECT $1 FROM @s//x; DELETE FROM t",
+    // A format character (zero-width space, word joiner, byte-order mark…) in code, which a
+    // server may skip, drop or keep in a name.
+    "SELECT SYSTEM$WAIT\u{200B}(1)",
+    "SELECT SYSTEM$WAIT\u{200C}(1)",
+    "SELECT SYSTEM$WAIT\u{200D}(1)",
+    "SELECT SYSTEM$WAIT\u{2060}(1)",
+    "SELECT SYSTEM$WAIT\u{2061}(1)",
+    "SELECT SYSTEM$WAIT\u{00AD}(1)",
+    "SELECT SYSTEM$WAIT\u{180E}(1)",
+    "SELECT TO_QUERY\u{FEFF}('DELETE FROM t')",
+    "SELECT * FROM TABLE(p\u{FEFF}())",
+    "SELECT * FROM TABLE\u{200B}(p())",
+    "SELECT SYS\u{200B}TEM$WAIT(1)",
+    "SELECT 1 ->> DEL\u{200B}ETE FROM t",
+    // Snowflake reserves neither LIMIT nor EXCEPT, so right after a table or subquery they may
+    // be its alias (with a column list, or before SAMPLE or a join): the FROM list goes on
+    // unless the clause's own syntax follows.
+    "SELECT * FROM t1 limit (a, b), LATERAL my_udtf(t1.a)",
+    "SELECT * FROM t1 except (a, b), LATERAL my_udtf(t1.a)",
+    "SELECT * FROM t1 limit (a, b), my_udtf(t1.a)",
+    "SELECT * FROM t2, t1 except (a, b), my_udtf(t1.a)",
+    "SELECT * FROM (SELECT 1) limit (a), my_udtf(1)",
+    "SELECT * FROM t1 limit SAMPLE (10), LATERAL my_udtf(t1.a)",
+    "SELECT * FROM t1 limit TABLESAMPLE (10), my_udtf(t1.a)",
+    "SELECT * FROM t1 limit INNER JOIN t2 ON true, LATERAL my_udtf(t1.a)",
+    "SELECT * FROM t1 except (a, b) JOIN t2 ON true, my_udtf(t1.a)",
+    // `db..name` is the name in the PUBLIC schema: the call is its last part.
+    "SELECT * FROM TABLE(db..my_proc())",
+    "SELECT * FROM db..my_udtf(1)",
+    "SELECT * FROM t, LATERAL db..f(t.a)",
+    "SELECT * FROM t JOIN TABLE(db..p()) x ON true",
+    "SELECT * FROM TABLE(db . . p())",
+    "SELECT * FROM TABLE(db./* x */.p())",
+    "SELECT * FROM TABLE(\"db\"..\"p\"())",
+    "SELECT * FROM TABLE(DB..P ())",
+    "SELECT * FROM t1, db..p()",
+    "SELECT * FROM (db..p())",
+    "SELECT * FROM t1 ASOF JOIN db..p() MATCH_CONDITION (t1.a >= 1)",
+    "SELECT * FROM t PIVOT (db..my_agg(amount) FOR month IN ('JAN')) AS p",
+    "SELECT * FROM db..SEMANTIC_VIEW(sv DIMENSIONS a)",
 ];
 
 fn suite() -> Suite {

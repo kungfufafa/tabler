@@ -37,11 +37,8 @@ pub static LEX: LexProfile = LexProfile {
     triple_quotes: true,
     // GoogleSQL keeps a backslash and the character after it together in a raw string too ("both
     // characters are preserved"; a raw string cannot end in an odd number of backslashes), so
-    // `r'\''` is one string. The shared scanner ends a raw string at the first quote, which
-    // would read `r'\', ' ; DELETE FROM t; --'` as two strings around a comma where BigQuery
-    // runs the DELETE. Without the flag the prefix is a word and the string after it reads
-    // backslashes like any other, which is where BigQuery ends it.
-    raw_prefixes: false,
+    // `r'\''` is one string, as the shared scanner reads it.
+    raw_prefixes: true,
     byte_prefixes: true,
     hash_comments: true,
     slash_slash_comments: false,
@@ -53,12 +50,13 @@ pub static LEX: LexProfile = LexProfile {
     begin_end_bodies: true,
 };
 
-/// The functions a query may call that reach another service or change something, by the last
-/// part of their name (`ML.PREDICT(` calls `PREDICT`), and whole when the name is quoted in one
-/// piece (`` `ML.PREDICT`( ``, also with the `SAFE.` prefix). The plain built-ins `IF`,
+/// The functions a query may call that reach another service or change something. A one-part
+/// entry matches the last part of a name (`ML.PREDICT(` calls `PREDICT`), an entry of several
+/// parts the last parts of a qualified one, words or quoted parts, a quoted part holding dots
+/// counting as the parts it spells (`` `safe.ml`.predict( ``). The plain built-ins `IF`,
 /// `TRANSLATE`, `SEARCH` and `AGG` share a last part with `AI.IF`, `ML.TRANSLATE`,
-/// `AI.TRANSLATE`, `AI.SEARCH` and `AI.AGG`, so those are caught by the words `ML` and `AI` in
-/// `writes` instead.
+/// `AI.TRANSLATE`, `AI.SEARCH` and `AI.AGG`, which `ML.*` and `AI.*` catch (also behind
+/// a separately quoted qualifier, `` `ai`.if( ``), and the words `ML` and `AI` in `writes`.
 const WRITE_CALLS: &[&str] = &[
     // Federated queries: the SQL runs on Cloud SQL, Spanner or AlloyDB.
     "EXTERNAL_QUERY",
@@ -384,31 +382,6 @@ mod tests {
             "SELECT SEARCH(t, 'x') FROM d.t",
             "FROM d.t |> WHERE a > 1 |> AGGREGATE COUNT(*) GROUP BY b",
             "SELECT KEYS.NEW_KEYSET('AEAD_AES_GCM_256')",
-        ] {
-            assert_eq!(classify_bigquery(sql), StatementClass::Read, "{sql}");
-        }
-    }
-
-    /// The holes the rules cannot close, each under Limits in the brief with its change request
-    /// to the shared classifier. They read today; when a change request lands and a case here
-    /// turns into a write, move it to the suite's WRITES.
-    #[test]
-    fn documented_holes_read_until_their_change_requests() {
-        for sql in [
-            // A separately quoted qualifier hides the words `AI` and `ML`, and the last part is a
-            // plain built-in (qualified callees).
-            "SELECT `ai`.if(('spam?', body)) FROM d.mail",
-            "SELECT `safe.ai`.if(('spam?', body)) FROM d.mail",
-            "SELECT `ai`.translate(body, 'en') FROM d.docs",
-            "SELECT * FROM `ml`.translate(MODEL d.tr, TABLE d.docs, STRUCT('en' AS x))",
-            "SELECT * FROM `ai`.search(TABLE d.docs, 'body', 'cats')",
-            "SELECT `ai`.agg(('sum up', body)) FROM d.docs",
-            // A quoted name takes the escapes of a string (`\u0073` is `s`); the classifier
-            // matches it as written (escaped quoted names).
-            "SELECT `st_regionstat\\u0073`(geo, 'ee://x') FROM t",
-            "SELECT * FROM `external_quer\\u0079`('c', 'q')",
-            "SELECT * FROM `\\u006dl.predict`(MODEL d.m, TABLE d.t)",
-            "SELECT `keys`.`keyset_chai\\u006e`('gcp-kms://k', b'x')",
         ] {
             assert_eq!(classify_bigquery(sql), StatementClass::Read, "{sql}");
         }

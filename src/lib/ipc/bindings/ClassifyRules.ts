@@ -18,18 +18,24 @@ queries: Array<string>,
 inspections: Array<string>, 
 /**
  * Words that make a query a write wherever they are in it (`INTO`, `DELETE`…), and any
- * statement one when the terminator is optional.
+ * statement one when the terminator is optional. An entry that is one punctuation
+ * character counts wherever that character is code (Snowflake's `@`, a stage).
  */
 writes: Array<string>, 
 /**
  * Functions a call of which (`name(`) changes the server, reads its files or reaches other
- * servers: T-SQL `OPENQUERY`, `XP_*`, Snowflake `SYSTEM$*`, DuckDB `READ_*`.
+ * servers: T-SQL `OPENQUERY`, `XP_*`, Snowflake `SYSTEM$*`, DuckDB `READ_*`. An entry of
+ * several parts (`AI.IF`, `ML.*`) matches the last parts of a qualified callee, a one-part
+ * entry its last part whatever qualifies it.
  */
 writeCalls: Array<string>, 
 /**
  * The table functions a read may use where a table goes (after `FROM`, `JOIN`, `TABLE`,
  * `DESCRIBE` or a comma of a `FROM` list); any other table function makes it a write.
- * None: the dialect has none to police. A file named where a table goes (DuckDB
- * `FROM 'data.csv'`) is not a table function: the engine settings of the session refuse it.
+ * A one-part entry allows an unqualified call only, an entry of several parts
+ * (`INFORMATION_SCHEMA.QUERY_HISTORY`) the call's last parts, and `!NAME` a method call
+ * (`svc!NAME(`); a quoted name matches only on its exact text. None: the dialect has none
+ * to police. A file named where a table goes (DuckDB `FROM 'data.csv'`) is not a table
+ * function: the engine settings of the session refuse it.
  */
 tableFunctions: Array<string> | null, };

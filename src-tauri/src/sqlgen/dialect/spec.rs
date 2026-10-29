@@ -172,6 +172,16 @@ pub struct RedactRule {
     pub keyword: &'static str,
 }
 
+/// A function of the trace's redaction that takes a secret by position: the string literals of
+/// its argument number `argument` (1-based) are masked (Snowflake's `ENCRYPT(value,
+/// 'passphrase')`, `SYSTEM$AUTHORIZE_PRIVATELINK('id', 'token')`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RedactCall {
+    /// Upper case; matches the function's last name part.
+    pub function: &'static str,
+    pub argument: usize,
+}
+
 /// The optional behaviour of a dialect. Lanes start from `SqlKnobs::ANSI`.
 #[derive(Clone, Copy)]
 pub struct SqlKnobs {
@@ -234,6 +244,8 @@ pub struct SqlKnobs {
     /// follows one is masked, only where the command starts a statement, so a column of that name
     /// (`WHERE login = 'bob'`) keeps its literal.
     pub redact_commands: &'static [&'static str],
+    /// Functions that take a secret by position (`RedactCall`).
+    pub redact_calls: &'static [RedactCall],
     /// The end of the row-cap cancel notice: what became of the statement's changes.
     pub cancel_notice: &'static str,
 }
@@ -268,6 +280,7 @@ impl SqlKnobs {
         side_effect_functions: &[],
         redact: &[],
         redact_commands: &[],
+        redact_calls: &[],
         cancel_notice: "any changes it made were rolled back",
     };
 }

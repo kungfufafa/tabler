@@ -11,6 +11,8 @@
 //!
 //! Offsets are **character** offsets into the text, like the core splitter's.
 
+use std::collections::HashMap;
+
 use serde::Serialize;
 use ts_rs::TS;
 
@@ -47,8 +49,11 @@ pub const PLAIN: Reading = reading(false, false);
 /// around it differently: with `dollar_quotes`, a `$` of code that may open a body (a run of tag
 /// characters, ASCII letters, digits, `_` or any non-ASCII ones, then another `$` follow it) after
 /// a non-ASCII character, with a non-ASCII character in that run, or in a word that starts with a
-/// digit (`a\u{A0}$$`, `$\u{A0}$`, `$a\u{A0}b$`, `1$$`); with `e_strings`, an `E'…'` string after
-/// a non-ASCII character, and a number glued to `E'` (`1E'…'`).
+/// digit (`a\u{A0}$$`, `$\u{A0}$`, `$a\u{A0}b$`, `1$$`), and a body that never closes; with
+/// `dollar_tags` too, a `$` that opens none here but whose text up to the next `$` comes again
+/// (ClickHouse's heredoc tags); with `e_strings`, an `E'…'` string after a non-ASCII character,
+/// and a number glued to `E'` (`1E'…'`). And so does a format or other default-ignorable
+/// character in code (`Scan::ambiguous`).
 #[derive(Debug, Clone, Copy, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -74,7 +79,8 @@ pub struct LexProfile {
     pub dollar_tags: bool,
     /// `'''…'''` and `"""…"""` strings, which may hold newlines and single quotes (BigQuery).
     pub triple_quotes: bool,
-    /// `r'…'`, `rb'…'` and `br'…'` strings take no escapes (BigQuery).
+    /// `r'…'`, `rb'…'` and `br'…'` strings take no escapes (BigQuery), but a backslash keeps the
+    /// character after it in the string: `r'\''` is one string, as in GoogleSQL.
     pub raw_prefixes: bool,
     /// `b'…'` byte strings (BigQuery); they read like the other strings.
     pub byte_prefixes: bool,
@@ -115,17 +121,23 @@ pub struct ClassifyRules {
     #[ts(as = "Vec<String>")]
     pub inspections: &'static [&'static str],
     /// Words that make a query a write wherever they are in it (`INTO`, `DELETE`…), and any
-    /// statement one when the terminator is optional.
+    /// statement one when the terminator is optional. An entry that is one punctuation
+    /// character counts wherever that character is code (Snowflake's `@`, a stage).
     #[ts(as = "Vec<String>")]
     pub writes: &'static [&'static str],
     /// Functions a call of which (`name(`) changes the server, reads its files or reaches other
-    /// servers: T-SQL `OPENQUERY`, `XP_*`, Snowflake `SYSTEM$*`, DuckDB `READ_*`.
+    /// servers: T-SQL `OPENQUERY`, `XP_*`, Snowflake `SYSTEM$*`, DuckDB `READ_*`. An entry of
+    /// several parts (`AI.IF`, `ML.*`) matches the last parts of a qualified callee, a one-part
+    /// entry its last part whatever qualifies it.
     #[ts(as = "Vec<String>")]
     pub write_calls: &'static [&'static str],
     /// The table functions a read may use where a table goes (after `FROM`, `JOIN`, `TABLE`,
     /// `DESCRIBE` or a comma of a `FROM` list); any other table function makes it a write.
-    /// None: the dialect has none to police. A file named where a table goes (DuckDB
-    /// `FROM 'data.csv'`) is not a table function: the engine settings of the session refuse it.
+    /// A one-part entry allows an unqualified call only, an entry of several parts
+    /// (`INFORMATION_SCHEMA.QUERY_HISTORY`) the call's last parts, and `!NAME` a method call
+    /// (`svc!NAME(`); a quoted name matches only on its exact text. None: the dialect has none
+    /// to police. A file named where a table goes (DuckDB `FROM 'data.csv'`) is not a table
+    /// function: the engine settings of the session refuse it.
     #[ts(as = "Option<Vec<String>>")]
     pub table_functions: Option<&'static [&'static str]>,
 }
@@ -190,6 +202,8 @@ pub struct Token {
 pub struct Scan {
     pub chars: Vec<char>,
     pub tokens: Vec<Token>,
+    /// The reading the text was scanned under.
+    pub reading: Reading,
     /// A server may end one of the comments elsewhere than this scan did: a block comment holds
     /// a `/*` (it ends at its first `*/` where comments do not nest, later where they do), or a
     /// line comment holds a line break other than LF or CRLF (PostgreSQL ends one at a CR,
@@ -205,6 +219,17 @@ pub struct Scan {
     /// ambiguous after a non-ASCII character, with one in its tag, or in a word that starts with
     /// a digit (`a\u{A0}$$`, `$\u{A0}$`, `$a\u{A0}b$`, `1$$`), and so is an `E'…'` string after a
     /// non-ASCII character or glued to a number (`1E'…'`: `1` then an E-string to those lexers).
+    /// ClickHouse reads a heredoc wherever a `$` starts a token and the text up to the next `$`
+    /// (`$1$`, and any text for older servers) comes again later, and a `$tag$` that never
+    /// closes as a word: so a body this scan opened that never closes is ambiguous too, and
+    /// where tags open bodies (`dollar_tags`), so is a `$` of code that opens nothing here but
+    /// whose delimiter comes again.
+    ///
+    /// So is a format or other default-ignorable character in code (`is_invisible`: a
+    /// zero-width space, a word joiner, a soft hyphen, a byte-order mark…): some servers skip
+    /// it as a space (ClickHouse), others may drop it and join the words around it
+    /// (`SYS\u{200B}TEM$WAIT`) or keep it in a name, and a scanner cannot know which. A
+    /// byte-order mark that starts the text is a space.
     pub ambiguous: bool,
 }
 
@@ -268,6 +293,11 @@ pub fn scan(lex: &LexProfile, reading: Reading, sql: &str) -> Scan {
         let end = end.max(i + 1).min(chars.len());
         ambiguous |= match kind {
             TokenKind::Comment => s.comment_may_end_elsewhere(i, end),
+            TokenKind::Word | TokenKind::Punct
+                if chars[i..end].iter().any(|&c| is_invisible(c)) =>
+            {
+                true
+            }
             _ => s.literal_may_open_elsewhere(kind, i, end),
         };
         tokens.push(Token {
@@ -277,11 +307,84 @@ pub fn scan(lex: &LexProfile, reading: Reading, sql: &str) -> Scan {
         });
         i = end;
     }
+    if lex.dollar_tags && !ambiguous {
+        ambiguous = heredoc_elsewhere(&chars, &tokens);
+    }
     Scan {
         chars,
         tokens,
+        reading,
         ambiguous,
     }
+}
+
+/// Whether `c` is a Unicode format character (category Cf) or another default-ignorable code
+/// point (Unicode 16): characters a text shows as nothing, which servers skip, drop or keep.
+pub fn is_invisible(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0xAD | 0x34F
+            | 0x600..=0x605
+            | 0x61C
+            | 0x6DD
+            | 0x70F
+            | 0x890..=0x891
+            | 0x8E2
+            | 0x115F..=0x1160
+            | 0x17B4..=0x17B5
+            | 0x180B..=0x180F
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x206F
+            | 0x3164
+            | 0xFE00..=0xFE0F
+            | 0xFEFF
+            | 0xFFA0
+            | 0xFFF0..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0000..=0xE0FFF
+    )
+}
+
+/// Whether ClickHouse may read a heredoc at a `$` of code where the scan opened none
+/// (`Scan::ambiguous`): it takes the text from a `$` that starts a token up to the next `$` as the
+/// delimiter whatever it holds (`$1$`), and reads a heredoc when that delimiter comes again.
+fn heredoc_elsewhere(chars: &[char], tokens: &[Token]) -> bool {
+    // A `$` starts a token unless a word goes on through it (`a$b`); after a number it does
+    // (`1$a$`: `1`, then the heredoc).
+    let starts = |p: usize, number: bool| {
+        number
+            || p == 0
+            || !(chars[p - 1].is_ascii_alphanumeric() || matches!(chars[p - 1], '_' | '$'))
+    };
+    let mut candidates = tokens
+        .iter()
+        .filter(|t| matches!(t.kind, TokenKind::Word | TokenKind::Punct))
+        .flat_map(|t| {
+            let number = t.kind == TokenKind::Word && chars[t.start].is_ascii_digit();
+            (t.start..t.end).filter(move |&p| chars[p] == '$' && starts(p, number))
+        })
+        .peekable();
+    if candidates.peek().is_none() {
+        return false;
+    }
+    let dollars: Vec<usize> = (0..chars.len()).filter(|&p| chars[p] == '$').collect();
+    // The delimiter at each `$` runs to the next one, so the delimiter of `p` comes again at `r`
+    // exactly when `r`'s own delimiter is the same text: the last `$` each delimiter starts at.
+    let mut last: HashMap<&[char], usize> = HashMap::new();
+    for pair in dollars.windows(2) {
+        last.insert(&chars[pair[0]..=pair[1]], pair[0]);
+    }
+    candidates.any(|p| {
+        let next = dollars.partition_point(|&d| d <= p);
+        dollars
+            .get(next)
+            .is_some_and(|&q| last.get(&chars[p..=q]).is_some_and(|&r| r > q))
+    })
 }
 
 /// A character a dollar-quote tag may hold for some lexer: PostgreSQL's take ASCII letters,
@@ -313,8 +416,9 @@ impl Scanner<'_> {
         let c = self.chars[i];
         let next = self.at(i + 1);
         let lex = self.lex;
-        if c.is_whitespace() {
-            let mut j = i;
+        // A byte-order mark that starts the text (a file saved with one) is no part of its SQL.
+        if c.is_whitespace() || (i == 0 && c == '\u{FEFF}') {
+            let mut j = i + 1;
             while self.at(j).is_some_and(char::is_whitespace) {
                 j += 1;
             }
@@ -379,7 +483,8 @@ impl Scanner<'_> {
         let lex = self.lex;
         match prefix.as_str() {
             "E" if lex.e_strings && quote == '\'' => Some(self.quoted_end(j, quote, true)),
-            "R" | "RB" | "BR" if lex.raw_prefixes => Some(self.string_end(j, false)),
+            // No escapes, but a backslash and the character after it stay together.
+            "R" | "RB" | "BR" if lex.raw_prefixes => Some(self.string_end(j, true)),
             "B" if lex.byte_prefixes => Some(self.string_end(j, self.reading.string_backslash)),
             _ => None,
         }
@@ -413,11 +518,19 @@ impl Scanner<'_> {
 
     /// Whether a lexer may open a literal elsewhere than this scan did around the token `i..end`
     /// of `kind` (`Scan::ambiguous`): a `$` that may open a body next to a character lexers
-    /// class differently, or an `E'…'` string whose prefix a lexer may read otherwise.
+    /// class differently, a body that never closes (ClickHouse reads its `$tag$` as a word), or
+    /// an `E'…'` string whose prefix a lexer may read otherwise.
     fn literal_may_open_elsewhere(&self, kind: TokenKind, i: usize, end: usize) -> bool {
         let chars = self.chars;
         let after_non_ascii = |j: usize| j > 0 && !chars[j - 1].is_ascii();
         let number = kind == TokenKind::Word && chars[i].is_ascii_digit();
+        if self.lex.dollar_quotes && kind == TokenKind::Str && chars[i] == '$' {
+            let len = self.dollar_tag(i).unwrap_or(1);
+            let closed = end - i >= 2 * len && chars[end - len..end] == chars[i..i + len];
+            if !closed {
+                return true;
+            }
+        }
         if self.lex.dollar_quotes {
             // The `$`s of code: in words and punctuation, and the opener of a body.
             let dollars = match kind {
@@ -652,9 +765,98 @@ mod tests {
             [r"'a\'", ";", "DELETE", "'"]
         );
         assert_eq!(texts(escaping, r"'a\' ; DELETE'"), [r"'a\' ; DELETE'"]);
-        // A raw string takes no escapes; a triple-quoted one holds single quotes.
-        assert_eq!(texts(escaping, r"r'\' x"), [r"r'\'", "x"]);
+        // A raw string takes no escapes, but under every reading a backslash keeps the character
+        // after it (GoogleSQL); a triple-quoted one holds single quotes.
+        for r in [PLAIN, escaping] {
+            assert_eq!(
+                texts(r, r"r'\', ' ; DELETE FROM t; --'"),
+                [r"r'\', '", ";", "DELETE", "FROM", "t", ";", "--'"]
+            );
+            assert_eq!(texts(r, r"rb'a\\' x"), [r"rb'a\\'", "x"]);
+            assert_eq!(texts(r, r"r'''\''' x''' y"), [r"r'''\''' x'''", "y"]);
+        }
         assert_eq!(texts(escaping, "'''it's''' x"), ["'''it's'''", "x"]);
+    }
+
+    #[test]
+    fn invisible_characters_in_code_are_ambiguous() {
+        for c in [
+            '\u{200B}',
+            '\u{200C}',
+            '\u{200D}',
+            '\u{2060}',
+            '\u{2061}',
+            '\u{00AD}',
+            '\u{180E}',
+            '\u{FEFF}',
+            '\u{034F}',
+            '\u{FE0F}',
+            '\u{3164}',
+            '\u{E0020}',
+        ] {
+            assert!(is_invisible(c), "{c:?}");
+            for sql in [
+                format!("SELECT SYSTEM$WAIT{c}(1)"),
+                format!("SELECT SYS{c}TEM$WAIT(1)"),
+                format!("SELECT 1{c}"),
+                format!("{c}{c}SELECT 1"),
+            ] {
+                assert!(scan(&LEX, PLAIN, &sql).ambiguous, "{sql:?}");
+            }
+            // In strings, quoted names and comments they are text.
+            let sql = format!("SELECT '{c}', \"{c}\" -- {c}\n/* {c} */ $${c}$$");
+            assert!(!scan(&LEX, PLAIN, &sql).ambiguous, "{sql:?}");
+        }
+        for c in [' ', '\u{A0}', '\u{3000}', 'é', '\u{2028}'] {
+            assert!(!is_invisible(c), "{c:?}");
+        }
+        // A byte-order mark that starts the text is a space.
+        let s = scan(&LEX, PLAIN, "\u{FEFF}SELECT 1");
+        assert!(!s.ambiguous);
+        assert_eq!(
+            kinds(&LEX, PLAIN, "\u{FEFF} SELECT")[0],
+            (TokenKind::Word, "SELECT".into())
+        );
+    }
+
+    #[test]
+    fn heredocs_another_lexer_may_read_are_ambiguous() {
+        for sql in [
+            // ClickHouse takes `$1$` (and older servers any text up to the next `$`) as a tag.
+            "SELECT $1$'$1$, file('/etc/passwd') -- '",
+            "SELECT $x'$ '$x'$, url('h') --'",
+            "SELECT $ a $ ' $ a $, url('h') --'",
+            "SELECT 1$a-b$ x $a-b$",
+            "SELECT \u{E9}$-$ x $-$",
+            // A body that never closes: ClickHouse reads its tag as a word, PostgreSQL refuses.
+            "SELECT 1 AS $a$, * FROM url('http://evil/x', CSV, 'a String')",
+            "SELECT $$ x",
+            "SELECT $a$ x $a",
+        ] {
+            assert!(scan(&LEX, PLAIN, sql).ambiguous, "{sql:?}");
+        }
+        for sql in [
+            "SELECT $1, $2, $1 + $2",
+            "SELECT $a$x$a$, $$y$$, a$b$, x$b$ ",
+            "SELECT 1 AS a$, $id_var FROM t WHERE x = $id_var",
+            "SELECT '$1$' || $1 || '$1$'",
+        ] {
+            assert!(!scan(&LEX, PLAIN, sql).ambiguous, "{sql:?}");
+        }
+        // Where only `$$` opens a body, `$a$` is Snowflake's variable `a$` twice; an unclosed
+        // `$$` is still unsure. Without dollar bodies, `$` is punctuation and opens nothing.
+        let untagged = LexProfile {
+            dollar_tags: false,
+            ..LEX
+        };
+        assert!(!scan(&untagged, PLAIN, "SELECT $a$, $a$, $1$ x $1$").ambiguous);
+        assert!(scan(&untagged, PLAIN, "SELECT $a$, $$ x").ambiguous);
+        let plain = LexProfile {
+            dollar_quotes: false,
+            dollar_tags: false,
+            ..LEX
+        };
+        assert!(!scan(&plain, PLAIN, "SELECT $1$ x $1$, $$ y").ambiguous);
     }
 
     #[test]

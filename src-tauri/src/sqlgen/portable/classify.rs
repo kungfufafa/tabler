@@ -3,15 +3,23 @@
 //! query or an inspection of the rules and nothing in it writes; empty and unknown statements are
 //! WRITEs. On top of the statement kind:
 //!
-//! - a query holding a word of `writes` anywhere (`INTO`, `DELETE`…) is a write, and with an
-//!   optional terminator (T-SQL) any statement is (`SELECT 1 DELETE FROM t` is two statements);
+//! - a query holding a word of `writes` anywhere (`INTO`, `DELETE`…), or a punctuation character
+//!   listed there (Snowflake's `@`), is a write, and with an optional terminator (T-SQL) any
+//!   statement is (`SELECT 1 DELETE FROM t` is two statements);
+//! - each statement Snowflake's flow operator chains (`SHOW TABLES ->> GET …`) must read too;
 //! - a call of a function of `write_calls` is a write (T-SQL `OPENQUERY(srv, 'DELETE …')` hides
-//!   its statement in a string);
+//!   its statement in a string). An entry of several parts (`AI.IF`) matches a qualified callee's
+//!   last parts, words or quoted names (`` `ai`.if( ``), and a quoted part holding dots counts as
+//!   the parts it spells (`` `safe.ai`.if( ``);
 //! - where a table goes, a table function outside `table_functions` is a write (ClickHouse
 //!   `url()`, `s3()`…), also as the first table of a parenthesized join
-//!   (`FROM (url(…) CROSS JOIN t)`). A file named where a table goes (DuckDB `FROM 'x.csv'`,
-//!   `FROM data.csv`) is not looked for: the session's engine settings refuse those reads (see
-//!   `dialect::duckdb`);
+//!   (`FROM (url(…) CROSS JOIN t)`). The function is the last part of its name, past every run
+//!   of dots (`db..p(`) and a method's `!` (`m!PREDICT(`). A one-part entry allows an
+//!   unqualified call only (qualified, the name is a schema's object: the user's), an entry of
+//!   several parts the call's last parts (`INFORMATION_SCHEMA.QUERY_HISTORY`), a `!METHOD` entry
+//!   a method of that name; a quoted name matches on its exact text, never as a clause word
+//!   (`"VALUES"()`). A file named where a table goes (DuckDB `FROM 'x.csv'`, `FROM data.csv`) is
+//!   not looked for: the session's engine settings refuse those reads (see `dialect::duckdb`);
 //! - a word that starts with a digit may be a number and then a keyword to the server: T-SQL,
 //!   and PostgreSQL before 15 with the servers built on its lexer, read `1DELETE` as `1` then
 //!   `DELETE`, and T-SQL `0xINTO` as an empty binary then `INTO`. Servers end a number at
@@ -31,8 +39,9 @@
 //!
 //! Comments, strings and quoted names are never keywords; a quoted name followed by `(` is still
 //! a call of that function. A Unicode-escaped name (`U&"\0072ead_csv"`, with an optional
-//! `UESCAPE 'c'`) may spell any function: as a callee it is on every deny-list and on no
-//! allow-list.
+//! `UESCAPE 'c'`), and a quoted name holding a backslash where quoted names take escapes
+//! (`` `external_quer\x79` `` in BigQuery and ClickHouse), may spell any function: as a callee,
+//! or a part of one, it is on every deny-list and on no allow-list.
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -43,8 +52,9 @@ use crate::sqlgen::dialect::lex::{
 };
 use crate::sqlgen::portable::split::{first_reading, statements};
 
-/// A token of code: a word (upper case), a quoted name (upper case), a name whose spelling the
-/// scanner cannot know (`U&"…"`), a string or a punctuation character.
+/// A token of code: a word (upper case), a quoted name (as written, quotes removed), a name whose
+/// spelling the scanner cannot know (`U&"…"`, or a quoted name holding a backslash where quoted
+/// names take escapes), a string or a punctuation character.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Code {
     Word(String),
@@ -53,10 +63,6 @@ enum Code {
     Str,
     Punct(char),
 }
-
-/// What `Code::AnyName` answers as a callee: no allow-list holds it (`names_listed` puts it on
-/// every deny-list).
-const ANY_NAME: &str = "\u{FFFD}";
 
 impl Code {
     fn is(&self, c: char) -> bool {
@@ -70,14 +76,39 @@ impl Code {
         }
     }
 
-    /// What a call could name: a word or a quoted name.
-    fn callee(&self) -> Option<&str> {
-        match self {
-            Code::Word(w) | Code::Name(w) => Some(w),
-            Code::AnyName => Some(ANY_NAME),
-            Code::Str | Code::Punct(_) => None,
-        }
+    /// Whether a call could name it: a word or a quoted name.
+    fn is_name(&self) -> bool {
+        matches!(self, Code::Word(_) | Code::Name(_) | Code::AnyName)
     }
+}
+
+/// A part of a qualified name: a name token, or nothing between two dots (`db..p`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    At(usize),
+    Empty,
+}
+
+/// The parts of the qualified name that ends at the name token `i`, first to last: the names
+/// before it with a run of dots between each two (every dot past the first is an empty part:
+/// Snowflake's `db..p` is `db.PUBLIC.p`, SQL Server's `db..t` `db.dbo.t`).
+fn qualified_parts(code: &[Code], i: usize) -> Vec<Part> {
+    let mut parts = vec![Part::At(i)];
+    let mut q = i;
+    loop {
+        let mut d = q;
+        while d > 0 && code[d - 1].is('.') {
+            d -= 1;
+        }
+        if d == q || d == 0 || !code[d - 1].is_name() {
+            break;
+        }
+        parts.extend(std::iter::repeat_n(Part::Empty, q - d - 1));
+        parts.push(Part::At(d - 1));
+        q = d - 1;
+    }
+    parts.reverse();
+    parts
 }
 
 /// Whether the word at `i` may be read as part of a number: it starts with a digit, or it follows
@@ -128,14 +159,97 @@ fn spellings(code: &[Code], i: usize) -> impl Iterator<Item = Cow<'_, str>> {
         .chain(folded.into_iter().flatten().map(Cow::Owned))
 }
 
-/// Whether the token at `i` names an entry of `list`: a quoted name, or a word that is one or may
-/// hide one.
+/// Whether the name ending at the token `i` names an entry of a deny-list (`write_calls`, the
+/// side-effect functions), in any spelling. An entry of several parts (`AI.IF`, `KEYS.*`)
+/// matches the last parts of a qualified name (`ai.if`, `` `safe`.`ai`.if ``, `x.keys.f`); a
+/// one-part entry its last part, whatever qualifies it. A word counts with the words it may
+/// hide (`spellings`), a quoted name upper-cased by Unicode rules and split at its dots, since a
+/// server may read `` `safe.ai`.if `` as three parts. A name whose spelling cannot be known is
+/// on every list.
 fn names_listed(code: &[Code], i: usize, list: &[&str]) -> bool {
-    match &code[i] {
-        Code::Name(n) => listed(list, n),
-        Code::AnyName => !list.is_empty(),
-        _ => spellings(code, i).any(|s| listed(list, &s)),
+    if list.is_empty() || !code[i].is_name() {
+        return false;
     }
+    let parts = qualified_parts(code, i);
+    let mut slots: Vec<Vec<Cow<'_, str>>> = Vec::with_capacity(parts.len());
+    for p in parts {
+        match p {
+            Part::Empty => slots.push(vec![Cow::Borrowed("")]),
+            Part::At(k) => match &code[k] {
+                Code::AnyName => return true,
+                Code::Name(n) => slots.extend(
+                    n.to_uppercase()
+                        .split('.')
+                        .map(|s| vec![Cow::Owned(s.to_owned())]),
+                ),
+                _ => slots.push(spellings(code, k).collect()),
+            },
+        }
+    }
+    list.iter().any(|entry| {
+        let want: Vec<&str> = entry.split('.').collect();
+        want.len() <= slots.len()
+            && slots[slots.len() - want.len()..]
+                .iter()
+                .zip(&want)
+                .all(|(slot, w)| slot.iter().any(|s| listed(&[*w], s)))
+    })
+}
+
+/// Words of the grammar that read like a call where a table goes (`FROM TABLE(…)`,
+/// `FROM VALUES (…)`, Snowflake's `SEMANTIC_VIEW(…)`): quoted, they name a user's object.
+const CLAUSE_WORDS: &[&str] = &["TABLE", "VALUES", "SEMANTIC_VIEW"];
+
+/// Whether the name token `code` is the part `entry` of an allow-list entry: a word on its ASCII
+/// upper case, a quoted name on its exact text (Snowflake resolves `"flatten"` to the user's
+/// object of that name), never a quoted clause word.
+fn part_allowed(code: &Code, entry: &str) -> bool {
+    match code {
+        Code::Word(w) => listed(&[entry], w),
+        Code::Name(n) => !CLAUSE_WORDS.contains(&entry) && listed(&[entry], n),
+        _ => false,
+    }
+}
+
+/// Whether the table function named by `parts` (and called as a method after `!` when `method`)
+/// is on the allow-list `allowed`. A one-part entry matches an unqualified call only: qualified,
+/// the name is a schema's object, so the user's. An entry of several parts
+/// (`INFORMATION_SCHEMA.QUERY_HISTORY`, `SNOWFLAKE.CORE.GET_LINEAGE`) matches the call's last
+/// parts, so a database may stand before a schema; an empty part (`db..p`) matches nothing. A
+/// method entry (`!SPCS_GET_LOGS`) matches a method of that name only, whatever its instance.
+fn table_function_allowed(code: &[Code], parts: &[Part], method: bool, allowed: &[&str]) -> bool {
+    let token = |p: &Part| match p {
+        Part::At(k) => Some(&code[*k]),
+        Part::Empty => None,
+    };
+    if parts
+        .iter()
+        .any(|p| token(p).is_some_and(|c| *c == Code::AnyName))
+    {
+        return false;
+    }
+    allowed.iter().any(|entry| match entry.strip_prefix('!') {
+        Some(m) => {
+            method
+                && parts
+                    .last()
+                    .and_then(token)
+                    .is_some_and(|c| part_allowed(c, m))
+        }
+        None if method => false,
+        None => {
+            let want: Vec<&str> = entry.split('.').collect();
+            let fits = if want.len() == 1 {
+                parts.len() == 1
+            } else {
+                want.len() <= parts.len()
+            };
+            fits && parts[parts.len() - want.len()..]
+                .iter()
+                .zip(&want)
+                .all(|(p, w)| token(p).is_some_and(|c| part_allowed(c, w)))
+        }
+    })
 }
 
 /// Functions whose arguments may hold a `FROM` (`EXTRACT(YEAR FROM ts)`).
@@ -200,13 +314,40 @@ fn reads_under(lex: &LexProfile, rules: &ClassifyRules, scan: &Scan) -> bool {
     !ranges.is_empty()
         && ranges.into_iter().all(|r| {
             let code = code_of(scan, r);
-            // A batch may hold several `;`-separated statements: each one must read.
+            // A batch may hold several `;`-separated statements: each one must read, and so must
+            // each one the flow operator chains on.
             let parts: Vec<&[Code]> = code
                 .split(|c| c.is(';'))
                 .filter(|p| !p.is_empty())
                 .collect();
-            !parts.is_empty() && parts.iter().all(|p| reads(lex, rules, p))
+            !parts.is_empty()
+                && parts.iter().all(|p| {
+                    reads(lex, rules, p) && chained(p).iter().all(|c| reads(lex, rules, c))
+                })
         })
+}
+
+/// The statements Snowflake's flow operator `->>` chains after the first one (`SHOW TABLES ->>
+/// GET @s …`): the code from each `->>` that a word follows to the next one. The whole statement
+/// must read too, so this only adds writes: a chained `GET` or `START TRANSACTION` is unknown, so
+/// a write. Elsewhere `->>` takes an operand (DuckDB's `j->>'$.a'`, `j->>0`), and only a name
+/// after it (`j->>col`) is judged as a statement, a false write.
+fn chained(code: &[Code]) -> Vec<&[Code]> {
+    let starts: Vec<usize> = (3..code.len())
+        .filter(|&i| {
+            code[i - 3].is('-')
+                && code[i - 2].is('>')
+                && code[i - 1].is('>')
+                && code[i]
+                    .word()
+                    .is_some_and(|w| !w.starts_with(|c: char| c.is_ascii_digit()))
+        })
+        .collect();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(k, &s)| &code[s..starts.get(k + 1).map_or(code.len(), |&n| n - 3)])
+        .collect()
 }
 
 fn code_of(scan: &Scan, r: Range<usize>) -> Vec<Code> {
@@ -222,7 +363,14 @@ fn code_of(scan: &Scan, r: Range<usize>) -> Vec<Code> {
         let t = &toks[i];
         out.extend(match t.kind {
             TokenKind::Word => Some(Code::Word(scan.upper(t))),
-            TokenKind::Ident => Some(Code::Name(scan.ident_name(t).to_uppercase())),
+            // Where quoted names take a string's escapes (BigQuery, ClickHouse backticks), one
+            // holding a backslash may spell any name (`` `external_quer\x79` ``).
+            TokenKind::Ident
+                if scan.reading.ident_backslash && scan.chars[t.start..t.end].contains(&'\\') =>
+            {
+                Some(Code::AnyName)
+            }
+            TokenKind::Ident => Some(Code::Name(scan.ident_name(t))),
             TokenKind::Str => Some(Code::Str),
             TokenKind::Punct => Some(Code::Punct(scan.chars[t.start])),
             TokenKind::Space | TokenKind::Comment => None,
@@ -262,8 +410,13 @@ fn unicode_name(scan: &Scan, toks: &[Token], i: usize) -> Option<usize> {
     Some(i + 3)
 }
 
+/// Whether `code` holds a word of `words`, or a punctuation character one of them is (Snowflake's
+/// `@`, which only ever names a stage).
 fn has_word(code: &[Code], words: &[&str]) -> bool {
-    (0..code.len()).any(|i| spellings(code, i).any(|s| listed(words, &s)))
+    (0..code.len()).any(|i| match code[i] {
+        Code::Punct(c) => words.iter().any(|w| w.chars().eq([c])),
+        _ => spellings(code, i).any(|s| listed(words, &s)),
+    })
 }
 
 fn reads(lex: &LexProfile, rules: &ClassifyRules, code: &[Code]) -> bool {
@@ -389,19 +542,31 @@ fn tables_read_only(rules: &ClassifyRules, code: &[Code]) -> bool {
         }
         match code.get(p) {
             Some(Code::Word(w)) if nested && listed(rules.queries, w) => true,
-            Some(c) if c.callee().is_some() => {
-                // A qualified name: the function is its last part.
+            Some(c) if c.is_name() => {
+                // A qualified name: the function is its last part, past every run of dots
+                // (`db..p(`) and a method after `!` (Snowflake's `m!PREDICT(`).
                 let mut q = p;
-                while code.get(q + 1).is_some_and(|c| c.is('.'))
-                    && code.get(q + 2).is_some_and(|c| c.callee().is_some())
-                {
-                    q += 2;
+                let mut method = false;
+                loop {
+                    let mut d = q + 1;
+                    while code.get(d).is_some_and(|c| c.is('.')) {
+                        d += 1;
+                    }
+                    if d > q + 1 && code.get(d).is_some_and(Code::is_name) {
+                        q = d;
+                    } else if d == q + 1
+                        && code.get(d).is_some_and(|c| c.is('!'))
+                        && code.get(d + 1).is_some_and(Code::is_name)
+                    {
+                        q = d + 1;
+                        method = true;
+                        break;
+                    } else {
+                        break;
+                    }
                 }
                 let called = code.get(q + 1).is_some_and(|c| c.is('('));
-                match code[q].callee() {
-                    Some(name) if called => listed(allowed, name),
-                    _ => true,
-                }
+                !called || table_function_allowed(code, &qualified_parts(code, q), method, allowed)
             }
             _ => true,
         }
@@ -474,19 +639,32 @@ fn table_positions(code: &[Code]) -> Vec<usize> {
 /// comma lists may hold calls need to (`GROUP BY a, lower(b)`, ClickHouse `LIMIT 1 BY a, f(b)`,
 /// the select list after `UNION`); after any other clause no table follows a comma in a valid
 /// statement, so the list may as well stay open. An ended list's commas are no longer checked,
-/// so the keyword counts only where a clause can start and followed by what the clause takes.
-/// Anywhere else it is a name: an alias (`FROM t AS where, …`), a part of a qualified name
-/// (`ON t.a = u.order, …`), a table, or an operand (ClickHouse reads `ON a = limit` as a column).
+/// so the keyword counts only where a clause can start and followed by what the clause takes:
+/// `LIMIT` a number, a bind or a variable (also in parentheses), `EXCEPT` what starts a query.
+/// Anywhere else it is a name: an alias (`FROM t AS where, …`; Snowflake reserves neither
+/// `LIMIT` nor `EXCEPT`, so `FROM t1 limit (a, b), f(x)` aliases `t1`), a part of a qualified
+/// name (`ON t.a = u.order, …`), a table, or an operand (ClickHouse reads `ON a = limit` as a
+/// column).
 fn ends_from_list(code: &[Code], i: usize, w: &str) -> bool {
     let next = code.get(i + 1);
     let next_word = next.and_then(Code::word);
     let paren = next.is_some_and(|c| c.is('('));
+    let value = |c: Option<&Code>| match c {
+        Some(Code::Word(w)) => w.starts_with(|c: char| c.is_ascii_digit()),
+        Some(Code::Punct(p)) => matches!(p, '?' | '$' | ':' | '@' | '{'),
+        _ => false,
+    };
+    let query = |c: Option<&Code>| {
+        c.is_some_and(|c| c.is('('))
+            || c.and_then(Code::word)
+                .is_some_and(|w| matches!(w, "SELECT" | "WITH" | "VALUES" | "TABLE" | "FROM"))
+    };
+    let after_set_operator = next_word.is_some_and(|n| AFTER_SET_OPERATOR.contains(&n));
     let takes_next = match w {
         "GROUP" | "ORDER" => next_word == Some("BY"),
-        "UNION" | "EXCEPT" | "INTERSECT" => {
-            paren || next_word.is_some_and(|n| AFTER_SET_OPERATOR.contains(&n))
-        }
-        "LIMIT" => paren || next_word.is_some(),
+        "UNION" | "INTERSECT" => paren || after_set_operator,
+        "EXCEPT" => after_set_operator || (paren && query(code.get(i + 2))),
+        "LIMIT" => value(next) || (paren && (value(code.get(i + 2)) || query(code.get(i + 2)))),
         _ => false,
     };
     let clause_can_start = match i.checked_sub(1).map(|p| &code[p]) {
@@ -528,8 +706,9 @@ fn says(code: &[Code], phrase: &str) -> bool {
 }
 
 /// Whether the statement `r` of `scan` (a batch, where the dialect has them) is one statement
-/// for the server: it holds no `;` between two statements, and where terminators are optional no
-/// word that may start a second one (`starts_another`).
+/// for the server: it holds no `;` between two statements and no flow operator chaining one
+/// (`chained`), and where terminators are optional no word that may start a second one
+/// (`starts_another`).
 pub(super) fn one_statement(
     lex: &LexProfile,
     rules: &ClassifyRules,
@@ -540,7 +719,9 @@ pub(super) fn one_statement(
     let mut parts = code.split(|c| c.is(';')).filter(|p| !p.is_empty());
     match (parts.next(), parts.next()) {
         (Some(_), Some(_)) => false,
-        (Some(part), None) => !(lex.terminator_optional && starts_another(rules, part)),
+        (Some(part), None) => {
+            chained(part).is_empty() && !(lex.terminator_optional && starts_another(rules, part))
+        }
         (None, _) => true,
     }
 }
@@ -597,7 +778,7 @@ fn starts_another(rules: &ClassifyRules, code: &[Code]) -> bool {
 
 /// Whether the code after a `WITH` defines a table: `name AS (` or `name (columns) AS (`.
 fn defines_table(rest: &[Code]) -> bool {
-    rest.first().and_then(Code::callee).is_some()
+    rest.first().is_some_and(Code::is_name)
         && rest
             .get(1)
             .is_some_and(|c| c.is('(') || c.word() == Some("AS"))
@@ -617,4 +798,219 @@ pub fn code_only(lex: &LexProfile, sql: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sqlgen::dialect::lex::{Reading, reading};
+    use crate::sqlgen::portable::split::is_single_statement;
+    use crate::sqlgen::portable::testing::{ANSI_LEX, ANSI_RULES};
+    use StatementClass::{Read, Write};
+
+    /// Rules with qualified, method and keyword entries, as Snowflake and BigQuery list them.
+    const RULES: ClassifyRules = ClassifyRules {
+        writes: &["INTO", "DELETE", "COMMIT", "@"],
+        write_calls: &["SYSTEM$*", "AI.*", "KEYS.KEYSET_CHAIN"],
+        table_functions: Some(&[
+            "TABLE",
+            "VALUES",
+            "FLATTEN",
+            "SUM",
+            "INFORMATION_SCHEMA.QUERY_HISTORY",
+            "SNOWFLAKE.CORE.GET_LINEAGE",
+            "!SPCS_GET_LOGS",
+        ]),
+        ..ANSI_RULES
+    };
+
+    fn class(sql: &str) -> StatementClass {
+        with(&ANSI_LEX, &RULES, sql)
+    }
+
+    fn check(reads: &[&str], writes: &[&str]) {
+        for sql in reads {
+            assert_eq!(class(sql), Read, "{sql}");
+        }
+        for sql in writes {
+            assert_eq!(class(sql), Write, "{sql}");
+        }
+    }
+
+    #[test]
+    fn a_qualified_name_where_a_table_goes_is_checked_by_its_last_part() {
+        check(
+            &[
+                "SELECT * FROM TABLE(FLATTEN(input => x))",
+                "SELECT * FROM t, LATERAL FLATTEN(t.v) f",
+                "SELECT * FROM t PIVOT (SUM(a) FOR m IN ('JAN'))",
+                "SELECT * FROM db..t, db..u",
+                "SELECT * FROM TABLE(svc!SPCS_GET_LOGS())",
+                "SELECT * FROM TABLE(db.s.svc!SPCS_GET_LOGS())",
+            ],
+            &[
+                // A run of dots keeps the name going (`db..p` is `db.PUBLIC.p`).
+                "SELECT * FROM TABLE(db..my_proc())",
+                "SELECT * FROM db..f(1)",
+                "SELECT * FROM t, LATERAL db..f(t.a)",
+                "SELECT * FROM t JOIN TABLE(db..p()) x ON true",
+                "SELECT * FROM TABLE(db . . p())",
+                "SELECT * FROM TABLE(db./* x */.p())",
+                "SELECT * FROM TABLE(\"db\"..\"p\"())",
+                "SELECT * FROM t1, db..p()",
+                "SELECT * FROM (db..p())",
+                "SELECT * FROM db...p()",
+                "SELECT * FROM db..FLATTEN(1)",
+                // A method is checked by its method.
+                "SELECT * FROM TABLE(m!PREDICT(1))",
+                "SELECT * FROM TABLE(db.s.m!PREDICT(1))",
+                "SELECT * FROM TABLE(m ! PREDICT(1))",
+                "SELECT * FROM TABLE(\"m\"!\"predict\"(1))",
+                "SELECT * FROM TABLE(s!FLATTEN(1))",
+            ],
+        );
+    }
+
+    #[test]
+    fn allow_list_entries_match_by_their_qualification() {
+        check(
+            &[
+                "SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())",
+                "SELECT * FROM TABLE(db.information_schema.query_history())",
+                "SELECT * FROM TABLE(SNOWFLAKE.CORE.GET_LINEAGE('x'))",
+                "SELECT * FROM TABLE(\"INFORMATION_SCHEMA\".\"QUERY_HISTORY\"())",
+                "SELECT * FROM TABLE(\"FLATTEN\"(1))",
+                "SELECT * FROM VALUES (1), (2)",
+            ],
+            &[
+                // A namespaced entry needs its namespace.
+                "SELECT * FROM TABLE(QUERY_HISTORY())",
+                "SELECT * FROM TABLE(myschema.QUERY_HISTORY())",
+                "SELECT * FROM TABLE(db..QUERY_HISTORY())",
+                "SELECT * FROM TABLE(core.GET_LINEAGE('x'))",
+                "SELECT * FROM TABLE(GET_LINEAGE('x'))",
+                // A one-part entry allows only an unqualified call.
+                "SELECT * FROM TABLE(s.FLATTEN(input => x))",
+                "SELECT * FROM t PIVOT (s.SUM(a) FOR m IN ('JAN'))",
+                // A method entry allows only a method.
+                "SELECT * FROM TABLE(SPCS_GET_LOGS())",
+                "SELECT * FROM TABLE(s.SPCS_GET_LOGS())",
+                // A quoted name matches on its exact text, never as a clause word.
+                "SELECT * FROM TABLE(\"flatten\"(1))",
+                "SELECT * FROM TABLE(\"\u{FB02}atten\"(1))",
+                "SELECT * FROM TABLE(INFORMATION_SCHEMA.\"query_history\"())",
+                "SELECT * FROM TABLE(\"INFORMATION_SCHEMA.QUERY_HISTORY\"())",
+                "SELECT * FROM TABLE(\"VALUES\"())",
+                "SELECT * FROM TABLE(\"TABLE\"())",
+                "SELECT * FROM \"VALUES\"(1)",
+                "SELECT * FROM TABLE(U&\"FLATTEN\"(1))",
+            ],
+        );
+    }
+
+    #[test]
+    fn qualified_deny_list_entries_match_the_last_parts_of_a_callee() {
+        check(
+            &[
+                "SELECT IF(a, 1, 2), TRANSLATE(s, 'a', 'b'), x.IF(1) FROM t",
+                "SELECT KEYSET_CHAIN(1), \"keys\" FROM t",
+            ],
+            &[
+                "SELECT AI.IF(1) FROM t",
+                "SELECT \"ai\".if(1) FROM t",
+                "SELECT \"safe\".\"ai\".\"if\"(1) FROM t",
+                "SELECT \"safe.ai\".if(1) FROM t",
+                "SELECT \"safe.ai.if\"(1) FROM t",
+                "SELECT \"ai\" . translate (1) FROM t",
+                "SELECT x.\"keys\".keyset_chain(1) FROM t",
+                "SELECT \"x.system$wait\"(1)",
+                "SELECT 1AI.IF(1)",
+                "SELECT U&\"x\".if(1)",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_quoted_name_holding_a_backslash_may_spell_any_name_where_names_take_escapes() {
+        const ESCAPING: &[Reading] = &[reading(true, true)];
+        let lex = LexProfile {
+            ident_quotes: &[('`', '`')],
+            readings: ESCAPING,
+            ..ANSI_LEX
+        };
+        for sql in [
+            "SELECT `syst\\u0065m$wait`(1)",
+            "SELECT `\\x61i`.if(1)",
+            "SELECT * FROM TABLE(`flat\\x74en`(1))",
+        ] {
+            assert_eq!(with(&lex, &RULES, sql), Write, "{sql}");
+        }
+        for sql in [
+            "SELECT `a\\`b` FROM `t\\\\`",
+            "SELECT * FROM TABLE(`FLATTEN`(1))",
+        ] {
+            assert_eq!(with(&lex, &RULES, sql), Read, "{sql}");
+        }
+        // Where quoted names take no escapes, a backslash is a character.
+        let plain = LexProfile {
+            ident_quotes: &[('`', '`')],
+            ..ANSI_LEX
+        };
+        assert_eq!(with(&plain, &RULES, "SELECT `a\\b`(1)"), Read);
+    }
+
+    #[test]
+    fn a_listed_punctuation_character_writes_wherever_it_is_code() {
+        check(
+            &["SELECT 'a@b', \"@\" FROM t -- @"],
+            &[
+                "SELECT $1 FROM @stage/file.csv",
+                "SELECT $1 FROM @s//x; DELETE FROM t",
+                "SELECT $1 FROM @s/a'b ->> DELETE FROM t --'",
+                "SELECT 1@2",
+            ],
+        );
+        assert_eq!(with(&ANSI_LEX, &ANSI_RULES, "SELECT @x"), Read);
+    }
+
+    #[test]
+    fn each_statement_the_flow_operator_chains_is_judged() {
+        check(
+            &[
+                "SELECT 1 ->> SELECT * FROM $1",
+                "SELECT j->>'a', j->>0, j ->> 'b' FROM t",
+            ],
+            &[
+                "SELECT 1 ->> START TRANSACTION",
+                "SELECT 1 ->> GET x",
+                "SELECT 1 ->> SELECT 2 ->> COMMIT",
+                // A name after it is judged as a statement too (DuckDB's `j->>col`).
+                "SELECT j->>col FROM t",
+            ],
+        );
+        let one = |sql| is_single_statement(&ANSI_LEX, &RULES, sql);
+        assert!(one("SELECT j->>'a' FROM t") && !one("SELECT 1 ->> SELECT 2"));
+    }
+
+    #[test]
+    fn unreserved_limit_and_except_end_a_from_list_only_before_their_syntax() {
+        check(
+            &[
+                "SELECT * FROM t LIMIT 10",
+                "SELECT * FROM t LIMIT ? OFFSET ?",
+                "SELECT a FROM t1 LIMIT 1, lower(b)",
+                "SELECT a FROM t1 LIMIT (5), lower(b)",
+                "SELECT a FROM t1 EXCEPT SELECT b, lower(c) FROM t2",
+                "SELECT a FROM t1 EXCEPT (SELECT b, lower(c) FROM t2)",
+                "SELECT a FROM t1 EXCEPT ALL SELECT b, lower(c) FROM t2",
+            ],
+            &[
+                "SELECT * FROM t1 limit (a, b), my_udtf(t1.a)",
+                "SELECT * FROM t1 limit SAMPLE (10), LATERAL my_udtf(t1.a)",
+                "SELECT * FROM t1 except (a, b), my_udtf(t1.a)",
+                "SELECT * FROM t2, t1 except (a, b), my_udtf(t1.a)",
+                "SELECT * FROM (SELECT 1) limit (a), my_udtf(1)",
+            ],
+        );
+    }
 }

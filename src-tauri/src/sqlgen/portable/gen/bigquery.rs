@@ -329,6 +329,18 @@ const WRITES: &[&str] = &[
     "SELECT * FROM t WHERE id = 1 /* /* */ DELETE FROM t */",
     "SELECT 1DELETE FROM t",
     "SELECT 1e0EXTERNAL_QUERY('c', 'q')",
+    // A separately quoted qualifier of an AI or ML function (`AI.*`, `ML.*` match a qualified
+    // callee's last parts), and a quoted name that takes escapes (it may spell any function).
+    "SELECT `ai`.if(('spam?', body)) FROM d.mail",
+    "SELECT `safe.ai`.if(('spam?', body)) FROM d.mail",
+    "SELECT `ai`.translate(body, 'en') FROM d.docs",
+    "SELECT * FROM `ml`.translate(MODEL d.tr, TABLE d.docs, STRUCT('en' AS x))",
+    "SELECT * FROM `ai`.search(TABLE d.docs, 'body', 'cats')",
+    "SELECT `ai`.agg(('sum up', body)) FROM d.docs",
+    "SELECT `st_regionstat\\u0073`(geo, 'ee://x') FROM t",
+    "SELECT * FROM `external_quer\\u0079`('c', 'q')",
+    "SELECT * FROM `\\u006dl.predict`(MODEL d.m, TABLE d.t)",
+    "SELECT `keys`.`keyset_chai\\u006e`('gcp-kms://k', b'x')",
 ];
 
 fn suite() -> Suite {

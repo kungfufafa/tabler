@@ -44,8 +44,8 @@ use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::dialect::SqlDialect;
 use crate::sqlgen::dialect::lex::{ClassifyRules, LexProfile, PLAIN};
 use crate::sqlgen::dialect::spec::{
-    CiLike, DialectSpec, ExplainForm, PlaceholderStyle, RedactRule, Returning, SqlHooks, SqlKnobs,
-    double_quoted, ph_dollar, single_quoted,
+    CiLike, DialectSpec, ExplainForm, PlaceholderStyle, RedactCall, RedactRule, Returning,
+    SqlHooks, SqlKnobs, double_quoted, ph_dollar, single_quoted,
 };
 use crate::sqlgen::portable::classify;
 use crate::types::mutate::ServerExpr;
@@ -311,6 +311,11 @@ pub static SPEC: DialectSpec = DialectSpec {
                 keyword: "PG_OAUTH_TOKEN",
             },
         ],
+        // A Parquet encryption key passed by position: `PRAGMA add_parquet_key('name', 'key')`.
+        redact_calls: &[RedactCall {
+            function: "ADD_PARQUET_KEY",
+            argument: 2,
+        }],
         ..SqlKnobs::ANSI
     },
     hooks: SqlHooks::NONE,
@@ -588,8 +593,7 @@ mod tests {
 
     #[test]
     fn redacts_secrets_and_credential_settings() {
-        let redact =
-            |sql: &str| crate::sqlgen::portable::redact::redact(&LEX, SPEC.knobs.redact, sql);
+        let redact = |sql: &str| crate::sqlgen::portable::redact::redact_spec(&SPEC, sql);
         let mask = crate::sqlgen::admin::PASSWORD_MASK;
         for (sql, secret) in [
             ("CREATE SECRET (TYPE http, BEARER_TOKEN 'tok')", "tok"),
@@ -633,6 +637,16 @@ mod tests {
                 "ics",
             ),
             ("ATTACH 'quack:h' AS q (TYPE quack, TOKEN 'qt')", "qt"),
+            // A named argument, and a key passed by position.
+            (
+                "SELECT * FROM quack_serve('quack:h', token := 'qt2')",
+                "qt2",
+            ),
+            ("CALL quack_serve('quack:h', token => 'qt3')", "qt3"),
+            (
+                "PRAGMA add_parquet_key('k1', 'AAAAAAAAAAAAAAAA')",
+                "AAAAAAAAAAAAAAAA",
+            ),
         ] {
             let r = redact(sql);
             assert!(

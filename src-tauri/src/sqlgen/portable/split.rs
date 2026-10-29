@@ -69,9 +69,10 @@ impl Lines {
 
 /// Whether `sql` holds at most one statement under every reading of the dialect. Callers guard
 /// with it (EXPLAIN wraps one statement, only a single read is cancelled, a board object runs
-/// one), so an unsure answer is no: a batch or block counts its `;`-separated statements, where
-/// terminators are optional a word of `rules` that may start a second statement counts as one,
-/// and a comment a server may end elsewhere (`Scan::ambiguous`) may hide one.
+/// one), so an unsure answer is no: a batch or block counts its `;`-separated statements and
+/// the ones a flow operator chains (`SHOW TABLES ->> SELECT …`), where terminators are optional a
+/// word of `rules` that may start a second statement counts as one, and a comment a server may
+/// end elsewhere (`Scan::ambiguous`) may hide one.
 pub fn is_single_statement(lex: &LexProfile, rules: &ClassifyRules, sql: &str) -> bool {
     let readings = if lex.readings.is_empty() {
         &[PLAIN][..]

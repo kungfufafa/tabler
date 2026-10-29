@@ -130,11 +130,9 @@ const READS: &[&str] = &[
     "SELECT sleep(1)",
     // A backslash escapes the quote: one string.
     "SELECT 'a\\'; DROP TABLE t; --'",
-    // Unicode quotes: strings and names, the rules' words inside them, quoted table functions
-    // of the allow-list.
+    // Unicode quotes: strings and names, the rules' words inside them.
     "SELECT ‘a b’ AS s, “my col” FROM “my db”.“my table” WHERE ‘x’ = ‘x’",
     "SELECT ‘INSERT INTO t SELECT * FROM url(''x'')’ AS s, “into”, “parallel”, “file” FROM hits",
-    "SELECT * FROM “numbers”(10) AS n, “zeros”(2)",
     "SELECT s, arr, a FROM arrays_test ARRAY JOIN arr AS a, arr2 AS b",
     "SELECT 1.5, .5, 1e3, 0x1F, 0b101, 1_000_000, inf, nan, -inf",
     "SELECT\n  o.id,\n  o.total\nFROM\n  orders AS o\nWHERE\n  o.total > 0\nORDER BY\n  o.id",
@@ -458,6 +456,19 @@ const WRITES: &[&str] = &[
     // A known false write: the reading without escapes in names (the Unicode quotes') ends the
     // name at `\``.
     "SELECT `a\\`; DROP TABLE t; --`",
+    // Known false writes: a quoted name matches the allow-list on its exact text only.
+    "SELECT * FROM “numbers”(10) AS n, “zeros”(2)",
+    // Closed in F8c (shared scanner): whitespace ClickHouse skips and Rust does not (format
+    // characters), a heredoc tag that starts with a digit, a `$tag$` that never closes (a word
+    // to ClickHouse), and a backquoted callee written with escapes.
+    "SELECT file\u{200B}('/etc/passwd')",
+    "SELECT file\u{180E}('/etc/passwd')",
+    "SELECT * FROM url\u{FEFF}('http://evil/x', CSV, 'a String')",
+    "SELECT 1 IN remote\u{2060}('h', db.t)",
+    "SELECT $1$'$1$, file('/etc/passwd') -- '",
+    "SELECT 1 AS $a$, * FROM url('http://evil/x', CSV, 'a String')",
+    "SELECT `fil\\x65`('/etc/passwd')",
+    "SELECT * FROM `\\x75rl`('http://x', CSV)",
 ];
 
 fn suite() -> Suite {

@@ -774,11 +774,13 @@ mod tests {
             "SELECT * FROM generate_series(1, 10)",
             // Unicode quotes: a string and names.
             "SELECT ‘a b’ AS s, “my col” FROM “my db”.“my table”",
-            "SELECT * FROM “numbers”(3)",
         ] {
             assert_eq!(classify_clickhouse(sql), StatementClass::Read, "{sql}");
         }
         for sql in [
+            // A quoted name matches the allow-list on its exact text only, and the list is
+            // upper case: a known false write.
+            "SELECT * FROM “numbers”(3)",
             "SELECT * FROM t INTO OUTFILE 'x.csv'",
             "SYSTEM DROP DNS CACHE",
             "KILL QUERY WHERE query_id = 'x'",

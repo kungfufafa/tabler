@@ -13,12 +13,15 @@
 //! reads from a table function outside `table_functions` (a stored procedure can be selected
 //! from, `SELECT * FROM TABLE(proc())`, and so can `INFER_SCHEMA` over staged files).
 //!
-//! The flow operator `->>` chains statements (`SHOW TABLES ->> DELETE FROM t`), which the shared
-//! classifier cannot see (it is punctuation), so `SHOW`, `DESCRIBE`, `DESC` and `EXPLAIN` are
-//! queries here, not inspections: a write word anywhere in them makes them writes, and every
-//! statement word that writes is in `writes` (also `COMMENT`, `SET`, `USE`, `BEGIN`). `GET` (also
-//! a function) and `START` (`CONNECT BY … START WITH`) cannot be, so `… ->> GET …` and `… ->>
-//! START TRANSACTION` stay reads until the classifier splits at `->>` (a change request).
+//! The flow operator `->>` chains statements (`SHOW TABLES ->> DELETE FROM t`). The shared
+//! classifier judges each statement it chains on its own, so `… ->> GET …` and `… ->> START
+//! TRANSACTION` write although `GET` (also a function) and `START` (`CONNECT BY … START WITH`)
+//! cannot be in `writes`, and the whole text as one statement too: `SHOW`, `DESCRIBE`, `DESC`
+//! and `EXPLAIN` are queries here, not inspections, so a write word anywhere in them makes them
+//! writes, and every statement word that writes is in `writes` (also `COMMENT`, `SET`, `USE`,
+//! `BEGIN`). An `@` in code names a stage, and every use of one reads staged files (where a
+//! table goes, as an argument, in `EXECUTE IMMEDIATE FROM`), so `@` is in `writes` too: a
+//! comment or quote opener inside an unquoted stage path (`@s//x`) cannot hide a statement.
 //!
 //! The statements the driver sends for itself (session setup, `SHOW` introspection, `GET_DDL`,
 //! cancels) are built here too.
@@ -30,7 +33,7 @@ use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::dialect::SqlDialect;
 use crate::sqlgen::dialect::lex::{ClassifyRules, LexProfile, reading};
 use crate::sqlgen::dialect::spec::{
-    CiLike, DialectSpec, ExplainForm, PlaceholderStyle, RedactRule, SqlHooks, SqlKnobs,
+    CiLike, DialectSpec, ExplainForm, PlaceholderStyle, RedactCall, RedactRule, SqlHooks, SqlKnobs,
     double_quoted, ph_question, single_quoted_backslash,
 };
 use crate::sqlgen::mutate::cells;
@@ -133,11 +136,14 @@ const WRITE_CALLS: &[&str] = &[
 /// procedure or table function in the current schema, so a pattern would let
 /// `TABLE(QUERY_HISTORY_PURGE())` run one.
 ///
-/// The list matches a call's last name, whatever its schema, but only a built-in without a
-/// namespace keeps its name from user functions. The others reach a user's object of that name
-/// when called unqualified or through another schema (`TABLE(myschema.QUERY_HISTORY())`, see the
-/// brief's Limits), so each carries its namespace in a comment, for the change request that
-/// matches qualified entries. Unmarked: no namespace, or a keyword.
+/// Only a built-in without a namespace keeps its name from user functions, and only unqualified:
+/// a bare entry allows an unqualified call (`s.FLATTEN()` names a schema's object, so the
+/// user's). The others reach a user's object of that name when called unqualified or through
+/// another schema (`TABLE(myschema.QUERY_HISTORY())`), so they carry their namespace and match
+/// the call's last parts: `INFORMATION_SCHEMA.X` with or without a database before it,
+/// `SNOWFLAKE.CORE.X` that whole path, `!X` a service's method (`svc!X()`). Quoted, an entry
+/// matches only its exact text, and the keywords `TABLE`, `VALUES` and `SEMANTIC_VIEW` never
+/// (`portable::classify`).
 const TABLE_FUNCTIONS: &[&str] = &[
     "TABLE",
     "VALUES",
@@ -148,104 +154,104 @@ const TABLE_FUNCTIONS: &[&str] = &[
     "SPLIT_TO_TABLE",
     "STRTOK_SPLIT_TO_TABLE",
     "RESULT_SCAN",
-    "BIND_VALUES", // INFORMATION_SCHEMA
+    "INFORMATION_SCHEMA.BIND_VALUES",
     "GET_QUERY_OPERATOR_STATS",
     "GET_OBJECT_REFERENCES",
-    "GET_LINEAGE",               // SNOWFLAKE.CORE
-    "CUMULATIVE_PRIVACY_LOSSES", // SNOWFLAKE.DATA_PRIVACY
+    "SNOWFLAKE.CORE.GET_LINEAGE",
+    "SNOWFLAKE.DATA_PRIVACY.CUMULATIVE_PRIVACY_LOSSES",
     "ESTIMATE_HYBRID_TABLE_STORAGE_USAGE",
-    "ESTIMATE_REMAINING_DP_AGGREGATES", // SNOWFLAKE.DATA_PRIVACY
+    "SNOWFLAKE.DATA_PRIVACY.ESTIMATE_REMAINING_DP_AGGREGATES",
     "CORTEX_SEARCH_DATA_SCAN",
     "CORTEX_SEARCH_BATCH",
     "MODEL_MONITOR_DRIFT_METRIC",
     "MODEL_MONITOR_PERFORMANCE_METRIC",
     "MODEL_MONITOR_STAT_METRIC",
     // Methods of a service (`svc!SPCS_GET_LOGS()`).
-    "SPCS_GET_EVENTS",
-    "SPCS_GET_LOGS",
-    "SPCS_GET_METRICS",
+    "!SPCS_GET_EVENTS",
+    "!SPCS_GET_LOGS",
+    "!SPCS_GET_METRICS",
     // SNOWFLAKE.LOCAL's AI observability functions.
-    "GET_AI_EVALUATION_DATA",
-    "GET_AI_OBSERVABILITY_EVENTS",
-    "GET_AI_OBSERVABILITY_LOGS",
-    "GET_AI_RECORD_TRACE",
-    "GET_CONTACTS",           // SNOWFLAKE.CORE
-    "GET_JOB_HISTORY",        // SNOWFLAKE.SPCS
-    "GET_TABLE_VERSIONS",     // INFORMATION_SCHEMA
-    "GET_TABLE_VERSION_REFS", // INFORMATION_SCHEMA
-    // INFORMATION_SCHEMA table functions (history and metadata, no file contents), but for the
-    // three marked.
-    "ALERT_HISTORY",
-    "APPLICATION_CALLBACK_HISTORY",
-    "APPLICATION_CONFIGURATION_VALUE_HISTORY",
-    "APPLICATION_SPECIFICATION_STATUS_HISTORY",
-    "AUTO_REFRESH_REGISTRATION_HISTORY",
-    "AUTOMATIC_CLUSTERING_HISTORY",
-    "AVAILABLE_LISTING_REFRESH_HISTORY",
-    "AVAILABLE_LISTINGS",
-    "COMPLETE_TASK_GRAPHS",
-    "COPY_HISTORY",
-    "CORTEX_SEARCH_REFRESH_HISTORY",
-    "CURRENT_TASK_GRAPHS",
-    "DATA_METRIC_FUNCTION_EXPECTATIONS",
-    "DATA_METRIC_FUNCTION_REFERENCES",
-    "DATA_QUALITY_MONITORING_EXPECTATION_STATUS", // SNOWFLAKE.LOCAL
-    "DATA_QUALITY_MONITORING_RESULTS",            // SNOWFLAKE.LOCAL
-    "DATA_TRANSFER_HISTORY",
-    "DATABASE_REFRESH_HISTORY",
-    "DATABASE_REFRESH_PROGRESS",
-    "DATABASE_REFRESH_PROGRESS_BY_JOB",
-    "DATABASE_REPLICATION_USAGE_HISTORY",
-    "DATABASE_STORAGE_USAGE_HISTORY",
-    "DBT_PROJECT_EXECUTION_HISTORY",
-    "DYNAMIC_TABLE_GRAPH_HISTORY",
-    "DYNAMIC_TABLE_REFRESH_HISTORY",
-    "DYNAMIC_TABLES",
-    "EXTERNAL_FUNCTIONS_HISTORY",
-    "EXTERNAL_TABLE_FILE_REGISTRATION_HISTORY",
-    "EXTERNAL_TABLE_FILES",
-    "ICEBERG_TABLE_FILE_REGISTRATION_HISTORY",
-    "ICEBERG_TABLE_FILES",
-    "ICEBERG_TABLE_SNAPSHOT_REFRESH_HISTORY",
-    "LISTING_REFRESH_HISTORY",
-    "LOGIN_HISTORY",
-    "LOGIN_HISTORY_BY_USER",
-    "MATERIALIZED_VIEW_REFRESH_HISTORY",
-    "NETWORK_RULE_REFERENCES",
-    "NOTIFICATION_HISTORY",
-    "ONLINE_FEATURE_TABLE_REFRESH_HISTORY",
-    "PIPE_USAGE_HISTORY",
-    "POLICY_REFERENCES",
-    "QUERY_ACCELERATION_HISTORY",
-    "QUERY_HISTORY",
-    "QUERY_HISTORY_BY_SESSION",
-    "QUERY_HISTORY_BY_USER",
-    "QUERY_HISTORY_BY_WAREHOUSE",
-    "REPLICATION_GROUP_DANGLING_REFERENCES",
-    "REPLICATION_GROUP_LAG_HISTORY",
-    "REPLICATION_GROUP_REFRESH_HISTORY",
-    "REPLICATION_GROUP_REFRESH_HISTORY_ALL",
-    "REPLICATION_GROUP_REFRESH_PROGRESS",
-    "REPLICATION_GROUP_REFRESH_PROGRESS_ALL",
-    "REPLICATION_GROUP_REFRESH_PROGRESS_BY_JOB",
-    "REPLICATION_GROUP_USAGE_HISTORY",
-    "REPLICATION_USAGE_HISTORY",
-    "REST_EVENT_HISTORY",
-    "SEARCH_OPTIMIZATION_HISTORY",
-    "SEMANTIC_VIEW_MATERIALIZATION_REFRESH_HISTORY",
-    "SERVERLESS_ALERT_HISTORY",
-    "SERVERLESS_TASK_HISTORY",
-    "STAGE_DIRECTORY_FILE_REGISTRATION_HISTORY",
-    "STAGE_STORAGE_USAGE_HISTORY",
-    "STORAGE_LIFECYCLE_POLICY_HISTORY",
-    "TAG_REFERENCES",
-    "TAG_REFERENCES_ALL_COLUMNS",
-    "TAG_REFERENCES_WITH_LINEAGE", // SNOWFLAKE.ACCOUNT_USAGE
-    "TASK_DEPENDENTS",
-    "TASK_GRAPH_CHANGES",
-    "TASK_HISTORY",
-    "WAREHOUSE_LOAD_HISTORY",
-    "WAREHOUSE_METERING_HISTORY",
+    "SNOWFLAKE.LOCAL.GET_AI_EVALUATION_DATA",
+    "SNOWFLAKE.LOCAL.GET_AI_OBSERVABILITY_EVENTS",
+    "SNOWFLAKE.LOCAL.GET_AI_OBSERVABILITY_LOGS",
+    "SNOWFLAKE.LOCAL.GET_AI_RECORD_TRACE",
+    "SNOWFLAKE.CORE.GET_CONTACTS",
+    "SNOWFLAKE.SPCS.GET_JOB_HISTORY",
+    "INFORMATION_SCHEMA.GET_TABLE_VERSIONS",
+    "INFORMATION_SCHEMA.GET_TABLE_VERSION_REFS",
+    // INFORMATION_SCHEMA table functions (history and metadata, no file contents), and three of
+    // the SNOWFLAKE database's in their alphabetical places.
+    "INFORMATION_SCHEMA.ALERT_HISTORY",
+    "INFORMATION_SCHEMA.APPLICATION_CALLBACK_HISTORY",
+    "INFORMATION_SCHEMA.APPLICATION_CONFIGURATION_VALUE_HISTORY",
+    "INFORMATION_SCHEMA.APPLICATION_SPECIFICATION_STATUS_HISTORY",
+    "INFORMATION_SCHEMA.AUTO_REFRESH_REGISTRATION_HISTORY",
+    "INFORMATION_SCHEMA.AUTOMATIC_CLUSTERING_HISTORY",
+    "INFORMATION_SCHEMA.AVAILABLE_LISTING_REFRESH_HISTORY",
+    "INFORMATION_SCHEMA.AVAILABLE_LISTINGS",
+    "INFORMATION_SCHEMA.COMPLETE_TASK_GRAPHS",
+    "INFORMATION_SCHEMA.COPY_HISTORY",
+    "INFORMATION_SCHEMA.CORTEX_SEARCH_REFRESH_HISTORY",
+    "INFORMATION_SCHEMA.CURRENT_TASK_GRAPHS",
+    "INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_EXPECTATIONS",
+    "INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES",
+    "SNOWFLAKE.LOCAL.DATA_QUALITY_MONITORING_EXPECTATION_STATUS",
+    "SNOWFLAKE.LOCAL.DATA_QUALITY_MONITORING_RESULTS",
+    "INFORMATION_SCHEMA.DATA_TRANSFER_HISTORY",
+    "INFORMATION_SCHEMA.DATABASE_REFRESH_HISTORY",
+    "INFORMATION_SCHEMA.DATABASE_REFRESH_PROGRESS",
+    "INFORMATION_SCHEMA.DATABASE_REFRESH_PROGRESS_BY_JOB",
+    "INFORMATION_SCHEMA.DATABASE_REPLICATION_USAGE_HISTORY",
+    "INFORMATION_SCHEMA.DATABASE_STORAGE_USAGE_HISTORY",
+    "INFORMATION_SCHEMA.DBT_PROJECT_EXECUTION_HISTORY",
+    "INFORMATION_SCHEMA.DYNAMIC_TABLE_GRAPH_HISTORY",
+    "INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY",
+    "INFORMATION_SCHEMA.DYNAMIC_TABLES",
+    "INFORMATION_SCHEMA.EXTERNAL_FUNCTIONS_HISTORY",
+    "INFORMATION_SCHEMA.EXTERNAL_TABLE_FILE_REGISTRATION_HISTORY",
+    "INFORMATION_SCHEMA.EXTERNAL_TABLE_FILES",
+    "INFORMATION_SCHEMA.ICEBERG_TABLE_FILE_REGISTRATION_HISTORY",
+    "INFORMATION_SCHEMA.ICEBERG_TABLE_FILES",
+    "INFORMATION_SCHEMA.ICEBERG_TABLE_SNAPSHOT_REFRESH_HISTORY",
+    "INFORMATION_SCHEMA.LISTING_REFRESH_HISTORY",
+    "INFORMATION_SCHEMA.LOGIN_HISTORY",
+    "INFORMATION_SCHEMA.LOGIN_HISTORY_BY_USER",
+    "INFORMATION_SCHEMA.MATERIALIZED_VIEW_REFRESH_HISTORY",
+    "INFORMATION_SCHEMA.NETWORK_RULE_REFERENCES",
+    "INFORMATION_SCHEMA.NOTIFICATION_HISTORY",
+    "INFORMATION_SCHEMA.ONLINE_FEATURE_TABLE_REFRESH_HISTORY",
+    "INFORMATION_SCHEMA.PIPE_USAGE_HISTORY",
+    "INFORMATION_SCHEMA.POLICY_REFERENCES",
+    "INFORMATION_SCHEMA.QUERY_ACCELERATION_HISTORY",
+    "INFORMATION_SCHEMA.QUERY_HISTORY",
+    "INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION",
+    "INFORMATION_SCHEMA.QUERY_HISTORY_BY_USER",
+    "INFORMATION_SCHEMA.QUERY_HISTORY_BY_WAREHOUSE",
+    "INFORMATION_SCHEMA.REPLICATION_GROUP_DANGLING_REFERENCES",
+    "INFORMATION_SCHEMA.REPLICATION_GROUP_LAG_HISTORY",
+    "INFORMATION_SCHEMA.REPLICATION_GROUP_REFRESH_HISTORY",
+    "INFORMATION_SCHEMA.REPLICATION_GROUP_REFRESH_HISTORY_ALL",
+    "INFORMATION_SCHEMA.REPLICATION_GROUP_REFRESH_PROGRESS",
+    "INFORMATION_SCHEMA.REPLICATION_GROUP_REFRESH_PROGRESS_ALL",
+    "INFORMATION_SCHEMA.REPLICATION_GROUP_REFRESH_PROGRESS_BY_JOB",
+    "INFORMATION_SCHEMA.REPLICATION_GROUP_USAGE_HISTORY",
+    "INFORMATION_SCHEMA.REPLICATION_USAGE_HISTORY",
+    "INFORMATION_SCHEMA.REST_EVENT_HISTORY",
+    "INFORMATION_SCHEMA.SEARCH_OPTIMIZATION_HISTORY",
+    "INFORMATION_SCHEMA.SEMANTIC_VIEW_MATERIALIZATION_REFRESH_HISTORY",
+    "INFORMATION_SCHEMA.SERVERLESS_ALERT_HISTORY",
+    "INFORMATION_SCHEMA.SERVERLESS_TASK_HISTORY",
+    "INFORMATION_SCHEMA.STAGE_DIRECTORY_FILE_REGISTRATION_HISTORY",
+    "INFORMATION_SCHEMA.STAGE_STORAGE_USAGE_HISTORY",
+    "INFORMATION_SCHEMA.STORAGE_LIFECYCLE_POLICY_HISTORY",
+    "INFORMATION_SCHEMA.TAG_REFERENCES",
+    "INFORMATION_SCHEMA.TAG_REFERENCES_ALL_COLUMNS",
+    "SNOWFLAKE.ACCOUNT_USAGE.TAG_REFERENCES_WITH_LINEAGE",
+    "INFORMATION_SCHEMA.TASK_DEPENDENTS",
+    "INFORMATION_SCHEMA.TASK_GRAPH_CHANGES",
+    "INFORMATION_SCHEMA.TASK_HISTORY",
+    "INFORMATION_SCHEMA.WAREHOUSE_LOAD_HISTORY",
+    "INFORMATION_SCHEMA.WAREHOUSE_METERING_HISTORY",
     // PIVOT's aggregates.
     "AVG",
     "COUNT",
@@ -264,14 +270,15 @@ const TABLE_FUNCTIONS: &[&str] = &[
 pub static RULES: ClassifyRules = ClassifyRules {
     // `SHOW`, `DESCRIBE` / `DESC` and `EXPLAIN` read, but `->>` may chain any statement after
     // them, so they are judged like queries (see the module doc). `LIST` / `LS` (which read a
-    // stage) and `USE` (which changes the session's role, warehouse or database) write.
+    // stage) and `USE` (which changes the session's role, warehouse or database) write, and so
+    // does a stage itself, `@`.
     queries: &["SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN"],
     inspections: &[],
     writes: &[
         "INTO", "INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "DROP", "ALTER", "TRUNCATE",
         "UNDROP", "CALL", "EXECUTE", "COPY", "PUT", "REMOVE", "RM", "LIST", "LS", "GRANT",
         "REVOKE", "USE", "SET", "UNSET", "BEGIN", "COMMIT", "ROLLBACK", "COMMENT", "DECLARE",
-        "LET", "NEXTVAL",
+        "LET", "NEXTVAL", "@",
     ],
     write_calls: WRITE_CALLS,
     table_functions: Some(TABLE_FUNCTIONS),
@@ -428,6 +435,8 @@ pub static SPEC: DialectSpec = DialectSpec {
             "ENTITY_SENTIMENT",
             "SEARCH_PREVIEW",
             "SPLIT_TEXT_*",
+            // Not the plain string function `TRANSLATE(s, 'abc', 'xyz')`.
+            "CORTEX.TRANSLATE",
         ],
         redact: &[
             RedactRule {
@@ -464,6 +473,42 @@ pub static SPEC: DialectSpec = DialectSpec {
             },
             RedactRule {
                 keyword: "OIDC_CLIENT_SECRET",
+            },
+        ],
+        // A credential passed by position: the token of a privatelink authorization, the
+        // passphrase or key of the encryption functions.
+        redact_calls: &[
+            RedactCall {
+                function: "SYSTEM$AUTHORIZE_PRIVATELINK",
+                argument: 2,
+            },
+            RedactCall {
+                function: "SYSTEM$REVOKE_PRIVATELINK",
+                argument: 2,
+            },
+            RedactCall {
+                function: "ENCRYPT",
+                argument: 2,
+            },
+            RedactCall {
+                function: "DECRYPT",
+                argument: 2,
+            },
+            RedactCall {
+                function: "TRY_DECRYPT",
+                argument: 2,
+            },
+            RedactCall {
+                function: "ENCRYPT_RAW",
+                argument: 2,
+            },
+            RedactCall {
+                function: "DECRYPT_RAW",
+                argument: 2,
+            },
+            RedactCall {
+                function: "TRY_DECRYPT_RAW",
+                argument: 2,
             },
         ],
         ..SqlKnobs::ANSI
@@ -828,7 +873,7 @@ mod tests {
             // LIMIT as an alias after AS, or before a comma, keeps the FROM list open.
             "SELECT * FROM t1 AS limit (a, b), my_udtf(t1.a)",
             "SELECT * FROM t1 limit, my_udtf(t1.a)",
-            // Named with its schema, PUBLIC's call is checked (`db..p()` is not: see the holes).
+            // PUBLIC's call is checked, named with its schema or through `db..`.
             "SELECT * FROM TABLE(db.public.my_proc())",
             "SELECT * FROM t PIVOT (my_agg(amount) FOR month IN ('JAN')) AS p",
         ] {
@@ -852,139 +897,17 @@ mod tests {
         }
     }
 
-    /// The holes the rules cannot close, each under Limits in the brief with its change request
-    /// to the shared classifier. They read today; when a change request lands and a case here
-    /// turns into a write, move it to the suite's WRITES.
+    /// The hole the rules cannot close, under Limits in the brief: it reads today; when it closes
+    /// and the case turns into a write, move it to the suite's WRITES. To verify on a real
+    /// account: whether a quoted NEXTVAL advances the sequence.
     #[test]
     fn documented_holes_read_until_their_change_requests() {
-        for sql in [
-            // A method call where a table goes: the check sees the instance, never the method.
-            "SELECT * FROM TABLE(m!PREDICT(1))",
-            "SELECT * FROM t, TABLE(m!PREDICT(t.a))",
-            "SELECT * FROM TABLE(db.s.m!PREDICT(1))",
-            "SELECT * FROM t JOIN TABLE(\"m\"!\"predict\"(t.a)) p ON true",
-            "SELECT * FROM TABLE(m ! PREDICT_TABLE(t.a) OVER (PARTITION BY t.b))",
-            // Quoted names match the allow-list in any case or Unicode spelling, where Snowflake
-            // resolves them to a user object.
-            "SELECT * FROM TABLE(\"flatten\"(1))",
-            "SELECT * FROM TABLE(\"\u{FB02}atten\"(1))",
-            "SELECT * FROM TABLE(\"Result_Scan\"('q'))",
-            "SELECT * FROM TABLE(\"re\u{17F}ult_scan\"('q'))",
-            "SELECT * FROM TABLE(INFORMATION_SCHEMA.\"query_history\"())",
-            "SELECT f.value FROM t, LATERAL \"flatten\"(input => t.v) f",
-            // Quoted, the keywords of the list are names of user objects, even in upper case.
-            "SELECT * FROM TABLE(\"VALUES\"())",
-            "SELECT * FROM TABLE(\"TABLE\"())",
-            "SELECT * FROM \"VALUES\"(1)",
-            "SELECT * FROM TABLE(\"SEMANTIC_VIEW\"())",
-            // The list matches the last name, whatever the schema. A namespaced function
-            // (INFORMATION_SCHEMA, the SNOWFLAKE database's, a service method) called unqualified
-            // or through another schema resolves through the session's schema and search path to
-            // the user's object of that name.
-            "SELECT * FROM TABLE(QUERY_HISTORY())",
-            "SELECT * FROM TABLE(LOGIN_HISTORY())",
-            "SELECT * FROM TABLE(TAG_REFERENCES('t', 'table'))",
-            "SELECT * FROM TABLE(CORTEX_SEARCH_REFRESH_HISTORY())",
-            "SELECT * FROM TABLE(myschema.QUERY_HISTORY())",
-            "SELECT * FROM t1 JOIN TABLE(myschema.QUERY_HISTORY()) q ON true",
-            "SELECT * FROM TABLE(db.public.TASK_HISTORY())",
-            "SELECT * FROM t, TABLE(BIND_VALUES('q'))",
-            "SELECT * FROM TABLE(public.GET_LINEAGE('x'))",
-            "SELECT * FROM TABLE(core.GET_CONTACTS('t1', 'TABLE'))",
-            "SELECT * FROM TABLE(GET_AI_RECORD_TRACE('db', 's', 'a', 'r'))",
-            "SELECT * FROM TABLE(DATA_QUALITY_MONITORING_RESULTS(REF_ENTITY_NAME => 't'))",
-            "SELECT * FROM TABLE(CUMULATIVE_PRIVACY_LOSSES('x'))",
-            "SELECT * FROM TABLE(GET_JOB_HISTORY())",
-            "SELECT * FROM TABLE(TAG_REFERENCES_WITH_LINEAGE('x'))",
-            "SELECT * FROM TABLE(SPCS_GET_LOGS())",
-            "SELECT * FROM TABLE(s.SPCS_GET_LOGS())",
-            // A qualified call of a built-in without a namespace names a schema object, so only
-            // the user's: a function that predates the built-in (behavior change 1430), or a
-            // procedure if one may take the name (to verify on a real account).
-            "SELECT * FROM TABLE(s.FLATTEN(input => x))",
-            "SELECT f.value FROM t, LATERAL s.FLATTEN(input => t.v) f",
-            "SELECT * FROM TABLE(s.RESULT_SCAN('q'))",
-            "SELECT * FROM TABLE(s.GENERATOR(ROWCOUNT => 1))",
-            "SELECT * FROM TABLE(s.CORTEX_SEARCH_DATA_SCAN(SERVICE_NAME => 'c'))",
-            "SELECT * FROM TABLE(s.MODEL_MONITOR_DRIFT_METRIC('m'))",
-            "SELECT * FROM t PIVOT (s.SUM(amount) FOR month IN ('JAN')) AS p",
-            "SELECT * FROM s.SEMANTIC_VIEW(sv DIMENSIONS a)",
-            // To verify on a real account: whether a quoted NEXTVAL advances the sequence.
-            "SELECT seq.\"NEXTVAL\"",
-            // A stage where a table goes, and what the flow operator chains after GET or START.
-            "SELECT $1 FROM @stage/file.csv",
-            "SHOW TABLES ->> GET @s/f.csv file:///tmp/",
-            "SELECT 1 ->> START TRANSACTION",
-            // A comment, quote or `$$` opener in an unquoted stage path, which Snowflake may read
-            // as part of the path: the scanner skips the rest, and the flow operator runs it.
-            "SELECT $1 FROM @s//x ->> DELETE FROM t",
-            "SELECT $1 FROM @~//x ->> DELETE FROM t",
-            "SELECT $1 FROM @%t//x ->> DELETE FROM t",
-            "SELECT $1 FROM @\"s\"//x ->> DELETE FROM t",
-            "SELECT $1 FROM @s/a--b ->> DELETE FROM t",
-            "SELECT $1 FROM @s/*.csv ->> DELETE FROM t --*/",
-            "SELECT $1 FROM @s/a'b ->> DELETE FROM t --'",
-            "SELECT $1 FROM @s/a\"b ->> DELETE FROM t --\"",
-            "SELECT $1 FROM @s/$$x ->> DELETE FROM t ->> SELECT $$ $$",
-            "SELECT $1 FROM @\"s\"/$$ ->> DELETE FROM t ->> SELECT $$ $$",
-            "SELECT $1 FROM @~/a.$$x ->> DELETE FROM t ->> SELECT $$ $$",
-            "SELECT $1 FROM @%t/$$x ->> DELETE FROM t ->> SELECT $$ $$",
-            "SELECT $1 FROM @db.s.st/$$x ->> DELETE FROM t ->> SELECT $$ $$",
-            // Two statements in one request, which MULTI_STATEMENT_COUNT = 1 (pinned at login)
-            // makes Snowflake refuse whole.
-            "SELECT $1 FROM @s//x; DELETE FROM t",
-            // A format character (zero-width space, word joiner, byte-order mark…) is neither
-            // space nor a letter to the scanner, so it hides the call or the word it touches. To
-            // verify on a real account: whether Snowflake skips these characters or refuses them.
-            "SELECT SYSTEM$WAIT\u{200B}(1)",
-            "SELECT SYSTEM$WAIT\u{200C}(1)",
-            "SELECT SYSTEM$WAIT\u{200D}(1)",
-            "SELECT SYSTEM$WAIT\u{2060}(1)",
-            "SELECT SYSTEM$WAIT\u{2061}(1)",
-            "SELECT SYSTEM$WAIT\u{00AD}(1)",
-            "SELECT SYSTEM$WAIT\u{180E}(1)",
-            "SELECT TO_QUERY\u{FEFF}('DELETE FROM t')",
-            "SELECT * FROM TABLE(p\u{FEFF}())",
-            "SELECT * FROM TABLE\u{200B}(p())",
-            "SELECT SYS\u{200B}TEM$WAIT(1)",
-            "SELECT 1 ->> DEL\u{200B}ETE FROM t",
-            // The FROM list ends at LIMIT before `(` or a word and at EXCEPT before `(`, but
-            // Snowflake reserves neither, so right after a table or subquery they may be its
-            // alias (with a column list, or before SAMPLE or a join; AT, CHANGES and PIVOT come
-            // before an alias) and a comma goes on with the list, unchecked. Only a user table
-            // function is reached, and only if Snowflake takes the alias: to verify on a real
-            // account. With AS, or before a comma, the list goes on and the call writes.
-            "SELECT * FROM t1 limit (a, b), LATERAL my_udtf(t1.a)",
-            "SELECT * FROM t1 except (a, b), LATERAL my_udtf(t1.a)",
-            "SELECT * FROM t1 limit (a, b), my_udtf(t1.a)",
-            "SELECT * FROM t2, t1 except (a, b), my_udtf(t1.a)",
-            "SELECT * FROM (SELECT 1) limit (a), my_udtf(1)",
-            "SELECT * FROM t1 limit SAMPLE (10), LATERAL my_udtf(t1.a)",
-            "SELECT * FROM t1 limit TABLESAMPLE (10), my_udtf(t1.a)",
-            "SELECT * FROM t1 limit INNER JOIN t2 ON true, LATERAL my_udtf(t1.a)",
-            "SELECT * FROM t1 except (a, b) JOIN t2 ON true, my_udtf(t1.a)",
-            // `db..name` is the name in the PUBLIC schema, but the walk over a qualified name
-            // stops at the second `.`, so the call after it is never looked at.
-            "SELECT * FROM TABLE(db..my_proc())",
-            "SELECT * FROM db..my_udtf(1)",
-            "SELECT * FROM t, LATERAL db..f(t.a)",
-            "SELECT * FROM t JOIN TABLE(db..p()) x ON true",
-            "SELECT * FROM TABLE(db . . p())",
-            "SELECT * FROM TABLE(db./* x */.p())",
-            "SELECT * FROM TABLE(\"db\"..\"p\"())",
-            "SELECT * FROM TABLE(DB..P ())",
-            "SELECT * FROM t1, db..p()",
-            "SELECT * FROM (db..p())",
-            "SELECT * FROM t1 ASOF JOIN db..p() MATCH_CONDITION (t1.a >= 1)",
-            "SELECT * FROM t PIVOT (db..my_agg(amount) FOR month IN ('JAN')) AS p",
-            "SELECT * FROM db..SEMANTIC_VIEW(sv DIMENSIONS a)",
-        ] {
-            assert_eq!(
-                classify_snowflake(sql),
-                StatementClass::Read,
-                "{sql} writes now: move it to the suite's WRITES and update the brief's Limits"
-            );
-        }
+        let sql = "SELECT seq.\"NEXTVAL\"";
+        assert_eq!(
+            classify_snowflake(sql),
+            StatementClass::Read,
+            "{sql} writes now: move it to the suite's WRITES and update the brief's Limits"
+        );
     }
 
     /// Every secret parameter of the CREATE / ALTER syntax keeps its literal out of the trace.
@@ -1107,9 +1030,58 @@ mod tests {
             "CREATE SECURITY INTEGRATION s TYPE = SCIM SCIM_CLIENT = 'OKTA' SYNC_PASSWORD = TRUE",
             "ALTER USER u SET RSA_PUBLIC_KEY = 'MIIBIjANBg'",
             "SELECT * FROM t WHERE token = 'x'",
+            "SELECT ENCRYPT(v, k), TRY_DECRYPT('ciphertext')",
         ] {
             assert_eq!(redact(sql).sql, sql, "{sql}");
         }
+    }
+
+    /// A credential passed to a function by position is masked too, and only that argument.
+    #[test]
+    fn redacts_the_secret_arguments_of_functions() {
+        let redact = |sql: &str| crate::sqlgen::portable::redact::redact_spec(&SPEC, sql);
+        let mask = crate::sqlgen::admin::PASSWORD_MASK;
+        for (sql, masked) in [
+            (
+                "SELECT SYSTEM$AUTHORIZE_PRIVATELINK('185...', 'eyJr0k3n')",
+                format!("SELECT SYSTEM$AUTHORIZE_PRIVATELINK('185...', {mask})"),
+            ),
+            (
+                "select system$revoke_privatelink('sub-id', 'tok')",
+                format!("select system$revoke_privatelink('sub-id', {mask})"),
+            ),
+            (
+                "SELECT ENCRYPT('value', 'pass\\'phrase'), DECRYPT(c, 'pp') FROM t",
+                format!("SELECT ENCRYPT('value', {mask}), DECRYPT(c, {mask}) FROM t"),
+            ),
+            (
+                "SELECT TRY_DECRYPT(c, 'pp', 'aad', 'AES-GCM')",
+                format!("SELECT TRY_DECRYPT(c, {mask}, 'aad', 'AES-GCM')"),
+            ),
+            (
+                "SELECT ENCRYPT_RAW(v, TO_BINARY('k', 'HEX'), iv), DECRYPT_RAW(v, 'k2', iv), \
+                 TRY_DECRYPT_RAW(v, 'k3', iv)",
+                format!(
+                    "SELECT ENCRYPT_RAW(v, TO_BINARY({mask}, {mask}), iv), DECRYPT_RAW(v, {mask}, \
+                     iv), TRY_DECRYPT_RAW(v, {mask}, iv)"
+                ),
+            ),
+        ] {
+            assert_eq!(redact(sql).sql, masked, "{sql}");
+        }
+    }
+
+    /// The Metrics Board refuses Cortex's TRANSLATE, which bills per call, but not the plain
+    /// string function of that name.
+    #[test]
+    fn cortex_translate_is_a_side_effect_by_its_schema() {
+        use crate::sqlgen::portable::classify::calls_listed_function;
+        let side = |sql| calls_listed_function(&LEX, SPEC.knobs.side_effect_functions, sql);
+        assert!(side(
+            "SELECT SNOWFLAKE.CORTEX.TRANSLATE(body, 'de', 'en') FROM docs"
+        ));
+        assert!(side("SELECT cortex.translate(body, '', 'en') FROM docs"));
+        assert!(!side("SELECT TRANSLATE(s, 'abc', 'xyz') FROM t"));
     }
 
     #[test]
