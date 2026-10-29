@@ -103,6 +103,13 @@ pub struct LexProfile {
     pub terminator_optional: bool,
     /// `BEGIN … END` blocks (procedural bodies, scripts) keep their inner `;`.
     pub begin_end_bodies: bool,
+    /// The server reads `(expr).name` as `name(expr)` when the value has no field of that name
+    /// (attribute notation, the PostgreSQL family): to the classifier a name after `)` or `]`
+    /// and `.`, and each later name of such a chain (`(1).abs.name`), is a call of it. Written
+    /// to the renderer only when on, so the other dialects' `lex/<d>.json` stay as they were.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub attribute_calls: bool,
 }
 
 /// What the portable classifier (`sqlgen::portable::classify`) decides with. Words are upper
@@ -680,6 +687,7 @@ mod tests {
         batch_separator: None,
         terminator_optional: false,
         begin_end_bodies: false,
+        attribute_calls: false,
     };
 
     fn kinds(lex: &LexProfile, reading: Reading, sql: &str) -> Vec<(TokenKind, String)> {

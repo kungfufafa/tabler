@@ -68,6 +68,7 @@ pub static LEX: LexProfile = LexProfile {
     batch_separator: None,
     terminator_optional: false,
     begin_end_bodies: true,
+    attribute_calls: false,
 };
 
 /// What a `SELECT` may call that changes the account or the session, reads staged files, runs

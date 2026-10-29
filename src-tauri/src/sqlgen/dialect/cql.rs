@@ -45,6 +45,7 @@ pub static LEX: LexProfile = LexProfile {
     terminator_optional: false,
     // A batch ends with `APPLY BATCH`, not `END`: `split_cql` keeps it whole.
     begin_end_bodies: false,
+    attribute_calls: false,
 };
 
 pub static RULES: ClassifyRules = ClassifyRules {

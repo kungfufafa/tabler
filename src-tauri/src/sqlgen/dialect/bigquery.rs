@@ -48,6 +48,7 @@ pub static LEX: LexProfile = LexProfile {
     batch_separator: None,
     terminator_optional: false,
     begin_end_bodies: true,
+    attribute_calls: false,
 };
 
 /// The functions a query may call that reach another service or change something. A one-part

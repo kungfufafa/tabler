@@ -211,6 +211,64 @@ async fn imports_into_an_existing_table() {
     assert!(err.to_string().contains("primary key"), "{err}");
 }
 
+/// UPDATE ON DUPLICATE where the server has no upsert (Greenplum 6, Redshift: `DataCaps::upsert`)
+/// is refused before anything reaches it.
+#[tokio::test]
+async fn an_upsert_is_refused_where_the_server_has_none() {
+    use crate::sqlgen::Dialect;
+    use crate::testkit::FakeSession;
+    use crate::types::caps::SessionCaps;
+    use crate::types::profile::Driver;
+
+    let dir = tempfile::tempdir().unwrap();
+    let meta = people(&session(dir.path()).await).await;
+    let csv = write(
+        dir.path(),
+        "u.csv",
+        b"id,name,age,active
+1,Ann,30,true
+",
+    );
+    let upsert = request(&csv, "people", &PEOPLE_MAP, InsertMode::UpdateOnDuplicate);
+    let mut caps = SessionCaps::core(Driver::Sqlite, Dialect::Sqlite, None);
+    caps.data.upsert = false;
+    let none = FakeSession::new(caps);
+    let err = run_csv_import(
+        &none,
+        &upsert,
+        Some(&meta),
+        |_| {},
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "unsupported: SQLite: updating the rows whose key exists is not available"
+    );
+    assert!(none.calls().is_empty(), "{:?}", none.calls());
+    // Plain inserts go on there, and the upsert where the server has one.
+    let insert = request(&csv, "people", &PEOPLE_MAP, InsertMode::StopOnError);
+    run_csv_import(
+        &none,
+        &insert,
+        Some(&meta),
+        |_| {},
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let has = FakeSession::new(SessionCaps::core(Driver::Sqlite, Dialect::Sqlite, None));
+    run_csv_import(&has, &upsert, Some(&meta), |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        has.calls().iter().any(|c| c.contains("ON CONFLICT")),
+        "{:?}",
+        has.calls()
+    );
+}
+
 #[tokio::test]
 async fn stop_on_error_rolls_everything_back_and_names_the_rows() {
     let dir = tempfile::tempdir().unwrap();

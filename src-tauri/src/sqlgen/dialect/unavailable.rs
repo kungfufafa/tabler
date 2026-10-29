@@ -35,6 +35,7 @@ const LEX: LexProfile = LexProfile {
     batch_separator: None,
     terminator_optional: false,
     begin_end_bodies: false,
+    attribute_calls: false,
 };
 
 /// Nothing reads (`classify` answers WRITE without them anyway).

@@ -10,7 +10,8 @@ import type { Dialect } from "@/lib/ipc";
  * PRAGMA, which SQLite applies while preparing it), WITH … without a data-modifying keyword, and
  * SQLite PRAGMAs that only read. Everything else, including empty and unknown statements, is a
  * WRITE, and so is any statement that calls `set_config(…)` (it changes settings,
- * `default_transaction_read_only` too). Comments, strings and quoted identifiers are ignored, so
+ * `default_transaction_read_only` too; on PostgreSQL also in attribute notation,
+ * `(…).set_config`). Comments, strings and quoted identifiers are ignored, so
  * `-- delete` or `'DROP'` change nothing; a `;` outside them starts another statement (all of them
  * must be reads). The text is read under every quoting / comment mode the server may be in, and is
  * a READ only under all of them. The check is deliberately coarse in the safe direction: a doubtful
@@ -307,7 +308,7 @@ const hasWord = (tokens: Token[], words: ReadonlySet<string>) =>
   tokens.some((t) => t.word && words.has(t.text));
 const INTO = new Set(["INTO"]);
 
-function classifyExplain(tokens: Token[]): StatementClass {
+function classifyExplain(tokens: Token[], attributes: boolean): StatementClass {
   let analyze = false;
   let i = 0;
   if (tokens[0]?.text === "(") {
@@ -344,7 +345,7 @@ function classifyExplain(tokens: Token[]): StatementClass {
   // PRAGMA while it prepares it, so `EXPLAIN [QUERY PLAN] PRAGMA query_only = 0` changes the
   // setting: it is the PRAGMA. A lone `pragma` is a table to MySQL's EXPLAIN / DESCRIBE.
   const pragma = tokens[i]?.text === "PRAGMA" && tokens.length > i + 1;
-  return analyze || pragma ? classifyTokens(tokens.slice(i)) : "read";
+  return analyze || pragma ? classifyTokens(tokens.slice(i), attributes) : "read";
 }
 
 function classifyPragma(tokens: Token[]): StatementClass {
@@ -360,14 +361,44 @@ function classifyPragma(tokens: Token[]): StatementClass {
 }
 
 /**
- * `set_config(…)`, `pg_catalog.set_config(…)`: changes settings (even
- * `default_transaction_read_only`) although it is called from a SELECT.
+ * Whether the word at `i` is selected from a value: `(expr).name`, `arr[1].name`, or a later name
+ * of such a chain (`(expr).a.name`, `(expr)."a".name`). PostgreSQL calls `name(value)` when the
+ * value has no field of that name (attribute notation). A name after a plain name (`t.name`,
+ * `t."a".name`) is a column or a qualified name, never such a call.
  */
-const callsSetConfig = (tokens: Token[]) =>
-  tokens.some((t, k) => t.word && t.text === "SET_CONFIG" && tokens[k + 1]?.text === "(");
+function inAttributeNotation(tokens: Token[], i: number): boolean {
+  let k = i;
+  while (k >= 2 && tokens[k - 1]!.text === ".") {
+    const before = tokens[k - 2]!;
+    if (before.text === ")" || before.text === "]") return true;
+    if (before.word) {
+      k -= 2;
+    } else if (before.text === ".") {
+      // Two dots in a row: a quoted name of the chain stood between them, blanked to a space
+      // (`(x)."f".set_config`), so the walk goes on from the first dot.
+      k -= 1;
+    } else {
+      return false;
+    }
+  }
+  return false;
+}
 
-function classifyTokens(tokens: Token[]): StatementClass {
-  if (callsSetConfig(tokens)) return "write";
+/**
+ * `set_config(…)`, `pg_catalog.set_config(…)`: changes settings (even
+ * `default_transaction_read_only`) although it is called from a SELECT. With `attributes`
+ * (PostgreSQL) also in attribute notation (`(…).set_config`).
+ */
+const callsSetConfig = (tokens: Token[], attributes: boolean) =>
+  tokens.some(
+    (t, k) =>
+      t.word &&
+      t.text === "SET_CONFIG" &&
+      (tokens[k + 1]?.text === "(" || (attributes && inAttributeNotation(tokens, k))),
+  );
+
+function classifyTokens(tokens: Token[], attributes: boolean): StatementClass {
+  if (callsSetConfig(tokens, attributes)) return "write";
   let i = 0;
   while (tokens[i]?.text === "(") i += 1;
   const first = tokens[i];
@@ -386,7 +417,7 @@ function classifyTokens(tokens: Token[]): StatementClass {
     case "EXPLAIN":
     case "DESCRIBE":
     case "DESC":
-      return classifyExplain(rest);
+      return classifyExplain(rest, attributes);
     case "PRAGMA":
       return classifyPragma(rest);
     default:
@@ -396,7 +427,11 @@ function classifyTokens(tokens: Token[]): StatementClass {
 
 function readsUnder(sql: string, dialect: Dialect, reading: Reading): boolean {
   const statements = statementTokens(codeOnly(sql, dialect, reading));
-  return statements.length > 0 && statements.every((tokens) => classifyTokens(tokens) === "read");
+  const attributes = dialect === "postgres";
+  return (
+    statements.length > 0 &&
+    statements.every((tokens) => classifyTokens(tokens, attributes) === "read")
+  );
 }
 
 /**

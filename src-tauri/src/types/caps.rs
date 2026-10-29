@@ -305,6 +305,9 @@ pub struct DataCaps {
     pub affected: Affected,
     /// A column can be set to `DEFAULT` in an UPDATE.
     pub default_keyword: bool,
+    /// The import may update the rows whose key exists (`ON CONFLICT … DO UPDATE`, MySQL's
+    /// `ON DUPLICATE KEY UPDATE`): off where the server has no upsert (Greenplum 6, Redshift).
+    pub upsert: bool,
     pub server_exprs: Vec<ServerExpr>,
     /// Most bind parameters one statement takes.
     pub max_params: u32,
@@ -465,6 +468,7 @@ impl SessionCaps {
                 transactions: TxMode::Atomic,
                 affected: Affected::Exact,
                 default_keyword,
+                upsert: true,
                 server_exprs: SERVER_EXPRS.to_vec(),
                 max_params: crate::sqlgen::sql::max_params(dialect) as u32,
             },
@@ -511,6 +515,7 @@ impl SessionCaps {
                 transactions: TxMode::None,
                 affected: Affected::Unknown,
                 default_keyword: false,
+                upsert: false,
                 server_exprs: Vec::new(),
                 max_params: 0,
             },
@@ -623,6 +628,18 @@ impl SessionCaps {
         self
     }
 
+    /// Refuses the import's upsert (`InsertMode::UpdateOnDuplicate`) where the server has none.
+    pub fn require_upsert(&self) -> Result<(), AppError> {
+        if self.data.upsert {
+            Ok(())
+        } else {
+            Err(AppError::Unsupported(format!(
+                "{}: updating the rows whose key exists is not available",
+                self.engine()
+            )))
+        }
+    }
+
     /// The engine's name: the flavor's when the session found one ("Amazon Redshift").
     pub fn engine(&self) -> &'static str {
         let pg_flavor = match self.flavor {
@@ -671,6 +688,11 @@ mod tests {
         ];
         for c in &caps {
             assert_eq!(c.features, Feature::ALL, "{:?}: every feature", c.driver);
+            assert!(
+                c.data.upsert && c.require_upsert().is_ok(),
+                "{:?}",
+                c.driver
+            );
             assert!(Feature::ALL.iter().all(|f| c.require(*f).is_ok()));
         }
         let path =
@@ -705,6 +727,10 @@ mod tests {
         );
         assert_eq!(redshift.features, [Feature::Editor, Feature::StructureView]);
         assert_eq!(redshift.dialect, Some(SqlDialect::Redshift));
+        assert_eq!(
+            unsupported(redshift.require_upsert()),
+            "Amazon Redshift: updating the rows whose key exists is not available"
+        );
         assert_eq!(redshift.flavor, Some(Flavor::Redshift));
         assert_eq!(
             unsupported(redshift.require(Feature::StructureEdit)),

@@ -101,6 +101,7 @@ pub static LEX: LexProfile = LexProfile {
     batch_separator: None,
     terminator_optional: false,
     begin_end_bodies: false,
+    attribute_calls: false,
 };
 
 pub static RULES: ClassifyRules = ClassifyRules {

@@ -40,8 +40,7 @@ impl<'a> Traced<'a> {
     }
 
     /// The server's `server_version_num` (`flavor::server_version_num`), for catalog queries
-    /// that differ between versions (the flavors' hooks).
-    #[allow(dead_code)]
+    /// that differ between versions (`table_meta`, the flavors' hooks).
     pub fn server_version_num(&self) -> i32 {
         self.server_version_num
     }
@@ -170,7 +169,7 @@ fn value_of_debug(text: &str) -> Value {
 const USER_SCHEMA_FILTER: &str = "n.nspname NOT IN ('pg_catalog','information_schema','pg_toast') \
      AND n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast\\_temp\\_%'";
 
-fn kind_of_relkind(relkind: &str) -> TableKind {
+pub(crate) fn kind_of_relkind(relkind: &str) -> TableKind {
     match relkind {
         "v" => TableKind::View,
         "m" => TableKind::MaterializedView,
@@ -180,7 +179,7 @@ fn kind_of_relkind(relkind: &str) -> TableKind {
     }
 }
 
-fn first_char(s: Option<&str>) -> Option<char> {
+pub(crate) fn first_char(s: Option<&str>) -> Option<char> {
     s.and_then(|s| s.chars().next())
 }
 
@@ -193,7 +192,8 @@ pub async fn default_schema(client: &Traced<'_>) -> Result<Option<String>, AppEr
     Ok(row.try_get::<_, Option<String>>(0)?)
 }
 
-async fn schema_of(client: &Traced<'_>, table: &TableRef) -> Result<String, AppError> {
+/// The table's schema, or the one unqualified names resolve to.
+pub(crate) async fn schema_of(client: &Traced<'_>, table: &TableRef) -> Result<String, AppError> {
     match table.schema.as_deref().filter(|s| !s.is_empty()) {
         Some(s) => Ok(s.to_string()),
         None => Ok(default_schema(client)
@@ -287,7 +287,7 @@ pub async fn view_definition(
 }
 
 /// (char_max_len, numeric_precision, numeric_scale) from a type name and its `atttypmod`.
-fn typmod_info(type_name: &str, typmod: i32) -> (Option<i64>, Option<i32>, Option<i32>) {
+pub(crate) fn typmod_info(type_name: &str, typmod: i32) -> (Option<i64>, Option<i32>, Option<i32>) {
     match type_name {
         "varchar" | "bpchar" if typmod >= 4 => (Some((typmod - 4) as i64), None, None),
         "bit" | "varbit" if typmod >= 0 => (Some(typmod as i64), None, None),
@@ -336,7 +336,7 @@ pub fn parse_trigger_def(def: &str) -> (Option<String>, Vec<String>) {
     (Some(timing.to_string()), events)
 }
 
-fn fk_action(code: &str) -> String {
+pub(crate) fn fk_action(code: &str) -> String {
     match code {
         "r" => "RESTRICT",
         "c" => "CASCADE",
@@ -345,6 +345,99 @@ fn fk_action(code: &str) -> String {
         _ => "NO ACTION",
     }
     .to_string()
+}
+
+/// PostgreSQL 10, 11 and 12 brought what `table_meta` reads of identity columns, of the INCLUDE
+/// columns of an index and of generated columns.
+const PG10: i32 = 100_000;
+const PG11: i32 = 110_000;
+const PG12: i32 = 120_000;
+
+/// Whether a server of `server_version_num` is `version` or later. An unknown version (0) counts
+/// as a current one, whose SQL plain PostgreSQL has always been sent.
+fn at_least(server_version_num: i32, version: i32) -> bool {
+    server_version_num == 0 || server_version_num >= version
+}
+
+/// `table_meta`'s column query: identity columns from PostgreSQL 10 (`attidentity`), generated
+/// ones from 12 (`attgenerated`); an older server (and Greenplum 6, which is 9.4) reads none.
+pub(crate) fn columns_sql(server_version_num: i32) -> String {
+    let identity = if at_least(server_version_num, PG10) {
+        "a.attidentity::text"
+    } else {
+        "NULL::text"
+    };
+    let generated = if at_least(server_version_num, PG12) {
+        "a.attgenerated <> ''"
+    } else {
+        "false"
+    };
+    format!(
+        "SELECT a.attnum::int, a.attname::text, format_type(a.atttypid, a.atttypmod)::text, \
+                t.typname::text, t.typtype::text, t.typcategory::text, \
+                bt.typname::text, bt.typtype::text, bt.typcategory::text, \
+                et.typname::text, \
+                NOT a.attnotnull, \
+                pg_get_expr(d.adbin, d.adrelid)::text, \
+                {identity}, {generated}, \
+                col_description(c.oid, a.attnum)::text, \
+                (SELECT string_agg(e.enumlabel::text, E'\\x1f' ORDER BY e.enumsortorder) \
+                   FROM pg_enum e WHERE e.enumtypid = COALESCE(bt.oid, t.oid)), \
+                (SELECT string_agg(e.enumlabel::text, E'\\x1f' ORDER BY e.enumsortorder) \
+                   FROM pg_enum e WHERE e.enumtypid = t.typelem), \
+                CASE WHEN a.attcollation <> 0 AND a.attcollation <> t.typcollation \
+                     THEN co.collname::text END, \
+                a.atttypmod::int, COALESCE(bt.typtypmod, -1)::int, \
+                (WITH RECURSIVE dom(base, depth) AS ( \
+                   SELECT CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE et.typbasetype END, 1 \
+                    WHERE t.typtype = 'd' OR et.typtype = 'd' \
+                   UNION ALL \
+                   SELECT d.typbasetype, dom.depth + 1 FROM dom \
+                     JOIN pg_type d ON d.oid = dom.base AND d.typtype = 'd') \
+                 SELECT format_type(dom.base, NULL) || CASE WHEN t.typtype = 'd' THEN '' ELSE '[]' END \
+                   FROM dom ORDER BY dom.depth DESC LIMIT 1) \
+         FROM pg_attribute a \
+         JOIN pg_class c ON c.oid = a.attrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         JOIN pg_type t ON t.oid = a.atttypid \
+         LEFT JOIN pg_type bt ON t.typtype = 'd' AND bt.oid = t.typbasetype \
+         LEFT JOIN pg_type et ON t.typcategory = 'A' AND et.oid = t.typelem \
+         LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+         LEFT JOIN pg_collation co ON co.oid = a.attcollation \
+         WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped \
+         ORDER BY a.attnum"
+    )
+}
+
+/// `table_meta`'s index query: before PostgreSQL 11 every column of an index is a key
+/// (`indnatts`; `indnkeyatts` and INCLUDE came with 11).
+pub(crate) fn indexes_sql(server_version_num: i32) -> String {
+    let keys = if at_least(server_version_num, PG11) {
+        "ix.indnkeyatts"
+    } else {
+        "ix.indnatts"
+    };
+    format!(
+        "SELECT i.relname::text, ix.indisunique, ix.indisprimary, am.amname::text, \
+                pg_get_indexdef(ix.indexrelid)::text, \
+                pg_get_expr(ix.indpred, ix.indrelid)::text, \
+                (SELECT string_agg(pg_get_indexdef(ix.indexrelid, k.ord::int, true), \
+                                   E'\\x1f' ORDER BY k.ord) \
+                   FROM unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) \
+                  WHERE k.ord <= {keys}), \
+                obj_description(ix.indexrelid, 'pg_class')::text, \
+                (SELECT string_agg(a.attname::text, E'\\x1f' ORDER BY k.ord) \
+                   FROM unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) \
+                   JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum \
+                  WHERE k.ord > {keys}) \
+         FROM pg_index ix \
+         JOIN pg_class i ON i.oid = ix.indexrelid \
+         JOIN pg_class t ON t.oid = ix.indrelid \
+         JOIN pg_namespace n ON n.oid = t.relnamespace \
+         JOIN pg_am am ON am.oid = i.relam \
+         WHERE n.nspname = $1 AND t.relname = $2 \
+         ORDER BY ix.indisprimary DESC, i.relname"
+    )
 }
 
 pub async fn table_meta(client: &Traced<'_>, table: &TableRef) -> Result<TableMeta, AppError> {
@@ -364,9 +457,38 @@ pub async fn table_meta(client: &Traced<'_>, table: &TableRef) -> Result<TableMe
         .await?
         .ok_or_else(|| AppError::NotFound(format!("table {schema}.{name}")))?;
     let relkind: String = rel.try_get(0)?;
-    let kind = kind_of_relkind(&relkind);
-    let comment: Option<String> = rel.try_get(1)?;
-    let row_estimate: Option<i64> = rel.try_get(2)?;
+    let relation = Relation {
+        kind: kind_of_relkind(&relkind),
+        comment: rel.try_get(1)?,
+        row_estimate: rel.try_get(2)?,
+    };
+    table_meta_of(client, schema, name, relation).await
+}
+
+/// What `table_meta` reads of the relation itself. An engine that reads it its own way
+/// (Greenplum 6's external and legacy partitioned tables) hands it to `table_meta_of`.
+pub(crate) struct Relation {
+    pub kind: TableKind,
+    pub comment: Option<String>,
+    pub row_estimate: Option<i64>,
+}
+
+/// The rest of `table_meta` for the relation `name` of `schema`: its key, columns, indexes,
+/// foreign keys, checks and triggers, read with the catalog SQL of the server's version
+/// (`columns_sql`, `indexes_sql`).
+pub(crate) async fn table_meta_of(
+    client: &Traced<'_>,
+    schema: String,
+    name: &str,
+    relation: Relation,
+) -> Result<TableMeta, AppError> {
+    let params: &[&(dyn tokio_postgres::types::ToSql + Sync)] = &[&schema, &name];
+    let Relation {
+        kind,
+        comment,
+        row_estimate,
+    } = relation;
+    let v = client.server_version_num();
 
     // Primary key (ordered)
     let pk_rows = client
@@ -391,44 +513,7 @@ pub async fn table_meta(client: &Traced<'_>, table: &TableRef) -> Result<TableMe
     }
 
     // Columns
-    let col_rows = client
-        .query(
-            "SELECT a.attnum::int, a.attname::text, format_type(a.atttypid, a.atttypmod)::text, \
-                    t.typname::text, t.typtype::text, t.typcategory::text, \
-                    bt.typname::text, bt.typtype::text, bt.typcategory::text, \
-                    et.typname::text, \
-                    NOT a.attnotnull, \
-                    pg_get_expr(d.adbin, d.adrelid)::text, \
-                    a.attidentity::text, a.attgenerated <> '', \
-                    col_description(c.oid, a.attnum)::text, \
-                    (SELECT string_agg(e.enumlabel::text, E'\\x1f' ORDER BY e.enumsortorder) \
-                       FROM pg_enum e WHERE e.enumtypid = COALESCE(bt.oid, t.oid)), \
-                    (SELECT string_agg(e.enumlabel::text, E'\\x1f' ORDER BY e.enumsortorder) \
-                       FROM pg_enum e WHERE e.enumtypid = t.typelem), \
-                    CASE WHEN a.attcollation <> 0 AND a.attcollation <> t.typcollation \
-                         THEN co.collname::text END, \
-                    a.atttypmod::int, COALESCE(bt.typtypmod, -1)::int, \
-                    (WITH RECURSIVE dom(base, depth) AS ( \
-                       SELECT CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE et.typbasetype END, 1 \
-                        WHERE t.typtype = 'd' OR et.typtype = 'd' \
-                       UNION ALL \
-                       SELECT d.typbasetype, dom.depth + 1 FROM dom \
-                         JOIN pg_type d ON d.oid = dom.base AND d.typtype = 'd') \
-                     SELECT format_type(dom.base, NULL) || CASE WHEN t.typtype = 'd' THEN '' ELSE '[]' END \
-                       FROM dom ORDER BY dom.depth DESC LIMIT 1) \
-             FROM pg_attribute a \
-             JOIN pg_class c ON c.oid = a.attrelid \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             JOIN pg_type t ON t.oid = a.atttypid \
-             LEFT JOIN pg_type bt ON t.typtype = 'd' AND bt.oid = t.typbasetype \
-             LEFT JOIN pg_type et ON t.typcategory = 'A' AND et.oid = t.typelem \
-             LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
-             LEFT JOIN pg_collation co ON co.oid = a.attcollation \
-             WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped \
-             ORDER BY a.attnum",
-            params,
-        )
-        .await?;
+    let col_rows = client.query(&columns_sql(v), params).await?;
     let mut columns = Vec::with_capacity(col_rows.len());
     for row in col_rows {
         let attnum: i32 = row.try_get(0)?;
@@ -535,30 +620,7 @@ pub async fn table_meta(client: &Traced<'_>, table: &TableRef) -> Result<TableMe
         kind,
         TableKind::Table | TableKind::Partitioned | TableKind::MaterializedView
     ) {
-        let rows = client
-            .query(
-                "SELECT i.relname::text, ix.indisunique, ix.indisprimary, am.amname::text, \
-                        pg_get_indexdef(ix.indexrelid)::text, \
-                        pg_get_expr(ix.indpred, ix.indrelid)::text, \
-                        (SELECT string_agg(pg_get_indexdef(ix.indexrelid, k.ord::int, true), \
-                                           E'\\x1f' ORDER BY k.ord) \
-                           FROM unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) \
-                          WHERE k.ord <= ix.indnkeyatts), \
-                        obj_description(ix.indexrelid, 'pg_class')::text, \
-                        (SELECT string_agg(a.attname::text, E'\\x1f' ORDER BY k.ord) \
-                           FROM unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) \
-                           JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum \
-                          WHERE k.ord > ix.indnkeyatts) \
-                 FROM pg_index ix \
-                 JOIN pg_class i ON i.oid = ix.indexrelid \
-                 JOIN pg_class t ON t.oid = ix.indrelid \
-                 JOIN pg_namespace n ON n.oid = t.relnamespace \
-                 JOIN pg_am am ON am.oid = i.relam \
-                 WHERE n.nspname = $1 AND t.relname = $2 \
-                 ORDER BY ix.indisprimary DESC, i.relname",
-                params,
-            )
-            .await?;
+        let rows = client.query(&indexes_sql(v), params).await?;
         for row in rows {
             let cols: Option<String> = row.try_get(6)?;
             let include: Option<String> = row.try_get(8)?;
@@ -785,5 +847,119 @@ mod tests {
         assert_eq!(kind_of_relkind("v"), TableKind::View);
         assert_eq!(kind_of_relkind("m"), TableKind::MaterializedView);
         assert_eq!(kind_of_relkind("f"), TableKind::ForeignTable);
+    }
+
+    /// Identity columns came with PostgreSQL 10, INCLUDE columns of an index with 11 and generated
+    /// columns with 12: an older server gets the column and index queries without them. A
+    /// current server, and one whose version is unknown, get the SQL they always got (the
+    /// `vanilla` golden of `drivers::postgres` holds it whole).
+    #[test]
+    fn the_catalog_sql_follows_the_server_version() {
+        for (v, identity, include, generated) in [
+            (90_426, false, false, false),
+            (90_624, false, false, false),
+            (100_023, true, false, false),
+            (110_022, true, true, false),
+            (120_000, true, true, true),
+            (170_002, true, true, true),
+            (0, true, true, true),
+        ] {
+            let columns = columns_sql(v);
+            assert_eq!(columns.contains("a.attidentity::text"), identity, "{v}");
+            assert_eq!(columns.contains("a.attgenerated <> ''"), generated, "{v}");
+            assert_eq!(columns.contains("NULL::text, "), !identity, "{v}");
+            let indexes = indexes_sql(v);
+            assert_eq!(
+                indexes.matches("ix.indnkeyatts").count(),
+                if include { 2 } else { 0 }
+            );
+            assert_eq!(
+                indexes.matches("ix.indnatts").count(),
+                if include { 0 } else { 2 }
+            );
+        }
+        assert_eq!(columns_sql(0), columns_sql(170_002));
+        assert_eq!(indexes_sql(0), indexes_sql(170_002));
+    }
+
+    /// `table_meta` on PostgreSQL 9.4 sends no column it lacks and reads the table.
+    #[tokio::test]
+    async fn table_meta_reads_an_old_server() {
+        use crate::drivers::postgres::testing::{Cell, Col, FakePg};
+
+        crate::testkit::install_crypto();
+        let mut types = vec![Col::int4("attnum")];
+        types.extend((1..10).map(|i| Col::text(&format!("t{i}"))));
+        types.extend([
+            Col::bool("nullable"),
+            Col::text("default"),
+            Col::text("identity"),
+        ]);
+        types.push(Col::bool("generated"));
+        types.extend((14..18).map(|i| Col::text(&format!("t{i}"))));
+        types.extend([Col::int4("typmod"), Col::int4("dtypmod"), Col::text("base")]);
+        let mut id = vec![Cell::Int(1), Cell::text("id"), Cell::text("integer")];
+        id.extend([Cell::text("int4"), Cell::text("b"), Cell::text("N")]);
+        id.extend([Cell::Null, Cell::Null, Cell::Null, Cell::Null]);
+        id.extend([Cell::Bool(false), Cell::Null, Cell::Null, Cell::Bool(false)]);
+        id.extend([Cell::Null, Cell::Null, Cell::Null, Cell::Null]);
+        id.extend([Cell::Int(-1), Cell::Int(-1), Cell::Null]);
+        let pg = FakePg::new()
+            .server_version("9.4.26")
+            .rows(
+                "SELECT c.relkind::text, obj_description",
+                vec![
+                    Col::text("relkind"),
+                    Col::text("comment"),
+                    Col::int8("reltuples"),
+                ],
+                vec![vec![Cell::text("r"), Cell::Null, Cell::Int(3)]],
+            )
+            // The columns 9.4 lacks fail the statement, as there.
+            .error(
+                "attidentity",
+                "42703",
+                "column a.attidentity does not exist",
+            )
+            .error(
+                "attgenerated",
+                "42703",
+                "column a.attgenerated does not exist",
+            )
+            .error(
+                "indnkeyatts",
+                "42703",
+                "column ix.indnkeyatts does not exist",
+            )
+            .rows(
+                "format_type(a.atttypid, a.atttypmod)::text",
+                types,
+                vec![id],
+            )
+            .start()
+            .await;
+        let mut config = tokio_postgres::Config::new();
+        config
+            .host("127.0.0.1")
+            .port(pg.port())
+            .user("u")
+            .password("pw")
+            .dbname("d");
+        let (client, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(connection);
+        let trace = SqlTrace::default();
+        let c = Traced::new(&client, &trace, 90_426);
+        let meta = table_meta(&c, &TableRef::new(Some("public"), "t"))
+            .await
+            .unwrap();
+        assert_eq!(meta.kind, TableKind::Table);
+        assert_eq!(meta.row_estimate, Some(3));
+        assert_eq!(meta.columns.len(), 1);
+        assert!(!meta.columns[0].is_auto_increment && !meta.columns[0].is_generated);
+        let sent = pg.queries().join("\n");
+        assert!(
+            sent.contains("NULL::text, false, ") && sent.contains("ix.indnatts"),
+            "{sent}"
+        );
     }
 }

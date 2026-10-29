@@ -44,6 +44,7 @@ pub const DIAGRAM_COLS: usize = 14;
 // PG: a partitioned table is one box. Its partitions (`relispartition`) are left out, and so are
 // the foreign keys PostgreSQL clones from a declared one (`conparentid <> 0`): one per partition
 // of a referenced partitioned table, and the copy on every partition of a referencing one.
+// `relispartition` is NULL on CockroachDB, hence `IS NOT TRUE` rather than `NOT`.
 const PG_DIAGRAM_SQL: &str = "\
 SELECT 'c'::text, c.relname::text, c.relkind::text, \
        CASE WHEN c.reltuples < 0 THEN NULL ELSE c.reltuples::bigint::text END, \
@@ -55,7 +56,7 @@ FROM pg_catalog.pg_class c \
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
 JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
 LEFT JOIN pg_catalog.pg_constraint pk ON pk.conrelid = c.oid AND pk.contype = 'p' \
-WHERE n.nspname = $1 AND c.relkind IN ('r','p','v','m','f') AND NOT c.relispartition \
+WHERE n.nspname = $1 AND c.relkind IN ('r','p','v','m','f') AND c.relispartition IS NOT TRUE \
 UNION ALL \
 SELECT 'f', c.relname::text, NULL, NULL, a.attname::text, NULL, k.ord::text, NULL, NULL, \
        con.conname::text, rn.nspname::text, rc.relname::text, ra.attname::text, \
@@ -68,7 +69,7 @@ JOIN pg_catalog.pg_namespace rn ON rn.oid = rc.relnamespace \
 CROSS JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS k(attnum, refnum, ord) \
 JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum \
 JOIN pg_catalog.pg_attribute ra ON ra.attrelid = rc.oid AND ra.attnum = k.refnum \
-WHERE con.contype = 'f' AND n.nspname = $1 AND NOT c.relispartition AND con.conparentid = 0";
+WHERE con.contype = 'f' AND n.nspname = $1 AND c.relispartition IS NOT TRUE AND con.conparentid = 0";
 
 // information_schema columns carry different collations (utf8mb3_bin / _tolower_ci…): each cell is
 // converted to utf8mb4 so the UNION never mixes collations.
@@ -202,9 +203,14 @@ mod tests {
     fn pg_leaves_out_partitions_and_cloned_keys() {
         let sql = diagram_query(Dialect::Postgres, "public").sql;
         let (columns, keys) = sql.split_once("UNION ALL").unwrap();
-        assert!(columns.contains("AND NOT c.relispartition"), "{columns}");
-        assert!(keys.contains("AND NOT c.relispartition"), "{keys}");
+        assert!(
+            columns.contains("AND c.relispartition IS NOT TRUE"),
+            "{columns}"
+        );
+        assert!(keys.contains("AND c.relispartition IS NOT TRUE"), "{keys}");
         assert!(keys.contains("AND con.conparentid = 0"), "{keys}");
+        // `NOT NULL` is NULL: CockroachDB, where relispartition is NULL, would get no rows.
+        assert!(!sql.contains("NOT c.relispartition"), "{sql}");
     }
 
     #[test]

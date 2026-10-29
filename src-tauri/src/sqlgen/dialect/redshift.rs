@@ -48,6 +48,9 @@ pub static LEX: LexProfile = LexProfile {
     batch_separator: None,
     terminator_optional: false,
     begin_end_bodies: false,
+    // PostgreSQL 8.0's parser calls `name(expr)` for `(expr).name`, a quoted name too, which
+    // Redshift folds to lower case (`(1)."PG_TERMINATE_BACKEND"`).
+    attribute_calls: true,
 };
 
 /// The functions a query may call that change the server: AWS's system administration functions
@@ -103,9 +106,9 @@ pub static RULES: ClassifyRules = ClassifyRules {
         "VACUUM",
         // The calls of `WRITE_CALLS` that take one argument, as words: PostgreSQL 8.0 reads
         // `(1).pg_terminate_backend` as `pg_terminate_backend(1)` (attribute notation), with no
-        // `(` after the name for the call check to see. Spelt out where a column may share the
-        // prefix (`lo_size` stays a read); a quoted name is a change request
-        // (docs/drivers/pg-flavors.md, Limits).
+        // `(` after the name. `LEX.attribute_calls` now makes such a name a call, a quoted one
+        // too; these words stay until the lane drops them. Spelt out where a column may share
+        // the prefix (`lo_size` stays a read).
         "PG_TERMINATE_BACKEND",
         "PG_CANCEL_BACKEND",
         "LO_IMPORT",
@@ -719,36 +722,24 @@ mod tests {
         ));
     }
 
-    /// The holes the rules cannot close, each under Limits in the brief with its change request
-    /// to the shared classifier. They read today; when a change request lands and a case here
-    /// turns into a write, move it to the suite's WRITES.
+    /// Attribute notation (`LEX.attribute_calls`): `(expr).name` calls `name(expr)`, a quoted
+    /// name too, which Redshift folds to lower case unless enable_case_sensitive_identifier is on.
+    /// The classifier makes such a call a write and the Metrics Board refuses it.
     #[test]
-    fn documented_holes_read_until_their_change_requests() {
-        for sql in [
-            // A quoted name in attribute notation calls the function too, and Redshift folds a
-            // quoted name to lower case unless enable_case_sensitive_identifier is on; the words
-            // of `writes` never match a quoted name.
-            "SELECT (1).\"pg_terminate_backend\"",
-            "SELECT (1).\"PG_TERMINATE_BACKEND\"",
-            "SELECT ('/etc/passwd').\"lo_import\"",
-            "SELECT ('s').\"nextval\"",
-        ] {
-            assert_eq!(
-                classify_redshift(sql),
-                StatementClass::Read,
-                "{sql} writes now: move it to the suite's WRITES and update the brief's Limits"
-            );
-        }
-        // The Metrics Board's own check sees `name(` only. It refuses these anyway, since the
-        // classifier makes them writes and the board refuses writes first.
+    fn a_call_in_attribute_notation_writes() {
         for sql in [
             "SELECT (1).pg_terminate_backend",
+            "SELECT (1).\"pg_terminate_backend\"",
+            "SELECT (1).\"PG_TERMINATE_BACKEND\"",
             "SELECT ('/etc/passwd').lo_import",
+            "SELECT ('/etc/passwd').\"lo_import\"",
+            "SELECT ('s').\"nextval\"",
+            "SELECT ('a').\"set_config\"",
         ] {
             assert_eq!(classify_redshift(sql), StatementClass::Write, "{sql}");
             assert!(
-                !crate::sqlgen::sql::calls_side_effect_function(SqlDialect::Redshift, sql),
-                "{sql} is a side effect call now: drop this case and update the brief's Limits"
+                crate::sqlgen::sql::calls_side_effect_function(SqlDialect::Redshift, sql),
+                "{sql}"
             );
         }
     }

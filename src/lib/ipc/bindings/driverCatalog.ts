@@ -1259,6 +1259,7 @@ export const DRIVER_CATALOG = {
         "transactions": "atomic",
         "affected": "exact",
         "defaultKeyword": true,
+        "upsert": true,
         "serverExprs": [
           "now",
           "currentTimestamp",
@@ -1380,6 +1381,7 @@ export const DRIVER_CATALOG = {
         "transactions": "atomic",
         "affected": "exact",
         "defaultKeyword": true,
+        "upsert": true,
         "serverExprs": [
           "now",
           "currentTimestamp",
@@ -1501,6 +1503,7 @@ export const DRIVER_CATALOG = {
         "transactions": "atomic",
         "affected": "exact",
         "defaultKeyword": false,
+        "upsert": true,
         "serverExprs": [
           "now",
           "currentTimestamp",
@@ -1550,6 +1553,7 @@ export const DRIVER_CATALOG = {
         "transactions": "none",
         "affected": "unknown",
         "defaultKeyword": false,
+        "upsert": false,
         "serverExprs": [],
         "maxParams": 0
       },
@@ -1615,6 +1619,7 @@ export const DRIVER_CATALOG = {
         "transactions": "atomic",
         "affected": "exact",
         "defaultKeyword": false,
+        "upsert": true,
         "serverExprs": [
           "now",
           "currentTimestamp",
@@ -1687,6 +1692,7 @@ export const DRIVER_CATALOG = {
         "transactions": "atomic",
         "affected": "exact",
         "defaultKeyword": false,
+        "upsert": true,
         "serverExprs": [
           "now",
           "currentTimestamp",
@@ -1736,6 +1742,7 @@ export const DRIVER_CATALOG = {
         "transactions": "none",
         "affected": "unknown",
         "defaultKeyword": false,
+        "upsert": false,
         "serverExprs": [],
         "maxParams": 0
       },
@@ -1778,6 +1785,7 @@ export const DRIVER_CATALOG = {
         "transactions": "none",
         "affected": "unknown",
         "defaultKeyword": false,
+        "upsert": false,
         "serverExprs": [],
         "maxParams": 0
       },
@@ -1820,6 +1828,7 @@ export const DRIVER_CATALOG = {
         "transactions": "none",
         "affected": "unknown",
         "defaultKeyword": false,
+        "upsert": false,
         "serverExprs": [],
         "maxParams": 0
       },
@@ -1862,6 +1871,7 @@ export const DRIVER_CATALOG = {
         "transactions": "none",
         "affected": "unknown",
         "defaultKeyword": false,
+        "upsert": false,
         "serverExprs": [],
         "maxParams": 0
       },
@@ -1904,6 +1914,7 @@ export const DRIVER_CATALOG = {
         "transactions": "none",
         "affected": "unknown",
         "defaultKeyword": false,
+        "upsert": false,
         "serverExprs": [],
         "maxParams": 0
       },
@@ -1946,6 +1957,7 @@ export const DRIVER_CATALOG = {
         "transactions": "none",
         "affected": "unknown",
         "defaultKeyword": false,
+        "upsert": false,
         "serverExprs": [],
         "maxParams": 0
       },
@@ -1987,6 +1999,7 @@ export const DRIVER_CATALOG = {
         "transactions": "none",
         "affected": "unknown",
         "defaultKeyword": false,
+        "upsert": false,
         "serverExprs": [],
         "maxParams": 0
       },
@@ -2028,6 +2041,7 @@ export const DRIVER_CATALOG = {
         "transactions": "none",
         "affected": "unknown",
         "defaultKeyword": false,
+        "upsert": false,
         "serverExprs": [],
         "maxParams": 0
       },
@@ -2069,6 +2083,7 @@ export const DRIVER_CATALOG = {
         "transactions": "none",
         "affected": "unknown",
         "defaultKeyword": false,
+        "upsert": false,
         "serverExprs": [],
         "maxParams": 0
       },
@@ -2110,6 +2125,7 @@ export const DRIVER_CATALOG = {
         "transactions": "none",
         "affected": "unknown",
         "defaultKeyword": false,
+        "upsert": false,
         "serverExprs": [],
         "maxParams": 0
       },

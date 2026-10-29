@@ -31,7 +31,8 @@
     "dashCommentNeedsSpace": false,
     "batchSeparator": null,
     "terminatorOptional": false,
-    "beginEndBodies": false
+    "beginEndBodies": false,
+    "attributeCalls": true
   },
   "classify": {
     "queries": [

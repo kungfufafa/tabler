@@ -1,14 +1,12 @@
-//! What the engines' catalog code shares: rows read as text, relation kinds, type modifiers,
-//! the column lists of constraint definitions, and kill outcomes. Some are copies of
-//! `introspect`'s private helpers, which the lane cannot reach.
+//! What the engines' catalog code shares: rows read as text, optional queries, the column lists
+//! of constraint definitions, and kill outcomes. Relation kinds, type modifiers and the table's
+//! schema are `introspect`'s (`kind_of_relkind`, `typmod_info`, `schema_of`).
 
 use tokio_postgres::Row;
 use tokio_postgres::error::SqlState;
 
-use crate::drivers::postgres::introspect::{self, Traced};
 use crate::error::AppError;
 use crate::types::admin::KillOutcome;
-use crate::types::schema::{TableKind, TableRef};
 use crate::types::value::Value;
 
 /// Each row's columns (all text in the query) as `Value::Text` or `Value::Null`, the shape
@@ -26,62 +24,6 @@ pub(super) fn text_rows(rows: &[Row]) -> Result<Vec<Vec<Value>>, AppError> {
         out.push(values);
     }
     Ok(out)
-}
-
-pub(super) fn kind_of_relkind(relkind: &str) -> TableKind {
-    match relkind {
-        "v" => TableKind::View,
-        "m" => TableKind::MaterializedView,
-        "f" => TableKind::ForeignTable,
-        "p" => TableKind::Partitioned,
-        _ => TableKind::Table,
-    }
-}
-
-/// (char_max_len, numeric_precision, numeric_scale) from a type name and its `atttypmod`.
-pub(super) fn typmod_info(type_name: &str, typmod: i32) -> (Option<i64>, Option<i32>, Option<i32>) {
-    match type_name {
-        "varchar" | "bpchar" if typmod >= 4 => (Some((typmod - 4) as i64), None, None),
-        "bit" | "varbit" if typmod >= 0 => (Some(typmod as i64), None, None),
-        "numeric" if typmod >= 4 => {
-            let t = typmod - 4;
-            let precision = (t >> 16) & 0xffff;
-            // Scale is an 11-bit two's-complement field (negative scales since PG 15).
-            let scale = ((t & 0x7ff) ^ 1024) - 1024;
-            (None, Some(precision), Some(scale))
-        }
-        "int2" => (None, Some(16), Some(0)),
-        "int4" | "oid" => (None, Some(32), Some(0)),
-        "int8" => (None, Some(64), Some(0)),
-        "float4" => (None, Some(24), None),
-        "float8" => (None, Some(53), None),
-        _ => (None, None, None),
-    }
-}
-
-pub(super) fn fk_action(code: &str) -> String {
-    match code {
-        "r" => "RESTRICT",
-        "c" => "CASCADE",
-        "n" => "SET NULL",
-        "d" => "SET DEFAULT",
-        _ => "NO ACTION",
-    }
-    .to_string()
-}
-
-pub(super) fn first_char(s: Option<&str>) -> Option<char> {
-    s.and_then(|s| s.chars().next())
-}
-
-/// The table's schema, or the one unqualified names resolve to.
-pub(super) async fn schema_of(c: &Traced<'_>, table: &TableRef) -> Result<String, AppError> {
-    match table.schema.as_deref().filter(|s| !s.is_empty()) {
-        Some(s) => Ok(s.to_string()),
-        None => Ok(introspect::default_schema(c)
-            .await?
-            .unwrap_or_else(|| "public".to_string())),
-    }
 }
 
 /// A catalog relation, function, setting or privilege the server does not have or does not show
@@ -215,17 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_kinds_modifiers_and_actions() {
-        assert_eq!(kind_of_relkind("p"), TableKind::Partitioned);
-        assert_eq!(kind_of_relkind("v"), TableKind::View);
-        assert_eq!(kind_of_relkind("r"), TableKind::Table);
-        assert_eq!(typmod_info("varchar", 259), (Some(255), None, None));
-        assert_eq!(
-            typmod_info("numeric", ((20 << 16) | 6) + 4),
-            (None, Some(20), Some(6))
-        );
-        assert_eq!(fk_action("c"), "CASCADE");
-        assert_eq!(fk_action("a"), "NO ACTION");
+    fn maps_kill_outcomes() {
         let failed = kill_outcome("7", Err(AppError::NotConnected));
         assert!(!failed.ok && failed.message.is_some());
         assert!(kill_outcome("7", Ok(true)).ok);

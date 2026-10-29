@@ -152,6 +152,31 @@
   { "sql": "SELECT current_setting('default_transaction_read_only')", "class": "read" },
   { "sql": "SELECT 'set_config(' AS s, set_config_name FROM t", "class": "read" },
   {
+    "sql": "SELECT ('a').set_config",
+    "dialect": "postgres",
+    "class": "write",
+    "note": "attribute notation: PostgreSQL calls name(expr) for (expr).name"
+  },
+  { "sql": "SELECT (1).\"set_config\"", "dialect": "postgres", "class": "write" },
+  {
+    "sql": "SELECT (x).abs.set_config, a[1].set_config FROM t",
+    "dialect": "postgres",
+    "class": "write"
+  },
+  {
+    "sql": "SELECT (x).\"f\".set_config FROM t",
+    "dialect": "postgres",
+    "class": "write",
+    "note": "a quoted link of the chain is blanked: the walk still reaches (x)"
+  },
+  {
+    "sql": "SELECT t.set_config, t.\"f\".set_config, (t).set_config_name FROM t",
+    "dialect": "postgres",
+    "class": "read"
+  },
+  { "sql": "SELECT (1).set_config", "dialect": "mysql", "class": "read" },
+  { "sql": "SELECT (1).set_config", "dialect": "sqlite", "class": "read" },
+  {
     "sql": "SELECT '\\'' AS a, \"\\\"; DELETE FROM t; -- \" AS b",
     "dialect": "mysql",
     "class": "write",

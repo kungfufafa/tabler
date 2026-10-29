@@ -24,6 +24,39 @@ use crate::types::schema::{
     CompletionMetadata, DatabaseInfo, SchemaInfo, TableMeta, TableRef, TableSummary,
 };
 
+/// What a statement of the session init sets. An engine's hooks pick statements by it
+/// (`PgFlavorHooks::init_sql`), never by their text, which the profile's own startup commands
+/// may share (`SET client_encoding …` among them is the user's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitKind {
+    DateStyle,
+    IntervalStyle,
+    FloatDigits,
+    Encoding,
+    TimeZone,
+    ReadOnly,
+    /// A server setting of the profile's extra parameters.
+    Setting,
+    /// The profile's startup commands.
+    Startup,
+}
+
+/// A statement of the session init and what it sets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitStatement {
+    pub kind: InitKind,
+    pub sql: String,
+}
+
+impl InitStatement {
+    pub fn new(kind: InitKind, sql: impl Into<String>) -> InitStatement {
+        InitStatement {
+            kind,
+            sql: sql.into(),
+        }
+    }
+}
+
 /// What the PostgreSQL driver does differently on one engine. Every hook defaults to plain
 /// PostgreSQL: a catalog or admin hook answering `None` leaves the work to the driver's own
 /// queries. The driver picks the hooks once, at connect, for the engine the server names
@@ -45,14 +78,16 @@ pub(crate) trait PgFlavorHooks: Send + Sync {
     }
 
     /// The statements every new server connection runs, pool and editor alike. `base` is plain
-    /// PostgreSQL's (`connect::session_init_statements`); `read_only`: the session must refuse
-    /// writes (the profile says so, or its client encoding is not UTF-8).
+    /// PostgreSQL's (`connect::session_init_statements`), each with what it sets (`InitKind`):
+    /// an engine picks by that, never by the text, which the profile's startup commands may share.
+    /// `read_only`: the session must refuse writes (the profile says so, or its client encoding is
+    /// not UTF-8).
     fn init_sql(
         &self,
         _profile: &ConnectionProfile,
         _read_only: bool,
-        base: Vec<String>,
-    ) -> Vec<String> {
+        base: Vec<InitStatement>,
+    ) -> Vec<InitStatement> {
         base
     }
 
@@ -136,6 +171,14 @@ pub(crate) trait PgFlavorHooks: Send + Sync {
     /// failure (40001) again, as CockroachDB asks its clients to.
     fn retry_serialization(&self) -> bool {
         false
+    }
+
+    /// A read the editor may stop at the row cap inside a transaction block runs under a
+    /// savepoint, so the cancel rolls back to it and the transaction goes on
+    /// (`PgSession::run_on_editor`). An engine without savepoints (Redshift, where a SAVEPOINT
+    /// aborts the open transaction) answers false: such a read is then drained, not cancelled.
+    fn row_cap_savepoint(&self) -> bool {
+        true
     }
 }
 
@@ -354,7 +397,11 @@ mod tests {
         assert_eq!(hooks.sql_dialect(), SqlDialect::Postgres);
         assert_eq!(hooks.default_database(), "postgres");
         assert!(!hooks.init_one_by_one() && !hooks.retry_serialization());
-        let base = vec!["SET a = 1;".to_string(), "SET b = 2;".to_string()];
+        assert!(hooks.row_cap_savepoint());
+        let base = vec![
+            InitStatement::new(InitKind::DateStyle, "SET a = 1;"),
+            InitStatement::new(InitKind::Startup, "SET b = 2;"),
+        ];
         let profile = crate::types::profile::ConnectionProfile {
             id: uuid::Uuid::nil(),
             name: "p".into(),

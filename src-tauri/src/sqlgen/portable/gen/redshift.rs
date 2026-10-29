@@ -258,6 +258,13 @@ const WRITES: &[&str] = &[
     "SELECT ('shared').pg_stat_reset_shared",
     "SELECT * FROM stv_sessions WHERE (process).pg_cancel_backend",
     "WITH k AS (SELECT (process).pg_terminate_backend FROM stv_sessions) SELECT * FROM k",
+    // A quoted name there too, which Redshift folds to lower case; and a chain of them.
+    "SELECT (1).\"pg_terminate_backend\"",
+    "SELECT (1).\"PG_TERMINATE_BACKEND\"",
+    "SELECT ('/etc/passwd').\"lo_import\"",
+    "SELECT ('s').\"nextval\"",
+    "SELECT ('a').\"set_config\"",
+    "SELECT (1).abs.\"pg_cancel_backend\"",
     "SELECT 1; DELETE FROM t",
     "SHOW ALL; SET search_path TO x",
     "EXPLAIN SELECT 1; DROP TABLE t",

@@ -48,6 +48,7 @@ pub static LEX: LexProfile = LexProfile {
     batch_separator: None,
     terminator_optional: false,
     begin_end_bodies: false,
+    attribute_calls: false,
 };
 
 /// The functions a `SELECT` may call that change the cluster, its data, its files or its

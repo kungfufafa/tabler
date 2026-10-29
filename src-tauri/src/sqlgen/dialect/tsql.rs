@@ -45,6 +45,7 @@ pub static LEX: LexProfile = LexProfile {
     batch_separator: Some("GO"),
     terminator_optional: true,
     begin_end_bodies: true,
+    attribute_calls: false,
 };
 
 pub static RULES: ClassifyRules = ClassifyRules {

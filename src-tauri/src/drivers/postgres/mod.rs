@@ -826,7 +826,9 @@ impl PgSession {
     /// block would abort the whole transaction. There, a read that may be cancelled at the cap
     /// first sets `CAP_SAVEPOINT` (sent together with the describe round trip) so the cancel can
     /// be rolled back to it (`EditorRun::savepoint_cleanup`) and the transaction goes on.
-    /// Statements that must run to completion (`CALL`, DML with `RETURNING`…) are drained.
+    /// Statements that must run to completion (`CALL`, DML with `RETURNING`…) are drained, and
+    /// so is a read in a transaction block on an engine without savepoints
+    /// (`PgFlavorHooks::row_cap_savepoint`).
     async fn run_on_editor(
         &self,
         client: &Client,
@@ -842,7 +844,11 @@ impl PgSession {
         };
         let mut in_tx = self.tx_state.get() == Some(true);
         let returns_rows = editor::may_return_rows(sql);
-        let wants_savepoint = in_tx && returns_rows && cancel_safe_on_stop(sql, Dialect::Postgres);
+        // An engine without savepoints drains the read instead (no canceller below).
+        let wants_savepoint = in_tx
+            && returns_rows
+            && cancel_safe_on_stop(sql, Dialect::Postgres)
+            && self.hooks.row_cap_savepoint();
         let savepoint_sql = format!("SAVEPOINT {CAP_SAVEPOINT}");
         let (described, savepoint) = futures::join!(
             async {
@@ -968,6 +974,7 @@ mod tests {
 
     use super::*;
     use crate::drivers::CollectSink;
+    use crate::drivers::postgres::flavor::{InitKind, InitStatement};
     use crate::drivers::postgres::testing::{Cell, Col, FakePg};
     use crate::types::caps::Feature;
     use crate::types::profile::{ConnectionProfile, ProfileOptions};
@@ -1229,8 +1236,15 @@ mod tests {
             "dev"
         }
 
-        fn init_sql(&self, _: &ConnectionProfile, _: bool, base: Vec<String>) -> Vec<String> {
-            let unknown = |s: &String| s.contains("IntervalStyle") || s.contains("float_digits");
+        fn init_sql(
+            &self,
+            _: &ConnectionProfile,
+            _: bool,
+            base: Vec<InitStatement>,
+        ) -> Vec<InitStatement> {
+            let unknown = |s: &InitStatement| {
+                matches!(s.kind, InitKind::IntervalStyle | InitKind::FloatDigits)
+            };
             base.into_iter().filter(|s| !unknown(s)).collect()
         }
 
@@ -1289,6 +1303,10 @@ mod tests {
 
         fn retry_serialization(&self) -> bool {
             true
+        }
+
+        fn row_cap_savepoint(&self) -> bool {
+            false
         }
     }
 
@@ -1494,6 +1512,45 @@ mod tests {
             match tx.len() {
                 3 => assert!(is_serialization_failure(&result.unwrap_err())),
                 _ => assert_eq!(result.unwrap()[0].affected, 1),
+            }
+            session.close().await;
+        }
+    }
+
+    /// A capped read in a transaction block sets the row-cap savepoint, except on an engine that
+    /// has none: there a SAVEPOINT would abort the user's transaction, so the read is drained.
+    #[tokio::test]
+    async fn a_capped_read_in_a_transaction_sets_a_savepoint_only_where_the_engine_has_them() {
+        fn no_savepoints(_: Option<PgFlavor>) -> &'static dyn PgFlavorHooks {
+            &TEST_HOOKS
+        }
+        for (pick, savepoint) in [(vanilla as PickHooks, true), (no_savepoints, false)] {
+            let pg = FakePg::new()
+                .rows(
+                    "FROM t",
+                    vec![Col::int4("a")],
+                    (0..20).map(|n| vec![Cell::Int(n)]).collect(),
+                )
+                .error("SAVEPOINT", "0A000", "SAVEPOINT is not supported")
+                .start()
+                .await;
+            let session = PgSession::open_with(target(&fake_profile(pg.port())), pick)
+                .await
+                .unwrap();
+            on_editor(&session, "BEGIN").await.unwrap();
+            assert_eq!(session.in_transaction(), Some(true));
+            let first = on_editor(&session, "SELECT a FROM t").await.unwrap();
+            assert_eq!(first, Some(Value::Int(0)));
+            on_editor(&session, "COMMIT").await.unwrap();
+            let sent = pg.queries();
+            assert_eq!(
+                sent.iter().any(|q| q.contains("SAVEPOINT")),
+                savepoint,
+                "{sent:?}"
+            );
+            if !savepoint {
+                // Nothing was cancelled on the server: the read ran to its end.
+                assert!(pg.cancels().is_empty());
             }
             session.close().await;
         }

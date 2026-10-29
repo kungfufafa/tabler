@@ -44,6 +44,7 @@ pub static ANSI_LEX: LexProfile = LexProfile {
     batch_separator: None,
     terminator_optional: false,
     begin_end_bodies: true,
+    attribute_calls: false,
 };
 
 pub static ANSI_RULES: ClassifyRules = ClassifyRules {
@@ -115,6 +116,7 @@ pub static TSQL_LEX: LexProfile = LexProfile {
     batch_separator: Some("GO"),
     terminator_optional: true,
     begin_end_bodies: true,
+    attribute_calls: false,
 };
 
 pub static TSQL_RULES: ClassifyRules = ClassifyRules {

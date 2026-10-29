@@ -18,21 +18,18 @@
 //! read, and `backend_type` / `wait_event`, so its sessions come from this file's own query.
 
 use async_trait::async_trait;
-use std::collections::BTreeMap;
 
-use super::catalog::{first_char, fk_action, kind_of_relkind, schema_of, text_rows, typmod_info};
-use crate::drivers::postgres::decode::{kind_from_pg_type, split_list};
+use super::catalog::text_rows;
 use crate::drivers::postgres::flavor::PgFlavorHooks;
-use crate::drivers::postgres::introspect::{self, Traced, parse_trigger_def};
+use crate::drivers::postgres::introspect::{self, Relation, Traced, kind_of_relkind, schema_of};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
-use crate::sqlgen::ddl::{PgTableContext, check_expression, table_parts};
+use crate::sqlgen::ddl::{PgTableContext, table_parts};
 use crate::types::admin::ProcessRow;
 use crate::types::caps::{Feature, SessionCaps};
 use crate::types::driver::PgFlavor;
 use crate::types::schema::{
-    CheckMeta, ColumnMeta, CompletionMetadata, ForeignKeyMeta, IndexMeta, SchemaInfo, TableKind,
-    TableMeta, TableOptions, TableRef, TableSummary, TriggerMeta, ValueKind,
+    CompletionMetadata, SchemaInfo, TableKind, TableMeta, TableOptions, TableRef, TableSummary,
 };
 
 pub(super) struct Greenplum;
@@ -98,128 +95,6 @@ const LEGACY_RELATION: &str = "SELECT c.relkind::text, obj_description(c.oid, 'p
             EXISTS (SELECT 1 FROM pg_partition p WHERE p.parrelid = c.oid) \
      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
      WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r','v','m','f')";
-
-const PRIMARY_KEY: &str = "SELECT a.attname::text, k.ord::int \
-     FROM pg_constraint con \
-     JOIN pg_class c ON c.oid = con.conrelid \
-     JOIN pg_namespace n ON n.oid = c.relnamespace \
-     CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
-     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum \
-     WHERE con.contype = 'p' AND n.nspname = $1 AND c.relname = $2 ORDER BY k.ord";
-
-/// The PostgreSQL driver's column query, without identity columns before PostgreSQL 10 and
-/// generated ones before 12 (`introspect::table_meta` reads the same columns).
-fn columns_sql(v: i32) -> String {
-    let identity = if v < PG10 {
-        "NULL::text"
-    } else {
-        "a.attidentity::text"
-    };
-    let generated = if v < GP7 {
-        "false"
-    } else {
-        "a.attgenerated <> ''"
-    };
-    format!(
-        "SELECT a.attnum::int, a.attname::text, format_type(a.atttypid, a.atttypmod)::text, \
-                t.typname::text, t.typtype::text, t.typcategory::text, \
-                bt.typname::text, bt.typtype::text, bt.typcategory::text, \
-                et.typname::text, \
-                NOT a.attnotnull, \
-                pg_get_expr(d.adbin, d.adrelid)::text, \
-                {identity}, {generated}, \
-                col_description(c.oid, a.attnum)::text, \
-                (SELECT string_agg(e.enumlabel::text, E'\\x1f' ORDER BY e.enumsortorder) \
-                   FROM pg_enum e WHERE e.enumtypid = COALESCE(bt.oid, t.oid)), \
-                (SELECT string_agg(e.enumlabel::text, E'\\x1f' ORDER BY e.enumsortorder) \
-                   FROM pg_enum e WHERE e.enumtypid = t.typelem), \
-                CASE WHEN a.attcollation <> 0 AND a.attcollation <> t.typcollation \
-                     THEN co.collname::text END, \
-                a.atttypmod::int, COALESCE(bt.typtypmod, -1)::int, \
-                (WITH RECURSIVE dom(base, depth) AS ( \
-                   SELECT CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE et.typbasetype END, 1 \
-                    WHERE t.typtype = 'd' OR et.typtype = 'd' \
-                   UNION ALL \
-                   SELECT d.typbasetype, dom.depth + 1 FROM dom \
-                     JOIN pg_type d ON d.oid = dom.base AND d.typtype = 'd') \
-                 SELECT format_type(dom.base, NULL) || CASE WHEN t.typtype = 'd' THEN '' ELSE '[]' END \
-                   FROM dom ORDER BY dom.depth DESC LIMIT 1) \
-         FROM pg_attribute a \
-         JOIN pg_class c ON c.oid = a.attrelid \
-         JOIN pg_namespace n ON n.oid = c.relnamespace \
-         JOIN pg_type t ON t.oid = a.atttypid \
-         LEFT JOIN pg_type bt ON t.typtype = 'd' AND bt.oid = t.typbasetype \
-         LEFT JOIN pg_type et ON t.typcategory = 'A' AND et.oid = t.typelem \
-         LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
-         LEFT JOIN pg_collation co ON co.oid = a.attcollation \
-         WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped \
-         ORDER BY a.attnum"
-    )
-}
-
-/// The PostgreSQL driver's index query; before PostgreSQL 11 every index column is a key
-/// (`indnatts`, no `indnkeyatts`).
-fn indexes_sql(v: i32) -> String {
-    let keys = if v < 110_000 {
-        "ix.indnatts"
-    } else {
-        "ix.indnkeyatts"
-    };
-    format!(
-        "SELECT i.relname::text, ix.indisunique, ix.indisprimary, am.amname::text, \
-                pg_get_indexdef(ix.indexrelid)::text, \
-                pg_get_expr(ix.indpred, ix.indrelid)::text, \
-                (SELECT string_agg(pg_get_indexdef(ix.indexrelid, k.ord::int, true), \
-                                   E'\\x1f' ORDER BY k.ord) \
-                   FROM unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) \
-                  WHERE k.ord <= {keys}), \
-                obj_description(ix.indexrelid, 'pg_class')::text, \
-                (SELECT string_agg(a.attname::text, E'\\x1f' ORDER BY k.ord) \
-                   FROM unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) \
-                   JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum \
-                  WHERE k.ord > {keys}) \
-         FROM pg_index ix \
-         JOIN pg_class i ON i.oid = ix.indexrelid \
-         JOIN pg_class t ON t.oid = ix.indrelid \
-         JOIN pg_namespace n ON n.oid = t.relnamespace \
-         JOIN pg_am am ON am.oid = i.relam \
-         WHERE n.nspname = $1 AND t.relname = $2 \
-         ORDER BY ix.indisprimary DESC, i.relname"
-    )
-}
-
-const FOREIGN_KEYS: &str = "SELECT con.conname::text, con.confupdtype::text, con.confdeltype::text, \
-            fn.nspname::text, fc.relname::text, pg_get_constraintdef(con.oid)::text, \
-            (SELECT string_agg(a.attname::text, E'\\x1f' ORDER BY k.ord) \
-               FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
-               JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum), \
-            (SELECT string_agg(a.attname::text, E'\\x1f' ORDER BY k.ord) \
-               FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) \
-               JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum) \
-     FROM pg_constraint con \
-     JOIN pg_class c ON c.oid = con.conrelid \
-     JOIN pg_namespace n ON n.oid = c.relnamespace \
-     JOIN pg_class fc ON fc.oid = con.confrelid \
-     JOIN pg_namespace fn ON fn.oid = fc.relnamespace \
-     WHERE con.contype = 'f' AND n.nspname = $1 AND c.relname = $2 \
-     ORDER BY con.conname";
-
-const CHECKS: &str = "SELECT con.conname::text, pg_get_constraintdef(con.oid)::text, \
-            (SELECT string_agg(a.attname::text, E'\\x1f' ORDER BY k.ord) \
-               FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) \
-               JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum) \
-     FROM pg_constraint con \
-     JOIN pg_class c ON c.oid = con.conrelid \
-     JOIN pg_namespace n ON n.oid = c.relnamespace \
-     WHERE con.contype = 'c' AND n.nspname = $1 AND c.relname = $2 \
-     ORDER BY con.conname";
-
-const TRIGGERS: &str = "SELECT t.tgname::text, t.tgenabled <> 'D', pg_get_triggerdef(t.oid, true)::text \
-     FROM pg_trigger t \
-     JOIN pg_class c ON c.oid = t.tgrelid \
-     JOIN pg_namespace n ON n.oid = c.relnamespace \
-     WHERE NOT t.tgisinternal AND n.nspname = $1 AND c.relname = $2 \
-     ORDER BY t.tgname";
 
 /// Greenplum 6's sessions as the PostgreSQL driver lists them (`sqlgen::admin::PG_PROCESS_LIST`,
 /// the same columns): without `backend_type`, and waits from `waiting` / `waiting_reason`.
@@ -322,6 +197,8 @@ impl PgFlavorHooks for Greenplum {
         }
         if server_version_num < PG95 {
             adjusted = adjusted.without(&[Feature::SessionDetails]);
+            // ON CONFLICT came with PostgreSQL 9.5: the import offers no upsert.
+            adjusted.data.upsert = false;
         }
         *caps = adjusted;
     }
@@ -499,213 +376,25 @@ fn table_ddl(c: &Traced<'_>, meta: &TableMeta, details: Details) -> Result<Strin
     Ok(parts.script())
 }
 
-/// `introspect::table_meta` with Greenplum 6's catalog SQL, plus its external tables and legacy
-/// partitioned tables.
+/// `introspect::table_meta` on Greenplum 6, whose relation this file reads: external tables and
+/// legacy partitioned tables are told by their storage and `pg_partition`. The rest is the
+/// PostgreSQL driver's, with the catalog SQL of 9.4 that the server version picks there.
 async fn legacy_table_meta(c: &Traced<'_>, table: &TableRef) -> Result<TableMeta, AppError> {
-    let v = c.server_version_num();
     let schema = schema_of(c, table).await?;
     let name = table.name.as_str();
-    let params: &[&(dyn tokio_postgres::types::ToSql + Sync)] = &[&schema, &name];
-
     let rel = c
-        .query_opt(LEGACY_RELATION, params)
+        .query_opt(LEGACY_RELATION, &[&schema, &name])
         .await?
         .ok_or_else(|| AppError::NotFound(format!("table {schema}.{name}")))?;
     let relkind: String = rel.try_get(0)?;
-    let comment: Option<String> = rel.try_get(1)?;
-    let row_estimate: Option<i64> = rel.try_get(2)?;
     let storage: Option<String> = rel.try_get(3)?;
     let partitioned: Option<bool> = rel.try_get(4)?;
-    let kind = kind_of(&relkind, storage.as_deref(), partitioned == Some(true));
-
-    let mut primary_key = Vec::new();
-    let mut pk_ordinals: BTreeMap<String, u32> = BTreeMap::new();
-    for row in c.query(PRIMARY_KEY, params).await? {
-        let col: String = row.try_get(0)?;
-        let ord: i32 = row.try_get(1)?;
-        pk_ordinals.insert(col.clone(), ord.max(0) as u32);
-        primary_key.push(col);
-    }
-
-    let mut columns = Vec::new();
-    for row in c.query(&columns_sql(v), params).await? {
-        columns.push(column(&row, &pk_ordinals)?);
-    }
-
-    let mut indexes = Vec::new();
-    if matches!(
-        kind,
-        TableKind::Table | TableKind::Partitioned | TableKind::MaterializedView
-    ) {
-        for row in c.query(&indexes_sql(v), params).await? {
-            let cols: Option<String> = row.try_get(6)?;
-            let include: Option<String> = row.try_get(8)?;
-            indexes.push(IndexMeta {
-                name: row.try_get(0)?,
-                columns: split_list(cols.as_deref()),
-                unique: row.try_get(1)?,
-                primary: row.try_get(2)?,
-                method: row.try_get(3)?,
-                predicate: row.try_get(5)?,
-                definition: row.try_get(4)?,
-                comment: row.try_get(7)?,
-                include: split_list(include.as_deref()),
-            });
-        }
-    }
-
-    let mut foreign_keys = Vec::new();
-    let mut checks = Vec::new();
-    if matches!(kind, TableKind::Table | TableKind::Partitioned) {
-        for row in c.query(FOREIGN_KEYS, params).await? {
-            let on_update: String = row.try_get(1)?;
-            let on_delete: String = row.try_get(2)?;
-            let ref_schema: String = row.try_get(3)?;
-            let ref_table: String = row.try_get(4)?;
-            let cols: Option<String> = row.try_get(6)?;
-            let ref_cols: Option<String> = row.try_get(7)?;
-            foreign_keys.push(ForeignKeyMeta {
-                name: row.try_get(0)?,
-                columns: split_list(cols.as_deref()),
-                ref_table: TableRef::new(Some(&ref_schema), &ref_table),
-                ref_columns: split_list(ref_cols.as_deref()),
-                on_update: fk_action(&on_update),
-                on_delete: fk_action(&on_delete),
-                definition: row.try_get(5)?,
-            });
-        }
-        for row in c.query(CHECKS, params).await? {
-            let def: Option<String> = row.try_get(1)?;
-            let cols: Option<String> = row.try_get(2)?;
-            checks.push(CheckMeta {
-                name: row.try_get(0)?,
-                expression: check_expression(def.as_deref().unwrap_or("")),
-                columns: split_list(cols.as_deref()),
-            });
-        }
-    }
-
-    let mut triggers = Vec::new();
-    for row in c.query(TRIGGERS, params).await? {
-        let definition: String = row.try_get(2)?;
-        let (timing, events) = parse_trigger_def(&definition);
-        triggers.push(TriggerMeta {
-            name: row.try_get(0)?,
-            timing,
-            events,
-            enabled: row.try_get(1)?,
-            definition,
-        });
-    }
-
-    Ok(TableMeta {
-        table: TableRef::new(Some(&schema), name),
-        kind,
-        columns,
-        primary_key,
-        indexes,
-        foreign_keys,
-        triggers,
-        comment,
-        row_estimate,
-        ddl: None,
-        checks,
-        options: None,
-    })
-}
-
-/// One row of `columns_sql`, read as `introspect::table_meta` reads it.
-fn column(row: &tokio_postgres::Row, pk: &BTreeMap<String, u32>) -> Result<ColumnMeta, AppError> {
-    let attnum: i32 = row.try_get(0)?;
-    let name: String = row.try_get(1)?;
-    let data_type: String = row.try_get(2)?;
-    let typname: String = row.try_get(3)?;
-    let typtype: Option<String> = row.try_get(4)?;
-    let typcategory: Option<String> = row.try_get(5)?;
-    let base_typname: Option<String> = row.try_get(6)?;
-    let base_typtype: Option<String> = row.try_get(7)?;
-    let base_typcategory: Option<String> = row.try_get(8)?;
-    let elem_typname: Option<String> = row.try_get(9)?;
-    let nullable: bool = row.try_get(10)?;
-    let default_expr: Option<String> = row.try_get(11)?;
-    let identity: Option<String> = row.try_get(12)?;
-    let is_generated: bool = row.try_get(13)?;
-    let comment: Option<String> = row.try_get(14)?;
-    let enum_values: Option<String> = row.try_get(15)?;
-    let elem_enum_values: Option<String> = row.try_get(16)?;
-    let collation: Option<String> = row.try_get(17)?;
-    let atttypmod: i32 = row.try_get(18)?;
-    let domain_typmod: i32 = row.try_get(19)?;
-    let base_type: Option<String> = row.try_get(20)?;
-
-    // Domains are classified by their base type.
-    let (eff_name, eff_type, eff_cat) = match base_typname.as_deref() {
-        Some(base) => (
-            base.to_string(),
-            first_char(base_typtype.as_deref()),
-            first_char(base_typcategory.as_deref()),
-        ),
-        None => (
-            typname.clone(),
-            first_char(typtype.as_deref()),
-            first_char(typcategory.as_deref()),
-        ),
+    let relation = Relation {
+        kind: kind_of(&relkind, storage.as_deref(), partitioned == Some(true)),
+        comment: rel.try_get(1)?,
+        row_estimate: rel.try_get(2)?,
     };
-    let kind = kind_from_pg_type(&eff_name, eff_type, eff_cat, elem_typname.as_deref());
-    let enum_values = match kind {
-        ValueKind::Enum => Some(split_list(enum_values.as_deref())),
-        ValueKind::Array => {
-            let v = split_list(elem_enum_values.as_deref());
-            if v.is_empty() { None } else { Some(v) }
-        }
-        _ => None,
-    };
-    let typmod = if atttypmod == -1 && base_typname.is_some() {
-        domain_typmod
-    } else {
-        atttypmod
-    };
-    let typmod_type = match (kind, elem_typname.as_deref()) {
-        (ValueKind::Array, Some(elem)) => elem.to_string(),
-        _ => eff_name.clone(),
-    };
-    let (char_max_len, numeric_precision, numeric_scale) = typmod_info(&typmod_type, typmod);
-    let identity = identity.filter(|s| !s.is_empty());
-    let is_auto_increment = identity.is_some()
-        || default_expr
-            .as_deref()
-            .is_some_and(|d| d.starts_with("nextval("));
-    let extra = identity.as_deref().map(|i| match i {
-        "a" => "ALWAYS".to_string(),
-        "d" => "BY DEFAULT".to_string(),
-        other => other.to_string(),
-    });
-    Ok(ColumnMeta {
-        is_pk: pk.contains_key(&name),
-        pk_ordinal: pk.get(&name).copied(),
-        name,
-        ordinal: attnum.max(0) as u32,
-        data_type,
-        kind,
-        nullable,
-        default_expr,
-        is_auto_increment,
-        is_generated,
-        is_unsigned: false,
-        comment,
-        enum_values,
-        char_max_len,
-        numeric_precision,
-        numeric_scale,
-        collation,
-        array_elem_type: if kind == ValueKind::Array {
-            elem_typname
-        } else {
-            None
-        },
-        extra,
-        base_type,
-    })
+    introspect::table_meta_of(c, schema, name, relation).await
 }
 
 #[cfg(test)]
@@ -716,6 +405,7 @@ mod tests {
     use crate::drivers::postgres::testing::{Cell, Col, FakePg};
     use crate::sqlgen::SqlDialect;
     use crate::types::driver::Flavor;
+    use crate::types::schema::ValueKind;
 
     const VERSIONS: [(&str, &str, i32); 3] = [
         (GREENPLUM6, "9.4.26", 90_426),
@@ -736,14 +426,16 @@ mod tests {
             assert_eq!(details.contains("relstorage"), legacy, "{v}");
             assert_eq!(details.contains("pg_get_partition_def"), legacy, "{v}");
             assert_eq!(details.contains("pg_get_partkeydef"), !legacy, "{v}");
-            let columns = columns_sql(v);
+            let columns = introspect::columns_sql(v);
             assert_eq!(columns.contains("attidentity"), !legacy, "{v}");
             assert_eq!(columns.contains("attgenerated"), !legacy, "{v}");
-            let indexes = indexes_sql(v);
+            let indexes = introspect::indexes_sql(v);
             assert_eq!(indexes.contains("indnkeyatts"), !legacy, "{v}");
         }
         // From Greenplum 7 on, the column and index queries are the PostgreSQL driver's own.
-        assert!(columns_sql(120_012).contains("a.attidentity::text, a.attgenerated <> ''"));
+        assert!(
+            introspect::columns_sql(120_012).contains("a.attidentity::text, a.attgenerated <> ''")
+        );
     }
 
     #[test]
@@ -769,6 +461,7 @@ mod tests {
             ] {
                 assert_eq!(caps.has(f), !legacy, "{v} {f:?}");
             }
+            assert_eq!(caps.data.upsert, !legacy, "{v}");
         }
     }
 

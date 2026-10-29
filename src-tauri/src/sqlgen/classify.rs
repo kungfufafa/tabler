@@ -7,11 +7,11 @@
 //! an EXPLAIN of a PRAGMA as the PRAGMA, which SQLite applies while preparing it),
 //! `WITH …` without a data-modifying keyword, and SQLite PRAGMAs that only read. Everything else,
 //! including empty and unknown statements, is a WRITE, and so is any statement that calls
-//! `set_config(…)` (it changes settings, `default_transaction_read_only` too). Comments, strings
-//! and quoted identifiers are ignored; a `;` outside them starts another statement (all of them
-//! must be reads). The text is read under every quoting / comment mode the server may be in, and
-//! is a READ only under all of them. The check is deliberately coarse in the safe direction: a
-//! doubtful statement is a WRITE.
+//! `set_config(…)` (it changes settings, `default_transaction_read_only` too; on PostgreSQL also
+//! in attribute notation, `(…).set_config`). Comments, strings and quoted identifiers are
+//! ignored; a `;` outside them starts another statement (all of them must be reads). The text is
+//! read under every quoting / comment mode the server may be in, and is a READ only under all of
+//! them. The check is deliberately coarse in the safe direction: a doubtful statement is a WRITE.
 
 use crate::sqlgen::Dialect;
 
@@ -571,7 +571,7 @@ fn read_unless(write: bool) -> StatementClass {
     }
 }
 
-fn classify_explain(tokens: &[Token]) -> StatementClass {
+fn classify_explain(tokens: &[Token], attributes: bool) -> StatementClass {
     let analyze_words = ["ANALYZE", "ANALYSE"];
     let mut analyze = false;
     let mut i = 0;
@@ -616,7 +616,7 @@ fn classify_explain(tokens: &[Token]) -> StatementClass {
     // setting: it is the PRAGMA. A lone `pragma` is a table to MySQL's EXPLAIN / DESCRIBE.
     let pragma = tokens.get(i).is_some_and(|t| t.is("PRAGMA")) && tokens.len() > i + 1;
     if analyze || pragma {
-        classify_tokens(&tokens[i..])
+        classify_tokens(&tokens[i..], attributes)
     } else {
         StatementClass::Read
     }
@@ -640,15 +640,44 @@ fn classify_pragma(tokens: &[Token]) -> StatementClass {
 }
 
 /// `set_config(…)`, `pg_catalog.set_config(…)`: changes settings (even
-/// `default_transaction_read_only`) although it is called from a SELECT.
-fn calls_set_config(tokens: &[Token]) -> bool {
-    tokens
-        .windows(2)
-        .any(|w| w[0].word && w[0].is("SET_CONFIG") && w[1].is("("))
+/// `default_transaction_read_only`) although it is called from a SELECT. With `attributes`
+/// (PostgreSQL) also in attribute notation (`(…).set_config`, see [`in_attribute_notation`]).
+fn calls_set_config(tokens: &[Token], attributes: bool) -> bool {
+    (0..tokens.len()).any(|i| {
+        tokens[i].word
+            && tokens[i].is("SET_CONFIG")
+            && (tokens.get(i + 1).is_some_and(|t| t.is("("))
+                || (attributes && in_attribute_notation(tokens, i)))
+    })
 }
 
-fn classify_tokens(tokens: &[Token]) -> StatementClass {
-    if calls_set_config(tokens) {
+/// Whether the word at `i` is selected from a value: `(expr).name`, `arr[1].name`, or a later
+/// name of such a chain (`(expr).a.name`, `(expr)."a".name`). PostgreSQL calls `name(value)` when
+/// the value has no field of that name (attribute notation), so `SELECT (1).pg_terminate_backend`
+/// ends a session and `SELECT ('s').nextval` moves a sequence. A name after a plain name
+/// (`t.name`, `t."a".name`) is a column or a qualified name, never such a call.
+fn in_attribute_notation(tokens: &[Token], i: usize) -> bool {
+    let mut k = i;
+    while k >= 2 && tokens[k - 1].is(".") {
+        let before = &tokens[k - 2];
+        if before.is(")") || before.is("]") {
+            return true;
+        }
+        if before.word {
+            k -= 2;
+        } else if before.is(".") {
+            // Two dots in a row: a quoted name of the chain stood between them, blanked to a
+            // space (`(1)."abs".pg_terminate_backend`), so the walk goes on from the first dot.
+            k -= 1;
+        } else {
+            return false;
+        }
+    }
+    false
+}
+
+fn classify_tokens(tokens: &[Token], attributes: bool) -> StatementClass {
+    if calls_set_config(tokens, attributes) {
         return StatementClass::Write;
     }
     let start = tokens.iter().take_while(|t| t.is("(")).count();
@@ -660,7 +689,7 @@ fn classify_tokens(tokens: &[Token]) -> StatementClass {
         "SELECT" | "VALUES" | "TABLE" => read_unless(has_word(rest, &["INTO"])),
         "WITH" => read_unless(has_word(rest, WITH_WRITE_WORDS)),
         "SHOW" | "USE" => StatementClass::Read,
-        "EXPLAIN" | "DESCRIBE" | "DESC" => classify_explain(rest),
+        "EXPLAIN" | "DESCRIBE" | "DESC" => classify_explain(rest, attributes),
         "PRAGMA" => classify_pragma(rest),
         _ => StatementClass::Write,
     }
@@ -668,10 +697,11 @@ fn classify_tokens(tokens: &[Token]) -> StatementClass {
 
 fn reads_under(sql: &str, dialect: Dialect, reading: Reading) -> bool {
     let statements = statement_tokens(&code_only(sql, dialect, reading));
+    let attributes = dialect == Dialect::Postgres;
     !statements.is_empty()
         && statements
             .iter()
-            .all(|tokens| classify_tokens(tokens) == StatementClass::Read)
+            .all(|tokens| classify_tokens(tokens, attributes) == StatementClass::Read)
 }
 
 /// Classifies one statement (several separated by `;` are a READ only when each one is). The
@@ -794,10 +824,11 @@ fn is_side_effect_name(name: &[char]) -> bool {
 
 /// Whether `sql` calls a function that changes the server although the statement is a SELECT
 /// ([`SIDE_EFFECT_FUNCTIONS`], or MariaDB's `NEXT VALUE FOR`): a word of the list directly
-/// followed by `(`, as in `setval(…)` or `pg_catalog.setval(…)`. Strings, comments and a column
-/// or alias of that name are not calls; a quoted name (`"setval"(…)`, MySQL `` `sleep`(…) ``,
-/// SQLite `[load_extension](…)`) is, as the server calls it. The ways to write a name that the
-/// server reads as the same function are read as it reads them:
+/// followed by `(`, as in `setval(…)` or `pg_catalog.setval(…)`, or on PostgreSQL in attribute
+/// notation (`(1).pg_terminate_backend`, `('s')."nextval"`: [`in_attribute_notation`]). Strings,
+/// comments and a column or alias of that name are not calls; a quoted name (`"setval"(…)`,
+/// MySQL `` `sleep`(…) ``, SQLite `[load_extension](…)`) is, as the server calls it. The ways to
+/// write a name that the server reads as the same function are read as it reads them:
 ///
 /// - MySQL / MariaDB executable comments and hints are code, version number and closing `*/`
 ///   apart: `SLEEP/*!*/(1)`, `/*!50000 GET_LOCK*/('a', 10)`, `/*!50000SLEEP*/(1)`,
@@ -810,16 +841,18 @@ fn is_side_effect_name(name: &[char]) -> bool {
 /// one counts. Unlike [`classify`] this is not about the statement kind: it only tells the
 /// Metrics Board which reads it must refuse.
 pub fn calls_side_effect_function(sql: &str, dialect: Dialect) -> bool {
+    let attributes = dialect == Dialect::Postgres;
     readings(dialect).iter().any(|&reading| {
         let code = code_only_keeping(sql, dialect, reading, SIDE_EFFECT_NAMES);
         statement_tokens(&code).iter().any(|tokens| {
-            tokens
-                .windows(2)
-                .any(|w| w[0].is_word_in(SIDE_EFFECT_FUNCTIONS) && w[1].is("("))
-                || (dialect == Dialect::Mysql
-                    && tokens
-                        .windows(3)
-                        .any(|w| w[0].is("NEXT") && w[1].is("VALUE") && w[2].is("FOR")))
+            (0..tokens.len()).any(|i| {
+                tokens[i].is_word_in(SIDE_EFFECT_FUNCTIONS)
+                    && (tokens.get(i + 1).is_some_and(|t| t.is("("))
+                        || (attributes && in_attribute_notation(tokens, i)))
+            }) || (dialect == Dialect::Mysql
+                && tokens
+                    .windows(3)
+                    .any(|w| w[0].is("NEXT") && w[1].is("VALUE") && w[2].is("FOR")))
         })
     })
 }
@@ -1447,5 +1480,97 @@ mod tests {
                 "SELECT dblink_connect_u('c', 'dbname=x')",
             ],
         );
+    }
+
+    /// PostgreSQL's parser calls `name(expr)` for `(expr).name` when `expr` has no field `name`
+    /// (attribute notation): a call without a `(` after the name.
+    #[test]
+    fn a_postgres_call_in_attribute_notation_is_found() {
+        let attribute_calls = [
+            "SELECT (1).pg_terminate_backend",
+            "SELECT ('s').nextval",
+            "SELECT (1).\"pg_terminate_backend\"",
+            "SELECT ('s'). /* c */ \"nextval\"",
+            "SELECT (1)\n.pg_cancel_backend",
+            "SELECT (SELECT pid FROM s).pg_terminate_backend",
+            "SELECT (pid).pg_terminate_backend FROM pg_stat_activity",
+            "SELECT a[1].pg_terminate_backend FROM t",
+            "SELECT (1).abs.pg_terminate_backend",
+            // A quoted link of the chain is blanked to a space: the walk still reaches `(1)`.
+            "SELECT (1).\"abs\".pg_terminate_backend",
+            "SELECT (1).\"abs\".\"pg_terminate_backend\"",
+            "SELECT (t).\"Name\".nextval FROM t",
+            "SELECT (1).U&\"abs\".pg_terminate_backend",
+            "SELECT ('/etc/passwd').lo_import",
+            "SELECT 1 FROM t WHERE (100).pg_sleep IS NULL",
+        ];
+        flagged(Dialect::Postgres, &attribute_calls);
+        for sql in attribute_calls {
+            // Safe Mode lets them run, as it does `nextval('s')`.
+            assert_eq!(
+                classify(sql, Dialect::Postgres),
+                StatementClass::Read,
+                "{sql}"
+            );
+        }
+        // A name that cannot be read may be any function: set_config too, so a write.
+        let unreadable = "SELECT (1).U&\"!0070g_terminate_backend\" UESCAPE '!'";
+        flagged(Dialect::Postgres, &[unreadable]);
+        assert_eq!(
+            classify(unreadable, Dialect::Postgres),
+            StatementClass::Write
+        );
+        quiet(
+            Dialect::Postgres,
+            &[
+                "SELECT t.pg_terminate_backend, s.\"nextval\" FROM t, s",
+                "SELECT public.t.nextval FROM public.t",
+                "SELECT t.\"Name\".nextval FROM t",
+                "SELECT \"t\".nextval FROM t",
+                "SELECT (doc).items, (1).abs FROM t",
+                "SELECT '(1).nextval', \"(1).nextval\" -- (1).nextval",
+            ],
+        );
+        // Only PostgreSQL reads `(…).name` so.
+        quiet(
+            Dialect::Mysql,
+            &["SELECT (1).sleep", "SELECT ('a').get_lock"],
+        );
+        quiet(Dialect::Sqlite, &["SELECT ('x').load_extension"]);
+    }
+
+    #[test]
+    fn set_config_in_attribute_notation_is_a_write() {
+        for sql in [
+            "SELECT (1).set_config",
+            "SELECT ('a').\"set_config\"",
+            "SELECT (x).abs.set_config FROM t",
+            "SELECT (x).\"f\".set_config FROM t",
+            "SELECT (x).\"f\".\"set_config\" FROM t",
+            "EXPLAIN ANALYZE SELECT (1).set_config",
+        ] {
+            assert_eq!(
+                classify(sql, Dialect::Postgres),
+                StatementClass::Write,
+                "{sql}"
+            );
+        }
+        for sql in [
+            "SELECT t.set_config FROM t",
+            "SELECT t.\"f\".set_config FROM t",
+            "SELECT (t).set_config_name FROM t",
+        ] {
+            assert_eq!(
+                classify(sql, Dialect::Postgres),
+                StatementClass::Read,
+                "{sql}"
+            );
+        }
+        for dialect in [Dialect::Mysql, Dialect::Sqlite] {
+            assert_eq!(
+                classify("SELECT (1).set_config", dialect),
+                StatementClass::Read
+            );
+        }
     }
 }

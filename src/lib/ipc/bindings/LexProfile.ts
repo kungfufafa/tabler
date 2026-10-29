@@ -92,4 +92,11 @@ terminatorOptional: boolean,
 /**
  * `BEGIN … END` blocks (procedural bodies, scripts) keep their inner `;`.
  */
-beginEndBodies: boolean, };
+beginEndBodies: boolean, 
+/**
+ * The server reads `(expr).name` as `name(expr)` when the value has no field of that name
+ * (attribute notation, the PostgreSQL family): to the classifier a name after `)` or `]`
+ * and `.`, and each later name of such a chain (`(1).abs.name`), is a call of it. Written
+ * to the renderer only when on, so the other dialects' `lex/<d>.json` stay as they were.
+ */
+attributeCalls?: boolean, };

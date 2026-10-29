@@ -11,14 +11,15 @@
 //!
 //! DDL in a transaction is not atomic on CockroachDB (`autocommit_before_ddl`), so structure
 //! editing stays off; so do backups (pg_dump), users (no `aclexplode`), row edits without a key
-//! (no `ctid`), other client encodings than UTF-8, the diagram (`relispartition` is NULL) and
-//! the Create Database options (no collations or templates).
+//! (no `ctid`), other client encodings than UTF-8 and the Create Database options (no
+//! collations or templates). The diagram's PostgreSQL query reads `relispartition`, which is
+//! NULL here, with `IS NOT TRUE`.
 
 use async_trait::async_trait;
 
-use super::catalog::{kill_outcome, optional, schema_of};
-use crate::drivers::postgres::flavor::PgFlavorHooks;
-use crate::drivers::postgres::introspect::{self, Traced};
+use super::catalog::{kill_outcome, optional};
+use crate::drivers::postgres::flavor::{InitKind, InitStatement, PgFlavorHooks};
+use crate::drivers::postgres::introspect::{self, Traced, kind_of_relkind, schema_of};
 use crate::error::AppError;
 use crate::sqlgen::dialect::spec::ExplainForm;
 use crate::types::admin::{KillOutcome, KillScope, ProcessRow};
@@ -103,9 +104,14 @@ impl PgFlavorHooks for Cockroach {
     /// Without the DateStyle and IntervalStyle settings, which older versions refuse unless
     /// enabled and which change nothing Tabler reads (it sends dates as ISO text). A client
     /// encoding other than UTF-8 is refused by the server, so the connect fails.
-    fn init_sql(&self, _: &ConnectionProfile, _: bool, base: Vec<String>) -> Vec<String> {
+    fn init_sql(
+        &self,
+        _: &ConnectionProfile,
+        _: bool,
+        base: Vec<InitStatement>,
+    ) -> Vec<InitStatement> {
         base.into_iter()
-            .filter(|s| !s.starts_with("SET DateStyle") && !s.starts_with("SET IntervalStyle"))
+            .filter(|s| !matches!(s.kind, InitKind::DateStyle | InitKind::IntervalStyle))
             .collect()
     }
 
@@ -204,7 +210,6 @@ impl PgFlavorHooks for Cockroach {
             .without(&[
                 Feature::EditWithoutKey,
                 Feature::Encoding,
-                Feature::Diagram,
                 Feature::CreateDatabase,
             ]);
     }
@@ -232,7 +237,7 @@ async fn list_tables(c: &Traced<'_>, schema: &str) -> Result<Vec<TableSummary>, 
         out.push(TableSummary {
             name: row.try_get(0)?,
             schema: Some(schema.to_string()),
-            kind: super::catalog::kind_of_relkind(&relkind),
+            kind: kind_of_relkind(&relkind),
             row_estimate: row.try_get(3)?,
             size_bytes: None,
             comment: row.try_get(2)?,
@@ -404,6 +409,30 @@ mod tests {
         FakePg::new().server_version("13.0.0").version(VERSION)
     }
 
+    /// DateStyle and IntervalStyle go by what the statement sets: a startup command of the user
+    /// that sets them stays.
+    #[test]
+    fn the_init_leaves_out_the_styles_only() {
+        use InitKind::*;
+        let base = [
+            (DateStyle, "SET DateStyle = 'ISO, YMD';"),
+            (IntervalStyle, "SET IntervalStyle = 'postgres';"),
+            (FloatDigits, "SET extra_float_digits = 3;"),
+            (Startup, "SET DateStyle = 'ISO, DMY';"),
+        ]
+        .map(|(kind, sql)| InitStatement::new(kind, sql))
+        .to_vec();
+        let init: Vec<String> = COCKROACH
+            .init_sql(&testkit::profile(26257), false, base)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
+        assert_eq!(
+            init,
+            ["SET extra_float_digits = 3;", "SET DateStyle = 'ISO, DMY';"]
+        );
+    }
+
     #[tokio::test]
     async fn a_session_on_cockroachdb() {
         let pg = fake()
@@ -436,6 +465,7 @@ mod tests {
         assert_eq!(caps.safety.read_only, ReadOnlyMode::Server);
         assert!(caps.has(Feature::KillProcess) && caps.has(Feature::ProcessList));
         assert!(caps.has(Feature::EditRows) && caps.has(Feature::TableDdl));
+        assert!(caps.has(Feature::Diagram));
         for f in [
             Feature::StructureEdit,
             Feature::Backup,
@@ -443,7 +473,6 @@ mod tests {
             Feature::Users,
             Feature::EditWithoutKey,
             Feature::Encoding,
-            Feature::Diagram,
             Feature::CreateDatabase,
         ] {
             assert!(!caps.has(f), "{f:?}");

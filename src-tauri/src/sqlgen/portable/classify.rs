@@ -10,7 +10,9 @@
 //! - a call of a function of `write_calls` is a write (T-SQL `OPENQUERY(srv, 'DELETE …')` hides
 //!   its statement in a string). An entry of several parts (`AI.IF`) matches a qualified callee's
 //!   last parts, words or quoted names (`` `ai`.if( ``), and a quoted part holding dots counts as
-//!   the parts it spells (`` `safe.ai`.if( ``);
+//!   the parts it spells (`` `safe.ai`.if( ``). Where the profile has `attribute_calls` (the
+//!   PostgreSQL family), a name in attribute notation is a call too: `(1).pg_terminate_backend`,
+//!   `('s')."nextval"`;
 //! - where a table goes, a table function outside `table_functions` is a write (ClickHouse
 //!   `url()`, `s3()`…), also as the first table of a parenthesized join
 //!   (`FROM (url(…) CROSS JOIN t)`). The function is the last part of its name, past every run
@@ -421,7 +423,7 @@ fn has_word(code: &[Code], words: &[&str]) -> bool {
 
 fn reads(lex: &LexProfile, rules: &ClassifyRules, code: &[Code]) -> bool {
     !(lex.terminator_optional && has_word(code, rules.writes))
-        && !calls(code, rules.write_calls)
+        && !calls(code, rules.write_calls, lex.attribute_calls)
         && tables_read_only(rules, code)
         && statement_reads(rules, code)
 }
@@ -518,9 +520,29 @@ fn explained_query_reads(rules: &ClassifyRules, rest: &[Code]) -> bool {
         && statement_reads(rules, &rest[i..])
 }
 
-/// Whether `code` calls a function of `names`.
-fn calls(code: &[Code], names: &[&str]) -> bool {
-    (1..code.len()).any(|i| code[i].is('(') && names_listed(code, i - 1, names))
+/// Whether `code` calls a function of `names`: a name before `(`, and with `attributes`
+/// (`LexProfile::attribute_calls`) a name in attribute notation too.
+fn calls(code: &[Code], names: &[&str], attributes: bool) -> bool {
+    (0..code.len()).any(|i| {
+        let called = code.get(i + 1).is_some_and(|c| c.is('('))
+            || (attributes && in_attribute_notation(code, i));
+        called && names_listed(code, i, names)
+    })
+}
+
+/// Whether the name at `i` is selected from a value: `(expr).name`, `arr[1].name`, or a later
+/// name of such a chain (`(expr).a.name`). The PostgreSQL family calls `name(value)` when the
+/// value has no field of that name, so `(1).pg_terminate_backend` ends a session. A name after a
+/// plain name (`t.name`) is a column or a qualified name, never such a call.
+fn in_attribute_notation(code: &[Code], i: usize) -> bool {
+    let mut k = i;
+    while k >= 2 && code[k].is_name() && code[k - 1].is('.') {
+        if code[k - 2].is(')') || code[k - 2].is(']') {
+            return true;
+        }
+        k -= 2;
+    }
+    false
 }
 
 /// Whether every table function `code` reads from is allowed.
@@ -687,7 +709,9 @@ pub fn calls_listed_function(lex: &LexProfile, names: &[&str], sql: &str) -> boo
         && lex.readings.iter().any(|&r| {
             let scan = scan(lex, r, sql);
             let code = code_of(&scan, 0..scan.tokens.len());
-            scan.ambiguous || calls(&code, names) || names.iter().any(|n| says(&code, n))
+            scan.ambiguous
+                || calls(&code, names, lex.attribute_calls)
+                || names.iter().any(|n| says(&code, n))
         })
 }
 
@@ -990,6 +1014,48 @@ mod tests {
         );
         let one = |sql| is_single_statement(&ANSI_LEX, &RULES, sql);
         assert!(one("SELECT j->>'a' FROM t") && !one("SELECT 1 ->> SELECT 2"));
+    }
+
+    #[test]
+    fn a_name_in_attribute_notation_is_a_call_where_the_profile_says_so() {
+        const RULES: ClassifyRules = ClassifyRules {
+            write_calls: &["PG_TERMINATE_BACKEND", "NEXTVAL", "AI.IF"],
+            ..ANSI_RULES
+        };
+        let attributes = LexProfile {
+            attribute_calls: true,
+            ..ANSI_LEX
+        };
+        let calls_side_effect = |lex: &LexProfile, sql| {
+            calls_listed_function(lex, &["PG_TERMINATE_BACKEND", "NEXTVAL"], sql)
+        };
+        for sql in [
+            "SELECT (1).pg_terminate_backend",
+            "SELECT (1).\"pg_terminate_backend\"",
+            "SELECT (1).\"PG_TERMINATE_BACKEND\"",
+            "SELECT ('s').nextval",
+            "SELECT ('s'). /* c */ \"nextval\"",
+            "SELECT (SELECT pid FROM s).pg_terminate_backend",
+            "SELECT (a[1]).pg_terminate_backend FROM t",
+            "SELECT a[1].pg_terminate_backend FROM t",
+            "SELECT (1).abs.pg_terminate_backend",
+            "SELECT (1).U&\"x\"",
+            "SELECT * FROM t WHERE (pid).pg_terminate_backend",
+        ] {
+            assert_eq!(with(&attributes, &RULES, sql), Write, "{sql}");
+            assert!(calls_side_effect(&attributes, sql), "{sql}");
+            // Without the flag only a call before `(` counts.
+            assert_eq!(with(&ANSI_LEX, &RULES, sql), Read, "{sql}");
+            assert!(!calls_side_effect(&ANSI_LEX, sql), "{sql}");
+        }
+        for sql in [
+            "SELECT t.pg_terminate_backend, s.\"nextval\" FROM t, s",
+            "SELECT (doc).items, (1).abs FROM t",
+            "SELECT '(1).nextval', \"(1).nextval\" -- (1).nextval",
+        ] {
+            assert_eq!(with(&attributes, &RULES, sql), Read, "{sql}");
+            assert!(!calls_side_effect(&attributes, sql), "{sql}");
+        }
     }
 
     #[test]

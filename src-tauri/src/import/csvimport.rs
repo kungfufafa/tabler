@@ -740,8 +740,13 @@ pub(crate) async fn import_records(
         primary_key: &plan.primary_key,
     };
     target.validate()?;
+    let caps = session.capabilities();
+    // A server without an upsert (Greenplum 6, Redshift) would refuse the first batch only.
+    if plan.mode == InsertMode::UpdateOnDuplicate {
+        caps.require_upsert()?;
+    }
     // The values one statement binds: fewer than the dialect's on some servers (D1).
-    let narrowing = Narrowing::for_caps(&session.capabilities());
+    let narrowing = Narrowing::for_caps(&caps);
     let bytes = Arc::new(AtomicU64::new(0));
     let read_count = Arc::new(AtomicU64::new(0));
     let (reader, total_bytes) = open(bytes.clone())?;

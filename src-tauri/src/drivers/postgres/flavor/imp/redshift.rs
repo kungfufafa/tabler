@@ -25,10 +25,10 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 
-use super::catalog::{kill_outcome, optional, paren_lists, signalled, typmod_info};
+use super::catalog::{kill_outcome, optional, paren_lists, signalled};
 use crate::drivers::postgres::decode::kind_from_name;
-use crate::drivers::postgres::flavor::PgFlavorHooks;
-use crate::drivers::postgres::introspect::Traced;
+use crate::drivers::postgres::flavor::{InitKind, InitStatement, PgFlavorHooks};
+use crate::drivers::postgres::introspect::{Traced, typmod_info};
 use crate::error::AppError;
 use crate::sqlgen::admin::kill_sql;
 use crate::sqlgen::dialect::redshift::{SPEC, ShowDdl, show_ddl};
@@ -52,10 +52,10 @@ pub(super) static REDSHIFT: Redshift = Redshift;
 const EXTRA_FLOAT_DIGITS: &str = "SET extra_float_digits = 2;";
 
 /// The init statements of PostgreSQL that Redshift has no setting for.
-const NOT_SETTINGS: &[&str] = &[
-    "SET IntervalStyle",
-    "SET client_encoding",
-    "SET default_transaction_read_only",
+const NOT_SETTINGS: &[InitKind] = &[
+    InitKind::IntervalStyle,
+    InitKind::Encoding,
+    InitKind::ReadOnly,
 ];
 
 /// The schemas Redshift keeps for itself.
@@ -165,15 +165,17 @@ impl PgFlavorHooks for Redshift {
             .unwrap_or("dev")
     }
 
-    fn init_sql(&self, _: &ConnectionProfile, _: bool, base: Vec<String>) -> Vec<String> {
+    fn init_sql(
+        &self,
+        _: &ConnectionProfile,
+        _: bool,
+        base: Vec<InitStatement>,
+    ) -> Vec<InitStatement> {
         base.into_iter()
-            .filter(|s| !NOT_SETTINGS.iter().any(|n| s.starts_with(n)))
-            .map(|s| {
-                if s.starts_with("SET extra_float_digits") {
-                    EXTRA_FLOAT_DIGITS.to_string()
-                } else {
-                    s
-                }
+            .filter(|s| !NOT_SETTINGS.contains(&s.kind))
+            .map(|s| match s.kind {
+                InitKind::FloatDigits => InitStatement::new(s.kind, EXTRA_FLOAT_DIGITS),
+                _ => s,
             })
             .collect()
     }
@@ -279,6 +281,8 @@ impl PgFlavorHooks for Redshift {
                 .filter(|op| !matches!(op, FilterOp::JsonContains | FilterOp::JsonNotContains))
                 .collect(),
             default_keyword: SPEC.knobs.set_default,
+            // No ON CONFLICT.
+            upsert: false,
             server_exprs: vec![
                 ServerExpr::Now,
                 ServerExpr::CurrentTimestamp,
@@ -305,6 +309,11 @@ impl PgFlavorHooks for Redshift {
             Feature::Timezone,
             Feature::StartupCommands,
         ]);
+    }
+
+    /// Redshift has no savepoints: one aborts the open transaction.
+    fn row_cap_savepoint(&self) -> bool {
+        false
     }
 }
 
@@ -868,25 +877,37 @@ mod tests {
 
     #[test]
     fn the_init_is_what_redshift_takes() {
-        let base = vec![
-            "SET DateStyle = 'ISO, YMD';".to_string(),
-            "SET IntervalStyle = 'postgres';".to_string(),
-            "SET extra_float_digits = 3;".to_string(),
-            "SET client_encoding = 'UTF8';".to_string(),
-            "SET TIME ZONE 'UTC';".to_string(),
-            "SET default_transaction_read_only = on;".to_string(),
-            "SELECT set_config('query_group', 'etl', false);".to_string(),
-            "SET search_path = app, public;".to_string(),
-        ];
+        use InitKind::*;
+        let base = [
+            (DateStyle, "SET DateStyle = 'ISO, YMD';"),
+            (IntervalStyle, "SET IntervalStyle = 'postgres';"),
+            (FloatDigits, "SET extra_float_digits = 3;"),
+            (Encoding, "SET client_encoding = 'UTF8';"),
+            (TimeZone, "SET TIME ZONE 'UTC';"),
+            (ReadOnly, "SET default_transaction_read_only = on;"),
+            (Setting, "SELECT set_config('query_group', 'etl', false);"),
+            // The user's own commands stay, whatever they read like.
+            (
+                Startup,
+                "SET search_path = app, public; SET IntervalStyle = 'iso_8601';",
+            ),
+        ]
+        .map(|(kind, sql)| InitStatement::new(kind, sql))
+        .to_vec();
         let profile = testkit::profile(5439);
+        let init: Vec<String> = REDSHIFT
+            .init_sql(&profile, true, base)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
         assert_eq!(
-            REDSHIFT.init_sql(&profile, true, base),
+            init,
             [
                 "SET DateStyle = 'ISO, YMD';",
                 "SET extra_float_digits = 2;",
                 "SET TIME ZONE 'UTC';",
                 "SELECT set_config('query_group', 'etl', false);",
-                "SET search_path = app, public;",
+                "SET search_path = app, public; SET IntervalStyle = 'iso_8601';",
             ]
         );
     }
@@ -1059,7 +1080,7 @@ mod tests {
             assert!(!caps.has(f), "{f:?}");
         }
         assert!(!caps.data.filter_ops.contains(&FilterOp::JsonContains));
-        assert!(!caps.data.default_keyword);
+        assert!(!caps.data.default_keyword && !caps.data.upsert);
         assert_eq!(session.explain_form(ExplainMode::Plan), None);
         session.close().await;
     }
@@ -1545,6 +1566,36 @@ mod tests {
             testkit::sent(&pg, "SHOW TABLE"),
             ["SHOW TABLE \"public\".\"sales\""]
         );
+    }
+
+    /// A read in the editor after BEGIN sends no row-cap savepoint, which the fake Redshift
+    /// refuses as the cluster does (aborting the transaction there): the read is drained.
+    #[tokio::test]
+    async fn a_read_after_begin_sends_no_savepoint() {
+        let pg = fake()
+            .rows(
+                "FROM sales",
+                vec![Col::int4("salesid")],
+                (0..20).map(|n| vec![Cell::Int(n)]).collect(),
+            )
+            .start()
+            .await;
+        let session = testkit::session(&testkit::profile(pg.port())).await;
+        for sql in ["BEGIN", "SELECT salesid FROM sales", "COMMIT"] {
+            let mut sink = crate::drivers::CollectSink::default();
+            session
+                .run_statement(sql, 10, &mut sink, crate::drivers::CancelSlot::default())
+                .await
+                .unwrap();
+        }
+        assert!(
+            testkit::sent(&pg, "SAVEPOINT").is_empty(),
+            "{:?}",
+            pg.queries()
+        );
+        assert!(pg.cancels().is_empty());
+        assert!(!testkit::sent(&pg, "SELECT salesid FROM sales").is_empty());
+        session.close().await;
     }
 
     /// The grid's edits, built with Redshift SQL, run on the fake Redshift, which refuses

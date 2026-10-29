@@ -11,7 +11,12 @@ export type DataCaps = { paging: Paging, count: CountMode, sort: boolean, filter
 /**
  * A column can be set to `DEFAULT` in an UPDATE.
  */
-defaultKeyword: boolean, serverExprs: Array<ServerExpr>, 
+defaultKeyword: boolean, 
+/**
+ * The import may update the rows whose key exists (`ON CONFLICT … DO UPDATE`, MySQL's
+ * `ON DUPLICATE KEY UPDATE`): off where the server has no upsert (Greenplum 6, Redshift).
+ */
+upsert: boolean, serverExprs: Array<ServerExpr>, 
 /**
  * Most bind parameters one statement takes.
  */

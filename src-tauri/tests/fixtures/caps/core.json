@@ -43,7 +43,8 @@
         "default"
       ],
       "sort": true,
-      "transactions": "atomic"
+      "transactions": "atomic",
+      "upsert": true
     },
     "dialect": "postgres",
     "driver": "postgres",
@@ -164,7 +165,8 @@
         "default"
       ],
       "sort": true,
-      "transactions": "atomic"
+      "transactions": "atomic",
+      "upsert": true
     },
     "dialect": "mysql",
     "driver": "mysql",
@@ -285,7 +287,8 @@
         "default"
       ],
       "sort": true,
-      "transactions": "atomic"
+      "transactions": "atomic",
+      "upsert": true
     },
     "dialect": "sqlite",
     "driver": "sqlite",

@@ -18,6 +18,7 @@ use tokio_postgres::tls::MakeTlsConnect;
 use tokio_postgres::{Client, Config, SimpleQueryMessage};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+use super::flavor::{InitKind, InitStatement};
 use crate::conn_options::{check_postgres as check_options, extra_params, is_utf8_encoding};
 use crate::drivers::ConnectTarget;
 use crate::error::AppError;
@@ -355,25 +356,35 @@ pub fn read_only_session(options: &ProfileOptions) -> bool {
 
 /// The statements plain PostgreSQL runs on every new server connection (pool and editor alike);
 /// an engine adjusts them (`PgFlavorHooks::init_sql`).
-pub fn session_init_statements(options: &ProfileOptions) -> Vec<String> {
+pub fn session_init_statements(options: &ProfileOptions) -> Vec<InitStatement> {
+    use InitKind::*;
     let mut sql = vec![
-        "SET DateStyle = 'ISO, YMD';".to_string(),
-        "SET IntervalStyle = 'postgres';".to_string(),
-        "SET extra_float_digits = 3;".to_string(),
-        opt_sql::pg_client_encoding(client_encoding(options)),
+        InitStatement::new(DateStyle, "SET DateStyle = 'ISO, YMD';"),
+        InitStatement::new(IntervalStyle, "SET IntervalStyle = 'postgres';"),
+        InitStatement::new(FloatDigits, "SET extra_float_digits = 3;"),
+        InitStatement::new(
+            Encoding,
+            opt_sql::pg_client_encoding(client_encoding(options)),
+        ),
     ];
     if let Some(tz) = options.timezone.as_deref().filter(|t| !t.trim().is_empty()) {
-        sql.push(format!(
-            "SET TIME ZONE '{}';",
-            tz.trim().replace('\'', "''")
+        sql.push(InitStatement::new(
+            TimeZone,
+            format!("SET TIME ZONE '{}';", tz.trim().replace('\'', "''")),
         ));
     }
     if read_only_session(options) {
-        sql.push("SET default_transaction_read_only = on;".to_string());
+        sql.push(InitStatement::new(
+            ReadOnly,
+            "SET default_transaction_read_only = on;",
+        ));
     }
     // The extra parameters' server settings (checked by `check_options` before connecting).
     for (name, value) in extra_params(options).unwrap_or_default().settings {
-        sql.push(opt_sql::pg_set_config(&name, &value));
+        sql.push(InitStatement::new(
+            Setting,
+            opt_sql::pg_set_config(&name, &value),
+        ));
     }
     if let Some(extra) = options
         .startup_sql
@@ -381,11 +392,14 @@ pub fn session_init_statements(options: &ProfileOptions) -> Vec<String> {
         .filter(|s| !s.trim().is_empty())
     {
         let extra = extra.trim();
-        sql.push(if extra.ends_with(';') {
-            extra.to_string()
-        } else {
-            format!("{extra};")
-        });
+        sql.push(InitStatement::new(
+            Startup,
+            if extra.ends_with(';') {
+                extra.to_string()
+            } else {
+                format!("{extra};")
+            },
+        ));
     }
     sql
 }
@@ -400,7 +414,8 @@ pub struct SessionInit {
 }
 
 impl SessionInit {
-    pub fn new(statements: Vec<String>, one_by_one: bool) -> SessionInit {
+    pub fn new(statements: Vec<InitStatement>, one_by_one: bool) -> SessionInit {
+        let statements: Vec<String> = statements.into_iter().map(|s| s.sql).collect();
         SessionInit {
             batch: statements.join(" ").into(),
             statements: statements.into(),
@@ -936,6 +951,38 @@ mod tests {
         );
     }
 
+    /// Each statement says what it sets; a startup command that reads like one of the settings
+    /// is still a startup command.
+    #[test]
+    fn the_init_statements_say_what_they_set() {
+        let opts = ProfileOptions {
+            timezone: Some("UTC".into()),
+            read_only: true,
+            pg_params: Some("jit=off".into()),
+            startup_sql: Some("SET client_encoding = 'LATIN1'".into()),
+            ..ProfileOptions::default()
+        };
+        let kinds: Vec<(InitKind, String)> = session_init_statements(&opts)
+            .into_iter()
+            .map(|s| (s.kind, s.sql))
+            .collect();
+        use InitKind::*;
+        assert_eq!(
+            kinds,
+            [
+                (DateStyle, "SET DateStyle = 'ISO, YMD';"),
+                (IntervalStyle, "SET IntervalStyle = 'postgres';"),
+                (FloatDigits, "SET extra_float_digits = 3;"),
+                (Encoding, "SET client_encoding = 'UTF8';"),
+                (TimeZone, "SET TIME ZONE 'UTC';"),
+                (ReadOnly, "SET default_transaction_read_only = on;"),
+                (Setting, "SELECT set_config('jit', 'off', false);"),
+                (Startup, "SET client_encoding = 'LATIN1';"),
+            ]
+            .map(|(k, s)| (k, s.to_string()))
+        );
+    }
+
     #[test]
     fn tls_configs_build_for_every_mode() {
         rustls::crypto::aws_lc_rs::default_provider()
@@ -1053,7 +1100,10 @@ mod tests {
         let pool = build_pool(
             make_config(&target, "postgres"),
             make_tls(&target).unwrap(),
-            SessionInit::new(vec!["SET x = 1".into()], false),
+            SessionInit::new(
+                vec![InitStatement::new(InitKind::Startup, "SET x = 1")],
+                false,
+            ),
             Some(Arc::new(token)),
         )
         .unwrap();
@@ -1072,7 +1122,10 @@ mod tests {
         let plain = build_pool(
             make_config(&target, "postgres"),
             make_tls(&target).unwrap(),
-            SessionInit::new(vec!["SET x = 1".into()], false),
+            SessionInit::new(
+                vec![InitStatement::new(InitKind::Startup, "SET x = 1")],
+                false,
+            ),
             None,
         )
         .unwrap();
