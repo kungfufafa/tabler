@@ -11,15 +11,15 @@
     ],
     "readings": [
       {
-        "stringBackslash": false,
+        "stringBackslash": true,
         "identBackslash": false
       },
       {
-        "stringBackslash": true,
+        "stringBackslash": false,
         "identBackslash": false
       }
     ],
-    "eStrings": true,
+    "eStrings": false,
     "dollarQuotes": true,
     "dollarTags": true,
     "tripleQuotes": false,
@@ -36,8 +36,7 @@
   "classify": {
     "queries": [
       "SELECT",
-      "WITH",
-      "VALUES"
+      "WITH"
     ],
     "inspections": [
       "SHOW",
@@ -58,12 +57,42 @@
       "CALL",
       "GRANT",
       "REVOKE",
-      "VACUUM"
+      "VACUUM",
+      "PG_TERMINATE_BACKEND",
+      "PG_CANCEL_BACKEND",
+      "LO_IMPORT",
+      "LO_UNLINK",
+      "LO_CREAT",
+      "LO_CREATE",
+      "PG_START_BACKUP",
+      "PG_STAT_RESET*",
+      "PG_READ_FILE",
+      "PG_READ_BINARY_FILE",
+      "PG_STAT_FILE",
+      "PG_LS_*",
+      "NEXTVAL"
     ],
     "writeCalls": [
       "PG_TERMINATE_BACKEND",
       "PG_CANCEL_BACKEND",
-      "SET_CONFIG"
+      "SET_CONFIG",
+      "CHANGE_QUERY_PRIORITY",
+      "CHANGE_SESSION_PRIORITY",
+      "CHANGE_USER_PRIORITY",
+      "REBOOT_CLUSTER",
+      "LO_*",
+      "LOWRITE",
+      "PG_START_BACKUP",
+      "PG_STOP_BACKUP",
+      "PG_STAT_RESET*",
+      "PG_READ_FILE",
+      "PG_READ_BINARY_FILE",
+      "PG_STAT_FILE",
+      "PG_LS_*",
+      "PG_RELOAD_CONF",
+      "PG_ROTATE_LOGFILE",
+      "NEXTVAL",
+      "SETVAL"
     ],
     "tableFunctions": null
   }
