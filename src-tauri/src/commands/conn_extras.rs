@@ -175,15 +175,16 @@ pub(crate) async fn set_connection_encoding_on(
         None => None,
     };
     let password = connect_password(state, &profile, None).await?;
+    let extras = state.secrets.extras(&profile).await?;
     let attempt = Instant::now();
     let opened = async {
         let session = tokio::time::timeout(
             connect_timeout(&profile),
-            drivers::connect(ConnectTarget {
+            extras.scope(drivers::connect(ConnectTarget {
                 profile: &profile,
                 password: password.as_deref(),
                 host_override,
-            }),
+            })),
         )
         .await
         .map_err(|_| AppError::Timeout)??;

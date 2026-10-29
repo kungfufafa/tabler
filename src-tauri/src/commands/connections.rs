@@ -313,19 +313,21 @@ pub async fn command_password(profile: &ConnectionProfile) -> Result<String, App
     secrets::run_password_command(command, secrets::PASSWORD_COMMAND_TIMEOUT).await
 }
 
-/// Opens the connection's session, SQL or native.
+/// Opens the connection's session, SQL or native, with its driver's second secrets (see
+/// `secrets::ExtraSecrets`).
 async fn open_session(
     profile: &ConnectionProfile,
     password: Option<&str>,
+    extras: secrets::ExtraSecrets,
     host_override: Option<(String, u16)>,
 ) -> Result<(Session, crate::drivers::ServerInfo), AppError> {
     let session = tokio::time::timeout(
         connect_timeout(profile),
-        drivers::open(ConnectTarget {
+        extras.scope(drivers::open(ConnectTarget {
             profile,
             password,
             host_override,
-        }),
+        })),
     )
     .await
     .map_err(|_| AppError::Timeout)??;
@@ -494,6 +496,7 @@ pub async fn connect(
     check_socket(&profile)?;
     let typed = password.clone();
     let password = connect_password(&state, &profile, password).await?;
+    let extras = state.secrets.extras(&profile).await?;
     // Another workspace of the profile shares its open tunnel (a pinned local port could not be
     // bound twice, and the SSH server's questions are not asked again).
     let shared = state.shared_tunnel(&profile).await;
@@ -517,17 +520,18 @@ pub async fn connect(
     };
     let host_override = tunnel.as_ref().map(TunnelHandle::connect_addr);
     let attempt = Instant::now();
-    let (session, server) = match open_session(&profile, password.as_deref(), host_override).await {
-        Ok(opened) => opened,
-        Err(e) => {
-            if let Some(t) = &tunnel {
-                let e = t.explain_error(e, attempt);
-                t.close().await;
+    let (session, server) =
+        match open_session(&profile, password.as_deref(), extras, host_override).await {
+            Ok(opened) => opened,
+            Err(e) => {
+                if let Some(t) = &tunnel {
+                    let e = t.explain_error(e, attempt);
+                    t.close().await;
+                    return Err(e);
+                }
                 return Err(e);
             }
-            return Err(e);
-        }
-    };
+        };
     // Never persisted: reconnects reuse it while a connection of the profile is open.
     let session_password = typed.filter(|_| profile.options.password_mode() == PasswordMode::Ask);
     let connection_id = Uuid::new_v4();
@@ -681,8 +685,9 @@ pub(crate) async fn switch_database_on(
     };
     let profile = with_live_encoding(profile, live);
     let password = connect_password(state, &profile, None).await?;
+    let extras = state.secrets.extras(&profile).await?;
     let attempt = Instant::now();
-    let (session, server) = open_session(&profile, password.as_deref(), host_override)
+    let (session, server) = open_session(&profile, password.as_deref(), extras, host_override)
         .await
         .map_err(|e| match &conn.tunnel {
             Some(t) => t.explain_error(e, attempt),

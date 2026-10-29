@@ -102,7 +102,7 @@ export async function connectProfile(
     let typed: string | null = typable ? password : null;
     // An "Ask every time" profile already asked for the key as its password: no second prompt.
     const asked = typed === null && mode === "ask" && profile !== undefined;
-    if (asked) typed = await askConnectionPassword(profile.name, "connect");
+    if (asked) typed = await askConnectionPassword(profile.name, "connect", profile.driver);
     // The key prompt of an encrypted SQLite file: asked after the connect refused it.
     let keyPrompted = false;
     let info: ConnectionInfo;

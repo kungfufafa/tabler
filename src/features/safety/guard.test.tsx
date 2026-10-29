@@ -13,7 +13,13 @@ import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ipc, type ConnectionInfo, type ConnectionProfile, type SafeModeLevel } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
-import { guardExecution, SEND_QUERIES_TITLE, type GuardRequest } from "./guard";
+import {
+  guardExecution,
+  nameReason,
+  passwordSecret,
+  SEND_QUERIES_TITLE,
+  type GuardRequest,
+} from "./guard";
 import { SafetyHost } from "./SafetyHost";
 import { changeSafeModeLevel } from "./setLevel";
 import { useSafetyPromptStore } from "./store";
@@ -317,6 +323,77 @@ describe("guardExecution", () => {
     await screen.findByRole("alertdialog");
     act(() => unmount());
     await expect(pending).resolves.toBe(false);
+  });
+});
+
+describe("Safe Mode on a connection whose secret is a token", () => {
+  const tokenProfile = (patch: Partial<ConnectionProfile> = {}) =>
+    ({ ...profile("safe"), name: "Edge D1", driver: "d1", ...patch }) as ConnectionProfile;
+  const passcode = (enabled: boolean) =>
+    vi.spyOn(ipc.security, "passcodeStatus").mockResolvedValue({ enabled, biometrics: false });
+
+  it("asks for the app passcode when one is set, else the name; core profiles as before", async () => {
+    passcode(true);
+    await expect(passwordSecret(tokenProfile())).resolves.toBe("passcode");
+    // A command's output on a driver beyond the core three: the same.
+    const iam = tokenProfile({ driver: "clickhouse" });
+    iam.options = { ...iam.options, passwordMode: "command" };
+    await expect(passwordSecret(iam)).resolves.toBe("passcode");
+    await expect(
+      passwordSecret({ ...iam, options: { ...iam.options, passwordMode: null } }),
+    ).resolves.toBe("password");
+    // Core profiles never ask for the passcode, a command's included.
+    await expect(passwordSecret(profile("safe"))).resolves.toBe("password");
+    hasPassword = false;
+    await expect(passwordSecret(profile("safe", { passwordMode: "command" }))).resolves.toBe(
+      "name",
+    );
+    passcode(false);
+    await expect(passwordSecret(tokenProfile())).resolves.toBe("name");
+    expect(nameReason("name", tokenProfile())).toContain("signs in with a token");
+    expect(nameReason("name", profile("safe"))).toContain("no saved password");
+    expect(nameReason("passcode", tokenProfile())).toBeNull();
+  });
+
+  it("checks the passcode through the backend; a wrong one can be retried", async () => {
+    const user = userEvent.setup();
+    passcode(true);
+    const verify = vi
+      .spyOn(ipc.safety, "verifyPassword")
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    render(<SafetyHost />);
+    vi.spyOn(ipc.profiles, "get").mockResolvedValue(tokenProfile());
+    useConnectionsStore.getState().add(info({ name: "Edge D1", driver: "d1" }));
+    const asked = guardExecution("c1", { kind: "commit", statements: ["DELETE FROM t"] });
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "Enter the app passcode to continue on Edge D1",
+    });
+    const field = within(dialog).getByLabelText("Passcode");
+    await user.type(field, "1111{Enter}");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Wrong passcode");
+    await user.clear(field);
+    await user.type(field, "4321{Enter}");
+    await expect(asked).resolves.toBe(true);
+    expect(verify.mock.calls).toEqual([
+      [PROFILE_ID, "1111"],
+      [PROFILE_ID, "4321"],
+    ]);
+  });
+
+  it("asks for the name without a passcode, and says why", async () => {
+    const user = userEvent.setup();
+    passcode(false);
+    render(<SafetyHost />);
+    vi.spyOn(ipc.profiles, "get").mockResolvedValue(tokenProfile());
+    useConnectionsStore.getState().add(info({ name: "Edge D1", driver: "d1" }));
+    const asked = guardExecution("c1", { kind: "commit", statements: ["DELETE FROM t"] });
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "Type the name of Edge D1 to continue",
+    });
+    expect(dialog).toHaveTextContent("Settings ▸ Security");
+    await user.type(within(dialog).getByLabelText("Connection name"), "Edge D1{Enter}");
+    await expect(asked).resolves.toBe(true);
   });
 });
 

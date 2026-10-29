@@ -257,7 +257,7 @@ export function useConnect() {
       const password =
         profile?.options.passwordMode === "ask"
           ? (takeHandedOverPassword(profileId) ??
-            (await askConnectionPassword(profile.name, "connect")))
+            (await askConnectionPassword(profile.name, "connect", profile.driver)))
           : undefined;
       return withHostKeyTrust(profileId, "connect", profileName(qc, profileId), () =>
         password === undefined

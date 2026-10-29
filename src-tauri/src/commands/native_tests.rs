@@ -856,6 +856,8 @@ async fn driver_util_reaches_only_a_built_lane() {
             ssh_password: None,
             ssh_passphrase: None,
             clear_password: false,
+            key_passphrase: None,
+            session_token: None,
         }
     };
     let err = native::driver_util_on(&f.state, &input(Driver::Postgres), "probe", Json::Null)

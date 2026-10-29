@@ -9,12 +9,14 @@ use uuid::Uuid;
 
 use crate::drivers::native::{CallKind, NativeSession};
 use crate::error::AppError;
+use crate::passcode;
 use crate::secrets::{SecretKind, Secrets};
 use crate::sqlgen::SqlDialect;
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::split::is_meta_command;
 use crate::sqlgen::sql::{split_statements, writes};
 use crate::state::{AppState, Connection};
+use crate::types::profile::{ConnectionProfile, PasswordMode};
 use crate::types::query::ExplainMode;
 
 /// Message of the error returned for a write on a read-only connection.
@@ -46,20 +48,54 @@ pub async fn verify_password(
         .is_some_and(|s| constant_time_eq(s.as_bytes(), password.as_bytes())))
 }
 
-/// Checks the password typed in a safe-mode prompt against the connection's DB password.
+/// Whether Safe Mode confirms a write on `profile` with the app passcode (or, without one, the
+/// connection's name) instead of its password: its secret is a token nobody types (an API key,
+/// an access token), or a driver beyond the core three gets it from a command. The core
+/// profiles keep their password prompt. Mirrors `passwordSecret` in the renderer's
+/// `safety/guard.ts`.
+pub fn confirms_with_passcode(profile: &ConnectionProfile) -> bool {
+    profile.driver.descriptor().secret_is_token
+        || (!profile.driver.is_core() && profile.options.password_mode() == PasswordMode::Command)
+}
+
+/// Whether `answer` is what the Safe Mode prompt of `profile_id` asks for: the app passcode when
+/// [`confirms_with_passcode`] and one is set, else the connection's name; for every other
+/// profile its DB password, as [`verify_password`] checks it (the prompt asks for the name only
+/// when there is no password, and checks that itself).
+pub async fn verify_safe_mode(
+    state: &AppState,
+    profile_id: Uuid,
+    answer: &str,
+) -> Result<bool, AppError> {
+    let profile = state
+        .appdb
+        .get_profile(profile_id)?
+        .ok_or_else(|| AppError::NotFound(format!("profile {profile_id}")))?;
+    if !confirms_with_passcode(&profile) {
+        let session = state.session_password(profile_id);
+        return verify_password(&state.secrets, session, profile_id, answer).await;
+    }
+    let Some(stored) = passcode::load(&state.appdb)? else {
+        let name = profile.name.trim();
+        return Ok(!name.is_empty() && constant_time_eq(name.as_bytes(), answer.trim().as_bytes()));
+    };
+    // PBKDF2 at the passcode's cost: off the async workers.
+    let answer = answer.to_string();
+    tokio::task::spawn_blocking(move || passcode::verify(&stored, &answer))
+        .await
+        .map_err(|e| AppError::internal(format!("background task failed: {e}")))
+}
+
+/// Checks what was typed in a safe-mode prompt (see [`verify_safe_mode`]).
 #[tauri::command]
 pub async fn verify_connection_password(
     state: State<'_, AppState>,
     profile_id: Uuid,
     password: String,
 ) -> Result<bool, AppError> {
-    if state.appdb.get_profile(profile_id)?.is_none() {
-        return Err(AppError::NotFound(format!("profile {profile_id}")));
-    }
-    let session = state.session_password(profile_id);
-    let ok = verify_password(&state.secrets, session, profile_id, &password).await?;
+    let ok = verify_safe_mode(&state, profile_id, &password).await?;
     if !ok {
-        log::info!("safe mode: wrong password for profile {profile_id}");
+        log::info!("safe mode: wrong answer for profile {profile_id}");
     }
     Ok(ok)
 }
@@ -146,6 +182,7 @@ mod tests {
     use crate::appdb::AppDb;
     use crate::secrets::Backend;
     use crate::sqlgen::Dialect;
+    use crate::types::profile::{Driver, ProfileOptions, SslMode};
 
     #[test]
     fn constant_time_eq_compares_whole_strings() {
@@ -192,6 +229,143 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    fn safety_state() -> AppState {
+        let appdb = AppDb::open_in_memory().unwrap();
+        AppState::new(appdb.clone(), Secrets::new(Backend::File, appdb))
+    }
+
+    fn saved(state: &AppState, driver: Driver, mode: PasswordMode) -> ConnectionProfile {
+        let profile = ConnectionProfile {
+            id: Uuid::new_v4(),
+            name: "Billing prod".into(),
+            color: None,
+            group: None,
+            driver,
+            host: Some("db".into()),
+            port: None,
+            user: Some("app".into()),
+            database: None,
+            ssl: SslMode::Require,
+            ssl_ca_path: None,
+            sqlite_path: None,
+            ssh: None,
+            options: ProfileOptions {
+                password_mode: Some(mode),
+                password_command: Some("printf tok".into()),
+                ..ProfileOptions::default()
+            },
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_connected_at: None,
+        };
+        state.appdb.upsert_profile(&profile).unwrap()
+    }
+
+    fn set_passcode(state: &AppState, code: &str) {
+        let stored = passcode::hash(code, 1_000).unwrap();
+        passcode::store(&state.appdb, Some(&stored)).unwrap();
+    }
+
+    #[test]
+    fn only_token_and_non_core_command_secrets_confirm_with_the_passcode() {
+        let state = safety_state();
+        for mode in [
+            PasswordMode::Keychain,
+            PasswordMode::Ask,
+            PasswordMode::Command,
+        ] {
+            for core in [Driver::Postgres, Driver::Mysql, Driver::Sqlite] {
+                assert!(
+                    !confirms_with_passcode(&saved(&state, core, mode)),
+                    "{core:?}"
+                );
+            }
+            // An API token is never typed again; a password is, unless a command prints it.
+            assert!(confirms_with_passcode(&saved(&state, Driver::D1, mode)));
+            assert_eq!(
+                confirms_with_passcode(&saved(&state, Driver::Clickhouse, mode)),
+                mode == PasswordMode::Command
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn safe_mode_of_a_token_profile_takes_the_passcode_else_the_name() {
+        let state = safety_state();
+        let d1 = saved(&state, Driver::D1, PasswordMode::Keychain);
+        // The stored token is not what the prompt asks for.
+        state
+            .secrets
+            .set(d1.id, SecretKind::DbPassword, "api-token")
+            .await
+            .unwrap();
+        // No passcode: the connection's name (trimmed), nothing else.
+        assert!(
+            verify_safe_mode(&state, d1.id, "Billing prod")
+                .await
+                .unwrap()
+        );
+        assert!(
+            verify_safe_mode(&state, d1.id, "  Billing prod ")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !verify_safe_mode(&state, d1.id, "billing prod")
+                .await
+                .unwrap()
+        );
+        assert!(!verify_safe_mode(&state, d1.id, "api-token").await.unwrap());
+        assert!(!verify_safe_mode(&state, d1.id, "").await.unwrap());
+        // With a passcode: the passcode only.
+        set_passcode(&state, "4321");
+        assert!(verify_safe_mode(&state, d1.id, "4321").await.unwrap());
+        assert!(
+            !verify_safe_mode(&state, d1.id, "Billing prod")
+                .await
+                .unwrap()
+        );
+        assert!(!verify_safe_mode(&state, d1.id, "api-token").await.unwrap());
+        // A command's token on a non-core driver: the same.
+        let iam = saved(&state, Driver::Clickhouse, PasswordMode::Command);
+        assert!(verify_safe_mode(&state, iam.id, "4321").await.unwrap());
+        assert!(!verify_safe_mode(&state, iam.id, "tok").await.unwrap());
+        let err = verify_safe_mode(&state, Uuid::new_v4(), "4321")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn safe_mode_of_a_core_profile_is_unchanged_by_a_passcode() {
+        let state = safety_state();
+        set_passcode(&state, "4321");
+        let pg = saved(&state, Driver::Postgres, PasswordMode::Keychain);
+        state
+            .secrets
+            .set(pg.id, SecretKind::DbPassword, "pw")
+            .await
+            .unwrap();
+        assert!(verify_safe_mode(&state, pg.id, "pw").await.unwrap());
+        assert!(!verify_safe_mode(&state, pg.id, "4321").await.unwrap());
+        assert!(
+            !verify_safe_mode(&state, pg.id, "Billing prod")
+                .await
+                .unwrap()
+        );
+        // "Ask every time": the password typed at connect.
+        let ask = saved(&state, Driver::Mysql, PasswordMode::Ask);
+        assert!(!verify_safe_mode(&state, ask.id, "typed").await.unwrap());
+        state.set_session_password(ask.id, Some("typed".into()));
+        assert!(verify_safe_mode(&state, ask.id, "typed").await.unwrap());
+        assert!(!verify_safe_mode(&state, ask.id, "4321").await.unwrap());
+        // A core command profile has no password to check: the prompt asks for the name and
+        // checks it itself, as before.
+        let iam = saved(&state, Driver::Postgres, PasswordMode::Command);
+        assert!(!verify_safe_mode(&state, iam.id, "4321").await.unwrap());
     }
 
     #[test]

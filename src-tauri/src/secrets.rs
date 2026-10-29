@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::appdb::AppDb;
 use crate::error::AppError;
 use crate::process::NoWindow as _;
+use crate::types::driver::ExtraSecret;
 use crate::types::profile::{ConnectionProfile, PasswordMode, SecretStatus};
 
 const SERVICE: &str = "tabler";
@@ -22,6 +23,10 @@ pub enum SecretKind {
     DbPassword,
     SshPassword,
     SshPassphrase,
+    /// The passphrase of a driver's private key file (Snowflake key pair).
+    KeyPassphrase,
+    /// A temporary credential's session token (AWS).
+    SessionToken,
 }
 
 impl SecretKind {
@@ -30,15 +35,59 @@ impl SecretKind {
             SecretKind::DbPassword => "db",
             SecretKind::SshPassword => "ssh",
             SecretKind::SshPassphrase => "ssh-passphrase",
+            SecretKind::KeyPassphrase => "key-passphrase",
+            SecretKind::SessionToken => "session-token",
         }
     }
 
-    pub fn all() -> [SecretKind; 3] {
-        [
+    /// Every kind: what a profile's secret status, copy and delete go through.
+    pub fn all() -> &'static [SecretKind] {
+        &[
             SecretKind::DbPassword,
             SecretKind::SshPassword,
             SecretKind::SshPassphrase,
+            SecretKind::KeyPassphrase,
+            SecretKind::SessionToken,
         ]
+    }
+
+    /// Kept in the Keychain as UTF-8 bytes rather than as a password: Windows Credential Manager
+    /// stores a password as UTF-16, which halves its 2,560-byte limit to 1,280 characters, and an
+    /// AWS session token can be longer. The older kinds keep their format, so what is stored
+    /// still reads.
+    fn as_bytes(self) -> bool {
+        matches!(self, SecretKind::KeyPassphrase | SecretKind::SessionToken)
+    }
+
+    /// What the secret is called in messages.
+    fn noun(self) -> &'static str {
+        match self {
+            SecretKind::DbPassword => "password",
+            SecretKind::SshPassword => "SSH password",
+            SecretKind::SshPassphrase => "SSH key passphrase",
+            SecretKind::KeyPassphrase => "key passphrase",
+            SecretKind::SessionToken => "session token",
+        }
+    }
+}
+
+impl From<ExtraSecret> for SecretKind {
+    fn from(extra: ExtraSecret) -> SecretKind {
+        match extra {
+            ExtraSecret::KeyPassphrase => SecretKind::KeyPassphrase,
+            ExtraSecret::SessionToken => SecretKind::SessionToken,
+        }
+    }
+}
+
+/// A Keychain failure as an error; a secret over the platform's size limit says so plainly.
+fn keychain_error(kind: SecretKind, e: keyring::v1::Error) -> AppError {
+    match e {
+        keyring::v1::Error::TooLong(_, limit) => AppError::InvalidInput(format!(
+            "The {} is too long for the system keychain (at most {limit} bytes)",
+            kind.noun()
+        )),
+        e => AppError::Secrets(e.to_string()),
     }
 }
 
@@ -108,7 +157,15 @@ impl Secrets {
             Backend::Keychain => tokio::task::spawn_blocking(move || {
                 let entry = keyring::v1::Entry::new(SERVICE, &key)
                     .map_err(|e| AppError::Secrets(e.to_string()))?;
-                match entry.get_password() {
+                let read = if kind.as_bytes() {
+                    entry.get_secret().and_then(|bytes| {
+                        String::from_utf8(bytes)
+                            .map_err(|e| keyring::v1::Error::BadEncoding(e.into_bytes()))
+                    })
+                } else {
+                    entry.get_password()
+                };
+                match read {
                     Ok(p) => Ok(Some(p)),
                     Err(keyring::v1::Error::NoEntry) => Ok(None),
                     Err(e) => Err(AppError::Secrets(e.to_string())),
@@ -132,9 +189,12 @@ impl Secrets {
             Backend::Keychain => tokio::task::spawn_blocking(move || {
                 let entry = keyring::v1::Entry::new(SERVICE, &key)
                     .map_err(|e| AppError::Secrets(e.to_string()))?;
-                entry
-                    .set_password(&value)
-                    .map_err(|e| AppError::Secrets(e.to_string()))
+                if kind.as_bytes() {
+                    entry.set_secret(value.as_bytes())
+                } else {
+                    entry.set_password(&value)
+                }
+                .map_err(|e| keychain_error(kind, e))
             })
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?,
@@ -160,36 +220,99 @@ impl Secrets {
 
     pub async fn delete_all(&self, profile_id: Uuid) -> Result<(), AppError> {
         for kind in SecretKind::all() {
-            self.delete(profile_id, kind).await?;
+            self.delete(profile_id, *kind).await?;
         }
         Ok(())
     }
 
     pub async fn copy_all(&self, from: Uuid, to: Uuid) -> Result<(), AppError> {
         for kind in SecretKind::all() {
-            if let Some(v) = self.get(from, kind).await? {
-                self.set(to, kind, &v).await?;
+            if let Some(v) = self.get(from, *kind).await? {
+                self.set(to, *kind, &v).await?;
             }
         }
         Ok(())
     }
 
     pub async fn status(&self, profile_id: Uuid) -> Result<SecretStatus, AppError> {
+        let has =
+            |kind| async move { Ok::<_, AppError>(self.get(profile_id, kind).await?.is_some()) };
         Ok(SecretStatus {
-            has_password: self
-                .get(profile_id, SecretKind::DbPassword)
-                .await?
-                .is_some(),
-            has_ssh_password: self
-                .get(profile_id, SecretKind::SshPassword)
-                .await?
-                .is_some(),
-            has_ssh_passphrase: self
-                .get(profile_id, SecretKind::SshPassphrase)
-                .await?
-                .is_some(),
+            has_password: has(SecretKind::DbPassword).await?,
+            has_ssh_password: has(SecretKind::SshPassword).await?,
+            has_ssh_passphrase: has(SecretKind::SshPassphrase).await?,
+            has_key_passphrase: has(SecretKind::KeyPassphrase).await?,
+            has_session_token: has(SecretKind::SessionToken).await?,
         })
     }
+
+    /// The second secrets `profile`'s driver takes (none for most drivers, so nothing is read),
+    /// as stored, for a connect.
+    pub async fn extras(&self, profile: &ConnectionProfile) -> Result<ExtraSecrets, AppError> {
+        let mut extras = ExtraSecrets::default();
+        for extra in profile.driver.descriptor().extra_secrets {
+            if let Some(value) = self.get(profile.id, (*extra).into()).await? {
+                extras.set(*extra, value);
+            }
+        }
+        Ok(extras)
+    }
+}
+
+/// The second secrets of a connect (a key passphrase, a session token), handed to the driver
+/// without a field in `ConnectTarget`: the connect runs its driver's `open` inside
+/// [`ExtraSecrets::scope`], where [`extra_secret`] reads them. A driver that needs one later (a
+/// re-login) keeps what it read at open.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ExtraSecrets {
+    key_passphrase: Option<String>,
+    session_token: Option<String>,
+}
+
+impl std::fmt::Debug for ExtraSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let shown = |v: &Option<String>| v.as_ref().map(|_| "<redacted>");
+        f.debug_struct("ExtraSecrets")
+            .field("key_passphrase", &shown(&self.key_passphrase))
+            .field("session_token", &shown(&self.session_token))
+            .finish()
+    }
+}
+
+tokio::task_local! {
+    static EXTRA_SECRETS: ExtraSecrets;
+}
+
+impl ExtraSecrets {
+    pub fn get(&self, extra: ExtraSecret) -> Option<&str> {
+        match extra {
+            ExtraSecret::KeyPassphrase => self.key_passphrase.as_deref(),
+            ExtraSecret::SessionToken => self.session_token.as_deref(),
+        }
+    }
+
+    pub fn set(&mut self, extra: ExtraSecret, value: String) {
+        let slot = match extra {
+            ExtraSecret::KeyPassphrase => &mut self.key_passphrase,
+            ExtraSecret::SessionToken => &mut self.session_token,
+        };
+        *slot = Some(value);
+    }
+
+    /// Runs `fut` (a driver's `open` or `util`) with these secrets readable through
+    /// [`extra_secret`].
+    pub async fn scope<F: std::future::Future>(self, fut: F) -> F::Output {
+        EXTRA_SECRETS.scope(self, fut).await
+    }
+}
+
+/// The second secret `extra` of the connect running now (see [`ExtraSecrets`]); `None` when it
+/// is not set, or outside a connect.
+pub fn extra_secret(extra: ExtraSecret) -> Option<String> {
+    EXTRA_SECRETS
+        .try_with(|extras| extras.get(extra).map(str::to_string))
+        .ok()
+        .flatten()
 }
 
 /// How long a password command may run ("Command Line (IAM authentication)").
@@ -754,13 +877,28 @@ impl CommandPassword {
         profile: &ConnectionProfile,
         current: Option<&str>,
     ) -> Option<Arc<CommandPassword>> {
+        CommandPassword::for_profile_ttl(profile, current, PASSWORD_COMMAND_TTL)
+    }
+
+    /// [`CommandPassword::for_profile`] reused for `ttl`: a driver's tokens live as long as its
+    /// descriptor's `command_ttl_secs` says.
+    pub fn for_profile_ttl(
+        profile: &ConnectionProfile,
+        current: Option<&str>,
+        ttl: Duration,
+    ) -> Option<Arc<CommandPassword>> {
         if profile.options.password_mode() != PasswordMode::Command {
             return None;
         }
         let command = profile.options.password_command()?;
-        Some(Arc::new(
-            CommandPassword::new(command, PASSWORD_COMMAND_TTL).seeded(current),
-        ))
+        Some(Arc::new(CommandPassword::new(command, ttl).seeded(current)))
+    }
+
+    /// Forgets the password, so the next [`CommandPassword::password`] runs the command again
+    /// (once, however many requests wait for it): the server refused the token before its TTL
+    /// ended.
+    pub async fn invalidate(&self) {
+        *self.cached.lock().await = None;
     }
 
     /// The password for a new connection: the cached one while younger than the TTL, else the
@@ -1467,5 +1605,199 @@ mod tests {
         assert!(secrets.status(other).await.unwrap().has_password);
         secrets.delete_all(id).await.unwrap();
         assert!(!secrets.status(id).await.unwrap().has_password);
+    }
+
+    #[test]
+    fn every_kind_has_its_own_account() {
+        let suffixes: std::collections::HashSet<_> =
+            SecretKind::all().iter().map(|k| k.suffix()).collect();
+        assert_eq!(suffixes.len(), SecretKind::all().len());
+        assert_eq!(
+            account(Uuid::nil(), SecretKind::SessionToken),
+            "00000000-0000-0000-0000-000000000000/session-token"
+        );
+        // The older kinds keep their Keychain format; the new ones are stored as bytes.
+        let bytes: Vec<_> = SecretKind::all()
+            .iter()
+            .filter(|k| k.as_bytes())
+            .copied()
+            .collect();
+        assert_eq!(bytes, [SecretKind::KeyPassphrase, SecretKind::SessionToken]);
+        assert_eq!(
+            SecretKind::from(ExtraSecret::KeyPassphrase),
+            SecretKind::KeyPassphrase
+        );
+    }
+
+    #[tokio::test]
+    async fn the_second_secrets_store_copy_and_delete_with_the_profile() {
+        let secrets = Secrets::new(Backend::File, AppDb::open_in_memory().unwrap());
+        let id = Uuid::new_v4();
+        // An AWS session token is longer than Windows Credential Manager keeps as a password.
+        let token = "FwoGZXIvYXdzE".repeat(150);
+        secrets
+            .set(id, SecretKind::KeyPassphrase, "pass phrase")
+            .await
+            .unwrap();
+        secrets
+            .set(id, SecretKind::SessionToken, &token)
+            .await
+            .unwrap();
+        let status = secrets.status(id).await.unwrap();
+        assert!(status.has_key_passphrase && status.has_session_token);
+        assert!(!status.has_password);
+        let copy = Uuid::new_v4();
+        secrets.copy_all(id, copy).await.unwrap();
+        assert_eq!(
+            secrets
+                .get(copy, SecretKind::SessionToken)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(token.as_str())
+        );
+        assert_eq!(
+            secrets
+                .get(copy, SecretKind::KeyPassphrase)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("pass phrase")
+        );
+        secrets.delete_all(id).await.unwrap();
+        let status = secrets.status(id).await.unwrap();
+        assert!(!status.has_key_passphrase && !status.has_session_token);
+        assert!(secrets.status(copy).await.unwrap().has_session_token);
+    }
+
+    #[test]
+    fn a_secret_over_the_keychain_limit_is_refused_plainly() {
+        let err = keychain_error(
+            SecretKind::SessionToken,
+            keyring::v1::Error::TooLong("secret".into(), 2560),
+        );
+        assert_eq!(err.code(), "INVALID_INPUT");
+        assert_eq!(
+            err.to_string(),
+            "The session token is too long for the system keychain (at most 2560 bytes)"
+        );
+        let err = keychain_error(SecretKind::DbPassword, keyring::v1::Error::NoEntry);
+        assert_eq!(err.code(), "SECRETS");
+    }
+
+    fn driver_profile(driver: crate::types::profile::Driver) -> ConnectionProfile {
+        ConnectionProfile {
+            id: Uuid::new_v4(),
+            name: "p".into(),
+            color: None,
+            group: None,
+            driver,
+            host: Some("db".into()),
+            port: None,
+            user: None,
+            database: None,
+            ssl: crate::types::profile::SslMode::Require,
+            ssl_ca_path: None,
+            sqlite_path: None,
+            ssh: None,
+            options: crate::types::profile::ProfileOptions::default(),
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_connected_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_connect_reads_only_the_second_secrets_of_its_driver() {
+        use crate::types::profile::Driver;
+        let secrets = Secrets::new(Backend::File, AppDb::open_in_memory().unwrap());
+        let snowflake = driver_profile(Driver::Snowflake);
+        let pg = driver_profile(Driver::Postgres);
+        for id in [snowflake.id, pg.id] {
+            for kind in [SecretKind::KeyPassphrase, SecretKind::SessionToken] {
+                secrets.set(id, kind, "stored").await.unwrap();
+            }
+        }
+        let extras = secrets.extras(&snowflake).await.unwrap();
+        assert_eq!(extras.get(ExtraSecret::KeyPassphrase), Some("stored"));
+        assert_eq!(extras.get(ExtraSecret::SessionToken), None);
+        assert_eq!(secrets.extras(&pg).await.unwrap(), ExtraSecrets::default());
+        // Never in a log line.
+        let shown = format!("{extras:?}");
+        assert!(
+            !shown.contains("stored") && shown.contains("<redacted>"),
+            "{shown}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_driver_reads_the_second_secrets_inside_the_connect_only() {
+        let mut extras = ExtraSecrets::default();
+        extras.set(ExtraSecret::SessionToken, "tok".into());
+        assert_eq!(extra_secret(ExtraSecret::SessionToken), None);
+        let read = extras
+            .scope(async {
+                // Across an await, as a driver's open has them.
+                tokio::task::yield_now().await;
+                (
+                    extra_secret(ExtraSecret::SessionToken),
+                    extra_secret(ExtraSecret::KeyPassphrase),
+                )
+            })
+            .await;
+        assert_eq!(read, (Some("tok".into()), None));
+        assert_eq!(extra_secret(ExtraSecret::SessionToken), None);
+    }
+
+    #[tokio::test]
+    async fn a_token_ttl_of_one_second_runs_the_command_again() {
+        use std::sync::atomic::Ordering;
+        let (source, runs) = counting(Duration::from_secs(1), vec![Ok("tok-1"), Ok("tok-2")]);
+        assert_eq!(source.password().await.unwrap(), "tok-1");
+        assert_eq!(source.password().await.unwrap(), "tok-1");
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(source.password().await.unwrap(), "tok-2");
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn invalidate_runs_the_command_exactly_once_more() {
+        use std::sync::atomic::Ordering;
+        let (source, runs) = counting(Duration::from_secs(600), vec![Ok("tok-2")]);
+        let source = Arc::new(source.seeded(Some("tok-1")));
+        assert_eq!(source.password().await.unwrap(), "tok-1");
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+        // The server refused tok-1: everyone waiting gets the one new token.
+        source.invalidate().await;
+        assert!(source.is_stale().await);
+        let waiting: Vec<_> = (0..4)
+            .map(|_| {
+                let source = source.clone();
+                tokio::spawn(async move { source.password().await.unwrap() })
+            })
+            .collect();
+        for w in waiting {
+            assert_eq!(w.await.unwrap(), "tok-2");
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(source.password().await.unwrap(), "tok-2");
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_driver_ttl_applies_to_command_profiles_only() {
+        use crate::types::profile::Driver;
+        let mut profile = driver_profile(Driver::Snowflake);
+        let ttl = Duration::from_secs(u64::from(Driver::Snowflake.descriptor().command_ttl_secs));
+        assert!(CommandPassword::for_profile_ttl(&profile, None, ttl).is_none());
+        profile.options.password_mode = Some(PasswordMode::Command);
+        profile.options.password_command = Some("printf tok".into());
+        let source = CommandPassword::for_profile_ttl(&profile, None, ttl).unwrap();
+        assert_eq!(source.ttl, ttl);
+        // The core drivers keep the ten minutes of RDS IAM tokens.
+        let core = CommandPassword::for_profile(&profile, None).unwrap();
+        assert_eq!(core.ttl, PASSWORD_COMMAND_TTL);
     }
 }

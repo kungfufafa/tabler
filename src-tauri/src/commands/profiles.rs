@@ -11,9 +11,10 @@ use crate::commands::connections::{
 use crate::drivers::{self, ConnectTarget, ServerInfo};
 use crate::error::AppError;
 use crate::profiles_io::{self, ExportedConnection, ExportedSecrets, Payload, ReadOutcome};
-use crate::secrets::SecretKind;
+use crate::secrets::{ExtraSecrets, SecretKind};
 use crate::state::AppState;
 use crate::tunnel::{KeyboardInteractive, SshPromptPurpose, TunnelAuth, TunnelHandle};
+use crate::types::driver::ExtraSecret;
 use crate::types::profile::{
     ConnectionProfile, ConnectionTag, ConnectionsFilePreview, Driver, ExportConnectionsRequest,
     PasswordMode, ProfileInput, SecretStatus, SshAuth, SshConfig, SshPasswordMode, TAG_NAME_MAX,
@@ -130,11 +131,46 @@ pub async fn store_secrets(state: &AppState, input: &ProfileInput) -> Result<(),
             Some(secret) => state.secrets.set(id, kind, secret).await?,
         }
     }
+    // The second secrets of the drivers that take them, the same way; the other drivers' (the
+    // core ones') saves never touch these entries.
+    for extra in input.profile.driver.descriptor().extra_secrets {
+        let kind = SecretKind::from(*extra);
+        match typed_extra(input, *extra) {
+            None => {}
+            Some("") => state.secrets.delete(id, kind).await?,
+            Some(secret) => state.secrets.set(id, kind, secret).await?,
+        }
+    }
     Ok(())
 }
 
-/// An SSH secret for a test: the one typed in the dialog, none when it was cleared (`""`), else
-/// the stored one.
+/// The second secret `extra` as the dialog sends it (see `ProfileInput::key_passphrase`).
+fn typed_extra(input: &ProfileInput, extra: ExtraSecret) -> Option<&str> {
+    match extra {
+        ExtraSecret::KeyPassphrase => input.key_passphrase.as_deref(),
+        ExtraSecret::SessionToken => input.session_token.as_deref(),
+    }
+}
+
+/// The second secrets a test (or a call of the form) uses: each one the profile's driver takes,
+/// as typed in the dialog, none when it was cleared (`""`), else the stored one.
+pub async fn resolve_extra_secrets(
+    state: &AppState,
+    input: &ProfileInput,
+) -> Result<ExtraSecrets, AppError> {
+    let mut extras = ExtraSecrets::default();
+    for extra in input.profile.driver.descriptor().extra_secrets {
+        let typed = typed_extra(input, *extra).map(str::to_string);
+        let id = input.profile.id;
+        if let Some(value) = typed_or_stored(state, id, &typed, (*extra).into()).await? {
+            extras.set(*extra, value);
+        }
+    }
+    Ok(extras)
+}
+
+/// An SSH or second secret for a test: the one typed in the dialog, none when it was cleared
+/// (`""`), else the stored one.
 async fn typed_or_stored(
     state: &AppState,
     id: Uuid,
@@ -281,18 +317,21 @@ pub async fn tunnel_auth_for(
     Ok(auth)
 }
 
-/// Connects once, reads the server version and disconnects.
+/// Connects once, reads the server version and disconnects: any driver's session, SQL or a
+/// native store's, with the dialog's second secrets.
 async fn probe(
     profile: &ConnectionProfile,
     password: Option<&str>,
+    extras: ExtraSecrets,
     host_override: Option<(String, u16)>,
 ) -> Result<ServerInfo, AppError> {
-    let session = drivers::connect(ConnectTarget {
-        profile,
-        password,
-        host_override,
-    })
-    .await?;
+    let session = extras
+        .scope(drivers::open(ConnectTarget {
+            profile,
+            password,
+            host_override,
+        }))
+        .await?;
     let info = session.server_info().await;
     session.close().await;
     info
@@ -400,6 +439,7 @@ pub async fn run_connection_test_with(
         };
     }
     let password = resolve_password(state, &input).await?;
+    let extras = resolve_extra_secrets(state, &input).await?;
     let mut ssh_auth = resolve_tunnel_auth(state, &input).await?;
     ssh_auth.prompts = prompts;
     let tunnel_used = tunnel_config(&input.profile).is_some();
@@ -415,7 +455,7 @@ pub async fn run_connection_test_with(
         let attempt = Instant::now();
         let outcome = tokio::time::timeout(
             timeout,
-            probe(&input.profile, password.as_deref(), host_override),
+            probe(&input.profile, password.as_deref(), extras, host_override),
         )
         .await
         .unwrap_or(Err(AppError::Timeout));
@@ -562,6 +602,14 @@ pub async fn run_export(state: &AppState, req: ExportConnectionsRequest) -> Resu
         if req.include_passwords && profile.options.password_mode() == PasswordMode::Keychain {
             secrets.password = state.secrets.get(id, SecretKind::DbPassword).await?;
         }
+        // A driver's second secrets go with the passwords, whatever the password mode (a key
+        // passphrase serves a profile without a password).
+        if req.include_passwords {
+            let extras = state.secrets.extras(&profile).await?;
+            for extra in profile.driver.descriptor().extra_secrets {
+                *secrets.extra_mut(*extra) = extras.get(*extra).map(str::to_string);
+            }
+        }
         // The password command is treated like a password: only in files that carry those
         // (which are encrypted).
         if !req.include_passwords {
@@ -697,6 +745,11 @@ pub async fn run_import(
                 state.secrets.set(id, kind, secret).await?;
             }
         }
+        for extra in stored.driver.descriptor().extra_secrets {
+            if let Some(secret) = secrets.extra(*extra).filter(|s| !s.is_empty()) {
+                state.secrets.set(id, (*extra).into(), secret).await?;
+            }
+        }
         imported.push(stored);
     }
     // The imported connections' groups, plus the file's empty groups when importing everything,
@@ -750,6 +803,8 @@ mod tests {
             ssh_password: None,
             ssh_passphrase: None,
             clear_password: false,
+            key_passphrase: None,
+            session_token: None,
         }
     }
 
@@ -858,6 +913,121 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), "AUTH_FAILED");
+    }
+
+    /// A driver's second secrets (an AWS session token here) store, resolve, copy and delete
+    /// with the profile like the SSH ones, and travel in an encrypted connections file.
+    #[tokio::test]
+    async fn second_secrets_store_copy_delete_and_travel_with_the_profile() {
+        let target = state();
+        let state = state();
+        let mut aws = pg_profile("aws", None);
+        aws.driver = Driver::Dynamodb;
+        let aws = state.appdb.upsert_profile(&aws).unwrap();
+        let id = aws.id;
+        let mut input = sqlite_input("/x.db");
+        input.profile = aws.clone();
+        input.session_token = Some("tok-1".into());
+        // DynamoDB takes no key passphrase: what is typed for one is not kept.
+        input.key_passphrase = Some("ignored".into());
+        store_secrets(&state, &input).await.unwrap();
+        let status = state.secrets.status(id).await.unwrap();
+        assert!(status.has_session_token && !status.has_key_passphrase);
+        assert_eq!(
+            state
+                .secrets
+                .extras(&aws)
+                .await
+                .unwrap()
+                .get(ExtraSecret::SessionToken),
+            Some("tok-1")
+        );
+
+        // An untouched field keeps the stored value; a test uses what is typed, else that.
+        input.session_token = None;
+        store_secrets(&state, &input).await.unwrap();
+        let resolved = resolve_extra_secrets(&state, &input).await.unwrap();
+        assert_eq!(resolved.get(ExtraSecret::SessionToken), Some("tok-1"));
+        assert_eq!(resolved.get(ExtraSecret::KeyPassphrase), None);
+        input.session_token = Some("typed".into());
+        let resolved = resolve_extra_secrets(&state, &input).await.unwrap();
+        assert_eq!(resolved.get(ExtraSecret::SessionToken), Some("typed"));
+        input.session_token = Some(String::new());
+        let resolved = resolve_extra_secrets(&state, &input).await.unwrap();
+        assert_eq!(resolved.get(ExtraSecret::SessionToken), None);
+
+        // Duplicate and delete go through every kind.
+        let copy = Uuid::new_v4();
+        state.secrets.copy_all(id, copy).await.unwrap();
+        assert!(state.secrets.status(copy).await.unwrap().has_session_token);
+
+        // Exported with the passwords (sealed by the file password), imported back.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("aws.tablerconnections");
+        let path = path.to_string_lossy().into_owned();
+        let request = |include: bool, password: Option<&str>| ExportConnectionsRequest {
+            profile_ids: vec![id],
+            groups: vec![],
+            include_passwords: include,
+            include_ssh_secrets: false,
+            file_password: password.map(str::to_string),
+            path: path.clone(),
+        };
+        run_export(&state, request(true, Some("pw"))).await.unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("tok-1"));
+        let imported = run_import(&target, &path, Some("pw"), &[id], &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            target
+                .secrets
+                .get(imported[0].id, SecretKind::SessionToken)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("tok-1")
+        );
+        // Without the passwords the token stays home.
+        run_export(&state, request(false, None)).await.unwrap();
+        let again = run_import(&target, &path, None, &[id], &[]).await.unwrap();
+        assert!(
+            !target
+                .secrets
+                .status(again[0].id)
+                .await
+                .unwrap()
+                .has_session_token
+        );
+
+        // `""` removes it; deleting the profile's secrets takes the rest.
+        input.session_token = Some(String::new());
+        store_secrets(&state, &input).await.unwrap();
+        assert!(!state.secrets.status(id).await.unwrap().has_session_token);
+        state.secrets.delete_all(copy).await.unwrap();
+        assert!(!state.secrets.status(copy).await.unwrap().has_session_token);
+    }
+
+    /// The core profiles' saves and tests never read or change the second secrets' entries.
+    #[tokio::test]
+    async fn core_profiles_leave_second_secrets_alone() {
+        let state = state();
+        let mut input = sqlite_input("/x.db");
+        input.profile = pg_profile("pg", None);
+        let id = input.profile.id;
+        state
+            .secrets
+            .set(id, SecretKind::KeyPassphrase, "left")
+            .await
+            .unwrap();
+        input.key_passphrase = Some(String::new());
+        input.session_token = Some("ignored".into());
+        store_secrets(&state, &input).await.unwrap();
+        let status = state.secrets.status(id).await.unwrap();
+        assert!(status.has_key_passphrase && !status.has_session_token);
+        assert_eq!(
+            resolve_extra_secrets(&state, &input).await.unwrap(),
+            ExtraSecrets::default()
+        );
     }
 
     #[tokio::test]
@@ -1018,6 +1188,8 @@ mod tests {
             ssh_password: None,
             ssh_passphrase: None,
             clear_password: false,
+            key_passphrase: None,
+            session_token: None,
         })
         .unwrap();
         sent["profile"]["options"]

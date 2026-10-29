@@ -12,6 +12,7 @@ import { useUiStore } from "@/stores/ui";
 import { PasswordPromptHost } from "./PasswordPrompt";
 import { useOpenProfile } from "./openProfile";
 import {
+  askConnectionPassword,
   handOverPassword,
   isPromptCancelled,
   requestPassword,
@@ -142,6 +143,22 @@ describe("“Ask every time” connections", () => {
     act(() => result.current.mutate("p-local-pg"));
     await waitFor(() => expect(connect).toHaveBeenCalledWith("p-local-pg"));
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("calls the secret what the driver calls it", async () => {
+    const user = userEvent.setup();
+    renderConnect();
+    const asked = askConnectionPassword("Edge", "test", "d1");
+    const prompt = await screen.findByRole("dialog", { name: "API Token for Edge" });
+    expect(prompt).toHaveTextContent(/asks for its API token every time/);
+    await user.type(within(prompt).getByLabelText("Password"), "tok{Enter}");
+    await expect(asked).resolves.toBe("tok");
+    // The core drivers' prompts are as before, SQLite's key included.
+    const lite = askConnectionPassword("Lite", "connect", "sqlite");
+    const again = await screen.findByRole("dialog", { name: "Password for Lite" });
+    expect(again).toHaveTextContent(/asks for its password every time/);
+    await user.type(within(again).getByLabelText("Password"), "k{Enter}");
+    await expect(lite).resolves.toBe("k");
   });
 
   it("without a prompt host nothing is asked: the request resolves null", async () => {

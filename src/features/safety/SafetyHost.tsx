@@ -142,6 +142,8 @@ function PasswordBody({ prompt }: { prompt: PasswordPrompt }) {
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const byName = prompt.secret === "name";
+  // The app passcode (a token connection): checked by the backend like the password.
+  const noun = prompt.secret === "passcode" ? "passcode" : "password";
   useEffect(() => inputRef.current?.focus(), []);
 
   // Settings ▸ Security ▸ Unlock Safe Mode with Touch ID: offered once on its own, then on the
@@ -156,7 +158,7 @@ function PasswordBody({ prompt }: { prompt: PasswordPrompt }) {
       return;
     }
     setTouchId(result === "unavailable" ? "unavailable" : "idle");
-    if (result === "unavailable") setError("Touch ID is not available. Type the password.");
+    if (result === "unavailable") setError(`Touch ID is not available. Type the ${noun}.`);
     inputRef.current?.focus();
   };
   const askRef = useRef(askTouchId);
@@ -190,13 +192,13 @@ function PasswordBody({ prompt }: { prompt: PasswordPrompt }) {
     try {
       const ok = await ipc.safety.verifyPassword(prompt.target.profileId, value);
       if (ok) answerSafetyPrompt(prompt.id, true);
-      else retry("Wrong password. Try again.");
+      else retry(`Wrong ${noun}. Try again.`);
     } catch (err) {
-      retry(`Could not check the password: ${toIpcError(err).message}`);
+      retry(`Could not check the ${noun}: ${toIpcError(err).message}`);
     }
   };
 
-  const label = byName ? "Connection name" : "Password";
+  const label = byName ? "Connection name" : noun === "passcode" ? "Passcode" : "Password";
   return (
     <form className="contents" onSubmit={(e) => void submit(e)}>
       <Header prompt={prompt} />
@@ -207,7 +209,7 @@ function PasswordBody({ prompt }: { prompt: PasswordPrompt }) {
           data-safety-autofocus
           type={byName ? "text" : "password"}
           aria-label={label}
-          placeholder={byName ? prompt.target.name : "Password"}
+          placeholder={byName ? prompt.target.name : label}
           autoComplete="off"
           autoCapitalize="off"
           autoCorrect="off"

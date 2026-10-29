@@ -7,7 +7,7 @@ use serde_json::Value as Json;
 use tauri::State;
 use uuid::Uuid;
 
-use crate::commands::profiles::resolve_password;
+use crate::commands::profiles::{resolve_extra_secrets, resolve_password};
 use crate::commands::safety::refuse_read_only_call;
 use crate::drivers::native::unknown_call;
 use crate::drivers::registry::{self, UtilInput};
@@ -39,8 +39,8 @@ pub(crate) async fn session_call_on(
     session.call(method, args).await
 }
 
-/// Calls `method` of the driver of the profile being edited, with the secret the dialog would
-/// connect with.
+/// Calls `method` of the driver of the profile being edited, with the secrets the dialog would
+/// connect with (its second ones through `secrets::extra_secret`).
 #[tauri::command]
 pub async fn driver_util(
     state: State<'_, AppState>,
@@ -69,14 +69,16 @@ pub(crate) async fn driver_util_on(
         registry::util_kind(profile.driver, method),
     )?;
     let secret = resolve_password(state, input).await?;
+    let extras = resolve_extra_secrets(state, input).await?;
     log::info!("driver_util {method} for {}", profile.name);
-    registry::util(
-        UtilInput {
-            profile,
-            secret: secret.as_deref(),
-        },
-        method,
-        args,
-    )
-    .await
+    extras
+        .scope(registry::util(
+            UtilInput {
+                profile,
+                secret: secret.as_deref(),
+            },
+            method,
+            args,
+        ))
+        .await
 }

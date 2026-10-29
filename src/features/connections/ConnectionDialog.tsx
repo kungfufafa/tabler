@@ -1856,7 +1856,11 @@ export function ConnectionDialog({
       if (!(await persist(values))) return;
       const input = buildInput(values);
       if (values.passwordMode === "ask") {
-        askedPassword.current ??= await askConnectionPassword(values.name, "test");
+        askedPassword.current ??= await askConnectionPassword(
+          values.name,
+          "test",
+          input.profile.driver,
+        );
         input.password = askedPassword.current;
       }
       // The form's profile id also keys a pending SSH host key.

@@ -52,6 +52,30 @@ describe("protectedChanges", () => {
     ]);
   });
 
+  it("names the driver's secret and its second secrets", () => {
+    // A SQLite profile's password is its encryption key, but it is still called the password.
+    const lite = { ...saved("safe"), driver: "sqlite" as const };
+    expect(protectedChanges(lite, input(lite, {}, { password: "k" }))).toEqual([
+      "Saving a new password.",
+    ]);
+    const aws = { ...saved("safe"), driver: "dynamodb" as const };
+    expect(
+      protectedChanges(
+        aws,
+        input(aws, {}, { password: "s", sessionToken: "t", keyPassphrase: "not taken" }),
+      ),
+    ).toEqual(["Saving a new secret access key.", "Saving a new session token."]);
+    expect(protectedChanges(aws, input(aws, {}, { sessionToken: "" }))).toEqual([
+      "Removing the saved session token.",
+    ]);
+    // Untouched (absent or null): nothing.
+    expect(protectedChanges(aws, input(aws, {}, { sessionToken: null }))).toEqual([]);
+    const snow = { ...saved("safe"), driver: "snowflake" as const };
+    expect(
+      protectedChanges(snow, input(snow, {}, { clearPassword: true, keyPassphrase: "pp" })),
+    ).toEqual(["Removing the saved password or token.", "Saving a new key passphrase."]);
+  });
+
   it("asks nothing below Safe Mode", () => {
     for (const level of ["silent", "alert", "alertNonSelect"] as const) {
       const p = saved(level);

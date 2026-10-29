@@ -318,13 +318,14 @@ pub(crate) async fn session_on_database(
         None => None,
     };
     let password = connect_password(state, &profile, None).await?;
+    let extras = state.secrets.extras(&profile).await?;
     tokio::time::timeout(
         connect_timeout(&profile),
-        drivers::connect(ConnectTarget {
+        extras.scope(drivers::connect(ConnectTarget {
             profile: &profile,
             password: password.as_deref(),
             host_override,
-        }),
+        })),
     )
     .await
     .map_err(|_| AppError::Timeout)?

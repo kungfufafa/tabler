@@ -23,6 +23,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::types::driver::ExtraSecret;
 use crate::types::profile::{
     ConnectionProfile, Driver, ImportPreviewItem, PasswordMode, SkippedConnection,
 };
@@ -73,15 +74,39 @@ pub struct ExportedSecrets {
     pub ssh_password: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssh_passphrase: Option<String>,
+    /// The driver's second secrets (see `DriverDescriptor::extra_secrets`), exported with the
+    /// passwords.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_passphrase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
 }
 
 impl ExportedSecrets {
     pub fn is_empty(&self) -> bool {
-        self.password.is_none() && self.ssh_password.is_none() && self.ssh_passphrase.is_none()
+        self.password.is_none()
+            && self.ssh_password.is_none()
+            && self.ssh_passphrase.is_none()
+            && self.key_passphrase.is_none()
+            && self.session_token.is_none()
     }
 
     pub fn has_ssh(&self) -> bool {
         self.ssh_password.is_some() || self.ssh_passphrase.is_some()
+    }
+
+    pub fn extra(&self, extra: ExtraSecret) -> Option<&str> {
+        match extra {
+            ExtraSecret::KeyPassphrase => self.key_passphrase.as_deref(),
+            ExtraSecret::SessionToken => self.session_token.as_deref(),
+        }
+    }
+
+    pub fn extra_mut(&mut self, extra: ExtraSecret) -> &mut Option<String> {
+        match extra {
+            ExtraSecret::KeyPassphrase => &mut self.key_passphrase,
+            ExtraSecret::SessionToken => &mut self.session_token,
+        }
     }
 }
 
@@ -557,7 +582,8 @@ pub fn drop_password_command(profile: &mut ConnectionProfile) {
 
 /// The connections chosen for import (by their id in the file), as new profiles: fresh ids,
 /// appended to the list (sort order 0 lets the app DB put them last), never connected. Secrets
-/// the profile cannot use (an SSH secret without SSH) are dropped, and so is every password
+/// the profile cannot use (an SSH secret without SSH, a second secret its driver does not take)
+/// are dropped, and so is every password
 /// command except those of `keep_commands` (ids in the file), which the user saw in the preview
 /// and chose to keep (see [`drop_password_command`]).
 pub fn plan_import(
@@ -585,6 +611,13 @@ pub fn plan_import(
             if profile.ssh.is_none() {
                 secrets.ssh_password = None;
                 secrets.ssh_passphrase = None;
+            }
+            // Only the second secrets the profile's driver takes.
+            let takes = profile.driver.descriptor().extra_secrets;
+            for extra in [ExtraSecret::KeyPassphrase, ExtraSecret::SessionToken] {
+                if !takes.contains(&extra) {
+                    *secrets.extra_mut(extra) = None;
+                }
             }
             (profile, secrets)
         })
@@ -666,7 +699,7 @@ mod tests {
                     secrets: ExportedSecrets {
                         password: Some("db-pw".into()),
                         ssh_password: Some("ssh-pw".into()),
-                        ssh_passphrase: None,
+                        ..ExportedSecrets::default()
                     },
                 },
                 ExportedConnection {
@@ -951,6 +984,38 @@ mod tests {
 
         assert_eq!(plan_import(&p, &[chosen[1]], &[]).len(), 1);
         assert!(plan_import(&p, &[], &[]).is_empty());
+    }
+
+    #[test]
+    fn second_secrets_travel_sealed_and_come_in_for_drivers_that_take_them() {
+        let mut p = payload();
+        p.connections[0].profile.driver = Driver::Dynamodb;
+        let both = ExportedSecrets {
+            key_passphrase: Some("key-pp".into()),
+            session_token: Some("sess-tok".into()),
+            ..ExportedSecrets::default()
+        };
+        p.connections[0].secrets = both.clone();
+        p.connections[1].secrets = both;
+        let bytes = write_with_iterations(&p, Some("file pw"), "now", FAST).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(!text.contains("key-pp") && !text.contains("sess-tok"));
+        // A plain file refuses them like any secret.
+        assert!(write_with_iterations(&p, None, "now", FAST).is_err());
+        let ReadOutcome::Opened { payload: back, .. } = read(&bytes, Some("file pw")).unwrap()
+        else {
+            panic!("the password opens it");
+        };
+        assert_eq!(back.connections, p.connections);
+        let chosen = [p.connections[0].profile.id, p.connections[1].profile.id];
+        let planned = plan_import(&back, &chosen, &[]);
+        // DynamoDB takes a session token, no key passphrase; PostgreSQL neither.
+        assert_eq!(
+            planned[0].1.extra(ExtraSecret::SessionToken),
+            Some("sess-tok")
+        );
+        assert_eq!(planned[0].1.extra(ExtraSecret::KeyPassphrase), None);
+        assert!(planned[1].1.is_empty());
     }
 
     /// Regression: an imported file could carry a password command, run through the shell on

@@ -173,6 +173,8 @@ async fn conn2_mysql_connects_through_its_socket() {
         ssh_password: None,
         ssh_passphrase: None,
         clear_password: false,
+        key_passphrase: None,
+        session_token: None,
     };
     let result = run_connection_test(&state, input(profile.clone()))
         .await

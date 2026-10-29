@@ -497,6 +497,14 @@ pub struct ProfileInput {
     /// When true the stored DB password is removed.
     #[serde(default)]
     pub clear_password: bool,
+    /// The second secrets of the drivers that take one (`DriverDescriptor::extra_secrets`), like
+    /// the SSH ones: absent keeps the stored value, `""` removes it, anything else replaces it.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub key_passphrase: Option<String>,
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub session_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
@@ -506,6 +514,13 @@ pub struct SecretStatus {
     pub has_password: bool,
     pub has_ssh_password: bool,
     pub has_ssh_passphrase: bool,
+    /// Absent from older payloads (the mock's), like the other new optional fields.
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub has_key_passphrase: bool,
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub has_session_token: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

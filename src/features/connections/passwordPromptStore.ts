@@ -1,5 +1,7 @@
 import { create } from "zustand";
+import { inSentence, secretLabel } from "@/features/drivers/catalog";
 import { hasSingleHost } from "@/features/export/singleHost";
+import type { Driver } from "@/lib/ipc";
 
 /**
  * The password prompt of "Ask every time" connections: Connect and Test ask for the database
@@ -79,15 +81,19 @@ export function isPromptCancelled(err: unknown): boolean {
   return err instanceof PasswordPromptCancelled;
 }
 
-/** Asks for the database password of connection `name` (Connect / Test). */
+/**
+ * Asks for the database password of connection `name` (Connect / Test); for a `driver` that
+ * calls its secret otherwise, by that name ("API Token for …").
+ */
 export async function askConnectionPassword(
   name: string,
   purpose: "connect" | "test",
+  driver?: Driver,
 ): Promise<string> {
+  const label = driver ? secretLabel(driver) : "Password";
   const password = await requestPassword({
-    title: `Password for ${name || "this connection"}`,
-    description:
-      "This connection asks for its password every time. It is kept in memory while the connection is open, so reconnecting does not ask again.",
+    title: `${label} for ${name || "this connection"}`,
+    description: `This connection asks for its ${inSentence(label)} every time. It is kept in memory while the connection is open, so reconnecting does not ask again.`,
     confirmLabel: purpose === "test" ? "Test" : "Connect",
   });
   if (password === null) throw new PasswordPromptCancelled();

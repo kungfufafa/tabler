@@ -1561,6 +1561,8 @@ async fn test_connection_does_not_need_the_pinned_local_port() {
         ssh_password: Some(PASSWORD.into()),
         ssh_passphrase: None,
         clear_password: false,
+        key_passphrase: None,
+        session_token: None,
     };
     let (first, second) = tokio::join!(
         run_connection_test(&state, input()),
@@ -1940,6 +1942,8 @@ async fn saved_ssh_secrets_can_be_cleared() {
         ssh_password: ssh_password.map(str::to_string),
         ssh_passphrase: ssh_passphrase.map(str::to_string),
         clear_password: false,
+        key_passphrase: None,
+        session_token: None,
     };
 
     // The stale passphrase does not stop the unencrypted key: the tunnel comes up and only the

@@ -30,12 +30,16 @@ export interface AlertPrompt extends PromptBase {
 }
 
 /**
- * Safe Mode: the connection's DB password (`secret: "password"`, checked by the backend) or, when
- * the profile has no password to check against, its name (`secret: "name"`).
+ * What a Safe Mode prompt asks for: the connection's DB password (checked by the backend), the
+ * app passcode for a connection whose secret is a token (checked by the backend too), or, when
+ * neither can be checked, the connection's name (see `passwordSecret` in `guard.ts`).
  */
+export type SafeSecret = "password" | "passcode" | "name";
+
+/** Safe Mode: asks for `secret`. */
 export interface PasswordPrompt extends PromptBase {
   kind: "password";
-  secret: "password" | "name";
+  secret: SafeSecret;
 }
 
 export type SafetyPrompt = AlertPrompt | PasswordPrompt;

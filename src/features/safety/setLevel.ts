@@ -1,8 +1,15 @@
 import { PASSWORD_MODE_LABEL } from "@/features/connections/schema";
 import {
+  EXTRA_SECRET_LABEL,
+  extraSecrets,
+  inSentence,
+  secretLabel,
+} from "@/features/drivers/catalog";
+import {
   ipc,
   type ConnectionInfo,
   type ConnectionProfile,
+  type ExtraSecret,
   type ProfileInput,
   type SafeModeLevel,
 } from "@/lib/ipc";
@@ -45,7 +52,7 @@ export async function confirmProtectedChange(
     secret,
     target,
     title: passwordTitle(secret, target.name),
-    description: lines(description, nameReason(secret)),
+    description: lines(description, nameReason(secret, profile)),
     statements: [],
     confirmLabel: "Continue",
   });
@@ -68,7 +75,8 @@ export async function confirmSafeModeChange(
 /**
  * What saving `next` over the Safe Mode 1 / 2 profile `current` changes that the password
  * protects: a lower level, Read-only turned off, another password storage, a new or removed
- * password. Empty below Safe Mode, or when nothing protected changes.
+ * password (an API token… on the drivers that call it so) or second secret (a key passphrase, a
+ * session token). Empty below Safe Mode, or when nothing protected changes.
  */
 export function protectedChanges(current: ConnectionProfile, next: ProfileInput): string[] {
   const from = effectiveLevel(current.options.safeMode);
@@ -84,8 +92,20 @@ export function protectedChanges(current: ConnectionProfile, next: ProfileInput)
     out.push(
       `Changing the password storage from ${PASSWORD_MODE_LABEL[mode]} to ${PASSWORD_MODE_LABEL[nextMode]}.`,
     );
-  if (next.password !== null) out.push("Saving a new password.");
-  if (next.clearPassword) out.push("Removing the saved password.");
+  const secret = inSentence(secretLabel(next.profile.driver));
+  if (next.password !== null) out.push(`Saving a new ${secret}.`);
+  if (next.clearPassword) out.push(`Removing the saved ${secret}.`);
+  // Absent or null: untouched; "" removes the stored one.
+  const typed: [ExtraSecret, string | null | undefined][] = [
+    ["keyPassphrase", next.keyPassphrase],
+    ["sessionToken", next.sessionToken],
+  ];
+  const takes = extraSecrets(next.profile.driver);
+  for (const [extra, value] of typed) {
+    if (value === null || value === undefined || !takes.includes(extra)) continue;
+    const noun = inSentence(EXTRA_SECRET_LABEL[extra]);
+    out.push(value === "" ? `Removing the saved ${noun}.` : `Saving a new ${noun}.`);
+  }
   return out;
 }
 

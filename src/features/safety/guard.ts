@@ -1,10 +1,10 @@
 import { toast } from "sonner";
-import { coreDialect } from "@/features/drivers/catalog";
+import { confirmsWithPasscode, coreDialect } from "@/features/drivers/catalog";
 import { ipc, type ConnectionProfile, type Driver, type SafeModeLevel } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { effectiveLevel } from "./levels";
 import { decide, requestWrites } from "./policy";
-import { requestSafetyPrompt, type PromptTarget } from "./store";
+import { requestSafetyPrompt, type PromptTarget, type SafeSecret } from "./store";
 
 /** What is about to be sent to the server, for the connection's safe-mode check. */
 export type GuardRequest =
@@ -56,12 +56,22 @@ async function loadProfile(profileId: string): Promise<ConnectionProfile | null>
 
 /**
  * What a Safe Mode prompt asks for: the DB password when the backend has one to check (stored in
- * the Keychain, or typed at connect for "Ask every time"), else the connection's name.
+ * the Keychain, or typed at connect for "Ask every time"), else the connection's name. A
+ * connection whose secret nobody types (a token, or a command's output on a driver beyond the
+ * core three, see `confirmsWithPasscode`) asks for the app passcode when one is set, else for its
+ * name; the backend's `verify_safe_mode` makes the same choice.
  */
 export async function passwordSecret(
-  profile: Pick<ConnectionProfile, "id" | "options"> | null,
-): Promise<"password" | "name"> {
+  profile: Pick<ConnectionProfile, "id" | "driver" | "options"> | null,
+): Promise<SafeSecret> {
   if (!profile) return "name";
+  if (confirmsWithPasscode(profile)) {
+    try {
+      return (await ipc.security.passcodeStatus()).enabled ? "passcode" : "name";
+    } catch {
+      return "name";
+    }
+  }
   if (profile.options.passwordMode === "ask") return "password";
   if (profile.options.passwordMode === "none") return "name";
   try {
@@ -72,17 +82,30 @@ export async function passwordSecret(
 }
 
 /** Title of a Safe Mode prompt. */
-export function passwordTitle(secret: "password" | "name", name: string): string {
-  return secret === "password"
-    ? `Enter the password of ${name} to continue`
-    : `Type the name of ${name} to continue`;
+export function passwordTitle(secret: SafeSecret, name: string): string {
+  switch (secret) {
+    case "password":
+      return `Enter the password of ${name} to continue`;
+    case "passcode":
+      return `Enter the app passcode to continue on ${name}`;
+    case "name":
+      return `Type the name of ${name} to continue`;
+  }
 }
 
-/** Why a Safe Mode prompt asks for the name (null when it asks for the password). */
-export function nameReason(secret: "password" | "name"): string | null {
-  return secret === "name"
-    ? "This connection has no saved password to check, so Safe Mode asks for its name instead."
-    : null;
+/**
+ * Why a Safe Mode prompt asks for the name (null when it asks for the password or the passcode):
+ * there is no saved password to check, or the connection signs in with a token and no app
+ * passcode is set.
+ */
+export function nameReason(
+  secret: SafeSecret,
+  profile?: Pick<ConnectionProfile, "driver" | "options"> | null,
+): string | null {
+  if (secret !== "name") return null;
+  return profile && confirmsWithPasscode(profile)
+    ? "This connection signs in with a token, which Safe Mode does not ask for, so it asks for its name instead. Set a passcode in Settings ▸ Security to be asked for that."
+    : "This connection has no saved password to check, so Safe Mode asks for its name instead.";
 }
 
 /** Joins the non-empty lines of a prompt description. */
@@ -157,7 +180,10 @@ export async function guardExecution(
     secret,
     target,
     title: passwordTitle(secret, target.name),
-    description: lines(request.kind === "operation" ? request.label : null, nameReason(secret)),
+    description: lines(
+      request.kind === "operation" ? request.label : null,
+      nameReason(secret, profile),
+    ),
     statements,
     confirmLabel,
   });

@@ -1,6 +1,7 @@
 import {
   CORE_DRIVERS,
   CORE_KINDS,
+  extraSecrets as driverExtraSecrets,
   isCoreKind,
   KIND_DESCRIPTORS,
   kindOf,
@@ -11,6 +12,7 @@ import type { BrowsePage } from "../bindings/BrowsePage";
 import type { BrowseRequest } from "../bindings/BrowseRequest";
 import type { ConnectionInfo } from "../bindings/ConnectionInfo";
 import type { ConnectionProfile } from "../bindings/ConnectionProfile";
+import type { ExtraSecret } from "../bindings/ExtraSecret";
 import type { FilterGroup } from "../bindings/FilterGroup";
 import type { ProfileInput } from "../bindings/ProfileInput";
 import type { RowCount } from "../bindings/RowCount";
@@ -40,6 +42,29 @@ const secrets = new Map<string, string>([["p-local-pg", "secret"]]);
 /** The DB password the mock stores for a profile (safe-mode prompts check it). */
 export const mockStoredPassword = (profileId: string): string | null =>
   secrets.get(profileId) ?? null;
+/** The second secrets (key passphrase, session token) of the drivers that take them, by profile id. */
+const extraSecrets = new Map<string, Partial<Record<ExtraSecret, string>>>();
+export { extraSecrets as mockExtraSecrets };
+
+/**
+ * Saves the second secrets `input` carries for its driver, like `store_secrets`: absent or null
+ * keeps the stored one, "" removes it, anything else replaces it. Other drivers' are not touched.
+ */
+function storeExtraSecrets(input: ProfileInput): void {
+  const id = input.profile.id;
+  const typed: Record<ExtraSecret, string | null | undefined> = {
+    keyPassphrase: input.keyPassphrase,
+    sessionToken: input.sessionToken,
+  };
+  for (const extra of driverExtraSecrets(input.profile.driver)) {
+    const value = typed[extra];
+    if (value === null || value === undefined) continue;
+    const stored = { ...extraSecrets.get(id) };
+    if (value === "") delete stored[extra];
+    else stored[extra] = value;
+    extraSecrets.set(id, stored);
+  }
+}
 const connections = new Map<string, ConnectionInfo & { profile: ConnectionProfile }>();
 /** "Ask every time" passwords typed this session, by profile id (see mock/connections_io.ts). */
 const sessionPasswords = new Map<string, string>();
@@ -136,11 +161,13 @@ registerMock("save_profile", ({ input }) => {
   const keychain = (stored.options.passwordMode ?? "keychain") === "keychain";
   if (clearPassword || !keychain) secrets.delete(stored.id);
   else if (password) secrets.set(stored.id, password);
+  storeExtraSecrets(input as ProfileInput);
   return stored;
 });
 registerMock("delete_profile", ({ id }) => {
   profiles.delete(id as string);
   secrets.delete(id as string);
+  extraSecrets.delete(id as string);
 });
 registerMock("duplicate_profile", ({ id }) => {
   const src = profiles.get(id as string) ?? mockError("NOT_FOUND", `profile ${id}`);
@@ -156,6 +183,8 @@ registerMock("duplicate_profile", ({ id }) => {
   profiles.set(copy.id, copy);
   const pw = secrets.get(src.id);
   if (pw) secrets.set(copy.id, pw);
+  const extras = extraSecrets.get(src.id);
+  if (extras) extraSecrets.set(copy.id, { ...extras });
   return copy;
 });
 registerMock("reorder_profiles", ({ ids }) => {
@@ -168,6 +197,8 @@ registerMock("get_secret_status", ({ id }) => ({
   hasPassword: secrets.has(id as string),
   hasSshPassword: false,
   hasSshPassphrase: false,
+  hasKeyPassphrase: extraSecrets.get(id as string)?.keyPassphrase !== undefined,
+  hasSessionToken: extraSecrets.get(id as string)?.sessionToken !== undefined,
 }));
 registerMock("test_connection", async ({ input }) => {
   const { profile, password } = input as ProfileInput;

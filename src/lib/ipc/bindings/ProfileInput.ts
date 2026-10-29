@@ -8,4 +8,9 @@ export type ProfileInput = { profile: ConnectionProfile, password: string | null
 /**
  * When true the stored DB password is removed.
  */
-clearPassword: boolean, };
+clearPassword: boolean, 
+/**
+ * The second secrets of the drivers that take one (`DriverDescriptor::extra_secrets`), like
+ * the SSH ones: absent keeps the stored value, `""` removes it, anything else replaces it.
+ */
+keyPassphrase?: string | null, sessionToken?: string | null, };

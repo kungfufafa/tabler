@@ -5,9 +5,11 @@ import type {
   Dialect,
   Driver,
   DriverDescriptor,
+  ExtraSecret,
   KindDescriptor,
   MysqlVersion,
   PgFlavor,
+  SecretLabel,
 } from "@/lib/ipc";
 import { DRIVER_CATALOG } from "@/lib/ipc/bindings/driverCatalog";
 
@@ -41,6 +43,65 @@ export function isCoreKind(kind: DatabaseKind): boolean {
 /** The driver's name ("PostgreSQL", "Redis"). */
 export function driverLabel(driver: Driver): string {
   return DESCRIPTORS[driver].label;
+}
+
+/** What a driver's secret is called in the form (`SecretLabel::text` in the backend). */
+export const SECRET_LABEL: Readonly<Record<SecretLabel, string>> = {
+  password: "Password",
+  authToken: "Auth Token",
+  apiToken: "API Token",
+  apiKey: "API Key",
+  secretAccessKey: "Secret Access Key",
+  encryptionKey: "Encryption Key",
+  accessToken: "Access Token",
+  passwordOrToken: "Password or Token",
+};
+
+/** What a driver's second secret is called in the form. */
+export const EXTRA_SECRET_LABEL: Readonly<Record<ExtraSecret, string>> = {
+  keyPassphrase: "Key Passphrase",
+  sessionToken: "Session Token",
+};
+
+/**
+ * What the connection's secret is called in prompts ("Password", "API Token"). The core
+ * drivers' prompts say "Password", as they always have (a SQLite key included).
+ */
+export function secretLabel(driver: Driver): string {
+  const desc: DriverDescriptor | undefined = DESCRIPTORS[driver];
+  return isCoreDriver(driver) || !desc ? "Password" : SECRET_LABEL[desc.secret];
+}
+
+/** The second secrets the driver takes (none for most). */
+export function extraSecrets(driver: Driver): readonly ExtraSecret[] {
+  const desc: DriverDescriptor | undefined = DESCRIPTORS[driver];
+  return desc?.extraSecrets ?? [];
+}
+
+/** A label inside a sentence: "API Token" → "API token", "Secret Access Key" → "secret access key". */
+export function inSentence(label: string): string {
+  return label
+    .split(" ")
+    .map((word) => (/^[A-Z]{2,}$/.test(word) ? word : word.toLowerCase()))
+    .join(" ");
+}
+
+/**
+ * Whether Safe Mode confirms a write on the profile with the app passcode (or, without one, the
+ * connection's name) instead of its password: its secret is a token nobody types, or a driver
+ * beyond the core three gets it from a command. Mirrors `confirms_with_passcode` in the backend's
+ * `commands/safety.rs`; the core profiles keep their password prompt.
+ */
+export function confirmsWithPasscode(
+  profile: Pick<ConnectionProfile, "driver" | "options">,
+): boolean {
+  // A driver the catalog does not know (a profile read without one) keeps the password prompt.
+  const desc: DriverDescriptor | undefined = DESCRIPTORS[profile.driver];
+  if (!desc) return false;
+  return (
+    desc.secretIsToken ||
+    (!isCoreDriver(profile.driver) && profile.options.passwordMode === "command")
+  );
 }
 
 /**

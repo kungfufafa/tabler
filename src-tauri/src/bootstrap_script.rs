@@ -5,6 +5,7 @@
 
 use crate::error::AppError;
 use crate::secrets;
+use crate::types::driver::Location;
 use crate::types::profile::ConnectionProfile;
 
 /// The variables a script sees about the connection it runs for.
@@ -31,6 +32,32 @@ pub fn script_env(profile: &ConnectionProfile) -> Vec<(&'static str, String)> {
             .into_iter()
             .filter_map(|(k, v)| v.filter(|v| !v.is_empty()).map(|v| (k, v))),
     );
+    // The other drivers' file (DuckDB…) and settings; SQLite's file stays TABLER_SQLITE_PATH.
+    // The params never hold a secret (`drivers::registry::validate`).
+    if !profile.driver.is_core() {
+        let more = [
+            (
+                "TABLER_FILE",
+                profile
+                    .sqlite_path
+                    .clone()
+                    .filter(|_| profile.driver.descriptor().location == Location::File),
+            ),
+            (
+                "TABLER_DRIVER_PARAMS",
+                profile
+                    .options
+                    .driver_params
+                    .as_ref()
+                    .filter(|p| !p.0.is_empty())
+                    .and_then(|p| serde_json::to_string(p).ok()),
+            ),
+        ];
+        env.extend(
+            more.into_iter()
+                .filter_map(|(k, v)| v.filter(|v| !v.is_empty()).map(|v| (k, v))),
+        );
+    }
     env
 }
 
@@ -87,6 +114,46 @@ mod tests {
         assert!(env.contains(&("TABLER_DRIVER", "sqlite".into())));
         assert!(env.contains(&("TABLER_SQLITE_PATH", "/tmp/x.sqlite".into())));
         assert!(!env.iter().any(|(k, _)| *k == "TABLER_HOST"));
+        // SQLite's variables are as before.
+        assert!(!env.iter().any(|(k, _)| k.starts_with("TABLER_FILE")));
+        assert!(!env.iter().any(|(k, _)| *k == "TABLER_DRIVER_PARAMS"));
+    }
+
+    #[test]
+    fn env_carries_the_file_and_the_driver_params() {
+        use crate::types::profile::DriverParams;
+        let mut duck = profile(None);
+        duck.driver = Driver::Duckdb;
+        duck.sqlite_path = Some("/data/w.duckdb".into());
+        let env = script_env(&duck);
+        assert!(env.contains(&("TABLER_DRIVER", "duckdb".into())));
+        assert!(env.contains(&("TABLER_FILE", "/data/w.duckdb".into())));
+        assert!(!env.iter().any(|(k, _)| *k == "TABLER_DRIVER_PARAMS"));
+
+        let mut warehouse = profile(None);
+        warehouse.driver = Driver::Snowflake;
+        warehouse.sqlite_path = None;
+        let mut params = serde_json::Map::new();
+        params.insert("account".into(), "xy12345".into());
+        params.insert("warehouse".into(), "COMPUTE_WH".into());
+        warehouse.options.driver_params = Some(DriverParams(params));
+        let env = script_env(&warehouse);
+        let json = env
+            .iter()
+            .find(|(k, _)| *k == "TABLER_DRIVER_PARAMS")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        let back: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(back["account"], "xy12345");
+        assert_eq!(back["warehouse"], "COMPUTE_WH");
+        assert!(!env.iter().any(|(k, _)| *k == "TABLER_FILE"));
+        // A file path left from another driver is not a cloud driver's file.
+        warehouse.sqlite_path = Some("/tmp/old.sqlite".into());
+        assert!(
+            !script_env(&warehouse)
+                .iter()
+                .any(|(k, _)| *k == "TABLER_FILE")
+        );
     }
 
     /// The use case of the spec: copy the database into place before the file is checked.

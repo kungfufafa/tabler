@@ -166,7 +166,9 @@ export async function connectWorkspace(
           info = await attempt(null);
         } catch (e) {
           if (toIpcError(e).code !== "AUTH_FAILED") throw e;
-          info = await attempt(await askConnectionPassword(profile.name, "connect"));
+          info = await attempt(
+            await askConnectionPassword(profile.name, "connect", profile.driver),
+          );
         }
     } else info = await attempt(null);
     useConnectionsStore.getState().add(info);
