@@ -12,6 +12,8 @@ pub mod explain;
 #[cfg(test)]
 mod golden;
 pub mod mutate;
+// What a server narrows in its dialect (D1: 100 values, no blobs, integers to 2^53).
+pub mod narrow;
 // Command and document builders of the native stores, each with its driver's feature.
 #[cfg(any(
     feature = "drv-redis",

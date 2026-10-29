@@ -13,6 +13,9 @@
 //! // … drive the client, then:
 //! assert_eq!(server.requests()[0].header("authorization"), Some("Bearer t"));
 //! ```
+//!
+//! A route can also answer through a handler, so an in-memory engine (a driver's fake) is served
+//! over a real socket: `Route::new("*", "/*").handler(move |req| engine.reply(req))`.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -104,9 +107,19 @@ impl Reply {
     }
 }
 
+/// Makes a route's reply from the request.
+#[derive(Clone)]
+pub struct Handler(Arc<dyn Fn(&Request) -> Reply + Send + Sync>);
+
+impl std::fmt::Debug for Handler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Handler")
+    }
+}
+
 /// The replies of one method and path. `method` `"*"` takes any method; a `path` ending in `*`
 /// takes every path with that prefix; the query string is not part of the match. Replies are
-/// used in order and the last one repeats (none: an empty 200).
+/// used in order and the last one repeats (none: an empty 200), unless a handler makes them.
 #[derive(Debug, Clone)]
 pub struct Route {
     method: String,
@@ -114,7 +127,14 @@ pub struct Route {
     /// The `authorization` header the route requires; a request without it gets a 401.
     auth: Option<String>,
     replies: Vec<Reply>,
+    handler: Option<Handler>,
     served: usize,
+}
+
+/// What a matched route answers: a canned reply, or its handler's for the request.
+enum Next {
+    Reply(Reply),
+    Handle(Handler),
 }
 
 impl Route {
@@ -124,12 +144,20 @@ impl Route {
             path: path.to_string(),
             auth: None,
             replies: Vec::new(),
+            handler: None,
             served: 0,
         }
     }
 
     pub fn reply(mut self, reply: Reply) -> Route {
         self.replies.push(reply);
+        self
+    }
+
+    /// Answers every request with what `handle` makes of it (canned replies are then unused).
+    /// It runs on the server's task, outside the server's locks, once per request.
+    pub fn handler(mut self, handle: impl Fn(&Request) -> Reply + Send + Sync + 'static) -> Route {
+        self.handler = Some(Handler(Arc::new(handle)));
         self
     }
 
@@ -147,18 +175,21 @@ impl Route {
         method && path
     }
 
-    fn next_reply(&mut self, req: &Request) -> Reply {
+    fn next_reply(&mut self, req: &Request) -> Next {
         if let Some(auth) = &self.auth
             && req.header("authorization") != Some(auth.as_str())
         {
-            return Reply::unauthorized();
+            return Next::Reply(Reply::unauthorized());
         }
-        let reply = match self.replies.len() {
-            0 => Reply::ok(),
-            n => self.replies[self.served.min(n - 1)].clone(),
-        };
+        let served = self.served;
         self.served += 1;
-        reply
+        if let Some(handler) = &self.handler {
+            return Next::Handle(handler.clone());
+        }
+        Next::Reply(match self.replies.len() {
+            0 => Reply::ok(),
+            n => self.replies[served.min(n - 1)].clone(),
+        })
     }
 }
 
@@ -275,12 +306,20 @@ async fn serve(mut sock: TcpStream, routes: Arc<Mutex<Vec<Route>>>, log: Arc<Mut
     let Some(req) = read_request(&mut sock).await else {
         return;
     };
-    let reply = {
+    let next = {
         let mut routes = routes.lock().unwrap();
         match routes.iter_mut().find(|r| r.matches(&req)) {
             Some(route) => route.next_reply(&req),
-            None => Reply::text(404, format!("no route for {} {}", req.method, req.path)),
+            None => Next::Reply(Reply::text(
+                404,
+                format!("no route for {} {}", req.method, req.path),
+            )),
         }
+    };
+    // A handler may take its engine's own locks: the routes' is released by now.
+    let reply = match next {
+        Next::Reply(reply) => reply,
+        Next::Handle(Handler(handle)) => handle(&req),
     };
     let index = {
         let mut log = log.lock().unwrap();
@@ -593,6 +632,81 @@ mod tests {
             .wait_until(Duration::from_secs(5), |r| r.len() == 5)
             .await;
         assert_eq!(requests[2].header("authorization"), Some("Bearer good"));
+    }
+
+    /// An in-memory engine behind a handler route: replies made from each request and the
+    /// engine's state, the route's credential checked first, other routes still canned.
+    #[tokio::test]
+    async fn a_handler_route_serves_an_engine_over_the_socket() {
+        let items = Arc::new(Mutex::new(Vec::<String>::new()));
+        let engine = items.clone();
+        let server = FakeServer::start(vec![
+            Route::new("GET", "/health").reply(Reply::text(200, "ok")),
+            Route::new("*", "/v1/*")
+                .auth("Bearer t")
+                .handler(move |req| {
+                    let mut items = engine.lock().unwrap();
+                    match (req.method.as_str(), req.path.as_str()) {
+                        ("POST", "/v1/items") => {
+                            items.push(req.text());
+                            Reply::json(201, &serde_json::json!({ "n": items.len() }))
+                        }
+                        ("GET", "/v1/items") => {
+                            let all = items.join(",");
+                            Reply::text(
+                                200,
+                                format!("{all}?{}", req.query.as_deref().unwrap_or("")),
+                            )
+                        }
+                        _ => Reply::text(404, "unknown"),
+                    }
+                }),
+        ])
+        .await;
+        let http = client();
+        for (body, n) in [("a", 1), ("b", 2)] {
+            let r = http
+                .post(server.url("/v1/items"))
+                .bearer_auth("t")
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 201);
+            let reply: serde_json::Value = serde_json::from_str(&r.text().await.unwrap()).unwrap();
+            assert_eq!(reply["n"], n);
+        }
+        let listed = http
+            .get(server.url("/v1/items?page=2"))
+            .bearer_auth("t")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(listed.text().await.unwrap(), "a,b?page=2");
+        let anonymous = http
+            .post(server.url("/v1/items"))
+            .body("c")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(anonymous.status(), 401);
+        let other = http
+            .delete(server.url("/v1/x"))
+            .bearer_auth("t")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(other.status(), 404);
+        let health = http.get(server.url("/health")).send().await.unwrap();
+        assert_eq!(health.text().await.unwrap(), "ok");
+        // The refused request never reached the engine.
+        assert_eq!(*items.lock().unwrap(), ["a", "b"]);
+        let requests = server
+            .wait_until(Duration::from_secs(5), |r| {
+                r.len() == 6 && r.iter().all(|r| r.outcome == Outcome::Sent)
+            })
+            .await;
+        assert_eq!(requests[0].text(), "a");
     }
 
     #[tokio::test]

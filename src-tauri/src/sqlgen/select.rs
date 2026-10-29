@@ -3,6 +3,7 @@
 
 use crate::error::AppError;
 use crate::sqlgen::mutate::{TableSpec, row_key_where};
+use crate::sqlgen::narrow::{Narrowing, big_integer_projection, holds_integers};
 use crate::sqlgen::quote::Dialect;
 use crate::types::browse::{
     Conjunction, FilterGroup, FilterNode, FilterOp, NullsOrder, RowIdentity, RowKey, SortDir,
@@ -532,12 +533,23 @@ pub fn build_where(
     filter: Option<&FilterGroup>,
     params: &mut Vec<Value>,
 ) -> Result<Option<String>, AppError> {
+    let limit = crate::sqlgen::transfer::max_params(dialect);
+    build_where_within(dialect, columns, filter, params, limit)
+}
+
+/// `build_where` for a server that binds at most `limit` values (`Narrowing::max_params`).
+pub fn build_where_within(
+    dialect: Dialect,
+    columns: &[ColumnMeta],
+    filter: Option<&FilterGroup>,
+    params: &mut Vec<Value>,
+    limit: usize,
+) -> Result<Option<String>, AppError> {
     let Some(filter) = filter else {
         return Ok(None);
     };
     let mut sink = ParamSink::new(dialect, params);
     let sql = group_sql(&mut sink, columns, filter)?;
-    let limit = crate::sqlgen::transfer::max_params(dialect);
     if params.len() > limit {
         return Err(AppError::InvalidInput(format!(
             "the filter needs {} values, more than one query can bind ({limit}): use fewer \
@@ -553,17 +565,24 @@ pub fn build_where(
     Ok(sql)
 }
 
+/// `table`, when given, qualifies each column: a select whose list reads a column under its own
+/// name as another expression (`big_integer_projection`) would otherwise sort by that alias.
 fn order_by(
     dialect: Dialect,
     columns: &[ColumnMeta],
     sort: &[SortSpec],
     pk: &[String],
     identity: RowIdentity,
+    table: Option<&str>,
 ) -> Result<String, AppError> {
+    let column = |name: &str| match table {
+        Some(t) => format!("{t}.{}", dialect.quote_ident(name)),
+        None => dialect.quote_ident(name),
+    };
     let mut terms: Vec<String> = Vec::new();
     for s in sort {
         find_column(columns, &s.column)?;
-        let ident = dialect.quote_ident(&s.column);
+        let ident = column(&s.column);
         let dir = match s.dir {
             SortDir::Asc => "ASC",
             SortDir::Desc => "DESC",
@@ -586,7 +605,7 @@ fn order_by(
     if terms.is_empty() {
         // Stable paging needs a deterministic order: fall back to the primary key / rowid.
         if !pk.is_empty() {
-            terms.extend(pk.iter().map(|c| format!("{} ASC", dialect.quote_ident(c))));
+            terms.extend(pk.iter().map(|c| format!("{} ASC", column(c))));
         } else if identity == RowIdentity::Rowid && dialect == Dialect::Sqlite {
             terms.push("rowid ASC".into());
         }
@@ -600,6 +619,16 @@ fn order_by(
 
 /// Builds the paged SELECT for a table browse.
 pub fn build_select(spec: &SelectSpec<'_>) -> Result<BuiltSql, AppError> {
+    build_select_narrowed(spec, &Narrowing::of(spec.dialect))
+}
+
+/// `build_select` within what the session's server narrows: the filter's values bound by its
+/// `max_params`, and with `big_integers_as_text` (SQLite only) the columns that may hold
+/// integers read so that one beyond 2^53 comes as its text.
+pub fn build_select_narrowed(
+    spec: &SelectSpec<'_>,
+    narrowing: &Narrowing,
+) -> Result<BuiltSql, AppError> {
     let d = spec.dialect;
     let cols: Vec<&ColumnMeta> = match spec.selected {
         Some(names) => names
@@ -611,18 +640,40 @@ pub fn build_select(spec: &SelectSpec<'_>) -> Result<BuiltSql, AppError> {
     if cols.is_empty() {
         return Err(AppError::InvalidInput("no columns to select".into()));
     }
-    let mut select_list: Vec<String> = cols.iter().map(|c| select_expr(d, c)).collect();
+    let big_integers = narrowing.big_integers_as_text && d == Dialect::Sqlite;
+    let mut select_list: Vec<String> = cols
+        .iter()
+        .map(|c| {
+            if big_integers && holds_integers(c.kind) {
+                big_integer_projection(&d.quote_ident(&c.name))
+            } else {
+                select_expr(d, c)
+            }
+        })
+        .collect();
     if spec.identity == RowIdentity::Rowid && d == Dialect::Sqlite {
         select_list.push(format!("rowid AS {}", d.quote_ident(ROWID_ALIAS)));
     }
     let mut params = Vec::new();
-    let where_sql = build_where(d, spec.columns, spec.filter, &mut params)?;
-    let order = order_by(d, spec.columns, spec.sort, spec.pk, spec.identity)?;
-    let mut sql = format!(
-        "SELECT {}\nFROM {}",
-        select_list.join(", "),
-        d.qualify(spec.table.schema.as_deref(), &spec.table.name)
-    );
+    let where_sql = build_where_within(
+        d,
+        spec.columns,
+        spec.filter,
+        &mut params,
+        narrowing.max_params,
+    )?;
+    let from = d.qualify(spec.table.schema.as_deref(), &spec.table.name);
+    // SQLite resolves a bare ORDER BY name to the select's alias first: sort by the table's
+    // column, not by the CASE that reads big integers as text (text sorts after every number).
+    let order = order_by(
+        d,
+        spec.columns,
+        spec.sort,
+        spec.pk,
+        spec.identity,
+        big_integers.then_some(from.as_str()),
+    )?;
+    let mut sql = format!("SELECT {}\nFROM {from}", select_list.join(", "));
     if let Some(w) = where_sql {
         sql.push_str("\nWHERE ");
         sql.push_str(&w);
@@ -639,8 +690,20 @@ pub fn build_count(
     columns: &[ColumnMeta],
     filter: Option<&FilterGroup>,
 ) -> Result<BuiltSql, AppError> {
+    let limit = crate::sqlgen::transfer::max_params(dialect);
+    build_count_within(dialect, table, columns, filter, limit)
+}
+
+/// `build_count` for a server that binds at most `limit` values.
+pub fn build_count_within(
+    dialect: Dialect,
+    table: &TableRef,
+    columns: &[ColumnMeta],
+    filter: Option<&FilterGroup>,
+    limit: usize,
+) -> Result<BuiltSql, AppError> {
     let mut params = Vec::new();
-    let where_sql = build_where(dialect, columns, filter, &mut params)?;
+    let where_sql = build_where_within(dialect, columns, filter, &mut params, limit)?;
     let mut sql = format!(
         "SELECT count(*) FROM {}",
         dialect.qualify(table.schema.as_deref(), &table.name)

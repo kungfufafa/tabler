@@ -37,7 +37,12 @@
       "DESCRIBE",
       "DESC",
       "USE",
-      "LIST"
+      "LIST",
+      "CONSISTENCY",
+      "SERIAL",
+      "TRACING",
+      "PAGING",
+      "EXPAND"
     ],
     "writes": [
       "INTO",

@@ -125,7 +125,8 @@ bigdecimal = { version = "0.4", optional = true }
 # Redis and Valkey: the async client only; the driver wraps TLS itself with tokio-rustls.
 redis = { version = "=1.7.1", optional = true, default-features = false, features = ["tokio-comp"] }
 # MongoDB: its default `rustls-tls` uses ring, so aws-lc-rs is chosen explicitly.
-mongodb = { version = "3.9.1", optional = true, default-features = false, features = ["compat-3-0-0", "rustls-tls-aws-lc", "dns-resolver"] }
+# `cert-key-password`: a client key with a password (pure Rust pem and pkcs8).
+mongodb = { version = "3.9.1", optional = true, default-features = false, features = ["compat-3-0-0", "rustls-tls-aws-lc", "dns-resolver", "cert-key-password"] }
 # TLS streams on the app's rustls config (Redis, Vertica); already in the lock.
 tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["tls12", "logging"] }
 # Vertica's MD5 password hash (SHA-512 comes from aws-lc-rs); already in the lock.
@@ -180,6 +181,8 @@ mysql_async = { version = "0.37", default-features = false, features = ["default
 tempfile = "3"
 # Paused-clock tests (`#[tokio::test(start_paused = true)]`) of timeouts and cancel retries.
 tokio = { version = "1", features = ["test-util"] }
+# Authorizer hooks: the D1 fake refuses statements the way D1 does, not by judging their text.
+rusqlite = { version = "0.40", features = ["hooks"] }
 
 # The real-server suites of the driver lanes (dev/lanes.json) are built only with their lane's
 # feature: a build without it skips them instead of parsing them, so a lane's unfinished suite

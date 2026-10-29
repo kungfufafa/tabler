@@ -6,6 +6,7 @@
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::ddl::create_table_sql;
+use crate::sqlgen::narrow::Narrowing;
 use crate::sqlgen::select::{BuiltSql, pg_cast_type};
 use crate::types::import::{ImportColumnDef, ImportType, InsertMode};
 use crate::types::schema::{TableMeta, TableRef};
@@ -274,7 +275,25 @@ pub struct InsertTarget<'a> {
 impl InsertTarget<'_> {
     /// Rows per statement: as many as the parameter limit allows, at most 1,000.
     pub fn rows_per_statement(&self) -> usize {
-        (max_params(self.dialect) / self.columns.len().max(1)).clamp(1, 1000)
+        self.rows_per_statement_within(&Narrowing::of(self.dialect))
+    }
+
+    /// `rows_per_statement` within the values the server binds (`Narrowing::max_params`).
+    pub fn rows_per_statement_within(&self, narrowing: &Narrowing) -> usize {
+        (narrowing.max_params / self.columns.len().max(1)).clamp(1, 1000)
+    }
+
+    /// `build` within what the server narrows: blobs written in, the values checked.
+    pub fn build_within(
+        &self,
+        rows: Vec<Vec<Value>>,
+        narrowing: &Narrowing,
+    ) -> Result<BuiltSql, AppError> {
+        let built = self.build(rows)?;
+        if *narrowing == Narrowing::of(self.dialect) {
+            return Ok(built);
+        }
+        narrowing.finish(built, "an INSERT of the import")
     }
 
     /// Checks the insert option against the dialect and the key (before anything is read).
@@ -571,6 +590,44 @@ mod tests {
             vec![Value::Text("1".into()), Value::Text("a".into())],
             vec![Value::Text("2".into()), Value::Null],
         ]
+    }
+
+    /// A server that binds fewer values (D1: 100) gets fewer rows per INSERT, and its blobs
+    /// written in; the dialect's own limit gives the same statements as `build`.
+    #[test]
+    fn an_import_stays_within_what_the_server_binds() {
+        use crate::types::caps::SessionCaps;
+        use crate::types::profile::Driver;
+        let t = TableRef::new(None, "files");
+        let columns = cols(&[("id", ""), ("name", ""), ("data", "")]);
+        let target = InsertTarget {
+            dialect: Dialect::Sqlite,
+            table: &t,
+            columns: &columns,
+            mode: InsertMode::StopOnError,
+            primary_key: &[],
+        };
+        let d1 = Narrowing::for_caps(&SessionCaps::for_driver(Driver::D1));
+        assert_eq!(target.rows_per_statement(), 1000);
+        assert_eq!(target.rows_per_statement_within(&d1), 33);
+        let rows = || {
+            vec![vec![
+                Value::Int(1),
+                Value::Text("a".into()),
+                Value::from_bytes(&[0xab]),
+            ]]
+        };
+        let built = target.build_within(rows(), &d1).unwrap();
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"files\" (\"id\", \"name\", \"data\") VALUES (?1, ?2, X'ab')"
+        );
+        assert_eq!(built.params, [Value::Int(1), Value::Text("a".into())]);
+        let own = Narrowing::of(Dialect::Sqlite);
+        assert_eq!(
+            target.build_within(rows(), &own).unwrap(),
+            target.build(rows()).unwrap()
+        );
     }
 
     #[test]

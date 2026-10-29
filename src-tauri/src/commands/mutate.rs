@@ -12,7 +12,7 @@ use crate::drivers::{Session, TxStatement};
 use crate::error::{AppError, ErrorPayload};
 use crate::sqlgen::SqlDialect;
 use crate::sqlgen::mutate::ordered;
-use crate::sqlgen::sql::{self, ColumnForm, TableTarget};
+use crate::sqlgen::sql::{self, ColumnForm, Narrowing, TableTarget};
 use crate::state::{AppState, Connection};
 use crate::types::browse::RowKey;
 use crate::types::caps::{Feature, TxMode};
@@ -165,6 +165,7 @@ pub async fn plan_rows(conn: &Connection, req: &ApplyRequest) -> Result<PlannedR
     let caps = session.capabilities();
     caps.require_all(&change_features(req))?;
     let returning = req.returning && caps.has(Feature::Returning);
+    let narrowing = Narrowing::for_caps(&caps);
     let meta = cached_meta(conn, &req.table).await?;
     let dialect = session.dialect();
     let target = TableTarget {
@@ -178,7 +179,7 @@ pub async fn plan_rows(conn: &Connection, req: &ApplyRequest) -> Result<PlannedR
             .iter()
             .position(|c| std::ptr::eq(c, change))
             .unwrap_or(0);
-        let (built, expect) = sql::change(dialect, &target, change, returning)?;
+        let (built, expect) = sql::change_on(&narrowing, dialect, &target, change, returning)?;
         let mut st = TxStatement::new(built.sql, built.params);
         st.expect_affected = expect;
         out.push((index, st));

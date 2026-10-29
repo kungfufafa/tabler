@@ -1,6 +1,10 @@
 //! UPDATE / INSERT / DELETE of staged grid edits for the extension dialects. Rows are addressed
 //! by primary key only (or by rowid where the spec has one): a statement that might touch more
 //! than the row the user edited is never built.
+//!
+//! A NULL cell is written as the literal `NULL` in SET and VALUES: a bound NULL carries no type,
+//! and a server that types it by the driver's default (SQL Server: nvarchar) refuses it for a
+//! binary column.
 
 use std::collections::BTreeMap;
 
@@ -102,6 +106,7 @@ pub fn build_update(
         }
         sets.push(match cell {
             Cell::Expr(e) => format!("{id} = {}", server_expr(spec, *e, col)?),
+            Cell::Value(Value::Null) => format!("{id} = NULL"),
             Cell::Value(v) => format!("{id} = {}", params.push((*v).clone(), Some(col))),
         });
     }
@@ -138,6 +143,7 @@ pub fn build_insert(
         names.push(ident(spec, name));
         exprs.push(match cell {
             Cell::Expr(e) => server_expr(spec, *e, col)?,
+            Cell::Value(Value::Null) => "NULL".to_string(),
             Cell::Value(v) => params.push((*v).clone(), Some(col)),
         });
     }
@@ -212,4 +218,49 @@ pub fn build_change(
         ),
         StagedChange::Delete { key, .. } => (build_delete(spec, t, key)?, Some(1)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sqlgen::portable::testing::{ANSI_TEST, TSQL_LIKE_TEST, columns, map, text};
+    use crate::types::schema::TableRef;
+
+    /// A NULL goes in as the literal, so a server never has to guess a bound NULL's type (SQL
+    /// Server would send nvarchar, which a varbinary column refuses).
+    #[test]
+    fn a_null_cell_is_written_as_the_literal() {
+        let t = TableRef::new(Some("dbo"), "users");
+        let cols = columns();
+        let target = TableTarget {
+            table: &t,
+            columns: &cols,
+        };
+        for spec in [&ANSI_TEST, &TSQL_LIKE_TEST] {
+            let update = StagedChange::Update {
+                row_id: "r".into(),
+                key: RowKey::Pk(map([("id", Value::Int(7))])),
+                changes: map([("data", Value::Null), ("name", text("x"))]),
+                exprs: None,
+            };
+            let (built, _) = build_change(spec, &target, &update, false).unwrap();
+            assert_eq!(built.params, [text("x"), Value::Int(7)], "{}", built.sql);
+            assert!(built.sql.contains(" = NULL, "), "{}", built.sql);
+            let insert = StagedChange::Insert {
+                row_id: "n".into(),
+                values: map([("data", Value::Null), ("id", Value::Int(8))]),
+                exprs: None,
+            };
+            let (built, _) = build_change(spec, &target, &insert, false).unwrap();
+            assert_eq!(built.params, [Value::Int(8)], "{}", built.sql);
+            assert!(built.sql.contains("VALUES (NULL, "), "{}", built.sql);
+            // A key column that is NULL is still matched with IS NULL, not bound.
+            let delete = StagedChange::Delete {
+                row_id: "r".into(),
+                key: RowKey::Pk(map([("id", Value::Null)])),
+            };
+            let (built, _) = build_change(spec, &target, &delete, false).unwrap();
+            assert!(built.params.is_empty(), "{}", built.sql);
+        }
+    }
 }

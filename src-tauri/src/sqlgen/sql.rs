@@ -6,6 +6,10 @@
 //!
 //! `column_form` and `fetch_form` tell the decoders how the rows of `select` and `fetch_cell`
 //! arrive (as text, as hex…), keyed on the dialect the SQL was built for rather than the driver.
+//!
+//! The `*_on` builders take what the session's server narrows in its dialect (`Narrowing`, from
+//! its caps): D1's 100 values per statement, blobs written in and integers beyond 2^53 read as
+//! text. A session that narrows nothing gets exactly the SQL of the plain builders.
 
 use crate::drivers::redact::{Redaction, redact_secrets};
 use crate::error::AppError;
@@ -13,9 +17,12 @@ use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::dialect::spec::ExplainForm;
 use crate::sqlgen::dialect::{DialectRef, SqlDialect, ensure_built};
 use crate::sqlgen::mutate::TableSpec;
+pub use crate::sqlgen::narrow::Narrowing;
 use crate::sqlgen::select::{BuiltSql, SelectSpec};
 use crate::sqlgen::split::SplitStatement;
-use crate::sqlgen::{Dialect, classify, explain, mutate, portable, select, split, transfer};
+use crate::sqlgen::{
+    Dialect, classify, explain, mutate, narrow, portable, select, split, transfer,
+};
 use crate::types::browse::{FilterGroup, RowIdentity, RowKey, SortSpec};
 use crate::types::mutate::StagedChange;
 use crate::types::query::ExplainMode;
@@ -80,6 +87,23 @@ pub fn select(d: impl Into<SqlDialect>, q: &SelectQuery<'_>) -> Result<BuiltSql,
     }
 }
 
+/// `select` within what the session's server narrows.
+pub fn select_on(
+    n: &Narrowing,
+    d: impl Into<SqlDialect>,
+    q: &SelectQuery<'_>,
+) -> Result<BuiltSql, AppError> {
+    let d = d.into();
+    match d.resolve() {
+        DialectRef::Core(dialect) if *n != Narrowing::of(d) => {
+            let built = select::build_select_narrowed(&q.spec(dialect), n)?;
+            n.finish(built, "the filter")
+        }
+        // generic: safe for every dialect
+        _ => select(d, q),
+    }
+}
+
 /// `SELECT count(*) FROM table WHERE …`.
 pub fn count(
     d: impl Into<SqlDialect>,
@@ -92,6 +116,25 @@ pub fn count(
         DialectRef::Ext(spec) => {
             portable::select::build_count(ensure_built(spec)?, table, columns, filter)
         }
+    }
+}
+
+/// `count` within what the session's server narrows.
+pub fn count_on(
+    n: &Narrowing,
+    d: impl Into<SqlDialect>,
+    table: &TableRef,
+    columns: &[ColumnMeta],
+    filter: Option<&FilterGroup>,
+) -> Result<BuiltSql, AppError> {
+    let d = d.into();
+    match d.resolve() {
+        DialectRef::Core(dialect) if *n != Narrowing::of(d) => {
+            let built = select::build_count_within(dialect, table, columns, filter, n.max_params)?;
+            n.finish(built, "the filter")
+        }
+        // generic: safe for every dialect
+        _ => count(d, table, columns, filter),
     }
 }
 
@@ -111,6 +154,26 @@ pub fn fetch_cell(
     }
 }
 
+/// `fetch_cell` within what the session's server narrows (a blob key written in).
+pub fn fetch_cell_on(
+    n: &Narrowing,
+    d: impl Into<SqlDialect>,
+    t: &TableTarget<'_>,
+    column: &ColumnMeta,
+    key: &RowKey,
+) -> Result<(String, Vec<Value>), AppError> {
+    let d = d.into();
+    match d.resolve() {
+        DialectRef::Core(dialect) if *n != Narrowing::of(d) => {
+            let (sql, params) = select::build_fetch_cell(&t.spec(dialect), column, key)?;
+            let built = n.finish(BuiltSql { sql, params }, "the row's key")?;
+            Ok((built.sql, built.params))
+        }
+        // generic: safe for every dialect
+        _ => fetch_cell(d, t, column, key),
+    }
+}
+
 /// The statement of one staged change and how many rows it must affect.
 pub fn change(
     d: impl Into<SqlDialect>,
@@ -123,6 +186,26 @@ pub fn change(
         DialectRef::Ext(spec) => {
             portable::mutate::build_change(ensure_built(spec)?, t, change, returning)
         }
+    }
+}
+
+/// `change` within what the session's server narrows: blobs written in, and refused past the
+/// values one statement may bind.
+pub fn change_on(
+    n: &Narrowing,
+    d: impl Into<SqlDialect>,
+    t: &TableTarget<'_>,
+    change: &StagedChange,
+    returning: bool,
+) -> Result<(BuiltSql, Option<u64>), AppError> {
+    let d = d.into();
+    match d.resolve() {
+        DialectRef::Core(dialect) if *n != Narrowing::of(d) => {
+            let (built, expect) = mutate::build_change(&t.spec(dialect), change, returning)?;
+            Ok((n.finish(built, "the change")?, expect))
+        }
+        // generic: safe for every dialect
+        _ => self::change(d, t, change, returning),
     }
 }
 
@@ -265,6 +348,9 @@ pub enum ColumnForm {
     Text,
     /// As text that may be cut: the column cannot be edited, keyed on or loaded whole.
     LossyText,
+    /// In its own type, except an integer beyond 2^53, which comes as its text
+    /// (`Narrowing::big_integers_as_text`).
+    IntegerText,
 }
 
 /// How `select` returns `column` in dialect `d`.
@@ -280,6 +366,20 @@ pub fn column_form(d: impl Into<SqlDialect>, column: &ColumnMeta) -> ColumnForm 
                 Some(_) => ColumnForm::Text,
             }
         }
+    }
+}
+
+/// `column_form` of a select built within `n` (`select_on`).
+pub fn column_form_on(n: &Narrowing, d: impl Into<SqlDialect>, column: &ColumnMeta) -> ColumnForm {
+    let d = d.into();
+    match d.resolve() {
+        DialectRef::Core(Dialect::Sqlite)
+            if n.big_integers_as_text && narrow::holds_integers(column.kind) =>
+        {
+            ColumnForm::IntegerText
+        }
+        // generic: safe for every dialect
+        _ => column_form(d, column),
     }
 }
 

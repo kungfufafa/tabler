@@ -3,9 +3,11 @@
 
 mod actor;
 pub mod cipher;
-mod decode;
+// The SQLite-over-HTTP drivers (LibSQL, D1) map declared types and read trigger heads as the
+// local driver does (`decode::kind_from_decltype`, `introspect::parse_trigger_head`).
+pub(crate) mod decode;
 mod exec;
-mod introspect;
+pub(crate) mod introspect;
 
 use std::io::Read;
 use std::path::Path;

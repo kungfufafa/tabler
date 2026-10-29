@@ -530,12 +530,13 @@ impl SessionCaps {
         }
     }
 
-    /// Where a session's caps start: `core` for a core driver on a core dialect, otherwise
-    /// `minimal` (a PostgreSQL flavor that speaks Redshift SQL is not a core session), which the
-    /// driver then adjusts.
+    /// Where a session's caps start: `core` for a core driver on a core dialect, `sqlite_family`
+    /// for another driver on SQLite's (LibSQL, D1), otherwise `minimal` (a PostgreSQL flavor
+    /// that speaks Redshift SQL is not a core session), which the driver then adjusts.
     pub fn base(driver: Driver, dialect: SqlDialect, flavor: Option<Flavor>) -> SessionCaps {
         match dialect.resolve() {
             DialectRef::Core(core) if driver.is_core() => SessionCaps::core(driver, core, flavor),
+            DialectRef::Core(Dialect::Sqlite) => SessionCaps::sqlite_family(driver),
             DialectRef::Core(_) | DialectRef::Ext(_) => {
                 let mut caps = SessionCaps::minimal(driver);
                 caps.flavor = flavor;
@@ -543,6 +544,23 @@ impl SessionCaps {
                 caps
             }
         }
+    }
+
+    /// LibSQL and D1 speak SQLite and their grid goes through the SQLite builders: SQLite's
+    /// namespaces and data caps from the start, the features of `minimal` until the driver grants
+    /// more. A server that binds fewer values says so in its descriptor (`wire`, D1: 100). D1's
+    /// edits address rows by primary key only: its batch commits before the affected count can be
+    /// checked, so an edit by all columns could not be undone when it matched two rows (its
+    /// descriptor has no rowid, and the driver never grants `EditWithoutKey`).
+    fn sqlite_family(driver: Driver) -> SessionCaps {
+        let sqlite = SessionCaps::core(driver, Dialect::Sqlite, None);
+        let mut caps = SessionCaps::minimal(driver);
+        caps.namespaces = sqlite.namespaces;
+        caps.data = sqlite.data;
+        if let Some(max) = driver.descriptor().wire.max_params {
+            caps.data.max_params = caps.data.max_params.min(max);
+        }
+        caps
     }
 
     /// The caps a driver's sessions start from when nothing is known about the server: `base`
@@ -745,6 +763,31 @@ mod tests {
             unsupported(SessionCaps::minimal(Driver::Redis).require(Feature::Editor)),
             "Redis: the query editor is not available"
         );
+    }
+
+    #[test]
+    fn libsql_and_d1_start_as_the_sqlite_family() {
+        let sqlite = SessionCaps::core(Driver::Sqlite, Dialect::Sqlite, None);
+        for d in [Driver::Libsql, Driver::D1] {
+            let caps = SessionCaps::for_driver(d);
+            // The grid of the SQLite builders, none of the core-only features.
+            assert_eq!(caps.features, [Feature::Editor, Feature::StructureView]);
+            assert_eq!(caps.namespaces, sqlite.namespaces, "{d:?}");
+            assert_eq!(caps.data.filter_ops, sqlite.data.filter_ops, "{d:?}");
+            assert!(caps.data.sort && caps.data.count == CountMode::Exact);
+            assert!(!caps.has(Feature::EditWithoutKey));
+            assert_eq!(caps.safety, SessionCaps::minimal(d).safety);
+            assert_eq!(caps.session, SessionCaps::minimal(d).session);
+        }
+        assert_eq!(
+            SessionCaps::for_driver(Driver::Libsql).data,
+            sqlite.data,
+            "LibSQL binds as many parameters as SQLite"
+        );
+        assert_eq!(SessionCaps::for_driver(Driver::D1).data.max_params, 100);
+        // Rows without a primary key: LibSQL's by rowid, D1's not at all.
+        assert!(Driver::Libsql.descriptor().rowid);
+        assert!(!Driver::D1.descriptor().rowid);
     }
 
     #[test]

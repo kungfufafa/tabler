@@ -3,12 +3,12 @@
 
 ## ansi: changes
 update by pk
-  sql: "UPDATE \"app\".\"users\" SET \"name\" = ?, \"price\" = ? WHERE \"id\" = ?"
-  params: [{"t":"text","v":"Bob"},{"t":"null"},{"t":"int","v":7}]
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = ?, \"price\" = NULL WHERE \"id\" = ?"
+  params: [{"t":"text","v":"Bob"},{"t":"int","v":7}]
   preview: "UPDATE \"app\".\"users\" SET \"name\" = 'Bob', \"price\" = NULL WHERE \"id\" = 7"
 update by pk, returning
-  sql: "UPDATE \"app\".\"users\" SET \"name\" = ?, \"price\" = ? WHERE \"id\" = ? RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
-  params: [{"t":"text","v":"Bob"},{"t":"null"},{"t":"int","v":7}]
+  sql: "UPDATE \"app\".\"users\" SET \"name\" = ?, \"price\" = NULL WHERE \"id\" = ? RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
+  params: [{"t":"text","v":"Bob"},{"t":"int","v":7}]
   preview: "UPDATE \"app\".\"users\" SET \"name\" = 'Bob', \"price\" = NULL WHERE \"id\" = 7 RETURNING \"id\", \"name\", \"age\", \"price\", \"payload\", \"data\", \"geom\", \"Odd \"\"Name\"\" ]\", \"created\""
 update with DEFAULT and a clock
   sql: "UPDATE \"app\".\"users\" SET \"age\" = DEFAULT, \"created\" = CURRENT_TIMESTAMP(3), \"name\" = DEFAULT WHERE \"id\" = ?"
@@ -97,12 +97,12 @@ delete by an empty key, returning
 
 ## tsql: changes
 update by pk
-  sql: "UPDATE [app].[users] SET [name] = @P1, [price] = @P2 WHERE [id] = @P3"
-  params: [{"t":"text","v":"Bob"},{"t":"null"},{"t":"int","v":7}]
+  sql: "UPDATE [app].[users] SET [name] = @P1, [price] = NULL WHERE [id] = @P2"
+  params: [{"t":"text","v":"Bob"},{"t":"int","v":7}]
   preview: "UPDATE [app].[users] SET [name] = N'Bob', [price] = NULL WHERE [id] = 7"
 update by pk, returning
-  sql: "UPDATE [app].[users] SET [name] = @P1, [price] = @P2 OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] WHERE [id] = @P3"
-  params: [{"t":"text","v":"Bob"},{"t":"null"},{"t":"int","v":7}]
+  sql: "UPDATE [app].[users] SET [name] = @P1, [price] = NULL OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] WHERE [id] = @P2"
+  params: [{"t":"text","v":"Bob"},{"t":"int","v":7}]
   preview: "UPDATE [app].[users] SET [name] = N'Bob', [price] = NULL OUTPUT CONVERT(NVARCHAR(MAX), INSERTED.[id]) AS [id], CONVERT(NVARCHAR(MAX), INSERTED.[name]) AS [name], CONVERT(NVARCHAR(MAX), INSERTED.[age]) AS [age], CONVERT(NVARCHAR(MAX), INSERTED.[price]) AS [price], CONVERT(NVARCHAR(MAX), INSERTED.[payload]) AS [payload], INSERTED.[data], INSERTED.[geom].STAsText() AS [geom], CONVERT(NVARCHAR(MAX), INSERTED.[Odd \"Name\" ]]]) AS [Odd \"Name\" ]]], CONVERT(NVARCHAR(MAX), INSERTED.[created]) AS [created] WHERE [id] = 7"
 update with DEFAULT and a clock
   sql: "UPDATE [app].[users] SET [age] = DEFAULT, [created] = CURRENT_TIMESTAMP(3), [name] = DEFAULT WHERE [id] = @P1"

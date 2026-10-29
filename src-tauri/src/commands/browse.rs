@@ -9,8 +9,9 @@ use crate::drivers::postgres::decode::text_to_value;
 use crate::drivers::{CancelSlot, DbSession, Session};
 use crate::error::AppError;
 use crate::sqlgen::SqlDialect;
+use crate::sqlgen::narrow::big_integer_from_text;
 use crate::sqlgen::select::ROWID_ALIAS;
-use crate::sqlgen::sql::{self, ColumnForm, FetchForm, SelectQuery, TableTarget};
+use crate::sqlgen::sql::{self, ColumnForm, FetchForm, Narrowing, SelectQuery, TableTarget};
 use crate::state::{AppState, Connection};
 use crate::types::browse::{
     BrowsePage, BrowseRequest, FilterGroup, RowCount, RowIdentity, RowKey, TracedSql,
@@ -44,28 +45,35 @@ fn identity_for(driver: Driver, meta: &TableMeta) -> RowIdentity {
 }
 
 /// Columns the select of `dialect` reads as text (PG casts every column, a spec may project
-/// some) arrive as text; decode them by the column's kind.
+/// some) arrive as text; decode them by the column's kind. Where only integers beyond 2^53 come
+/// as text (D1), a text cell is decoded only when it is one of those.
 fn decode_rows(
+    narrowing: &Narrowing,
     dialect: SqlDialect,
     columns: &[&ColumnMeta],
     rows: Vec<Vec<Value>>,
 ) -> Vec<Vec<Value>> {
-    let as_text: Vec<bool> = columns
+    let forms: Vec<ColumnForm> = columns
         .iter()
-        .map(|c| sql::column_form(dialect, c) != ColumnForm::Native)
+        .map(|c| sql::column_form_on(narrowing, dialect, c))
         .collect();
-    if !as_text.contains(&true) {
+    if forms.iter().all(|f| *f == ColumnForm::Native) {
         return rows;
     }
     rows.into_iter()
         .map(|row| {
             row.into_iter()
                 .enumerate()
-                .map(|(i, v)| match (columns.get(i), v) {
-                    (Some(col), Value::Text(text)) if as_text[i] => {
-                        text_to_value(col.kind, &col.data_type, &text)
+                .map(|(i, v)| match (columns.get(i), forms.get(i), v) {
+                    (_, Some(ColumnForm::IntegerText), Value::Text(text)) => {
+                        big_integer_from_text(&text).unwrap_or(Value::Text(text))
                     }
-                    (_, v) => v,
+                    (
+                        Some(col),
+                        Some(ColumnForm::Text | ColumnForm::LossyText),
+                        Value::Text(text),
+                    ) => text_to_value(col.kind, &col.data_type, &text),
+                    (_, _, v) => v,
                 })
                 .collect()
         })
@@ -154,6 +162,7 @@ pub async fn browse_page(
 ) -> Result<BrowsePage, AppError> {
     let driver = session.driver();
     let dialect = session.dialect();
+    let narrowing = Narrowing::for_caps(&session.capabilities());
     let mut identity = identity_for(driver, meta);
 
     let selected: Vec<&ColumnMeta> = match &req.columns {
@@ -173,7 +182,8 @@ pub async fn browse_page(
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let built = sql::select(
+        let built = sql::select_on(
+            &narrowing,
             dialect,
             &SelectQuery {
                 table: &meta.table,
@@ -207,7 +217,7 @@ pub async fn browse_page(
                         row_ids = Some(ids);
                     }
                 }
-                let rows = decode_rows(dialect, &selected, rows);
+                let rows = decode_rows(&narrowing, dialect, &selected, rows);
                 return Ok(BrowsePage {
                     columns: selected.iter().map(|c| (*c).clone()).collect(),
                     rows,
@@ -303,7 +313,14 @@ pub(crate) async fn count_rows(
     }
     let session = any.sql()?;
     session.require(Feature::ExactCount)?;
-    let built = sql::count(session.dialect(), &meta.table, &meta.columns, filter)?;
+    let narrowing = Narrowing::for_caps(&session.capabilities());
+    let built = sql::count_on(
+        &narrowing,
+        session.dialect(),
+        &meta.table,
+        &meta.columns,
+        filter,
+    )?;
     let rs = query_limited(session.as_ref(), &built.sql, &built.params, limit).await?;
     let count = match rs.rows.first().and_then(|r| r.first()) {
         Some(Value::Int(i)) => *i,
@@ -422,7 +439,8 @@ pub async fn fetch_cell_limited(
         table: &meta.table,
         columns: &meta.columns,
     };
-    let (query, params) = sql::fetch_cell(dialect, &target, col, key)?;
+    let narrowing = Narrowing::for_caps(&session.capabilities());
+    let (query, params) = sql::fetch_cell_on(&narrowing, dialect, &target, col, key)?;
     let rs = query_limited(session, &query, &params, limit).await?;
     fetched_value(dialect, col, rs.rows.into_iter().next().unwrap_or_default())
 }
@@ -635,6 +653,69 @@ mod tests {
 
     fn db_error() -> AppError {
         AppError::db("no such column: rowid")
+    }
+
+    /// LibSQL is SQLite underneath: a table without a primary key is addressed by its rowid. D1
+    /// edits by primary key only, so its keyless tables have no row identity.
+    #[tokio::test]
+    async fn the_sqlite_family_keys_rows_like_sqlite_but_d1_by_primary_key_only() {
+        let (session, _dir) = sqlite_session().await;
+        let keyless = meta(session.as_ref(), "cache").await;
+        let keyed = meta(session.as_ref(), "files").await;
+        for (driver, without_key) in [
+            (Driver::Sqlite, RowIdentity::Rowid),
+            (Driver::Libsql, RowIdentity::Rowid),
+            (Driver::D1, RowIdentity::None),
+        ] {
+            assert_eq!(identity_for(driver, &keyless), without_key, "{driver:?}");
+            assert_eq!(identity_for(driver, &keyed), RowIdentity::Pk, "{driver:?}");
+        }
+    }
+
+    /// Where only integers beyond 2^53 come as text (D1), a text cell is read as a number only
+    /// when it is one of those: other text in the column (`'12'` untyped) stays text.
+    #[test]
+    fn integer_text_cells_are_decoded_only_when_they_are_integers() {
+        use crate::types::caps::SessionCaps;
+        let col = |name: &str, ty: &str, kind: ValueKind| -> ColumnMeta {
+            serde_json::from_value(serde_json::json!({
+                "name": name, "ordinal": 1, "dataType": ty, "kind": kind, "nullable": true,
+                "isPk": false, "isAutoIncrement": false, "isGenerated": false,
+                "isUnsigned": false,
+            }))
+            .unwrap()
+        };
+        let n = col("n", "INTEGER", ValueKind::Int);
+        let s = col("s", "TEXT", ValueKind::Text);
+        let columns = [&n, &s];
+        let text = |t: &str| Value::Text(t.into());
+        let rows = vec![
+            vec![text("9007199254740993"), text("9007199254740993")],
+            vec![text("-9223372036854775808"), text("x")],
+            vec![text("oops"), text("12")],
+            vec![text("12"), text("12")],
+            vec![Value::Int(5), Value::Null],
+        ];
+        let d1 = Narrowing::for_caps(&SessionCaps::for_driver(Driver::D1));
+        assert_eq!(
+            decode_rows(&d1, SqlDialect::Sqlite, &columns, rows.clone()),
+            [
+                vec![
+                    Value::BigInt("9007199254740993".into()),
+                    text("9007199254740993")
+                ],
+                vec![Value::BigInt("-9223372036854775808".into()), text("x")],
+                vec![text("oops"), text("12")],
+                vec![text("12"), text("12")],
+                vec![Value::Int(5), Value::Null],
+            ]
+        );
+        // SQLite reads every column in its own type: nothing to decode.
+        let sqlite = Narrowing::of(SqlDialect::Sqlite);
+        assert_eq!(
+            decode_rows(&sqlite, SqlDialect::Sqlite, &columns, rows.clone()),
+            rows
+        );
     }
 
     #[test]

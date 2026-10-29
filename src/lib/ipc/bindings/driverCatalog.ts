@@ -264,7 +264,7 @@ export const DRIVER_CATALOG = {
       "timezone": false,
       "startup": "sql",
       "bootstrapScript": true,
-      "rowid": false,
+      "rowid": true,
       "urlSchemes": [
         "libsql"
       ],
@@ -574,7 +574,7 @@ export const DRIVER_CATALOG = {
         "file": null
       },
       "encoding": false,
-      "timezone": false,
+      "timezone": true,
       "startup": "sql",
       "bootstrapScript": true,
       "rowid": false,
@@ -639,7 +639,10 @@ export const DRIVER_CATALOG = {
       "fileExtensions": [],
       "systemSchemas": [
         "system",
-        "system_*"
+        "system_*",
+        "dse_*",
+        "solr_admin",
+        "OpsCenter"
       ],
       "readOnly": "classifierOnly",
       "sharing": "independent",
@@ -738,7 +741,11 @@ export const DRIVER_CATALOG = {
         "mongodb+srv"
       ],
       "fileExtensions": [],
-      "systemSchemas": [],
+      "systemSchemas": [
+        "admin",
+        "config",
+        "local"
+      ],
       "readOnly": "classifierOnly",
       "sharing": "independent",
       "coreReuse": [],
@@ -1565,8 +1572,8 @@ export const DRIVER_CATALOG = {
       ],
       "namespaces": {
         "databases": false,
-        "schemas": "single",
-        "defaultSchema": null,
+        "schemas": "schemas",
+        "defaultSchema": "main",
         "labels": {
           "database": "Database",
           "schema": "Schema",
@@ -1576,15 +1583,45 @@ export const DRIVER_CATALOG = {
       },
       "data": {
         "paging": "offset",
-        "count": "none",
-        "sort": false,
-        "filterOps": [],
-        "rawFilter": null,
-        "transactions": "none",
-        "affected": "unknown",
+        "count": "exact",
+        "sort": true,
+        "filterOps": [
+          "eq",
+          "ne",
+          "gt",
+          "lt",
+          "ge",
+          "le",
+          "like",
+          "notLike",
+          "in",
+          "notIn",
+          "isNull",
+          "isNotNull",
+          "between",
+          "notBetween",
+          "contains",
+          "notContains",
+          "containsCase",
+          "notContainsCase",
+          "hasPrefix",
+          "hasSuffix",
+          "hasPrefixCase",
+          "hasSuffixCase"
+        ],
+        "rawFilter": "sqlWhere",
+        "transactions": "atomic",
+        "affected": "exact",
         "defaultKeyword": false,
-        "serverExprs": [],
-        "maxParams": 0
+        "serverExprs": [
+          "now",
+          "currentTimestamp",
+          "currentDate",
+          "currentTime",
+          "localTimestamp",
+          "default"
+        ],
+        "maxParams": 32000
       },
       "safety": {
         "readOnly": "classifierOnly",
@@ -1607,8 +1644,8 @@ export const DRIVER_CATALOG = {
       ],
       "namespaces": {
         "databases": false,
-        "schemas": "single",
-        "defaultSchema": null,
+        "schemas": "schemas",
+        "defaultSchema": "main",
         "labels": {
           "database": "Database",
           "schema": "Schema",
@@ -1618,15 +1655,45 @@ export const DRIVER_CATALOG = {
       },
       "data": {
         "paging": "offset",
-        "count": "none",
-        "sort": false,
-        "filterOps": [],
-        "rawFilter": null,
-        "transactions": "none",
-        "affected": "unknown",
+        "count": "exact",
+        "sort": true,
+        "filterOps": [
+          "eq",
+          "ne",
+          "gt",
+          "lt",
+          "ge",
+          "le",
+          "like",
+          "notLike",
+          "in",
+          "notIn",
+          "isNull",
+          "isNotNull",
+          "between",
+          "notBetween",
+          "contains",
+          "notContains",
+          "containsCase",
+          "notContainsCase",
+          "hasPrefix",
+          "hasSuffix",
+          "hasPrefixCase",
+          "hasSuffixCase"
+        ],
+        "rawFilter": "sqlWhere",
+        "transactions": "atomic",
+        "affected": "exact",
         "defaultKeyword": false,
-        "serverExprs": [],
-        "maxParams": 0
+        "serverExprs": [
+          "now",
+          "currentTimestamp",
+          "currentDate",
+          "currentTime",
+          "localTimestamp",
+          "default"
+        ],
+        "maxParams": 100
       },
       "safety": {
         "readOnly": "classifierOnly",

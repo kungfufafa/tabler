@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 use crate::drivers::{DbSession, TxStatement};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
+use crate::sqlgen::narrow::Narrowing;
 use crate::sqlgen::transfer::{
     InsertTarget, create_import_table, import_type_sql, mysql_warning_guard, mysql_warning_text,
     pg_sync_sequence,
@@ -524,9 +525,10 @@ type RowRange = (usize, usize);
 /// MySQL each INSERT runs between the statements of `mysql_warning_guard`, which cover its rows.
 fn chunk_statements(
     target: &InsertTarget<'_>,
+    narrowing: &Narrowing,
     rows: Vec<Vec<Value>>,
 ) -> Result<(Vec<TxStatement>, Vec<Option<RowRange>>), AppError> {
-    let per = target.rows_per_statement();
+    let per = target.rows_per_statement_within(narrowing);
     let guard = (target.dialect == Dialect::Mysql).then(mysql_warning_guard);
     let mut statements = Vec::new();
     let mut ranges = Vec::new();
@@ -538,7 +540,7 @@ fn chunk_statements(
         bytes += row.iter().map(text_len).sum::<usize>();
         batch.push(row);
         if batch.len() >= per || bytes >= STATEMENT_BYTES || i + 1 == total {
-            let built = target.build(std::mem::take(&mut batch))?;
+            let built = target.build_within(std::mem::take(&mut batch), narrowing)?;
             let range = Some((batch_start, i + 1));
             if let Some((before, _)) = &guard {
                 statements.push(TxStatement::new(before.clone(), Vec::new()));
@@ -738,6 +740,8 @@ pub(crate) async fn import_records(
         primary_key: &plan.primary_key,
     };
     target.validate()?;
+    // The values one statement binds: fewer than the dialect's on some servers (D1).
+    let narrowing = Narrowing::for_caps(&session.capabilities());
     let bytes = Arc::new(AtomicU64::new(0));
     let read_count = Arc::new(AtomicU64::new(0));
     let (reader, total_bytes) = open(bytes.clone())?;
@@ -860,7 +864,7 @@ pub(crate) async fn import_records(
         }
         let at = chunk.at;
         let (mut statements, mut ranges) = if rows > 0 {
-            chunk_statements(&target, chunk.rows)?
+            chunk_statements(&target, &narrowing, chunk.rows)?
         } else {
             (Vec::new(), Vec::new())
         };

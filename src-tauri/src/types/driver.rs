@@ -277,6 +277,27 @@ pub enum Sharing {
     SingleProcess,
 }
 
+/// What a server's API cannot carry of its SQL dialect, so the SQL is written around it
+/// (`sqlgen::narrow`). D1 speaks SQLite through JSON and JavaScript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SqlWire {
+    /// Bind parameters one statement takes, where fewer than the dialect's.
+    pub max_params: Option<u32>,
+    /// Numbers arrive as JavaScript numbers: integers beyond 2^53 are selected as text.
+    pub js_numbers: bool,
+    /// Blobs cannot be bound: statements carry them as literals.
+    pub blob_literals: bool,
+}
+
+impl SqlWire {
+    /// The dialect as it is.
+    pub const NONE: SqlWire = SqlWire {
+        max_params: None,
+        js_numbers: false,
+        blob_literals: false,
+    };
+}
+
 /// The fixed facts of a driver.
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -339,6 +360,10 @@ pub struct DriverDescriptor {
     pub core_reuse: &'static [Feature],
     /// The cargo feature that builds the driver; None for the drivers of every build.
     pub cargo_feature: Option<&'static str>,
+    /// What the server's API narrows in its SQL (the backend's builders only).
+    #[serde(skip)]
+    #[ts(skip)]
+    pub wire: SqlWire,
 }
 
 impl DriverDescriptor {
@@ -430,6 +455,7 @@ const BASE: DriverDescriptor = DriverDescriptor {
     sharing: Sharing::Independent,
     core_reuse: &[],
     cargo_feature: None,
+    wire: SqlWire::NONE,
 };
 
 static POSTGRES: DriverDescriptor = DriverDescriptor {
@@ -511,6 +537,8 @@ static LIBSQL: DriverDescriptor = DriverDescriptor {
     command_ttl_secs: 3000,
     // The host or the `url` param: the lane checks.
     required: &[],
+    // SQLite underneath: a table without a primary key has a rowid (D1's edits are by key only).
+    rowid: true,
     url_schemes: &["libsql"],
     read_only: ReadOnlyMode::PerRequest,
     cargo_feature: Some("drv-libsql"),
@@ -538,6 +566,12 @@ static D1: DriverDescriptor = DriverDescriptor {
     startup: StartupKind::None,
     url_schemes: &["d1", "cloudflared1"],
     cargo_feature: Some("drv-d1"),
+    // The REST API binds 100 values and no blobs, and returns integers as JavaScript numbers.
+    wire: SqlWire {
+        max_params: Some(100),
+        js_numbers: true,
+        blob_literals: true,
+    },
     ..BASE
 };
 
@@ -633,6 +667,8 @@ static VERTICA: DriverDescriptor = DriverDescriptor {
         ProfileField::User,
         ProfileField::Database,
     ],
+    // The session sets `SET TIME ZONE TO …`.
+    timezone: true,
     url_schemes: &["vertica"],
     system_schemas: &[
         "v_catalog",
@@ -659,7 +695,8 @@ static CASSANDRA: DriverDescriptor = DriverDescriptor {
         ..NO_LABELS
     },
     url_schemes: &["cassandra"],
-    system_schemas: &["system", "system_*"],
+    // DataStax Enterprise's keyspaces too, as the lane's catalog hides them.
+    system_schemas: &["system", "system_*", "dse_*", "solr_admin", "OpsCenter"],
     cargo_feature: Some("drv-cassandra"),
     ..BASE
 };
@@ -694,6 +731,8 @@ static MONGODB: DriverDescriptor = DriverDescriptor {
     required: &[],
     startup: StartupKind::None,
     url_schemes: &["mongodb", "mongodb+srv"],
+    // The server's own databases (users, the oplog, sharding metadata).
+    system_schemas: &["admin", "config", "local"],
     cargo_feature: Some("drv-mongodb"),
     ..BASE
 };
@@ -1144,6 +1183,22 @@ mod tests {
         let cql = Driver::Cassandra.descriptor();
         assert!(cql.is_system_schema("system") && cql.is_system_schema("system_auth"));
         assert!(!cql.is_system_schema("systems"));
+        for dse in ["dse_security", "solr_admin", "OpsCenter"] {
+            assert!(cql.is_system_schema(dse), "{dse}");
+        }
+        assert!(!cql.is_system_schema("opscenter") && !cql.is_system_schema("dse"));
+        let mongo = Driver::Mongodb.descriptor();
+        for (db, system) in [
+            ("admin", true),
+            ("config", true),
+            ("local", true),
+            ("shop", false),
+            ("admins", false),
+        ] {
+            assert_eq!(mongo.is_system_schema(db), system, "{db}");
+        }
+        // The session sets the time zone the profile names.
+        assert!(Driver::Vertica.descriptor().timezone);
     }
 
     /// Writes `driverCatalog.ts` next to the ts-rs bindings: the descriptors the renderer reads

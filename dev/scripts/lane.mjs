@@ -12,7 +12,7 @@
 //
 // Options: --slot sN builds in that slot; --heavy also holds every other slot, s0 included (a
 // cold DuckDB build); --jobs N; --snapshot builds HEAD with the lane's changed files over it
-// (check, clippy, test, test-all) instead of the working tree.
+// (check, clippy, test, test-all, bindings) instead of the working tree.
 //
 // Cargo always runs with `--locked --no-default-features --features <the lane's>`, so the other
 // lanes' code is compiled out, in a slot under C:/t with CARGO_BUILD_JOBS=4. Without --slot the
@@ -52,6 +52,8 @@ import {
 
 const COMMANDS = ["check", "clippy", "test", "test-all", "it", "bindings", "ts", "fmt"];
 const CARGO_COMMANDS = ["check", "clippy", "test", "test-all", "it", "bindings"];
+// What may build a HEAD snapshot with the lane's changed files over it (other work left out).
+const SNAPSHOT_COMMANDS = ["check", "clippy", "test", "test-all", "bindings"];
 const BINDINGS_DIR = "src/lib/ipc/bindings";
 
 function parseArgs(argv) {
@@ -75,8 +77,8 @@ function parseArgs(argv) {
   if (opts.slot && !LANE_SLOTS.includes(opts.slot) && opts.slot !== "s0") {
     throw new UsageError(`--slot: one of ${ALL_SLOTS.join(", ")}`);
   }
-  if (opts.snapshot && !["check", "clippy", "test", "test-all"].includes(command)) {
-    throw new UsageError("--snapshot goes with check, clippy, test and test-all");
+  if (opts.snapshot && !SNAPSHOT_COMMANDS.includes(command)) {
+    throw new UsageError(`--snapshot goes with ${SNAPSHOT_COMMANDS.join(", ")}`);
   }
   return { lane, command, rest, ...opts };
 }
@@ -138,7 +140,7 @@ async function cargo(lanes, lane, command, opts) {
     case "it":
       return integration(lane, base, env, label);
     case "bindings":
-      return bindings(lane, base, slot, env, label);
+      return bindings(lane, base, slot, { cwd, env, label });
   }
 }
 
@@ -162,10 +164,12 @@ async function integration(lane, base, env, label) {
  * and removes the lane's files there that are no longer exported. Shared bindings are never
  * touched.
  */
-async function bindings(lane, base, slot, env, label) {
+async function bindings(lane, base, slot, { cwd, env, label }) {
+  // TS_RS_EXPORT_DIR (`cargoEnv`) is absolute: a snapshot exports into the slot as well.
   const out = `${slotDir(slot)}/bindings-${lane.name}`;
   fs.rmSync(out, { recursive: true, force: true });
   const code = await run("cargo", ["test", ...base, "--lib", "--", "export_bindings_"], {
+    cwd,
     env,
     label,
   });
