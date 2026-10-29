@@ -8,6 +8,14 @@ pub mod crypto;
 pub mod fake_http;
 pub mod fake_native;
 pub mod fake_session;
+// The keys, certificates and vectors of the shared transport's tests (`tls_client`,
+// `drivers::common`), built with the features that build what they test.
+#[cfg(feature = "common-jwt")]
+pub mod jwt_key;
+#[cfg(feature = "common-aws")]
+pub mod sigv4_vectors;
+#[cfg(feature = "common-tls")]
+pub mod tls;
 
 pub use crypto::install_crypto;
 pub use fake_http::{Body, FakeServer, Outcome, Piece, Reply, Request, Route};

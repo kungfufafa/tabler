@@ -1,0 +1,70 @@
+//! An RSA test key (2048 bits) for RS256 JWTs, in PKCS#8 and PKCS#1 PEM, and a token that
+//! `openssl dgst -sha256 -sign` made with it, so a signer is checked against another
+//! implementation (RS256 signatures are deterministic).
+
+pub const PKCS8_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCzfL7TDT4klp2F
+mD7C6DaNTHuI5muzUTVH/7yT7fUAwBSF6UNP63CL1DNJKkxgEMWlT7vQQVC/HEGY
+PmXlmCzhsR4dIVMiVlHtj4Bp5iD0OtJqSRI4XaZGVYhJbGLrikJIrRX1END8T0r4
+NJK3Du+N6VnUdIsDUzQ87yBmjxckH4OmnaenKqiz7ibIpZD/G3X2AQ4HU8p2cyMi
+ejErJHxJS+aXfKV9zkbYgrB4g4iVUxmCf1tQcBxmKYUf/zk9OOV92noxyuZun7Yf
+IWx/ynSQQ99laWJKFW5ossY696xOf4/tIH3sCzl5sF80LrviDVsoCYYTnoom2n61
+KGJonLtpAgMBAAECggEAVniLYJd5MFxloGakGfeQzIsj2uUTzwyZLEo/Ok+CYS2o
+1Yj3NmoZyyvc12tq5z89UTK0K5VEBwZgba3mHnItcUAI34TeDeVjTB1+Asbtamxq
+Ue1JO2GWyTzMz37Ju2tdGrFUqj/DR0MWPbTqWAn4jDh3YB0TmfL8cDzOMcrPHcXI
+dYHlLYVb0SV0CgLhLzpKQOo3Hhz7iHXZSc01QKs0sZ7OpkeoYJZLf/YHpH7+aFCx
+FH38/eGtbwu7I6qEp2itZd1DROwSVP8mXftEEBLPbyUYDrslYoMNS4aytYtLNBIO
+u+AFDCoCN9YuwtBFfcFhm2Ub8DAJK3DMAhTkLZxYjwKBgQDX4cZkPPAWrurokAFE
+7kvtpcjyuEbJYraHZyIQgoA4QaEoDjenTZaOAwE2mLUlF+SRwUYxBDI7oOHy9nzZ
+9vLFpxRzmd4k+CUFK4SM6pf+sHjWUBOj3LXimNcqv+tU7HDVmO7i1jcE0cEG7Sg5
+EVedRmBivaKR/lnDyfzDdr9W5wKBgQDU144zNzmGmGQKKN9MRYRxnwvInr13ilrK
+ZYU5ZLZu14mYqJ7zXLJ2EOnPUBHCY2h6fQ3fUc1uzDwmND9DXwZw7nKiGspQjKFx
+37TXJ+CJV46e4qRD9jSYYPneaShhjkK10kOXEf5MtsDT/Hzbn2jtUc01RtB0XJ8s
+G7O4g3ghLwKBgFOixqei7Cj9j0iWMcewwn3JUramKdZvheOjUxEuXdptoq/QAkOw
+zXkrNNcgBl3eidDmHflzdLqhM6hbUjdnctqcRlIa9HNCJ6V/HJUzdbtYRxhQYauE
+IHsvV3zaaaO3DmfSHgqHjz0wviWez4x8aYMm9sSKT2dcMQ6nPGPFp49VAoGBAJF8
+SjIN9J9g+TjMmV3sQszbl1Vp1D6q7sZcQIVrpxv67o3P7N6SpVX416kipREHnDnl
+0x6sLs0mg5LlsbyebquxAeB2iYYnqo9JB7buBhg7JjzK1Nezql3iI8n4fWa5tDXO
+ZO8VmIrdfM8qTjpdK37UpH1fS0vOp+qhgOaFzw53AoGAD+GshJAsB3ESFWdX8xkT
+DKWwLup2bMuJYRxvFXEvKaSBZ7xjh37j5RvRV2w5gE49ej1Pz8cCrEXlMz3IC/pq
+ycnjyMH9ufq2qh66HIiRzeucRFhvXKY2tkYr1p3vX14en09DMd0XJFKEWLSy/DZI
+RddOQ+TPI7bcvkg0rfXq/J4=
+-----END PRIVATE KEY-----
+";
+
+/// The same key as `-----BEGIN RSA PRIVATE KEY-----`.
+pub const PKCS1_PEM: &str = "-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEAs3y+0w0+JJadhZg+wug2jUx7iOZrs1E1R/+8k+31AMAUhelD
+T+twi9QzSSpMYBDFpU+70EFQvxxBmD5l5Zgs4bEeHSFTIlZR7Y+AaeYg9DrSakkS
+OF2mRlWISWxi64pCSK0V9RDQ/E9K+DSStw7vjelZ1HSLA1M0PO8gZo8XJB+Dpp2n
+pyqos+4myKWQ/xt19gEOB1PKdnMjInoxKyR8SUvml3ylfc5G2IKweIOIlVMZgn9b
+UHAcZimFH/85PTjlfdp6Mcrmbp+2HyFsf8p0kEPfZWliShVuaLLGOvesTn+P7SB9
+7As5ebBfNC674g1bKAmGE56KJtp+tShiaJy7aQIDAQABAoIBAFZ4i2CXeTBcZaBm
+pBn3kMyLI9rlE88MmSxKPzpPgmEtqNWI9zZqGcsr3Ndrauc/PVEytCuVRAcGYG2t
+5h5yLXFACN+E3g3lY0wdfgLG7WpsalHtSTthlsk8zM9+ybtrXRqxVKo/w0dDFj20
+6lgJ+Iw4d2AdE5ny/HA8zjHKzx3FyHWB5S2FW9EldAoC4S86SkDqNx4c+4h12UnN
+NUCrNLGezqZHqGCWS3/2B6R+/mhQsRR9/P3hrW8LuyOqhKdorWXdQ0TsElT/Jl37
+RBASz28lGA67JWKDDUuGsrWLSzQSDrvgBQwqAjfWLsLQRX3BYZtlG/AwCStwzAIU
+5C2cWI8CgYEA1+HGZDzwFq7q6JABRO5L7aXI8rhGyWK2h2ciEIKAOEGhKA43p02W
+jgMBNpi1JRfkkcFGMQQyO6Dh8vZ82fbyxacUc5neJPglBSuEjOqX/rB41lATo9y1
+4pjXKr/rVOxw1Zju4tY3BNHBBu0oORFXnUZgYr2ikf5Zw8n8w3a/VucCgYEA1NeO
+Mzc5hphkCijfTEWEcZ8LyJ69d4paymWFOWS2bteJmKie81yydhDpz1ARwmNoen0N
+31HNbsw8JjQ/Q18GcO5yohrKUIyhcd+01yfgiVeOnuKkQ/Y0mGD53mkoYY5CtdJD
+lxH+TLbA0/x8259o7VHNNUbQdFyfLBuzuIN4IS8CgYBTosanouwo/Y9IljHHsMJ9
+yVK2pinWb4Xjo1MRLl3abaKv0AJDsM15KzTXIAZd3onQ5h35c3S6oTOoW1I3Z3La
+nEZSGvRzQielfxyVM3W7WEcYUGGrhCB7L1d82mmjtw5n0h4Kh489ML4lns+MfGmD
+JvbEik9nXDEOpzxjxaePVQKBgQCRfEoyDfSfYPk4zJld7ELM25dVadQ+qu7GXECF
+a6cb+u6Nz+zekqVV+NepIqURB5w55dMerC7NJoOS5bG8nm6rsQHgdomGJ6qPSQe2
+7gYYOyY8ytTXs6pd4iPJ+H1mubQ1zmTvFZiK3XzPKk46XSt+1KR9X0tLzqfqoYDm
+hc8OdwKBgA/hrISQLAdxEhVnV/MZEwylsC7qdmzLiWEcbxVxLymkgWe8Y4d+4+Ub
+0VdsOYBOPXo9T8/HAqxF5TM9yAv6asnJ48jB/bn6tqoeuhyIkc3rnERYb1ymNrZG
+K9ad719eHp9PQzHdFyRShFi0svw2SEXXTkPkzyO23L5INK316vye
+-----END RSA PRIVATE KEY-----
+";
+
+/// The header and claims of [`TOKEN`], in the order serde_json writes them.
+pub const HEADER: &str = r#"{"alg":"RS256","typ":"JWT"}"#;
+pub const CLAIMS: &str = r#"{"aud":"https://oauth2.example.test/token","exp":1700003600,"iat":1700000000,"iss":"tabler@example.test"}"#;
+
+/// `HEADER.CLAIMS.signature`, signed by the openssl CLI with this key.
+pub const TOKEN: &str = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJodHRwczovL29hdXRoMi5leGFtcGxlLnRlc3QvdG9rZW4iLCJleHAiOjE3MDAwMDM2MDAsImlhdCI6MTcwMDAwMDAwMCwiaXNzIjoidGFibGVyQGV4YW1wbGUudGVzdCJ9.lFRNFPF4aK6cwcr5BOCimfiZCNRzTrLdvr-wxh1igtBKxP7wdqfygVcugnPxKVWfXUADQ4EHkUhbbBsF9QeewvcymcSg7CEYC-jncnn4n6uZwT4rpn_cRdbBRYo3P4PrIUHev2Y_Wbpr0OgQAta6qOvd_zQu1xm4T7805gws8I6zct2j9JlyAeht39ODlxeWrLpLvHKUU7DGgbnatwMOIlBfaWs2HEQFNtZG6y9WLZ1CEhUKOIXoInB_YV4SS25kujlh4ROT9ecTKjVQZszhYL3svOVmSgl3yrPH8GmrMrUEyon3UWs5vBFirfOvZ-0rlXJOgOQwxUVDpUXWtfFGzA";

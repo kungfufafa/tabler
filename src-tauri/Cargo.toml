@@ -36,8 +36,10 @@ all-drivers = [
     "drv-elasticsearch",
     "drv-dynamodb",
 ]
-# Transport shared by several drivers (`drivers::common`).
-common-http = ["dep:bytes", "dep:percent-encoding"]
+# Transport shared by several drivers (`drivers::common`); `common-tls` is the rustls client
+# configs (`tls_client`) of the drivers that run TLS over their own sockets.
+common-tls = []
+common-http = ["common-tls", "dep:bytes", "dep:percent-encoding"]
 common-aws = ["common-http", "dep:hex"]
 common-jwt = ["common-http"]
 drv-pg-flavors = []
@@ -48,9 +50,9 @@ drv-sqlserver = ["dep:tiberius", "tokio-util/compat"]
 drv-clickhouse = ["common-http"]
 drv-snowflake = ["dep:snowflake-connector-rs"]
 drv-bigquery = ["common-jwt"]
-drv-vertica = ["dep:tokio-rustls", "dep:md-5", "dep:bytes", "dep:hex"]
-drv-cassandra = ["dep:scylla", "dep:num-bigint", "dep:bigdecimal", "dep:bytes"]
-drv-redis = ["dep:redis", "dep:tokio-rustls", "dep:bytes"]
+drv-vertica = ["common-tls", "dep:tokio-rustls", "dep:md-5", "dep:bytes", "dep:hex"]
+drv-cassandra = ["common-tls", "dep:scylla", "dep:num-bigint", "dep:bigdecimal", "dep:bytes"]
+drv-redis = ["common-tls", "dep:redis", "dep:tokio-rustls", "dep:bytes"]
 drv-mongodb = ["dep:mongodb", "dep:percent-encoding"]
 drv-elasticsearch = ["common-aws"]
 drv-dynamodb = ["common-aws"]

@@ -35,6 +35,8 @@ pub mod sqlgen;
 pub mod state;
 #[cfg(test)]
 pub mod testkit;
+#[cfg(feature = "common-tls")]
+pub mod tls_client;
 pub mod tls_files;
 pub mod tunnel;
 pub mod types;

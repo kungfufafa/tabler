@@ -591,6 +591,58 @@ async fn run_password_command_in(
             "Enter the command that prints the password (Command Line mode)".into(),
         ));
     }
+    let output = run_captured(shell, command, timeout, "password command").await?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match stdout.lines().map(str::trim).rfind(|l| !l.is_empty()) {
+        Some(password) => Ok(password.to_string()),
+        None => Err(with_stderr(
+            &output.stderr,
+            "the password command printed nothing".into(),
+        )),
+    }
+}
+
+/// Runs a command like [`run_password_command`] and returns everything it printed, for output
+/// that spans lines (the JSON of an AWS `credential_process`). `what` names the command in errors
+/// ("credential_process command").
+#[cfg(feature = "common-aws")]
+pub(crate) async fn run_command_output(
+    command: &str,
+    timeout: Duration,
+    what: &str,
+) -> Result<String, AppError> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err(AppError::InvalidInput(format!("the {what} is empty")));
+    }
+    let output = run_captured(&login_shell(), command, timeout, what).await?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// What a command that succeeded printed: its stdout, and the start of its stderr.
+struct Captured {
+    stdout: Vec<u8>,
+    stderr: String,
+}
+
+/// A `Connect` error: `msg`, then the command's stderr.
+fn with_stderr(stderr: &str, msg: String) -> AppError {
+    AppError::Connect(if stderr.is_empty() {
+        msg
+    } else {
+        format!("{msg}: {stderr}")
+    })
+}
+
+/// Runs `command` through `shell` the way [`run_password_command`] says and waits for its output.
+/// A command that cannot start, fails, times out or prints too much is an error naming it as
+/// `what`.
+async fn run_captured(
+    shell: &LoginShell,
+    command: &str,
+    timeout: Duration,
+    what: &str,
+) -> Result<Captured, AppError> {
     let mut cmd = shell.command(command)?;
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -599,16 +651,13 @@ async fn run_password_command_in(
     #[cfg(unix)]
     cmd.process_group(0);
     let mut child = cmd.spawn().map_err(|e| {
-        AppError::Connect(format!(
-            "cannot run the password command ({}): {e}",
-            shell.program()
-        ))
+        AppError::Connect(format!("cannot run the {what} ({}): {e}", shell.program()))
     })?;
     let mut group = ProcessGroup::of(&child);
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-        return Err(AppError::internal(
-            "the password command has no output pipes",
-        ));
+        return Err(AppError::internal(format!(
+            "the {what} has no output pipes"
+        )));
     };
     let stdout = tokio::spawn(read_capped(stdout));
     let stderr = tokio::spawn(read_capped(stderr));
@@ -619,11 +668,11 @@ async fn run_password_command_in(
     let status = status
         .map_err(|_| {
             AppError::Connect(format!(
-                "the password command did not finish within {}s",
+                "the {what} did not finish within {}s",
                 timeout.as_secs()
             ))
         })?
-        .map_err(|e| AppError::Connect(format!("the password command failed: {e}")))?;
+        .map_err(|e| AppError::Connect(format!("the {what} failed: {e}")))?;
     let drained = |reader: tokio::task::JoinHandle<(Vec<u8>, bool)>| async move {
         tokio::time::timeout(OUTPUT_DRAIN, reader)
             .await
@@ -632,38 +681,29 @@ async fn run_password_command_in(
     };
     let stderr = drained(stderr).await.unwrap_or_default().0;
     let stderr = shorten(&String::from_utf8_lossy(&stderr));
-    let with_stderr = |msg: String| {
-        AppError::Connect(if stderr.is_empty() {
-            msg
-        } else {
-            format!("{msg}: {stderr}")
-        })
-    };
     if !status.success() {
         let status = match status.code() {
             Some(code) => format!("exit status {code}"),
             None => "killed by a signal".into(),
         };
-        return Err(with_stderr(format!(
-            "the password command failed ({status})"
-        )));
+        return Err(with_stderr(
+            &stderr,
+            format!("the {what} failed ({status})"),
+        ));
     }
     let Some((stdout, over)) = drained(stdout).await else {
         return Err(with_stderr(
-            "the password command left a process running that keeps its output open".into(),
+            &stderr,
+            format!("the {what} left a process running that keeps its output open"),
         ));
     };
     if over {
-        return Err(with_stderr(format!(
-            "the password command printed more than {} KiB",
-            OUTPUT_LIMIT / 1024
-        )));
+        return Err(with_stderr(
+            &stderr,
+            format!("the {what} printed more than {} KiB", OUTPUT_LIMIT / 1024),
+        ));
     }
-    let stdout = String::from_utf8_lossy(&stdout);
-    match stdout.lines().map(str::trim).rfind(|l| !l.is_empty()) {
-        Some(password) => Ok(password.to_string()),
-        None => Err(with_stderr("the password command printed nothing".into())),
-    }
+    Ok(Captured { stdout, stderr })
 }
 
 /// How long a bootstrap CLI script may run before the connect gives up on it.
