@@ -1,0 +1,1 @@
+[{"index":"logs-2024","health":"yellow","status":"open","pri":"1","rep":"1","docs.count":"3","store.size":"12873"},{"index":"products","health":"green","status":"open","pri":"2","rep":"0","docs.count":"120","store.size":"40960"},{"index":".kibana_8.15.2_001","health":"green","status":"open","pri":"1","rep":"0","docs.count":"14","store.size":"64712"}]

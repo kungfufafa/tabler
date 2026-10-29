@@ -1,0 +1,1 @@
+{"logs-2024":{"mappings":{"properties":{"@timestamp":{"type":"date"},"bytes":{"type":"long"},"host":{"properties":{"name":{"type":"keyword"},"ip":{"type":"ip"}}},"message":{"type":"text","fields":{"keyword":{"type":"keyword","ignore_above":256}}},"tags":{"type":"keyword"}}}}}
