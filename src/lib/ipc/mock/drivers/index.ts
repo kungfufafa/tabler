@@ -1,5 +1,7 @@
-import { LANE_IDS, laneOfDriver, type LaneId } from "@/features/drivers/lanes";
+import { DESCRIPTORS, isCoreDriver, isCoreKind, KINDS } from "@/features/drivers/catalog";
+import { LANE_IDS, LANES, laneOfDriver, type LaneId } from "@/features/drivers/lanes";
 import type { ConnectionProfile } from "../../bindings/ConnectionProfile";
+import type { DatabaseKind } from "../../bindings/DatabaseKind";
 import type { Driver } from "../../bindings/Driver";
 import type { MockDriver, MockLane } from "./types";
 
@@ -57,7 +59,7 @@ export async function loadMockDriver(driver: Driver): Promise<MockDriver | null>
  * tests); the core seed (`SEED_PROFILES`) stays as it is. Returns the profiles added.
  */
 export async function seedMockDriverProfiles(ids: readonly Driver[]): Promise<ConnectionProfile[]> {
-  // Imported here: the handlers will dispatch to this module, which must not import them back.
+  // Imported here: the handlers dispatch to this module, which must not import them back.
   const { mockProfiles } = await import("../handlers");
   const added: ConnectionProfile[] = [];
   for (const id of ids) {
@@ -68,4 +70,92 @@ export async function seedMockDriverProfiles(ids: readonly Driver[]): Promise<Co
     }
   }
   return added;
+}
+
+// --- the mock's build --------------------------------------------------------------------------
+
+/**
+ * The databases beyond the core ones the mock is a build of: none by default (the mock is a build
+ * of the core drivers, so the picker shows the 4 core tiles), the ones `?mockDrivers=` names in
+ * `vite --mode mock`, or a test's.
+ */
+const builtKinds = new Set<DatabaseKind>();
+
+/** The databases the mock connects to, in the picker's order (`AppInfo.kinds`). */
+export function mockBuiltKinds(): DatabaseKind[] {
+  return KINDS.filter((k) => isCoreKind(k.kind) || builtKinds.has(k.kind)).map((k) => k.kind);
+}
+
+/** The drivers the mock has (`AppInfo.drivers`), in the catalog's order. */
+export function mockBuiltDrivers(): Driver[] {
+  const kinds = mockBuiltKinds();
+  return Object.values(DESCRIPTORS)
+    .map((d) => d.driver)
+    .filter((d) => KINDS.some((k) => k.driver === d && kinds.includes(k.kind)));
+}
+
+/** Whether the mock connects to `kind` (`registry::ensure_built`). */
+export function isMockBuilt(kind: DatabaseKind): boolean {
+  return isCoreKind(kind) || builtKinds.has(kind);
+}
+
+/** The databases `id` names: a database, a lane driver's, a lane's (`pg-flavors`), or `all`. */
+function kindsNamed(id: string): DatabaseKind[] {
+  const lane = LANE_IDS.find((l) => l === id);
+  return KINDS.filter(
+    (k) =>
+      id === "all" ||
+      k.kind === id ||
+      (k.driver === id && !isCoreDriver(k.driver)) ||
+      (lane !== undefined && LANES[lane].kinds.some((kind) => kind === k.kind)),
+  ).map((k) => k.kind);
+}
+
+/**
+ * Makes the mock a build of the databases `ids` names: a database id (`cockroachdb`), a lane
+ * driver's id (`redis`), a lane's (`pg-flavors`), or `all`. Unknown ids are left out. Returns the
+ * databases added.
+ */
+export function buildMockDrivers(ids: readonly string[]): DatabaseKind[] {
+  const added: DatabaseKind[] = [];
+  for (const raw of ids) {
+    const id = raw.trim().toLowerCase();
+    const kinds = kindsNamed(id);
+    if (kinds.length === 0 && id !== "") console.warn(`[mock] no driver or database “${raw}”`);
+    for (const kind of kinds)
+      if (!isCoreKind(kind) && !builtKinds.has(kind)) {
+        builtKinds.add(kind);
+        added.push(kind);
+      }
+  }
+  return added;
+}
+
+/** Tests only: back to a build of the core drivers. */
+export function resetMockBuild(): void {
+  builtKinds.clear();
+}
+
+let seeding: Promise<unknown> = Promise.resolve();
+
+/** Resolves once the seed profiles of `enableMockDrivers` are in (`list_profiles` waits). */
+export const mockDriversSeeded = (): Promise<unknown> => seeding;
+
+/**
+ * `?mockDrivers=redis,mongodb`: builds them into the mock (`buildMockDrivers`) and adds their mock
+ * drivers' seed profiles to the launcher. Returns the profiles added.
+ */
+export function enableMockDrivers(ids: readonly string[]): Promise<ConnectionProfile[]> {
+  const kinds = buildMockDrivers(ids);
+  const drivers = KINDS.filter((k) => kinds.includes(k.kind) && !isCoreDriver(k.driver)).map(
+    (k) => k.driver,
+  );
+  const seeded = seedMockDriverProfiles([...new Set(drivers)]);
+  seeding = seeded.catch((err: unknown) => console.error("[mock] seeding the drivers failed", err));
+  return seeded;
+}
+
+if (typeof window !== "undefined") {
+  const ids = new URLSearchParams(window.location.search).get("mockDrivers");
+  if (ids) void enableMockDrivers(ids.split(","));
 }

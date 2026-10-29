@@ -60,6 +60,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { openBackup } from "@/features/backup/store";
+import { kindOf } from "@/features/drivers/catalog";
 import { usePaletteStore } from "@/features/palette/store";
 import { copyConnectionUrl } from "@/features/safety/copyUrl";
 import { openProfileInNewWindow } from "@/features/tabs/windowHandoff";
@@ -915,9 +916,7 @@ export function Launcher() {
                       {dragging?.kind === "connection" ? (
                         <div className="bg-popover border-border flex h-9 w-56 items-center gap-2 rounded-md border px-2 shadow-md">
                           <DriverBadge
-                            driver={dragging.profile.driver}
-                            mysqlVersion={dragging.profile.options.mysqlVersion}
-                            pgFlavor={dragging.profile.options.pgFlavor}
+                            kind={kindOf(dragging.profile)}
                             color={dragging.profile.color}
                           />
                           <span className="truncate text-[13px] font-semibold">

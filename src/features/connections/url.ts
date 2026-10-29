@@ -1,5 +1,24 @@
-import type { CoreDriver } from "@/features/drivers/catalog";
-import type { ConnectionProfile, SafeModeLevel, SslMode } from "@/lib/ipc";
+import {
+  databaseKind,
+  DESCRIPTORS,
+  isCoreDriver,
+  isCoreKind,
+  KIND_DESCRIPTORS,
+  kindDriver,
+  kindOf,
+  visibleKinds,
+  type CoreDriver,
+} from "@/features/drivers/catalog";
+import { awaitKindUi, loadKindUi } from "@/features/drivers/registry";
+import type { KindUi } from "@/features/drivers/types";
+import type {
+  ConnectionProfile,
+  DatabaseKind,
+  DriverDescriptor,
+  SafeModeLevel,
+  SslMode,
+} from "@/lib/ipc";
+import { useAppInfoStore } from "@/stores/appInfo";
 import { ACCENT_PRESETS, isHexColor, type AccentPreset } from "@/lib/theme";
 import { parseHex } from "./colors";
 import {
@@ -27,6 +46,10 @@ import {
  * 1 MariaDB, 2 Old MySQL), `lazyload`, and where to go once
  * connected: `schema`, `table` or `view`, plus a row filter — `column` + `operation` (or
  * `operator`) + `value`, or a raw condition in `condition` / `raw` / `query`.
+ *
+ * The databases of the driver lanes this build has read and write their own URLs (`KindUi.url`,
+ * found by scheme: the descriptor's `urlSchemes`, or what the loaded lane declares); a `+ssh`
+ * URL of one keeps the SSH server's part here.
  */
 
 const SCHEMES: Record<string, CoreDriver> = {
@@ -455,6 +478,103 @@ function postgresValues(params: URLSearchParams, values: Partial<ConnectionFormV
   if (extra.length > 0) values.pgParams = extra.join(" ");
 }
 
+/** A database of a lane, with its lane form as loaded so far (undefined: still loading). */
+interface LaneUrlKind {
+  kind: DatabaseKind;
+  ui: KindUi | null | undefined;
+}
+
+/** The databases beyond the core ones that this build has. */
+const builtLaneKinds = (): DatabaseKind[] =>
+  visibleKinds(useAppInfoStore.getState().info).filter((k) => !isCoreKind(k));
+
+/** The schemes a database's URLs use: what its loaded lane declares, else its driver's. */
+function schemesOf({ kind, ui }: LaneUrlKind): readonly string[] {
+  if (ui?.url) return ui.url.schemes;
+  // A flavor's own schemes come with its lane; the driver's are its driver's own database's.
+  const driver = kindDriver(kind);
+  return databaseKind(driver) === kind ? DESCRIPTORS[driver].urlSchemes : [];
+}
+
+/** The built database whose URLs use `scheme`, if any. */
+function laneOfScheme(scheme: string): LaneUrlKind | null {
+  for (const kind of builtLaneKinds()) {
+    const lane = { kind, ui: loadKindUi(kind) };
+    if (schemesOf(lane).some((s) => s.toLowerCase() === scheme)) return lane;
+  }
+  return null;
+}
+
+/**
+ * Loads the lane forms of the databases this build has, so that `parseConnectionUrl` reads their
+ * URLs ("New connection from URL…" calls it when it opens). A lane that fails to load is left out.
+ */
+export async function loadUrlSchemes(): Promise<void> {
+  await Promise.all(builtLaneKinds().map((k) => awaitKindUi(k).catch(() => null)));
+}
+
+/**
+ * A URL of a lane's database (`lane`): the lane reads its own part; the SSH server of a `+ssh`
+ * URL, the name, colour, tag, safe mode and where to go once connected are read here, as for
+ * every URL.
+ */
+function parseLaneUrl(
+  text: string,
+  fullScheme: string,
+  overSsh: boolean,
+  lane: LaneUrlKind,
+): ParsedConnectionUrl {
+  const label = KIND_DESCRIPTORS[lane.kind].label;
+  if (lane.ui === undefined)
+    throw new Error(`Tabler is still loading what reads ${label} URLs. Try again in a moment.`);
+  const reader = lane.ui?.url;
+  if (!reader) throw new Error(`Tabler cannot read ${label} URLs yet.`);
+  const driver = kindDriver(lane.kind);
+  const desc: DriverDescriptor = DESCRIPTORS[driver];
+  let url = text;
+  let ssh: ReturnType<typeof parseSshAuthority> | null = null;
+  if (overSsh) {
+    if (desc.ssh !== "tunnel") throw new Error(`${label} connections cannot go over SSH.`);
+    // `<scheme>+ssh://<ssh authority>/<the database URL's authority, path and query>`
+    const rest = text.slice(fullScheme.length + 1).replace(/^\/\//, "");
+    const slash = rest.indexOf("/");
+    if (slash < 0) throw new Error("After the SSH server, add the database: …/user@host/db");
+    ssh = parseSshAuthority(rest.slice(0, slash));
+    url = `${fullScheme.slice(0, -4)}://${rest.slice(slash + 1)}`;
+  }
+  const parsed = reader.parse(url);
+  if (!parsed) throw new Error(`This is not a valid ${label} URL.`);
+  const params = new URLSearchParams(url.split("?")[1] ?? "");
+  const values: Partial<ConnectionFormValues> = {
+    ...parsed.values,
+    driver,
+    pgFlavor: KIND_DESCRIPTORS[lane.kind].pgFlavor,
+  };
+  commonValues(params, values);
+  values.name =
+    params.get("name")?.trim() || parsed.values.name || values.host || values.database || label;
+  if (ssh) {
+    values.sshEnabled = true;
+    values.sshHost = ssh.host;
+    values.sshPort = ssh.port || "22";
+    values.sshUser = ssh.user;
+    values.sshAuth =
+      boolParam(params.get("usePrivateKey")) === true
+        ? "key"
+        : ssh.password !== null
+          ? "password"
+          : "key";
+    if (ssh.password !== null) values.sshPassword = ssh.password;
+    if (!params.get("name")) values.name = `${values.name} via ${ssh.host}`;
+  }
+  return {
+    values,
+    password: parsed.password,
+    target: parsed.target ?? targetFromParams(params),
+    extras: parsed.extras ?? extrasFromParams(params),
+  };
+}
+
 /** Parses a connection URL. Throws an Error with a user-facing message when it is not one. */
 export function parseConnectionUrl(input: string): ParsedConnectionUrl {
   const text = input.trim().replace(/^jdbc:/i, "");
@@ -462,6 +582,9 @@ export function parseConnectionUrl(input: string): ParsedConnectionUrl {
   const overSsh = fullScheme?.endsWith("+ssh") ?? false;
   const scheme = overSsh ? fullScheme!.slice(0, -4) : fullScheme;
   const driver = scheme ? SCHEMES[scheme] : undefined;
+  // Another database's scheme: its lane reads it, when this build has the database.
+  const lane = fullScheme && scheme && !driver ? laneOfScheme(scheme) : null;
+  if (lane && fullScheme) return parseLaneUrl(text, fullScheme, overSsh, lane);
   if (!fullScheme || !scheme || !driver)
     throw new Error("Use a postgres://, mysql://, mariadb:// or sqlite:// URL.");
 
@@ -689,12 +812,44 @@ function sshAuthority(ssh: NonNullable<ConnectionProfile["ssh"]>): string {
 }
 
 /**
+ * The URL of a profile of a lane's database: the lane writes it (`KindUi.url.format`; a `+ssh`
+ * URL over SSH), or, until it can, a plain one of its driver's scheme. Null for the core drivers
+ * (a PostgreSQL flavor's lane may write its own).
+ */
+function laneProfileUrl(p: ConnectionProfile, password: string | null): string | null {
+  const kind = kindOf(p);
+  if (isCoreKind(kind)) return null;
+  const url = loadKindUi(kind)?.url?.format(p) ?? null;
+  if (url === null) return isCoreDriver(p.driver) ? null : plainUrl(p, password);
+  const parts = /^([a-z][a-z0-9+.-]*):\/\/(.*)$/is.exec(url);
+  if (!p.ssh || !parts) return url;
+  return `${parts[1]}+ssh://${sshAuthority(p.ssh)}/${parts[2]}`;
+}
+
+/** `scheme://user@host:port/database` (or the file's path) with the common query. */
+function plainUrl(p: ConnectionProfile, password: string | null): string {
+  const desc: DriverDescriptor = DESCRIPTORS[p.driver];
+  const scheme = desc.urlSchemes[0] ?? p.driver;
+  const query = commonQuery(p);
+  tailQuery(p, query);
+  if (desc.location === "file")
+    return `${scheme}://${p.sqlitePath ? encodeURI(p.sqlitePath) : ""}?${query.toString()}`;
+  const user = p.user ? enc(p.user) + (password ? `:${enc(password)}` : "") + "@" : "";
+  const host = (p.host ?? "").includes(":") ? `[${p.host}]` : (p.host ?? "");
+  const port = p.port ? `:${p.port}` : "";
+  const db = p.database ? `/${enc(p.database)}` : "";
+  return `${scheme}://${user}${host}${port}${db}?${query.toString()}`;
+}
+
+/**
  * The profile as a connection URL ("Copy as URL"). The password is only included when given
  * (it is never stored in the profile). With SSH it is the `+ssh` form TablePlus reads —
  * `postgresql+ssh://sshuser@sshhost:2222/dbuser:dbpass@127.0.0.1:5432/db?…` — whose SSH password is
  * never included; `usePrivateKey=true` for key authentication.
  */
 export function profileToUrl(p: ConnectionProfile, password: string | null = null): string {
+  const lane = laneProfileUrl(p, password);
+  if (lane !== null) return lane;
   const query = commonQuery(p);
   const ssh = p.ssh;
   if (p.driver === "sqlite") {

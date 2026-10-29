@@ -15,7 +15,13 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Controller, useForm, type FieldErrors, type UseFormReturn } from "react-hook-form";
+import {
+  Controller,
+  useForm,
+  type FieldErrors,
+  type Resolver,
+  type UseFormReturn,
+} from "react-hook-form";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -47,12 +53,17 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
   CORE_DRIVERS,
+  DESCRIPTORS,
   isCoreDriver,
   isCoreKind,
   KIND_DESCRIPTORS,
+  kindOf,
+  SECRET_LABEL,
   visibleKinds,
   type CoreDriver,
 } from "@/features/drivers/catalog";
+import { awaitKindUi, useKindUi } from "@/features/drivers/registry";
+import type { FormIssue, KindUi, SharedRow } from "@/features/drivers/types";
 import { rememberSafeModeLevel } from "@/features/safety/guard";
 import { SAFE_MODE_DESCRIPTION, SAFE_MODE_SUMMARY } from "@/features/safety/levels";
 import { confirmProtectedChange, protectedChanges } from "@/features/safety/setLevel";
@@ -62,12 +73,14 @@ import {
   toIpcError,
   type ConnectionProfile,
   type Driver,
+  type DriverDescriptor,
   type MysqlVersion,
   type PasswordMode,
   type SafeModeLevel,
   type SshPasswordMode,
   type SslMode,
   type SslNegotiation,
+  type TlsStyle,
 } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
@@ -89,6 +102,12 @@ import {
   kindDriver,
   type DatabaseKind,
 } from "./colors";
+import { DatabaseRow } from "./rows/DatabaseRow";
+import { FileRow } from "./rows/FileRow";
+import { HostPortRow } from "./rows/HostPortRow";
+import { SecretRow } from "./rows/SecretRow";
+import { SslRows } from "./rows/SslRows";
+import { UserRow } from "./rows/UserRow";
 import { CustomColorSwatch } from "./CustomColorSwatch";
 import { EditTagsDialog } from "./EditTagsDialog";
 import { GroupCombobox } from "./GroupCombobox";
@@ -106,6 +125,7 @@ import {
   DEFAULT_CONNECT_TIMEOUT_SECS,
   ENCODING_CHOICES,
   DEFAULT_FORM,
+  formKind,
   formToProfileInput,
   MYSQL_REMOTE_SOCKET_PLACEHOLDER,
   MYSQL_SOCKET_PLACEHOLDER,
@@ -173,6 +193,104 @@ const SHORT_SSL_LIST: readonly MysqlVersion[] = ["mariadb", "singlestore", "old"
 function sslModesOf(driver: Driver, version: MysqlVersion): ReadonlyArray<[SslMode, string]> {
   if (driver !== "mysql") return SSL_MODES.postgres;
   return SHORT_SSL_LIST.includes(version) ? SSL_MODES.mariadb : SSL_MODES.mysql;
+}
+
+/**
+ * The SSL modes of a database beyond the core ones, by how its driver does TLS (the descriptor's
+ * `tls`), where its lane names none of its own (`KindUi.sslModes`); null: nothing to choose.
+ */
+const TLS_SSL_MODES: Record<TlsStyle, ReadonlyArray<readonly [SslMode, string]> | null> = {
+  libpq: SSL_MODES.postgres,
+  mysql: SSL_MODES.mysql,
+  tds: [
+    ["disable", "Off"],
+    ["prefer", "Optional"],
+    ["require", "Required"],
+    ["verify-full", "Required, verify the certificate"],
+  ],
+  onOff: [
+    ["disable", "Off"],
+    ["require", "On"],
+    ["verify-full", "On, verify the certificate"],
+  ],
+  https: [
+    ["disable", "HTTP"],
+    ["require", "HTTPS"],
+    ["verify-full", "HTTPS, verify the certificate"],
+  ],
+  none: null,
+};
+
+/** The SSL modes the form of a lane's database offers (null: none). */
+function laneSslModes(
+  desc: DriverDescriptor,
+  ui: KindUi | null | undefined,
+): ReadonlyArray<readonly [SslMode, string]> | null {
+  return ui?.sslModes !== undefined ? ui.sslModes : TLS_SSL_MODES[desc.tls];
+}
+
+/**
+ * The SSL mode a lane's form starts on when the form's mode is not on its menu: Off for an on/off
+ * switch (those servers listen in plain text unless set up for TLS), else the first mode with TLS
+ * (an HTTP API or a cloud service is reached over HTTPS).
+ */
+function firstSslMode(tls: TlsStyle, modes: ReadonlyArray<readonly [SslMode, string]>): SslMode {
+  if (tls === "onOff") return modes[0]![0];
+  return (modes.find(([m]) => m !== "disable") ?? modes[0]!)[0];
+}
+
+/**
+ * The shared rows of a lane's database whose lane gives no form (yet), from its descriptor: where
+ * it is (a host, a file or a cloud account), its secret and its TLS.
+ */
+function descriptorRows(desc: DriverDescriptor): SharedRow[] {
+  const ssl: SharedRow[] = desc.tls === "none" ? [] : ["ssl"];
+  switch (desc.location) {
+    case "file":
+      return ["file", "secret"];
+    case "cloud":
+      return ["user", "secret", "database"];
+    case "host":
+      return ["hostPort", "user", "secret", "database", ...ssl];
+  }
+}
+
+/**
+ * The drivers the form's Driver menu offers: the core three for a core database (one form serves
+ * them), else this build's drivers of the same family beyond the core ones (each its own form).
+ */
+function driverChoices(driver: Driver, built: readonly DatabaseKind[]): readonly Driver[] {
+  if (isCoreDriver(driver)) return DRIVERS;
+  const family = DESCRIPTORS[driver].family;
+  return Object.values(DESCRIPTORS)
+    .filter((d) => !isCoreDriver(d.driver) && d.family === family)
+    .map((d) => d.driver)
+    .filter((d) => d === driver || built.includes(databaseKind(d)));
+}
+
+/**
+ * The values a database's tile starts its form with: its driver and flavor, its port, an SSL mode
+ * its menu offers, and its lane's defaults. Driver params start empty.
+ */
+function kindValues(
+  kind: DatabaseKind,
+  ui: KindUi | null,
+  ssl: SslMode,
+): Partial<ConnectionFormValues> {
+  const k = KIND_DESCRIPTORS[kind];
+  const values: Partial<ConnectionFormValues> = {
+    driver: k.driver,
+    pgFlavor: k.pgFlavor,
+    port: k.defaultPort === null ? "" : String(k.defaultPort),
+  };
+  if (!isCoreDriver(k.driver)) {
+    values.driverParams = {};
+    const desc = DESCRIPTORS[k.driver];
+    const modes = laneSslModes(desc, ui);
+    if (modes && modes.length > 0 && !modes.some(([m]) => m === ssl))
+      values.ssl = firstSslMode(desc.tls, modes);
+  }
+  return { ...values, ...ui?.defaults?.() };
 }
 
 /** The MariaDB / SingleStore / old MySQL list has no DISABLED and no VERIFY-CA: their nearest mode. */
@@ -410,20 +528,36 @@ function SslFileButton({
  * dialog's Create button) goes on to the form; ←/→ move between the tiles.
  */
 function DriverPicker({
+  kinds,
   value,
   onChange,
   onConfirm,
 }: {
+  /** The databases this build has, in the picker's order (up to 20). */
+  kinds: readonly DatabaseKind[];
   value: DatabaseKind;
   onChange: (kind: DatabaseKind) => void;
   onConfirm: (kind: DatabaseKind) => void;
 }) {
   const tiles = useRef(new Map<DatabaseKind, HTMLButtonElement>());
-  // The databases this build has; the form has the fields of the core ones only (the others
-  // bring theirs with their driver).
-  const kinds = visibleKinds(useAppInfo()).filter(isCoreKind);
+  const grid = useRef<HTMLDivElement>(null);
+  // The core four fit one row; a fuller build wraps its tiles, and ↑/↓ then move by a row.
+  const wide = kinds.length > 4;
+  const rowStep = () => {
+    if (!wide || !grid.current) return 1;
+    const columns = getComputedStyle(grid.current).gridTemplateColumns.split(" ").filter(Boolean);
+    return Math.max(1, columns.length);
+  };
   return (
-    <div role="radiogroup" aria-label="Database" className="grid grid-cols-4 gap-3">
+    <div
+      ref={grid}
+      role="radiogroup"
+      aria-label="Database"
+      className={cn(
+        "grid gap-3",
+        wide ? "grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))]" : "grid-cols-4",
+      )}
+    >
       {kinds.map((d, i) => (
         <button
           key={d}
@@ -443,33 +577,29 @@ function DriverPicker({
               onConfirm(d);
               return;
             }
+            const row = e.key === "ArrowDown" || e.key === "ArrowUp" ? rowStep() : 1;
             const step =
               e.key === "ArrowRight" || e.key === "ArrowDown"
-                ? 1
+                ? row
                 : e.key === "ArrowLeft" || e.key === "ArrowUp"
-                  ? -1
+                  ? -row
                   : 0;
             if (step === 0) return;
             e.preventDefault();
-            const next = kinds[(i + step + kinds.length) % kinds.length]!;
+            const next = kinds[(((i + step) % kinds.length) + kinds.length) % kinds.length]!;
             onChange(next);
             tiles.current.get(next)?.focus();
           }}
           className={cn(
-            "flex flex-col items-center gap-3 rounded-xl border px-3 pt-6 pb-5 text-center transition-colors outline-none",
+            "flex flex-col items-center gap-3 rounded-xl border px-3 text-center transition-colors outline-none",
+            wide ? "pt-4 pb-3" : "pt-6 pb-5",
             "focus-visible:ring-ring/50 focus-visible:ring-3",
             value === d
               ? "border-brand bg-brand-soft"
               : "border-border hover:border-border-strong hover:bg-row-hover",
           )}
         >
-          <DriverBadge
-            driver={kindDriver(d)}
-            mysqlVersion={KIND_DESCRIPTORS[d].mysqlVersion}
-            pgFlavor={KIND_DESCRIPTORS[d].pgFlavor}
-            color={KIND_TINT[d]}
-            size="lg"
-          />
+          <DriverBadge kind={d} color={KIND_TINT[d]} size="lg" />
           <span className="text-[13px] font-medium">{KIND_LABEL[d]}</span>
         </button>
       ))}
@@ -521,24 +651,40 @@ function tagOptions(current: string | null, custom: readonly CustomTag[]): strin
 
 function GeneralFields({
   form,
+  kindUi,
+  built,
   hasStoredPassword,
   groups,
   onBootstrap,
   onEditTags,
+  onSwitchKind,
 }: {
   form: Form;
+  /** The lane form of the form's database: null for a core one, undefined while it loads. */
+  kindUi: KindUi | null | undefined;
+  /** The databases this build has. */
+  built: readonly DatabaseKind[];
   hasStoredPassword: boolean;
   /** Existing group names, suggested in the Group field. */
   groups: readonly string[];
   onBootstrap: () => void;
   onEditTags: () => void;
+  /** Driver ▸ another database with a form of its own (a lane's). */
+  onSwitchKind: (kind: DatabaseKind) => void;
 }) {
   const { register, control, formState, watch, setValue, getValues } = form;
   const customTags = useCustomTags();
   const mysqlVersion = watch("mysqlVersion");
   const errors = formState.errors;
   const uid = useId();
-  const driver = watch("driver");
+  const chosen = watch("driver");
+  // A lane's database has its own rows; the core rows below read a core driver.
+  const lane = !isCoreDriver(chosen);
+  const driver: CoreDriver = isCoreDriver(chosen) ? chosen : "postgres";
+  const kind = formKind({ driver: chosen, mysqlVersion, pgFlavor: watch("pgFlavor") });
+  const kindFacts = KIND_DESCRIPTORS[kind];
+  // An edited profile changes driver within its family only (each has its form).
+  const choices = driverChoices(chosen, built);
   const clearPassword = watch("clearPassword");
   const passwordMode = watch("passwordMode");
   const ssl = watch("ssl");
@@ -673,6 +819,13 @@ function GeneralFields({
               <Select
                 value={field.value}
                 onValueChange={(v) => {
+                  // A lane's database has a form of its own: switching to another driver of
+                  // its family starts that driver's form over.
+                  const other = choices.find((d) => d === v && !isCoreDriver(d));
+                  if (other) {
+                    onSwitchKind(databaseKind(other));
+                    return;
+                  }
                   const next = CORE_DRIVERS.find((d) => d === v);
                   if (!next) return;
                   const port = getValues("port").trim();
@@ -686,7 +839,7 @@ function GeneralFields({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {DRIVERS.map((d) => (
+                  {choices.map((d) => (
                     <SelectItem key={d} value={d}>
                       {DRIVER_LABEL[d]}
                     </SelectItem>
@@ -736,8 +889,18 @@ function GeneralFields({
         </div>
       </Row>
 
-      {sqlite ? <SqliteFields form={form} hasStoredPassword={hasStoredPassword} /> : null}
-      {sqlite ? (
+      {lane ? (
+        <LaneRows
+          form={form}
+          kind={kind}
+          ui={kindUi}
+          hasStoredPassword={hasStoredPassword}
+          onBootstrap={onBootstrap}
+        />
+      ) : sqlite ? (
+        <SqliteFields form={form} hasStoredPassword={hasStoredPassword} />
+      ) : null}
+      {lane ? null : sqlite ? (
         <BootstrapRow form={form} onOpen={onBootstrap} />
       ) : (
         <>
@@ -788,7 +951,11 @@ function GeneralFields({
                 <Input
                   id={`${uid}-port`}
                   {...register("port")}
-                  placeholder={DEFAULT_PORT[driver]}
+                  placeholder={
+                    kindFacts.defaultPort === null
+                      ? DEFAULT_PORT[driver]
+                      : String(kindFacts.defaultPort)
+                  }
                   className="w-20 shrink-0 font-mono"
                   inputMode="numeric"
                   aria-invalid={errors.port ? true : undefined}
@@ -801,7 +968,7 @@ function GeneralFields({
             <Input
               id={`${uid}-user`}
               {...register("user")}
-              placeholder={driver === "postgres" ? "postgres" : "root"}
+              placeholder={kindFacts.defaultUser ?? (driver === "postgres" ? "postgres" : "root")}
               className="font-mono"
               autoComplete="off"
               aria-invalid={errors.user ? true : undefined}
@@ -908,7 +1075,9 @@ function GeneralFields({
           <Row
             label="Database"
             htmlFor={`${uid}-database`}
-            hint={driver === "postgres" ? "Defaults to postgres" : "Optional"}
+            hint={
+              kindFacts.defaultDatabase ? `Defaults to ${kindFacts.defaultDatabase}` : "Optional"
+            }
           >
             <Input id={`${uid}-database`} {...register("database")} className="font-mono" />
           </Row>
@@ -1017,9 +1186,146 @@ function GeneralFields({
             </Row>
           )}
           <OtherOptionsRow form={form} />
+          {/* A PostgreSQL flavor's lane may add fields of its own to the PostgreSQL form. */}
+          {kindUi?.Fields && (
+            <kindUi.Fields form={form} kind={kind} hasStoredPassword={hasStoredPassword} />
+          )}
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * The rows of a lane's database after Name, Tag, Group and Driver: the shared rows its lane
+ * lists (or its descriptor's, while its lane gives none), in the words its lane and descriptor
+ * use, then the lane's own fields (loaded with the lane) and the bootstrap commands.
+ */
+function LaneRows({
+  form,
+  kind,
+  ui,
+  hasStoredPassword,
+  onBootstrap,
+}: {
+  form: Form;
+  kind: DatabaseKind;
+  ui: KindUi | null | undefined;
+  hasStoredPassword: boolean;
+  onBootstrap: () => void;
+}) {
+  if (ui === undefined)
+    return (
+      <Row label="">
+        <p className="text-muted-foreground flex h-8 items-center gap-2 text-xs" role="status">
+          <Loader2 className="size-3.5 animate-spin" /> Loading the {KIND_LABEL[kind]} form…
+        </p>
+      </Row>
+    );
+  const facts = KIND_DESCRIPTORS[kind];
+  const desc: DriverDescriptor = DESCRIPTORS[facts.driver];
+  const label = (row: SharedRow, fallback: string) => ui?.labels?.[row] ?? fallback;
+  const sslModes = laneSslModes(desc, ui);
+  const row = (shared: SharedRow) => {
+    switch (shared) {
+      case "hostPort":
+        return (
+          <HostPortRow
+            key={shared}
+            form={form}
+            label={label(shared, desc.labels.host ?? "Host")}
+            defaultPort={facts.defaultPort}
+          />
+        );
+      case "user":
+        return (
+          <UserRow
+            key={shared}
+            form={form}
+            label={label(shared, desc.labels.user ?? "User")}
+            placeholder={facts.defaultUser ?? ""}
+          />
+        );
+      case "secret":
+        return (
+          <SecretRow
+            key={shared}
+            form={form}
+            hasStoredPassword={hasStoredPassword}
+            label={label(shared, SECRET_LABEL[desc.secret])}
+            passwordModes={desc.passwordModes}
+          />
+        );
+      case "database":
+        return (
+          <DatabaseRow
+            key={shared}
+            form={form}
+            label={label(shared, desc.labels.database ?? "Database")}
+            placeholder={facts.defaultDatabase ?? undefined}
+            hint={desc.required.includes("database") ? "" : "Optional"}
+          />
+        );
+      case "file":
+        return (
+          <FileRow
+            key={shared}
+            form={form}
+            label={label(shared, desc.labels.file ?? "Database file")}
+            pickerTitle={`Open ${facts.label} database`}
+            filters={
+              desc.fileExtensions.length > 0
+                ? [{ name: facts.label, extensions: [...desc.fileExtensions] }]
+                : []
+            }
+          />
+        );
+      case "ssl":
+        return sslModes ? <SslRows key={shared} form={form} modes={sslModes} /> : null;
+      case "socket":
+        return <SocketRow key={shared} form={form} />;
+    }
+  };
+  return (
+    <>
+      {(ui?.rows ?? descriptorRows(desc)).map(row)}
+      {ui?.Fields && <ui.Fields form={form} kind={kind} hasStoredPassword={hasStoredPassword} />}
+      {(desc.startup !== "none" || desc.bootstrapScript) && (
+        <BootstrapRow form={form} onOpen={onBootstrap} />
+      )}
+    </>
+  );
+}
+
+/** "Use socket" of a lane's database: a socket path instead of host and port. */
+function SocketRow({ form }: { form: Form }) {
+  const uid = useId();
+  const on = form.watch("useSocket");
+  return (
+    <Row label="Socket" htmlFor={`${uid}-socket`} error={form.formState.errors.socketPath?.message}>
+      <div className="flex items-center gap-2">
+        <Input
+          id={`${uid}-socket`}
+          {...form.register("socketPath")}
+          disabled={!on}
+          className="font-mono"
+        />
+        <label className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs whitespace-nowrap">
+          <Controller
+            control={form.control}
+            name="useSocket"
+            render={({ field }) => (
+              <Checkbox
+                checked={field.value}
+                onCheckedChange={(v) => field.onChange(v === true)}
+                aria-label="Use socket"
+              />
+            )}
+          />
+          Use socket
+        </label>
+      </div>
+    </Row>
   );
 }
 
@@ -1063,7 +1369,7 @@ function OtherOptionsRow({ form }: { form: Form }) {
     mysqlLocalInfile: form.watch("mysqlLocalInfile"),
     pgDisableChannelBinding: form.watch("pgDisableChannelBinding"),
   };
-  if (driver === "sqlite") return null;
+  if (!isCoreDriver(driver) || driver === "sqlite") return null;
   const options = OTHER_OPTIONS[driver];
   const on = options.filter(([field]) => flags[field]);
   return (
@@ -1344,7 +1650,7 @@ function SshFields({ form }: { form: Form }) {
   const auth = watch("sshAuth");
   const passwordMode = watch("sshPasswordMode");
   /** SQLite over SSH downloads the file: no tunnel, so no local port. */
-  const tunnel = watch("driver") !== "sqlite";
+  const tunnel = DESCRIPTORS[watch("driver")].ssh !== "sftp";
   return (
     <>
       <Row
@@ -1547,7 +1853,10 @@ function SshFields({ form }: { form: Form }) {
 function AdvancedFields({ form }: { form: Form }) {
   const { register, control, formState, watch } = form;
   const uid = useId();
-  const driver = watch("driver");
+  const chosen = watch("driver");
+  // The core rows below read a core driver; a lane's database has what its descriptor offers.
+  const driver: CoreDriver | null = isCoreDriver(chosen) ? chosen : null;
+  const timezone = driver !== null || DESCRIPTORS[chosen].timezone;
   const safeMode = watch("safeMode");
   return (
     <>
@@ -1602,7 +1911,7 @@ function AdvancedFields({ form }: { form: Form }) {
             </span>
           </div>
         </Row>
-      ) : (
+      ) : timezone ? (
         <Row
           label="Time zone"
           htmlFor={`${uid}-tz`}
@@ -1610,8 +1919,8 @@ function AdvancedFields({ form }: { form: Form }) {
         >
           <Input id={`${uid}-tz`} {...register("timezone")} className="w-56 font-mono" />
         </Row>
-      )}
-      {driver !== "sqlite" && (
+      ) : null}
+      {driver !== null && driver !== "sqlite" && (
         <Row
           label="Encoding"
           htmlFor={`${uid}-encoding`}
@@ -1679,6 +1988,27 @@ function AdvancedFields({ form }: { form: Form }) {
   );
 }
 
+/**
+ * The form's resolver: the schema's checks, then those of the lane form of a lane's database
+ * (`KindUi.validate`, read when the form is checked), on the fields they name.
+ */
+function withLaneChecks(ui: () => KindUi | null | undefined): Resolver<ConnectionFormValues> {
+  const schema = zodResolver(connectionFormSchema);
+  return async (values, context, options) => {
+    const result = await schema(values, context, options);
+    const issues: FormIssue[] = ui()?.validate?.(values) ?? [];
+    if (issues.length === 0) return result;
+    const errors: Record<string, unknown> = { ...result.errors };
+    for (const issue of issues) {
+      const [head = "", ...rest] = issue.path.split(".");
+      const error = { type: "custom", message: issue.message };
+      if (rest.length === 0) errors[head] ??= error;
+      else errors[head] = { ...(errors[head] as object | undefined), [rest.join(".")]: error };
+    }
+    return { values: {}, errors: errors as FieldErrors<ConnectionFormValues> };
+  };
+}
+
 /** Fields that live in the (collapsible) Advanced block. */
 const ADVANCED_FIELDS = [
   "connectTimeoutSecs",
@@ -1707,8 +2037,11 @@ export function ConnectionDialog({
   onSaved?: (profile: ConnectionProfile) => void;
 }) {
   const [id, setId] = useState<string>(() => crypto.randomUUID());
+  /** The lane form of the form's database, for the resolver (its own checks). */
+  const kindUiRef = useRef<KindUi | null | undefined>(null);
+  const resolver = useMemo(() => withLaneChecks(() => kindUiRef.current), []);
   const form = useForm<ConnectionFormValues>({
-    resolver: zodResolver(connectionFormSchema),
+    resolver,
     defaultValues: DEFAULT_FORM,
     mode: "onSubmit",
   });
@@ -1737,9 +2070,15 @@ export function ConnectionDialog({
   const unlocked = useRef(false);
   const sshRef = useRef<HTMLElement>(null);
   const advancedRef = useRef<HTMLElement>(null);
+  /** The edited profile of a lane's database, until its lane form has read its params. */
+  const unread = useRef<ConnectionProfile | null>(null);
+  /** Bumped on every open: a lane form loaded for an earlier one is not applied. */
+  const session = useRef(0);
+  const built = visibleKinds(useAppInfo());
 
   useEffect(() => {
     if (!open) return;
+    session.current++;
     setId(profile?.id ?? crypto.randomUUID());
     const { connectTimeout: timeout, defaultSafeMode } = getPrefs();
     form.reset(
@@ -1749,6 +2088,7 @@ export function ConnectionDialog({
           ? urlToForm(prefill, timeout, defaultSafeMode)
           : newProfileForm(timeout, defaultSafeMode),
     );
+    unread.current = profile;
     test.reset();
     // A prefill without a driver ("New ▸ Connection in this group…") still picks one first.
     setStep(profile || prefill?.values.driver !== undefined ? "form" : "driver");
@@ -1766,20 +2106,59 @@ export function ConnectionDialog({
 
   const driver = form.watch("driver");
   const sshEnabled = form.watch("sshEnabled");
-  const sqlite = driver === "sqlite";
+  const desc: DriverDescriptor = DESCRIPTORS[driver];
+  /** SQLite over SSH downloads the file (SFTP); a database without SSH has no toggle. */
+  const sftp = desc.ssh === "sftp";
   const testResult = test.isSuccess ? test.data : undefined;
   const testError = test.isError ? test.error : null;
   const mysqlVersion = form.watch("mysqlVersion");
-  const title = profile
-    ? `Edit ${profile.name}`
-    : `New ${KIND_LABEL[databaseKind(driver, mysqlVersion)]} connection`;
+  const kind = formKind({ driver, mysqlVersion, pgFlavor: form.watch("pgFlavor") });
+  // Null at once for a core database; a lane's loads with its lane (undefined meanwhile).
+  const kindUi = useKindUi(kind);
+  kindUiRef.current = kindUi;
+  const title = profile ? `Edit ${profile.name}` : `New ${KIND_LABEL[kind]} connection`;
 
-  const buildInput = (values: ConnectionFormValues) => formToProfileInput(values, profile, id);
+  // An edited profile's lane form reads its params into its fields once it has loaded (the form
+  // of the profile's own database: a render before the reset still shows the last one's).
+  useEffect(() => {
+    const p = unread.current;
+    if (!open || !kindUi || !p || kindOf(p) !== kind) return;
+    unread.current = null;
+    for (const [field, value] of Object.entries(kindUi.fromProfile?.(p) ?? {}))
+      form.setValue(field as keyof ConnectionFormValues, value as never);
+  }, [open, profile, kind, kindUi, form]);
+
+  const buildInput = (values: ConnectionFormValues) =>
+    formToProfileInput(values, profile, id, kindUiRef.current);
+
+  /**
+   * Starts the form over for `kind` (a tile, or Driver ▸ a lane's database): its driver, flavor,
+   * port and its lane's defaults, once its lane has loaded. Resolves false when it failed to load.
+   */
+  const startKind = async (kind: DatabaseKind): Promise<boolean> => {
+    const opened = session.current;
+    let ui: KindUi | null;
+    try {
+      ui = await awaitKindUi(kind);
+    } catch (err) {
+      toast.error(`The ${KIND_LABEL[kind]} form could not be loaded`, {
+        description: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+    if (opened !== session.current) return false;
+    unread.current = null;
+    form.reset({ ...form.getValues(), ...kindValues(kind, ui, form.getValues("ssl")) });
+    return true;
+  };
 
   const pickDriver = (kind: DatabaseKind) => {
     const d = kindDriver(kind);
-    // The picker offers the core databases only.
-    if (!isCoreDriver(d)) return;
+    // A lane's database (a PostgreSQL flavor too) waits for its lane's form.
+    if (!isCoreDriver(d) || !isCoreKind(kind)) {
+      void startKind(kind).then((ok) => ok && setStep("form"));
+      return;
+    }
     form.setValue("driver", d);
     form.setValue("port", DEFAULT_PORT[d]);
     // MariaDB is the MySQL driver with Ver. ▸ MariaDB (and its SSL mode names).
@@ -1905,7 +2284,7 @@ export function ConnectionDialog({
       <DialogContent
         className={cn(
           "flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0",
-          step === "driver" ? "sm:max-w-lg" : "sm:max-w-[600px]",
+          step === "form" ? "sm:max-w-[600px]" : built.length > 4 ? "sm:max-w-2xl" : "sm:max-w-lg",
         )}
         showCloseButton
       >
@@ -1915,8 +2294,9 @@ export function ConnectionDialog({
               <DialogTitle>New connection</DialogTitle>
               <DialogDescription>Choose the database you are connecting to.</DialogDescription>
             </DialogHeader>
-            <div className="px-5 py-5">
+            <div className="min-h-0 overflow-y-auto px-5 py-5">
               <DriverPicker
+                kinds={built}
                 value={pickedDriver}
                 onChange={setPickedDriver}
                 onConfirm={pickDriver}
@@ -1939,11 +2319,7 @@ export function ConnectionDialog({
         ) : (
           <form onSubmit={submit(true)} className="flex min-h-0 flex-1 flex-col">
             <DialogHeader className="border-border shrink-0 flex-row items-center gap-3 border-b py-3.5 pr-12 pl-5">
-              <DriverBadge
-                driver={driver}
-                mysqlVersion={mysqlVersion}
-                color={form.watch("color")}
-              />
+              <DriverBadge kind={kind} color={form.watch("color")} />
               <div className="flex min-w-0 flex-col gap-1">
                 <DialogTitle className="truncate">{title}</DialogTitle>
                 <DialogDescription className="text-xs">
@@ -1966,13 +2342,16 @@ export function ConnectionDialog({
             <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-4">
               <GeneralFields
                 form={form}
+                kindUi={kindUi}
+                built={built}
                 hasStoredPassword={secret.data?.hasPassword ?? false}
                 groups={groups}
                 onBootstrap={() => setBootstrapOpen(true)}
                 onEditTags={() => setTagsOpen(true)}
+                onSwitchKind={(next) => void startKind(next)}
               />
-              {sshEnabled && (
-                <Section title={sqlite ? "SSH (SFTP)" : "SSH tunnel"} sectionRef={sshRef}>
+              {sshEnabled && desc.ssh !== "none" && (
+                <Section title={sftp ? "SSH (SFTP)" : "SSH tunnel"} sectionRef={sshRef}>
                   <SshFields form={form} />
                 </Section>
               )}
@@ -1984,24 +2363,26 @@ export function ConnectionDialog({
             </div>
             <DialogFooter className="border-border mx-0 mb-0 shrink-0 flex-row items-center gap-2 border-t px-5 py-3 sm:justify-between">
               <div className="flex shrink-0 items-center gap-1.5">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-pressed={sshEnabled}
-                  onClick={toggleSsh}
-                  title={
-                    sqlite
-                      ? "Open a database file on an SSH server (downloaded over SFTP)"
-                      : "Connect through an SSH tunnel"
-                  }
-                  className={cn(
-                    sshEnabled &&
-                      "border-brand/50 bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand dark:border-brand/50 dark:bg-brand-soft",
-                  )}
-                >
-                  <Network /> Over SSH
-                </Button>
+                {desc.ssh !== "none" && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-pressed={sshEnabled}
+                    onClick={toggleSsh}
+                    title={
+                      sftp
+                        ? "Open a database file on an SSH server (downloaded over SFTP)"
+                        : "Connect through an SSH tunnel"
+                    }
+                    className={cn(
+                      sshEnabled &&
+                        "border-brand/50 bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand dark:border-brand/50 dark:bg-brand-soft",
+                    )}
+                  >
+                    <Network /> Over SSH
+                  </Button>
+                )}
                 <Button
                   type="button"
                   variant="ghost"

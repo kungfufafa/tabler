@@ -33,7 +33,7 @@ import type { TriggerMeta } from "../bindings/TriggerMeta";
 import type { Value } from "../bindings/Value";
 import type { ValueKind } from "../bindings/ValueKind";
 // handlers.ts registers the base get_table / list_tables; it must run before the overrides below.
-import "./handlers";
+import { mockLaneSession } from "./handlers";
 import { TABLE_COLUMNS, tableMetaFor, tablesFor } from "./fixtures";
 import { rowsFor } from "./rows";
 import { mockError, mockInvoke, registerMock } from "./transport";
@@ -201,6 +201,9 @@ function metaOf(d: Driver, t: TableRef): TableMeta | null {
 
 registerMock("list_tables", async ({ connectionId, schema }) => {
   const c = await connectionOf(connectionId);
+  // A mock driver beyond the core ones lists its own.
+  const lane = mockLaneSession(c.connectionId);
+  if (lane) return lane.listTables(String(schema ?? ""));
   if (schema === "temp") return [];
   return listOf(c.driver, schema as string).map((t) => ({ ...t }));
 });
@@ -208,6 +211,8 @@ registerMock("list_tables", async ({ connectionId, schema }) => {
 registerMock("get_table", async ({ connectionId, table }) => {
   const c = await connectionOf(connectionId);
   const t = table as TableRef;
+  const lane = mockLaneSession(c.connectionId);
+  if (lane) return lane.tableMeta(t);
   return metaOf(c.driver, t) ?? mockError("NOT_FOUND", `table ${t.name}`);
 });
 

@@ -1,35 +1,44 @@
 import { ChevronRight, Folder, Loader2 } from "lucide-react";
 import { Fragment } from "react";
-import type { ConnectionTag, Driver, MysqlVersion, PgFlavor } from "@/lib/ipc";
+import type { ConnectionTag, DatabaseKind, Driver, MysqlVersion, PgFlavor } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { databaseKind, KIND_SHORT, TINTED, tintStyle } from "./colors";
 import { GROUP_ICONS, isGroupImage, splitPath, type GroupIconId } from "./groups";
 import { tagColorOf, tagLabel, useCustomTags } from "./tags";
 
 /**
- * Rounded square with the database's short label (PG / MY / MA / SQ), tinted with a connection
- * colour. `mysqlVersion`: a MySQL connection set to Ver. ▸ MariaDB reads MA; `pgFlavor`: a
- * PostgreSQL one for CockroachDB reads CR.
+ * Which database a badge is for: its `kind` (a profile's `kindOf`), or a driver with the flavor
+ * settings that pick its kind (a MySQL connection set to Ver. ▸ MariaDB reads MA).
  */
-export function DriverBadge({
-  driver,
-  mysqlVersion,
-  pgFlavor,
-  color,
-  busy = false,
-  size = "md",
-  className,
-}: {
-  driver: Driver;
-  mysqlVersion?: MysqlVersion | null;
-  pgFlavor?: PgFlavor | null;
-  color: string | null | undefined;
-  /** Shows a spinner instead of the label (connecting). */
-  busy?: boolean;
-  size?: "md" | "lg";
-  className?: string;
-}) {
-  const label = KIND_SHORT[databaseKind(driver, mysqlVersion, pgFlavor)];
+type BadgeDatabase =
+  | { kind: DatabaseKind; driver?: never; mysqlVersion?: never; pgFlavor?: never }
+  | {
+      kind?: never;
+      driver: Driver;
+      mysqlVersion?: MysqlVersion | null;
+      pgFlavor?: PgFlavor | null;
+    };
+
+function badgeKind(db: BadgeDatabase): DatabaseKind {
+  if (db.kind !== undefined) return db.kind;
+  return databaseKind(db.driver, db.mysqlVersion, db.pgFlavor);
+}
+
+/**
+ * Rounded square with the database's short label (PG / MY / MA / SQ / CR…), tinted with a
+ * connection colour.
+ */
+export function DriverBadge(
+  props: BadgeDatabase & {
+    color: string | null | undefined;
+    /** Shows a spinner instead of the label (connecting). */
+    busy?: boolean;
+    size?: "md" | "lg";
+    className?: string;
+  },
+) {
+  const { color, busy = false, size = "md", className } = props;
+  const label = KIND_SHORT[badgeKind(props)];
   return (
     <span
       aria-hidden

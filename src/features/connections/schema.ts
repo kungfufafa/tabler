@@ -1,9 +1,22 @@
 import { z } from "zod";
-import { coreDriver } from "@/features/drivers/catalog";
+import {
+  databaseKind,
+  DESCRIPTORS,
+  inSentence,
+  isCoreDriver,
+  KINDS,
+  SECRET_LABEL,
+} from "@/features/drivers/catalog";
+import type { KindUi } from "@/features/drivers/types";
 import type {
   ConnectionProfile,
+  DatabaseKind,
+  Driver,
+  DriverDescriptor,
   MysqlVersion,
   PasswordMode,
+  PgFlavor,
+  ProfileField,
   ProfileInput,
   SafeModeLevel,
   SshPasswordMode,
@@ -11,6 +24,21 @@ import type {
 } from "@/lib/ipc";
 import { ACCENT_PRESETS, HEX_COLOR, isHexColor } from "@/lib/theme";
 import { normalizePath } from "./groups";
+
+/** A non-empty list as zod's enums take it. */
+function nonEmpty<T>(items: readonly T[]): [T, ...T[]] {
+  const [first, ...rest] = items;
+  if (first === undefined) throw new Error("an enum needs a value");
+  return [first, ...rest];
+}
+
+/** Every driver a profile may name, from the catalog (the form opens those this build has). */
+export const DRIVER_IDS = nonEmpty(Object.values(DESCRIPTORS).map((d) => d.driver));
+
+/** The PostgreSQL-compatible engines a `postgres` profile may be for, from the catalog. */
+export const PG_FLAVORS = nonEmpty(
+  KINDS.flatMap((k): PgFlavor[] => (k.pgFlavor ? [k.pgFlavor] : [])),
+);
 
 const port = z
   .string()
@@ -38,13 +66,6 @@ export const PASSWORD_MODE_LABEL: Record<PasswordMode, string> = {
   none: "No password",
   command: "Command Line (IAM authentication)",
 };
-
-/** The key storage modes of a SQLite database's encryption key (no command: a key is typed). */
-export const SQLITE_KEY_MODES = [
-  "keychain",
-  "ask",
-  "none",
-] as const satisfies readonly PasswordMode[];
 
 /** SSH password storage, like the database password's menu (no command). */
 export const SSH_PASSWORD_MODES = [
@@ -167,7 +188,17 @@ export const connectionFormSchema = z
         (g) => normalizePath(g).length <= GROUP_PATH_MAX,
         `Use at most ${GROUP_PATH_MAX} characters for the group path`,
       ),
-    driver: z.enum(["postgres", "mysql", "sqlite"]),
+    driver: z.enum(DRIVER_IDS),
+    /**
+     * The PostgreSQL-compatible engine of a `postgres` profile (its tile: CockroachDB…); with the
+     * driver and `mysqlVersion` it names the form's database (`formKind`).
+     */
+    pgFlavor: z.enum(PG_FLAVORS).nullable(),
+    /**
+     * The settings of a driver beyond the common fields (`options.driverParams`), which its
+     * lane's form reads and writes; empty for the core databases.
+     */
+    driverParams: z.record(z.string(), z.unknown()),
     host: z.string().trim(),
     port,
     user: z.string().trim(),
@@ -236,6 +267,13 @@ export const connectionFormSchema = z
   .superRefine((v, ctx) => {
     if (v.sshEnabled && !v.sshHost)
       ctx.addIssue({ code: "custom", path: ["sshHost"], message: "SSH host is required" });
+    // A driver beyond the core three requires what its descriptor says (its lane's own checks
+    // run next to these, `KindUi.validate`).
+    if (!isCoreDriver(v.driver)) {
+      for (const issue of [...requiredIssues(v), ...secretAndKeyIssues(v)])
+        ctx.addIssue({ code: "custom", ...issue });
+      return;
+    }
     if (v.driver === "sqlite") {
       if (!v.sqlitePath)
         ctx.addIssue({
@@ -269,29 +307,98 @@ export const connectionFormSchema = z
         path: ["socketPath"],
         message: `Over SSH the socket is the one on the SSH server: enter its full path (e.g. ${MYSQL_REMOTE_SOCKET_PLACEHOLDER})`,
       });
-    if (v.passwordMode === "command" && v.passwordCommand.trim() === "")
-      ctx.addIssue({
-        code: "custom",
-        path: ["passwordCommand"],
-        message: "Enter the command that prints the password",
-      });
-    if (v.ssl !== "disable") {
-      if (v.sslKeyPath && !v.sslCertPath)
-        ctx.addIssue({
-          code: "custom",
-          path: ["sslCertPath"],
-          message: "Choose the certificate that goes with the key (Cert…)",
-        });
-      if (v.sslCertPath && !v.sslKeyPath)
-        ctx.addIssue({
-          code: "custom",
-          path: ["sslKeyPath"],
-          message: "Choose the private key of the certificate (Key…)",
-        });
-    }
+    for (const issue of secretAndKeyIssues(v)) ctx.addIssue({ code: "custom", ...issue });
   });
 
 export type ConnectionFormValues = z.infer<typeof connectionFormSchema>;
+
+/** A problem of the form's values, on the field it names (`driverParams.<key>` for a param). */
+interface FieldIssue {
+  path: string[];
+  message: string;
+}
+
+/** The form values the descriptor's required fields are kept in. */
+const REQUIRED_FIELD: Record<ProfileField, "host" | "port" | "user" | "database" | "sqlitePath"> = {
+  host: "host",
+  port: "port",
+  user: "user",
+  database: "database",
+  file: "sqlitePath",
+};
+
+/** The usual names of the common fields (a descriptor's `labels` override them). */
+const FIELD_NAME: Record<ProfileField, string> = {
+  host: "Host",
+  port: "Port",
+  user: "User",
+  database: "Database",
+  file: "Database file",
+};
+
+/**
+ * What a driver beyond the core three requires (`DriverDescriptor.required` and
+ * `requiredParams`), in the words its form uses.
+ */
+function requiredIssues(v: ConnectionFormValues): FieldIssue[] {
+  const desc: DriverDescriptor | undefined = DESCRIPTORS[v.driver];
+  if (!desc) return [];
+  const out: FieldIssue[] = [];
+  for (const field of desc.required) {
+    if (v[REQUIRED_FIELD[field]] !== "") continue;
+    const name = (field === "port" ? null : desc.labels[field]) ?? FIELD_NAME[field];
+    out.push({
+      path: [REQUIRED_FIELD[field]],
+      message: field === "file" ? "Choose a database file" : `${name} is required`,
+    });
+  }
+  for (const key of desc.requiredParams) {
+    const value = v.driverParams[key];
+    if (value === undefined || value === null || value === "")
+      out.push({ path: ["driverParams", key], message: `${key} is required` });
+  }
+  return out;
+}
+
+/** The password command of Command mode, and TLS client keys that come in pairs. */
+function secretAndKeyIssues(v: ConnectionFormValues): FieldIssue[] {
+  const out: FieldIssue[] = [];
+  if (v.passwordMode === "command" && v.passwordCommand.trim() === "")
+    out.push({
+      path: ["passwordCommand"],
+      message: `Enter the command that prints the ${secretWord(v.driver)}`,
+    });
+  if (v.ssl !== "disable") {
+    if (v.sslKeyPath && !v.sslCertPath)
+      out.push({
+        path: ["sslCertPath"],
+        message: "Choose the certificate that goes with the key (Cert…)",
+      });
+    if (v.sslCertPath && !v.sslKeyPath)
+      out.push({
+        path: ["sslKeyPath"],
+        message: "Choose the private key of the certificate (Key…)",
+      });
+  }
+  return out;
+}
+
+/** "password", or what a driver beyond the core three calls its secret ("API token"). */
+function secretWord(driver: Driver): string {
+  const desc: DriverDescriptor | undefined = DESCRIPTORS[driver];
+  if (isCoreDriver(driver) || !desc) return "password";
+  return inSentence(SECRET_LABEL[desc.secret]);
+}
+
+/**
+ * The database of the picker the form is for: its driver, or a flavor of it (MariaDB, a
+ * PostgreSQL-compatible engine).
+ */
+export function formKind(
+  v: Pick<ConnectionFormValues, "driver" | "mysqlVersion" | "pgFlavor">,
+): DatabaseKind {
+  return databaseKind(v.driver, v.mysqlVersion, v.pgFlavor);
+}
 
 export const DEFAULT_FORM: ConnectionFormValues = {
   name: "",
@@ -299,6 +406,8 @@ export const DEFAULT_FORM: ConnectionFormValues = {
   tag: "local",
   group: "",
   driver: "postgres",
+  pgFlavor: null,
+  driverParams: {},
   host: "127.0.0.1",
   port: "",
   user: "",
@@ -355,7 +464,18 @@ export function newProfileForm(
   return { ...DEFAULT_FORM, port: "5432", connectTimeoutSecs: String(connectTimeout), safeMode };
 }
 
-export function profileToForm(p: ConnectionProfile): ConnectionFormValues {
+/**
+ * The form of a saved profile. `kindUi`: its database's lane form, which reads the profile's
+ * driver params into its own fields (`fromProfile`).
+ */
+export function profileToForm(p: ConnectionProfile, kindUi?: KindUi | null): ConnectionFormValues {
+  return {
+    ...coreProfileToForm(p),
+    ...kindUi?.fromProfile?.(p),
+  };
+}
+
+function coreProfileToForm(p: ConnectionProfile): ConnectionFormValues {
   return {
     ...DEFAULT_FORM,
     name: p.name,
@@ -365,8 +485,9 @@ export function profileToForm(p: ConnectionProfile): ConnectionFormValues {
         : "blue",
     tag: p.options.tag,
     group: p.group ?? "",
-    // The dialog opens core profiles only (`openConnectionDialog`).
-    driver: coreDriver(p.driver),
+    driver: p.driver,
+    pgFlavor: p.options.pgFlavor ?? null,
+    driverParams: { ...p.options.driverParams },
     host: p.host ?? "",
     port: p.port ? String(p.port) : "",
     user: p.user ?? "",
@@ -418,30 +539,55 @@ function compatibilityToForm(
     : "";
 }
 
-/** The password modes the form offers for a driver (a SQLite key is never a command's output). */
-export function passwordModesFor(driver: ConnectionFormValues["driver"]): readonly PasswordMode[] {
-  return driver === "sqlite" ? SQLITE_KEY_MODES : PASSWORD_MODES;
+/**
+ * The password modes the form offers for a driver, as its descriptor lists them (a SQLite key is
+ * never a command's output).
+ */
+export function passwordModesFor(driver: Driver): readonly PasswordMode[] {
+  const desc: DriverDescriptor | undefined = DESCRIPTORS[driver];
+  return desc?.passwordModes ?? PASSWORD_MODES;
 }
 
 const orNull = (s: string) => (s === "" ? null : s);
 const numOrNull = (s: string) => (s === "" ? null : Number(s));
 
+/** A form's driver params as a profile keeps them: none when empty. */
+const paramsOrNull = (params: Record<string, unknown>) =>
+  Object.keys(params).length > 0 ? { ...params } : null;
+
 /**
  * Builds the backend payload. `existing` keeps ids/timestamps when editing. The typed password
  * only goes to the Keychain for "Store in keychain"; the other modes send none (an "Ask every
- * time" password is passed to the connect or test call instead).
+ * time" password is passed to the connect or test call instead). `kindUi`: the lane form of the
+ * database, whose `toProfile` writes its driver params and clears what it does not use.
  */
 export function formToProfileInput(
   v: ConnectionFormValues,
   existing: ConnectionProfile | null,
   id: string,
+  kindUi?: KindUi | null,
 ): ProfileInput {
+  const input = coreFormToProfileInput(v, existing, id);
+  if (kindUi?.toProfile) input.profile = kindUi.toProfile(v, input.profile);
+  return input;
+}
+
+function coreFormToProfileInput(
+  v: ConnectionFormValues,
+  existing: ConnectionProfile | null,
+  id: string,
+): ProfileInput {
+  // What the common fields mean follows the driver's descriptor: the core drivers' values are
+  // the ones these rules always had (SQLite: a file, SFTP, no TLS and no password command).
+  const desc = DESCRIPTORS[v.driver];
+  const file = desc.location === "file";
   const sqlite = v.driver === "sqlite";
   const mysql = v.driver === "mysql";
   const postgres = v.driver === "postgres";
   const keychain = v.passwordMode === "keychain";
-  const sslFiles = !sqlite && v.ssl !== "disable";
-  const socket = mysql && v.useSocket;
+  const sslFiles = desc.tls !== "none" && v.ssl !== "disable";
+  const socket = desc.socket && v.useSocket;
+  const sshOn = v.sshEnabled && desc.ssh !== "none";
   const flag = (on: boolean) => (on ? true : null);
   const profile: ConnectionProfile = {
     id,
@@ -449,14 +595,14 @@ export function formToProfileInput(
     color: v.color,
     group: orNull(normalizePath(v.group)),
     driver: v.driver,
-    host: sqlite ? null : orNull(v.host),
-    port: sqlite ? null : numOrNull(v.port),
-    user: sqlite ? null : orNull(v.user),
-    database: sqlite ? null : orNull(v.database),
+    host: file ? null : orNull(v.host),
+    port: file ? null : numOrNull(v.port),
+    user: file ? null : orNull(v.user),
+    database: file ? null : orNull(v.database),
     ssl: v.ssl,
     sslCaPath: orNull(v.sslCaPath),
-    sqlitePath: sqlite ? orNull(v.sqlitePath) : null,
-    ssh: v.sshEnabled
+    sqlitePath: file ? orNull(v.sqlitePath) : null,
+    ssh: sshOn
       ? {
           host: v.sshHost,
           // 0: the Port of ~/.ssh/config, else 22.
@@ -464,8 +610,8 @@ export function formToProfileInput(
           user: v.sshUser,
           auth: v.sshAuth,
           keyPath: v.sshAuth === "key" ? orNull(v.sshKeyPath) : null,
-          // SQLite over SSH downloads the file: there is no tunnel port.
-          localPort: sqlite ? null : numOrNull(v.sshLocalPort),
+          // SQLite over SSH downloads the file (SFTP): there is no tunnel port.
+          localPort: desc.ssh === "sftp" ? null : numOrNull(v.sshLocalPort),
           keepaliveSecs: numOrNull(v.sshKeepaliveSecs) || null,
           passwordMode: v.sshAuth === "password" ? v.sshPasswordMode : null,
         }
@@ -483,11 +629,13 @@ export function formToProfileInput(
       sslKeyPath: sslFiles ? orNull(v.sslKeyPath) : null,
       sslCertPath: sslFiles ? orNull(v.sslCertPath) : null,
       passwordCommand:
-        !sqlite && v.passwordMode === "command" ? orNull(v.passwordCommand.trim()) : null,
+        desc.passwordModes.includes("command") && v.passwordMode === "command"
+          ? orNull(v.passwordCommand.trim())
+          : null,
       useSocket: socket ? true : null,
       socketPath: socket ? orNull(v.socketPath) : null,
       bootstrapScript: v.bootstrapScript.trim() === "" ? null : v.bootstrapScript,
-      encoding: sqlite ? null : orNull(v.encoding),
+      encoding: desc.encoding ? orNull(v.encoding) : null,
       sqliteCipherCompatibility:
         sqlite && v.sqliteCipherCompatibility !== "" ? Number(v.sqliteCipherCompatibility) : null,
       sqliteResourceFile: sqlite ? orNull(v.sqliteResourceFile) : null,
@@ -500,10 +648,15 @@ export function formToProfileInput(
       pgParams: postgres && v.pgParams.trim() !== "" ? v.pgParams.trim() : null,
       // Not on the form (a link's `lazyload`, the sidebar's own toggle): editing keeps it.
       lazyLoad: existing?.options.lazyLoad ?? null,
-      // Not on the form yet either: a CockroachDB or Redshift profile must not turn into plain
-      // PostgreSQL (and lose its default port) when it is edited here.
-      pgFlavor: postgres ? (existing?.options.pgFlavor ?? null) : null,
-      driverParams: existing?.driver === v.driver ? (existing.options.driverParams ?? null) : null,
+      // The form's flavor (its tile, or the edited profile's): a CockroachDB or Redshift profile
+      // must not turn into plain PostgreSQL (and lose its default port) when it is edited here.
+      pgFlavor: postgres ? v.pgFlavor : null,
+      // The params belong to the driver they were read or written for. The core Driver menu keeps
+      // the old driver's params in the form; switching to a lane's driver starts them empty.
+      driverParams:
+        existing && existing.driver !== v.driver && isCoreDriver(v.driver)
+          ? null
+          : paramsOrNull(v.driverParams),
     },
     sortOrder: existing?.sortOrder ?? 0,
     createdAt: existing?.createdAt ?? "",
@@ -535,10 +688,11 @@ export function urlToForm(
 
 /**
  * The launcher row's second line, TablePlus style: `host : port : user : database` (empty parts
- * left out), or the SQLite file path.
+ * left out), or the SQLite file path; a lane's database writes its own (`KindUi.summary`).
  */
-export function connectionDetail(p: ConnectionProfile): string {
-  if (p.driver === "sqlite") return p.sqlitePath ?? "";
+export function connectionDetail(p: ConnectionProfile, kindUi?: KindUi | null): string {
+  if (kindUi?.summary) return kindUi.summary(p);
+  if (isFileProfile(p)) return p.sqlitePath ?? "";
   const where = usesSocket(p)
     ? [p.options.socketPath || "socket"]
     : [p.host, p.port === null ? null : String(p.port)];
@@ -549,12 +703,18 @@ export function connectionDetail(p: ConnectionProfile): string {
 
 /** One-line summary for cards: `user@host:port/db` or the SQLite path. */
 export function connectionSummary(p: ConnectionProfile): string {
-  if (p.driver === "sqlite") return p.sqlitePath ?? "";
+  if (isFileProfile(p)) return p.sqlitePath ?? "";
   const hostPort = usesSocket(p)
     ? (p.options.socketPath ?? "") || "socket"
     : `${p.host ?? ""}${p.port ? `:${p.port}` : ""}`;
   const db = p.database ? `/${p.database}` : "";
   return `${p.user ? `${p.user}@` : ""}${hostPort}${db}`;
+}
+
+/** A profile of a database file (SQLite, DuckDB): its path is what identifies it. */
+function isFileProfile(p: Pick<ConnectionProfile, "driver">): boolean {
+  const desc: DriverDescriptor | undefined = DESCRIPTORS[p.driver];
+  return desc?.location === "file";
 }
 
 /** A MySQL profile that connects through a Unix socket ("Use socket"). */

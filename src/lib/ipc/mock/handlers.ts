@@ -1,8 +1,7 @@
 import {
-  CORE_DRIVERS,
-  CORE_KINDS,
+  driverLabel,
   extraSecrets as driverExtraSecrets,
-  isCoreKind,
+  isCoreDriver,
   KIND_DESCRIPTORS,
   kindOf,
 } from "@/features/drivers/catalog";
@@ -32,6 +31,15 @@ import {
   mockSqliteKey,
   mockSshPrompt,
 } from "./connect_extras";
+import {
+  isMockBuilt,
+  loadMockDriver,
+  mockBuiltDrivers,
+  mockBuiltKinds,
+  mockDriversSeeded,
+  type MockDriver,
+  type MockSession,
+} from "./drivers";
 import { mockCheckHostKey } from "./export";
 import { SEED_PROFILES, tableMetaFor, tablesFor } from "./fixtures";
 import { matchesGroup, rowsFor, sortRows } from "./rows";
@@ -87,16 +95,41 @@ function sshOf(p: ConnectionProfile) {
 }
 
 /**
- * Mirrors `registry::ensure_built`: a database this build lacks (the mock has the core ones) is
- * refused before its script, password command or tunnel would run.
+ * Mirrors `registry::ensure_built`: a database this build lacks (the mock has the core ones, and
+ * those of `?mockDrivers=`) is refused before its script, password command or tunnel would run.
  */
 function ensureBuilt(p: ConnectionProfile): void {
   const kind = kindOf(p);
-  if (!isCoreKind(kind))
+  if (!isMockBuilt(kind))
     mockError(
       "UNSUPPORTED",
       `unsupported: ${KIND_DESCRIPTORS[kind].label} is not built into this Tabler`,
     );
+}
+
+/**
+ * The mock driver of a profile beyond the core drivers (its lane's, or a test's); null for a core
+ * one (a PostgreSQL flavor is served by the core mock). Refused when the lane has no mock.
+ */
+async function laneDriver(p: ConnectionProfile): Promise<MockDriver | null> {
+  if (isCoreDriver(p.driver)) return null;
+  return (
+    (await loadMockDriver(p.driver)) ??
+    mockError("UNSUPPORTED", `unsupported: the mock has no ${driverLabel(p.driver)} driver yet`)
+  );
+}
+
+/** The sessions of the mock drivers beyond the core ones, by connection id. */
+const laneSessions = new Map<string, MockSession>();
+
+/** The mock driver's session of a connection beyond the core drivers; null for a core one. */
+export function mockLaneSession(connectionId: string): MockSession | null {
+  return laneSessions.get(connectionId) ?? null;
+}
+
+/** What a mock driver's session does not offer is refused, like a missing feature. */
+function unsupported(what: string): never {
+  mockError("UNSUPPORTED", `unsupported: ${what}`);
 }
 
 function conn(connectionId: string) {
@@ -105,13 +138,14 @@ function conn(connectionId: string) {
   return c;
 }
 
-// The mock is a build of the core drivers (their databases in the picker's order).
+// The mock is a build of the core drivers (their databases in the picker's order), and of those
+// `?mockDrivers=` names.
 registerMock("app_info", () => ({
   version: "0.1.0",
   platform: "mock",
   debug: true,
-  drivers: [...CORE_DRIVERS],
-  kinds: [...CORE_KINDS],
+  drivers: mockBuiltDrivers(),
+  kinds: mockBuiltKinds(),
 }));
 // The browser has no app to quit; `beforeunload` guards the tab instead.
 registerMock("quit_app", () => undefined);
@@ -139,9 +173,13 @@ registerMock("create_sqlite_database", ({ path, key }) => {
 });
 
 // --- profiles ---
-registerMock("list_profiles", () =>
-  [...profiles.values()].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)),
-);
+registerMock("list_profiles", async () => {
+  // `?mockDrivers=` adds its drivers' profiles once their mocks have loaded.
+  await mockDriversSeeded();
+  return [...profiles.values()].sort(
+    (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
+  );
+});
 registerMock(
   "get_profile",
   ({ id }) => profiles.get(id as string) ?? mockError("NOT_FOUND", `profile ${id}`),
@@ -211,6 +249,7 @@ registerMock("test_connection", async ({ input }) => {
     tunnelUsed: profile.ssh !== null,
   });
   ensureBuilt(profile);
+  const lane = await laneDriver(profile);
   try {
     mockBootstrapScript(profile);
   } catch (err) {
@@ -241,11 +280,12 @@ registerMock("test_connection", async ({ input }) => {
       tunnelUsed: ssh !== null,
     };
   }
+  const version = lane ? lane.serverVersion(profile) : serverVersion(profile);
   return {
     ok: true,
-    serverVersion: serverVersion(profile),
+    serverVersion: version,
     latencyMs: ssh ? 48 : 12,
-    message: `Connected to ${serverVersion(profile)}`,
+    message: `Connected to ${version}`,
     tunnelUsed: ssh !== null,
   };
 });
@@ -255,6 +295,7 @@ registerMock("connect", async ({ profileId, password, databaseOverride }) => {
   const p = profiles.get(profileId as string) ?? mockError("NOT_FOUND", `profile ${profileId}`);
   await new Promise((r) => setTimeout(r, 250));
   ensureBuilt(p);
+  const lane = await laneDriver(p);
   if (p.options.passwordMode === "ask") {
     const typed = typeof password === "string" ? password : sessionPasswords.get(p.id);
     if (typed === undefined)
@@ -281,6 +322,7 @@ registerMock("connect", async ({ profileId, password, databaseOverride }) => {
   await mockSshPrompt(p, "connect");
   if ((p.host ?? "").includes("bad"))
     mockError("CONNECT_FAILED", `could not connect to ${p.host}:${p.port}: connection refused`);
+  if (lane) return connectLane(p, lane, ssh, databaseOverride);
   const info: ConnectionInfo = {
     connectionId: uuid(),
     profileId: p.id,
@@ -311,8 +353,47 @@ registerMock("connect", async ({ profileId, password, databaseOverride }) => {
   );
   return info;
 });
+/**
+ * A connection of a mock driver beyond the core ones: its session answers the connection's
+ * commands, and its caps are the connection's.
+ */
+function connectLane(
+  p: ConnectionProfile,
+  lane: MockDriver,
+  ssh: ConnectionProfile["ssh"],
+  databaseOverride: unknown,
+): ConnectionInfo {
+  const session = lane.connect(p);
+  const info: ConnectionInfo = {
+    connectionId: uuid(),
+    profileId: p.id,
+    name: p.name,
+    color: p.color,
+    driver: p.driver,
+    serverVersion: lane.serverVersion(p),
+    currentDatabase:
+      (databaseOverride as string | null | undefined) ?? p.database ?? p.sqlitePath ?? null,
+    currentUser: p.user,
+    tunnel: ssh ? { localPort: 50000 + (connections.size % 1000) } : null,
+    readOnly: p.options.readOnly,
+    capabilities: session.caps,
+  };
+  laneSessions.set(info.connectionId, session);
+  connections.set(info.connectionId, { ...info, profile: p });
+  profiles.set(p.id, { ...p, lastConnectedAt: now() });
+  queueMicrotask(() =>
+    mockEmit("connection:status", {
+      connectionId: info.connectionId,
+      status: "connected",
+      message: null,
+    }),
+  );
+  return info;
+}
+
 registerMock("disconnect", ({ connectionId }) => {
   connections.delete(connectionId as string);
+  laneSessions.delete(connectionId as string);
   mockEmit("connection:status", { connectionId, status: "disconnected", message: null });
 });
 registerMock("list_connections", () =>
@@ -362,6 +443,8 @@ registerMock("set_connection_encoding", async ({ connectionId, encoding }) => {
 // --- schema ---
 registerMock("list_databases", ({ connectionId }) => {
   const c = conn(connectionId as string);
+  const lane = mockLaneSession(c.connectionId);
+  if (lane) return lane.listDatabases();
   const names =
     c.driver === "postgres"
       ? ["tabler_dev", "postgres", "ecommerce_sales"]
@@ -379,6 +462,8 @@ registerMock("list_databases", ({ connectionId }) => {
 });
 registerMock("list_schemas", ({ connectionId }) => {
   const c = conn(connectionId as string);
+  const lane = mockLaneSession(c.connectionId);
+  if (lane) return lane.listSchemas();
   if (c.driver === "postgres")
     return mockAdminSchemas(c.connectionId, c.currentDatabase, [
       { name: "public", isDefault: true },
@@ -409,6 +494,8 @@ registerMock(
 );
 registerMock("get_completion_metadata", ({ connectionId }) => {
   const c = conn(connectionId as string);
+  // A mock driver beyond the core ones offers no completion of its own.
+  if (mockLaneSession(c.connectionId)) return { defaultSchema: null, schemas: {} };
   const schemas: Record<string, Record<string, string[]>> = {};
   const names =
     c.driver === "postgres"
@@ -431,6 +518,8 @@ registerMock("invalidate_schema_cache", () => undefined);
 // --- browse ---
 registerMock("browse_table", async ({ connectionId, req }) => {
   const c = conn(connectionId as string);
+  const lane = mockLaneSession(c.connectionId);
+  if (lane) return lane.browse(req as BrowseRequest);
   const { table, columns: selected, filter, sort, limit, offset } = req as BrowseRequest;
   const schema = table.schema ?? "public";
   const meta =
@@ -461,6 +550,11 @@ registerMock("browse_table", async ({ connectionId, req }) => {
 registerMock("count_table_rows", ({ connectionId, table, filter, exact, estimateAbove }) => {
   const c = conn(connectionId as string);
   const t = table as TableRef;
+  const lane = mockLaneSession(c.connectionId);
+  if (lane) {
+    if (!lane.count) unsupported("counting rows");
+    return lane.count(t, (filter as FilterGroup | null) ?? null);
+  }
   const schema = t.schema ?? "public";
   const meta = tableMetaFor(c.driver, schema, t.name) ?? mockError("NOT_FOUND", `table ${t.name}`);
   const total = meta.rowEstimate ?? 25;
@@ -475,6 +569,11 @@ registerMock("count_table_rows", ({ connectionId, table, filter, exact, estimate
 registerMock("fetch_cell", ({ connectionId, table, key, column }) => {
   const c = conn(connectionId as string);
   const t = table as TableRef;
+  const lane = mockLaneSession(c.connectionId);
+  if (lane) {
+    if (!lane.fetchCell) unsupported("fetching a cell");
+    return lane.fetchCell(t, key as RowKey, String(column));
+  }
   const schema = t.schema ?? "public";
   const meta = tableMetaFor(c.driver, schema, t.name) ?? mockError("NOT_FOUND", `table ${t.name}`);
   const all = rowsFor(`${c.driver}:${schema}.${t.name}`, meta.columns, meta.rowEstimate ?? 25);
@@ -550,11 +649,23 @@ function statementsOf(req: ApplyRequest): Array<{ change: StagedChange; sql: str
   });
 }
 
-registerMock("preview_changes", ({ req }) => statementsOf(req as ApplyRequest).map((s) => s.sql));
+registerMock("preview_changes", ({ connectionId, req }) => {
+  const lane = typeof connectionId === "string" ? mockLaneSession(connectionId) : null;
+  if (lane) {
+    if (!lane.preview) unsupported("editing rows");
+    return lane.preview(req as ApplyRequest);
+  }
+  return statementsOf(req as ApplyRequest).map((s) => s.sql);
+});
 
 registerMock("apply_changes", async ({ connectionId, req }) => {
   const c = conn(connectionId as string);
   const r = req as ApplyRequest;
+  const lane = mockLaneSession(c.connectionId);
+  if (lane) {
+    if (!lane.apply) unsupported("editing rows");
+    return lane.apply(r);
+  }
   const schema = r.table.schema ?? "public";
   const meta =
     tableMetaFor(c.driver, schema, r.table.name) ?? mockError("NOT_FOUND", `table ${r.table.name}`);

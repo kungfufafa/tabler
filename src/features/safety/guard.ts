@@ -1,7 +1,19 @@
 import { toast } from "sonner";
-import { confirmsWithPasscode, coreDialect } from "@/features/drivers/catalog";
-import { ipc, type ConnectionProfile, type Driver, type SafeModeLevel } from "@/lib/ipc";
+import { confirmsWithPasscode, CORE_DRIVERS } from "@/features/drivers/catalog";
+import { classifyDialect, loadDialectLex } from "@/features/drivers/portable/classify";
+import { awaitDriverUi } from "@/features/drivers/registry";
+import { capsOf } from "@/lib/caps";
+import {
+  ipc,
+  type ConnectionInfo,
+  type ConnectionProfile,
+  type Dialect,
+  type Driver,
+  type SafeModeLevel,
+  type SessionCaps,
+} from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
+import { allReadsWith, type Classifier } from "./classify";
 import { effectiveLevel } from "./levels";
 import { decide, requestWrites } from "./policy";
 import { requestSafetyPrompt, type PromptTarget, type SafeSecret } from "./store";
@@ -127,6 +139,47 @@ export function promptTarget(
   };
 }
 
+/** The core dialect a session speaks (the core classifier reads it); null for any other. */
+function coreDialectOf(caps: SessionCaps): Dialect | null {
+  return CORE_DRIVERS.find((d) => d === caps.dialect) ?? null;
+}
+
+/**
+ * The classifier of a session beyond the core dialects: the portable classifier over its
+ * extension SQL dialect's lexer profile (`bindings/lex/<dialect>.json`), or its lane's console
+ * classifier for a native store. Null when there is none (the lane is not built, or failed to
+ * load): every query then counts as a write.
+ */
+async function laneClassifier(caps: SessionCaps): Promise<Classifier | null> {
+  try {
+    if (caps.dialect !== null) {
+      const lex = await loadDialectLex(caps.dialect);
+      return lex ? (statement) => classifyDialect(lex, statement) : null;
+    }
+    return (await awaitDriverUi(caps.driver))?.console?.classify ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether `request` may change the server, read with the session's own classifier (its caps say
+ * which): the core one for a core dialect, at once, as before; for another dialect or a native
+ * console, `laneClassifier`'s, once loaded.
+ */
+export function sessionWrites(
+  info: Pick<ConnectionInfo, "driver" | "capabilities">,
+  request: GuardRequest,
+): boolean | Promise<boolean> {
+  const caps = capsOf(info);
+  const core = coreDialectOf(caps);
+  if (core !== null || request.kind !== "query") return requestWrites(request, core);
+  const { statements } = request;
+  return laneClassifier(caps).then(
+    (classify) => classify === null || !allReadsWith(statements, classify),
+  );
+}
+
 const CONFIRM_LABEL: Record<GuardRequest["kind"], string> = {
   query: "Send",
   commit: "Commit",
@@ -149,8 +202,9 @@ export async function guardExecution(
   // Not an open connection: the backend refuses the call anyway.
   if (!conn) return true;
   const { info } = conn;
-  // Another driver's statements all count as writes: the core classifier cannot read them.
-  const writes = requestWrites(request, coreDialect(info.driver));
+  // A core session's statements are read at once; another one's by its own classifier.
+  const read = sessionWrites(info, request);
+  const writes = typeof read === "boolean" ? read : await read;
   const profile = await loadProfile(info.profileId);
   const target = promptTarget(info, profile);
   const decision = decide(target.level, writes, info.readOnly);

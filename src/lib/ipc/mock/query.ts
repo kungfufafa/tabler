@@ -1,8 +1,10 @@
 // Mock handlers for run_sql, cancel_query, explain, list_history, delete_history, clear_history,
 // read_text_file and write_text_file. They run against the same fixture data as browse_table.
 import { coreDialect } from "@/features/drivers/catalog";
+import { loadDialectLex } from "@/features/drivers/portable/classify";
+import { split as splitPortable } from "@/features/drivers/portable/scanner";
 import { utf16ToChar } from "@/features/editor/offsets";
-import { splitStatements } from "@/features/editor/scanner";
+import { splitStatements, type StatementRange } from "@/features/editor/scanner";
 import type { ColumnMeta } from "../bindings/ColumnMeta";
 import type { ConnectionInfo } from "../bindings/ConnectionInfo";
 import type { Driver } from "../bindings/Driver";
@@ -15,10 +17,13 @@ import type { QueryEvent } from "../bindings/QueryEvent";
 import type { ResultColumn } from "../bindings/ResultColumn";
 import type { RunOptions } from "../bindings/RunOptions";
 import type { StatementResult } from "../bindings/StatementResult";
+import type { StatementSpan } from "../bindings/StatementSpan";
 import type { TableMeta } from "../bindings/TableMeta";
 import type { Value } from "../bindings/Value";
 import type { ValueKind } from "../bindings/ValueKind";
+import type { MockSession } from "./drivers";
 import { tableMetaFor, tablesFor } from "./fixtures";
+import { mockLaneSession } from "./handlers";
 import { rowsFor } from "./rows";
 import { mockError, mockInvoke, registerMock } from "./transport";
 
@@ -932,8 +937,132 @@ function mockDialect(info: ConnectionInfo) {
   );
 }
 
+/** One command per non-empty line, as a native console's mock reads its text (UTF-16 offsets). */
+function commandLines(text: string): StatementRange[] {
+  const out: StatementRange[] = [];
+  let start = 0;
+  text.split("\n").forEach((line, i) => {
+    const body = line.trim();
+    const lead = line.length - line.trimStart().length;
+    if (body !== "")
+      out.push({ start: start + lead, end: start + lead + body.length, line: i + 1 });
+    start += line.length + 1;
+  });
+  return out;
+}
+
+/** How the backend splits a session's text: its dialect's splitter, or its console's commands. */
+async function laneStatements(session: MockSession, text: string): Promise<StatementRange[]> {
+  const lex = session.caps.dialect === null ? null : await loadDialectLex(session.caps.dialect);
+  return lex ? splitPortable(lex.lex, text) : commandLines(text);
+}
+
+/**
+ * An event of one statement run alone, as the event of statement `index` of the batch; null for
+ * its own `done`, since the batch ends once, after its last statement.
+ */
+function inBatch(
+  event: QueryEvent,
+  index: number,
+  sql: string,
+  span: StatementSpan,
+): QueryEvent | null {
+  switch (event.event) {
+    case "started":
+      return { event: "started", data: { index, sql, span } };
+    case "columns":
+      return { event: "columns", data: { ...event.data, index } };
+    case "rows":
+      return { event: "rows", data: { ...event.data, index } };
+    case "finished":
+      return {
+        event: "finished",
+        data: { index, result: { ...event.data.result, index, sql, span } },
+      };
+    case "failed":
+      return {
+        event: "failed",
+        data: { index, error: { ...event.data.error, statementIndex: index } },
+      };
+    case "notice":
+      return { event: "notice", data: { ...event.data, index } };
+    case "done":
+      return null;
+  }
+}
+
+/**
+ * `run_sql` on a session of a mock driver beyond the core ones: each statement of the text (split
+ * as the backend splits it) runs in the session, its events renumbered for the batch.
+ */
+async function runLane(
+  info: ConnectionInfo,
+  session: MockSession,
+  text: string,
+  options: unknown,
+  onEvent: unknown,
+): Promise<StatementResult[]> {
+  const stopOnError = (options as Partial<RunOptions> | undefined)?.stopOnError ?? true;
+  const channel = onEvent as { send?: (e: QueryEvent) => void } | undefined;
+  const began = performance.now();
+  const results: StatementResult[] = [];
+  const statements = await laneStatements(session, text);
+  for (let index = 0; index < statements.length; index++) {
+    const st = statements[index]!;
+    const sql = text.slice(st.start, st.end);
+    const span = {
+      start: utf16ToChar(text, st.start),
+      end: utf16ToChar(text, st.end),
+      line: st.line,
+    };
+    const startedAt = new Date().toISOString();
+    let failed = false;
+    await session.run(sql, (raw) => {
+      const event = inBatch(raw, index, sql, span);
+      if (event === null) return;
+      if (event.event === "finished") {
+        results.push(event.data.result);
+        record(info, sql, "editor", {
+          durationMs: event.data.result.durationMs,
+          rowCount: event.data.result.kind === "rows" ? event.data.result.rowCount : null,
+          affected: event.data.result.affected,
+        });
+      } else if (event.event === "failed") {
+        failed = true;
+        results.push({
+          index,
+          sql,
+          span,
+          kind: "empty",
+          columns: [],
+          resultSets: 0,
+          rowCount: 0,
+          truncated: false,
+          affected: null,
+          lastInsertId: null,
+          startedAt,
+          durationMs: 0,
+          error: event.data.error,
+          notices: [],
+        });
+        record(info, sql, "editor", { durationMs: 0, error: event.data.error.message });
+      }
+      channel?.send?.(event);
+    });
+    if (failed && stopOnError) break;
+  }
+  channel?.send?.({
+    event: "done",
+    data: { totalMs: Math.max(1, Math.round(performance.now() - began)) },
+  });
+  return results;
+}
+
 registerMock("run_sql", async ({ connectionId, queryId, sql, options, onEvent }) => {
   const info = await connectionInfo(connectionId);
+  // A mock driver beyond the core ones runs its own statements.
+  const lane = mockLaneSession(info.connectionId);
+  if (lane) return runLane(info, lane, String(sql ?? ""), options, onEvent);
   const dialect = mockDialect(info);
   const text = String(sql ?? "");
   const opts = {

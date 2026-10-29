@@ -448,3 +448,15 @@ export function classifyStatement(sql: string, dialect: Dialect): StatementClass
 export function allReads(statements: readonly string[], dialect: Dialect): boolean {
   return statements.length > 0 && statements.every((s) => classifyStatement(s, dialect) === "read");
 }
+
+/**
+ * A classifier of the statements of a session the core classifier cannot read: the portable
+ * classifier over an extension SQL dialect's lexer profile, or a native store's console
+ * classifier (`ConsoleUi.classify`). Unknown commands must be writes.
+ */
+export type Classifier = (statement: string) => StatementClass;
+
+/** `allReads` with another classifier: at least one statement, and every one a READ. */
+export function allReadsWith(statements: readonly string[], classify: Classifier): boolean {
+  return statements.length > 0 && statements.every((s) => classify(s) === "read");
+}

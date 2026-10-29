@@ -12,6 +12,7 @@ import {
   type ConnectionInfo,
   type TunnelStatusEvent,
 } from "@/lib/ipc";
+import { capsOf } from "@/lib/caps";
 import { listenEvent } from "@/lib/ipc/events";
 import { useConnectionsStore, type OpenConnection } from "@/stores/connections";
 import { getQueryTab, isBusy } from "@/stores/queryTabs";
@@ -158,6 +159,20 @@ export function applyStatus(
     toast.success(`Reconnected to ${conn.info.name}`, { id });
     refetchFailed(qc, connectionId);
   }
+}
+
+/**
+ * Whether the app may ping a connection on its own (`LifecycleCaps.keepaliveSecs`): a session
+ * whose ping would bill a query or wake a suspended warehouse reports none, and is left alone.
+ */
+export function pingsFreely(conn: OpenConnection | undefined): boolean {
+  return conn !== undefined && capsOf(conn.info).session.keepaliveSecs !== null;
+}
+
+/** The open connections the health check pings (`pingsFreely`), in the store's order. */
+export function healthCheckTargets(): string[] {
+  const { order, byId } = useConnectionsStore.getState();
+  return order.filter((id) => pingsFreely(byId[id]));
 }
 
 /** What a keepalive ping result means for a connection currently in `current`; null = no change. */
@@ -653,7 +668,7 @@ export function useConnectionEvents(): void {
     () =>
       startKeepalive({
         ping: (id) => ipc.connections.ping(id),
-        connectionIds: () => useConnectionsStore.getState().order,
+        connectionIds: healthCheckTargets,
         onResult: (id, status, error) => onPingResult(qc, id, status, error),
       }),
     [qc],

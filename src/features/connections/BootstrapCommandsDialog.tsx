@@ -12,9 +12,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { CoreDriver } from "@/features/drivers/catalog";
+import { coreDialect, type CoreDriver } from "@/features/drivers/catalog";
 import { languageExtension } from "@/features/editor/cmExtensions";
 import { sqlEditorTheme } from "@/features/editor/cmTheme";
+import type { Driver } from "@/lib/ipc";
 
 const EXAMPLE: Record<CoreDriver, string> = {
   postgres: "SET search_path TO app, public;",
@@ -46,7 +47,8 @@ export function BootstrapCommandsDialog({
   value: string;
   /** The shell script run before connecting. */
   script?: string;
-  driver: CoreDriver;
+  /** A driver beyond the core three gets a plain editor (its commands are its own). */
+  driver: Driver;
   onOpenChange: (open: boolean) => void;
   onSave: (sql: string, script: string) => void;
 }) {
@@ -55,6 +57,7 @@ export function BootstrapCommandsDialog({
   // The editor is created when the dialog's content mounts, with the value at that time.
   const initial = useRef(value);
   initial.current = value;
+  const dialect = coreDialect(driver);
 
   const save = useCallback(() => {
     const view = viewRef.current;
@@ -89,10 +92,10 @@ export function BootstrapCommandsDialog({
               ...defaultKeymap,
               ...historyKeymap,
             ]),
-            languageExtension({ dialect: driver }),
+            dialect ? languageExtension({ dialect }) : [],
             sqlEditorTheme,
             EditorView.lineWrapping,
-            placeholder(EXAMPLE[driver]),
+            placeholder(dialect ? EXAMPLE[dialect] : ""),
             EditorView.contentAttributes.of({ "aria-label": "Bootstrap commands" }),
           ],
         }),
@@ -100,7 +103,7 @@ export function BootstrapCommandsDialog({
       viewRef.current = view;
       view.focus();
     },
-    [driver],
+    [dialect],
   );
 
   return (
@@ -126,7 +129,7 @@ export function BootstrapCommandsDialog({
             id="bootstrap-script"
             ref={scriptRef}
             defaultValue={script}
-            placeholder={SCRIPT_EXAMPLE[driver]}
+            placeholder={SCRIPT_EXAMPLE[dialect ?? "postgres"]}
             rows={4}
             spellCheck={false}
             autoComplete="off"

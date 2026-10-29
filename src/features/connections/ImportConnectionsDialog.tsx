@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { kindOf } from "@/features/drivers/catalog";
 import { effectiveLevel, safeModeText } from "@/features/safety/levels";
 import {
   ipc,
@@ -343,12 +344,7 @@ export function ImportConnectionsDialog({
                       checked={selected.has(c.profile.id)}
                       onCheckedChange={(v) => toggle(c.profile.id, v === true)}
                     />
-                    <DriverBadge
-                      driver={c.profile.driver}
-                      mysqlVersion={c.profile.options.mysqlVersion}
-                      pgFlavor={c.profile.options.pgFlavor}
-                      color={c.profile.color}
-                    />
+                    <DriverBadge kind={kindOf(c.profile)} color={c.profile.color} />
                     <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 items-center gap-1.5">
                         <span className="truncate text-[13px] font-semibold">{c.profile.name}</span>

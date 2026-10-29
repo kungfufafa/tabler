@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { parseConnectionUrl, type ParsedConnectionUrl } from "./url";
+import { loadUrlSchemes, parseConnectionUrl, type ParsedConnectionUrl } from "./url";
 
 /**
  * "New connection from URL…": one field for a `postgres://` / `mysql://` / `mariadb://` /
@@ -36,6 +36,8 @@ export function ConnectionUrlDialog({
     setText("");
     setError(null);
     handedOver.current = false;
+    // The drivers beyond the core ones read their own URLs: load them while the URL is pasted.
+    void loadUrlSchemes();
   }, [open]);
 
   const submit = (e: React.FormEvent) => {

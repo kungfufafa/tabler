@@ -7,6 +7,8 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { kindOf } from "@/features/drivers/catalog";
+import { useKindUi } from "@/features/drivers/registry";
 import { relativeTime } from "@/lib/format/time";
 import type { ConnectionProfile } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
@@ -58,6 +60,8 @@ export function ConnectionRow({
 }) {
   const last = profile.lastConnectedAt;
   const drag = useDraggable({ id: profile.id, data: { profile } });
+  // A database of a lane writes its own detail line ("account / warehouse") once loaded.
+  const kindUi = useKindUi(kindOf(profile));
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -84,13 +88,7 @@ export function ConnectionRow({
             drag.isDragging && "opacity-50",
           )}
         >
-          <DriverBadge
-            driver={profile.driver}
-            mysqlVersion={profile.options.mysqlVersion}
-            pgFlavor={profile.options.pgFlavor}
-            color={profile.color}
-            busy={connecting}
-          />
+          <DriverBadge kind={kindOf(profile)} color={profile.color} busy={connecting} />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
               <span className="truncate text-[13px] leading-4 font-semibold">{profile.name}</span>
@@ -121,7 +119,7 @@ export function ConnectionRow({
                   strokeWidth={2.25}
                 />
               )}
-              <span className="truncate">{connectionDetail(profile)}</span>
+              <span className="truncate">{connectionDetail(profile, kindUi)}</span>
             </div>
           </div>
           {last && (

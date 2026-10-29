@@ -1,4 +1,5 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import type { Driver } from "./bindings/Driver";
 
 export type InvokeArgs = Record<string, unknown>;
 
@@ -69,10 +70,31 @@ const BROKEN_SESSION_CODES = new Set(["NOT_CONNECTED", "CONNECT_FAILED", "TIMEOU
 const MYSQL_GONE = new Set([2006, 2013]);
 
 /**
+ * The driver of each open connection, by id (the connections store keeps it current): another
+ * engine's error codes mean other things, so MySQL's 2006 / 2013 count for MySQL only.
+ */
+const connectionDrivers = new Map<string, Driver>();
+
+/** Records the driver of an open connection; null forgets it (the connection closed). */
+export function setConnectionDriver(connectionId: string, driver: Driver | null): void {
+  if (driver === null) connectionDrivers.delete(connectionId);
+  else connectionDrivers.set(connectionId, driver);
+}
+
+/** The drivers that speak MySQL's client protocol (MariaDB is the MySQL driver). */
+const MYSQL_CLIENTS: ReadonlySet<Driver> = new Set(["mysql"]);
+
+/** MySQL's codes apply to a MySQL connection, and to one the store does not know yet. */
+function mysqlCodesApply(connectionId: string): boolean {
+  const driver = connectionDrivers.get(connectionId);
+  return driver === undefined || MYSQL_CLIENTS.has(driver);
+}
+
+/**
  * True when command `cmd`, run against `args.connectionId`, failed in a way that suggests the
  * connection itself is broken (rather than the statement): see `BROKEN_SESSION_CODES`, plus
  * server errors of SQLSTATE class 08 (connection exception), 57P01–57P03 (PostgreSQL admin /
- * crash shutdown, cannot connect now) and MySQL 2006 / 2013.
+ * crash shutdown, cannot connect now) and, on a MySQL connection, MySQL 2006 / 2013.
  */
 export function isConnectionFailure(
   cmd: string,
@@ -84,7 +106,11 @@ export function isConnectionFailure(
   if (BROKEN_SESSION_CODES.has(code)) return true;
   if (code !== "DB_ERROR") return false;
   if (sqlstate && (sqlstate.startsWith("08") || /^57P0[1-3]$/.test(sqlstate))) return true;
-  return typeof vendorCode === "number" && MYSQL_GONE.has(vendorCode);
+  return (
+    typeof vendorCode === "number" &&
+    MYSQL_GONE.has(vendorCode) &&
+    mysqlCodesApply(args.connectionId)
+  );
 }
 
 type ConnectionFailureListener = (connectionId: string, error: IpcError) => void;

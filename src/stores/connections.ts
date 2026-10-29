@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { ConnStatus, ConnectionInfo } from "@/lib/ipc";
+import { setConnectionDriver } from "@/lib/ipc/transport";
 
 export interface OpenConnection {
   info: ConnectionInfo;
@@ -62,6 +63,15 @@ export const useConnectionsStore = create<ConnectionsState>()((set) => ({
       return { byId: { ...s.byId, [connectionId]: { ...c, currentSchema } } };
     }),
 }));
+
+// The transport reads a failed command's error codes by the connection's driver
+// (`isConnectionFailure`): it learns each open connection's driver here, whichever way the store
+// changed.
+useConnectionsStore.subscribe((s, prev) => {
+  if (s.byId === prev.byId) return;
+  for (const id of Object.keys(prev.byId)) if (!(id in s.byId)) setConnectionDriver(id, null);
+  for (const [id, c] of Object.entries(s.byId)) setConnectionDriver(id, c.info.driver);
+});
 
 export function useActiveConnection(): OpenConnection | null {
   return useConnectionsStore((s) => (s.activeId ? (s.byId[s.activeId] ?? null) : null));

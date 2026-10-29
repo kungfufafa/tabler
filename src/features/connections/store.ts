@@ -1,8 +1,9 @@
 import { toast } from "sonner";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { isCoreDriver } from "@/features/drivers/catalog";
+import { isCoreDriver, kindOf, visibleKinds } from "@/features/drivers/catalog";
 import type { ConnectionProfile } from "@/lib/ipc";
+import { useAppInfoStore } from "@/stores/appInfo";
 import { liftPath, normalizePath, rebasePath } from "./groups";
 import { CONNECTION_SORTS, type ConnectionSort } from "./list";
 import type { ParsedConnectionUrl } from "./url";
@@ -44,12 +45,18 @@ export function openConnectionDialog(
   profile: ConnectionProfile | null = null,
   prefill: ParsedConnectionUrl | null = null,
 ): void {
-  // The form has the fields of the core drivers only (a newer Tabler may have saved another).
-  if (profile && !isCoreDriver(profile.driver)) {
+  // The form has the fields of the core drivers (their flavors too) and of the databases this
+  // build has (a newer or fuller Tabler may have saved another).
+  if (profile && !isCoreDriver(profile.driver) && !builtKind(profile)) {
     toast.error(`“${profile.name}” cannot be edited in this version of Tabler`);
     return;
   }
   useConnectionDialog.setState({ open: true, profile, prefill: profile ? null : prefill });
+}
+
+/** Whether this build has the database of `profile` (`AppInfo.kinds`). */
+function builtKind(profile: ConnectionProfile): boolean {
+  return visibleKinds(useAppInfoStore.getState().info).includes(kindOf(profile));
 }
 
 /**
