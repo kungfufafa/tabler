@@ -8,6 +8,14 @@
       [
         "\"",
         "\""
+      ],
+      [
+        "‘",
+        "’"
+      ],
+      [
+        "“",
+        "”"
       ]
     ],
     "stringQuotes": [
@@ -17,6 +25,10 @@
       {
         "stringBackslash": true,
         "identBackslash": true
+      },
+      {
+        "stringBackslash": true,
+        "identBackslash": false
       }
     ],
     "eStrings": false,
@@ -26,7 +38,7 @@
     "rawPrefixes": false,
     "bytePrefixes": false,
     "hashComments": true,
-    "slashSlashComments": false,
+    "slashSlashComments": true,
     "nestedBlockComments": true,
     "dashCommentNeedsSpace": false,
     "batchSeparator": null,
@@ -36,21 +48,92 @@
   "classify": {
     "queries": [
       "SELECT",
-      "WITH"
-    ],
-    "inspections": [
+      "WITH",
+      "FROM",
       "SHOW",
       "DESCRIBE",
       "DESC",
       "EXPLAIN",
-      "EXISTS",
-      "USE"
+      "EXISTS"
     ],
+    "inspections": [],
     "writes": [
-      "INTO"
+      "INTO",
+      "PARALLEL",
+      "ANALYZE",
+      "STREAM_LIKE_ENGINE_ALLOW_DIRECT_SELECT",
+      "SETTINGS",
+      "ADDITIONAL_RESULT_FILTER",
+      "ADDITIONAL_TABLE_FILTERS",
+      "PARALLEL_REPLICAS_CUSTOM_KEY",
+      "IMPLICIT_TABLE_AT_TOP_LEVEL",
+      "FORMAT_SCHEMA_SOURCE",
+      "FORMAT_SCHEMA",
+      "OUTPUT_FORMAT_SCHEMA",
+      "FORMAT_TEMPLATE_RESULTSET",
+      "FORMAT_TEMPLATE_ROW",
+      "INPUT_FORMAT_RECORD_ERRORS_FILE_PATH",
+      "URL_BASE",
+      "S3_BASE"
     ],
     "writeCalls": [
-      "FILE"
+      "FILE",
+      "FILECLUSTER",
+      "FILESYSTEM",
+      "SQLITE",
+      "URL",
+      "URLCLUSTER",
+      "S3",
+      "S3CLUSTER",
+      "COSN",
+      "OSS",
+      "GCS",
+      "AZUREBLOBSTORAGE",
+      "AZUREBLOBSTORAGECLUSTER",
+      "HDFS",
+      "HDFSCLUSTER",
+      "REMOTE",
+      "REMOTESECURE",
+      "CLUSTER",
+      "CLUSTERALLREPLICAS",
+      "MYSQL",
+      "POSTGRESQL",
+      "MONGODB",
+      "REDIS",
+      "JDBC",
+      "ODBC",
+      "HIVE",
+      "MEILISEARCH",
+      "BIGQUERY",
+      "ELASTICSEARCH",
+      "YTSAURUS",
+      "ARROWFLIGHT",
+      "ICEBERG",
+      "ICEBERGS3",
+      "ICEBERGAZURE",
+      "ICEBERGHDFS",
+      "ICEBERGLOCAL",
+      "ICEBERGCLUSTER",
+      "ICEBERGS3CLUSTER",
+      "ICEBERGAZURECLUSTER",
+      "ICEBERGHDFSCLUSTER",
+      "ICEBERGLOCALCLUSTER",
+      "DELTALAKE*",
+      "HUDI*",
+      "PAIMON*",
+      "EXECUTABLE",
+      "EVAL",
+      "AI*",
+      "GENERATESERIALID",
+      "LOGTRACE",
+      "SHOWCERTIFICATE",
+      "ADDRESSTOLINE",
+      "ADDRESSTOLINEWITHINLINES",
+      "ADDRESSTOSYMBOL",
+      "CATBOOSTEVALUATE",
+      "MODELEVALUATE",
+      "HASCOLUMNINTABLE",
+      "TRACEVIEW"
     ],
     "tableFunctions": [
       "NUMBERS",
@@ -59,6 +142,8 @@
       "ZEROS_MT",
       "VALUES",
       "GENERATERANDOM",
+      "GENERATE_SERIES",
+      "GENERATESERIES",
       "VIEW",
       "MERGE",
       "NULL"
