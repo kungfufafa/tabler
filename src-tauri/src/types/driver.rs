@@ -748,6 +748,8 @@ static ELASTICSEARCH: DriverDescriptor = DriverDescriptor {
     tls: TlsStyle::Https,
     secret: SecretLabel::PasswordOrToken,
     secret_is_token: true,
+    // SigV4 with temporary AWS credentials (Amazon OpenSearch).
+    extra_secrets: &[ExtraSecret::SessionToken],
     command_ttl_secs: 3000,
     // The host, or the `urls` or `cloudId` param: the lane checks.
     required: &[],

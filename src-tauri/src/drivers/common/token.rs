@@ -1,9 +1,13 @@
-//! The secret a token-authenticated driver sends: none, the stored one, or what the profile's
-//! Command Line mode prints, reused for the driver's `command_ttl_secs` and run again once the
-//! server refuses it (`invalidate`, which `HttpClient` calls on a 401).
+//! The secret a token-authenticated driver sends: none, the stored one, what the profile's
+//! Command Line mode prints (reused for the driver's `command_ttl_secs`), or what a login issues
+//! for as long as it says (an OAuth token endpoint's access token). A command or a login runs
+//! again once the server refuses the token (`invalidate`, which `HttpClient` calls on a 401).
 
 use std::sync::Arc;
 use std::time::Duration;
+
+use futures::future::BoxFuture;
+use tokio::time::Instant;
 
 use crate::error::AppError;
 use crate::secrets::{CommandPassword, PASSWORD_COMMAND_TTL};
@@ -14,6 +18,7 @@ pub enum TokenSource {
     None,
     Static(String),
     Command(Arc<CommandPassword>),
+    Issued(Arc<IssuedTokens>),
 }
 
 /// Secrets never show in logs or panics.
@@ -23,7 +28,73 @@ impl std::fmt::Debug for TokenSource {
             TokenSource::None => "TokenSource::None",
             TokenSource::Static(_) => "TokenSource::Static(***)",
             TokenSource::Command(_) => "TokenSource::Command",
+            TokenSource::Issued(_) => "TokenSource::Issued",
         })
+    }
+}
+
+/// A token a login issued and how long it lasts (`expires_in`; `None`: until a server refuses
+/// it).
+#[derive(Clone)]
+pub struct IssuedToken {
+    pub token: String,
+    pub expires_in: Option<Duration>,
+}
+
+impl std::fmt::Debug for IssuedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IssuedToken")
+            .field("expires_in", &self.expires_in)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Asks the login for a token (a signed assertion or a refresh token sent to the token
+/// endpoint).
+pub type FetchToken =
+    Arc<dyn Fn() -> BoxFuture<'static, Result<IssuedToken, AppError>> + Send + Sync>;
+
+/// A token is fetched again this long before it expires, or after a quarter of its lifetime
+/// when that is shorter.
+pub const ISSUED_REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
+
+/// The tokens of a login: fetched when first needed, again shortly before they expire, and once
+/// more after a server refused one. One fetch serves every request waiting for it.
+pub struct IssuedTokens {
+    fetch: FetchToken,
+    /// The token and when to fetch the next (`None`: never, until invalidated).
+    cached: tokio::sync::Mutex<Option<(String, Option<Instant>)>>,
+}
+
+impl IssuedTokens {
+    pub fn new(fetch: FetchToken) -> IssuedTokens {
+        IssuedTokens {
+            fetch,
+            cached: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// A token that should still work.
+    pub async fn token(&self) -> Result<String, AppError> {
+        let mut cached = self.cached.lock().await;
+        if let Some((token, renew_at)) = cached.as_ref()
+            && renew_at.is_none_or(|at| Instant::now() < at)
+        {
+            return Ok(token.clone());
+        }
+        let fresh = (self.fetch)().await?;
+        // A lifetime past what a clock can count is none.
+        let renew_at = fresh.expires_in.and_then(|lifetime| {
+            let margin = ISSUED_REFRESH_MARGIN.min(lifetime / 4);
+            Instant::now().checked_add(lifetime.saturating_sub(margin))
+        });
+        *cached = Some((fresh.token.clone(), renew_at));
+        Ok(fresh.token)
+    }
+
+    /// Forgets the token a server refused.
+    pub async fn invalidate(&self) {
+        *self.cached.lock().await = None;
     }
 }
 
@@ -50,8 +121,14 @@ impl TokenSource {
         }
     }
 
+    /// The tokens `fetch` gets from a login (see [`IssuedTokens`]).
+    pub fn issued(fetch: FetchToken) -> TokenSource {
+        TokenSource::Issued(Arc::new(IssuedTokens::new(fetch)))
+    }
+
     /// The secret to send now (`None`: nothing). A command runs when its last output is older
-    /// than the TTL or was invalidated.
+    /// than the TTL or was invalidated; a login when its token is about to expire or was
+    /// invalidated.
     pub async fn get(&self) -> Result<Option<String>, AppError> {
         match self {
             TokenSource::None => Ok(None),
@@ -59,20 +136,25 @@ impl TokenSource {
             TokenSource::Command(command) => {
                 Ok(Some(command.password().await?).filter(|t| !t.is_empty()))
             }
+            TokenSource::Issued(tokens) => {
+                Ok(Some(tokens.token().await?).filter(|t| !t.is_empty()))
+            }
         }
     }
 
-    /// The server refused the secret: a command runs again for the next request (a stored secret
-    /// stays, nothing would change it).
+    /// The server refused the secret: a command or a login runs again for the next request (a
+    /// stored secret stays, nothing would change it).
     pub async fn invalidate(&self) {
-        if let TokenSource::Command(command) = self {
-            command.invalidate().await;
+        match self {
+            TokenSource::Command(command) => command.invalidate().await,
+            TokenSource::Issued(tokens) => tokens.invalidate().await,
+            TokenSource::None | TokenSource::Static(_) => {}
         }
     }
 
     /// Whether [`TokenSource::invalidate`] can bring a different secret.
     pub fn refreshes(&self) -> bool {
-        matches!(self, TokenSource::Command(_))
+        matches!(self, TokenSource::Command(_) | TokenSource::Issued(_))
     }
 }
 
@@ -152,6 +234,83 @@ pub(crate) mod tests {
         t.invalidate().await;
         assert_eq!(t.get().await.unwrap().as_deref(), Some("tok-2"));
         assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+
+    /// A login whose fetches are counted: fetch n issues `tok-n` lasting `lifetime`.
+    pub(crate) fn issued(lifetime: Option<Duration>) -> (TokenSource, Arc<AtomicUsize>) {
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let counter = fetches.clone();
+        let fetch: FetchToken = Arc::new(move || {
+            let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+            Box::pin(async move {
+                Ok(IssuedToken {
+                    token: format!("tok-{n}"),
+                    expires_in: lifetime,
+                })
+            })
+        });
+        (TokenSource::issued(fetch), fetches)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn issued_tokens_last_until_shortly_before_they_expire() {
+        let (t, fetches) = issued(Some(Duration::from_secs(3600)));
+        assert!(t.refreshes());
+        assert_eq!(t.get().await.unwrap().as_deref(), Some("tok-1"));
+        // Five minutes before the hour is up, the next request gets a new one.
+        tokio::time::advance(Duration::from_secs(3600 - 301)).await;
+        assert_eq!(t.get().await.unwrap().as_deref(), Some("tok-1"));
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert_eq!(t.get().await.unwrap().as_deref(), Some("tok-2"));
+        // A refused token is replaced at once.
+        t.invalidate().await;
+        assert_eq!(t.get().await.unwrap().as_deref(), Some("tok-3"));
+        assert_eq!(fetches.load(Ordering::SeqCst), 3);
+        assert_eq!(format!("{t:?}"), "TokenSource::Issued");
+
+        // A short-lived token is kept for three quarters of its life, not fetched every time.
+        let (t, fetches) = issued(Some(Duration::from_secs(60)));
+        t.get().await.unwrap();
+        tokio::time::advance(Duration::from_secs(44)).await;
+        t.get().await.unwrap();
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert_eq!(t.get().await.unwrap().as_deref(), Some("tok-2"));
+
+        // Without a lifetime it stays until refused.
+        let (t, fetches) = issued(None);
+        t.get().await.unwrap();
+        tokio::time::advance(Duration::from_secs(86_400)).await;
+        t.get().await.unwrap();
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_login_is_the_caller_s_error_and_is_tried_again() {
+        let fails = Arc::new(AtomicUsize::new(0));
+        let counter = fails.clone();
+        let t = TokenSource::issued(Arc::new(move || {
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                match n {
+                    0 => Err(AppError::Auth("the login was refused".into())),
+                    _ => Ok(IssuedToken {
+                        token: "ok".into(),
+                        expires_in: None,
+                    }),
+                }
+            })
+        }));
+        assert_eq!(t.get().await.unwrap_err().code(), "AUTH_FAILED");
+        assert_eq!(t.get().await.unwrap().as_deref(), Some("ok"));
+        let shown = format!(
+            "{:?}",
+            IssuedToken {
+                token: "secret".into(),
+                expires_in: None
+            }
+        );
+        assert!(!shown.contains("secret"), "{shown}");
     }
 
     #[tokio::test]

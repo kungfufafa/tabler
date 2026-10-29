@@ -95,6 +95,26 @@ impl Rs256Key {
     }
 }
 
+/// The `grant_type` that trades a signed assertion for an access token (RFC 7523).
+pub const JWT_BEARER_GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
+
+/// How long a token request's assertion is valid (Google's maximum).
+pub const ASSERTION_LIFETIME_SECS: i64 = 3600;
+
+/// The claims of a service account's request for an access token (RFC 7523, Google's service
+/// account login): who asks (`iss`), for which scopes, at which token endpoint (`aud`), valid
+/// for an hour from `now` (seconds since the epoch). The key file's `private_key_id` goes in the
+/// header as `kid`.
+pub fn token_request_claims(issuer: &str, scope: &str, audience: &str, now: i64) -> Value {
+    serde_json::json!({
+        "iss": issuer,
+        "scope": scope,
+        "aud": audience,
+        "iat": now,
+        "exp": now + ASSERTION_LIFETIME_SECS,
+    })
+}
+
 /// Signs one JWT with the key `pkcs8_pem` (see [`Rs256Key`]).
 pub fn sign_rs256(pkcs8_pem: &str, header: &Value, claims: &Value) -> Result<String, AppError> {
     Rs256Key::from_pem(pkcs8_pem)?.sign(header, claims)
@@ -188,11 +208,45 @@ mod tests {
     }
 
     #[test]
+    fn a_service_account_assertion_carries_its_key_id_and_an_hour() {
+        let key = Rs256Key::from_pem(PKCS8_PEM).unwrap();
+        let claims = token_request_claims(
+            "sa@p.iam.gserviceaccount.com",
+            "https://www.googleapis.com/auth/bigquery.readonly",
+            "https://oauth2.googleapis.com/token",
+            1_700_000_000,
+        );
+        let token = key.sign(&json!({"kid": "kid-1"}), &claims).unwrap();
+        let (header, got) = verify_rs256(key.public_key_der(), &token).unwrap();
+        assert_eq!(
+            header,
+            json!({"alg": "RS256", "kid": "kid-1", "typ": "JWT"})
+        );
+        assert_eq!(
+            got,
+            json!({
+                "iss": "sa@p.iam.gserviceaccount.com",
+                "scope": "https://www.googleapis.com/auth/bigquery.readonly",
+                "aud": "https://oauth2.googleapis.com/token",
+                "iat": 1_700_000_000,
+                "exp": 1_700_003_600,
+            })
+        );
+        assert_eq!(
+            JWT_BEARER_GRANT,
+            "urn:ietf:params:oauth:grant-type:jwt-bearer"
+        );
+    }
+
+    #[test]
     fn bad_keys_and_headers_are_refused() {
         for pem in [
             "",
             "not a key",
             "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+            "-----BEGIN PRIVATE KEY-----\n!!!\n-----END PRIVATE KEY-----\n",
+            "-----BEGIN PRIVATE KEY-----\nAAAA\n",
+            crate::testkit::tls::CA_PEM,
         ] {
             assert_eq!(
                 Rs256Key::from_pem(pem).unwrap_err().code(),

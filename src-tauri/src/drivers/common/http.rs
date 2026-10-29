@@ -1,8 +1,10 @@
 //! The HTTP client of the HTTP drivers (LibSQL, D1, ClickHouse, BigQuery, Elasticsearch,
 //! DynamoDB): reqwest on the `tls_client` config, an SSH tunnel that keeps the server's name for
 //! the Host header, SNI and the certificate check, credentials on the endpoint's own requests
-//! only, one token refresh after a 401, backoff on 429 and 503, and a cancel slot that stops the
-//! request and the reading of its reply.
+//! only, one token refresh after a 401, backoff on 429 and on the server errors of requests that
+//! may run twice ([`Repeat`]), the system proxy (never for a tunnel or this machine), and a
+//! cancel slot that stops the request and the reading of its reply. Requests carry their own
+//! headers and body as built; a credential (a SigV4 signature) is added last, per attempt.
 //!
 //! ```ignore
 //! let client = HttpClient::for_target(&target, "https://db.example.com:8443", options, cred)?;
@@ -144,7 +146,41 @@ impl Default for HttpTls {
     }
 }
 
-/// What `send` does with a 429 or 503.
+/// Which failed replies `send` sends a request again after, within its [`RetryPolicy`]. A
+/// request whose body is a stream is never sent twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Repeat {
+    /// A 429 (the server turned the request away), and a 503 of a GET, HEAD or OPTIONS. Any
+    /// other request may have done its work before the server failed: PUT and DELETE are
+    /// idempotent in HTTP's terms, but an edit guarded by a version, run twice, reports a
+    /// conflict for the change it made.
+    #[default]
+    Safe,
+    /// Also a 500, 502 and 504 of a GET, HEAD or OPTIONS (BigQuery's `backendError`).
+    ServerErrors,
+    /// A 429, 500, 502, 503 or 504 whatever the method: the caller knows the request may run
+    /// twice (a read sent as a POST, a write guarded by a condition).
+    Always,
+}
+
+impl Repeat {
+    /// Whether a reply of `status` to a `method` request is sent again.
+    fn repeats(self, method: &Method, status: u16) -> bool {
+        let safe = matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS);
+        match status {
+            429 => true,
+            503 => safe || self == Repeat::Always,
+            500 | 502 | 504 => match self {
+                Repeat::Safe => false,
+                Repeat::ServerErrors => safe,
+                Repeat::Always => true,
+            },
+            _ => false,
+        }
+    }
+}
+
+/// What `send` does with a 429 or a server error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
     /// How many times such a reply is retried; 0 hands it to the caller, with its
@@ -154,6 +190,8 @@ pub struct RetryPolicy {
     pub base_delay: Duration,
     /// The longest wait: a server asking for more gets its reply handed to the caller.
     pub max_delay: Duration,
+    /// Which replies are retried (`HttpClient::send_repeating` chooses per request).
+    pub repeat: Repeat,
 }
 
 impl RetryPolicy {
@@ -161,6 +199,7 @@ impl RetryPolicy {
         max_retries: 0,
         base_delay: Duration::ZERO,
         max_delay: Duration::ZERO,
+        repeat: Repeat::Safe,
     };
 
     /// The wait before retry `n` (0-based) without a `Retry-After`: `base_delay · 2ⁿ`, between half
@@ -183,6 +222,7 @@ impl Default for RetryPolicy {
             max_retries: 3,
             base_delay: Duration::from_millis(250),
             max_delay: Duration::from_secs(20),
+            repeat: Repeat::Safe,
         }
     }
 }
@@ -195,6 +235,9 @@ pub struct HttpOptions {
     /// the cancel slot ends a request).
     pub request_timeout: Option<Duration>,
     pub retry: RetryPolicy,
+    /// A proxy (`http://host:port`) in place of the system's. Neither is used for a tunnel or
+    /// this machine, which a proxy cannot reach.
+    pub proxy: Option<String>,
 }
 
 impl Default for HttpOptions {
@@ -204,6 +247,7 @@ impl Default for HttpOptions {
             connect_timeout: Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS),
             request_timeout: None,
             retry: RetryPolicy::default(),
+            proxy: None,
         }
     }
 }
@@ -404,8 +448,17 @@ impl HttpClient {
             builder = builder.timeout(limit);
         }
         // A proxy cannot reach this machine's loopback, nor the tunnel's server by its name.
-        if endpoint.tunnel.is_some() || is_loopback(&endpoint.base) {
+        if !uses_proxy(&endpoint) {
             builder = builder.no_proxy();
+        } else if let Some(proxy) = o.proxy.as_deref() {
+            // The URL may hold the proxy's password: the message leaves it out.
+            let proxy = reqwest::Proxy::all(proxy.trim()).map_err(|e| {
+                AppError::InvalidInput(format!(
+                    "the proxy is not a valid URL: {}",
+                    error_text(&e.without_url())
+                ))
+            })?;
+            builder = builder.proxy(proxy);
         }
         if let (Route::Resolve, Some(tunnel)) = (route, endpoint.tunnel) {
             builder = builder.resolve(&endpoint.real_host, tunnel);
@@ -471,23 +524,101 @@ impl HttpClient {
         self.client.request(method, url)
     }
 
+    /// The URL of `target`, an absolute URL or a path and query under the endpoint's base,
+    /// exactly as written: a request signed over its text (SigV4) must arrive as signed, so a
+    /// text the URL parser would change is refused rather than sent as something else (a `.` or
+    /// `..` segment, also as `%2E`; a space or another character it encodes; a `\` or a `#`).
+    pub fn exact_url(&self, target: &str) -> Result<Url, AppError> {
+        let refused = |why: String| {
+            AppError::InvalidInput(format!("the request URL {target} cannot be sent: {why}"))
+        };
+        let (url, written) = match target.split_once("://") {
+            Some(("http" | "https", rest)) => {
+                let url = Url::parse(target).map_err(|e| refused(e.to_string()))?;
+                let written = rest.find(['/', '?', '#']).map_or("", |i| &rest[i..]);
+                (url, written.to_string())
+            }
+            _ => {
+                let written = format!(
+                    "{}/{}",
+                    self.endpoint.base.path().trim_end_matches('/'),
+                    target.trim_start_matches('/')
+                );
+                let url = self
+                    .endpoint
+                    .base
+                    .join(&written)
+                    .map_err(|e| refused(e.to_string()))?;
+                // A path must not name another server (`/\\host/…` would).
+                if !self.endpoint.owns(&url) {
+                    return Err(refused("it names another server".into()));
+                }
+                (url, written)
+            }
+        };
+        let written = if written.is_empty() || written.starts_with('?') {
+            format!("/{written}")
+        } else {
+            written
+        };
+        let sent = match url.query() {
+            Some(query) => format!("{}?{query}", url.path()),
+            None => url.path().to_string(),
+        };
+        if sent != written || url.fragment().is_some() {
+            return Err(refused(format!("it would go as {sent}")));
+        }
+        Ok(url)
+    }
+
+    /// A request for [`HttpClient::exact_url`] of `target`.
+    pub fn request_exact(&self, method: Method, target: &str) -> Result<RequestBuilder, AppError> {
+        Ok(self.request_url(method, self.exact_url(target)?))
+    }
+
     pub fn get(&self, path: &str) -> Result<RequestBuilder, AppError> {
         self.request(Method::GET, path)
+    }
+
+    pub fn head(&self, path: &str) -> Result<RequestBuilder, AppError> {
+        self.request(Method::HEAD, path)
     }
 
     pub fn post(&self, path: &str) -> Result<RequestBuilder, AppError> {
         self.request(Method::POST, path)
     }
 
+    pub fn put(&self, path: &str) -> Result<RequestBuilder, AppError> {
+        self.request(Method::PUT, path)
+    }
+
+    pub fn delete(&self, path: &str) -> Result<RequestBuilder, AppError> {
+        self.request(Method::DELETE, path)
+    }
+
+    pub fn patch(&self, path: &str) -> Result<RequestBuilder, AppError> {
+        self.request(Method::PATCH, path)
+    }
+
     /// Sends `req` and returns the reply once its head has arrived; any status is a reply. With
     /// `cancel`, the slot stops the request, the waits between retries and the reading of the
     /// reply until the reply is dropped. A 401 from a credential that can bring a fresh secret
-    /// is retried once with it; a 429 or 503 as the retry policy says. A request whose body is a
-    /// stream is sent once.
+    /// is retried once with it; a 429 or a server error as the retry policy and its [`Repeat`]
+    /// say. A request whose body is a stream is sent once.
     pub async fn send<'a>(
         &self,
         req: RequestBuilder,
         cancel: Option<&'a CancelSlot>,
+    ) -> Result<HttpReply<'a>, AppError> {
+        self.send_repeating(req, cancel, self.retry.repeat).await
+    }
+
+    /// [`HttpClient::send`] retrying the replies `repeat` names instead of the policy's.
+    pub async fn send_repeating<'a>(
+        &self,
+        req: RequestBuilder,
+        cancel: Option<&'a CancelSlot>,
+        repeat: Repeat,
     ) -> Result<HttpReply<'a>, AppError> {
         let token = CancellationToken::new();
         let armed = match cancel {
@@ -498,6 +629,9 @@ impl HttpClient {
             None => None,
         };
         let mut template = Some(req.build().map_err(map_reqwest_error)?);
+        let method = template
+            .as_ref()
+            .map_or(Method::GET, |r| r.method().clone());
         let mut refreshed = false;
         let mut retries = 0;
         loop {
@@ -515,7 +649,7 @@ impl HttpClient {
                 self.credential.invalidate().await;
                 continue;
             }
-            if matches!(status, 429 | 503) && replayable && retries < self.retry.max_retries {
+            if repeat.repeats(&method, status) && replayable && retries < self.retry.max_retries {
                 let wait =
                     retry_after(resp.headers()).unwrap_or_else(|| self.retry.backoff(retries));
                 if wait <= self.retry.max_delay {
@@ -612,11 +746,47 @@ fn host_ip(url: &Url) -> Option<IpAddr> {
 
 fn is_loopback(url: &Url) -> bool {
     match host_ip(url) {
-        Some(ip) => ip.is_loopback(),
-        None => url
-            .host_str()
-            .is_some_and(|h| h.eq_ignore_ascii_case("localhost")),
+        Some(ip) => ip.to_canonical().is_loopback(),
+        None => url.host_str().is_some_and(|h| {
+            let h = h.to_ascii_lowercase();
+            h == "localhost" || h.ends_with(".localhost")
+        }),
     }
+}
+
+/// Whether requests to `endpoint` may go through a proxy (the system's or the options'): never
+/// through a tunnel or to this machine.
+fn uses_proxy(endpoint: &HttpEndpoint) -> bool {
+    endpoint.tunnel.is_none() && !is_loopback(&endpoint.base)
+}
+
+/// What `application/x-www-form-urlencoded` leaves as it is: letters, digits and `*-._`.
+const FORM_KEEP: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'*')
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_');
+
+/// `pairs` as an `application/x-www-form-urlencoded` body, as browsers write one (a space is
+/// `+`): what an OAuth token endpoint takes. reqwest's own `form` needs a feature the app does
+/// not build.
+pub fn form_body(pairs: &[(&str, &str)]) -> String {
+    let encode = |s: &str| {
+        percent_encoding::utf8_percent_encode(s, FORM_KEEP)
+            .to_string()
+            .replace("%20", "+")
+    };
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// `req` with the form `pairs` as its body (see [`form_body`]) and that content type.
+pub fn with_form(req: RequestBuilder, pairs: &[(&str, &str)]) -> RequestBuilder {
+    req.header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(form_body(pairs))
 }
 
 /// `Retry-After` in seconds or as an HTTP date (a date in the past is no wait).
@@ -718,6 +888,19 @@ impl<'a> HttpReply<'a> {
         String::from_utf8(body).map_err(|_| AppError::db("the server's reply is not UTF-8 text"))
     }
 
+    /// The status, headers and whole body, whatever the status: a 4xx body is the caller's to
+    /// read (DynamoDB names its error in `x-amzn-ErrorType` and the JSON of a 400).
+    pub async fn into_response(self) -> Result<HttpResponse, AppError> {
+        let status = self.status();
+        let headers = self.headers().clone();
+        let body = self.bytes().await?;
+        Ok(HttpResponse {
+            status,
+            headers,
+            body,
+        })
+    }
+
     /// The body as `T`; a status other than 2xx is an error (see [`status_error`]), and a body
     /// that is not a `T` a protocol error naming what came.
     pub async fn json<T: DeserializeOwned>(self) -> Result<T, AppError> {
@@ -811,6 +994,39 @@ impl<'a> HttpReply<'a> {
             }
         })
         .boxed()
+    }
+}
+
+/// A whole reply ([`HttpReply::into_response`]).
+#[derive(Clone)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub headers: HeaderMap,
+    pub body: Vec<u8>,
+}
+
+/// The body stays out of logs and panics: a token endpoint's reply holds a token.
+impl std::fmt::Debug for HttpResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpResponse")
+            .field("status", &self.status)
+            .field("content_type", &self.content_type())
+            .field("body_len", &self.body.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl HttpResponse {
+    pub fn is_success(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
+
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name)?.to_str().ok()
+    }
+
+    pub fn content_type(&self) -> Option<&str> {
+        self.header(CONTENT_TYPE.as_str())
     }
 }
 
@@ -924,7 +1140,9 @@ mod tests {
     use super::*;
     use crate::drivers::common::token::tests::{counted, profile};
     use crate::drivers::{cancel_portable, request_cancel};
-    use crate::testkit::tls::{CA_PEM, TlsServer, ca_file, cert_der};
+    use crate::testkit::tls::{
+        CA_PEM, CLIENT_CERT_PEM, TlsServer, ca_file, cert_der, client_identity,
+    };
     use crate::testkit::{FakeServer, Outcome, Piece, Reply, Route as FakeRoute, install_crypto};
     use crate::types::profile::Driver;
     use std::sync::atomic::Ordering;
@@ -1418,6 +1636,530 @@ mod tests {
         assert_eq!(auth, expected.authorization);
     }
 
+    /// What the lanes' transports send: their own headers, a raw body and an encoded path, by
+    /// every method, arriving as built.
+    #[tokio::test]
+    async fn headers_raw_bodies_and_encoded_paths_arrive_unchanged_by_every_method() {
+        let server = FakeServer::start(vec![
+            FakeRoute::new("*", "/*").reply(
+                Reply::text(200, "ok")
+                    .header("x-elastic-product", "Elasticsearch")
+                    .header("x-amzn-requestid", "req-1"),
+            ),
+        ])
+        .await;
+        let client = plain(
+            &server.url("/es"),
+            Credential::Scheme("ApiKey", TokenSource::from_secret(Some("k"))),
+            RetryPolicy::NONE,
+        );
+        let target = "/logs-*/_doc/a%2Fb%20c+d'!$(),;=:@~?refresh=wait_for&q=x%20y%2B1&s=*";
+        let body: &[u8] = b"{\"a\":1}\n\xff\x00 raw";
+        for method in [
+            Method::GET,
+            Method::HEAD,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::PATCH,
+        ] {
+            let req = client
+                .request_exact(method.clone(), target)
+                .unwrap()
+                .header("x-opaque-id", "tabler-7")
+                .header("x-goog-user-project", "billing-project")
+                .header(CONTENT_TYPE, "application/x-ndjson")
+                .body(body.to_vec());
+            let reply = client.send(req, None).await.unwrap();
+            assert_eq!(reply.status(), 200, "{method}");
+            assert_eq!(reply.header("x-amzn-requestid"), Some("req-1"));
+            let got = server.requests().pop().unwrap();
+            assert_eq!(got.method, method.as_str());
+            assert_eq!(
+                got.path, "/es/logs-*/_doc/a%2Fb%20c+d'!$(),;=:@~",
+                "{method}"
+            );
+            assert_eq!(
+                got.query.as_deref(),
+                Some("refresh=wait_for&q=x%20y%2B1&s=*")
+            );
+            assert_eq!(got.body, body, "{method}");
+            assert_eq!(got.header("x-opaque-id"), Some("tabler-7"));
+            assert_eq!(got.header("x-goog-user-project"), Some("billing-project"));
+            assert_eq!(got.header("content-type"), Some("application/x-ndjson"));
+            assert_eq!(got.header("authorization"), Some("ApiKey k"));
+        }
+        // The helpers name their methods.
+        for (req, method) in [
+            (client.head("/h").unwrap(), "HEAD"),
+            (client.put("/h").unwrap(), "PUT"),
+            (client.delete("/h").unwrap(), "DELETE"),
+            (client.patch("/h").unwrap(), "PATCH"),
+        ] {
+            client.send(req, None).await.unwrap();
+            assert_eq!(server.requests().pop().unwrap().method, method);
+        }
+        // An absolute URL of the endpoint, as the lanes' seams carry it.
+        let absolute = server.url("/es/_cat/indices?format=json&h=index");
+        let reply = client
+            .send(client.request_exact(Method::GET, &absolute).unwrap(), None)
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), 200);
+        let got = server.requests().pop().unwrap();
+        assert_eq!(got.path, "/es/_cat/indices");
+        assert_eq!(got.query.as_deref(), Some("format=json&h=index"));
+        assert_eq!(got.header("authorization"), Some("ApiKey k"));
+    }
+
+    #[test]
+    fn exact_urls_are_sent_as_written_or_refused() {
+        let client = plain("https://h.test/base/", Credential::None, RetryPolicy::NONE);
+        let exact = |t: &str| client.exact_url(t).map(|u| u.to_string());
+        assert_eq!(
+            exact("/_doc/a%2fB?x=%2B").unwrap(),
+            "https://h.test/base/_doc/a%2fB?x=%2B"
+        );
+        assert_eq!(exact("").unwrap(), "https://h.test/base/");
+        assert_eq!(exact("?q").unwrap(), "https://h.test/base/?q");
+        assert_eq!(
+            exact("https://other.test:8443/x?y").unwrap(),
+            "https://other.test:8443/x?y"
+        );
+        assert_eq!(exact("https://other.test").unwrap(), "https://other.test/");
+        for bad in [
+            "/a/../b",
+            "/a/%2E%2E/b",
+            "/a/%2e/b",
+            "/a/./b",
+            "/a b",
+            "/a\\b",
+            "/a#b",
+            "/q?it's",
+            "/q?a b",
+            "/caf\u{e9}",
+            "https://other.test/a/../b",
+            "\\\\evil.test/x",
+            "/\\evil.test/x",
+        ] {
+            let err = client.exact_url(bad).unwrap_err();
+            assert_eq!(err.code(), "INVALID_INPUT", "{bad}");
+            assert!(err.to_string().contains("cannot be sent"), "{err}");
+        }
+    }
+
+    /// DynamoDB names its errors in a 400's headers and body: the caller gets them all, and a
+    /// 400 is no credential problem.
+    #[tokio::test]
+    async fn replies_hand_back_status_headers_and_4xx_bodies() {
+        let error = r#"{"__type":"com.amazonaws.dynamodb.v20120810#ValidationException","message":"bad key"}"#;
+        let server = FakeServer::start(vec![
+            FakeRoute::new("POST", "/").reply(
+                Reply::new(400)
+                    .header("content-type", "application/x-amz-json-1.0")
+                    .header("date", "Thu, 29 Oct 2026 06:00:00 GMT")
+                    .header("x-amzn-requestid", "RID-1")
+                    .header("x-amzn-errortype", "ValidationException:http://internal/")
+                    .body(error),
+            ),
+        ])
+        .await;
+        let client = plain(
+            &server.url(""),
+            Credential::Bearer(counted(Duration::from_secs(600)).0),
+            RetryPolicy::default(),
+        );
+        let req = client
+            .post("/")
+            .unwrap()
+            .header("x-amz-target", "DynamoDB_20120810.GetItem")
+            .body("{}");
+        let reply = client.send(req, None).await.unwrap();
+        let response = reply.into_response().await.unwrap();
+        assert_eq!(response.status, 400);
+        assert!(!response.is_success());
+        assert_eq!(response.body, error.as_bytes());
+        assert_eq!(response.content_type(), Some("application/x-amz-json-1.0"));
+        assert_eq!(
+            response.header("date"),
+            Some("Thu, 29 Oct 2026 06:00:00 GMT")
+        );
+        assert_eq!(response.header("x-amzn-RequestId"), Some("RID-1"));
+        assert_eq!(
+            response.header("x-amzn-ErrorType"),
+            Some("ValidationException:http://internal/")
+        );
+        assert!(!format!("{response:?}").contains("bad key"));
+        // Sent once: no token refresh, no retry.
+        assert_eq!(server.requests().len(), 1);
+        let req = client.post("/").unwrap().body("{}");
+        let err = client
+            .send(req, None)
+            .await
+            .unwrap()
+            .error_for_status()
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "DB_ERROR");
+        assert!(err.to_string().contains("ValidationException"), "{err}");
+        assert_eq!(status_error(400, b"", None, None).code(), "DB_ERROR");
+    }
+
+    #[tokio::test]
+    async fn server_errors_are_retried_only_where_the_request_may_run_twice() {
+        let flaky = |status: u16| vec![Reply::text(status, "busy"), Reply::text(200, "done")];
+        let mut routes = Vec::new();
+        for (path, status) in [
+            ("/get-503", 503),
+            ("/post-503", 503),
+            ("/put-503", 503),
+            ("/get-500", 500),
+            ("/get-500-opted", 500),
+            ("/head-502", 502),
+            ("/post-500-opted", 500),
+            ("/post-500-always", 500),
+            ("/post-429", 429),
+            ("/stream-503", 503),
+        ] {
+            let mut route = FakeRoute::new("*", path);
+            for reply in flaky(status) {
+                route = route.reply(reply);
+            }
+            routes.push(route);
+        }
+        let server = FakeServer::start(routes).await;
+        let retry = RetryPolicy {
+            max_retries: 2,
+            base_delay: Duration::from_millis(5),
+            max_delay: Duration::from_secs(1),
+            repeat: Repeat::Safe,
+        };
+        let client = plain(&server.url(""), Credential::None, retry);
+        async fn status(c: &HttpClient, method: Method, path: &str, repeat: Repeat) -> u16 {
+            let req = c.request(method, path).unwrap().body("{\"n\":1}");
+            c.send_repeating(req, None, repeat).await.unwrap().status()
+        }
+        let c = &client;
+        assert_eq!(status(c, Method::GET, "/get-503", Repeat::Safe).await, 200);
+        assert_eq!(
+            status(c, Method::POST, "/post-503", Repeat::Safe).await,
+            503
+        );
+        assert_eq!(status(c, Method::PUT, "/put-503", Repeat::Safe).await, 503);
+        assert_eq!(status(c, Method::GET, "/get-500", Repeat::Safe).await, 500);
+        assert_eq!(
+            status(c, Method::GET, "/get-500-opted", Repeat::ServerErrors).await,
+            200
+        );
+        assert_eq!(
+            status(c, Method::HEAD, "/head-502", Repeat::ServerErrors).await,
+            200
+        );
+        assert_eq!(
+            status(c, Method::POST, "/post-500-opted", Repeat::ServerErrors).await,
+            500
+        );
+        assert_eq!(
+            status(c, Method::POST, "/post-500-always", Repeat::Always).await,
+            200
+        );
+        // The server turned a 429 away unprocessed: any method goes again.
+        assert_eq!(
+            status(c, Method::POST, "/post-429", Repeat::Safe).await,
+            200
+        );
+        // A streamed body cannot be sent twice, whatever the caller allows.
+        let pieces: Vec<Result<&'static [u8], std::io::Error>> = vec![Ok(b"a")];
+        let req = client
+            .post("/stream-503")
+            .unwrap()
+            .body(reqwest::Body::wrap_stream(futures::stream::iter(pieces)));
+        let reply = client
+            .send_repeating(req, None, Repeat::Always)
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), 503);
+        let sent = |path: &str| server.requests().iter().filter(|r| r.path == path).count();
+        for (path, times) in [
+            ("/get-503", 2),
+            ("/post-503", 1),
+            ("/put-503", 1),
+            ("/get-500", 1),
+            ("/get-500-opted", 2),
+            ("/head-502", 2),
+            ("/post-500-opted", 1),
+            ("/post-500-always", 2),
+            ("/post-429", 2),
+            ("/stream-503", 1),
+        ] {
+            assert_eq!(sent(path), times, "{path}");
+        }
+        // The client's policy chooses for `send`.
+        let server = FakeServer::start(vec![
+            FakeRoute::new("GET", "/q")
+                .reply(Reply::text(500, "backendError"))
+                .reply(Reply::text(200, "done")),
+        ])
+        .await;
+        let client = plain(
+            &server.url(""),
+            Credential::None,
+            RetryPolicy {
+                repeat: Repeat::ServerErrors,
+                ..retry
+            },
+        );
+        let reply = client.send(client.get("/q").unwrap(), None).await.unwrap();
+        assert_eq!(reply.status(), 200);
+        assert_eq!(server.requests().len(), 2);
+    }
+
+    /// The OAuth token endpoint takes a form, on another host than the API: it gets the form and
+    /// none of the API's credentials.
+    #[tokio::test]
+    async fn form_posts_reach_a_token_endpoint_without_the_api_credential() {
+        let api = FakeServer::start(vec![FakeRoute::new("*", "/*").reply(Reply::ok())]).await;
+        let oauth = FakeServer::start(vec![FakeRoute::new("POST", "/token").reply(Reply::json(
+            200,
+            &serde_json::json!({"access_token": "ya29.x", "expires_in": 3599}),
+        ))])
+        .await;
+        let client = plain(
+            &api.url(""),
+            Credential::Bearer(TokenSource::from_secret(Some("api-token"))),
+            RetryPolicy::NONE,
+        );
+        let url = Url::parse(&oauth.url("/token")).unwrap();
+        let req = with_form(
+            client.request_url(Method::POST, url),
+            &[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                ("assertion", "a.b+c/d=e f*~"),
+            ],
+        );
+        let reply: serde_json::Value = client.json(req, None).await.unwrap();
+        assert_eq!(reply["access_token"], "ya29.x");
+        let got = oauth.requests().pop().unwrap();
+        assert_eq!(
+            got.header("content-type"),
+            Some("application/x-www-form-urlencoded")
+        );
+        assert_eq!(
+            got.text(),
+            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer\
+             &assertion=a.b%2Bc%2Fd%3De+f*%7E"
+        );
+        assert_eq!(got.header("authorization"), None);
+        assert_eq!(form_body(&[]), "");
+        assert_eq!(form_body(&[("é", "-._*")]), "%C3%A9=-._*");
+    }
+
+    #[tokio::test]
+    async fn a_401_fetches_an_issued_token_again_once() {
+        let server = FakeServer::start(vec![
+            FakeRoute::new("GET", "/q")
+                .auth("Bearer tok-2")
+                .reply(Reply::json(200, &serde_json::json!({"ok": true}))),
+        ])
+        .await;
+        let (token, fetches) =
+            crate::drivers::common::token::tests::issued(Some(Duration::from_secs(3600)));
+        let client = plain(
+            &server.url(""),
+            Credential::Bearer(token),
+            RetryPolicy::NONE,
+        );
+        let reply: serde_json::Value = client.json(client.get("/q").unwrap(), None).await.unwrap();
+        assert_eq!(reply, serde_json::json!({"ok": true}));
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        // Reused while it lasts.
+        client.send(client.get("/q").unwrap(), None).await.unwrap();
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        assert_eq!(server.requests().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_proxy_carries_requests_but_never_to_a_tunnel_or_this_machine() {
+        let proxy = FakeServer::start(vec![
+            FakeRoute::new("*", "http://*").reply(Reply::text(200, "via proxy")),
+        ])
+        .await;
+        let target = FakeServer::start(vec![FakeRoute::new("*", "/*").reply(Reply::ok())]).await;
+        install_crypto();
+        let through = |base: &str, tunnel: Option<SocketAddr>| {
+            let options = HttpOptions {
+                proxy: Some(proxy.url("")),
+                ..HttpOptions::default()
+            };
+            HttpClient::new(
+                HttpEndpoint::new(base, tunnel).unwrap(),
+                options,
+                Credential::None,
+            )
+            .unwrap()
+        };
+        // A server elsewhere: the request goes to the proxy, in absolute form.
+        let client = through("http://db.example.test:9200", None);
+        let reply = client
+            .send(client.get("/x?y=1").unwrap(), None)
+            .await
+            .unwrap();
+        assert_eq!(reply.text().await.unwrap(), "via proxy");
+        let got = proxy.requests().pop().unwrap();
+        assert_eq!(got.path, "http://db.example.test:9200/x");
+        assert_eq!(got.query.as_deref(), Some("y=1"));
+        // This machine and a tunnel are reached directly.
+        let client = through(&target.url(""), None);
+        client
+            .send(client.get("/local").unwrap(), None)
+            .await
+            .unwrap();
+        let client = through("http://db.example.test:9200", Some(target.addr()));
+        client
+            .send(client.get("/tunnel").unwrap(), None)
+            .await
+            .unwrap();
+        let paths: Vec<String> = target.requests().into_iter().map(|r| r.path).collect();
+        assert_eq!(paths, ["/local", "/tunnel"]);
+        assert_eq!(proxy.requests().len(), 1);
+        // Which endpoints a proxy, the system's too, may carry.
+        let uses = |base: &str, tunnel: Option<SocketAddr>| {
+            uses_proxy(&HttpEndpoint::new(base, tunnel).unwrap())
+        };
+        assert!(uses("https://search.example.com", None));
+        assert!(uses("http://10.0.0.5:8123", None));
+        for local in [
+            "http://localhost:9200",
+            "http://LOCALHOST",
+            "http://es.localhost",
+            "http://127.0.0.1",
+            "http://127.0.0.2:1",
+            "http://[::1]:9200",
+            "http://[::ffff:127.0.0.1]",
+        ] {
+            assert!(!uses(local, None), "{local}");
+        }
+        assert!(!uses("https://search.example.com", Some(target.addr())));
+        let bad = HttpOptions {
+            proxy: Some("http://ann:s3cret@[bad".into()),
+            ..HttpOptions::default()
+        };
+        let endpoint = HttpEndpoint::new("https://search.example.com", None).unwrap();
+        let err = HttpClient::new(endpoint, bad, Credential::None).unwrap_err();
+        assert_eq!(err.code(), "INVALID_INPUT");
+        assert!(!err.to_string().contains("s3cret"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_client_certificate_is_shown_and_verification_can_be_skipped() {
+        let server = TlsServer::requiring_client_cert();
+        let base = format!("https://localhost:{}", server.addr().port());
+        // Skip-verify (`require`): the test CA is trusted by nobody, and the server is reached.
+        let skip = |identity| HttpTls {
+            mode: SslMode::Require,
+            ca_path: None,
+            identity,
+            pin_sha256: None,
+        };
+        let client = tls_client(&base, None, skip(Some(client_identity()))).unwrap();
+        assert_eq!(get(&client).await.unwrap(), 200);
+        let seen = server.requests().pop().unwrap();
+        assert_eq!(
+            seen.client_cert.as_deref(),
+            Some(cert_der(CLIENT_CERT_PEM).as_ref())
+        );
+        // Without the certificate the server refuses the client.
+        let client = tls_client(&base, None, skip(None)).unwrap();
+        assert!(get(&client).await.is_err());
+        // Verifying, the certificate is not enough: the server's CA is not trusted.
+        let verified = HttpTls {
+            identity: Some(client_identity()),
+            ..HttpTls::verified()
+        };
+        let client = tls_client(&base, None, verified).unwrap();
+        assert_eq!(get(&client).await.unwrap_err().code(), "CONNECT_FAILED");
+        // With the CA file, both sides check out.
+        let ca = ca_file();
+        let both = HttpTls {
+            mode: SslMode::VerifyFull,
+            ca_path: Some(ca.path().to_string_lossy().into_owned()),
+            identity: Some(client_identity()),
+            pin_sha256: None,
+        };
+        let client = tls_client(&base, None, both).unwrap();
+        assert_eq!(get(&client).await.unwrap(), 200);
+        assert_eq!(server.requests().len(), 2);
+    }
+
+    /// Elasticsearch on Amazon OpenSearch: a path with an encoded id, the lane's own headers and
+    /// a raw body, signed after they are final with every header, the body hash among them.
+    #[cfg(feature = "common-aws")]
+    #[tokio::test]
+    async fn sigv4_signs_an_encoded_path_and_every_header_the_request_carries() {
+        use super::super::aws::{CredentialProvider, Credentials, Signer, sigv4};
+        let server = FakeServer::start(vec![FakeRoute::new("*", "/*").reply(Reply::ok())]).await;
+        install_crypto();
+        let creds = Credentials::static_keys("AKID", "secret", Some("session")).unwrap();
+        let signer = Signer::new(
+            "aoss",
+            "us-east-1",
+            Arc::new(CredentialProvider::fixed(creds.clone())),
+        );
+        let endpoint =
+            HttpEndpoint::new("http://abc.us-east-1.aoss.test:9200", Some(server.addr())).unwrap();
+        let client =
+            HttpClient::new(endpoint, HttpOptions::default(), Credential::Sigv4(signer)).unwrap();
+        let req = client
+            .request_exact(
+                Method::PUT,
+                "/logs-*/_doc/a%2Fb%20c?refresh=wait_for&q=x%20y",
+            )
+            .unwrap()
+            .header("x-opaque-id", "tabler-7")
+            .header(CONTENT_TYPE, "application/json")
+            .body(b"{\"a\":\"\xc3\xa9\"}".to_vec());
+        assert_eq!(client.send(req, None).await.unwrap().status(), 200);
+        let got = server.requests().pop().unwrap();
+        assert_eq!(got.path, "/logs-*/_doc/a%2Fb%20c");
+        let auth = got.header("authorization").unwrap();
+        let names = auth
+            .split("SignedHeaders=")
+            .nth(1)
+            .and_then(|r| r.split(',').next())
+            .unwrap();
+        assert_eq!(
+            names,
+            "content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token;x-opaque-id"
+        );
+        let headers: Vec<(String, String)> = names
+            .split(';')
+            .map(|n| (n.to_string(), got.header(n).unwrap().to_string()))
+            .collect();
+        let at = chrono::NaiveDateTime::parse_from_str(
+            got.header("x-amz-date").unwrap(),
+            "%Y%m%dT%H%M%SZ",
+        )
+        .unwrap()
+        .and_utc();
+        let expected = sigv4::sign_parts(
+            "PUT",
+            &got.path,
+            got.query.as_deref().unwrap_or(""),
+            &headers,
+            &got.body,
+            &creds,
+            at,
+            "us-east-1",
+            "aoss",
+        );
+        assert_eq!(auth, expected.authorization);
+        assert!(
+            expected
+                .canonical_request
+                .starts_with("PUT\n/logs-%2A/_doc/a%252Fb%2520c\n")
+        );
+    }
+
     #[test]
     fn endpoints_take_http_urls_and_the_tunnel_of_a_target() {
         let p = profile(Driver::Elasticsearch, None);
@@ -1517,6 +2259,7 @@ mod tests {
             max_retries: 10,
             base_delay: Duration::from_millis(100),
             max_delay: Duration::from_secs(1),
+            repeat: Repeat::Safe,
         };
         for _ in 0..20 {
             let first = p.backoff(0);

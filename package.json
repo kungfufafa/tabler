@@ -26,6 +26,7 @@
     "test:lanes": "node --test dev/scripts/lane-lib.test.mjs",
     "dev:db:seed": "sh dev/scripts/db-seed.sh",
     "dev:sqlite:build": "sh dev/scripts/build-sqlite.sh",
+    "dev:duckdb:build": "sh dev/scripts/build-duckdb.sh",
     "dev:db:up": "docker compose -f dev/docker-compose.yml up -d --wait",
     "dev:db:down": "docker compose -f dev/docker-compose.yml down",
     "dev:db:reset": "docker compose -f dev/docker-compose.yml down -v && docker compose -f dev/docker-compose.yml up -d --wait"

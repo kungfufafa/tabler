@@ -30,6 +30,8 @@ src-tauri/target
 src-tauri/gen/schemas
 dev/fixtures/*.sqlite
 dev/fixtures/*.sqlite-*
+dev/fixtures/*.duckdb
+dev/fixtures/*.duckdb.wal
 dev/ssh/
 dev/seed/chinook/
 test-results

@@ -773,7 +773,9 @@ export const DRIVER_CATALOG = {
       ],
       "secret": "passwordOrToken",
       "secretIsToken": true,
-      "extraSecrets": [],
+      "extraSecrets": [
+        "sessionToken"
+      ],
       "commandTtlSecs": 3000,
       "required": [],
       "requiredParams": [],

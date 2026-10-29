@@ -1,6 +1,7 @@
 //! TLS for the tests of `tls_client` and the HTTP client: a test CA, a server certificate it
-//! signed (for `db.example.test`, `localhost` and `127.0.0.1`, both valid until 2126), and a
-//! small HTTPS server that records the name each client asked for (SNI) and the request it sent.
+//! signed (for `db.example.test`, `localhost` and `127.0.0.1`, both valid until 2126), a client
+//! certificate it signed (`CN=tabler-client`, until 2125), and a small HTTPS server that records
+//! the name each client asked for (SNI), the certificate it showed and the request it sent.
 //! Made once with the `openssl` CLI (P-256 keys).
 
 use std::io::{Read as _, Write as _};
@@ -50,6 +51,29 @@ EknduUOR04/7wcQnHbUOrddE6LnD75LumgHxCF/YRgoSYz+rlXmJCQPU
 -----END PRIVATE KEY-----
 ";
 
+/// A client certificate signed by [`CA_PEM`] (`CN=tabler-client`, extended key usage
+/// `clientAuth`): what a PKI realm or an X.509 user accepts.
+pub const CLIENT_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIBmzCCAUCgAwIBAgIEL40AATAKBggqhkjOPQQDAjAZMRcwFQYDVQQDDA5UYWJs
+ZXIgVGVzdCBDQTAgFw0yNjEwMjkwNjQ3MDhaGA8yMTI1MDUyMzA2NDcwOFowGDEW
+MBQGA1UEAwwNdGFibGVyLWNsaWVudDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IA
+BD64mXobT+9Ma2qNIo/7W6F3Z3V/rs7ARbdPaS/XnLKwEpMHL6g01W9K4O/zT8zM
+ecEFjUCHfcIjp1yEAMcaHqCjdTBzMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQD
+AgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMCMB0GA1UdDgQWBBRpx9zBgMrb2mtpsSQQ
+Wm+BqDTqWDAfBgNVHSMEGDAWgBTIbtk2z638GIX31x8DdsldrXFrnDAKBggqhkjO
+PQQDAgNJADBGAiEAt+XsfvBS+O6yOFj4NxXwNRhZBMNLQSQrkP3gxYaCNmUCIQC7
+cB+BdVgAx41jDly4/oJF30aEvIYmC8N6rp6qDEQTJA==
+-----END CERTIFICATE-----
+";
+
+/// The private key of [`CLIENT_CERT_PEM`] (PKCS#8).
+pub const CLIENT_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgz8r+0ais0LN7adAl
+cGxLOmJZy+z6JKmOoMYJsGXzwxahRANCAAQ+uJl6G0/vTGtqjSKP+1uhd2d1f67O
+wEW3T2kv15yysBKTBy+oNNVvSuDv80/MzHnBBY1Ah33CI6dchADHGh6g
+-----END PRIVATE KEY-----
+";
+
 pub fn cert_der(pem: &str) -> CertificateDer<'static> {
     CertificateDer::from_pem_slice(pem.as_bytes()).expect("a certificate")
 }
@@ -61,15 +85,40 @@ pub fn ca_file() -> tempfile::NamedTempFile {
     file
 }
 
+/// [`CLIENT_CERT_PEM`] and its key, as `tls_files::load_client_certificate` reads them.
+pub fn client_identity() -> crate::tls_files::ClientCertificate {
+    crate::tls_files::ClientCertificate {
+        certs: vec![cert_der(CLIENT_CERT_PEM)],
+        key: PrivateKeyDer::from_pem_slice(CLIENT_KEY_PEM.as_bytes()).expect("a key"),
+    }
+}
+
 /// The server's side: the server certificate followed by the CA, as servers with their own CA
 /// (Elasticsearch's generated one) present them.
 pub fn server_config() -> Arc<rustls::ServerConfig> {
+    server_config_with(false)
+}
+
+/// [`server_config`], with `client_auth` refusing a client without a certificate [`CA_PEM`]
+/// signed.
+fn server_config_with(client_auth: bool) -> Arc<rustls::ServerConfig> {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let key = PrivateKeyDer::from_pem_slice(SERVER_KEY_PEM.as_bytes()).expect("a key");
-    let config = rustls::ServerConfig::builder_with_provider(provider)
+    let builder = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
-        .expect("protocol versions")
-        .with_no_client_auth()
+        .expect("protocol versions");
+    let builder = if client_auth {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert_der(CA_PEM)).expect("the CA");
+        let verifier =
+            rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider)
+                .build()
+                .expect("a client verifier");
+        builder.with_client_cert_verifier(verifier)
+    } else {
+        builder.with_no_client_auth()
+    };
+    let config = builder
         .with_single_cert(vec![cert_der(SERVER_CERT_PEM), cert_der(CA_PEM)], key)
         .expect("a server config");
     Arc::new(config)
@@ -80,6 +129,8 @@ pub fn server_config() -> Arc<rustls::ServerConfig> {
 pub struct TlsRequest {
     /// The name the client sent (SNI); none for an IP address.
     pub sni: Option<String>,
+    /// The certificate the client showed (DER), if it was asked for one.
+    pub client_cert: Option<Vec<u8>>,
     /// The request line.
     pub line: String,
     /// Names lower-cased.
@@ -96,7 +147,8 @@ impl TlsRequest {
 }
 
 /// An HTTPS server on 127.0.0.1 with [`server_config`]: it answers every request `200 ok` and
-/// records it; a client that refuses its certificate leaves no record. It stops when dropped.
+/// records it; a client that refuses its certificate, or that the server refuses, leaves no
+/// record. It stops when dropped.
 pub struct TlsServer {
     addr: SocketAddr,
     log: Arc<Mutex<Vec<TlsRequest>>>,
@@ -105,11 +157,19 @@ pub struct TlsServer {
 
 impl TlsServer {
     pub fn start() -> TlsServer {
+        TlsServer::serving(server_config())
+    }
+
+    /// A server that wants a client certificate [`CA_PEM`] signed ([`CLIENT_CERT_PEM`]).
+    pub fn requiring_client_cert() -> TlsServer {
+        TlsServer::serving(server_config_with(true))
+    }
+
+    fn serving(config: Arc<rustls::ServerConfig>) -> TlsServer {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("local address");
         let log = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
-        let config = server_config();
         {
             let (log, stop) = (log.clone(), stop.clone());
             std::thread::spawn(move || {
@@ -166,7 +226,17 @@ fn serve(sock: TcpStream, config: Arc<rustls::ServerConfig>, log: Arc<Mutex<Vec<
         .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
         .collect();
     let sni = tls.conn.server_name().map(str::to_string);
-    log.lock().unwrap().push(TlsRequest { sni, line, headers });
+    let client_cert = tls
+        .conn
+        .peer_certificates()
+        .and_then(|certs| certs.first())
+        .map(|cert| cert.to_vec());
+    log.lock().unwrap().push(TlsRequest {
+        sni,
+        client_cert,
+        line,
+        headers,
+    });
     let _ = tls.write_all(
         b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok",
     );
