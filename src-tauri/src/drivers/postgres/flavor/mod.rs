@@ -1,17 +1,198 @@
 //! PostgreSQL-compatible engines served by the PostgreSQL driver (CockroachDB, Greenplum,
-//! Redshift). The engine-specific code lives in `imp`, built with the pg-flavors lane's feature.
+//! Redshift). The engine-specific code lives in `imp`, built with the pg-flavors lane's feature,
+//! and reaches the driver only through `PgFlavorHooks`.
 //!
 //! Until that code takes a flavor over, a PostgreSQL session on one runs the plain PostgreSQL
-//! code paths, so it offers less (`adjust_caps`), and a Redshift server, whose SQL the core
-//! generators do not write, is refused (`refuse_unsupported`).
+//! code paths (`VANILLA`), so it offers less (`adjust_caps`), and a Redshift server, whose SQL the
+//! core generators do not write, is refused (`refuse_unsupported`).
 
 #[cfg(feature = "drv-pg-flavors")]
 pub mod imp;
 
+use async_trait::async_trait;
+
+use super::introspect::Traced;
 use crate::error::AppError;
 use crate::sqlgen::SqlDialect;
+use crate::sqlgen::dialect::spec::ExplainForm;
+use crate::types::admin::{KillOutcome, KillScope, ProcessRow};
 use crate::types::caps::{Feature, SessionCaps};
 use crate::types::driver::{Flavor, KindId, PgFlavor};
+use crate::types::profile::ConnectionProfile;
+use crate::types::query::ExplainMode;
+use crate::types::schema::{
+    CompletionMetadata, DatabaseInfo, SchemaInfo, TableMeta, TableRef, TableSummary,
+};
+
+/// What the PostgreSQL driver does differently on one engine. Every hook defaults to plain
+/// PostgreSQL: a catalog or admin hook answering `None` leaves the work to the driver's own
+/// queries. The driver picks the hooks once, at connect, for the engine the server names
+/// (`hooks`).
+#[async_trait]
+pub(crate) trait PgFlavorHooks: Send + Sync {
+    /// The engine; `None` for plain PostgreSQL (`VANILLA`), whose admin hooks the session then
+    /// leaves to the callers' SQL without taking a connection for them.
+    fn flavor(&self) -> Option<PgFlavor>;
+
+    /// The SQL the session speaks (Redshift: `SqlDialect::Redshift`).
+    fn sql_dialect(&self) -> SqlDialect {
+        SqlDialect::Postgres
+    }
+
+    /// The database a profile without one connects to.
+    fn default_database(&self) -> &'static str {
+        "postgres"
+    }
+
+    /// The statements every new server connection runs, pool and editor alike. `base` is plain
+    /// PostgreSQL's (`connect::session_init_statements`); `read_only`: the session must refuse
+    /// writes (the profile says so, or its client encoding is not UTF-8).
+    fn init_sql(
+        &self,
+        _profile: &ConnectionProfile,
+        _read_only: bool,
+        base: Vec<String>,
+    ) -> Vec<String> {
+        base
+    }
+
+    /// Sends the init statements one at a time instead of as one batch.
+    fn init_one_by_one(&self) -> bool {
+        false
+    }
+
+    async fn list_databases(&self, _c: &Traced<'_>) -> Option<Result<Vec<DatabaseInfo>, AppError>> {
+        None
+    }
+
+    async fn list_schemas(&self, _c: &Traced<'_>) -> Option<Result<Vec<SchemaInfo>, AppError>> {
+        None
+    }
+
+    async fn list_tables(
+        &self,
+        _c: &Traced<'_>,
+        _schema: &str,
+    ) -> Option<Result<Vec<TableSummary>, AppError>> {
+        None
+    }
+
+    async fn table_meta(
+        &self,
+        _c: &Traced<'_>,
+        _table: &TableRef,
+    ) -> Option<Result<TableMeta, AppError>> {
+        None
+    }
+
+    async fn view_definition(
+        &self,
+        _c: &Traced<'_>,
+        _table: &TableRef,
+    ) -> Option<Result<Option<String>, AppError>> {
+        None
+    }
+
+    async fn completion_metadata(
+        &self,
+        _c: &Traced<'_>,
+    ) -> Option<Result<CompletionMetadata, AppError>> {
+        None
+    }
+
+    /// The server's sessions (`DbSession::list_processes`).
+    async fn list_processes(&self, _c: &Traced<'_>) -> Option<Result<Vec<ProcessRow>, AppError>> {
+        None
+    }
+
+    /// Kills processes of `list_processes` (`DbSession::kill_processes`).
+    async fn kill(
+        &self,
+        _c: &Traced<'_>,
+        _ids: &[String],
+        _scope: KillScope,
+    ) -> Option<Vec<KillOutcome>> {
+        None
+    }
+
+    /// The server's own DDL of a table (`DbSession::table_ddl`).
+    async fn table_ddl(
+        &self,
+        _c: &Traced<'_>,
+        _table: &TableRef,
+    ) -> Option<Result<String, AppError>> {
+        None
+    }
+
+    fn explain_form(&self, _mode: ExplainMode) -> Option<ExplainForm> {
+        None
+    }
+
+    /// Grants back what the engine is proven to do: `caps` comes without `UNPROVEN_ON_FLAVORS`
+    /// (`adjust_caps`). `server_version_num` as libpq computes it (`server_version_num`).
+    fn adjust_caps(&self, _caps: &mut SessionCaps, _server_version_num: i32) {}
+
+    /// Runs a transaction (`DbSession::transaction`) the server aborted with a serialization
+    /// failure (40001) again, as CockroachDB asks its clients to.
+    fn retry_serialization(&self) -> bool {
+        false
+    }
+}
+
+/// Plain PostgreSQL: every hook as the driver does it.
+pub(crate) struct Vanilla;
+
+#[async_trait]
+impl PgFlavorHooks for Vanilla {
+    fn flavor(&self) -> Option<PgFlavor> {
+        None
+    }
+}
+
+pub(crate) static VANILLA: Vanilla = Vanilla;
+
+/// The hooks of the engine `flavor` (`None`: plain PostgreSQL): the pg-flavors lane's, when this
+/// build has them, otherwise `VANILLA`.
+pub(crate) fn hooks(flavor: Option<PgFlavor>) -> &'static dyn PgFlavorHooks {
+    #[cfg(feature = "drv-pg-flavors")]
+    if let Some(hooks) = flavor.and_then(imp::hooks) {
+        return hooks;
+    }
+    #[cfg(not(feature = "drv-pg-flavors"))]
+    let _ = flavor;
+    &VANILLA
+}
+
+/// `server_version_num` as libpq computes it from the `server_version` a server reports at
+/// startup (`17.2` → 170002, `9.4.26` → 90426; CockroachDB reports `13.0.0`, Redshift `8.0.2`),
+/// without asking the server, which Redshift could not answer; 0 when it is not a version.
+pub fn server_version_num(server_version: &str) -> i32 {
+    let mut parts = [0i32; 3];
+    let mut count = 0;
+    let mut rest = server_version;
+    while count < parts.len() {
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        // Longer parts are no version (and could overflow below).
+        if digits == 0 || digits > 4 {
+            break;
+        }
+        parts[count] = rest[..digits].parse().unwrap_or(0);
+        count += 1;
+        rest = &rest[digits..];
+        match rest.strip_prefix('.') {
+            Some(after) => rest = after,
+            None => break,
+        }
+    }
+    let [major, minor, patch] = parts;
+    match count {
+        3 => (100 * major + minor) * 100 + patch,
+        2 if major >= 10 => 10_000 * major + minor,
+        2 => (100 * major + minor) * 100,
+        1 => 10_000 * major,
+        _ => 0,
+    }
+}
 
 /// The PostgreSQL-compatible engine a server's `version()` names, if it is not PostgreSQL.
 pub fn detect(version: &str) -> Option<PgFlavor> {
@@ -127,6 +308,114 @@ mod tests {
                 format!("unsupported: {name}: user management is not available")
             );
         }
+    }
+
+    #[test]
+    fn reads_the_server_version_as_libpq_does() {
+        for (version, num) in [
+            ("17.2", 170_002),
+            ("17.2 (Debian 17.2-1.pgdg120+1)", 170_002),
+            ("16beta1", 160_000),
+            ("9.6.24", 90_624),
+            ("9.6devel", 90_600),
+            ("9.4.26", 90_426),
+            ("12.12", 120_012),
+            ("14.4", 140_004),
+            ("13.0.0", 130_000),
+            ("8.0.2", 80_002),
+            ("", 0),
+            ("devel", 0),
+            ("123456.1", 0),
+        ] {
+            assert_eq!(server_version_num(version), num, "{version}");
+        }
+    }
+
+    /// Without the lane every engine gets `VANILLA`, and `VANILLA` changes nothing: no SQL of its
+    /// own, the init it is given, the caps it is given.
+    #[tokio::test]
+    async fn vanilla_is_plain_postgres() {
+        use crate::drivers::SqlTrace;
+        use crate::drivers::postgres::testing::FakePg;
+        use crate::types::profile::ProfileOptions;
+
+        assert_eq!(hooks(None).flavor(), None);
+        for flavor in [
+            PgFlavor::Cockroachdb,
+            PgFlavor::Greenplum,
+            PgFlavor::Redshift,
+        ] {
+            let picked = hooks(Some(flavor)).flavor();
+            // With the lane: its hooks, or VANILLA while it has none for the engine.
+            let lane = cfg!(feature = "drv-pg-flavors") && picked == Some(flavor);
+            assert!(lane || picked.is_none(), "{flavor:?}: {picked:?}");
+        }
+        let hooks: &dyn PgFlavorHooks = &VANILLA;
+        assert_eq!(hooks.sql_dialect(), SqlDialect::Postgres);
+        assert_eq!(hooks.default_database(), "postgres");
+        assert!(!hooks.init_one_by_one() && !hooks.retry_serialization());
+        let base = vec!["SET a = 1;".to_string(), "SET b = 2;".to_string()];
+        let profile = crate::types::profile::ConnectionProfile {
+            id: uuid::Uuid::nil(),
+            name: "p".into(),
+            color: None,
+            group: None,
+            driver: Driver::Postgres,
+            host: None,
+            port: None,
+            user: None,
+            database: None,
+            ssl: crate::types::profile::SslMode::Disable,
+            ssl_ca_path: None,
+            sqlite_path: None,
+            ssh: None,
+            options: ProfileOptions::default(),
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_connected_at: None,
+        };
+        for read_only in [false, true] {
+            assert_eq!(hooks.init_sql(&profile, read_only, base.clone()), base);
+        }
+        for mode in [ExplainMode::Plan, ExplainMode::Analyze] {
+            assert_eq!(hooks.explain_form(mode), None);
+        }
+        let flavored = adjust_caps(SessionCaps::base(
+            Driver::Postgres,
+            SqlDialect::Postgres,
+            Some(Flavor::Greenplum),
+        ));
+        let mut caps = flavored.clone();
+        hooks.adjust_caps(&mut caps, 90_426);
+        assert_eq!(caps, flavored);
+
+        crate::testkit::install_crypto();
+        let pg = FakePg::new().start().await;
+        let mut config = tokio_postgres::Config::new();
+        config
+            .host("127.0.0.1")
+            .port(pg.port())
+            .user("u")
+            .password("pw")
+            .dbname("d");
+        let (client, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(connection);
+        let trace = SqlTrace::default();
+        let c = Traced::new(&client, &trace, 170_002);
+        let table = TableRef::new(Some("public"), "t");
+        assert!(hooks.list_databases(&c).await.is_none());
+        assert!(hooks.list_schemas(&c).await.is_none());
+        assert!(hooks.list_tables(&c, "public").await.is_none());
+        assert!(hooks.table_meta(&c, &table).await.is_none());
+        assert!(hooks.view_definition(&c, &table).await.is_none());
+        assert!(hooks.completion_metadata(&c).await.is_none());
+        assert!(hooks.list_processes(&c).await.is_none());
+        let ids = ["7".to_string()];
+        assert!(hooks.kill(&c, &ids, KillScope::Query).await.is_none());
+        assert!(hooks.table_ddl(&c, &table).await.is_none());
+        assert!(pg.queries().is_empty(), "{:?}", pg.queries());
+        assert!(trace.drain().is_empty());
     }
 
     #[test]

@@ -15,7 +15,7 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, ConfigBuilder, DigitallySignedStruct, RootCertStore, SignatureScheme};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_postgres::tls::MakeTlsConnect;
-use tokio_postgres::{Client, Config};
+use tokio_postgres::{Client, Config, SimpleQueryMessage};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::conn_options::{check_postgres as check_options, extra_params, is_utf8_encoding};
@@ -284,8 +284,9 @@ pub fn make_tls(target: &ConnectTarget<'_>) -> Result<PgTls, AppError> {
     })
 }
 
-/// Translates a profile into a `tokio_postgres::Config`.
-pub fn make_config(target: &ConnectTarget<'_>) -> Config {
+/// Translates a profile into a `tokio_postgres::Config`; a profile without a database connects to
+/// `default_database` (the engine's, `PgFlavorHooks::default_database`).
+pub fn make_config(target: &ConnectTarget<'_>, default_database: &str) -> Config {
     let profile = target.profile;
     let mut config = Config::new();
     config.host(target.host());
@@ -301,7 +302,7 @@ pub fn make_config(target: &ConnectTarget<'_>) -> Config {
             .database
             .as_deref()
             .filter(|d| !d.is_empty())
-            .unwrap_or("postgres"),
+            .unwrap_or(default_database),
     );
     // Checked by `check_options` (`make_tls`) before anything connects.
     let extra = extra_params(&profile.options).unwrap_or_default();
@@ -337,44 +338,100 @@ pub fn connect_timeout(options: &ProfileOptions) -> Duration {
         .unwrap_or(DEFAULT_CONNECT_TIMEOUT)
 }
 
-/// The statements run on every new server connection (pool and editor alike).
-pub fn session_init_sql(options: &ProfileOptions) -> String {
-    let mut sql = String::from(
-        "SET DateStyle = 'ISO, YMD'; SET IntervalStyle = 'postgres'; SET extra_float_digits = 3; ",
-    );
-    let encoding = options
+/// The client encoding of a session: the profile's, when it is a valid name, otherwise UTF-8.
+fn client_encoding(options: &ProfileOptions) -> &str {
+    options
         .encoding()
         .filter(|e| opt_sql::valid_encoding(e))
-        .unwrap_or("UTF8");
-    sql.push_str(&opt_sql::pg_client_encoding(encoding));
+        .unwrap_or("UTF8")
+}
+
+/// Whether the session refuses writes: the profile is read-only, or its encoding is not UTF-8
+/// (Tabler reads and writes text as UTF-8, so the server must refuse the writes that would be
+/// stored mis-encoded).
+pub fn read_only_session(options: &ProfileOptions) -> bool {
+    options.read_only || !is_utf8_encoding(Some(client_encoding(options)))
+}
+
+/// The statements plain PostgreSQL runs on every new server connection (pool and editor alike);
+/// an engine adjusts them (`PgFlavorHooks::init_sql`).
+pub fn session_init_statements(options: &ProfileOptions) -> Vec<String> {
+    let mut sql = vec![
+        "SET DateStyle = 'ISO, YMD';".to_string(),
+        "SET IntervalStyle = 'postgres';".to_string(),
+        "SET extra_float_digits = 3;".to_string(),
+        opt_sql::pg_client_encoding(client_encoding(options)),
+    ];
     if let Some(tz) = options.timezone.as_deref().filter(|t| !t.trim().is_empty()) {
-        sql.push_str(&format!(
-            " SET TIME ZONE '{}';",
+        sql.push(format!(
+            "SET TIME ZONE '{}';",
             tz.trim().replace('\'', "''")
         ));
     }
-    // Also a session whose encoding is not UTF-8: Tabler reads and writes text as UTF-8, so the
-    // server must refuse the writes that would be stored mis-encoded.
-    if options.read_only || !is_utf8_encoding(Some(encoding)) {
-        sql.push_str(" SET default_transaction_read_only = on;");
+    if read_only_session(options) {
+        sql.push("SET default_transaction_read_only = on;".to_string());
     }
     // The extra parameters' server settings (checked by `check_options` before connecting).
     for (name, value) in extra_params(options).unwrap_or_default().settings {
-        sql.push(' ');
-        sql.push_str(&opt_sql::pg_set_config(&name, &value));
+        sql.push(opt_sql::pg_set_config(&name, &value));
     }
     if let Some(extra) = options
         .startup_sql
         .as_deref()
         .filter(|s| !s.trim().is_empty())
     {
-        sql.push(' ');
-        sql.push_str(extra.trim());
-        if !extra.trim_end().ends_with(';') {
-            sql.push(';');
-        }
+        let extra = extra.trim();
+        sql.push(if extra.ends_with(';') {
+            extra.to_string()
+        } else {
+            format!("{extra};")
+        });
     }
     sql
+}
+
+/// The init every new connection of a session runs (the editor's and the pool's).
+#[derive(Clone)]
+pub struct SessionInit {
+    statements: Arc<[String]>,
+    /// The statements as the one batch plain PostgreSQL sends.
+    batch: Arc<str>,
+    one_by_one: bool,
+}
+
+impl SessionInit {
+    pub fn new(statements: Vec<String>, one_by_one: bool) -> SessionInit {
+        SessionInit {
+            batch: statements.join(" ").into(),
+            statements: statements.into(),
+            one_by_one,
+        }
+    }
+
+    /// Runs the init on a new connection: as one batch, or (`one_by_one`) one statement at a time.
+    pub async fn run(&self, client: &Client) -> Result<(), tokio_postgres::Error> {
+        if !self.one_by_one {
+            return client.batch_execute(&self.batch).await;
+        }
+        for statement in self.statements.iter() {
+            client.batch_execute(statement).await?;
+        }
+        Ok(())
+    }
+}
+
+/// What the server says it is (`version()`), asked before the session init, which depends on the
+/// engine (CockroachDB, Greenplum and Redshift name themselves there). One simple-protocol round
+/// trip.
+pub async fn server_version(client: &Client) -> Result<String, AppError> {
+    let messages = client.simple_query("SELECT version()").await?;
+    Ok(messages
+        .iter()
+        .find_map(|m| match m {
+            SimpleQueryMessage::Row(row) => row.get(0).map(str::to_string),
+            _ => None,
+        })
+        .unwrap_or_default())
 }
 
 fn is_tls_handshake_error(err: &tokio_postgres::Error) -> bool {
@@ -537,26 +594,28 @@ fn spawn_connection(
     (lost, task.abort_handle(), notices)
 }
 
-/// Opens the dedicated editor client and runs the session init on it. With `prefer`, a TLS
-/// handshake failure is retried without TLS (as libpq does). Returns the config actually used
-/// (pinned to the address that worked) so the pool shares the same transport (see
-/// [`pool_config`]) and cancel requests reach the editor's server.
+/// The dedicated editor client, connected (`open_editor`).
+pub struct Editor {
+    /// The config actually used (pinned to the address that worked), so the pool shares the
+    /// same transport (see [`pool_config`]) and cancel requests reach the editor's server.
+    pub config: Config,
+    pub client: Client,
+    /// Set once the connection task ends (`spawn_connection`).
+    pub lost: Arc<AtomicBool>,
+    pub task: tokio::task::AbortHandle,
+    pub notices: NoticeBuffer,
+    /// The `server_version` the server reported at startup.
+    pub server_version: Option<String>,
+}
+
+/// Opens the dedicated editor client; the caller runs the session init on it. With `prefer`, a
+/// TLS handshake failure is retried without TLS (as libpq does).
 pub async fn open_editor(
     mut config: Config,
     tls: &PgTls,
-    init_sql: &str,
     timeout: Duration,
     prefer: bool,
-) -> Result<
-    (
-        Config,
-        Client,
-        Arc<AtomicBool>,
-        tokio::task::AbortHandle,
-        NoticeBuffer,
-    ),
-    AppError,
-> {
+) -> Result<Editor, AppError> {
     let (client, connection) = match connect_once(&mut config, tls, timeout).await {
         Ok(pair) => pair,
         Err(ConnectFailure::TlsHandshake(e)) if prefer => {
@@ -568,9 +627,16 @@ pub async fn open_editor(
         }
         Err(e) => return Err(e.into()),
     };
+    let server_version = connection.parameter("server_version").map(str::to_string);
     let (lost, task, notices) = spawn_connection(connection);
-    client.batch_execute(init_sql).await?;
-    Ok((config, client, lost, task, notices))
+    Ok(Editor {
+        config,
+        client,
+        lost,
+        task,
+        notices,
+        server_version,
+    })
 }
 
 /// The worker pool's connect settings: the profile's (`original`) with the transport the editor
@@ -620,12 +686,12 @@ impl deadpool_postgres::Connect for PoolConnect {
     }
 }
 
-/// Builds the worker pool; every new connection runs the session init batch. `token`: the
-/// password source of a profile whose password comes from a command (see [`PoolConnect`]).
+/// Builds the worker pool; every new connection runs the session init. `token`: the password
+/// source of a profile whose password comes from a command (see [`PoolConnect`]).
 pub fn build_pool(
     config: Config,
     tls: PgTls,
-    init_sql: String,
+    init: SessionInit,
     token: Option<Arc<CommandPassword>>,
 ) -> Result<Pool, AppError> {
     let manager = deadpool_postgres::Manager::from_connect(
@@ -635,18 +701,12 @@ pub fn build_pool(
             recycling_method: RecyclingMethod::Fast,
         },
     );
-    let init: Arc<str> = Arc::from(init_sql);
     Pool::builder(manager)
         .max_size(4)
         .post_create(Hook::async_fn(
             move |client: &mut ClientWrapper, _metrics: &Metrics| {
                 let init = init.clone();
-                Box::pin(async move {
-                    client
-                        .batch_execute(&init)
-                        .await
-                        .map_err(HookError::Backend)
-                })
+                Box::pin(async move { init.run(client).await.map_err(HookError::Backend) })
             },
         ))
         .build()
@@ -669,7 +729,23 @@ pub fn pool_error(err: deadpool_postgres::PoolError) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::drivers::postgres::flavor::{PgFlavorHooks, VANILLA};
+    use crate::drivers::postgres::testing::FakePg;
     use crate::types::profile::{ConnectionProfile, Driver};
+
+    /// The init batch plain PostgreSQL sends on every connection of a profile with `options`.
+    fn session_init_sql(options: &ProfileOptions) -> String {
+        let mut p = profile();
+        p.options = options.clone();
+        let statements = VANILLA.init_sql(
+            &p,
+            read_only_session(options),
+            session_init_statements(options),
+        );
+        let init = SessionInit::new(statements, VANILLA.init_one_by_one());
+        assert!(!init.one_by_one);
+        init.batch.to_string()
+    }
 
     fn profile() -> ConnectionProfile {
         ConnectionProfile {
@@ -702,7 +778,7 @@ mod tests {
             password: Some("pw"),
             host_override: Some(("127.0.0.1".into(), 50000)),
         };
-        let cfg = make_config(&target);
+        let cfg = make_config(&target, "postgres");
         assert_eq!(cfg.get_ports(), &[50000]);
         assert!(matches!(
             cfg.get_hosts()[0],
@@ -744,7 +820,7 @@ mod tests {
             password: None,
             host_override: None,
         };
-        let cfg = make_config(&target);
+        let cfg = make_config(&target, "postgres");
         assert_eq!(cfg.get_application_name(), Some("reports"));
         assert_eq!(cfg.get_options(), Some("-c geqo=off"));
         assert_eq!(
@@ -775,11 +851,14 @@ mod tests {
         assert_eq!(make_tls(&target).err().unwrap().code(), "INVALID_INPUT");
         // The defaults stay as they were.
         let plain = profile();
-        let cfg = make_config(&ConnectTarget {
-            profile: &plain,
-            password: None,
-            host_override: None,
-        });
+        let cfg = make_config(
+            &ConnectTarget {
+                profile: &plain,
+                password: None,
+                host_override: None,
+            },
+            "postgres",
+        );
         assert_eq!(cfg.get_application_name(), Some("tabler"));
         assert!(session_init_sql(&plain.options).contains("SET client_encoding = 'UTF8';"));
     }
@@ -821,6 +900,40 @@ mod tests {
         assert!(sql.ends_with("SET search_path = app;"));
         opts.timezone = Some("it's".into());
         assert!(session_init_sql(&opts).contains("SET TIME ZONE 'it''s';"));
+    }
+
+    /// The session init of plain PostgreSQL, byte for byte as it was before the flavor seam.
+    #[test]
+    fn the_session_init_stays_byte_identical() {
+        const BASE: &str = "SET DateStyle = 'ISO, YMD'; SET IntervalStyle = 'postgres'; \
+                            SET extra_float_digits = 3;";
+        let mut opts = ProfileOptions::default();
+        assert_eq!(
+            session_init_sql(&opts),
+            format!("{BASE} SET client_encoding = 'UTF8';")
+        );
+        opts.encoding = Some("LATIN1".into());
+        opts.timezone = Some(" it's ".into());
+        opts.read_only = true;
+        opts.pg_params = Some("jit=off application_name=x".into());
+        opts.startup_sql = Some("  SET search_path = app\n".into());
+        assert_eq!(
+            session_init_sql(&opts),
+            format!(
+                "{BASE} SET client_encoding = 'LATIN1'; SET TIME ZONE 'it''s'; \
+                 SET default_transaction_read_only = on; SELECT set_config('jit', 'off', false); \
+                 SET search_path = app;"
+            )
+        );
+        opts.encoding = Some("not an encoding".into());
+        opts.timezone = Some("  ".into());
+        opts.read_only = false;
+        opts.pg_params = None;
+        opts.startup_sql = Some("SELECT 1; SELECT 2;  ".into());
+        assert_eq!(
+            session_init_sql(&opts),
+            format!("{BASE} SET client_encoding = 'UTF8'; SELECT 1; SELECT 2;")
+        );
     }
 
     #[test]
@@ -899,97 +1012,12 @@ mod tests {
             .install_default()
             .ok();
         let tls = make_tls(&target).unwrap();
-        let mut config = make_config(&target);
+        let mut config = make_config(&target, "postgres");
         let err = match connect_once(&mut config, &tls, Duration::from_secs(5)).await {
             Ok(_) => panic!("the fake server never accepts"),
             Err(f) => AppError::from(f),
         };
         assert!(err.to_string().contains("no encryption"), "{err}");
-    }
-
-    /// What [`fake_pg`] saw: the passwords of the connections it accepted, and the cancel
-    /// requests (`(pid, secret key)`) it received.
-    #[derive(Clone, Default)]
-    struct FakePg {
-        passwords: Arc<std::sync::Mutex<Vec<String>>>,
-        cancels: Arc<std::sync::Mutex<Vec<(i32, i32)>>>,
-    }
-
-    /// A minimal PostgreSQL server on 127.0.0.1: asks every connection for a cleartext password,
-    /// accepts it, answers every simple query with an empty result and records cancel requests.
-    async fn fake_pg() -> (u16, FakePg) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let seen = FakePg::default();
-        let state = seen.clone();
-        tokio::spawn(async move {
-            let mut pid = 100;
-            while let Ok((socket, _)) = listener.accept().await {
-                pid += 1;
-                tokio::spawn(serve_fake_pg(socket, state.clone(), pid));
-            }
-        });
-        (port, seen)
-    }
-
-    async fn serve_fake_pg(
-        mut socket: tokio::net::TcpStream,
-        seen: FakePg,
-        pid: i32,
-    ) -> std::io::Result<()> {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        async fn body(socket: &mut tokio::net::TcpStream) -> std::io::Result<Vec<u8>> {
-            let len = socket.read_i32().await?;
-            let mut body = vec![0u8; usize::try_from(len - 4).unwrap_or(0)];
-            socket.read_exact(&mut body).await?;
-            Ok(body)
-        }
-        let int = |b: &[u8]| i32::from_be_bytes(b[..4].try_into().unwrap());
-        loop {
-            let startup = body(&mut socket).await?;
-            match int(&startup) {
-                // CancelRequest: record it; closing the socket tells the client it was handled.
-                80_877_102 => {
-                    seen.cancels
-                        .lock()
-                        .unwrap()
-                        .push((int(&startup[4..]), int(&startup[8..])));
-                    return Ok(());
-                }
-                // SSLRequest / GSSENCRequest: not supported.
-                80_877_103 | 80_877_104 => socket.write_all(b"N").await?,
-                _ => break,
-            }
-        }
-        // AuthenticationCleartextPassword, then the PasswordMessage.
-        socket.write_all(&[b'R', 0, 0, 0, 8, 0, 0, 0, 3]).await?;
-        let _tag = socket.read_u8().await?;
-        let password = body(&mut socket).await?;
-        let password = password.strip_suffix(&[0]).unwrap_or(&password);
-        seen.passwords
-            .lock()
-            .unwrap()
-            .push(String::from_utf8_lossy(password).into_owned());
-        // AuthenticationOk, BackendKeyData, ReadyForQuery.
-        let mut out = vec![b'R', 0, 0, 0, 8, 0, 0, 0, 0, b'K', 0, 0, 0, 12];
-        out.extend(pid.to_be_bytes());
-        out.extend(42i32.to_be_bytes());
-        out.extend([b'Z', 0, 0, 0, 5, b'I']);
-        socket.write_all(&out).await?;
-        loop {
-            let tag = socket.read_u8().await?;
-            let _ = body(&mut socket).await?;
-            match tag {
-                b'X' => return Ok(()),
-                // EmptyQueryResponse, ReadyForQuery.
-                b'Q' => {
-                    socket
-                        .write_all(&[b'I', 0, 0, 0, 4, b'Z', 0, 0, 0, 5, b'I'])
-                        .await?
-                }
-                _ => {}
-            }
-        }
     }
 
     fn fake_target(p: &mut ConnectionProfile, port: u16) {
@@ -1006,7 +1034,8 @@ mod tests {
     #[tokio::test]
     async fn pool_connections_get_a_fresh_password_once_it_is_old() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let (port, seen) = fake_pg().await;
+        let pg = FakePg::new().start().await;
+        let port = pg.port();
         let mut p = profile();
         fake_target(&mut p, port);
         let target = ConnectTarget {
@@ -1022,9 +1051,9 @@ mod tests {
         })
         .seeded(Some("tok-0"));
         let pool = build_pool(
-            make_config(&target),
+            make_config(&target, "postgres"),
             make_tls(&target).unwrap(),
-            "SET x = 1".into(),
+            SessionInit::new(vec!["SET x = 1".into()], false),
             Some(Arc::new(token)),
         )
         .unwrap();
@@ -1035,24 +1064,21 @@ mod tests {
         drop(first);
         // An idle connection is reused as it is.
         let third = pool.get().await.unwrap();
-        assert_eq!(*seen.passwords.lock().unwrap(), ["tok-0", "tok-1"]);
+        assert_eq!(pg.passwords(), ["tok-0", "tok-1"]);
         assert_eq!(runs.load(Ordering::SeqCst), 1);
         drop((second, third));
 
         // Without a password command the profile's password is used throughout.
         let plain = build_pool(
-            make_config(&target),
+            make_config(&target, "postgres"),
             make_tls(&target).unwrap(),
-            "SET x = 1".into(),
+            SessionInit::new(vec!["SET x = 1".into()], false),
             None,
         )
         .unwrap();
         let _a = plain.get().await.unwrap();
         let _b = plain.get().await.unwrap();
-        assert_eq!(
-            *seen.passwords.lock().unwrap(),
-            ["tok-0", "tok-1", "tok-0", "tok-0"]
-        );
+        assert_eq!(pg.passwords(), ["tok-0", "tok-1", "tok-0", "tok-0"]);
     }
 
     #[test]
@@ -1063,7 +1089,7 @@ mod tests {
             password: None,
             host_override: None,
         };
-        let original = make_config(&target);
+        let original = make_config(&target, "postgres");
         let mut editor = original.clone();
         editor.hostaddr("10.0.0.7".parse().unwrap());
         editor.ssl_mode(tokio_postgres::config::SslMode::Disable);
@@ -1085,7 +1111,8 @@ mod tests {
     /// name when that address cannot be reached.
     #[tokio::test]
     async fn cancel_requests_go_to_the_pinned_address() {
-        let (port, seen) = fake_pg().await;
+        let pg = FakePg::new().start().await;
+        let port = pg.port();
         let mut p = profile();
         fake_target(&mut p, port);
         let target = ConnectTarget {
@@ -1109,16 +1136,16 @@ mod tests {
         super::super::editor::cancel_and_wait(&client.cancel_token(), &tls, &config)
             .await
             .unwrap();
-        assert_eq!(seen.cancels.lock().unwrap().len(), 1);
+        assert_eq!(pg.cancels().len(), 1);
 
         // The pinned address is gone: the host name is tried.
-        let mut moved = make_config(&target);
+        let mut moved = make_config(&target, "postgres");
         moved.hostaddr("::1".parse().unwrap());
         if std::net::TcpListener::bind(("::1", port)).is_ok() {
             super::super::editor::cancel_and_wait(&client.cancel_token(), &tls, &moved)
                 .await
                 .unwrap();
-            assert_eq!(seen.cancels.lock().unwrap().len(), 2);
+            assert_eq!(pg.cancels().len(), 2);
         }
     }
 

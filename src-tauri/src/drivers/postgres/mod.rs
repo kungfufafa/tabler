@@ -1,13 +1,17 @@
 //! PostgreSQL driver: tokio-postgres + rustls behind a small deadpool worker pool (browsing,
 //! introspection, generic execution) plus one dedicated editor client whose session state
-//! (`BEGIN`, `SET`) persists between runs in the SQL editor.
+//! (`BEGIN`, `SET`) persists between runs in the SQL editor. The PostgreSQL-compatible engines
+//! it also serves (CockroachDB, Greenplum, Redshift) differ through `flavor::PgFlavorHooks`,
+//! picked at connect for the engine the server names.
 
 mod connect;
 pub mod decode;
 mod editor;
 pub mod flavor;
-mod introspect;
+pub(crate) mod introspect;
 pub mod params;
+#[cfg(test)]
+pub(crate) mod testing;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,18 +32,21 @@ use crate::drivers::{
 };
 use crate::error::AppError;
 use crate::secrets::CommandPassword;
+use crate::sqlgen::dialect::spec::ExplainForm;
 use crate::sqlgen::{Dialect, SqlDialect};
+use crate::types::admin::{KillOutcome, KillScope, ProcessRow};
 use crate::types::browse::TracedSql;
 use crate::types::caps::SessionCaps;
 use crate::types::driver::{Flavor, PgFlavor};
 use crate::types::profile::{Driver, SslMode};
-use crate::types::query::{ExecOutcome, ResultSet};
+use crate::types::query::{ExecOutcome, ExplainMode, ResultSet};
 use crate::types::schema::{
     CompletionMetadata, DatabaseInfo, SchemaInfo, TableMeta, TableRef, TableSummary,
 };
 use crate::types::value::Value;
 
 pub use connect::PgTls;
+use flavor::PgFlavorHooks;
 
 /// How long `close` waits for a cancelled editor statement to give the connection back.
 const CLOSE_WAIT: Duration = Duration::from_secs(5);
@@ -76,66 +83,87 @@ pub struct PgSession {
     kept_statements: std::sync::Mutex<Vec<(String, String)>>,
     /// The statements this session ran for the app, for the console log (see `SqlTrace`).
     trace: SqlTrace,
-    /// The engine the profile says the server is (`ProfileOptions::pg_flavor`).
-    profile_flavor: Option<PgFlavor>,
-    /// The engine `server_info` found the server to be; it overrides the profile's.
-    found_flavor: std::sync::OnceLock<PgFlavor>,
+    /// The engine the server is: the one its `version()` named at connect, otherwise the one its
+    /// profile says (`ProfileOptions::pg_flavor`).
+    flavor: Option<PgFlavor>,
+    /// `server_version_num` as libpq computes it from the server's `server_version`.
+    server_version_num: i32,
+    /// What that engine does differently (`flavor::hooks`).
+    hooks: &'static dyn PgFlavorHooks,
 }
+
+/// Picks the hooks of an engine (`flavor::hooks`; tests pass their own).
+type PickHooks = fn(Option<PgFlavor>) -> &'static dyn PgFlavorHooks;
+
+/// How often `transaction` runs when the engine asks for retries (`retry_serialization`).
+const SERIALIZATION_ATTEMPTS: u32 = 3;
 
 impl PgSession {
     pub async fn open(target: ConnectTarget<'_>) -> Result<PgSession, AppError> {
+        PgSession::open_with(target, flavor::hooks).await
+    }
+
+    /// Connects the editor, asks the server which engine it is (that engine overrides the
+    /// profile's), and runs that engine's session init on the editor and on each pool
+    /// connection.
+    async fn open_with(target: ConnectTarget<'_>, pick: PickHooks) -> Result<PgSession, AppError> {
         let profile = target.profile;
+        let profile_flavor = profile.options.pg_flavor;
         let tls = connect::make_tls(&target)?;
-        let profile_config = connect::make_config(&target);
-        let init_sql = connect::session_init_sql(&profile.options);
+        let profile_config = connect::make_config(&target, pick(profile_flavor).default_database());
         let timeout = connect::connect_timeout(&profile.options);
-        let (config, editor, editor_lost, editor_task, notices) = connect::open_editor(
+        let editor = connect::open_editor(
             profile_config.clone(),
             &tls,
-            &init_sql,
             timeout,
             profile.ssl == SslMode::Prefer,
         )
         .await?;
-        let pool_config = connect::pool_config(&profile_config, &config);
+        let found = flavor::detect(&connect::server_version(&editor.client).await?);
+        if let Some(found) = found
+            && profile_flavor != Some(found)
+        {
+            log::info!("the server is {found:?}, not {profile_flavor:?} as its profile says");
+        }
+        let engine = found.or(profile_flavor);
+        let hooks = pick(engine);
+        flavor::refuse_unsupported(found, hooks.sql_dialect())?;
+        let options = &profile.options;
+        let init = connect::SessionInit::new(
+            hooks.init_sql(
+                profile,
+                connect::read_only_session(options),
+                connect::session_init_statements(options),
+            ),
+            hooks.init_one_by_one(),
+        );
+        init.run(&editor.client).await?;
+        let pool_config = connect::pool_config(&profile_config, &editor.config);
         let token = CommandPassword::for_profile(profile, target.password);
-        let pool = connect::build_pool(pool_config.clone(), tls.clone(), init_sql, token.clone())?;
+        let pool = connect::build_pool(pool_config.clone(), tls.clone(), init, token.clone())?;
         Ok(PgSession {
             pool,
-            editor_token: editor.cancel_token(),
-            editor: Mutex::new(Some(editor)),
-            editor_lost,
-            editor_task,
+            editor_token: editor.client.cancel_token(),
+            editor: Mutex::new(Some(editor.client)),
+            editor_lost: editor.lost,
+            editor_task: editor.task,
             closing: AtomicBool::new(false),
-            notices,
+            notices: editor.notices,
             tx_state: TxState::default(),
             tls,
-            config,
+            config: editor.config,
             pool_config,
             token,
             editor_runs: Mutex::new(()),
             kept_statements: std::sync::Mutex::new(Vec::new()),
             trace: SqlTrace::default(),
-            profile_flavor: profile.options.pg_flavor,
-            found_flavor: std::sync::OnceLock::new(),
+            flavor: engine,
+            server_version_num: editor
+                .server_version
+                .as_deref()
+                .map_or(0, flavor::server_version_num),
+            hooks,
         })
-    }
-
-    /// Remembers the engine a `version()` names (once), and refuses one these sessions cannot
-    /// serve.
-    fn note_version(&self, version: &str) -> Result<(), AppError> {
-        let found = flavor::detect(version);
-        if let Some(found) = found
-            && self.found_flavor.set(found).is_ok()
-            && self.profile_flavor != Some(found)
-        {
-            log::info!(
-                "the server is {:?}, not {:?} as its profile says",
-                found,
-                self.profile_flavor
-            );
-        }
-        flavor::refuse_unsupported(found, self.dialect())
     }
 
     /// A worker client from the pool (session init already applied by the `post_create` hook).
@@ -193,7 +221,54 @@ impl PgSession {
 
     /// A worker client whose catalog queries are recorded in this session's trace.
     fn traced<'a>(&'a self, client: &'a Client) -> introspect::Traced<'a> {
-        introspect::Traced::new(client, &self.trace)
+        introspect::Traced::new(client, &self.trace, self.server_version_num)
+    }
+
+    /// Plain PostgreSQL's hooks (`VANILLA`): the callers' own SQL does what the engine hooks
+    /// would, without a pool connection taken for nothing.
+    fn plain(&self) -> bool {
+        self.hooks.flavor().is_none()
+    }
+
+    /// `transaction` on one pool connection.
+    async fn transaction_on(
+        &self,
+        client: Object,
+        statements: &[TxStatement],
+    ) -> Result<Vec<ExecOutcome>, AppError> {
+        client.batch_execute("BEGIN").await?;
+        let mut out = Vec::with_capacity(statements.len());
+        for (i, st) in statements.iter().enumerate() {
+            match self
+                .trace
+                .run_async(
+                    classify_statement(&st.sql, Dialect::Postgres),
+                    trace_sql(Dialect::Postgres, &st.sql, &st.params),
+                    TraceCounts::of_exec,
+                    run_execute(&client, &st.sql, &st.params),
+                )
+                .await
+                .and_then(|o| {
+                    check_affected(st, &o, i)?;
+                    Ok(o)
+                }) {
+                Ok(outcome) => out.push(outcome),
+                Err(err) => {
+                    if client.batch_execute("ROLLBACK").await.is_err() {
+                        // The connection is in an unknown state: drop it from the pool.
+                        drop(Object::take(client));
+                    }
+                    return Err(err.with_statement_index(i));
+                }
+            }
+        }
+        if let Err(err) = client.batch_execute("COMMIT").await {
+            if client.batch_execute("ROLLBACK").await.is_err() {
+                drop(Object::take(client));
+            }
+            return Err(err.into());
+        }
+        Ok(out)
     }
 
     /// Cancels what runs on `client`, which connected with `config` (the editor's or the
@@ -297,7 +372,7 @@ impl DbSession for PgSession {
     }
 
     fn dialect(&self) -> SqlDialect {
-        SqlDialect::Postgres
+        self.hooks.sql_dialect()
     }
 
     async fn server_info(&self) -> Result<ServerInfo, AppError> {
@@ -308,29 +383,72 @@ impl DbSession for PgSession {
                 &[],
             )
             .await?;
-        let version: String = row.try_get(0)?;
-        self.note_version(&version)?;
         Ok(ServerInfo {
-            version,
+            version: row.try_get(0)?,
             current_database: row.try_get(1)?,
             current_user: row.try_get(2)?,
         })
     }
 
     fn flavor(&self) -> Option<Flavor> {
-        self.found_flavor
-            .get()
-            .copied()
-            .or(self.profile_flavor)
-            .map(flavor::session_flavor)
+        self.flavor.map(flavor::session_flavor)
     }
 
+    /// The PostgreSQL caps, without what a flavor is not proven to do (`flavor::adjust_caps`)
+    /// unless its hooks grant it back.
     fn capabilities(&self) -> SessionCaps {
-        flavor::adjust_caps(SessionCaps::base(
+        let mut caps = flavor::adjust_caps(SessionCaps::base(
             Driver::Postgres,
             self.dialect(),
             self.flavor(),
-        ))
+        ));
+        self.hooks.adjust_caps(&mut caps, self.server_version_num);
+        caps
+    }
+
+    fn explain_form(&self, mode: ExplainMode) -> Option<ExplainForm> {
+        self.hooks.explain_form(mode)
+    }
+
+    async fn list_processes(&self) -> Option<Result<Vec<ProcessRow>, AppError>> {
+        if self.plain() {
+            return None;
+        }
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return Some(Err(e)),
+        };
+        self.hooks.list_processes(&self.traced(&client)).await
+    }
+
+    async fn kill_processes(&self, ids: &[String], scope: KillScope) -> Option<Vec<KillOutcome>> {
+        if self.plain() {
+            return None;
+        }
+        let client = match self.client().await {
+            Ok(client) => client,
+            // What the core path reports when it cannot reach the server: each kill failed.
+            Err(e) => {
+                let failed = |id: &String| KillOutcome {
+                    id: id.clone(),
+                    ok: false,
+                    message: Some(e.to_string()),
+                };
+                return Some(ids.iter().map(failed).collect());
+            }
+        };
+        self.hooks.kill(&self.traced(&client), ids, scope).await
+    }
+
+    async fn table_ddl(&self, table: &TableRef) -> Option<Result<String, AppError>> {
+        if self.plain() {
+            return None;
+        }
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return Some(Err(e)),
+        };
+        self.hooks.table_ddl(&self.traced(&client), table).await
     }
 
     /// Checks the pool, and keeps the editor connection alive when it is idle (no editor run
@@ -382,34 +500,60 @@ impl DbSession for PgSession {
         }
     }
 
+    // The catalog reads: the engine's hooks first, then the `pg_catalog` queries.
+
     async fn list_databases(&self) -> Result<Vec<DatabaseInfo>, AppError> {
         let client = self.client().await?;
-        introspect::list_databases(&self.traced(&client)).await
+        let c = self.traced(&client);
+        match self.hooks.list_databases(&c).await {
+            Some(databases) => databases,
+            None => introspect::list_databases(&c).await,
+        }
     }
 
     async fn list_schemas(&self) -> Result<Vec<SchemaInfo>, AppError> {
         let client = self.client().await?;
-        introspect::list_schemas(&self.traced(&client)).await
+        let c = self.traced(&client);
+        match self.hooks.list_schemas(&c).await {
+            Some(schemas) => schemas,
+            None => introspect::list_schemas(&c).await,
+        }
     }
 
     async fn list_tables(&self, schema: &str) -> Result<Vec<TableSummary>, AppError> {
         let client = self.client().await?;
-        introspect::list_tables(&self.traced(&client), schema).await
+        let c = self.traced(&client);
+        match self.hooks.list_tables(&c, schema).await {
+            Some(tables) => tables,
+            None => introspect::list_tables(&c, schema).await,
+        }
     }
 
     async fn table_meta(&self, table: &TableRef) -> Result<TableMeta, AppError> {
         let client = self.client().await?;
-        introspect::table_meta(&self.traced(&client), table).await
+        let c = self.traced(&client);
+        match self.hooks.table_meta(&c, table).await {
+            Some(meta) => meta,
+            None => introspect::table_meta(&c, table).await,
+        }
     }
 
     async fn view_definition(&self, table: &TableRef) -> Result<Option<String>, AppError> {
         let client = self.client().await?;
-        introspect::view_definition(&self.traced(&client), table).await
+        let c = self.traced(&client);
+        match self.hooks.view_definition(&c, table).await {
+            Some(definition) => definition,
+            None => introspect::view_definition(&c, table).await,
+        }
     }
 
     async fn completion_metadata(&self) -> Result<CompletionMetadata, AppError> {
         let client = self.client().await?;
-        introspect::completion_metadata(&self.traced(&client)).await
+        let c = self.traced(&client);
+        match self.hooks.completion_metadata(&c).await {
+            Some(meta) => meta,
+            None => introspect::completion_metadata(&c).await,
+        }
     }
 
     async fn query(&self, sql: &str, params: &[Value]) -> Result<ResultSet, AppError> {
@@ -486,44 +630,29 @@ impl DbSession for PgSession {
         result
     }
 
+    /// Runs `statements` in one transaction. An engine that aborts transactions it cannot
+    /// serialize and expects the client to run them again (`retry_serialization`) gets them
+    /// again, up to `SERIALIZATION_ATTEMPTS` times; nothing of an aborted attempt remains.
     async fn transaction(
         &self,
         statements: Vec<TxStatement>,
     ) -> Result<Vec<ExecOutcome>, AppError> {
-        let client = self.client().await?;
-        client.batch_execute("BEGIN").await?;
-        let mut out = Vec::with_capacity(statements.len());
-        for (i, st) in statements.iter().enumerate() {
-            match self
-                .trace
-                .run_async(
-                    classify_statement(&st.sql, Dialect::Postgres),
-                    trace_sql(Dialect::Postgres, &st.sql, &st.params),
-                    TraceCounts::of_exec,
-                    run_execute(&client, &st.sql, &st.params),
-                )
-                .await
-                .and_then(|o| {
-                    check_affected(st, &o, i)?;
-                    Ok(o)
-                }) {
-                Ok(outcome) => out.push(outcome),
-                Err(err) => {
-                    if client.batch_execute("ROLLBACK").await.is_err() {
-                        // The connection is in an unknown state: drop it from the pool.
-                        drop(Object::take(client));
-                    }
-                    return Err(err.with_statement_index(i));
+        let mut attempt = 1;
+        loop {
+            let client = self.client().await?;
+            match self.transaction_on(client, &statements).await {
+                Err(e)
+                    if attempt < SERIALIZATION_ATTEMPTS
+                        && self.hooks.retry_serialization()
+                        && is_serialization_failure(&e) =>
+                {
+                    log::info!("postgres: running the transaction again after: {e}");
+                    tokio::time::sleep(Duration::from_millis(50 * u64::from(attempt))).await;
+                    attempt += 1;
                 }
+                result => return result,
             }
         }
-        if let Err(err) = client.batch_execute("COMMIT").await {
-            if client.batch_execute("ROLLBACK").await.is_err() {
-                drop(Object::take(client));
-            }
-            return Err(err.into());
-        }
-        Ok(out)
     }
 
     async fn run_statement(
@@ -648,6 +777,11 @@ async fn settle(cancel: &CancelSlot) {
     if !settle_cancels(cancel, CANCEL_SETTLE_LIMIT).await {
         log::warn!("postgres: a cancel request did not finish in time");
     }
+}
+
+/// The server aborted the transaction because it could not serialize it (40001).
+fn is_serialization_failure(e: &AppError) -> bool {
+    matches!(e, AppError::Db { sqlstate: Some(code), .. } if code == SqlState::T_R_SERIALIZATION_FAILURE.code())
 }
 
 /// Savepoint a capped read inside a transaction block runs under (see `run_on_editor`).
@@ -834,6 +968,8 @@ mod tests {
 
     use super::*;
     use crate::drivers::CollectSink;
+    use crate::drivers::postgres::testing::{Cell, Col, FakePg};
+    use crate::types::caps::Feature;
     use crate::types::profile::{ConnectionProfile, ProfileOptions};
 
     /// A session on `TABLER_TEST_PG_URL` (`postgres://user[:pass]@host:port/db`); None (the test
@@ -926,6 +1062,441 @@ mod tests {
         assert!(on_editor(&session, "SELECT 1").await.is_err());
         on_editor(&session, "ROLLBACK").await.unwrap();
         session.close().await;
+    }
+
+    /// A profile for the fake server on `port`.
+    fn fake_profile(port: u16) -> ConnectionProfile {
+        ConnectionProfile {
+            id: uuid::Uuid::nil(),
+            name: "fake".into(),
+            color: None,
+            group: None,
+            driver: Driver::Postgres,
+            host: Some("127.0.0.1".into()),
+            port: Some(port),
+            user: Some("tabler".into()),
+            database: None,
+            ssl: SslMode::Disable,
+            ssl_ca_path: None,
+            sqlite_path: None,
+            ssh: None,
+            options: ProfileOptions::default(),
+            sort_order: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_connected_at: None,
+        }
+    }
+
+    fn target(profile: &ConnectionProfile) -> ConnectTarget<'_> {
+        crate::testkit::install_crypto();
+        ConnectTarget {
+            profile,
+            password: Some("pw"),
+            host_override: None,
+        }
+    }
+
+    /// What a fake server received, section by section, one statement per line: the connection
+    /// (`c1` is the first one that sent something) and the SQL as a JSON string.
+    #[derive(Default)]
+    struct Received {
+        text: String,
+        seen: usize,
+        connections: Vec<i32>,
+    }
+
+    impl Received {
+        fn section(&mut self, name: &str, pg: &FakePg) {
+            self.text.push_str(&format!("# {name}\n"));
+            let statements = pg.statements();
+            for (pid, sql) in &statements[self.seen..] {
+                if !self.connections.contains(pid) {
+                    self.connections.push(*pid);
+                }
+                let n = self.connections.iter().position(|p| p == pid).unwrap() + 1;
+                let sql = serde_json::to_string(sql).unwrap();
+                self.text.push_str(&format!("c{n} {sql}\n"));
+            }
+            self.seen = statements.len();
+        }
+
+        /// Compares with `tests/fixtures/postgres/<name>.txt`, or rewrites it under
+        /// `TABLER_BLESS=1`.
+        fn check(&self, name: &str) {
+            let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/postgres")
+                .join(format!("{name}.txt"));
+            if std::env::var("TABLER_BLESS").as_deref() == Ok("1") {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, &self.text).unwrap();
+                return;
+            }
+            let golden = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{}: {e} (TABLER_BLESS=1 writes it)", path.display()))
+                .replace("\r\n", "\n");
+            let want: Vec<&str> = golden.lines().collect();
+            let got: Vec<&str> = self.text.lines().collect();
+            if let Some(at) = (0..want.len().max(got.len())).find(|i| want.get(*i) != got.get(*i)) {
+                panic!(
+                    "{} differs at line {}:\n  golden: {}\n  now:    {}\nIf the change is \
+                     intended: TABLER_BLESS=1 cargo test --lib drivers::postgres, then review \
+                     the diff.",
+                    path.display(),
+                    at + 1,
+                    want.get(at).unwrap_or(&"<end of file>"),
+                    got.get(at).unwrap_or(&"<end of file>"),
+                );
+            }
+        }
+    }
+
+    /// Plain PostgreSQL gets exactly the SQL it got before the flavor seam: the session setup
+    /// and every catalog read, as the server received them (`tests/fixtures/postgres/
+    /// vanilla.txt`).
+    #[tokio::test]
+    async fn plain_postgres_gets_the_same_sql() {
+        let pg = FakePg::new()
+            .server_version("17.2")
+            .version("PostgreSQL 17.2 on x86_64-pc-linux-gnu, compiled by gcc")
+            .rows(
+                "SELECT (current_schemas(false))[1]::text",
+                vec![Col::text("current_schemas")],
+                vec![vec![Cell::text("public")]],
+            )
+            .rows(
+                "SELECT c.relkind::text, obj_description",
+                vec![
+                    Col::text("relkind"),
+                    Col::text("comment"),
+                    Col::int8("reltuples"),
+                ],
+                vec![vec![Cell::text("r"), Cell::Null, Cell::Null]],
+            )
+            .start()
+            .await;
+        let mut profile = fake_profile(pg.port());
+        profile.options.timezone = Some("Asia/Jakarta".into());
+        profile.options.startup_sql = Some("SET search_path = app, public".into());
+        let mut received = Received::default();
+        let session = PgSession::open(target(&profile)).await.unwrap();
+        received.section("open", &pg);
+        session.server_info().await.unwrap();
+        received.section("server_info", &pg);
+        session.list_databases().await.unwrap();
+        received.section("list_databases", &pg);
+        session.list_schemas().await.unwrap();
+        received.section("list_schemas", &pg);
+        session.list_tables("public").await.unwrap();
+        received.section("list_tables", &pg);
+        let view = TableRef::new(Some("public"), "v");
+        session.view_definition(&view).await.unwrap();
+        received.section("view_definition", &pg);
+        let meta = session.table_meta(&TableRef::new(None, "t")).await.unwrap();
+        assert_eq!(meta.table, TableRef::new(Some("public"), "t"));
+        received.section("table_meta", &pg);
+        session.completion_metadata().await.unwrap();
+        received.section("completion_metadata", &pg);
+        session.close().await;
+        received.check("vanilla");
+    }
+
+    const COCKROACH: &str =
+        "CockroachDB CCL v24.2.4 (x86_64-pc-linux-gnu, built 2024/10/14, go1.22.5)";
+    const GREENPLUM: &str = "PostgreSQL 9.4.26 (Greenplum Database 6.27.1 build commit:1d9f0a3) \
+                             on x86_64-unknown-linux-gnu, compiled by gcc";
+    const REDSHIFT: &str = "PostgreSQL 8.0.2 on i686-pc-linux-gnu, compiled by GCC gcc (GCC) \
+                            3.4.2 20041017 (Red Hat 3.4.2-6.fc3), Redshift 1.0.77467";
+
+    fn vanilla(_: Option<PgFlavor>) -> &'static dyn PgFlavorHooks {
+        &flavor::VANILLA
+    }
+
+    /// The hooks of a made-up engine that changes everything an engine's hooks can.
+    struct TestHooks;
+
+    #[async_trait]
+    impl PgFlavorHooks for TestHooks {
+        fn flavor(&self) -> Option<PgFlavor> {
+            Some(PgFlavor::Redshift)
+        }
+
+        fn sql_dialect(&self) -> SqlDialect {
+            SqlDialect::Redshift
+        }
+
+        fn default_database(&self) -> &'static str {
+            "dev"
+        }
+
+        fn init_sql(&self, _: &ConnectionProfile, _: bool, base: Vec<String>) -> Vec<String> {
+            let unknown = |s: &String| s.contains("IntervalStyle") || s.contains("float_digits");
+            base.into_iter().filter(|s| !unknown(s)).collect()
+        }
+
+        fn init_one_by_one(&self) -> bool {
+            true
+        }
+
+        async fn list_schemas(
+            &self,
+            c: &introspect::Traced<'_>,
+        ) -> Option<Result<Vec<SchemaInfo>, AppError>> {
+            Some(Ok(vec![SchemaInfo {
+                name: format!("v{}", c.server_version_num()),
+                is_default: true,
+            }]))
+        }
+
+        async fn list_processes(
+            &self,
+            _: &introspect::Traced<'_>,
+        ) -> Option<Result<Vec<ProcessRow>, AppError>> {
+            Some(Ok(Vec::new()))
+        }
+
+        async fn kill(
+            &self,
+            _: &introspect::Traced<'_>,
+            ids: &[String],
+            _: KillScope,
+        ) -> Option<Vec<KillOutcome>> {
+            let killed = |id: &String| KillOutcome {
+                id: id.clone(),
+                ok: true,
+                message: None,
+            };
+            Some(ids.iter().map(killed).collect())
+        }
+
+        async fn table_ddl(
+            &self,
+            _: &introspect::Traced<'_>,
+            table: &TableRef,
+        ) -> Option<Result<String, AppError>> {
+            Some(Ok(format!("CREATE TABLE {}", table.name)))
+        }
+
+        fn explain_form(&self, _: ExplainMode) -> Option<ExplainForm> {
+            Some(ExplainForm::Prefix("EXPLAIN VERBOSE"))
+        }
+
+        fn adjust_caps(&self, caps: &mut SessionCaps, server_version_num: i32) {
+            if server_version_num == 80_002 {
+                *caps = caps.clone().with(&[Feature::Users]);
+            }
+        }
+
+        fn retry_serialization(&self) -> bool {
+            true
+        }
+    }
+
+    static TEST_HOOKS: TestHooks = TestHooks;
+
+    fn test_hooks(f: Option<PgFlavor>) -> &'static dyn PgFlavorHooks {
+        match f {
+            Some(PgFlavor::Redshift) => &TEST_HOOKS,
+            _ => &flavor::VANILLA,
+        }
+    }
+
+    /// The fake answering `version()` with a CockroachDB, a Greenplum and a Redshift string: the
+    /// session is on that engine, and without the engine's own hooks it runs the PostgreSQL code
+    /// paths with less (CockroachDB, Greenplum) or not at all (Redshift).
+    #[tokio::test]
+    async fn the_server_names_its_engine_at_connect() {
+        for (version, server_version, engine, num) in [
+            (COCKROACH, "13.0.0", PgFlavor::Cockroachdb, 130_000),
+            (GREENPLUM, "9.4.26", PgFlavor::Greenplum, 90_426),
+        ] {
+            assert_eq!(flavor::detect(version), Some(engine));
+            let pg = FakePg::new()
+                .server_version(server_version)
+                .version(version)
+                .start()
+                .await;
+            let profile = fake_profile(pg.port());
+            let session = PgSession::open_with(target(&profile), vanilla)
+                .await
+                .unwrap();
+            assert_eq!(session.flavor(), Some(flavor::session_flavor(engine)));
+            assert_eq!(session.dialect(), SqlDialect::Postgres);
+            assert_eq!(session.server_version_num, num);
+            let caps = session.capabilities();
+            assert!(caps.has(Feature::EditRows), "{engine:?}");
+            for f in flavor::UNPROVEN_ON_FLAVORS {
+                assert!(!caps.has(f), "{engine:?} {f:?}");
+            }
+            // The callers' PostgreSQL SQL, without a pool connection taken for it.
+            let table = TableRef::new(Some("public"), "t");
+            assert!(session.list_processes().await.is_none());
+            assert!(
+                session
+                    .kill_processes(&["1".into()], KillScope::Query)
+                    .await
+                    .is_none()
+            );
+            assert!(session.table_ddl(&table).await.is_none());
+            assert_eq!(session.explain_form(ExplainMode::Analyze), None);
+            assert_eq!(pg.startups().len(), 1, "{engine:?}");
+            session.close().await;
+        }
+
+        assert_eq!(flavor::detect(REDSHIFT), Some(PgFlavor::Redshift));
+        let pg = FakePg::new()
+            .server_version("8.0.2")
+            .version(REDSHIFT)
+            .start()
+            .await;
+        let err = PgSession::open_with(target(&fake_profile(pg.port())), vanilla)
+            .await
+            .err()
+            .expect("refused");
+        assert_eq!(
+            err.to_string(),
+            "unsupported: Amazon Redshift is not built into this Tabler"
+        );
+        // Refused before anything of PostgreSQL's was sent.
+        assert_eq!(pg.queries(), ["SELECT version()"]);
+    }
+
+    /// The engine the server names wins over the profile's; the profile's stands when the server
+    /// names none.
+    #[tokio::test]
+    async fn the_engine_the_server_names_overrides_the_profiles() {
+        for (version, profile_engine, engine) in [
+            (
+                COCKROACH,
+                Some(PgFlavor::Greenplum),
+                Some(Flavor::Cockroachdb),
+            ),
+            (
+                "PostgreSQL 17.2",
+                Some(PgFlavor::Greenplum),
+                Some(Flavor::Greenplum),
+            ),
+            ("PostgreSQL 17.2", None, None),
+        ] {
+            let pg = FakePg::new().version(version).start().await;
+            let mut profile = fake_profile(pg.port());
+            profile.options.pg_flavor = profile_engine;
+            let session = PgSession::open_with(target(&profile), vanilla)
+                .await
+                .unwrap();
+            assert_eq!(session.flavor(), engine, "{version} {profile_engine:?}");
+            assert_eq!(session.capabilities().flavor, engine);
+            session.close().await;
+        }
+    }
+
+    /// An engine's hooks decide the default database, the dialect, the session init, the catalog
+    /// reads, the admin calls and the caps.
+    #[tokio::test]
+    async fn the_engines_hooks_drive_the_session() {
+        let pg = FakePg::new()
+            .server_version("8.0.2")
+            .version(REDSHIFT)
+            .error(
+                "IntervalStyle",
+                "42704",
+                "unrecognized configuration parameter",
+            )
+            .error(
+                "extra_float_digits",
+                "42704",
+                "unrecognized configuration parameter",
+            )
+            .start()
+            .await;
+        let mut profile = fake_profile(pg.port());
+        profile.options.pg_flavor = Some(PgFlavor::Redshift);
+        profile.options.timezone = Some("UTC".into());
+        let session = PgSession::open_with(target(&profile), test_hooks)
+            .await
+            .unwrap();
+        assert_eq!(session.dialect(), SqlDialect::Redshift);
+        assert_eq!(session.flavor(), Some(Flavor::Redshift));
+        let database = ("database".to_string(), "dev".to_string());
+        assert!(pg.startups()[0].contains(&database), "{:?}", pg.startups());
+        // The engine's init, one statement at a time.
+        assert_eq!(
+            pg.queries(),
+            [
+                "SELECT version()",
+                "SET DateStyle = 'ISO, YMD';",
+                "SET client_encoding = 'UTF8';",
+                "SET TIME ZONE 'UTC';",
+            ]
+        );
+        let schemas = session.list_schemas().await.unwrap();
+        assert_eq!(schemas[0].name, "v80002");
+        assert!(!pg.queries().iter().any(|q| q.contains("pg_namespace")));
+        // The pool connection got the engine's init too.
+        assert_eq!(pg.queries().len(), 7, "{:?}", pg.queries());
+        assert!(session.list_processes().await.unwrap().unwrap().is_empty());
+        let killed = session
+            .kill_processes(&["7".into()], KillScope::Connection)
+            .await
+            .unwrap();
+        assert!(killed[0].ok);
+        let table = TableRef::new(Some("public"), "t");
+        let ddl = session.table_ddl(&table).await.unwrap().unwrap();
+        assert_eq!(ddl, "CREATE TABLE t");
+        assert_eq!(
+            session.explain_form(ExplainMode::Plan),
+            Some(ExplainForm::Prefix("EXPLAIN VERBOSE"))
+        );
+        let caps = session.capabilities();
+        assert!(caps.has(Feature::Users) && !caps.has(Feature::StructureEdit));
+        session.close().await;
+    }
+
+    /// A transaction the server could not serialize runs again where the engine asks for that,
+    /// and only there.
+    #[tokio::test]
+    async fn a_transaction_the_engine_could_not_serialize_runs_again() {
+        fn retrying(_: Option<PgFlavor>) -> &'static dyn PgFlavorHooks {
+            &TEST_HOOKS
+        }
+        for (pick, tx) in [
+            (
+                retrying as PickHooks,
+                vec!["BEGIN", "UPDATE", "ROLLBACK", "BEGIN", "UPDATE", "COMMIT"],
+            ),
+            (vanilla as PickHooks, vec!["BEGIN", "UPDATE", "ROLLBACK"]),
+        ] {
+            let pg = FakePg::new()
+                .error_times("UPDATE t", "40001", "restart transaction", Some(1))
+                .command("UPDATE t", "UPDATE 1")
+                .start()
+                .await;
+            let session = PgSession::open_with(target(&fake_profile(pg.port())), pick)
+                .await
+                .unwrap();
+            let update = TxStatement {
+                sql: "UPDATE t SET a = 1".into(),
+                params: Vec::new(),
+                expect_affected: Some(1),
+            };
+            let result = session.transaction(vec![update]).await;
+            let sent: Vec<String> = pg
+                .queries()
+                .into_iter()
+                .filter_map(|q| {
+                    let word = q.split_whitespace().next().unwrap_or_default().to_string();
+                    ["BEGIN", "UPDATE", "ROLLBACK", "COMMIT"]
+                        .contains(&word.as_str())
+                        .then_some(word)
+                })
+                .collect();
+            assert_eq!(sent, tx);
+            match tx.len() {
+                3 => assert!(is_serialization_failure(&result.unwrap_err())),
+                _ => assert_eq!(result.unwrap()[0].affected, 1),
+            }
+            session.close().await;
+        }
     }
 
     #[tokio::test]

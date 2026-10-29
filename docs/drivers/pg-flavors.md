@@ -92,13 +92,26 @@ Every classifier is default-deny: a statement or command it does not know is a w
 - `sqlgen/dialect/redshift.rs`: Redshift's `DialectSpec` and `LexProfile`; the `export_bindings_lex_redshift` test.
 - Renderer: the three tiles' `KindUi` (the PostgreSQL form with flavor defaults) and a `MockDriver`.
 
+## The seam (F8b)
+
+What the PostgreSQL driver gives the lane, in `drivers/postgres/flavor/mod.rs` (the lane fills `flavor/imp/**` only):
+
+- `imp::hooks(PgFlavor) -> Option<&'static dyn PgFlavorHooks>` is the lane's entry point (a stub answering `None` until then); `flavor::hooks` falls back to `VANILLA`, plain PostgreSQL, which changes nothing.
+- At connect the session asks the editor connection `SELECT version()` (one simple-protocol round trip, before the session init) and reads `server_version` from the startup parameters (`server_version_num`, as libpq computes it). The engine `detect` finds there overrides the profile's `pg_flavor` (with a log line); its hooks are picked once and kept for the session. The profile's engine alone picks `default_database`, which is needed before connecting.
+- `init_sql` gets the PostgreSQL init statements (`connect::session_init_statements`) and whether the session must refuse writes; `init_one_by_one` sends them one at a time, on the editor and on each pool connection.
+- The catalog hooks (`list_databases`, `list_schemas`, `list_tables`, `table_meta`, `view_definition`, `completion_metadata`) run before the `pg_catalog` queries; `None` falls through to them. They get a `Traced` worker client (its queries show in the console log) with `server_version_num()` for version-gated SQL (Greenplum 6 / 7, Cloudberry).
+- `list_processes`, `kill`, `table_ddl` and `explain_form` answer `DbSession`'s hooks of the same names; `None` keeps the callers' core SQL (`admin.rs`, `commands/ddl.rs`, `commands/query.rs`).
+- `adjust_caps(&mut caps, server_version_num)` grants back from the restricted caps; `sql_dialect` is what `DbSession::dialect` reports; `retry_serialization` makes `DbSession::transaction` run a transaction aborted with 40001 again (up to 3 attempts).
+- Byte-identity of plain PostgreSQL is pinned by `drivers::postgres::tests::plain_postgres_gets_the_same_sql` (golden `src-tauri/tests/fixtures/postgres/vanilla.txt`: the connect sequence and every catalog query as `FakePg` received them) and `connect::tests::the_session_init_stays_byte_identical`. The only change F8b made there is the `SELECT version()` before the init.
+- **Pending: a real-server check.** F8b was verified against `FakePg` only: this Windows machine has no PostgreSQL yet. Before the seam is pushed, run the `TABLER_TEST_PG_URL` suites (the `drivers::postgres` lib tests and `src-tauri/tests/postgres.rs` with the other PostgreSQL suites, see `docs/verify-servers.md`) against a PostgreSQL the user approves installing, the Mac, or a CI job with a postgres service (critique A12).
+
 ## Decisions and corrections for this lane
 
 - Starts after F8b, which puts `PgFlavorHooks` and `VANILLA` into the ungated `drivers/postgres/flavor/mod.rs`: there is nothing to implement before (critique B3). It still lands first (plan §6.1).
 - CockroachDB and Greenplum sessions report `SqlDialect::Postgres` and differ from PostgreSQL only in caps and hooks; Redshift reports `SqlDialect::Redshift`, an extension dialect that lexes like PostgreSQL (plan A6).
-- Without the lane, `VANILLA.adjust_caps` takes StructureEdit, Backup, Restore, Users and KillProcess away from any profile with `pg_flavor` set or sniffed, and refuses a sniffed Redshift as not built. The lane grants back only what it proves: GP6 (PostgreSQL 9.4) lacks identity columns, `ADD COLUMN IF NOT EXISTS` and `ON CONFLICT`; CockroachDB DDL inside a transaction is not atomic (XXA00), so its structure apply is DataOnly or out of scope (critique D7).
+- Every session with `pg_flavor` set or sniffed loses StructureEdit, Backup, Restore, Users and KillProcess (`flavor::adjust_caps`, applied before the engine hooks run), and without the lane a sniffed Redshift is refused as not built. The lane grants back, in its `adjust_caps`, only what it proves: GP6 (PostgreSQL 9.4) lacks identity columns, `ADD COLUMN IF NOT EXISTS` and `ON CONFLICT`; CockroachDB DDL inside a transaction is not atomic (XXA00), so its structure apply is DataOnly or out of scope (critique D7).
 - Redshift's text projection is per column: `::varchar(65535)` fails on GEOMETRY and HLLSKETCH and truncates SUPER, so such columns are not editable and not fetched whole (critique D3).
-- PostgreSQL keeps its own TLS; the lane's tests use `fake_pg`, which F8b moves to a `#[cfg(test)] pub(crate)` module (critique A12, B4).
+- PostgreSQL keeps its own TLS; the lane's tests use `FakePg` (`drivers/postgres/testing.rs`, moved there in F8b; critique A12, B4).
 - Redshift: no keep-alive (`keepalive_secs: None`) and a free `ping` (plan §5.2).
 
 ## Definition of done (this lane)

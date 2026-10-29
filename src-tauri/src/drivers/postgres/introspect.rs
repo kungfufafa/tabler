@@ -27,11 +27,23 @@ use crate::types::value::Value;
 pub struct Traced<'a> {
     client: &'a Client,
     trace: &'a SqlTrace,
+    server_version_num: i32,
 }
 
 impl<'a> Traced<'a> {
-    pub fn new(client: &'a Client, trace: &'a SqlTrace) -> Traced<'a> {
-        Traced { client, trace }
+    pub fn new(client: &'a Client, trace: &'a SqlTrace, server_version_num: i32) -> Traced<'a> {
+        Traced {
+            client,
+            trace,
+            server_version_num,
+        }
+    }
+
+    /// The server's `server_version_num` (`flavor::server_version_num`), for catalog queries
+    /// that differ between versions (the flavors' hooks).
+    #[allow(dead_code)]
+    pub fn server_version_num(&self) -> i32 {
+        self.server_version_num
     }
 
     fn note(
