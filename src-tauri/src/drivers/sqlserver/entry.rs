@@ -1,6 +1,5 @@
-//! The entry points `drivers::registry` calls. The foundation owns this file until the lane is
-//! handed over; until then it only reports that the driver is not implemented, and the lane's
-//! other work goes in other files of this module.
+//! The entry points `drivers::registry` calls (docs/drivers/FOUNDATION.md). The lane owns this
+//! file; until its driver is done, `open` reports that it is not implemented yet.
 
 use crate::drivers::native::CallKind;
 use crate::drivers::registry::UtilInput;

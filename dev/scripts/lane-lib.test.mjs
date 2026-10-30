@@ -166,6 +166,42 @@ describe("parsers", () => {
     assert.equal(d[2].file, null);
   });
 
+  it("fails a type error only for the lane whose file holds it", async () => {
+    // A project of three files with the repository's TypeScript: the mongodb lane's index has an
+    // error, the redis lane's and the shared file have none (the F10 isolation acceptance).
+    const root = path.join(TMP, "tsc-project");
+    const write = (file, text) => {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    };
+    write(
+      "tsconfig.json",
+      JSON.stringify({ compilerOptions: { strict: true, noEmit: true }, include: ["src"] }),
+    );
+    write("src/shared.ts", "export const ok: number = 1;\n");
+    write("src/features/drivers/redis/index.ts", 'export { ok } from "../../../shared";\n');
+    write("src/features/drivers/mongodb/index.ts", 'export const broken: number = "x";\n');
+    fs.symlinkSync(
+      path.join(lib.ROOT, "node_modules"),
+      path.join(root, "node_modules"),
+      "junction",
+    );
+    const posixRoot = root.split(path.sep).join("/");
+
+    const redis = await lib.tscCheck(lanes, "redis", posixRoot);
+    assert.deepEqual(redis.failing, []);
+    assert.deepEqual(redis.ignored, { mongodb: 1 });
+    const mongodb = await lib.tscCheck(lanes, "mongodb", posixRoot);
+    assert.deepEqual(
+      mongodb.failing.map((d) => [d.file, d.code]),
+      [["src/features/drivers/mongodb/index.ts", "TS2322"]],
+    );
+    // The foundation's mode ignores every lane's files; an error in a shared file fails all.
+    assert.deepEqual((await lib.tscCheck(lanes, null, posixRoot)).failing, []);
+    write("src/shared.ts", 'export const ok: number = "1";\n');
+    assert.equal((await lib.tscCheck(lanes, "redis", posixRoot)).failing.length, 1);
+  });
+
   it("reads .env files", () => {
     const file = path.join(TMP, "test.env");
     fs.writeFileSync(

@@ -1,7 +1,7 @@
 import type { ConnectionInfo } from "../bindings/ConnectionInfo";
 import type { ConnectionProfile } from "../bindings/ConnectionProfile";
 import type { SessionDetails } from "../bindings/SessionDetails";
-import { mockStoredPassword } from "./handlers";
+import { mockLaneSession, mockStoredPassword } from "./handlers";
 import { mockEmit, mockError, mockInvoke, registerMock } from "./transport";
 
 /**
@@ -111,6 +111,10 @@ registerMock("session_details", async ({ connectionId }): Promise<SessionDetails
   const open = await mockInvoke<ConnectionInfo[]>("list_connections", {});
   const info = open.find((c) => c.connectionId === connectionId);
   if (!info) mockError("NOT_CONNECTED", "not connected");
+  // A mock driver beyond the core ones gives its own (or has none).
+  const lane = mockLaneSession(info.connectionId);
+  if (lane)
+    return lane.sessionDetails?.() ?? mockError("UNSUPPORTED", "unsupported: session details");
   const profile = await mockInvoke<ConnectionProfile>("get_profile", { id: info.profileId });
   if (profile.driver === "sqlite")
     return { tls: false, tlsVersion: null, tlsCipher: null, encoding: "UTF-8" };

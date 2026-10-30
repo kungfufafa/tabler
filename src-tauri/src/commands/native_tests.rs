@@ -27,6 +27,7 @@ use crate::secrets::{Backend, Secrets};
 use crate::sqlgen::Dialect;
 use crate::state::{AppState, Connection};
 use crate::testkit::{FakeSession, FakeStore};
+use crate::types::admin::KillScope;
 use crate::types::browse::{BrowseRequest, RowKey};
 use crate::types::caps::{Feature, SessionCaps, TxMode};
 use crate::types::history::HistoryFilter;
@@ -354,6 +355,41 @@ async fn sql_only_commands_refuse_a_native_connection_before_sending_anything() 
         assert_eq!(f.store.calls(), Vec::<String>::new(), "{caps:?}");
         assert!(!f.store.is_closed());
     }
+}
+
+/// Running Queries on a store: its own task list and kill (`NativeSession::list_processes`,
+/// `kill_processes`) once its caps grant them, refused before anything is sent otherwise.
+#[tokio::test]
+async fn a_native_store_lists_and_stops_its_own_processes() {
+    let f = fixture(SessionCaps::minimal(Driver::Redis)).await;
+    let session = f.conn.any_session().await;
+    let err = crate::admin::list_processes_any(&session)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "UNSUPPORTED", "{err}");
+    let ids = ["task:1".to_string()];
+    let err = crate::admin::kill_any(&session, &ids, KillScope::Query)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "UNSUPPORTED", "{err}");
+    assert_eq!(f.store.calls(), Vec::<String>::new());
+
+    let caps =
+        SessionCaps::minimal(Driver::Redis).with(&[Feature::ProcessList, Feature::KillProcess]);
+    let f = fixture(caps).await;
+    let session = f.conn.any_session().await;
+    let rows = crate::admin::list_processes_any(&session).await.unwrap();
+    assert_eq!(rows[0].id, "task:1");
+    let ids = ["task:1".to_string(), "task:2".to_string()];
+    let outcomes = crate::admin::kill_any(&session, &ids, KillScope::Connection)
+        .await
+        .unwrap();
+    let ok: Vec<bool> = outcomes.iter().map(|o| o.ok).collect();
+    assert_eq!(ok, [true, false]);
+    assert_eq!(
+        f.store.calls(),
+        ["list_processes", "kill Connection task:1 task:2"]
+    );
 }
 
 /// A database switch that cannot open the new session leaves the store's session in place.

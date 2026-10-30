@@ -15,6 +15,7 @@ import type { UserDetail } from "../bindings/UserDetail";
 import type { UserRef } from "../bindings/UserRef";
 import type { UserState } from "../bindings/UserState";
 import type { UserSummary } from "../bindings/UserSummary";
+import { mockLaneSession } from "./handlers";
 import { mockError, mockInvoke, registerMock } from "./transport";
 
 /**
@@ -456,6 +457,10 @@ function seedProcesses(driver: Driver, me: ConnectionInfo): MockProcess[] {
 
 registerMock("admin_list_processes", async ({ connectionId }) => {
   const c = await connection(connectionId);
+  // A mock driver beyond the core ones lists its own (or has none).
+  const lane = mockLaneSession(c.connectionId);
+  if (lane)
+    return lane.listProcesses?.() ?? mockError("UNSUPPORTED", "unsupported: the process list");
   if (c.driver === "sqlite")
     mockError(
       "UNSUPPORTED",
@@ -517,6 +522,12 @@ registerMock("admin_list_processes", async ({ connectionId }) => {
 registerMock("admin_kill_processes", async ({ connectionId, ids, scope }) => {
   const c = await connection(connectionId);
   if (c.readOnly) mockError("UNSUPPORTED", "unsupported: this connection is read-only");
+  const lane = mockLaneSession(c.connectionId);
+  if (lane)
+    return (
+      lane.killProcesses?.(ids as string[], scope as KillScope) ??
+      mockError("UNSUPPORTED", "unsupported: Kill Process")
+    );
   const list = processes.get(c.driver) ?? [];
   const outcomes: KillOutcome[] = [];
   for (const id of ids as string[]) {
@@ -722,6 +733,11 @@ function accounts(driver: Driver): UserState[] {
 
 registerMock("admin_list_users", async ({ connectionId, includeNologin }) => {
   const c = await connection(connectionId);
+  const lane = mockLaneSession(c.connectionId);
+  if (lane)
+    return (
+      lane.listUsers?.(includeNologin === true) ?? mockError("UNSUPPORTED", "unsupported: users")
+    );
   return accounts(c.driver)
     .map((u): UserSummary => ({
       name: u.name,
@@ -736,6 +752,8 @@ registerMock("admin_list_users", async ({ connectionId, includeNologin }) => {
 registerMock("admin_get_user", async ({ connectionId, user }) => {
   const c = await connection(connectionId);
   const ref = user as UserRef;
+  const lane = mockLaneSession(c.connectionId);
+  if (lane) return lane.loadUser?.(ref) ?? mockError("UNSUPPORTED", "unsupported: users");
   const found = accounts(c.driver).find((u) => key(u) === key(ref));
   if (!found) mockError("NOT_FOUND", `not found: user ${ref.name}`);
   const detail: UserDetail = {

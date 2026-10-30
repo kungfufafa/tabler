@@ -83,14 +83,23 @@ jobs:
         run: git diff --exit-code -- src/lib/ipc/bindings
 
       - name: Rust with every driver — clippy, lib tests
+        # The bindings go to a folder of their own, for the next step to compare both ways.
+        env:
+          TS_RS_EXPORT_DIR: ${{ runner.temp }}/bindings-all
         run: |
           cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings
           cargo test --manifest-path src-tauri/Cargo.toml --locked --all-features --lib
 
-      - name: Shared bindings are the same with every driver
-        # A lane's own bindings (`<Prefix>*.ts`, `lex/<d>.json`) are new, untracked files until it
-        # lands, which `git diff` leaves out; the shared ones must not change.
-        run: git diff --exit-code -- src/lib/ipc/bindings
+      - name: Bindings are the ones every driver exports
+        # The shared bindings and the lanes' committed ones (`<Prefix>*.ts`, `lex/<d>.json`, which
+        # `lane.mjs <lane> bindings` writes) must be what the build with every driver exports, and
+        # none may be left over from a type that is gone. A lane's binding that is not committed
+        # yet only warns: it is committed with the lane's code, at the latest when the lane lands.
+        run: |
+          out="$RUNNER_TEMP/bindings-all"
+          git diff --no-index --exit-code --diff-filter=MD -- src/lib/ipc/bindings "$out"
+          added=$(git diff --no-index --name-only --diff-filter=A -- src/lib/ipc/bindings "$out" || true)
+          for f in $added; do echo "::warning::binding not committed yet: ${f#"$out"/}"; done
 
   check-windows:
     # The same checks on Windows, which build.yml also ships.

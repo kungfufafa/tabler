@@ -17,10 +17,11 @@ use crate::sqlgen::Dialect;
 use crate::sqlgen::dialect::spec::ExplainForm;
 use crate::sqlgen::dialect::{DialectRef, SqlDialect};
 use crate::sqlgen::split::leading_keywords;
-use crate::types::admin::{KillOutcome, KillScope, ProcessRow};
+use crate::types::admin::{KillOutcome, KillScope, ProcessRow, UserDetail, UserRef, UserSummary};
 use crate::types::browse::{TraceCategory, TracedSql};
 use crate::types::caps::{Feature, SessionCaps};
 use crate::types::driver::Flavor;
+use crate::types::objects::{RoutineRef, RoutineSummary};
 use crate::types::profile::{ConnectionProfile, Driver};
 use crate::types::query::{
     ExecOutcome, ExplainMode, ResultColumn, ResultSet, ServerNotice, StatementKind,
@@ -28,6 +29,7 @@ use crate::types::query::{
 use crate::types::schema::{
     CompletionMetadata, DatabaseInfo, SchemaInfo, TableMeta, TableRef, TableSummary,
 };
+use crate::types::security::SessionDetails;
 use crate::types::value::Value;
 
 pub mod common;
@@ -1095,6 +1097,38 @@ pub trait DbSession: Send + Sync {
     /// The server's own DDL of a table (`SHOW CREATE`, `GET_DDL`); `None` builds it from the
     /// table's structure.
     async fn table_ddl(&self, _table: &TableRef) -> Option<Result<String, AppError>> {
+        None
+    }
+
+    // The hooks below answer for an engine whose catalog is not the core one of its dialect
+    // (`None`: the caller reads it with the core SQL, which a non-core dialect refuses).
+
+    /// The routines of `schema` (`objects::list_routines`).
+    async fn list_routines(&self, _schema: &str) -> Option<Result<Vec<RoutineSummary>, AppError>> {
+        None
+    }
+
+    /// What opening a routine shows (`objects::routine_definition`).
+    async fn routine_definition(&self, _routine: &RoutineRef) -> Option<Result<String, AppError>> {
+        None
+    }
+
+    /// The server's users, the ones that cannot log in only with `include_nologin`
+    /// (`admin::list_users`).
+    async fn list_users(
+        &self,
+        _include_nologin: bool,
+    ) -> Option<Result<Vec<UserSummary>, AppError>> {
+        None
+    }
+
+    /// A user's attributes and grants (`admin::load_user`).
+    async fn load_user(&self, _user: &UserRef) -> Option<Result<UserDetail, AppError>> {
+        None
+    }
+
+    /// The session's TLS state and character set (`commands::lock::session_details`).
+    async fn session_details(&self) -> Option<Result<SessionDetails, AppError>> {
         None
     }
 }

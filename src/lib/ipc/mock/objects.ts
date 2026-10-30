@@ -21,6 +21,7 @@ import type { TableRef } from "../bindings/TableRef";
 import type { TableSummary } from "../bindings/TableSummary";
 // The DDL mock registers apply_ddl / list_tables / get_table, which this file calls.
 import "./ddl";
+import { mockLaneSession } from "./handlers";
 import { mockError, mockInvoke, registerMock } from "./transport";
 
 type Routine = Omit<RoutineSummary, "schema"> & { body: string };
@@ -320,6 +321,12 @@ async function planOf(c: ConnectionInfo, op: ObjectOp): Promise<DdlPlan> {
 
 registerMock("list_routines", async ({ connectionId, schema }) => {
   const c = await connectionOf(connectionId);
+  // A mock driver beyond the core ones lists its own (or has none).
+  const lane = c ? mockLaneSession(c.connectionId) : null;
+  if (lane)
+    return (
+      lane.listRoutines?.(schema as string) ?? mockError("UNSUPPORTED", "unsupported: routines")
+    );
   return c ? routinesFor(c, schema as string) : [];
 });
 
@@ -355,6 +362,8 @@ registerMock("list_database_items", async ({ connectionId, includeSystem }) => {
 registerMock("get_routine_definition", async ({ connectionId, routine }) => {
   const c = await requireConnection(connectionId);
   const r = routine as RoutineRef;
+  const lane = mockLaneSession(c.connectionId);
+  if (lane) return lane.routineDefinition?.(r) ?? mockError("UNSUPPORTED", "unsupported: routines");
   const list = c.driver === "postgres" ? (PG_ROUTINES[r.schema ?? "public"] ?? []) : MYSQL_ROUTINES;
   const found = list.find(
     (x) =>

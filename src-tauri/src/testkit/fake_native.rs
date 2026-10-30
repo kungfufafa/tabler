@@ -20,6 +20,7 @@ use crate::drivers::{
 use crate::error::AppError;
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::split::SplitStatement;
+use crate::types::admin::{KillOutcome, KillScope, ProcessRow};
 use crate::types::browse::{
     BrowsePage, BrowseRequest, FilterGroup, RowCount, RowIdentity, RowKey, TraceCategory, TracedSql,
 };
@@ -574,6 +575,39 @@ impl NativeSession for FakeStore {
             "stats" => CallKind::Read,
             _ => CallKind::Write,
         }
+    }
+
+    /// One task, `task:1`, running `wait`.
+    async fn list_processes(&self) -> Option<Result<Vec<ProcessRow>, AppError>> {
+        self.touch("list_processes");
+        Some(self.open().map(|()| {
+            vec![ProcessRow {
+                id: "task:1".into(),
+                user: None,
+                database: None,
+                application: Some("tabler".into()),
+                client: None,
+                state: Some("running".into()),
+                command: None,
+                started_at: None,
+                duration_ms: Some(5),
+                wait_event: None,
+                query: Some("wait".into()),
+                current: false,
+                own: true,
+            }]
+        }))
+    }
+
+    /// Stops `task:1`; any other id is not running.
+    async fn kill_processes(&self, ids: &[String], scope: KillScope) -> Option<Vec<KillOutcome>> {
+        self.touch(format!("kill {scope:?} {}", ids.join(" ")));
+        let outcome = |id: &String| KillOutcome {
+            id: id.clone(),
+            ok: id == "task:1",
+            message: (id != "task:1").then(|| format!("no task {id}")),
+        };
+        Some(ids.iter().map(outcome).collect())
     }
 }
 

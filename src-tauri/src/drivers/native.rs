@@ -8,6 +8,7 @@ use crate::drivers::{CancelHandle, CancelSlot, RowSink, ServerInfo, SqlTrace, St
 use crate::error::AppError;
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::split::SplitStatement;
+use crate::types::admin::{KillOutcome, KillScope, ProcessRow};
 use crate::types::browse::{BrowsePage, BrowseRequest, FilterGroup, RowCount, RowKey, TracedSql};
 use crate::types::caps::SessionCaps;
 use crate::types::mutate::{ApplyRequest, ApplyResult};
@@ -153,5 +154,17 @@ pub trait NativeSession: TableSource {
     /// Whether `call(method)` only reads; anything unknown changes something.
     fn call_kind(&self, _method: &str) -> CallKind {
         CallKind::Write
+    }
+
+    // --- administration (Running Queries), where the caps grant ProcessList / KillProcess ---
+    /// The store's running work (Elasticsearch `_tasks`); `None`: it has no list.
+    async fn list_processes(&self) -> Option<Result<Vec<ProcessRow>, AppError>> {
+        None
+    }
+
+    /// Stops the work `ids` (as `list_processes` gave them), one outcome per id; `None`: the
+    /// store cannot.
+    async fn kill_processes(&self, _ids: &[String], _scope: KillScope) -> Option<Vec<KillOutcome>> {
+        None
     }
 }

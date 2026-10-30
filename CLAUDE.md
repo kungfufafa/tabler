@@ -23,6 +23,11 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
 - `src/components/ui/` is shadcn-generated; do not hand-edit (re-add instead).
 - Pin `tauri = "2"` and `@tauri-apps/*@^2` (3.0 alpha exists). Keep the template's TypeScript version.
 
+## Drivers
+
+- 16 more databases come as 13 driver lanes (`dev/lanes.json`; CockroachDB, Greenplum and Redshift are PostgreSQL flavors). Read `docs/drivers/FOUNDATION.md` first (the shared traits, hooks and registries, and each lane's command lines), then `docs/drivers/README.md` (ownership, rules, landing) and the lane's brief `docs/drivers/<lane>.md`.
+- A lane edits only its own globs and builds through `node dev/scripts/lane.mjs <lane> …` (never repo-wide `cargo fmt` or `prettier --write .`); anything shared is a request to the lead. While lanes are open, shared work uses `node dev/scripts/gates.mjs rs | ts | feat` in place of the plain gates.
+
 ## Git
 
 - One branch: `main`. Commit and push straight to `main`; no feature branches, PRs or `claude/*` worktrees (side sessions work in this checkout too).

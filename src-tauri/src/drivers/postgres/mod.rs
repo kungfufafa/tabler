@@ -34,15 +34,17 @@ use crate::error::AppError;
 use crate::secrets::CommandPassword;
 use crate::sqlgen::dialect::spec::ExplainForm;
 use crate::sqlgen::{Dialect, SqlDialect};
-use crate::types::admin::{KillOutcome, KillScope, ProcessRow};
+use crate::types::admin::{KillOutcome, KillScope, ProcessRow, UserDetail, UserRef, UserSummary};
 use crate::types::browse::TracedSql;
 use crate::types::caps::SessionCaps;
 use crate::types::driver::{Flavor, PgFlavor};
+use crate::types::objects::{RoutineRef, RoutineSummary};
 use crate::types::profile::{Driver, SslMode};
 use crate::types::query::{ExecOutcome, ExplainMode, ResultSet};
 use crate::types::schema::{
     CompletionMetadata, DatabaseInfo, SchemaInfo, TableMeta, TableRef, TableSummary,
 };
+use crate::types::security::SessionDetails;
 use crate::types::value::Value;
 
 pub use connect::PgTls;
@@ -449,6 +451,70 @@ impl DbSession for PgSession {
             Err(e) => return Some(Err(e)),
         };
         self.hooks.table_ddl(&self.traced(&client), table).await
+    }
+
+    async fn list_routines(&self, schema: &str) -> Option<Result<Vec<RoutineSummary>, AppError>> {
+        if self.plain() {
+            return None;
+        }
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return Some(Err(e)),
+        };
+        self.hooks
+            .list_routines(&self.traced(&client), schema)
+            .await
+    }
+
+    async fn routine_definition(&self, routine: &RoutineRef) -> Option<Result<String, AppError>> {
+        if self.plain() {
+            return None;
+        }
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return Some(Err(e)),
+        };
+        self.hooks
+            .routine_definition(&self.traced(&client), routine)
+            .await
+    }
+
+    async fn list_users(
+        &self,
+        include_nologin: bool,
+    ) -> Option<Result<Vec<UserSummary>, AppError>> {
+        if self.plain() {
+            return None;
+        }
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return Some(Err(e)),
+        };
+        self.hooks
+            .list_users(&self.traced(&client), include_nologin)
+            .await
+    }
+
+    async fn load_user(&self, user: &UserRef) -> Option<Result<UserDetail, AppError>> {
+        if self.plain() {
+            return None;
+        }
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return Some(Err(e)),
+        };
+        self.hooks.load_user(&self.traced(&client), user).await
+    }
+
+    async fn session_details(&self) -> Option<Result<SessionDetails, AppError>> {
+        if self.plain() {
+            return None;
+        }
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return Some(Err(e)),
+        };
+        self.hooks.session_details(&self.traced(&client)).await
     }
 
     /// Checks the pool, and keeps the editor connection alive when it is idle (no editor run
@@ -1219,6 +1285,22 @@ mod tests {
         &flavor::VANILLA
     }
 
+    fn routine() -> RoutineRef {
+        RoutineRef {
+            schema: Some("public".into()),
+            name: "f".into(),
+            kind: crate::types::objects::RoutineKind::Function,
+            identity_arguments: String::new(),
+        }
+    }
+
+    fn role() -> UserRef {
+        UserRef {
+            name: "alice".into(),
+            host: None,
+        }
+    }
+
     /// The hooks of a made-up engine that changes everything an engine's hooks can.
     struct TestHooks;
 
@@ -1291,13 +1373,79 @@ mod tests {
             Some(Ok(format!("CREATE TABLE {}", table.name)))
         }
 
+        async fn list_routines(
+            &self,
+            _: &introspect::Traced<'_>,
+            schema: &str,
+        ) -> Option<Result<Vec<RoutineSummary>, AppError>> {
+            let r = routine();
+            Some(Ok(vec![RoutineSummary {
+                schema: Some(schema.to_string()),
+                name: r.name,
+                kind: r.kind,
+                arguments: String::new(),
+                identity_arguments: r.identity_arguments,
+                return_type: Some("integer".into()),
+                language: Some("sql".into()),
+                comment: None,
+            }]))
+        }
+
+        async fn routine_definition(
+            &self,
+            _: &introspect::Traced<'_>,
+            routine: &RoutineRef,
+        ) -> Option<Result<String, AppError>> {
+            Some(Ok(format!("CREATE FUNCTION {}()", routine.name)))
+        }
+
+        async fn list_users(
+            &self,
+            _: &introspect::Traced<'_>,
+            include_nologin: bool,
+        ) -> Option<Result<Vec<UserSummary>, AppError>> {
+            let user = |name: &str, can_login| UserSummary {
+                name: name.into(),
+                host: None,
+                can_login,
+                superuser: false,
+            };
+            let users = [user("alice", true), user("readers", false)];
+            Some(Ok(users
+                .into_iter()
+                .filter(|u| include_nologin || u.can_login)
+                .collect()))
+        }
+
+        async fn load_user(
+            &self,
+            _: &introspect::Traced<'_>,
+            user: &UserRef,
+        ) -> Option<Result<UserDetail, AppError>> {
+            Some(Err(AppError::NotFound(format!("user {}", user.name))))
+        }
+
+        async fn session_details(
+            &self,
+            _: &introspect::Traced<'_>,
+        ) -> Option<Result<SessionDetails, AppError>> {
+            Some(Ok(SessionDetails {
+                encoding: Some("UNICODE".into()),
+                ..SessionDetails::default()
+            }))
+        }
+
         fn explain_form(&self, _: ExplainMode) -> Option<ExplainForm> {
             Some(ExplainForm::Prefix("EXPLAIN VERBOSE"))
         }
 
         fn adjust_caps(&self, caps: &mut SessionCaps, server_version_num: i32) {
             if server_version_num == 80_002 {
-                *caps = caps.clone().with(&[Feature::Users]);
+                *caps = caps.clone().with(&[
+                    Feature::Users,
+                    Feature::Routines,
+                    Feature::SessionDetails,
+                ]);
             }
         }
 
@@ -1356,6 +1504,11 @@ mod tests {
                     .is_none()
             );
             assert!(session.table_ddl(&table).await.is_none());
+            assert!(session.list_routines("public").await.is_none());
+            assert!(session.routine_definition(&routine()).await.is_none());
+            assert!(session.list_users(true).await.is_none());
+            assert!(session.load_user(&role()).await.is_none());
+            assert!(session.session_details().await.is_none());
             assert_eq!(session.explain_form(ExplainMode::Analyze), None);
             assert_eq!(pg.startups().len(), 1, "{engine:?}");
             session.close().await;
@@ -1461,6 +1614,27 @@ mod tests {
         let table = TableRef::new(Some("public"), "t");
         let ddl = session.table_ddl(&table).await.unwrap().unwrap();
         assert_eq!(ddl, "CREATE TABLE t");
+        // Routines, users and the session's details come from the engine's hooks, through the
+        // commands' own functions, which send none of PostgreSQL's catalog SQL for them.
+        let sent = pg.queries().len();
+        let sql: &dyn DbSession = &session;
+        let routines = crate::objects::list_routines(sql, "public").await.unwrap();
+        assert_eq!(routines[0].name, "f");
+        let definition = crate::objects::routine_definition(sql, &routine()).await;
+        assert_eq!(definition.unwrap(), "CREATE FUNCTION f()");
+        let users = crate::admin::list_users(sql, false).await.unwrap();
+        assert_eq!(
+            users.iter().map(|u| &u.name[..]).collect::<Vec<_>>(),
+            ["alice"]
+        );
+        assert_eq!(crate::admin::list_users(sql, true).await.unwrap().len(), 2);
+        let err = crate::admin::load_user(sql, &role()).await.unwrap_err();
+        assert_eq!(err.code(), "NOT_FOUND");
+        let details = crate::commands::lock::session_details_of(sql)
+            .await
+            .unwrap();
+        assert_eq!(details.encoding.as_deref(), Some("UNICODE"));
+        assert_eq!(pg.queries().len(), sent, "{:?}", pg.queries());
         assert_eq!(
             session.explain_form(ExplainMode::Plan),
             Some(ExplainForm::Prefix("EXPLAIN VERBOSE"))

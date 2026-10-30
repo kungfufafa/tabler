@@ -6,14 +6,23 @@ import type { ConnectionProfile } from "../../bindings/ConnectionProfile";
 import type { DatabaseInfo } from "../../bindings/DatabaseInfo";
 import type { Driver } from "../../bindings/Driver";
 import type { FilterGroup } from "../../bindings/FilterGroup";
+import type { KillOutcome } from "../../bindings/KillOutcome";
+import type { KillScope } from "../../bindings/KillScope";
+import type { ProcessRow } from "../../bindings/ProcessRow";
 import type { QueryEvent } from "../../bindings/QueryEvent";
 import type { RowCount } from "../../bindings/RowCount";
+import type { RoutineRef } from "../../bindings/RoutineRef";
+import type { RoutineSummary } from "../../bindings/RoutineSummary";
 import type { RowKey } from "../../bindings/RowKey";
 import type { SchemaInfo } from "../../bindings/SchemaInfo";
 import type { SessionCaps } from "../../bindings/SessionCaps";
+import type { SessionDetails } from "../../bindings/SessionDetails";
 import type { TableMeta } from "../../bindings/TableMeta";
 import type { TableRef } from "../../bindings/TableRef";
 import type { TableSummary } from "../../bindings/TableSummary";
+import type { UserDetail } from "../../bindings/UserDetail";
+import type { UserRef } from "../../bindings/UserRef";
+import type { UserSummary } from "../../bindings/UserSummary";
 import type { Value } from "../../bindings/Value";
 
 /**
@@ -53,6 +62,18 @@ export interface MockSession {
   run(statement: string, emit: (event: QueryEvent) => void): void | Promise<void>;
   /** The session's own calls (`session_call`). */
   call?(method: string, args: unknown): unknown;
+  // The backend's hooks of the same names (docs/drivers/FOUNDATION.md), each refused without it.
+  /** Running Queries. */
+  listProcesses?(): ProcessRow[];
+  killProcesses?(ids: string[], scope: KillScope): KillOutcome[];
+  /** The sidebar's routines. */
+  listRoutines?(schema: string): RoutineSummary[];
+  routineDefinition?(routine: RoutineRef): string;
+  /** The Users window (reading only). */
+  listUsers?(includeNologin: boolean): UserSummary[];
+  loadUser?(user: UserRef): UserDetail;
+  /** The status bar's TLS state and character set. */
+  sessionDetails?(): SessionDetails;
 }
 
 /** What a lane's mock module exports as `default`. */

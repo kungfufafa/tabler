@@ -7,7 +7,8 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use crate::drivers::{DbSession, TxStatement};
+use crate::drivers::session::not_sql;
+use crate::drivers::{DbSession, Session, TxStatement};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::admin::{
@@ -362,6 +363,20 @@ pub async fn list_processes(session: &dyn DbSession) -> Result<Vec<ProcessRow>, 
     })
 }
 
+/// [`list_processes`] on a session of either kind: a store that speaks no SQL lists its own
+/// (`NativeSession::list_processes`) or has none.
+pub async fn list_processes_any(session: &Session) -> Result<Vec<ProcessRow>, AppError> {
+    let native = match session {
+        Session::Sql(s) => return list_processes(s.as_ref()).await,
+        Session::Native(n) => n,
+    };
+    native.capabilities().require(Feature::ProcessList)?;
+    match native.list_processes().await {
+        Some(rows) => rows,
+        None => Err(not_sql(native.driver())),
+    }
+}
+
 /// A core process id (PG `pid`, MySQL thread `Id`) as `list_processes` gave it.
 fn process_id(id: &str) -> Result<i64, AppError> {
     id.parse()
@@ -413,12 +428,36 @@ pub async fn kill(
     Ok(out)
 }
 
+/// [`kill`] on a session of either kind: a store that speaks no SQL stops its own work
+/// (`NativeSession::kill_processes`) or cannot.
+pub async fn kill_any(
+    session: &Session,
+    ids: &[String],
+    scope: KillScope,
+) -> Result<Vec<KillOutcome>, AppError> {
+    let native = match session {
+        Session::Sql(s) => return kill(s.as_ref(), ids, scope).await,
+        Session::Native(n) => n,
+    };
+    native.capabilities().require(Feature::KillProcess)?;
+    native
+        .kill_processes(ids, scope)
+        .await
+        .ok_or_else(|| not_sql(native.driver()))
+}
+
 // --- users ----------------------------------------------------------------------------------
 
+/// The accounts of the server; the driver lists its own where it has a list
+/// (`DbSession::list_users`).
 pub async fn list_users(
     session: &dyn DbSession,
     include_nologin: bool,
 ) -> Result<Vec<UserSummary>, AppError> {
+    session.require(Feature::Users)?;
+    if let Some(users) = session.list_users(include_nologin).await {
+        return users;
+    }
     match session.core_dialect(Feature::Users)? {
         Dialect::Postgres => {
             let rs = session.query(admin_sql::PG_LIST_ROLES, &[]).await?;
@@ -557,8 +596,13 @@ pub fn mysql_db_rows(rows: &[Vec<Value>]) -> Vec<ObjectPrivileges> {
         .collect()
 }
 
-/// Loads an account for the User Management window.
+/// Loads an account for the User Management window (the driver's own reading where it has one:
+/// `DbSession::load_user`).
 pub async fn load_user(session: &dyn DbSession, user: &UserRef) -> Result<UserDetail, AppError> {
+    session.require(Feature::Users)?;
+    if let Some(detail) = session.load_user(user).await {
+        return detail;
+    }
     let name = Value::Text(user.name.clone());
     match session.core_dialect(Feature::Users)? {
         Dialect::Postgres => {

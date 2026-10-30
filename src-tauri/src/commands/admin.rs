@@ -89,8 +89,8 @@ pub async fn admin_list_processes(
     state: State<'_, AppState>,
     connection_id: Uuid,
 ) -> Result<Vec<ProcessRow>, AppError> {
-    let session = state.session(connection_id).await?;
-    admin::list_processes(session.as_ref()).await
+    let session = state.any_session(connection_id).await?;
+    admin::list_processes_any(&session).await
 }
 
 /// Kill Query / Kill Connection, one outcome per id.
@@ -103,8 +103,8 @@ pub async fn admin_kill_processes(
 ) -> Result<Vec<KillOutcome>, AppError> {
     let conn = state.connection(connection_id).await?;
     writable(&conn)?;
-    let session = conn.session().await?;
-    let outcomes = admin::kill(session.as_ref(), &ids, scope).await?;
+    let session = conn.any_session().await;
+    let outcomes = admin::kill_any(&session, &ids, scope).await?;
     log::info!(
         "admin kill {scope:?}: {} of {} done",
         outcomes.iter().filter(|o| o.ok).count(),

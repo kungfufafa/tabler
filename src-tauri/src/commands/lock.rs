@@ -123,10 +123,15 @@ pub async fn session_details(
     session_details_of(session.as_ref()).await
 }
 
-/// The body of [`session_details`] on a session.
+/// The body of [`session_details`] on a session; the driver's own where it has them
+/// (`DbSession::session_details`).
 pub(crate) async fn session_details_of(
     session: &dyn DbSession,
 ) -> Result<SessionDetails, AppError> {
+    session.require(Feature::SessionDetails)?;
+    if let Some(details) = session.session_details().await {
+        return details;
+    }
     let dialect = session.core_dialect(Feature::SessionDetails)?;
     let mut details = SessionDetails::default();
     let mut first_error = None;

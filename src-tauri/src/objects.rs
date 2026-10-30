@@ -222,11 +222,16 @@ pub fn routine_from_mysql_row(schema: &str, row: &[Value]) -> Option<RoutineSumm
 }
 
 /// Functions and procedures of `schema` (PG: aggregates and window functions too), extension
-/// members left out. SQLite has none.
+/// members left out. SQLite has none. The driver lists its own where it has a list
+/// (`DbSession::list_routines`).
 pub async fn list_routines(
     session: &dyn DbSession,
     schema: &str,
 ) -> Result<Vec<RoutineSummary>, AppError> {
+    session.require(Feature::Routines)?;
+    if let Some(routines) = session.list_routines(schema).await {
+        return routines;
+    }
     let params = [Value::Text(schema.to_string())];
     let dialect = session.core_dialect(Feature::Routines)?;
     let rows = match dialect {
@@ -283,11 +288,16 @@ async fn pg_find_routine(
 }
 
 /// What opening a routine shows: PG `pg_get_functiondef` (aggregates rebuilt from
-/// `pg_aggregate`); MySQL `DROP … IF EXISTS` + `SHOW CREATE`.
+/// `pg_aggregate`); MySQL `DROP … IF EXISTS` + `SHOW CREATE`; the driver's own where it has
+/// one (`DbSession::routine_definition`).
 pub async fn routine_definition(
     session: &dyn DbSession,
     r: &RoutineRef,
 ) -> Result<String, AppError> {
+    session.require(Feature::Routines)?;
+    if let Some(definition) = session.routine_definition(r).await {
+        return definition;
+    }
     match session.core_dialect(Feature::Routines)? {
         Dialect::Postgres => {
             let row = pg_find_routine(

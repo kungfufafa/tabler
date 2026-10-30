@@ -5,9 +5,14 @@ import type { ApplyResult } from "../../bindings/ApplyResult";
 import type { BrowsePage } from "../../bindings/BrowsePage";
 import type { ConnectionInfo } from "../../bindings/ConnectionInfo";
 import type { ConnectionProfile } from "../../bindings/ConnectionProfile";
+import type { KillOutcome } from "../../bindings/KillOutcome";
+import type { ProcessRow } from "../../bindings/ProcessRow";
 import type { QueryEvent } from "../../bindings/QueryEvent";
+import type { RoutineSummary } from "../../bindings/RoutineSummary";
+import type { SessionDetails } from "../../bindings/SessionDetails";
 import type { StatementResult } from "../../bindings/StatementResult";
 import type { TableSummary } from "../../bindings/TableSummary";
+import type { UserSummary } from "../../bindings/UserSummary";
 import { SEED_PROFILES } from "../fixtures";
 import { mockProfiles } from "../handlers";
 import { mockInvoke } from "../transport";
@@ -217,6 +222,111 @@ describe("a connection of a mock driver", () => {
     });
     expect(events.filter((e) => e.event === "done")).toHaveLength(1);
     expect(events.at(-1)?.event).toBe("done");
+    await mockInvoke("disconnect", { connectionId });
+  });
+
+  it("answers Running Queries, routines, users and session details through the session's hooks", async () => {
+    // Without the hooks, refused like the backend's missing hook.
+    let { connectionId } = await connectFake();
+    for (const [command, args] of [
+      ["admin_list_processes", {}],
+      ["admin_kill_processes", { ids: ["t1"], scope: "query" }],
+      ["list_routines", { schema: "app" }],
+      ["admin_list_users", { includeNologin: false }],
+      ["session_details", {}],
+    ] as const) {
+      await expect(mockInvoke(command, { connectionId, ...args })).rejects.toMatchObject({
+        code: "UNSUPPORTED",
+      });
+    }
+    await mockInvoke("disconnect", { connectionId });
+
+    const fake = fakeMockDriver("mongodb");
+    const process: ProcessRow = {
+      id: "t1",
+      user: null,
+      database: null,
+      application: "tabler",
+      client: null,
+      state: "running",
+      command: null,
+      startedAt: null,
+      durationMs: 5,
+      waitEvent: null,
+      query: "find users",
+      current: false,
+      own: true,
+    };
+    const routine: RoutineSummary = {
+      schema: "app",
+      name: "f",
+      kind: "function",
+      arguments: "",
+      identityArguments: "",
+      returnType: null,
+      language: "js",
+      comment: null,
+    };
+    const user: UserSummary = { name: "ada", host: null, canLogin: true, superuser: false };
+    const details: SessionDetails = {
+      tls: true,
+      tlsVersion: null,
+      tlsCipher: null,
+      encoding: null,
+    };
+    registerMockDriver("mongodb", {
+      ...fake,
+      connect: (profile) => ({
+        ...fake.connect(profile),
+        listProcesses: () => [process],
+        killProcesses: (ids, scope) =>
+          ids.map((id) => ({ id, ok: scope === "query", message: null })),
+        listRoutines: (schema) => [{ ...routine, schema }],
+        routineDefinition: (r) => `function ${r.name}() {}`,
+        listUsers: (includeNologin) => (includeNologin ? [user] : []),
+        loadUser: (u) => ({
+          state: {
+            name: u.name,
+            host: null,
+            globalPrivileges: [],
+            limits: null,
+            attributes: null,
+            databasePrivileges: [],
+            schemaPrivileges: [],
+            tablePrivileges: [],
+            partialTablePrivileges: [],
+          },
+          schemas: [],
+        }),
+        sessionDetails: () => details,
+      }),
+    });
+    buildMockDrivers(["mongodb"]);
+    ({ connectionId } = await mockInvoke<ConnectionInfo>("connect", {
+      profileId: "p-fake-mongodb",
+    }));
+    expect(await mockInvoke("admin_list_processes", { connectionId })).toEqual([process]);
+    expect(
+      await mockInvoke<KillOutcome[]>("admin_kill_processes", {
+        connectionId,
+        ids: ["t1"],
+        scope: "query",
+      }),
+    ).toEqual([{ id: "t1", ok: true, message: null }]);
+    expect(await mockInvoke("list_routines", { connectionId, schema: "app" })).toEqual([routine]);
+    expect(
+      await mockInvoke("get_routine_definition", {
+        connectionId,
+        routine: { schema: "app", name: "f", kind: "function", identityArguments: "" },
+      }),
+    ).toBe("function f() {}");
+    expect(await mockInvoke("admin_list_users", { connectionId, includeNologin: true })).toEqual([
+      user,
+    ]);
+    expect(
+      await mockInvoke("admin_get_user", { connectionId, user: { name: "ada", host: null } }),
+    ).toMatchObject({ state: { name: "ada" } });
+    expect(await mockInvoke("session_details", { connectionId })).toEqual(details);
     await mockInvoke("disconnect", { connectionId });
   });
 

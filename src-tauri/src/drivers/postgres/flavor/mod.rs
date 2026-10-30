@@ -15,14 +15,16 @@ use super::introspect::Traced;
 use crate::error::AppError;
 use crate::sqlgen::SqlDialect;
 use crate::sqlgen::dialect::spec::ExplainForm;
-use crate::types::admin::{KillOutcome, KillScope, ProcessRow};
+use crate::types::admin::{KillOutcome, KillScope, ProcessRow, UserDetail, UserRef, UserSummary};
 use crate::types::caps::{Feature, SessionCaps};
 use crate::types::driver::{Flavor, KindId, PgFlavor};
+use crate::types::objects::{RoutineRef, RoutineSummary};
 use crate::types::profile::ConnectionProfile;
 use crate::types::query::ExplainMode;
 use crate::types::schema::{
     CompletionMetadata, DatabaseInfo, SchemaInfo, TableMeta, TableRef, TableSummary,
 };
+use crate::types::security::SessionDetails;
 
 /// What a statement of the session init sets. An engine's hooks pick statements by it
 /// (`PgFlavorHooks::init_sql`), never by their text, which the profile's own startup commands
@@ -156,6 +158,47 @@ pub(crate) trait PgFlavorHooks: Send + Sync {
         _c: &Traced<'_>,
         _table: &TableRef,
     ) -> Option<Result<String, AppError>> {
+        None
+    }
+
+    /// The routines of `schema` (`DbSession::list_routines`).
+    async fn list_routines(
+        &self,
+        _c: &Traced<'_>,
+        _schema: &str,
+    ) -> Option<Result<Vec<RoutineSummary>, AppError>> {
+        None
+    }
+
+    /// What opening a routine shows (`DbSession::routine_definition`).
+    async fn routine_definition(
+        &self,
+        _c: &Traced<'_>,
+        _routine: &RoutineRef,
+    ) -> Option<Result<String, AppError>> {
+        None
+    }
+
+    /// The server's users (`DbSession::list_users`).
+    async fn list_users(
+        &self,
+        _c: &Traced<'_>,
+        _include_nologin: bool,
+    ) -> Option<Result<Vec<UserSummary>, AppError>> {
+        None
+    }
+
+    /// A user's attributes and grants (`DbSession::load_user`).
+    async fn load_user(
+        &self,
+        _c: &Traced<'_>,
+        _user: &UserRef,
+    ) -> Option<Result<UserDetail, AppError>> {
+        None
+    }
+
+    /// The session's TLS state and character set (`DbSession::session_details`).
+    async fn session_details(&self, _c: &Traced<'_>) -> Option<Result<SessionDetails, AppError>> {
         None
     }
 
@@ -461,6 +504,21 @@ mod tests {
         let ids = ["7".to_string()];
         assert!(hooks.kill(&c, &ids, KillScope::Query).await.is_none());
         assert!(hooks.table_ddl(&c, &table).await.is_none());
+        assert!(hooks.list_routines(&c, "public").await.is_none());
+        let routine = RoutineRef {
+            schema: Some("public".into()),
+            name: "f".into(),
+            kind: crate::types::objects::RoutineKind::Function,
+            identity_arguments: String::new(),
+        };
+        assert!(hooks.routine_definition(&c, &routine).await.is_none());
+        assert!(hooks.list_users(&c, true).await.is_none());
+        let user = UserRef {
+            name: "u".into(),
+            host: None,
+        };
+        assert!(hooks.load_user(&c, &user).await.is_none());
+        assert!(hooks.session_details(&c).await.is_none());
         assert!(pg.queries().is_empty(), "{:?}", pg.queries());
         assert!(trace.drain().is_empty());
     }
