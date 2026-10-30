@@ -13,6 +13,8 @@ import { fksOf, type GridColumn, type RowStatus } from "./types";
 const CLS: Record<CellDisplayClass, string> = {
   null: "text-null italic",
   default: "text-null italic",
+  // A field the row does not have (a document store's): apart from NULL.
+  missing: "text-null",
   empty: "text-null text-[10px] tracking-wide italic",
   bool: "",
   num: "",

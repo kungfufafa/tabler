@@ -31,7 +31,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { coreDialect } from "@/features/drivers/catalog";
-import type { Driver } from "@/lib/ipc";
+import type { Dialect, Driver, Feature } from "@/lib/ipc";
 import {
   isMatchStrategy,
   MATCH_STRATEGIES,
@@ -77,6 +77,86 @@ export type MenuEntry =
 
 const sep = (id: string): MenuEntry => ({ kind: "separator", id });
 
+/** The feature each entry needs (`SessionCaps.features`); the others need none. */
+const ENTRY_FEATURE: Readonly<Record<string, Feature>> = {
+  "open-structure": "structureView",
+  export: "exportTables",
+  "import-csv": "importCsv",
+  "import-json": "importJson",
+  "import-sql": "importSqlDump",
+  "new-table": "createTable",
+  "new-schema": "createSchema",
+  clone: "createTable",
+  rename: "renameTable",
+  truncate: "truncateTable",
+  delete: "dropTable",
+  "script-creation": "tableDdl",
+  "script-drop": "dropTable",
+  "script-truncate": "truncateTable",
+  "script-laravel": "laravelMigration",
+  "generate-diagram": "diagram",
+  "new-function": "routines",
+  "new-procedure": "routines",
+  "new-query": "editor",
+};
+
+const NEEDED: readonly Feature[] = [...new Set(Object.values(ENTRY_FEATURE))];
+
+/** Entries that write a core dialect's SQL in the renderer: none for another engine's session. */
+const CORE_SQL_ENTRIES: ReadonlySet<string> = new Set([
+  "item-overview",
+  "clone",
+  "copy-script",
+  "new-view",
+  "new-materializedView",
+  "new-function",
+  "new-procedure",
+]);
+
+/**
+ * `entries` without what the session lacks (features ANDed in, plan F9b): the items whose
+ * feature it does not offer, with `coreSql` false those that write core SQL, and the submenus
+ * and separators left empty or doubled. Without `features` (a core session) the entries are
+ * returned as they are.
+ */
+export function withFeatures(
+  entries: MenuEntry[],
+  features: readonly Feature[] | undefined,
+  coreSql = true,
+): MenuEntry[] {
+  // A core session offers them all: its menus stay exactly as they were.
+  if (coreSql && (!features || NEEDED.every((f) => features.includes(f)))) return entries;
+  const offered = (id: string) => {
+    if (!coreSql && CORE_SQL_ENTRIES.has(id)) return false;
+    const need = ENTRY_FEATURE[id];
+    return need === undefined || !features || features.includes(need);
+  };
+  const out: MenuEntry[] = [];
+  for (const e of entries) {
+    if (e.kind === "separator") {
+      if (out.length > 0 && out.at(-1)!.kind !== "separator") out.push(e);
+      continue;
+    }
+    if (!offered(e.id)) continue;
+    if (e.kind === "sub") {
+      const items = withFeatures(e.items, features, coreSql);
+      if (items.some((i) => i.kind !== "separator")) out.push({ ...e, items });
+      continue;
+    }
+    out.push(e);
+  }
+  while (out.at(-1)?.kind === "separator") out.pop();
+  return out;
+}
+
+/**
+ * The core dialect a menu's entries write: the session's (`connectionDialect`), or the driver's
+ * own when the caller leaves it out. A Redshift session (PostgreSQL's driver) has none.
+ */
+function menuDialect(o: { driver: Driver; dialect?: Dialect | null }): Dialect | null {
+  return o.dialect === undefined ? coreDialect(o.driver) : o.dialect;
+}
+
 /** What the "New ▸" submenu (and the "+" menu) can create. */
 export type NewTarget = "table" | NewObjectKind | "schema" | "query" | "group";
 
@@ -84,10 +164,14 @@ export interface NewMenuHandlers {
   newItem: (what: NewTarget) => void;
 }
 
-/** "New ▸" entries for a driver: Table / View / Materialized View (PG) / Function / Procedure
- * (PG, MySQL) / Schema (PG), and Group… when the sidebar can keep groups (`group`). */
+/**
+ * "New ▸" entries for a driver: Table / View / Materialized View (PG) / Function / Procedure
+ * (PG, MySQL) / Schema (PG), and Group… when the sidebar can keep groups (`group`). The
+ * templates are `dialect`'s, the session's core dialect: none without one.
+ */
 export function newEntries(
   driver: Driver,
+  dialect: Dialect | null,
   readOnly: boolean,
   on: NewMenuHandlers,
   suffix = "…",
@@ -109,8 +193,7 @@ export function newEntries(
     ["function", "Function", SquareFunction],
     ["procedure", "Procedure", Workflow],
   ];
-  // Their templates are a core dialect's: none for other drivers.
-  const dialect = coreDialect(driver);
+  // Their templates are a core dialect's: none for another session.
   for (const [kind, label, icon] of kinds)
     if (dialect && supportsNewObject(dialect, kind))
       out.push({
@@ -143,6 +226,7 @@ export function newEntries(
 /** "New ▸" (with Group… when `group`: TablePlus's New ▸ Group…, spec §2.3). */
 export function newSubmenu(
   driver: Driver,
+  dialect: Dialect | null,
   readOnly: boolean,
   on: NewMenuHandlers,
   group = false,
@@ -152,7 +236,7 @@ export function newSubmenu(
     id: "new",
     label: "New",
     icon: Plus,
-    items: newEntries(driver, readOnly, on, "…", { group }),
+    items: newEntries(driver, dialect, readOnly, on, "…", { group }),
   };
 }
 
@@ -175,6 +259,10 @@ export interface TableMenuOptions {
   allPinned: boolean | null;
   /** New ▸ offers Group… (the sidebar keeps groups for this connection). */
   groups?: boolean;
+  /** What the session offers (`withFeatures`); every feature when left out. */
+  features?: readonly Feature[];
+  /** The session's core dialect (`connectionDialect`), the driver's own when left out. */
+  dialect?: Dialect | null;
 }
 
 export interface TableMenuHandlers extends NewMenuHandlers {
@@ -216,6 +304,7 @@ export function tableMenu(
   on: TableMenuHandlers,
   groupItems: readonly MenuEntry[] = [],
 ): MenuEntry[] {
+  const dialect = menuDialect(o);
   const entries: MenuEntry[] = [
     {
       kind: "item",
@@ -294,7 +383,7 @@ export function tableMenu(
       ],
     },
     sep("s2"),
-    newSubmenu(o.driver, o.readOnly, on, o.groups),
+    newSubmenu(o.driver, dialect, o.readOnly, on, o.groups),
     {
       kind: "item",
       id: "clone",
@@ -374,7 +463,7 @@ export function tableMenu(
     },
   );
   for (const extend of tableMenuExtensions) entries.push(...extend(o));
-  return entries;
+  return withFeatures(entries, o.features, dialect !== null);
 }
 
 // --- sidebar groups ------------------------------------------------------------------------------
@@ -449,6 +538,10 @@ export interface ObjectMenuOptions {
   droppable?: number;
   /** New ▸ offers Group…. */
   groups?: boolean;
+  /** What the session offers (`withFeatures`); every feature when left out. */
+  features?: readonly Feature[];
+  /** The session's core dialect (`connectionDialect`), the driver's own when left out. */
+  dialect?: Dialect | null;
 }
 
 export interface ObjectMenuHandlers extends NewMenuHandlers {
@@ -467,7 +560,8 @@ export function objectMenu(
   on: ObjectMenuHandlers,
   groupItems: readonly MenuEntry[] = [],
 ): MenuEntry[] {
-  return [
+  const dialect = menuDialect(o);
+  const entries: MenuEntry[] = [
     { kind: "item", id: "open-new-tab", label: "Open in New Tab", icon: Code, onSelect: on.open },
     {
       kind: "item",
@@ -498,7 +592,7 @@ export function objectMenu(
       ],
     },
     sep("s1"),
-    newSubmenu(o.driver, o.readOnly, on, o.groups),
+    newSubmenu(o.driver, dialect, o.readOnly, on, o.groups),
     {
       kind: "item",
       id: "delete",
@@ -510,6 +604,7 @@ export function objectMenu(
       onSelect: on.drop,
     },
   ];
+  return withFeatures(entries, o.features, dialect !== null);
 }
 
 /**
@@ -517,9 +612,18 @@ export function objectMenu(
  * New ▸.
  */
 export function headerMenu(
-  o: { driver: Driver; readOnly: boolean; overview: boolean; diagram?: boolean; groups?: boolean },
+  o: {
+    driver: Driver;
+    readOnly: boolean;
+    overview: boolean;
+    diagram?: boolean;
+    groups?: boolean;
+    features?: readonly Feature[];
+    dialect?: Dialect | null;
+  },
   on: NewMenuHandlers & { itemOverview: () => void; generateDiagram?: () => void },
 ): MenuEntry[] {
+  const dialect = menuDialect(o);
   const entries: MenuEntry[] = [];
   if (o.overview)
     entries.push({
@@ -538,8 +642,8 @@ export function headerMenu(
       onSelect: on.generateDiagram,
     });
   if (entries.length > 0) entries.push(sep("s1"));
-  entries.push(newSubmenu(o.driver, o.readOnly, on, o.groups));
-  return entries;
+  entries.push(newSubmenu(o.driver, dialect, o.readOnly, on, o.groups));
+  return withFeatures(entries, o.features, dialect !== null);
 }
 
 /**
@@ -547,7 +651,15 @@ export function headerMenu(
  * Generate Diagram…, Copy Name, Reload Items, Collapse All, New ▸.
  */
 export function schemaNodeMenu(
-  o: { driver: Driver; readOnly: boolean; loaded: boolean; diagram: boolean; groups?: boolean },
+  o: {
+    driver: Driver;
+    readOnly: boolean;
+    loaded: boolean;
+    diagram: boolean;
+    groups?: boolean;
+    features?: readonly Feature[];
+    dialect?: Dialect | null;
+  },
   on: NewMenuHandlers & {
     itemOverview: () => void;
     generateDiagram: () => void;
@@ -556,6 +668,7 @@ export function schemaNodeMenu(
     collapseAll: () => void;
   },
 ): MenuEntry[] {
+  const dialect = menuDialect(o);
   const entries: MenuEntry[] = [
     {
       kind: "item",
@@ -592,9 +705,9 @@ export function schemaNodeMenu(
       onSelect: on.collapseAll,
     },
     sep("s2"),
-    newSubmenu(o.driver, o.readOnly, on, o.groups),
+    newSubmenu(o.driver, dialect, o.readOnly, on, o.groups),
   );
-  return entries;
+  return withFeatures(entries, o.features, dialect !== null);
 }
 
 // --- the "+" menu and its settings ---------------------------------------------------------------
@@ -722,18 +835,23 @@ export function searchMenu(
   ];
 }
 
-/** The sidebar "+" menu: New Table… … New Schema…, New Group…, New Query, Settings ▸. */
+/**
+ * The sidebar "+" menu: New Table… … New Schema…, New Group…, New Query, Settings ▸. `features`
+ * and `dialect` are the session's (`withFeatures`, `newEntries`).
+ */
 export function plusMenu(
   driver: Driver,
   readOnly: boolean,
   settings: MenuEntry[],
   on: NewMenuHandlers,
   newQueryShortcut?: string,
+  features?: readonly Feature[],
+  dialect: Dialect | null = coreDialect(driver),
 ): MenuEntry[] {
-  const items = newEntries(driver, readOnly, on, "…", { group: true }).map((e) =>
+  const items = newEntries(driver, dialect, readOnly, on, "…", { group: true }).map((e) =>
     e.kind === "item" ? { ...e, label: `New ${e.label}` } : e,
   );
-  return [
+  const entries: MenuEntry[] = [
     ...items,
     {
       kind: "item",
@@ -743,6 +861,9 @@ export function plusMenu(
       shortcut: newQueryShortcut,
       onSelect: () => on.newItem("query"),
     },
+  ];
+  return [
+    ...withFeatures(entries, features, dialect !== null),
     sep("s-settings"),
     { kind: "sub", id: "settings", label: "Settings", items: settings },
   ];

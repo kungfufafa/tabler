@@ -6,7 +6,7 @@ import type { ColumnMeta, RowCount } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { BarIconButton, BarSeparator, BarTooltip, BottomBarFrame } from "./BarParts";
 import { ColumnsMenu } from "./ColumnsMenu";
-import { Pagination, type PageChange } from "./Pagination";
+import { Pagination, type CursorPaging, type PageChange } from "./Pagination";
 import type { DefaultOrder } from "./tableViewMemory";
 
 /**
@@ -138,6 +138,12 @@ export interface TableBottomBarProps {
   defaultOrder?: DefaultOrder;
   onDefaultOrderChange?: (order: DefaultOrder) => void;
   hasPrimaryKey?: boolean;
+  /** A table read by cursor: Previous / Next only (`offset` is the rows before this page). */
+  cursor?: CursorPaging | null;
+  /** The exact count is offered (default: yes). */
+  countable?: boolean;
+  /** The filter bar has something to offer (default: yes). */
+  filterable?: boolean;
 }
 
 /**
@@ -182,6 +188,7 @@ export function TableBottomBar(p: TableBottomBarProps) {
           size="xs"
           aria-label="Filters"
           aria-pressed={p.filtersVisible}
+          disabled={p.filterable === false}
           onClick={p.onToggleFilters}
           className={cn(
             "text-muted-foreground hover:text-foreground h-6 px-1.5",
@@ -225,6 +232,8 @@ export function TableBottomBar(p: TableBottomBarProps) {
         defaultOrder={p.defaultOrder}
         onDefaultOrderChange={p.onDefaultOrderChange}
         hasPrimaryKey={p.hasPrimaryKey}
+        cursor={p.cursor}
+        countable={p.countable}
       />
     </BottomBarFrame>
   );

@@ -104,11 +104,14 @@ export function originSources(columns: readonly ResultColumn[]): OriginSource[] 
 export interface ResultStatement {
   /** Its text; null when it is not known (the result then stays read-only). */
   sql: string | null;
-  dialect: SqlDialect;
+  /** Null: SQL of another engine, which the core lexers cannot read (read-only). */
+  dialect: SqlDialect | null;
 }
 
 export interface EditabilityOptions extends ResultStatement {
   readOnlyConnection?: boolean;
+  /** The session offers editing rows (`Feature::EditRows`; default yes). */
+  canEditRows?: boolean;
 }
 
 const readOnly = (reason: string): ResultEditability => ({ kind: "readOnly", reason });
@@ -143,12 +146,16 @@ function referenceProblem(source: OriginSource, tokens: readonly SqlToken[]): st
 export function resultEditability(
   columns: readonly ResultColumn[],
   metaOf: (table: TableRef) => TableMeta | null | undefined,
-  { sql, dialect, readOnlyConnection = false }: EditabilityOptions,
+  { sql, dialect, readOnlyConnection = false, canEditRows = true }: EditabilityOptions,
 ): ResultEditability {
   const sources = originSources(columns);
   if (sources.length === 0) return readOnly("Its columns do not come from a table.");
   if (readOnlyConnection) return readOnly("The connection is read-only.");
+  if (!canEditRows) return readOnly("The connection cannot edit rows.");
   if (sql === null) return readOnly("The query that produced it is not known.");
+  // The statement must be read to find its table; only the core dialects are. Edits always go
+  // by the table's primary key, never by all the row's columns.
+  if (dialect === null) return readOnly("The query is not SQL this editor reads.");
   const tokens = sqlTokens(sql, dialect);
   if (isCompound(tokens))
     return readOnly("It combines the rows of several queries (UNION, EXCEPT or INTERSECT).");

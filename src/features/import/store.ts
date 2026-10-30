@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import type { TableRef } from "@/lib/ipc";
+import { allowFeature } from "@/lib/caps";
+import type { Feature, TableRef } from "@/lib/ipc";
 
 /** CSV and JSON go through the import wizard; SQL dumps through their preview. */
 export type ImportKind = "csv" | "json" | "sql";
@@ -10,6 +11,13 @@ export interface ImportRequest {
   /** Target table for a CSV / JSON import; null = chosen (or created) in the wizard. */
   table: TableRef | null;
 }
+
+/** What the session must offer for each kind of import. */
+const IMPORT_FEATURE: Record<ImportKind, Feature> = {
+  csv: "importCsv",
+  json: "importJson",
+  sql: "importSqlDump",
+};
 
 interface ImportState {
   request: ImportRequest | null;
@@ -30,6 +38,7 @@ export const useImportStore = create<ImportState>()(() => ({
  * then shows the CSV wizard or the SQL dump preview. Pass `path` to skip the file panel.
  */
 export function openImport(request: ImportRequest, path: string | null = null): void {
+  if (!allowFeature(request.connectionId, IMPORT_FEATURE[request.kind])) return;
   useImportStore.setState((s) => ({ request, path, session: s.session + 1 }));
 }
 

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { coreDialect } from "@/features/drivers/catalog";
+import { connectionDialect } from "@/lib/caps";
 import { onSqlLog, type Dialect, type SqlLogCategory, type SqlLogEvent } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 
@@ -73,7 +73,8 @@ export const useConsoleStore = create<ConsoleState>()((set) => ({
       at,
       connectionName: info?.name ?? null,
       database: info?.currentDatabase ?? null,
-      ...(info ? { dialect: coreDialect(info.driver) } : {}),
+      // Highlighted as the session's core dialect; plain for another engine's statements.
+      ...(info ? { dialect: connectionDialect(info) } : {}),
     };
     set((s) => ({ entries: appendCapped(s.entries, entry) }));
   },

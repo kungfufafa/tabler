@@ -73,6 +73,7 @@ import {
   type TableMeta,
   type Value,
 } from "@/lib/ipc";
+import { has, useCaps } from "@/lib/caps";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
 import { useInspectorStore, type CellFetch } from "@/stores/inspector";
@@ -106,12 +107,14 @@ function useResultEditability(
   connectionId: string | null,
   info: ResultSetInfo,
   sql: string | null,
-  dialect: Dialect,
+  dialect: Dialect | null,
 ): ResultEditability {
   const tables = useMemo(() => originTables(info.columns), [info.columns]);
   const readOnly = useConnectionsStore((s) =>
     connectionId ? (s.byId[connectionId]?.info.readOnly ?? false) : false,
   );
+  const caps = useCaps(connectionId);
+  const canEditRows = caps === null || has(caps, "editRows");
   const metas = useQueries({
     queries: tables.map((table) => ({
       queryKey: rowKeys.meta(connectionId ?? "", table),
@@ -130,8 +133,9 @@ function useResultEditability(
             sql,
             dialect,
             readOnlyConnection: readOnly,
+            canEditRows,
           }),
-    [info.done, info.columns, connectionId, metas, tables, readOnly, sql, dialect],
+    [info.done, info.columns, connectionId, metas, tables, readOnly, sql, dialect, canEditRows],
   );
   useEffect(() => setResultEditability(info.id, editability), [info.id, editability]);
   return editability;
@@ -152,7 +156,8 @@ export interface ResultGridProps {
   label: string;
   /** The statement that produced the result (null when unknown: the result is read-only). */
   sql: string | null;
-  dialect: Dialect;
+  /** Null: another engine's SQL (read-only, no core copy formats). */
+  dialect: Dialect | null;
   /** The grid owns the grid shortcuts (the visible tab's selected result). */
   active: boolean;
   /** Fixed height (stacked results); the grid fills its parent otherwise. */
@@ -504,11 +509,15 @@ export function ResultGrid({
           onSortChange={setSort}
           columnState={columnState}
           onColumnStateChange={setColumnState}
-          copyContext={{
-            dialect,
-            schema: target?.table.schema ?? null,
-            table: target?.table.name ?? info.columns.find((c) => c.table)?.table ?? "result",
-          }}
+          copyContext={
+            dialect
+              ? {
+                  dialect,
+                  schema: target?.table.schema ?? null,
+                  table: target?.table.name ?? info.columns.find((c) => c.table)?.table ?? "result",
+                }
+              : undefined
+          }
           editable={editable}
           readOnlyNotice={editability.kind === "readOnly" ? READ_ONLY_RESULT : undefined}
           active={active}
@@ -614,7 +623,7 @@ export function StaticGrid({
   columns: readonly ResultColumn[];
   rows: readonly Value[][];
   label: string;
-  dialect: Dialect;
+  dialect: Dialect | null;
 }) {
   const columns = useMemo(() => readOnlyGridColumns(resultColumns), [resultColumns]);
   const [sort, setSort] = useState<SortSpec[]>([]);
@@ -639,7 +648,7 @@ export function StaticGrid({
       emptyText={resultColumns.length === 0 ? "No columns" : "No rows"}
       sort={sort}
       onSortChange={setSort}
-      copyContext={{ dialect, schema: null, table: "result" }}
+      copyContext={dialect ? { dialect, schema: null, table: "result" } : undefined}
       editable={false}
       onFocusCell={(cell) =>
         setInspector(

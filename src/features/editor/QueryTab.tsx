@@ -16,7 +16,6 @@ import { getQueryTab, updateQueryTab, useQueryTabBusy, useQueryTabField } from "
 import { useTabsStore, type Tab } from "@/stores/tabs";
 import {
   cancelQuery,
-  dialectOf,
   explainQuery,
   exportQuery,
   formatQuery,
@@ -33,7 +32,7 @@ import {
 } from "./controller";
 import { focusEditor, getEditorState, syncDirty } from "./editorStates";
 import { HISTORY_KEY } from "./historyGroups";
-import type { SqlDialect } from "./scanner";
+import { coreLanguage, useEditorLanguage, type EditorLanguage } from "./language";
 import { EditorBar } from "./EditorBar";
 import { EditorPanes, type EditorPaneHandlers } from "./EditorPanes";
 import { changeEditorFontSize } from "./editorSettings";
@@ -84,9 +83,19 @@ const isCollapsedLayout = (layout: Layout) => (layout.results ?? 100) < 0.01;
  */
 export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
   const driver = useConnectionsStore((s) => s.byId[tab.connectionId]?.info.driver);
-  const dialect = dialectOf(driver);
-  if (dialect) return <QueryTabView tab={tab} dialect={dialect} />;
-  // A driver beyond the core ones: the core lexers must not split or classify its statements.
+  // A core dialect, or the language of the session's lane (its SQL dialect or its console).
+  const language = useEditorLanguage(tab.connectionId);
+  if (language === undefined)
+    return (
+      <div
+        data-slot="lane-loading"
+        className="text-muted-foreground flex h-full items-center justify-center p-6 text-xs"
+      >
+        Loading the editor…
+      </div>
+    );
+  if (language) return <QueryTabView tab={tab} dialect={language} />;
+  // A session without an editor: the core lexers must not split or classify its statements.
   return driver ? <NotAvailable driver={driver} what="The SQL editor" /> : null;
 }
 
@@ -95,7 +104,7 @@ function QueryTabView({
   dialect,
 }: {
   tab: Extract<Tab, { kind: "query" }>;
-  dialect: SqlDialect;
+  dialect: EditorLanguage;
 }) {
   const tabId = tab.id;
   const qc = useQueryClient();
@@ -261,7 +270,7 @@ function QueryTabView({
           // A collapsed pane keeps its results, out of the tab order.
           inert={resultsCollapsed}
         >
-          <ResultsPane tabId={tabId} dialect={dialect} />
+          <ResultsPane tabId={tabId} dialect={coreLanguage(dialect)} />
         </ResizablePanel>
       </ResizablePanelGroup>
       <HistorySheet

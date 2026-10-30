@@ -10,7 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { coreDialect } from "@/features/drivers/catalog";
+import { capsOf, connectionDialect } from "@/lib/caps";
 import { runNew, type ObjectContext } from "@/features/objects/actions";
 import { plusMenu, settingsEntries } from "@/features/objects/menu";
 import { DropdownMenuEntries } from "@/features/objects/MenuEntries";
@@ -46,6 +46,8 @@ export function SchemaPicker({ connection }: { connection: OpenConnection }) {
     if (!showSystem && current !== null && PG_SYSTEM_SCHEMAS.includes(current))
       setCurrentSchema(id, null);
   }, [showSystem, current, id, setCurrentSchema]);
+  // One namespace only: nothing to switch between.
+  if (capsOf(connection.info).namespaces.schemas === "single") return null;
   if (driver !== "postgres" && driver !== "sqlite") return null;
   if (!schemas.data) return null;
   const list = [...schemas.data];
@@ -112,7 +114,8 @@ export function SidebarFooter({ connection }: { connection: OpenConnection }) {
   const currentSchema = useCurrentSchema(connection.info.connectionId);
   const [dialog, setDialog] = useState<TableDialogState | null>(null);
   const { driver, readOnly, connectionId } = connection.info;
-  const dialect = coreDialect(driver);
+  // The table dialog writes a core dialect's DDL: none for another session.
+  const dialect = connectionDialect(connection.info);
   const ctx: ObjectContext = {
     connectionId,
     driver,
@@ -135,6 +138,8 @@ export function SidebarFooter({ connection }: { connection: OpenConnection }) {
         ),
     },
     newQueryCombo,
+    capsOf(connection.info).features,
+    dialect,
   );
   return (
     <div className="border-sidebar-border bg-sidebar flex h-8 shrink-0 items-center gap-0.5 border-t px-1.5">

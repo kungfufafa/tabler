@@ -14,6 +14,12 @@ export interface FilterRowSpec {
   enabled: boolean;
 }
 
+/** A page of a table read by cursor: where it starts, and how many rows came before it. */
+export interface CursorPage {
+  cursor: string;
+  before: number;
+}
+
 export interface PageInfo {
   rows: number;
   durationMs: number;
@@ -27,6 +33,12 @@ export interface TableTabState {
   filtersVisible: boolean;
   limit: number;
   offset: number;
+  /**
+   * A table read by cursor (`Paging::Cursor`): the pages after the first that led to the one
+   * shown, for Previous; `scope` is the request they were read for (its filter, sort and page
+   * size), so another one starts again at the first page. Null on the first page.
+   */
+  cursorPages: { scope: string; stack: CursorPage[] } | null;
   columnState: ColumnState;
   /** Set after a page loads (its rows, query time and SELECT show in the bottom bar). */
   page: PageInfo | null;
@@ -57,6 +69,7 @@ function initial(init?: Partial<TableTabState>): TableTabState {
     filtersVisible: false,
     limit: getPrefs().pageSize,
     offset: 0,
+    cursorPages: null,
     columnState: { widths: {}, order: [], hidden: [] },
     page: null,
     count: null,

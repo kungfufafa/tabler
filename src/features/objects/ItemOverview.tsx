@@ -6,11 +6,11 @@ import { TableIcon } from "@/components/TypeIcon";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { coreDialect } from "@/features/drivers/catalog";
 import { NotAvailable } from "@/features/drivers/NotAvailable";
 import { invalidateSchema } from "@/features/structure/invalidate";
 import { registerToolTab, type ToolTabProps } from "@/features/tabs/toolTabs";
 import { KIND_LABEL } from "@/features/structure/tableActions";
+import { connectionDialect } from "@/lib/caps";
 import { formatCount } from "@/lib/format/time";
 import type { Dialect, OverviewItem } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
@@ -364,11 +364,11 @@ export function ItemOverviewDialog({
 
 /** The Item Overview tab (tool "overview"): the schema's items, on the tab's connection. */
 export function ItemOverviewTab({ tab, params }: ToolTabProps<OverviewParams>) {
-  const driver = useConnectionsStore((s) => s.byId[tab.connectionId]?.info.driver ?? null);
-  if (!driver) return null;
-  // Its operations generate a core dialect's SQL.
-  const dialect = coreDialect(driver);
-  if (!dialect) return <NotAvailable driver={driver} what="Item Overview" />;
+  const info = useConnectionsStore((s) => s.byId[tab.connectionId]?.info);
+  if (!info) return null;
+  // Its operations generate a core dialect's SQL: the session's (none for a Redshift session).
+  const dialect = connectionDialect(info);
+  if (!dialect) return <NotAvailable driver={info.driver} what="Item Overview" />;
   return (
     <ItemOverviewView
       key={`${tab.connectionId}:${params.schema}`}

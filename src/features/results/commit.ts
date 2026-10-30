@@ -1,16 +1,16 @@
 import { toast } from "sonner";
 import { refreshOpenTableTabs } from "@/features/commit/refreshTables";
-import { coreDialect } from "@/features/drivers/catalog";
 import type { RunState } from "@/features/editor/runModel";
 import { charToUtf16 } from "@/features/editor/offsets";
 import { skippedSpans, type SqlDialect } from "@/features/editor/scanner";
-import { canRedo, discardAll, redo, setRowError } from "@/features/staging/model";
+import { canRedo, discardAll, dropApplied, redo, setRowError } from "@/features/staging/model";
+import type { StagingState } from "@/features/staging/types";
+import { dialectFor } from "@/lib/caps";
 import type { ApplyRequest, RowResult } from "@/lib/ipc";
-import { useConnectionsStore } from "@/stores/connections";
 import { getQueryTab } from "@/stores/queryTabs";
 import { resultData } from "@/stores/resultData";
 import { useTabsStore } from "@/stores/tabs";
-import { applyCommitted, toResultChanges } from "./changes";
+import { applyCommitted, bufferIndex, bufferKey, toResultChanges } from "./changes";
 import { TARGET_CHANGED, sameTarget, type ResultEditTarget } from "./editability";
 import {
   dirtyResultOf,
@@ -129,6 +129,51 @@ export function failResultCommit(p: PlannedResult, rows: readonly RowResult[]): 
 }
 
 /**
+ * The staging after the buffer rows `removed` left the buffer: the staged rows below them name
+ * their rows by their new positions.
+ */
+function shiftedStaging(s: StagingState, removed: readonly number[]): StagingState {
+  if (removed.length === 0) return s;
+  const moved = (key: string) => {
+    const idx = bufferIndex(key);
+    return idx === null ? key : bufferKey(idx - removed.filter((r) => r < idx).length);
+  };
+  return {
+    ...s,
+    changes: new Map([...s.changes].map(([key, change]) => [moved(key), change])),
+    insertOrder: s.insertOrder.map(moved),
+  };
+}
+
+/**
+ * After a commit that stopped partway (critique D2): the changes the server applied are settled
+ * as committed (their rows updated in place, with whatever the server returned of them), the
+ * others stay staged with their errors.
+ */
+export function settlePartialResultCommit(
+  p: PlannedResult,
+  rows: readonly RowResult[],
+  applied: ReadonlySet<string>,
+): void {
+  const staging = stagingOf(useResultsStore.getState(), p.resultId);
+  const done: StagingState = {
+    ...staging,
+    changes: new Map([...staging.changes].filter(([key]) => applied.has(key))),
+    insertOrder: staging.insertOrder.filter((key) => applied.has(key)),
+  };
+  const current = resultData.get(p.resultId)?.rows ?? [];
+  resultData.replaceRows(p.resultId, applyCommitted(current, done, p.target, rows));
+  const removed = [...done.changes]
+    .filter(([, change]) => change.status === "deleted")
+    .flatMap(([key]) => bufferIndex(key) ?? []);
+  const errors = new Map(rows.flatMap((r) => (r.error ? [[r.rowId, r.error.message]] : [])));
+  setResultStaging(p.tabId, p.resultId, (s) =>
+    shiftedStaging(dropApplied(s, applied, errors), removed),
+  );
+  refreshOpenTableTabs(p.connectionId, p.target.table);
+}
+
+/**
  * After a commit went through: the rows as they are now (edited in place, deleted ones gone, new
  * ones appended), the staged edits gone; re-running a plain read is offered.
  */
@@ -139,8 +184,8 @@ export function finishResultCommit(p: PlannedResult, rows: RowResult[]): void {
   setResultStaging(p.tabId, p.resultId, () => discardAll());
   // The table was written: its open table tabs (a split view, another tab) reload too.
   refreshOpenTableTabs(p.connectionId, p.target.table);
-  const driver = useConnectionsStore.getState().byId[p.connectionId]?.info.driver ?? "postgres";
-  const dialect = coreDialect(driver);
+  // The session's core dialect, as result editing reads it (none for a Redshift session).
+  const dialect = dialectFor(p.connectionId, "postgres");
   const rerun =
     p.resultId.startsWith("pin:") || !dialect
       ? null

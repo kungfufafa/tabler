@@ -1,7 +1,7 @@
 import { EditorSelection } from "@codemirror/state";
-import { coreDialect } from "@/features/drivers/catalog";
 import { applyToEditor, focusEditor, getEditorState } from "@/features/editor/editorStates";
-import { splitStatements, statementAt } from "@/features/editor/scanner";
+import { languageOf, splitWith } from "@/features/editor/language";
+import { statementAt } from "@/features/editor/scanner";
 import { activeEditorKey } from "@/features/editor/split";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTabsStore } from "@/stores/tabs";
@@ -19,15 +19,14 @@ export function editorSql(tabId: string): PluginSql | null {
   const state = getEditorState(activeEditorKey(tabId));
   if (!state) return null;
   const tab = useTabsStore.getState().tabs.find((t) => t.id === tabId);
-  const driver = tab
-    ? useConnectionsStore.getState().byId[tab.connectionId]?.info.driver
-    : undefined;
-  // A connection without a core dialect has no SQL editor (and no core lexer may split its text).
-  const dialect = driver ? coreDialect(driver) : "postgres";
-  if (!dialect) return null;
+  const info = tab ? useConnectionsStore.getState().byId[tab.connectionId]?.info : undefined;
+  // Split as the editor splits it (`languageOf`): a core dialect's scanner, or the lane's
+  // splitter for an extension dialect or a console. None without an editor, or while it loads.
+  const language = languageOf(info);
+  if (!language) return null;
   const text = state.doc.toString();
   const sel = state.selection.main;
-  const st = statementAt(splitStatements(text, dialect), text, sel.head, true);
+  const st = statementAt(splitWith(language, text), text, sel.head, true);
   return {
     text,
     selected: state.sliceDoc(sel.from, sel.to),

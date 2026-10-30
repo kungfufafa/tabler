@@ -41,8 +41,10 @@ import type { ActionId } from "@/features/palette/actions";
 import { formatCount, formatDuration } from "@/lib/format/time";
 import { formatCombo, isMac } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
+import { appliesPartially, has, useCaps } from "@/lib/caps";
 import { cn } from "@/lib/utils";
 import { updateQueryTab, useQueryTabField } from "@/stores/queryTabs";
+import { useTabsStore } from "@/stores/tabs";
 import { useResultRowCount } from "@/stores/resultData";
 import { ROW_LIMITS } from "./controller";
 import { useCursorLabel } from "./cursor";
@@ -438,11 +440,30 @@ function BeautifyButton({ handlers }: { handlers: EditorBarHandlers }) {
   );
 }
 
-function ExplainButton({ handlers, busy }: { handlers: EditorBarHandlers; busy: boolean }) {
+function ExplainButton({
+  handlers,
+  busy,
+  analyze = true,
+  rollsBack = true,
+}: {
+  handlers: EditorBarHandlers;
+  busy: boolean;
+  /** Explain Analyze is offered. */
+  analyze?: boolean;
+  /** An analyzed statement runs in a transaction that is rolled back. */
+  rollsBack?: boolean;
+}) {
+  const analyzeNote = rollsBack ? "Runs in a rolled-back transaction" : "Runs the statement";
   return (
     <div className="flex shrink-0 items-center">
       <Tip
-        label={`Explain (${SHIFT_CLICK}: Explain Analyze, which runs in a rolled-back transaction)`}
+        label={
+          analyze
+            ? `Explain (${SHIFT_CLICK}: Explain Analyze, which ${
+                rollsBack ? "runs in a rolled-back transaction" : "runs the statement"
+              })`
+            : "Explain"
+        }
         action="query.explain"
       >
         <Button
@@ -450,7 +471,7 @@ function ExplainButton({ handlers, busy }: { handlers: EditorBarHandlers; busy: 
           size="xs"
           aria-label="Explain"
           className={splitMain}
-          onClick={(e) => (e.shiftKey ? handlers.analyze() : handlers.explain())}
+          onClick={(e) => (e.shiftKey && analyze ? handlers.analyze() : handlers.explain())}
           disabled={busy}
         >
           <ListTree className="size-3.5" />
@@ -474,15 +495,15 @@ function ExplainButton({ handlers, busy }: { handlers: EditorBarHandlers; busy: 
             Explain
             <MenuShortcut action="query.explain" />
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={handlers.analyze} className="items-start">
-            <span className="flex min-w-0 flex-col">
-              Explain Analyze
-              <span className="text-muted-foreground text-[11px] leading-4">
-                Runs in a rolled-back transaction
+          {analyze && (
+            <DropdownMenuItem onSelect={handlers.analyze} className="items-start">
+              <span className="flex min-w-0 flex-col">
+                Explain Analyze
+                <span className="text-muted-foreground text-[11px] leading-4">{analyzeNote}</span>
               </span>
-            </span>
-            <DropdownMenuShortcut>{SHIFT_CLICK}</DropdownMenuShortcut>
-          </DropdownMenuItem>
+              <DropdownMenuShortcut>{SHIFT_CLICK}</DropdownMenuShortcut>
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -583,6 +604,10 @@ export function EditorBar({ tabId, handlers }: { tabId: string; handlers: Editor
   const resultsCollapsed = useQueryTabField(tabId, "resultsCollapsed");
   const busy = run?.status === "running" || plan?.status === "running";
   const cancelling = run?.status === "running" && run.cancelling;
+  // What the session offers (unknown: everything, as for the core sessions).
+  const connectionId = useTabsStore((s) => s.tabs.find((t) => t.id === tabId)?.connectionId);
+  const caps = useCaps(connectionId ?? null);
+  const offers = (f: Parameters<typeof has>[1]) => caps === null || has(caps, f);
 
   return (
     <div
@@ -605,8 +630,15 @@ export function EditorBar({ tabId, handlers }: { tabId: string; handlers: Editor
         <RunSummary tabId={tabId} />
       </div>
       <RowLimitSelect tabId={tabId} />
-      <BeautifyButton handlers={handlers} />
-      <ExplainButton handlers={handlers} busy={busy} />
+      {offers("format") && <BeautifyButton handlers={handlers} />}
+      {offers("explain") && (
+        <ExplainButton
+          handlers={handlers}
+          busy={busy}
+          analyze={offers("explainAnalyze")}
+          rollsBack={caps === null || !appliesPartially(caps.data.transactions)}
+        />
+      )}
       <RunButton handlers={handlers} busy={busy} cancelling={cancelling} />
     </div>
   );

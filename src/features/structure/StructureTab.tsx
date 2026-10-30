@@ -32,8 +32,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
-import { coreDialect } from "@/features/drivers/catalog";
 import { NotAvailable } from "@/features/drivers/NotAvailable";
+import { isCoreDriver } from "@/features/drivers/catalog";
+import { laneBuiltFor, useDriverUi } from "@/features/drivers/registry";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { bumpGeneration, openWorkspaceSheet, useCommitGeneration } from "@/features/commit/store";
 import { commitWorkspace, workspacePendingCount } from "@/features/commit/workspace";
@@ -56,6 +57,7 @@ import {
   type TableMeta,
   type TableRef,
 } from "@/lib/ipc";
+import { capsOf, has, sessionDialect } from "@/lib/caps";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
@@ -125,6 +127,7 @@ import {
   IndexesSection,
   TriggersSection,
 } from "./OtherSections";
+import { ReadOnlyStructure } from "./ReadOnlyStructure";
 import { ShowDdlDialog } from "./ShowDdlDialog";
 import {
   stagedOps,
@@ -180,25 +183,63 @@ function focusedColumn(view: StructureView): string | null {
  * and applies them.
  */
 export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }> }) {
-  const driver = useConnectionsStore((s) => s.byId[tab.connectionId]?.info.driver ?? "postgres");
-  // Its edits are planned as a core dialect's DDL.
-  const dialect = coreDialect(driver);
-  if (!dialect) return <NotAvailable driver={driver} what="The structure editor" />;
-  return <StructureTabView tab={tab} dialect={dialect} />;
+  const info = useConnectionsStore((s) => s.byId[tab.connectionId]?.info);
+  const driver = info?.driver ?? "postgres";
+  const ui = useDriverUi(info?.driver ?? null);
+  // The lane's module is still loading.
+  if (ui === undefined)
+    return (
+      <div className="flex flex-col gap-2 p-4" data-slot="lane-loading">
+        <Skeleton className="h-5 w-48" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  const caps = capsOf(info ?? { driver, capabilities: null });
+  // A session of a lane this build lacks: nothing of the lane's, nor the core editor.
+  if (!isCoreDriver(driver) && !laneBuiltFor({ driver }))
+    return <NotAvailable driver={driver} what="The structure editor" />;
+  // A lane's own view of its tables' structure (indexes of a collection, a key's type).
+  const View = ui?.StructureView;
+  if (View)
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="min-h-0 flex-1">
+          <View connectionId={tab.connectionId} table={tab.table} caps={caps} />
+        </div>
+        <BottomBar tabId={tab.id} />
+      </div>
+    );
+  if (!has(caps, "structureView"))
+    return <NotAvailable driver={driver} what="The structure view" />;
+  // Its edits are planned as a core dialect's DDL; another session's structure is read-only.
+  const dialect = sessionDialect(caps);
+  if (!dialect)
+    return (
+      <ReadOnlyStructure
+        tabId={tab.id}
+        connectionId={tab.connectionId}
+        table={tab.table}
+        caps={caps}
+      />
+    );
+  return <StructureTabView tab={tab} dialect={dialect} canEdit={has(caps, "structureEdit")} />;
 }
 
 function StructureTabView({
   tab,
   dialect,
+  canEdit,
 }: {
   tab: Extract<Tab, { kind: "structure" }>;
   dialect: Dialect;
+  /** The session offers editing the structure (`Feature::StructureEdit`). */
+  canEdit: boolean;
 }) {
   const { connectionId, table } = tab;
   const qc = useQueryClient();
-  const readOnlyConnection = useConnectionsStore(
-    (s) => s.byId[connectionId]?.info.readOnly ?? false,
-  );
+  // Without editing the structure, it shows as on a read-only connection.
+  const readOnlyConnection =
+    useConnectionsStore((s) => s.byId[connectionId]?.info.readOnly ?? false) || !canEdit;
   const isActive = useTabsStore((s) => s.activeId === tab.id);
   const openTable = useTabsStore((s) => s.openTable);
   const setView = useTabsStore((s) => s.setView);

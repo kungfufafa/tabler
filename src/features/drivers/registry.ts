@@ -91,6 +91,18 @@ function laneBuilt(lane: LaneId, info: Pick<AppInfo, "kinds"> | null | undefined
   return LANES[lane].kinds.some((k) => kinds.includes(k));
 }
 
+/**
+ * Whether this build has the lane that serves `driver` (or speaks `dialect`): false for a core
+ * one, which has no lane. A session of a lane the build lacks gets none of the lane's views.
+ */
+export function laneBuiltFor(
+  of: { driver: Driver } | { dialect: SqlDialectId },
+  info: Pick<AppInfo, "kinds"> | null | undefined = useAppInfoStore.getState().info,
+): boolean {
+  const lane = "driver" in of ? laneOfDriver(of.driver) : laneOfDialect(of.dialect);
+  return lane !== null && laneBuilt(lane, info);
+}
+
 /** The lane of an id; null for a core one. */
 type LaneFor<K> = (id: K) => LaneId | null;
 

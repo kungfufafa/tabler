@@ -1,5 +1,6 @@
 import { toast } from "sonner";
 import { create } from "zustand";
+import { allowFeature } from "@/lib/caps";
 import {
   ipc,
   toIpcError,
@@ -141,6 +142,8 @@ export const useExportStore = create<ExportState>()(() => ({
  * reopens on its progress instead.
  */
 export function openExport(args: OpenExportArgs): void {
+  // Every export reads through the session's export (rows held by a result included).
+  if (!useExportStore.getState().run && !allowFeature(args.connectionId, "exportTables")) return;
   useExportStore.setState((s) =>
     s.run
       ? { open: true }

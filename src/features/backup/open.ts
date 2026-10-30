@@ -1,3 +1,4 @@
+import { allowFeature } from "@/lib/caps";
 import { useConnectionsStore } from "@/stores/connections";
 import { openBackup, type BackupMode } from "./store";
 
@@ -13,6 +14,7 @@ export function openBackupForActive(mode: BackupMode): void {
     return;
   }
   const { info, currentSchema } = active;
+  if (!allowFeature(info.connectionId, mode === "restore" ? "restore" : "backup")) return;
   const database =
     info.driver === "mysql" ? (currentSchema ?? info.currentDatabase) : info.currentDatabase;
   openBackup({ mode, profileId: info.profileId, database: database ?? null });

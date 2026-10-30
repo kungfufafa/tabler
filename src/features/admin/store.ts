@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import { allowFeature } from "@/lib/caps";
+import type { Feature } from "@/lib/ipc";
 
 /** Server-administration surfaces of a live connection. */
 export type AdminPanel =
@@ -27,7 +29,19 @@ interface AdminState {
 
 export const useAdminStore = create<AdminState>()(() => ({ request: null }));
 
+/** What the session must offer for each panel. */
+const PANEL_FEATURE: Record<AdminPanel, Feature> = {
+  processList: "processList",
+  users: "users",
+  createDatabase: "createDatabase",
+  createSchema: "createSchema",
+  renameDatabase: "renameDatabase",
+  dropDatabase: "dropDatabase",
+  dropSchema: "dropSchema",
+};
+
 export function openAdmin(request: AdminRequest): void {
+  if (!allowFeature(request.connectionId, PANEL_FEATURE[request.panel])) return;
   useAdminStore.setState({ request });
 }
 

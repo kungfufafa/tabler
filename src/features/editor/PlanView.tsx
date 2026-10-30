@@ -3,8 +3,10 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { writeClipboard } from "@/features/datagrid/clipboard";
 import { formatDuration } from "@/lib/format/time";
+import { appliesPartially, useCaps } from "@/lib/caps";
 import type { Dialect } from "@/lib/ipc";
 import type { PlanState } from "@/stores/queryTabs";
+import { useTabsStore } from "@/stores/tabs";
 import { ElapsedTimer } from "./ElapsedTimer";
 import { ErrorBlock } from "./ErrorBlock";
 import { errorRange } from "./errorPos";
@@ -19,9 +21,15 @@ export function PlanView({
 }: {
   tabId: string;
   plan: PlanState;
-  dialect: Dialect;
+  /** Null: another engine's dialect (no core copy formats). */
+  dialect: Dialect | null;
 }) {
   const title = plan.mode === "analyze" ? "EXPLAIN ANALYZE" : "EXPLAIN";
+  // Whether the session rolls an analyzed statement back: it runs in a transaction only where
+  // the session's writes are all or nothing (`TxMode`).
+  const connectionId = useTabsStore((s) => s.tabs.find((t) => t.id === tabId)?.connectionId);
+  const caps = useCaps(connectionId ?? null);
+  const rollsBack = caps === null || !appliesPartially(caps.data.transactions);
   const text = plan.result?.text ?? null;
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -54,8 +62,9 @@ export function PlanView({
           back; SQLite's plan never executes anything. */}
       {plan.mode === "analyze" && dialect !== "sqlite" && plan.status === "done" && (
         <p className="border-gridline text-muted-foreground shrink-0 border-b px-3 py-1 text-[11px] leading-4">
-          Ran inside a transaction that was rolled back — no changes were kept (non-transactional
-          MySQL tables excepted).
+          {rollsBack
+            ? "Ran inside a transaction that was rolled back — no changes were kept (non-transactional MySQL tables excepted)."
+            : "This connection cannot roll a statement back: whatever the analyzed statement changed was kept."}
         </p>
       )}
       <div className="min-h-0 flex-1">

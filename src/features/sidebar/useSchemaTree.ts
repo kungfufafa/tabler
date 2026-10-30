@@ -9,6 +9,7 @@ import {
   type TableMeta,
   type TableSummary,
 } from "@/lib/ipc";
+import { useCaps } from "@/lib/caps";
 import { useConnectionsStore } from "@/stores/connections";
 import { EMPTY_PINS } from "@/stores/pins";
 import { EMPTY_RECENT } from "@/stores/recent";
@@ -158,9 +159,15 @@ export function useSchemas(connectionId: string | null) {
   });
 }
 
-/** Resolves the schema shown in the sidebar for a connection (defaults to the server default). */
+/**
+ * Resolves the schema shown in the sidebar for a connection (defaults to the server default). A
+ * session with one namespace only (`SchemaMode::Single`: a key space, a document database) lists
+ * no schemas: its tables are its default schema's, or the session's own ("").
+ */
 export function useCurrentSchema(connectionId: string | null): string | null {
-  const schemas = useSchemas(connectionId);
+  const caps = useCaps(connectionId);
+  const single = caps?.namespaces.schemas === "single";
+  const schemas = useSchemas(single ? null : connectionId);
   const selected = useConnectionsStore((s) =>
     connectionId ? (s.byId[connectionId]?.currentSchema ?? null) : null,
   );
@@ -170,6 +177,7 @@ export function useCurrentSchema(connectionId: string | null): string | null {
     if (connectionId && selected === null && fallback !== null)
       setCurrentSchema(connectionId, fallback);
   }, [connectionId, selected, fallback, setCurrentSchema]);
+  if (single) return selected ?? caps.namespaces.defaultSchema ?? "";
   return selected ?? fallback;
 }
 

@@ -41,6 +41,7 @@ import {
   type TableRef,
   type TextEncoding,
 } from "@/lib/ipc";
+import { useCaps } from "@/lib/caps";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
 import {
@@ -179,6 +180,8 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
   const kindLabel = json ? "JSON" : "CSV";
   const qc = useQueryClient();
   const driver = useConnectionsStore((s) => s.byId[connectionId]?.info.driver);
+  // The backend refuses an upsert where the server has none: the wizard does not offer it.
+  const upsert = useCaps(connectionId)?.data.upsert ?? true;
   const current = useCurrentSchema(connectionId);
   const schema = request.table?.schema ?? current;
   const tables = useTables(connectionId, schema);
@@ -296,7 +299,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
   const createMapping = createDefs.map((d, i) => (skipped.has(i) ? null : d.name.trim() || null));
   const effective = creating ? createMapping : mapping;
   const matchCount = matchedCount(effective);
-  const modes = insertModesFor(driver, creating);
+  const modes = insertModesFor(driver, creating, upsert);
   const effectiveMode = modes.includes(mode) ? mode : "stopOnError";
 
   const running = run !== null || guarding;

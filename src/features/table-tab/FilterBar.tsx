@@ -27,7 +27,7 @@ import {
 import { consoleSegments } from "@/features/console/highlight";
 import { writeClipboard } from "@/features/datagrid/clipboard";
 import { useAction, type ActionId } from "@/features/palette/actions";
-import type { ColumnMeta, Conjunction, Dialect, FilterOp } from "@/lib/ipc";
+import type { ColumnMeta, Conjunction, Dialect, FilterOp, RawFilter } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
@@ -46,6 +46,7 @@ import { focusFilterRow, type FilterPart } from "./filterFocus";
 import { RawSqlInput } from "./RawSqlInput";
 import {
   ANY_COLUMN,
+  CORE_FILTERS,
   defaultFilterRow,
   isAnyColumnRow,
   isRawSqlRow,
@@ -58,10 +59,18 @@ import {
   rowValueError,
   targetOf,
   whereOfPageSql,
+  type FilterSession,
   type OpDef,
 } from "./filters";
 
 const RAW_SQL_PLACEHOLDER = "e.g. age > 30 AND name LIKE 'A%'";
+
+/** How the raw filter row reads for each kind of raw filter a session takes. */
+const RAW_FILTER: Record<RawFilter, { label: string; hint: string; placeholder: string }> = {
+  sqlWhere: { label: "Raw SQL", hint: "WHERE …", placeholder: RAW_SQL_PLACEHOLDER },
+  json: { label: "Raw query", hint: "{ … }", placeholder: 'e.g. {"age": {"$gt": 30}}' },
+  queryString: { label: "Query string", hint: "q=…", placeholder: "e.g. age:>30 AND name:A*" },
+};
 
 /** The hint in a value field: a list, a pattern, JSON, hex (a blob column) or any column's text. */
 function valuePlaceholder(def: OpDef, any: boolean, hex: boolean): string {
@@ -98,7 +107,8 @@ function SqlButton({
 }: {
   sql: string | null;
   dirty: boolean;
-  dialect: Dialect;
+  /** Highlights the query; null: another engine's query, shown plain. */
+  dialect: Dialect | null;
 }) {
   const [view, setView] = useState<"full" | "where">("full");
   const where = whereOfPageSql(sql);
@@ -308,6 +318,7 @@ export function FilterBar({
   conjunction,
   dirty,
   dialect = "postgres",
+  session = CORE_FILTERS,
   sql = null,
   onChange,
   onApply,
@@ -326,8 +337,10 @@ export function FilterBar({
   conjunction: Conjunction;
   /** The rows differ from the applied filters. */
   dirty: boolean;
-  /** Decides the operator list (ILIKE, JSON contains) and its "– Case …" labels. */
-  dialect?: Dialect;
+  /** Decides the "– Case …" labels and highlights the SQL; null: another engine's. */
+  dialect?: Dialect | null;
+  /** What the session's filters offer (operators, raw filter, Any column): a core session's. */
+  session?: FilterSession;
   /** The current page's SELECT (the "SQL" button shows its WHERE). */
   sql?: string | null;
   onChange: (rows: FilterRowSpec[], conjunction: Conjunction) => void;
@@ -357,8 +370,10 @@ export function FilterBar({
   const defaultColumn = usePrefs((p) => p.filterDefaultColumn);
   const defaultOperator = usePrefs((p) => p.filterDefaultOperator);
   const fresh = () =>
-    defaultFilterRow(columns, { column: defaultColumn, operator: defaultOperator });
-  const defaultOp: FilterOp = defaultOperator === "contains" ? "contains" : "eq";
+    defaultFilterRow(columns, { column: defaultColumn, operator: defaultOperator }, session);
+  const defaultOp: FilterOp = fresh().op;
+  const offered = session.ops;
+  const rawFilter = session.raw === null ? null : RAW_FILTER[session.raw];
   /** Where the focus goes once `rows` changes (⌘I / ⇧⌘I / + / ⌘↑ / ⌘↓). */
   const focusAfter = useRef<{ index: number; part: FilterPart } | null>(null);
   const focusRow = (index: number, part: FilterPart) => focusFilterRow(barRef.current, index, part);
@@ -387,14 +402,15 @@ export function FilterBar({
     );
   /** A new column: an operator it does not offer goes back to the default one. */
   const changeColumn = (row: FilterRowSpec, column: string) => {
-    const keep = column === RAW_SQL_COLUMN || opAllowed(row.op, dialect, targetOf(column, columns));
+    const keep = column === RAW_SQL_COLUMN || opAllowed(row.op, offered, targetOf(column, columns));
     update(row.id, keep ? { column } : { column, op: defaultOp });
   };
   const add = () => onChange([...rows, fresh()], conjunction);
   /** A blank condition on the column and operator of `row` (the value left to type). */
   const likeRow = (row: FilterRowSpec): FilterRowSpec => {
     const blank = { ...fresh(), column: row.column, op: row.op };
-    if (!opAllowed(blank.op, dialect, targetOf(blank.column, columns))) blank.op = "eq";
+    if (!opAllowed(blank.op, offered, targetOf(blank.column, columns)))
+      blank.op = opAllowed("eq", offered) ? "eq" : defaultOp;
     return blank;
   };
   /** `+`: a blank condition on the same column and operator, right under `id`. */
@@ -560,7 +576,7 @@ export function FilterBar({
           const raw = isRawSqlRow(row);
           const any = isAnyColumnRow(row);
           const hasValue = raw || def.arity !== 0;
-          const ops = opsFor(dialect, targetOf(row.column, columns));
+          const ops = opsFor(offered, targetOf(row.column, columns));
           // A blob column filters by hex: its message says so when the text is not hex.
           const valueError = rowValueError(row, columns);
           const hex = columns.find((c) => c.name === row.column)?.kind === "bytes";
@@ -606,14 +622,18 @@ export function FilterBar({
                   <SelectValue placeholder="Column" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={RAW_SQL_COLUMN} className="text-xs">
-                    Raw SQL
-                    <span className="text-muted-foreground ml-2 font-mono">WHERE …</span>
-                  </SelectItem>
-                  <SelectItem value={ANY_COLUMN} className="text-xs">
-                    Any column
-                  </SelectItem>
-                  <SelectSeparator />
+                  {rawFilter && (
+                    <SelectItem value={RAW_SQL_COLUMN} className="text-xs">
+                      {rawFilter.label}
+                      <span className="text-muted-foreground ml-2 font-mono">{rawFilter.hint}</span>
+                    </SelectItem>
+                  )}
+                  {session.anyColumn && (
+                    <SelectItem value={ANY_COLUMN} className="text-xs">
+                      Any column
+                    </SelectItem>
+                  )}
+                  {(rawFilter || session.anyColumn) && <SelectSeparator />}
                   {columns.map((c) => (
                     <SelectItem key={c.name} value={c.name} className="font-mono text-xs">
                       {c.name}
@@ -627,11 +647,11 @@ export function FilterBar({
                   value={row.value}
                   onValueChange={(value) => update(row.id, { value })}
                   onEnter={() => applyRow(row.id)}
-                  dialect={dialect}
+                  dialect={session.raw === "sqlWhere" ? dialect : null}
                   table={table}
                   columns={columnNames}
-                  placeholder={RAW_SQL_PLACEHOLDER}
-                  aria-label="Raw SQL condition"
+                  placeholder={rawFilter?.placeholder ?? RAW_SQL_PLACEHOLDER}
+                  aria-label={session.raw === "sqlWhere" ? "Raw SQL condition" : "Raw filter"}
                   data-filter-value
                   data-filter-part="value"
                   spellCheck={false}

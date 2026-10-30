@@ -25,12 +25,13 @@ import {
   failResultCommit,
   finishResultCommit,
   planResultCommit,
+  settlePartialResultCommit,
   type PlannedResult,
 } from "@/features/results/commit";
 import { discardResultEdits, pendingForTab, useResultsStore } from "@/features/results/store";
 import { guardExecution } from "@/features/safety/guard";
 import { withServerExprs } from "@/features/staging/expr";
-import { discardAll, pendingCount, setRowError } from "@/features/staging/model";
+import { discardAll, dropApplied, pendingCount, setRowError } from "@/features/staging/model";
 import { toStagedChanges } from "@/features/staging/toPayload";
 import {
   failStructureCommit,
@@ -40,14 +41,19 @@ import {
 import { invalidateSchema } from "@/features/structure/invalidate";
 import { sameRef } from "@/features/structure/model";
 import { useStructureStore } from "@/features/structure/store";
+import { appliesPartially, connectionCaps } from "@/lib/caps";
 import {
   ipc,
   toIpcError,
   type DdlOp,
+  type ErrorPayload,
+  type GroupPlan,
   type GroupResult,
   type RoutineRef,
   type TableRef,
+  type TxMode,
   type WorkspaceGroup,
+  type WorkspacePlan,
   type WorkspaceResult,
 } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
@@ -261,7 +267,158 @@ export function collectWorkspace(connectionId: string): CollectedWorkspace {
     });
   }
   sources.sort((a, b) => RANK[a.kind] - RANK[b.kind]);
-  return { sources, problems };
+  if (commitsWorkspace(connectionId)) return { sources, problems };
+  // Without the workspace commit, definitions and item operations have no command to go through.
+  const kept: WorkspaceSource[] = [];
+  for (const s of sources) {
+    if (s.kind === "definition" || s.kind === "object")
+      problems.push({ title: s.title, message: "This connection cannot commit it" });
+    else kept.push(s);
+  }
+  return { sources: kept, problems };
+}
+
+// --- sessions without a workspace commit -----------------------------------------------------------
+
+/**
+ * Whether the connection commits its whole workspace in one call (`apply_workspace_changes`).
+ * Without `Feature::WorkspaceCommit` each tab's part goes through its own command
+ * (`apply_changes`, `apply_ddl`), one after another, stopping at the first that fails.
+ */
+export function commitsWorkspace(connectionId: string): boolean {
+  const caps = connectionCaps(connectionId);
+  return caps === null || caps.features.includes("workspaceCommit");
+}
+
+/** How the connection's session applies staged rows (atomic while it is unknown). */
+export function txModeOf(connectionId: string): TxMode {
+  return connectionCaps(connectionId)?.data.transactions ?? "atomic";
+}
+
+/** Whether a commit of `sources` on its own commands runs as one transaction. */
+function perTabAtomic(mode: TxMode, sources: readonly WorkspaceSource[]): boolean {
+  return sources.length === 1 && sources[0]!.group.kind === "rows" && !appliesPartially(mode);
+}
+
+const commitError = (message: string): ErrorPayload => ({
+  code: "UNSUPPORTED",
+  message,
+  detail: null,
+  hint: null,
+  sqlstate: null,
+  vendorCode: null,
+  position: null,
+  statementIndex: null,
+  data: null,
+});
+
+/**
+ * What committing `sources` would run (the Preview sheet's statements): one
+ * `preview_workspace_changes`, or each part's own preview on a session without the workspace
+ * commit.
+ */
+export async function previewWorkspace(
+  connectionId: string,
+  sources: readonly WorkspaceSource[],
+): Promise<WorkspacePlan> {
+  if (commitsWorkspace(connectionId))
+    return ipc.workspace.preview(
+      connectionId,
+      sources.map((s) => s.group),
+    );
+  const mode = txModeOf(connectionId);
+  const groups = await Promise.all(
+    sources.map(async ({ group }): Promise<GroupPlan> => {
+      try {
+        if (group.kind === "rows") {
+          const statements = await ipc.mutate.preview(connectionId, group.request);
+          return { statements, warnings: [], transactional: !appliesPartially(mode), error: null };
+        }
+        if (group.kind === "ddl")
+          return { ...(await ipc.ddl.preview(connectionId, group.table, group.ops)), error: null };
+        return {
+          statements: [],
+          warnings: [],
+          transactional: false,
+          error: commitError("This connection cannot commit it"),
+        };
+      } catch (e) {
+        const error = commitError(toIpcError(e).message);
+        return { statements: [], warnings: [], transactional: false, error };
+      }
+    }),
+  );
+  return { groups, atomic: perTabAtomic(mode, sources) };
+}
+
+const NOT_RUN: GroupResult = {
+  status: "notRun",
+  sql: [],
+  executed: [],
+  failedIndex: null,
+  rows: [],
+  routine: null,
+  error: null,
+};
+
+/**
+ * Commits each part on its own command, in order, stopping at the first that fails, and answers
+ * as `apply_workspace_changes` would. A part of a session that applies changes one by one (or in
+ * a batch that can stop partway) answers a result per change, applied or not.
+ */
+async function applyPerTab(
+  connectionId: string,
+  sources: readonly WorkspaceSource[],
+): Promise<WorkspaceResult> {
+  const groups: GroupResult[] = [];
+  let failedGroup: number | null = null;
+  let error: ErrorPayload | null = null;
+  let durationMs = 0;
+  for (const [i, { group }] of sources.entries()) {
+    if (failedGroup !== null) {
+      groups.push(NOT_RUN);
+      continue;
+    }
+    let g: GroupResult;
+    if (group.kind === "rows") {
+      const r = await ipc.mutate.apply(connectionId, group.request);
+      durationMs += r.durationMs;
+      g = {
+        ...NOT_RUN,
+        status: r.success ? "applied" : "failed",
+        sql: r.sql,
+        executed: r.success ? r.sql : [],
+        rows: r.results,
+        error: r.error,
+      };
+    } else if (group.kind === "ddl") {
+      const r = await ipc.ddl.apply(connectionId, group.table, group.ops);
+      durationMs += r.durationMs;
+      g = {
+        ...NOT_RUN,
+        status: r.error ? "failed" : "applied",
+        sql: r.executed,
+        executed: r.executed,
+        failedIndex: r.failedIndex,
+        error: r.error,
+      };
+    } else {
+      g = { ...NOT_RUN, status: "failed", error: commitError("This connection cannot commit it") };
+    }
+    groups.push(g);
+    if (g.status === "failed") {
+      failedGroup = i;
+      error = g.error;
+    }
+  }
+  return {
+    success: failedGroup === null,
+    atomic: perTabAtomic(txModeOf(connectionId), sources),
+    groups,
+    failedGroup,
+    error,
+    durationMs,
+  };
 }
 
 /**
@@ -514,34 +671,61 @@ async function finishSource(
   }
 }
 
+/**
+ * Settles a part that failed; answers how many of its changes the server applied all the same
+ * (`partial`: a session whose commit can stop partway, critique D2), which leave the staging.
+ */
 async function failSource(
   connectionId: string,
   s: WorkspaceSource,
   g: GroupResult,
   committedOps: PendingObjectOp[],
-): Promise<void> {
+  partial: boolean,
+  writtenTables: Written[],
+): Promise<number> {
   const message = g.error?.message ?? "Failed";
+  // A change the server answered without an error was applied; one it never reached has no answer.
+  const applied = partial
+    ? new Set(g.rows.filter((r) => r.error === null).map((r) => r.rowId))
+    : new Set<string>();
   switch (s.kind) {
     case "rows":
+      if (applied.size > 0) {
+        const errors = new Map(
+          g.rows.flatMap((r) => (r.error ? [[r.rowId, r.error.message]] : [])),
+        );
+        useTableTabsStore.getState().update(s.tabId, (slice) => ({
+          staging: dropApplied(slice.staging, applied, errors),
+          // The applied rows read back as the server holds them now.
+          refreshToken: slice.refreshToken + 1,
+        }));
+        bumpGeneration(s.tabId);
+        writtenTables.push({ table: s.table, tabId: s.tabId });
+        return applied.size;
+      }
       useTableTabsStore.getState().update(s.tabId, (slice) => ({
         staging: g.rows.reduce(
           (acc, r) => (r.error ? setRowError(acc, r.rowId, r.error.message) : acc),
           slice.staging,
         ),
       }));
-      return;
+      return 0;
     case "results":
+      if (applied.size > 0) {
+        settlePartialResultCommit(s.planned, g.rows, applied);
+        return applied.size;
+      }
       failResultCommit(s.planned, g.rows);
-      return;
+      return 0;
     case "ddl":
       failStructureCommit(s.tabId, g.executed);
-      return;
+      return 0;
     case "definition": {
       // A routine MySQL dropped and could not create again lives on only in its text: keep it
       // in a tab.
       const restore = g.restore ?? null;
       if (restore && !restore.restored) keepPreviousVersion(connectionId, s.drop, restore.previous);
-      return;
+      return 0;
     }
     case "object": {
       const done = await settleFailedOp(connectionId, s.op, g.executed, message);
@@ -549,16 +733,20 @@ async function failSource(
         committedOps.push(done);
         afterObjectOp(queryClient, connectionId, done);
       }
-      return;
+      return 0;
     }
   }
 }
 
-/** Settles every part after `apply_workspace_changes`; true when it all went through. */
+/**
+ * Settles every part after `apply_workspace_changes` (or the parts' own commands); true when it
+ * all went through. `partial`: a failed part may have applied some of its changes.
+ */
 async function settle(
   connectionId: string,
   sources: readonly WorkspaceSource[],
   result: WorkspaceResult,
+  partial = false,
 ): Promise<boolean> {
   const committedOps: PendingObjectOp[] = [];
   const savedDefinitions: string[] = [];
@@ -572,7 +760,7 @@ async function settle(
       changed += s.count;
       await finishSource(connectionId, s, g, committedOps, savedDefinitions, writtenTables);
     } else if (g.status === "failed") {
-      await failSource(connectionId, s, g, committedOps);
+      changed += await failSource(connectionId, s, g, committedOps, partial, writtenTables);
     }
   }
   const qc = queryClient;
@@ -657,7 +845,8 @@ export async function applyWorkspace(connectionId: string): Promise<boolean> {
   try {
     for (const s of sources) if (s.kind === "object") clearOpError(connectionId, s.op.id);
     const groups = sources.map((s) => s.group);
-    const plan = await ipc.workspace.preview(connectionId, groups);
+    const perTab = !commitsWorkspace(connectionId);
+    const plan = await previewWorkspace(connectionId, sources);
     const bad = plan.groups.findIndex((g) => g.error);
     if (bad >= 0) {
       const err = plan.groups[bad]!.error!;
@@ -678,8 +867,15 @@ export async function applyWorkspace(connectionId: string): Promise<boolean> {
     }
     const statements = plan.groups.flatMap((g) => g.statements);
     if (!(await guardExecution(connectionId, { kind: "commit", statements }))) return false;
-    const result = await ipc.workspace.apply(connectionId, groups);
-    return await settle(connectionId, sources, result);
+    const result = perTab
+      ? await applyPerTab(connectionId, sources)
+      : await ipc.workspace.apply(connectionId, groups);
+    return await settle(
+      connectionId,
+      sources,
+      result,
+      perTab && appliesPartially(txModeOf(connectionId)),
+    );
   } catch (e) {
     toast.error("Could not commit the changes", { description: toIpcError(e).message });
     return false;

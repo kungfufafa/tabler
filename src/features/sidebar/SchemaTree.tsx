@@ -34,7 +34,7 @@ import { TableIcon } from "@/components/TypeIcon";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { openDiagram } from "@/features/diagram/store";
-import { coreDialect } from "@/features/drivers/catalog";
+import { useDriverUi } from "@/features/drivers/registry";
 import {
   copyLaravelMigrations,
   copyNames,
@@ -81,6 +81,8 @@ import {
   type ObjectDialog,
 } from "@/features/objects/store";
 import { isAlterable } from "@/features/structure/tableActions";
+import { laneMenuEntries } from "./laneMenu";
+import { connectionDialect, has, nounsOf, useCaps } from "@/lib/caps";
 import { formatCount } from "@/lib/format/time";
 import { comboFromEvent, isMac } from "@/lib/keys/combo";
 import {
@@ -315,10 +317,22 @@ export function SchemaTree({
   const activeTab = useTabsStore((s) => s.tabs.find((t) => t.id === s.activeId) ?? null);
   const driver = useConnectionsStore((s) => s.byId[connectionId]?.info.driver ?? "postgres");
   const readOnly = useConnectionsStore((s) => s.byId[connectionId]?.info.readOnly ?? false);
+  const info = useConnectionsStore((s) => s.byId[connectionId]?.info);
+  const caps = useCaps(connectionId);
+  // What the session offers is ANDed in (every feature for the core sessions).
+  const features = caps?.features;
+  const offers = (f: Parameters<typeof has>[1]) => caps === null || has(caps, f);
+  // A lane's own items of an item's menu (`DriverUi.objectMenu`).
+  const driverUi = useDriverUi(info?.driver ?? null);
   const currentSchema = useCurrentSchema(connectionId);
   const collapsed = useSidebarPrefs((s) => s.collapsed);
-  const showFunctions = useSidebarPrefs((s) => s.options.showFunctions) && driver !== "sqlite";
-  const showSequences = useSidebarPrefs((s) => s.options.showSequences) && driver === "postgres";
+  const showFunctions =
+    useSidebarPrefs((s) => s.options.showFunctions) && driver !== "sqlite" && offers("routines");
+  const showSequences =
+    useSidebarPrefs((s) => s.options.showSequences) && driver === "postgres" && offers("sequences");
+  /** What the session calls a section ("Collections" for a document store's Tables). */
+  const sectionLabel = (label: string) =>
+    label === "Tables" && caps ? nounsOf(caps).tables : label;
   const routines = useRoutines(connectionId, currentSchema, showFunctions && !lazy);
   const sequences = useSequences(connectionId, currentSchema, showSequences && !lazy);
   useSidebarReload(connectionId, currentSchema, lazy);
@@ -483,8 +497,8 @@ export function SchemaTree({
   /** The context of a row of `schema` (a lazy-loaded tree lists several schemas). */
   const ctxFor = (schema: string | null | undefined): ObjectContext =>
     schema ? { ...ctx, schema } : ctx;
-  // The object dialogs and Item Overview generate a core dialect's SQL: none for other drivers.
-  const dialect = coreDialect(driver);
+  // The object dialogs and Item Overview generate a core dialect's SQL: none for other sessions.
+  const dialect = info ? connectionDialect(info) : "postgres";
   const dialog = (d: ObjectDialog) => {
     if (dialect) openObjectDialog({ connectionId, dialect, dialog: d });
   };
@@ -527,7 +541,7 @@ export function SchemaTree({
         <ContextMenuContent>
           <ContextMenuEntries
             entries={headerMenu(
-              { driver, readOnly, overview: false, groups: hasGroups },
+              { driver, readOnly, overview: false, groups: hasGroups, features, dialect },
               {
                 ...newHandlers,
                 itemOverview: () => overviewOf(null),
@@ -707,7 +721,19 @@ export function SchemaTree({
   const tableEntries = (row: TableRow): MenuEntry[] => {
     const t = row.table;
     const tables = tablesOf(targetsOf(row.key));
-    return tableMenu(
+    const lane =
+      info && tables.length === 1
+        ? laneMenuEntries(
+            driverUi,
+            { table: refOf(t), kind: t.kind, database: info.currentDatabase },
+            info,
+            () =>
+              void qc.invalidateQueries({
+                queryKey: schemaKeys.tables(connectionId, t.schema ?? ""),
+              }),
+          )
+        : [];
+    const own = tableMenu(
       {
         driver,
         readOnly,
@@ -718,6 +744,8 @@ export function SchemaTree({
         renamable: isAlterable(t.kind),
         allPinned: pinScope === null ? null : tables.every((x) => pinned.has(tableKey(x))),
         groups: hasGroups,
+        features,
+        dialect,
       },
       {
         ...newIn(t.schema),
@@ -759,6 +787,7 @@ export function SchemaTree({
       },
       groupItemsOf(row),
     );
+    return lane.length > 0 ? [...own, ...lane] : own;
   };
 
   /** The schema an item row belongs to. */
@@ -778,6 +807,8 @@ export function SchemaTree({
         count: targets.length,
         droppable: droppableObjects(row, targets).length,
         groups: hasGroups,
+        features,
+        dialect,
       },
       {
         ...newIn(schemaOfItem(row)),
@@ -935,7 +966,15 @@ export function SchemaTree({
 
   const nodeEntries = (row: SchemaNodeRow): MenuEntry[] =>
     schemaNodeMenu(
-      { driver, readOnly, loaded: row.count !== null, diagram: true, groups: hasGroups },
+      {
+        driver,
+        readOnly,
+        loaded: row.count !== null,
+        diagram: true,
+        groups: hasGroups,
+        features,
+        dialect,
+      },
       {
         ...newIn(row.schema),
         itemOverview: () => overviewOf(row.schema),
@@ -1049,7 +1088,7 @@ export function SchemaTree({
           if (row.type === "header") {
             // A click on the label of Tables / Views / Materialized views opens their Item Overview
             // (TablePlus); the chevron (and Enter / Space, ← / →) collapses the section.
-            const overview = OVERVIEW_HEADERS.has(row.label);
+            const overview = OVERVIEW_HEADERS.has(row.label) && dialect !== null;
             return (
               <ContextMenu key={row.key}>
                 <ContextMenuTrigger asChild>
@@ -1088,7 +1127,7 @@ export function SchemaTree({
                         )}
                       />
                     </span>
-                    <span className="truncate">{row.label}</span>
+                    <span className="truncate">{sectionLabel(row.label)}</span>
                     <span className="text-muted-foreground/70 ml-auto pl-2 font-normal tabular-nums">
                       {row.count}
                     </span>
@@ -1100,9 +1139,11 @@ export function SchemaTree({
                       {
                         driver,
                         readOnly,
-                        overview: OVERVIEW_HEADERS.has(row.label),
+                        overview: OVERVIEW_HEADERS.has(row.label) && dialect !== null,
                         diagram: row.label === "Tables",
                         groups: hasGroups,
+                        features,
+                        dialect,
                       },
                       {
                         ...newIn(row.schema),

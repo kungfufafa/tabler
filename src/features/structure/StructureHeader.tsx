@@ -16,6 +16,7 @@ import { ChoiceCell } from "./cells";
 import type { TableOptionField } from "./objects";
 import type { StructureView } from "./model";
 import { CellInput } from "./parts";
+import { tableOptionRows } from "./tableOptions";
 
 function Label({ children }: { children: ReactNode }) {
   return (
@@ -170,6 +171,7 @@ export function StructureHeader({
       )}
       <span className={cn(dialect === "sqlite" && "flex-1")} />
       <div className="flex items-center gap-1">
+        {dialect !== "mysql" && <StorageOptions options={info.options} />}
         {dialect === "mysql" && (
           <OptionsButton
             options={info.options}
@@ -209,6 +211,20 @@ export function StructureHeader({
 }
 
 const ROW_FORMATS = ["DEFAULT", "DYNAMIC", "COMPACT", "REDUNDANT", "COMPRESSED"];
+
+/**
+ * The options a PostgreSQL flavor that distributes its tables reports (Greenplum, Redshift):
+ * read-only; nothing for PostgreSQL itself and SQLite, which report none.
+ */
+function StorageOptions({ options }: { options: TableOptions | null }) {
+  const rows = tableOptionRows(options, false);
+  if (rows.length === 0) return null;
+  return (
+    <span data-testid="table-storage" className="text-muted-foreground px-1 text-[11px]">
+      {rows.map(([label, value]) => `${label}: ${value}`).join(" · ")}
+    </span>
+  );
+}
 
 /** MySQL Engine, Charset, Collation, Auto increment, Row format. */
 function OptionsButton({

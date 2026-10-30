@@ -1880,6 +1880,9 @@ function createTableText(d: Driver, meta: TableMeta): string {
 registerMock("get_table_ddl", async ({ connectionId, table }) => {
   const c = await connectionOf(connectionId);
   const t = table as TableRef;
+  // A mock driver beyond the core ones gives its own (or has none).
+  const lane = mockLaneSession(c.connectionId);
+  if (lane) return lane.tableDdl?.(t) ?? mockError("UNSUPPORTED", "unsupported: Show DDL");
   const meta = metaOf(c.driver, t) ?? mockError("NOT_FOUND", `table ${t.name}`);
   if (meta.kind === "view" || meta.kind === "materializedView") {
     const what =

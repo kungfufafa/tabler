@@ -5,6 +5,7 @@ import type {
   FilterGroup,
   FilterNode,
   FilterOp,
+  RawFilter,
   Value,
   ValueKind,
 } from "@/lib/ipc";
@@ -87,7 +88,7 @@ export function opDef(op: FilterOp): OpDef {
  * An operator's label on a driver: the case variants read "– Case sensitive" on MySQL (its LIKE
  * follows the usually case-insensitive collation) and "– Case insensitive" elsewhere.
  */
-export function opLabel(op: FilterOp, dialect: Dialect): string {
+export function opLabel(op: FilterOp, dialect: Dialect | null): string {
   const label = opDef(op).label;
   return dialect === "mysql" && CASE_VARIANTS.has(op)
     ? label.replace("Case insensitive", "Case sensitive")
@@ -97,23 +98,34 @@ export function opLabel(op: FilterOp, dialect: Dialect): string {
 /** The column kind an operator list is for; "any" is the "Any column" pseudo-column. */
 export type OpTarget = Pick<ColumnMeta, "kind"> | "any" | null;
 
+const JSON_OPS: ReadonlySet<FilterOp> = new Set<FilterOp>(["jsonContains", "jsonNotContains"]);
+
 /**
- * The operators the filter bar offers on a driver for a column: ILIKE on PostgreSQL only, JSON
- * containment on PostgreSQL json / jsonb columns only.
+ * What the filter bar offers: a session's operators (`DataCaps.filterOps`), or a core dialect's
+ * (its sessions offer every operator, ILIKE and JSON containment on PostgreSQL only).
  */
-export function opsFor(dialect: Dialect, target: OpTarget = null): OpDef[] {
-  const json = target !== null && target !== "any" && target.kind === "json";
-  return OPS.filter((o) => {
-    if (o.op === "ilike") return dialect === "postgres";
-    if (o.op === "jsonContains" || o.op === "jsonNotContains")
-      return dialect === "postgres" && json;
-    return true;
-  });
+export type OfferedOps = Dialect | readonly FilterOp[];
+
+function offeredList(offered: OfferedOps): readonly FilterOp[] {
+  if (typeof offered !== "string") return offered;
+  return OPS.filter((o) => offered === "postgres" || (o.op !== "ilike" && !JSON_OPS.has(o.op))).map(
+    (o) => o.op,
+  );
 }
 
-/** Whether `op` is offered for `target` on `dialect` (see `opsFor`). */
-export function opAllowed(op: FilterOp, dialect: Dialect, target: OpTarget = null): boolean {
-  return opsFor(dialect, target).some((o) => o.op === op);
+/**
+ * The operators the filter bar offers for a column, in TablePlus's order: the offered ones (see
+ * `OfferedOps`), with JSON containment on json / jsonb columns only.
+ */
+export function opsFor(offered: OfferedOps, target: OpTarget = null): OpDef[] {
+  const json = target !== null && target !== "any" && target.kind === "json";
+  const list = offeredList(offered);
+  return OPS.filter((o) => list.includes(o.op) && (json || !JSON_OPS.has(o.op)));
+}
+
+/** Whether `op` is offered for `target` (see `opsFor`). */
+export function opAllowed(op: FilterOp, offered: OfferedOps, target: OpTarget = null): boolean {
+  return opsFor(offered, target).some((o) => o.op === op);
 }
 
 /**
@@ -236,6 +248,24 @@ export function isAnyColumnRow(row: Pick<FilterRowSpec, "column">): boolean {
   return row.column === ANY_COLUMN;
 }
 
+/**
+ * What a session's filter bar can do: its operators, its raw filter (a SQL WHERE, a JSON query or
+ * a query string; null: none) and whether "Any column" is offered.
+ */
+export interface FilterSession {
+  ops: OfferedOps;
+  raw: RawFilter | null;
+  anyColumn: boolean;
+}
+
+/** The filter bar of a core session (every operator of PostgreSQL's, a SQL WHERE). */
+export const CORE_FILTERS: FilterSession = { ops: "postgres", raw: "sqlWhere", anyColumn: true };
+
+/** Whether a session's filter bar has anything to offer. */
+export function filtersOffered(session: FilterSession): boolean {
+  return offeredList(session.ops).length > 0 || session.raw !== null;
+}
+
 /** The operator-list target of a filter row's column. */
 export function targetOf(column: string, columns: readonly ColumnMeta[]): OpTarget {
   if (column === ANY_COLUMN) return "any";
@@ -338,10 +368,14 @@ export function lastAppliedRowId(rows: FilterRowSpec[], columns: ColumnMeta[]): 
 export function defaultFilterRow(
   columns: readonly ColumnMeta[],
   settings: { column: FilterDefaultColumn; operator: FilterDefaultOperator },
+  session: FilterSession = CORE_FILTERS,
 ): FilterRowSpec {
-  const op: FilterOp = settings.operator === "contains" ? "contains" : "eq";
-  if (settings.column === "anyColumn") return newFilterRow(ANY_COLUMN, op);
-  if (settings.column === "rawSql") return newFilterRow(RAW_SQL_COLUMN, op);
+  const wanted: FilterOp = settings.operator === "contains" ? "contains" : "eq";
+  // A session without the operator starts from its first one.
+  const offered = offeredList(session.ops);
+  const op = offered.includes(wanted) || offered.length === 0 ? wanted : offered[0]!;
+  if (settings.column === "anyColumn" && session.anyColumn) return newFilterRow(ANY_COLUMN, op);
+  if (settings.column === "rawSql" && session.raw !== null) return newFilterRow(RAW_SQL_COLUMN, op);
   const pk = columns.find((c) => c.isPk) ?? columns[0];
   return newFilterRow(pk?.name ?? "", op);
 }

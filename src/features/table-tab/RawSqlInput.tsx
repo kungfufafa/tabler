@@ -7,7 +7,8 @@ import { applySuggestion, rawSqlSuggestions, type RawSqlSuggestions } from "./ra
 /**
  * The filter bar's Raw SQL field (`WHERE …` text) with autocomplete: column names and SQL
  * keywords for the word being typed (`rawSqlSuggestions`). ↑ / ↓ pick, ↩ / ⇥ insert, ⎋ closes the
- * list; with no list open ↩ applies the filter (`onEnter`).
+ * list; with no list open ↩ applies the filter (`onEnter`). Without a core dialect (another
+ * engine's SQL, a JSON query, a query string) it is a plain field.
  */
 export function RawSqlInput({
   value,
@@ -22,7 +23,7 @@ export function RawSqlInput({
   value: string;
   onValueChange: (value: string) => void;
   onEnter: () => void;
-  dialect: Dialect;
+  dialect: Dialect | null;
   table: string;
   columns: readonly string[];
 }) {
@@ -37,6 +38,7 @@ export function RawSqlInput({
   }, [value]);
 
   const suggest = (text: string, caret: number) => {
+    if (dialect === null) return;
     const s = rawSqlSuggestions(text, caret, dialect, table, columns);
     setList(s ? { ...s, index: 0 } : null);
   };

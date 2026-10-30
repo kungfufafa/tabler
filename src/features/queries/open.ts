@@ -1,7 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { notAvailableFor } from "@/features/drivers/catalog";
-import { dialectOf, insertSql, runQuery } from "@/features/editor/controller";
+import { insertSql, runQuery } from "@/features/editor/controller";
+import { editorOf } from "@/features/editor/language";
 import { HISTORY_KEY } from "@/features/editor/historyGroups";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
@@ -25,12 +26,12 @@ function hooks(qc: QueryClient, connectionId: string) {
  */
 export function openSavedQuery(connection: OpenConnection, query: SavedQuery): string | null {
   const { connectionId, driver } = connection.info;
-  const dialect = dialectOf(driver);
-  if (!dialect) {
+  const editor = editorOf(connection.info);
+  if (!editor) {
     toast.error(notAvailableFor(driver, "The SQL editor"));
     return null;
   }
-  const tabId = openSqlInNewQueryTab(connectionId, query.sql, dialect, query.name);
+  const tabId = openSqlInNewQueryTab(connectionId, query.sql, editor.dialect, query.name);
   useUiStore.getState().setView("workspace");
   return tabId;
 }

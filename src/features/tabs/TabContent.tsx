@@ -1,11 +1,17 @@
 import { Kbd } from "@/components/Kbd";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useDriverUi } from "@/features/drivers/registry";
 import { QueryTab } from "@/features/editor/QueryTab";
 import { ActionsEnabledContext } from "@/features/palette/actions";
 import { StructureTab } from "@/features/structure/StructureTab";
+import { BottomBarFrame } from "@/features/table-tab/BarParts";
 import { TableTab } from "@/features/table-tab/TableTab";
+import { capsOf } from "@/lib/caps";
 import { shortcutFor } from "@/lib/keys/keymap";
+import { useConnectionsStore } from "@/stores/connections";
 import { useActiveTab, useTabsStore, type Tab, type TabGroup } from "@/stores/tabs";
 import { getToolTab } from "./toolTabs";
+import { ViewSwitch } from "./ViewSwitch";
 
 /** The connected workspace before any table opens (TablePlus shows a single centred hint). */
 function WorkspaceHint() {
@@ -40,6 +46,36 @@ function ToolTabBody({ tab, focused }: { tab: Extract<Tab, { kind: "tool" }>; fo
 }
 
 /**
+ * A table tab's data: the grid, or the view a lane gives its driver in its place
+ * (`DriverUi.TableView`: a key browser, a document list), above the Data | Structure switch. The
+ * core drivers have no lane: their grid shows at once.
+ */
+function TableTabBody({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
+  const info = useConnectionsStore((s) => s.byId[tab.connectionId]?.info);
+  const ui = useDriverUi(info?.driver ?? null);
+  // The lane's module is still loading.
+  if (ui === undefined)
+    return (
+      <div className="flex flex-col gap-2 p-4" data-slot="lane-loading">
+        <Skeleton className="h-5 w-48" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  const View = ui?.TableView;
+  if (!View || !info) return <TableTab tab={tab} />;
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1">
+        <View connectionId={tab.connectionId} table={tab.table} caps={capsOf(info)} />
+      </div>
+      <BottomBarFrame aria-label="Table data">
+        <ViewSwitch tabId={tab.id} view="table" />
+      </BottomBarFrame>
+    </div>
+  );
+}
+
+/**
  * One tab's content. `focused`: false for the tab of a split workspace's other group; its
  * shortcuts and menu items are off (`ActionsEnabledContext`) until that group gets the focus.
  */
@@ -47,7 +83,7 @@ export function TabBody({ tab, focused = true }: { tab: Tab; focused?: boolean }
   let body;
   switch (tab.kind) {
     case "table":
-      body = <TableTab key={tab.id} tab={tab} />;
+      body = <TableTabBody key={tab.id} tab={tab} />;
       break;
     case "structure":
       body = <StructureTab key={tab.id} tab={tab} />;

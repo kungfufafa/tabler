@@ -1,6 +1,7 @@
+import { StandardSQL } from "@codemirror/lang-sql";
 import type { StatementRange } from "@/features/editor/scanner";
-import type { ConnectionProfile, DatabaseKind, Driver } from "@/lib/ipc";
-import type { ConsoleUi, DriverUi, KindUi, LaneModule } from "../types";
+import type { ConnectionProfile, DatabaseKind, Driver, SqlDialectId } from "@/lib/ipc";
+import type { ConsoleUi, DialectUi, DriverUi, KindUi, LaneModule } from "../types";
 import { FakeFields, FakeInspector, FakeStructureView, FakeTableView } from "./fakeViews";
 
 /**
@@ -92,4 +93,26 @@ export function fakeLane(kind: DatabaseKind, driver: Driver): LaneModule {
     ],
   };
   return { kinds: { [kind]: form }, drivers: { [driver]: views } };
+}
+
+/**
+ * The fake lane of the second fake session (`fakeMockDriver(driver, { dialect })`): the same form
+ * and object menu, no views of its own (the app's grid, structure and editor), and a `DialectUi`
+ * for its extension SQL dialect.
+ */
+export function fakeSqlLane(kind: DatabaseKind, driver: Driver, dialect: SqlDialectId): LaneModule {
+  const doc = fakeLane(kind, driver);
+  const sql: DialectUi = {
+    label: "Fake SQL",
+    codemirror: () => StandardSQL,
+    formatter: "sql",
+    functions: [],
+    columnTypes: [],
+    quoteIdent: (name) => `"${name.replaceAll('"', '""')}"`,
+  };
+  return {
+    kinds: doc.kinds,
+    drivers: { [driver]: { objectMenu: doc.drivers?.[driver]?.objectMenu } },
+    dialects: { [dialect]: sql },
+  };
 }

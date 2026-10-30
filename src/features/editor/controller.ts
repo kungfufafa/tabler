@@ -1,13 +1,12 @@
 import { toggleLineComment } from "@codemirror/commands";
 import { diagnosticCount, setDiagnostics } from "@codemirror/lint";
 import { EditorSelection, type EditorState } from "@codemirror/state";
+import type { SqlLanguage } from "sql-formatter";
 import { toast } from "sonner";
-import { coreDialect } from "@/features/drivers/catalog";
 import {
   ipc,
   isMock,
   toIpcError,
-  type Driver,
   type ExplainMode,
   type QueryEvent,
   type StatementResult,
@@ -20,6 +19,7 @@ import { hasPendingResultEdits } from "@/features/results/commit";
 import { confirmRerunDiscard } from "@/features/results/rerunConfirm";
 import { discardRunEdits, pendingForRun, useResultsStore } from "@/features/results/store";
 import { guardExecution } from "@/features/safety/guard";
+import { allowFeature } from "@/lib/caps";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { useConnectionsStore } from "@/stores/connections";
@@ -61,15 +61,16 @@ import {
   normalizeError,
   type RunState,
 } from "./runModel";
+import {
+  coreLanguage,
+  languageOf,
+  splitWith,
+  statementsWith,
+  type EditorLanguage,
+} from "./language";
 import { findParams, paramFields, substituteParams, type Replacement } from "./params";
 import { askParams } from "./paramsPrompt";
-import {
-  minifySql,
-  splitStatements,
-  statementAt,
-  statementTexts,
-  type SqlDialect,
-} from "./scanner";
+import { minifySql, statementAt } from "./scanner";
 import { changesSchema } from "./schemaChange";
 import { activeEditorKey, splitKey } from "./split";
 import { recordSubmission, unsubstituteRange } from "./submissions";
@@ -98,21 +99,14 @@ export interface ControllerHooks {
   onSchemaChanged?: () => void;
 }
 
-/**
- * The dialect the SQL editor reads a connection's SQL in: its driver's (PostgreSQL while the
- * connection is unknown); null for a driver beyond the core ones, which the core lexers must not
- * split or classify.
- */
-export function dialectOf(driver: Driver | undefined): SqlDialect | null {
-  return driver ? coreDialect(driver) : "postgres";
-}
-
 function queryTab(tabId: string) {
   const tab = useTabsStore.getState().tabs.find((t) => t.id === tabId);
   if (!tab || tab.kind !== "query") return null;
   const connection = useConnectionsStore.getState().byId[tab.connectionId];
-  const dialect = dialectOf(connection?.info.driver);
-  // No SQL editor for such a connection (`QueryTab` says so): nothing to run, format or save.
+  // A core dialect, or the language of the session's lane (`languageOf`).
+  const dialect = languageOf(connection?.info);
+  // No editor for such a connection (`QueryTab` says so), or its lane is still loading:
+  // nothing to run, format or save.
   if (!dialect) return null;
   return { tab, connectionId: tab.connectionId, dialect };
 }
@@ -126,14 +120,14 @@ export type RunTarget = "auto" | "current" | Submission;
 export function resolveTarget(
   state: EditorState,
   target: RunTarget,
-  dialect: SqlDialect,
+  dialect: EditorLanguage,
 ): Submission | null {
   if (typeof target === "object") return target;
   const sel = state.selection.main;
   if (!sel.empty) return { sql: state.sliceDoc(sel.from, sel.to), baseOffset: sel.from };
   const text = state.doc.toString();
   if (target === "auto") return { sql: text, baseOffset: 0 };
-  const st = statementAt(splitStatements(text, dialect), text, sel.head, true);
+  const st = statementAt(splitWith(dialect, text), text, sel.head, true);
   return st ? { sql: text.slice(st.start, st.end), baseOffset: st.start } : null;
 }
 
@@ -162,10 +156,12 @@ export interface PreparedSql extends Submission {
 export async function prepareSql(
   tabId: string,
   sub: Submission,
-  dialect: SqlDialect,
+  language: EditorLanguage,
 ): Promise<PreparedSql | null> {
   const prefs = getPrefs();
-  if (!prefs.editorQueryParams) return { ...sub, replacements: [] };
+  // Parameters are read with the core lexers: a lane's text has none.
+  const dialect = coreLanguage(language);
+  if (!prefs.editorQueryParams || dialect === null) return { ...sub, replacements: [] };
   const occurrences = findParams(sub.sql, dialect, {
     syntax: prefs.editorQueryParamsRegex,
     inQuotes: prefs.editorQueryParamsInQuotes,
@@ -237,7 +233,7 @@ export async function runQuery(
   if (!info || !state) return;
   if (isBusy(getQueryTab(tabId))) return busyNotice();
   const target0 = resolveTarget(state, target, info.dialect);
-  if (!target0 || splitStatements(target0.sql, info.dialect).length === 0) {
+  if (!target0 || splitWith(info.dialect, target0.sql).length === 0) {
     toast.message(target === "current" ? "No statement under the cursor" : "Nothing to run");
     return;
   }
@@ -255,7 +251,7 @@ export async function runQuery(
   const sub = await prepareSql(tabId, target0, info.dialect);
   if (!sub) return;
   // The connection's safe mode may ask first; declining is not an error.
-  const statements = statementTexts(sub.sql, info.dialect);
+  const statements = statementsWith(info.dialect, sub.sql);
   if (!(await guardExecution(info.connectionId, { kind: "query", statements }))) return;
   const before = getQueryTab(tabId);
   // Another run may have started while the dialogs were open.
@@ -359,6 +355,7 @@ export async function explainQuery(
   const state = getEditorState(key);
   if (!info || !state) return;
   if (isBusy(getQueryTab(tabId))) return busyNotice();
+  if (!allowFeature(info.connectionId, mode === "analyze" ? "explainAnalyze" : "explain")) return;
   const target = resolveTarget(state, "current", info.dialect);
   if (!target || target.sql.trim() === "") {
     toast.message("No statement under the cursor");
@@ -450,12 +447,13 @@ function cursorAfterReplace(head: number, from: number, to: number, length: numb
  */
 async function rewriteQuery(
   tabId: string,
-  rewrite: (sql: string, dialect: SqlDialect) => string | Promise<string>,
+  rewrite: (sql: string, dialect: EditorLanguage) => string | Promise<string>,
 ): Promise<void> {
   const info = queryTab(tabId);
   const key = activeEditorKey(tabId);
   const state = getEditorState(key);
   if (!info || !state) return;
+  if (!allowFeature(info.connectionId, "format")) return;
   const sub = resolveTarget(state, "current", info.dialect);
   if (!sub || sub.sql.trim() === "") return;
   const out = await rewrite(sub.sql, info.dialect);
@@ -482,9 +480,12 @@ export async function formatQuery(tabId: string): Promise<void> {
   const prefs = getPrefs();
   try {
     await rewriteQuery(tabId, async (sql, dialect) => {
+      const language = typeof dialect === "string" ? FORMAT_LANGUAGE[dialect] : dialect.formatter;
+      // A lane's language without a formatter is left as it is.
+      if (language === null) return sql;
       const { format } = await import("sql-formatter");
       return format(sql, {
-        language: FORMAT_LANGUAGE[dialect],
+        language: language as SqlLanguage,
         keywordCase: prefs.editorUppercaseKeywords ? "upper" : "lower",
         tabWidth: prefs.editorTabSize,
         useTabs: prefs.editorIndentWithTabs,
@@ -499,7 +500,11 @@ export async function formatQuery(tabId: string): Promise<void> {
 
 /** "Uglify SQL": puts the selection (or the statement under the cursor) on one line. */
 export function minifyQuery(tabId: string): Promise<void> {
-  return rewriteQuery(tabId, minifySql);
+  // The core scanner finds the strings and comments to keep; a lane's text is left as it is.
+  return rewriteQuery(tabId, (sql, dialect) => {
+    const core = coreLanguage(dialect);
+    return core === null ? sql : minifySql(sql, core);
+  });
 }
 
 /** Inserts `sql` at the cursor on its own line; with `run`, selects it and runs it. */
@@ -665,7 +670,7 @@ export async function openQueryFile(tabId: string): Promise<void> {
   const state = getEditorState(tabId);
   const reuse = state !== null && state.doc.length === 0 && !info.tab.dirty;
   if (!reuse) {
-    openFileInNewQueryTab(info.connectionId, path, file, info.dialect);
+    openFileInNewQueryTab(info.connectionId, path, file, coreLanguage(info.dialect));
     return;
   }
   applyToEditor(tabId, (s) => ({
@@ -724,7 +729,7 @@ export function exportQuery(tabId: string): void {
   const state = getEditorState(activeEditorKey(tabId));
   if (!state) return;
   const sub = resolveTarget(state, "current", info.dialect);
-  const statements = sub ? splitStatements(sub.sql, info.dialect) : [];
+  const statements = sub ? splitWith(info.dialect, sub.sql) : [];
   const only = statements.length === 1 ? statements[0]! : null;
   if (!sub || !only) {
     toast.message(

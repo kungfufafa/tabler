@@ -32,13 +32,16 @@ import {
   type GridColumn,
   type ViewRow,
 } from "@/features/datagrid/types";
-import { coreDialect } from "@/features/drivers/catalog";
+import { MISSING } from "@/features/documents/formats";
+import { driverLabel } from "@/features/drivers/catalog";
+import { useDriverUi } from "@/features/drivers/registry";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { openExportForActiveTab } from "@/features/export/store";
 import { openImport } from "@/features/import/store";
 import { setRowContext } from "@/features/commit/rowContext";
 import { openWorkspaceSheet, useCommitGeneration } from "@/features/commit/store";
 import { actions, useAction } from "@/features/palette/actions";
+import { exprOf } from "@/features/staging/expr";
 import { defaultsFor, mergeRows } from "@/features/staging/merge";
 import {
   canRedo,
@@ -64,6 +67,8 @@ import {
   type SortSpec,
   type Value,
 } from "@/lib/ipc";
+import { capsOf, featureLabel, has, sessionDialect } from "@/lib/caps";
+import { notAvailableFor } from "@/features/drivers/catalog";
 import { errorWithHint } from "@/lib/errorText";
 import { valueText } from "@/lib/values";
 import { useConnectionsStore } from "@/stores/connections";
@@ -83,7 +88,15 @@ import { FilterBar } from "./FilterBar";
 import { focusFilterRow } from "./filterFocus";
 import { filterMemoryKey, initialFilterState, rememberFilters } from "./filterMemory";
 import { joinSql } from "./joinSql";
-import { defaultFilterRow, isFilterOp, joinList, lastAppliedRowId, toFilterGroup } from "./filters";
+import {
+  defaultFilterRow,
+  filtersOffered,
+  isFilterOp,
+  joinList,
+  lastAppliedRowId,
+  toFilterGroup,
+  type FilterSession,
+} from "./filters";
 import {
   fkFilterText,
   openExportCurrentPage,
@@ -119,14 +132,52 @@ function rowKeyString(page: BrowsePage, index: number): string {
   return `${key.kind === "pk" ? "pk" : "all"}:${vals.join("|")}`;
 }
 
+/**
+ * A page read by cursor without the rows whose key came earlier in it: a server that pages by
+ * cursor may return a row twice (Redis SCAN), and the grid keys rows by their key. Only keyed
+ * pages: rows matched by all their columns may be equal and still be rows of their own.
+ */
+function uniqueRows(page: BrowsePage): BrowsePage {
+  if (page.identity !== "pk") return page;
+  const seen = new Set<string>();
+  const keep = page.rows.map((_, i) => {
+    const key = rowKeyString(page, i);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (keep.every(Boolean)) return page;
+  return { ...page, rows: page.rows.filter((_, i) => keep[i]) };
+}
+
+const NO_CURSOR_PAGES: NonNullable<TableTabState["cursorPages"]>["stack"] = [];
+
 export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   const { connectionId, table } = tab;
   const qc = useQueryClient();
   const connection = useConnectionsStore((s) => s.byId[connectionId]);
   const driver = connection?.info.driver ?? "postgres";
-  // Null for a driver beyond the core ones: no filter bar or Generate JOIN (their operators and
-  // SQL are the core dialects'), and no table context for the copy formats.
-  const dialect = coreDialect(driver);
+  // What the session offers (the core sessions: everything, as before).
+  const caps = capsOf(connection?.info ?? { driver, capabilities: null });
+  // Null for a session that does not speak a core dialect: no Generate JOIN or SQL completion in
+  // the filter bar (their SQL is the core dialects'), and no table context for the copy formats.
+  const dialect = sessionDialect(caps);
+  const filterSession = useMemo<FilterSession>(
+    () => ({
+      ops: caps.data.filterOps,
+      raw: caps.data.rawFilter,
+      anyColumn: caps.dialect !== null,
+    }),
+    [caps.data.filterOps, caps.data.rawFilter, caps.dialect],
+  );
+  const filterable = filtersOffered(filterSession);
+  const byCursor = caps.data.paging === "cursor";
+  // A store whose new rows lack the fields not typed in (a document store), rather than taking
+  // their defaults.
+  const nativeStore = caps.dialect === null;
+  // The lane's own inspector for the row, where it has one.
+  const driverUi = useDriverUi(driver);
+  const hasInspectorSlot = !!driverUi?.Inspector;
   const isActive = useTabsStore((s) => s.activeId === tab.id);
   const openTable = useTabsStore((s) => s.openTable);
   const setView = useTabsStore((s) => s.setView);
@@ -188,8 +239,12 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   }, [tab.preview, tab.id, pending, filtered, pin]);
 
   const meta = useTableMeta(connectionId, table);
-  const editable =
-    !!meta.data && meta.data.kind === "table" && !(connection?.info.readOnly ?? false);
+  // The table's rows can be edited at all (see `editable`, which also asks the page's key).
+  const tableEditable =
+    !!meta.data &&
+    meta.data.kind === "table" &&
+    !(connection?.info.readOnly ?? false) &&
+    has(caps, "editRows");
 
   const [draft, setDraft] = useState<{
     rows: FilterRowSpec[];
@@ -205,34 +260,57 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   const defaultOperator = usePrefs((p) => p.filterDefaultOperator);
   const metaColumns = meta.data?.columns;
   const starterRow = useMemo(
-    () => defaultFilterRow(metaColumns ?? [], { column: defaultColumn, operator: defaultOperator }),
-    [metaColumns, defaultColumn, defaultOperator],
+    () =>
+      defaultFilterRow(
+        metaColumns ?? [],
+        { column: defaultColumn, operator: defaultOperator },
+        filterSession,
+      ),
+    [metaColumns, defaultColumn, defaultOperator, filterSession],
   );
 
   const filterGroup = useMemo(
     () => (meta.data ? toFilterGroup(state.filters, meta.data.columns, state.conjunction) : null),
     [meta.data, state.filters, state.conjunction],
   );
+  // A session that cannot sort reads in its own order.
+  const sort = useMemo(
+    () =>
+      !caps.data.sort
+        ? []
+        : state.sort.length > 0
+          ? state.sort
+          : defaultOrderSort(defaultOrder, meta.data?.primaryKey ?? []),
+    [caps.data.sort, state.sort, defaultOrder, meta.data?.primaryKey],
+  );
+  // Paging by cursor: the pages that led here hold for this filter, sort and page size only.
+  const cursorScope = useMemo(
+    () => JSON.stringify([filterGroup, sort, state.limit]),
+    [filterGroup, sort, state.limit],
+  );
+  const cursorStack =
+    byCursor && state.cursorPages?.scope === cursorScope
+      ? state.cursorPages.stack
+      : NO_CURSOR_PAGES;
+  const cursorAt = cursorStack.at(-1) ?? null;
   const request = useMemo(
     () =>
       meta.data
         ? {
             columns: null,
             filter: filterGroup,
-            sort:
-              state.sort.length > 0
-                ? state.sort
-                : defaultOrderSort(defaultOrder, meta.data.primaryKey),
+            sort,
             limit: state.limit,
-            offset: state.offset,
+            offset: byCursor ? 0 : state.offset,
+            ...(byCursor ? { cursor: cursorAt?.cursor ?? null } : {}),
           }
         : null,
-    [meta.data, filterGroup, state.sort, state.limit, state.offset, defaultOrder],
+    [meta.data, filterGroup, sort, state.limit, state.offset, byCursor, cursorAt],
   );
   // grid3: a new page (or another sort / filter) starts at the grid's top.
   const pageKey = useMemo(
-    () => ({ offset: state.offset, sort: state.sort, filters: state.filters }),
-    [state.offset, state.sort, state.filters],
+    () => ({ offset: state.offset, cursor: cursorAt, sort: state.sort, filters: state.filters }),
+    [state.offset, cursorAt, state.sort, state.filters],
   );
   const rows = useTableRows(connectionId, table, request, state.refreshToken, pending > 0);
   const rowNumbers = usePrefs((p) => p.gridRowNumbers);
@@ -242,12 +320,16 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     () => ({ above: estimateCount ? estimateAbove : null }),
     [estimateCount, estimateAbove],
   );
+  // Counted with every load where that is cheap; where it scans (and may bill) the table, only
+  // when asked; never where the session cannot count.
+  const countable = caps.data.count !== "none";
+  const countAuto = caps.data.count === "exact" || caps.data.count === "estimate";
   const count = useRowCount(
     connectionId,
     table,
     filterGroup,
     state.refreshToken,
-    meta.data !== undefined,
+    meta.data !== undefined && countAuto,
     estimate,
   );
 
@@ -261,7 +343,15 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     if (count.data) update(tab.id, { count: count.data });
   }, [count.data, tab.id, update]);
 
-  const page = rows.data;
+  const page = useMemo(
+    () => (rows.data && byCursor ? uniqueRows(rows.data) : rows.data),
+    [rows.data, byCursor],
+  );
+  // The page's key decides what an edit may do: without one, rows are matched by all their
+  // columns, which a session must offer.
+  const editable = tableEditable && (page?.identity !== "none" || has(caps, "editWithoutKey"));
+  const canInsert = editable && has(caps, "insertRows");
+  const canDelete = editable && has(caps, "deleteRows");
   // Grid columns follow the PAGE's columns (row cells are in that order); the metadata may be newer
   // or older for a moment around a refresh.
   const pageColumns = page?.columns;
@@ -363,6 +453,18 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   /** The latest rows, for callbacks handed out earlier (the inspector's `edit`). */
   const live = useRef({ viewRows, page, editable, columns });
   live.current = { viewRows, page, editable, columns };
+  // An UPDATE may set a column to DEFAULT (SQLite: only an INSERT may).
+  const updateDefault = caps.data.defaultKeyword;
+  /** DEFAULT and NOW() go to the server as expressions, which the session must take. */
+  const serverExprsOk = useCallback(
+    (value: Value): boolean => {
+      if (value.t !== "default" && !exprOf(value)) return true;
+      if (has(caps, "serverExpressions")) return true;
+      toast.message(notAvailableFor(driver, featureLabel("serverExpressions")));
+      return false;
+    },
+    [caps, driver],
+  );
   /**
    * Stages `value` into source column `col` of the rows `keys` (one undo step), like an inline
    * edit in the grid; the sidebar's Details (one row, or every selected row in a bulk edit).
@@ -380,6 +482,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         toast.message("EMPTY applies to text columns only");
         return;
       }
+      if (!serverExprsOk(value)) return;
       const edits: CellEdit[] = [];
       let sqliteDefaults = 0;
       for (const key of keys) {
@@ -387,19 +490,40 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         const row = viewRows[r];
         if (!row || row.status === "deleted") continue;
         // SQLite has no `SET col = DEFAULT`; DEFAULT only works when inserting.
-        if (value.t === "default" && driver === "sqlite" && row.status !== "inserted") {
+        if (value.t === "default" && !updateDefault && row.status !== "inserted") {
           sqliteDefaults++;
           continue;
         }
         edits.push({ rowKey: key, col, value, original: page.rows[r] });
       }
       if (sqliteDefaults > 0)
-        toast.message("SQLite can't set an existing value to DEFAULT", {
+        toast.message(`${driverLabel(driver)} can't set an existing value to DEFAULT`, {
           description: "DEFAULT works on new rows only.",
         });
       if (edits.length > 0) setStaging((s) => setCells(s, edits));
     },
-    [setStaging, driver],
+    [setStaging, driver, updateDefault, serverExprsOk],
+  );
+  /**
+   * Stages new values for fields of the row `key` by column name, as one undo step: what a lane's
+   * inspector saves (a document editor's changed fields). Columns the grid cannot edit are left.
+   */
+  const stageFields = useCallback(
+    (key: string, changes: Record<string, Value>) => {
+      const { viewRows, page, editable, columns } = live.current;
+      if (!editable || !page) return;
+      const r = viewRows.findIndex((v) => v.key === key);
+      const row = viewRows[r];
+      if (!row || row.status === "deleted") return;
+      const edits: CellEdit[] = [];
+      for (const [name, value] of Object.entries(changes)) {
+        const col = columns.findIndex((c) => c.name === name);
+        if (col < 0 || !columns[col]!.editable || !serverExprsOk(value)) continue;
+        edits.push({ rowKey: key, col, value, original: page.rows[r] });
+      }
+      if (edits.length > 0) setStaging((s) => setCells(s, edits));
+    },
+    [setStaging, serverExprsOk],
   );
   /** Rows selected in the grid (indexes into `viewRows`): several make the sidebar a bulk edit. */
   const [selectedIdx, setSelectedIdx] = useState<number[]>([]);
@@ -480,6 +604,22 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             : {}),
         },
         fetch: key ? { connectionId, table, key, column: column.name } : null,
+        ...(hasInspectorSlot
+          ? {
+              slot: {
+                connectionId,
+                table,
+                columns: page?.columns ?? [],
+                cells:
+                  row.status === "deleted"
+                    ? null
+                    : Object.fromEntries(columns.map((c, i) => [c.name, row.cells[i] ?? NULL])),
+                ...(canEdit
+                  ? { stage: (changes: Record<string, Value>) => stageFields(row.key, changes) }
+                  : {}),
+              },
+            }
+          : {}),
       });
     },
     [
@@ -493,6 +633,8 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       editRows,
       connectionId,
       bulkFor,
+      hasInspectorSlot,
+      stageFields,
     ],
   );
   /** The grid's focused cell (its row by key: staging and reloads replace the row objects). */
@@ -558,6 +700,11 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     sidebarColumn,
     bulkFor,
   ]);
+  /** A new row's cells: a document store's lack every field until one is typed in. */
+  const newRowCells = (cols: BrowsePage["columns"]): Value[] =>
+    nativeStore ? cols.map(() => MISSING) : defaultsFor(cols);
+  const refuse = (feature: "insertRows" | "deleteRows") =>
+    toast.message(notAvailableFor(driver, featureLabel(feature)));
   /** `GridAction` column indexes are SOURCE indexes: positions in `columns` / `page.columns`. */
   const onAction = (a: GridAction) => {
     if (!page) return;
@@ -565,6 +712,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       case "setNull":
       case "setEmpty":
       case "setDefault": {
+        if (a.type === "setDefault" && !serverExprsOk({ t: "default" })) return;
         const edits: CellEdit[] = [];
         let sqliteDefaults = 0;
         let notText = 0;
@@ -579,7 +727,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             continue;
           }
           // SQLite has no `SET col = DEFAULT`; DEFAULT only works when inserting.
-          if (a.type === "setDefault" && driver === "sqlite" && row.status !== "inserted") {
+          if (a.type === "setDefault" && !updateDefault && row.status !== "inserted") {
             sqliteDefaults++;
             continue;
           }
@@ -596,7 +744,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
           });
         }
         if (sqliteDefaults > 0)
-          toast.message("SQLite can't set an existing value to DEFAULT", {
+          toast.message(`${driverLabel(driver)} can't set an existing value to DEFAULT`, {
             description: "DEFAULT works on new rows only.",
           });
         if (notText > 0 && edits.length === 0) toast.message("EMPTY applies to text columns only");
@@ -605,6 +753,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       }
       case "setNow": {
         // The server's NOW(): staged as the expression, sent unquoted (never a client-side time).
+        if (!serverExprsOk({ t: "default" })) return;
         const edits: CellEdit[] = [];
         for (const { r, c } of a.cells) {
           const row = viewRows[r];
@@ -648,6 +797,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
           const row = viewRows[r];
           const col = columns[c];
           if (!row || !col || !col.editable || row.status === "deleted") continue;
+          if (!serverExprsOk(value)) return;
           edits.push({ rowKey: row.key, col: c, value, original: originalOf(r) });
         }
         if (edits.length > 0) setStaging((s) => setCells(s, edits));
@@ -659,6 +809,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         );
         return;
       case "deleteRows":
+        if (!canDelete) return void refuse("deleteRows");
         setStaging((s) =>
           deleteRows(
             s,
@@ -669,6 +820,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         );
         return;
       case "duplicateRows": {
+        if (!canInsert) return void refuse("insertRows");
         // One undo step for the whole selection; auto-increment columns get a fresh value.
         const copies = a.rows.flatMap((r) => {
           const row = viewRows[r];
@@ -682,11 +834,13 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         return;
       }
       case "newRow":
-        setStaging((s) => insertRow(s, `new:${crypto.randomUUID()}`, defaultsFor(page.columns)));
+        if (!canInsert) return void refuse("insertRows");
+        setStaging((s) => insertRow(s, `new:${crypto.randomUUID()}`, newRowCells(page.columns)));
         return;
       case "insertRows": {
+        if (!canInsert) return void refuse("insertRows");
         // Pasted rows: each column's default, overwritten by the pasted values.
-        const defaults = defaultsFor(page.columns);
+        const defaults = newRowCells(page.columns);
         const pasted = a.rows.map((cells) => {
           const values = [...defaults];
           for (const { c, value } of cells) if (c < values.length) values[c] = value;
@@ -746,12 +900,37 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   // ⌘J (the foreign key of the focused cell) is the grid's own: with several keys it asks which.
   /** ⌘← / ⌘→ in the grid: the previous / next page (like the bottom bar's ‹ ›). */
   const turnPage = (dir: -1 | 1) => {
+    if (byCursor) return turnCursorPage(dir);
     const { offset, limit } = state;
     const total = count.data?.count ?? null;
     const hasNext = total !== null ? offset + limit < total : (page?.rows.length ?? 0) === limit;
     if (dir < 0 ? offset === 0 : !hasNext) return;
     guarded(() => update(tab.id, { offset: Math.max(0, offset + dir * limit) }));
   };
+  /**
+   * Previous / Next of a table read by cursor: the next page starts at the cursor the page shown
+   * ended with (an empty page may still have one: the server found nothing in that stretch);
+   * the previous one is the cursor before it.
+   */
+  const turnCursorPage = (dir: -1 | 1) => {
+    if (dir < 0 && cursorStack.length === 0) return;
+    const next = page?.nextCursor ?? null;
+    if (dir > 0 && (!page || next === null)) return;
+    const stack =
+      dir < 0
+        ? cursorStack.slice(0, -1)
+        : [...cursorStack, { cursor: next!, before: (cursorAt?.before ?? 0) + page!.rows.length }];
+    guarded(() =>
+      update(tab.id, { cursorPages: stack.length > 0 ? { scope: cursorScope, stack } : null }),
+    );
+  };
+  const cursorPaging = byCursor
+    ? {
+        page: cursorStack.length + 1,
+        hasNext: (page?.nextCursor ?? null) !== null,
+        onTurn: turnCursorPage,
+      }
+    : null;
   useAction("grid.prev-page", isActive ? () => turnPage(-1) : null);
   useAction("grid.next-page", isActive ? () => turnPage(1) : null);
   /** Quick Look's foreign-key viewer: the referenced row(s), by an `=` filter. */
@@ -931,13 +1110,14 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
 
   return (
     <div ref={rootRef} className="flex h-full min-h-0 flex-col">
-      {state.filtersVisible && dialect && (
+      {state.filtersVisible && filterable && (
         <FilterBar
           columns={meta.data.columns}
           rows={draft.rows.length > 0 ? draft.rows : [starterRow]}
           conjunction={draft.conjunction}
           dirty={draftDirty}
           dialect={dialect}
+          session={filterSession}
           sql={page?.sql ?? null}
           onChange={(r, c) => setDraft({ rows: r, conjunction: c })}
           onApply={applyFilters}
@@ -973,9 +1153,15 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             rowCount={viewRows.length}
             getRow={getRow}
             loading={rows.isPending}
-            emptyText={state.filters.length > 0 ? "No rows match the filter" : "Table is empty"}
-            sort={state.sort}
-            onSortChange={onSortChange}
+            emptyText={
+              state.filters.length > 0
+                ? "No rows match the filter"
+                : cursorStack.length > 0 || (page?.nextCursor ?? null) !== null
+                  ? "No rows on this page"
+                  : "Table is empty"
+            }
+            sort={caps.data.sort ? state.sort : []}
+            onSortChange={caps.data.sort ? onSortChange : undefined}
             columnState={state.columnState}
             onColumnStateChange={onColumnStateChange}
             onFocusCell={onFocusCell}
@@ -997,13 +1183,13 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             active={isActive}
             onEditCommit={onEditCommit}
             onAction={onAction}
-            onQuickFilter={onQuickFilter}
-            onFilterColumn={onFilterColumn}
+            onQuickFilter={filterable ? onQuickFilter : undefined}
+            onFilterColumn={filterable ? onFilterColumn : undefined}
             onSelectedRowsChange={setSelectedIdx}
             rowNumbers={rowNumbers}
             onRefresh={refresh}
             onGenerateJoin={dialect ? generateJoin : undefined}
-            onImport={editable ? (kind) => openImport({ connectionId, kind, table }) : undefined}
+            onImport={canInsert ? (kind) => openImport({ connectionId, kind, table }) : undefined}
             onExportPage={() => openExportCurrentPage(connectionId, table, tab.id)}
             quickLookKey
             onLoadReferenced={loadReferenced}
@@ -1015,15 +1201,15 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       </div>
       <TableBottomBar
         leading={<ViewSwitch tabId={tab.id} view="table" />}
-        canAddRow={editable && !!page}
+        canAddRow={canInsert && !!page}
         onAddRow={addRow}
-        offset={state.offset}
+        offset={byCursor ? (cursorAt?.before ?? 0) : state.offset}
         limit={state.limit}
         pageRows={page?.rows.length ?? 0}
         selectedRows={rows.isError ? 0 : selectedRows}
         shownRows={viewRows.length}
         count={count.data ?? null}
-        countPending={count.isPending}
+        countPending={countAuto && count.isPending}
         durationMs={page?.durationMs ?? null}
         sql={page?.sql ?? null}
         loading={rows.isFetching}
@@ -1044,6 +1230,9 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         defaultOrder={defaultOrder}
         onDefaultOrderChange={memoryKey ? setDefaultOrder : undefined}
         hasPrimaryKey={meta.data.primaryKey.length > 0}
+        cursor={cursorPaging}
+        countable={countable}
+        filterable={filterable}
       />
       <AlertDialog open={guard !== null} onOpenChange={(open) => !open && setGuard(null)}>
         <AlertDialogContent>

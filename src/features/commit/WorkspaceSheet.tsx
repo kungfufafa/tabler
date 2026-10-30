@@ -10,15 +10,15 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { coreDialect } from "@/features/drivers/catalog";
 import { describeOp, unstageObjectOp, type PendingObjectOp } from "@/features/objects/pendingOps";
 import { SqlBlock } from "@/features/structure/SqlBlock";
+import { connectionDialect } from "@/lib/caps";
 import {
-  ipc,
   toIpcError,
   type DefinitionRestore,
   type Dialect,
   type GroupPlan,
+  type TxMode,
   type WorkspacePlan,
 } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
@@ -27,6 +27,9 @@ import { restoreNote } from "./definitions";
 import { useCommitStore, useCommitting, closeWorkspaceSheet, type CommitFailure } from "./store";
 import {
   applyWorkspace,
+  commitsWorkspace,
+  previewWorkspace,
+  txModeOf,
   useWorkspaceSources,
   type WorkspaceProblem,
   type WorkspaceSource,
@@ -61,6 +64,25 @@ function nonAtomicNote(dialect: Dialect | null, sources: readonly WorkspaceSourc
   return `${lead} Some statements cannot run inside a transaction block.`;
 }
 
+/**
+ * How a session without the workspace commit applies the changes (each tab on its own, in
+ * order, stopping at the first that fails), by how it applies a tab's rows (`TxMode`).
+ */
+function perTabNote(mode: TxMode): string {
+  const lead = "Each tab's changes are committed on their own, in order; a failure stops the rest.";
+  switch (mode) {
+    case "atomic":
+    case "dataOnly":
+      return `${lead} A tab's row edits run in one transaction: if one fails, that tab's edits are reverted.`;
+    case "batch":
+      return `${lead} A tab's row edits go as one batch, which the server may apply in part: the applied ones are committed, the failed ones stay pending.`;
+    case "sequential":
+      return `${lead} Row edits run one at a time: the ones that went through are committed, the failed ones stay pending.`;
+    case "none":
+      return `${lead} Row edits run one at a time, and none is undone when a later one fails: the failed ones stay pending.`;
+  }
+}
+
 const NO_KEY_WARNING =
   "No primary key: each UPDATE/DELETE matches every original column value and must affect exactly one row.";
 
@@ -74,16 +96,10 @@ function usePlan(connectionId: string | null, sources: readonly WorkspaceSource[
   useEffect(() => {
     if (connectionId === null || sources.length === 0) return;
     let cancelled = false;
-    ipc.workspace
-      .preview(
-        connectionId,
-        sources.map((s) => s.group),
-      )
-      .then(
-        (plan) => !cancelled && setState({ sources, plan, error: null }),
-        (e: unknown) =>
-          !cancelled && setState({ sources, plan: null, error: toIpcError(e).message }),
-      );
+    previewWorkspace(connectionId, sources).then(
+      (plan) => !cancelled && setState({ sources, plan, error: null }),
+      (e: unknown) => !cancelled && setState({ sources, plan: null, error: toIpcError(e).message }),
+    );
     return () => {
       cancelled = true;
     };
@@ -297,10 +313,12 @@ export function WorkspaceSheet() {
   const { dialect, name } = useConnectionsStore(
     useShallow((s) => {
       const c = connectionId ? s.byId[connectionId] : undefined;
-      // Null for a driver beyond the core ones: its SQL shows plain.
-      return { dialect: c ? coreDialect(c.info.driver) : "postgres", name: c?.info.name ?? "" };
+      // Null for a session that speaks no core dialect: its statements show plain.
+      return { dialect: c ? connectionDialect(c.info) : "postgres", name: c?.info.name ?? "" };
     }),
   );
+  // Without the workspace commit each tab commits on its own (`perTabNote`).
+  const perTab = connectionId !== null && !commitsWorkspace(connectionId);
   const { sources, problems } = useWorkspaceSources(connectionId);
   const committing = useCommitting(connectionId);
   const planned = usePlan(connectionId, sources);
@@ -361,7 +379,9 @@ export function WorkspaceSheet() {
             {plural(total, "pending change")} in {plural(tabs, "tab")}.{" "}
             {atomic
               ? "They run in a single transaction: if one fails, all changes are reverted."
-              : nonAtomicNote(dialect, sources)}
+              : perTab
+                ? perTabNote(txModeOf(connectionId))
+                : nonAtomicNote(dialect, sources)}
           </SheetDescription>
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto px-5 py-3">

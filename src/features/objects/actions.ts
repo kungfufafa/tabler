@@ -2,16 +2,18 @@ import { EditorSelection } from "@codemirror/state";
 import { toast } from "sonner";
 import { openCreateSchema } from "@/features/admin/store";
 import { markDefinition } from "@/features/commit/definitions";
-import { coreDialect, notAvailableFor, requireCoreDialect } from "@/features/drivers/catalog";
+import { notAvailableFor } from "@/features/drivers/catalog";
 import { applyToEditor } from "@/features/editor/editorStates";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { openExportTables } from "@/features/export/store";
 import { openImport, type ImportKind } from "@/features/import/store";
 import { actions } from "@/features/palette/actions";
 import { openGroupDialog } from "@/features/sidebar/groups";
+import { dialectFor } from "@/lib/caps";
 import {
   ipc,
   toIpcError,
+  type Dialect,
   type Driver,
   type ObjectOp,
   type RoutineSummary,
@@ -25,7 +27,7 @@ import { useUiStore } from "@/stores/ui";
 import { laravelMigrations } from "./laravel";
 import type { NewTarget } from "./menu";
 import { openObjectDialog, routineRef } from "./store";
-import { newObjectTemplate, type NewObjectKind } from "./templates";
+import { NEW_OBJECT_LABEL, newObjectTemplate, type NewObjectKind } from "./templates";
 
 /** The connection and sidebar state a menu acts in. */
 export interface ObjectContext {
@@ -36,6 +38,16 @@ export interface ObjectContext {
   schema: string | null;
   /** Where pins are kept (`pinScope`); null when pinning is unavailable. */
   pinScope: string | null;
+}
+
+/**
+ * The session's core dialect (`dialectFor`) on an action: throws for a session without one (a
+ * Redshift session, PostgreSQL's driver, too), with a message the error toast can show.
+ */
+function requireSessionDialect(ctx: ObjectContext, what = "This"): Dialect {
+  const dialect = dialectFor(ctx.connectionId, ctx.driver);
+  if (dialect) return dialect;
+  throw new Error(notAvailableFor(ctx.driver, what));
 }
 
 export const refOf = (t: Pick<TableSummary, "schema" | "name">): TableRef => ({
@@ -86,7 +98,7 @@ export function openTableTab(
 /** Opens a routine's definition in a new SQL tab titled with its name. */
 export async function openRoutine(ctx: ObjectContext, r: RoutineSummary): Promise<void> {
   try {
-    const dialect = requireCoreDialect(ctx.driver);
+    const dialect = requireSessionDialect(ctx);
     const sql = await ipc.objects.routineDefinition(ctx.connectionId, routineRef(r));
     const id = openSqlInNewQueryTab(ctx.connectionId, sql, dialect, r.name);
     // ⌘S in this tab drops and recreates the routine (TablePlus), instead of saving a file.
@@ -100,7 +112,7 @@ export async function openRoutine(ctx: ObjectContext, r: RoutineSummary): Promis
 /** Opens a sequence's CREATE SEQUENCE text in a new SQL tab. */
 export async function openSequence(ctx: ObjectContext, s: SequenceSummary): Promise<void> {
   try {
-    const dialect = requireCoreDialect(ctx.driver);
+    const dialect = requireSessionDialect(ctx);
     const sql = await ipc.objects.sequenceDefinition(ctx.connectionId, refOf(s));
     openSqlInNewQueryTab(ctx.connectionId, sql, dialect, s.name);
     showWorkspace();
@@ -111,8 +123,9 @@ export async function openSequence(ctx: ObjectContext, s: SequenceSummary): Prom
 
 /** New ▸ View… / Function… …: a SQL tab with the template, its placeholder name selected. */
 export function openNewObject(ctx: ObjectContext, kind: NewObjectKind): string {
-  // The New ▸ menu offers these for the core dialects only (`newEntries`).
-  const dialect = requireCoreDialect(ctx.driver);
+  // The New ▸ menu offers these for a session of a core dialect only (`newEntries`): the
+  // template is that dialect's, never PostgreSQL's for a Redshift session.
+  const dialect = requireSessionDialect(ctx, `Creating a ${NEW_OBJECT_LABEL[kind].toLowerCase()}`);
   const t = newObjectTemplate(dialect, kind, ctx.schema);
   const id = openSqlInNewQueryTab(ctx.connectionId, t.sql, dialect, t.title);
   applyToEditor(id, () => ({ selection: EditorSelection.range(t.from, t.to) }));
@@ -132,7 +145,7 @@ export function runNew(ctx: ObjectContext, what: NewTarget, createTable?: () => 
     case "table":
       if (createTable) createTable();
       else {
-        const dialect = coreDialect(ctx.driver);
+        const dialect = dialectFor(ctx.connectionId, ctx.driver);
         if (!dialect) toast.error(notAvailableFor(ctx.driver, "Creating a table"));
         else
           openObjectDialog({
@@ -152,7 +165,11 @@ export function runNew(ctx: ObjectContext, what: NewTarget, createTable?: () => 
       if (ctx.pinScope !== null) openGroupDialog({ scope: ctx.pinScope });
       return;
     default:
-      openNewObject(ctx, what);
+      try {
+        openNewObject(ctx, what);
+      } catch (e) {
+        toast.error(toIpcError(e).message);
+      }
   }
 }
 
@@ -223,7 +240,7 @@ export async function copyLaravelMigrations(
 ): Promise<void> {
   if (tables.length === 0) return;
   try {
-    const dialect = requireCoreDialect(ctx.driver);
+    const dialect = requireSessionDialect(ctx);
     const metas = await Promise.all(
       tables.map((t) => ipc.schema.table(ctx.connectionId, refOf(t))),
     );

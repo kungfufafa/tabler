@@ -31,7 +31,8 @@ export function ShowDdlDialog({
   onOpenChange: (open: boolean) => void;
   connectionId: string;
   table: TableRef;
-  dialect: Dialect;
+  /** Highlights the statement; null: another engine's (plain, opened in its own editor). */
+  dialect: Dialect | null;
   returnFocus?: () => void;
 }) {
   const ddl = useQuery({

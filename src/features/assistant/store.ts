@@ -9,6 +9,8 @@ import {
   type AssistantMessage,
   type AssistantProviderConfig,
 } from "@/lib/ipc";
+import { allowFeature } from "@/lib/caps";
+import { useConnectionsStore } from "@/stores/connections";
 import { useInspectorStore } from "@/stores/inspector";
 import { useUiStore } from "@/stores/ui";
 import type { Agent } from "./agents";
@@ -109,6 +111,8 @@ export function showAssistant(): void {
  * take the focus, whether the tab was already showing or mounts only now.
  */
 export function askAssistant(): void {
+  const active = useConnectionsStore.getState().activeId;
+  if (active && !allowFeature(active, "assistant")) return;
   showAssistant();
   useAssistantStore.setState((s) => ({ focusRequest: s.focusRequest + 1 }));
 }

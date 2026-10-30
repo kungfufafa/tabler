@@ -21,7 +21,7 @@ import { toggleBlockCommentSmart } from "./cmExtensions";
 import type { EditorBarHandlers } from "./EditorBar";
 import { dropEditor, getEditorView } from "./editorStates";
 import { EditorMenuExtensions } from "./menuExtensions";
-import type { SqlDialect } from "./scanner";
+import type { EditorLanguage } from "./language";
 import {
   isSplitOpen,
   setFocusedPane,
@@ -169,7 +169,8 @@ function EditorContextMenu({
 interface PanesProps {
   tabId: string;
   connectionId: string;
-  dialect: SqlDialect;
+  /** A core dialect, or a lane's language. */
+  dialect: EditorLanguage;
   currentDatabase: string | null;
   handlers: EditorPaneHandlers;
 }

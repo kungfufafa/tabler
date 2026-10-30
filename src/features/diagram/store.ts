@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { allowFeature } from "@/lib/caps";
 import type { TableRef } from "@/lib/ipc";
 
 export interface DiagramRequest {
@@ -22,6 +23,7 @@ export const useDiagramStore = create<DiagramState>()(() => ({ request: null, se
 
 /** Sidebar / palette "Generate Diagram…" (selected tables, or the whole schema). */
 export function openDiagram(request: DiagramRequest): void {
+  if (!allowFeature(request.connectionId, "diagram")) return;
   useDiagramStore.setState((s) => ({ request, seq: s.seq + 1 }));
 }
 

@@ -2,6 +2,8 @@ import { useEffect, useMemo } from "react";
 import { useDisconnect } from "@/features/connections/useConnections";
 import { actions, useAction } from "@/features/palette/actions";
 import { disconnectGuarded } from "@/features/palette/commands";
+import { capsOf } from "@/lib/caps";
+import type { Feature } from "@/lib/ipc";
 import { isShortcutDispatch } from "@/lib/keys/useShortcuts";
 import { useActiveConnection, useConnectionsStore } from "@/stores/connections";
 import { getQueryTab, isBusy } from "@/stores/queryTabs";
@@ -136,23 +138,29 @@ function useAdminActions() {
   const active = useActiveConnection();
   const connectionId = active?.info.connectionId ?? null;
   const driver = active?.info.driver ?? null;
+  // What the session offers is ANDed in (every feature for the core sessions).
+  const features = active ? capsOf(active.info).features : null;
   const { mutate: disconnect } = useDisconnect();
   const handlers = useMemo(() => {
-    if (!connectionId) return null;
+    if (!connectionId || !features) return null;
+    const offers = (f: Feature) => features.includes(f);
     const server = driver === "postgres" || driver === "mysql";
     const pg = driver === "postgres";
     return {
-      processList: () => {
-        if (!cancelsRunningQuery()) openProcessList(connectionId);
-      },
-      users: () => openUserManagement(connectionId),
-      newDatabase: server ? () => openCreateDatabase(connectionId) : null,
-      dropDatabase: server ? () => openDropDatabase(connectionId) : null,
-      newSchema: pg ? () => openCreateSchema(connectionId) : null,
-      dropSchema: pg ? () => openDropSchema(connectionId) : null,
+      processList: offers("processList")
+        ? () => {
+            if (!cancelsRunningQuery()) openProcessList(connectionId);
+          }
+        : null,
+      users: offers("users") ? () => openUserManagement(connectionId) : null,
+      newDatabase:
+        server && offers("createDatabase") ? () => openCreateDatabase(connectionId) : null,
+      dropDatabase: server && offers("dropDatabase") ? () => openDropDatabase(connectionId) : null,
+      newSchema: pg && offers("createSchema") ? () => openCreateSchema(connectionId) : null,
+      dropSchema: pg && offers("dropSchema") ? () => openDropSchema(connectionId) : null,
       disconnect: () => void disconnectGuarded(connectionId, disconnect),
     };
-  }, [connectionId, driver, disconnect]);
+  }, [connectionId, driver, features, disconnect]);
 
   useAction("admin.process-list", handlers?.processList);
   useAction("admin.users", handlers?.users);

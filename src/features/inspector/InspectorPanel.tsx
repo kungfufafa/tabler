@@ -1,18 +1,21 @@
 import { X } from "lucide-react";
-import { useState, type KeyboardEvent } from "react";
+import { useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
 import { hideAssistant, showAssistant, useAssistantStore } from "@/features/assistant/store";
+import { useDriverUi } from "@/features/drivers/registry";
 import { ColumnsPane } from "@/features/structure/ColumnsPane";
 import { useColumnSelectionStore } from "@/features/structure/columnSelection";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
+import { useConnectionsStore } from "@/stores/connections";
 import {
   cellAtColumn,
   useInspectorStore,
   type InspectedCell,
   type InspectorMode,
+  type InspectorSlotRow,
 } from "@/stores/inspector";
 import { usePrefs } from "@/stores/prefs";
 import { useUiStore } from "@/stores/ui";
@@ -86,6 +89,19 @@ export function InspectorPanel() {
         <div className="text-muted-foreground flex flex-1 items-center justify-center p-6 text-xs">
           No row selected
         </div>
+      ) : mode === "row" && cell.slot ? (
+        <LaneInspector
+          slot={cell.slot}
+          fallback={
+            <DetailsView
+              cell={cell}
+              onViewCell={(col) => {
+                setCellCol({ of: cell, col });
+                setMode("cell");
+              }}
+            />
+          }
+        />
       ) : mode === "row" ? (
         <DetailsView
           cell={cell}
@@ -98,6 +114,28 @@ export function InspectorPanel() {
         <CellView cell={shown} />
       )}
     </aside>
+  );
+}
+
+/**
+ * Details of a row whose driver shows rows in a view of its own (`DriverUi.Inspector`: a
+ * document editor): that view, with the row's fields and a way to stage changes to them; the
+ * app's Details while there is none.
+ */
+function LaneInspector({ slot, fallback }: { slot: InspectorSlotRow; fallback: ReactNode }) {
+  const driver = useConnectionsStore((s) => s.byId[slot.connectionId]?.info.driver ?? null);
+  const Inspector = useDriverUi(driver)?.Inspector;
+  if (!Inspector) return fallback;
+  return (
+    <div data-slot="lane-inspector" className="flex min-h-0 flex-1 flex-col overflow-auto">
+      <Inspector
+        connectionId={slot.connectionId}
+        table={slot.table}
+        columns={slot.columns}
+        row={slot.cells}
+        onStage={slot.stage}
+      />
+    </div>
   );
 }
 

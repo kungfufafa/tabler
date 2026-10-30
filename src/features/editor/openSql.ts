@@ -12,12 +12,13 @@ import type { SqlDialect } from "./scanner";
 export function openSqlInNewQueryTab(
   connectionId: string,
   sql: string,
-  dialect: SqlDialect,
+  dialect: SqlDialect | null,
   title?: string,
 ): string {
   const tabs = useTabsStore.getState();
   const id = tabs.newQuery(connectionId);
-  seedEditor(id, sql, { dialect });
+  // A lane's language (null) is set when the editor mounts.
+  seedEditor(id, sql, dialect ? { dialect } : undefined);
   if (title) tabs.rename(id, title);
   return id;
 }
@@ -40,10 +41,10 @@ export function openFileInNewQueryTab(
   connectionId: string,
   path: string,
   file: SqlFileRead,
-  dialect: SqlDialect,
+  dialect: SqlDialect | null,
 ): string {
   const id = useTabsStore.getState().newQuery(connectionId);
-  seedEditor(id, file.text, { dialect });
+  seedEditor(id, file.text, dialect ? { dialect } : undefined);
   linkTabToFile(id, path, file);
   return id;
 }

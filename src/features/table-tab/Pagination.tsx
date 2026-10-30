@@ -27,6 +27,16 @@ export interface PageChange {
   limit: number;
 }
 
+/**
+ * The paging of a table read by cursor (`Paging::Cursor`): the page shown (1-based), whether
+ * another follows, and the step to the previous or next one. There is no offset to jump to.
+ */
+export interface CursorPaging {
+  page: number;
+  hasNext: boolean;
+  onTurn: (dir: -1 | 1) => void;
+}
+
 /** The page sizes offered for `limit` (the tab's own size is kept when it is not a preset). */
 function pageSizes(limit: number): number[] {
   const sizes: number[] = [...PAGE_SIZES];
@@ -48,6 +58,8 @@ export function Pagination({
   defaultOrder,
   onDefaultOrderChange,
   hasPrimaryKey = true,
+  cursor = null,
+  countable = true,
 }: {
   offset: number;
   limit: number;
@@ -55,6 +67,10 @@ export function Pagination({
   count: RowCount | null;
   onChange: (next: PageChange) => void;
   onCountExact: () => void;
+  /** Paging by cursor instead of offset (Previous / Next only). */
+  cursor?: CursorPaging | null;
+  /** "Count rows exactly" is offered (a session that cannot count has none). */
+  countable?: boolean;
   /** The table's Default content order (shown when `onDefaultOrderChange` is given). */
   defaultOrder?: DefaultOrder;
   onDefaultOrderChange?: (order: DefaultOrder) => void;
@@ -62,9 +78,14 @@ export function Pagination({
   hasPrimaryKey?: boolean;
 }) {
   const total = count?.count ?? null;
-  const page = Math.floor(offset / limit) + 1;
-  const pages = total !== null ? Math.max(1, Math.ceil(total / limit)) : null;
-  const hasNext = total !== null ? offset + limit < total : pageRows === limit;
+  const page = cursor ? cursor.page : Math.floor(offset / limit) + 1;
+  const pages = total !== null && !cursor ? Math.max(1, Math.ceil(total / limit)) : null;
+  const hasNext = cursor
+    ? cursor.hasNext
+    : total !== null
+      ? offset + limit < total
+      : pageRows === limit;
+  const atFirst = cursor ? cursor.page <= 1 : offset === 0;
   const id = useId();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState({ limit: String(limit), offset: String(offset) });
@@ -82,6 +103,8 @@ export function Pagination({
     draft.offset.trim() !== "" && Number.isFinite(offsetValue) && offsetValue >= 0;
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    // By cursor only the page size changes (from the first page).
+    if (cursor) return go({ offset: 0, limit: Number(draft.limit) });
     if (!offsetValid) return;
     go({ offset: Math.floor(offsetValue), limit: Number(draft.limit) });
   };
@@ -89,13 +112,15 @@ export function Pagination({
     <div className="flex shrink-0 items-center">
       <BarIconButton
         label="Previous page"
-        disabled={offset === 0}
-        onClick={() => onChange({ offset: Math.max(0, offset - limit), limit })}
+        disabled={atFirst}
+        onClick={() =>
+          cursor ? cursor.onTurn(-1) : onChange({ offset: Math.max(0, offset - limit), limit })
+        }
       >
         <ChevronLeft />
       </BarIconButton>
       <Popover open={open} onOpenChange={openChange}>
-        <BarTooltip label="Page size and offset">
+        <BarTooltip label={cursor ? "Page size" : "Page size and offset"}>
           <PopoverTrigger asChild>
             <Button
               variant="ghost"
@@ -146,43 +171,51 @@ export function Pagination({
                 ))}
               </SelectContent>
             </Select>
-            <label htmlFor={`${id}-offset`} className="text-muted-foreground">
-              Offset
-            </label>
-            <Input
-              id={`${id}-offset`}
-              type="number"
-              min={0}
-              step={1}
-              inputMode="numeric"
-              value={draft.offset}
-              onChange={(e) => setDraft((d) => ({ ...d, offset: e.target.value }))}
-              aria-invalid={!offsetValid || undefined}
-              className="h-7 text-xs tabular-nums"
-            />
+            {!cursor && (
+              <>
+                <label htmlFor={`${id}-offset`} className="text-muted-foreground">
+                  Offset
+                </label>
+                <Input
+                  id={`${id}-offset`}
+                  type="number"
+                  min={0}
+                  step={1}
+                  inputMode="numeric"
+                  value={draft.offset}
+                  onChange={(e) => setDraft((d) => ({ ...d, offset: e.target.value }))}
+                  aria-invalid={!offsetValid || undefined}
+                  className="h-7 text-xs tabular-nums"
+                />
+              </>
+            )}
             <div className="col-span-2 flex items-center gap-1 pt-0.5">
-              <Button
-                type="button"
-                variant="outline"
-                size="xs"
-                disabled={offset === 0}
-                onClick={() => go({ offset: 0, limit })}
-              >
-                <ChevronsLeft />
-                First page
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="xs"
-                disabled={pages === null || page >= pages}
-                onClick={() => pages !== null && go({ offset: (pages - 1) * limit, limit })}
-              >
-                Last page
-                <ChevronsRight />
-              </Button>
+              {!cursor && (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    disabled={offset === 0}
+                    onClick={() => go({ offset: 0, limit })}
+                  >
+                    <ChevronsLeft />
+                    First page
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    disabled={pages === null || page >= pages}
+                    onClick={() => pages !== null && go({ offset: (pages - 1) * limit, limit })}
+                  >
+                    Last page
+                    <ChevronsRight />
+                  </Button>
+                </>
+              )}
               <span className="flex-1" />
-              <Button type="submit" size="xs" disabled={!offsetValid}>
+              <Button type="submit" size="xs" disabled={!cursor && !offsetValid}>
                 Go
               </Button>
             </div>
@@ -220,27 +253,29 @@ export function Pagination({
               </Select>
             </div>
           )}
-          <div className="border-border flex items-center border-t pt-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              className="-ml-1"
-              disabled={count?.exact === true}
-              onClick={() => {
-                setOpen(false);
-                onCountExact();
-              }}
-            >
-              Count rows exactly
-            </Button>
-          </div>
+          {countable && (
+            <div className="border-border flex items-center border-t pt-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                className="-ml-1"
+                disabled={count?.exact === true}
+                onClick={() => {
+                  setOpen(false);
+                  onCountExact();
+                }}
+              >
+                Count rows exactly
+              </Button>
+            </div>
+          )}
         </PopoverContent>
       </Popover>
       <BarIconButton
         label="Next page"
         disabled={!hasNext}
-        onClick={() => onChange({ offset: offset + limit, limit })}
+        onClick={() => (cursor ? cursor.onTurn(1) : onChange({ offset: offset + limit, limit }))}
       >
         <ChevronRight />
       </BarIconButton>

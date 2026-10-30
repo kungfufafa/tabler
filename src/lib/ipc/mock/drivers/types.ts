@@ -41,6 +41,8 @@ export interface MockSession {
   listSchemas(): SchemaInfo[];
   listTables(schema: string): TableSummary[];
   tableMeta(table: TableRef): TableMeta;
+  /** The statement that creates the table, for Show DDL (refused without it). */
+  tableDdl?(table: TableRef): string;
   browse(req: BrowseRequest): BrowsePage;
   count?(table: TableRef, filter: FilterGroup | null): RowCount;
   fetchCell?(table: TableRef, key: RowKey, column: string): Value;

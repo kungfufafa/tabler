@@ -9,6 +9,7 @@ import type { ResultColumn } from "../../../bindings/ResultColumn";
 import type { RowKey } from "../../../bindings/RowKey";
 import type { RowResult } from "../../../bindings/RowResult";
 import type { SessionCaps } from "../../../bindings/SessionCaps";
+import type { SqlDialectId } from "../../../bindings/SqlDialectId";
 import type { StatementResult } from "../../../bindings/StatementResult";
 import type { TableMeta } from "../../../bindings/TableMeta";
 import type { TableRef } from "../../../bindings/TableRef";
@@ -26,6 +27,11 @@ import type { MockDriver, MockSession } from "../types";
  * with a console of `find <c>`, `count <c>`, `insert <c> {json}` and `delete <c> <id>` lines and
  * the calls `stats` (reads) and `compact` (writes). It stands in for whichever lane driver a
  * test names.
+ *
+ * With a `dialect` it is the second fake session, one of an extension SQL dialect: the same
+ * collections as tables, paged by offset, filtered and sorted, edited in a batch that may apply
+ * in part (`TxMode::Batch`), `SELECT … FROM <table>` and `DELETE FROM <table> WHERE _id = '<id>'`
+ * in its editor, and Show DDL.
  */
 
 type Doc = Record<string, Value>;
@@ -116,8 +122,33 @@ const failure = (message: string, statementIndex: number | null = null): ErrorPa
   data: null,
 });
 
-/** The caps of the fake: a document store's ("Collections", cursors, sequential edits). */
-export function fakeCaps(driver: Driver): SessionCaps {
+/**
+ * The caps of the fake: a document store's ("Collections", cursors, sequential edits), or with a
+ * `dialect` a SQL session's (tables, offsets, batch edits, Show DDL).
+ */
+export function fakeCaps(driver: Driver, dialect: SqlDialectId | null = null): SessionCaps {
+  if (dialect !== null) {
+    const doc = fakeCaps(driver);
+    return {
+      ...doc,
+      dialect,
+      language: "sql",
+      features: [...doc.features, "tableDdl", "exportTables"],
+      namespaces: {
+        ...doc.namespaces,
+        labels: { database: "Database", schema: "Schema", table: "Table", tables: "Tables" },
+      },
+      data: {
+        ...doc.data,
+        paging: "offset",
+        count: "exact",
+        sort: true,
+        filterOps: ["eq", "ne", "like", "isNull", "isNotNull"],
+        rawFilter: "sqlWhere",
+        transactions: "batch",
+      },
+    };
+  }
   return {
     driver,
     flavor: null,
@@ -153,7 +184,7 @@ export function fakeCaps(driver: Driver): SessionCaps {
   };
 }
 
-function session(driver: Driver): MockSession {
+function session(driver: Driver, dialect: SqlDialectId | null): MockSession {
   const collections = seedCollections();
   const docs = (table: TableRef): Doc[] =>
     collections.get(table.name) ?? mockError("NOT_FOUND", `not found: collection ${table.name}`);
@@ -167,7 +198,7 @@ function session(driver: Driver): MockSession {
     });
 
   return {
-    caps: fakeCaps(driver),
+    caps: fakeCaps(driver, dialect),
     listDatabases: () => [{ name: "app", owner: null, encoding: null, isCurrent: true }],
     listSchemas: () => [],
     listTables: () =>
@@ -193,10 +224,19 @@ function session(driver: Driver): MockSession {
       checks: [],
       options: null,
     }),
+    ...(dialect !== null
+      ? {
+          tableDdl: (table: TableRef) =>
+            `CREATE TABLE ${table.name} (${columnsOf(docs(table))
+              .map((c) => `${c.name} ${c.dataType}`)
+              .join(", ")})`,
+        }
+      : {}),
     browse: (req): BrowsePage => {
       const all = docs(req.table);
       const columns = columnsOf(all);
-      const from = req.cursor ? Number(req.cursor) : 0;
+      // By cursor as a document store, by offset as a SQL session.
+      const from = dialect !== null ? req.offset : req.cursor ? Number(req.cursor) : 0;
       const page = all.slice(from, from + req.limit);
       const next = from + page.length;
       return {
@@ -205,11 +245,14 @@ function session(driver: Driver): MockSession {
         pkColumns: ["_id"],
         identity: "pk",
         rowIds: null,
-        offset: 0,
+        offset: dialect !== null ? from : 0,
         limit: req.limit,
-        sql: `db.${req.table.name}.find({}).limit(${req.limit})`,
+        sql:
+          dialect !== null
+            ? `SELECT * FROM ${req.table.name} LIMIT ${req.limit} OFFSET ${from}`
+            : `db.${req.table.name}.find({}).limit(${req.limit})`,
         durationMs: 1,
-        nextCursor: next < all.length ? String(next) : null,
+        nextCursor: dialect === null && next < all.length ? String(next) : null,
       };
     },
     count: (table) => ({ count: docs(table).length, exact: true }),
@@ -245,7 +288,7 @@ function session(driver: Driver): MockSession {
       const error = results.find((r) => r.error)?.error ?? null;
       return { success: error === null, results, sql: preview(req), error, durationMs: 1 };
     },
-    run: (statement, emit) => run(collections, statement, emit),
+    run: (statement, emit) => run(collections, sqlCommand(statement, dialect), emit),
     call: (method, args) => {
       const name = (args as { collection?: string } | null)?.collection ?? "orders";
       if (method === "stats")
@@ -254,6 +297,16 @@ function session(driver: Driver): MockSession {
       return mockError("UNSUPPORTED", `unsupported: unknown call “${method}”`);
     },
   };
+}
+
+/** The console line a statement of the SQL fake stands for (the document fake's as it is). */
+function sqlCommand(statement: string, dialect: SqlDialectId | null): string {
+  if (dialect === null) return statement;
+  const select = /^\s*select\b[\s\S]*?\bfrom\s+(\w+)/i.exec(statement);
+  if (select) return `find ${select[1]}`;
+  const del = /^\s*delete\s+from\s+(\w+)\s+where\s+_id\s*=\s*'([^']*)'/i.exec(statement);
+  if (del) return `delete ${del[1]} ${del[2]}`;
+  return statement;
 }
 
 const docText = (values: Record<string, Value>): string =>
@@ -351,8 +404,14 @@ function run(
   fail(`unknown command ${verb ?? ""}`.trim());
 }
 
-/** The fake as the mock driver `driver` (a lane's driver id: the tests choose one). */
-export function fakeMockDriver(driver: Driver): MockDriver {
+/**
+ * The fake as the mock driver `driver` (a lane's driver id: the tests choose one); with a
+ * `dialect`, the SQL session of that extension dialect.
+ */
+export function fakeMockDriver(
+  driver: Driver,
+  { dialect = null }: { dialect?: SqlDialectId | null } = {},
+): MockDriver {
   return {
     driver,
     serverVersion: () => "FakeStore 1.0",
@@ -368,7 +427,7 @@ export function fakeMockDriver(driver: Driver): MockDriver {
         sortOrder: 100,
       }),
     ],
-    connect: () => session(driver),
+    connect: () => session(driver, dialect),
     util: (method) =>
       method === "listDatabases"
         ? ["app"]

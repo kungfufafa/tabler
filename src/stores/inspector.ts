@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { GridColumn, RowStatus } from "@/features/datagrid/types";
-import type { RowKey, TableRef, Value } from "@/lib/ipc";
+import type { ColumnMeta, RowKey, TableRef, Value } from "@/lib/ipc";
 import { useUiStore } from "./ui";
 
 /** The focused cell's whole row (the right sidebar's Details view). */
@@ -46,12 +46,29 @@ export interface CellFetch {
   column: string;
 }
 
+/**
+ * The row of a table whose driver shows rows in a view of its own (`DriverUi.Inspector`, a
+ * document editor): the right sidebar's Details shows that view.
+ */
+export interface InspectorSlotRow {
+  connectionId: string;
+  table: TableRef;
+  /** The table's columns, as the page was read. */
+  columns: readonly ColumnMeta[];
+  /** The row's cells by column; null for a row staged for deletion. */
+  cells: Readonly<Record<string, Value>> | null;
+  /** Stages new values for the row's columns, as one edit (absent when it cannot be edited). */
+  stage?: (changes: Record<string, Value>) => void;
+}
+
 export interface InspectedCell {
   column: GridColumn;
   value: Value;
   rowIndex: number;
   source: string;
   row?: InspectedRow;
+  /** Set when the table's driver has an inspector of its own. */
+  slot?: InspectorSlotRow;
   /** Only for saved rows of a table (not for new rows or query results). */
   fetch?: CellFetch | null;
   /**

@@ -1,5 +1,5 @@
-import { requireCoreDialect } from "@/features/drivers/catalog";
-import { statementTexts } from "@/features/editor/scanner";
+import { notAvailableFor } from "@/features/drivers/catalog";
+import { languageOf, statementsWith } from "@/features/editor/language";
 import { guardExecution } from "@/features/safety/guard";
 import { ipc, type StatementResult, type Value } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
@@ -35,9 +35,13 @@ export async function executeSql(
 ): Promise<ExecResult> {
   const conn = connectionId ? useConnectionsStore.getState().byId[connectionId] : undefined;
   if (!connectionId || !conn) throw new Error("Not connected: open a connection first");
-  // Split and classified by a core dialect only: another driver's SQL is refused here.
-  const dialect = requireCoreDialect(conn.info.driver, "Running SQL from a plugin");
-  const statements = statementTexts(sql, dialect).filter((s) => s.trim() !== "");
+  // Split as the session's editor splits it (`languageOf`: a core dialect's scanner, or the
+  // lane's splitter), never by PostgreSQL's for a Redshift session; refused without one.
+  const language = languageOf(conn.info);
+  if (language === undefined) throw new Error("The connection's language is still loading");
+  if (language === null)
+    throw new Error(notAvailableFor(conn.info.driver, "Running SQL from a plugin"));
+  const statements = statementsWith(language, sql).filter((s) => s.trim() !== "");
   if (statements.length === 0) throw new Error("Nothing to execute");
   const wait = options.userWait ?? (<T>(p: Promise<T>) => p);
   if (!(await wait(guardExecution(connectionId, { kind: "query", statements }))))

@@ -31,13 +31,20 @@ export const INSERT_MODES: ReadonlyArray<{ value: InsertMode; label: string; tit
 
 /**
  * Insert options for a connection: PostgreSQL has no REPLACE; a table the import creates has no
- * key, so only plain inserts.
+ * key, so only plain inserts; a server without an upsert (`DataCaps.upsert`: Greenplum 6,
+ * Redshift) has no UPDATE ON DUPLICATE.
  */
-export function insertModesFor(driver: Driver | undefined, creating: boolean): InsertMode[] {
+export function insertModesFor(
+  driver: Driver | undefined,
+  creating: boolean,
+  upsert = true,
+): InsertMode[] {
   if (creating) return ["stopOnError"];
-  return driver === "postgres"
-    ? ["stopOnError", "updateOnDuplicate"]
-    : ["stopOnError", "replace", "updateOnDuplicate"];
+  const modes: InsertMode[] =
+    driver === "postgres"
+      ? ["stopOnError", "updateOnDuplicate"]
+      : ["stopOnError", "replace", "updateOnDuplicate"];
+  return upsert ? modes : modes.filter((m) => m !== "updateOnDuplicate");
 }
 
 export const COLUMN_TYPES: ReadonlyArray<{ value: ImportType; label: string }> = [

@@ -68,6 +68,7 @@ import { runShortcut } from "@/lib/keys/useShortcuts";
 import type { TableMeta, TableRef } from "@/lib/ipc";
 import type { EditorAcceptKey, Prefs } from "@/stores/prefs";
 import { sqlEditorTheme } from "./cmTheme";
+import type { LaneLanguage } from "./language";
 import { splitStatements, statementAt, type SqlDialect, type StatementRange } from "./scanner";
 import {
   allFieldsSource,
@@ -86,6 +87,14 @@ export const dialectFacet = Facet.define<SqlDialect, SqlDialect>({
   combine: (values) => values[0] ?? "postgres",
 });
 
+/** A lane's splitter, which replaces the core scanner's (provided by the language compartment). */
+export const laneSplitFacet = Facet.define<
+  LaneLanguage["split"] | null,
+  LaneLanguage["split"] | null
+>({
+  combine: (values) => values[0] ?? null,
+});
+
 /** SQL language + schema completion; reconfigured when the driver or the schema changes. */
 export const languageConf = new Compartment();
 /**
@@ -97,7 +106,13 @@ export const prefsConf = new Compartment();
 const CM_DIALECTS = { postgres: PostgreSQL, mysql: MySQL, sqlite: SQLite } as const;
 
 export interface LanguageConfig {
+  /** The core dialect (ignored when `lane` is set). */
   dialect: SqlDialect;
+  /**
+   * A lane's language instead of a core dialect: its highlighting and splitter; completion is
+   * the saved queries' keywords only.
+   */
+  lane?: LaneLanguage;
   schema?: SQLNamespace;
   defaultSchema?: string;
   upperCaseKeywords?: boolean;
@@ -149,6 +164,12 @@ export function languagePrefsOf(
  * keywords, functions, saved-query keywords.
  */
 export function languageExtension(cfg: LanguageConfig): Extension {
+  if (cfg.lane)
+    return [
+      laneSplitFacet.of(cfg.lane.split),
+      cfg.lane.extension(),
+      savedQueryCompletionExtension(cfg.profileId ?? null),
+    ];
   const d = CM_DIALECTS[cfg.dialect];
   const upperCase = cfg.upperCaseKeywords ?? true;
   const tablesOn = cfg.completeTables !== false;
@@ -354,18 +375,22 @@ class StatementHighlighter {
   private statements: StatementRange[] = [];
   private text = "";
   private dialect: SqlDialect;
+  private lane: LaneLanguage["split"] | null;
 
   constructor(view: EditorView) {
     this.dialect = view.state.facet(dialectFacet);
+    this.lane = view.state.facet(laneSplitFacet);
     this.rescan(view.state);
     this.decorations = this.build(view);
   }
 
   update(u: ViewUpdate) {
     const dialect = u.state.facet(dialectFacet);
-    const rescan = u.docChanged || dialect !== this.dialect;
+    const lane = u.state.facet(laneSplitFacet);
+    const rescan = u.docChanged || dialect !== this.dialect || lane !== this.lane;
     if (rescan) {
       this.dialect = dialect;
+      this.lane = lane;
       this.rescan(u.state);
     }
     if (rescan || u.selectionSet || u.viewportChanged) this.decorations = this.build(u.view);
@@ -378,7 +403,7 @@ class StatementHighlighter {
       return;
     }
     this.text = state.doc.toString();
-    this.statements = splitStatements(this.text, this.dialect);
+    this.statements = this.lane ? this.lane(this.text) : splitStatements(this.text, this.dialect);
   }
 
   private build(view: EditorView): DecorationSet {

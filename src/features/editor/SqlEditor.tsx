@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import { useShallow } from "zustand/react/shallow";
 import { ensureSavedQueries } from "@/features/queries/store";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
+import { has, useCaps } from "@/lib/caps";
 import { ipc, type TableRef } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { usePrefsStore } from "@/stores/prefs";
@@ -18,37 +19,46 @@ import {
 } from "./cmExtensions";
 import { completionDefaultSchema, completionNamespace } from "./completion";
 import { registerView, stashEditorState, takeEditorState } from "./editorStates";
-import type { SqlDialect } from "./scanner";
+import { coreLanguage, type EditorLanguage } from "./language";
 
 export function SqlEditor({
   tabId,
   connectionId,
-  dialect,
+  dialect: language,
   currentDatabase,
   autoFocus = true,
 }: {
   tabId: string;
   connectionId: string;
-  dialect: SqlDialect;
+  /** A core dialect, or a lane's language (no schema completion: its SQL is not the core's). */
+  dialect: EditorLanguage;
   currentDatabase: string | null;
   autoFocus?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const dialect = coreLanguage(language);
+  const lane = typeof language === "string" ? undefined : language;
 
   const completion = useQuery({
     queryKey: schemaKeys.completion(connectionId),
     queryFn: () => ipc.schema.completion(connectionId),
     staleTime: 5 * 60_000,
+    enabled: dialect !== null,
   });
   const completionPrefs = usePrefsStore(useShallow((s) => languagePrefsOf(s.prefs)));
   const prefs = usePrefsStore(useShallow((s) => editorPrefsOf(s.prefs)));
-  const defaultSchema = completionDefaultSchema(dialect, completion.data, currentDatabase);
-  // Function completion: the default schema's routines (SQLite has none).
+  const defaultSchema =
+    dialect === null
+      ? undefined
+      : completionDefaultSchema(dialect, completion.data, currentDatabase);
+  // Function completion: the default schema's routines (SQLite has none), where the session lists them.
+  const caps = useCaps(connectionId);
+  const offersRoutines = caps === null || has(caps, "routines");
   const routines = useQuery({
     queryKey: ["completion-routines", connectionId, defaultSchema ?? ""],
     queryFn: () => ipc.objects.routines(connectionId, defaultSchema!),
-    enabled: dialect !== "sqlite" && !!defaultSchema,
+    enabled: dialect !== null && dialect !== "sqlite" && offersRoutines && !!defaultSchema,
     staleTime: 5 * 60_000,
     select: (list) => list.map((r) => ({ name: r.name, kind: r.kind })),
   });
@@ -68,21 +78,34 @@ export function SqlEditor({
   // Keyword binding completes from the saved queries.
   useEffect(() => void ensureSavedQueries(), []);
 
-  const language = useMemo<LanguageConfig>(
-    () => ({
+  const config = useMemo<LanguageConfig>(
+    () =>
+      lane
+        ? // The core dialect is not read with a lane's language.
+          { dialect: "postgres", lane, profileId, ...completionPrefs }
+        : {
+            dialect: dialect ?? "postgres",
+            schema: completionNamespace(completion.data),
+            defaultSchema,
+            tables: completion.data?.schemas as LanguageConfig["tables"],
+            routines: routines.data,
+            tableMeta,
+            profileId,
+            ...completionPrefs,
+          },
+    [
+      lane,
       dialect,
-      schema: completionNamespace(completion.data),
+      completion.data,
       defaultSchema,
-      tables: completion.data?.schemas as LanguageConfig["tables"],
-      routines: routines.data,
+      routines.data,
       tableMeta,
       profileId,
-      ...completionPrefs,
-    }),
-    [dialect, completion.data, defaultSchema, routines.data, tableMeta, profileId, completionPrefs],
+      completionPrefs,
+    ],
   );
-  const languageRef = useRef(language);
-  languageRef.current = language;
+  const languageRef = useRef(config);
+  languageRef.current = config;
 
   // One EditorView per mount; the EditorState (doc, undo history, selection) outlives it.
   useLayoutEffect(() => {
@@ -108,8 +131,8 @@ export function SqlEditor({
   }, [tabId]);
 
   useEffect(() => {
-    viewRef.current?.dispatch({ effects: languageConf.reconfigure(languageExtension(language)) });
-  }, [language]);
+    viewRef.current?.dispatch({ effects: languageConf.reconfigure(languageExtension(config)) });
+  }, [config]);
 
   useEffect(() => {
     viewRef.current?.dispatch({ effects: prefsConf.reconfigure(prefsExtension(prefs)) });

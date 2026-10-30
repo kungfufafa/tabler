@@ -1,6 +1,9 @@
 import { toast } from "sonner";
 import { create } from "zustand";
+import { notAvailableFor } from "@/features/drivers/catalog";
+import { allowFeature, connectionDialect, featureLabel } from "@/lib/caps";
 import { ipc, isMock, type PluginList } from "@/lib/ipc";
+import { useConnectionsStore } from "@/stores/connections";
 import { getPrefs, setPref } from "@/stores/prefs";
 import { isPluginEnabled, withoutPlugin, withPluginState, type PluginStates } from "./pluginPrefs";
 import type { PluginEntry, PluginItem } from "./types";
@@ -267,8 +270,17 @@ export async function revealPluginsFolder(): Promise<void> {
   }
 }
 
-/** Dummy Data ▸ Generate Dummy Data…: the dialog for `request`'s table. */
+/**
+ * Dummy Data ▸ Generate Dummy Data…: the dialog for `request`'s table. Refused with a toast,
+ * like the other openers, where the session lacks Dummy Data or a core dialect for its INSERTs.
+ */
 export function openDummyData(request: DummyDataRequest): void {
+  if (!allowFeature(request.connectionId, "dummyData")) return;
+  const conn = useConnectionsStore.getState().byId[request.connectionId];
+  if (conn && !connectionDialect(conn.info)) {
+    toast.error(notAvailableFor(conn.info.driver, featureLabel("dummyData")));
+    return;
+  }
   usePluginsStore.setState({ dummy: request });
 }
 

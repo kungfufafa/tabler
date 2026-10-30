@@ -22,7 +22,8 @@ import {
 } from "@/features/sidebar/useSchemaTree";
 import { pendingCount } from "@/features/staging/model";
 import { useStructureStore } from "@/features/structure/store";
-import { ipc, type RoutineSummary, type TableSummary } from "@/lib/ipc";
+import { capsOf } from "@/lib/caps";
+import { ipc, type Feature, type RoutineSummary, type TableSummary } from "@/lib/ipc";
 import { KEYMAP } from "@/lib/keys/keymap";
 import { useActiveConnection, useConnectionsStore } from "@/stores/connections";
 import { useTableTabsStore } from "@/stores/tableTabs";
@@ -93,20 +94,23 @@ export function usePaletteItems(
   const connectionId = active?.info.connectionId ?? null;
   const profileId = active?.info.profileId ?? "";
   const driver = active?.info.driver ?? null;
+  // What the session offers is ANDed in (every feature for the core sessions).
+  const features = active ? capsOf(active.info).features : undefined;
+  const offers = (f: Feature) => !features || features.includes(f);
   const currentDatabase = active?.info.currentDatabase ?? null;
   const databases = useDatabases(connectionId);
   const schemas = useSchemas(connectionId);
   const schema = useCurrentSchema(connectionId);
   const lazy = useLazyLoad(active);
   const lazyItems = useLazyItems(active, lazy && mode === "all", {
-    routines: driver !== "sqlite",
+    routines: driver !== "sqlite" && offers("routines"),
   });
   const tables = useTables(connectionId, lazy ? null : schema);
   const switching = useSwitchingDatabase(connectionId);
   const routines = useRoutines(
     connectionId,
     schema,
-    mode === "all" && !lazy && driver !== "sqlite",
+    mode === "all" && !lazy && driver !== "sqlite" && offers("routines"),
   );
   // Search in Database…: one backend call for every schema (loaded in the sidebar or not).
   const includeSystem = useSidebarPrefs((s) => s.options.showSystemSchemas);
@@ -268,12 +272,14 @@ export function usePaletteItems(
       database: currentDatabase,
       current: schema,
       select,
-      menu: (name) => schemaMenu({ connectionId, driver, show: select }, name),
+      menu: (name) => schemaMenu({ connectionId, driver, show: select, features }, name),
     });
-  }, [schemas.data, connectionId, driver, profileId, currentDatabase, schema, commands]);
+  }, [schemas.data, connectionId, driver, profileId, currentDatabase, schema, commands, features]);
 
   const databaseGroup = useMemo(() => {
     if (!connectionId || driver === null || driver === "sqlite") return [];
+    // Opening another database is switching to it.
+    if (features && !features.includes("switchDatabase")) return [];
     // ↩ / double-click open a new workspace; "Open in Current Workspace" switches this one.
     const open = (name: string) => commands.switchDatabase(connectionId, name);
     return databaseItems(databases.data ?? [], {
@@ -281,24 +287,36 @@ export function usePaletteItems(
       current: currentDatabase,
       switching,
       switchTo: (name) => commands.openDatabase(connectionId, name),
-      menu: (name, current) => databaseMenu({ connectionId, driver, open }, name, current),
+      menu: (name, current) =>
+        databaseMenu({ connectionId, driver, open, features }, name, current),
     });
-  }, [databases.data, connectionId, driver, profileId, currentDatabase, switching, commands]);
+  }, [
+    databases.data,
+    connectionId,
+    driver,
+    profileId,
+    currentDatabase,
+    switching,
+    commands,
+    features,
+  ]);
 
   // ⌘K's "+" rows: New Database… (PostgreSQL, MySQL) once the list is in, New Schema… (PG).
   const createRows = useMemo(() => {
     if (!connectionId) return { databases: [], schemas: [] };
     return {
       databases:
-        (driver === "postgres" || driver === "mysql") && databases.data
+        (driver === "postgres" || driver === "mysql") &&
+        databases.data &&
+        (!features || features.includes("createDatabase"))
           ? [createItem("databases", { profileId, run: () => openCreateDatabase(connectionId) })]
           : [],
       schemas:
-        driver === "postgres" && schemas.data
+        driver === "postgres" && schemas.data && (!features || features.includes("createSchema"))
           ? [createItem("schemas", { profileId, run: () => openCreateSchema(connectionId) })]
           : [],
     };
-  }, [connectionId, driver, profileId, databases.data, schemas.data]);
+  }, [connectionId, driver, profileId, databases.data, schemas.data, features]);
 
   const connectionGroup = useMemo(() => {
     const openByProfile = new Map(

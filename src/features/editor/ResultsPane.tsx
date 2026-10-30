@@ -260,7 +260,7 @@ function ResultBody({
   shown: Shown;
   tabId: string;
   connectionId: string | null;
-  dialect: Dialect;
+  dialect: Dialect | null;
   active: boolean;
   height?: number;
   footer: ReactNode;
@@ -308,7 +308,7 @@ function statementSql(run: RunState | null, info: ResultSetInfo): string | null 
  * Message, Pin Result, row numbers and Export…. Results whose columns come from one table with
  * its primary key are editable; ⌘S commits their staged changes.
  */
-export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialect }) {
+export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialect | null }) {
   const qc = useQueryClient();
   const run = useQueryTabField(tabId, "run");
   const plan = useQueryTabField(tabId, "plan");

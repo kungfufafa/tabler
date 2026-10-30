@@ -4,6 +4,14 @@ export function isNull(v: Value): boolean {
   return v.t === "null";
 }
 
+/**
+ * A field the row does not have (`Other{missing}`: a document without it, an item without the
+ * attribute). It is not NULL: it shows apart, and typing into it takes the column's type.
+ */
+export function isMissingValue(v: Value): boolean {
+  return v.t === "other" && v.v.ty === "missing";
+}
+
 export function valuesEqual(a: Value, b: Value): boolean {
   if (a.t !== b.t) return false;
   if (a.t === "null" || a.t === "default") return true;
@@ -131,7 +139,20 @@ export const BYTES_TEXT_CELL_LIMIT = 256;
 export const BYTES_HEX_CELL_LIMIT = 32;
 
 export type DisplayClass =
-  "null" | "default" | "bool" | "num" | "text" | "json" | "bytes" | "other" | "temporal" | "uuid";
+  | "null"
+  | "default"
+  | "missing"
+  | "bool"
+  | "num"
+  | "text"
+  | "json"
+  | "bytes"
+  | "other"
+  | "temporal"
+  | "uuid";
+
+/** What a grid cell shows for a missing field (`isMissingValue`). */
+export const MISSING_PLACEHOLDER = "—";
 
 export interface DisplayValue {
   text: string;
@@ -185,7 +206,9 @@ export function displayValue(v: Value): DisplayValue {
     case "array":
       return { text: pgArrayLiteral(v.v), cls: "json" };
     case "other":
-      return { text: v.v.text, cls: "other" };
+      return isMissingValue(v)
+        ? { text: MISSING_PLACEHOLDER, cls: "missing" }
+        : { text: v.v.text, cls: "other" };
     case "date":
     case "time":
     case "timestamp":
@@ -220,7 +243,8 @@ export const EMPTY_PLACEHOLDER = "EMPTY";
  */
 export function cellDisplay(v: Value): CellDisplay {
   const d = displayValue(v);
-  if (d.cls === "null" || d.cls === "default") return { ...d, placeholder: true };
+  if (d.cls === "null" || d.cls === "default" || d.cls === "missing")
+    return { ...d, placeholder: true };
   if (d.text === "") return { text: EMPTY_PLACEHOLDER, cls: "empty", placeholder: true };
   return { ...d, placeholder: false };
 }
@@ -253,6 +277,14 @@ export type ParseResult = { ok: true; value: Value } | { ok: false; error: strin
 
 const INT_RE = /^[+-]?\d+$/;
 const DEC_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+
+/**
+ * The type an edit of an `Other` value keeps (an ObjectId stays an ObjectId); none for a missing
+ * field, which takes the column's type like a NULL does.
+ */
+function otherType(previous: Value | undefined): string | null {
+  return previous?.t === "other" && !isMissingValue(previous) ? previous.v.ty : null;
+}
 
 /** Turns editor text into a typed value; never uses `Number()` for integers/decimals. */
 export function parseEditText(kind: ValueKind, text: string, previous?: Value): ParseResult {
@@ -313,7 +345,7 @@ export function parseEditText(kind: ValueKind, text: string, previous?: Value): 
     case "array":
       return {
         ok: true,
-        value: { t: "other", v: { ty: previous?.t === "other" ? previous.v.ty : "array", text } },
+        value: { t: "other", v: { ty: otherType(previous) ?? "array", text } },
       };
     case "bytes":
       return { ok: false, error: "Binary values cannot be edited inline" };
@@ -322,7 +354,7 @@ export function parseEditText(kind: ValueKind, text: string, previous?: Value): 
     case "other":
       return {
         ok: true,
-        value: { t: "other", v: { ty: previous?.t === "other" ? previous.v.ty : kind, text } },
+        value: { t: "other", v: { ty: otherType(previous) ?? kind, text } },
       };
     default:
       return { ok: true, value: { t: "text", v: text } };

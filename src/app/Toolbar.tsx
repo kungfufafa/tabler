@@ -47,6 +47,7 @@ import {
 import { changeSafeModeLevel } from "@/features/safety/setLevel";
 import { useWindowFullscreen } from "@/hooks/useWindowFullscreen";
 import { toIpcError, type ConnectionProfile, type SafeModeLevel } from "@/lib/ipc";
+import { has } from "@/lib/caps";
 import { cn } from "@/lib/utils";
 import { useActiveConnection } from "@/stores/connections";
 import { setPref, usePrefs } from "@/stores/prefs";
@@ -256,7 +257,7 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
           label="User management"
           action="admin.users"
           text={caption}
-          disabled={!active || active.info.driver === "sqlite"}
+          disabled={!active || active.info.driver === "sqlite" || !has(active.info, "users")}
         >
           <UserCog className="size-3.5" />
         </ToolbarButton>
@@ -267,7 +268,7 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
           label="Metrics board"
           action="metrics.open"
           text={caption}
-          disabled={!hasConnection}
+          disabled={!hasConnection || (!!active && !has(active.info, "metrics"))}
         >
           <Gauge className="size-3.5" />
         </ToolbarButton>

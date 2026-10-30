@@ -192,6 +192,32 @@ export function discardAll(): StagingState {
 }
 
 /**
+ * After a commit that stopped partway (critique D2): the changes the server applied leave the
+ * staging, the others stay with their errors. The undo history goes too, as after any commit:
+ * undoing an edit of an applied row would stage its change again, and a retry would send it
+ * twice.
+ */
+export function dropApplied(
+  s: StagingState,
+  applied: ReadonlySet<string>,
+  errors: ReadonlyMap<string, string>,
+): StagingState {
+  const changes = new Map<string, RowChange>();
+  for (const [rowKey, change] of s.changes) {
+    if (applied.has(rowKey)) continue;
+    const error = errors.get(rowKey);
+    changes.set(rowKey, error === undefined ? change : { ...change, error });
+  }
+  return {
+    changes,
+    insertOrder: s.insertOrder.filter((k) => !applied.has(k)),
+    undo: [],
+    redo: [],
+    version: s.version + 1,
+  };
+}
+
+/**
  * Puts back every row `entry` touched; returns the new changes / insert order plus the inverse entry
  * (the rows as they are now), which undoes this restore.
  */

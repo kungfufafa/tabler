@@ -12,8 +12,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { coreDialect } from "@/features/drivers/catalog";
 import { useTableMeta } from "@/features/table-tab/useTableRows";
+import { connectionDialect, has } from "@/lib/caps";
 import { tableKey } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { DUMMY_DATA, dummyInserts, MAX_DUMMY_ROWS, seededRng } from "./builtin/dummyData";
@@ -33,9 +33,11 @@ function DummyDataForm({ request }: { request: DummyDataRequest }) {
     [request.table.schema, request.table.name],
   );
   const meta = useTableMeta(request.connectionId, table);
-  const driver = useConnectionsStore((s) => s.byId[request.connectionId]?.info.driver ?? null);
-  // The INSERTs are a core dialect's: none for a driver beyond the core ones.
-  const dialect = driver ? coreDialect(driver) : null;
+  const info = useConnectionsStore((s) => s.byId[request.connectionId]?.info);
+  const driver = info?.driver ?? null;
+  // The INSERTs are a core dialect's: none for a session without one (Redshift's too) or
+  // without Dummy Data.
+  const dialect = info && has(info, "dummyData") ? connectionDialect(info) : null;
   const [countText, setCountText] = useState("10");
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 2 ** 31));
   const [busy, setBusy] = useState(false);

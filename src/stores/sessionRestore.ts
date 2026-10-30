@@ -3,7 +3,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { openConnectionOf } from "@/features/connections/openProfile";
 import { profileKeys } from "@/features/connections/useConnections";
-import { dialectOf } from "@/features/editor/controller";
+import { editorOf } from "@/features/editor/language";
 import { LARGE_FILE_BYTES, LARGE_GZ_BYTES } from "@/features/editor/largeFile";
 import { applyToEditor, markSaved, seedEditor } from "@/features/editor/editorStates";
 import { usePaletteStore } from "@/features/palette/store";
@@ -160,7 +160,7 @@ export async function restoreWorkspaceTabs(
   // The connection may have gone away (disconnect) while the checks ran.
   if (!useConnectionsStore.getState().byId[connectionId]) return { restored: 0, skipped: [] };
 
-  const dialect = dialectOf(conn.info.driver);
+  const dialect = editorOf(conn.info)?.dialect ?? null;
   const restored: Tab[] = [];
   const skipped: string[] = [];
   let activeId: string | null = null;
