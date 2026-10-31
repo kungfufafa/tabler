@@ -10,7 +10,7 @@
 //!   status, billing mode, TTL attribute and stream, and the table as a `CreateTable` request
 //!   (its definition and DDL).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde_json::{Map, Value as J, json};
 
@@ -22,10 +22,17 @@ use crate::types::schema::{
     ValueKind,
 };
 
-/// The grid shows at most this many sampled attributes.
+/// The grid and the console show at most this many attributes.
 pub const MAX_COLUMNS: usize = 500;
-/// `ListTables` pages followed before giving up (100 tables each).
-pub const MAX_TABLE_PAGES: usize = 10_000;
+/// The most tables a region holds (AWS's highest quota per account).
+pub const MAX_TABLES: usize = 10_000;
+/// Table names a `ListTables` page asks for (DynamoDB's most).
+pub const TABLE_PAGE: usize = 100;
+/// `ListTables` pages followed before giving up: a full region's, and the empty page that may
+/// end them.
+pub const MAX_TABLE_PAGES: usize = MAX_TABLES / TABLE_PAGE + 1;
+/// The longest table name DynamoDB allows.
+pub const MAX_TABLE_NAME: usize = 255;
 
 fn protocol(what: impl std::fmt::Display) -> AppError {
     AppError::db(format!(
@@ -44,23 +51,42 @@ fn int_at(v: &J, key: &str) -> Option<i64> {
         .or_else(|| n.as_f64().filter(|f| f.is_finite()).map(|f| f as i64))
 }
 
-/// The table names of a `ListTables` reply and where the next page starts.
-pub fn parse_list_tables(reply: &J) -> Result<(Vec<String>, Option<String>), AppError> {
+/// A table name of a `ListTables` reply, at most as long as DynamoDB allows.
+fn table_name(n: &J) -> Result<String, AppError> {
+    match n.as_str() {
+        Some(s) if s.chars().count() <= MAX_TABLE_NAME => Ok(s.to_string()),
+        Some(s) => Err(AppError::db(format!(
+            "DynamoDB listed a table name of {} characters (at most {MAX_TABLE_NAME})",
+            s.chars().count()
+        ))),
+        None => Err(AppError::db(format!("unexpected table name {n}"))),
+    }
+}
+
+/// The table names of a `ListTables` reply that asked for at most `limit`, and where the next
+/// page starts. A page longer than asked for is refused, so a region's listing stays bounded.
+pub fn parse_list_tables(
+    reply: &J,
+    limit: usize,
+) -> Result<(Vec<String>, Option<String>), AppError> {
     let names = match reply.get("TableNames") {
+        Some(J::Array(names)) if names.len() > limit => {
+            return Err(AppError::db(format!(
+                "DynamoDB listed {} tables for a Limit of {limit}",
+                names.len()
+            )));
+        }
         Some(J::Array(names)) => names
             .iter()
-            .map(|n| {
-                n.as_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| AppError::db(format!("unexpected table name {n}")))
-            })
+            .map(table_name)
             .collect::<Result<Vec<_>, _>>()?,
         None => Vec::new(),
         Some(other) => return Err(AppError::db(format!("unexpected TableNames {other}"))),
     };
-    let next = str_at(reply, "LastEvaluatedTableName")
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+    let next = match reply.get("LastEvaluatedTableName") {
+        Some(n @ J::String(s)) if !s.is_empty() => Some(table_name(n)?),
+        _ => None,
+    };
     Ok((names, next))
 }
 
@@ -98,21 +124,23 @@ pub struct TableDescription {
 }
 
 impl TableDescription {
-    /// The keys of `index` (a secondary index), or of the table for `None`.
-    pub fn keys_of(&self, index: Option<&str>) -> Option<&KeySchema> {
-        match index {
-            None => Some(&self.keys),
-            Some(name) => self
-                .global_indexes
+    /// The secondary index `name`, and whether it is global (a global one may share the table's
+    /// partition key, so only the list it came from tells; it has no strongly consistent reads).
+    pub fn index(&self, name: &str) -> Option<(&IndexDescription, bool)> {
+        let global = self.global_indexes.iter().find(|i| i.name == name);
+        global.map(|i| (i, true)).or_else(|| {
+            self.local_indexes
                 .iter()
-                .chain(&self.local_indexes)
                 .find(|i| i.name == name)
-                .map(|i| &i.keys),
-        }
+                .map(|i| (i, false))
+        })
     }
 }
 
-fn key_schema(raw: Option<&J>, attributes: &[(String, AttrType)]) -> Result<KeySchema, AppError> {
+/// `AttributeDefinitions` by name.
+type Definitions<'a> = HashMap<&'a str, AttrType>;
+
+fn key_schema(raw: Option<&J>, attributes: &Definitions<'_>) -> Result<KeySchema, AppError> {
     let entries = raw
         .and_then(J::as_array)
         .ok_or_else(|| protocol("no KeySchema"))?;
@@ -121,9 +149,8 @@ fn key_schema(raw: Option<&J>, attributes: &[(String, AttrType)]) -> Result<KeyS
     for e in entries {
         let name = str_at(e, "AttributeName").ok_or_else(|| protocol("a key without a name"))?;
         let ty = attributes
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, t)| *t)
+            .get(name)
+            .copied()
             .ok_or_else(|| protocol(format!("the key {name} has no AttributeDefinition")))?;
         match str_at(e, "KeyType") {
             Some("HASH") => hash = Some((name.to_string(), ty)),
@@ -137,7 +164,7 @@ fn key_schema(raw: Option<&J>, attributes: &[(String, AttrType)]) -> Result<KeyS
     })
 }
 
-fn index(raw: &J, attributes: &[(String, AttrType)]) -> Result<IndexDescription, AppError> {
+fn index(raw: &J, attributes: &Definitions<'_>) -> Result<IndexDescription, AppError> {
     let projection = raw.get("Projection").cloned().unwrap_or(J::Null);
     Ok(IndexDescription {
         name: str_at(raw, "IndexName")
@@ -174,10 +201,15 @@ pub fn parse_describe_table(reply: &J) -> Result<TableDescription, AppError> {
                 .collect()
         })
         .unwrap_or_default();
+    // Looked up by name: a hostile reply's indexes and definitions can number in the millions.
+    let mut definitions = Definitions::new();
+    for (name, ty) in &attributes {
+        definitions.entry(name.as_str()).or_insert(*ty);
+    }
     let indexes = |key: &str| -> Result<Vec<IndexDescription>, AppError> {
         t.get(key)
             .and_then(J::as_array)
-            .map(|list| list.iter().map(|i| index(i, &attributes)).collect())
+            .map(|list| list.iter().map(|i| index(i, &definitions)).collect())
             .unwrap_or(Ok(Vec::new()))
     };
     let provisioned_reads = t
@@ -206,7 +238,7 @@ pub fn parse_describe_table(reply: &J) -> Result<TableDescription, AppError> {
             .ok_or_else(|| protocol("no TableName"))?
             .to_string(),
         status: str_at(t, "TableStatus").map(str::to_string),
-        keys: key_schema(t.get("KeySchema"), &attributes)?,
+        keys: key_schema(t.get("KeySchema"), &definitions)?,
         global_indexes: indexes("GlobalSecondaryIndexes")?,
         local_indexes: indexes("LocalSecondaryIndexes")?,
         attributes,
@@ -267,13 +299,18 @@ pub fn summary(name: &str, region: &str) -> TableSummary {
 /// The attributes of items in the order they were first seen, with the types seen.
 pub fn sampled_attributes(items: &[Item]) -> Vec<(String, BTreeSet<AttrType>)> {
     let mut out: Vec<(String, BTreeSet<AttrType>)> = Vec::new();
+    // Indexed by name: items of a sparse table (or a hostile reply) can name a million attributes.
+    let mut at: HashMap<&str, usize> = HashMap::new();
     for item in items {
         for (name, value) in item {
-            match out.iter_mut().find(|(n, _)| n == name) {
+            match at.get(name.as_str()).and_then(|i| out.get_mut(*i)) {
                 Some((_, types)) => {
                     types.insert(value.ty());
                 }
-                None => out.push((name.clone(), BTreeSet::from([value.ty()]))),
+                None => {
+                    at.insert(name, out.len());
+                    out.push((name.clone(), BTreeSet::from([value.ty()])));
+                }
             }
         }
     }
@@ -348,16 +385,22 @@ pub fn columns(desc: &TableDescription, sample: &[Item]) -> Vec<ColumnMeta> {
         c.extra = Some(key_type.to_string());
         out.push(c);
     }
+    let mut names: HashSet<String> = out.iter().map(|c| c.name.clone()).collect();
     for (name, types) in sampled_attributes(sample) {
         if out.len() >= MAX_COLUMNS {
             break;
         }
-        if !out.iter().any(|c| c.name == name) {
+        if names.insert(name.clone()) {
             out.push(column(&name, 0, &types));
         }
     }
+    // A table's index keys are a few dozen (two per index); a reply naming far more is cut.
+    let room = out.len() + MAX_COLUMNS;
     for (name, ty) in &desc.attributes {
-        if !out.iter().any(|c| c.name == *name) {
+        if out.len() >= room {
+            break;
+        }
+        if names.insert(name.clone()) {
             let mut c = column(name, 0, &BTreeSet::from([*ty]));
             c.comment = Some("index key".into());
             out.push(c);
@@ -371,9 +414,13 @@ pub fn columns(desc: &TableDescription, sample: &[Item]) -> Vec<ColumnMeta> {
 
 /// Adds attributes the columns lack and types they were not seen with (a grid page's items).
 pub fn merge_columns(columns: &mut Vec<ColumnMeta>, items: &[Item]) {
+    let mut at: HashMap<String, usize> = HashMap::new();
+    for (i, c) in columns.iter().enumerate() {
+        at.entry(c.name.clone()).or_insert(i);
+    }
     for (name, types) in sampled_attributes(items) {
         let room = columns.len() < MAX_COLUMNS;
-        match columns.iter_mut().find(|c| c.name == name) {
+        match at.get(&name).and_then(|i| columns.get_mut(*i)) {
             Some(c) if !c.is_pk => {
                 let mut all: BTreeSet<AttrType> =
                     crate::sqlgen::native::dynamo::column_types(&c.data_type)
@@ -556,6 +603,33 @@ pub fn definition(desc: &TableDescription) -> String {
     request_text("CreateTable", &create_table_request(desc))
 }
 
+/// The key schema of a table's structure (from [`table_meta`]): its key columns by `pk_ordinal`,
+/// typed `S`, `N` or `B`.
+pub fn key_schema_of(meta: &TableMeta) -> Result<KeySchema, AppError> {
+    let key = |ordinal: u32| -> Result<Option<(String, AttrType)>, AppError> {
+        let Some(c) = meta.columns.iter().find(|c| c.pk_ordinal == Some(ordinal)) else {
+            return Ok(None);
+        };
+        match AttrType::parse(&c.data_type) {
+            Some(t @ (AttrType::S | AttrType::N | AttrType::B)) => Ok(Some((c.name.clone(), t))),
+            _ => Err(AppError::InvalidInput(format!(
+                "the key attribute {} of {} has the type {}, not S, N or B",
+                c.name, meta.table.name, c.data_type
+            ))),
+        }
+    };
+    let hash = key(1)?.ok_or_else(|| {
+        AppError::InvalidInput(format!(
+            "the structure of {} has no partition key",
+            meta.table.name
+        ))
+    })?;
+    Ok(KeySchema {
+        hash,
+        range: key(2)?,
+    })
+}
+
 /// A table's structure: `region` is its schema; `ttl` its TTL attribute.
 pub fn table_meta(
     desc: &TableDescription,
@@ -627,16 +701,57 @@ mod tests {
 
     #[test]
     fn list_tables_pages() {
-        let (names, next) =
-            parse_list_tables(&json!({"TableNames": ["a", "b"], "LastEvaluatedTableName": "b"}))
-                .unwrap();
+        let page = json!({"TableNames": ["a", "b"], "LastEvaluatedTableName": "b"});
+        let (names, next) = parse_list_tables(&page, 100).unwrap();
         assert_eq!(
             (names, next.as_deref()),
             (vec!["a".to_string(), "b".to_string()], Some("b"))
         );
-        assert_eq!(parse_list_tables(&json!({})).unwrap(), (vec![], None));
-        assert!(parse_list_tables(&json!({"TableNames": [1]})).is_err());
-        assert!(parse_list_tables(&json!({"TableNames": "a"})).is_err());
+        assert_eq!(parse_list_tables(&json!({}), 100).unwrap(), (vec![], None));
+        assert!(parse_list_tables(&json!({"TableNames": [1]}), 100).is_err());
+        assert!(parse_list_tables(&json!({"TableNames": "a"}), 100).is_err());
+        // More names than asked for, or names longer than DynamoDB's, are a hostile server's.
+        assert!(parse_list_tables(&page, 1).is_err());
+        let longest = "é".repeat(MAX_TABLE_NAME);
+        let ok = json!({"TableNames": [longest], "LastEvaluatedTableName": longest});
+        assert_eq!(
+            parse_list_tables(&ok, 100).unwrap().0,
+            std::slice::from_ref(&longest)
+        );
+        let long = format!("{longest}x");
+        assert!(parse_list_tables(&json!({"TableNames": [long]}), 100).is_err());
+        let next_long = json!({"TableNames": [], "LastEvaluatedTableName": long});
+        assert!(parse_list_tables(&next_long, 100).is_err());
+        let null_next = json!({"TableNames": ["a"], "LastEvaluatedTableName": null});
+        assert_eq!(parse_list_tables(&null_next, 100).unwrap().1, None);
+    }
+
+    /// Sampling and merging look attributes up by name: a page naming a hundred thousand
+    /// distinct attributes is quick (a scan of every name for every name took minutes).
+    #[test]
+    fn many_attributes_are_sampled_in_linear_time() {
+        let n = 200_000;
+        let items: Vec<Item> = (0..n)
+            .map(|i| {
+                Item::from([
+                    (format!("a{i}"), Attr::Null),
+                    ("pk".to_string(), Attr::S("x".into())),
+                ])
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        let sampled = sampled_attributes(&items);
+        assert_eq!(sampled.len(), n + 1);
+        let first: Vec<&str> = sampled.iter().take(3).map(|(n, _)| n.as_str()).collect();
+        assert_eq!(first, ["a0", "pk", "a1"]);
+        let mut cols = columns(&parse_describe_table(&music()).unwrap(), &[]);
+        merge_columns(&mut cols, &items);
+        assert_eq!(cols.len(), MAX_COLUMNS);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -653,8 +768,11 @@ mod tests {
         );
         assert_eq!(d.global_indexes[0].non_key, ["Album"]);
         assert_eq!(d.local_indexes[0].projection, "KEYS_ONLY");
-        assert_eq!(d.keys_of(Some("ByYear")).unwrap().hash.0, "Artist");
-        assert!(d.keys_of(Some("nope")).is_none());
+        let (by_year, global) = d.index("ByYear").unwrap();
+        assert_eq!((by_year.keys.hash.0.as_str(), global), ("Artist", false));
+        let (by_genre, global) = d.index("ByGenre").unwrap();
+        assert_eq!((by_genre.keys.hash.0.as_str(), global), ("Genre", true));
+        assert!(d.index("nope").is_none());
         for bad in [
             json!({}),
             json!({"Table": {"TableName": "t"}}),

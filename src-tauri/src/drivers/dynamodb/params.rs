@@ -153,6 +153,24 @@ pub fn region_endpoint(region: &str) -> Result<String, AppError> {
     Ok(format!("https://dynamodb.{r}.{suffix}/"))
 }
 
+/// The domains of AWS's own endpoints: regional, FIPS, VPC (`*.vpce.amazonaws.com`) and
+/// dual-stack (`dynamodb.<region>.api.aws`).
+const AWS_DOMAINS: [&str; 3] = ["amazonaws.com", "amazonaws.com.cn", "api.aws"];
+
+/// Whether `endpoint` (a URL) is a host of AWS itself, whose certificate is always a public one.
+pub fn is_aws_host(endpoint: &str) -> bool {
+    let Some(host) = reqwest::Url::parse(endpoint).ok().and_then(|u| {
+        u.host_str()
+            .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
+    }) else {
+        return false;
+    };
+    AWS_DOMAINS.iter().any(|d| {
+        host.strip_suffix(d)
+            .is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
+    })
+}
+
 /// An endpoint override as `scheme://host[:port]/`: http or https, a host, no credentials,
 /// query or fragment; a path is kept.
 pub fn normalize_endpoint(endpoint: &str) -> Result<String, AppError> {
@@ -259,6 +277,31 @@ mod tests {
             "http://",
         ] {
             assert!(normalize_endpoint(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn aws_hosts_are_aws_s_own_domains() {
+        for aws in [
+            "https://dynamodb.us-east-1.amazonaws.com/",
+            "https://dynamodb.cn-north-1.amazonaws.com.cn/",
+            "https://dynamodb-fips.us-gov-west-1.amazonaws.com/",
+            "https://vpce-1a2b-c3d4.dynamodb.us-east-1.vpce.amazonaws.com/",
+            "https://dynamodb.eu-west-1.api.aws/",
+            "https://DynamoDB.US-EAST-1.AmazonAWS.com./",
+            "http://dynamodb.us-east-1.amazonaws.com:443/x/",
+        ] {
+            assert!(is_aws_host(aws), "{aws}");
+        }
+        for other in [
+            "http://localhost:8000/",
+            "https://127.0.0.1:4566/",
+            "https://dynamodb.us-east-1.amazonaws.com.evil.test/",
+            "https://evilamazonaws.com/",
+            "https://notapi.aws/",
+            "nonsense",
+        ] {
+            assert!(!is_aws_host(other), "{other}");
         }
     }
 

@@ -1,13 +1,15 @@
 //! An in-memory DynamoDB for the tests: tables with key schemas, items kept in key order, the
 //! JSON 1.0 actions the driver sends (ListTables pages, DescribeTable, DescribeTimeToLive,
 //! DescribeEndpoints, Scan and Query with `Limit`, `ExclusiveStartKey`, filters and `Select:
-//! COUNT` (a Query refuses key conditions DynamoDB refuses and filters naming a key), GetItem, PutItem, UpdateItem and DeleteItem with conditions, TransactWriteItems with
-//! `CancellationReasons` and idempotency tokens, `SELECT * FROM t` through ExecuteStatement),
-//! the expression subset the builders write, and the failures a client must survive: scripted
-//! errors (throttling, server errors), SigV4 checked against a known secret, a server clock
-//! that refuses stale signatures, expired session tokens. It is a `Transport` itself, and is
-//! served over a socket by `testkit::fake_http` (`FakeDynamo::route`). `ReqwestTransport` is
-//! the plain client of the wire tests (the shared `HttpClient` takes its place in Phase B).
+//! COUNT` (a Query refuses key conditions DynamoDB refuses and filters naming a key), GetItem,
+//! PutItem, UpdateItem and DeleteItem with conditions, TransactWriteItems with
+//! `CancellationReasons` and idempotency tokens, `SELECT * FROM t` through ExecuteStatement, whose
+//! writes it acknowledges without applying), the expression subset the builders write, and the
+//! failures a client must survive: scripted errors (throttling, server errors), SigV4 checked
+//! against a known secret, a server clock that refuses stale signatures, expired session tokens,
+//! slow replies (`set_delay`). It is a `Transport` itself, and is
+//! served over a socket by `testkit::fake_http` (`FakeDynamo::route`), which the session's own
+//! transport (`HttpTransport` over the shared `HttpClient`) reaches in the wire tests.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -17,8 +19,10 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::{Map, Value as J, json};
 
 use super::attr::{Attr, AttrType, Item, item_from_json, map_json};
-use super::sigv4;
-use super::transport::{HttpRequest, HttpResponse, Transport, header};
+use super::transport::{HttpRequest, HttpResponse, HttpTransport, Transport, header};
+use crate::drivers::common::aws::credentials::Credentials;
+use crate::drivers::common::aws::sigv4::{amz_date, sign_parts};
+use crate::drivers::common::http::{HttpClient, HttpEndpoint, HttpOptions, RetryPolicy};
 use crate::error::AppError;
 use crate::sqlgen::native::dynamo::{KeySchema, same_attr};
 use crate::testkit::fake_http;
@@ -159,6 +163,8 @@ struct State {
     tokens: HashSet<String>,
     /// Table names per ListTables page, items per ExecuteStatement page.
     page: usize,
+    /// How long an in-process request takes (a slow server, for cancels and time outs).
+    delay: Option<std::time::Duration>,
 }
 
 pub struct FakeDynamo {
@@ -269,6 +275,11 @@ impl FakeDynamo {
         self.state().page = n.max(1);
     }
 
+    /// Every in-process request from now on takes `delay` before its reply.
+    pub fn set_delay(&self, delay: std::time::Duration) {
+        self.state().delay = Some(delay);
+    }
+
     /// A route of `testkit::fake_http` serving this DynamoDB on every path.
     pub fn route(self: &Arc<Self>) -> fake_http::Route {
         let me = self.clone();
@@ -326,6 +337,10 @@ impl Transport for FakeDynamo {
             (Some(h), None) => h.to_string(),
             (None, _) => return Err(AppError::Connect("no host".into())),
         };
+        let delay = self.state().delay;
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
         Ok(self.reply(&req, &host))
     }
 }
@@ -356,7 +371,7 @@ impl State {
                 "Request is missing Authentication Token",
             )));
         };
-        let Some((credential, signed, signature)) = sigv4::parse_authorization(auth) else {
+        let Some((credential, signed, signature)) = parse_authorization(auth) else {
             return Err(refuse(auth_fail(
                 "IncompleteSignatureException",
                 "bad Authorization",
@@ -394,9 +409,9 @@ impl State {
                     "InvalidSignatureException",
                     &format!(
                         "Signature expired: {} is now earlier than {} ({} - 5 min.)",
-                        sigv4::amz_date(at),
-                        sigv4::amz_date(now - chrono::Duration::minutes(5)),
-                        sigv4::amz_date(now)
+                        amz_date(at),
+                        amz_date(now - chrono::Duration::minutes(5)),
+                        amz_date(now)
                     ),
                 )
                 .1,
@@ -420,18 +435,11 @@ impl State {
                 (n.clone(), v)
             })
             .collect();
-        let again = sigv4::sign(
-            &sigv4::Request {
-                method: "POST",
-                path: "/",
-                query: "",
-                headers: &headers,
-                payload: &req.body,
-            },
-            key_id,
-            secret,
-            at,
-            sigv4::Scope { region, service },
+        let Ok(creds) = Credentials::static_keys(key_id, secret, None) else {
+            return Err(refuse(invalid("no signing key")));
+        };
+        let again = sign_parts(
+            "POST", "/", "", &headers, &req.body, &creds, at, region, service,
         );
         if again.signature != signature {
             return Err(refuse(auth_fail(
@@ -759,6 +767,13 @@ impl State {
             .unwrap_or_default()
             .trim();
         let upper = text.to_ascii_uppercase();
+        // PartiQL writes are acknowledged, not applied: the fake applies the API's edits.
+        if ["INSERT ", "UPDATE ", "DELETE "]
+            .iter()
+            .any(|w| upper.starts_with(w))
+        {
+            return Ok(json!({}));
+        }
         let Some(rest) = upper.strip_prefix("SELECT * FROM ") else {
             return Err(invalid("Statement wasn't well formed, can't be processed"));
         };
@@ -1179,59 +1194,39 @@ fn compare(a: Option<&Attr>, op: &str, b: Option<&Attr>) -> bool {
     }
 }
 
-// --- a plain client for the wire tests --------------------------------------------------------
+// --- the wire ---------------------------------------------------------------------------------
 
-/// reqwest without proxies (the requests must reach 127.0.0.1).
-pub struct ReqwestTransport {
-    http: reqwest::Client,
+/// The session's own transport to `endpoint` (a `testkit::fake_http` server), without retries.
+pub fn http_transport(endpoint: &str) -> std::sync::Arc<HttpTransport> {
+    crate::testkit::install_crypto();
+    let options = HttpOptions {
+        retry: RetryPolicy::NONE,
+        ..HttpOptions::default()
+    };
+    let endpoint = HttpEndpoint::new(endpoint, None).expect("an endpoint");
+    let http = HttpClient::new(
+        endpoint,
+        options,
+        crate::drivers::common::http::Credential::None,
+    )
+    .expect("an HTTP client");
+    std::sync::Arc::new(HttpTransport::new(http))
 }
 
-impl ReqwestTransport {
-    pub fn new() -> ReqwestTransport {
-        crate::testkit::install_crypto();
-        ReqwestTransport {
-            http: reqwest::Client::builder()
-                .no_proxy()
-                .build()
-                .expect("a reqwest client"),
+/// The parts of an `Authorization` header: credential, signed header names, signature.
+pub fn parse_authorization(header: &str) -> Option<(String, Vec<String>, String)> {
+    let rest = header.strip_prefix("AWS4-HMAC-SHA256")?.trim();
+    let mut credential = None;
+    let mut signed = None;
+    let mut signature = None;
+    for part in rest.split(',') {
+        let (k, v) = part.trim().split_once('=')?;
+        match k {
+            "Credential" => credential = Some(v.to_string()),
+            "SignedHeaders" => signed = Some(v.split(';').map(str::to_string).collect()),
+            "Signature" => signature = Some(v.to_string()),
+            _ => {}
         }
     }
-}
-
-fn map_reqwest(e: reqwest::Error) -> AppError {
-    if e.is_timeout() {
-        AppError::Timeout
-    } else if e.is_connect() {
-        AppError::Connect(e.to_string())
-    } else {
-        AppError::NotConnected
-    }
-}
-
-#[async_trait]
-impl Transport for ReqwestTransport {
-    async fn send(&self, req: HttpRequest) -> Result<HttpResponse, AppError> {
-        let mut builder = self.http.post(&req.url);
-        for (k, v) in &req.headers {
-            builder = builder.header(k, v);
-        }
-        let resp = builder.body(req.body).send().await.map_err(map_reqwest)?;
-        let status = resp.status().as_u16();
-        let headers = resp
-            .headers()
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.as_str().to_string(),
-                    v.to_str().unwrap_or_default().to_string(),
-                )
-            })
-            .collect();
-        let body = resp.bytes().await.map_err(map_reqwest)?.to_vec();
-        Ok(HttpResponse {
-            status,
-            headers,
-            body,
-        })
-    }
+    Some((credential?, signed?, signature?))
 }

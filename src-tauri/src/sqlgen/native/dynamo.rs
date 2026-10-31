@@ -197,6 +197,11 @@ pub fn api_class(action: &str, body: &J) -> StatementClass {
     }
 }
 
+/// A request on one line: `Action` and its body as compact JSON (the console log's entry).
+pub fn request_line(action: &str, body: &J) -> String {
+    format!("{action} {body}")
+}
+
 /// The text of a request: `Action` and its body as indented JSON (what the console runs).
 pub fn request_text(action: &str, body: &J) -> String {
     let json = serde_json::to_string_pretty(body).unwrap_or_else(|_| body.to_string());
@@ -239,21 +244,23 @@ fn comment_at(chars: &[char], i: usize) -> Option<(usize, bool)> {
     match (chars.get(i), chars.get(i + 1)) {
         (Some('-'), Some('-')) => {
             let mut j = i + 2;
+            let mut other_break = false;
+            let mut unclear = false;
             while j < chars.len() && !matches!(chars[j], '\n' | '\r') {
+                if other_break && !chars[j].is_whitespace() {
+                    unclear = true;
+                }
+                other_break |= OTHER_BREAKS.contains(&chars[j]);
                 j += 1;
             }
-            let line_end = chars[i..]
-                .iter()
-                .position(|c| *c == '\n')
-                .map_or(chars.len(), |p| i + p);
-            let unclear = chars[i + 2..line_end]
-                .iter()
-                .position(|c| *c == '\r' || OTHER_BREAKS.contains(c))
-                .is_some_and(|p| {
-                    chars[i + 2 + p + 1..line_end]
-                        .iter()
-                        .any(|c| !c.is_whitespace())
-                });
+            // Text after a lone `\r` before the next `\n`. The look ahead stops at the first
+            // text (or the `\n`), so comments ended by lone `\r`s stay linear.
+            if !unclear && (other_break || chars.get(j) == Some(&'\r')) {
+                unclear = chars[j..]
+                    .iter()
+                    .take_while(|c| **c != '\n')
+                    .any(|c| !c.is_whitespace());
+            }
             Some((j, unclear))
         }
         (Some('/'), Some('*')) => {
@@ -406,6 +413,8 @@ pub fn split_console(text: &str) -> Vec<SplitStatement> {
     let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
+    // Lines are counted on from the last command's start, not from the top each time.
+    let (mut counted, mut line) = (0, 1u32);
     loop {
         i = skip_trivia(&chars, i);
         while chars.get(i) == Some(&';') {
@@ -420,7 +429,8 @@ pub fn split_console(text: &str) -> Vec<SplitStatement> {
             e -= 1;
         }
         if e > i {
-            let line = 1 + chars[..i].iter().filter(|&&c| c == '\n').count() as u32;
+            line += chars[counted..i].iter().filter(|&&c| c == '\n').count() as u32;
+            counted = i;
             out.push(SplitStatement {
                 sql: chars[i..e].iter().collect(),
                 start: i,
@@ -448,6 +458,51 @@ pub fn partiql_class(statement: &str) -> StatementClass {
         StatementClass::Read
     } else {
         StatementClass::Write
+    }
+}
+
+/// What a PartiQL statement that succeeded proves it changed. Not a safety check: a `SELECT` the
+/// classifier calls a write still reads, and changes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartiqlWrite {
+    Nothing,
+    /// One item: DynamoDB refuses an `INSERT` of a key that exists (`DuplicateItemException`)
+    /// and an `UPDATE` of one that does not (`ConditionalCheckFailedException`).
+    One,
+    /// One item or none: a `DELETE` of a missing key succeeds and deletes nothing.
+    AtMostOne,
+}
+
+impl PartiqlWrite {
+    /// The items it changed, given how many it returned (`RETURNING ALL OLD *`); unknown for a
+    /// `DELETE` that returned none.
+    pub fn affected(self, returned: usize) -> Option<u64> {
+        match self {
+            PartiqlWrite::Nothing => None,
+            PartiqlWrite::One => Some(1),
+            PartiqlWrite::AtMostOne => (returned > 0).then_some(1),
+        }
+    }
+}
+
+/// The write a PartiQL statement is, by its first word.
+pub fn partiql_write(statement: &str) -> PartiqlWrite {
+    let chars: Vec<char> = statement.chars().collect();
+    let i = skip_trivia(&chars, 0);
+    let mut j = i;
+    while j < chars.len() && chars[j].is_ascii_alphabetic() {
+        j += 1;
+    }
+    let word: String = chars[i..j].iter().collect();
+    if chars.get(j).is_some_and(|c| is_word_char(*c) || *c == '$') {
+        return PartiqlWrite::Nothing;
+    }
+    if word.eq_ignore_ascii_case("INSERT") || word.eq_ignore_ascii_case("UPDATE") {
+        PartiqlWrite::One
+    } else if word.eq_ignore_ascii_case("DELETE") {
+        PartiqlWrite::AtMostOne
+    } else {
+        PartiqlWrite::Nothing
     }
 }
 
@@ -714,6 +769,8 @@ pub struct ReadSpec<'a> {
     pub filter: Option<&'a FilterGroup>,
     /// Newest first (a Query only: `ScanIndexForward: false`).
     pub descending: bool,
+    /// `ConsistentRead`: the caller asks only where DynamoDB has it, the table and its local
+    /// indexes (only the description tells a global index that shares the table's keys apart).
     pub consistent: bool,
     pub consumed_capacity: bool,
 }
@@ -839,8 +896,7 @@ fn read_body(
     if let Some(f) = filter {
         body.insert("FilterExpression".into(), json!(f));
     }
-    // A global secondary index cannot be read consistently; an index read never asks.
-    if spec.consistent && spec.index.is_none() {
+    if spec.consistent {
         body.insert("ConsistentRead".into(), json!(true));
     }
     if spec.consumed_capacity {
@@ -1239,18 +1295,29 @@ fn condition(
 
 /// Items the grid loaded, by key, so an edit can prove each changed attribute still holds what
 /// was shown, keep each attribute's type, and copy an item whose key changes. The session
-/// records each page it returns; the oldest are forgotten past `CAP` items.
+/// records each page it returns; the oldest are forgotten past `CAP` items or `BYTE_CAP` bytes
+/// (an item no longer loaded is still edited, guarded by its key alone; its key cannot change).
 #[derive(Debug, Clone, Default)]
 pub struct LoadedItems {
-    by_key: HashMap<String, Item>,
+    /// Each item with its size ([`LoadedItems::size`]).
+    by_key: HashMap<String, (Item, usize)>,
     order: std::collections::VecDeque<String>,
+    bytes: usize,
 }
 
 impl LoadedItems {
     pub const CAP: usize = 20_000;
+    /// 20,000 items of DynamoDB's largest (400 KB) would be 8 GB.
+    pub const BYTE_CAP: usize = 128 * 1024 * 1024;
 
     fn key_text(key: &Item) -> String {
         map_json(key).to_string()
+    }
+
+    /// At most the memory an item kept takes: the item ([`attr::item_size`]), its key's text
+    /// twice (the map's and the order's) and the map's entry with its spare room.
+    fn size(key: &str, item: &Item) -> usize {
+        2 * (key.len() + key.len() / 8 + 32) + 128 + attr::item_size(item)
     }
 
     /// Remembers a loaded item (one without its key attributes is not editable).
@@ -1259,31 +1326,85 @@ impl LoadedItems {
             return;
         };
         let k = LoadedItems::key_text(&key);
-        if self.by_key.insert(k.clone(), item.clone()).is_none() {
-            self.order.push_back(k);
+        let size = LoadedItems::size(&k, item);
+        match self.by_key.insert(k.clone(), (item.clone(), size)) {
+            Some((_, old)) => self.bytes = self.bytes.saturating_sub(old),
+            None => self.order.push_back(k),
         }
-        while self.order.len() > LoadedItems::CAP {
-            if let Some(old) = self.order.pop_front() {
-                self.by_key.remove(&old);
+        self.bytes += size;
+        self.trim(LoadedItems::CAP, LoadedItems::BYTE_CAP);
+    }
+
+    /// Forgets the oldest items until at most `items` of at most `bytes` are left.
+    pub fn trim(&mut self, items: usize, bytes: usize) {
+        while self.order.len() > items || self.bytes > bytes {
+            let Some(old) = self.order.pop_front() else {
+                break;
+            };
+            if let Some((_, size)) = self.by_key.remove(&old) {
+                self.bytes = self.bytes.saturating_sub(size);
             }
         }
     }
 
     pub fn get(&self, key: &Item) -> Option<&Item> {
-        self.by_key.get(&LoadedItems::key_text(key))
+        self.by_key
+            .get(&LoadedItems::key_text(key))
+            .map(|(item, _)| item)
     }
 
+    /// Forgets an item a commit wrote: what was loaded no longer guards it.
+    pub fn forget(&mut self, key: &Item) {
+        let k = LoadedItems::key_text(key);
+        if let Some((_, size)) = self.by_key.remove(&k) {
+            self.bytes = self.bytes.saturating_sub(size);
+            self.order.retain(|o| *o != k);
+        }
+    }
+
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.by_key.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.by_key.is_empty()
     }
 
+    /// About the bytes the items take.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    #[cfg(test)]
     pub fn clear(&mut self) {
         self.by_key.clear();
         self.order.clear();
+        self.bytes = 0;
+    }
+}
+
+/// Keeps the loaded items of a session's tables within `bytes` in all: the other tables' go
+/// first, the largest first, then the oldest of `current`'s.
+pub fn trim_loaded(tables: &mut HashMap<String, LoadedItems>, current: &str, bytes: usize) {
+    let mut total: usize = tables.values().map(LoadedItems::bytes).sum();
+    while total > bytes {
+        let largest = tables
+            .iter()
+            .filter(|(t, _)| t.as_str() != current)
+            .max_by_key(|(_, l)| l.bytes())
+            .map(|(t, _)| t.clone());
+        let Some(other) = largest else {
+            break;
+        };
+        let freed = tables.remove(&other).map_or(0, |l| l.bytes());
+        total = total.saturating_sub(freed);
+    }
+    if total > bytes
+        && let Some(own) = tables.get_mut(current)
+    {
+        own.trim(LoadedItems::CAP, bytes);
     }
 }
 
@@ -1777,7 +1898,9 @@ pub fn reply_last_key(reply: &J) -> Result<Option<Item>, AppError> {
     }
 }
 
-/// `true` when two attributes are equal as DynamoDB compares them (sets in any order).
+/// `true` when two attributes are equal as DynamoDB compares them (sets in any order): the fake
+/// server's conditions.
+#[cfg(test)]
 pub fn same_attr(a: &Attr, b: &Attr) -> bool {
     fn sorted<T: Ord + Clone>(v: &[T]) -> Vec<T> {
         let mut s = v.to_vec();
@@ -1799,9 +1922,6 @@ pub fn same_attr(a: &Attr, b: &Attr) -> bool {
         _ => a == b,
     }
 }
-
-/// Re-exported for the session: a cell of an item.
-pub use attr::{Cap, cell};
 
 #[cfg(test)]
 mod tests {
@@ -2126,6 +2246,77 @@ mod tests {
         }
     }
 
+    /// Long texts lex and split in linear time: comments ended by lone `\r`s (each once looked
+    /// ahead to the next `\n`) and many commands (each once counted its line from the top).
+    #[test]
+    fn long_texts_stay_linear() {
+        let started = std::time::Instant::now();
+        let crs = "--a\r".repeat(50_000);
+        assert_eq!(classify_console(&crs), StatementClass::Write);
+        assert!(split_console(&crs).is_empty());
+        let statement = format!("SELECT * FROM t {crs}");
+        assert_eq!(partiql_class(&statement), StatementClass::Write);
+        let many = "SELECT * FROM t;\n".repeat(50_000);
+        let parts = split_console(&many);
+        assert_eq!(parts.len(), 50_000);
+        assert_eq!(parts[49_999].line, 50_000);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "{:?}",
+            started.elapsed()
+        );
+        // A comment that a lone `\r` (or another break) ends early, before blanks only.
+        for clear in [
+            "-- x\r  \t\nSELECT 1",
+            "-- x\u{2028} \nSELECT 1",
+            "SELECT 1 -- x\r",
+        ] {
+            assert_eq!(partiql_class(clear), StatementClass::Read, "{clear:?}");
+        }
+        for unclear in [
+            "-- x\r y\nSELECT 1",
+            "-- x\u{1e}y\nSELECT 1",
+            "-- x\u{85}\ry\nSELECT 1",
+        ] {
+            assert_eq!(partiql_class(unclear), StatementClass::Write, "{unclear:?}");
+        }
+    }
+
+    #[test]
+    fn insert_and_update_change_one_item_and_delete_at_most_one() {
+        for w in [
+            "INSERT INTO \"t\" VALUE {'pk': 'a'}",
+            " -- c\n update \"t\" SET a = 1 WHERE pk = 'a'",
+        ] {
+            assert_eq!(partiql_write(w), PartiqlWrite::One, "{w}");
+        }
+        assert_eq!(
+            partiql_write("/* x */DELETE FROM \"t\" WHERE pk = 'a'"),
+            PartiqlWrite::AtMostOne
+        );
+        // A DELETE of a missing key succeeds: only the item it returned proves one was deleted.
+        assert_eq!(PartiqlWrite::AtMostOne.affected(0), None);
+        assert_eq!(PartiqlWrite::AtMostOne.affected(1), Some(1));
+        assert_eq!(PartiqlWrite::One.affected(0), Some(1));
+        assert_eq!(PartiqlWrite::Nothing.affected(3), None);
+        // A SELECT the classifier calls a write (lexers could read it differently) still reads.
+        for r in [
+            "SELECT * FROM t -- x\r DELETE",
+            "SELECT * FROM \"t\" WHERE a = `1`",
+            "EXISTS(SELECT * FROM t)",
+            "INSERTX INTO t",
+            "insert_ INTO t",
+            "delete$ FROM t",
+            "",
+        ] {
+            assert_eq!(partiql_write(r), PartiqlWrite::Nothing, "{r}");
+        }
+        assert_eq!(
+            partiql_class("SELECT * FROM t -- x\r DELETE"),
+            StatementClass::Write
+        );
+    }
+
     /// Random texts over the console's vocabulary (fixed seed): nothing panics, splitting keeps
     /// each command's text, and a text read as a read holds only reads.
     #[test]
@@ -2407,7 +2598,8 @@ mod tests {
         assert_eq!(r.body["FilterExpression"], json!("(size(tags) > :x)"));
         assert_eq!(r.body["ScanIndexForward"], json!(false));
         assert_eq!(r.body["IndexName"], json!("byName"));
-        assert!(!r.body.contains_key("ConsistentRead"));
+        // The caller asked (a local index): the builder cannot tell a global one apart.
+        assert_eq!(r.body["ConsistentRead"], json!(true));
     }
 
     /// A Query's FilterExpression cannot name a key attribute (DynamoDB refuses it): a filter
@@ -2989,6 +3181,63 @@ mod tests {
         );
         l.clear();
         assert!(l.is_empty());
+        assert_eq!(l.bytes(), 0);
+    }
+
+    /// Items are also forgotten by size, per table and over a session's tables, so pages of large
+    /// items cannot pile up.
+    #[test]
+    fn loaded_items_are_bounded_by_size() {
+        let k = KeySchema {
+            hash: ("id".into(), AttrType::N),
+            range: None,
+        };
+        let item = |id: usize, len: usize| {
+            Item::from([
+                ("id".to_string(), Attr::N(id.to_string())),
+                ("blob".to_string(), Attr::S("x".repeat(len))),
+            ])
+        };
+        let mut l = LoadedItems::default();
+        for i in 0..10 {
+            l.record(&k, &item(i, 1000));
+        }
+        let each = l.bytes() / 10;
+        assert!(each > 1000, "{each}");
+        // Recording an item again replaces its size, it is not counted twice.
+        l.record(&k, &item(9, 3000));
+        let more = attr::item_size(&item(9, 3000)) - attr::item_size(&item(9, 1000));
+        assert!(more >= 2000, "{more}");
+        assert_eq!(l.bytes(), 10 * each + more);
+        l.forget(&Item::from([("id".to_string(), Attr::N("9".into()))]));
+        assert_eq!((l.len(), l.bytes()), (9, 9 * each));
+        l.trim(LoadedItems::CAP, 4 * each);
+        assert_eq!(l.len(), 4);
+        assert!(
+            l.get(&Item::from([("id".to_string(), Attr::N("4".into()))]))
+                .is_none()
+        );
+        assert!(
+            l.get(&Item::from([("id".to_string(), Attr::N("5".into()))]))
+                .is_some()
+        );
+
+        // Over a session: the other tables go first, the largest first, then the current one's
+        // oldest items.
+        let mut tables: HashMap<String, LoadedItems> = HashMap::new();
+        for (t, n) in [("a", 3), ("b", 5), ("c", 4)] {
+            let entry = tables.entry(t.to_string()).or_default();
+            for i in 0..n {
+                entry.record(&k, &item(i, 1000));
+            }
+        }
+        trim_loaded(&mut tables, "a", 9 * each);
+        let mut left: Vec<&str> = tables.keys().map(String::as_str).collect();
+        left.sort_unstable();
+        assert_eq!(left, ["a", "c"]);
+        trim_loaded(&mut tables, "a", 2 * each);
+        assert_eq!(tables.keys().collect::<Vec<_>>(), ["a"]);
+        assert_eq!(tables["a"].len(), 2);
     }
 
     #[test]

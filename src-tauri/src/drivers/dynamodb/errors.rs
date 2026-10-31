@@ -7,7 +7,8 @@
 
 use crate::error::AppError;
 
-use super::transport::{HttpResponse, header};
+use super::transport::{HttpResponse, MAX_REPLY_MEMORY, header, parsed_size};
+use crate::drivers::common::http::body_excerpt;
 
 /// What a failed `ConditionExpression` of an edit means for the user (the wording of
 /// `drivers::check_affected`).
@@ -52,7 +53,6 @@ pub struct ServiceError {
     pub code: String,
     pub message: String,
     pub cancellation_reasons: Vec<CancellationReason>,
-    pub request_id: Option<String>,
 }
 
 /// Errors that say the request was throttled: it did nothing and can be repeated after a pause.
@@ -81,7 +81,10 @@ impl ServiceError {
     /// The error of a reply that is not a success. A body that is not DynamoDB's JSON (a proxy's
     /// HTML page) keeps a short excerpt as the message.
     pub fn from_response(resp: &HttpResponse) -> ServiceError {
-        let json: Option<serde_json::Value> = serde_json::from_slice(&resp.body).ok();
+        // A body too big to parse is shown as an excerpt.
+        let json: Option<serde_json::Value> = (parsed_size(&resp.body) <= MAX_REPLY_MEMORY)
+            .then(|| serde_json::from_slice(&resp.body).ok())
+            .flatten();
         let field = |k: &str| {
             json.as_ref()
                 .and_then(|j| j.get(k))
@@ -108,7 +111,7 @@ impl ServiceError {
                 if json.is_some() {
                     String::new()
                 } else {
-                    excerpt(&resp.body)
+                    body_excerpt(&resp.body, resp.header(header::CONTENT_TYPE))
                 }
             });
         let cancellation_reasons = json
@@ -137,8 +140,12 @@ impl ServiceError {
             code,
             message,
             cancellation_reasons,
-            request_id: resp.header(header::REQUEST_ID).map(str::to_string),
         }
+    }
+
+    /// The credentials were refused (or AWS sent its bare 403).
+    pub fn is_auth(&self) -> bool {
+        AUTH.contains(&self.code.as_str()) || (self.code.is_empty() && self.status == 403)
     }
 
     pub fn is_throttling(&self) -> bool {
@@ -187,7 +194,7 @@ impl ServiceError {
     }
 
     pub fn into_app_error(self) -> AppError {
-        if AUTH.contains(&self.code.as_str()) || (self.code.is_empty() && self.status == 403) {
+        if self.is_auth() {
             return AppError::Auth(format!(
                 "DynamoDB refused the credentials ({}): {}",
                 if self.code.is_empty() {
@@ -255,35 +262,6 @@ impl ServiceError {
     }
 }
 
-/// At most this many characters of a body that is not JSON go into a message.
-const EXCERPT_CHARS: usize = 200;
-
-fn excerpt(body: &[u8]) -> String {
-    let text = String::from_utf8_lossy(body);
-    let mut plain = String::with_capacity(text.len());
-    let mut in_tag = false;
-    for c in text.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' if in_tag => {
-                in_tag = false;
-                plain.push(' ');
-            }
-            _ if !in_tag => plain.push(c),
-            _ => {}
-        }
-    }
-    let collapsed = plain.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() > EXCERPT_CHARS {
-        format!(
-            "{}…",
-            collapsed.chars().take(EXCERPT_CHARS).collect::<String>()
-        )
-    } else {
-        collapsed
-    }
-}
-
 /// The error of each item of a cancelled transaction, in request order: the item's own reason,
 /// or that nothing was applied because of another item.
 pub fn transaction_item_errors(reasons: &[CancellationReason], items: usize) -> Vec<String> {
@@ -343,6 +321,32 @@ mod tests {
         });
         assert_eq!(header_only.code, "ValidationException");
         assert_eq!(header_only.message, "1 validation error");
+    }
+
+    /// A body that would take too much memory parsed is not parsed: its code comes from the
+    /// header alone and its message is a short excerpt.
+    #[test]
+    fn a_body_too_big_to_parse_is_an_excerpt() {
+        let zeros = vec!["0"; MAX_REPLY_MEMORY / 96 + 1].join(",");
+        let body = format!(
+            r#"{{"__type":"com.amazonaws.dynamodb.v20120810#ThrottlingException","message":"m","x":[{zeros}]}}"#
+        );
+        assert!(parsed_size(body.as_bytes()) > MAX_REPLY_MEMORY);
+        let resp = |headers| HttpResponse {
+            status: 400,
+            headers,
+            body: body.clone().into_bytes(),
+        };
+        let bare = ServiceError::from_response(&resp(vec![]));
+        assert_eq!(bare.code, "");
+        assert!(bare.message.starts_with(r#"{"__type""#), "{}", bare.message);
+        assert!(bare.message.len() < 1_000, "{}", bare.message.len());
+        let headed = ServiceError::from_response(&resp(vec![(
+            header::ERROR_TYPE.into(),
+            "ThrottlingException:http://internal.amazon.com/coral/".into(),
+        )]));
+        assert_eq!(headed.code, "ThrottlingException");
+        assert_eq!(headed.message, bare.message);
     }
 
     #[test]

@@ -10,27 +10,37 @@
 //!   been applied before the reply was lost;
 //! - a signature the server finds too old or too new: once, with the clock corrected by the
 //!   reply's `Date` (a user's clock that drifted);
-//! - an expired session token: once, with credentials fetched again (when they can be).
+//! - an expired session token: once, with credentials fetched again (when they can be, the
+//!   Command mode's command run again).
 //!
-//! Cancel drops the request in flight (every call is a single request) or the pause.
+//! Cancel drops the request in flight (every call is a single request) or the pause. The
+//! session's calls are kept in its trace for the console log; the console's own commands are not
+//! (the editor logs them itself).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use tokio_util::sync::CancellationToken;
 
-use super::credentials::{CredentialProvider, Credentials};
 use super::errors::ServiceError;
-use super::sigv4;
-use super::transport::{HttpRequest, HttpResponse, Transport, header};
+use super::transport::{
+    HttpRequest, HttpResponse, MAX_REPLY_MEMORY, Transport, header, parsed_size,
+};
+use crate::drivers::common::aws::credentials::{CredentialProvider, Credentials};
+use crate::drivers::common::aws::sigv4::{amz_date, sign_parts};
+use crate::drivers::{SqlTrace, TRACE_SQL_MAX_CHARS};
 use crate::error::AppError;
-use crate::sqlgen::native::dynamo::is_read_action;
+use crate::secrets::CommandPassword;
+use crate::sqlgen::native::dynamo::{is_read_action, request_line};
+use crate::types::browse::{TraceCategory, TracedSql};
 
 pub const TARGET_PREFIX: &str = "DynamoDB_20120810";
 pub const CONTENT_TYPE: &str = "application/x-amz-json-1.0";
 pub const SERVICE: &str = "dynamodb";
+/// The most a reply's `Date` may move our clock.
+const MAX_CLOCK_SKEW: chrono::TimeDelta = chrono::TimeDelta::days(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
@@ -53,14 +63,6 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// One try, no retries.
-    pub fn none() -> RetryPolicy {
-        RetryPolicy {
-            max_attempts: 1,
-            ..RetryPolicy::default()
-        }
-    }
-
     /// The pause before retry `retry` (0 for the first): a random length up to
     /// `min(cap, base * 2^retry)`.
     pub fn delay(&self, retry: u32) -> Duration {
@@ -92,6 +94,15 @@ impl CallError {
             CallError::App(e) => e,
         }
     }
+
+    /// What the console log shows of it.
+    fn text(&self) -> String {
+        match self {
+            CallError::Service(e) if e.message.is_empty() => e.code.clone(),
+            CallError::Service(e) => format!("{}: {}", e.code, e.message),
+            CallError::App(e) => e.to_string(),
+        }
+    }
 }
 
 impl From<AppError> for CallError {
@@ -110,7 +121,11 @@ pub struct Client {
     host: String,
     path: String,
     region: String,
-    creds: CredentialProvider,
+    creds: Arc<CredentialProvider>,
+    /// The Command mode's command, forgotten with the credentials it printed when DynamoDB
+    /// refuses them as expired.
+    command: Option<Arc<CommandPassword>>,
+    trace: Option<SqlTrace>,
     retry: RetryPolicy,
     /// The server's clock minus ours, learned from a refused signature.
     skew_ms: AtomicI64,
@@ -147,7 +162,7 @@ impl Client {
         transport: Arc<dyn Transport>,
         endpoint: &str,
         region: &str,
-        creds: CredentialProvider,
+        creds: Arc<CredentialProvider>,
     ) -> Result<Client, AppError> {
         let url = reqwest::Url::parse(endpoint)
             .map_err(|_| AppError::InvalidInput(format!("DynamoDB endpoint {endpoint}")))?;
@@ -167,19 +182,36 @@ impl Client {
             path: url.path().to_string(),
             region: region.to_string(),
             creds,
+            command: None,
+            trace: None,
             retry: RetryPolicy::default(),
             skew_ms: AtomicI64::new(0),
             clock: Arc::new(Utc::now),
         })
     }
 
+    /// Tests pause less (a session keeps the default).
+    #[cfg(test)]
     pub fn with_retry(mut self, retry: RetryPolicy) -> Client {
         self.retry = retry;
         self
     }
 
+    /// Tests pin the clock (a session signs with the system's).
+    #[cfg(test)]
     pub fn with_clock(mut self, clock: Clock) -> Client {
         self.clock = clock;
+        self
+    }
+
+    pub fn with_command(mut self, command: Option<Arc<CommandPassword>>) -> Client {
+        self.command = command;
+        self
+    }
+
+    /// Records the calls in `trace` (all but [`Client::call_quiet`]'s).
+    pub fn with_trace(mut self, trace: SqlTrace) -> Client {
+        self.trace = Some(trace);
         self
     }
 
@@ -195,9 +227,12 @@ impl Client {
         &self.creds
     }
 
-    /// Our clock corrected by what the server's says.
+    /// Our clock corrected by what the server's says (chrono's `+` panics past year 262143).
     pub fn now(&self) -> DateTime<Utc> {
-        (self.clock)() + chrono::Duration::milliseconds(self.skew_ms.load(Ordering::Relaxed))
+        let local = (self.clock)();
+        chrono::TimeDelta::try_milliseconds(self.skew_ms.load(Ordering::Relaxed))
+            .and_then(|skew| local.checked_add_signed(skew))
+            .unwrap_or(local)
     }
 
     /// The signed request of `action` with `body`, at `at`.
@@ -210,7 +245,7 @@ impl Client {
     ) -> HttpRequest {
         let mut headers = vec![
             (header::CONTENT_TYPE.to_string(), CONTENT_TYPE.to_string()),
-            (header::AMZ_DATE.to_string(), sigv4::amz_date(at)),
+            (header::AMZ_DATE.to_string(), amz_date(at)),
             (
                 header::TARGET.to_string(),
                 format!("{TARGET_PREFIX}.{action}"),
@@ -221,21 +256,16 @@ impl Client {
         }
         let mut signed_headers = headers.clone();
         signed_headers.push(("host".to_string(), self.host.clone()));
-        let signed = sigv4::sign(
-            &sigv4::Request {
-                method: "POST",
-                path: &self.path,
-                query: "",
-                headers: &signed_headers,
-                payload: &body,
-            },
-            &creds.access_key_id,
-            &creds.secret_access_key,
+        let signed = sign_parts(
+            "POST",
+            &self.path,
+            "",
+            &signed_headers,
+            &body,
+            creds,
             at,
-            sigv4::Scope {
-                region: &self.region,
-                service: SERVICE,
-            },
+            &self.region,
+            SERVICE,
         );
         headers.push((header::AUTHORIZATION.to_string(), signed.authorization));
         HttpRequest {
@@ -245,7 +275,8 @@ impl Client {
         }
     }
 
-    /// Learns the server's clock from a reply's `Date`.
+    /// Learns the server's clock from a reply's `Date`. A `Date` more than a day off is not a
+    /// drifted clock but a broken or hostile server (AWS itself allows 5 minutes), so it is ignored.
     fn correct_clock(&self, resp: &HttpResponse) -> bool {
         let Some(server) = resp
             .header(header::DATE)
@@ -253,7 +284,12 @@ impl Client {
         else {
             return false;
         };
-        let skew = server.with_timezone(&Utc) - (self.clock)();
+        let skew = server
+            .with_timezone(&Utc)
+            .signed_duration_since((self.clock)());
+        if skew.abs() > MAX_CLOCK_SKEW {
+            return false;
+        }
         self.skew_ms
             .store(skew.num_milliseconds(), Ordering::Relaxed);
         true
@@ -271,8 +307,35 @@ impl Client {
             .map_err(CallError::into_app_error)
     }
 
+    /// [`Client::call`] for the console's own commands, which the session does not trace.
+    pub async fn call_quiet(
+        &self,
+        action: &str,
+        body: &serde_json::Value,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<serde_json::Value, AppError> {
+        self.send(action, body, cancel)
+            .await
+            .map_err(CallError::into_app_error)
+    }
+
     /// [`Client::call`], with DynamoDB's own error kept whole.
     pub async fn call_detailed(
+        &self,
+        action: &str,
+        body: &serde_json::Value,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<serde_json::Value, CallError> {
+        let started = Instant::now();
+        let result = self.send(action, body, cancel).await;
+        if let Some(trace) = &self.trace {
+            trace.record(traced(action, body, started, &result));
+        }
+        result
+    }
+
+    /// One call with its retries.
+    async fn send(
         &self,
         action: &str,
         body: &serde_json::Value,
@@ -304,6 +367,14 @@ impl Client {
                 if resp.body.iter().all(u8::is_ascii_whitespace) {
                     return Ok(serde_json::json!({}));
                 }
+                if parsed_size(&resp.body) > MAX_REPLY_MEMORY {
+                    return Err(AppError::db(format!(
+                        "DynamoDB's {action} reply holds too many values to read at once (more \
+                         than {} MB once read): ask for fewer items with a Limit or fewer keys",
+                        MAX_REPLY_MEMORY >> 20
+                    ))
+                    .into());
+                }
                 return serde_json::from_slice(&resp.body).map_err(|e| {
                     CallError::App(AppError::db(format!(
                         "unexpected {action} reply from DynamoDB: {e}"
@@ -318,6 +389,9 @@ impl Client {
             if err.is_expired_token() && !refreshed && self.creds.refreshable() {
                 refreshed = true;
                 self.creds.invalidate().await;
+                if let Some(command) = &self.command {
+                    command.invalidate().await;
+                }
                 continue;
             }
             let retry = err.is_throttling() || (repeat && err.is_server_error());
@@ -335,6 +409,44 @@ impl Client {
     }
 }
 
+/// A call as the console log shows it: the request's text (capped), the items it returned or
+/// counted, its error.
+fn traced(
+    action: &str,
+    body: &serde_json::Value,
+    started: Instant,
+    result: &Result<serde_json::Value, CallError>,
+) -> TracedSql {
+    let mut sql = request_line(action, body);
+    if let Some((cut, _)) = sql.char_indices().nth(TRACE_SQL_MAX_CHARS) {
+        sql.truncate(cut);
+        sql.push('…');
+    }
+    let category = if action.starts_with("List") || action.starts_with("Describe") {
+        TraceCategory::Structure
+    } else {
+        TraceCategory::Data
+    };
+    let rows = result.as_ref().ok().and_then(|reply| {
+        match (
+            reply.get("Items").and_then(serde_json::Value::as_array),
+            reply.get("Count"),
+        ) {
+            (Some(items), _) => Some(items.len() as u64),
+            (None, Some(count)) => count.as_u64(),
+            (None, None) => None,
+        }
+    });
+    TracedSql {
+        sql,
+        category,
+        duration_ms: started.elapsed().as_millis() as u64,
+        rows,
+        affected: None,
+        error: result.as_ref().err().map(CallError::text),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,7 +455,9 @@ mod tests {
     use async_trait::async_trait;
     use chrono::TimeZone as _;
 
-    use crate::drivers::dynamodb::credentials::Fetch;
+    use crate::drivers::common::aws::credentials::Fetch;
+    use crate::drivers::dynamodb::auth;
+    use crate::drivers::dynamodb::testing::parse_authorization;
 
     /// Replies in order (the last repeats) and records every request.
     struct Script {
@@ -392,7 +506,7 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 10, 29, 10, 0, 0).unwrap()
     }
 
-    fn client(script: &Arc<Script>, creds: CredentialProvider) -> Client {
+    fn client(script: &Arc<Script>, creds: Arc<CredentialProvider>) -> Client {
         Client::new(
             script.clone(),
             "https://dynamodb.us-east-1.amazonaws.com/",
@@ -408,8 +522,10 @@ mod tests {
         .with_clock(Arc::new(at))
     }
 
-    fn keys() -> CredentialProvider {
-        CredentialProvider::fixed(Credentials::new("AKID", "secret", Some("tok")).unwrap())
+    fn keys() -> Arc<CredentialProvider> {
+        Arc::new(CredentialProvider::fixed(
+            Credentials::static_keys("AKID", "secret", Some("tok")).unwrap(),
+        ))
     }
 
     #[tokio::test]
@@ -428,7 +544,7 @@ mod tests {
         assert_eq!(req.header("x-amz-date"), Some("20261029T100000Z"));
         assert_eq!(req.header("x-amz-security-token"), Some("tok"));
         let (credential, signed, signature) =
-            sigv4::parse_authorization(req.header("authorization").unwrap()).unwrap();
+            parse_authorization(req.header("authorization").unwrap()).unwrap();
         assert_eq!(credential, "AKID/20261029/us-east-1/dynamodb/aws4_request");
         assert_eq!(
             signed,
@@ -448,21 +564,16 @@ mod tests {
             .cloned()
             .collect();
         headers.push(("host".into(), "dynamodb.us-east-1.amazonaws.com".into()));
-        let again = sigv4::sign(
-            &sigv4::Request {
-                method: "POST",
-                path: "/",
-                query: "",
-                headers: &headers,
-                payload: br#"{"Limit":100}"#,
-            },
-            "AKID",
-            "secret",
+        let again = sign_parts(
+            "POST",
+            "/",
+            "",
+            &headers,
+            br#"{"Limit":100}"#,
+            &Credentials::static_keys("AKID", "secret", None).unwrap(),
             at(),
-            sigv4::Scope {
-                region: "us-east-1",
-                service: "dynamodb",
-            },
+            "us-east-1",
+            "dynamodb",
         );
         assert_eq!(again.signature, signature);
         assert!(again.canonical_request.contains(
@@ -472,7 +583,7 @@ mod tests {
             script.clone(),
             "http://127.0.0.1:8000/",
             "local",
-            CredentialProvider::fixed(Credentials::local(None)),
+            Arc::new(CredentialProvider::fixed(auth::local(None))),
         )
         .unwrap();
         assert_eq!(local.host, "127.0.0.1:8000");
@@ -592,12 +703,64 @@ mod tests {
         assert_eq!(script.seen().len(), 2);
     }
 
+    /// A `Date` far from ours (here near chrono's last year, where adding to it panics) is not
+    /// taken as the server's clock: the refusal is reported and later calls sign with ours.
+    #[tokio::test]
+    async fn an_implausible_server_date_is_ignored() {
+        for date in [
+            "31 Dec 262142 23:59:59 GMT",
+            "Fri, 30 Oct 2026 10:00:01 GMT",
+            "Thu, 1 Jan 1970 00:00:00 GMT",
+        ] {
+            let skewed = HttpResponse::json(
+                400,
+                &serde_json::json!({"__type": "com.amazon.coral.service#InvalidSignatureException", "message": "Signature expired: x"}),
+            )
+            .with_header("Date", date);
+            let script = Script::new(vec![Ok(skewed), ok(serde_json::json!({}))]);
+            let c = client(&script, keys());
+            assert!(matches!(
+                c.call("Scan", &serde_json::json!({}), None).await,
+                Err(AppError::Auth(_))
+            ));
+            assert_eq!(script.seen().len(), 1, "{date}");
+            assert_eq!(c.now(), at());
+            c.call("Scan", &serde_json::json!({}), None).await.unwrap();
+            assert_eq!(
+                script.seen()[1].header("x-amz-date"),
+                Some("20261029T100000Z")
+            );
+        }
+        // Fetched credentials check their expiry against the same corrected clock.
+        let fetch: Fetch = Arc::new(|| {
+            Box::pin(async {
+                auth::from_command_output(
+                    r#"{"Version":1,"AccessKeyId":"A","SecretAccessKey":"s","SessionToken":"t","Expiration":"2026-10-29T11:00:00Z"}"#,
+                    None,
+                )
+            })
+        });
+        let skewed = HttpResponse::json(
+            400,
+            &serde_json::json!({"__type": "com.amazon.coral.service#InvalidSignatureException", "message": "Signature expired: x"}),
+        )
+        .with_header("Date", "31 Dec 262142 23:59:59 GMT");
+        let script = Script::new(vec![Ok(skewed), ok(serde_json::json!({}))]);
+        let c = client(&script, Arc::new(CredentialProvider::fetching(fetch, None)));
+        assert!(c.call("Scan", &serde_json::json!({}), None).await.is_err());
+        c.call("Scan", &serde_json::json!({}), None).await.unwrap();
+        // The clamp itself: an extreme skew stored by any path still leaves a usable clock.
+        for extreme in [i64::MAX, i64::MIN] {
+            c.skew_ms.store(extreme, Ordering::Relaxed);
+            assert_eq!(c.now(), at());
+        }
+    }
+
     #[tokio::test]
     async fn expired_tokens_are_fetched_again_once() {
-        let fetch: Fetch = Arc::new(|| {
-            Box::pin(async { Ok(Credentials::new("ASIA", "s", Some("fresh")).unwrap()) })
-        });
-        let stale = Credentials::new("ASIA", "s", Some("stale")).unwrap();
+        let fetch: Fetch =
+            Arc::new(|| Box::pin(async { Credentials::static_keys("ASIA", "s", Some("fresh")) }));
+        let stale = Credentials::static_keys("ASIA", "s", Some("stale")).unwrap();
         let script = Script::new(vec![
             error(
                 400,
@@ -606,7 +769,10 @@ mod tests {
             ),
             ok(serde_json::json!({})),
         ]);
-        let c = client(&script, CredentialProvider::fetching(fetch, Some(stale)));
+        let c = client(
+            &script,
+            Arc::new(CredentialProvider::fetching(fetch, Some(stale))),
+        );
         c.call("Scan", &serde_json::json!({}), None).await.unwrap();
         let tokens: Vec<_> = script
             .seen()
@@ -654,6 +820,87 @@ mod tests {
         assert!(quiet.seen().is_empty());
     }
 
+    /// The Command mode's output is reused for its time to live; refused as expired, the command
+    /// runs again (once).
+    #[tokio::test]
+    async fn an_expired_command_output_runs_the_command_again() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = runs.clone();
+        let cmd = Arc::new(CommandPassword::with_fetch(
+            Duration::from_secs(600),
+            move || {
+                let n = seen.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    Ok(format!(
+                        "{{\"Version\":1,\"AccessKeyId\":\"A\",\"SecretAccessKey\":\"s\",\
+                         \"SessionToken\":\"t{n}\"}}"
+                    ))
+                })
+            },
+        ));
+        let script = Script::new(vec![
+            error(400, "ExpiredTokenException", "expired"),
+            ok(serde_json::json!({})),
+        ]);
+        let c = client(&script, auth::command_provider(cmd.clone(), None)).with_command(Some(cmd));
+        c.call("Scan", &serde_json::json!({}), None).await.unwrap();
+        let tokens: Vec<_> = script
+            .seen()
+            .iter()
+            .map(|r| r.header("x-amz-security-token").unwrap().to_string())
+            .collect();
+        assert_eq!(tokens, ["t0", "t1"]);
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+
+    /// The session's calls go into its trace with their item counts and errors; the console's
+    /// commands (`call_quiet`) do not.
+    #[tokio::test]
+    async fn calls_are_traced_but_console_commands_are_not() {
+        let script = Script::new(vec![
+            ok(serde_json::json!({"Items": [{"a": {"S": "x"}}], "Count": 1})),
+            error(400, "ResourceNotFoundException", "no such table"),
+            ok(serde_json::json!({"Count": 7})),
+        ]);
+        let trace = SqlTrace::default();
+        let c = client(&script, keys()).with_trace(trace.clone());
+        c.call("Scan", &serde_json::json!({"TableName": "t"}), None)
+            .await
+            .unwrap();
+        assert!(
+            c.call(
+                "DescribeTable",
+                &serde_json::json!({"TableName": "x"}),
+                None
+            )
+            .await
+            .is_err()
+        );
+        c.call_quiet("Scan", &serde_json::json!({"Select": "COUNT"}), None)
+            .await
+            .unwrap();
+        let entries = trace.drain();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].sql, r#"Scan {"TableName":"t"}"#);
+        assert_eq!(
+            (entries[0].category, entries[0].rows),
+            (TraceCategory::Data, Some(1))
+        );
+        assert_eq!(entries[1].category, TraceCategory::Structure);
+        assert_eq!(
+            entries[1].error.as_deref(),
+            Some("ResourceNotFoundException: no such table")
+        );
+        let long = "x".repeat(TRACE_SQL_MAX_CHARS + 10);
+        let t = traced(
+            "PutItem",
+            &serde_json::json!({ "TableName": long }),
+            Instant::now(),
+            &Ok(serde_json::json!({})),
+        );
+        assert_eq!(t.sql.chars().count(), TRACE_SQL_MAX_CHARS + 1);
+    }
+
     #[tokio::test]
     async fn replies_that_are_not_json_are_errors() {
         let script = Script::new(vec![Ok(HttpResponse {
@@ -692,6 +939,5 @@ mod tests {
             assert!(p.delay(retry) <= Duration::from_millis(400));
         }
         assert!(p.delay(0) <= Duration::from_millis(100));
-        assert_eq!(RetryPolicy::none().max_attempts, 1);
     }
 }

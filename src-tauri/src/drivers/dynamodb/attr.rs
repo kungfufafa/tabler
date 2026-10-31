@@ -16,7 +16,7 @@
 //! Json cells are read as DynamoDB JSON when every value is typed, otherwise as plain JSON
 //! (objects maps, arrays lists, numbers `N` with their exact text).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use base64::Engine as _;
 
@@ -54,6 +54,38 @@ pub enum Attr {
 
 /// An item: attribute name → value.
 pub type Item = BTreeMap<String, Attr>;
+
+/// At most the memory an item (or an `M`'s content) holds: its tree's nodes, its names and
+/// what its values hold. What the budgets of items kept count.
+pub fn item_size(item: &Item) -> usize {
+    let n = item.len();
+    let nodes = match n {
+        0 => 0,
+        // A node has room for 11 entries: a map of one costs a whole node.
+        1..=11 => alloc(LEAF),
+        // Every node but the root holds at least 5; an internal node is over at least 5.
+        _ => n.div_ceil(5) * alloc(LEAF) + n.div_ceil(25) * alloc(INTERNAL),
+    };
+    nodes
+        + item
+            .iter()
+            .map(|(k, v)| alloc(k.len()) + v.heap())
+            .sum::<usize>()
+}
+
+const VALUE: usize = std::mem::size_of::<Attr>();
+/// A `String`, and a `Vec<u8>` of a binary set.
+const STRING: usize = std::mem::size_of::<String>();
+/// A leaf of an item's tree: 11 names and values, its parent link, index and length.
+const LEAF: usize = 11 * (STRING + VALUE) + 16;
+/// An internal node: a leaf and its 12 edges.
+const INTERNAL: usize = LEAF + 12 * std::mem::size_of::<usize>();
+
+/// An allocation of `n` bytes with the allocator's header and rounding (its size classes are at
+/// most an eighth apart).
+fn alloc(n: usize) -> usize {
+    if n == 0 { 0 } else { n + n / 8 + 32 }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AttrType {
@@ -187,6 +219,25 @@ impl Attr {
         }
     }
 
+    /// At most the memory the value holds outside itself (its own place is its map's node or
+    /// its list's buffer). Lists and sets collected from a reply may have twice the room they
+    /// use.
+    fn heap(&self) -> usize {
+        match self {
+            Attr::S(s) | Attr::N(s) => alloc(s.len()),
+            Attr::B(b) => alloc(b.len()),
+            Attr::Bool(_) | Attr::Null => 0,
+            Attr::M(m) => item_size(m),
+            Attr::L(l) => alloc(2 * l.len() * VALUE) + l.iter().map(Attr::heap).sum::<usize>(),
+            Attr::Ss(s) | Attr::Ns(s) => {
+                alloc(2 * s.len() * STRING) + s.iter().map(|x| alloc(x.len())).sum::<usize>()
+            }
+            Attr::Bs(b) => {
+                alloc(2 * b.len() * STRING) + b.iter().map(|x| alloc(x.len())).sum::<usize>()
+            }
+        }
+    }
+
     /// An AttributeValue of a reply or a request.
     pub fn from_json(v: &serde_json::Value) -> Result<Attr, AppError> {
         Attr::from_json_at(v, 0)
@@ -302,6 +353,7 @@ pub fn missing() -> Value {
     Value::other(TY_MISSING, "")
 }
 
+#[cfg(test)]
 pub fn is_missing(v: &Value) -> bool {
     matches!(v, Value::Other(o) if o.ty == TY_MISSING)
 }
@@ -696,20 +748,20 @@ fn content(j: &Json) -> Result<Attr, AppError> {
 }
 
 /// A set, refusing what DynamoDB refuses: no members, or a member twice.
-fn check_set<T: PartialEq>(items: Vec<T>, ty: AttrType) -> Result<Vec<T>, AppError> {
+fn check_set<T: Eq + std::hash::Hash>(items: Vec<T>, ty: AttrType) -> Result<Vec<T>, AppError> {
     if items.is_empty() {
         return Err(invalid(format!(
             "a DynamoDB set ({}) cannot be empty: set the attribute to NULL or remove it",
             ty.as_str()
         )));
     }
-    for (i, a) in items.iter().enumerate() {
-        if items[..i].contains(a) {
-            return Err(invalid(format!(
-                "a DynamoDB set ({}) cannot hold a member twice",
-                ty.as_str()
-            )));
-        }
+    // Hashed: a set a server sent (a duplicated row's) can hold many thousands of members.
+    let mut seen = HashSet::with_capacity(items.len());
+    if !items.iter().all(|a| seen.insert(a)) {
+        return Err(invalid(format!(
+            "a DynamoDB set ({}) cannot hold a member twice",
+            ty.as_str()
+        )));
     }
     Ok(items)
 }
@@ -1023,6 +1075,49 @@ mod tests {
         let big = Attr::L(vec![Attr::S("x".repeat(JSON_CELL_CAP)); 2]);
         assert!(matches!(to_value(&big, Cap::Grid), Value::Other(ref o) if o.ty == TY_PREVIEW));
         assert!(matches!(to_value(&big, Cap::Full), Value::Json(_)));
+    }
+
+    /// Sizes are at least the memory taken: a tree node for every map however small, the
+    /// values' own room in lists and sets, every text with its allocation.
+    #[test]
+    fn sizes_count_every_nested_value() {
+        assert_eq!(VALUE, 32);
+        assert_eq!(item_size(&Item::new()), 0);
+        let small = item_from_json(&json!({"a": {"S": "xy"}})).unwrap();
+        assert_eq!(item_size(&small), alloc(LEAF) + alloc(1) + alloc(2));
+        assert!(item_size(&small) >= LEAF + 2 * 16);
+        let nested = item_from_json(&json!({
+            "m": {"M": {"k": {"L": [{"N": "123"}, {"B": "AAEC"}, {"NULL": true}]}}},
+            "ss": {"SS": ["a", "bc"]},
+        }))
+        .unwrap();
+        let list = alloc(6 * VALUE) + alloc(3) + alloc(3);
+        let m = alloc(LEAF) + alloc(1) + list;
+        let ss = alloc(4 * STRING) + alloc(1) + alloc(2);
+        assert_eq!(
+            item_size(&nested),
+            alloc(LEAF) + alloc(1) + m + alloc(2) + ss
+        );
+        // 30 maps of one entry each: 30 nodes.
+        let mut deep = json!({"NULL": true});
+        for _ in 0..30 {
+            deep = json!({"M": {"a": deep}});
+        }
+        let deep = item_from_json(&json!({ "a": deep })).unwrap();
+        assert!(item_size(&deep) >= 31 * LEAF);
+        // Wide maps: a node per 5 entries at the most.
+        let wide: Item = (0..1000).map(|i| (format!("a{i}"), Attr::Null)).collect();
+        assert!(item_size(&wide) >= 1000 * (STRING + VALUE));
+        assert!(item_size(&wide) <= 1000 * (LEAF / 5 + 2 * LEAF / 25 + 48));
+    }
+
+    #[test]
+    fn a_set_twice_a_member_is_refused_however_large() {
+        let members: Vec<String> = (0..50_000).map(|i| i.to_string()).collect();
+        assert!(check_set(members.clone(), AttrType::Ss).is_ok());
+        let mut twice = members;
+        twice.push("7".into());
+        assert!(check_set(twice, AttrType::Ss).is_err());
     }
 
     /// Decoding then encoding with the attribute's own type gives the attribute back.
