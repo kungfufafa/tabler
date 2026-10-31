@@ -1,5 +1,11 @@
 //! MongoDB (the mongodb lane). Built with its cargo feature only.
 //!
+//! - `entry`: what the registry calls (open, validate, the form's calls);
+//! - `params`: the profile's MongoDB settings (`MongoParams`) and a light reading of a URL;
+//! - `connect`: a profile as the crate's client options (hosts, SSH, TLS, sign-in, timeouts);
+//! - `session`: the `NativeSession` and its `TableSource` (catalog, grid, counts, edits, cancel);
+//! - `console`: one console statement run and shown; `calls`: the session's own calls and
+//!   Running Queries;
 //! - `literal`: JavaScript object literals and Extended JSON read into BSON (the console's and
 //!   the raw filter's values, Json cells written back);
 //! - `values`: BSON values as `Value`s and back, keeping each value's BSON type;
@@ -14,12 +20,19 @@
 //! preview text) are built in `sqlgen::native::mongo`. The crate is `::mongodb` here: this
 //! module shadows its name.
 
+pub mod calls;
 pub mod catalog;
 pub mod classify;
+pub mod connect;
+pub mod console;
 pub mod entry;
 pub mod errors;
 pub mod literal;
+pub mod params;
 pub mod schema;
+pub mod session;
+#[cfg(test)]
+mod session_tests;
 pub mod shell;
 #[cfg(test)]
 pub mod testing;

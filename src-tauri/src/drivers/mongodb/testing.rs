@@ -3,9 +3,12 @@
 //! `listDatabases`, `listCollections`, `listIndexes`, `dbStats`), reads (`find` with cursors and
 //! `getMore`, `count`, `distinct`, `aggregate` with the stages Tabler and the console use,
 //! `explain`), writes (`insert`, `update`, `delete`, `findAndModify` with their `n`), indexes,
-//! collections and views, and `$currentOp` / `killOp`. `serve` puts it behind the wire protocol
-//! (OP_MSG on a localhost port), so the `mongodb` crate itself connects to it; a delay on a
-//! command lets a test cancel it (`killOp`) or time it out (`maxTimeMS`).
+//! collections and views, `$currentOp` / `killOp`, and transactions (`startTransaction`,
+//! `commitTransaction`, `abortTransaction`). `serve` puts it behind the wire protocol (OP_MSG on
+//! a localhost port), so the `mongodb` crate itself connects to it; a delay on a command lets a
+//! test cancel it (`killOp`) or time it out (`maxTimeMS`), access control signs in with SASL
+//! PLAIN or MONGODB-OIDC (and asks an OIDC connection to sign in again), and a restart drops
+//! every connection.
 //!
 //! Queries support equality (also into arrays), `$eq` `$ne` `$gt` `$gte` `$lt` `$lte` `$in`
 //! `$nin` `$exists` `$regex` `$options` `$not` `$type` `$size` `$all` `$elemMatch`, `$and` `$or`
@@ -27,12 +30,14 @@ use tokio::net::{TcpListener, TcpStream};
 use super::literal::int_of;
 use super::values::type_name;
 
-/// A server error: its code, code name and message.
+/// A server error: its code, code name, message and labels.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fail {
     pub code: i32,
     pub name: &'static str,
     pub message: String,
+    /// The reply's `errorLabels` (`TransientTransactionError`).
+    pub labels: Vec<&'static str>,
 }
 
 impl Fail {
@@ -41,6 +46,7 @@ impl Fail {
             code,
             name,
             message: message.into(),
+            labels: Vec::new(),
         }
     }
 
@@ -49,7 +55,11 @@ impl Fail {
     }
 
     fn reply(&self) -> Document {
-        doc! { "ok": 0.0, "errmsg": self.message.clone(), "code": self.code, "codeName": self.name }
+        let mut reply = doc! { "ok": 0.0, "errmsg": self.message.clone(), "code": self.code, "codeName": self.name };
+        if !self.labels.is_empty() {
+            reply.insert("errorLabels", self.labels.clone());
+        }
+        reply
     }
 }
 
@@ -86,7 +96,19 @@ struct Op {
     opid: i32,
     ns: String,
     command: Document,
+    lsid: Option<Bson>,
     killed: bool,
+}
+
+/// Who may sign in, when a test turns access control on.
+#[derive(Default)]
+struct Access {
+    /// SASL PLAIN's user and password.
+    plain: Option<(String, String)>,
+    /// The MONGODB-OIDC access tokens the server takes.
+    tokens: Vec<String>,
+    /// The next command of a signed-in connection fails with `ReauthenticationRequired`.
+    reauth_next: bool,
 }
 
 #[derive(Default)]
@@ -105,6 +127,14 @@ struct State {
     batch_bytes: Option<usize>,
     /// The session (`lsid`) of the command being run.
     lsid: Option<Bson>,
+    /// The data as it was when the open transaction started, restored by `abortTransaction`.
+    txn: Option<BTreeMap<String, BTreeMap<String, Coll>>>,
+    commits: usize,
+    aborts: usize,
+    access: Option<Access>,
+    /// Bumped by `drop_connections`: a served connection of an older epoch closes.
+    epoch: u64,
+    sign_ins: Vec<String>,
 }
 
 /// The most document bytes a server puts in one batch (`BSONObjMaxUserSize`).
@@ -164,9 +194,22 @@ impl FakeMongo {
 
     /// The next command named `name` fails with `code`.
     pub fn fail_next(&self, name: &str, code: i32, message: &str) {
-        self.lock()
-            .fail_next
-            .insert(name.into(), Fail::new(code, "TestFailure", message));
+        self.fail_next_labelled(name, code, message, &[]);
+    }
+
+    /// `fail_next` with the reply's `errorLabels`.
+    pub fn fail_next_labelled(
+        &self,
+        name: &str,
+        code: i32,
+        message: &str,
+        labels: &[&'static str],
+    ) {
+        let fail = Fail {
+            labels: labels.to_vec(),
+            ..Fail::new(code, "TestFailure", message)
+        };
+        self.lock().fail_next.insert(name.into(), fail);
     }
 
     /// Commands named `name` take `d` before they run (served ones only), as a running
@@ -186,22 +229,97 @@ impl FakeMongo {
         self.lock().batch_bytes = Some(bytes);
     }
 
+    /// Operations running under a `delay` (a test cancels one only once it reached the
+    /// server).
+    pub fn running(&self) -> usize {
+        self.lock().ops.len()
+    }
+
     /// Open cursors (a test checks that pages leave none behind).
     pub fn open_cursors(&self) -> usize {
         self.lock().cursors.len()
     }
 
-    /// Runs one command on `db` and returns the reply (errors as `ok: 0` replies).
+    /// Transactions committed and aborted so far.
+    pub fn transactions(&self) -> (usize, usize) {
+        let s = self.lock();
+        (s.commits, s.aborts)
+    }
+
+    /// Turns access control on: SASL PLAIN as `user` with `password` (the crate's other
+    /// mechanisms are not spoken).
+    pub fn require_plain(&self, user: &str, password: &str) {
+        let mut s = self.lock();
+        let access = s.access.get_or_insert_with(Access::default);
+        access.plain = Some((user.into(), password.into()));
+    }
+
+    /// Turns access control on: MONGODB-OIDC with one of `tokens` (replacing the earlier ones).
+    pub fn accept_tokens(&self, tokens: &[&str]) {
+        let mut s = self.lock();
+        let access = s.access.get_or_insert_with(Access::default);
+        access.tokens = tokens.iter().map(|t| t.to_string()).collect();
+    }
+
+    /// The next command of a signed-in connection fails with `ReauthenticationRequired` (391),
+    /// as when an OIDC token expires.
+    pub fn reauth_next(&self) {
+        if let Some(access) = self.lock().access.as_mut() {
+            access.reauth_next = true;
+        }
+    }
+
+    /// Closes every served connection at its next message, as a restarted server would.
+    pub fn drop_connections(&self) {
+        self.lock().epoch += 1;
+    }
+
+    /// The secrets the server took, oldest first (`plain:<password>`, `oidc:<token>`).
+    pub fn sign_ins(&self) -> Vec<String> {
+        self.lock().sign_ins.clone()
+    }
+
+    /// Runs one command on `db` and returns the reply (errors as `ok: 0` replies). A command
+    /// with `startTransaction` starts a transaction: until `commitTransaction` its writes are
+    /// applied, and `abortTransaction` puts the data back as it was.
     pub fn run(&self, db: &str, command: &Document) -> Document {
+        const TXN_FIELDS: [&str; 3] = ["txnNumber", "autocommit", "startTransaction"];
         let mut s = self.lock();
         let clean: Document = command
             .iter()
-            .filter(|(k, _)| !k.starts_with('$') && k.as_str() != "lsid")
+            .filter(|(k, _)| {
+                !k.starts_with('$') && k.as_str() != "lsid" && !TXN_FIELDS.contains(&k.as_str())
+            })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         s.log.push((db.to_string(), clean.clone()));
         s.lsid = command.get("lsid").cloned();
         let name = clean.keys().next().cloned().unwrap_or_default();
+        if command.get_bool("startTransaction") == Ok(true) {
+            s.txn = Some(s.dbs.clone());
+        }
+        match name.as_str() {
+            "commitTransaction" => {
+                if let Some(f) = s.fail_next.remove(&name) {
+                    // Not committed: the transaction stays open, its writes in place.
+                    return f.reply();
+                }
+                s.txn = None;
+                s.commits += 1;
+                return doc! { "ok": 1.0 };
+            }
+            "abortTransaction" => {
+                return match s.txn.take() {
+                    Some(before) => {
+                        s.dbs = before;
+                        s.aborts += 1;
+                        doc! { "ok": 1.0 }
+                    }
+                    None => Fail::new(251, "NoSuchTransaction", "no transaction is open").reply(),
+                };
+            }
+            _ => {}
+        }
         if let Some(f) = s.fail_next.remove(&name) {
             return f.reply();
         }
@@ -241,12 +359,82 @@ impl FakeMongo {
         )
     }
 
+    /// Access control, when a test turned it on: the sign-in (`saslStart`), and refusals for a
+    /// connection that has not signed in or must sign in again. `None`: run the command.
+    fn gate(&self, command: &Document, authed: &mut bool) -> Option<Document> {
+        let name = command.keys().next()?.clone();
+        let mut s = self.lock();
+        let access = s.access.as_ref()?;
+        match name.as_str() {
+            "saslStart" => {
+                let payload = match command.get("payload") {
+                    Some(Bson::Binary(b)) => b.bytes.clone(),
+                    _ => Vec::new(),
+                };
+                let taken = match command.get_str("mechanism").unwrap_or_default() {
+                    // authzid NUL user NUL password
+                    "PLAIN" => {
+                        let parts: Vec<&[u8]> = payload.split(|b| *b == 0).collect();
+                        match (&access.plain, parts.as_slice()) {
+                            (Some((u, p)), [_, user, pass])
+                                if *user == u.as_bytes() && *pass == p.as_bytes() =>
+                            {
+                                Some(format!("plain:{p}"))
+                            }
+                            _ => None,
+                        }
+                    }
+                    "MONGODB-OIDC" => Document::from_reader(payload.as_slice())
+                        .ok()
+                        .and_then(|d| d.get_str("jwt").ok().map(str::to_string))
+                        .filter(|t| access.tokens.contains(t))
+                        .map(|t| format!("oidc:{t}")),
+                    _ => None,
+                };
+                Some(match taken {
+                    Some(secret) => {
+                        *authed = true;
+                        s.sign_ins.push(secret);
+                        doc! {
+                            "conversationId": 1,
+                            "done": true,
+                            "payload": Bson::Binary(::mongodb::bson::Binary {
+                                subtype: ::mongodb::bson::spec::BinarySubtype::Generic,
+                                bytes: Vec::new(),
+                            }),
+                            "ok": 1.0,
+                        }
+                    }
+                    None => Fail::new(18, "AuthenticationFailed", "Authentication failed.").reply(),
+                })
+            }
+            "hello" | "isMaster" | "ismaster" | "ping" | "buildInfo" | "buildinfo"
+            | "endSessions" => None,
+            _ if !*authed => Some(
+                Fail::new(
+                    13,
+                    "Unauthorized",
+                    format!("command {name} requires authentication"),
+                )
+                .reply(),
+            ),
+            _ if access.reauth_next => {
+                if let Some(a) = s.access.as_mut() {
+                    a.reauth_next = false;
+                }
+                Some(Fail::new(391, "ReauthenticationRequired", "the access token expired").reply())
+            }
+            _ => None,
+        }
+    }
+
     async fn connection(&self, mut stream: TcpStream) -> std::io::Result<()> {
-        let connection_id = {
+        let (connection_id, epoch) = {
             let mut s = self.lock();
             s.connections += 1;
-            s.connections
+            (s.connections, s.epoch)
         };
+        let mut authed = false;
         loop {
             let mut header = [0u8; 16];
             stream.read_exact(&mut header).await?;
@@ -266,10 +454,17 @@ impl FakeMongo {
             let Ok((flags, command)) = decode_msg(&body) else {
                 return Ok(());
             };
+            if self.lock().epoch != epoch {
+                // Closed without a reply, as a server that went away.
+                return Ok(());
+            }
             let db = command.get_str("$db").unwrap_or("admin").to_string();
-            let mut reply = match self.wait_delay(&db, &command).await {
-                Some(f) => f.reply(),
-                None => self.run(&db, &command),
+            let mut reply = match self.gate(&command, &mut authed) {
+                Some(reply) => reply,
+                None => match self.wait_delay(&db, &command).await {
+                    Some(f) => f.reply(),
+                    None => self.run(&db, &command),
+                },
             };
             if is_hello(&command) {
                 reply.insert("connectionId", connection_id);
@@ -292,7 +487,7 @@ impl FakeMongo {
             s.next_op += 1;
             let opid = s.next_op;
             let coll = command.get_str(&name).unwrap_or_default();
-            let command: Document = command
+            let clean: Document = command
                 .iter()
                 .filter(|(k, _)| !k.starts_with('$') && k.as_str() != "lsid")
                 .map(|(k, v)| (k.clone(), v.clone()))
@@ -300,7 +495,8 @@ impl FakeMongo {
             s.ops.push(Op {
                 opid,
                 ns: format!("{db}.{coll}"),
-                command,
+                command: clean,
+                lsid: command.get("lsid").cloned(),
                 killed: false,
             });
             opid
@@ -1009,7 +1205,16 @@ fn doc_size(d: &Document) -> usize {
 fn current_ops(s: &State) -> Vec<Bson> {
     s.ops
         .iter()
-        .map(|o| Bson::Document(doc! { "opid": o.opid, "active": true, "op": "command", "ns": o.ns.clone(), "command": o.command.clone() }))
+        .map(|o| {
+            let mut op = doc! {
+                "opid": o.opid, "active": true, "op": "command", "ns": o.ns.clone(),
+                "command": o.command.clone(), "microsecs_running": 1500_i64, "appName": "Tabler",
+            };
+            if let Some(lsid) = &o.lsid {
+                op.insert("lsid", lsid.clone());
+            }
+            Bson::Document(op)
+        })
         .collect()
 }
 

@@ -1,42 +1,40 @@
-//! The entry points `drivers::registry` calls (docs/drivers/FOUNDATION.md). The lane owns this
-//! file; until its driver is done, `open` reports that it is not implemented yet.
+//! The entry points `drivers::registry` calls (docs/drivers/FOUNDATION.md).
 
-use crate::drivers::native::CallKind;
-use crate::drivers::registry::UtilInput;
+use std::sync::Arc;
+
+use crate::drivers::native::{CallKind, NativeSession, unknown_call};
+use crate::drivers::registry::{self, UtilInput};
 use crate::drivers::{ConnectTarget, Session};
 use crate::error::AppError;
 use crate::types::profile::{ConnectionProfile, Driver};
 
+use super::params::MongoParams;
+use super::session::MongoSession;
+
 const DRIVER: Driver = Driver::Mongodb;
 
-/// Opens a session on the profile's server: `Session::Sql` for a SQL engine, `Session::Native`
-/// for a store that speaks no SQL.
-pub async fn open(_target: ConnectTarget<'_>) -> Result<Session, AppError> {
-    Err(AppError::Unsupported(format!(
-        "{} driver: not implemented yet",
-        DRIVER.label()
-    )))
+/// Opens a MongoDB session (a native store: no SQL). The MCP process is refused: MCP serves no
+/// native store in v1.
+pub async fn open(target: ConnectTarget<'_>) -> Result<Session, AppError> {
+    let session = MongoSession::open(target, registry::unattended()).await?;
+    Ok(Session::Native(Arc::new(session) as Arc<dyn NativeSession>))
 }
 
-/// The driver's own checks of a profile being saved or tested (its `driver_params`), after the
-/// registry's common ones.
-pub fn validate(_profile: &ConnectionProfile) -> Result<(), AppError> {
-    Ok(())
+/// The profile's MongoDB settings (`MongoParams`), checked against its other fields.
+pub fn validate(profile: &ConnectionProfile) -> Result<(), AppError> {
+    MongoParams::of_profile(profile).map(|_| ())
 }
 
-/// A call of the connection form that needs no session (pickers, probes, creating a file).
+/// The connection form has no MongoDB calls.
 pub async fn util(
     _input: UtilInput<'_>,
     method: &str,
     _args: serde_json::Value,
 ) -> Result<serde_json::Value, AppError> {
-    Err(AppError::Unsupported(format!(
-        "{}: unknown call \u{201c}{method}\u{201d}",
-        DRIVER.label()
-    )))
+    Err(unknown_call(DRIVER, method))
 }
 
-/// Whether a `util` call only reads; anything unknown changes something.
+/// Whether a `util` call only reads; there are none, and anything unknown changes something.
 pub fn util_kind(_method: &str) -> CallKind {
     CallKind::Write
 }

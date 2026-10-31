@@ -82,8 +82,12 @@ pub fn from_reply(reply: &Document) -> Option<AppError> {
     })
 }
 
-/// An error of the driver.
+/// An error of the driver. One Tabler raised inside the driver (the OIDC callback's password
+/// command) comes back as it was.
 pub fn from_driver(e: &Error) -> AppError {
+    if let Some(app) = e.get_custom::<AppError>() {
+        return app.clone();
+    }
     match e.kind.as_ref() {
         ErrorKind::Authentication { message, .. } => AppError::Auth(message.clone()),
         ErrorKind::Command(c) => from_code(c.code, &c.code_name, &c.message),

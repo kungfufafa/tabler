@@ -1068,80 +1068,6 @@ mod end_to_end {
         assert_eq!(catalog::reply_n(&f.run("hr", &replace)), Some(0));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn grid_pages_of_large_documents_come_whole() {
-        let f = FakeMongo::new();
-        let text = "x".repeat(2000);
-        f.seed(
-            "hr",
-            "logs",
-            (0..10)
-                .map(|i| doc! { "_id": i, "text": text.clone() })
-                .collect(),
-        );
-        // About two documents to a batch, as 16 MiB holds about 300 documents of 56 KB.
-        f.batch_bytes(5000);
-        let addr = f.serve().await;
-        let client = ::mongodb::Client::with_uri_str(FakeMongo::uri(addr))
-            .await
-            .unwrap();
-        let db = client.database("hr");
-        // The find and its getMores in one session: a server reads a cursor on only in its own.
-        let mut session = client.start_session().await.unwrap();
-        let mut rows = Vec::new();
-        for skip in [0_u64, 4, 8] {
-            let spec = mongo::FindSpec {
-                sort: doc! { "_id": 1 },
-                skip,
-                limit: 4,
-                ..Default::default()
-            };
-            let mut page = mongo::PageRead::new("logs", &spec);
-            let reply = db
-                .run_command(mongo::find("logs", &spec))
-                .session(&mut session)
-                .await
-                .unwrap();
-            let (mut batch, mut cursor) = catalog::cursor_batch(&reply);
-            loop {
-                let step = page.take(&mut batch, cursor);
-                rows.extend(batch.drain(..).filter_map(|d| d.get("_id").cloned()));
-                match step {
-                    mongo::PageStep::More(get_more) => {
-                        if skip == 0 {
-                            let other = db.run_command(get_more.clone()).await.unwrap_err();
-                            assert!(matches!(
-                                errors::from_driver(&other),
-                                AppError::Db {
-                                    vendor_code: Some(50737),
-                                    ..
-                                }
-                            ));
-                        }
-                        let reply = db
-                            .run_command(get_more)
-                            .session(&mut session)
-                            .await
-                            .unwrap();
-                        (batch, cursor) = catalog::cursor_batch(&reply);
-                    }
-                    mongo::PageStep::Close(kill) => {
-                        db.run_command(kill).session(&mut session).await.unwrap();
-                        break;
-                    }
-                    mongo::PageStep::Done => break,
-                }
-            }
-        }
-        // Every document once: no page came back short, so no skip passed over any.
-        assert_eq!(rows, (0..10).map(Bson::Int32).collect::<Vec<_>>());
-        // Two pages took a getMore each (and the first one a refused one outside its session).
-        assert_eq!(f.commands_named("getMore").len(), 3);
-        assert_eq!(f.open_cursors(), 0);
-        drop(session);
-        client.shutdown().await;
-    }
-
     #[test]
     fn console_statements_run_on_the_fake() {
         let f = people();
@@ -1263,7 +1189,7 @@ mod end_to_end {
         let mut opid = None;
         for _ in 0..200 {
             let ops = admin
-                .run_command(mongo::current_op_by_comment(&comment))
+                .run_command(mongo::current_op_matching(&comment, None))
                 .await
                 .unwrap();
             if let Some(op) = catalog::cursor_batch(&ops).0.first() {

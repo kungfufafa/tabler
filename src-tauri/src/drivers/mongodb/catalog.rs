@@ -9,6 +9,7 @@ use super::literal::int_of;
 use crate::sqlgen::native::mongo::{
     ID, JsonMode, create_collection_text, create_index_text, create_view_text, doc_json,
 };
+use crate::types::admin::ProcessRow;
 use crate::types::schema::{
     CheckMeta, ColumnMeta, DatabaseInfo, IndexMeta, TableKind, TableMeta, TableRef, TableSummary,
 };
@@ -296,6 +297,83 @@ fn required_fields(validator: &Document) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// What defines a collection beyond its documents: its create text (options, validator), then
+/// each index but `_id_`.
+pub fn ddl(info: &CollectionInfo, indexes: &[IndexMeta]) -> String {
+    let mut ddl = format!("{};", info.definition());
+    for i in indexes.iter().filter(|i| !i.primary) {
+        if let Some(d) = &i.definition {
+            ddl.push('\n');
+            ddl.push_str(d);
+            ddl.push(';');
+        }
+    }
+    ddl
+}
+
+/// The operations of a `$currentOp` listing as Running Queries rows. `listing` is the comment of
+/// the listing itself (`current`); `app` the application name Tabler's sessions give (`own`).
+pub fn processes(ops: &[Document], listing: &str, app: &str) -> Vec<ProcessRow> {
+    ops.iter()
+        .filter_map(|op| {
+            let id = match op.get("opid")? {
+                Bson::String(s) => s.clone(),
+                other => int_of(other)?.to_string(),
+            };
+            let command = op.get_document("command").ok();
+            let comment = command.and_then(|c| c.get_str("comment").ok());
+            let user = op
+                .get_array("effectiveUsers")
+                .ok()
+                .and_then(|u| u.first())
+                .and_then(Bson::as_document)
+                .and_then(|u| {
+                    let name = u.get_str("user").ok()?;
+                    Some(match u.get_str("db") {
+                        Ok(db) => format!("{name}@{db}"),
+                        Err(_) => name.to_string(),
+                    })
+                });
+            let ns = op.get_str("ns").ok();
+            let application = op.get_str("appName").ok().map(str::to_string);
+            let micros = int(op, "microsecs_running");
+            Some(ProcessRow {
+                id,
+                user,
+                database: ns
+                    .map(|ns| ns.split_once('.').map_or(ns, |(db, _)| db))
+                    .filter(|db| !db.is_empty())
+                    .map(str::to_string),
+                client: op
+                    .get_str("client")
+                    .or_else(|_| op.get_str("client_s"))
+                    .ok()
+                    .map(str::to_string),
+                state: Some(if flag(op, "active") { "active" } else { "idle" }.to_string()),
+                command: op.get_str("op").ok().map(str::to_string),
+                started_at: op.get_str("currentOpTime").ok().map(str::to_string),
+                duration_ms: micros
+                    .map(|us| us / 1000)
+                    .or_else(|| int(op, "secs_running").map(|s| s.saturating_mul(1000))),
+                wait_event: flag(op, "waitingForLock").then(|| "waiting for a lock".to_string()),
+                query: command.map(|c| {
+                    let text = doc_json(c, JsonMode::Relaxed);
+                    match text.char_indices().nth(QUERY_TEXT_CHARS) {
+                        Some((at, _)) => format!("{}…", &text[..at]),
+                        None => text,
+                    }
+                }),
+                current: comment == Some(listing),
+                own: application.as_deref() == Some(app),
+                application,
+            })
+        })
+        .collect()
+}
+
+/// How much of an operation's command the process list shows.
+const QUERY_TEXT_CHARS: usize = 2000;
+
 /// A collection's structure: the inferred `columns`, its indexes, its validator as a check, and
 /// its definition (the create text, then each index but `_id_`).
 pub fn table_meta(
@@ -306,14 +384,7 @@ pub fn table_meta(
     row_estimate: Option<i64>,
 ) -> TableMeta {
     let has_id = columns.iter().any(|c| c.name == ID && c.is_pk);
-    let mut ddl = format!("{};", info.definition());
-    for i in indexes.iter().filter(|i| !i.primary) {
-        if let Some(d) = &i.definition {
-            ddl.push('\n');
-            ddl.push_str(d);
-            ddl.push(';');
-        }
-    }
+    let ddl = ddl(info, &indexes);
     let checks = match info.options.get_document("validator") {
         Ok(v) if !v.is_empty() => vec![CheckMeta {
             name: "validator".into(),

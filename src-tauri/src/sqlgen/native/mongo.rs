@@ -326,37 +326,49 @@ pub fn count_documents(collection: &str, filter: Document) -> Document {
     }
 }
 
-/// The next batch of a cursor.
-pub fn get_more(cursor_id: i64, collection: &str, batch_size: Option<i64>) -> Document {
-    let mut d = doc! { "getMore": cursor_id, "collection": collection };
-    if let Some(n) = batch_size {
-        d.insert("batchSize", n);
-    }
-    d
-}
-
-pub fn kill_cursors(collection: &str, ids: &[i64]) -> Document {
-    doc! { "killCursors": collection, "cursors": ids.to_vec() }
-}
-
 /// The comment of an operation Tabler starts (`tabler-<id>`).
 pub fn op_comment(id: &str) -> String {
     format!("{COMMENT_PREFIX}{id}")
 }
 
-/// Run on `admin`: this connection's operations with `comment`, for a cancel.
-pub fn current_op_by_comment(comment: &str) -> Document {
+/// `command` with Tabler's `comment`, unless it carries one of its own (the console's
+/// `.comment(…)`), which is kept: a cancel then finds the operation by its session.
+pub fn with_comment(mut command: Document, comment: &str) -> Document {
+    if !command.contains_key("comment") {
+        command.insert("comment", comment);
+    }
+    command
+}
+
+/// Run on `admin`: the user's own operations that carry `comment` (also the `getMore`s of a
+/// cursor opened with it) or run in the session `lsid` (`{id: UUID}`), for a cancel.
+pub fn current_op_matching(comment: &str, lsid: Option<&Document>) -> Document {
+    let mut any = vec![
+        Bson::Document(doc! { "command.comment": comment }),
+        Bson::Document(doc! { "cursor.originatingCommand.comment": comment }),
+    ];
+    if let Some(id) = lsid.and_then(|l| l.get("id")) {
+        any.push(Bson::Document(doc! { "lsid.id": id.clone() }));
+    }
     doc! {
         "aggregate": 1,
         "pipeline": [
             { "$currentOp": { "allUsers": false, "idleConnections": false } },
-            { "$match": { "$or": [
-                { "command.comment": comment },
-                { "cursor.originatingCommand.comment": comment },
-            ] } },
+            { "$match": { "$or": any } },
             { "$project": { "opid": 1 } },
         ],
         "cursor": {},
+    }
+}
+
+/// Run on `admin`: the operations running now (Running Queries), every user's or only the
+/// caller's; `comment` marks this listing itself.
+pub fn current_ops(all_users: bool, comment: &str) -> Document {
+    doc! {
+        "aggregate": 1,
+        "pipeline": [{ "$currentOp": { "allUsers": all_users, "idleConnections": false } }],
+        "cursor": {},
+        "comment": comment,
     }
 }
 
@@ -377,10 +389,13 @@ pub struct FindSpec {
     pub projection: Option<Document>,
     pub skip: u64,
     pub limit: u32,
-    pub max_time_ms: Option<u64>,
-    pub comment: Option<String>,
 }
 
+/// The `find` of a grid page. A batch carries at most 16 MiB (the server's `haveSpaceForNext`),
+/// so a page of large documents arrives in several batches even with `batchSize` set to the
+/// page: the session reads the cursor on (`getMore`, whose `limit` the server keeps) until the
+/// page is whole. Offset paging needs every page whole, or the next page's `skip` passes over
+/// the documents a short page left out.
 pub fn find(collection: &str, spec: &FindSpec) -> Document {
     let mut d = doc! { "find": collection, "filter": spec.filter.clone() };
     if !spec.sort.is_empty() {
@@ -394,79 +409,11 @@ pub fn find(collection: &str, spec: &FindSpec) -> Document {
     }
     if spec.limit > 0 {
         d.insert("limit", i64::from(spec.limit));
-        // The whole page in the first batch when it fits in 16 MiB; otherwise the server cuts
-        // the batch and `PageRead` fetches the rest. Never `singleBatch`: it closes the cursor
-        // after a cut batch, and the page would come back short without a sign.
+        // The whole page in the first batch when it fits in 16 MiB. Never `singleBatch`: it
+        // closes the cursor after a cut batch, and the page would come back short without a sign.
         d.insert("batchSize", i64::from(spec.limit));
     }
-    if let Some(ms) = spec.max_time_ms.filter(|ms| *ms > 0) {
-        d.insert("maxTimeMS", i64::try_from(ms).unwrap_or(i64::MAX));
-    }
-    if let Some(c) = &spec.comment {
-        d.insert("comment", c.clone());
-    }
     d
-}
-
-/// What the session runs after a batch of a grid page.
-#[derive(Debug, Clone, PartialEq)]
-pub enum PageStep {
-    /// This `getMore`, whose batch goes to `PageRead::take` in turn.
-    More(Document),
-    /// The page is full while the server still holds the cursor: this `killCursors` frees it
-    /// (its reply does not matter).
-    Close(Document),
-    /// The server closed the cursor: the page is complete.
-    Done,
-}
-
-/// Reads a grid page to its end. A batch carries at most 16 MiB (the server's
-/// `haveSpaceForNext`), so a page of large documents arrives in several batches even with
-/// `batchSize` set to the page: the first from `find`, the rest through `getMore` on the same
-/// cursor, whose `limit` the server keeps. Offset paging needs every page whole, or the next
-/// page's `skip` passes over the documents a short page left out. The session runs the `find`
-/// and its `getMore`s in one explicit session: a server refuses a cursor's `getMore` from
-/// another one, and each `run_command` without a session takes an implicit one of its own.
-#[derive(Debug, Clone)]
-pub struct PageRead {
-    collection: String,
-    /// The page size; 0 reads to the cursor's end.
-    limit: usize,
-    rows: usize,
-}
-
-impl PageRead {
-    pub fn new(collection: &str, spec: &FindSpec) -> PageRead {
-        PageRead {
-            collection: collection.to_string(),
-            limit: spec.limit as usize,
-            rows: 0,
-        }
-    }
-
-    /// Takes a batch (`firstBatch`, then each `nextBatch`) with the reply's cursor id, keeps no
-    /// more documents than the page has room for, and says what to run next.
-    pub fn take<T>(&mut self, batch: &mut Vec<T>, cursor_id: i64) -> PageStep {
-        if self.limit > 0 {
-            batch.truncate(self.limit.saturating_sub(self.rows));
-        }
-        self.rows += batch.len();
-        if cursor_id == 0 {
-            return PageStep::Done;
-        }
-        let full = self.limit > 0 && self.rows >= self.limit;
-        // An empty batch on an open cursor would only repeat: a grid page is never tailable.
-        if full || batch.is_empty() {
-            return PageStep::Close(kill_cursors(&self.collection, &[cursor_id]));
-        }
-        let rest = (self.limit > 0).then(|| (self.limit - self.rows) as i64);
-        PageStep::More(get_more(cursor_id, &self.collection, rest))
-    }
-
-    /// The documents of the page so far.
-    pub fn rows(&self) -> usize {
-        self.rows
-    }
 }
 
 /// One field of one document (`fetch_cell`). A name with a `.` or a leading `$` would project a
@@ -1392,9 +1339,28 @@ pub fn drop_index(coll: &str, name: &str) -> Document {
     doc! { "dropIndexes": coll, "index": name }
 }
 
-/// Sets (or, with an empty document, removes) a collection's validator.
-pub fn set_validator(coll: &str, validator: &Document) -> Document {
-    doc! { "collMod": coll, "validator": validator.clone() }
+/// Sets (or, with an empty document, removes) a collection's validator, with how strictly it
+/// applies (`validationLevel`: strict, moderate, off) and what a failing write gets
+/// (`validationAction`: error, warn) when given.
+pub fn set_validator(
+    coll: &str,
+    validator: &Document,
+    level: Option<&str>,
+    action: Option<&str>,
+) -> Document {
+    let mut d = doc! { "collMod": coll, "validator": validator.clone() };
+    if let Some(level) = level {
+        d.insert("validationLevel", level);
+    }
+    if let Some(action) = action {
+        d.insert("validationAction", action);
+    }
+    d
+}
+
+/// Drops the database the command runs on.
+pub fn drop_database() -> Document {
+    doc! { "dropDatabase": 1 }
 }
 
 /// `db.createCollection("name", {options})`, the definition a collection's DDL shows.
@@ -1843,7 +1809,7 @@ mod tests {
     }
 
     #[test]
-    fn find_builds_pages_read_to_their_end() {
+    fn find_builds_grid_pages() {
         let spec = FindSpec {
             filter: doc! { "a": 1 },
             sort: sort_document(&[SortSpec {
@@ -1854,54 +1820,19 @@ mod tests {
             projection: projection(Some(&["b".to_string()])),
             skip: 100,
             limit: 50,
-            max_time_ms: Some(3000),
-            comment: Some(op_comment("x")),
         };
         assert_eq!(
-            find("c", &spec),
+            with_comment(find("c", &spec), &op_comment("x")),
             doc! {
                 "find": "c", "filter": { "a": 1 }, "sort": { "b": -1, "_id": 1 },
                 "projection": { "_id": 1, "b": 1 }, "skip": 100_i64, "limit": 50_i64,
-                "batchSize": 50_i64, "maxTimeMS": 3000_i64, "comment": "tabler-x",
+                "batchSize": 50_i64, "comment": "tabler-x",
             }
         );
         assert_eq!(
             find("c", &FindSpec::default()),
             doc! { "find": "c", "filter": {} }
         );
-
-        // A batch cut at 16 MiB: the rest of the page through getMore, then the cursor freed.
-        let mut page = PageRead::new("c", &spec);
-        let mut first = vec![(); 20];
-        assert_eq!(
-            page.take(&mut first, 77),
-            PageStep::More(doc! { "getMore": 77_i64, "collection": "c", "batchSize": 30_i64 })
-        );
-        let mut next = vec![(); 30];
-        assert_eq!(
-            page.take(&mut next, 77),
-            PageStep::Close(doc! { "killCursors": "c", "cursors": [77_i64] })
-        );
-        assert_eq!(page.rows(), 50);
-        // The server closed it: done, and never more rows than the page holds.
-        let mut page = PageRead::new("c", &spec);
-        let mut all = vec![(); 60];
-        assert_eq!(page.take(&mut all, 0), PageStep::Done);
-        assert_eq!((all.len(), page.rows()), (50, 50));
-        // An empty batch on an open cursor stops instead of asking again forever.
-        let mut page = PageRead::new("c", &spec);
-        assert_eq!(
-            page.take(&mut Vec::<()>::new(), 9),
-            PageStep::Close(doc! { "killCursors": "c", "cursors": [9_i64] })
-        );
-        // Without a limit, every batch to the cursor's end.
-        let mut page = PageRead::new("c", &FindSpec::default());
-        assert_eq!(
-            page.take(&mut vec![(); 101], 5),
-            PageStep::More(doc! { "getMore": 5_i64, "collection": "c" })
-        );
-        assert_eq!(page.take(&mut vec![(); 3], 0), PageStep::Done);
-        assert_eq!(page.rows(), 104);
         assert!(sort_document(&[]).is_empty());
         assert_eq!(
             sort_document(&[SortSpec {
