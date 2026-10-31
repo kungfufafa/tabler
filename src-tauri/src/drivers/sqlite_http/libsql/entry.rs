@@ -119,7 +119,7 @@ pub fn validate(profile: &ConnectionProfile) -> Result<(), AppError> {
     match params.url() {
         Some(url) => {
             let parsed = parse_url(url)?;
-            if parsed.token.is_some() || parsed.basic.is_some() {
+            if parsed.has_secret {
                 return Err(AppError::InvalidInput(
                     "LibSQL: the URL holds a token or a password: put it in the Auth Token \
                      field (and the user in User)"

@@ -15,8 +15,11 @@ pub struct LibsqlUrl {
     pub base: String,
     /// `?authToken=…`.
     pub token: Option<String>,
-    /// `user:password@` (a `sqld` behind basic auth).
+    /// `user:password@` (a `sqld` behind basic auth), also with only one of the two.
     pub basic: Option<(String, String)>,
+    /// A token key (any casing, even empty or repeated) or a user or password was in the URL: a
+    /// stored URL that says so is refused, since the params are kept as plain text.
+    pub has_secret: bool,
     pub host: String,
     pub port: Option<u16>,
     pub tls: bool,
@@ -47,12 +50,17 @@ pub fn parse_url(input: &str) -> Result<LibsqlUrl, AppError> {
             .map_err(|e| AppError::InvalidInput(format!("invalid LibSQL URL: {e}")))
     };
     let mut token = None;
+    let mut has_secret = false;
     let mut tls = tls;
     let mut kept: Vec<(String, String)> = Vec::new();
     for (k, v) in parse("https")?.query_pairs() {
-        match k.as_ref() {
-            "authToken" | "authtoken" | "auth_token" => {
-                token = Some(v.into_owned()).filter(|t| !t.is_empty());
+        match k.to_ascii_lowercase().as_str() {
+            // A later empty one does not erase the token.
+            "authtoken" | "auth_token" => {
+                has_secret = true;
+                if !v.is_empty() {
+                    token = Some(v.into_owned());
+                }
             }
             // Only `libsql://` reads `tls`; the scheme says it for the others.
             "tls" if scheme == "libsql" => tls = !matches!(v.as_ref(), "0" | "false"),
@@ -67,13 +75,14 @@ pub fn parse_url(input: &str) -> Result<LibsqlUrl, AppError> {
         url.query_pairs_mut().extend_pairs(kept);
     }
     url.set_fragment(None);
-    let basic = (!url.username().is_empty()).then(|| {
+    let basic = (!url.username().is_empty() || url.password().is_some()).then(|| {
         let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
         (
             decode(url.username()),
             decode(url.password().unwrap_or_default()),
         )
     });
+    has_secret |= basic.is_some();
     // Neither fails on an http(s) URL with a host.
     let _ = url.set_username("");
     let _ = url.set_password(None);
@@ -95,6 +104,7 @@ pub fn parse_url(input: &str) -> Result<LibsqlUrl, AppError> {
         base,
         token,
         basic,
+        has_secret,
         host: host
             .trim_start_matches('[')
             .trim_end_matches(']')
@@ -213,6 +223,28 @@ mod tests {
         assert_eq!(base("https://h?tls=0"), "https://h");
         let v6 = parse_url("http://[::1]:8080").unwrap();
         assert_eq!(v6.host, "::1");
+        assert!(!v6.has_secret);
+    }
+
+    #[test]
+    fn any_token_key_or_userinfo_is_a_secret() {
+        // A password without a user.
+        let pw = parse_url("https://:pw@h/db").unwrap();
+        assert_eq!(pw.basic, Some((String::new(), "pw".into())));
+        assert!(pw.has_secret);
+        assert_eq!(pw.base, "https://h/db");
+        assert!(parse_url("https://u@h").unwrap().has_secret);
+        // A later empty key neither erases the token nor hides it.
+        let twice = parse_url("https://h/db?authToken=SECRET&authToken=").unwrap();
+        assert_eq!(twice.token.as_deref(), Some("SECRET"));
+        assert!(twice.has_secret);
+        assert!(parse_url("https://h?auth_token=").unwrap().has_secret);
+        // Any casing is the token, and it never stays in the base sent to the server.
+        let cased = parse_url("https://h?AuthToken=S&x=1").unwrap();
+        assert_eq!(cased.token.as_deref(), Some("S"));
+        assert_eq!(cased.base, "https://h?x=1");
+        assert!(!parse_url("https://h/db?x=1").unwrap().has_secret);
+        assert!(!parse_url("https://@h").unwrap().has_secret);
     }
 
     #[test]

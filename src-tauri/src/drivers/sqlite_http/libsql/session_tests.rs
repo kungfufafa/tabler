@@ -814,6 +814,10 @@ fn profiles_are_checked_and_name_their_server() {
     for secret in [
         "libsql://db.turso.io?authToken=eyJ",
         "https://u:pw@sqld.example.com",
+        "https://:pw@h/db",
+        "https://h/db?authToken=SECRET&authToken=",
+        "https://h/db?authToken=",
+        "https://h/db?AuthToken=S",
     ] {
         let e = entry::validate(&url(secret)).unwrap_err().to_string();
         assert!(e.contains("Auth Token"), "{e}");

@@ -65,6 +65,20 @@ impl D1Params {
             .trim_end_matches('/');
         let url = reqwest::Url::parse(base)
             .map_err(|e| AppError::InvalidInput(format!("Cloudflare D1: the API base: {e}")))?;
+        // `driver_params` are stored as plain text and written into links, and the HTTP client
+        // sends a URL's user and password as Basic auth: the base may hold no credential, and a
+        // query or fragment is refused whole rather than guessing which keys are secret.
+        if !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(AppError::InvalidInput(
+                "Cloudflare D1: the API base takes no user, password, query or fragment: put \
+                 the API token in the API Token field"
+                    .into(),
+            ));
+        }
         let host = url
             .host_str()
             .unwrap_or_default()

@@ -1,9 +1,15 @@
 import type { LaneModule } from "../types";
+import { d1Ui } from "./d1";
+import { libsqlUi } from "./libsql";
 
 /**
- * The renderer of the sqlite-remote lane (LibSQL and Cloudflare D1; docs/drivers/sqlite-remote.md): its connection
- * forms, views and console. Empty until the lane fills it in; `registry.ts` imports it lazily.
+ * The renderer of the sqlite-remote lane (LibSQL and Cloudflare D1; docs/drivers/sqlite-remote.md):
+ * the two connection forms and their URLs. Both sessions speak the core SQLite dialect, so the
+ * grid, the structure view and the SQL editor (its splitter, classifier, highlighting and
+ * formatter) are the app's own: the lane has no views, console or dialect of its own.
  */
-const lane: LaneModule = {};
+const lane: LaneModule = {
+  kinds: { libsql: libsqlUi, d1: d1Ui },
+};
 
 export default lane;

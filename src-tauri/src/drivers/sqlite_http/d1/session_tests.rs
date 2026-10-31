@@ -540,6 +540,22 @@ fn params_are_checked() {
     ))
     .unwrap_err();
     assert!(e.to_string().contains("https://"), "{e}");
+    // A credential in the base would be stored as plain text and sent as Basic auth.
+    for secret in [
+        "https://u:SECRET@gw.example/client/v4",
+        "https://SECRET@gw.example/client/v4",
+        "https://:SECRET@gw.example/client/v4",
+        "https://gw.example/?key=SECRET",
+        "https://gw.example/v4?",
+        "https://gw.example/v4#SECRET",
+        "http://u:SECRET@127.0.0.1:8787/v4",
+    ] {
+        let e = entry::validate(&with(json!({"accountId": ACCOUNT, "apiBase": secret})))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("API Token field"), "{secret}: {e}");
+        assert!(!e.contains("SECRET"), "{e}");
+    }
     assert!(entry::validate(&with(json!({"accountId": 7}))).is_err());
     let parsed = D1Params::from_driver_params(None).unwrap();
     assert_eq!(
@@ -653,6 +669,11 @@ async fn a_raw_filter_cannot_add_a_statement() {
     let two = "SELECT 1; DELETE FROM t";
     assert!(s.query(two, &[]).await.is_err());
     assert!(s.execute(two, &[]).await.is_err());
+    // A writable session too: the DELETE behind a variable's suffix is not sent.
+    let hidden = "SELECT $a(--) ; DELETE FROM t";
+    let e = s.query(hidden, &[]).await.unwrap_err();
+    assert!(e.to_string().contains("one statement at a time"), "{e}");
+    assert!(s.execute(hidden, &[]).await.is_err());
     let mut sink = Sink::default();
     assert!(
         s.run_statement(two, 10, &mut sink, CancelSlot::default())

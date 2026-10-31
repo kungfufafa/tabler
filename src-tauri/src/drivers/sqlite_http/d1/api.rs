@@ -104,9 +104,10 @@ pub fn list_url(
 /// `base` with path segments (each percent-encoded) and query pairs appended.
 fn url(base: &str, segments: &[&str], query: &[(&str, &str)]) -> Result<String, AppError> {
     let mut url = Url::parse(base)
-        .map_err(|e| AppError::InvalidInput(format!("invalid D1 API base URL {base}: {e}")))?;
+        .map_err(|e| AppError::InvalidInput(format!("invalid D1 API base URL: {e}")))?;
+    // The base is not echoed: one that skipped `D1Params::api_base` could hold a credential.
     url.path_segments_mut()
-        .map_err(|_| AppError::InvalidInput(format!("invalid D1 API base URL {base}")))?
+        .map_err(|_| AppError::InvalidInput("invalid D1 API base URL".into()))?
         .pop_if_empty()
         .extend(segments);
     if !query.is_empty() {
@@ -130,8 +131,12 @@ pub fn validate_account_id(id: &str) -> Result<(), AppError> {
 
 /// D1 runs every statement of a `;`-separated text, so each call sends one: the app's SQL can
 /// end in a raw filter the user typed, and the editor and MCP split their scripts themselves.
+/// A variable whose suffix hides a `;` from the shared lexer (`SELECT $a(--) ; DELETE FROM t`)
+/// counts as several.
 pub fn one_statement(sql: &str) -> Result<(), AppError> {
-    if crate::sqlgen::sql::is_single_statement(crate::sqlgen::Dialect::Sqlite, sql) {
+    if crate::sqlgen::sql::is_single_statement(crate::sqlgen::Dialect::Sqlite, sql)
+        && !crate::drivers::sqlite_http::session::hides_code_in_a_variable(sql)
+    {
         Ok(())
     } else {
         Err(AppError::InvalidInput(format!(
@@ -428,6 +433,20 @@ mod tests {
         assert!(is_uuid("6a1c5e0e-1d2f-4c3b-9a8e-0123456789ab"));
         assert!(!is_uuid("my-database"));
         assert!(!is_uuid("6a1c5e0e-1d2f-4c3b-9a8e-0123456789"));
+    }
+
+    #[test]
+    fn one_statement_counts_what_sqlite_reads() {
+        assert!(one_statement("SELECT 1;").is_ok());
+        assert!(one_statement("SELECT $a, :b, @c FROM t WHERE x = ';'").is_ok());
+        for several in [
+            "SELECT 1; DELETE FROM t",
+            // The shared lexer reads `--` as a comment; SQLite reads `$a(--)` as a variable.
+            "SELECT $a(--) ; DELETE FROM t",
+            "SELECT :a::b(') ; DELETE FROM t ; SELECT $b(')",
+        ] {
+            assert!(one_statement(several).is_err(), "{several}");
+        }
     }
 
     #[test]
