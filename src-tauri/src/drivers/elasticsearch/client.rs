@@ -1,37 +1,44 @@
 //! The REST client the session runs on: every request is an `EsRequest` from
-//! `sqlgen::native::elastic` (or the console), sent through a [`Transport`] with its
-//! credentials, and every reply read with the total parsers of this module's siblings.
+//! `sqlgen::native::elastic` (or the console), sent through a [`Transport`] (the shared HTTP
+//! client adds the credential), and every reply read with the total parsers of this module's
+//! siblings. The app's own requests go into the session's trace; the console's do not.
 //!
 //! Browsing pages through `from`/`size` while the page ends within `index.max_result_window`;
 //! deeper pages walk a point in time with `search_after` (Elasticsearch 7.12+, which sorts on
-//! `_shard_doc` last) or a scroll (OpenSearch, older Elasticsearch), and hand the renderer a
-//! cursor so the next page continues where this one stopped. A jump to a far page reads every
-//! page before it, without `_source` on a point in time.
+//! `_shard_doc` last) or a scroll (OpenSearch, older Elasticsearch). Every full page hands the
+//! renderer a cursor where the next one starts. A walk that expired, or a scroll that moved on
+//! (an earlier page read again), walks again from the cursor's position.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
-use chrono::Utc;
-
+use crate::drivers::{SqlTrace, TRACE_SQL_MAX_CHARS, TraceCounts};
 use crate::error::AppError;
 use crate::sqlgen::native::elastic::{
     self as build, BrowseSpec, EditPlan, MAX_PAGE, PageCursor, PagePlan, WalkMode,
 };
+use crate::types::browse::TraceCategory;
+use crate::types::schema::TableSummary;
 
-use super::auth::Auth;
-use super::catalog::{self, IndexMapping};
+use super::catalog::{self, IndexMapping, IndexSettings};
 use super::console::{EsRequest, Method};
 use super::errors;
 use super::info::{ClusterInfo, Features};
 use super::json::{self, Json};
+use super::processes::{self, Task};
 use super::reply::{self, Grid};
 use super::transport::{BaseUrl, HttpRequest, HttpResponse, Transport};
 
+#[derive(Clone)]
 pub struct EsClient {
     transport: Arc<dyn Transport>,
     base: BaseUrl,
-    auth: Auth,
-    /// `x-opaque-id` of the requests (tasks started by this session can be found by it).
+    /// `x-opaque-id` of the requests (tasks started by them can be found by it).
     opaque_id: String,
+    trace: Option<SqlTrace>,
+    /// Open scrolls of the grid and the position each one reads next.
+    scrolls: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 /// A page of the grid.
@@ -39,28 +46,59 @@ pub struct EsClient {
 pub struct Page {
     pub hits: Vec<Json>,
     pub next_cursor: Option<String>,
+    /// The search that read the hits (the last of a walk), as console text.
+    pub request: String,
+}
+
+/// Whether an error says a point in time or scroll is gone (expired, or closed at a last page).
+pub fn is_context_missing(e: &AppError) -> bool {
+    match e {
+        AppError::Db {
+            message,
+            detail,
+            vendor_code: Some(404),
+            ..
+        } => {
+            detail
+                .as_deref()
+                .is_some_and(|d| d.contains("search_context_missing"))
+                || message.to_ascii_lowercase().contains("no search context")
+        }
+        _ => false,
+    }
 }
 
 impl EsClient {
-    pub fn new(
-        transport: Arc<dyn Transport>,
-        base: BaseUrl,
-        auth: Auth,
-        opaque_id: &str,
-    ) -> EsClient {
+    pub fn new(transport: Arc<dyn Transport>, base: BaseUrl, opaque_id: &str) -> EsClient {
         EsClient {
             transport,
             base,
-            auth,
             opaque_id: opaque_id.to_string(),
+            trace: None,
+            scrolls: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub fn base(&self) -> &BaseUrl {
-        &self.base
+    /// Records the app's requests into `trace`.
+    pub fn with_trace(mut self, trace: SqlTrace) -> EsClient {
+        self.trace = Some(trace);
+        self
     }
 
-    /// The HTTP request of `req`, with its body type and credentials.
+    /// The client of one console run: the same connection, its own opaque id, untraced.
+    pub fn for_run(&self, run: u64) -> EsClient {
+        EsClient {
+            opaque_id: format!("{}/{run}", self.opaque_id),
+            trace: None,
+            ..self.clone()
+        }
+    }
+
+    pub fn opaque_id(&self) -> &str {
+        &self.opaque_id
+    }
+
+    /// The HTTP request of `req`, with its body type.
     pub fn http_request(&self, req: &EsRequest) -> HttpRequest {
         let mut http = HttpRequest {
             method: req.method,
@@ -72,7 +110,6 @@ impl EsClient {
             http.set_header("content-type", body.content_type());
             http.body = Some(body.to_bytes());
         }
-        self.auth.authorize(&mut http, Utc::now());
         http
     }
 
@@ -81,8 +118,8 @@ impl EsClient {
         self.transport.send(self.http_request(req)).await
     }
 
-    /// Sends a request and reads its JSON reply; an error reply is an error.
-    pub async fn json(&self, req: &EsRequest) -> Result<Json, AppError> {
+    /// Sends a request and reads its JSON reply; an error reply is an error. Not traced.
+    pub async fn fetch_json(&self, req: &EsRequest) -> Result<Json, AppError> {
         let reply = self.send(req).await?;
         if let Some(e) = errors::reply_error(build::ENGINE, reply.status, &reply.body) {
             return Err(e);
@@ -93,15 +130,28 @@ impl EsClient {
                 req.method.as_str(),
                 req.path(),
                 e.message,
-                super::transport::body_excerpt(&reply.body)
+                crate::drivers::common::http::body_excerpt(
+                    &reply.body,
+                    reply.content_type.as_deref()
+                )
             ))
         })
+    }
+
+    /// [`EsClient::fetch_json`], recorded in the trace.
+    pub async fn json(&self, req: &EsRequest) -> Result<Json, AppError> {
+        let started = Instant::now();
+        let result = self.fetch_json(req).await;
+        if let Some(trace) = &self.trace {
+            trace.finish(category(req), trace_text(req), started, &result, counts);
+        }
+        result
     }
 
     /// `GET /`: the cluster and what its version allows. Free (no search, no billing), so it is
     /// also the ping.
     pub async fn info(&self) -> Result<ClusterInfo, AppError> {
-        let info = ClusterInfo::parse(&self.json(&build::info()).await?)?;
+        let info = ClusterInfo::parse(&self.fetch_json(&build::info()).await?)?;
         info.check_supported()?;
         Ok(info)
     }
@@ -109,10 +159,10 @@ impl EsClient {
     /// The sidebar's tables: indices, aliases and (where the cluster has them) data streams.
     pub async fn tables(
         &self,
-        schema: &str,
+        schema: Option<&str>,
         show_system: bool,
         features: Features,
-    ) -> Result<Vec<crate::types::schema::TableSummary>, AppError> {
+    ) -> Result<Vec<TableSummary>, AppError> {
         let indices =
             catalog::parse_cat_indices(&self.json(&build::cat_indices(show_system)).await?)?;
         let aliases = catalog::parse_cat_aliases(&self.json(&build::cat_aliases()).await?)?;
@@ -140,10 +190,15 @@ impl EsClient {
         catalog::parse_mappings(&self.json(&build::mapping(target)).await?)
     }
 
+    pub async fn settings(&self, target: &str) -> Result<Vec<(String, IndexSettings)>, AppError> {
+        catalog::parse_settings(&self.json(&build::settings(target)).await?)
+    }
+
     /// The smallest `index.max_result_window` of a target's indices (10,000 by default).
     pub async fn result_window(&self, target: &str) -> Result<u64, AppError> {
-        let settings = catalog::parse_settings(&self.json(&build::settings(target)).await?)?;
-        Ok(settings
+        Ok(self
+            .settings(target)
+            .await?
             .iter()
             .map(|(_, s)| {
                 s.max_result_window
@@ -151,6 +206,13 @@ impl EsClient {
             })
             .min()
             .unwrap_or(catalog::DEFAULT_RESULT_WINDOW))
+    }
+
+    /// The documents of a target's indices as `_cat/indices` counts them (an estimate: deleted
+    /// documents not yet merged away, nested documents).
+    pub async fn doc_count(&self, target: &str) -> Result<Option<i64>, AppError> {
+        let rows = catalog::parse_cat_indices(&self.json(&build::cat_indices_of(target)).await?)?;
+        Ok(rows.iter().map(|r| r.docs).sum())
     }
 
     pub async fn count(&self, target: &str, query: &Json) -> Result<i64, AppError> {
@@ -173,8 +235,8 @@ impl EsClient {
         Ok(build::doc_of(&reply))
     }
 
-    /// The page at `offset` (see the module doc). `preference` keeps `from`/`size` pages on the
-    /// same shard copies.
+    /// A page of `limit` rows: where `cursor` says, else at `offset` (see the module doc).
+    /// `preference` keeps `from`/`size` pages on the same shard copies.
     #[allow(clippy::too_many_arguments)]
     pub async fn browse(
         &self,
@@ -190,60 +252,112 @@ impl EsClient {
         let fingerprint = spec.fingerprint();
         match build::plan_page(offset, limit, window, cursor, &fingerprint)? {
             PagePlan::FromSize { from, size } => {
-                let reply = self
-                    .json(&build::search_page(spec, from, size, preference))
-                    .await?;
+                let req = build::search_page(spec, from, size, preference);
+                let reply = self.json(&req).await?;
+                let hits = build::hits_of(&reply).to_vec();
+                let next_cursor = (hits.len() as u64 >= size)
+                    .then(|| PageCursor::from_position(from + size, &fingerprint).encode());
                 Ok(Page {
-                    hits: build::hits_of(&reply).to_vec(),
-                    next_cursor: None,
+                    hits,
+                    next_cursor,
+                    request: req.to_console_text(),
                 })
             }
-            PagePlan::Continue(c) => match c.mode {
-                WalkMode::Pit => {
-                    self.pit_from(spec, c.id, c.after, offset, limit, &fingerprint, features)
-                        .await
-                }
-                WalkMode::Scroll => {
-                    let reply = self.json(&build::scroll_next(&c.id)).await?;
-                    self.scroll_page(reply, c.position, offset, limit, &fingerprint)
-                        .await
-                }
-            },
-            PagePlan::Walk { skip } => match features.pit.filter(|_| features.shard_doc) {
-                Some(api) => {
-                    let reply = self.json(&build::open_pit(api, &spec.target)).await?;
-                    let mut id = build::pit_id(&reply)
-                        .ok_or_else(|| AppError::db("unexpected reply opening a point in time"))?;
-                    let mut after: Option<Json> = None;
-                    let mut skipped = 0;
-                    while skipped < skip {
-                        let n = (skip - skipped).min(MAX_PAGE);
-                        let reply = self
-                            .json(&build::pit_page(spec, &id, after.as_ref(), n, false))
-                            .await?;
-                        if let Some(next) = build::pit_id(&reply) {
-                            id = next;
-                        }
-                        let hits = build::hits_of(&reply);
-                        skipped += hits.len() as u64;
-                        after = hits.last().and_then(|h| h.get("sort")).cloned();
-                        if (hits.len() as u64) < n {
-                            self.close_quietly(&build::close_pit(api, &id)).await;
-                            return Ok(Page {
-                                hits: Vec::new(),
-                                next_cursor: None,
-                            });
+            PagePlan::Continue(c) => {
+                let position = c.position;
+                let continued = match c.mode {
+                    WalkMode::Pit => {
+                        self.pit_from(spec, c.id, c.after, position, limit, &fingerprint, features)
+                            .await
+                    }
+                    WalkMode::Scroll if self.scroll_at(&c.id) == Some(position) => {
+                        let req = build::scroll_next(&c.id);
+                        match self.json(&req).await {
+                            Ok(reply) => {
+                                let sent = req.to_console_text();
+                                self.scroll_page(
+                                    reply,
+                                    sent,
+                                    position,
+                                    position,
+                                    limit,
+                                    &fingerprint,
+                                )
+                                .await
+                            }
+                            Err(e) => {
+                                self.forget_scroll(&c.id);
+                                Err(e)
+                            }
                         }
                     }
-                    self.pit_from(spec, id, after, offset, limit, &fingerprint, features)
-                        .await
+                    // A scroll reads forward only: one that moved on (an earlier page read
+                    // again) or that this session does not know is walked again.
+                    WalkMode::Scroll | WalkMode::From => {
+                        if self.forget_scroll(&c.id) {
+                            self.close_quietly(&build::clear_scroll(&c.id)).await;
+                        }
+                        return self
+                            .walk(spec, features, position, limit, &fingerprint)
+                            .await;
+                    }
+                };
+                match continued {
+                    Err(e) if is_context_missing(&e) => {
+                        self.walk(spec, features, position, limit, &fingerprint)
+                            .await
+                    }
+                    other => other,
                 }
-                None => {
-                    let reply = self.json(&build::scroll_start(spec, limit)).await?;
-                    self.scroll_page(reply, 0, offset, limit, &fingerprint)
-                        .await
+            }
+            PagePlan::Walk { skip } => self.walk(spec, features, skip, limit, &fingerprint).await,
+        }
+    }
+
+    /// Opens a point in time (or a scroll) and reads the page `skip` rows in.
+    async fn walk(
+        &self,
+        spec: &BrowseSpec,
+        features: Features,
+        skip: u64,
+        limit: u64,
+        fingerprint: &str,
+    ) -> Result<Page, AppError> {
+        match features.pit.filter(|_| features.shard_doc) {
+            Some(api) => {
+                let reply = self.json(&build::open_pit(api, &spec.target)).await?;
+                let mut id = build::pit_id(&reply)
+                    .ok_or_else(|| AppError::db("unexpected reply opening a point in time"))?;
+                let mut after: Option<Json> = None;
+                let mut skipped = 0;
+                while skipped < skip {
+                    let n = (skip - skipped).min(MAX_PAGE);
+                    let req = build::pit_page(spec, &id, after.as_ref(), n, false);
+                    let reply = self.json(&req).await?;
+                    if let Some(next) = build::pit_id(&reply) {
+                        id = next;
+                    }
+                    let hits = build::hits_of(&reply);
+                    skipped += hits.len() as u64;
+                    after = hits.last().and_then(|h| h.get("sort")).cloned();
+                    if (hits.len() as u64) < n {
+                        self.close_quietly(&build::close_pit(api, &id)).await;
+                        return Ok(Page {
+                            hits: Vec::new(),
+                            next_cursor: None,
+                            request: req.to_console_text(),
+                        });
+                    }
                 }
-            },
+                self.pit_from(spec, id, after, skip, limit, fingerprint, features)
+                    .await
+            }
+            None => {
+                let req = build::scroll_start(spec, limit);
+                let reply = self.json(&req).await?;
+                self.scroll_page(reply, req.to_console_text(), 0, skip, limit, fingerprint)
+                    .await
+            }
         }
     }
 
@@ -259,9 +373,8 @@ impl EsClient {
         fingerprint: &str,
         features: Features,
     ) -> Result<Page, AppError> {
-        let reply = self
-            .json(&build::pit_page(spec, &id, after.as_ref(), limit, true))
-            .await?;
+        let req = build::pit_page(spec, &id, after.as_ref(), limit, true);
+        let reply = self.json(&req).await?;
         let id = build::pit_id(&reply).unwrap_or(id);
         let hits = build::hits_of(&reply).to_vec();
         let next_cursor = if (hits.len() as u64) < limit {
@@ -281,25 +394,36 @@ impl EsClient {
                 .encode(),
             )
         };
-        Ok(Page { hits, next_cursor })
+        Ok(Page {
+            hits,
+            next_cursor,
+            request: req.to_console_text(),
+        })
     }
 
-    /// Continues a scroll whose next batch starts at `pos` until the rows from `offset` are
-    /// read (a batch holds `limit` rows, so pages at multiples of `limit` line up).
+    /// Continues a scroll whose next batch (`reply`, to the request `sent`) starts at `pos`
+    /// until the rows from `offset` are read (a batch holds `limit` rows, so pages at multiples
+    /// of `limit` line up).
     async fn scroll_page(
         &self,
         mut reply: Json,
+        mut sent: String,
         mut pos: u64,
         offset: u64,
         limit: u64,
         fingerprint: &str,
     ) -> Result<Page, AppError> {
         let mut out = Vec::new();
+        let mut previous: Option<String> = None;
         loop {
             let id = reply
                 .get("_scroll_id")
                 .and_then(Json::as_str)
                 .map(str::to_string);
+            // The server may hand out a new id with each batch.
+            if let Some(old) = previous.take().filter(|old| Some(old) != id.as_ref()) {
+                self.forget_scroll(&old);
+            }
             let hits = build::hits_of(&reply);
             let n = hits.len() as u64;
             for (i, h) in hits.iter().enumerate() {
@@ -312,17 +436,21 @@ impl EsClient {
             let done = n == 0 || n < limit;
             if done || out.len() as u64 >= limit {
                 let next_cursor = match id {
-                    Some(id) if !done => Some(
-                        PageCursor {
-                            mode: WalkMode::Scroll,
-                            id,
-                            after: None,
-                            position: pos,
-                            fingerprint: fingerprint.to_string(),
-                        }
-                        .encode(),
-                    ),
+                    Some(id) if !done => {
+                        self.remember_scroll(&id, pos);
+                        Some(
+                            PageCursor {
+                                mode: WalkMode::Scroll,
+                                id,
+                                after: None,
+                                position: pos,
+                                fingerprint: fingerprint.to_string(),
+                            }
+                            .encode(),
+                        )
+                    }
                     Some(id) => {
+                        self.forget_scroll(&id);
                         self.close_quietly(&build::clear_scroll(&id)).await;
                         None
                     }
@@ -331,10 +459,39 @@ impl EsClient {
                 return Ok(Page {
                     hits: out,
                     next_cursor,
+                    request: sent,
                 });
             }
             let id = id.ok_or_else(|| AppError::db("the scroll reply has no _scroll_id"))?;
-            reply = self.json(&build::scroll_next(&id)).await?;
+            let req = build::scroll_next(&id);
+            reply = self.json(&req).await?;
+            sent = req.to_console_text();
+            previous = Some(id);
+        }
+    }
+
+    fn scrolls(&self) -> std::sync::MutexGuard<'_, HashMap<String, u64>> {
+        self.scrolls.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn scroll_at(&self, id: &str) -> Option<u64> {
+        self.scrolls().get(id).copied()
+    }
+
+    fn remember_scroll(&self, id: &str, pos: u64) {
+        self.scrolls().insert(id.to_string(), pos);
+    }
+
+    /// Forgets a scroll; whether it was known.
+    fn forget_scroll(&self, id: &str) -> bool {
+        self.scrolls().remove(id).is_some()
+    }
+
+    /// Frees the scrolls still open (the session closes).
+    pub async fn close_walks(&self) {
+        let ids: Vec<String> = self.scrolls().drain().map(|(id, _)| id).collect();
+        if !ids.is_empty() {
+            self.close_quietly(&build::clear_scrolls(&ids)).await;
         }
     }
 
@@ -354,6 +511,23 @@ impl EsClient {
         }
         let reply = self.json(&plan.request()).await?;
         Ok(build::bulk_outcomes(&reply, &plan.ops))
+    }
+
+    /// The running tasks.
+    pub async fn tasks(&self) -> Result<Vec<Task>, AppError> {
+        Ok(processes::parse_tasks(&self.json(&build::tasks()).await?))
+    }
+
+    /// Cancels the tasks a request with the opaque id `opaque` started (a console run's
+    /// `_update_by_query`, `_reindex`…, which closing their connection does not stop).
+    pub async fn cancel_tasks_of(&self, opaque: &str) -> Result<(), AppError> {
+        let tasks = processes::parse_tasks(&self.fetch_json(&build::tasks()).await?);
+        for task in processes::of_run(&tasks, opaque) {
+            if let Ok(req) = build::cancel_task(&task.id) {
+                self.close_quietly(&req).await;
+            }
+        }
+        Ok(())
     }
 
     /// Runs a console request and reads its reply as grids. An error reply is an error; a
@@ -380,5 +554,40 @@ impl EsClient {
                 &reply.body,
             ))]),
         }
+    }
+}
+
+/// What the console log files a request under.
+fn category(req: &EsRequest) -> TraceCategory {
+    const DATA: &[&str] = &[
+        "_search", "_count", "_mget", "_bulk", "_pit", "_sql", "_doc", "_update",
+    ];
+    if req.segments.iter().any(|s| DATA.contains(&s.as_str())) {
+        TraceCategory::Data
+    } else {
+        TraceCategory::Structure
+    }
+}
+
+/// A request as the console log shows it, capped.
+fn trace_text(req: &EsRequest) -> String {
+    let text = req.to_console_text();
+    match text.char_indices().nth(TRACE_SQL_MAX_CHARS) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text,
+    }
+}
+
+/// The rows a reply returned (hits) or changed (bulk items).
+fn counts(reply: &Json) -> TraceCounts {
+    if let Some(items) = reply.get("items").and_then(Json::as_array) {
+        return TraceCounts {
+            rows: None,
+            affected: Some(items.len() as u64),
+        };
+    }
+    match reply.at(&["hits", "hits"]).and_then(Json::as_array) {
+        Some(hits) => TraceCounts::rows(hits.len()),
+        None => TraceCounts::NONE,
     }
 }

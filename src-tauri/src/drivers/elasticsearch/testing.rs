@@ -1,18 +1,20 @@
 //! Fakes for the tests: [`FakeEs`], an in-memory cluster behind the `Transport` seam (indices
 //! with mappings and documents, `from`/`size`, points in time with `search_after`, scrolls,
-//! counts, `_mget`, `_bulk` with `if_seq_no` checks, injected failures), and a plain reqwest
-//! transport for the wire-level tests against `testkit::fake_http`.
+//! counts, `_mget`, `_bulk` with `if_seq_no` checks, SQL with cursors, tasks, injected
+//! failures), which [`route`] also serves over a real socket through `testkit::fake_http`.
 //!
 //! The fake answers what the client sends, not the whole API: queries other than `match_all`,
 //! `ids` and a top-level `term` match every document, and documents come back in the order
-//! they were indexed (their position is their `sort` value).
+//! they were indexed (their position is their `sort` value). Its SQL answers any query with the
+//! `n` field of the first index's documents, a page of `fetch_size` rows at a time.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
 use crate::error::AppError;
+use crate::testkit::{Reply, Request, Route};
 
 use super::console::{Method, parse_target};
 use super::json::{self, Json};
@@ -47,6 +49,14 @@ struct State {
     requests: Vec<HttpRequest>,
     /// Canned replies by `METHOD /path` prefix, used once each.
     failures: Vec<(String, HttpResponse)>,
+    /// Running tasks (`_tasks` objects) and the ids cancelled.
+    tasks: Vec<Json>,
+    cancelled: Vec<String>,
+    /// Open SQL cursors (the next row) and the ones closed.
+    sql_cursors: HashMap<String, (usize, usize)>,
+    sql_closed: Vec<String>,
+    /// `index.max_result_window` of every index (`None`: the default).
+    window: Option<u64>,
 }
 
 pub struct FakeEs {
@@ -136,7 +146,70 @@ impl FakeEs {
         self.state().scrolls.len()
     }
 
-    fn handle(&self, req: &HttpRequest) -> HttpResponse {
+    /// Sets `index.max_result_window` of every index.
+    pub fn window(&self, n: u64) {
+        self.state().window = Some(n);
+    }
+
+    /// Adds a running task (an object of `_tasks?group_by=none`).
+    pub fn task(&self, task: &str) {
+        let t = json::parse(task).unwrap_or_else(|e| panic!("{task}: {e:?}"));
+        self.state().tasks.push(t);
+    }
+
+    /// The task ids cancelled so far.
+    pub fn cancelled(&self) -> Vec<String> {
+        self.state().cancelled.clone()
+    }
+
+    pub fn open_sql_cursors(&self) -> usize {
+        self.state().sql_cursors.len()
+    }
+
+    pub fn closed_sql_cursors(&self) -> Vec<String> {
+        self.state().sql_closed.clone()
+    }
+
+    /// One SQL page from row `from`, `size` rows: the `n` of the first index's documents.
+    fn sql_page(st: &mut State, from: usize, size: usize, first: bool) -> HttpResponse {
+        let docs: Vec<Json> = st
+            .indices
+            .first()
+            .map(|i| {
+                i.docs
+                    .iter()
+                    .map(|d| d.source.get("n").cloned().unwrap_or(Json::Null))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let rows: Vec<Json> = docs
+            .iter()
+            .skip(from)
+            .take(size)
+            .map(|n| Json::Arr(vec![n.clone()]))
+            .collect();
+        let next = from + rows.len();
+        let mut out = Vec::new();
+        if first {
+            out.push((
+                "columns".to_string(),
+                Json::Arr(vec![Json::obj([
+                    ("name", Json::str("n")),
+                    ("type", Json::str("long")),
+                ])]),
+            ));
+        }
+        out.push(("rows".to_string(), Json::Arr(rows)));
+        if next < docs.len() {
+            st.next_id += 1;
+            let id = format!("sql-{}", st.next_id);
+            st.sql_cursors.insert(id.clone(), (next, size));
+            out.push(("cursor".to_string(), Json::str(id)));
+        }
+        HttpResponse::json(200, &Json::Obj(out).to_text())
+    }
+
+    pub fn handle(&self, req: &HttpRequest) -> HttpResponse {
         let line = format!("{} {}", req.method.as_str(), req.path());
         let mut st = self.state();
         st.requests.push(req.clone());
@@ -221,18 +294,23 @@ impl FakeEs {
             }
             (Method::Get, [target, "_settings"]) => {
                 let found = resolve(&st, target);
+                let window = st.window;
                 let out: Vec<(String, Json)> = found
                     .iter()
                     .map(|i| {
+                        let mut settings = vec![
+                            ("index.number_of_shards".to_string(), Json::str("1")),
+                            ("index.uuid".to_string(), Json::str("x")),
+                        ];
+                        if let Some(w) = window {
+                            settings.push((
+                                "index.max_result_window".to_string(),
+                                Json::str(w.to_string()),
+                            ));
+                        }
                         (
                             i.name.clone(),
-                            Json::obj([(
-                                "settings",
-                                Json::obj([
-                                    ("index.number_of_shards", Json::str("1")),
-                                    ("index.uuid", Json::str("x")),
-                                ]),
-                            )]),
+                            Json::obj([("settings", Json::Obj(settings))]),
                         )
                     })
                     .collect();
@@ -333,7 +411,7 @@ impl FakeEs {
                     .insert(id.clone(), (index, docs, pos + hits.len(), size));
                 search_reply(hits, Some(("_scroll_id", &id)))
             }
-            (Method::Post, [target, "_search"]) => {
+            (Method::Get | Method::Post, [target, "_search"]) => {
                 let query = body_json.get("query").cloned().unwrap_or(Json::Null);
                 let docs: Vec<(String, FakeDoc)> = resolve(&st, target)
                     .iter()
@@ -356,7 +434,7 @@ impl FakeEs {
                     return search_reply(hits, Some(("_scroll_id", &id)));
                 }
                 let from = body_json.get("from").and_then(Json::as_u64).unwrap_or(0) as usize;
-                if from + size > 10_000 {
+                if (from + size) as u64 > st.window.unwrap_or(10_000) {
                     return error(
                         400,
                         "illegal_argument_exception",
@@ -420,6 +498,90 @@ impl FakeEs {
                     ])
                     .to_text(),
                 )
+            }
+            (Method::Get, ["_cat", "indices", target]) => {
+                let rows: Vec<Json> = resolve(&st, target)
+                    .iter()
+                    .map(|i| {
+                        Json::obj([
+                            ("index", Json::str(i.name.clone())),
+                            ("docs.count", Json::str(i.docs.len().to_string())),
+                        ])
+                    })
+                    .collect();
+                if rows.is_empty() {
+                    return not_found(target);
+                }
+                HttpResponse::json(200, &Json::Arr(rows).to_text())
+            }
+            (Method::Get, ["_alias", name]) => {
+                let out: Vec<(String, Json)> = st
+                    .aliases
+                    .iter()
+                    .filter(|(a, _)| a == name)
+                    .map(|(a, i)| {
+                        (
+                            i.clone(),
+                            Json::obj([("aliases", Json::obj([(a.clone(), Json::Obj(vec![]))]))]),
+                        )
+                    })
+                    .collect();
+                if out.is_empty() {
+                    return error(
+                        404,
+                        "aliases_not_found_exception",
+                        &format!("alias [{name}] missing"),
+                    );
+                }
+                HttpResponse::json(200, &Json::Obj(out).to_text())
+            }
+            (Method::Get, ["_tasks"]) => HttpResponse::json(
+                200,
+                &Json::obj([("tasks", Json::Arr(st.tasks.clone()))]).to_text(),
+            ),
+            (Method::Post, ["_tasks", id, "_cancel"]) => {
+                let found = st.tasks.iter().position(|t| {
+                    format!(
+                        "{}:{}",
+                        t.get("node").and_then(Json::as_str).unwrap_or_default(),
+                        t.get("id").and_then(Json::scalar_text).unwrap_or_default()
+                    ) == *id
+                });
+                match found {
+                    Some(i) => {
+                        st.tasks.remove(i);
+                        st.cancelled.push(id.to_string());
+                        HttpResponse::json(200, r#"{"nodes":{}}"#)
+                    }
+                    None => error(
+                        404,
+                        "resource_not_found_exception",
+                        &format!("task [{id}] is not found"),
+                    ),
+                }
+            }
+            (Method::Post, ["_sql"]) => {
+                if let Some(c) = body_json.get("cursor").and_then(Json::as_str) {
+                    let Some((from, size)) = st.sql_cursors.remove(c) else {
+                        return error(404, "search_context_missing_exception", "no cursor");
+                    };
+                    return Self::sql_page(&mut st, from, size, false);
+                }
+                let size = body_json
+                    .get("fetch_size")
+                    .and_then(Json::as_u64)
+                    .unwrap_or(1000) as usize;
+                Self::sql_page(&mut st, 0, size.max(1), true)
+            }
+            (Method::Post, ["_sql", "close"]) => {
+                let c = body_json
+                    .get("cursor")
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let found = st.sql_cursors.remove(&c).is_some();
+                st.sql_closed.push(c);
+                HttpResponse::json(200, &format!(r#"{{"succeeded":{found}}}"#))
             }
             _ => error(
                 400,
@@ -696,59 +858,26 @@ impl Transport for FakeEs {
     }
 }
 
-/// reqwest without proxies (the requests must reach 127.0.0.1), sending each request as built:
-/// its headers are the client's (credentials, content type, opaque id).
-pub struct ReqwestTransport {
-    http: reqwest::Client,
-}
-
-impl ReqwestTransport {
-    pub fn new(timeout: Option<std::time::Duration>) -> ReqwestTransport {
-        crate::testkit::install_crypto();
-        let mut b = reqwest::Client::builder().no_proxy();
-        if let Some(t) = timeout {
-            b = b.timeout(t);
+/// A route of `testkit::fake_http` that serves `es` over a real socket (every method and path),
+/// so the session runs through the shared HTTP client end to end.
+pub fn route(es: Arc<FakeEs>) -> Route {
+    Route::new("*", "/*").handler(move |req: &Request| {
+        let query = req
+            .query
+            .as_ref()
+            .map(|q| format!("?{q}"))
+            .unwrap_or_default();
+        let http = HttpRequest {
+            method: Method::parse(&req.method).unwrap_or(Method::Get),
+            url: format!("http://fake{}{query}", req.path),
+            headers: req.headers.clone(),
+            body: (!req.body.is_empty()).then(|| req.body.clone()),
+        };
+        let reply = es.handle(&http);
+        let mut out = Reply::new(reply.status).body(reply.body);
+        if let Some(ct) = reply.content_type {
+            out = out.header("content-type", &ct);
         }
-        ReqwestTransport {
-            http: b.build().expect("a reqwest client"),
-        }
-    }
-}
-
-fn map_reqwest(e: reqwest::Error) -> AppError {
-    if e.is_timeout() {
-        AppError::Timeout
-    } else if e.is_connect() {
-        AppError::Connect(e.to_string())
-    } else {
-        AppError::NotConnected
-    }
-}
-
-#[async_trait]
-impl Transport for ReqwestTransport {
-    async fn send(&self, req: HttpRequest) -> Result<HttpResponse, AppError> {
-        let method = reqwest::Method::from_bytes(req.method.as_str().as_bytes())
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-        let mut b = self.http.request(method, &req.url);
-        for (k, v) in &req.headers {
-            b = b.header(k.as_str(), v.as_str());
-        }
-        if let Some(body) = req.body {
-            b = b.body(body);
-        }
-        let resp = b.send().await.map_err(map_reqwest)?;
-        let status = resp.status().as_u16();
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        let body = resp.bytes().await.map_err(map_reqwest)?.to_vec();
-        Ok(HttpResponse {
-            status,
-            content_type,
-            body,
-        })
-    }
+        out
+    })
 }

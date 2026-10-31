@@ -73,8 +73,6 @@ pub struct Field {
     pub es_type: String,
     /// A keyword multi-field to sort and match exactly on (`title.keyword`).
     pub keyword: Option<String>,
-    /// `index: false`: not searchable.
-    pub indexed: bool,
     /// `doc_values: false`: not sortable on its own.
     pub doc_values: bool,
 }
@@ -105,7 +103,6 @@ impl Field {
             path: c.name.clone(),
             es_type: c.data_type.clone(),
             keyword,
-            indexed: true,
             doc_values: sortable_raw,
         }
     }
@@ -223,7 +220,6 @@ fn walk(props: &[(String, Json)], prefix: &str, out: &mut Vec<Field>, depth: usi
             path,
             es_type,
             keyword,
-            indexed: def.get("index").and_then(Json::as_bool) != Some(false),
             doc_values: def.get("doc_values").and_then(Json::as_bool) != Some(false),
         });
     }
@@ -360,14 +356,9 @@ fn column(name: &str, es_type: &str, nullable: bool) -> ColumnMeta {
 /// The settings Tabler reads from `GET /<index>/_settings?flat_settings=true`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct IndexSettings {
-    pub shards: Option<u32>,
-    pub replicas: Option<u32>,
+    /// `index.max_result_window`, the deepest `from + size` (the default where it is unset).
     pub max_result_window: Option<u64>,
-    pub refresh_interval: Option<String>,
-    pub hidden: bool,
-    /// A write block (`index.blocks.write`, `read_only`, `read_only_allow_delete`).
-    pub write_blocked: bool,
-    /// Every setting, flat (`index.number_of_shards` → `"1"`).
+    /// Every setting, flat (`index.number_of_shards` → `"1"`), for the index's definition.
     pub flat: Vec<(String, Json)>,
 }
 
@@ -384,23 +375,11 @@ pub fn parse_settings(reply: &Json) -> Result<Vec<(String, IndexSettings)>, AppE
                 .and_then(Json::as_object)
                 .map(<[_]>::to_vec)
                 .unwrap_or_default();
-            let get = |k: &str| flat.iter().find(|(n, _)| n == k).map(|(_, v)| v);
-            let truthy = |k: &str| {
-                get(k).is_some_and(|v| v.as_bool() == Some(true) || v.as_str() == Some("true"))
-            };
             let settings = IndexSettings {
-                shards: get("index.number_of_shards")
-                    .and_then(Json::as_u64)
-                    .map(|n| n as u32),
-                replicas: get("index.number_of_replicas")
-                    .and_then(Json::as_u64)
-                    .map(|n| n as u32),
-                max_result_window: get("index.max_result_window").and_then(Json::as_u64),
-                refresh_interval: get("index.refresh_interval").and_then(Json::scalar_text),
-                hidden: truthy("index.hidden"),
-                write_blocked: truthy("index.blocks.write")
-                    || truthy("index.blocks.read_only")
-                    || truthy("index.blocks.read_only_allow_delete"),
+                max_result_window: flat
+                    .iter()
+                    .find(|(n, _)| n == "index.max_result_window")
+                    .and_then(|(_, v)| v.as_u64()),
                 flat,
             };
             (index.clone(), settings)
@@ -470,7 +449,6 @@ pub struct CatAlias {
     pub index: String,
     /// `-` when the alias has no filter.
     pub filtered: bool,
-    pub is_write_index: Option<bool>,
 }
 
 pub fn parse_cat_aliases(reply: &Json) -> Result<Vec<CatAlias>, AppError> {
@@ -487,11 +465,6 @@ pub fn parse_cat_aliases(reply: &Json) -> Result<Vec<CatAlias>, AppError> {
                     .get("filter")
                     .and_then(Json::as_str)
                     .is_some_and(|f| f != "-" && f != "*"),
-                is_write_index: match r.get("is_write_index").and_then(Json::as_str) {
-                    Some("true") => Some(true),
-                    Some("false") => Some(false),
-                    _ => None,
-                },
             })
         })
         .collect())
@@ -503,7 +476,6 @@ pub struct DataStream {
     pub name: String,
     pub indices: Vec<String>,
     pub status: Option<String>,
-    pub template: Option<String>,
     pub hidden: bool,
     pub system: bool,
 }
@@ -527,7 +499,6 @@ pub fn parse_data_streams(reply: &Json) -> Result<Vec<DataStream>, AppError> {
                     .map(str::to_string)
                     .collect(),
                 status: s.get("status").and_then(Json::as_str).map(str::to_string),
-                template: s.get("template").and_then(Json::as_str).map(str::to_string),
                 hidden: s.get("hidden").and_then(Json::as_bool).unwrap_or(false),
                 system: s.get("system").and_then(Json::as_bool).unwrap_or(false),
             })
@@ -544,7 +515,7 @@ pub fn is_system_name(name: &str) -> bool {
 /// dot-prefixed names as `SystemView` only when `show_system`. Backing indices of data streams
 /// are left out (the stream stands for them).
 pub fn tables(
-    schema: &str,
+    schema: Option<&str>,
     indices: &[CatIndex],
     aliases: &[CatAlias],
     streams: &[DataStream],
@@ -583,7 +554,7 @@ pub fn tables(
         }
         out.push(TableSummary {
             name: i.index.clone(),
-            schema: Some(schema.to_string()),
+            schema: schema.map(str::to_string),
             kind: kind_for(&i.index, TableKind::Table),
             row_estimate: i.docs,
             size_bytes: i.size_bytes,
@@ -605,7 +576,7 @@ pub fn tables(
         }
         out.push(TableSummary {
             name: alias.to_string(),
-            schema: Some(schema.to_string()),
+            schema: schema.map(str::to_string),
             kind: kind_for(alias, TableKind::View),
             row_estimate: None,
             size_bytes: None,
@@ -631,7 +602,7 @@ pub fn tables(
         }
         out.push(TableSummary {
             name: s.name.clone(),
-            schema: Some(schema.to_string()),
+            schema: schema.map(str::to_string),
             kind: if s.hidden || s.system {
                 TableKind::SystemView
             } else {
@@ -643,18 +614,6 @@ pub fn tables(
         });
     }
     out
-}
-
-/// The completion lists: each index, alias and stream with its field paths.
-pub fn completion_fields(mappings: &[(String, IndexMapping)]) -> BTreeMap<String, Vec<String>> {
-    mappings
-        .iter()
-        .map(|(index, m)| {
-            let mut names: Vec<String> = vec![ID.to_string()];
-            names.extend(m.fields.iter().map(|f| f.path.clone()));
-            (index.clone(), names)
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -813,7 +772,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let t = tables("c", &indices, &aliases, &streams, false);
+        let t = tables(Some("c"), &indices, &aliases, &streams, false);
         let names: Vec<(&str, TableKind)> = t.iter().map(|t| (t.name.as_str(), t.kind)).collect();
         assert_eq!(
             names,
@@ -833,7 +792,8 @@ mod tests {
         assert_eq!(t[1].row_estimate, None);
         assert_eq!(t[2].comment.as_deref(), Some("alias of logs, old"));
         assert_eq!(t[3].row_estimate, Some(7));
-        let all = tables("c", &indices, &aliases, &streams, true);
+        let all = tables(None, &indices, &aliases, &streams, true);
+        assert!(all.iter().all(|t| t.schema.is_none()));
         assert!(
             all.iter()
                 .any(|t| t.name == ".kibana_1" && t.kind == TableKind::SystemView)
@@ -855,10 +815,8 @@ mod tests {
         )
         .unwrap();
         let (_, s) = &s[0];
-        assert_eq!(s.shards, Some(3));
         assert_eq!(s.max_result_window, Some(50000));
-        assert_eq!(s.refresh_interval.as_deref(), Some("30s"));
-        assert!(s.write_blocked && !s.hidden);
+        assert_eq!(s.flat.len(), 6);
         assert!(
             is_internal_setting("index.uuid") && !is_internal_setting("index.number_of_shards")
         );

@@ -111,13 +111,6 @@ impl Json {
         }
     }
 
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            Json::Num(n) | Json::Str(n) => n.trim().parse().ok(),
-            _ => None,
-        }
-    }
-
     pub fn as_array(&self) -> Option<&[Json]> {
         match self {
             Json::Arr(items) => Some(items),
@@ -213,13 +206,6 @@ fn newline(out: &mut String, indent: Option<usize>, level: usize) {
         out.push('\n');
         out.extend(std::iter::repeat_n(' ', n * level));
     }
-}
-
-/// A string as a JSON string literal.
-pub fn quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    write_str(&mut out, s);
-    out
 }
 
 fn write_str(out: &mut String, s: &str) {
@@ -323,7 +309,8 @@ pub fn parse_console(text: &str) -> Result<Vec<Json>, JsonError> {
     }
 }
 
-/// Values of newline-delimited JSON (`_bulk` replies, `_msearch` bodies), strictly.
+/// Values of newline-delimited JSON, strictly (the fakes read `_bulk` bodies with it).
+#[cfg(test)]
 pub fn parse_ndjson(text: &str) -> Result<Vec<Json>, JsonError> {
     let mut p = Parser::new(text, false);
     let mut out = Vec::new();

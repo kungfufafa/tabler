@@ -3,6 +3,8 @@
 //! of both engines with their column types, `_cat` tables, `_bulk` items with their errors, and
 //! any other reply as one JSON cell. Row caps apply; what was cut is said in a notice.
 
+use std::collections::HashSet;
+
 use crate::types::query::ResultColumn;
 use crate::types::schema::ValueKind;
 use crate::types::value::Value;
@@ -10,10 +12,12 @@ use crate::types::value::Value;
 use super::catalog;
 use super::console::EsRequest;
 use super::json::Json;
-use super::values::{field_value, number_value, to_value};
+use super::values::{Paths, number_value, to_value};
 
 /// More `_source` columns than this in one console grid are left in the JSON reply.
 pub const MAX_COLUMNS: usize = 512;
+/// A `_source` path longer than this (bytes) is not made a console column.
+pub const MAX_PATH: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Grid {
@@ -124,29 +128,37 @@ fn hits_or_json(reply: &Json, max_rows: usize) -> Grid {
 
 /// Documents (hits or `_mget` docs): `_index`, `_id`, then the `_source` leaves.
 fn docs_grid(docs: &[Json], max_rows: usize) -> Grid {
-    let mut paths: Vec<String> = Vec::new();
-    let mut overflow = false;
+    let mut leaves = Leaves::default();
+    let mut buf = String::new();
     for d in docs.iter().take(max_rows) {
         if let Some(src) = d.get("_source") {
-            leaf_paths(src, "", &mut paths, &mut overflow, 0);
+            leaf_paths(src, &mut buf, &mut leaves, 0);
         }
     }
+    let Leaves {
+        out: paths,
+        overflow,
+        ..
+    } = leaves;
     let mut columns = vec![
         result_column(catalog::INDEX, "keyword", ValueKind::Text),
         result_column(catalog::ID, "keyword", ValueKind::Text),
     ];
     columns.extend(paths.iter().map(|p| result_column(p, "", ValueKind::Json)));
+    let index = Paths::new(paths.iter().map(String::as_str));
     let mut rows = Vec::new();
     for d in docs.iter().take(max_rows) {
         let mut row = vec![
             d.get("_index").map_or(Value::Null, |v| to_value(v, None)),
             d.get("_id").map_or(Value::Null, |v| to_value(v, None)),
         ];
+        let source = d.get("_source").map(|s| index.locate(s));
         for p in &paths {
-            row.push(match d.get("_source") {
-                Some(src) => field_value(src, p, None),
-                None => super::values::missing(),
-            });
+            row.push(
+                source
+                    .as_ref()
+                    .map_or_else(super::values::missing, |s| s.value(p, None)),
+            );
         }
         rows.push(row);
     }
@@ -171,26 +183,45 @@ fn docs_grid(docs: &[Json], max_rows: usize) -> Grid {
     }
 }
 
-/// Leaf paths of an object in first-seen order; arrays and empty objects are leaves.
-fn leaf_paths(v: &Json, prefix: &str, out: &mut Vec<String>, overflow: &mut bool, depth: usize) {
+/// The console columns found so far.
+#[derive(Default)]
+struct Leaves {
+    out: Vec<String>,
+    seen: HashSet<String>,
+    /// Some leaves were left out (past the cap, or a path too long).
+    overflow: bool,
+}
+
+/// Leaf paths of an object in first-seen order; arrays and empty objects are leaves. One
+/// buffer is reused, a path past [`MAX_PATH`] is not followed and the walk stops once the cap
+/// is full, so a hostile document (a huge key over many children) costs linear time.
+fn leaf_paths(v: &Json, path: &mut String, leaves: &mut Leaves, depth: usize) {
     let Json::Obj(pairs) = v else { return };
     for (k, val) in pairs {
-        let path = format!("{prefix}{k}");
+        if leaves.overflow && leaves.out.len() >= MAX_COLUMNS {
+            return;
+        }
+        let len = path.len();
+        if len + 1 + k.len() > MAX_PATH {
+            leaves.overflow = true;
+            continue;
+        }
+        if depth > 0 {
+            path.push('.');
+        }
+        path.push_str(k);
         match val {
             Json::Obj(inner) if !inner.is_empty() && depth < 32 => {
-                leaf_paths(val, &format!("{path}."), out, overflow, depth + 1);
+                leaf_paths(val, path, leaves, depth + 1);
             }
+            _ if leaves.seen.contains(path.as_str()) => {}
+            _ if leaves.out.len() >= MAX_COLUMNS => leaves.overflow = true,
             _ => {
-                if out.contains(&path) {
-                    continue;
-                }
-                if out.len() >= MAX_COLUMNS {
-                    *overflow = true;
-                } else {
-                    out.push(path);
-                }
+                leaves.seen.insert(path.clone());
+                leaves.out.push(path.clone());
             }
         }
+        path.truncate(len);
     }
 }
 
@@ -215,9 +246,10 @@ pub fn text_grid(text: &str) -> Grid {
 /// An array of flat objects (`_cat` with `format=json`).
 fn table_grid(rows: &[Json], max_rows: usize) -> Grid {
     let mut keys: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
     for r in rows.iter().take(max_rows) {
         for (k, _) in r.as_object().unwrap_or_default() {
-            if !keys.contains(k) && keys.len() < MAX_COLUMNS {
+            if keys.len() < MAX_COLUMNS && k.len() <= MAX_PATH && seen.insert(k.as_str()) {
                 keys.push(k.clone());
             }
         }
@@ -349,7 +381,44 @@ pub fn sql_grid(reply: &Json, max_rows: usize) -> Option<Grid> {
             result_column(name, c.get("type").and_then(Json::as_str).unwrap_or(""), *k)
         })
         .collect();
-    let rows = rows
+    let (rows, truncated) = typed_rows(rows, &kinds, max_rows);
+    Some(Grid {
+        columns,
+        truncated,
+        rows,
+        notices: Vec::new(),
+        cursor: sql_cursor(reply),
+    })
+}
+
+/// The cursor of an SQL reply page, if more rows can be read.
+pub fn sql_cursor(reply: &Json) -> Option<String> {
+    reply
+        .get("cursor")
+        .and_then(Json::as_str)
+        .filter(|c| !c.is_empty())
+        .map(str::to_string)
+}
+
+/// The rows of a cursor page of an SQL reply (`rows` or `datarows`), typed by the kinds of the
+/// first page's columns, at most `max_rows`; and whether the page held more.
+pub fn sql_page_rows(
+    reply: &Json,
+    kinds: &[ValueKind],
+    max_rows: usize,
+) -> (Vec<Vec<Value>>, bool) {
+    match reply
+        .get("rows")
+        .or_else(|| reply.get("datarows"))
+        .and_then(Json::as_array)
+    {
+        Some(rows) => typed_rows(rows, kinds, max_rows),
+        None => (Vec::new(), false),
+    }
+}
+
+fn typed_rows(rows: &[Json], kinds: &[ValueKind], max_rows: usize) -> (Vec<Vec<Value>>, bool) {
+    let out = rows
         .iter()
         .take(max_rows)
         .map(|r| {
@@ -360,21 +429,8 @@ pub fn sql_grid(reply: &Json, max_rows: usize) -> Option<Grid> {
                 .map(|(i, v)| sql_value(v, kinds.get(i).copied().unwrap_or(ValueKind::Text)))
                 .collect()
         })
-        .collect::<Vec<Vec<Value>>>();
-    Some(Grid {
-        columns,
-        truncated: reply
-            .get("rows")
-            .or_else(|| reply.get("datarows"))
-            .and_then(Json::as_array)
-            .is_some_and(|r| r.len() > max_rows),
-        rows,
-        notices: Vec::new(),
-        cursor: reply
-            .get("cursor")
-            .and_then(Json::as_str)
-            .map(str::to_string),
-    })
+        .collect();
+    (out, rows.len() > max_rows)
 }
 
 #[cfg(test)]

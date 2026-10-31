@@ -66,10 +66,18 @@ pub fn cat_indices(show_system: bool) -> EsRequest {
         )
 }
 
+/// The document counts of a target's indices (an index, alias, stream or pattern).
+pub fn cat_indices_of(target: &str) -> EsRequest {
+    EsRequest::new(Method::Get, &["_cat", "indices", target])
+        .param("format", "json")
+        .param("bytes", "b")
+        .param("h", "index,health,status,pri,rep,docs.count,store.size")
+}
+
 pub fn cat_aliases() -> EsRequest {
     EsRequest::new(Method::Get, &["_cat", "aliases"])
         .param("format", "json")
-        .param("h", "alias,index,filter,is_write_index")
+        .param("h", "alias,index,filter")
         .param("s", "alias")
 }
 
@@ -89,6 +97,11 @@ pub fn alias(name: &str) -> EsRequest {
     EsRequest::new(Method::Get, &["_alias", name])
 }
 
+/// One data stream (its backing indices, template and status).
+pub fn data_stream(name: &str) -> EsRequest {
+    EsRequest::new(Method::Get, &["_data_stream", name])
+}
+
 /// Running search and write tasks (the process list).
 pub fn tasks() -> EsRequest {
     EsRequest::new(Method::Get, &["_tasks"])
@@ -96,8 +109,32 @@ pub fn tasks() -> EsRequest {
         .param("group_by", "none")
 }
 
-pub fn cancel_task(id: &str) -> EsRequest {
-    EsRequest::new(Method::Post, &["_tasks", id, "_cancel"])
+/// Cancels the task `id`, whether the user picked it or the server listed it.
+pub fn cancel_task(id: &str) -> Result<EsRequest, AppError> {
+    Ok(EsRequest::new(
+        Method::Post,
+        &["_tasks", task_id(id)?, "_cancel"],
+    ))
+}
+
+/// A task id as `_tasks` lists it (`<node id>:<number>`), checked before it goes into a path.
+fn task_id(id: &str) -> Result<&str, AppError> {
+    let ok = id.split_once(':').is_some_and(|(node, n)| {
+        !node.is_empty()
+            && node
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && !node.starts_with('_')
+            && !n.is_empty()
+            && n.chars().all(|c| c.is_ascii_digit())
+    });
+    if ok {
+        Ok(id)
+    } else {
+        Err(AppError::InvalidInput(format!(
+            "\u{201c}{id}\u{201d} is not a task id (node:number)"
+        )))
+    }
 }
 
 /// An index as the request that creates it again: its settings (without the ones the cluster
@@ -143,6 +180,18 @@ pub fn alias_definition(name: &str, reply: &Json) -> String {
         req.method.as_str(),
         req.target(),
         Json::obj([("actions", Json::Arr(actions))]).to_pretty()
+    )
+}
+
+/// A data stream (reply of `GET /_data_stream/<name>`) as that request, commented, and what it
+/// says: a stream is made by its index template, so there is no request that creates it alone.
+pub fn data_stream_definition(name: &str, reply: &Json) -> String {
+    let req = data_stream(name);
+    format!(
+        "# {} {}\n{}",
+        req.method.as_str(),
+        req.target(),
+        reply.to_pretty()
     )
 }
 
@@ -233,7 +282,7 @@ fn group(fields: &[Field], g: &FilterGroup, f: Features, depth: usize) -> Result
                 condition(fields, column, *op, values, f)?
             }
             FilterNode::Group(inner) => group(fields, inner, f, depth + 1)?,
-            FilterNode::Raw { sql } => raw_filter(sql)?,
+            FilterNode::Raw { sql } => raw_filter(fields, sql)?,
             FilterNode::AnyColumn { op, values } => any_column(*op, values)?,
         });
     }
@@ -250,14 +299,17 @@ fn group(fields: &[Field], g: &FilterGroup, f: Features, depth: usize) -> Result
 }
 
 /// A raw filter: Query DSL when it starts with `{`, otherwise a Lucene `query_string`. DSL that
-/// calls a model or another service is refused here (the grid only reads); the console runs it.
-pub fn raw_filter(text: &str) -> Result<Json, AppError> {
+/// calls a model or another service is refused here (the grid only reads), and so is DSL that
+/// sends text to a `semantic_text` field of `fields`; the console runs them.
+pub fn raw_filter(fields: &[Field], text: &str) -> Result<Json, AppError> {
     let t = text.trim();
     if t.starts_with('{') {
         let q = json::parse(t)
             .map_err(|e| AppError::InvalidInput(format!("raw filter: {}", e.describe(t))))?;
         let probe = EsRequest::new(Method::Get, &["_search"]).json(q.clone());
-        if classify::classify(&probe) != crate::sqlgen::classify::StatementClass::Read {
+        if classify::classify(&probe) != crate::sqlgen::classify::StatementClass::Read
+            || infers_on_semantic_text(&q, fields, 0)
+        {
             return Err(AppError::InvalidInput(
                 "raw filter: this query calls a model or another service; run it in the console"
                     .into(),
@@ -269,6 +321,59 @@ pub fn raw_filter(text: &str) -> Result<Json, AppError> {
     } else {
         Ok(leaf("query_string", "query", Json::str(t)))
     }
+}
+
+/// Whether DSL sends text to the inference endpoint of a `semantic_text` field, which the
+/// request does not name: a `match` on such a field (Elasticsearch 8.18+ runs it as a semantic
+/// query), or a `multi_match` whose `fields` name one (also by a `*` pattern or with a boost).
+fn infers_on_semantic_text(q: &Json, fields: &[Field], depth: usize) -> bool {
+    let semantic = |name: &str| {
+        let name = name.split('^').next().unwrap_or(name);
+        fields.iter().any(|f| {
+            f.es_type.split('|').any(|t| t == "semantic_text") && glob_matches(name, &f.path)
+        })
+    };
+    match q {
+        // The parser bounds nesting; this only keeps the walk cheap.
+        _ if depth > json::MAX_DEPTH => true,
+        Json::Obj(pairs) => pairs.iter().any(|(k, v)| {
+            let named = match k.as_str() {
+                "match" => v
+                    .as_object()
+                    .is_some_and(|o| o.iter().any(|(f, _)| semantic(f.as_str()))),
+                "multi_match" => v
+                    .get("fields")
+                    .and_then(Json::as_array)
+                    .is_some_and(|fs| fs.iter().filter_map(Json::as_str).any(semantic)),
+                _ => false,
+            };
+            named || infers_on_semantic_text(v, fields, depth + 1)
+        }),
+        Json::Arr(items) => items
+            .iter()
+            .any(|v| infers_on_semantic_text(v, fields, depth + 1)),
+        _ => false,
+    }
+}
+
+/// A field pattern with `*` wildcards against a field path.
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = path.strip_prefix(first) else {
+        return false;
+    };
+    let middle: Vec<&str> = parts.collect();
+    let Some((last, middle)) = middle.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(i) => rest = rest.get(i + part.len()..).unwrap_or_default(),
+            None => return false,
+        }
+    }
+    rest.ends_with(last)
 }
 
 /// Where a column's conditions go.
@@ -764,8 +869,14 @@ pub fn scroll_next(id: &str) -> EsRequest {
 }
 
 pub fn clear_scroll(id: &str) -> EsRequest {
-    EsRequest::new(Method::Delete, &["_search", "scroll"])
-        .json(Json::obj([("scroll_id", Json::Arr(vec![Json::str(id)]))]))
+    clear_scrolls(&[id.to_string()])
+}
+
+pub fn clear_scrolls(ids: &[String]) -> EsRequest {
+    EsRequest::new(Method::Delete, &["_search", "scroll"]).json(Json::obj([(
+        "scroll_id",
+        Json::Arr(ids.iter().map(|id| Json::str(id.clone())).collect()),
+    )]))
 }
 
 pub fn count(target: &str, query: &Json) -> EsRequest {
@@ -822,11 +933,12 @@ pub enum PagePlan {
     Walk { skip: u64 },
 }
 
-/// Where a deep walk stands, handed to the renderer as `BrowsePage.next_cursor`.
+/// Where the next page starts, handed to the renderer as `BrowsePage.next_cursor`: a position
+/// within the result window, or where a deep walk stands.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageCursor {
     pub mode: WalkMode,
-    /// The point-in-time or scroll id.
+    /// The point-in-time or scroll id (empty for `From`).
     pub id: String,
     /// `search_after` values (point in time).
     pub after: Option<Json>,
@@ -838,17 +950,31 @@ pub struct PageCursor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WalkMode {
+    /// `from` / `size` at `position` (within the result window).
+    From,
     Pit,
     Scroll,
 }
 
 impl PageCursor {
+    /// The cursor of a page read with `from` / `size` that ends at `position`.
+    pub fn from_position(position: u64, fingerprint: &str) -> PageCursor {
+        PageCursor {
+            mode: WalkMode::From,
+            id: String::new(),
+            after: None,
+            position,
+            fingerprint: fingerprint.to_string(),
+        }
+    }
+
     pub fn encode(&self) -> String {
         let mut pairs = vec![
             ("v".to_string(), Json::int(1)),
             (
                 "mode".to_string(),
                 Json::str(match self.mode {
+                    WalkMode::From => "from",
                     WalkMode::Pit => "pit",
                     WalkMode::Scroll => "scroll",
                 }),
@@ -871,6 +997,7 @@ impl PageCursor {
         }
         Ok(PageCursor {
             mode: match v.get("mode").and_then(Json::as_str) {
+                Some("from") => WalkMode::From,
                 Some("pit") => WalkMode::Pit,
                 Some("scroll") => WalkMode::Scroll,
                 _ => return Err(bad()),
@@ -891,9 +1018,10 @@ impl PageCursor {
     }
 }
 
-/// Plans the page at `offset` of `limit` rows: the cursor when it continues exactly there,
-/// `from`/`size` while the page ends within `window` (`index.max_result_window`), otherwise a
-/// walk from the start.
+/// Plans a page of `limit` rows: where a cursor of this query says (a walk it continues, or a
+/// position), else at `offset`; `from`/`size` while the page ends within `window`
+/// (`index.max_result_window`), otherwise a walk from the start. A cursor of another query (the
+/// filter or sort changed) is ignored.
 pub fn plan_page(
     offset: u64,
     limit: u64,
@@ -901,19 +1029,23 @@ pub fn plan_page(
     cursor: Option<&str>,
     fingerprint: &str,
 ) -> Result<PagePlan, AppError> {
+    let mut start = offset;
     if let Some(c) = cursor {
         let c = PageCursor::decode(c)?;
-        if c.fingerprint == fingerprint && c.position == offset {
-            return Ok(PagePlan::Continue(c));
+        if c.fingerprint == fingerprint {
+            match c.mode {
+                WalkMode::From => start = c.position,
+                WalkMode::Pit | WalkMode::Scroll => return Ok(PagePlan::Continue(c)),
+            }
         }
     }
-    if offset.saturating_add(limit) <= window {
+    if start.saturating_add(limit) <= window {
         Ok(PagePlan::FromSize {
-            from: offset,
+            from: start,
             size: limit,
         })
     } else {
-        Ok(PagePlan::Walk { skip: offset })
+        Ok(PagePlan::Walk { skip: start })
     }
 }
 
@@ -1299,37 +1431,22 @@ pub fn sql_query(api: SqlApi, query: &str, fetch_size: u64) -> EsRequest {
         ]))
 }
 
-/// The next page of a SQL cursor.
-pub fn sql_next(api: SqlApi, cursor: &str) -> EsRequest {
-    EsRequest::new(Method::Post, api.segments())
-        .param(
-            "format",
-            if api == SqlApi::OpenSearch {
-                "jdbc"
-            } else {
-                "json"
-            },
-        )
-        .json(Json::obj([("cursor", Json::str(cursor))]))
+/// The next page of a SQL cursor, on the endpoint and in the `format` of the query that opened
+/// it (`opened`: a console request, or [`sql_query`]).
+pub fn sql_next(opened: &EsRequest, cursor: &str) -> EsRequest {
+    let segs: Vec<&str> = opened.segments.iter().map(String::as_str).collect();
+    let mut next = EsRequest::new(Method::Post, &segs);
+    if let Some(format) = opened.query_value("format") {
+        next = next.param("format", format);
+    }
+    next.json(Json::obj([("cursor", Json::str(cursor))]))
 }
 
-/// Frees a SQL cursor that was not read to its end.
-pub fn sql_close(api: SqlApi, cursor: &str) -> EsRequest {
-    let mut segs: Vec<&str> = api.segments().to_vec();
+/// Frees a SQL cursor that was not read to its end: `close` on the endpoint that opened it.
+pub fn sql_close(opened: &EsRequest, cursor: &str) -> EsRequest {
+    let mut segs: Vec<&str> = opened.segments.iter().map(String::as_str).collect();
     segs.push("close");
     EsRequest::new(Method::Post, &segs).json(Json::obj([("cursor", Json::str(cursor))]))
-}
-
-/// The Query DSL a SQL query runs as (Explain): `translate` on Elasticsearch, `_explain` on
-/// OpenSearch.
-pub fn sql_translate(api: SqlApi, query: &str) -> EsRequest {
-    let mut segs: Vec<&str> = api.segments().to_vec();
-    segs.push(if api == SqlApi::OpenSearch {
-        "_explain"
-    } else {
-        "translate"
-    });
-    EsRequest::new(Method::Post, &segs).json(Json::obj([("query", Json::str(query))]))
 }
 
 #[cfg(test)]
@@ -1487,8 +1604,47 @@ mod tests {
                 "{c} {op:?}"
             );
         }
-        assert!(raw_filter(r#"{"neural":{"v":{"query_text":"x","model_id":"m"}}}"#).is_err());
-        assert!(raw_filter("{ bad").is_err());
+        assert!(
+            raw_filter(
+                &fields(),
+                r#"{"neural":{"v":{"query_text":"x","model_id":"m"}}}"#
+            )
+            .is_err()
+        );
+        assert!(raw_filter(&fields(), "{ bad").is_err());
+        // A query in base64 is not decoded here: `{"semantic":…}`, `{"sparse_vector":…}`, `{}`.
+        for inner in [
+            "eyJzZW1hbnRpYyI6eyJmaWVsZCI6ImJvZHkiLCJxdWVyeSI6ImhlbGxvIn19",
+            "eyJzcGFyc2VfdmVjdG9yIjp7ImZpZWxkIjoiYm9keSIsInF1ZXJ5IjoiaGVsbG8ifX0=",
+            "e30=",
+        ] {
+            let dsl = format!(r#"{{"bool":{{"must":[{{"wrapper":{{"query":"{inner}"}}}}]}}}}"#);
+            assert!(raw_filter(&fields(), &dsl).is_err(), "{dsl}");
+        }
+        // Text for a `semantic_text` field goes to its inference endpoint: not in the grid.
+        let mut semantic = fields();
+        semantic.push(Field {
+            path: "body.semantic".into(),
+            es_type: "semantic_text".into(),
+            keyword: None,
+            doc_values: false,
+        });
+        for dsl in [
+            r#"{"match":{"body.semantic":"what is x"}}"#,
+            r#"{"bool":{"must":[{"match":{"body.semantic":{"query":"x"}}}]}}"#,
+            r#"{"multi_match":{"query":"x","fields":["title","body.semantic^2"]}}"#,
+            r#"{"multi_match":{"query":"x","fields":["body.*"]}}"#,
+        ] {
+            assert!(raw_filter(&semantic, dsl).is_err(), "{dsl}");
+            assert!(raw_filter(&fields(), dsl).is_ok(), "{dsl}");
+        }
+        for dsl in [
+            r#"{"match":{"body":"x"}}"#,
+            r#"{"multi_match":{"query":"x","fields":["title","b*y"]}}"#,
+            r#"{"term":{"body.semantic":"x"}}"#,
+        ] {
+            assert!(raw_filter(&semantic, dsl).is_ok(), "{dsl}");
+        }
         let old = features("7.9.0");
         assert!(matches!(
             query(
@@ -1663,18 +1819,30 @@ mod tests {
         };
         let text = c.encode();
         assert_eq!(PageCursor::decode(&text).unwrap(), c);
+        // The renderer pages by cursor (offset 0): the cursor decides.
         assert_eq!(
-            plan_page(10_050, 50, 10_000, Some(&text), &fp).unwrap(),
+            plan_page(0, 50, 10_000, Some(&text), &fp).unwrap(),
             PagePlan::Continue(c.clone())
         );
-        // Another position or another query restarts.
-        assert_eq!(
-            plan_page(20_000, 50, 10_000, Some(&text), &fp).unwrap(),
-            PagePlan::Walk { skip: 20_000 }
-        );
+        // A cursor of another query is ignored.
         assert_eq!(
             plan_page(0, 50, 10_000, Some(&text), "other").unwrap(),
             PagePlan::FromSize { from: 0, size: 50 }
+        );
+        // A position cursor pages with from/size inside the window and walks past it.
+        let at = PageCursor::from_position(200, &fp);
+        assert_eq!(PageCursor::decode(&at.encode()).unwrap(), at);
+        assert_eq!(
+            plan_page(0, 50, 10_000, Some(&at.encode()), &fp).unwrap(),
+            PagePlan::FromSize {
+                from: 200,
+                size: 50
+            }
+        );
+        let deep = PageCursor::from_position(9_980, &fp).encode();
+        assert_eq!(
+            plan_page(0, 50, 10_000, Some(&deep), &fp).unwrap(),
+            PagePlan::Walk { skip: 9_980 }
         );
         for bad in [
             "",
@@ -1907,6 +2075,10 @@ mod tests {
         assert!(a.starts_with("POST /_aliases\n"));
         assert!(a.contains("\"is_write_index\": true"));
         assert_eq!(
+            data_stream_definition("logs-app", &parse(r#"{"data_streams":[]}"#).unwrap()),
+            "# GET /_data_stream/logs-app\n{\n  \"data_streams\": []\n}"
+        );
+        assert_eq!(
             truncate("logs").to_console_text(),
             "POST /logs/_delete_by_query?conflicts=proceed&refresh=true\n{\"query\":{\"match_all\":{}}}"
         );
@@ -1915,6 +2087,15 @@ mod tests {
             "/logs/_cache/clear"
         );
         assert!(index_action("logs", "explode").is_err());
+        assert_eq!(
+            cancel_task("oTUltX4IQMOUUVeiohTt8A:12345")
+                .unwrap()
+                .target(),
+            "/_tasks/oTUltX4IQMOUUVeiohTt8A:12345/_cancel"
+        );
+        for bad in ["../_bulk:1", "_all:1", "n:x", "n", "n:1/_cancel"] {
+            assert!(cancel_task(bad).is_err(), "{bad}");
+        }
         // Every one of them is a write to the classifier.
         for r in [
             truncate("logs"),
@@ -1922,11 +2103,12 @@ mod tests {
             delete_index("x"),
             index_action("x", "open").unwrap(),
             index_action("x", "refresh").unwrap(),
-            cancel_task("n:1"),
+            cancel_task("n:1").unwrap(),
             bulk(vec![]),
-            sql_close(SqlApi::Elastic, "c"),
+            sql_close(&sql_query(SqlApi::Elastic, "SELECT 1", 1), "c"),
             close_pit(PitApi::Elastic, "p"),
             clear_scroll("s"),
+            clear_scrolls(&["a".into(), "b".into()]),
         ] {
             assert_eq!(
                 classify::classify(&r),
@@ -1943,23 +2125,28 @@ mod tests {
             sql_query(SqlApi::Elastic, "SELECT 1", 100).to_console_text(),
             "POST /_sql?format=json\n{\"query\":\"SELECT 1\",\"fetch_size\":100}"
         );
+        let os = sql_query(SqlApi::OpenSearch, "SELECT 1", 5);
         assert_eq!(
-            sql_next(SqlApi::OpenSearch, "c").to_console_text(),
+            sql_next(&os, "c").to_console_text(),
             "POST /_plugins/_sql?format=jdbc\n{\"cursor\":\"c\"}"
         );
-        assert_eq!(sql_close(SqlApi::XPack, "c").target(), "/_xpack/sql/close");
         assert_eq!(
-            sql_translate(SqlApi::Elastic, "SELECT 1").target(),
-            "/_sql/translate"
+            sql_close(&os, "c").to_console_text(),
+            "POST /_plugins/_sql/close\n{\"cursor\":\"c\"}"
         );
+        let xpack = sql_query(SqlApi::XPack, "SELECT 1", 5);
+        assert_eq!(sql_close(&xpack, "c").target(), "/_xpack/sql/close");
+        // A console request keeps its endpoint and format; its other parameters stay behind.
+        let typed = EsRequest::new(Method::Post, &["_opendistro", "_sql"])
+            .param("format", "json")
+            .param("pretty", "");
         assert_eq!(
-            sql_translate(SqlApi::OpenSearch, "SELECT 1").target(),
-            "/_plugins/_sql/_explain"
+            sql_next(&typed, "c").target(),
+            "/_opendistro/_sql?format=json"
         );
         for r in [
             sql_query(SqlApi::Elastic, "SELECT 1", 1),
-            sql_next(SqlApi::Elastic, "c"),
-            sql_translate(SqlApi::OpenSearch, "SELECT 1"),
+            sql_next(&os, "c"),
         ] {
             assert_eq!(
                 classify::classify(&r),

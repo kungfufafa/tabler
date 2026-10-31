@@ -68,7 +68,7 @@ pub fn reply_error(engine: &str, status: u16, body: &[u8]) -> Option<AppError> {
         None => Some(status_error(
             engine,
             status,
-            &super::transport::body_excerpt(body),
+            &crate::drivers::common::http::body_excerpt(body, None),
             None,
         )),
     }

@@ -17,22 +17,18 @@ pub enum Distribution {
 pub struct Version {
     pub major: u32,
     pub minor: u32,
-    pub patch: u32,
 }
 
 impl Version {
-    /// `8.15.2`, `2.17.0`, `7.10.2-SNAPSHOT`, `9.0.0-beta1`; missing parts are 0.
+    /// `8.15.2`, `2.17.0`, `7.10.2-SNAPSHOT`, `9.0.0-beta1`; a missing minor is 0. The patch
+    /// is checked, but no feature depends on it.
     pub fn parse(text: &str) -> Option<Version> {
         let core = text.trim().split(['-', '+']).next()?;
         let mut parts = core.split('.');
         let major = parts.next()?.parse().ok()?;
         let minor = parts.next().map_or(Some(0), |p| p.parse().ok())?;
-        let patch = parts.next().map_or(Some(0), |p| p.parse().ok())?;
-        Some(Version {
-            major,
-            minor,
-            patch,
-        })
+        parts.next().map_or(Some(0), |p| p.parse::<u32>().ok())?;
+        Some(Version { major, minor })
     }
 
     pub fn at_least(&self, major: u32, minor: u32) -> bool {
@@ -43,17 +39,13 @@ impl Version {
 /// What `GET /` says about the cluster.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClusterInfo {
-    /// The node that answered.
-    pub node_name: Option<String>,
     pub cluster_name: String,
-    pub cluster_uuid: Option<String>,
     pub distribution: Distribution,
     /// As the server wrote it.
     pub version_text: String,
     pub version: Version,
     /// `default`, `oss`, `serverless` (Elasticsearch).
     pub build_flavor: Option<String>,
-    pub lucene: Option<String>,
 }
 
 impl ClusterInfo {
@@ -85,7 +77,6 @@ impl ClusterInfo {
             (None, true) => Version {
                 major: u32::MAX,
                 minor: 0,
-                patch: 0,
             },
             (None, false) => {
                 return Err(AppError::Connect(format!(
@@ -94,25 +85,15 @@ impl ClusterInfo {
             }
         };
         Ok(ClusterInfo {
-            node_name: reply.get("name").and_then(Json::as_str).map(str::to_string),
             cluster_name: reply
                 .get("cluster_name")
                 .and_then(Json::as_str)
                 .unwrap_or("elasticsearch")
                 .to_string(),
-            cluster_uuid: reply
-                .get("cluster_uuid")
-                .and_then(Json::as_str)
-                .filter(|u| *u != "_na_")
-                .map(str::to_string),
             distribution,
             version_text: number,
             version: version_value,
             build_flavor,
-            lucene: version
-                .get("lucene_version")
-                .and_then(Json::as_str)
-                .map(str::to_string),
         })
     }
 
@@ -166,8 +147,7 @@ impl ClusterInfo {
                 case_insensitive: v.at_least(7, 10),
                 data_streams: v.at_least(7, 9),
                 create_without_id: v.at_least(7, 5),
-                cat: true,
-                total_hits_object: v.major >= 7,
+                tasks: !self.is_serverless(),
             },
             Distribution::OpenSearch => Features {
                 pit: v.at_least(2, 4).then_some(PitApi::OpenSearch),
@@ -179,8 +159,7 @@ impl ClusterInfo {
                 case_insensitive: true,
                 data_streams: true,
                 create_without_id: true,
-                cat: true,
-                total_hits_object: true,
+                tasks: true,
             },
         }
     }
@@ -233,9 +212,8 @@ pub struct Features {
     pub data_streams: bool,
     /// A bulk `create` without `_id` (7.5+); before, `index` without `_id`.
     pub create_without_id: bool,
-    pub cat: bool,
-    /// `hits.total` is `{value, relation}` (7.0+), a number before.
-    pub total_hits_object: bool,
+    /// The task management API (`_tasks`), which Elasticsearch Serverless does not have.
+    pub tasks: bool,
 }
 
 #[cfg(test)]
@@ -271,9 +249,10 @@ mod tests {
             r#"{"name":"serverless","cluster_name":"abc","cluster_uuid":"_na_","version":{"number":"8.11.0","build_flavor":"serverless","build_type":"docker"}}"#,
         );
         assert!(s.is_serverless());
-        assert_eq!(s.cluster_uuid, None);
         assert_eq!(s.display_version(), "Elasticsearch Serverless");
         assert_eq!(s.features().pit, Some(PitApi::Elastic));
+        // Serverless has no task management API.
+        assert!(!s.features().tasks && i.features().tasks);
     }
 
     #[test]
@@ -286,7 +265,7 @@ mod tests {
         let six =
             info(r#"{"cluster_name":"c","version":{"number":"6.8.23","build_flavor":"default"}}"#);
         let f = six.features();
-        assert!(f.typed_paths && f.seq_no_guards && !f.total_hits_object);
+        assert!(f.typed_paths && f.seq_no_guards && f.tasks);
         assert_eq!(f.sql, Some(SqlApi::XPack));
         let oss =
             info(r#"{"cluster_name":"c","version":{"number":"7.10.2","build_flavor":"oss"}}"#);
@@ -324,11 +303,7 @@ mod tests {
     fn versions_parse_leniently_and_fail_cleanly() {
         assert_eq!(
             Version::parse("9.0.0-beta1"),
-            Some(Version {
-                major: 9,
-                minor: 0,
-                patch: 0
-            })
+            Some(Version { major: 9, minor: 0 })
         );
         assert_eq!(Version::parse("7").map(|v| v.minor), Some(0));
         assert_eq!(Version::parse("x.y"), None);

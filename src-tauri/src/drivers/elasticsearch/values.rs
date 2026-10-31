@@ -7,6 +7,8 @@
 //! and under a literal dotted key (`{"user.name": …}`), as Elasticsearch reads it; through an
 //! array of objects it collects every match into a JSON array.
 
+use std::collections::HashMap;
+
 use base64::Engine as _;
 
 use crate::error::AppError;
@@ -74,80 +76,169 @@ pub fn to_value(v: &Json, es_type: Option<&str>) -> Value {
     }
 }
 
-/// The values at a dotted path of a `_source` object, and whether an array was crossed to get
-/// there (the field then holds an array).
-pub fn lookup<'a>(source: &'a Json, path: &str) -> (Vec<&'a Json>, bool) {
-    let parts: Vec<&str> = path.split('.').collect();
-    let mut out = Vec::new();
-    let mut crossed = false;
-    collect(source, &parts, &mut out, &mut crossed, 0);
-    (out, crossed)
+/// Dotted field paths (`user.name`) to find in many `_source`s: each document is walked once
+/// for all of them. Looking each path up on its own scans the document once per column, which a
+/// wide mapping (or a hostile server) turns into minutes of work on one page. The paths are a
+/// tree of `.`-segments, so a key is matched by hashing its own segments, never the whole path
+/// above it: a huge key over many children stays linear.
+pub struct Paths<'p> {
+    /// Each path, to its node.
+    slots: HashMap<&'p str, usize>,
+    /// A node and one segment under it, to that node; [`ROOT`] is the document.
+    children: HashMap<(usize, &'p str), usize>,
+    /// Each node's parent ([`ROOT`] at the top).
+    parents: Vec<usize>,
 }
 
-fn collect<'a>(
-    v: &'a Json,
-    parts: &[&str],
-    out: &mut Vec<&'a Json>,
-    crossed: &mut bool,
-    depth: usize,
-) {
-    if parts.is_empty() {
-        out.push(v);
-        return;
-    }
-    if depth > json::MAX_DEPTH {
-        return;
-    }
-    match v {
-        Json::Obj(pairs) => {
-            for k in 1..=parts.len() {
-                let key = parts[..k].join(".");
-                for (name, val) in pairs {
-                    if *name == key {
-                        collect(val, &parts[k..], out, crossed, depth + 1);
+const ROOT: usize = usize::MAX;
+
+/// What a document holds at a path.
+#[derive(Default, Clone)]
+struct Found<'s> {
+    values: Vec<&'s Json>,
+    /// A value was reached through an array.
+    crossed: bool,
+    /// Going on past the path crosses an array.
+    passes_array: bool,
+}
+
+/// One `_source` walked for [`Paths`].
+pub struct Located<'a, 'p, 's> {
+    paths: &'a Paths<'p>,
+    found: Vec<Found<'s>>,
+}
+
+impl<'p> Paths<'p> {
+    pub fn new(paths: impl IntoIterator<Item = &'p str>) -> Paths<'p> {
+        let mut tree = Paths {
+            slots: HashMap::new(),
+            children: HashMap::new(),
+            parents: Vec::new(),
+        };
+        for p in paths {
+            let mut node = ROOT;
+            for seg in p.split('.') {
+                node = match tree.children.get(&(node, seg)) {
+                    Some(&n) => n,
+                    None => {
+                        let n = tree.parents.len();
+                        tree.parents.push(node);
+                        tree.children.insert((node, seg), n);
+                        n
                     }
+                };
+            }
+            tree.slots.insert(p, node);
+        }
+        tree
+    }
+
+    /// The node a key (dots and all) reaches from `node`.
+    fn step(&self, node: usize, key: &str) -> Option<usize> {
+        key.split('.')
+            .try_fold(node, |n, seg| self.children.get(&(n, seg)).copied())
+    }
+
+    /// The values of `source` at every path.
+    pub fn locate<'a, 's>(&'a self, source: &'s Json) -> Located<'a, 'p, 's> {
+        let mut found = vec![Found::default(); self.parents.len()];
+        self.walk(source, ROOT, false, 0, &mut found);
+        Located { paths: self, found }
+    }
+
+    /// A key matches a path also when it holds dots itself (`{"user.name": …}`), and an array
+    /// is crossed into its items, as Elasticsearch reads a document.
+    fn walk<'s>(
+        &self,
+        v: &'s Json,
+        node: usize,
+        crossed: bool,
+        depth: usize,
+        found: &mut [Found<'s>],
+    ) {
+        // The parser bounds nesting; this only keeps the walk cheap.
+        if depth > json::MAX_DEPTH {
+            return;
+        }
+        match v {
+            Json::Obj(pairs) => {
+                for (name, val) in pairs {
+                    // Nothing under a path that no column starts with is needed.
+                    let Some(n) = self.step(node, name) else {
+                        continue;
+                    };
+                    if let Some(f) = found.get_mut(n) {
+                        f.values.push(val);
+                        f.crossed |= crossed;
+                        f.passes_array |= crossed || matches!(val, Json::Arr(_));
+                    }
+                    self.walk(val, n, crossed, depth + 1, found);
                 }
             }
+            Json::Arr(items) => {
+                for item in items {
+                    self.walk(item, node, true, depth + 1, found);
+                }
+            }
+            _ => {}
         }
-        Json::Arr(items) => {
-            *crossed = true;
-            for item in items {
-                collect(item, parts, out, crossed, depth + 1);
+    }
+}
+
+impl Located<'_, '_, '_> {
+    /// The cell of `path` (one of the paths located): through an array of objects, or where
+    /// several keys match, every value as a JSON array.
+    pub fn value(&self, path: &str, es_type: Option<&str>) -> Value {
+        let Some(&node) = self.paths.slots.get(path) else {
+            return missing();
+        };
+        let Some(f) = self.found.get(node) else {
+            return missing();
+        };
+        let mut crossed = f.crossed;
+        let mut up = self.paths.parents.get(node).copied().unwrap_or(ROOT);
+        while !crossed && up != ROOT {
+            crossed = self.found.get(up).is_some_and(|q| q.passes_array);
+            up = self.paths.parents.get(up).copied().unwrap_or(ROOT);
+        }
+        match (f.values.as_slice(), crossed) {
+            ([], _) => missing(),
+            ([one], false) => to_value(one, es_type),
+            (many, _) => {
+                Value::Json(Json::Arr(many.iter().map(|v| (*v).clone()).collect()).to_text())
             }
         }
-        _ => {}
     }
 }
 
 /// The cell of `path` in a `_source`.
 pub fn field_value(source: &Json, path: &str, es_type: Option<&str>) -> Value {
-    let (found, crossed) = lookup(source, path);
-    match (found.as_slice(), crossed) {
-        ([], _) => missing(),
-        ([one], false) => to_value(one, es_type),
-        (many, _) => Value::Json(Json::Arr(many.iter().map(|v| (*v).clone()).collect()).to_text()),
-    }
+    Paths::new([path]).locate(source).value(path, es_type)
 }
 
-/// One search hit as a grid row for `columns` (metadata columns from the hit, the rest from its
+/// Search hits as grid rows for `columns` (metadata columns from the hit, the rest from its
 /// `_source`). A hit without `_source` (disabled, or filtered out) gives `missing` cells.
-pub fn hit_row(hit: &Json, columns: &[crate::types::schema::ColumnMeta]) -> Vec<Value> {
-    let source = hit.get("_source");
-    columns
-        .iter()
-        .map(|c| match c.name.as_str() {
-            catalog::ID | catalog::INDEX | catalog::ROUTING => match hit.get(&c.name) {
-                Some(Json::Str(s)) => Value::Text(s.clone()),
-                Some(other) => to_value(other, None),
-                None => Value::Null,
-            },
-            catalog::SEQ_NO | catalog::PRIMARY_TERM | catalog::SCORE => {
-                hit.get(&c.name).map_or(Value::Null, |v| to_value(v, None))
-            }
-            path => match source {
-                Some(src) => field_value(src, path, Some(c.data_type.as_str())),
-                None => missing(),
-            },
+pub fn hit_rows(hits: &[Json], columns: &[crate::types::schema::ColumnMeta]) -> Vec<Vec<Value>> {
+    let paths = Paths::new(columns.iter().map(|c| c.name.as_str()));
+    hits.iter()
+        .map(|hit| {
+            let source = hit.get("_source").map(|s| paths.locate(s));
+            columns
+                .iter()
+                .map(|c| match c.name.as_str() {
+                    catalog::ID | catalog::INDEX | catalog::ROUTING => match hit.get(&c.name) {
+                        Some(Json::Str(s)) => Value::Text(s.clone()),
+                        Some(other) => to_value(other, None),
+                        None => Value::Null,
+                    },
+                    catalog::SEQ_NO | catalog::PRIMARY_TERM | catalog::SCORE => {
+                        hit.get(&c.name).map_or(Value::Null, |v| to_value(v, None))
+                    }
+                    path => source
+                        .as_ref()
+                        .map_or_else(missing, |s| s.value(path, Some(c.data_type.as_str()))),
+                })
+                .collect()
         })
         .collect()
 }
@@ -368,9 +459,10 @@ mod tests {
             r#"{"_index":"logs-1","_id":"x1","_seq_no":12,"_primary_term":3,"_score":null,"_source":{"a":9007199254740993,"b":{"c":"2024-01-01"}}}"#,
         )
         .unwrap();
-        let row = hit_row(&hit, &cols);
+        let bare = parse(r#"{"_index":"i","_id":"y"}"#).unwrap();
+        let rows = hit_rows(&[hit, bare], &cols);
         assert_eq!(
-            row,
+            rows[0],
             vec![
                 Value::Text("logs-1".into()),
                 Value::Text("x1".into()),
@@ -380,10 +472,66 @@ mod tests {
                 Value::TimestampTz("2024-01-01".into()),
             ]
         );
-        let bare = parse(r#"{"_index":"i","_id":"y"}"#).unwrap();
-        let row = hit_row(&bare, &cols);
-        assert_eq!(row[2], Value::Null);
-        assert!(is_missing(&row[4]));
+        assert_eq!(rows[1][2], Value::Null);
+        assert!(is_missing(&rows[1][4]));
+    }
+
+    #[test]
+    fn keys_with_dots_and_arrays_on_the_way() {
+        // Both spellings of a path, and an array above it, make the cell an array.
+        let src =
+            parse(r#"{"a":{"b":1},"a.b":2,"x":[1,2],"x.y":3,"p.q":{"r":[{"s":4}]}}"#).unwrap();
+        assert_eq!(field_value(&src, "a.b", None), Value::Json("[1,2]".into()));
+        assert_eq!(field_value(&src, "x.y", None), Value::Json("[3]".into()));
+        assert_eq!(
+            field_value(&src, "p.q.r.s", None),
+            Value::Json("[4]".into())
+        );
+        assert_eq!(
+            field_value(&src, "p.q.r", None),
+            Value::Json(r#"[{"s":4}]"#.into())
+        );
+        // A root that is not an object holds no field.
+        assert!(is_missing(&field_value(&Json::Num("1".into()), "a", None)));
+    }
+
+    #[test]
+    fn a_wide_document_is_walked_once() {
+        // 20,000 fields: one scan per column would compare 400 million keys.
+        let n = 20_000;
+        let text = format!(
+            "{{{}}}",
+            (0..n)
+                .map(|i| format!("\"f{i}\":{i}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let src = parse(&text).unwrap();
+        let mapping = format!(
+            r#"{{"properties":{{{}}}}}"#,
+            (0..n)
+                .map(|i| format!(r#""f{i}":{{"type":"long"}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let cols = columns(
+            &flatten_mapping(&parse(&mapping).unwrap()),
+            ColumnsFor {
+                spans_indices: false,
+                seq_no_guards: false,
+            },
+        );
+        let last = cols.len() - 1;
+        let want = cols[last]
+            .name
+            .trim_start_matches('f')
+            .parse::<i64>()
+            .unwrap();
+        let hit = Json::Obj(vec![("_source".into(), src)]);
+        let started = std::time::Instant::now();
+        let rows = hit_rows(&[hit], &cols);
+        assert_eq!(rows[0][last], Value::Int(want));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]

@@ -15,6 +15,9 @@
 //!   `_search/scroll`, …) and `_sql` with a `SELECT`, `SHOW` or `DESCRIBE` (every query the
 //!   request carries: the `sql` parameters and the body's `query` and `sql`).
 //! - `PUT`, `DELETE`, `PATCH`, `OPTIONS` write.
+//! - A segment holding a decoded `/`, `\` or `?` (`%2F`, `%5C`, `%3F`) is one segment to the
+//!   cluster, but a reverse proxy in front of it may decode it: the path such a proxy passes on
+//!   must read too (see [`proxied`]).
 //!
 //! On top of that, whatever the endpoint: a `refresh` parameter (a realtime `GET` with
 //! `refresh=true` refreshes the shard), a body passed as the `source` parameter, a
@@ -28,7 +31,7 @@
 
 use crate::sqlgen::classify::StatementClass;
 
-use super::console::{self, Body, EsRequest, Method};
+use super::console::{self, Body, EsRequest, Method, QueryPairs};
 use super::json::Json;
 
 /// Path segments that act on the cluster whatever the method (compared ignoring ASCII case).
@@ -137,6 +140,9 @@ pub const REMOTE_KEYS: &[&str] = &[
     "personalize_request_parameters",
     "keep_on_completion",
     "wait_for_completion_timeout",
+    // A query passed in base64: the cluster decodes and rewrites it like any other (a `semantic`
+    // query inside calls its model), and nothing here decodes it.
+    "wrapper",
 ];
 
 /// The endpoint names Elasticsearch 6.8 to 9.x and OpenSearch 1 to 3 define at the start of a
@@ -524,11 +530,13 @@ const SQL_WRITE_WORDS: &[&str] = &[
     "COPY", "ATTACH", "KILL", "OPTIMIZE", "REFRESH", "FLUSH", "CLOSE", "OPEN",
 ];
 
-/// Classifies one console statement; text that does not parse is a write.
+/// Classifies one console statement; text that does not parse is a write. A SQL statement reads
+/// when [`sql_reads`] says so.
 pub fn classify_text(text: &str) -> StatementClass {
-    match console::parse_request(text) {
-        Ok(req) => classify(&req),
-        Err(_) => StatementClass::Write,
+    match console::parse_command(text) {
+        Ok(console::Command::Request(req)) => classify(&req),
+        Ok(console::Command::Sql(sql)) if sql_reads(&sql) => StatementClass::Read,
+        Ok(console::Command::Sql(_)) | Err(_) => StatementClass::Write,
     }
 }
 
@@ -540,39 +548,81 @@ pub fn classify(req: &EsRequest) -> StatementClass {
     }
 }
 
+/// A request reads when its path reads as the cluster gets it and as a decoding reverse proxy
+/// would pass it on (see [`proxied`]).
 fn reads(req: &EsRequest) -> bool {
     let segs: Vec<&str> = req.segments.iter().map(String::as_str).collect();
-    if !known_endpoint(&segs) {
+    reads_as(req, &segs, &req.query)
+        && proxied(req).is_none_or(|(segs, query)| {
+            let segs: Vec<&str> = segs.iter().map(String::as_str).collect();
+            reads_as(req, &segs, &query)
+        })
+}
+
+/// The path and query a reverse proxy in front of the cluster (`pathPrefix`) hands on when it
+/// decodes the path first, as nginx's `proxy_pass http://es:9200/;` does: `%2F` and `%5C` become
+/// separators (`GET /logs%2F_flush` reaches the cluster as `GET /logs/_flush`) and `%3F` starts
+/// the query. `None` when no segment holds `/`, `\` or `?`. The cluster itself decodes segment
+/// by segment, so a document id `a%2Fb` stays one id there.
+fn proxied(req: &EsRequest) -> Option<(Vec<String>, QueryPairs)> {
+    if !req.segments.iter().any(|s| s.contains(['/', '\\', '?'])) {
+        return None;
+    }
+    let path = req.segments.join("/");
+    let (path, decoded_query) = match path.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (path.as_str(), None),
+    };
+    let segs = path
+        .split(['/', '\\'])
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    let mut query: QueryPairs = decoded_query
+        .into_iter()
+        .flat_map(|q| q.split(['&', '?']))
+        .filter(|p| !p.is_empty())
+        .map(|p| match p.split_once('=') {
+            Some((k, v)) => (k.to_string(), Some(v.to_string())),
+            None => (p.to_string(), None),
+        })
+        .collect();
+    query.extend(req.query.iter().cloned());
+    Some((segs, query))
+}
+
+/// Whether `req` reads with the path `segs` and the query `query`.
+fn reads_as(req: &EsRequest, segs: &[&str], query: &QueryPairs) -> bool {
+    if !known_endpoint(segs) {
         return false;
     }
-    if segs.iter().any(|s| is_action_segment(s)) || acting_get(&segs) {
+    if segs.iter().any(|s| is_action_segment(s)) || acting_get(segs) {
         return false;
     }
-    if req.query.iter().any(|(k, v)| write_param(k, v.as_deref())) {
+    if query.iter().any(|(k, v)| write_param(k, v.as_deref())) {
         return false;
     }
     // `GET _async_search/<id>?keep_alive=` (and the EQL, ES|QL, SQL and OpenSearch async gets)
     // extends the stored result; only opening a point in time takes it as a plain read.
-    if req
-        .query
+    if query
         .iter()
         .any(|(k, _)| k.eq_ignore_ascii_case("keep_alive"))
-        && !opens_pit(&segs)
+        && !opens_pit(segs)
     {
         return false;
     }
     if req.body.as_ref().is_some_and(body_calls_out) {
         return false;
     }
-    if is_sql(&segs) && !sql_body_reads(req) {
+    if is_sql(segs) && !sql_body_reads(req.body.as_ref(), query) {
         return false;
     }
-    if segs.contains(&"_analyze") && !(analyze_shape(&segs) && analyze_body_reads(req)) {
+    if segs.contains(&"_analyze") && !(analyze_shape(segs) && analyze_body_reads(req)) {
         return false;
     }
     match req.method {
         Method::Get | Method::Head => true,
-        Method::Post => post_reads(&segs),
+        Method::Post => post_reads(segs),
         Method::Put | Method::Delete | Method::Patch | Method::Options => false,
     }
 }
@@ -776,15 +826,14 @@ pub fn is_sql(segs: &[&str]) -> bool {
 /// cursor. The queries: body `query`, every `sql` parameter (OpenSearch's legacy GET), and body
 /// `sql`: NLPchina's SQL plugin, which serves `_sql` before 7.5, copies the body's string keys
 /// into the parameters and runs `sql`, whatever `query` says.
-fn sql_body_reads(req: &EsRequest) -> bool {
-    let mut queries: Vec<&str> = req
-        .query
+fn sql_body_reads(body: Option<&Body>, query: &QueryPairs) -> bool {
+    let mut queries: Vec<&str> = query
         .iter()
         .filter(|(k, _)| k == "sql")
         .map(|(_, v)| v.as_deref().unwrap_or(""))
         .collect();
     let mut cursor = false;
-    match &req.body {
+    match body {
         None => {}
         Some(Body::Json(Json::Obj(pairs))) => {
             for (k, v) in pairs {
@@ -933,6 +982,7 @@ mod tests {
             "GET /logs/_doc/1",
             "GET /logs/_doc/1?refresh=false",
             "GET /_cluster/health?wait_for_status=yellow",
+            "GET /_cluster/health?wait_for_nodes=1000&timeout=30s",
             "GET /_tasks?detailed=true",
             "GET /logs/_search\n{\"query\":{\"match\":{\"msg\":\"x\"}}}",
             "POST /logs/_search\n{\"query\":{\"match_all\":{}},\"size\":5}",
@@ -1071,6 +1121,11 @@ mod tests {
             "POST /logs/_search\n{\"ext\":{\"generative_qa_parameters\":{}}}",
             "POST _msearch\n{\"index\":\"a\"}\n{\"query\":{\"sparse_vector\":{\"inference_id\":\"x\"}}}",
             "POST /logs/_search\n{\"query\":{\"knn\":{\"field\":\"s\",\"k\":10,\"query_vector_builder\":{\"text_embedding\":{\"model_text\":\"q\"}}}}}",
+            // Any of them (or any query) in base64: {"semantic":{"field":"body","query":"hello"}}.
+            "POST /logs/_search\n{\"query\":{\"wrapper\":{\"query\":\"eyJzZW1hbnRpYyI6eyJmaWVsZCI6ImJvZHkiLCJxdWVyeSI6ImhlbGxvIn19\"}}}",
+            "GET /logs/_search\n{\"query\":{\"bool\":{\"filter\":[{\"wrapper\":{\"query\":\"e30=\"}}]}}}",
+            "POST _msearch\n{\"index\":\"a\"}\n{\"query\":{\"wrapper\":{\"query\":\"e30=\"}}}",
+            "POST /logs/_count\n{\"query\":{\"wrapper\":{\"query\":\"e30=\"}}}",
             // Text the field's mapping infers, or stored feature queries.
             "POST /logs/_search\n{\"query\":{\"sparse_vector\":{\"field\":\"s\",\"query\":\"q\"}}}",
             "GET /logs/_search\n{\"retriever\":{\"rrf\":{\"query\":\"q\",\"fields\":[\"a\",\"s\"]}}}",
@@ -1166,6 +1221,46 @@ mod tests {
         }
     }
 
+    /// The cluster decodes segment by segment, but a reverse proxy in front of it (`pathPrefix`)
+    /// may decode `%2F`, `%5C` and `%3F` first and resolve dot segments: what it would pass on
+    /// must read too.
+    #[test]
+    fn paths_a_decoding_proxy_would_change() {
+        for t in [
+            "GET /logs%2F_flush",
+            "GET /x%2F..%2F_flush",
+            "GET /x%2F..%2F_security%2Fenroll%2Fkibana",
+            "GET /logs/_doc/x%2F..%2F..%2F_cache%2Fclear",
+            "POST /logs/_explain/x%2F..%2F..%2F_delete_by_query\n{\"query\":{\"match_all\":{}}}",
+            "POST /logs/_termvectors/x%2F..%2F..%2F_update_by_query",
+            "GET /logs/_doc/a%5C..%5C..%5C_flush",
+            // Without dot parts the proxy still splits the segment.
+            "POST /logs/_explain/x%2F_delete_by_query\n{\"query\":{\"match_all\":{}}}",
+            "POST /logs/_termvectors/x%5C_update_by_query",
+            "POST /logs%2F_update_by_query/_search",
+            "GET /logs/_doc/a%2F_flush",
+            "GET /logs/_doc/a%2F_x",
+            "HEAD /logs/_doc/a%5C_refresh",
+            // `%3F` starts the query behind a proxy.
+            "GET /logs/_doc/a%3Frefresh=true",
+            "GET /logs/_search%3Fsearch_pipeline=p",
+            "GET /_async_search/abc%3Fkeep_alive=5d",
+            "GET /_plugins/_sql%3Fsql=DELETE%20FROM%20logs",
+        ] {
+            write(t);
+        }
+        for t in [
+            // Ids and date math with slashes stay reads.
+            "GET /logs/_doc/a%2Fb",
+            "GET /pages/_doc/https%3A%2F%2Fexample.com%2Fp%3Fq%3D1",
+            "GET /%3Clogs-%7Bnow%2Fd%7D%3E/_search",
+            "POST /%3Clogs-%7Bnow%2Fd%7D%3E/_search\n{\"query\":{\"match_all\":{}}}",
+            "GET /logs/_source/a%5Cb",
+        ] {
+            read(t);
+        }
+    }
+
     #[test]
     fn vocabulary_tables_are_consistent() {
         for (top, w) in TOP_PAIRS {
@@ -1192,5 +1287,18 @@ mod tests {
         assert!(!sql_reads("-- only a comment"));
         assert!(!sql_reads("SELECT `a FROM t"));
         assert!(!sql_reads("select * from t where x in (delete)"));
+    }
+
+    #[test]
+    fn console_sql_statements() {
+        read("SELECT a FROM logs WHERE b = 'x'");
+        read("# all tables\nSHOW TABLES;");
+        read("describe logs");
+        write("SELECT 1; DELETE FROM logs");
+        write("SELECT * FROM logs WHERE a IN (SELECT 1) INTO x");
+        write("SELECT 'unterminated");
+        // Not a SQL word: a request that does not parse.
+        write("DELETE FROM logs");
+        write("TRUNCATE logs");
     }
 }

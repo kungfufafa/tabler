@@ -4,9 +4,9 @@
 //!
 //! A request is parsed once into an [`EsRequest`]: the classifier reads it and the client sends
 //! it, so what is judged is what goes out. The path is kept as decoded segments and written back
-//! with every unsafe character percent-encoded: `.` and `..` segments (also as `%2e`) are
-//! refused, since a URL parser would fold them into another endpoint, and a path can never name
-//! another host.
+//! with every unsafe character percent-encoded: `.` and `..` segments (also as `%2e`, and parts
+//! of a segment behind a decoded `/` or `\`, which a reverse proxy may decode) are refused, since
+//! a URL parser would fold them into another endpoint, and a path can never name another host.
 
 use crate::error::AppError;
 use crate::sqlgen::split::SplitStatement;
@@ -99,7 +99,7 @@ pub type QueryPairs = Vec<(String, Option<String>)>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct EsRequest {
     pub method: Method,
-    /// Decoded, non-empty, never `.` or `..`.
+    /// Decoded and non-empty; no part of one between `/` or `\` is `.` or `..`.
     pub segments: Vec<String>,
     pub query: QueryPairs,
     pub body: Option<Body>,
@@ -270,8 +270,12 @@ pub fn parse_target(target: &str) -> Result<(Vec<String>, QueryPairs), AppError>
     let mut segments = Vec::new();
     for raw in path.split('/').filter(|s| !s.is_empty()) {
         let seg = percent_decode(raw)?;
-        if seg == "." || seg == ".." {
-            return Err(bad("`.` and `..` segments are not allowed"));
+        // A decoded `/` or `\` stays in its segment here, but a reverse proxy in front of the
+        // cluster may decode it into a separator: then no part may lead elsewhere either.
+        if seg.split(['/', '\\']).any(|p| p == "." || p == "..") {
+            return Err(bad(
+                "`.` and `..` segments are not allowed (also behind %2F or %5C)",
+            ));
         }
         segments.push(seg);
     }
@@ -367,16 +371,78 @@ fn is_comment_line(t: &str) -> bool {
     t.starts_with('#') || t.starts_with("//")
 }
 
-/// Whether a line (trimmed at the start) opens a request: a method word, then a space or the end.
-fn is_request_line(t: &str) -> bool {
-    let word: String = t.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
-    let rest = &t[word.len()..];
-    Method::parse(&word).is_some() && (rest.is_empty() || rest.starts_with([' ', '\t']))
+/// The first word of a line (trimmed at the start), when a space, a tab or the end follows it.
+fn first_word(t: &str) -> Option<&str> {
+    let n = t.chars().take_while(|c| c.is_ascii_alphabetic()).count();
+    let (word, rest) = t.split_at(n);
+    (!word.is_empty() && (rest.is_empty() || rest.starts_with([' ', '\t', '\r']))).then_some(word)
 }
 
-/// Splits console text into requests. A request starts at a line whose first word is a method,
-/// outside strings and comments; its body runs to the next such line. Text before the first
-/// request that is not a comment is a statement of its own, which then fails to parse.
+/// Whether a line (trimmed at the start) opens a request: a method word, then a space or the end.
+fn is_request_line(t: &str) -> bool {
+    first_word(t).is_some_and(|w| Method::parse(w).is_some())
+}
+
+/// Whether a line inside a SQL statement still going on opens a request: the method word must
+/// then be followed by one path and nothing else but a comment, so that SQL lines such as
+/// `options` or `get AS g,` stay in the statement.
+fn is_request_line_in_sql(t: &str) -> bool {
+    let mut words = t
+        .split_whitespace()
+        .skip(1)
+        .take_while(|w| !(w.starts_with('#') || w.starts_with("//")));
+    is_request_line(t) && words.next().is_some() && words.next().is_none()
+}
+
+/// The words that open a SQL statement of the console, run through the cluster's SQL endpoint:
+/// the reading ones only (anything else is not a statement the console knows, and fails).
+pub const SQL_WORDS: &[&str] = &["SELECT", "SHOW", "DESCRIBE", "DESC"];
+
+/// Whether a line (trimmed at the start) opens a SQL statement.
+fn is_sql_line(t: &str) -> bool {
+    first_word(t).is_some_and(|w| SQL_WORDS.iter().any(|s| s.eq_ignore_ascii_case(w)))
+}
+
+/// One console statement: a REST request, or a SQL query for the cluster's SQL endpoint.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Command {
+    Request(EsRequest),
+    Sql(String),
+}
+
+/// The SQL of a statement whose first line (after blank and comment lines) opens a SQL
+/// statement, without a final `;`.
+pub fn sql_command(text: &str) -> Option<String> {
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let t = line.trim();
+        if t.is_empty() || is_comment_line(t) {
+            offset += line.len();
+            continue;
+        }
+        if !is_sql_line(t) {
+            return None;
+        }
+        let sql = text[offset..].trim();
+        return Some(sql.strip_suffix(';').unwrap_or(sql).trim_end().to_string());
+    }
+    None
+}
+
+/// Parses one console statement (of [`split`]).
+pub fn parse_command(text: &str) -> Result<Command, AppError> {
+    match sql_command(text) {
+        Some(sql) => Ok(Command::Sql(sql)),
+        None => parse_request(text).map(Command::Request),
+    }
+}
+
+/// Splits console text into statements, at lines whose first word is a method or (outside a SQL
+/// statement still going on) a SQL word, outside strings and comments. A request's body runs to
+/// the next such line; a SQL statement goes on over its lines until one ends with `;` or is
+/// blank, so a subquery on a line of its own stays in it, and so does a line that starts with a
+/// method word but is not a method and one path. Text before the first statement that
+/// is not a comment is a statement of its own, which then fails to parse.
 pub fn split(text: &str) -> Vec<SplitStatement> {
     let chars: Vec<char> = text.chars().collect();
     let mut starts: Vec<usize> = Vec::new();
@@ -386,6 +452,8 @@ pub fn split(text: &str) -> Vec<SplitStatement> {
     // not start a request.
     let mut in_triple = false;
     let mut in_block = false;
+    // Inside a SQL statement whose lines go on (no `;` or blank line yet).
+    let mut sql_goes_on = false;
     while i < chars.len() {
         let c = chars[i];
         if line_start && !in_triple && !in_block {
@@ -398,8 +466,21 @@ pub fn split(text: &str) -> Vec<SplitStatement> {
                 .position(|&c| c == '\n')
                 .map_or(chars.len(), |n| j + n);
             let line: String = chars[j..line_end].iter().collect();
-            if is_request_line(&line) {
+            let request = if sql_goes_on {
+                is_request_line_in_sql(&line)
+            } else {
+                is_request_line(&line)
+            };
+            if request {
                 starts.push(j);
+                sql_goes_on = false;
+            } else if is_sql_line(&line) && !sql_goes_on {
+                starts.push(j);
+                sql_goes_on = true;
+            }
+            if sql_goes_on {
+                let t = line.trim();
+                sql_goes_on = !(t.is_empty() || t.ends_with(';'));
             }
         }
         line_start = false;
@@ -546,6 +627,12 @@ mod tests {
             "GET ./x",
             "GET http://other:9200/_search",
             "GET /a\\..\\b",
+            // Dot parts behind a decoded separator, which a decoding proxy would fold.
+            "GET /x%2F..%2F_flush",
+            "GET /logs/_doc/x%2F..%2F..%2F_cache%2Fclear",
+            "GET /logs/_doc/a%5C..%5C..%5C_flush",
+            "GET /a%2F.",
+            "GET /%2E%2E%2Fx",
             "GET /a#frag",
             "GET /a%zz",
             "GET /a%ff",
@@ -589,6 +676,71 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert!(parse_request(&parts[0].sql).is_err());
         assert!(split("  \n// x\n").is_empty());
+    }
+
+    #[test]
+    fn sql_statements_split_at_semicolons_and_blank_lines() {
+        let text = "SELECT a,\n  b\nFROM logs\nWHERE c IN (\nSELECT d FROM e)\n\nshow tables;\nDESC logs\nGET /x\nselect 1;";
+        let parts = split(text);
+        let sqls: Vec<&str> = parts.iter().map(|s| s.sql.as_str()).collect();
+        assert_eq!(
+            sqls,
+            [
+                "SELECT a,\n  b\nFROM logs\nWHERE c IN (\nSELECT d FROM e)",
+                "show tables;",
+                "DESC logs",
+                "GET /x",
+                "select 1;"
+            ]
+        );
+        assert_eq!(parts[1].line, 7);
+        assert_eq!(
+            parse_command(sqls[1]).unwrap(),
+            Command::Sql("show tables".into())
+        );
+        assert_eq!(
+            parse_command("# first\nSELECT 1 ;").unwrap(),
+            Command::Sql("SELECT 1".into())
+        );
+        assert!(matches!(
+            parse_command("GET /").unwrap(),
+            Command::Request(_)
+        ));
+        // Only the reading SQL words open a statement; anything else fails as a request.
+        assert!(parse_command("DELETE FROM logs").is_err());
+        assert!(parse_command("UPDATE logs SET a = 1").is_err());
+        assert!(parse_command("SELECTED /a").is_err());
+        // A method word in a SQL statement going on is the statement's, unless the line is a
+        // method and one path.
+        let text = "SELECT a,
+  options
+FROM t
+WHERE x IN (
+  get AS g,
+  head
+)
+GET /x # next
+GET
+/y";
+        let sqls: Vec<String> = split(text).into_iter().map(|s| s.sql).collect();
+        assert_eq!(
+            sqls,
+            [
+                "SELECT a,
+  options
+FROM t
+WHERE x IN (
+  get AS g,
+  head
+)",
+                "GET /x # next",
+                "GET
+/y"
+            ]
+        );
+        // A SQL word in a request body is the body's.
+        let text = "POST _sql\n{\"query\": \"\"\"\nSELECT 1\n\"\"\"}";
+        assert_eq!(split(text).len(), 1);
     }
 
     #[test]
