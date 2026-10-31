@@ -1,9 +1,16 @@
 import type { LaneModule } from "../types";
+import { tsqlUi } from "./dialect";
+import { sqlserverUi } from "./form";
 
 /**
- * The renderer of the sqlserver lane (SQL Server; docs/drivers/sqlserver.md): its connection
- * forms, views and console. Empty until the lane fills it in; `registry.ts` imports it lazily.
+ * The renderer of the sqlserver lane (SQL Server; docs/drivers/sqlserver.md): the connection form
+ * and its connection strings, and T-SQL in the editor. The grid, the structure view and the
+ * editor's runs are the app's own, which the session's caps drive; the lane has no views or
+ * calls of its own.
  */
-const lane: LaneModule = {};
+const lane: LaneModule = {
+  kinds: { sqlserver: sqlserverUi },
+  dialects: { tsql: tsqlUi },
+};
 
 export default lane;
