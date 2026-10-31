@@ -1,0 +1,1032 @@
+{
+  "$comment": "Cases of the DynamoDB console's splitter and read/write classifier (src-tauri/src/sqlgen/native/dynamo.rs split_console and classify_console). The backend's tests (sqlgen::native::dynamo::tests::shared_console_cases) and the renderer's mirror (src/features/drivers/dynamodb/classify.test.ts) both run them; `class` is the whole text's.",
+  "classify": [
+    {
+      "sql": "SELECT * FROM \"t\"",
+      "class": "read"
+    },
+    {
+      "sql": "select a, b from t where pk = 'x'",
+      "class": "read"
+    },
+    {
+      "sql": "  \n-- note\n/* c */ SeLeCt * FROM t",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT\t* FROM \"t\".\"idx\"",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t WHERE a = 'DELETE FROM t'",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT(1) FROM t",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t;",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t ; -- end\n;",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t WHERE a = 'x;y'",
+      "class": "read"
+    },
+    {
+      "sql": "-- note\r\nSELECT * FROM t -- x\r\n",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t -- x\r",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t -- x\r  \t\n;",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t -- a   \n",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t WHERE a = 'C:\\path' AND b = 'it''s' AND \"c\\d\" = 1",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t /* a -- b ' \" ` */",
+      "class": "read"
+    },
+    {
+      "sql": "-- x\r  \t\nSELECT 1",
+      "class": "read"
+    },
+    {
+      "sql": "-- x  \nSELECT 1",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT 1 -- x\r",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t;;;",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t; SELECT * FROM u",
+      "class": "read"
+    },
+    {
+      "sql": "select * from \"Music\" where \"Artist\" = 'Acme' and begins_with(\"SongTitle\", 'Happy')",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t WHERE contains(\"tags\", 'DELETE')",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM \"t\" WHERE \"pk\" = ? ",
+      "class": "read"
+    },
+    {
+      "sql": " SELECT * FROM t",
+      "class": "read"
+    },
+    {
+      "sql": "　SELECT * FROM t　",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t WHERE a = 'é😀'",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' FROM t",
+      "class": "read"
+    },
+    {
+      "sql": "INSERT INTO t VALUE {'pk': 'a'}",
+      "class": "write"
+    },
+    {
+      "sql": "UPDATE t SET a = 1 WHERE pk = 'x'",
+      "class": "write"
+    },
+    {
+      "sql": "DELETE FROM t WHERE pk = 'x'",
+      "class": "write"
+    },
+    {
+      "sql": "EXISTS(SELECT * FROM t WHERE pk = 'x')",
+      "class": "write"
+    },
+    {
+      "sql": "/* SELECT */ DELETE FROM t WHERE pk = 'x'",
+      "class": "write"
+    },
+    {
+      "sql": "-- SELECT\nUPDATE t SET a = 1 WHERE pk = 'x'",
+      "class": "write"
+    },
+    {
+      "sql": "SELECTX * FROM t",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT_ * FROM t",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT$ * FROM t",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT1 FROM t",
+      "class": "write"
+    },
+    {
+      "sql": "ſelect * from t",
+      "class": "write"
+    },
+    {
+      "sql": "(SELECT * FROM t)",
+      "class": "write"
+    },
+    {
+      "sql": "",
+      "class": "write"
+    },
+    {
+      "sql": "   ",
+      "class": "write"
+    },
+    {
+      "sql": ";;",
+      "class": "write"
+    },
+    {
+      "sql": "-- only a comment",
+      "class": "write"
+    },
+    {
+      "sql": "/* only a comment */",
+      "class": "write"
+    },
+    {
+      "sql": "REPLACE INTO t VALUE {}",
+      "class": "write"
+    },
+    {
+      "sql": "﻿SELECT * FROM t",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t; DELETE FROM t WHERE pk = 'a'",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t WHERE a = 'x';;\nUPDATE t SET b = 1 WHERE pk = 'a'",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t -- x\n; INSERT INTO t VALUE {'pk': 'b'}",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t --x\r; DELETE FROM t WHERE pk = 'a'",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t --x\r DELETE FROM t WHERE pk = 'a'",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t -- x ; DELETE FROM t WHERE pk = 'a'",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t -- x\u001d; DELETE FROM t WHERE pk = 'a'",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t -- x\u001e; DELETE FROM t WHERE pk = 'a'",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t /* /* */ ; DELETE FROM t WHERE pk = 'a' -- */",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t WHERE a = `1 // '\n`; DELETE FROM t WHERE pk = 'a' --'",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t WHERE a = `{b: 1}`",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t WHERE a = '\\' /* '; DELETE FROM t WHERE pk = 'a' -- */",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM \"t\\\" /* \"; DELETE FROM t WHERE pk = 'a' -- */",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t /* ; DELETE FROM t WHERE pk = 'a'",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t WHERE a = '; DELETE FROM t WHERE pk = 'a'",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM \"t; DELETE FROM t WHERE pk = 'a'",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT {'a': '\"'} FROM t; DELETE FROM t WHERE pk = 'a' --\"}",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT {'a': \"\\\"} FROM t; DELETE FROM t WHERE pk = 'a' --\"}",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t -- x\r y\n",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t -- x\u001ey\n",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t -- x\ry\n",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM t /* a /* b */",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' FROM t",
+      "class": "write"
+    },
+    {
+      "sql": "DELETE FROM t WHERE pk = 'a' RETURNING ALL OLD *",
+      "class": "write"
+    },
+    {
+      "sql": "-- x\u001cDELETE FROM t WHERE pk = 'a' --\nSELECT * FROM t",
+      "class": "read"
+    },
+    {
+      "sql": "/* /* */ SELECT 1 */ DELETE FROM t WHERE pk = 'a'",
+      "class": "read"
+    },
+    {
+      "sql": "Scan {\"x\": \"\\\"; DeleteTable {\\\"TableName\\\": \\\"t\\\"}\"}",
+      "class": "read"
+    },
+    {
+      "sql": "Scan {\"TableName\": \"t\"}",
+      "class": "read"
+    },
+    {
+      "sql": "Query {\"TableName\": \"t\", \"KeyConditionExpression\": \"#k = :v\"}",
+      "class": "read"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"SELECT * FROM t\"}",
+      "class": "read"
+    },
+    {
+      "sql": "BatchExecuteStatement {\"Statements\": [{\"Statement\": \"SELECT * FROM t WHERE pk='a'\"}]}",
+      "class": "read"
+    },
+    {
+      "sql": "ExecuteTransaction {\"TransactStatements\": [{\"Statement\": \"SELECT * FROM t WHERE pk='a'\"}]}",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM t; Scan {\"TableName\": \"t\"}",
+      "class": "read"
+    },
+    {
+      "sql": "ListTables",
+      "class": "read"
+    },
+    {
+      "sql": "ListTables;",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeLimits ;",
+      "class": "read"
+    },
+    {
+      "sql": "Scan\n{\n  \"TableName\": \"t\",\n  \"Limit\": 5\n}",
+      "class": "read"
+    },
+    {
+      "sql": "Scan {\"TableName\": \"t;--/*\", \"x\": \"q\\\";\"}",
+      "class": "read"
+    },
+    {
+      "sql": "Scan {\"Limit\": 1e308}",
+      "class": "read"
+    },
+    {
+      "sql": "Scan {\"a\": \"\\ud83d\\ude00\"}",
+      "class": "read"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"SELECT * FROM t WHERE pk = ?\", \"ConsistentRead\": true, \"Limit\": 5, \"NextToken\": \"n\", \"Parameters\": [{\"S\": \"a\"}], \"ReturnConsumedCapacity\": \"TOTAL\", \"ReturnValuesOnConditionCheckFailure\": \"NONE\"}",
+      "class": "read"
+    },
+    {
+      "sql": "BatchExecuteStatement {\"ReturnConsumedCapacity\": \"TOTAL\", \"Statements\": [{\"Statement\": \"SELECT * FROM t WHERE pk = ?\", \"ConsistentRead\": true, \"Parameters\": [{\"S\": \"a\"}], \"ReturnValuesOnConditionCheckFailure\": \"NONE\"}]}",
+      "class": "read"
+    },
+    {
+      "sql": "ExecuteTransaction {\"ClientRequestToken\": \"c\", \"ReturnConsumedCapacity\": \"TOTAL\", \"TransactStatements\": [{\"Statement\": \"SELECT * FROM t WHERE pk = ?\", \"Parameters\": [{\"S\": \"a\"}], \"ReturnValuesOnConditionCheckFailure\": \"NONE\"}]}",
+      "class": "read"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"-- note\\r\\nSELECT * FROM t\"}",
+      "class": "read"
+    },
+    {
+      "sql": "Scan {\"a\": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+      "class": "read"
+    },
+    {
+      "sql": "BatchGetItem {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeBackup {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeContinuousBackups {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeContributorInsights {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeEndpoints {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeExport {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeGlobalTable {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeGlobalTableSettings {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeImport {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeKinesisStreamingDestination {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeLimits {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeTable {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeTableReplicaAutoScaling {}",
+      "class": "read"
+    },
+    {
+      "sql": "DescribeTimeToLive {}",
+      "class": "read"
+    },
+    {
+      "sql": "GetItem {}",
+      "class": "read"
+    },
+    {
+      "sql": "GetResourcePolicy {}",
+      "class": "read"
+    },
+    {
+      "sql": "ListBackups {}",
+      "class": "read"
+    },
+    {
+      "sql": "ListContributorInsights {}",
+      "class": "read"
+    },
+    {
+      "sql": "ListExports {}",
+      "class": "read"
+    },
+    {
+      "sql": "ListGlobalTables {}",
+      "class": "read"
+    },
+    {
+      "sql": "ListImports {}",
+      "class": "read"
+    },
+    {
+      "sql": "ListTables {}",
+      "class": "read"
+    },
+    {
+      "sql": "ListTagsOfResource {}",
+      "class": "read"
+    },
+    {
+      "sql": "Query {}",
+      "class": "read"
+    },
+    {
+      "sql": "Scan {}",
+      "class": "read"
+    },
+    {
+      "sql": "SearchVectors {}",
+      "class": "read"
+    },
+    {
+      "sql": "TransactGetItems {}",
+      "class": "read"
+    },
+    {
+      "sql": "PutItem {\"TableName\": \"t\", \"Item\": {}}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"DELETE FROM t WHERE pk = 'a'\"}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement {}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": 1}",
+      "class": "write"
+    },
+    {
+      "sql": "BatchExecuteStatement {\"Statements\": []}",
+      "class": "write"
+    },
+    {
+      "sql": "BatchExecuteStatement {\"Statements\": [{\"Statement\": \"SELECT * FROM t\"}, {\"Statement\": \"UPDATE t SET a=1 WHERE pk='a'\"}]}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteTransaction {\"TransactStatements\": [{\"Statement\": \"EXISTS(SELECT * FROM t WHERE pk='a')\"}]}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"SELECT * FROM t\", \"\\u0053tatement\": \"DELETE FROM t\"}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"TableName\": ",
+      "class": "write"
+    },
+    {
+      "sql": "scan {\"TableName\": \"t\"}",
+      "class": "write"
+    },
+    {
+      "sql": "Unknown",
+      "class": "write"
+    },
+    {
+      "sql": "Unknown {}",
+      "class": "write"
+    },
+    {
+      "sql": "-- nothing",
+      "class": "write"
+    },
+    {
+      "sql": "DeleteTable {\"TableName\": \"t\"}",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateTimeToLive {}",
+      "class": "write"
+    },
+    {
+      "sql": "ExportTableToPointInTime {}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"SELECT * FROM t; DELETE FROM t WHERE pk = 'a'\"}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"SELECT * FROM t\", \"Statement\": \"DELETE FROM t\"}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"-- x\\rDELETE FROM \\\"t\\\" WHERE \\\"pk\\\" = 'a' /*\\nSELECT * FROM \\\"t\\\" */\"}",
+      "class": "write"
+    },
+    {
+      "sql": "BatchExecuteStatement {\"Statements\": [{\"Statement\": \"-- x\\rDELETE FROM \\\"t\\\" WHERE \\\"pk\\\" = 'a' /*\\nSELECT * FROM \\\"t\\\" */\"}]}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteTransaction {\"TransactStatements\": [{\"Statement\": \"-- x\\rDELETE FROM \\\"t\\\" WHERE \\\"pk\\\" = 'a' /*\\nSELECT * FROM \\\"t\\\" */\"}]}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"SELECT * FROM t --x\\r; DELETE FROM t WHERE pk = 'a'\"}",
+      "class": "write"
+    },
+    {
+      "sql": "BatchExecuteStatement {\"Statements\": [{\"Statement\": \"SELECT * FROM t --x\\r; DELETE FROM t WHERE pk = 'a'\"}]}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"SELECT * FROM t\", \"statement\": \"DELETE FROM t WHERE pk='a'\"}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"SELECT * FROM t\", \"STATEMENT\": \"DELETE FROM t WHERE pk='a'\"}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"SELECT * FROM t\", \"Statements\": [{\"Statement\": \"DELETE FROM t\"}]}",
+      "class": "write"
+    },
+    {
+      "sql": "BatchExecuteStatement {\"Statements\": [{\"Statement\": \"SELECT * FROM t\", \"statement\": \"DELETE FROM t\"}]}",
+      "class": "write"
+    },
+    {
+      "sql": "BatchExecuteStatement {\"Statements\": [{\"Statement\": \"SELECT * FROM t\"}], \"statements\": [{\"Statement\": \"DELETE FROM t\"}]}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteTransaction {\"TransactStatements\": [{\"Statement\": \"SELECT * FROM t\"}], \"transactStatements\": [{\"Statement\": \"DELETE FROM t\"}]}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteTransaction {\"TransactStatements\": [{\"Statement\": \"SELECT * FROM t\", \"ConsistentRead\": true}]}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement {\"Statement\": \"SELECT * FROM t\", \"Unknown\": 1}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteStatement [\"SELECT * FROM t\"]",
+      "class": "write"
+    },
+    {
+      "sql": "BatchExecuteStatement {\"Statements\": [\"SELECT * FROM t\"]}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan [1]",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": 1} trailing",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"TableName\": \"a\", \"TableName\": \"b\"}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": {\"b\": 1, \"b\": 2}}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"Limit\": 1e400}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"Limit\": -1e400}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"Limit\": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": \"\\udc00\"}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": \"\\ud83d\"}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": \"\\ud83dx\"}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": \"\\x\"}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": \"tab\there\"}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": 01}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": 1.}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": .5}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": 1e}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": +1}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": NaN}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": true,}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {'a': 1}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": 1}}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"a\": 1}; PutItem {\"TableName\": \"t\", \"Item\": {\"pk\": {\"S\": \"x\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "Scan {\"x\": \"a\\\\\"}; DeleteTable {\"TableName\": \"t\"}",
+      "class": "write"
+    },
+    {
+      "sql": "TransactWriteItems {}",
+      "class": "write"
+    },
+    {
+      "sql": "BatchWriteItem {}",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateItem {}",
+      "class": "write"
+    },
+    {
+      "sql": "BatchExecuteStatement {}",
+      "class": "write"
+    },
+    {
+      "sql": "CreateBackup {}",
+      "class": "write"
+    },
+    {
+      "sql": "CreateGlobalTable {}",
+      "class": "write"
+    },
+    {
+      "sql": "CreateTable {}",
+      "class": "write"
+    },
+    {
+      "sql": "DeleteBackup {}",
+      "class": "write"
+    },
+    {
+      "sql": "DeleteItem {}",
+      "class": "write"
+    },
+    {
+      "sql": "DeleteResourcePolicy {}",
+      "class": "write"
+    },
+    {
+      "sql": "DeleteTable {}",
+      "class": "write"
+    },
+    {
+      "sql": "DisableKinesisStreamingDestination {}",
+      "class": "write"
+    },
+    {
+      "sql": "EnableKinesisStreamingDestination {}",
+      "class": "write"
+    },
+    {
+      "sql": "ExecuteTransaction {}",
+      "class": "write"
+    },
+    {
+      "sql": "ImportTable {}",
+      "class": "write"
+    },
+    {
+      "sql": "PutItem {}",
+      "class": "write"
+    },
+    {
+      "sql": "PutResourcePolicy {}",
+      "class": "write"
+    },
+    {
+      "sql": "RestoreTableFromBackup {}",
+      "class": "write"
+    },
+    {
+      "sql": "RestoreTableToPointInTime {}",
+      "class": "write"
+    },
+    {
+      "sql": "TagResource {}",
+      "class": "write"
+    },
+    {
+      "sql": "UntagResource {}",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateContinuousBackups {}",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateContributorInsights {}",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateGlobalTable {}",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateGlobalTableSettings {}",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateKinesisStreamingDestination {}",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateTable {}",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateTableReplicaAutoScaling {}",
+      "class": "write"
+    },
+    {
+      "sql": "BatchWriteItem",
+      "class": "write"
+    },
+    {
+      "sql": "CreateBackup",
+      "class": "write"
+    },
+    {
+      "sql": "CreateGlobalTable",
+      "class": "write"
+    },
+    {
+      "sql": "CreateTable",
+      "class": "write"
+    },
+    {
+      "sql": "DeleteBackup",
+      "class": "write"
+    },
+    {
+      "sql": "DeleteItem",
+      "class": "write"
+    },
+    {
+      "sql": "DeleteResourcePolicy",
+      "class": "write"
+    },
+    {
+      "sql": "DeleteTable",
+      "class": "write"
+    },
+    {
+      "sql": "DisableKinesisStreamingDestination",
+      "class": "write"
+    },
+    {
+      "sql": "EnableKinesisStreamingDestination",
+      "class": "write"
+    },
+    {
+      "sql": "ExportTableToPointInTime",
+      "class": "write"
+    },
+    {
+      "sql": "ImportTable",
+      "class": "write"
+    },
+    {
+      "sql": "PutItem",
+      "class": "write"
+    },
+    {
+      "sql": "PutResourcePolicy",
+      "class": "write"
+    },
+    {
+      "sql": "RestoreTableFromBackup",
+      "class": "write"
+    },
+    {
+      "sql": "RestoreTableToPointInTime",
+      "class": "write"
+    },
+    {
+      "sql": "TagResource",
+      "class": "write"
+    },
+    {
+      "sql": "TransactWriteItems",
+      "class": "write"
+    },
+    {
+      "sql": "UntagResource",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateContinuousBackups",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateContributorInsights",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateGlobalTable",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateGlobalTableSettings",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateItem",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateKinesisStreamingDestination",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateTable",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateTableReplicaAutoScaling",
+      "class": "write"
+    },
+    {
+      "sql": "UpdateTimeToLive",
+      "class": "write"
+    }
+  ],
+  "split": [
+    {
+      "sql": "SELECT * FROM t WHERE a = 'x;y' AND \"we;ird\" = 1;\n-- comment; with a semicolon\nScan {\"TableName\": \"t;1\", \"FilterExpression\": \"a = :v\", \"x\": \"q\\\";\"};;;  /* only; a comment */ ;\nDescribeLimits;\nUPDATE \"t\" SET a = 'it''s;' WHERE pk = 'k'",
+      "statements": [
+        "SELECT * FROM t WHERE a = 'x;y' AND \"we;ird\" = 1",
+        "Scan {\"TableName\": \"t;1\", \"FilterExpression\": \"a = :v\", \"x\": \"q\\\";\"}",
+        "DescribeLimits",
+        "UPDATE \"t\" SET a = 'it''s;' WHERE pk = 'k'"
+      ]
+    },
+    {
+      "sql": "\n\n  SELECT 1;\nSELECT ü",
+      "statements": [
+        "SELECT 1",
+        "SELECT ü"
+      ]
+    },
+    {
+      "sql": "  -- x\n /* y */ ;; ",
+      "statements": []
+    },
+    {
+      "sql": "Scan {\"TableName\": \"a--b\"}",
+      "statements": [
+        "Scan {\"TableName\": \"a--b\"}"
+      ]
+    },
+    {
+      "sql": "a;b",
+      "statements": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "sql": "'unclosed;",
+      "statements": [
+        "'unclosed;"
+      ]
+    },
+    {
+      "sql": "\"unclosed;",
+      "statements": [
+        "\"unclosed;"
+      ]
+    },
+    {
+      "sql": "Scan {\"x\": \"un;closed",
+      "statements": [
+        "Scan {\"x\": \"un;closed"
+      ]
+    },
+    {
+      "sql": "SELECT * FROM t -- a;b\nSELECT 2; ListTables ; DescribeLimits",
+      "statements": [
+        "SELECT * FROM t -- a;b\nSELECT 2",
+        "ListTables",
+        "DescribeLimits"
+      ]
+    },
+    {
+      "sql": "SELECT `a;b` FROM t; SELECT 1",
+      "statements": [
+        "SELECT `a;b` FROM t",
+        "SELECT 1"
+      ]
+    },
+    {
+      "sql": "SELECT * FROM t /* a; */ WHERE x = 1;\r\nScan {}\r\n",
+      "statements": [
+        "SELECT * FROM t /* a; */ WHERE x = 1",
+        "Scan {}"
+      ]
+    },
+    {
+      "sql": "Scan [1]; Scan {}",
+      "statements": [
+        "Scan [1]",
+        "Scan {}"
+      ]
+    },
+    {
+      "sql": "Query {\"a\": \"\\\\\"}; Scan {}",
+      "statements": [
+        "Query {\"a\": \"\\\\\"}",
+        "Scan {}"
+      ]
+    },
+    {
+      "sql": "ListTables ListTables; x",
+      "statements": [
+        "ListTables ListTables",
+        "x"
+      ]
+    },
+    {
+      "sql": "SELECT 'é😀;' FROM t; SELECT 2",
+      "statements": [
+        "SELECT 'é😀;' FROM t",
+        "SELECT 2"
+      ]
+    }
+  ]
+}

@@ -2526,6 +2526,43 @@ mod tests {
         );
     }
 
+    /// The cases the renderer's mirror of the splitter and classifier runs too
+    /// (`src/features/drivers/dynamodb/classify.test.ts`): both must agree on every one.
+    #[test]
+    fn shared_console_cases() {
+        let cases: J = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/dynamodb/console.cases.json"
+        ))
+        .expect("the case file is JSON");
+        let classify = cases["classify"].as_array().expect("classify cases");
+        assert!(classify.len() > 200);
+        let mut wrong = Vec::new();
+        for c in classify {
+            let text = c["sql"].as_str().expect("sql");
+            let want = match c["class"].as_str() {
+                Some("read") => StatementClass::Read,
+                _ => StatementClass::Write,
+            };
+            if classify_console(text) != want {
+                wrong.push(format!("{text:?}: want {want:?}"));
+            }
+        }
+        for c in cases["split"].as_array().expect("split cases") {
+            let text = c["sql"].as_str().expect("sql");
+            let want: Vec<&str> = c["statements"]
+                .as_array()
+                .expect("statements")
+                .iter()
+                .filter_map(J::as_str)
+                .collect();
+            let got: Vec<String> = split_console(text).into_iter().map(|s| s.sql).collect();
+            if got != want {
+                wrong.push(format!("split {text:?}: {got:?}, want {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
     // --- reads -----------------------------------------------------------------------------
 
     #[test]
