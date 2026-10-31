@@ -163,3 +163,23 @@ Each suite works in a table of its own (`tabler_it_<pid>`) and drops it again. I
 the catalog, browse with paging, count, fetch cell, a staged commit with a failing change, an editor
 run, a cancel and a time out, and a read-only session's refusals. Turso and D1 bill the rows read.
 Not run yet: no server was available when the lane landed (2026-10-31).
+
+### SQL Server (`sqlserver`)
+
+| Suite                | Variable                    | Server                                                                                                                                                                                                                                                                                                                                                |
+| -------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/sqlserver.rs` | `TABLER_TEST_SQLSERVER_URL` | SQL Server 2022 Developer or Express with TCP on (`docker run -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=<password> -p 1433:1433 mcr.microsoft.com/mssql/server:2022-latest`): `sqlserver://sa:<password>@127.0.0.1:1433/master`, a SQL Server login and a port (the suite's URL takes no instance name or options; it encrypts and takes any certificate) |
+
+```sh
+node dev/scripts/lane.mjs sqlserver it
+```
+
+The suite makes its own tables (`tabler_it_<what>_<uuid>` in the URL's database) and drops them. It
+covers connect, the catalog, the session setup (ARITHABORT, TEXTSIZE) and the engine edition,
+browse with paging, count, a whole binary cell, money, `bigint` past 2^53 and `datetimeoffset`,
+Show DDL, a commit with a failing change and the guard on a row that is gone, `@@ROWCOUNT` after a
+trigger that writes, whether a batch runs an ODBC `{call p}` escape, the login of a switched
+database, cancel, the query time out, Explain's plan XML, and a read-only session's refusals (the
+plan of a DELETE that leaves its row, `NEXT VALUE FOR` that leaves its sequence). TLS verify
+modes, Entra tokens, NTLM and integrated logins, SQL Browser and the Azure redirect need
+environments of their own. Not run yet: no server was available when the lane landed (2026-10-31).

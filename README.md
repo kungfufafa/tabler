@@ -7,7 +7,7 @@
 
 <p align="center">
   A fast, keyboard-first desktop database client for <b>PostgreSQL</b>, <b>MySQL / MariaDB</b> and
-  <b>SQLite</b>, with <b>LibSQL</b> (Turso) and <b>Cloudflare D1</b> too.<br>
+  <b>SQLite</b>, with <b>SQL Server</b>, <b>LibSQL</b> (Turso) and <b>Cloudflare D1</b> too.<br>
   It looks and works like TablePlus, so your muscle memory carries over.
 </p>
 
@@ -38,18 +38,18 @@
 
 ## Features
 
-| Area                | What you get                                                                                                                                                  |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Databases**       | PostgreSQL · MySQL / MariaDB · SQLite · LibSQL (Turso, `sqld`) · Cloudflare D1 (see [docs/drivers](docs/drivers/README.md) for what each engine does)         |
-| **Connections**     | Profiles with colours, groups and environment tags (Local … Production) · SSL / TLS · SSH tunnels · Keychain passwords · read-only sessions · open from a URL |
-| **Browse**          | Searchable sidebar with pins · virtualized data grid · server-side sort, filters and paging · foreign-key jump · row details panel · Quick Look               |
-| **Edit**            | Type-aware inline editing · paste rows from Excel, Numbers or CSV · Set NULL / DEFAULT · bulk edit · Preview SQL · one-transaction commit · undo              |
-| **SQL editor**      | Schema-aware autocomplete · run current / all / selection · streaming multi-result runs · cancel · EXPLAIN · history · saved queries · parameters             |
-| **Structure**       | Edit columns, indexes, foreign keys, triggers and checks · preview the DDL before it runs · create / rename / truncate / drop tables · ER diagram             |
-| **Import / export** | CSV, JSON, SQL, HTML and Excel export · CSV, JSON and SQL dump import · backup / restore with `pg_dump` and `mysqldump`                                       |
-| **Safety**          | Five Safe Mode levels per connection · read-only connections · Touch ID and passcode lock                                                                     |
-| **Admin**           | Create and drop databases and schemas · running queries with kill · user management and privileges · Metrics Board                                            |
-| **Workspace**       | Multiple windows and split views · tabs restored at startup · Open Anything (⌘P) · console log (⇧⌘C) · themes · plugins · AI assistant · MCP server           |
+| Area                | What you get                                                                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Databases**       | PostgreSQL · MySQL / MariaDB · SQLite · SQL Server · LibSQL (Turso, `sqld`) · Cloudflare D1 (see [docs/drivers](docs/drivers/README.md) for what each engine does) |
+| **Connections**     | Profiles with colours, groups and environment tags (Local … Production) · SSL / TLS · SSH tunnels · Keychain passwords · read-only sessions · open from a URL      |
+| **Browse**          | Searchable sidebar with pins · virtualized data grid · server-side sort, filters and paging · foreign-key jump · row details panel · Quick Look                    |
+| **Edit**            | Type-aware inline editing · paste rows from Excel, Numbers or CSV · Set NULL / DEFAULT · bulk edit · Preview SQL · one-transaction commit · undo                   |
+| **SQL editor**      | Schema-aware autocomplete · run current / all / selection · streaming multi-result runs · cancel · EXPLAIN · history · saved queries · parameters                  |
+| **Structure**       | Edit columns, indexes, foreign keys, triggers and checks · preview the DDL before it runs · create / rename / truncate / drop tables · ER diagram                  |
+| **Import / export** | CSV, JSON, SQL, HTML and Excel export · CSV, JSON and SQL dump import · backup / restore with `pg_dump` and `mysqldump`                                            |
+| **Safety**          | Five Safe Mode levels per connection · read-only connections · Touch ID and passcode lock                                                                          |
+| **Admin**           | Create and drop databases and schemas · running queries with kill · user management and privileges · Metrics Board                                                 |
+| **Workspace**       | Multiple windows and split views · tabs restored at startup · Open Anything (⌘P) · console log (⇧⌘C) · themes · plugins · AI assistant · MCP server                |
 
 Every feature, with its edge cases, is described in **[docs/features.md](docs/features.md)**.
 
@@ -166,7 +166,7 @@ server for tunnel tests. See [dev/README.md](dev/README.md).
 ```
 src-tauri/src/        Rust backend
   commands/           thin Tauri commands, one file per area
-  drivers/            the DbSession trait + postgres, mysql and sqlite drivers, and the driver lanes (libsql, d1)
+  drivers/            the DbSession trait + postgres, mysql and sqlite drivers, and the driver lanes (sqlserver, libsql, d1)
   sqlgen/             every SQL string the app generates (quoting, CRUD, DDL plans, EXPLAIN)
   tunnel/             SSH tunnels and host-key trust
   export/             streaming CSV / JSON / SQL writers
