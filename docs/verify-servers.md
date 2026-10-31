@@ -139,3 +139,27 @@ the 5 s bound) the tunnel port is back to the connection's own sockets and the s
 count is back to its baseline; the tunnel stays `Up` with no status change during the import; after
 `tunnel.close()` there are no sockets, nothing listens on the port, it can be bound again and the
 status watch reports `Down`.
+
+## Driver lanes
+
+Each landed driver lane has its own real-server suite (`src-tauri/tests/<id>.rs`), built only with
+the lane's feature and `#[ignore]`d, so a plain `cargo test` never reaches a server.
+`node dev/scripts/lane.mjs <lane> it` loads `.env` and runs it with `--include-ignored`; each test
+skips itself while its variable is unset. What only a real server can confirm is listed in the
+lane's brief (`docs/drivers/<lane>.md`, Phase B status).
+
+### LibSQL and Cloudflare D1 (`sqlite-remote`)
+
+| Suite             | Variable                 | Server                                                                                                                                                                                         |
+| ----------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/libsql.rs` | `TABLER_TEST_LIBSQL_URL` | A local `sqld` (`docker run -p 8080:8080 ghcr.io/tursodatabase/libsql-server`): `http://127.0.0.1:8080`; or Turso: `libsql://<db>-<org>.turso.io?authToken=<token>` (`turso db tokens create`) |
+| `tests/d1.rs`     | `TABLER_TEST_D1_URL`     | A Cloudflare account: `d1://:<api-token>@<account-id>/<database name or UUID>`, the token with D1 Edit permission                                                                              |
+
+```sh
+node dev/scripts/lane.mjs sqlite-remote it
+```
+
+Each suite works in a table of its own (`tabler_it_<pid>`) and drops it again. It covers connect,
+the catalog, browse with paging, count, fetch cell, a staged commit with a failing change, an editor
+run, a cancel and a time out, and a read-only session's refusals. Turso and D1 bill the rows read.
+Not run yet: no server was available when the lane landed (2026-10-31).

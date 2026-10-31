@@ -19,7 +19,7 @@ default = ["release-drivers"]
 # The drivers beyond PostgreSQL, MySQL and SQLite that release builds include (each lane's
 # feature is added here once it lands). Every driver's code sits behind its `drv-*` feature, so a
 # build without one compiles none of it and reports the driver as not built.
-release-drivers = []
+release-drivers = ["drv-libsql", "drv-d1"]
 all-drivers = [
     "drv-pg-flavors",
     "drv-libsql",

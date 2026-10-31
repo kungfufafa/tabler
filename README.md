@@ -7,7 +7,7 @@
 
 <p align="center">
   A fast, keyboard-first desktop database client for <b>PostgreSQL</b>, <b>MySQL / MariaDB</b> and
-  <b>SQLite</b>.<br>
+  <b>SQLite</b>, with <b>LibSQL</b> (Turso) and <b>Cloudflare D1</b> too.<br>
   It looks and works like TablePlus, so your muscle memory carries over.
 </p>
 
@@ -40,6 +40,7 @@
 
 | Area                | What you get                                                                                                                                                  |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Databases**       | PostgreSQL · MySQL / MariaDB · SQLite · LibSQL (Turso, `sqld`) · Cloudflare D1 (see [docs/drivers](docs/drivers/README.md) for what each engine does)         |
 | **Connections**     | Profiles with colours, groups and environment tags (Local … Production) · SSL / TLS · SSH tunnels · Keychain passwords · read-only sessions · open from a URL |
 | **Browse**          | Searchable sidebar with pins · virtualized data grid · server-side sort, filters and paging · foreign-key jump · row details panel · Quick Look               |
 | **Edit**            | Type-aware inline editing · paste rows from Excel, Numbers or CSV · Set NULL / DEFAULT · bulk edit · Preview SQL · one-transaction commit · undo              |
@@ -165,7 +166,7 @@ server for tunnel tests. See [dev/README.md](dev/README.md).
 ```
 src-tauri/src/        Rust backend
   commands/           thin Tauri commands, one file per area
-  drivers/            the DbSession trait + postgres, mysql and sqlite drivers
+  drivers/            the DbSession trait + postgres, mysql and sqlite drivers, and the driver lanes (libsql, d1)
   sqlgen/             every SQL string the app generates (quoting, CRUD, DDL plans, EXPLAIN)
   tunnel/             SSH tunnels and host-key trust
   export/             streaming CSV / JSON / SQL writers
