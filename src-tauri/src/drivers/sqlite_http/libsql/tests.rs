@@ -14,7 +14,7 @@ use crate::drivers::TxStatement;
 use crate::drivers::sqlite_http::catalog::{
     Remote, list_tables_query, parse_table_meta, parse_tables, table_meta_queries,
 };
-use crate::drivers::sqlite_http::testing::ReqwestTransport;
+use crate::drivers::sqlite_http::testing::http_transport;
 use crate::drivers::sqlite_http::transport::{HttpResponse, Transport};
 use crate::error::AppError;
 use crate::testkit::{FakeServer, Piece, Reply, Route};
@@ -88,7 +88,7 @@ async fn worker_calls_run_the_prelude_and_close_their_stream() {
         Prelude {
             foreign_keys: Some(true),
             startup: vec!["PRAGMA cache_size = 50".into()],
-            read_only: false,
+            query_only: false,
         },
     );
     let fk = c.execute("PRAGMA foreign_keys", &[]).await.unwrap();
@@ -145,26 +145,6 @@ async fn values_round_trip() {
             Value::Null
         ]
     );
-    // Named parameters.
-    let mut stmt = Stmt::new("SELECT :x + 1", vec![]);
-    stmt.named_args = vec![super::hrana::NamedArg {
-        name: ":x".into(),
-        value: super::hrana::HranaValue::Integer { value: "41".into() },
-    }];
-    let steps = c
-        .run(
-            None,
-            Batch {
-                steps: vec![BatchStep {
-                    condition: None,
-                    stmt,
-                }],
-            },
-        )
-        .await
-        .unwrap();
-    let r = steps.into_iter().next().unwrap().into_result().unwrap();
-    assert_eq!(super::decode::plain_rows(&r), [[Value::Int(42)]]);
 }
 
 #[tokio::test]
@@ -173,7 +153,7 @@ async fn read_only_streams_refuse_writes_and_a_failed_prelude_stops_the_work() {
     let c = client(
         &fake,
         Prelude {
-            read_only: true,
+            query_only: true,
             ..Prelude::default()
         },
     );
@@ -198,7 +178,7 @@ async fn read_only_streams_refuse_writes_and_a_failed_prelude_stops_the_work() {
     let sneaky = client(
         &fake,
         Prelude {
-            read_only: true,
+            query_only: true,
             startup: vec!["DELETE FROM t".into()],
             ..Prelude::default()
         },
@@ -211,7 +191,7 @@ async fn read_only_streams_refuse_writes_and_a_failed_prelude_stops_the_work() {
     let undo = client(
         &fake,
         Prelude {
-            read_only: true,
+            query_only: true,
             startup: vec!["PRAGMA query_only = 0".into()],
             ..Prelude::default()
         },
@@ -254,6 +234,60 @@ async fn read_only_streams_refuse_writes_and_a_failed_prelude_stops_the_work() {
     let e = broken.execute("DELETE FROM t", &[]).await.unwrap_err();
     assert!(e.to_string().contains("startup statements failed"), "{e}");
     assert_eq!(count(&fake), 3);
+}
+
+#[tokio::test]
+async fn query_only_stays_only_where_the_server_takes_it() {
+    let read_only = || Prelude {
+        query_only: true,
+        ..Prelude::default()
+    };
+    let fake = seeded();
+    let mut c = client(&fake, read_only());
+    assert!(c.probe_query_only().await.unwrap());
+    assert!(c.query_only());
+    // Asked alone, on a stream closed in the same request.
+    let body = fake.request_bodies().pop().unwrap();
+    assert_eq!(body["baton"], json!(null));
+    assert_eq!(
+        body["requests"][0]["batch"]["steps"][0]["stmt"]["sql"],
+        "PRAGMA query_only = 1"
+    );
+    assert_eq!(body["requests"][1], json!({"type": "close"}));
+    assert!(c.execute("DELETE FROM t", &[]).await.is_err());
+
+    // `sqld` refuses the whole batch that holds it: every call would fail.
+    let sqld = Arc::new(FakeHrana::sqld());
+    sqld.seed("CREATE TABLE t (a); INSERT INTO t VALUES (1);");
+    let e = client(&sqld, read_only())
+        .execute("SELECT a FROM t", &[])
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("unsupported statement"), "{e}");
+    let mut c = client(&sqld, read_only());
+    assert!(!c.probe_query_only().await.unwrap());
+    assert!(!c.query_only());
+    let rows = c.execute("SELECT a FROM t", &[]).await.unwrap().rows;
+    assert_eq!(rows.len(), 1);
+    let sent = sqld.request_bodies().pop().unwrap();
+    assert_eq!(
+        sent["requests"][0]["batch"]["steps"][0]["stmt"]["sql"],
+        "SELECT a FROM t"
+    );
+    // A writable client asks nothing.
+    let mut writable = client(&sqld, Prelude::default());
+    let before = sqld.requests().len();
+    assert!(!writable.probe_query_only().await.unwrap());
+    assert_eq!(sqld.requests().len(), before);
+
+    // A refused token is the probe's error.
+    let refused = Arc::new(FakeHrana::new());
+    refused.answer_status(Some(401));
+    let e = client(&refused, read_only())
+        .probe_query_only()
+        .await
+        .unwrap_err();
+    assert!(matches!(e, AppError::Auth(_)), "{e:?}");
 }
 
 #[tokio::test]
@@ -624,10 +658,6 @@ async fn servers_that_refuse_or_break() {
     assert!(e.to_string().contains("0 result(s) to 2 request(s)"), "{e}");
     fake.fail_next(HttpResponse::text(200, "{\"results\": ["));
     assert!(c.execute("SELECT 1", &[]).await.is_err());
-    let described = c.describe("DELETE FROM t WHERE id = ?1").await.unwrap();
-    assert!(!described.is_readonly);
-    assert_eq!(described.params.len(), 1);
-    assert!(c.describe("SELECT 1").await.unwrap().is_readonly);
 }
 
 #[tokio::test]
@@ -667,7 +697,7 @@ async fn the_wire_format_over_http() {
     .await;
     let base = server.url("");
     let c = HranaClient::new(
-        Arc::new(ReqwestTransport::new(Some("tok"))),
+        Arc::new(http_transport(&base, Some("tok"))),
         base.clone(),
         Prelude::default(),
     );
@@ -686,7 +716,7 @@ async fn the_wire_format_over_http() {
 
     // Without a token no authorization header goes out (an open `sqld` refuses an empty one).
     let open = HranaClient::new(
-        Arc::new(ReqwestTransport::new(Some(""))),
+        Arc::new(http_transport(&base, Some(""))),
         base,
         Prelude::default(),
     );

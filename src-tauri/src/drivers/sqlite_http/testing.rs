@@ -1,15 +1,28 @@
 //! Test helpers both drivers' fakes share: statements run on rusqlite with bound values the way a
-//! server runs them, and a plain reqwest transport for the wire-level tests against
-//! `testkit::fake_http` (the shared `HttpClient` takes its place in Phase B).
+//! server runs them, and a fake served over a real socket (`testkit::fake_http`), so a session
+//! opened by its `entry::open` talks to it through the shared HTTP client.
 
-use async_trait::async_trait;
-use futures::StreamExt as _;
+use std::collections::HashMap;
+use std::ops::ControlFlow;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::{RwLock, watch};
+
 use rusqlite::types::{Value as Sv, ValueRef};
 use rusqlite::{Connection, Statement};
 
 use super::catalog::{CatalogQuery, Rows};
-use super::transport::{HttpRequest, HttpResponse, Method, StreamingResponse, Transport};
-use crate::error::AppError;
+use super::transport::{HttpRequest, HttpResponse, HttpTransport, Method};
+use crate::appdb::AppDb;
+use crate::drivers::common::http::{Credential, HttpClient, HttpEndpoint, HttpOptions};
+use crate::drivers::common::token::TokenSource;
+use crate::drivers::{RowSink, Session};
+use crate::secrets::{Backend, Secrets};
+use crate::state::{AppState, Connection as AppConnection};
+use crate::testkit::{FakeServer, Reply, Route};
+use crate::types::profile::{ConnStatus, ConnectionInfo, ConnectionProfile, Driver};
+use crate::types::query::ResultColumn;
 use crate::types::value::Value;
 
 /// What one statement did.
@@ -27,36 +40,21 @@ pub struct Executed {
     pub readonly: bool,
 }
 
-/// Prepares and runs one statement with positional and named parameters.
-pub fn run(
-    conn: &Connection,
-    sql: &str,
-    positional: &[Sv],
-    named: &[(String, Sv)],
-) -> rusqlite::Result<Executed> {
+/// Prepares and runs one statement (a text of several is refused, as `sqld` refuses it).
+pub fn run(conn: &Connection, sql: &str, params: &[Sv]) -> rusqlite::Result<Executed> {
     let mut stmt = conn.prepare(sql)?;
-    run_prepared(conn, &mut stmt, positional, named)
+    run_prepared(conn, &mut stmt, params)
 }
 
-/// Runs a prepared statement (one of a `rusqlite::Batch`, say).
+/// Runs a prepared statement (one of a `rusqlite::Batch`, say) with its parameters by position;
+/// those beyond `params` stay unbound (NULL).
 pub fn run_prepared(
     conn: &Connection,
     stmt: &mut Statement<'_>,
-    positional: &[Sv],
-    named: &[(String, Sv)],
+    params: &[Sv],
 ) -> rusqlite::Result<Executed> {
-    for (i, v) in positional.iter().enumerate() {
-        if i < stmt.parameter_count() {
-            stmt.raw_bind_parameter(i + 1, v)?;
-        }
-    }
-    for (name, v) in named {
-        let index = [String::new(), ":".into(), "@".into(), "$".into()]
-            .iter()
-            .find_map(|p| stmt.parameter_index(&format!("{p}{name}")).ok().flatten());
-        if let Some(index) = index {
-            stmt.raw_bind_parameter(index, v)?;
-        }
+    for (i, v) in params.iter().enumerate().take(stmt.parameter_count()) {
+        stmt.raw_bind_parameter(i + 1, v)?;
     }
     let cols: Vec<(String, Option<String>)> = stmt
         .columns()
@@ -131,7 +129,7 @@ pub fn from_sqlite(v: &Sv) -> Value {
 /// The rows of a catalog statement run on a local database.
 pub fn sqlite_rows(conn: &Connection, q: &CatalogQuery) -> Rows {
     let params: Vec<Sv> = q.params.iter().map(to_sqlite).collect();
-    let done = run(conn, q.sql, &params, &[]).unwrap_or_else(|e| panic!("{}: {e}", q.sql));
+    let done = run(conn, q.sql, &params).unwrap_or_else(|e| panic!("{}: {e}", q.sql));
     done.rows
         .iter()
         .map(|r| r.iter().map(from_sqlite).collect())
@@ -142,92 +140,129 @@ pub fn catalog_rows(conn: &Connection, queries: &[CatalogQuery]) -> Vec<Rows> {
     queries.iter().map(|q| sqlite_rows(conn, q)).collect()
 }
 
-/// reqwest without proxies (the requests must reach 127.0.0.1), sending the token as a bearer
-/// only when there is one: a `sqld` without auth answers 400 to an empty one.
-pub struct ReqwestTransport {
-    http: reqwest::Client,
-    token: Option<String>,
+/// A fake server: answers the lane's requests, after an optional delay.
+pub trait Answers: Send + Sync + 'static {
+    fn answer(&self, req: &HttpRequest) -> HttpResponse;
+
+    /// How long the reply waits once the request has run (a client may give up meanwhile).
+    fn delay(&self) -> Option<Duration> {
+        None
+    }
 }
 
-impl ReqwestTransport {
-    pub fn new(token: Option<&str>) -> ReqwestTransport {
-        crate::testkit::install_crypto();
-        ReqwestTransport {
-            http: reqwest::Client::builder()
-                .no_proxy()
-                .build()
-                .expect("a reqwest client"),
-            token: token.filter(|t| !t.is_empty()).map(str::to_string),
-        }
-    }
-
-    async fn start(&self, req: HttpRequest) -> Result<reqwest::Response, AppError> {
-        let mut builder = match req.method {
-            Method::Get => self.http.get(&req.url),
-            Method::Post => self.http.post(&req.url),
+/// `fake` behind a socket on 127.0.0.1: every path, any method; with `auth` a request without
+/// that `authorization` header gets a 401.
+pub async fn serve(fake: Arc<dyn Answers>, auth: Option<&str>) -> FakeServer {
+    crate::testkit::install_crypto();
+    let mut route = Route::new("*", "/*").handler(move |req| {
+        let url = match &req.query {
+            Some(q) => format!("http://fake{}?{q}", req.path),
+            None => format!("http://fake{}", req.path),
         };
-        if let Some(token) = &self.token {
-            builder = builder.bearer_auth(token);
+        let method = if req.method.eq_ignore_ascii_case("GET") {
+            Method::Get
+        } else {
+            Method::Post
+        };
+        let body = (!req.body.is_empty()).then(|| req.body.clone());
+        let reply = fake.answer(&HttpRequest { method, url, body });
+        let mut out = Reply::new(reply.status).body(reply.body);
+        if let Some(content_type) = &reply.content_type {
+            out = out.header("content-type", content_type);
         }
-        if let Some(body) = req.body {
-            builder = builder
-                .header("content-type", "application/json")
-                .body(body);
+        if let Some(secs) = reply.retry_after {
+            out = out.header("retry-after", &secs.to_string());
         }
-        builder.send().await.map_err(map_reqwest)
+        if let Some(delay) = fake.delay() {
+            out = out.delay(delay);
+        }
+        out
+    });
+    if let Some(auth) = auth {
+        route = route.auth(auth);
     }
+    FakeServer::start(vec![route]).await
 }
 
-fn map_reqwest(e: reqwest::Error) -> AppError {
-    if e.is_timeout() {
-        AppError::Timeout
-    } else if e.is_connect() {
-        AppError::Connect(e.to_string())
-    } else {
-        AppError::NotConnected
-    }
-}
-
-fn head(resp: &reqwest::Response) -> (u16, Option<u64>, Option<String>) {
-    let header = |name: &str| {
-        resp.headers()
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-    };
-    (
-        resp.status().as_u16(),
-        header("retry-after").and_then(|v| v.trim().parse().ok()),
-        header("content-type"),
+/// The sessions' transport to `base`, with `token` as the bearer (none when empty).
+pub fn http_transport(base: &str, token: Option<&str>) -> HttpTransport {
+    crate::testkit::install_crypto();
+    let client = HttpClient::new(
+        HttpEndpoint::new(base, None).expect("an endpoint"),
+        HttpOptions::default(),
+        Credential::bearer(TokenSource::from_secret(token)),
     )
+    .expect("an HTTP client");
+    HttpTransport::new(client)
 }
 
-#[async_trait]
-impl Transport for ReqwestTransport {
-    async fn send(&self, req: HttpRequest) -> Result<HttpResponse, AppError> {
-        let resp = self.start(req).await?;
-        let (status, retry_after, content_type) = head(&resp);
-        let body = resp.bytes().await.map_err(map_reqwest)?.to_vec();
-        Ok(HttpResponse {
-            status,
-            retry_after,
-            content_type,
-            body,
-        })
+/// A profile of `driver` with `fields` set over the defaults (profile JSON, camelCase).
+pub fn profile(driver: Driver, fields: serde_json::Value) -> ConnectionProfile {
+    let mut json = serde_json::json!({
+        "id": uuid::Uuid::new_v4(), "name": "remote", "driver": driver,
+        "ssl": "disable", "options": {}, "sortOrder": 0, "createdAt": "", "updatedAt": "",
+    });
+    if let (Some(base), Some(extra)) = (json.as_object_mut(), fields.as_object()) {
+        for (k, v) in extra {
+            base.insert(k.clone(), v.clone());
+        }
+    }
+    serde_json::from_value(json).expect("a profile")
+}
+
+/// A new app state with one open connection of `profile` holding `session`, for the command
+/// bodies (`browse_rows`, `apply_changes_on`…).
+pub async fn app_connection(
+    profile: ConnectionProfile,
+    session: Session,
+) -> (Arc<AppState>, Arc<AppConnection>) {
+    let appdb = AppDb::open_in_memory().expect("an app database");
+    let profile = appdb.upsert_profile(&profile).expect("a saved profile");
+    let state = Arc::new(AppState::new(
+        appdb.clone(),
+        Secrets::new(Backend::File, appdb),
+    ));
+    let id = uuid::Uuid::new_v4();
+    let conn = Arc::new(AppConnection {
+        id,
+        profile: profile.clone(),
+        info: RwLock::new(ConnectionInfo {
+            connection_id: id,
+            profile_id: profile.id,
+            name: profile.name.clone(),
+            color: None,
+            driver: profile.driver,
+            server_version: String::new(),
+            current_database: None,
+            current_user: None,
+            tunnel: None,
+            read_only: profile.options.read_only,
+            capabilities: Some(session.capabilities()),
+        }),
+        session: RwLock::new(session),
+        schema_cache: RwLock::new(HashMap::new()),
+        status: watch::channel(ConnStatus::Connected).0,
+        tunnel: None,
+    });
+    state.insert_connection(conn.clone(), None).await;
+    (state, conn)
+}
+
+/// Collects what a statement streams.
+#[derive(Debug, Default)]
+pub struct Sink {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Value>>,
+}
+
+impl RowSink for Sink {
+    fn begin_set(&mut self, columns: Vec<ResultColumn>) {
+        self.columns = columns.into_iter().map(|c| c.name).collect();
     }
 
-    async fn send_streaming(&self, req: HttpRequest) -> Result<StreamingResponse, AppError> {
-        let resp = self.start(req).await?;
-        let (status, retry_after, content_type) = head(&resp);
-        let body = resp
-            .bytes_stream()
-            .map(|piece| piece.map(|b| b.to_vec()).map_err(map_reqwest));
-        Ok(StreamingResponse {
-            status,
-            retry_after,
-            content_type,
-            body: Box::pin(body),
-        })
+    fn rows(&mut self, rows: Vec<Vec<Value>>) -> ControlFlow<()> {
+        self.rows.extend(rows);
+        ControlFlow::Continue(())
     }
 }
 
@@ -236,21 +271,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn statements_bind_by_position_and_name() {
+    fn statements_bind_by_position() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE t (a INTEGER, b TEXT)")
             .unwrap();
         let ins = run(
             &conn,
-            "INSERT INTO t VALUES (?1, :b) RETURNING a, b",
-            &[Sv::Integer(7)],
-            &[("b".into(), Sv::Text("x".into()))],
+            "INSERT INTO t VALUES (?1, ?2) RETURNING a, b",
+            &[Sv::Integer(7), Sv::Text("x".into())],
         )
         .unwrap();
         assert_eq!((ins.changes, ins.total_changes), (1, 1));
         assert_eq!(ins.rows, [[Sv::Integer(7), Sv::Text("x".into())]]);
         assert!(!ins.readonly);
-        let sel = run(&conn, "SELECT a, b FROM t", &[], &[]).unwrap();
+        let sel = run(&conn, "SELECT a, b FROM t", &[]).unwrap();
         assert_eq!(
             (sel.changes, sel.total_changes),
             (0, 0),
@@ -262,7 +296,7 @@ mod tests {
              CREATE TRIGGER t_log AFTER DELETE ON t BEGIN INSERT INTO log VALUES (old.a); END;",
         )
         .unwrap();
-        let del = run(&conn, "DELETE FROM t", &[], &[]).unwrap();
+        let del = run(&conn, "DELETE FROM t", &[]).unwrap();
         assert_eq!((del.changes, del.total_changes), (1, 2));
         assert!(sel.readonly);
         assert_eq!(

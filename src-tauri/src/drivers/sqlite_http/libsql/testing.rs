@@ -1,11 +1,13 @@
 //! An in-process Hrana server over rusqlite for the LibSQL tests: `GET v2|v3`, `POST
 //! v2|v3/pipeline` and `POST v3/cursor`, streams with batons that change on every reply, a
 //! connection per stream on one database file (so a transaction on one stream is invisible to
-//! the others until it commits), batches with conditions, `get_autocommit`, `describe`, expiry,
-//! a `base_url` to follow, and canned failures (401, 404, HTML 5xx…).
+//! the others until it commits), batches with conditions, `get_autocommit`, expiry, a
+//! `base_url` to follow, and canned failures (401, 404, HTML 5xx…). It answers the requests the
+//! client sends (`batch`, `get_autocommit`, `close`) and refuses the others. `FakeHrana::sqld`
+//! also refuses what `sqld`'s statement analysis does (`sqld_refuses`), `PRAGMA query_only = 1`
+//! among it.
 //!
-//! It answers `Transport` calls directly; once `testkit::fake_http` takes handlers (a change
-//! request), the same `handle` can sit behind a real socket.
+//! It answers `Transport` calls directly, and behind a real socket (`testing::serve`).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -19,7 +21,7 @@ use serde_json::{Value as J, json};
 use tokio::time::Instant;
 
 use crate::drivers::sqlite_http::codes::code_name;
-use crate::drivers::sqlite_http::testing::{Executed, run};
+use crate::drivers::sqlite_http::testing::{Answers, Executed, run};
 use crate::drivers::sqlite_http::transport::{
     HttpRequest, HttpResponse, Method, StreamingResponse, Transport,
 };
@@ -52,6 +54,8 @@ struct Inner {
 pub struct FakeHrana {
     dir: tempfile::TempDir,
     v3: bool,
+    /// Analyses statements as `sqld` does before running a batch.
+    sqld: bool,
     inner: Mutex<Inner>,
     log: Mutex<Vec<HttpRequest>>,
 }
@@ -59,19 +63,25 @@ pub struct FakeHrana {
 impl FakeHrana {
     /// A server speaking Hrana 3 (and 2).
     pub fn new() -> FakeHrana {
-        FakeHrana::with_version(true)
+        FakeHrana::with(true, false)
     }
 
     /// A server speaking only Hrana 2 (`GET v3` is a 404).
     pub fn v2_only() -> FakeHrana {
-        FakeHrana::with_version(false)
+        FakeHrana::with(false, false)
     }
 
-    fn with_version(v3: bool) -> FakeHrana {
+    /// A Hrana 3 server that refuses what `sqld` (and so Turso) refuses before running a batch.
+    pub fn sqld() -> FakeHrana {
+        FakeHrana::with(true, true)
+    }
+
+    fn with(v3: bool, sqld: bool) -> FakeHrana {
         let dir = tempfile::tempdir().expect("a temp dir");
         let fake = FakeHrana {
             dir,
             v3,
+            sqld,
             inner: Mutex::new(Inner::default()),
             log: Mutex::new(Vec::new()),
         };
@@ -159,6 +169,23 @@ impl FakeHrana {
         HttpResponse::json(400, &json!({"message": message, "code": code}))
     }
 
+    /// The error `sqld` answers a batch with when its analysis refuses a statement of it: the
+    /// whole batch is refused, nothing of it runs.
+    fn refused(&self, batch: &J) -> Option<J> {
+        if !self.sqld {
+            return None;
+        }
+        let steps = batch["steps"].as_array()?;
+        let sql = steps
+            .iter()
+            .filter_map(|s| s["stmt"]["sql"].as_str())
+            .find(|sql| sqld_refuses(sql))?;
+        Some(json!({
+            "message": format!("SQL string could not be parsed: unsupported statement: {sql}"),
+            "code": "SQL_PARSE_ERROR"
+        }))
+    }
+
     /// The stream a baton names (a new one for `null`), or the 400 a server answers.
     fn stream<'a>(
         &self,
@@ -239,18 +266,12 @@ impl FakeHrana {
                     closed = true;
                     Ok(json!({"type": "close"}))
                 }
-                "execute" => execute(&stream.conn, &request["stmt"])
-                    .map(|r| json!({"type": "execute", "result": r})),
-                "batch" => {
-                    Ok(json!({"type": "batch", "result": batch(&stream.conn, &request["batch"])}))
-                }
-                "sequence" => stream
-                    .conn
-                    .execute_batch(request["sql"].as_str().unwrap_or_default())
-                    .map(|_| json!({"type": "sequence"}))
-                    .map_err(|e| error_json(&e)),
-                "describe" => describe(&stream.conn, request["sql"].as_str().unwrap_or_default())
-                    .map(|r| json!({"type": "describe", "result": r})),
+                "batch" => match self.refused(&request["batch"]) {
+                    Some(error) => Err(error),
+                    None => Ok(
+                        json!({"type": "batch", "result": batch(&stream.conn, &request["batch"])}),
+                    ),
+                },
                 "get_autocommit" if self.v3 => Ok(json!({
                     "type": "get_autocommit",
                     "is_autocommit": stream.conn.is_autocommit()
@@ -279,6 +300,10 @@ impl FakeHrana {
         let Ok(body) = req.json() else {
             return FakeHrana::bad_request("invalid JSON", "PROTO_ERROR");
         };
+        // `sqld` refuses it before the reply starts, with no error of the protocol's.
+        if self.refused(&body["batch"]).is_some() {
+            return HttpResponse::text(500, "Internal Server Error");
+        }
         let base_url = inner.base_url.clone();
         let stream = match self.stream(inner, &body["baton"]) {
             Ok(s) => s,
@@ -334,8 +359,7 @@ impl Default for FakeHrana {
 impl Transport for FakeHrana {
     async fn send(&self, req: HttpRequest) -> Result<HttpResponse, AppError> {
         let reply = self.handle(&req);
-        let delay = self.inner.lock().unwrap().reply_delay;
-        if let Some(d) = delay {
+        if let Some(d) = Answers::delay(self) {
             tokio::time::sleep(d).await;
         }
         Ok(reply)
@@ -352,6 +376,62 @@ impl Transport for FakeHrana {
             content_type: reply.content_type,
             body: Box::pin(futures::stream::iter(pieces)),
         })
+    }
+}
+
+impl Answers for FakeHrana {
+    fn answer(&self, req: &HttpRequest) -> HttpResponse {
+        self.handle(req)
+    }
+
+    fn delay(&self) -> Option<Duration> {
+        self.inner.lock().unwrap().reply_delay
+    }
+}
+
+/// Whether `sqld`'s statement analysis refuses `sql` (`query_analysis.rs`, `pragma_kind`): a
+/// PRAGMA it does not know or never runs, and one of its settings given a value
+/// (`query_only = 1`, `soft_heap_limit = 8`), also under EXPLAIN. EXPLAIN QUERY PLAN is a read
+/// to it, whatever it plans.
+fn sqld_refuses(sql: &str) -> bool {
+    // Run with or without a value.
+    const ANY: &str = "table_list index_list table_info table_xinfo index_info index_xinfo
+        pragma_list compile_options database_list function_list module_list encoding
+        defer_foreign_keys foreign_keys foreign_key_list foreign_key_check collation_list
+        data_version freelist_count integrity_check legacy_file_format page_count quick_check
+        stats user_version";
+    // Run only without a value.
+    const SETTINGS: &str = "analysis_limit application_id auto_vacuum automatic_index
+        busy_timeout cache_size cache_spill cell_size_check checkpoint_fullfsync fullfsync
+        hard_heap_limit journal_mode journal_size_limit legacy_alter_table locking_mode
+        max_page_count mmap_size page_size query_only read_uncommitted recursive_triggers
+        reverse_unordered_selects secure_delete soft_heap_limit synchronous temp_store threads
+        trusted_schema wal_autocheckpoint schema_version";
+    let listed = |list: &str, name: &str| list.split_whitespace().any(|n| n == name);
+    let lower = sql.trim_start().to_ascii_lowercase();
+    let mut rest = lower.as_str();
+    if let Some(after) = rest.strip_prefix("explain") {
+        let after = after.trim_start();
+        if after.starts_with("query") {
+            return false;
+        }
+        rest = after;
+    }
+    let Some(after) = rest.strip_prefix("pragma") else {
+        return false;
+    };
+    let after = after.trim_start();
+    let end = after
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+        .unwrap_or(after.len());
+    let name = after[..end].rsplit('.').next().unwrap_or_default();
+    let valued = after[end..].trim_start().starts_with(['=', '(']);
+    if listed(ANY, name) {
+        false
+    } else if listed(SETTINGS, name) {
+        valued
+    } else {
+        true
     }
 }
 
@@ -412,20 +492,6 @@ fn execute(conn: &Connection, stmt: &J) -> Result<J, J> {
         .map(|a| a.iter().map(to_sqlite).collect::<Result<_, _>>())
         .transpose()?
         .unwrap_or_default();
-    let named: Vec<(String, Sv)> = stmt["named_args"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|n| {
-                    Ok((
-                        n["name"].as_str().unwrap_or_default().to_string(),
-                        to_sqlite(&n["value"])?,
-                    ))
-                })
-                .collect::<Result<_, J>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
     let want_rows = stmt["want_rows"].as_bool().unwrap_or(true);
     let Executed {
         cols,
@@ -433,7 +499,7 @@ fn execute(conn: &Connection, stmt: &J) -> Result<J, J> {
         changes,
         last_insert_rowid,
         ..
-    } = run(conn, sql, &args, &named).map_err(|e| error_json(&e))?;
+    } = run(conn, sql, &args).map_err(|e| error_json(&e))?;
     Ok(json!({
         "cols": cols.iter().map(|(n, d)| json!({"name": n, "decltype": d})).collect::<Vec<_>>(),
         "rows": if want_rows {
@@ -498,22 +564,4 @@ fn batch(conn: &Connection, batch: &J) -> J {
         }
     }
     json!({"step_results": results, "step_errors": errors})
-}
-
-fn describe(conn: &Connection, sql: &str) -> Result<J, J> {
-    let stmt = conn.prepare(sql).map_err(|e| error_json(&e))?;
-    let params: Vec<J> = (1..=stmt.parameter_count())
-        .map(|i| json!({"name": stmt.parameter_name(i)}))
-        .collect();
-    let cols: Vec<J> = stmt
-        .columns()
-        .iter()
-        .map(|c| json!({"name": c.name(), "decltype": c.decl_type()}))
-        .collect();
-    Ok(json!({
-        "params": params,
-        "cols": cols,
-        "is_explain": sql.trim_start().to_ascii_uppercase().starts_with("EXPLAIN"),
-        "is_readonly": stmt.readonly(),
-    }))
 }

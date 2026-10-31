@@ -48,7 +48,9 @@ pub fn sqlite_code(name: &str) -> Option<i64> {
         .map(|(_, c)| i64::from(*c))
 }
 
-/// The name of a result code; an extended code nobody named goes by its primary code.
+/// The name of a result code; an extended code nobody named goes by its primary code. The fake
+/// servers word their errors with it.
+#[cfg(test)]
 pub fn code_name(code: i32) -> String {
     let named = |c: i32| CODES.iter().find(|(_, n)| *n == c).map(|(name, _)| *name);
     match named(code).or_else(|| named(code & 0xff)) {

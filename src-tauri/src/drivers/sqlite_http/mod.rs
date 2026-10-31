@@ -2,13 +2,10 @@
 //! lane). Not to be confused with `tunnel::sqlite_remote`, a SQLite file copied over SSH. Each
 //! driver is built with its own cargo feature; the modules here are shared by both.
 
-// Phase A: the clients, codecs and catalog are complete, but no session calls them until the
-// lane takes `entry.rs` over (F10). Remove this once the sessions use them.
-#![allow(dead_code)]
-
 pub mod catalog;
 pub mod codes;
 pub mod guard;
+pub mod session;
 pub mod transport;
 pub mod value;
 

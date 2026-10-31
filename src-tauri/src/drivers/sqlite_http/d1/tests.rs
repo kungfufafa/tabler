@@ -14,7 +14,7 @@ use crate::drivers::sqlite_http::catalog::{
     Remote, completion_query, list_tables_query, parse_completion, parse_table_meta, parse_tables,
     table_meta_queries,
 };
-use crate::drivers::sqlite_http::testing::ReqwestTransport;
+use crate::drivers::sqlite_http::testing::http_transport;
 use crate::drivers::sqlite_http::transport::{HttpResponse, Transport};
 use crate::error::AppError;
 use crate::testkit::{FakeServer, Reply, Route};
@@ -92,8 +92,12 @@ async fn databases_are_listed_page_by_page_and_names_resolve() {
     assert_eq!(c.list_databases(Some("other")).await.unwrap().len(), 1);
     let gone = D1Client::new(
         fake.clone(),
-        c.target()
-            .with_database("00000000-0000-4000-8000-000000000000"),
+        D1Target::new(
+            Some(API_BASE),
+            ACCOUNT,
+            "00000000-0000-4000-8000-000000000000",
+        )
+        .unwrap(),
         ParamEncoding::Native,
     );
     assert!(matches!(gone.database().await, Err(AppError::NotFound(_))));
@@ -473,7 +477,7 @@ async fn the_wire_format_over_http() {
     ])
     .await;
     let c = D1Client::new(
-        Arc::new(ReqwestTransport::new(Some("cf-token"))),
+        Arc::new(http_transport(&server.url(""), Some("cf-token"))),
         D1Target::new(Some(&server.url("/client/v4")), ACCOUNT, MAIN_DB).unwrap(),
         ParamEncoding::Native,
     );

@@ -78,14 +78,6 @@ impl D1Target {
             &[],
         )
     }
-
-    /// The same account and API base, another database.
-    pub fn with_database(&self, database_id: &str) -> D1Target {
-        D1Target {
-            database_id: database_id.to_string(),
-            ..self.clone()
-        }
-    }
 }
 
 /// One page of the account's databases, those named `name` only when given.
@@ -133,6 +125,18 @@ pub fn validate_account_id(id: &str) -> Result<(), AppError> {
             "the Cloudflare account ID is 32 hexadecimal characters (Workers & Pages \u{25b8} Overview)"
                 .into(),
         ))
+    }
+}
+
+/// D1 runs every statement of a `;`-separated text, so each call sends one: the app's SQL can
+/// end in a raw filter the user typed, and the editor and MCP split their scripts themselves.
+pub fn one_statement(sql: &str) -> Result<(), AppError> {
+    if crate::sqlgen::sql::is_single_statement(crate::sqlgen::Dialect::Sqlite, sql) {
+        Ok(())
+    } else {
+        Err(AppError::InvalidInput(format!(
+            "{ENGINE} would run every statement of this text: send one statement at a time"
+        )))
     }
 }
 
@@ -409,7 +413,6 @@ mod tests {
                 "http://127.0.0.1:9/client/v4/accounts/{ACCOUNT}/d1/database?page=2&per_page=50&name=my+db%26x"
             )
         );
-        assert_eq!(t.with_database("v").database_id, "v");
         assert!(D1Target::new(None, "nope", "db").is_err());
         assert!(D1Target::new(None, ACCOUNT, " ").is_err());
         assert!(

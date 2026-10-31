@@ -252,6 +252,22 @@ mod tests {
     }
 
     #[test]
+    fn timestamps_decimals_and_nested_values() {
+        assert_eq!(
+            decode_cell(&json!("2026-10-30 12:00:00"), ValueKind::Timestamp, false),
+            Value::Timestamp("2026-10-30 12:00:00".into())
+        );
+        assert_eq!(
+            decode_cell(&json!("12.50"), ValueKind::Decimal, false),
+            Value::Decimal("12.50".into())
+        );
+        assert_eq!(
+            decode_cell(&json!("{\"a\":[1]}"), ValueKind::Json, false),
+            Value::Json("{\"a\":[1]}".into())
+        );
+    }
+
+    #[test]
     fn integers_read_as_text_are_exact() {
         assert_eq!(
             decode_cell(&json!("9007199254740993"), ValueKind::Int, false),

@@ -1,16 +1,38 @@
-//! The small HTTP seam both clients are written against. The real implementation is the shared
-//! `drivers::common::http::HttpClient` (F8a: credentials, tunnels, TLS, retries); the tests use
-//! the in-process fakes of each driver, or a plain reqwest client against `testkit::fake_http`.
-//! Credentials are the transport's business: requests here carry none.
+//! The small HTTP seam both clients are written against. Sessions send through `HttpTransport`,
+//! the shared `drivers::common::http::HttpClient` (credentials, SSH tunnels, TLS, retries); the
+//! tests use each driver's in-process fake, which answers the same calls. Credentials are the
+//! transport's business: requests here carry none.
 
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, StreamExt as _};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::drivers::ConnectTarget;
+pub use crate::drivers::common::http::body_excerpt;
+use crate::drivers::common::http::{Credential, HttpClient, HttpOptions, HttpReply};
 use crate::error::AppError;
+
+/// The most of a reply read whole (a Hrana 2 result, any D1 result: both protocols send a result
+/// in one body, before `max_rows` can apply) or of one line of a cursor: beyond it the call
+/// fails, rather than a broken or hostile server exhausting the app's memory. The reply is
+/// decoded whole too, so the memory it takes at its peak is a multiple of this: about 2 to 3
+/// times for Hrana's typed values, and up to about 16 times for D1, whose cells become one JSON
+/// value each (32 bytes for a `0,` of two).
+pub const MAX_REPLY: usize = 256 << 20;
+
+/// The most of an error reply's body read: its message is at the start.
+const MAX_ERROR_BODY: usize = 64 << 10;
+
+/// A reply too large to read.
+pub fn too_large() -> AppError {
+    AppError::db(format!(
+        "the server sent more than {} MB at once: ask for fewer rows (add a LIMIT)",
+        MAX_REPLY >> 20
+    ))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
@@ -125,13 +147,16 @@ pub struct StreamingResponse {
 }
 
 impl StreamingResponse {
-    /// The whole body, for an error status.
+    /// The start of the body, for an error status (the rest is dropped with the request).
     pub async fn collect(self) -> HttpResponse {
-        use futures::StreamExt as _;
         let mut body = Vec::new();
         let mut pieces = self.body;
-        while let Some(Ok(piece)) = pieces.next().await {
-            body.extend_from_slice(&piece);
+        while body.len() < MAX_ERROR_BODY {
+            let Some(Ok(piece)) = pieces.next().await else {
+                break;
+            };
+            let room = MAX_ERROR_BODY - body.len();
+            body.extend_from_slice(&piece[..piece.len().min(room)]);
         }
         HttpResponse {
             status: self.status,
@@ -160,44 +185,89 @@ pub trait Transport: Send + Sync {
     }
 }
 
-/// At most this many characters of an unexpected body go into an error message.
-const EXCERPT_CHARS: usize = 300;
+/// The sessions' transport: the shared HTTP client, which adds the credential to the requests
+/// for its own server only (a `base_url` on another origin is never followed anyway), goes
+/// through the SSH tunnel, checks TLS as the profile says and waits out a 429. A request is
+/// stopped by dropping it: the sessions arm their cancel slot themselves.
+pub struct HttpTransport {
+    client: HttpClient,
+}
 
-/// A short plain-text form of a reply body for an error message: HTML loses its tags, and
-/// whitespace runs collapse.
-pub fn body_excerpt(body: &[u8], content_type: Option<&str>) -> String {
-    let text = String::from_utf8_lossy(body);
-    let html =
-        content_type.is_some_and(|c| c.contains("html")) || text.trim_start().starts_with('<');
-    let plain = if html {
-        strip_tags(&text)
-    } else {
-        text.into_owned()
-    };
-    let collapsed = plain.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() > EXCERPT_CHARS {
-        let cut: String = collapsed.chars().take(EXCERPT_CHARS).collect();
-        format!("{cut}…")
-    } else {
-        collapsed
+impl HttpTransport {
+    pub fn new(client: HttpClient) -> HttpTransport {
+        HttpTransport { client }
+    }
+
+    /// The transport to `base` as `target` reaches it.
+    pub fn for_target(
+        target: &ConnectTarget<'_>,
+        base: &str,
+        options: HttpOptions,
+        credential: Credential,
+    ) -> Result<HttpTransport, AppError> {
+        Ok(HttpTransport::new(HttpClient::for_target(
+            target, base, options, credential,
+        )?))
+    }
+
+    async fn start(&self, req: HttpRequest) -> Result<HttpReply<'static>, AppError> {
+        let url = reqwest::Url::parse(&req.url)
+            .map_err(|e| AppError::InvalidInput(format!("invalid URL {}: {e}", req.url)))?;
+        let method = match req.method {
+            Method::Get => reqwest::Method::GET,
+            Method::Post => reqwest::Method::POST,
+        };
+        let mut builder = self.client.request_url(method, url);
+        if let Some(body) = req.body {
+            builder = builder
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body);
+        }
+        self.client.send(builder, None).await
     }
 }
 
-fn strip_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' if in_tag => {
-                in_tag = false;
-                out.push(' ');
+fn head(reply: &HttpReply<'_>) -> (u16, Option<u64>, Option<String>) {
+    (
+        reply.status(),
+        reply.retry_after().map(|wait| wait.as_secs()),
+        reply.content_type().map(str::to_string),
+    )
+}
+
+#[async_trait]
+impl Transport for HttpTransport {
+    async fn send(&self, req: HttpRequest) -> Result<HttpResponse, AppError> {
+        let mut reply = self.start(req).await?;
+        let (status, retry_after, content_type) = head(&reply);
+        let mut body = Vec::new();
+        while let Some(piece) = reply.chunk().await? {
+            if body.len() + piece.len() > MAX_REPLY {
+                return Err(too_large());
             }
-            _ if !in_tag => out.push(c),
-            _ => {}
+            body.extend_from_slice(&piece);
         }
+        Ok(HttpResponse {
+            status,
+            retry_after,
+            content_type,
+            body,
+        })
     }
-    out
+
+    async fn send_streaming(&self, req: HttpRequest) -> Result<StreamingResponse, AppError> {
+        let reply = self.start(req).await?;
+        let (status, retry_after, content_type) = head(&reply);
+        let body = reply
+            .into_stream()
+            .map(|piece| piece.map(|bytes| bytes.to_vec()));
+        Ok(StreamingResponse {
+            status,
+            retry_after,
+            content_type,
+            body: Box::pin(body),
+        })
+    }
 }
 
 /// The error of an HTTP status that is not a success, with the server's own `message` (already
@@ -239,6 +309,8 @@ pub fn status_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::drivers::common::http::RetryPolicy;
+    use crate::testkit::{FakeServer, Piece, Reply, Route};
 
     #[test]
     fn request_paths_and_queries() {
@@ -252,21 +324,16 @@ mod tests {
     }
 
     #[test]
-    fn excerpts_are_short_plain_text() {
-        let html = b"<html><body><h1>502 Bad Gateway</h1>\n<p>nginx</p></body></html>";
-        assert_eq!(
-            body_excerpt(html, Some("text/html")),
-            "502 Bad Gateway nginx"
-        );
-        assert_eq!(body_excerpt(b"<p>x</p>", None), "x");
-        let long = "a".repeat(1000);
-        assert_eq!(
-            body_excerpt(long.as_bytes(), None).chars().count(),
-            EXCERPT_CHARS + 1
-        );
+    fn unexpected_bodies_are_errors_with_an_excerpt() {
         let r = HttpResponse::text(200, "not json");
         let e = r.parse::<serde_json::Value>("pipeline").unwrap_err();
         assert!(e.to_string().contains("not json"), "{e}");
+        let html = HttpResponse {
+            content_type: Some("text/html".into()),
+            ..HttpResponse::text(200, "<html><h1>502 Bad Gateway</h1></html>")
+        };
+        let e = html.parse::<serde_json::Value>("pipeline").unwrap_err();
+        assert!(e.to_string().contains("(body: 502 Bad Gateway)"), "{e}");
     }
 
     #[test]
@@ -319,5 +386,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.collect().await.body, b"/p");
+    }
+
+    fn transport(server: &FakeServer, token: &str, retry: RetryPolicy) -> HttpTransport {
+        crate::testkit::install_crypto();
+        let client = HttpClient::new(
+            crate::drivers::common::http::HttpEndpoint::new(&server.url(""), None).unwrap(),
+            HttpOptions {
+                retry,
+                ..HttpOptions::default()
+            },
+            Credential::bearer(crate::drivers::common::token::TokenSource::from_secret(
+                Some(token),
+            )),
+        )
+        .unwrap();
+        HttpTransport::new(client)
+    }
+
+    #[tokio::test]
+    async fn the_shared_client_carries_bodies_statuses_and_streams() {
+        let server = FakeServer::start(vec![
+            Route::new("POST", "/echo").handler(|req| Reply::json(200, &req.json())),
+            Route::new("GET", "/slow-down")
+                .reply(Reply::text(429, "later").header("retry-after", "120")),
+            Route::new("GET", "/stream").reply(Reply::ok().chunked(vec![
+                Piece::Data(b"ab".to_vec()),
+                Piece::Data(b"cd".to_vec()),
+            ])),
+        ])
+        .await;
+        let t = transport(&server, "tok", RetryPolicy::default());
+        let reply = t
+            .send(
+                HttpRequest::post_json(server.url("/echo"), &serde_json::json!({"a": 1})).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.status, 200);
+        assert_eq!(reply.content_type.as_deref(), Some("application/json"));
+        assert_eq!(reply.body, br#"{"a":1}"#);
+        let sent = &server.requests()[0];
+        assert_eq!(sent.header("authorization"), Some("Bearer tok"));
+        assert_eq!(sent.header("content-type"), Some("application/json"));
+
+        // A wait longer than the policy's is handed over with the reply.
+        let reply = t
+            .send(HttpRequest::get(server.url("/slow-down")))
+            .await
+            .unwrap();
+        assert_eq!((reply.status, reply.retry_after), (429, Some(120)));
+
+        let streamed = t
+            .send_streaming(HttpRequest::get(server.url("/stream")))
+            .await
+            .unwrap();
+        let pieces: Vec<Vec<u8>> = streamed.body.map(|p| p.unwrap()).collect::<Vec<_>>().await;
+        assert_eq!(pieces.concat(), b"abcd");
+
+        // Without a token no authorization header goes out (an open `sqld` refuses an empty
+        // one), and a request to another origin never gets the token.
+        let open = transport(&server, "", RetryPolicy::NONE);
+        open.send(HttpRequest::get(server.url("/stream")))
+            .await
+            .unwrap();
+        assert_eq!(
+            server.requests().pop().unwrap().header("authorization"),
+            None
+        );
+        let other = format!("http://localhost:{}/stream", server.addr().port());
+        t.send(HttpRequest::get(other)).await.unwrap();
+        assert_eq!(
+            server.requests().pop().unwrap().header("authorization"),
+            None
+        );
     }
 }

@@ -1,15 +1,17 @@
 //! The Hrana-over-HTTP client of the LibSQL driver.
 //!
 //! Every unit of work is one Hrana `batch` sent in one pipeline request. On a new stream the
-//! batch starts with the session's prelude (when read-only `PRAGMA query_only = 1`, then
-//! `PRAGMA foreign_keys`, the startup commands, and `PRAGMA query_only = 1` again after them),
-//! and the work's steps only run when the prelude succeeded: a read-only stream whose
-//! `query_only` failed never runs the user's statement.
+//! batch starts with the session's prelude (`PRAGMA query_only = 1` where a read-only session's
+//! server takes it, then `PRAGMA foreign_keys`, the startup commands, and `PRAGMA query_only = 1`
+//! again after each), and the work's steps only run when the prelude succeeded: a stream whose
+//! `query_only` failed never runs the user's statement. With `query_only`, batches on a held
+//! stream start with it too, so nothing run on the stream before can have turned it off.
 //!
 //! Worker calls use a new stream each time and close it in the same request. The editor holds
 //! its stream (`StreamState`) across calls, so `BEGIN` and PRAGMAs persist, follows the
 //! server's `base_url` on the same origin, and learns the transaction state from
-//! `get_autocommit` (Hrana 3).
+//! `get_autocommit` (Hrana 3). A held stream the server forgot while idle (about 10 s) without a
+//! transaction is replaced by a new one, where the work runs: the server refused it unread.
 
 use std::sync::{Arc, Mutex};
 
@@ -20,7 +22,9 @@ use crate::drivers::sqlite_http::catalog::{CatalogQuery, Rows};
 use crate::drivers::sqlite_http::guard::{
     GUARD_SQL, GuardFailure, guard_error, guard_params, parse_guard_failure,
 };
-use crate::drivers::sqlite_http::transport::{ByteStream, HttpRequest, Transport};
+use crate::drivers::sqlite_http::transport::{
+    ByteStream, HttpRequest, MAX_REPLY, Transport, too_large,
+};
 use crate::error::AppError;
 use crate::types::query::ExecOutcome;
 use crate::types::value::Value;
@@ -29,8 +33,8 @@ use super::decode::{encode_values, exec_outcome, plain_rows};
 use super::error::{ENGINE, HttpFailure, STREAM_LOST_HINT, hrana_error};
 use super::hrana::{
     Batch, BatchCond, BatchResult, BatchStep, Col, CursorEntry, CursorHead, CursorRequest,
-    DescribeResult, HranaError, HranaValue, LineBuffer, PipelineRequest, PipelineResponse, Stmt,
-    StmtResult, StreamRequest, StreamResponse, StreamResult, parse_line,
+    HranaError, HranaValue, LineBuffer, PipelineRequest, PipelineResponse, Stmt, StmtResult,
+    StreamRequest, StreamResponse, StreamResult, parse_line,
 };
 use super::url::{endpoint, follow_base_url};
 
@@ -58,14 +62,14 @@ pub struct Prelude {
     pub foreign_keys: Option<bool>,
     /// The profile's startup commands, one statement per step.
     pub startup: Vec<String>,
-    /// `PRAGMA query_only = 1`.
-    pub read_only: bool,
+    /// `PRAGMA query_only = 1`: a read-only session's, while its server takes it.
+    pub query_only: bool,
 }
 
 impl Prelude {
     /// From a profile's settings: its startup commands split into statements as SQLite reads
     /// them (Hrana wants one statement per step).
-    pub fn new(foreign_keys: Option<bool>, startup_sql: Option<&str>, read_only: bool) -> Prelude {
+    pub fn new(foreign_keys: Option<bool>, startup_sql: Option<&str>, query_only: bool) -> Prelude {
         let startup = startup_sql
             .map(|sql| {
                 crate::sqlgen::split::split_statements(sql, crate::sqlgen::Dialect::Sqlite)
@@ -78,16 +82,16 @@ impl Prelude {
         Prelude {
             foreign_keys,
             startup,
-            read_only,
+            query_only,
         }
     }
 
-    /// `query_only` comes first, so a read-only session's startup commands cannot write either,
-    /// and again after them, so one of them (`PRAGMA query_only = 0`) cannot turn it off.
+    /// `query_only` comes first, so the startup commands cannot write either, and again after
+    /// each of them, so one (`PRAGMA query_only = 0`) cannot turn it off for the next: a startup
+    /// command that writes fails the stream, and so the connect.
     pub fn steps(&self) -> Vec<Stmt> {
-        const QUERY_ONLY: &str = "PRAGMA query_only = 1";
         let mut steps = Vec::new();
-        if self.read_only {
+        if self.query_only {
             steps.push(Stmt::no_rows(QUERY_ONLY));
         }
         match self.foreign_keys {
@@ -95,13 +99,29 @@ impl Prelude {
             Some(false) => steps.push(Stmt::no_rows("PRAGMA foreign_keys = OFF")),
             None => {}
         }
-        steps.extend(self.startup.iter().map(Stmt::no_rows));
-        if self.read_only && !self.startup.is_empty() {
-            steps.push(Stmt::no_rows(QUERY_ONLY));
+        for statement in &self.startup {
+            steps.push(Stmt::no_rows(statement));
+            if self.query_only {
+                steps.push(Stmt::no_rows(QUERY_ONLY));
+            }
         }
         steps
     }
+
+    /// What a batch on `stream` starts with: the whole prelude on a new stream; on a held one
+    /// `query_only` again (whatever ran there before cannot have turned it off).
+    fn steps_for(&self, stream: &StreamState) -> Vec<Stmt> {
+        if !stream.is_open() {
+            self.steps()
+        } else if self.query_only {
+            vec![Stmt::no_rows(QUERY_ONLY)]
+        } else {
+            Vec::new()
+        }
+    }
 }
+
+const QUERY_ONLY: &str = "PRAGMA query_only = 1";
 
 /// A stream the caller keeps between calls (the editor's).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -113,7 +133,11 @@ pub struct StreamState {
     in_flight: bool,
     /// The server dropped the stream the caller held, and with it an open transaction.
     lost: bool,
-    /// From the last `get_autocommit`; `None` before the first, or on Hrana 2.
+    /// The last request was refused because the server no longer knows the stream: it did not
+    /// run.
+    gone: bool,
+    /// Whether the stream is outside a transaction: from the last `get_autocommit` (Hrana 3), or
+    /// what the caller learnt otherwise; `None` before the first, or when unknown.
     pub autocommit: Option<bool>,
 }
 
@@ -135,6 +159,18 @@ impl StreamState {
             lost,
             ..StreamState::default()
         };
+    }
+
+    /// Forgets a stream the caller knows holds nothing worth keeping (no transaction): the next
+    /// call starts a new one and nothing counts as lost.
+    pub fn forget(&mut self) {
+        *self = StreamState::default();
+    }
+
+    /// Whether a request now finds the stream idle outside a transaction, so a refusal for a
+    /// forgotten stream loses nothing.
+    fn idle(&self) -> bool {
+        self.is_open() && !self.in_flight && self.autocommit == Some(true)
     }
 }
 
@@ -181,10 +217,6 @@ impl HranaClient {
         }
     }
 
-    pub fn base(&self) -> &str {
-        &self.base
-    }
-
     /// `GET v3`, else `GET v2`; a 2xx says the server speaks it. Asked once per client. Every
     /// other answer means Hrana 2 over `v2/pipeline` (Turso documents only that one), except a
     /// refused token, which is the connection's error.
@@ -210,6 +242,63 @@ impl HranaClient {
         Ok(found)
     }
 
+    /// Whether the server still answers, without running SQL (no rows read, nothing billed): the
+    /// endpoint of the protocol it speaks.
+    pub async fn ping(&self) -> Result<(), AppError> {
+        let path = match self.version().await? {
+            Version::V3 => "v3",
+            Version::V2 => "v2",
+        };
+        let reply = self
+            .transport
+            .send(HttpRequest::get(endpoint(&self.base, path)))
+            .await?;
+        if reply.is_success() {
+            Ok(())
+        } else {
+            Err(HttpFailure::from_response(&reply).to_error())
+        }
+    }
+
+    /// Whether every batch starts with `PRAGMA query_only = 1`.
+    pub fn query_only(&self) -> bool {
+        self.prelude.query_only
+    }
+
+    /// The startup commands every new stream runs.
+    pub fn startup(&self) -> &[String] {
+        &self.prelude.startup
+    }
+
+    /// Runs `PRAGMA query_only = 1` alone on a stream of its own, and keeps it in the prelude only
+    /// if the server ran it: `sqld` (and so Turso) refuses any batch holding it, as it does every
+    /// PRAGMA setting given a value (`SQL_PARSE_ERROR`, "unsupported statement"), which would
+    /// fail every call. A failed request is the connect's error.
+    pub async fn probe_query_only(&mut self) -> Result<bool, AppError> {
+        if !self.prelude.query_only {
+            return Ok(false);
+        }
+        let requests = vec![
+            StreamRequest::Batch {
+                batch: single(QUERY_ONLY, &[])?,
+            },
+            StreamRequest::Close,
+        ];
+        let ran = match self
+            .pipeline(&mut StreamState::default(), requests)
+            .await?
+            .into_iter()
+            .next()
+        {
+            Some(StreamResult::Ok {
+                response: StreamResponse::Batch { result },
+            }) => matches!(steps_of(result, 0)?.first(), Some(Step::Done(_))),
+            _ => false,
+        };
+        self.prelude.query_only = ran;
+        Ok(ran)
+    }
+
     /// One pipeline request on `stream`. An error status ends the stream (the spec), and so
     /// does a transport failure (whether the server ran the request is unknown).
     async fn pipeline(
@@ -231,17 +320,21 @@ impl HranaClient {
         stream.in_flight = true;
         let reply = self.transport.send(req).await;
         stream.in_flight = false;
+        let mut gone = false;
         let parsed = reply.and_then(|reply| {
             if reply.is_success() {
                 reply.parse::<PipelineResponse>("pipeline")
             } else {
-                Err(HttpFailure::from_response(&reply).to_error())
+                let failure = HttpFailure::from_response(&reply);
+                gone = failure.stream_gone();
+                Err(failure.to_error())
             }
         });
         let parsed = match parsed {
             Ok(p) => p,
             Err(e) => {
                 stream.drop_stream();
+                stream.gone = gone;
                 return Err(e);
             }
         };
@@ -263,17 +356,30 @@ impl HranaClient {
         stream: Option<&mut StreamState>,
         work: Batch,
     ) -> Result<Vec<Step>, AppError> {
-        let mut own = StreamState::default();
-        let worker = stream.is_none();
-        let stream = stream.unwrap_or(&mut own);
+        let Some(stream) = stream else {
+            return self.run_once(&mut StreamState::default(), true, work).await;
+        };
+        let idle = stream.idle();
+        match self.run_once(stream, false, work.clone()).await {
+            Err(_) if idle && std::mem::take(&mut stream.gone) => {
+                stream.lost = false;
+                self.run_once(stream, false, work).await
+            }
+            other => other,
+        }
+    }
+
+    async fn run_once(
+        &self,
+        stream: &mut StreamState,
+        worker: bool,
+        work: Batch,
+    ) -> Result<Vec<Step>, AppError> {
         if stream.in_flight {
             stream.drop_stream();
         }
-        let prelude = if stream.is_open() {
-            Vec::new()
-        } else {
-            self.prelude.steps()
-        };
+        stream.gone = false;
+        let prelude = self.prelude.steps_for(stream);
         let (batch, offset) = with_prelude(&prelude, work);
         let mut requests = vec![StreamRequest::Batch { batch }];
         let version = self.version().await?;
@@ -354,32 +460,6 @@ impl HranaClient {
         tx_outcome(statements, &plan, &steps)
     }
 
-    /// How the server reads `sql` (parameters, columns, whether it only reads), on a new
-    /// stream.
-    pub async fn describe(&self, sql: &str) -> Result<DescribeResult, AppError> {
-        let mut stream = StreamState::default();
-        let results = self
-            .pipeline(
-                &mut stream,
-                vec![
-                    StreamRequest::Describe {
-                        sql: sql.to_string(),
-                    },
-                    StreamRequest::Close,
-                ],
-            )
-            .await?;
-        match results.into_iter().next() {
-            Some(StreamResult::Ok {
-                response: StreamResponse::Describe { result },
-            }) => Ok(result),
-            Some(StreamResult::Error { error }) => Err(hrana_error(&error)),
-            other => Err(AppError::db(format!(
-                "{ENGINE} answered describe with {other:?}"
-            ))),
-        }
-    }
-
     /// Closes a held stream; the server would expire it anyway, so failures are ignored.
     pub async fn close(&self, stream: &mut StreamState) {
         if stream.is_open() && !stream.in_flight {
@@ -401,16 +481,25 @@ impl HranaClient {
                 "{ENGINE} server without Hrana 3 has no cursor"
             )));
         }
-        let mut own = StreamState::default();
-        let stream = stream.unwrap_or(&mut own);
+        let Some(stream) = stream else {
+            return self.cursor_once(&mut StreamState::default(), work).await;
+        };
+        let idle = stream.idle();
+        match self.cursor_once(stream, work.clone()).await {
+            Err(_) if idle && std::mem::take(&mut stream.gone) => {
+                stream.lost = false;
+                self.cursor_once(stream, work).await
+            }
+            other => other,
+        }
+    }
+
+    async fn cursor_once(&self, stream: &mut StreamState, work: Batch) -> Result<Cursor, AppError> {
         if stream.in_flight {
             stream.drop_stream();
         }
-        let prelude = if stream.is_open() {
-            Vec::new()
-        } else {
-            self.prelude.steps()
-        };
+        stream.gone = false;
+        let prelude = self.prelude.steps_for(stream);
         let (batch, offset) = with_prelude(&prelude, work);
         let base = stream.base_url.clone().unwrap_or_else(|| self.base.clone());
         let body = CursorRequest {
@@ -423,7 +512,10 @@ impl HranaClient {
             .send_streaming(HttpRequest::post_json(endpoint(&base, "v3/cursor"), &body)?)
             .await?;
         if !(200..300).contains(&reply.status) {
-            return Err(HttpFailure::from_response(&reply.collect().await).to_error());
+            let failure = HttpFailure::from_response(&reply.collect().await);
+            stream.drop_stream();
+            stream.gone = failure.stream_gone();
+            return Err(failure.to_error());
         }
         Ok(Cursor {
             base,
@@ -449,7 +541,7 @@ fn follow(stream: &mut StreamState, base: &str, base_url: Option<&str>) {
 }
 
 /// A batch of one statement.
-fn single(sql: &str, params: &[Value]) -> Result<Batch, AppError> {
+pub fn single(sql: &str, params: &[Value]) -> Result<Batch, AppError> {
     Ok(Batch {
         steps: vec![BatchStep {
             condition: None,
@@ -521,14 +613,10 @@ pub fn with_prelude(prelude: &[Stmt], work: Batch) -> (Batch, u32) {
 fn shift(cond: BatchCond, by: u32) -> BatchCond {
     match cond {
         BatchCond::Ok { step } => BatchCond::Ok { step: step + by },
-        BatchCond::Error { step } => BatchCond::Error { step: step + by },
         BatchCond::Not { cond } => BatchCond::Not {
             cond: Box::new(shift(*cond, by)),
         },
         BatchCond::And { conds } => BatchCond::And {
-            conds: conds.into_iter().map(|c| shift(c, by)).collect(),
-        },
-        BatchCond::Or { conds } => BatchCond::Or {
             conds: conds.into_iter().map(|c| shift(c, by)).collect(),
         },
         BatchCond::IsAutocommit => BatchCond::IsAutocommit,
@@ -727,6 +815,7 @@ pub struct Cursor {
 
 impl Cursor {
     /// The stream's new baton and base URL, once the first line has been read.
+    #[cfg(test)]
     pub fn head(&self) -> Option<&CursorHead> {
         self.head.as_ref()
     }
@@ -747,6 +836,9 @@ impl Cursor {
             }
             if self.ended {
                 return Ok(self.lines.finish());
+            }
+            if self.lines.unread() > MAX_REPLY {
+                return Err(too_large());
             }
             match self.body.next().await {
                 Some(Ok(piece)) => self.lines.push(&piece),
@@ -828,7 +920,7 @@ mod tests {
         let prelude = Prelude {
             foreign_keys: Some(true),
             startup: vec!["PRAGMA cache_size = 100".into()],
-            read_only: true,
+            query_only: true,
         };
         let work = Batch {
             steps: vec![
@@ -876,12 +968,31 @@ mod tests {
             json!({"type": "and", "conds": [{"type": "ok", "step": 3},
                 {"type": "not", "cond": {"type": "ok", "step": 4}}]})
         );
-        // Without startup commands nothing can undo the first `query_only`.
+        // Without startup commands nothing can undo the first `query_only`; with several, one
+        // that turns it off cannot let the next write.
         let plain = Prelude {
-            read_only: true,
+            query_only: true,
             ..Prelude::default()
         };
         assert_eq!(plain.steps().len(), 1);
+        let undoing = Prelude {
+            startup: vec![
+                "PRAGMA query_only = 0".into(),
+                "INSERT INTO t VALUES (1)".into(),
+            ],
+            ..plain
+        };
+        let sql: Vec<String> = undoing.steps().into_iter().map(|s| s.sql).collect();
+        assert_eq!(
+            sql,
+            [
+                QUERY_ONLY,
+                "PRAGMA query_only = 0",
+                QUERY_ONLY,
+                "INSERT INTO t VALUES (1)",
+                QUERY_ONLY
+            ]
+        );
         // Without a prelude the work is unchanged.
         let (same, offset) = with_prelude(&[], work.clone());
         assert_eq!((same, offset), (work, 0));

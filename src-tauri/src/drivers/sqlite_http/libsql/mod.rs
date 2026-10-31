@@ -5,8 +5,11 @@ pub mod decode;
 pub mod entry;
 pub mod error;
 pub mod hrana;
+pub mod session;
 pub mod url;
 
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]

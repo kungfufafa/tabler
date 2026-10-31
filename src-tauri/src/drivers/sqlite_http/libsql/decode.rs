@@ -179,6 +179,28 @@ mod tests {
     }
 
     #[test]
+    fn timestamps_and_decimals_keep_their_text() {
+        let text = |v: &str| HranaValue::Text { value: v.into() };
+        assert_eq!(
+            decode_value(
+                &text("2026-10-30 12:00:00.123"),
+                ValueKind::Timestamp,
+                false
+            ),
+            Value::Timestamp("2026-10-30 12:00:00.123".into())
+        );
+        assert_eq!(
+            decode_value(&text("12.50"), ValueKind::Decimal, false),
+            Value::Decimal("12.50".into())
+        );
+        // An integer text beyond i64, as a server may send it, stays exact.
+        assert_eq!(
+            decode_value(&int("99999999999999999999"), ValueKind::Int, false),
+            Value::BigInt("99999999999999999999".into())
+        );
+    }
+
+    #[test]
     fn storage_class_wins_over_the_declared_type() {
         let text = HranaValue::Text {
             value: "2026-10-27".into(),

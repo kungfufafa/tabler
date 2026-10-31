@@ -15,7 +15,7 @@ use crate::drivers::sqlite_http::guard::{
 use crate::error::AppError;
 use crate::types::query::ExecOutcome;
 
-use super::api::{RawQuery, RawResult};
+use super::api::{RawQuery, RawResult, one_statement};
 use super::decode::{ParamEncoding, encode_params, exec_outcome};
 
 /// What each statement of the batch is.
@@ -35,6 +35,7 @@ pub fn tx_batch(statements: &[TxStatement], encoding: ParamEncoding) -> Result<T
     let mut queries = Vec::new();
     let mut roles = Vec::new();
     for (i, st) in statements.iter().enumerate() {
+        one_statement(&st.sql).map_err(|e| e.with_statement_index(i))?;
         queries.push(RawQuery {
             sql: st.sql.clone(),
             params: encode_params(&st.sql, &st.params, encoding)

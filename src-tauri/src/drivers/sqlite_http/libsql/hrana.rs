@@ -77,18 +77,10 @@ impl TryFrom<serde_json::Value> for HranaValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct NamedArg {
-    pub name: String,
-    pub value: HranaValue,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Stmt {
     pub sql: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<HranaValue>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub named_args: Vec<NamedArg>,
     pub want_rows: bool,
 }
 
@@ -97,7 +89,6 @@ impl Stmt {
         Stmt {
             sql: sql.into(),
             args,
-            named_args: Vec::new(),
             want_rows: true,
         }
     }
@@ -111,15 +102,14 @@ impl Stmt {
     }
 }
 
-/// When a batch step runs, from the outcome of earlier steps (0-based).
+/// When a batch step runs, from the outcome of earlier steps (0-based). Only the conditions the
+/// client builds; Hrana also has `error` and `or`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BatchCond {
     Ok { step: u32 },
-    Error { step: u32 },
     Not { cond: Box<BatchCond> },
     And { conds: Vec<BatchCond> },
-    Or { conds: Vec<BatchCond> },
     IsAutocommit,
 }
 
@@ -139,18 +129,8 @@ pub struct Batch {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamRequest {
     Close,
-    Execute {
-        stmt: Stmt,
-    },
     Batch {
         batch: Batch,
-    },
-    /// A script run statement after statement, without results.
-    Sequence {
-        sql: String,
-    },
-    Describe {
-        sql: String,
     },
     /// Hrana 3 only.
     GetAutocommit,
@@ -206,41 +186,17 @@ pub struct BatchResult {
     pub step_errors: Vec<Option<HranaError>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
-#[serde(default)]
-pub struct DescribeResult {
-    pub params: Vec<DescribeParam>,
-    pub cols: Vec<Col>,
-    pub is_explain: bool,
-    pub is_readonly: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
-#[serde(default)]
-pub struct DescribeParam {
-    pub name: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamResponse {
     Close,
-    Execute {
-        result: StmtResult,
-    },
     Batch {
         result: BatchResult,
     },
-    Sequence,
-    Describe {
-        result: DescribeResult,
-    },
-    StoreSql,
-    CloseSql,
     GetAutocommit {
         is_autocommit: bool,
     },
-    /// A response a newer server added.
+    /// A response to a request the client does not send, or one a newer server added.
     #[serde(other)]
     Unknown,
 }
@@ -378,6 +334,11 @@ impl LineBuffer {
         }
     }
 
+    /// Bytes pushed and not yet read as lines: once `next_line` finds none, one unfinished line.
+    pub fn unread(&self) -> usize {
+        self.buf.len().saturating_sub(self.start)
+    }
+
     /// What is left once the body has ended: a last line without a line break.
     pub fn finish(&mut self) -> Option<Vec<u8>> {
         let mut rest = std::mem::take(&mut self.buf);
@@ -408,18 +369,19 @@ mod tests {
         let req = PipelineRequest {
             baton: None,
             requests: vec![
-                StreamRequest::Execute {
-                    stmt: Stmt::new(
-                        "SELECT ?1",
-                        vec![HranaValue::Integer { value: "1".into() }, HranaValue::Null],
-                    ),
-                },
-                StreamRequest::Sequence {
-                    sql: "PRAGMA x; PRAGMA y".into(),
-                },
                 StreamRequest::Batch {
                     batch: Batch {
                         steps: vec![
+                            BatchStep {
+                                condition: None,
+                                stmt: Stmt::new(
+                                    "SELECT ?1",
+                                    vec![
+                                        HranaValue::Integer { value: "1".into() },
+                                        HranaValue::Null,
+                                    ],
+                                ),
+                            },
                             BatchStep {
                                 condition: None,
                                 stmt: Stmt::no_rows("BEGIN"),
@@ -442,10 +404,9 @@ mod tests {
             json!({
                 "baton": null,
                 "requests": [
-                    {"type": "execute", "stmt": {"sql": "SELECT ?1", "args": [
-                        {"type": "integer", "value": "1"}, {"type": "null"}], "want_rows": true}},
-                    {"type": "sequence", "sql": "PRAGMA x; PRAGMA y"},
                     {"type": "batch", "batch": {"steps": [
+                        {"stmt": {"sql": "SELECT ?1", "args": [
+                            {"type": "integer", "value": "1"}, {"type": "null"}], "want_rows": true}},
                         {"stmt": {"sql": "BEGIN", "want_rows": false}},
                         {"condition": {"type": "not", "cond": {"type": "ok", "step": 0}},
                          "stmt": {"sql": "ROLLBACK", "want_rows": false}}]}},
@@ -453,20 +414,6 @@ mod tests {
                     {"type": "close"}
                 ]
             })
-        );
-        let named = Stmt {
-            named_args: vec![NamedArg {
-                name: ":a".into(),
-                value: HranaValue::Blob {
-                    base64: "AQI".into(),
-                },
-            }],
-            ..Stmt::new("SELECT :a", vec![])
-        };
-        assert_eq!(
-            serde_json::to_value(&named).unwrap(),
-            json!({"sql": "SELECT :a", "named_args": [
-                {"name": ":a", "value": {"type": "blob", "base64": "AQI"}}], "want_rows": true})
         );
     }
 
@@ -476,24 +423,26 @@ mod tests {
             "baton": "b1",
             "base_url": null,
             "results": [
-                {"type": "ok", "response": {"type": "execute", "result": {
-                    "cols": [{"name": "a", "decltype": "INTEGER"}, {"name": null}],
-                    "rows": [[{"type": "integer", "value": "9007199254740993"},
-                              {"type": "float", "value": 1.5}],
-                             [{"type": "integer", "value": 3},
-                              {"type": "float", "value": null}],
-                             [{"type": "text", "value": "x"},
-                              {"type": "blob", "base64": "AQI="}]],
-                    "affected_row_count": 0,
-                    "last_insert_rowid": null,
-                    "rows_read": 1, "rows_written": 0, "query_duration_ms": 0.1}}},
+                {"type": "ok", "response": {"type": "batch", "result": {
+                    "step_results": [{
+                        "cols": [{"name": "a", "decltype": "INTEGER"}, {"name": null}],
+                        "rows": [[{"type": "integer", "value": "9007199254740993"},
+                                  {"type": "float", "value": 1.5}],
+                                 [{"type": "integer", "value": 3},
+                                  {"type": "float", "value": null}],
+                                 [{"type": "text", "value": "x"},
+                                  {"type": "blob", "base64": "AQI="}]],
+                        "affected_row_count": 0,
+                        "last_insert_rowid": null,
+                        "rows_read": 1, "rows_written": 0, "query_duration_ms": 0.1}],
+                    "step_errors": [null]}}},
                 {"type": "error", "error": {"message": "no such table: t", "code": "SQLITE_ERROR"}},
                 {"type": "ok", "response": {"type": "get_autocommit", "is_autocommit": false}},
                 {"type": "ok", "response": {"type": "batch", "result": {
                     "step_results": [{"cols": [], "rows": [], "affected_row_count": "2",
                                       "last_insert_rowid": 5}, null],
                     "step_errors": [null, {"message": "boom"}]}}},
-                {"type": "ok", "response": {"type": "something_new"}},
+                {"type": "ok", "response": {"type": "describe", "result": {"params": []}}},
                 {"type": "none"},
                 {"type": "ok", "response": {"type": "close"}}
             ]
@@ -501,11 +450,12 @@ mod tests {
         let resp: PipelineResponse = serde_json::from_value(body).unwrap();
         assert_eq!(resp.baton.as_deref(), Some("b1"));
         let StreamResult::Ok {
-            response: StreamResponse::Execute { result },
+            response: StreamResponse::Batch { result },
         } = &resp.results[0]
         else {
             panic!("{:?}", resp.results[0]);
         };
+        let result = result.step_results[0].as_ref().unwrap();
         assert_eq!(result.cols[1].name, None);
         assert_eq!(
             result.rows[0][0],

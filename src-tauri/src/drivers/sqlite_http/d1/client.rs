@@ -13,7 +13,8 @@ use crate::types::schema::ValueKind;
 use crate::types::value::Value;
 
 use super::api::{
-    D1Target, DatabaseInfo, ENGINE, RawBody, RawQuery, RawResult, is_uuid, list_url, parse_reply,
+    D1Target, DatabaseInfo, ENGINE, RawBody, RawQuery, RawResult, is_uuid, list_url, one_statement,
+    parse_reply,
 };
 use super::batch::{tx_batch, tx_error, tx_outcome};
 use super::decode::{ParamEncoding, encode_params, exec_outcome, plain_rows, result_set};
@@ -60,9 +61,9 @@ impl D1Client {
         Ok(results)
     }
 
-    /// One statement. Several separated by `;` run as a batch on D1; the first one's result
-    /// is returned (the editor sends one at a time).
+    /// One statement; a text of several is refused before it is sent (`one_statement`).
     pub async fn statement(&self, sql: &str, params: &[Value]) -> Result<RawResult, AppError> {
+        one_statement(sql)?;
         let body = RawBody::Single(RawQuery {
             sql: sql.to_string(),
             params: encode_params(sql, params, self.encoding)?,

@@ -2,28 +2,30 @@
 //! (paged, filtered by name), a database's details, and `/raw` with single statements and
 //! batches, each run as one transaction that rolls back on any error.
 //!
-//! It refuses what D1 refuses: `BEGIN`, `COMMIT`, `SAVEPOINT` and friends, `ATTACH`, PRAGMAs
-//! off D1's list (also as table-valued functions), and any statement naming `_cf_KV`, the
-//! internal table D1 lists but will not read. D1 does this with an authorizer; without
-//! rusqlite's `hooks` feature (a change request) the fake judges the statement text. It keeps
-//! D1's limits (100 parameters, 100 KB statements) and answers as D1's JavaScript would: integers
-//! beyond 2^53 rounded, whole REALs without a fraction, blobs as byte arrays, and `meta.changes`
-//! as the `sqlite3_total_changes()` delta (rows triggers and cascades changed included).
+//! It refuses what D1 refuses, the way workerd does: an authorizer while a statement is prepared
+//! (`BEGIN`, `COMMIT`, `SAVEPOINT` and friends, `ATTACH`, PRAGMAs off D1's list, also read as
+//! table-valued functions, and `_cf_KV`, the internal table D1 lists but will not read), and
+//! SQLite's own statement loop over a text of several, where only the last statement may have
+//! parameters and the last must be given exactly as many as it has. It keeps D1's limits (100
+//! parameters, 100 KB statements) and answers as D1's JavaScript would: integers beyond 2^53
+//! rounded, whole REALs without a fraction, blobs as byte arrays, and `meta.changes` as the
+//! `sqlite3_total_changes()` delta (rows triggers and cascades changed included).
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rusqlite::Connection;
+use rusqlite::fallible_iterator::FallibleIterator as _;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::types::Value as Sv;
 use serde_json::{Value as J, json};
 
 use crate::drivers::sqlite_http::codes::code_name;
-use crate::drivers::sqlite_http::testing::{Executed, run};
+use crate::drivers::sqlite_http::testing::{Answers, Executed, run_prepared};
 use crate::drivers::sqlite_http::transport::{HttpRequest, HttpResponse, Method, Transport};
 use crate::error::AppError;
-use crate::sqlgen::Dialect;
-use crate::sqlgen::split::{leading_keywords, split_statements};
 
 use super::api::{MAX_PARAMS, MAX_STATEMENT_BYTES};
 
@@ -54,7 +56,11 @@ const PRAGMAS: [&str; 17] = [
 
 const NO_TRANSACTIONS: &str = "To execute a transaction, please use the state.storage.transaction() \
      or state.storage.transactionSync() APIs instead of the SQL BEGIN TRANSACTION or SAVEPOINT \
-     statements: SQLITE_AUTH";
+     statements";
+const NOT_AUTHORIZED: &str = "not authorized";
+const PARAMS_IN_LAST: &str = "When executing multiple SQL statements in a single call, only the \
+     last statement can have parameters.";
+const WRONG_BINDINGS: &str = "Wrong number of parameter bindings for SQL query.";
 
 struct FakeDb {
     uuid: String,
@@ -67,6 +73,7 @@ struct State {
     failures: VecDeque<HttpResponse>,
     status: Option<u16>,
     strict_params: bool,
+    reply_delay: Option<Duration>,
 }
 
 pub struct FakeD1 {
@@ -134,6 +141,11 @@ impl FakeD1 {
     /// Every reply has this status, with Cloudflare's authentication error.
     pub fn answer_status(&self, status: Option<u16>) {
         self.state.lock().unwrap().status = status;
+    }
+
+    /// Requests run, then the reply waits this long (a client that gives up never reads it).
+    pub fn delay_replies(&self, delay: Option<Duration>) {
+        self.state.lock().unwrap().reply_delay = delay;
     }
 
     /// Parameters must be strings (or null), as the API documents.
@@ -258,7 +270,21 @@ impl Default for FakeD1 {
 #[async_trait]
 impl Transport for FakeD1 {
     async fn send(&self, req: HttpRequest) -> Result<HttpResponse, AppError> {
-        Ok(self.handle(&req))
+        let reply = self.handle(&req);
+        if let Some(delay) = Answers::delay(self) {
+            tokio::time::sleep(delay).await;
+        }
+        Ok(reply)
+    }
+}
+
+impl Answers for FakeD1 {
+    fn answer(&self, req: &HttpRequest) -> HttpResponse {
+        self.handle(req)
+    }
+
+    fn delay(&self) -> Option<Duration> {
+        self.state.lock().unwrap().reply_delay
     }
 }
 
@@ -285,35 +311,77 @@ fn info_json(d: &FakeDb) -> J {
     })
 }
 
-/// Why D1 would refuse a statement, as its message.
-fn refusal(sql: &str) -> Option<String> {
-    let kw = leading_keywords(sql, 2);
-    let word = |i: usize| kw.get(i).map(String::as_str).unwrap_or("");
-    let not_authorized = || Some("not authorized: SQLITE_AUTH".to_string());
-    match word(0) {
-        "BEGIN" | "COMMIT" | "END" | "ROLLBACK" | "SAVEPOINT" | "RELEASE" => {
-            return Some(NO_TRANSACTIONS.to_string());
+/// Why D1's authorizer refuses an action while a statement is prepared, as its message.
+fn refusal(action: &AuthAction<'_>) -> Option<String> {
+    let protected = |table: &str| {
+        table
+            .get(..4)
+            .is_some_and(|p| p.eq_ignore_ascii_case("_cf_"))
+    };
+    let listed = |pragma: &str| PRAGMAS.contains(&pragma.to_ascii_lowercase().as_str());
+    let not_authorized = || Some(NOT_AUTHORIZED.to_string());
+    match *action {
+        AuthAction::Transaction { .. } | AuthAction::Savepoint { .. } => {
+            Some(NO_TRANSACTIONS.to_string())
         }
-        "ATTACH" | "DETACH" | "VACUUM" => return not_authorized(),
-        "PRAGMA" if !PRAGMAS.contains(&word(1).to_ascii_lowercase().as_str()) => {
-            return not_authorized();
+        AuthAction::Attach { .. } | AuthAction::Detach { .. } => not_authorized(),
+        AuthAction::Pragma {
+            pragma_name,
+            pragma_value,
+        } if !listed(pragma_name) || pragma_value.is_some_and(protected) => not_authorized(),
+        AuthAction::Read {
+            table_name,
+            column_name,
+        } if protected(table_name) => Some(format!(
+            "access to {table_name}.{column_name} is prohibited"
+        )),
+        // A PRAGMA read as a table-valued function (`pragma_table_info(?1)`).
+        AuthAction::Read { table_name, .. }
+            if table_name
+                .get(..7)
+                .is_some_and(|p| p.eq_ignore_ascii_case("pragma_"))
+                && !table_name.get(7..).is_some_and(listed) =>
+        {
+            not_authorized()
         }
-        _ => {}
-    }
-    let lower = sql.to_ascii_lowercase();
-    for (at, _) in lower.match_indices("pragma_") {
-        let name: String = lower[at + "pragma_".len()..]
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        if !PRAGMAS.contains(&name.as_str()) {
-            return not_authorized();
+        AuthAction::Insert { table_name }
+        | AuthAction::Delete { table_name }
+        | AuthAction::Update { table_name, .. }
+            if protected(table_name) =>
+        {
+            not_authorized()
         }
+        _ => None,
     }
-    if lower.contains("_cf_kv") {
-        return Some("access to _cf_KV.key is prohibited: SQLITE_AUTH".to_string());
+}
+
+/// D1's authorizer on `conn` while a request's statements are prepared and run; the reason of
+/// its last refusal goes to `refused`. Dropping it removes it, so the fake's own `BEGIN` and
+/// `COMMIT` around the request pass.
+struct Authorizer<'c>(&'c Connection);
+
+impl<'c> Authorizer<'c> {
+    fn install(conn: &'c Connection, refused: Arc<Mutex<Option<String>>>) -> Authorizer<'c> {
+        conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+            match refusal(&ctx.action) {
+                Some(why) => {
+                    *refused.lock().unwrap() = Some(why);
+                    Authorization::Deny
+                }
+                None => Authorization::Allow,
+            }
+        }))
+        .expect("an authorizer");
+        Authorizer(conn)
     }
-    None
+}
+
+impl Drop for Authorizer<'_> {
+    fn drop(&mut self) {
+        let _ = self
+            .0
+            .authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    }
 }
 
 fn param(v: &J, strict: bool) -> Result<Sv, (i64, String)> {
@@ -376,7 +444,21 @@ fn sqlite_message(e: &rusqlite::Error) -> String {
     }
 }
 
-/// One `{sql, params}` of a body: each of its statements' results.
+/// A failed statement as D1 words it: an authorizer's refusal by its reason.
+fn d1_message(e: &rusqlite::Error, refused: &Mutex<Option<String>>) -> String {
+    match (e.sqlite_error_code(), refused.lock().unwrap().take()) {
+        (Some(rusqlite::ErrorCode::AuthorizationForStatementDenied), Some(why)) => {
+            format!("{why}: SQLITE_AUTH")
+        }
+        _ => sqlite_message(e),
+    }
+}
+
+/// One `{sql, params}` of a body: each of its statements' results. A text of several runs as D1
+/// runs it, through SQLite's own statement loop: only the last statement may have parameters,
+/// and the last gets exactly as many values as it has (none are left unbound). D1 refuses a
+/// statement with parameters that is not the last before running it; the loop here only learns
+/// that once the next statement is prepared, so the request rolls back instead.
 fn run_query(conn: &Connection, q: &J, strict: bool) -> Result<Vec<J>, (i64, String)> {
     let sql = q["sql"].as_str().unwrap_or_default();
     let params: Vec<Sv> = match &q["params"] {
@@ -396,11 +478,21 @@ fn run_query(conn: &Connection, q: &J, strict: bool) -> Result<Vec<J>, (i64, Str
     if sql.len() > MAX_STATEMENT_BYTES {
         return Err((7500, "statement too long: SQLITE_TOOBIG".into()));
     }
+    let refused = Arc::new(Mutex::new(None));
+    let _authorizer = Authorizer::install(conn, refused.clone());
+    let failed = |e: rusqlite::Error| (7500, d1_message(&e, &refused));
+    let mut statements = rusqlite::Batch::new(conn, sql);
     let mut out = Vec::new();
-    for piece in split_statements(sql, Dialect::Sqlite) {
-        if let Some(message) = refusal(&piece.sql) {
-            return Err((7500, message));
+    let mut last_params = 0;
+    while let Some(mut stmt) = statements.next().map_err(failed)? {
+        if last_params > 0 {
+            return Err((7500, format!("{PARAMS_IN_LAST}: SQLITE_ERROR")));
         }
+        last_params = stmt.parameter_count();
+        if last_params > 0 && last_params != params.len() {
+            return Err((7500, format!("{WRONG_BINDINGS}: SQLITE_ERROR")));
+        }
+        let bound = if last_params > 0 { &params[..] } else { &[] };
         // D1's `meta.changes` is the `sqlite3_total_changes()` delta: what triggers and
         // cascades changed counts too.
         let Executed {
@@ -410,7 +502,7 @@ fn run_query(conn: &Connection, q: &J, strict: bool) -> Result<Vec<J>, (i64, Str
             last_insert_rowid,
             readonly,
             ..
-        } = run(conn, &piece.sql, &params, &[]).map_err(|e| (7500, sqlite_message(&e)))?;
+        } = run_prepared(conn, &mut stmt, bound).map_err(failed)?;
         out.push(json!({
             "results": {
                 "columns": cols.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
@@ -426,6 +518,9 @@ fn run_query(conn: &Connection, q: &J, strict: bool) -> Result<Vec<J>, (i64, Str
             "success": true
         }));
     }
+    if last_params != params.len() {
+        return Err((7500, format!("{WRONG_BINDINGS}: SQLITE_ERROR")));
+    }
     Ok(out)
 }
 
@@ -433,31 +528,107 @@ fn run_query(conn: &Connection, q: &J, strict: bool) -> Result<Vec<J>, (i64, Str
 mod tests {
     use super::*;
 
+    fn seeded() -> FakeD1 {
+        let fake = FakeD1::new();
+        fake.seed(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT);
+             INSERT INTO t (v) VALUES ('a'), ('b'), ('c');",
+        );
+        fake
+    }
+
+    /// `/raw` with one `{sql, params}`: its results, or D1's error message.
+    fn raw(fake: &FakeD1, sql: &str, params: J) -> Result<J, String> {
+        let url = format!("{API_BASE}/accounts/{ACCOUNT}/d1/database/{MAIN_DB}/raw");
+        let req = HttpRequest::post_json(url, &json!({"sql": sql, "params": params})).unwrap();
+        let reply: J = serde_json::from_slice(&fake.handle(&req).body).unwrap();
+        match reply["success"].as_bool() {
+            Some(true) => Ok(reply["result"].clone()),
+            _ => Err(reply["errors"][0]["message"].as_str().unwrap().to_string()),
+        }
+    }
+
+    fn rows(fake: &FakeD1) -> i64 {
+        fake.with_db(MAIN_DB, |c| {
+            c.query_row("SELECT count(*) FROM t", [], |r| r.get(0))
+                .unwrap()
+        })
+    }
+
     #[test]
     fn what_d1_refuses() {
+        let fake = seeded();
         for refused in [
             "BEGIN",
             "begin transaction",
             "COMMIT",
             "SAVEPOINT a",
+            "RELEASE a",
             "ATTACH 'x' AS y",
             "PRAGMA database_list",
-            "PRAGMA main.table_info(t)",
             "PRAGMA query_only = 1",
+            "PRAGMA table_info(_cf_KV)",
             "SELECT name FROM pragma_database_list",
             "SELECT * FROM _cf_KV",
+            "DELETE FROM _cf_KV",
+            "SELECT 1; DELETE FROM t; BEGIN",
         ] {
-            assert!(refusal(refused).is_some(), "{refused}");
+            let message = raw(&fake, refused, json!([])).expect_err(refused);
+            assert!(message.ends_with(": SQLITE_AUTH"), "{refused}: {message}");
         }
+        assert!(
+            raw(&fake, "BEGIN", json!([]))
+                .unwrap_err()
+                .starts_with("To execute a transaction")
+        );
+        assert_eq!(rows(&fake), 3, "a refused request changes nothing");
         for allowed in [
             "SELECT 1",
             "PRAGMA foreign_keys = ON",
             "PRAGMA table_info(t)",
-            "SELECT * FROM pragma_table_xinfo(?1)",
+            "SELECT * FROM pragma_table_xinfo('t')",
             "SELECT name FROM sqlite_schema m WHERE m.name NOT LIKE '\\_cf\\_%' ESCAPE '\\'",
+            "SELECT '_cf_KV', 'pragma_database_list', 'BEGIN'",
         ] {
-            assert_eq!(refusal(allowed), None, "{allowed}");
+            raw(&fake, allowed, json!([])).unwrap_or_else(|e| panic!("{allowed}: {e}"));
         }
+    }
+
+    #[test]
+    fn a_text_runs_as_sqlites_statement_loop_reads_it() {
+        let fake = seeded();
+        let two = raw(&fake, "SELECT 1; SELECT ?1", json!(["x"])).unwrap();
+        assert_eq!(two.as_array().unwrap().len(), 2);
+        // Parameters only in the last statement, exactly as many as it has.
+        for (sql, params) in [
+            ("SELECT ?1; DELETE FROM t", json!(["1"])),
+            ("DELETE FROM t WHERE id > ?1", json!([])),
+            ("DELETE FROM t", json!(["1"])),
+            ("DELETE FROM t WHERE id IN (?1, ?2)", json!(["1"])),
+        ] {
+            let message = raw(&fake, sql, params).expect_err(sql);
+            assert!(message.contains("parameter"), "{sql}: {message}");
+        }
+        assert_eq!(rows(&fake), 3);
+        // SQLite reads `$a(--)` as one variable, so these texts hide a DELETE from a lexer that
+        // sees a comment there; unbound (the editor binds nothing) D1 runs none of them.
+        for sql in [
+            "SELECT $a(--) ; DELETE FROM t",
+            "WITH x AS (SELECT $a(--)) DELETE FROM t",
+            "SELECT :a::b(') ; DELETE FROM t ; SELECT $b(')",
+        ] {
+            let message = raw(&fake, sql, json!([])).expect_err(sql);
+            assert!(message.contains("parameter"), "{sql}: {message}");
+        }
+        assert_eq!(rows(&fake), 3);
+        // Given its value, the one statement runs: what SQLite reads is a DELETE.
+        raw(
+            &fake,
+            "WITH x AS (SELECT $a(--)) DELETE FROM t",
+            json!(["v"]),
+        )
+        .unwrap();
+        assert_eq!(rows(&fake), 0);
     }
 
     #[test]

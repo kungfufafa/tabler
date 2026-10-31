@@ -8,42 +8,9 @@ use crate::types::query::ResultColumn;
 use crate::types::schema::ValueKind;
 use crate::types::value::Value;
 
-/// A declared column type (`decltype`) as a `ValueKind`: SQLite's affinity rules plus the
-/// DATE / DATETIME / BOOLEAN / JSON conventions of ORMs. The same rules as the local driver's
-/// `kind_from_decltype`, which is private to `drivers::sqlite`.
-pub fn kind_from_decltype(decl: Option<&str>) -> ValueKind {
-    let Some(decl) = decl else {
-        return ValueKind::Other;
-    };
-    let upper = decl.to_ascii_uppercase();
-    let base = upper.split('(').next().unwrap_or("").trim();
-    if base.is_empty() || base == "ANY" {
-        ValueKind::Other
-    } else if base == "JSON" || base == "JSONB" {
-        ValueKind::Json
-    } else if base == "BOOLEAN" || base == "BOOL" {
-        ValueKind::Bool
-    } else if base == "DATETIME" || base == "TIMESTAMP" {
-        ValueKind::Timestamp
-    } else if base == "DATE" {
-        ValueKind::Date
-    } else if base == "TIME" {
-        ValueKind::Time
-    } else if base == "UUID" {
-        ValueKind::Uuid
-    } else if base.contains("INT") {
-        ValueKind::Int
-    } else if base.contains("CHAR") || base.contains("CLOB") || base.contains("TEXT") {
-        ValueKind::Text
-    } else if base.contains("BLOB") {
-        ValueKind::Bytes
-    } else if base.contains("REAL") || base.contains("FLOA") || base.contains("DOUB") {
-        ValueKind::Float
-    } else {
-        // NUMERIC affinity, the catch-all.
-        ValueKind::Decimal
-    }
-}
+// Declared types read as the local driver reads them (SQLite's affinity plus the DATE / DATETIME /
+// BOOLEAN / JSON conventions of ORMs).
+pub(crate) use crate::drivers::sqlite::decode::kind_from_decltype;
 
 /// An integer cell: a BOOLEAN column shows true / false, anything else the number.
 pub fn integer_value(n: i64, kind: ValueKind) -> Value {

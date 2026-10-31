@@ -9,8 +9,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::drivers::sqlite::introspect::parse_trigger_head;
 use crate::error::AppError;
-use crate::sqlgen::ddl::{index_predicate, sqlite_checks, trigger_tail};
+use crate::sqlgen::ddl::{index_predicate, sqlite_checks};
 use crate::types::schema::{
     ColumnMeta, CompletionMetadata, ForeignKeyMeta, IndexMeta, SchemaInfo, TableKind, TableMeta,
     TableRef, TableSummary, TriggerMeta,
@@ -45,6 +46,11 @@ impl CatalogQuery {
 pub type Rows = Vec<Vec<Value>>;
 
 pub const MAIN: &str = "main";
+
+/// The rows of the first statement of a round trip (none when it brought nothing back).
+pub fn first_set(results: &[Rows]) -> &[Vec<Value>] {
+    results.first().map_or(&[][..], Vec::as_slice)
+}
 
 // The filters on `sqlite_schema` rows (alias `m`) of each engine. Macros, so the statements stay
 // `&'static str`. The vector-index shadow tables are `<index name>_shadow`.
@@ -340,6 +346,41 @@ fn parse_foreign_keys(table: &str, rows: &[Vec<Value>]) -> Result<Vec<ForeignKey
     Ok(groups.into_values().collect())
 }
 
+/// The statements `parse_table_ddl` reads: the object's own SQL, then its indexes' and
+/// triggers'.
+pub fn table_ddl_queries(table: &TableRef) -> Vec<CatalogQuery> {
+    let name = || vec![Value::Text(table.name.clone())];
+    vec![
+        CatalogQuery::new(OBJECT_SQL, name()),
+        CatalogQuery::new(DEPENDENTS_SQL, name()),
+    ]
+}
+
+/// What Show DDL gives: the `CREATE` statement SQLite keeps for the table or view, then those of
+/// its indexes (an index a constraint made has none) and triggers.
+pub fn parse_table_ddl(table: &TableRef, results: &[Rows]) -> Result<String, AppError> {
+    let [object, dependents] = results else {
+        return Err(AppError::internal(format!(
+            "table DDL: expected 2 result sets, got {}",
+            results.len()
+        )));
+    };
+    let Some(first) = object.first() else {
+        return Err(AppError::NotFound(format!("table {}", table.name)));
+    };
+    let mut statements = vec![opt_text(first, 1)?.unwrap_or_default()];
+    for r in dependents {
+        if let Some(sql) = opt_text(r, 2)? {
+            statements.push(sql);
+        }
+    }
+    Ok(statements
+        .iter()
+        .map(|s| format!("{};", s.trim().trim_end_matches(';')))
+        .collect::<Vec<_>>()
+        .join("\n\n"))
+}
+
 pub fn view_definition_query(table: &TableRef) -> CatalogQuery {
     CatalogQuery::new(VIEW_SQL, vec![Value::Text(table.name.clone())])
 }
@@ -382,30 +423,6 @@ pub fn parse_version(rows: &[Vec<Value>]) -> Result<String, AppError> {
         Some(r) => text(r, 0),
         None => Err(AppError::db("sqlite_version() returned no row")),
     }
-}
-
-/// Timing and event of a trigger from its `CREATE TRIGGER` text (as the local driver reads it):
-/// the words between the trigger name and `ON`. SQLite's default timing is BEFORE.
-pub fn parse_trigger_head(def: &str) -> (Option<String>, Vec<String>) {
-    let Some(tail) = trigger_tail(def) else {
-        return (None, Vec::new());
-    };
-    let words: Vec<String> = tail
-        .split_whitespace()
-        .take_while(|w| !w.eq_ignore_ascii_case("ON"))
-        .map(str::to_ascii_uppercase)
-        .collect();
-    let timing = match words.first().map(String::as_str) {
-        Some("INSTEAD") => "INSTEAD OF",
-        Some("AFTER") => "AFTER",
-        _ => "BEFORE",
-    };
-    let events = words
-        .iter()
-        .find(|w| matches!(w.as_str(), "INSERT" | "UPDATE" | "DELETE"))
-        .map(|w| vec![w.clone()])
-        .unwrap_or_default();
-    (Some(timing.to_string()), events)
 }
 
 fn table_kind(ty: &str) -> TableKind {
@@ -651,6 +668,34 @@ mod tests {
     }
 
     #[test]
+    fn table_ddl_has_the_indexes_and_triggers() {
+        let conn = schema();
+        let ddl = |name: &str| {
+            let t = TableRef::new(Some("main"), name);
+            parse_table_ddl(&t, &catalog_rows(&conn, &table_ddl_queries(&t)))
+        };
+        let users = ddl("users").unwrap();
+        // The UNIQUE constraint's index has no SQL of its own.
+        assert!(
+            users.starts_with("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT"),
+            "{users}"
+        );
+        assert!(
+            users.ends_with("WHERE id = NEW.id; END;"),
+            "the trigger comes last: {users}"
+        );
+        assert_eq!(users.matches(";\n\n").count(), 1, "{users}");
+        let posts = ddl("posts").unwrap();
+        assert!(
+            posts.contains(";\n\nCREATE INDEX posts_live ON posts(title) WHERE user_id > 0;"),
+            "{posts}"
+        );
+        assert_eq!(ddl("v").unwrap(), "CREATE VIEW v AS SELECT id FROM users;");
+        assert!(matches!(ddl("nope"), Err(AppError::NotFound(_))));
+        assert!(parse_table_ddl(&TableRef::new(None, "t"), &[]).is_err());
+    }
+
+    #[test]
     fn unexpected_rows_are_errors() {
         let t = TableRef::new(None, "t");
         assert!(parse_table_meta(&t, &[]).is_err());
@@ -690,18 +735,5 @@ mod tests {
         let mut huge = loose.clone();
         huge[1][0][0] = Value::BigInt(i64::MAX.to_string());
         assert_eq!(parse_table_meta(&t, &huge).unwrap().columns[0].ordinal, 0);
-    }
-
-    #[test]
-    fn trigger_heads() {
-        assert_eq!(
-            parse_trigger_head("CREATE TRIGGER t INSTEAD OF INSERT ON v BEGIN SELECT 1; END"),
-            (Some("INSTEAD OF".into()), vec!["INSERT".into()])
-        );
-        assert_eq!(
-            parse_trigger_head("CREATE TRIGGER t UPDATE OF a ON x BEGIN SELECT 1; END"),
-            (Some("BEFORE".into()), vec!["UPDATE".into()])
-        );
-        assert_eq!(parse_trigger_head("garbage"), (None, vec![]));
     }
 }
