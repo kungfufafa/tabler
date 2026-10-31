@@ -12,6 +12,10 @@
 //! `<parent>_1_prt_<name>`), and no table size is read there, since that would ask every
 //! segment.
 //!
+//! Roles and grants are PostgreSQL's (the coordinator keeps them), so user management runs the
+//! PostgreSQL driver's SQL, and so do the functions and procedures (`proisagg` / `proiswindow`
+//! where Greenplum 6 lacks `prokind`).
+//!
 //! `ctid` is unique on one segment only, so a table without a key is not editable. Greenplum 6
 //! lacks the sequence catalog, `array_position`, `relispartition`, `collprovider` and
 //! `pg_stat_ssl` the sequences, the diagram, the Create Database options and the session details
@@ -183,10 +187,12 @@ impl PgFlavorHooks for Greenplum {
     }
 
     fn adjust_caps(&self, caps: &mut SessionCaps, server_version_num: i32) {
-        // pg_cancel_backend / pg_terminate_backend by pid, as on PostgreSQL.
+        // pg_cancel_backend / pg_terminate_backend by pid, as on PostgreSQL. Roles are
+        // PostgreSQL's, kept by the coordinator: the PostgreSQL driver's role and grant SQL reads
+        // and writes them from 9.4 on (`aclexplode`, `acldefault`, aggregate FILTER).
         let mut adjusted = caps
             .clone()
-            .with(&[Feature::KillProcess])
+            .with(&[Feature::KillProcess, Feature::Users])
             .without(&[Feature::EditWithoutKey]);
         if server_version_num < PG10 {
             adjusted = adjusted.without(&[
@@ -449,7 +455,8 @@ mod tests {
             GREENPLUM.adjust_caps(&mut caps, v);
             assert!(caps.has(Feature::KillProcess) && caps.has(Feature::EditRows));
             assert!(!caps.has(Feature::EditWithoutKey));
-            for f in [Feature::StructureEdit, Feature::Backup, Feature::Users] {
+            assert!(caps.has(Feature::Users) && caps.has(Feature::Routines));
+            for f in [Feature::StructureEdit, Feature::Backup, Feature::Restore] {
                 assert!(!caps.has(f), "{v} {f:?}");
             }
             let legacy = v < GP7;
@@ -773,5 +780,112 @@ mod tests {
                 .await
                 .is_none()
         );
+    }
+
+    /// Roles, their grants and the routines of Greenplum 6 through the PostgreSQL driver's own
+    /// SQL: PostgreSQL 9.4 has all it reads, routine kinds from `proisagg` / `proiswindow`.
+    #[tokio::test]
+    async fn greenplum_6_users_and_routines() {
+        use crate::sqlgen::admin as admin_sql;
+        use crate::types::admin::UserRef;
+        use crate::types::objects::RoutineKind;
+
+        let text = |s: &str| Cell::text(s);
+        let pg = FakePg::new()
+            .server_version("9.4.26")
+            .version(GREENPLUM6)
+            .rows(
+                admin_sql::PG_LIST_ROLES,
+                vec![Col::text("rolname"), Col::text("login"), Col::text("super")],
+                vec![
+                    vec![text("gpadmin"), text("true"), text("true")],
+                    vec![text("etl"), text("true"), text("false")],
+                    vec![text("readers"), text("false"), text("false")],
+                ],
+            )
+            .rows(
+                admin_sql::PG_ROLE_ATTRIBUTES,
+                (0..8).map(|i| Col::text(&format!("a{i}"))).collect(),
+                vec![vec![
+                    text("false"),
+                    text("true"),
+                    text("false"),
+                    text("true"),
+                    text("false"),
+                    text("true"),
+                    text("-1"),
+                    Cell::Null,
+                ]],
+            )
+            .rows(
+                admin_sql::PG_DATABASE_GRANTS,
+                vec![Col::text("datname"), Col::text("privilege")],
+                vec![vec![text("warehouse"), text("CONNECT")]],
+            )
+            .rows(
+                admin_sql::PG_SCHEMA_GRANTS,
+                vec![Col::text("nspname"), Col::text("privilege")],
+                vec![vec![text("sales"), text("USAGE")]],
+            )
+            .rows(
+                admin_sql::PG_TABLE_GRANTS,
+                ["nspname", "priv", "total", "granted"]
+                    .into_iter()
+                    .map(Col::text)
+                    .collect(),
+                vec![vec![text("sales"), text("SELECT"), text("4"), text("4")]],
+            )
+            .rows(
+                admin_sql::PG_SCHEMAS,
+                vec![Col::text("nspname")],
+                vec![vec![text("public")], vec![text("sales")]],
+            )
+            .error("p.prokind", "42703", "column p.prokind does not exist")
+            .rows(
+                "p.proisagg",
+                [
+                    "proname", "kind", "args", "identity", "result", "lanname", "comment",
+                ]
+                .into_iter()
+                .map(Col::text)
+                .collect(),
+                vec![vec![
+                    text("median"),
+                    text("a"),
+                    text("numeric"),
+                    text("numeric"),
+                    text("numeric"),
+                    text("internal"),
+                    Cell::Null,
+                ]],
+            )
+            .start()
+            .await;
+        let session = testkit::session(&testkit::profile(pg.port())).await;
+        let sql: &dyn DbSession = &session;
+        assert!(session.capabilities().has(Feature::Users));
+        let users = crate::admin::list_users(sql, false).await.unwrap();
+        assert_eq!(
+            users.iter().map(|u| &u.name[..]).collect::<Vec<_>>(),
+            ["gpadmin", "etl"]
+        );
+        assert!(users[0].superuser && !users[1].superuser);
+        let etl = UserRef {
+            name: "etl".into(),
+            host: None,
+        };
+        let detail = crate::admin::load_user(sql, &etl).await.unwrap();
+        let attributes = detail.state.attributes.unwrap();
+        assert!(attributes.create_db && attributes.login && !attributes.superuser);
+        assert_eq!(detail.state.database_privileges[0].object, "warehouse");
+        assert_eq!(detail.state.schema_privileges[0].privileges, ["USAGE"]);
+        assert_eq!(detail.state.table_privileges[0].object, "sales");
+        assert_eq!(detail.schemas, ["public", "sales"]);
+
+        let routines = crate::objects::list_routines(sql, "public").await.unwrap();
+        assert_eq!(routines[0].name, "median");
+        assert_eq!(routines[0].kind, RoutineKind::Aggregate);
+        assert_eq!(testkit::sent(&pg, "p.proisagg").len(), 1);
+        session.close().await;
     }
 }

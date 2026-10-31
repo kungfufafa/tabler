@@ -13,6 +13,7 @@
 //! The statements the driver sends for itself with a name in them (SHOW TABLE, SHOW VIEW) are
 //! built here too.
 
+use crate::error::AppError;
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::dialect::lex::{ClassifyRules, LexProfile, PLAIN, reading};
 use crate::sqlgen::dialect::spec::{
@@ -348,6 +349,135 @@ pub fn show_ddl(what: ShowDdl, table: &TableRef) -> String {
     )
 }
 
+/// A type as the server names it (`format_type`, `oidvectortypes`), which goes into a statement
+/// as it is: letters, digits, spaces and `_ ( ) , [ ]` only, so no text can end the statement.
+fn server_type(ty: &str) -> Result<&str, AppError> {
+    let ty = ty.trim();
+    let allowed =
+        |c: char| c.is_ascii_alphanumeric() || matches!(c, ' ' | '_' | '(' | ')' | ',' | '[' | ']');
+    if ty.chars().all(allowed) {
+        Ok(ty)
+    } else {
+        Err(AppError::InvalidInput(format!("unexpected type name {ty}")))
+    }
+}
+
+/// `SHOW PROCEDURE "s"."p"(integer, character varying)`: the server's own text of a stored
+/// procedure. `arg_types` are the server's names of its input types (`oidvectortypes`), which
+/// pick one of its overloads.
+pub fn show_procedure(
+    schema: Option<&str>,
+    name: &str,
+    arg_types: &str,
+) -> Result<String, AppError> {
+    Ok(format!(
+        "SHOW PROCEDURE {}({})",
+        qualify_with(&SPEC, schema, name),
+        server_type(arg_types)?
+    ))
+}
+
+/// `pg_proc.provolatile`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Volatility {
+    Volatile,
+    Stable,
+    Immutable,
+}
+
+/// A scalar UDF (SQL or Python) as `pg_proc` keeps it: the server has no text of its CREATE
+/// statement, so `function_ddl` writes one from these parts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UdfParts<'a> {
+    pub schema: Option<&'a str>,
+    pub name: &'a str,
+    /// Each argument's name (SQL UDFs have none) and type.
+    pub args: Vec<(Option<&'a str>, &'a str)>,
+    pub returns: &'a str,
+    pub volatility: Volatility,
+    pub language: &'a str,
+    pub body: &'a str,
+}
+
+/// `CREATE OR REPLACE FUNCTION …` of a scalar UDF, its body in a dollar quote the body cannot end.
+pub fn function_ddl(f: &UdfParts) -> Result<String, AppError> {
+    let mut args = Vec::with_capacity(f.args.len());
+    for (name, ty) in &f.args {
+        let ty = server_type(ty)?;
+        args.push(match name.filter(|n| !n.is_empty()) {
+            Some(n) => format!("{} {ty}", (SPEC.quote_ident)(n)),
+            None => ty.to_string(),
+        });
+    }
+    let language = f.language.trim();
+    if language.is_empty()
+        || !language
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(AppError::InvalidInput(format!(
+            "unexpected language name {language}"
+        )));
+    }
+    let volatility = match f.volatility {
+        Volatility::Volatile => "VOLATILE",
+        Volatility::Stable => "STABLE",
+        Volatility::Immutable => "IMMUTABLE",
+    };
+    let tag = dollar_tag(f.body);
+    Ok(format!(
+        "CREATE OR REPLACE FUNCTION {}({})\n  RETURNS {}\n  {volatility}\nAS {tag}{}{tag} LANGUAGE {language};\n",
+        qualify_with(&SPEC, f.schema, f.name),
+        args.join(", "),
+        server_type(f.returns)?,
+        f.body,
+    ))
+}
+
+/// The first of `$$`, `$_$`, `$_1$`, … that, after `body`, is first found where the body ends.
+/// One pass collects the tags the body holds, so a hostile body costs linear time.
+fn dollar_tag(body: &str) -> String {
+    let fits = |tag: &str| format!("{body}{tag}").find(tag) == Some(body.len());
+    if fits("$$") {
+        return "$$".into();
+    }
+    // `$_<n>` closed by a `$` or by the body's end (the tag's own `$` then closes it);
+    // `$_$` and a trailing `$_` are n = 0. Leading zeros never match a tag.
+    let mut taken = std::collections::HashSet::new();
+    let mut from = 0;
+    while let Some(at) = body.get(from..).and_then(|rest| rest.find("$_")) {
+        let start = from + at + 2;
+        let rest = body.get(start..).unwrap_or("");
+        let digits =
+            &rest[..rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len()];
+        let closed = rest.len() == digits.len() || rest[digits.len()..].starts_with('$');
+        if closed && !digits.starts_with('0') {
+            taken.insert(if digits.is_empty() {
+                Some(0)
+            } else {
+                digits.parse::<usize>().ok()
+            });
+        }
+        from = start;
+    }
+    // The tags the body holds number at most its length, so this ends within that many steps;
+    // `fits` checks the pick once more.
+    let mut n = 0usize;
+    loop {
+        if !taken.contains(&Some(n)) {
+            let tag = if n == 0 {
+                "$_$".to_string()
+            } else {
+                format!("$_{n}$")
+            };
+            if fits(&tag) {
+                return tag;
+            }
+        }
+        n += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -482,6 +612,85 @@ mod tests {
             server_expr(ServerExpr::LocalTimestamp, ValueKind::Timestamp),
             None
         );
+    }
+
+    #[test]
+    fn shows_a_procedure_by_its_input_types() {
+        let sql = show_procedure(Some("etl \"x\""), "load", "integer, character varying").unwrap();
+        assert_eq!(
+            sql,
+            "SHOW PROCEDURE \"etl \"\"x\"\"\".\"load\"(integer, character varying)"
+        );
+        assert_eq!(classify_redshift(&sql), StatementClass::Read);
+        assert_eq!(
+            show_procedure(None, "p", "").unwrap(),
+            "SHOW PROCEDURE \"p\"()"
+        );
+        // Type text that could end the statement or start a string is refused.
+        for bad in [
+            "int); DROP TABLE t; --",
+            "int'",
+            "int\"",
+            "int -- x",
+            "int/*",
+        ] {
+            assert!(show_procedure(None, "p", bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn writes_a_udf_from_its_parts() {
+        let mut f = UdfParts {
+            schema: Some("public"),
+            name: "f_add",
+            args: vec![(None, "integer"), (None, "integer")],
+            returns: "integer",
+            volatility: Volatility::Immutable,
+            language: "sql",
+            body: "\n  SELECT $1 + $2\n",
+        };
+        assert_eq!(
+            function_ddl(&f).unwrap(),
+            "CREATE OR REPLACE FUNCTION \"public\".\"f_add\"(integer, integer)\n  RETURNS \
+             integer\n  IMMUTABLE\nAS $$\n  SELECT $1 + $2\n$$ LANGUAGE sql;\n"
+        );
+        // A Python body with `$$` in it, or ending in `$`, gets a tag it cannot end early.
+        f.args = vec![(Some("a"), "character varying"), (Some("B c"), "integer")];
+        f.language = "plpythonu";
+        f.volatility = Volatility::Stable;
+        for body in ["return a + '$$'", "return '$'", "return '$_$$'"] {
+            f.body = body;
+            let ddl = function_ddl(&f).unwrap();
+            assert!(
+                ddl.contains("(\"a\" character varying, \"B c\" integer)"),
+                "{ddl}"
+            );
+            let tag = dollar_tag(body);
+            let start = ddl.find("AS ").unwrap() + 3 + tag.len();
+            let end = start + ddl[start..].find(tag.as_str()).unwrap();
+            assert_eq!(&ddl[start..end], body);
+        }
+        for (body, tag) in [
+            ("$$ $_", "$_1$"),
+            ("$$ $_$ $_1$ $_01$ $_2", "$_3$"),
+            ("$$ $_$ $_1", "$_2$"),
+            ("$$ $_x$", "$_$"),
+        ] {
+            assert_eq!(dollar_tag(body), tag, "{body}");
+        }
+        // A server body that holds many tags costs linear time, not one search per tag.
+        let mut hostile = String::from("$$$_$");
+        for n in 1..200_000 {
+            hostile.push_str(&format!("$_{n}$"));
+        }
+        let started = std::time::Instant::now();
+        assert_eq!(dollar_tag(&hostile), "$_200000$");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        f.language = "plpythonu; DROP";
+        assert!(function_ddl(&f).is_err());
+        f.language = "sql";
+        f.returns = "int'";
+        assert!(function_ddl(&f).is_err());
     }
 
     /// Nothing the portable builders write for Redshift uses what Redshift lacks.

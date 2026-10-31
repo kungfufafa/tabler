@@ -5,26 +5,33 @@
 //! `reltuples` is NULL, so row counts come from `crdb_internal.table_row_statistics`;
 //! `pg_stat_activity` is empty and `pg_cancel_backend` missing, so sessions come from
 //! `crdb_internal.cluster_sessions` and kills are `CANCEL QUERIES` / `CANCEL SESSION` by session
-//! id; DDL is the server's own (`crdb_internal.create_statements`); EXPLAIN takes only its own
-//! options; and a transaction the server could not serialize (40001) runs again, as CockroachDB
-//! asks of its clients.
+//! id; DDL is the server's own (`crdb_internal.create_statements`), and so is a function's or
+//! procedure's (`pg_get_functiondef`, read without the `pg_aggregate` columns the PostgreSQL
+//! query casts to `regoper`, which CockroachDB lacks); EXPLAIN takes only its own options; and a
+//! transaction the server could not serialize (40001) runs again, as CockroachDB asks of its
+//! clients.
 //!
 //! DDL in a transaction is not atomic on CockroachDB (`autocommit_before_ddl`), so structure
 //! editing stays off; so do backups (pg_dump), users (no `aclexplode`), row edits without a key
-//! (no `ctid`), other client encodings than UTF-8 and the Create Database options (no
-//! collations or templates). The diagram's PostgreSQL query reads `relispartition`, which is
-//! NULL here, with `IS NOT TRUE`.
+//! (no `ctid`), other client encodings than UTF-8, the session details (`pg_stat_ssl` is empty)
+//! and the Create Database options (no collations or templates). The diagram's PostgreSQL query
+//! reads `relispartition`, which is NULL here, with `IS NOT TRUE`.
 
 use async_trait::async_trait;
 
-use super::catalog::{kill_outcome, optional};
+use tokio_postgres::error::SqlState;
+
+use super::catalog::{kill_outcome, optional, text_rows};
 use crate::drivers::postgres::flavor::{InitKind, InitStatement, PgFlavorHooks};
 use crate::drivers::postgres::introspect::{self, Traced, kind_of_relkind, schema_of};
 use crate::error::AppError;
+use crate::objects::routine_from_pg_row;
 use crate::sqlgen::dialect::spec::ExplainForm;
+use crate::sqlgen::objects::pg_routine_script;
 use crate::types::admin::{KillOutcome, KillScope, ProcessRow};
 use crate::types::caps::{Feature, SessionCaps};
 use crate::types::driver::{KindId, PgFlavor};
+use crate::types::objects::{RoutineRef, RoutineSummary};
 use crate::types::profile::ConnectionProfile;
 use crate::types::query::ExplainMode;
 use crate::types::schema::{
@@ -87,6 +94,28 @@ const CANCEL_QUERIES: &str = "CANCEL QUERIES IF EXISTS \
 
 const CREATE_STATEMENT: &str = "SELECT create_statement::text FROM crdb_internal.create_statements \
      WHERE database_name = current_database() AND schema_name = $1 AND descriptor_name = $2";
+
+/// A schema's functions and procedures (22.2 on; none before), as the PostgreSQL driver lists
+/// them (`objects::routine_from_pg_row`) but without `pg_depend`, which has no extension members
+/// here. `{kind}` is `prokind`, or `'f'` on a server whose `pg_proc` lacks it.
+fn routines_sql(kind: &str) -> String {
+    format!(
+        "SELECT p.proname::text, {kind}, pg_get_function_arguments(p.oid)::text, \
+                pg_get_function_identity_arguments(p.oid)::text, \
+                CASE WHEN {kind} <> 'p' THEN pg_get_function_result(p.oid)::text END, \
+                l.lanname::text, obj_description(p.oid, 'pg_proc')::text \
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+         LEFT JOIN pg_language l ON l.oid = p.prolang \
+         WHERE n.nspname = $1 ORDER BY p.proname, 4"
+    )
+}
+
+/// One routine's CREATE text: `pg_get_functiondef`, without the PostgreSQL driver's
+/// `pg_aggregate` columns (`::regoper` is not a CockroachDB type; it has no user aggregates).
+const ROUTINE_DEFINITION: &str = "SELECT pg_get_functiondef(p.oid)::text FROM pg_proc p \
+     JOIN pg_namespace n ON n.oid = p.pronamespace \
+     WHERE n.nspname = $1 AND p.proname = $2 \
+       AND pg_get_function_identity_arguments(p.oid)::text = $3";
 
 #[async_trait]
 impl PgFlavorHooks for Cockroach {
@@ -194,6 +223,22 @@ impl PgFlavorHooks for Cockroach {
         Some(table_ddl(c, table).await)
     }
 
+    async fn list_routines(
+        &self,
+        c: &Traced<'_>,
+        schema: &str,
+    ) -> Option<Result<Vec<RoutineSummary>, AppError>> {
+        Some(list_routines(c, schema).await)
+    }
+
+    async fn routine_definition(
+        &self,
+        c: &Traced<'_>,
+        routine: &RoutineRef,
+    ) -> Option<Result<String, AppError>> {
+        Some(routine_definition(c, routine).await)
+    }
+
     /// CockroachDB's EXPLAIN takes VERBOSE, TYPES, OPT, VEC, DISTSQL… but not COSTS or FORMAT.
     fn explain_form(&self, mode: ExplainMode) -> Option<ExplainForm> {
         Some(match mode {
@@ -211,6 +256,8 @@ impl PgFlavorHooks for Cockroach {
                 Feature::EditWithoutKey,
                 Feature::Encoding,
                 Feature::CreateDatabase,
+                // `pg_stat_ssl` is empty here: every session would read as unencrypted.
+                Feature::SessionDetails,
             ]);
     }
 
@@ -394,6 +441,43 @@ async fn table_ddl(c: &Traced<'_>, table: &TableRef) -> Result<String, AppError>
     })
 }
 
+async fn list_routines(c: &Traced<'_>, schema: &str) -> Result<Vec<RoutineSummary>, AppError> {
+    let rows = match c.query(&routines_sql("p.prokind::text"), &[&schema]).await {
+        Ok(rows) => rows,
+        Err(e) if e.code() == Some(&SqlState::UNDEFINED_COLUMN) => {
+            c.query(&routines_sql("'f'"), &[&schema]).await?
+        }
+        Err(e) => return Err(e.into()),
+    };
+    Ok(text_rows(&rows)?
+        .iter()
+        .filter_map(|r| routine_from_pg_row(schema, r))
+        .collect())
+}
+
+async fn routine_definition(c: &Traced<'_>, r: &RoutineRef) -> Result<String, AppError> {
+    // A ref without a schema is read as PostgreSQL's `objects::pg_find_routine` reads it.
+    let schema = r
+        .schema
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("public");
+    let row = c
+        .query_opt(
+            ROUTINE_DEFINITION,
+            &[&schema, &r.name, &r.identity_arguments],
+        )
+        .await?;
+    let definition = match row {
+        Some(row) => row.try_get::<_, Option<String>>(0)?,
+        None => None,
+    };
+    definition
+        .filter(|d| !d.trim().is_empty())
+        .map(|d| pg_routine_script(&d))
+        .ok_or_else(|| AppError::NotFound(format!("routine {}({})", r.name, r.identity_arguments)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::testkit::{self, COCKROACH as VERSION, CoreColumn};
@@ -403,6 +487,7 @@ mod tests {
     use crate::sqlgen::SqlDialect;
     use crate::types::driver::Flavor;
     use crate::types::driver::ReadOnlyMode;
+    use crate::types::objects::RoutineKind;
     use crate::types::schema::ValueKind;
 
     fn fake() -> FakePg {
@@ -465,7 +550,7 @@ mod tests {
         assert_eq!(caps.safety.read_only, ReadOnlyMode::Server);
         assert!(caps.has(Feature::KillProcess) && caps.has(Feature::ProcessList));
         assert!(caps.has(Feature::EditRows) && caps.has(Feature::TableDdl));
-        assert!(caps.has(Feature::Diagram));
+        assert!(caps.has(Feature::Diagram) && caps.has(Feature::Routines));
         for f in [
             Feature::StructureEdit,
             Feature::Backup,
@@ -474,6 +559,7 @@ mod tests {
             Feature::EditWithoutKey,
             Feature::Encoding,
             Feature::CreateDatabase,
+            Feature::SessionDetails,
         ] {
             assert!(!caps.has(f), "{f:?}");
         }
@@ -797,5 +883,123 @@ mod tests {
             .unwrap();
         assert!(ddl.starts_with("CREATE TABLE public.t") && ddl.ends_with(");"));
         assert_eq!(testkit::sent(&pg, "create_statements"), [CREATE_STATEMENT]);
+    }
+
+    fn routine_columns() -> Vec<Col> {
+        [
+            "proname",
+            "prokind",
+            "arguments",
+            "identity",
+            "result",
+            "lanname",
+            "comment",
+        ]
+        .into_iter()
+        .map(Col::text)
+        .collect()
+    }
+
+    /// Functions and procedures from `pg_proc` (with `prokind`, or without it on an older
+    /// server), and a definition from `pg_get_functiondef`, through the session's Routines.
+    #[tokio::test]
+    async fn functions_and_procedures() {
+        let rows = vec![
+            vec![
+                Cell::text("add_one"),
+                Cell::text("f"),
+                Cell::text("x INT8"),
+                Cell::text("x INT8"),
+                Cell::text("INT8"),
+                Cell::text("sql"),
+                Cell::Null,
+            ],
+            vec![
+                Cell::text("cleanup"),
+                Cell::text("p"),
+                Cell::text(""),
+                Cell::text(""),
+                Cell::Null,
+                Cell::text("plpgsql"),
+                Cell::text("nightly"),
+            ],
+        ];
+        let pg = fake()
+            .rows(
+                "pg_get_functiondef",
+                vec![Col::text("def")],
+                vec![vec![Cell::text(
+                    "CREATE FUNCTION public.add_one(x INT8)\n\tRETURNS INT8\n\tLANGUAGE SQL\n\tAS \
+                     $$\nSELECT x + 1;\n$$",
+                )]],
+            )
+            .rows("p.prokind::text", routine_columns(), rows.clone())
+            .start()
+            .await;
+        let session = testkit::session(&testkit::profile(pg.port())).await;
+        let sql: &dyn DbSession = &session;
+        let routines = crate::objects::list_routines(sql, "public").await.unwrap();
+        assert_eq!(routines.len(), 2);
+        assert_eq!(routines[0].kind, RoutineKind::Function);
+        assert_eq!(routines[0].return_type.as_deref(), Some("INT8"));
+        assert_eq!(routines[1].kind, RoutineKind::Procedure);
+        assert_eq!(routines[1].return_type, None);
+        assert_eq!(routines[1].comment.as_deref(), Some("nightly"));
+        // No extension members to leave out here, and no `pg_aggregate` read.
+        for q in testkit::sent(&pg, "FROM pg_proc") {
+            assert!(
+                !q.contains("pg_depend") && !q.contains("pg_aggregate"),
+                "{q}"
+            );
+        }
+        let routine = RoutineRef {
+            schema: Some("public".into()),
+            name: "add_one".into(),
+            kind: RoutineKind::Function,
+            identity_arguments: "x INT8".into(),
+        };
+        let ddl = crate::objects::routine_definition(sql, &routine)
+            .await
+            .unwrap();
+        assert!(ddl.starts_with("CREATE FUNCTION public.add_one") && ddl.ends_with("$$;\n"));
+        assert_eq!(
+            testkit::sent(&pg, "pg_get_functiondef"),
+            [ROUTINE_DEFINITION]
+        );
+        session.close().await;
+
+        // A server whose `pg_proc` has no `prokind` lists every routine as a function.
+        let pg = fake()
+            .error("p.prokind", "42703", "column \"prokind\" does not exist")
+            .rows(
+                "'f' <> 'p'",
+                routine_columns(),
+                rows.into_iter()
+                    .map(|mut r| {
+                        r[1] = Cell::text("f");
+                        r
+                    })
+                    .collect(),
+            )
+            .start()
+            .await;
+        let session = testkit::session(&testkit::profile(pg.port())).await;
+        let routines = crate::objects::list_routines(&session as &dyn DbSession, "public")
+            .await
+            .unwrap();
+        assert!(routines.iter().all(|r| r.kind == RoutineKind::Function));
+        assert_eq!(routines.len(), 2);
+        session.close().await;
+
+        // An overload the server does not have.
+        let pg = fake().start().await;
+        let (client, trace) = testkit::client(&pg).await;
+        let c = Traced::new(&client, &trace, 130_000);
+        let err = COCKROACH
+            .routine_definition(&c, &routine)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "{err}");
     }
 }

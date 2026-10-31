@@ -22,13 +22,16 @@ use tabler_lib::sqlgen::SqlDialect;
 use tabler_lib::sqlgen::dialect::redshift::SPEC;
 use tabler_lib::sqlgen::portable::mutate::build_change;
 use tabler_lib::sqlgen::sql::TableTarget;
+use tabler_lib::types::admin::UserRef;
 use tabler_lib::types::browse::RowKey;
 use tabler_lib::types::caps::Feature;
 use tabler_lib::types::driver::{Flavor, PgFlavor, ReadOnlyMode};
 use tabler_lib::types::mutate::StagedChange;
+use tabler_lib::types::objects::{RoutineKind, RoutineRef};
 use tabler_lib::types::profile::SslMode;
 use tabler_lib::types::schema::{TableKind, TableRef};
 use tabler_lib::types::value::Value;
+use tabler_lib::{admin, objects};
 
 /// A session on the server of `var` as a profile of `flavor`; None (skipped) while it is unset.
 async fn open(var: &str, flavor: PgFlavor) -> Option<Arc<dyn DbSession>> {
@@ -73,6 +76,34 @@ async fn run(session: &dyn DbSession, sql: &str) -> Vec<Vec<Value>> {
 
 fn scratch() -> TableRef {
     TableRef::new(Some("public"), &format!("tabler_it_{}", std::process::id()))
+}
+
+/// Creates the routine `create` (`{name}` in it is `name`, in `public`), finds it in the list of
+/// `public` and returns its definition; drops it again.
+async fn routine(session: &dyn DbSession, name: &str, create: &str) -> String {
+    run(session, &create.replace("{name}", name)).await;
+    let routines = objects::list_routines(session, "public").await.unwrap();
+    let found = routines
+        .iter()
+        .find(|r| r.name == name)
+        .unwrap_or_else(|| panic!("{name} not in {routines:?}"));
+    let reference = RoutineRef {
+        schema: found.schema.clone(),
+        name: found.name.clone(),
+        kind: found.kind,
+        identity_arguments: found.identity_arguments.clone(),
+    };
+    let ddl = objects::routine_definition(session, &reference).await;
+    let keyword = match found.kind {
+        RoutineKind::Procedure => "PROCEDURE",
+        _ => "FUNCTION",
+    };
+    run(
+        session,
+        &format!("DROP {keyword} public.{name}({})", found.identity_arguments),
+    )
+    .await;
+    ddl.unwrap_or_else(|e| panic!("{name}: {e}"))
 }
 
 fn int(v: &Value) -> i64 {
@@ -243,6 +274,16 @@ async fn cockroachdb_server() {
     assert_eq!(b.numeric_scale, Some(2), "{}", b.data_type);
     run(session.as_ref(), &format!("DROP TABLE {q}")).await;
 
+    // A SQL function: listed, and its definition is the server's.
+    let ddl = routine(
+        session.as_ref(),
+        &format!("tabler_it_fn_{}", std::process::id()),
+        "CREATE FUNCTION public.{name}(x INT8) RETURNS INT8 LANGUAGE SQL AS $$ SELECT x + 1 $$",
+    )
+    .await;
+    assert!(ddl.contains("SELECT x + 1"), "{ddl}");
+    assert!(!caps.has(Feature::SessionDetails) && caps.has(Feature::Routines));
+
     cancels_and_times_out(session.clone()).await;
     session.close().await;
 }
@@ -266,6 +307,27 @@ async fn greenplum_server() {
     .await;
     assert!(ddl.contains("DISTRIBUTED BY (id)"), "{ddl}");
     assert!(!session.capabilities().has(Feature::EditWithoutKey));
+
+    // Roles through the PostgreSQL driver's SQL: the connected user is listed and loads.
+    let me = run(session.as_ref(), "SELECT current_user::text").await;
+    let Value::Text(me) = &me[0][0] else {
+        panic!("{me:?}");
+    };
+    let users = admin::list_users(session.as_ref(), true).await.unwrap();
+    assert!(users.iter().any(|u| &u.name == me), "{users:?}");
+    let user = UserRef {
+        name: me.clone(),
+        host: None,
+    };
+    let detail = admin::load_user(session.as_ref(), &user).await.unwrap();
+    assert!(detail.state.attributes.is_some());
+    let ddl = routine(
+        session.as_ref(),
+        &format!("tabler_it_fn_{}", std::process::id()),
+        "CREATE FUNCTION public.{name}(x int) RETURNS int LANGUAGE sql AS $$ SELECT x + 1 $$",
+    )
+    .await;
+    assert!(ddl.contains("x + 1"), "{ddl}");
     cancels_and_times_out(session.clone()).await;
     session.close().await;
 }
@@ -334,5 +396,30 @@ async fn redshift_server() {
     .await;
     assert_eq!(name[0][0], Value::Text("uno".into()));
     run(session.as_ref(), &format!("DROP TABLE {q}")).await;
+
+    // A SQL UDF written again from pg_proc, and a stored procedure's SHOW PROCEDURE.
+    let ddl = routine(
+        session.as_ref(),
+        &format!("tabler_it_fn_{}", std::process::id()),
+        "CREATE FUNCTION public.{name}(int) RETURNS int IMMUTABLE AS $$ SELECT $1 + 1 $$ \
+         LANGUAGE sql",
+    )
+    .await;
+    assert!(
+        ddl.contains("RETURNS integer") && ddl.contains("SELECT $1 + 1"),
+        "{ddl}"
+    );
+    let ddl = routine(
+        session.as_ref(),
+        &format!("tabler_it_sp_{}", std::process::id()),
+        "CREATE PROCEDURE public.{name}(n int, INOUT s varchar(20)) AS $$ BEGIN s := s || n; \
+         END; $$ LANGUAGE plpgsql",
+    )
+    .await;
+    assert!(
+        ddl.contains("PROCEDURE") && ddl.contains("s := s || n"),
+        "{ddl}"
+    );
+    assert!(!caps.has(Feature::Users) && !caps.has(Feature::SessionDetails));
     session.close().await;
 }

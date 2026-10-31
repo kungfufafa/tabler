@@ -15,6 +15,10 @@
 //!   `pg_get_late_binding_view_cols()`. Keys come from `pg_get_constraintdef` (they are
 //!   informational: Redshift enforces none). There are no indexes, triggers or CHECK constraints.
 //! - DDL is the server's own `SHOW TABLE` / `SHOW VIEW` / `SHOW EXTERNAL TABLE`.
+//! - Functions and stored procedures come from `pg_proc_info` (`prokind`, argument modes). A
+//!   procedure's definition is `SHOW PROCEDURE` with the input types the server named; a SQL or
+//!   Python UDF's is written again from `prosrc` (`dialect::redshift::function_ddl`), since
+//!   Redshift keeps no CREATE text of it, and a Lambda or ML function's is not shown.
 //! - Sessions: `stv_sessions` and `stv_recents` on a provisioned cluster, `sys_session_history`
 //!   and `sys_query_history` on Serverless (which has no `stv_` views); kills by
 //!   `pg_cancel_backend` / `pg_terminate_backend`.
@@ -31,13 +35,18 @@ use crate::drivers::postgres::flavor::{InitKind, InitStatement, PgFlavorHooks};
 use crate::drivers::postgres::introspect::{Traced, typmod_info};
 use crate::error::AppError;
 use crate::sqlgen::admin::kill_sql;
-use crate::sqlgen::dialect::redshift::{SPEC, ShowDdl, show_ddl};
-use crate::sqlgen::{Dialect, SqlDialect};
+use crate::sqlgen::dialect::redshift::{
+    SPEC, ShowDdl, UdfParts, Volatility, function_ddl, show_ddl, show_procedure,
+};
+use crate::sqlgen::objects::pg_routine_script;
+use crate::sqlgen::split::leading_keywords;
+use crate::sqlgen::{Dialect, SqlDialect, sql};
 use crate::types::admin::{KillOutcome, KillScope, ProcessRow};
 use crate::types::browse::FilterOp;
 use crate::types::caps::{DataCaps, Feature, SessionCaps};
 use crate::types::driver::{KindId, PgFlavor, ReadOnlyMode};
 use crate::types::mutate::ServerExpr;
+use crate::types::objects::{RoutineKind, RoutineRef, RoutineSummary};
 use crate::types::profile::{ConnectionProfile, Driver};
 use crate::types::schema::{
     ColumnMeta, CompletionMetadata, DatabaseInfo, IndexMeta, SchemaInfo, TableKind, TableMeta,
@@ -148,6 +157,31 @@ const SERVERLESS_RUNNING: &str = "SELECT session_id, trim(query_text), \
      to_char(start_time, 'YYYY-MM-DD HH24:MI:SS'), (elapsed_time / 1000)::bigint \
      FROM sys_query_history WHERE trim(status) = 'running'";
 
+/// A schema's functions and stored procedures (`pg_proc_info` adds `prokind` and the argument
+/// modes to `pg_proc`). Columns: name, kind (`p` or `f`), input types, argument names, argument
+/// modes, result type, language, comment.
+const ROUTINES: &str = "SELECT p.proname, CASE p.prokind WHEN 'p' THEN 'p' ELSE 'f' END, \
+     oidvectortypes(p.proargtypes), array_to_string(p.proargnames, ','), \
+     array_to_string(p.proargmodes, ','), format_type(p.prorettype, NULL), l.lanname, \
+     obj_description(p.prooid, 'pg_proc') \
+     FROM pg_proc_info p JOIN pg_namespace n ON n.oid = p.pronamespace \
+     LEFT JOIN pg_language l ON l.oid = p.prolang \
+     WHERE n.nspname = $1 ORDER BY p.proname, 3";
+
+/// The overloads of one routine, as `ROUTINES` plus the volatility and the body.
+const ROUTINE: &str = "SELECT p.proname, CASE p.prokind WHEN 'p' THEN 'p' ELSE 'f' END, \
+     oidvectortypes(p.proargtypes), array_to_string(p.proargnames, ','), \
+     array_to_string(p.proargmodes, ','), format_type(p.prorettype, NULL), l.lanname, \
+     obj_description(p.prooid, 'pg_proc'), \
+     CASE p.provolatile WHEN 'i' THEN 'i' WHEN 's' THEN 's' ELSE 'v' END, p.prosrc \
+     FROM pg_proc_info p JOIN pg_namespace n ON n.oid = p.pronamespace \
+     LEFT JOIN pg_language l ON l.oid = p.prolang \
+     WHERE n.nspname = $1 AND p.proname = $2";
+
+/// The languages whose UDFs `function_ddl` writes again from `prosrc` (a Lambda or ML function
+/// keeps no body there).
+const UDF_LANGUAGES: &[&str] = &["sql", "plpythonu"];
+
 #[async_trait]
 impl PgFlavorHooks for Redshift {
     fn flavor(&self) -> Option<PgFlavor> {
@@ -165,17 +199,36 @@ impl PgFlavorHooks for Redshift {
             .unwrap_or("dev")
     }
 
+    /// On a read-only profile a startup command that writes is not sent: the server has no
+    /// read-only setting to refuse it (`ReadOnlyMode::ClassifierOnly`). The time zone is quoted
+    /// again for Redshift, which reads a backslash in a plain string as an escape, and no other
+    /// statement that a lexer reading splits in two is sent either.
     fn init_sql(
         &self,
-        _: &ConnectionProfile,
-        _: bool,
+        profile: &ConnectionProfile,
+        read_only: bool,
         base: Vec<InitStatement>,
     ) -> Vec<InitStatement> {
         base.into_iter()
             .filter(|s| !NOT_SETTINGS.contains(&s.kind))
-            .map(|s| match s.kind {
-                InitKind::FloatDigits => InitStatement::new(s.kind, EXTRA_FLOAT_DIGITS),
-                _ => s,
+            .filter_map(|s| match s.kind {
+                InitKind::FloatDigits => Some(InitStatement::new(s.kind, EXTRA_FLOAT_DIGITS)),
+                InitKind::TimeZone => time_zone(profile).map(|sql| InitStatement::new(s.kind, sql)),
+                _ => Some(s),
+            })
+            .filter(|s| {
+                let refused = read_only
+                    && match s.kind {
+                        InitKind::Startup => startup_writes(&s.sql),
+                        _ => !sql::is_single_statement(SqlDialect::Redshift, &s.sql),
+                    };
+                if refused {
+                    log::warn!(
+                        "a read-only Redshift profile's {:?} statement may write: not sent",
+                        s.kind
+                    );
+                }
+                !refused
             })
             .collect()
     }
@@ -262,14 +315,32 @@ impl PgFlavorHooks for Redshift {
         Some(table_ddl(c, table).await)
     }
 
+    async fn list_routines(
+        &self,
+        c: &Traced<'_>,
+        schema: &str,
+    ) -> Option<Result<Vec<RoutineSummary>, AppError>> {
+        Some(list_routines(c, schema).await)
+    }
+
+    async fn routine_definition(
+        &self,
+        c: &Traced<'_>,
+        routine: &RoutineRef,
+    ) -> Option<Result<String, AppError>> {
+        Some(routine_definition(c, routine).await)
+    }
+
     /// What the session is proven to do through Redshift SQL and this file: browse, filter, sort
     /// and count (estimates from `svv_table_info`), edit rows by primary key (the affected count
-    /// checked before commit), EXPLAIN plans, the server's DDL, view definitions, the session
-    /// list and its kills, other databases, and the time zone and startup commands of the init.
-    /// Not yet: RETURNING (Redshift has none), edits without a key, structure editing, export,
-    /// import, backups, users, routines, the diagram, cancelling on the server (CancelRequest is
-    /// unverified on a cluster), MCP (until the classifier's red-team review) and keep-alive
-    /// pings.
+    /// checked before commit), EXPLAIN plans, the server's DDL, view definitions, the functions
+    /// and procedures of a schema with their definitions (dropping one stays the core dialects':
+    /// the object operations refuse it here), the session list and its kills, other databases,
+    /// table exports, and the time zone and startup commands of the init.
+    /// Not yet: RETURNING (Redshift has none), edits without a key, structure editing, import,
+    /// backups, users (out of scope in v1), session details (`stl_connection_log` is for
+    /// superusers only), the diagram, cancelling on the server (CancelRequest is unverified on a
+    /// cluster), MCP (until the classifier's red-team review) and keep-alive pings.
     fn adjust_caps(&self, caps: &mut SessionCaps, _: i32) {
         let core = SessionCaps::core(Driver::Postgres, Dialect::Postgres, caps.flavor);
         caps.namespaces = core.namespaces;
@@ -303,6 +374,7 @@ impl PgFlavorHooks for Redshift {
             Feature::ExactCount,
             Feature::TableDdl,
             Feature::ViewDefinition,
+            Feature::Routines,
             Feature::SwitchDatabase,
             Feature::ProcessList,
             Feature::KillProcess,
@@ -318,6 +390,27 @@ impl PgFlavorHooks for Redshift {
     fn row_cap_savepoint(&self) -> bool {
         false
     }
+}
+
+/// The profile's time zone as Redshift reads it (`quote_exec` doubles backslashes too).
+fn time_zone(profile: &ConnectionProfile) -> Option<String> {
+    let tz = profile.options.timezone.as_deref()?.trim();
+    (!tz.is_empty()).then(|| format!("SET TIME ZONE {};", (SPEC.quote_literal)(tz)))
+}
+
+/// Whether a startup command writes, as Redshift SQL reads it (default-deny: a statement the
+/// classifier does not know writes). `SET` and `RESET` change the session's settings only
+/// (their values are constants, never a query), so they stay, but only where every lexer
+/// reading sees one statement: a backslash in a string or a nested comment can hide a second.
+fn startup_writes(text: &str) -> bool {
+    sql::split_statements(SqlDialect::Redshift, text)
+        .iter()
+        .filter(|st| {
+            let first = leading_keywords(&st.sql, 1);
+            !matches!(first.first().map(String::as_str), Some("SET" | "RESET"))
+                || !sql::is_single_statement(SqlDialect::Redshift, &st.sql)
+        })
+        .any(|st| sql::writes(SqlDialect::Redshift, &st.sql))
 }
 
 /// Text a CHAR column of a system view pads with spaces.
@@ -850,6 +943,187 @@ async fn table_ddl(c: &Traced<'_>, table: &TableRef) -> Result<String, AppError>
     Ok(lines.join("\n"))
 }
 
+/// A row of `ROUTINES` / `ROUTINE`.
+struct Routine {
+    name: String,
+    procedure: bool,
+    /// The input types as `oidvectortypes` spells them: what tells overloads apart.
+    identity: String,
+    /// The input arguments: mode (`INOUT` or none), name, type.
+    inputs: Vec<(Option<&'static str>, Option<String>, String)>,
+    returns: Option<String>,
+    language: Option<String>,
+    comment: Option<String>,
+}
+
+/// A comma list of `array_to_string`, empty for NULL.
+fn list_of(s: Option<String>) -> Vec<String> {
+    s.map(|s| s.split(',').map(|p| p.trim().to_string()).collect())
+        .unwrap_or_default()
+}
+
+fn routine_of(row: &tokio_postgres::Row) -> Result<Routine, AppError> {
+    let identity = row
+        .try_get::<_, Option<String>>(2)?
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let types: Vec<String> = identity
+        .split(',')
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let names = list_of(row.try_get(3)?);
+    let modes = list_of(row.try_get(4)?);
+    // Without modes every argument is an input and the names follow the input types; with
+    // them the names follow all arguments, OUT ones included, which `proargtypes` leaves out.
+    let input_names: Vec<Option<String>> = if modes.is_empty() {
+        (0..types.len()).map(|i| names.get(i).cloned()).collect()
+    } else {
+        modes
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| matches!(m.as_str(), "i" | "b"))
+            .map(|(i, _)| names.get(i).cloned())
+            .collect()
+    };
+    let input_modes: Vec<Option<&'static str>> = if modes.is_empty() {
+        vec![None; types.len()]
+    } else {
+        modes
+            .iter()
+            .filter(|m| matches!(m.as_str(), "i" | "b"))
+            .map(|m| (m == "b").then_some("INOUT"))
+            .collect()
+    };
+    let inputs = types
+        .into_iter()
+        .enumerate()
+        .map(|(i, ty)| {
+            (
+                input_modes.get(i).copied().flatten(),
+                input_names
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .filter(|n| !n.is_empty()),
+                ty,
+            )
+        })
+        .collect();
+    Ok(Routine {
+        name: row.try_get(0)?,
+        procedure: row.try_get::<_, Option<String>>(1)?.as_deref() == Some("p"),
+        identity,
+        inputs,
+        returns: row.try_get(5)?,
+        language: row.try_get(6)?,
+        comment: row.try_get(7)?,
+    })
+}
+
+impl Routine {
+    fn summary(self, schema: &str) -> RoutineSummary {
+        let arguments = self
+            .inputs
+            .iter()
+            .map(|(mode, name, ty)| {
+                [*mode, name.as_deref(), Some(ty.as_str())]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        RoutineSummary {
+            schema: Some(schema.to_string()),
+            name: self.name,
+            kind: if self.procedure {
+                RoutineKind::Procedure
+            } else {
+                RoutineKind::Function
+            },
+            arguments,
+            identity_arguments: self.identity,
+            return_type: if self.procedure { None } else { self.returns },
+            language: self.language,
+            comment: self.comment.filter(|c| !c.is_empty()),
+        }
+    }
+}
+
+async fn list_routines(c: &Traced<'_>, schema: &str) -> Result<Vec<RoutineSummary>, AppError> {
+    let mut out = Vec::new();
+    for row in c.query(ROUTINES, &[&schema]).await? {
+        out.push(routine_of(&row)?.summary(schema));
+    }
+    Ok(out)
+}
+
+/// A stored procedure's `SHOW PROCEDURE`; a SQL or Python UDF written again from `pg_proc`,
+/// which keeps no text of its CREATE statement.
+async fn routine_definition(c: &Traced<'_>, r: &RoutineRef) -> Result<String, AppError> {
+    // A ref without a schema is read as PostgreSQL's `objects::pg_find_routine` reads it.
+    let schema = r
+        .schema
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("public");
+    let wanted = r.identity_arguments.trim();
+    let mut found = None;
+    for row in c.query(ROUTINE, &[&schema, &r.name]).await? {
+        let routine = routine_of(&row)?;
+        if routine.identity == wanted {
+            found = Some((routine, row));
+            break;
+        }
+    }
+    let Some((routine, row)) = found else {
+        return Err(AppError::NotFound(format!("routine {}({wanted})", r.name)));
+    };
+    if routine.procedure {
+        // The procedure's types as the server spelt them, found above: the overload is its own.
+        let sql = show_procedure(Some(schema), &routine.name, &routine.identity)?;
+        let mut lines = Vec::new();
+        for row in c.query(&sql, &[]).await? {
+            if let Some(line) = row.try_get::<_, Option<String>>(0)? {
+                lines.push(line);
+            }
+        }
+        if lines.is_empty() {
+            return Err(AppError::NotFound(format!("procedure {}", routine.name)));
+        }
+        return Ok(pg_routine_script(&lines.join("\n")));
+    }
+    let language = routine.language.clone().unwrap_or_default();
+    if !UDF_LANGUAGES.contains(&language.as_str()) {
+        return Err(AppError::Unsupported(format!(
+            "the definition of a {language} function is not kept by Redshift"
+        )));
+    }
+    let volatility = match row.try_get::<_, Option<String>>(8)?.as_deref() {
+        Some("i") => Volatility::Immutable,
+        Some("s") => Volatility::Stable,
+        _ => Volatility::Volatile,
+    };
+    let body: Option<String> = row.try_get(9)?;
+    let returns = routine.returns.clone().unwrap_or_default();
+    function_ddl(&UdfParts {
+        schema: Some(schema),
+        name: &routine.name,
+        args: routine
+            .inputs
+            .iter()
+            .map(|(_, name, ty)| (name.as_deref(), ty.as_str()))
+            .collect(),
+        returns: &returns,
+        volatility,
+        language: &language,
+        body: body.as_deref().unwrap_or_default(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::testkit::{self, REDSHIFT as VERSION};
@@ -922,9 +1196,10 @@ mod tests {
         ]
         .map(|(kind, sql)| InitStatement::new(kind, sql))
         .to_vec();
-        let profile = testkit::profile(5439);
+        let mut profile = testkit::profile(5439);
+        profile.options.timezone = Some(" UTC ".into());
         let init: Vec<String> = REDSHIFT
-            .init_sql(&profile, true, base)
+            .init_sql(&profile, true, base.clone())
             .into_iter()
             .map(|s| s.sql)
             .collect();
@@ -937,6 +1212,22 @@ mod tests {
                 "SELECT set_config('query_group', 'etl', false);",
                 "SET search_path = app, public; SET IntervalStyle = 'iso_8601';",
             ]
+        );
+        // The time zone is quoted again: Redshift reads a backslash as an escape.
+        profile.options.timezone = Some("C:\\it's".into());
+        let tz: Vec<String> = REDSHIFT
+            .init_sql(&profile, false, base.clone())
+            .into_iter()
+            .filter(|s| s.kind == TimeZone)
+            .map(|s| s.sql)
+            .collect();
+        assert_eq!(tz, ["SET TIME ZONE 'C:\\\\it''s';"]);
+        profile.options.timezone = None;
+        assert!(
+            REDSHIFT
+                .init_sql(&profile, false, base)
+                .iter()
+                .all(|s| s.kind != TimeZone)
         );
     }
 
@@ -964,6 +1255,8 @@ mod tests {
             RUNNING,
             SERVERLESS_SESSIONS,
             SERVERLESS_RUNNING,
+            ROUTINES,
+            ROUTINE,
             &schemas,
         ] {
             for lacking in [
@@ -1103,6 +1396,7 @@ mod tests {
             Feature::KillProcess,
             Feature::Explain,
             Feature::ExportTables,
+            Feature::Routines,
         ] {
             assert!(caps.has(f), "{f:?}");
         }
@@ -1117,6 +1411,7 @@ mod tests {
             Feature::ExportSql,
             Feature::Mcp,
             Feature::Diagram,
+            Feature::SessionDetails,
         ] {
             assert!(!caps.has(f), "{f:?}");
         }
@@ -1945,5 +2240,366 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "salesid\n7\n");
         assert_eq!(pg.queries(), sent);
         session.close().await;
+    }
+
+    fn routine_columns(definition: bool) -> Vec<Col> {
+        let mut cols: Vec<Col> = [
+            "proname", "kind", "types", "names", "modes", "returns", "lanname", "comment",
+        ]
+        .into_iter()
+        .map(text_col)
+        .collect();
+        if definition {
+            cols.extend([text_col("volatile"), text_col("prosrc")]);
+        }
+        cols
+    }
+
+    fn opt(s: Option<&str>) -> Cell {
+        s.map_or(Cell::Null, Cell::text)
+    }
+
+    /// `pg_proc_info` rows: a procedure with INOUT and OUT arguments, a SQL UDF, a Python UDF
+    /// and a Lambda UDF.
+    fn routine_rows(definition: bool) -> Vec<Vec<Cell>> {
+        type Proc<'a> = (
+            &'a str,
+            &'a str,
+            &'a str,
+            Option<&'a str>,
+            Option<&'a str>,
+            &'a str,
+            &'a str,
+            Option<&'a str>,
+            &'a str,
+            &'a str,
+        );
+        let procs: [Proc; 4] = [
+            (
+                "load",
+                "p",
+                "integer, character varying",
+                Some("f1,f2,f3"),
+                Some("i,b,o"),
+                "void",
+                "plpgsql",
+                Some("Loads a day"),
+                "v",
+                "BEGIN NULL; END;",
+            ),
+            (
+                "f_add",
+                "f",
+                "integer, integer",
+                None,
+                None,
+                "integer",
+                "sql",
+                None,
+                "i",
+                " SELECT $1 + $2 ",
+            ),
+            (
+                "f_py",
+                "f",
+                "character varying",
+                Some("s"),
+                None,
+                "character varying",
+                "plpythonu",
+                None,
+                "s",
+                "return s + '$$'",
+            ),
+            (
+                "f_lambda",
+                "f",
+                "bigint",
+                None,
+                None,
+                "bigint",
+                "exfunc",
+                None,
+                "v",
+                "my-lambda",
+            ),
+        ];
+        procs
+            .into_iter()
+            .map(
+                |(name, kind, types, names, modes, returns, lang, comment, vol, src)| {
+                    let mut row = vec![
+                        Cell::text(name),
+                        Cell::text(kind),
+                        Cell::text(types),
+                        opt(names),
+                        opt(modes),
+                        Cell::text(returns),
+                        Cell::text(lang),
+                        opt(comment),
+                    ];
+                    if definition {
+                        row.extend([Cell::text(vol), Cell::text(src)]);
+                    }
+                    row
+                },
+            )
+            .collect()
+    }
+
+    /// Functions and procedures from `pg_proc_info`, procedures shown by `SHOW PROCEDURE` and
+    /// SQL and Python UDFs written again from `prosrc`, through the session's Routines.
+    #[tokio::test]
+    async fn functions_and_procedures() {
+        let pg = fake()
+            .rows("p.prosrc", routine_columns(true), routine_rows(true))
+            .rows(
+                "FROM pg_proc_info",
+                routine_columns(false),
+                routine_rows(false),
+            )
+            .rows(
+                "SHOW PROCEDURE",
+                vec![text_col("Stored Procedure Definition")],
+                vec![vec![Cell::text(
+                    "CREATE OR REPLACE PROCEDURE public.load(f1 integer, INOUT f2 character \
+                     varying, OUT f3 character varying)\nLANGUAGE plpgsql\nAS $$\nBEGIN NULL; \
+                     END;\n$$",
+                )]],
+            )
+            .start()
+            .await;
+        let session = testkit::session(&testkit::profile(pg.port())).await;
+        assert!(session.capabilities().has(Feature::Routines));
+        let sql: &dyn DbSession = &session;
+        let routines = crate::objects::list_routines(sql, "public").await.unwrap();
+        let summary: Vec<_> = routines
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.kind,
+                    r.arguments.as_str(),
+                    r.identity_arguments.as_str(),
+                    r.return_type.as_deref(),
+                    r.language.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (
+                    "load",
+                    RoutineKind::Procedure,
+                    "f1 integer, INOUT f2 character varying",
+                    "integer, character varying",
+                    None,
+                    Some("plpgsql"),
+                ),
+                (
+                    "f_add",
+                    RoutineKind::Function,
+                    "integer, integer",
+                    "integer, integer",
+                    Some("integer"),
+                    Some("sql"),
+                ),
+                (
+                    "f_py",
+                    RoutineKind::Function,
+                    "s character varying",
+                    "character varying",
+                    Some("character varying"),
+                    Some("plpythonu"),
+                ),
+                (
+                    "f_lambda",
+                    RoutineKind::Function,
+                    "bigint",
+                    "bigint",
+                    Some("bigint"),
+                    Some("exfunc"),
+                ),
+            ]
+        );
+        assert_eq!(routines[0].comment.as_deref(), Some("Loads a day"));
+        let reference = |name: &str, kind, args: &str| RoutineRef {
+            schema: Some("public".into()),
+            name: name.into(),
+            kind,
+            identity_arguments: args.into(),
+        };
+
+        let procedure = reference("load", RoutineKind::Procedure, "integer, character varying");
+        let ddl = crate::objects::routine_definition(sql, &procedure)
+            .await
+            .unwrap();
+        assert!(
+            ddl.starts_with("CREATE OR REPLACE PROCEDURE public.load(") && ddl.ends_with("$$;\n"),
+            "{ddl}"
+        );
+        assert_eq!(
+            testkit::sent(&pg, "SHOW PROCEDURE"),
+            ["SHOW PROCEDURE \"public\".\"load\"(integer, character varying)"]
+        );
+
+        let add = reference("f_add", RoutineKind::Function, "integer, integer");
+        assert_eq!(
+            crate::objects::routine_definition(sql, &add).await.unwrap(),
+            "CREATE OR REPLACE FUNCTION \"public\".\"f_add\"(integer, integer)\n  RETURNS \
+             integer\n  IMMUTABLE\nAS $$ SELECT $1 + $2 $$ LANGUAGE sql;\n"
+        );
+        let py = reference("f_py", RoutineKind::Function, "character varying");
+        assert_eq!(
+            crate::objects::routine_definition(sql, &py).await.unwrap(),
+            "CREATE OR REPLACE FUNCTION \"public\".\"f_py\"(\"s\" character varying)\n  RETURNS \
+             character varying\n  STABLE\nAS $_$return s + '$$'$_$ LANGUAGE plpythonu;\n"
+        );
+        let lambda = reference("f_lambda", RoutineKind::Function, "bigint");
+        let err = crate::objects::routine_definition(sql, &lambda)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Unsupported(_)), "{err}");
+        // An overload the server does not have, or argument text that would end the statement,
+        // finds nothing and sends no SHOW.
+        for args in ["text", "integer); DROP TABLE t; --"] {
+            let missing = reference("load", RoutineKind::Procedure, args);
+            let err = crate::objects::routine_definition(sql, &missing)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, AppError::NotFound(_)), "{err}");
+        }
+        assert_eq!(testkit::sent(&pg, "SHOW PROCEDURE").len(), 1);
+        // Dropping one is the core dialects' (DROP FUNCTION through the PostgreSQL generator).
+        let op = crate::types::objects::ObjectOp::DropRoutines {
+            routines: vec![add],
+            cascade: false,
+        };
+        assert!(crate::objects::plan_op(sql, &op).await.is_err());
+        assert!(testkit::sent(&pg, "DROP").is_empty());
+        session.close().await;
+    }
+
+    /// Read-only is Tabler's alone on Redshift: a startup command that writes is not sent, and
+    /// the editor's refusal (`commands::safety::run_writes`, which `run_sql` and the Metrics
+    /// Board ask) reads Redshift SQL. Grid edits, imports, DDL, object operations, users and
+    /// workspace commits refuse any read-only connection before they reach the session.
+    #[tokio::test]
+    async fn a_read_only_profile_sends_no_write() {
+        let startup = "SET search_path = app; INSERT INTO audit VALUES (1)";
+        for (read_only, sent) in [(true, false), (false, true)] {
+            let pg = fake()
+                .command("INSERT INTO audit", "INSERT 0 1")
+                .start()
+                .await;
+            let mut profile = testkit::profile(pg.port());
+            profile.options.read_only = read_only;
+            profile.options.startup_sql = Some(startup.into());
+            let session = testkit::session(&profile).await;
+            assert_eq!(
+                !testkit::sent(&pg, "INSERT INTO audit").is_empty(),
+                sent,
+                "{:?}",
+                pg.queries()
+            );
+            session.close().await;
+        }
+        let base = |sql: &str| vec![InitStatement::new(InitKind::Startup, sql)];
+        let profile = testkit::profile(5439);
+        for (sql, kept) in [
+            ("SET search_path = app, public; RESET query_group", true),
+            ("SELECT 1", true),
+            ("set datestyle to 'ISO'", true),
+            ("SET search_path = app; DELETE FROM t", false),
+            ("CALL purge()", false),
+            ("SELECT pg_terminate_backend(42)", false),
+            ("VACUUM", false),
+            ("ANALYZE t", false),
+            // One SET only where a backslash escapes or comments nest: another reading writes.
+            ("SET search_path = 'a\\'; DELETE FROM t; --'", false),
+            ("SET search_path TO E'\\'; DELETE FROM t; --'", false),
+            ("SET search_path = 'a', E'\\'; DELETE FROM t; --'", false),
+            ("SET a = 'x\\'; SET b = '; DELETE FROM t; --'", false),
+            (
+                "SET search_path = app /* /* */ ; DELETE FROM t; /* */",
+                false,
+            ),
+            (
+                "SET search_path = app /* x */; SET x = 1 /* /* */ ; INSERT INTO a VALUES (1); /* */",
+                false,
+            ),
+        ] {
+            assert_eq!(
+                REDSHIFT.init_sql(&profile, true, base(sql)).len(),
+                usize::from(kept),
+                "{sql}"
+            );
+            assert_eq!(REDSHIFT.init_sql(&profile, false, base(sql)).len(), 1);
+        }
+
+        // The time zone as PostgreSQL quotes it (quotes doubled, backslashes kept) would end
+        // its string early on Redshift: it is quoted again, and nothing split in two is sent.
+        let hostile = "UTC\\'; DELETE FROM t; --";
+        for read_only in [true, false] {
+            let pg = fake().start().await;
+            let mut profile = testkit::profile(pg.port());
+            profile.options.read_only = read_only;
+            profile.options.timezone = Some(hostile.into());
+            let init = REDSHIFT.init_sql(
+                &profile,
+                read_only,
+                crate::drivers::postgres::connect::session_init_statements(&profile.options),
+            );
+            let tz: Vec<&str> = init
+                .iter()
+                .filter(|s| s.kind == InitKind::TimeZone)
+                .map(|s| s.sql.as_str())
+                .collect();
+            assert_eq!(tz, ["SET TIME ZONE 'UTC\\\\''; DELETE FROM t; --';"]);
+            assert!(
+                init.iter()
+                    .all(|s| sql::is_single_statement(SqlDialect::Redshift, &s.sql)),
+                "{init:?}"
+            );
+            let session = testkit::session(&profile).await;
+            let sent = testkit::sent(&pg, "SET TIME ZONE");
+            assert!(!sent.is_empty(), "{:?}", pg.queries());
+            assert!(sent.iter().all(|q| q.as_str() == tz[0]), "{sent:?}");
+            // The DELETE goes out inside the time zone's string only.
+            assert_eq!(testkit::sent(&pg, "DELETE"), sent);
+            session.close().await;
+        }
+        // Anything else that a lexer reading splits in two stays out of a read-only session.
+        let split = vec![InitStatement::new(
+            InitKind::Setting,
+            "SELECT set_config('a', 'x\\', false); DELETE FROM t; --', false);",
+        )];
+        assert!(REDSHIFT.init_sql(&profile, true, split.clone()).is_empty());
+        assert_eq!(REDSHIFT.init_sql(&profile, false, split).len(), 1);
+
+        use crate::commands::safety::run_writes;
+        for sql in [
+            "UNLOAD ('SELECT * FROM t') TO 's3://b/p' IAM_ROLE 'arn:aws:iam::1:role/r'",
+            "COPY t FROM 's3://b/p' IAM_ROLE default",
+            "CALL etl.load(1)",
+            "SELECT * INTO #tmp FROM t",
+            "CREATE TEMP TABLE x AS SELECT 1",
+            "SELECT (42).pg_terminate_backend",
+            "SELECT 1; DELETE FROM t",
+            "SET query_group TO 'etl'",
+            "BEGIN; UPDATE t SET a = 1; COMMIT",
+        ] {
+            assert!(run_writes(sql, SqlDialect::Redshift, None, false), "{sql}");
+        }
+        for sql in [
+            "SELECT * FROM t",
+            "WITH a AS (SELECT 1) SELECT * FROM a",
+            "SHOW TABLE public.t",
+            "EXPLAIN SELECT * FROM t",
+            "SELECT 'DELETE FROM t'",
+        ] {
+            assert!(!run_writes(sql, SqlDialect::Redshift, None, false), "{sql}");
+        }
     }
 }
