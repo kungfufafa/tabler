@@ -12,7 +12,10 @@ use crate::drivers::{
     cancel_requested,
 };
 use crate::sqlgen::SqlDialect;
+use crate::sqlgen::dialect::testing::override_spec;
+use crate::sqlgen::portable::testing::TSQL_LIKE_TEST;
 use crate::types::browse::SortSpec;
+use crate::types::caps::SessionCaps;
 use crate::types::export::{
     CsvQuote, ExportLayout, ExportResultItem, ExportResultsRequest, ExportTablesRequest,
 };
@@ -38,6 +41,8 @@ struct FakeSession {
     drain_after_stop: Option<Duration>,
     /// Answer of the time zone query (`session_time_zone`); `None` = the fake cannot answer it.
     zone: Option<Vec<Value>>,
+    /// The caps it reports; `None` = the default of its driver and dialect.
+    caps: Option<SessionCaps>,
     seen: Mutex<Vec<(String, Vec<Value>)>>,
     cancels: AtomicUsize,
 }
@@ -56,6 +61,7 @@ impl FakeSession {
             block_until_cancel: false,
             drain_after_stop: None,
             zone: None,
+            caps: None,
             seen: Mutex::new(Vec::new()),
             cancels: AtomicUsize::new(0),
         }
@@ -88,6 +94,11 @@ impl DbSession for FakeSession {
     }
     fn dialect(&self) -> SqlDialect {
         self.dialect
+    }
+    fn capabilities(&self) -> SessionCaps {
+        self.caps
+            .clone()
+            .unwrap_or_else(|| SessionCaps::base(self.driver, self.dialect, None))
     }
     async fn server_info(&self) -> Result<ServerInfo, AppError> {
         Ok(ServerInfo::default())
@@ -384,8 +395,9 @@ async fn sql_export_writes_csv_and_reports_progress() {
     assert_eq!(files_in(dir.path()), ["out.csv"]);
 }
 
-/// Exports are written by the core generators: a session of an extension dialect, or of a driver
-/// beyond the core three, is refused before anything runs or is written.
+/// A session whose caps lack Export Tables (an extension dialect's minimal caps), or a driver
+/// beyond the core three on a core dialect that does not reuse its exports, is refused before
+/// anything runs or is written.
 #[tokio::test]
 async fn sessions_without_the_core_generators_export_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -408,7 +420,164 @@ async fn sessions_without_the_core_generators_export_nothing() {
         }
         assert!(fake.seen.lock().unwrap().is_empty());
     }
+    // Granting the feature does not open the core SQL to a driver that does not reuse it.
+    let libsql = FakeSession {
+        driver: Driver::Libsql,
+        dialect: SqlDialect::Sqlite,
+        caps: Some(
+            SessionCaps::base(Driver::Libsql, SqlDialect::Sqlite, None)
+                .with(&[Feature::ExportTables]),
+        ),
+        ..FakeSession::new(Dialect::Sqlite, vec![id_name_set(3)])
+    };
+    let req = request(table_source("t"), csv_format(), &dest, None);
+    let err = run_export(&libsql, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Unsupported(_)), "{err:?}");
+    assert!(libsql.seen.lock().unwrap().is_empty());
     assert!(files_in(dir.path()).is_empty());
+}
+
+/// A session of an extension dialect that grants Export Tables reads a table through its
+/// dialect's projections, under neutral aliases and without paging, and the export decodes the
+/// text cells by their columns' kinds as the grid does. A column the dialect reads cut, a SQL
+/// script and a query export (both core dialects only) are refused before anything runs; the
+/// rows a result holds export as they are.
+#[tokio::test]
+async fn an_extension_dialect_exports_through_its_projections() {
+    let _tsql = override_spec(SqlDialect::Tsql, &TSQL_LIKE_TEST);
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("events.json");
+    let mut meta = table_meta(
+        "dbo",
+        "events",
+        vec![
+            mcol("id", "bigint", ValueKind::BigInt, true),
+            mcol("payload", "nvarchar(max)", ValueKind::Json, false),
+            mcol("data", "varbinary(max)", ValueKind::Bytes, false),
+            mcol("note", "nvarchar(50)", ValueKind::Text, false),
+            mcol("shape", "geography", ValueKind::Geometry, false),
+        ],
+    );
+    let session = |sets: Vec<Set>, features: &[Feature]| FakeSession {
+        driver: Driver::Sqlserver,
+        dialect: SqlDialect::Tsql,
+        caps: Some(SessionCaps::base(Driver::Sqlserver, SqlDialect::Tsql, None).with(features)),
+        ..FakeSession::new(Dialect::Sqlite, sets)
+    };
+    let features = [Feature::ExportTables, Feature::ExportSql];
+    let select = |names: &[&str]| ExportSource::Table {
+        table: meta.table.clone(),
+        filter: None,
+        sort: vec![],
+        columns: Some(names.iter().map(|n| n.to_string()).collect()),
+        offset: None,
+    };
+
+    // The geography column is read as WKT, which drops its SRID: refused, nothing runs.
+    let fake = session(Vec::new(), &features);
+    let req = request(select(&["id", "shape"]), json_format(), &dest, None);
+    let err = run_export(&fake, &req, Some(&meta), |_| {}, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "unsupported: \"shape\" is shown shortened in Transact-SQL, so it cannot be exported"
+    );
+    // A SQL script needs a core dialect, whatever the caps say.
+    let req = request(select(&["id"]), insert_format("events", 10), &dest, None);
+    let err = run_export(&fake, &req, Some(&meta), |_| {}, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Unsupported(_)), "{err:?}");
+    // A query export runs the statement as written, past no classifier: core sessions only.
+    for sql in ["SELECT * INTO t2 FROM t", "CALL p()", "SELECT 1"] {
+        let req = request(sql_source(sql), json_format(), &dest, None);
+        let err = run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "unsupported: Transact-SQL: query exports run in PostgreSQL, MySQL and SQLite only; \
+             export the result or the table instead"
+        );
+    }
+    assert!(fake.seen.lock().unwrap().is_empty());
+    assert!(files_in(dir.path()).is_empty());
+    // Without Export Tables, the feature's own refusal.
+    let none = session(Vec::new(), &[]);
+    let req = request(sql_source("SELECT 1"), json_format(), &dest, None);
+    let err = run_export(&none, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap_err();
+    let expected = (&none as &dyn DbSession)
+        .require(Feature::ExportTables)
+        .unwrap_err();
+    assert_eq!(err.to_string(), expected.to_string());
+
+    // The rows a result holds export as they are: nothing runs.
+    let held = (
+        vec![rcol("id", ValueKind::BigInt, "bigint")],
+        vec![vec![Value::Int(1)]],
+    );
+    let fake = session(Vec::new(), &[Feature::ExportTables]);
+    let req = request(rows_source(held, None), json_format(), &dest, None);
+    let result = run_export(&fake, &req, None, |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(result.rows, 1);
+    assert!(fake.seen.lock().unwrap().is_empty());
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dest).unwrap()).unwrap();
+    assert_eq!(json, serde_json::json!([{"id": 1}]));
+
+    // The projected columns arrive as text; the bytes as they are.
+    let text = |s: &str| Value::Text(s.into());
+    let set: Set = (
+        vec![
+            rcol("_tabler_c0", ValueKind::Text, "nvarchar"),
+            rcol("_tabler_c1", ValueKind::Text, "nvarchar"),
+            rcol("data", ValueKind::Bytes, "varbinary"),
+            rcol("_tabler_c3", ValueKind::Text, "nvarchar"),
+        ],
+        vec![
+            vec![
+                text("1"),
+                text("{\"a\": [1, 2]}"),
+                Value::from_bytes(&[1, 2, 3]),
+                text("hi"),
+            ],
+            vec![
+                text("9007199254740993"),
+                Value::Null,
+                Value::Null,
+                text("7"),
+            ],
+        ],
+    );
+    meta.columns.retain(|c| c.name != "shape");
+    let fake = session(vec![set], &[Feature::ExportTables]);
+    let req = request(table_source("events"), json_format(), &dest, None);
+    let result = run_export(&fake, &req, Some(&meta), |_| {}, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(result.rows, 2);
+    assert_eq!(
+        fake.last_sql(),
+        "SELECT CONVERT(NVARCHAR(MAX), [id]) AS [_tabler_c0], CONVERT(NVARCHAR(MAX), [payload]) \
+         AS [_tabler_c1], [data], CONVERT(NVARCHAR(MAX), [note]) AS [_tabler_c3]\nFROM \
+         [dbo].[events] ORDER BY [id] ASC"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dest).unwrap()).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!([
+            {"id": 1, "payload": {"a": [1, 2]}, "data": "AQID", "note": "hi"},
+            {"id": "9007199254740993", "payload": null, "data": null, "note": "7"},
+        ])
+    );
 }
 
 #[tokio::test]

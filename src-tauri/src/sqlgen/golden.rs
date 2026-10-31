@@ -39,7 +39,7 @@ use crate::types::browse::{
 };
 use crate::types::mutate::{Clock, ServerExpr, StagedChange};
 use crate::types::query::ExplainMode;
-use crate::types::schema::{ColumnMeta, TableRef, ValueKind};
+use crate::types::schema::{ColumnMeta, TableKind, TableMeta, TableRef, ValueKind};
 use crate::types::value::Value;
 
 const DIALECTS: [Dialect; 3] = [Dialect::Postgres, Dialect::Mysql, Dialect::Sqlite];
@@ -1250,5 +1250,174 @@ fn redactions() {
         "unchanged in every dialect: {unchanged} of {}",
         corpus.len()
     ));
+    g.check();
+}
+
+/// A table of `columns()` for the export's SELECT (`export::table_query`).
+fn export_table(kind: TableKind, keyed: bool) -> TableMeta {
+    let mut columns = columns();
+    if !keyed {
+        for c in &mut columns {
+            c.is_pk = false;
+            c.pk_ordinal = None;
+        }
+    }
+    // An identity column written as `GENERATED ALWAYS`, and a generated one.
+    let mut serial = col("serial", "integer", ValueKind::Int);
+    serial.is_auto_increment = true;
+    serial.extra = Some("ALWAYS".into());
+    let mut total = col("total", "numeric", ValueKind::Decimal);
+    total.is_generated = true;
+    columns.push(serial);
+    columns.push(total);
+    TableMeta {
+        table: TableRef::new(Some("app"), "users"),
+        kind,
+        columns,
+        primary_key: if keyed { vec!["id".into()] } else { Vec::new() },
+        indexes: Vec::new(),
+        foreign_keys: Vec::new(),
+        triggers: Vec::new(),
+        comment: None,
+        row_estimate: None,
+        ddl: None,
+        checks: Vec::new(),
+        options: None,
+    }
+}
+
+#[test]
+fn exports() {
+    use crate::export::table_query;
+    let mut g = Golden::new(
+        "export",
+        "Table export SELECTs (export::table_query): columns as the export reads them, filter, \
+         sort, pages, large blobs and identity columns per dialect.",
+    );
+    let keyed = export_table(TableKind::Table, true);
+    let keyless = export_table(TableKind::Table, false);
+    let view = export_table(TableKind::View, false);
+    let subset = vec!["name".to_string(), "data".to_string(), "serial".to_string()];
+    let filter = nested_filter();
+    let sort = vec![SortSpec {
+        column: "age".into(),
+        dir: SortDir::Desc,
+        nulls: Some(NullsOrder::Last),
+    }];
+    let unknown = vec!["nope".to_string()];
+    let empty: Vec<String> = Vec::new();
+    /// One export: the table, its columns, filter, sort, `max_rows`, offset and generated
+    /// columns left out.
+    struct Case<'a> {
+        label: &'a str,
+        meta: &'a TableMeta,
+        selected: Option<&'a [String]>,
+        filter: Option<&'a FilterGroup>,
+        sort: &'a [SortSpec],
+        max_rows: Option<u64>,
+        offset: u64,
+        skip_generated: bool,
+    }
+    let all = |label, meta| Case {
+        label,
+        meta,
+        selected: None,
+        filter: None,
+        sort: &[],
+        max_rows: None,
+        offset: 0,
+        skip_generated: false,
+    };
+    let cases = [
+        all("every column", &keyed),
+        Case {
+            skip_generated: true,
+            ..all("every column but the generated ones", &keyed)
+        },
+        Case {
+            selected: Some(&subset),
+            ..all("a subset", &keyed)
+        },
+        Case {
+            filter: Some(&filter),
+            sort: &sort,
+            ..all("filter and sort", &keyed)
+        },
+        Case {
+            max_rows: Some(10),
+            ..all("first rows", &keyed)
+        },
+        Case {
+            sort: &sort,
+            max_rows: Some(10),
+            offset: 20,
+            ..all("a page, sorted", &keyed)
+        },
+        Case {
+            selected: Some(&subset),
+            offset: 20,
+            ..all("rows after an offset", &keyed)
+        },
+        Case {
+            max_rows: Some(10),
+            offset: 20,
+            ..all("a page of a table without a key", &keyless)
+        },
+        Case {
+            selected: Some(&subset),
+            sort: &sort,
+            max_rows: Some(5),
+            ..all("a sorted page of a table without a key", &keyless)
+        },
+        Case {
+            selected: Some(&subset),
+            max_rows: Some(10),
+            ..all("a page of a view", &view)
+        },
+        all("every row of a table without a key", &keyless),
+        Case {
+            selected: Some(&unknown),
+            ..all("an unknown column", &keyed)
+        },
+        Case {
+            selected: Some(&empty),
+            ..all("no column", &keyed)
+        },
+    ];
+    for d in DIALECTS {
+        g.section(name(d));
+        for c in &cases {
+            g.line(c.label);
+            let query = table_query(
+                d,
+                c.meta,
+                c.selected,
+                c.filter,
+                c.sort,
+                c.max_rows,
+                c.offset,
+                c.skip_generated,
+            );
+            match query {
+                Ok(query) => {
+                    g.result(
+                        "  ",
+                        d,
+                        Ok(BuiltSql {
+                            sql: query.sql,
+                            params: query.params,
+                        }),
+                    );
+                    if !query.blob_hex.is_empty() {
+                        g.line(format!("  blob hex of: {}", js(&query.blob_hex)));
+                    }
+                    if query.identity_always {
+                        g.line("  overriding system value");
+                    }
+                }
+                Err(e) => g.line(format!("  {}", fail(&e))),
+            }
+        }
+    }
     g.check();
 }

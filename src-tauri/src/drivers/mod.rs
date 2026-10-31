@@ -15,7 +15,7 @@ use crate::drivers::native::{CallKind, TableSource};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::dialect::spec::ExplainForm;
-use crate::sqlgen::dialect::{DialectRef, SqlDialect};
+use crate::sqlgen::dialect::{DialectRef, SqlDialect, ensure_built};
 use crate::sqlgen::split::leading_keywords;
 use crate::types::admin::{KillOutcome, KillScope, ProcessRow, UserDetail, UserRef, UserSummary};
 use crate::types::browse::{TraceCategory, TracedSql};
@@ -1149,6 +1149,21 @@ impl dyn DbSession + '_ {
         let driver = self.driver();
         core_dialect_for(driver, driver.descriptor().core_reuse, self.dialect(), f)
     }
+
+    /// The dialect of the session for feature `f` of shared code that builds its SQL through the
+    /// `sqlgen::sql` facade only (the table export): a core dialect as `core_dialect` gives it, or
+    /// an extension dialect this build has. Refused unless the session's caps grant `f`.
+    pub fn facade_dialect(&self, f: Feature) -> Result<SqlDialect, AppError> {
+        let dialect = self.dialect();
+        match dialect.resolve() {
+            DialectRef::Core(_) => self.core_dialect(f).map(SqlDialect::from),
+            DialectRef::Ext(spec) => {
+                self.require(f)?;
+                ensure_built(spec)?;
+                Ok(dialect)
+            }
+        }
+    }
 }
 
 /// `core_dialect` with the driver's `core_reuse` list given.
@@ -1867,6 +1882,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The facade's dialect: a core one as `core_dialect` decides, an extension one when the caps
+    /// grant the feature and the build has its spec.
+    #[test]
+    fn facade_dialect_takes_extension_dialects_through_their_caps() {
+        use crate::sqlgen::dialect::is_unavailable;
+        use crate::sqlgen::dialect::testing::override_spec;
+        use crate::sqlgen::portable::testing::ANSI_TEST;
+        use crate::testkit::FakeSession;
+        let session = |driver, dialect, features: &[Feature]| {
+            FakeSession::new(SessionCaps::base(driver, dialect, None).with(features))
+        };
+        let f = Feature::ExportTables;
+        let pg = session(Driver::Postgres, SqlDialect::Postgres, &[]);
+        let pg: &dyn DbSession = &pg;
+        assert_eq!(pg.facade_dialect(f).unwrap(), SqlDialect::Postgres);
+        // A driver beyond the core three on a core dialect: only what its descriptor reuses.
+        let libsql = session(Driver::Libsql, SqlDialect::Sqlite, &[f]);
+        let libsql: &dyn DbSession = &libsql;
+        assert!(matches!(
+            libsql.facade_dialect(f),
+            Err(AppError::Unsupported(_))
+        ));
+        // Without the feature, refused before anything else.
+        let none = session(Driver::Postgres, SqlDialect::Redshift, &[]);
+        let none: &dyn DbSession = &none;
+        assert_eq!(
+            none.facade_dialect(f).unwrap_err().to_string(),
+            none.require(f).unwrap_err().to_string()
+        );
+        // With it, the dialect, when this build has it.
+        let redshift = session(Driver::Postgres, SqlDialect::Redshift, &[f]);
+        let redshift: &dyn DbSession = &redshift;
+        match SqlDialect::Redshift.resolve() {
+            DialectRef::Ext(spec) if is_unavailable(spec) => {
+                let err = redshift.facade_dialect(f).unwrap_err().to_string();
+                assert!(err.contains("not built"), "{err}");
+            }
+            _ => assert_eq!(redshift.facade_dialect(f).unwrap(), SqlDialect::Redshift),
+        }
+        let _built = override_spec(SqlDialect::Redshift, &ANSI_TEST);
+        assert_eq!(redshift.facade_dialect(f).unwrap(), SqlDialect::Redshift);
     }
 
     #[test]

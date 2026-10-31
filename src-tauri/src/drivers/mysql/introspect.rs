@@ -596,6 +596,7 @@ pub fn table_options(
         collation,
         auto_increment,
         row_format,
+        ..TableOptions::default()
     }
 }
 

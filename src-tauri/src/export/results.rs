@@ -32,7 +32,7 @@ use super::writer::{FormatSpec, HtmlWriter, RowWriter, SqlScript, UNTITLED_TABLE
 use super::xlsx::XlsxWriter;
 use super::{
     FileOut, Plan, blocking, check_rows, export_dialect, file_out, mysql_long_lat, replaced_count,
-    session_time_zone, stream_plan, sync_file,
+    script_dialect, session_time_zone, stream_plan, sync_file,
 };
 
 /// File name stem of a file per result when the request names none.
@@ -199,15 +199,16 @@ pub async fn run_export_results(
         match &req.format {
             ExportFormat::SqlInsert { .. } => {
                 let script = script.unwrap_or_default();
-                let long_lat = mysql_long_lat(session, dialect).await;
-                let zone = session_time_zone(session, dialect).await;
+                let core = script_dialect(dialect)?;
+                let long_lat = mysql_long_lat(session, core).await;
+                let zone = session_time_zone(session, core).await;
                 let mut out = Encoded::new(
                     Compressed::new(out, script.gzip),
                     text_encoding,
                     replaced.clone(),
                 );
                 // Rows only: the session time zone around them.
-                let layout = script_layout(dialect, &[], script, false, zone.as_deref());
+                let layout = script_layout(core, &[], script, false, zone.as_deref());
                 out.write_all(layout.opening.as_bytes())?;
                 for &i in &output.results {
                     if cancel.is_cancelled() {

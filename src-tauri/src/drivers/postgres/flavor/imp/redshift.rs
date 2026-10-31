@@ -9,11 +9,11 @@
 //!   enforced by Tabler's classifier only (`ReadOnlyMode::ClassifierOnly`).
 //! - Tables: `pg_class` plus `svv_table_info` (row counts, sizes in 1 MB blocks), the
 //!   materialized views of `svv_mv_info` and the Spectrum tables of `svv_external_tables`.
-//!   Columns carry DISTKEY, SORTKEY and ENCODE in `extra`, and the table's DISTSTYLE is its
-//!   `TableOptions.row_format`. A late-binding view (`WITH NO SCHEMA BINDING`) has no columns in
-//!   `pg_attribute`: they come from `pg_get_late_binding_view_cols()`. Keys come from
-//!   `pg_get_constraintdef` (they are informational: Redshift enforces none). There are no
-//!   indexes, triggers or CHECK constraints.
+//!   Columns carry DISTKEY, SORTKEY and ENCODE in `extra`, and the table's DISTSTYLE and sort
+//!   key are its `TableOptions.distribution` and `sort_key`. A late-binding view (`WITH NO
+//!   SCHEMA BINDING`) has no columns in `pg_attribute`: they come from
+//!   `pg_get_late_binding_view_cols()`. Keys come from `pg_get_constraintdef` (they are
+//!   informational: Redshift enforces none). There are no indexes, triggers or CHECK constraints.
 //! - DDL is the server's own `SHOW TABLE` / `SHOW VIEW` / `SHOW EXTERNAL TABLE`.
 //! - Sessions: `stv_sessions` and `stv_recents` on a provisioned cluster, `sys_session_history`
 //!   and `sys_query_history` on Serverless (which has no `stv_` views); kills by
@@ -308,6 +308,9 @@ impl PgFlavorHooks for Redshift {
             Feature::KillProcess,
             Feature::Timezone,
             Feature::StartupCommands,
+            // Read through Redshift SQL's projections (`sql::export_select`); SQL scripts are
+            // written in the core dialects only.
+            Feature::ExportTables,
         ]);
     }
 
@@ -457,6 +460,20 @@ fn diststyle(code: Option<i32>) -> Option<&'static str> {
     })
 }
 
+/// The table's sort key from its columns' places in it (`attsortkeyord`): `SORTKEY (a, b)`, or
+/// `INTERLEAVED SORTKEY (a, b)` when the places are negative. The names are the catalog's, for
+/// display.
+fn sort_key(mut places: Vec<(i32, String)>) -> Option<String> {
+    if places.is_empty() {
+        return None;
+    }
+    let interleaved = places.iter().any(|(n, _)| *n < 0);
+    places.sort_by_key(|(n, _)| n.unsigned_abs());
+    let names: Vec<String> = places.into_iter().map(|(_, name)| name).collect();
+    let kind = if interleaved { "INTERLEAVED " } else { "" };
+    Some(format!("{kind}SORTKEY ({})", names.join(", ")))
+}
+
 /// DISTKEY, SORTKEY n (INTERLEAVED for a negative order) and ENCODE of a column.
 fn column_extra(distkey: bool, sortkey: i32, encoding: Option<&str>) -> Option<String> {
     let mut parts = Vec::new();
@@ -524,6 +541,7 @@ async fn table_meta(c: &Traced<'_>, table: &TableRef) -> Result<TableMeta, AppEr
     let reldiststyle: Option<i32> = rel.try_get(2)?;
 
     let mut columns = Vec::new();
+    let mut sort_places = Vec::new();
     for row in c.query(COLUMNS, params).await? {
         let attnum: i32 = row.try_get(0)?;
         let typname: String = row.try_get(3)?;
@@ -545,9 +563,13 @@ async fn table_meta(c: &Traced<'_>, table: &TableRef) -> Result<TableMeta, AppEr
             .is_some_and(|d| d.contains("\"identity\"("));
         (col.char_max_len, col.numeric_precision, col.numeric_scale) =
             typmod_info(&typname, typmod);
+        let sort_place = row.try_get::<_, Option<i32>>(9)?.unwrap_or(0);
+        if sort_place != 0 {
+            sort_places.push((sort_place, col.name.clone()));
+        }
         col.extra = column_extra(
             row.try_get::<_, Option<bool>>(8)?.unwrap_or(false),
-            row.try_get::<_, Option<i32>>(9)?.unwrap_or(0),
+            sort_place,
             encoding.as_deref(),
         );
         columns.push(col);
@@ -639,10 +661,16 @@ async fn table_meta(c: &Traced<'_>, table: &TableRef) -> Result<TableMeta, AppEr
         row_estimate,
         ddl: None,
         checks: Vec::new(),
-        options: distribution.map(|d| TableOptions {
-            row_format: Some(d),
-            ..TableOptions::default()
-        }),
+        options: table_options(distribution, sort_key(sort_places)),
+    })
+}
+
+/// The distribution and sort key, as the Structure tab shows them.
+fn table_options(distribution: Option<String>, sort_key: Option<String>) -> Option<TableOptions> {
+    (distribution.is_some() || sort_key.is_some()).then(|| TableOptions {
+        distribution,
+        sort_key,
+        ..TableOptions::default()
     })
 }
 
@@ -990,6 +1018,18 @@ mod tests {
         assert_eq!(column_extra(false, 0, None), None);
         assert_eq!(diststyle(Some(1)), Some("DISTSTYLE KEY"));
         assert_eq!(diststyle(Some(99)), None);
+        // The sort key in its own order, whatever the columns' order.
+        let places = |p: &[(i32, &str)]| p.iter().map(|(n, c)| (*n, c.to_string())).collect();
+        assert_eq!(
+            sort_key(places(&[(2, "id"), (1, "sold at")])).as_deref(),
+            Some("SORTKEY (sold at, id)")
+        );
+        assert_eq!(
+            sort_key(places(&[(-1, "a"), (-2, "b")])).as_deref(),
+            Some("INTERLEAVED SORTKEY (a, b)")
+        );
+        assert_eq!(sort_key(Vec::new()), None);
+        assert_eq!(table_options(None, None), None);
     }
 
     #[test]
@@ -1062,6 +1102,7 @@ mod tests {
             Feature::ProcessList,
             Feature::KillProcess,
             Feature::Explain,
+            Feature::ExportTables,
         ] {
             assert!(caps.has(f), "{f:?}");
         }
@@ -1073,7 +1114,7 @@ mod tests {
             Feature::CancelOnServer,
             Feature::Users,
             Feature::Backup,
-            Feature::ExportTables,
+            Feature::ExportSql,
             Feature::Mcp,
             Feature::Diagram,
         ] {
@@ -1261,10 +1302,13 @@ mod tests {
             TableRef::new(Some("public"), "event")
         );
         assert_eq!(meta.row_estimate, Some(172_456));
+        let options = meta.options.unwrap();
         assert_eq!(
-            meta.options.unwrap().row_format.as_deref(),
+            options.distribution.as_deref(),
             Some("DISTSTYLE KEY(salesid)")
         );
+        assert_eq!(options.sort_key.as_deref(), Some("SORTKEY (salesid)"));
+        assert_eq!(options.row_format, None);
         // The SUPER and GEOMETRY columns are read shortened, so they are not editable.
         assert!(crate::sqlgen::portable::select::is_lossy(
             &SPEC,
@@ -1678,6 +1722,228 @@ mod tests {
             .await;
         assert!(refused.is_err());
         assert_eq!(testkit::sent(&pg, "ROLLBACK").len(), 1);
+        session.close().await;
+    }
+
+    /// A table export reads through Redshift SQL's projections, never PostgreSQL's `::text`
+    /// (VARCHAR(256) there, which the fake Redshift refuses), and writes the values decoded. A
+    /// SUPER column, read shortened, and a SQL script are refused before anything is sent.
+    #[tokio::test]
+    async fn a_table_exports_through_redshift_sql() {
+        use crate::export::run_export;
+        use crate::types::export::{
+            CsvQuote, ExportFormat, ExportRequest, ExportResult, ExportSource,
+        };
+        use tokio_util::sync::CancellationToken;
+
+        async fn export(
+            session: &dyn DbSession,
+            meta: &TableMeta,
+            req: ExportRequest,
+        ) -> Result<ExportResult, AppError> {
+            run_export(session, &req, Some(meta), |_| {}, CancellationToken::new()).await
+        }
+
+        let pg = fake()
+            .error("::text", "42601", "::text is VARCHAR(256) on Redshift")
+            .rows(
+                "FROM \"public\".\"sales\"",
+                vec![
+                    Col::int4("salesid"),
+                    text_col("note"),
+                    text_col("_tabler_c2"),
+                    text_col("_tabler_c3"),
+                ],
+                vec![
+                    vec![
+                        Cell::Int(7),
+                        Cell::text("x, y"),
+                        Cell::text("9.99"),
+                        Cell::text("2024-01-02 03:04:05"),
+                    ],
+                    vec![Cell::Int(8), Cell::Null, Cell::Null, Cell::Null],
+                ],
+            )
+            .start()
+            .await;
+        let session = testkit::session(&testkit::profile(pg.port())).await;
+        let caps = session.capabilities();
+        assert!(caps.has(Feature::ExportTables) && !caps.has(Feature::ExportSql));
+
+        let mut id = blank_column("salesid".into(), 1, "integer".into(), ValueKind::Int);
+        id.is_pk = true;
+        id.pk_ordinal = Some(1);
+        let column =
+            |n: u32, name: &str, ty: &str, kind| blank_column(name.into(), n, ty.into(), kind);
+        let meta = TableMeta {
+            table: TableRef::new(Some("public"), "sales"),
+            kind: TableKind::Table,
+            columns: vec![
+                id,
+                column(2, "note", "character varying(256)", ValueKind::Text),
+                column(3, "price", "numeric(8,2)", ValueKind::Decimal),
+                column(
+                    4,
+                    "sold",
+                    "timestamp without time zone",
+                    ValueKind::Timestamp,
+                ),
+                column(5, "doc", "super", ValueKind::Json),
+            ],
+            primary_key: vec!["salesid".into()],
+            indexes: Vec::new(),
+            foreign_keys: Vec::new(),
+            triggers: Vec::new(),
+            comment: None,
+            row_estimate: None,
+            ddl: None,
+            checks: Vec::new(),
+            options: None,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("sales.csv");
+        let csv = ExportFormat::Csv {
+            delimiter: ",".into(),
+            header: true,
+            quote: CsvQuote::IfNeeded,
+            null_as: String::new(),
+            line_break: "\n".into(),
+            decimal: ".".into(),
+            line_break_to_space: false,
+        };
+        let script = ExportFormat::SqlInsert {
+            table_name: String::new(),
+            batch_size: 100,
+            drop_table: false,
+            structure: false,
+            content: true,
+            gzip: false,
+        };
+        let request = |columns: &[&str], format: &ExportFormat| ExportRequest {
+            export_id: "sales".into(),
+            source: ExportSource::Table {
+                table: meta.table.clone(),
+                filter: None,
+                sort: Vec::new(),
+                columns: Some(columns.iter().map(|c| c.to_string()).collect()),
+                offset: None,
+            },
+            format: format.clone(),
+            path: dest.to_string_lossy().into_owned(),
+            max_rows: None,
+            encoding: Default::default(),
+        };
+
+        let sent_before = pg.queries().len();
+        let err = export(&session, &meta, request(&["salesid", "doc"], &csv))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("\"doc\" is shown shortened in Redshift SQL, so it cannot be exported"),
+            "{err}"
+        );
+        let err = export(&session, &meta, request(&["salesid"], &script))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Unsupported(_)), "{err:?}");
+        assert_eq!(pg.queries().len(), sent_before);
+        assert!(!dest.exists());
+
+        let columns = ["salesid", "note", "price", "sold"];
+        let result = export(&session, &meta, request(&columns, &csv))
+            .await
+            .unwrap();
+        assert_eq!(result.rows, 2);
+        let select = testkit::sent(&pg, "FROM \"public\".\"sales\"");
+        assert!(!select.is_empty());
+        for sql in select {
+            assert_eq!(
+                sql,
+                "SELECT \"salesid\", \"note\", \"price\"::varchar(65535) AS \"_tabler_c2\", \
+                 \"sold\"::varchar(65535) AS \"_tabler_c3\"\nFROM \"public\".\"sales\" ORDER BY \
+                 \"salesid\" ASC"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            "salesid,note,price,sold\n7,\"x, y\",9.99,2024-01-02 03:04:05\n8,,,\n"
+        );
+        session.close().await;
+    }
+
+    /// A query export runs the user's statement as written, and on a read-only Redshift session
+    /// only the classifier stands before a write (the server takes no read-only setting): it is
+    /// refused before anything is sent, `SELECT … INTO` and `CALL` alike. The rows a result
+    /// holds still export, with nothing sent.
+    #[tokio::test]
+    async fn a_query_export_is_refused_on_redshift() {
+        use crate::export::run_export;
+        use crate::types::export::{CsvQuote, ExportFormat, ExportRequest, ExportSource};
+        use crate::types::query::ResultColumn;
+        use tokio_util::sync::CancellationToken;
+
+        let pg = fake().start().await;
+        let mut profile = testkit::profile(pg.port());
+        profile.options.read_only = true;
+        profile.options.pg_flavor = Some(PgFlavor::Redshift);
+        let session = testkit::session(&profile).await;
+        let caps = session.capabilities();
+        assert!(caps.has(Feature::ExportTables));
+        assert_eq!(caps.safety.read_only, ReadOnlyMode::ClassifierOnly);
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out.csv");
+        let request = |source| ExportRequest {
+            export_id: "query".into(),
+            source,
+            format: ExportFormat::Csv {
+                delimiter: ",".into(),
+                header: true,
+                quote: CsvQuote::IfNeeded,
+                null_as: String::new(),
+                line_break: "\n".into(),
+                decimal: ".".into(),
+                line_break_to_space: false,
+            },
+            path: dest.to_string_lossy().into_owned(),
+            max_rows: None,
+            encoding: Default::default(),
+        };
+        let sent = pg.queries();
+        for sql in ["SELECT * INTO t2 FROM t", "CALL p()", "SELECT 1"] {
+            let req = request(ExportSource::Sql { sql: sql.into() });
+            let err = run_export(&session, &req, None, |_| {}, CancellationToken::new())
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("Redshift SQL: query exports run in PostgreSQL, MySQL and SQLite"),
+                "{err}"
+            );
+        }
+        assert_eq!(pg.queries(), sent);
+        assert!(!dest.exists());
+
+        let column = ResultColumn {
+            name: "salesid".into(),
+            data_type: "int4".into(),
+            kind: ValueKind::Int,
+            nullable: None,
+            table: None,
+            origin: None,
+        };
+        let req = request(ExportSource::Rows {
+            columns: vec![column],
+            rows: vec![vec![Value::Int(7)]],
+            table: None,
+        });
+        let result = run_export(&session, &req, None, |_| {}, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.rows, 1);
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "salesid\n7\n");
+        assert_eq!(pg.queries(), sent);
         session.close().await;
     }
 }

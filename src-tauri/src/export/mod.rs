@@ -8,15 +8,19 @@
 //! and removed on error or cancellation. Progress is reported at most every
 //! `PROGRESS_INTERVAL` or `PROGRESS_ROWS` rows, whichever comes first.
 //!
-//! PostgreSQL table exports select every column as text (as browsing does) and decode it here
-//! by the column's kind (arrays by their element type), so `bytea` arrives in full. MySQL and
-//! SQLite drivers cap binary cells at `BYTES_PREVIEW_CAP`; table exports therefore also select
-//! the hex text of larger blobs and restore them (on SQLite for every column, since any column
-//! can hold a blob). A query export cannot do that: a capped binary cell fails the export
-//! instead of silently writing a truncated value.
+//! A table export's SELECT is the session dialect's (`sql::export_select`). PostgreSQL table
+//! exports select every column as text (as browsing does) and decode it here by the column's kind
+//! (arrays by their element type), so `bytea` arrives in full. MySQL and SQLite drivers cap
+//! binary cells at `BYTES_PREVIEW_CAP`; table exports therefore also select the hex text of
+//! larger blobs and restore them (on SQLite for every column, since any column can hold a blob).
+//! A query export cannot do that: a capped binary cell fails the export instead of silently
+//! writing a truncated value. An extension dialect reads the columns it projects as text, decoded
+//! here as the grid decodes them, and refuses one it would read cut. SQL scripts (`INSERT`
+//! exports) are written in the core dialects only.
 //!
 //! A query export only runs statements that return rows (`sql_query`): the worker connection
-//! it borrows goes back to the pool, so `BEGIN`, `SET`, `LOCK`… must never run there.
+//! it borrows goes back to the pool, so `BEGIN`, `SET`, `LOCK`… must never run there. It runs
+//! on a core session only (`require_query_export`), whose server enforces a read-only connection.
 //!
 //! A rows export (`ExportSource::Rows`: a result the SQL editor shows) runs nothing at all: the
 //! renderer's rows go through the same sink, in chunks, so progress, `max_rows`, cancellation
@@ -48,10 +52,11 @@ use crate::drivers::postgres::decode::{
 };
 use crate::drivers::{CancelSlot, DbSession, RowSink, contains_word, request_cancel};
 use crate::error::AppError;
-use crate::sqlgen::Dialect;
-use crate::sqlgen::select::{SelectSpec, build_select};
-use crate::sqlgen::split::{is_meta_command, leading_keywords, split_statements};
+use crate::sqlgen::dialect::DialectRef;
+use crate::sqlgen::split::{is_meta_command, leading_keywords};
+use crate::sqlgen::sql::{self, ColumnForm, SelectQuery};
 use crate::sqlgen::transfer::{default_time_zone, script_table};
+use crate::sqlgen::{Dialect, SqlDialect};
 use crate::types::browse::{FilterGroup, RowIdentity, SortDir, SortSpec};
 use crate::types::caps::Feature;
 use crate::types::export::{
@@ -86,6 +91,9 @@ pub struct OutputColumn {
     /// PostgreSQL arrays: the element type name (`bool`, `int4`…). The table's `data_type`
     /// (`boolean[]`) does not name it in a form the text decoder understands.
     pub array_elem: Option<String>,
+    /// The export's SELECT reads the column as text (`sql::column_form`): a text cell is decoded
+    /// by the column's kind.
+    pub as_text: bool,
 }
 
 impl From<&ColumnMeta> for OutputColumn {
@@ -95,6 +103,7 @@ impl From<&ColumnMeta> for OutputColumn {
             kind: c.kind,
             data_type: c.data_type.clone(),
             array_elem: c.array_elem_type.clone(),
+            as_text: false,
         }
     }
 }
@@ -106,6 +115,7 @@ impl From<ResultColumn> for OutputColumn {
             kind: c.kind,
             data_type: c.data_type,
             array_elem: None,
+            as_text: false,
         }
     }
 }
@@ -180,15 +190,16 @@ pub struct ExportQuery {
 }
 
 /// The SELECT for a table export: the grid's columns, filter and sort, no paging (or
-/// `LIMIT max_rows`, starting after `offset` rows: a table tab's page). `skip_generated` leaves
-/// generated columns out when no explicit column list is given (INSERT exports cannot write them).
+/// `LIMIT max_rows`, starting after `offset` rows: a table tab's page), in the session's dialect
+/// (`sql::export_select`). `skip_generated` leaves generated columns out when no explicit column
+/// list is given (INSERT exports cannot write them).
 ///
 /// A page (`offset` or `max_rows`) is ordered deterministically, so consecutive pages neither
 /// overlap nor miss rows: the sort, then the primary key; a table without a key by `rowid`
 /// (SQLite) or by every selected column.
 #[allow(clippy::too_many_arguments)]
 pub fn table_query(
-    dialect: Dialect,
+    dialect: impl Into<SqlDialect>,
     meta: &TableMeta,
     selected: Option<&[String]>,
     filter: Option<&FilterGroup>,
@@ -197,6 +208,7 @@ pub fn table_query(
     offset: u64,
     skip_generated: bool,
 ) -> Result<ExportQuery, AppError> {
+    let dialect = dialect.into();
     let names: Vec<String> = match selected {
         Some([]) => {
             return Err(AppError::InvalidInput(
@@ -234,7 +246,7 @@ pub fn table_query(
     };
     let limit = max_rows.map_or(u32::MAX, |n| u32::try_from(n).unwrap_or(u32::MAX));
     let paged = offset > 0 || max_rows.is_some();
-    // The key breaks the ties of the sort (without a sort `build_select` orders by it already).
+    // The key breaks the ties of the sort (without a sort the select orders by it already).
     let mut order: Vec<SortSpec> = sort.to_vec();
     if paged && !sort.is_empty() {
         for key in &meta.primary_key {
@@ -247,132 +259,46 @@ pub fn table_query(
             }
         }
     }
-    let built = build_select(&SelectSpec {
+    let built = sql::export_select(
         dialect,
-        table: &meta.table,
-        columns: &meta.columns,
-        selected: Some(&names),
-        filter,
-        sort: &order,
-        limit,
-        offset,
-        pk: &meta.primary_key,
-        identity,
-    })?;
-    let mut sql = built.sql;
-    if limit == u32::MAX && offset == 0 {
-        // Unbounded: drop the paging clause (the sink enforces `max_rows` anyway).
-        let paging = format!("\nLIMIT {} OFFSET 0", u32::MAX);
-        if let Some(stripped) = sql.strip_suffix(&paging) {
-            sql = stripped.to_string();
-        }
-    }
-    if paged && meta.primary_key.is_empty() {
-        // No key to order by: `rowid` on a SQLite table, else the selected columns (by position,
-        // which also orders PostgreSQL's text cells, and JSON columns that have no ordering).
-        let terms = if dialect == Dialect::Sqlite && meta.kind == TableKind::Table {
-            "rowid ASC".to_string()
-        } else {
-            (1..=cols.len())
-                .map(|i| i.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        if let Some(at) = sql.rfind("\nLIMIT ") {
-            let glue = if order.is_empty() { " ORDER BY " } else { ", " };
-            sql.insert_str(at, &format!("{glue}{terms}"));
-        }
-    }
+        &SelectQuery {
+            table: &meta.table,
+            columns: &meta.columns,
+            selected: Some(&names),
+            filter,
+            sort: &order,
+            limit,
+            offset,
+            pk: &meta.primary_key,
+            identity,
+        },
+        meta.kind,
+    )?;
 
-    let mut blob_hex = Vec::new();
-    if dialect == Dialect::Postgres {
-        // `"c"::text AS "c"` makes `ORDER BY "c"` bind to the text alias (PostgreSQL resolves
-        // output names first), which sorts numbers and dates as strings. The file's column
-        // names come from the metadata, so neutral aliases keep the sort on the real columns.
-        let list = cols
-            .iter()
-            .map(|c| {
-                let ident = dialect.quote_ident(&c.name);
-                format!("{ident}::text AS {ident}")
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        let prefix = format!("SELECT {list}\nFROM ");
-        if let Some(rest) = sql.strip_prefix(&prefix) {
-            let aliased = cols
-                .iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    format!(
-                        "{}::text AS {}",
-                        dialect.quote_ident(&c.name),
-                        dialect.quote_ident(&format!("_tabler_c{i}"))
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            sql = format!("SELECT {aliased}\nFROM {rest}");
-        }
-    } else {
-        // MySQL types are strict: only binary columns hold blobs. In SQLite any column can
-        // (whatever its declared type, or none); the `typeof` guard keeps the extra NULL
-        // for everything else.
-        let blobs: Vec<usize> = cols
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| dialect == Dialect::Sqlite || c.kind == ValueKind::Bytes)
-            .map(|(i, _)| i)
-            .collect();
-        let list = cols
-            .iter()
-            .map(|c| dialect.quote_ident(&c.name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let prefix = format!("SELECT {list}\nFROM ");
-        if !blobs.is_empty()
-            && let Some(rest) = sql.strip_prefix(&prefix)
-        {
-            let extras: Vec<String> = blobs
-                .iter()
-                .enumerate()
-                .map(|(j, &i)| large_blob_hex(dialect, &cols[i].name, j))
-                .collect();
-            sql = format!("SELECT {list}, {}\nFROM {rest}", extras.join(", "));
-            blob_hex = blobs;
-        }
-    }
-
-    let identity_always = dialect == Dialect::Postgres
+    let identity_always = matches!(dialect.resolve(), DialectRef::Core(Dialect::Postgres))
         && cols
             .iter()
             .any(|c| c.is_auto_increment && c.extra.as_deref() == Some("ALWAYS"));
-
+    let columns = cols
+        .into_iter()
+        .map(|c| OutputColumn {
+            as_text: sql::column_form(dialect, c) != ColumnForm::Native,
+            ..OutputColumn::from(c)
+        })
+        .collect();
     Ok(ExportQuery {
-        sql,
+        sql: built.sql,
         params: built.params,
-        columns: Some(cols.into_iter().map(OutputColumn::from).collect()),
-        blob_hex,
+        columns: Some(columns),
+        blob_hex: built.blob_hex,
         identity_always,
     })
 }
 
-/// Extra select-list item: the hex text of a blob the driver would deliver truncated.
-fn large_blob_hex(dialect: Dialect, column: &str, n: usize) -> String {
-    let c = dialect.quote_ident(column);
-    let alias = dialect.quote_ident(&format!("_tabler_hex_{n}"));
-    let cap = BYTES_PREVIEW_CAP;
-    match dialect {
-        Dialect::Mysql => format!("CASE WHEN LENGTH({c}) > {cap} THEN HEX({c}) END AS {alias}"),
-        _ => format!(
-            "CASE WHEN typeof({c}) = 'blob' AND length({c}) > {cap} THEN hex({c}) END AS {alias}"
-        ),
-    }
-}
-
 /// The statement of a query export: exactly one statement that returns rows, streamed as
 /// written.
-pub fn sql_query(sql: &str, dialect: Dialect) -> Result<ExportQuery, AppError> {
-    let statements = split_statements(sql, dialect);
+pub fn sql_query(sql: &str, dialect: impl Into<SqlDialect>) -> Result<ExportQuery, AppError> {
+    let statements = sql::split_statements(dialect, sql);
     match statements.as_slice() {
         [] => Err(AppError::InvalidInput(
             "there is no SQL statement to export".into(),
@@ -444,8 +370,9 @@ fn check_returns_rows(sql: &str) -> Result<(), AppError> {
 pub(crate) fn check_rows(
     columns: &[ResultColumn],
     rows: &[Vec<Value>],
-    dialect: Dialect,
+    dialect: impl Into<SqlDialect>,
 ) -> Result<(), AppError> {
+    let dialect = dialect.into();
     if columns.is_empty() {
         return Err(AppError::InvalidInput(
             "the result to export has no columns".into(),
@@ -461,12 +388,14 @@ pub(crate) fn check_rows(
             )));
         }
         if row.iter().any(|v| truncated_len(v).is_some()) {
-            let instead = match dialect {
-                Dialect::Postgres => "the query",
-                Dialect::Mysql | Dialect::Sqlite => "its table",
+            let instead = match dialect.resolve() {
+                DialectRef::Core(Dialect::Postgres) => "; export the query instead",
+                DialectRef::Core(Dialect::Mysql | Dialect::Sqlite) => "; export its table instead",
+                // Its driver decides how blobs arrive: nothing to point to.
+                DialectRef::Ext(_) => "",
             };
             return Err(AppError::InvalidInput(format!(
-                "a binary value in this result was truncated to {} KiB; export {instead} instead",
+                "a binary value in this result was truncated to {} KiB{instead}",
                 BYTES_PREVIEW_CAP / 1024
             )));
         }
@@ -533,7 +462,7 @@ fn truncated_len(v: &Value) -> Option<u64> {
 /// Receives the streamed rows and writes them; decides when to stop.
 struct ExportSink<'a, O: RowOut> {
     writer: O,
-    dialect: Dialect,
+    dialect: SqlDialect,
     planned: Option<Vec<OutputColumn>>,
     columns: Vec<OutputColumn>,
     /// MySQL: indexes of single-precision `FLOAT` columns (see `narrow_float`).
@@ -580,6 +509,16 @@ impl<O: RowOut> ExportSink<'_, O> {
                 }
                 if let Value::Text(text) = v {
                     *v = col.decode_pg_text(text);
+                }
+            }
+        } else {
+            // The columns an extension dialect projects as text, decoded as the grid does.
+            for (v, col) in row.iter_mut().zip(&self.columns) {
+                if col.as_text
+                    && col.kind != ValueKind::Text
+                    && let Value::Text(text) = v
+                {
+                    *v = text_to_value(col.kind, &col.data_type, text);
                 }
             }
         }
@@ -641,7 +580,7 @@ impl<O: RowOut + Send> RowSink for ExportSink<'_, O> {
             None => columns.into_iter().map(OutputColumn::from).collect(),
         };
         let names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
-        if self.dialect == Dialect::Mysql {
+        if matches!(self.dialect.resolve(), DialectRef::Core(Dialect::Mysql)) {
             self.mysql_floats = cols
                 .iter()
                 .enumerate()
@@ -727,7 +666,7 @@ async fn stream_export(
 #[allow(clippy::too_many_arguments)]
 async fn stream_plan<O: RowOut + Send>(
     session: &dyn DbSession,
-    dialect: Dialect,
+    dialect: SqlDialect,
     plan: &Plan<'_>,
     out: O,
     max_rows: Option<u64>,
@@ -746,7 +685,8 @@ async fn stream_plan<O: RowOut + Send>(
         columns: Vec::new(),
         mysql_floats: Vec::new(),
         blob_hex,
-        pg_text: dialect == Dialect::Postgres && matches!(plan, Plan::Query(_)),
+        pg_text: matches!(dialect.resolve(), DialectRef::Core(Dialect::Postgres))
+            && matches!(plan, Plan::Query(_)),
         max_rows,
         cancel: cancel.clone(),
         progress,
@@ -929,21 +869,55 @@ fn is_view(kind: TableKind) -> bool {
     )
 }
 
-/// The core dialect an export of `format` writes with: every export needs Export Tables, and a
-/// SQL script Export SQL besides (the same for one table, several or a result).
+/// The dialect an export of `format` reads with: every export needs Export Tables (and reads
+/// through the `sqlgen::sql` facade, so an extension dialect can), and a SQL script Export SQL
+/// and a core dialect besides (the same for one table, several or a result).
 pub(crate) fn export_dialect(
     session: &dyn DbSession,
     format: &ExportFormat,
-) -> Result<Dialect, AppError> {
+) -> Result<SqlDialect, AppError> {
     match format {
         ExportFormat::SqlInsert { .. } => {
             session.require(Feature::ExportTables)?;
-            session.core_dialect(Feature::ExportSql)
+            session
+                .core_dialect(Feature::ExportSql)
+                .map(SqlDialect::from)
         }
         ExportFormat::Csv { .. }
         | ExportFormat::Json { .. }
         | ExportFormat::Xlsx { .. }
-        | ExportFormat::Html => session.core_dialect(Feature::ExportTables),
+        | ExportFormat::Html => session.facade_dialect(Feature::ExportTables),
+    }
+}
+
+/// A query export (`ExportSource::Sql`) runs the user's statement as written, with no classifier
+/// in between, so it needs a core session besides `export_dialect`: there the server refuses
+/// writes on a read-only connection itself. An extension dialect exports its tables and the rows
+/// a result holds only (on Redshift, read-only by the classifier alone, `SELECT … INTO` or
+/// `CALL` would otherwise write).
+pub(crate) fn require_query_export(session: &dyn DbSession) -> Result<(), AppError> {
+    let dialect = session.dialect();
+    match dialect.resolve() {
+        DialectRef::Core(_) => session.core_dialect(Feature::ExportTables).map(drop),
+        DialectRef::Ext(_) => {
+            session.require(Feature::ExportTables)?;
+            Err(AppError::Unsupported(format!(
+                "{}: query exports run in PostgreSQL, MySQL and SQLite only; export the result \
+                 or the table instead",
+                dialect.label()
+            )))
+        }
+    }
+}
+
+/// The core dialect a SQL script is written in: `export_dialect` grants a script only there.
+pub(crate) fn script_dialect(dialect: SqlDialect) -> Result<Dialect, AppError> {
+    match dialect.resolve() {
+        DialectRef::Core(core) => Ok(core),
+        DialectRef::Ext(_) => Err(AppError::Unsupported(format!(
+            "{}: SQL exports are written in PostgreSQL, MySQL and SQLite only",
+            dialect.label()
+        ))),
     }
 }
 
@@ -960,6 +934,9 @@ pub async fn run_export(
 ) -> Result<ExportResult, AppError> {
     let started = Instant::now();
     let dialect = export_dialect(session, &req.format)?;
+    if let ExportSource::Sql { .. } = req.source {
+        require_query_export(session)?;
+    }
     let dest = validate_target(&req.path)?;
     let fetched;
     let table_meta: Option<&TableMeta> = match (&req.source, meta) {
@@ -1007,23 +984,24 @@ pub async fn run_export(
         *charset = html_charset(text_encoding);
     }
     let script = SqlScript::of(&req.format);
+    // A SQL script is written in the core dialect `export_dialect` granted it.
+    let core = script.map(|_| script_dialect(dialect)).transpose()?;
     let content = script.is_none_or(|s| s.content);
     // The INSERTs' timestamps are written as the exporting session read them: the script sets
     // that session time zone first (and puts the previous one back at its end).
-    let zone = if content && script.is_some() {
-        session_time_zone(session, dialect).await
-    } else {
-        None
+    let zone = match core {
+        Some(core) if content => session_time_zone(session, core).await,
+        _ => None,
     };
     // Structure and DROP exist for table sources only (not views): the script then has the
     // layout of a multi-table one (rows between the tables and their keys and triggers).
     let mut creates_table = false;
-    let layout = match (script, table_meta) {
-        (Some(s), Some(meta)) if (s.drop_table || s.structure) && !is_view(meta.kind) => {
-            let context = context_for(session, dialect, meta, s.structure, false).await;
+    let layout = match (script.zip(core), table_meta) {
+        (Some((s, core)), Some(meta)) if (s.drop_table || s.structure) && !is_view(meta.kind) => {
+            let context = context_for(session, core, meta, s.structure, false).await;
             creates_table = true;
             Some(script_layout(
-                dialect,
+                core,
                 &[ScriptTable { meta, context }],
                 s,
                 true,
@@ -1031,7 +1009,7 @@ pub async fn run_export(
             ))
         }
         // Rows only: just the time zone statements around them.
-        (Some(s), _) => Some(script_layout(dialect, &[], s, false, zone.as_deref())),
+        (Some((s, core)), _) => Some(script_layout(core, &[], s, false, zone.as_deref())),
         _ => None,
     };
     let (preamble, closing, footer) = match layout {
@@ -1043,9 +1021,12 @@ pub async fn run_export(
             "nothing to export: include the table structure or its content".into(),
         ));
     }
-    let long_lat =
-        matches!(spec, FormatSpec::Insert { .. }) && mysql_long_lat(session, dialect).await;
+    let long_lat = match core {
+        Some(core) => mysql_long_lat(session, core).await,
+        None => false,
+    };
     if let FormatSpec::Insert {
+        dialect: core,
         overriding_system_value,
         table,
         mysql_long_lat,
@@ -1058,7 +1039,7 @@ pub async fn run_export(
         }
         // The INSERTs go into the table the script creates.
         if creates_table && let Some(meta) = table_meta {
-            *table = script_table(dialect, &meta.table);
+            *table = script_table(*core, &meta.table);
         }
     }
     if cancel.is_cancelled() {

@@ -10,11 +10,13 @@ import type {
   ExportSource,
   FilterGroup,
   ResultColumn,
+  SessionCaps,
   SortSpec,
   TableRef,
   Value,
 } from "@/lib/ipc";
 import { csvDefaults as csvDefaultsOfPrefs, decimalClashes } from "@/features/datagrid/csv";
+import { isCoreSession } from "@/lib/caps";
 import { isCsvDecimal } from "@/stores/prefs";
 
 export type FormatKind = ExportFormat["format"];
@@ -90,6 +92,32 @@ export const FORMATS: ReadonlyArray<{ value: FormatKind; label: string; title: s
   { value: "xlsx", label: "Excel", title: "Excel workbook (.xlsx)" },
   { value: "html", label: "HTML", title: "An HTML table (.html)" },
 ];
+
+/**
+ * The formats a session exports to: a SQL script needs `exportSql` besides `exportTables` (a
+ * Redshift session reads its tables but writes no SQL script); every format while the caps are
+ * not known.
+ */
+export function formatsFor(caps: SessionCaps | null): typeof FORMATS {
+  return caps === null || caps.features.includes("exportSql")
+    ? FORMATS
+    : FORMATS.filter((f) => f.value !== "sqlInsert");
+}
+
+/** `options` in a format of `formats`: CSV in place of one the session does not offer. */
+export function withOfferedFormat(options: ExportOptions, formats: typeof FORMATS): ExportOptions {
+  return formats.some((f) => f.value === options.format) ? options : { ...options, format: "csv" };
+}
+
+/**
+ * Whether the session exports a query (runs a statement for the file): a core session only, as
+ * the backend's `require_query_export` decides. The statement runs as written, and only a core
+ * server refuses a write on a read-only connection by itself; another session (Redshift) exports
+ * its tables and the rows a result shows. True while the caps are not known.
+ */
+export function exportsQueries(caps: SessionCaps | null): boolean {
+  return caps === null || isCoreSession(caps);
+}
 
 export const ENCODINGS: ReadonlyArray<{ value: ExportEncoding; label: string; title: string }> = [
   { value: "utf8", label: "UTF-8", title: "Unicode, without a byte order mark" },

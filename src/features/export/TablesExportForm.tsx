@@ -18,6 +18,7 @@ import { DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/di
 import { Input } from "@/components/ui/input";
 import { useCurrentSchema, useDatabases } from "@/features/sidebar/useSchemaTree";
 import { Segmented } from "@/features/settings/controls";
+import { connectionCaps, useCaps } from "@/lib/caps";
 import { ipc, toIpcError, type TableRef, type TableSummary } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
@@ -26,7 +27,6 @@ import { pickExportFolder, pickExportPath } from "./destination";
 import { FormatOptions, Row } from "./formParts";
 import {
   BATCH_SIZE_RANGE,
-  FORMATS,
   buildExportTablesRequest,
   clampBatchSize,
   csvProblem,
@@ -35,6 +35,7 @@ import {
   fileExtension,
   fileFilter,
   formatCount,
+  formatsFor,
   loadExportOptions,
   loadLastDir,
   multiLayout,
@@ -42,6 +43,7 @@ import {
   saveExportOptions,
   saveLastDir,
   timestamp,
+  withOfferedFormat,
   type ExportOptions,
   type FormatKind,
 } from "./options";
@@ -147,7 +149,13 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
     return ordered;
   }, [leveled, dbList.data, currentDb]);
 
-  const [options, setOptions] = useState<ExportOptions>(() => loadExportOptions());
+  const [options, setOptions] = useState<ExportOptions>(() =>
+    withOfferedFormat(loadExportOptions(), formatsFor(connectionCaps(connectionId))),
+  );
+  // Only the formats the session writes (no SQL script without SQL export).
+  const caps = useCaps(connectionId);
+  const formats = useMemo(() => formatsFor(caps), [caps]);
+  useEffect(() => setOptions((o) => withOfferedFormat(o, formats)), [formats]);
   // Connection ▸ View Using Encoding: the files follow it until the encoding is chosen here (and
   // the remembered choice is not overwritten by it).
   const rememberedEncoding = useRef(options.encoding);
@@ -582,7 +590,7 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
             id="export-format"
             value={options.format}
             onChange={(format) => setOptions((o) => ({ ...o, format }))}
-            options={FORMATS}
+            options={formats}
           />
         </Row>
         {layoutRow}

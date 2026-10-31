@@ -1,16 +1,17 @@
 //! SQL of data transfer. Export scripts: `DROP TABLE IF EXISTS`, the table's structure and the
-//! session settings around a multi-table script. CSV import: `CREATE TABLE` from the wizard's
-//! column types and batched multi-row INSERTs (bind parameters only) with the wizard's insert
-//! option: plain INSERT (STOP ON ERROR), REPLACE, or UPDATE ON DUPLICATE.
+//! session settings around a multi-table script. Export reads: the SELECT of a table export in a
+//! core dialect (`sql::export_select`). CSV import: `CREATE TABLE` from the wizard's column types
+//! and batched multi-row INSERTs (bind parameters only) with the wizard's insert option: plain
+//! INSERT (STOP ON ERROR), REPLACE, or UPDATE ON DUPLICATE.
 
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
 use crate::sqlgen::ddl::create_table_sql;
 use crate::sqlgen::narrow::Narrowing;
-use crate::sqlgen::select::{BuiltSql, pg_cast_type};
+use crate::sqlgen::select::{BuiltSql, SelectSpec, build_select, pg_cast_type};
 use crate::types::import::{ImportColumnDef, ImportType, InsertMode};
-use crate::types::schema::{TableMeta, TableRef};
-use crate::types::value::Value;
+use crate::types::schema::{ColumnMeta, TableKind, TableMeta, TableRef, ValueKind};
+use crate::types::value::{BYTES_PREVIEW_CAP, Value};
 
 // ---------------------------------------------------------------------------------------------
 // Export scripts
@@ -152,6 +153,150 @@ pub fn script_footer(dialect: Dialect) -> Vec<String> {
     let mut lines = foreign_key_footer(dialect);
     lines.extend(time_zone_footer(dialect));
     lines
+}
+
+// ---------------------------------------------------------------------------------------------
+// Export reads
+// ---------------------------------------------------------------------------------------------
+
+/// The SELECT of a table export (`sql::export_select`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportSelect {
+    pub sql: String,
+    pub params: Vec<Value>,
+    /// For each column after the selected ones: the selected column whose large blob it carries
+    /// as hex text (NULL when the blob arrives whole). MySQL and SQLite, whose drivers cap blobs.
+    pub blob_hex: Vec<usize>,
+}
+
+/// The alias of the `i`-th selected column where an export reads it as text. The file's names
+/// come from the metadata; a neutral alias keeps `ORDER BY "c"` on the real column, since
+/// PostgreSQL (and the engines that read like it) resolve output names first and would sort
+/// numbers and dates as text.
+pub(crate) fn export_alias(i: usize) -> String {
+    format!("_tabler_c{i}")
+}
+
+/// `sql::export_select` of a core dialect: the browse SELECT without paging when none is asked
+/// for (`limit` `u32::MAX`, `offset` 0), a page of a table without a key ordered by its `rowid`
+/// (a SQLite table of `kind` Table) or by every selected column, PostgreSQL's columns as text, and
+/// the hex of MySQL's and SQLite's blobs beyond `BYTES_PREVIEW_CAP`.
+pub fn export_select(spec: &SelectSpec<'_>, kind: TableKind) -> Result<ExportSelect, AppError> {
+    let dialect = spec.dialect;
+    let cols: Vec<&ColumnMeta> = match spec.selected {
+        Some(names) => names
+            .iter()
+            .map(|n| {
+                spec.columns
+                    .iter()
+                    .find(|c| &c.name == n)
+                    .ok_or_else(|| AppError::InvalidInput(format!("unknown column \"{n}\"")))
+            })
+            .collect::<Result<_, _>>()?,
+        None => spec.columns.iter().collect(),
+    };
+    let built = build_select(spec)?;
+    let mut sql = built.sql;
+    let unbounded = spec.limit == u32::MAX && spec.offset == 0;
+    if unbounded {
+        // Unbounded: drop the paging clause (the sink enforces the row limit anyway).
+        let paging = format!("\nLIMIT {} OFFSET 0", u32::MAX);
+        if let Some(stripped) = sql.strip_suffix(&paging) {
+            sql = stripped.to_string();
+        }
+    } else if spec.pk.is_empty() {
+        // No key to order by: `rowid` on a SQLite table, else the selected columns (by position,
+        // which also orders PostgreSQL's text cells, and JSON columns that have no ordering).
+        let terms = if dialect == Dialect::Sqlite && kind == TableKind::Table {
+            "rowid ASC".to_string()
+        } else {
+            (1..=cols.len())
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        if let Some(at) = sql.rfind("\nLIMIT ") {
+            let glue = if spec.sort.is_empty() {
+                " ORDER BY "
+            } else {
+                ", "
+            };
+            sql.insert_str(at, &format!("{glue}{terms}"));
+        }
+    }
+
+    let mut blob_hex = Vec::new();
+    if dialect == Dialect::Postgres {
+        let list = cols
+            .iter()
+            .map(|c| {
+                let ident = dialect.quote_ident(&c.name);
+                format!("{ident}::text AS {ident}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let prefix = format!("SELECT {list}\nFROM ");
+        if let Some(rest) = sql.strip_prefix(&prefix) {
+            let aliased = cols
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    format!(
+                        "{}::text AS {}",
+                        dialect.quote_ident(&c.name),
+                        dialect.quote_ident(&export_alias(i))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            sql = format!("SELECT {aliased}\nFROM {rest}");
+        }
+    } else {
+        // MySQL types are strict: only binary columns hold blobs. In SQLite any column can
+        // (whatever its declared type, or none); the `typeof` guard keeps the extra NULL
+        // for everything else.
+        let blobs: Vec<usize> = cols
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| dialect == Dialect::Sqlite || c.kind == ValueKind::Bytes)
+            .map(|(i, _)| i)
+            .collect();
+        let list = cols
+            .iter()
+            .map(|c| dialect.quote_ident(&c.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let prefix = format!("SELECT {list}\nFROM ");
+        if !blobs.is_empty()
+            && let Some(rest) = sql.strip_prefix(&prefix)
+        {
+            let extras: Vec<String> = blobs
+                .iter()
+                .enumerate()
+                .map(|(j, &i)| large_blob_hex(dialect, &cols[i].name, j))
+                .collect();
+            sql = format!("SELECT {list}, {}\nFROM {rest}", extras.join(", "));
+            blob_hex = blobs;
+        }
+    }
+    Ok(ExportSelect {
+        sql,
+        params: built.params,
+        blob_hex,
+    })
+}
+
+/// Extra select-list item: the hex text of a blob the driver would deliver truncated.
+fn large_blob_hex(dialect: Dialect, column: &str, n: usize) -> String {
+    let c = dialect.quote_ident(column);
+    let alias = dialect.quote_ident(&format!("_tabler_hex_{n}"));
+    let cap = BYTES_PREVIEW_CAP;
+    match dialect {
+        Dialect::Mysql => format!("CASE WHEN LENGTH({c}) > {cap} THEN HEX({c}) END AS {alias}"),
+        _ => format!(
+            "CASE WHEN typeof({c}) = 'blob' AND length({c}) > {cap} THEN hex({c}) END AS {alias}"
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -568,7 +713,7 @@ pub fn mysql_warning_text(error: &str) -> Option<(String, Option<u64>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::schema::{IndexMeta, TableKind};
+    use crate::types::schema::IndexMeta;
 
     fn def(name: &str, ty: ImportType) -> ImportColumnDef {
         ImportColumnDef {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { BASE_CAPS } from "@/lib/caps";
 import type { ColumnMeta, FilterGroup, Value } from "@/lib/ipc";
 import {
   browsePageOf,
@@ -17,8 +18,11 @@ import {
   EXPORT_OPTIONS_KEY,
   buildExportTablesRequest,
   exportProblem,
+  exportsQueries,
   fileFilter,
   filterTables,
+  FORMATS,
+  formatsFor,
   multiLayout,
   formatBytes,
   formatElapsed,
@@ -32,6 +36,7 @@ import {
   toExportFormat,
   UNTITLED_TABLE,
   visibleColumnNames,
+  withOfferedFormat,
   type ExportInput,
   type ExportOptions,
 } from "./options";
@@ -72,6 +77,38 @@ function tableInput(patch: Partial<Extract<ExportInput, { kind: "table" }>> = {}
 
 const build = (input: ExportInput, options = opts(), sqlTableName = "") =>
   buildExportRequest({ exportId: "e1", path: "/tmp/out", input, options, sqlTableName });
+
+describe("formatsFor", () => {
+  it("offers a SQL script only to a session with SQL export", () => {
+    const core = BASE_CAPS.postgres;
+    expect(formatsFor(core)).toBe(FORMATS);
+    expect(formatsFor(null)).toBe(FORMATS);
+    // A Redshift session: its tables export, as no SQL script.
+    const redshift = {
+      ...core,
+      dialect: "redshift" as const,
+      features: core.features.filter((f) => f !== "exportSql"),
+    };
+    const offered = formatsFor(redshift);
+    expect(offered.map((f) => f.value)).toEqual(["csv", "json", "xlsx", "html"]);
+    const script = opts({ format: "sqlInsert" });
+    expect(withOfferedFormat(script, offered).format).toBe("csv");
+    expect(withOfferedFormat(script, FORMATS)).toBe(script);
+    const json = opts({ format: "json" });
+    expect(withOfferedFormat(json, offered)).toBe(json);
+  });
+});
+
+describe("exportsQueries", () => {
+  it("runs a query for the file on a core session only", () => {
+    expect(exportsQueries(BASE_CAPS.postgres)).toBe(true);
+    expect(exportsQueries(BASE_CAPS.sqlite)).toBe(true);
+    expect(exportsQueries(null)).toBe(true);
+    // Redshift: PostgreSQL's driver, its own dialect, read-only by the classifier alone.
+    expect(exportsQueries({ ...BASE_CAPS.postgres, dialect: "redshift" })).toBe(false);
+    expect(exportsQueries(BASE_CAPS.libsql)).toBe(false);
+  });
+});
 
 describe("buildExportRequest", () => {
   it("maps CSV options, including a tab delimiter", () => {

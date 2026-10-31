@@ -178,20 +178,43 @@ describe("elasticsearch: a partial RowResult.returned merged into the row", () =
   });
 });
 
-describe("pg-flavors: MPP table options in the Structure tab", () => {
-  it("labels a distributed table's options as its distribution and storage", () => {
+describe("pg-flavors, clickhouse: distribution and sort key in the Structure tab", () => {
+  it("labels a distributed table's options as its distribution, sort key and storage", () => {
     const options = {
-      engine: "appendoptimized, orientation=column",
+      engine: "ao_column (compresstype=zstd)",
       charset: null,
       collation: null,
       autoIncrement: null,
-      rowFormat: "DISTRIBUTED BY (id)",
+      rowFormat: null,
+      distribution: "DISTRIBUTED BY (id)",
     };
     expect(tableOptionRows(options, false)).toEqual([
       ["Distribution", "DISTRIBUTED BY (id)"],
-      ["Storage", "appendoptimized, orientation=column"],
+      ["Storage", "ao_column (compresstype=zstd)"],
     ]);
-    expect(tableOptionRows({ ...options, engine: "InnoDB", rowFormat: "Dynamic" }, true)).toEqual([
+    expect(
+      tableOptionRows(
+        { ...options, distribution: "DISTSTYLE KEY(id)", sortKey: "SORTKEY (ts, id)" },
+        false,
+      ),
+    ).toEqual([
+      ["Distribution", "DISTSTYLE KEY(id)"],
+      ["Sort key", "SORTKEY (ts, id)"],
+      ["Storage", "ao_column (compresstype=zstd)"],
+    ]);
+    // ClickHouse: the sorting key and the engine.
+    expect(
+      tableOptionRows(
+        { ...options, distribution: null, sortKey: "tenant, ts", engine: "MergeTree" },
+        false,
+      ),
+    ).toEqual([
+      ["Sort key", "tenant, ts"],
+      ["Storage", "MergeTree"],
+    ]);
+    // MySQL's options leave the new fields out.
+    const mysql = { engine: "InnoDB", charset: null, collation: null, autoIncrement: null };
+    expect(tableOptionRows({ ...mysql, rowFormat: "Dynamic" }, true)).toEqual([
       ["Engine", "InnoDB"],
       ["Row format", "Dynamic"],
     ]);

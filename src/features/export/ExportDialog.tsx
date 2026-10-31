@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/features/settings/controls";
+import { connectionCaps, useCaps } from "@/lib/caps";
 import { toIpcError } from "@/lib/ipc";
 import { isReadOnlyStatement } from "@/lib/sql/statement";
 import { useConnectionsStore } from "@/stores/connections";
@@ -21,7 +22,6 @@ import { pickExportFolder, pickExportPath } from "./destination";
 import { Check, FormatOptions, Row } from "./formParts";
 import {
   BATCH_SIZE_RANGE,
-  FORMATS,
   UNTITLED_TABLE,
   buildExportRequest,
   buildExportResultsRequest,
@@ -31,11 +31,13 @@ import {
   dirname,
   encodingForCharset,
   exportProblem,
+  exportsQueries,
   fileExtension,
   fileFilter,
   formatBytes,
   formatCount,
   formatElapsed,
+  formatsFor,
   hasCappedBytes,
   loadExportOptions,
   loadLastDir,
@@ -44,6 +46,7 @@ import {
   saveExportOptions,
   saveLastDir,
   sqlWritesStructure,
+  withOfferedFormat,
   type ExportInput,
   type ExportOptions,
   type ExportProblem,
@@ -193,21 +196,30 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
   const isSql = target.source.kind === "sql";
   const held = target.source.kind === "rows" ? target.source : null;
   const capped = useMemo(() => (held ? hasCappedBytes(held.rows) : false), [held]);
+  const caps = useCaps(target.connectionId);
   // A shown result can also be exported by running its statement again: when the rows held are
   // not the whole result (cut at the row limit, or the statement stopped early), and when a
   // binary value was cut to its preview (a PostgreSQL query export reads bytea in full). Only a
   // statement that just reads: running `DELETE … RETURNING` or `CALL` again would write again.
+  // And only on a session that exports queries (a core one).
   const rerunSql =
     held?.sql &&
+    exportsQueries(caps) &&
     isReadOnlyStatement(held.sql) &&
     (held.truncated || held.stopped !== null || (capped && driver === "postgres"))
       ? held.sql
       : null;
   // Reopening the dialog in the same session (e.g. on a running export) restores the form as it was.
   const [draft] = useState(() => useExportStore.getState().draft);
-  const [options, setOptions] = useState<ExportOptions>(
-    () => draft?.options ?? loadExportOptions(),
+  const [options, setOptions] = useState<ExportOptions>(() =>
+    withOfferedFormat(
+      draft?.options ?? loadExportOptions(),
+      formatsFor(connectionCaps(target.connectionId)),
+    ),
   );
+  // Only the formats the session writes (no SQL script without SQL export).
+  const formats = useMemo(() => formatsFor(caps), [caps]);
+  useEffect(() => setOptions((o) => withOfferedFormat(o, formats)), [formats]);
   // Connection ▸ View Using Encoding: a connection reading latin1 (cp1252, UTF-16) writes its files
   // in it, until the encoding is chosen here. The remembered choice is not overwritten by it.
   const rememberedEncoding = useRef(draft?.rememberedEncoding ?? options.encoding);
@@ -526,7 +538,7 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
             id="export-format"
             value={options.format}
             onChange={(format) => setOptions((o) => ({ ...o, format }))}
-            options={FORMATS}
+            options={formats}
           />
         </Row>
 

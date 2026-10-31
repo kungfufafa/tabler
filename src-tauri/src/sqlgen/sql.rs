@@ -20,13 +20,14 @@ use crate::sqlgen::mutate::TableSpec;
 pub use crate::sqlgen::narrow::Narrowing;
 use crate::sqlgen::select::{BuiltSql, SelectSpec};
 use crate::sqlgen::split::SplitStatement;
+pub use crate::sqlgen::transfer::ExportSelect;
 use crate::sqlgen::{
     Dialect, classify, explain, mutate, narrow, portable, select, split, transfer,
 };
 use crate::types::browse::{FilterGroup, RowIdentity, RowKey, SortSpec};
 use crate::types::mutate::StagedChange;
 use crate::types::query::ExplainMode;
-use crate::types::schema::{ColumnMeta, TableRef, ValueKind};
+use crate::types::schema::{ColumnMeta, TableKind, TableRef, ValueKind};
 use crate::types::value::Value;
 
 /// A browse query: `select::SelectSpec` without its dialect.
@@ -101,6 +102,22 @@ pub fn select_on(
         }
         // generic: safe for every dialect
         _ => select(d, q),
+    }
+}
+
+/// The SELECT of a table export, whose rows carry each column as `column_form` says: `q` without
+/// paging when `q.limit` is `u32::MAX` and `q.offset` 0 (the export stops at its row limit
+/// itself), and a page of a table without a key in a set order (its `rowid` on a SQLite table of
+/// `kind` Table, otherwise every selected column). An extension dialect reads each column through
+/// its own text projection and refuses one it reads cut.
+pub fn export_select(
+    d: impl Into<SqlDialect>,
+    q: &SelectQuery<'_>,
+    kind: TableKind,
+) -> Result<ExportSelect, AppError> {
+    match d.into().resolve() {
+        DialectRef::Core(dialect) => transfer::export_select(&q.spec(dialect), kind),
+        DialectRef::Ext(spec) => portable::select::build_export_select(ensure_built(spec)?, q),
     }
 }
 
@@ -638,6 +655,89 @@ mod tests {
             }
             same(max_params(d), transfer::max_params(d));
         }
+    }
+
+    /// The export's SELECT is the core builder's for a core dialect, byte for byte (the golden
+    /// corpus records it), and the spec's projections under neutral aliases for an extension one.
+    #[test]
+    fn exports_read_each_column_as_the_dialect_does() {
+        let t = TableRef::new(Some("dbo"), "users");
+        let cols = columns();
+        let pk = ["id".to_string()];
+        let names = ["id".to_string(), "name".to_string(), "data".to_string()];
+        let sort = [SortSpec {
+            column: "name".into(),
+            dir: SortDir::Asc,
+            nulls: None,
+        }];
+        // Every row of a keyed table, and a page of a table without a key.
+        let all = SelectQuery {
+            table: &t,
+            columns: &cols,
+            selected: Some(&names),
+            filter: None,
+            sort: &sort,
+            limit: u32::MAX,
+            offset: 0,
+            pk: &pk,
+            identity: RowIdentity::Pk,
+        };
+        let page = SelectQuery {
+            limit: 10,
+            offset: 20,
+            pk: &[],
+            identity: RowIdentity::None,
+            ..all
+        };
+        for d in CORE {
+            for kind in [TableKind::Table, TableKind::View] {
+                for q in [all, page] {
+                    same(
+                        export_select(d, &q, kind),
+                        transfer::export_select(&q.spec(d), kind),
+                    );
+                }
+            }
+        }
+
+        let _tsql = override_spec(SqlDialect::Tsql, &TSQL_LIKE_TEST);
+        let d = SqlDialect::Tsql;
+        // Every row: no paging; the sort stays on the real column, not on its text.
+        let every = export_select(d, &all, TableKind::Table).unwrap();
+        assert_eq!(
+            every.sql,
+            "SELECT CONVERT(NVARCHAR(MAX), [id]) AS [_tabler_c0], CONVERT(NVARCHAR(MAX), [name]) \
+             AS [_tabler_c1], [data]\nFROM [dbo].[users] ORDER BY [name] ASC"
+        );
+        assert!(every.params.is_empty() && every.blob_hex.is_empty());
+        // The rows carry the projected columns as text, the others as they are.
+        let by = |n: &str| cols.iter().find(|c| c.name == n).expect("a column");
+        assert_eq!(column_form(d, by("id")), ColumnForm::Text);
+        assert_eq!(column_form(d, by("data")), ColumnForm::Native);
+        // A page of a table without a key: every selected column orders it after the sort.
+        let paged = export_select(d, &page, TableKind::Table).unwrap();
+        assert!(
+            paged
+                .sql
+                .ends_with(" ORDER BY [name] ASC, 1, 2, 3\nOFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY"),
+            "{}",
+            paged.sql
+        );
+        // A column the dialect reads cut is refused.
+        let geom = ["id".to_string(), "geom".to_string()];
+        let refused = export_select(
+            d,
+            &SelectQuery {
+                selected: Some(&geom),
+                ..all
+            },
+            TableKind::Table,
+        )
+        .unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "unsupported: \"geom\" is shown shortened in Transact-SQL, so it cannot be exported"
+        );
     }
 
     #[test]

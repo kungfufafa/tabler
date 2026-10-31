@@ -32,7 +32,7 @@ use super::writer::{FormatSpec, HtmlWriter, RowWriter, SqlScript};
 use super::xlsx::XlsxWriter;
 use super::{
     FileOut, Plan, blocking, export_dialect, file_out, mysql_long_lat, replaced_count,
-    session_time_zone, stream_plan, sync_file, table_query,
+    script_dialect, session_time_zone, stream_plan, sync_file, table_query,
 };
 
 /// Longest file name stem (bytes) of a per-table file.
@@ -219,7 +219,7 @@ async fn write_sql_rows<W: Write + Send>(
     let mut writer = RowWriter::new(spec, &mut *out);
     let rows = stream_plan(
         session,
-        dialect,
+        dialect.into(),
         &Plan::Query(query),
         &mut writer,
         None,
@@ -327,9 +327,10 @@ pub async fn run_export_tables(
         match &req.format {
             ExportFormat::SqlInsert { .. } => {
                 let script = script.unwrap_or_default();
-                let long_lat = script.content && mysql_long_lat(session, dialect).await;
+                let core = script_dialect(dialect)?;
+                let long_lat = script.content && mysql_long_lat(session, core).await;
                 let zone = if script.content {
-                    session_time_zone(session, dialect).await
+                    session_time_zone(session, core).await
                 } else {
                     None
                 };
@@ -346,11 +347,10 @@ pub async fn run_export_tables(
                     }
                     let meta = metas[i].as_ref();
                     let context =
-                        context_for(session, dialect, meta, script.structure, order.len() > 1)
-                            .await;
+                        context_for(session, core, meta, script.structure, order.len() > 1).await;
                     tables.push(ScriptTable { meta, context });
                 }
-                let layout = script_layout(dialect, &tables, script, wants_header, zone.as_deref());
+                let layout = script_layout(core, &tables, script, wants_header, zone.as_deref());
                 out.write_all(layout.opening.as_bytes())?;
                 for &k in &layout.order {
                     let i = order[k];
@@ -360,7 +360,7 @@ pub async fn run_export_tables(
                         let mut on_rows = |rows: u64| report(i, rows, base + rows);
                         write_sql_rows(
                             session,
-                            dialect,
+                            core,
                             &metas[i],
                             batch_size,
                             long_lat,

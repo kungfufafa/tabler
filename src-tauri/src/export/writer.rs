@@ -10,8 +10,8 @@ use regex::Regex;
 use base64::Engine as _;
 
 use crate::error::AppError;
-use crate::sqlgen::Dialect;
 use crate::sqlgen::select::literal;
+use crate::sqlgen::{Dialect, SqlDialect};
 use crate::types::export::{CsvQuote, ExportFormat};
 use crate::types::value::Value;
 
@@ -156,10 +156,11 @@ fn decimal_byte(decimal: &str, delimiter: u8) -> Result<u8, AppError> {
 
 impl FormatSpec {
     /// Validates the renderer's format options. `default_table` names the INSERT target when
-    /// `table_name` is empty (table exports) and the Excel sheet.
+    /// `table_name` is empty (table exports) and the Excel sheet; INSERTs are written in
+    /// `dialect`, a core one.
     pub fn from_request(
         format: &ExportFormat,
-        dialect: Dialect,
+        dialect: impl Into<SqlDialect>,
         default_table: Option<&str>,
     ) -> Result<FormatSpec, AppError> {
         Ok(match format {
@@ -238,6 +239,7 @@ impl FormatSpec {
                     "" => default_table.unwrap_or(UNTITLED_TABLE),
                     _ => table_name.as_str(),
                 };
+                let dialect = super::script_dialect(dialect.into())?;
                 FormatSpec::Insert {
                     dialect,
                     table: dialect.quote_ident(name),

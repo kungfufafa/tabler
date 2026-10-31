@@ -196,18 +196,31 @@ pub struct CheckMeta {
     pub columns: Vec<String>,
 }
 
-/// MySQL table options. Every field is optional: as introspected, `None` means unknown; as the
-/// payload of `DdlOp::AlterTableOptions`, `None` means "leave unchanged".
+/// MySQL table options, and how an engine that spreads or orders its rows stores a table. Every
+/// field is optional: as introspected, `None` means unknown; as the payload of
+/// `DdlOp::AlterTableOptions`, `None` means "leave unchanged".
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct TableOptions {
+    /// MySQL's engine; the storage of an engine with several (Greenplum's access method and
+    /// storage options, ClickHouse's table engine).
     pub engine: Option<String>,
     pub charset: Option<String>,
     pub collation: Option<String>,
     /// Next `AUTO_INCREMENT` value.
     pub auto_increment: Option<u64>,
     pub row_format: Option<String>,
+    /// How the rows are spread over the nodes, as the server spells it (Greenplum's
+    /// `DISTRIBUTED BY (id)`, Redshift's `DISTSTYLE KEY(id)`). Shown, never changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub distribution: Option<String>,
+    /// The order the rows are stored in (ClickHouse's sorting key `tenant, ts`, Redshift's
+    /// `SORTKEY (ts)`). Shown, never changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub sort_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

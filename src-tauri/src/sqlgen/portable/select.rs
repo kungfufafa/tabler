@@ -1,6 +1,6 @@
-//! Browse SELECT, COUNT, the fetch of one cell and the WHERE of grid filters for the extension
-//! dialects, as their spec shapes them: placeholder style, paging, NULL ordering,
-//! case-insensitive matching, text projections.
+//! Browse SELECT, COUNT, the fetch of one cell, the WHERE of grid filters and the SELECT of a
+//! table export for the extension dialects, as their spec shapes them: placeholder style, paging,
+//! NULL ordering, case-insensitive matching, text projections.
 
 use crate::error::AppError;
 use crate::sqlgen::dialect::qualify_with;
@@ -9,6 +9,7 @@ use crate::sqlgen::dialect::spec::{
 };
 use crate::sqlgen::select::{BuiltSql, ROWID_ALIAS};
 use crate::sqlgen::sql::{SelectQuery, TableTarget};
+use crate::sqlgen::transfer::{ExportSelect, export_alias};
 use crate::types::browse::{
     Conjunction, FilterGroup, FilterNode, FilterOp, NullsOrder, RowIdentity, RowKey, SortDir,
     SortSpec,
@@ -568,11 +569,8 @@ fn order_terms(
     Ok(terms)
 }
 
-/// The paged SELECT of a table browse.
-pub fn build_select(spec: &DialectSpec, q: &SelectQuery<'_>) -> Result<BuiltSql, AppError> {
-    if let Some(hook) = spec.hooks.build_select {
-        return hook(spec, q);
-    }
+/// The columns `q` selects, in its order.
+fn selected<'c>(q: &SelectQuery<'c>) -> Result<Vec<&'c ColumnMeta>, AppError> {
     let cols: Vec<&ColumnMeta> = match q.selected {
         Some(names) => names
             .iter()
@@ -583,27 +581,16 @@ pub fn build_select(spec: &DialectSpec, q: &SelectQuery<'_>) -> Result<BuiltSql,
     if cols.is_empty() {
         return Err(AppError::InvalidInput("no columns to select".into()));
     }
-    let rowid = q.identity == RowIdentity::Rowid && spec.knobs.row_locator == RowLocator::Rowid;
-    let mut list: Vec<String> = cols
-        .iter()
-        .map(|c| select_expr(spec, &ident(spec, &c.name), c))
-        .collect();
-    if rowid {
-        list.push(format!("rowid AS {}", ident(spec, ROWID_ALIAS)));
-    }
-    let mut params = Vec::new();
-    let where_sql = build_where(spec, q.columns, q.filter, &mut params)?;
-    let mut terms = order_terms(spec, q.columns, q.sort, q.pk, rowid)?;
-    let mut sql = format!(
-        "SELECT {}\nFROM {}",
-        list.join(", "),
-        table_name(spec, q.table)
-    );
-    if let Some(w) = where_sql {
-        sql.push_str("\nWHERE ");
-        sql.push_str(&w);
-    }
-    let page = match spec.knobs.paging {
+    Ok(cols)
+}
+
+/// The paging clause of `q`; OFFSET … FETCH puts an order into `terms` when they have none.
+fn page_clause(
+    spec: &DialectSpec,
+    q: &SelectQuery<'_>,
+    terms: &mut Vec<String>,
+) -> Result<String, AppError> {
+    Ok(match spec.knobs.paging {
         Paging::LimitOffset => format!("\nLIMIT {} OFFSET {}", q.limit, q.offset),
         Paging::OffsetFetch => {
             // OFFSET … FETCH needs an ORDER BY, even one that orders nothing.
@@ -624,13 +611,105 @@ pub fn build_select(spec: &DialectSpec, q: &SelectQuery<'_>) -> Result<BuiltSql,
             }
             format!("\nLIMIT {}", q.limit)
         }
-    };
+    })
+}
+
+/// `SELECT list FROM table`, its WHERE and ORDER BY, then `page`.
+fn assemble(
+    spec: &DialectSpec,
+    q: &SelectQuery<'_>,
+    list: &[String],
+    where_sql: Option<String>,
+    terms: &[String],
+    page: &str,
+) -> String {
+    let mut sql = format!(
+        "SELECT {}\nFROM {}",
+        list.join(", "),
+        table_name(spec, q.table)
+    );
+    if let Some(w) = where_sql {
+        sql.push_str("\nWHERE ");
+        sql.push_str(&w);
+    }
     if !terms.is_empty() {
         sql.push_str(" ORDER BY ");
         sql.push_str(&terms.join(", "));
     }
-    sql.push_str(&page);
+    sql.push_str(page);
+    sql
+}
+
+/// The paged SELECT of a table browse.
+pub fn build_select(spec: &DialectSpec, q: &SelectQuery<'_>) -> Result<BuiltSql, AppError> {
+    if let Some(hook) = spec.hooks.build_select {
+        return hook(spec, q);
+    }
+    let cols = selected(q)?;
+    let rowid = q.identity == RowIdentity::Rowid && spec.knobs.row_locator == RowLocator::Rowid;
+    let mut list: Vec<String> = cols
+        .iter()
+        .map(|c| select_expr(spec, &ident(spec, &c.name), c))
+        .collect();
+    if rowid {
+        list.push(format!("rowid AS {}", ident(spec, ROWID_ALIAS)));
+    }
+    let mut params = Vec::new();
+    let where_sql = build_where(spec, q.columns, q.filter, &mut params)?;
+    let mut terms = order_terms(spec, q.columns, q.sort, q.pk, rowid)?;
+    let page = page_clause(spec, q, &mut terms)?;
+    let sql = assemble(spec, q, &list, where_sql, &terms, &page);
     Ok(BuiltSql { sql, params })
+}
+
+/// `sql::export_select` of an extension dialect. Each column the dialect projects is read as
+/// that text under a neutral alias (`transfer::export_alias`), so a sort stays on the real
+/// column. There is no paging when none is asked for (`limit` `u32::MAX`, `offset` 0), and a page
+/// of a table without a key is ordered by every selected column too. A column the dialect reads
+/// cut is refused: the file would hold the cut value.
+pub fn build_export_select(
+    spec: &DialectSpec,
+    q: &SelectQuery<'_>,
+) -> Result<ExportSelect, AppError> {
+    let cols = selected(q)?;
+    for c in &cols {
+        check_whole(spec, c, "be exported")?;
+    }
+    if let Some(hook) = spec.hooks.build_select {
+        let built = hook(spec, q)?;
+        return Ok(ExportSelect {
+            sql: built.sql,
+            params: built.params,
+            blob_hex: Vec::new(),
+        });
+    }
+    let list: Vec<String> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let id = ident(spec, &c.name);
+            match projection(spec, &id, c) {
+                Some(p) => format!("{p} AS {}", ident(spec, &export_alias(i))),
+                None => id,
+            }
+        })
+        .collect();
+    let mut params = Vec::new();
+    let where_sql = build_where(spec, q.columns, q.filter, &mut params)?;
+    let mut terms = order_terms(spec, q.columns, q.sort, q.pk, false)?;
+    let page = if q.limit == u32::MAX && q.offset == 0 {
+        String::new()
+    } else {
+        if q.pk.is_empty() {
+            terms.extend((1..=cols.len()).map(|i| i.to_string()));
+        }
+        page_clause(spec, q, &mut terms)?
+    };
+    Ok(ExportSelect {
+        sql: assemble(spec, q, &list, where_sql, &terms, &page),
+        params,
+        blob_hex: Vec::new(),
+    })
 }
 
 /// `SELECT count(*) FROM table WHERE …`.

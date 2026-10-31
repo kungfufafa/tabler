@@ -501,6 +501,7 @@ pub fn parse_table(
         checks: Vec::new(),
         options: Some(TableOptions {
             engine: non_empty(info, 1).or(Some(engine).filter(|e| !e.is_empty())),
+            sort_key: non_empty(info, 3),
             ..TableOptions::default()
         }),
     })
@@ -872,13 +873,15 @@ mod tests {
         assert_eq!(meta.comment.as_deref(), Some("click events"));
         assert_eq!(meta.row_estimate, Some(42));
         assert!(meta.ddl.as_deref().unwrap().starts_with("CREATE TABLE"));
+        let options = meta.options.unwrap();
         assert!(
-            meta.options
-                .unwrap()
+            options
                 .engine
                 .unwrap()
                 .starts_with("MergeTree PARTITION BY")
         );
+        // The sorting key as the server spells it.
+        assert_eq!(options.sort_key.as_deref(), Some("tenant, `user id`, ts"));
         assert!(parse_table(&table, &[], &columns, &[], &[]).is_err());
     }
 
@@ -921,6 +924,7 @@ mod tests {
         let columns = vec![column_row("a", "String", 1, "", [0, 0, 0, 0])];
         let meta = parse_table(&table, &info, &columns, &[], &[]).unwrap();
         assert!(meta.primary_key.is_empty() && meta.indexes.is_empty());
+        assert_eq!(meta.options.and_then(|o| o.sort_key), None);
         assert_eq!(
             key_parts("a, (b, c), f('x,y'), `d,e`"),
             ["a", "(b, c)", "f('x,y')", "`d,e`"]

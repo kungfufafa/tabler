@@ -349,6 +349,26 @@ pub struct PgTableContext {
     pub inherited_fks: Vec<String>,
     /// Triggers of a partition that are clones of its parent's.
     pub cloned_triggers: Vec<String>,
+    /// What an MPP table (Greenplum) adds after its column list, each on a line of its own in
+    /// this order: `USING` its access method (quoted, so a name the catalog gives stays one),
+    /// `WITH (…)` its storage options, its distribution and Greenplum 6's partition clause. The
+    /// texts are the server's own (`reloptions`, `pg_get_table_distributedby`, the partition
+    /// definition); the script is shown, never run.
+    pub mpp: PgMppClauses,
+}
+
+/// The clauses of `PgTableContext::mpp`; empty for PostgreSQL itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PgMppClauses {
+    /// The access method (`ao_column`), written `USING "ao_column"`.
+    pub access_method: Option<String>,
+    /// The storage options as the catalog spells them (`compresstype=zstd, compresslevel=5`).
+    pub storage_options: Option<String>,
+    /// `DISTRIBUTED BY (id)`, `DISTRIBUTED RANDOMLY`, `DISTRIBUTED REPLICATED`.
+    pub distribution: Option<String>,
+    /// A whole partition clause, after the distribution (Greenplum 6's `PARTITION BY RANGE (d)
+    /// (…)`); the declarative key of a partitioned table is `PgTableContext::partition_key`.
+    pub partitioning: Option<String>,
 }
 
 /// `sql` with `{schema}` naming the table's schema (`$2`, or the current schema when the
@@ -1794,6 +1814,10 @@ fn validate_table_options(o: &TableOptions) -> Result<(), AppError> {
         {
             return Err(invalid(format!("invalid {what} \"{v}\"")));
         }
+    }
+    // Shown for the engines that report them; no ALTER here writes them.
+    if o.distribution.is_some() || o.sort_key.is_some() {
+        return Err(invalid("the distribution and sort key cannot be changed"));
     }
     if *o == TableOptions::default() {
         return Err(invalid("no table option to change"));
@@ -4027,6 +4051,24 @@ impl Planner {
             Dialect::Postgres => {
                 if let Some(key) = context.partition_key.as_deref().map(str::trim) {
                     create.push_str(&format!(" PARTITION BY {key}"));
+                }
+                let mpp = &context.mpp;
+                let clauses: Vec<String> = [
+                    mpp.access_method
+                        .as_deref()
+                        .map(|am| format!("USING {}", self.q(am))),
+                    mpp.storage_options
+                        .as_deref()
+                        .map(|o| format!("WITH ({o})")),
+                    mpp.distribution.clone(),
+                    mpp.partitioning.clone(),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if !clauses.is_empty() {
+                    create.push('\n');
+                    create.push_str(&clauses.join("\n"));
                 }
             }
         }
@@ -8700,6 +8742,7 @@ mod tests {
                     collation: Some("utf8mb4_bin".into()),
                     auto_increment: Some(100),
                     row_format: Some("dynamic".into()),
+                    ..TableOptions::default()
                 }),
                 opts(TableOptions {
                     charset: Some("latin1".into()),
@@ -8752,6 +8795,21 @@ mod tests {
             })],
         );
         assert!(msg.contains("invalid engine"), "{msg}");
+        // The distribution and sort key are shown only: no ALTER is built of them.
+        for options in [
+            TableOptions {
+                distribution: Some("DISTRIBUTED BY (id)".into()),
+                ..TableOptions::default()
+            },
+            TableOptions {
+                engine: Some("InnoDB".into()),
+                sort_key: Some("id".into()),
+                ..TableOptions::default()
+            },
+        ] {
+            let msg = invalid_input(Dialect::Mysql, Some(&items), vec![opts(options)]);
+            assert!(msg.contains("cannot be changed"), "{msg}");
+        }
         // index comments are an index option
         let p = plan(
             Dialect::Mysql,
@@ -9234,6 +9292,70 @@ mod tests {
             [
                 r#"SELECT setval(pg_get_serial_sequence('"public"."users"', 'id'), LEAST(MIN("id"), -1)) FROM "public"."users" HAVING MIN("id") IS NOT NULL;"#
             ]
+        );
+    }
+
+    /// What an MPP table adds after its column list, after a declarative partition key, each on a
+    /// line of its own; the access method is a quoted name and the other texts are the server's.
+    #[test]
+    fn pg_mpp_clauses_follow_the_column_list() {
+        let users = pg_users();
+        let plain = table_parts(Dialect::Postgres, &users, &PgTableContext::default());
+        let mpp = PgMppClauses {
+            access_method: Some("ao_column".into()),
+            storage_options: Some("compresstype=zstd, compresslevel=5".into()),
+            distribution: Some("DISTRIBUTED BY (id)".into()),
+            partitioning: None,
+        };
+        let context = PgTableContext {
+            partition_key: Some("RANGE (created_at)".into()),
+            mpp: mpp.clone(),
+            ..PgTableContext::default()
+        };
+        let parts = table_parts(Dialect::Postgres, &users, &context);
+        let body = plain.table[0].trim_end_matches(';');
+        assert_eq!(
+            parts.table[0],
+            format!(
+                "{body} PARTITION BY RANGE (created_at)\nUSING \"ao_column\"\nWITH \
+                 (compresstype=zstd, compresslevel=5)\nDISTRIBUTED BY (id);"
+            )
+        );
+        // Only the table's statement changes.
+        assert_eq!(parts.indexes, plain.indexes);
+        assert_eq!(parts.table[1..], plain.table[1..]);
+        // Greenplum 6: no access method, the legacy partition clause last.
+        let legacy = PgTableContext {
+            mpp: PgMppClauses {
+                access_method: None,
+                storage_options: None,
+                distribution: Some("DISTRIBUTED RANDOMLY".into()),
+                partitioning: Some("PARTITION BY LIST(region) (VALUES('eu'))".into()),
+            },
+            ..PgTableContext::default()
+        };
+        assert_eq!(
+            table_parts(Dialect::Postgres, &users, &legacy).table[0],
+            format!("{body}\nDISTRIBUTED RANDOMLY\nPARTITION BY LIST(region) (VALUES('eu'));")
+        );
+        // An access method that needs quoting stays one name.
+        let odd = PgTableContext {
+            mpp: PgMppClauses {
+                access_method: Some("ao\"; DROP TABLE x; --".into()),
+                ..PgMppClauses::default()
+            },
+            ..PgTableContext::default()
+        };
+        assert!(
+            table_parts(Dialect::Postgres, &users, &odd).table[0]
+                .ends_with(")\nUSING \"ao\"\"; DROP TABLE x; --\";")
+        );
+        // Only PostgreSQL writes them.
+        let mysql = table_parts(Dialect::Mysql, &my_items(), &context);
+        assert!(
+            !mysql.table[0].contains("DISTRIBUTED"),
+            "{}",
+            mysql.table[0]
         );
     }
 

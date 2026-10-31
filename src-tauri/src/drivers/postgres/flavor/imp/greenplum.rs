@@ -24,7 +24,7 @@ use crate::drivers::postgres::flavor::PgFlavorHooks;
 use crate::drivers::postgres::introspect::{self, Relation, Traced, kind_of_relkind, schema_of};
 use crate::error::AppError;
 use crate::sqlgen::Dialect;
-use crate::sqlgen::ddl::{PgTableContext, table_parts};
+use crate::sqlgen::ddl::{PgMppClauses, PgTableContext, table_parts};
 use crate::types::admin::ProcessRow;
 use crate::types::caps::{Feature, SessionCaps};
 use crate::types::driver::PgFlavor;
@@ -261,8 +261,8 @@ struct Details {
 }
 
 impl Details {
-    /// As the Structure tab shows them (`TableOptions`: the storage as the engine, the
-    /// distribution as the row format).
+    /// As the Structure tab shows them (`TableOptions`: the storage as the engine, and the
+    /// distribution).
     fn table_options(&self) -> TableOptions {
         let engine = match (&self.storage, &self.options) {
             (Some(s), Some(o)) => Some(format!("{s} ({o})")),
@@ -272,7 +272,7 @@ impl Details {
         };
         TableOptions {
             engine,
-            row_format: self.distribution.clone(),
+            distribution: self.distribution.clone(),
             ..TableOptions::default()
         }
     }
@@ -351,29 +351,29 @@ fn table_ddl(c: &Traced<'_>, meta: &TableMeta, details: Details) -> Result<Strin
         ));
     }
     let legacy = c.server_version_num() < GP7;
+    let Details {
+        distribution,
+        storage,
+        options,
+        partitioning,
+    } = details;
+    let (partition_key, legacy_partitioning) = if legacy {
+        (None, partitioning)
+    } else {
+        (partitioning, None)
+    };
     let context = PgTableContext {
-        partition_key: details.partitioning.clone().filter(|_| !legacy),
+        partition_key,
+        mpp: PgMppClauses {
+            // Greenplum 6 names its storage in `WITH (…)` only.
+            access_method: storage.filter(|am| !legacy && am != "heap"),
+            storage_options: options,
+            distribution,
+            partitioning: legacy_partitioning,
+        },
         ..PgTableContext::default()
     };
-    let mut parts = table_parts(Dialect::Postgres, meta, &context);
-    if let Some(create) = parts.table.first_mut() {
-        let mut clauses = Vec::new();
-        if !legacy && let Some(am) = details.storage.as_deref().filter(|am| *am != "heap") {
-            clauses.push(format!("USING {}", Dialect::Postgres.quote_ident(am)));
-        }
-        if let Some(options) = &details.options {
-            clauses.push(format!("WITH ({options})"));
-        }
-        clauses.extend(details.distribution.clone());
-        if legacy {
-            clauses.extend(details.partitioning.clone());
-        }
-        if !clauses.is_empty() {
-            let body = create.trim_end().trim_end_matches(';');
-            *create = format!("{body}\n{};", clauses.join("\n"));
-        }
-    }
-    Ok(parts.script())
+    Ok(table_parts(Dialect::Postgres, meta, &context).script())
 }
 
 /// `introspect::table_meta` on Greenplum 6, whose relation this file reads: external tables and
@@ -655,7 +655,8 @@ mod tests {
         assert_eq!(meta.columns.len(), 2);
         assert_eq!(meta.columns[0].kind, ValueKind::BigInt);
         let options = meta.options.clone().unwrap();
-        assert_eq!(options.row_format.as_deref(), Some("DISTRIBUTED BY (id)"));
+        assert_eq!(options.distribution.as_deref(), Some("DISTRIBUTED BY (id)"));
+        assert_eq!(options.row_format, None);
         assert_eq!(
             options.engine.as_deref(),
             Some("ao_column (appendonly=true, orientation=column, compresstype=zstd)")

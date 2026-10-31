@@ -3,6 +3,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { actions } from "@/features/palette/actions";
+import { capsOf } from "@/lib/caps";
 import {
   ipc,
   type ConnectionInfo,
@@ -219,6 +220,30 @@ describe("ExportDialog", () => {
       lineBreakToSpace: false,
     });
     expect(toast.success.mock.calls[0]![0]).toBe("Exported 20 rows");
+  });
+
+  it("offers no SQL script to a session without SQL export", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem(EXPORT_OPTIONS_KEY, JSON.stringify({ format: "sqlInsert" }));
+    await setup();
+    // A Redshift session exports its tables, but writes no SQL script.
+    const caps = capsOf(info);
+    act(() =>
+      useConnectionsStore.getState().setInfo({
+        ...info,
+        capabilities: { ...caps, features: caps.features.filter((f) => f !== "exportSql") },
+      }),
+    );
+    const dialog = await openFromShortcut();
+    expect(within(dialog).queryByRole("radio", { name: "SQL" })).toBeNull();
+    expect(within(dialog).getByRole("radio", { name: "CSV" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    const run = spyRun();
+    await user.click(within(dialog).getByRole("button", { name: /^Export…/ }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+    expect(requestOf(run).format.format).toBe("csv");
   });
 
   it("shows progress and cancels a big export with a neutral toast", async () => {
@@ -611,6 +636,37 @@ describe("ExportDialog", () => {
       expect(within(dialog).queryByRole("radio", { name: "All rows" })).toBeNull();
       expect(within(dialog).getByText(/only the rows shown are written/)).toBeInTheDocument();
       const run = spyRun("/Users/me/Downloads/deleted.csv");
+      await user.click(exportButton(dialog));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+      expect(requestOf(run).source).toMatchObject({ kind: "rows", rows });
+    });
+
+    it("runs no statement again on a session that exports no queries", async () => {
+      const user = userEvent.setup();
+      await setup();
+      // A Redshift session exports its tables and the rows a result shows, never a query.
+      const caps = capsOf(info);
+      act(() =>
+        useConnectionsStore.getState().setInfo({
+          ...info,
+          capabilities: { ...caps, dialect: "redshift" },
+        }),
+      );
+      act(() =>
+        openExport({ connectionId: info.connectionId, source: { kind: "sql", sql: "SELECT 1" } }),
+      );
+      expect(toast.error).toHaveBeenCalledWith(
+        "Exporting a query is not available for this connection",
+        expect.anything(),
+      );
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      const source = held({ truncated: true, sql: "select * from events_big" });
+      act(() => openExport({ connectionId: info.connectionId, source }));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).queryByRole("radio", { name: "All rows" })).toBeNull();
+      expect(within(dialog).getByText(/only the rows shown are written/)).toBeInTheDocument();
+      const run = spyRun("/Users/me/Downloads/shown.csv");
       await user.click(exportButton(dialog));
       await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
       expect(requestOf(run).source).toMatchObject({ kind: "rows", rows });

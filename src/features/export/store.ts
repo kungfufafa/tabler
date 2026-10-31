@@ -1,6 +1,6 @@
 import { toast } from "sonner";
 import { create } from "zustand";
-import { allowFeature } from "@/lib/caps";
+import { allowFeature, connectionCaps } from "@/lib/caps";
 import {
   ipc,
   toIpcError,
@@ -21,6 +21,7 @@ import { useTableTabsStore } from "@/stores/tableTabs";
 import { useTabsStore } from "@/stores/tabs";
 import {
   basename,
+  exportsQueries,
   formatBytes,
   formatCount,
   formatDuration,
@@ -142,8 +143,17 @@ export const useExportStore = create<ExportState>()(() => ({
  * reopens on its progress instead.
  */
 export function openExport(args: OpenExportArgs): void {
-  // Every export reads through the session's export (rows held by a result included).
-  if (!useExportStore.getState().run && !allowFeature(args.connectionId, "exportTables")) return;
+  if (!useExportStore.getState().run) {
+    // Every export reads through the session's export (rows held by a result included).
+    if (!allowFeature(args.connectionId, "exportTables")) return;
+    // A statement exported runs as written: core sessions only (`exportsQueries`).
+    if (args.source.kind === "sql" && !exportsQueries(connectionCaps(args.connectionId))) {
+      toast.error("Exporting a query is not available for this connection", {
+        description: "Run it, then export the result it shows, or export a table.",
+      });
+      return;
+    }
+  }
   useExportStore.setState((s) =>
     s.run
       ? { open: true }
