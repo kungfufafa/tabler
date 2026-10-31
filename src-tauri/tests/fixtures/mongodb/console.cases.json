@@ -1,0 +1,1174 @@
+{
+  "$comment": "Cases of the MongoDB console's splitter and read/write classifier (src-tauri/src/drivers/mongodb/shell.rs and classify.rs). The backend's tests (drivers::mongodb::tests::shared_console_cases) and the renderer's mirror (src/features/drivers/mongodb/shell.test.ts) both run them; `class` is the whole text's (classify_script).",
+  "classify": [
+    {
+      "sql": "db.c.find({a: 1}).sort({b: 1}).limit(5)",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.findOne()",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.countDocuments({})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.estimatedDocumentCount()",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.count()",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.distinct('a')",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.aggregate([{$match: {}}, {$group: {_id: '$a'}}])",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.aggregate([{$lookup: {from: 'd', pipeline: [{$match: {}}], as: 'x'}}])",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.getIndexes()",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.stats()",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.explain().find({})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find().explain('executionStats')",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.explain().aggregate([{$match: {}}])",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find().count()",
+      "class": "read"
+    },
+    {
+      "sql": "db.getCollectionNames()",
+      "class": "read"
+    },
+    {
+      "sql": "db.getCollectionInfos()",
+      "class": "read"
+    },
+    {
+      "sql": "db.stats()",
+      "class": "read"
+    },
+    {
+      "sql": "db.serverStatus()",
+      "class": "read"
+    },
+    {
+      "sql": "db.version()",
+      "class": "read"
+    },
+    {
+      "sql": "db.hello()",
+      "class": "read"
+    },
+    {
+      "sql": "db.getUsers()",
+      "class": "read"
+    },
+    {
+      "sql": "db.runCommand({listCollections: 1})",
+      "class": "read"
+    },
+    {
+      "sql": "db.runCommand({find: 'c', filter: {}})",
+      "class": "read"
+    },
+    {
+      "sql": "db.runCommand({explain: {count: 'c'}})",
+      "class": "read"
+    },
+    {
+      "sql": "db.adminCommand({listDatabases: 1})",
+      "class": "read"
+    },
+    {
+      "sql": "db.runCommand('ping')",
+      "class": "read"
+    },
+    {
+      "sql": "db.currentOp()",
+      "class": "read"
+    },
+    {
+      "sql": "rs.status()",
+      "class": "read"
+    },
+    {
+      "sql": "use reports",
+      "class": "read"
+    },
+    {
+      "sql": "show dbs",
+      "class": "read"
+    },
+    {
+      "sql": "show collections",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({note: 'drop insert update $out $merge'})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({$where: 'this.a > 1'})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({_id: ObjectId('65f1a2b3c4d5e6f708192a3b')}).pretty()",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({}, {name: 1}).skip(10).limit(-5).toArray()",
+      "class": "read"
+    },
+    {
+      "sql": "db['odd-name'].find()",
+      "class": "read"
+    },
+    {
+      "sql": "db.getCollection('a.b').countDocuments({x: {$gt: 1}})",
+      "class": "read"
+    },
+    {
+      "sql": "db.getSiblingDB('admin').runCommand({ping: 1})",
+      "class": "read"
+    },
+    {
+      "sql": "db.system.profile.find().sort({ts: -1})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({d: ISODate('2024-05-01T10:00:00Z'), n: NumberLong(5)})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({r: /a;b/i})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find().size('anything')",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.aggregate({$match: {}}, {$limit: 2})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.aggregate([{$match: {}}]).explain()",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.aggregate([{$match: {}}], {explain: true})",
+      "class": "read"
+    },
+    {
+      "sql": "db.aggregate([{$documents: [{a: 1}]}])",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.explain('allPlansExecution').count({a: 1})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.explain().distinct('a')",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.explain().findOne()",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.explain().find().count()",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.explain().stats()",
+      "class": "read"
+    },
+    {
+      "sql": "rs.conf()",
+      "class": "read"
+    },
+    {
+      "sql": "show users",
+      "class": "read"
+    },
+    {
+      "sql": "show roles",
+      "class": "read"
+    },
+    {
+      "sql": "use (x)",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find(); db.c.count()",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find()\n  .limit(1)",
+      "class": "read"
+    },
+    {
+      "sql": "use x\ndb.c.find()\nshow collections",
+      "class": "read"
+    },
+    {
+      "sql": "// a note\ndb.c.find()",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({s: 'x;y', t: \"a\\nb\"})",
+      "class": "read"
+    },
+    {
+      "sql": "db.runCommand({find: 'c', insert: 'c'})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({'$out': 1})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.distinct('a', {b: {$in: [1, 2]}}, {maxTimeMS: 100})",
+      "class": "read"
+    },
+    {
+      "sql": "db.currentOp(true)",
+      "class": "read"
+    },
+    {
+      "sql": "db.stats(1024)",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find(); /* open",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({a: {$exists: false}}).hint({a: 1}).comment('x')",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.insertOne({})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.insertMany([{}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.updateOne({}, {$set: {a: 1}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.replaceOne({}, {})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.deleteMany({})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.findOneAndUpdate({}, {$set: {a: 1}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.findOneAndDelete({})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.bulkWrite([{insertOne: {document: {}}}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.createIndex({a: 1})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.dropIndex('a_1')",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.drop()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.renameCollection('d')",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.validate()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.hideIndex('a_1')",
+      "class": "write"
+    },
+    {
+      "sql": "db.createCollection('x')",
+      "class": "write"
+    },
+    {
+      "sql": "db.dropDatabase()",
+      "class": "write"
+    },
+    {
+      "sql": "db.killOp(1)",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.aggregate([{$out: 'd'}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.aggregate([{$merge: {into: 'd'}}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.aggregate([{$match: {}}, {$out: {db: 'x', coll: 'y'}}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.aggregate([{$facet: {a: [{$out: 'd'}]}}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.aggregate([{$lookup: {from: 'd', pipeline: [{$merge: 'e'}], as: 'x'}}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.aggregate([{$unionWith: {coll: 'd', pipeline: [{$out: 'e'}]}}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.aggregate([{$out: 'd'}], {explain: true})",
+      "class": "write"
+    },
+    {
+      "sql": "db.aggregate([{$documents: [{}]}, {$out: 'd'}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.explain().aggregate([{$out: 'd'}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.explain().remove({})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.explain().updateOne({}, {$set: {a: 1}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.explain().findOneAndDelete({})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({insert: 'c', documents: [{}]})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({explain: {delete: 'c', deletes: []}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({explain: {explain: {find: 'c'}}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({explain: 'find'})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({aggregate: 'c', pipeline: [{$out: 'x'}], cursor: {}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({mapReduce: 'c', map: 'f', reduce: 'g', out: {inline: 1}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({shutdown: 1})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({getMore: 1, collection: 'c'})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({killCursors: 'c', cursors: []})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({Find: 'c'})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({eval: 'x'})",
+      "class": "write"
+    },
+    {
+      "sql": "db.adminCommand({setParameter: 1, x: 1})",
+      "class": "write"
+    },
+    {
+      "sql": "db.adminCommand({fsync: 1, lock: true})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({profile: 2})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({collMod: 'c'})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({createUser: 'u', pwd: 'p', roles: []})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find(",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: x})",
+      "class": "write"
+    },
+    {
+      "sql": "const x = db.c.find()",
+      "class": "write"
+    },
+    {
+      "sql": "x",
+      "class": "write"
+    },
+    {
+      "sql": "",
+      "class": "write"
+    },
+    {
+      "sql": "  ",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.watch()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({\n})\ndb.c.drop()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find() // ; \ndb.c.drop()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find() /* a */ ; db.c.drop()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: /'/}); db.c.drop()",
+      "class": "write"
+    },
+    {
+      "sql": "db.system.profile.drop()",
+      "class": "write"
+    },
+    {
+      "sql": "db.getSiblingDB('admin').runCommand({shutdown: 1})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({explain: {update: 'c', updates: [{q: {}, u: {$set: {a: 1}}}]}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.updateMany({}, [{$set: {a: 1}}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.aggregate([{$match: {}}, {'$merge': 'x'}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find()\ndb.c.deleteMany({})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find(); db.c.drop()",
+      "class": "write"
+    },
+    {
+      "sql": "// only a comment",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find()\ndb.c.insertOne({})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: 'x\\'y'}); db.c.drop()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.countDocuments({$out: 1})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.aggregate([{$match: {}}], {let: {x: {$out: 1}}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.aggregate([{\"\\u0024out\": 'd'}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({aggregate: 'c', pipeline: [{'$merge': {into: 'x'}}]})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find().forEach(printjson)",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find().map(d => d)",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({}).explain().explain()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.explain().explain()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.explain().getIndexes()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.explain().validate()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: Foo(1)})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: 1}, {}, {nope: 1})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find().limit('x')",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find().skip(-1)",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find().sort()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.getIndexes().foo()",
+      "class": "write"
+    },
+    {
+      "sql": "show logs",
+      "class": "write"
+    },
+    {
+      "sql": "use a.b",
+      "class": "write"
+    },
+    {
+      "sql": "use",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.insert({a: 1})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.remove({})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: `${x}`})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find() db.c.drop()",
+      "class": "write"
+    },
+    {
+      "sql": "rs.initiate()",
+      "class": "write"
+    },
+    {
+      "sql": "rs.stepDown()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({s: '\"; db.c.drop(); \"'}) ; db.c.drop()",
+      "class": "write"
+    },
+    {
+      "sql": "db.getSiblingDB('a b').c.find()",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({})",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand('')",
+      "class": "write"
+    },
+    {
+      "sql": "db.runCommand({$oid: '65f1a2b3c4d5e6f708192a3b'})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({$date: '2024-01-01'})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.aggregate([{$match: {}}], {nope: true})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.distinct()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find().count().foo()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.mapReduce('f', 'g', {out: 'x'})",
+      "class": "write"
+    },
+    {
+      "sql": "DB.c.find()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.findOneAndReplace({}, {a: 1})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.createIndexes([{a: 1}])",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.dropIndexes()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.unhideIndex('a_1')",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: 1}).noCursorTimeout('yes')",
+      "class": "write"
+    },
+    {
+      "sql": "db.getUsers({showCredentials: true}); db.dropUser('u')",
+      "class": "write"
+    },
+    {
+      "sql": "db.currentOp('x')",
+      "class": "write"
+    },
+    {
+      "sql": "db.stats('x')",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: {$oid: '65f1a2b3c4d5e6f708192a3b'}, b: {$date: '2024-01-01T10:00:00.123Z'}, c: {$numberLong: '-5'}, d: {$numberDecimal: '1.50'}})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({a: {$binary: {base64: 'AAE=', subType: '04'}}, b: {$binary: 'AA==', $type: '0'}, c: {$uuid: '3b241101-e2bb-4255-8caf-4136c566a962'}, d: {$timestamp: {t: 1, i: 2}}})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({a: ObjectId('65f1a2b3c4d5e6f708192a3b'), b: ISODate('2024-01-01'), c: new Date(1700000000000), d: NumberLong('9007199254740993'), e: NumberInt(-5), f: NumberDecimal('1e10')})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({a: BinData(4, 'AAECAwQFBgcICQoLDA0ODw=='), b: HexData(0, '00ff'), c: MD5('00'), d: Timestamp(1, 2), e: MinKey(), f: Code('x', {y: 1}), g: RegExp('a', 'i'), h: DBRef('c', 1, 'db'), i: 0xFFn, j: -0x8000000000000000})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({a: {$regularExpression: {pattern: 'a', options: 'i'}}, b: {$date: {$numberLong: '5'}}, c: {$dbPointer: {$ref: 'c', $id: ObjectId('65f1a2b3c4d5e6f708192a3b')}}})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({a: ISODate('2024-02-29 10:00'), b: ISODate('2024-01-01T10:00:00+07:00'), c: Timestamp({t: NumberLong(1), i: 0})})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({a: {$binary: 1, $type: 2}})",
+      "class": "read"
+    },
+    {
+      "sql": "db.c.find({a: 0xFFFFFFFFFFFFFFFFFF})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: -0x8000000000000001})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: {$oid: 'zz'}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: {$date: 'nope'}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: {$numberLong: 'x'}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: {$numberDecimal: 'x'}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: {$binary: 'x', $type: '0'}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: {$uuid: 'x'}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: ObjectId('zz')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: ObjectId('65f1a2b3c4d5e6f708192a3b', 1)})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: ISODate('x')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: NumberLong('9223372036854775808')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: NumberInt(2147483648)})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: NumberDecimal('x')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: UUID('x')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: BinData(0, '!!')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: BinData(300, '')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: HexData(0, 'zz')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: MD5('x')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: Timestamp(-1, 0)})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: Timestamp(4294967296, 0)})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: new Date('x')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: new Date(2020, 1)})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: Number('x')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: Double('x')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: Long(1, 2)})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: RegExp('x', 'z')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: MinKey(1)})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: DBRef('c')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: Code()})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: Code(1)})",
+      "class": "write"
+    },
+    {
+      "sql": "db.getCollection('c').find({$code: {$regularExpression: MinKey, $numberLong: [/a/i, undefined], pipeline: [RegExp('a'), ISODate('2024-01-01')]}, '$OUT': [], $regularExpression: {$numberLong: [0x10, RegExp('a')]},}).allowDiskUse()",
+      "class": "write"
+    },
+    {
+      "sql": "db[\"c\"].find({}, {'$OUT': {1e1: Infinity}, $set: {$regularExpression: Timestamp(1,2)}, $match: {$oid: {$scope: NaN,}, '＄out': {$numberLong: Code('x', {$out: 'y'})}, $code: 1e3}}).min({a: 1})",
+      "class": "write"
+    },
+    {
+      "sql": "db .c .find({}, {$merge: [[UUID()]], `$out`: {'\\u{24}out': {$oid: RegExp('a')}, $function: []}, '\\u0024out': [1, `t`]}).collation({locale: 'en'})",
+      "class": "write"
+    },
+    {
+      "sql": "db/**/.c.find({$function: {$unionWith: ['$out']}, $lookup: ISODate('2024-01-01')}, {$scope: Code('x', {$out: 'y'}), \"$merge\": {$code: {$where: Infinity, __proto__: `t`,}}, 'find': {$set: ObjectId('65f1a2b3c4d5e6f708192a3b'), `$out`: MinKey,}}).toArray()",
+      "class": "write"
+    },
+    {
+      "sql": "db/**/.c.find({$scope: {}, $oid: [], '$out ': {$regularExpression: {aggregate: MaxKey()}}}, {$where: [{$merge: 'x', \"$\\\nout\": DBRef('c', 1, 'db'), '$out': 0x10}], $set: `t`}, {}).skip(1)",
+      "class": "write"
+    },
+    {
+      "sql": "db .c.find({'$out\\0': RegExp('a'),}, {$facet: [{$oid: MinKey}], pipeline: [], `$out`: {\"$merge\": []}}).collation({locale: 'en'})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.d.find({delete: {$code: {$facet: 0x10, $type: RegExp('a')}}, '$out': DBRef('c', 1, 'db'), $match: -1}).noCursorTimeout()",
+      "class": "write"
+    },
+    {
+      "sql": "db .c.find({$type: {$unionWith: {$binary: NumberLong(5)}, update: {'\\u{24}out': DBRef('c', 1, 'db')}, '\\u{24}out': []}, pipeline: [], constructor: {a: {1e1: new Date(), $merge: ObjectId('65f1a2b3c4d5e6f708192a3b'),}}}, {insert: undefined, $binary: {$scope: {$set: UUID(), 1e1: DBRef('c', 1, 'db')}}}).explain('allPlansExecution')",
+      "class": "write"
+    },
+    {
+      "sql": "db.getCollection('c').find({$set: ['x', {'$out': /a/i, update: Infinity,}], constructor: {$numberLong: [null, 'x'], delete: ['x', true], $scope: {'\\u0024out': MaxKey()}},}, {'＄out': {$numberLong: {\"$\\\nout\": 'x',}}}).limit(2)",
+      "class": "write"
+    },
+    {
+      "sql": "db/**/.c.find({\"$\\\nout\": {$binary: DBRef('c', 1, 'db')}, $lookup: [1e3], pipeline: 0x10}, {a: {`$out`: Timestamp(1,2), `$out`: UUID()}}, {}).comment('x').hint({a: 1})",
+      "class": "write"
+    },
+    {
+      "sql": "db .c .find({explain: {'\\x24merge': {$out: -1}, $numberLong: [Infinity], '＄out': Code('x', {$out: 'y'})}, pipeline: [{$numberLong: NumberLong(5)}, {find: ObjectId('65f1a2b3c4d5e6f708192a3b'),}], '$out': {$match: null, $merge: [DBRef('c', 1, 'db'), Code('x')], __proto__: {0: 1, $code: Code('x'), a: RegExp('a')}}}).hint({a: 1})",
+      "class": "write"
+    },
+    {
+      "sql": "db.getSiblingDB('x').c.aggregate([{$code: -1}, {a: [`t`, {'＄out': 0x10, update: `t`, delete: NaN}]}]).explain()",
+      "class": "write"
+    },
+    {
+      "sql": "db .c.find({\"$merge\": 0x10, $regularExpression: 0x10, \"$merge\": {$code: ISODate('2024-01-01')}}).toArray()",
+      "class": "write"
+    },
+    {
+      "sql": "db[\"c\"].count({$function: {$oid: [NaN]}}).pretty()",
+      "class": "write"
+    },
+    {
+      "sql": "db['c'].find({`$out`: {'＄out': {$regularExpression: undefined}, delete: [], '＄out': -1},}).explain('allPlansExecution').pretty()",
+      "class": "write"
+    },
+    {
+      "sql": "db/**/.c.find({insert: undefined, find: {'find': {$code: ISODate('2024-01-01')}, \"$merge\": undefined, '$out': {}}}).explain('allPlansExecution')",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.explain().distinct('a', {a: MaxKey(), $set: {$numberLong: {}}})",
+      "class": "write"
+    },
+    {
+      "sql": "db .c .find({update: {}, $set: '$out'}, {'\\u{24}out': {$regularExpression: {$out: ObjectId('65f1a2b3c4d5e6f708192a3b'), $out: '$out', '$OUT': true}}, $merge: DBRef('c', 1, 'db'),}).toArray()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({__proto__: {$code: Timestamp(1,2)}}, {'\\x24merge': NumberLong(5), pipeline: RegExp('a'), a: `t`}).skip(1)",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({pipeline: ObjectId('65f1a2b3c4d5e6f708192a3b'), 'find': Code('x')}, {'\\u0024out': [{$binary: true}], $where: [{$function: 1, $type: undefined,}, Timestamp(1,2)],}).allowDiskUse()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: {0: {}, $type: UUID(), insert: [undefined]}}, {insert: [[{}, 0x10], {$numberLong: 1e3}], '\\u{24}out': NumberLong(5)}, {}).allowDiskUse()",
+      "class": "write"
+    },
+    {
+      "sql": "db .c .find({$code: {'$out\\0': {$oid: null}, '\\x24merge': {insert: MaxKey(),}}, '\\u{24}out': 'x'}).allowDiskUse().allowDiskUse()",
+      "class": "write"
+    },
+    {
+      "sql": "db .c .distinct('a', {0: '$out', update: {'$OUT': {'\\x24merge': Code('x'), $facet: 1}, \"$\\\nout\": {$oid: UUID()}}, $set: {'$out ': UUID(), '$out ': MinKey, pipeline: RegExp('a')},})",
+      "class": "write"
+    },
+    {
+      "sql": "db/**/.c.find({'find': Code('x'), __proto__: {delete: [], $match: {$oid: null,}, $binary: [Timestamp(1,2), MinKey]}, update: ISODate('2024-01-01')}, {}).count()",
+      "class": "write"
+    },
+    {
+      "sql": "db .c.find({'＄out': {constructor: 0x10, '\\u{24}out': {}}, $out: {constructor: Code('x'), $code: {$oid: ISODate('2024-01-01')}},}, {$unionWith: [{a: NumberLong(5),}, Timestamp(1,2)]}).explain()",
+      "class": "write"
+    },
+    {
+      "sql": "db.getSiblingDB('x').getCollection('c').count({__proto__: [{$code: Code('x', {$out: 'y'}), $code: new Date()}], $function: {update: `t`, \"$\\\nout\": {delete: NumberLong(5)}, aggregate: 1e3,},}).pretty()",
+      "class": "write"
+    },
+    {
+      "sql": "db.getSiblingDB('x').getCollection('c').find({'$out\\0': {$numberLong: null,}}).noCursorTimeout()",
+      "class": "write"
+    },
+    {
+      "sql": "db .c.find({0: [{$regularExpression: /a/i}, NumberLong(5)]}).collation({locale: 'en'})",
+      "class": "write"
+    },
+    {
+      "sql": "db.getSiblingDB('admin').currentOp({'\\u0024out': {$binary: '$out'}, 0: /a/i}).pretty()",
+      "class": "write"
+    },
+    {
+      "sql": "db.getCollection('c').find({$lookup: {\"$merge\": {}, $lookup: {}, $set: {'$out ': /a/i, 0: NaN, '$out\\0': undefined},}, a: {$set: ISODate('2024-01-01')}, find: {$regularExpression: [Timestamp(1,2)]}}, {$function: [{pipeline: UUID(), $oid: `t`}], delete: {}}).pretty()",
+      "class": "write"
+    },
+    {
+      "sql": "db .c .find({$facet: {'\\u{24}out': MaxKey(), $oid: 1e3, explain: {$binary: 1e3,}}, \"$merge\": {}}, {}).noCursorTimeout()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.d.find({pipeline: 'x', $code: Code('x', {$out: 'y'}), '$out': {$numberLong: [ISODate('2024-01-01'), -1],}}).comment('x')",
+      "class": "write"
+    },
+    {
+      "sql": "db[\"c\"].find({'\\x24merge': {'\\x24merge': MaxKey(), $numberLong: {$oid: ISODate('2024-01-01')},}, '$out ': {$merge: [1, Code('x', {$out: 'y'})],}, delete: {$oid: Code('x', {$out: 'y'}), 0: {__proto__: true, $out: Code('x', {$out: 'y'}), __proto__: Timestamp(1,2)}}}).toArray()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({$binary: [{$oid: 0x10}, 'x'], '$out ': NumberLong(5), update: [],}, {'$out ': {constructor: [UUID()], find: {'$OUT': /a/i, constructor: NaN}, pipeline: MaxKey()}, aggregate: NaN}).skip(1).collation({locale: 'en'})\rshow users",
+      "class": "write"
+    },
+    {
+      "sql": "db/**/.c.find({'$OUT': [], find: [{$out: 1e3,}], $out: {1e1: {$binary: 'x'}, update: RegExp('a'),}}, {}, {}).size()",
+      "class": "write"
+    },
+    {
+      "sql": "db﻿.c.aggregate([{$binary: new Date(),}], {}).explain('allPlansExecution')",
+      "class": "write"
+    },
+    {
+      "sql": "db﻿.c.aggregate([{$lookup: Timestamp(1,2)}, {$code: [ISODate('2024-01-01'), `t`]}]).explain('allPlansExecution')",
+      "class": "write"
+    },
+    {
+      "sql": "db﻿.c.find({update: `t`, '$out ': {$code: UUID()}}).batchSize(1)",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.explain('executionStats').find({$type: [], '\\u{24}out': ISODate('2024-01-01')}, {'\\x24merge': {$numberLong: {`$out`: /a/i, $regularExpression: ISODate('2024-01-01')},}, '\\x24merge': {'＄out': [ObjectId('65f1a2b3c4d5e6f708192a3b'), NumberLong(5)], '\\u0024out': Code('x', {$out: 'y'}), explain: []}}).skip(1)",
+      "class": "write"
+    },
+    {
+      "sql": "db/**/.c.find({constructor: [{$numberLong: Infinity,}, {delete: /a/i, \"$\\\nout\": 1e3}], constructor: {$out: [`t`, new Date()], explain: undefined, \"$merge\": {`$out`: Code('x', {$out: 'y'})}}, '\\u0024out': []}, {$code: NumberLong(5), $binary: [DBRef('c', 1, 'db')]}).explain()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({\"$merge\": {$type: MaxKey(), update: [Timestamp(1,2), ISODate('2024-01-01')], $code: {$facet: Code('x', {$out: 'y'})}}}, {__proto__: {update: [1e3, NumberLong(5)], $numberLong: {$out: -1, $regularExpression: UUID(), $merge: 'x'}}, '\\x24merge': {'$out\\0': {$binary: null}, $merge: {'$out ': undefined, __proto__: 'x', '\\u0024out': Code('x')}}, '$out ': {$where: NumberLong(5), 1e1: []}}).explain()",
+      "class": "write"
+    },
+    {
+      "sql": "db .c .find({aggregate: Code('x'), '$out\\0': [[new Date()], {}]}, {1e1: {$function: {$oid: MinKey}, a: null}, 'find': {},}).limit(2)",
+      "class": "write"
+    },
+    {
+      "sql": "db.getSiblingDB('x').getCollection('c').find({pipeline: [], $code: new Date(),}, {$scope: [new Date(), NumberLong(5)], $binary: {$binary: {constructor: '$out'}}, \"$\\\nout\": UUID()}).collation({locale: 'en'})",
+      "class": "write"
+    },
+    {
+      "sql": "db .c .find({'$out ': {update: null}, '\\u{24}out': {pipeline: {find: NaN},}, $binary: {explain: ISODate('2024-01-01'), a: {$numberLong: UUID()},}}, {$function: DBRef('c', 1, 'db')}).explain()",
+      "class": "write"
+    },
+    {
+      "sql": "db﻿.c.find({'$OUT': {$numberLong: {}, $out: [Infinity]}, $out: {0: {$regularExpression: ObjectId('65f1a2b3c4d5e6f708192a3b')}, delete: {'$out ': 'x', $scope: Infinity, $scope: ObjectId('65f1a2b3c4d5e6f708192a3b')}, $merge: {constructor: '$out'}},}, {'$out ': {$set: []}, delete: {}, '$out\\0': []}).explain()",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.explain().find({}, {$numberLong: NumberLong(5), 'find': {a: null, insert: {$oid: 0x10}, '$out ': []},}).limit(2)",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: ISODate('2023-02-29')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: {$numberDecimal: '1e7000'}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: BinData(0, 'AB==')})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: 0x1FFFFFFFFFFFFFFFFn})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: {$timestamp: {t: 1, i: 2, x: 3}}})",
+      "class": "write"
+    },
+    {
+      "sql": "db.c.find({a: RegExp(/a/, 'i')})",
+      "class": "write"
+    }
+  ],
+  "split": [
+    {
+      "sql": "db.a.find(); db.b.find()\ndb.c.find({\n  x: 1\n})\nuse other\nshow dbs",
+      "statements": [
+        "db.a.find()",
+        "db.b.find()",
+        "db.c.find({\n  x: 1\n})",
+        "use other",
+        "show dbs"
+      ]
+    },
+    {
+      "sql": "db.a.find()\n  .sort({x: 1}) // newest\n\n  /* then */ .limit(5)\ndb.b.count()",
+      "statements": [
+        "db.a.find()\n  .sort({x: 1}) // newest\n\n  /* then */ .limit(5)",
+        "db.b.count()"
+      ]
+    },
+    {
+      "sql": "db.a.\nfind()",
+      "statements": [
+        "db.a.\nfind()"
+      ]
+    },
+    {
+      "sql": "db.a.find({s: 'x;y\\'z', t: \"a\\nb;\", r: /;\\/[/;]/i}) // ; no\n/* ; */ db.b.find()",
+      "statements": [
+        "db.a.find({s: 'x;y\\'z', t: \"a\\nb;\", r: /;\\/[/;]/i})",
+        "db.b.find()"
+      ]
+    },
+    {
+      "sql": "db.a.insertOne({t: `multi\nline;`})",
+      "statements": [
+        "db.a.insertOne({t: `multi\nline;`})"
+      ]
+    },
+    {
+      "sql": "// é\nuse é; db.ä.find()\n\n  db.b.find()",
+      "statements": [
+        "use é",
+        "db.ä.find()",
+        "db.b.find()"
+      ]
+    },
+    {
+      "sql": "",
+      "statements": []
+    },
+    {
+      "sql": "  ;;\n // x\n /* y */ ;",
+      "statements": []
+    },
+    {
+      "sql": "db.a.find({s: 'x",
+      "statements": [
+        "db.a.find({s: 'x"
+      ]
+    },
+    {
+      "sql": "db.a.find() /* open",
+      "statements": [
+        "db.a.find()"
+      ]
+    },
+    {
+      "sql": "db.a.find({n: 1.5})\n.5",
+      "statements": [
+        "db.a.find({n: 1.5})",
+        ".5"
+      ]
+    },
+    {
+      "sql": "db.a.find()\r\ndb.b.find()",
+      "statements": [
+        "db.a.find()",
+        "db.b.find()"
+      ]
+    },
+    {
+      "sql": "db.a.insertOne({a: 1,\n b: 2})\ndb.a.find()",
+      "statements": [
+        "db.a.insertOne({a: 1,\n b: 2})",
+        "db.a.find()"
+      ]
+    },
+    {
+      "sql": "db.a.find({x: '😀;'}); show dbs",
+      "statements": [
+        "db.a.find({x: '😀;'})",
+        "show dbs"
+      ]
+    },
+    {
+      "sql": "db.a.find(/x/)\ndb.b.find({r: /\\//})",
+      "statements": [
+        "db.a.find(/x/)",
+        "db.b.find({r: /\\//})"
+      ]
+    }
+  ]
+}

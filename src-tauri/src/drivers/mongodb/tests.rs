@@ -836,6 +836,36 @@ fn red_team_cases() {
     }
 }
 
+/// The cases the renderer's mirror of the splitter and classifier runs too
+/// (`src/features/drivers/mongodb/shell.test.ts`): both must agree on every one.
+#[test]
+fn shared_console_cases() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/mongodb/console.cases.json"
+    ))
+    .expect("the case file is JSON");
+    let classify = cases["classify"].as_array().expect("classify cases");
+    assert!(classify.len() > 150);
+    for c in classify {
+        let text = c["sql"].as_str().expect("sql");
+        let want = match c["class"].as_str() {
+            Some("read") => Read,
+            _ => Write,
+        };
+        assert_eq!(classify_script(text), want, "{text:?}");
+    }
+    for c in cases["split"].as_array().expect("split cases") {
+        let text = c["sql"].as_str().expect("sql");
+        let want: Vec<&str> = c["statements"]
+            .as_array()
+            .expect("statements")
+            .iter()
+            .filter_map(|s| s.as_str())
+            .collect();
+        assert_eq!(sqls(text), want, "{text:?}");
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // End to end: the builders against the fake server, in memory and through the real driver
 // ---------------------------------------------------------------------------------------------

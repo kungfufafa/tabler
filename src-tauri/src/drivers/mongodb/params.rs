@@ -266,6 +266,14 @@ impl UriParts {
             Some((p, q)) => (p, q),
             None => (tail, ""),
         };
+        // `u:12/x@h`, `me@corp.com:12?x@h`: a `/` or `?` left raw in a password ends the
+        // authority early, and pieces of the password would land in the host, port, database or
+        // options. With or without a user part, a raw `@` after the authority is refused.
+        if tail.contains('@') {
+            return Err(bad(
+                "a `/`, `?` or `@` in the user name, password, database or options must be percent-encoded",
+            ));
+        }
         let database = Some(decode(path.trim_start_matches('/'))).filter(|d| !d.is_empty());
         let options = query
             .split(['&', ';'])
@@ -660,5 +668,29 @@ pub(crate) mod tests {
         let v6 = UriParts::parse("mongodb://[::1]:27017").unwrap();
         assert_eq!(v6.hosts, ["[::1]:27017"]);
         assert!(v6.user.is_none() && v6.database.is_none() && !v6.tls());
+        // A raw `/` in the password: refused, not read as host `u`, port 12345, database `x@h`.
+        assert!(UriParts::parse("mongodb://u:12345/x@h").is_err());
+        // A raw `?` in the password: refused, not read as host `u`, port 12 and an option `x@h`.
+        assert!(UriParts::parse("mongodb://u:12?x@h").is_err());
+        assert!(UriParts::parse("mongodb://u:1234?5678@h/db").is_err());
+        assert!(UriParts::parse("mongodb://u:12%3Fx@h").is_ok());
+        assert!(UriParts::parse("mongodb://u:p@h/x%40y").is_ok());
+        // The same with a user part (a raw `@` in the user name): every raw `@` after the
+        // authority is refused, so the password's pieces never reach the host, port or database.
+        for uri in [
+            "mongodb://me@corp.com:s3cr/et@db.example.com:27017/app",
+            "mongodb://me@corp.com:1234/5678@db.example.com/app",
+            "mongodb://ldap@CORP:pa?ss@db.example.com/app",
+            "mongodb://u:p@ss/word@h/db",
+            "mongodb://h/?appName=a@b",
+        ] {
+            assert!(UriParts::parse(uri).is_err(), "{uri}");
+        }
+        let encoded =
+            UriParts::parse("mongodb://me%40corp.com:s3cr%2Fet@db.example.com/app").unwrap();
+        assert_eq!(encoded.user.as_deref(), Some("me@corp.com"));
+        assert_eq!(encoded.hosts, ["db.example.com"]);
+        assert_eq!(encoded.database.as_deref(), Some("app"));
+        assert!(UriParts::parse("mongodb://h/?appName=a%40b").is_ok());
     }
 }
