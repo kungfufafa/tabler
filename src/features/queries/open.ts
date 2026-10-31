@@ -1,6 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { notAvailableFor } from "@/features/drivers/catalog";
+import { notAvailableFor, sessionKind } from "@/features/drivers/catalog";
 import { insertSql, runQuery } from "@/features/editor/controller";
 import { editorOf } from "@/features/editor/language";
 import { HISTORY_KEY } from "@/features/editor/historyGroups";
@@ -25,10 +25,10 @@ function hooks(qc: QueryClient, connectionId: string) {
  * connection has no SQL editor (a driver beyond the core ones).
  */
 export function openSavedQuery(connection: OpenConnection, query: SavedQuery): string | null {
-  const { connectionId, driver } = connection.info;
+  const { connectionId } = connection.info;
   const editor = editorOf(connection.info);
   if (!editor) {
-    toast.error(notAvailableFor(driver, "The SQL editor"));
+    toast.error(notAvailableFor(sessionKind(connection.info), "The SQL editor"));
     return null;
   }
   const tabId = openSqlInNewQueryTab(connectionId, query.sql, editor.dialect, query.name);

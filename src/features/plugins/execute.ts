@@ -1,4 +1,4 @@
-import { notAvailableFor } from "@/features/drivers/catalog";
+import { notAvailableFor, sessionKind } from "@/features/drivers/catalog";
 import { languageOf, statementsWith } from "@/features/editor/language";
 import { guardExecution } from "@/features/safety/guard";
 import { ipc, type StatementResult, type Value } from "@/lib/ipc";
@@ -40,7 +40,7 @@ export async function executeSql(
   const language = languageOf(conn.info);
   if (language === undefined) throw new Error("The connection's language is still loading");
   if (language === null)
-    throw new Error(notAvailableFor(conn.info.driver, "Running SQL from a plugin"));
+    throw new Error(notAvailableFor(sessionKind(conn.info), "Running SQL from a plugin"));
   const statements = statementsWith(language, sql).filter((s) => s.trim() !== "");
   if (statements.length === 0) throw new Error("Nothing to execute");
   const wait = options.userWait ?? (<T>(p: Promise<T>) => p);

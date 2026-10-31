@@ -3,6 +3,8 @@ import { useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
 import { hideAssistant, showAssistant, useAssistantStore } from "@/features/assistant/store";
+import { LacksFieldsContext } from "@/features/datagrid/lacksFields";
+import { rowsCanLackFields } from "@/features/drivers/catalog";
 import { useDriverUi } from "@/features/drivers/registry";
 import { ColumnsPane } from "@/features/structure/ColumnsPane";
 import { useColumnSelectionStore } from "@/features/structure/columnSelection";
@@ -50,6 +52,10 @@ export function InspectorPanel() {
   const columns = useColumnSelectionStore((s) => s.selection);
   const assistantEnabled = usePrefs((p) => p.assistantEnabled);
   const assistantActive = useAssistantStore((s) => s.active) && assistantEnabled;
+  // The cells are the active connection's grid's: a missing field is one only on its session.
+  const lacksFields = useConnectionsStore((s) =>
+    rowsCanLackFields(s.activeId ? s.byId[s.activeId]?.info : null),
+  );
 
   const switchMode = (next: SidebarView) => {
     setCellCol(null);
@@ -59,61 +65,63 @@ export function InspectorPanel() {
   };
 
   return (
-    <aside
-      aria-label="Row details"
-      className="border-border bg-sidebar text-sidebar-foreground flex h-full min-w-0 flex-col border-l"
-    >
-      <div className="border-border flex h-7 shrink-0 items-center gap-1 border-b pr-1 pl-2">
-        <ModeSwitch
-          mode={assistantActive ? "assistant" : mode}
-          modes={assistantEnabled ? MODES : ROW_MODES}
-          onChange={switchMode}
-        />
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          className="size-5"
-          onClick={toggle}
-          aria-label="Close row details"
-          title={closeKeys ? `Close (${formatCombo(closeKeys)})` : "Close"}
-        >
-          <X />
-        </Button>
-      </div>
-      {assistantActive ? (
-        <AssistantPanel />
-      ) : columns ? (
-        // Columns selected in a structure view: their attributes, edited together.
-        <ColumnsPane selection={columns} />
-      ) : !cell || !shown ? (
-        <div className="text-muted-foreground flex flex-1 items-center justify-center p-6 text-xs">
-          No row selected
+    <LacksFieldsContext.Provider value={lacksFields}>
+      <aside
+        aria-label="Row details"
+        className="border-border bg-sidebar text-sidebar-foreground flex h-full min-w-0 flex-col border-l"
+      >
+        <div className="border-border flex h-7 shrink-0 items-center gap-1 border-b pr-1 pl-2">
+          <ModeSwitch
+            mode={assistantActive ? "assistant" : mode}
+            modes={assistantEnabled ? MODES : ROW_MODES}
+            onChange={switchMode}
+          />
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="size-5"
+            onClick={toggle}
+            aria-label="Close row details"
+            title={closeKeys ? `Close (${formatCombo(closeKeys)})` : "Close"}
+          >
+            <X />
+          </Button>
         </div>
-      ) : mode === "row" && cell.slot ? (
-        <LaneInspector
-          slot={cell.slot}
-          fallback={
-            <DetailsView
-              cell={cell}
-              onViewCell={(col) => {
-                setCellCol({ of: cell, col });
-                setMode("cell");
-              }}
-            />
-          }
-        />
-      ) : mode === "row" ? (
-        <DetailsView
-          cell={cell}
-          onViewCell={(col) => {
-            setCellCol({ of: cell, col });
-            setMode("cell");
-          }}
-        />
-      ) : (
-        <CellView cell={shown} />
-      )}
-    </aside>
+        {assistantActive ? (
+          <AssistantPanel />
+        ) : columns ? (
+          // Columns selected in a structure view: their attributes, edited together.
+          <ColumnsPane selection={columns} />
+        ) : !cell || !shown ? (
+          <div className="text-muted-foreground flex flex-1 items-center justify-center p-6 text-xs">
+            No row selected
+          </div>
+        ) : mode === "row" && cell.slot ? (
+          <LaneInspector
+            slot={cell.slot}
+            fallback={
+              <DetailsView
+                cell={cell}
+                onViewCell={(col) => {
+                  setCellCol({ of: cell, col });
+                  setMode("cell");
+                }}
+              />
+            }
+          />
+        ) : mode === "row" ? (
+          <DetailsView
+            cell={cell}
+            onViewCell={(col) => {
+              setCellCol({ of: cell, col });
+              setMode("cell");
+            }}
+          />
+        ) : (
+          <CellView cell={shown} />
+        )}
+      </aside>
+    </LacksFieldsContext.Provider>
   );
 }
 

@@ -6,6 +6,7 @@ import {
   type GridColumn,
   type ViewRow,
 } from "@/features/datagrid/types";
+import { useLacksFields } from "@/features/datagrid/lacksFields";
 import type { Value } from "@/lib/ipc";
 import { cellDisplay } from "@/lib/values";
 import { usePrefs } from "@/stores/prefs";
@@ -75,6 +76,7 @@ export interface AutoExpandArgs {
 export function useAutoExpandColumns(args: AutoExpandArgs): void {
   const enabled = usePrefs((p) => p.gridAutoExpandText);
   const fontSize = usePrefs((p) => p.gridFontSize);
+  const lacksFields = useLacksFields();
   const done = useRef<string | null>(null);
   const latest = useRef(args);
   latest.current = args;
@@ -90,7 +92,7 @@ export function useAutoExpandColumns(args: AutoExpandArgs): void {
       if (!row) continue;
       sampled++;
       a.columns.forEach((col, i) => {
-        const text = cellDisplay(row.cells[i] ?? NULL);
+        const text = cellDisplay(row.cells[i] ?? NULL, lacksFields);
         if (text.placeholder) return;
         const list = samples.get(col.id);
         if (list) list.push(text.text);
@@ -114,5 +116,5 @@ export function useAutoExpandColumns(args: AutoExpandArgs): void {
     );
     if (Object.keys(widths).length > 0)
       a.setColumnState({ ...a.columnState, widths: { ...a.columnState.widths, ...widths } });
-  }, [ready, signature, args.rowCount, fontSize]);
+  }, [ready, signature, args.rowCount, fontSize, lacksFields]);
 }

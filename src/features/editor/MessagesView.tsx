@@ -1,6 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Ban, CircleCheck, CircleX, Info, Loader2, TriangleAlert } from "lucide-react";
 import { memo, useMemo, useState } from "react";
+import { useLacksFields } from "@/features/datagrid/lacksFields";
 import { formatDuration } from "@/lib/format/time";
 import { cn } from "@/lib/utils";
 import { locateSubmitted } from "./submissions";
@@ -64,12 +65,13 @@ function NoticeLine({ notice }: { notice: RunNotice }) {
  * large result counts fall back to plain text).
  */
 function PlainResult({ set }: { set: ResultSetInfo }) {
+  const lacksFields = useLacksFields();
   const buffer = resultData.get(set.id);
   const columns = (buffer && buffer.columns.length > 0 ? buffer.columns : set.columns).map(
     (c) => c.name,
   );
   const text = set.done
-    ? formatPlainResult(columns, buffer?.rows ?? [], { truncated: set.truncated })
+    ? formatPlainResult(columns, buffer?.rows ?? [], { truncated: set.truncated, lacksFields })
     : "…";
   return (
     <pre

@@ -17,12 +17,12 @@ function clip(text: string): string {
 export function formatPlainResult(
   columns: readonly string[],
   rows: readonly (readonly Value[])[],
-  opts: { truncated?: boolean } = {},
+  opts: { truncated?: boolean; lacksFields?: boolean } = {},
 ): string {
   const shown = rows.slice(0, PLAIN_ROWS_MAX).map((r) =>
     columns.map((_, i) => {
       const v = r[i];
-      return clip(v ? displayValue(v).text : "");
+      return clip(v ? displayValue(v, opts.lacksFields).text : "");
     }),
   );
   const widths = columns.map((c, i) => Math.max(clip(c).length, ...shown.map((r) => r[i]!.length)));

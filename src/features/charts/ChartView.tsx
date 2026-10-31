@@ -9,6 +9,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { useLacksFields } from "@/features/datagrid/lacksFields";
 import { BarIconButton } from "@/features/table-tab/BarParts";
 import type { ResultColumn } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
@@ -209,11 +210,12 @@ export function ChartView({ resultId, columns, directive, done }: ChartViewProps
   const buffer = resultData.get(resultId);
   const rows = buffer?.rows;
   const cols = buffer && buffer.columns.length > 0 ? buffer.columns : columns;
+  const lacksFields = useLacksFields();
   // `rows` grows in place while streaming: `rowCount` says when to rebuild.
   const built = useMemo(
-    () => buildChartData(directive, cols, rows ?? []),
+    () => buildChartData(directive, cols, rows ?? [], lacksFields),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [directive, cols, rows, rowCount],
+    [directive, cols, rows, rowCount, lacksFields],
   );
   const box = useRef<HTMLDivElement>(null);
   const size = useSize(box);

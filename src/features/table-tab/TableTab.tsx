@@ -68,7 +68,7 @@ import {
   type Value,
 } from "@/lib/ipc";
 import { capsOf, featureLabel, has, sessionDialect } from "@/lib/caps";
-import { notAvailableFor } from "@/features/drivers/catalog";
+import { notAvailableFor, sessionKind } from "@/features/drivers/catalog";
 import { errorWithHint } from "@/lib/errorText";
 import { valueText } from "@/lib/values";
 import { useConnectionsStore } from "@/stores/connections";
@@ -159,6 +159,8 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   const driver = connection?.info.driver ?? "postgres";
   // What the session offers (the core sessions: everything, as before).
   const caps = capsOf(connection?.info ?? { driver, capabilities: null });
+  // What a refusal calls the session (Redshift, not its driver's PostgreSQL).
+  const kind = sessionKind(connection?.info ?? { driver, capabilities: null });
   // Null for a session that does not speak a core dialect: no Generate JOIN or SQL completion in
   // the filter bar (their SQL is the core dialects'), and no table context for the copy formats.
   const dialect = sessionDialect(caps);
@@ -460,10 +462,10 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     (value: Value): boolean => {
       if (value.t !== "default" && !exprOf(value)) return true;
       if (has(caps, "serverExpressions")) return true;
-      toast.message(notAvailableFor(driver, featureLabel("serverExpressions")));
+      toast.message(notAvailableFor(kind, featureLabel("serverExpressions")));
       return false;
     },
-    [caps, driver],
+    [caps, kind],
   );
   /**
    * Stages `value` into source column `col` of the rows `keys` (one undo step), like an inline
@@ -704,7 +706,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   const newRowCells = (cols: BrowsePage["columns"]): Value[] =>
     nativeStore ? cols.map(() => MISSING) : defaultsFor(cols);
   const refuse = (feature: "insertRows" | "deleteRows") =>
-    toast.message(notAvailableFor(driver, featureLabel(feature)));
+    toast.message(notAvailableFor(kind, featureLabel(feature)));
   /** `GridAction` column indexes are SOURCE indexes: positions in `columns` / `page.columns`. */
   const onAction = (a: GridAction) => {
     if (!page) return;

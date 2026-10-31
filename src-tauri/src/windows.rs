@@ -199,6 +199,11 @@ impl WindowRegistry {
         self.lock().quitting
     }
 
+    /// Windows whose label is reserved and that Tauri does not list yet (being built).
+    pub fn building(&self) -> usize {
+        self.lock().reserved.len()
+    }
+
     /// A window went away (`remaining`: the windows left). Forgets it and says what is left to do.
     pub fn forget(&self, label: &str, remaining: &[String]) -> WindowGone {
         let mut inner = self.lock();
@@ -239,6 +244,15 @@ impl WindowRegistry {
     pub fn last_focused(&self) -> Option<String> {
         self.lock().last_focused.clone()
     }
+}
+
+/// Whether the app ends now that a window went away, leaving `left` windows Tauri lists and
+/// `building` ones on their way. On Windows and Linux an app without a window cannot be reached
+/// (no Dock, no menu bar, no tray): it ends even when the runtime itself would keep running (a
+/// window it holds that Tauri does not list, an exit request kept waiting), which left a Tabler
+/// process without any window. macOS keeps its behaviour (the runtime's own last-window exit).
+pub fn exits_with_last_window(macos: bool, left: usize, building: usize) -> bool {
+    !macos && left == 0 && building == 0
 }
 
 // --- Tauri glue --------------------------------------------------------------------------------
@@ -510,6 +524,17 @@ pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
                     quit.confirm();
                 }
                 app.exit(0);
+            } else if exits_with_last_window(
+                cfg!(target_os = "macos"),
+                remaining.len(),
+                registry.building(),
+            ) {
+                // Its close guard already ran: nothing is left to ask.
+                log::info!("window {label} closed: it was the last one, exiting");
+                if let Some(quit) = app.try_state::<crate::shell::QuitState>() {
+                    quit.confirm();
+                }
+                app.exit(0);
             }
         }
         _ => {}
@@ -613,6 +638,26 @@ mod tests {
         assert_eq!(registry.owner_of(c), None);
         registry.set_connections("main", []);
         assert_eq!(registry.forget("main", &[]).connections, Vec::<Uuid>::new());
+    }
+
+    #[test]
+    fn the_last_window_closing_ends_the_app_off_macos() {
+        // Windows and Linux: no window left, none being built.
+        assert!(exits_with_last_window(false, 0, 0));
+        assert!(!exits_with_last_window(false, 1, 0));
+        // A window on its way (Move Tab to New Window from the last one) keeps the app.
+        assert!(!exits_with_last_window(false, 0, 1));
+        // macOS is left to the runtime, as before.
+        assert!(!exits_with_last_window(true, 0, 0));
+        // The registry counts reserved windows until Tauri lists them.
+        let reg = WindowRegistry::default();
+        let label = reg.reserve(&labels(&["main"]), None);
+        assert_eq!(reg.building(), 1);
+        reg.release(&label);
+        assert_eq!(reg.building(), 0);
+        let label = reg.reserve(&labels(&["main"]), None);
+        reg.forget(&label, &labels(&["main"]));
+        assert_eq!(reg.building(), 0);
     }
 
     #[test]

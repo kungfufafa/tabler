@@ -33,7 +33,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { NotAvailable } from "@/features/drivers/NotAvailable";
-import { isCoreDriver } from "@/features/drivers/catalog";
+import { isCoreDriver, sessionKind } from "@/features/drivers/catalog";
 import { laneBuiltFor, useDriverUi } from "@/features/drivers/registry";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
 import { bumpGeneration, openWorkspaceSheet, useCommitGeneration } from "@/features/commit/store";
@@ -197,7 +197,12 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
   const caps = capsOf(info ?? { driver, capabilities: null });
   // A session of a lane this build lacks: nothing of the lane's, nor the core editor.
   if (!isCoreDriver(driver) && !laneBuiltFor({ driver }))
-    return <NotAvailable driver={driver} what="The structure editor" />;
+    return (
+      <NotAvailable
+        kind={sessionKind(info ?? { driver, capabilities: null })}
+        what="The structure editor"
+      />
+    );
   // A lane's own view of its tables' structure (indexes of a collection, a key's type).
   const View = ui?.StructureView;
   if (View)
@@ -210,7 +215,12 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
       </div>
     );
   if (!has(caps, "structureView"))
-    return <NotAvailable driver={driver} what="The structure view" />;
+    return (
+      <NotAvailable
+        kind={sessionKind(info ?? { driver, capabilities: null })}
+        what="The structure view"
+      />
+    );
   // Its edits are planned as a core dialect's DDL; another session's structure is read-only.
   const dialect = sessionDialect(caps);
   if (!dialect)

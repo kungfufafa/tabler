@@ -40,6 +40,7 @@ import { MapView } from "../geometry/GeometryView";
 import { parseWkt } from "../geometry/wkt";
 import type { GridColumn } from "../types";
 import { sniffBase64Image } from "./bytes";
+import { useLacksFields } from "../lacksFields";
 import { CodeView } from "./CodeView";
 import { Seg, Toggle } from "./controls";
 import { readSortKeys, writeSortKeys } from "./jsonPrefs";
@@ -237,6 +238,7 @@ function ReferencedBody({
   load: () => Promise<ReferencedRows>;
   onOpen?: () => void;
 }) {
+  const lacksFields = useLacksFields();
   const [state, setState] = useState<Load<ReferencedRows>>({ status: "loading" });
   useEffect(() => {
     let alive = true;
@@ -285,7 +287,7 @@ function ReferencedBody({
           className="border-border bg-surface min-h-0 flex-1 divide-y overflow-auto rounded-md border"
         >
           {columns.map((c, i) => {
-            const d = cellDisplay(first[i] ?? { t: "null" });
+            const d = cellDisplay(first[i] ?? { t: "null" }, lacksFields);
             return (
               <div
                 key={`${i}\u0000${c.name}`}
@@ -459,6 +461,7 @@ export function QuickLook({
   onDetach,
   onDirtyChange,
 }: QuickLookProps) {
+  const lacksFields = useLacksFields();
   const [shown, setShown] = useState(value);
   const [fullState, setFullState] = useState<Load<null> | null>(null);
   const bytes = shown.t === "bytes" || column.kind === "bytes";
@@ -755,7 +758,7 @@ export function QuickLook({
       <BytesBody value={shown} view={bytesView} text={bytesText} column={column.name} />
     ) : bytes ? (
       <div className="text-null flex flex-1 items-center justify-center text-xs italic">
-        {cellDisplay(shown).text}
+        {cellDisplay(shown, lacksFields).text}
       </div>
     ) : json && !raw && jsonView === "tree" ? (
       <JsonTree text={text} sort={sorted} />

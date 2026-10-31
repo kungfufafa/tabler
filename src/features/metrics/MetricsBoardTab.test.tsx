@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { actions } from "@/features/palette/actions";
 import { TabBody } from "@/features/tabs/TabContent";
+import { capsOf } from "@/lib/caps";
 import { ipc, type ConnectionInfo, type MetricsQuery } from "@/lib/ipc";
 import { resetMockMetrics } from "@/lib/ipc/mock/metrics";
 import { useConnectionsStore } from "@/stores/connections";
@@ -10,6 +11,7 @@ import { useTabsStore, type ToolTab } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
 import { MetricsHost } from "./MetricsHost";
 import { defaultObject } from "./model";
+import { openMetricsBoard } from "./open";
 import { AUTOMATIC_WRITE_REFUSED, WRITE_REFUSED } from "./runner";
 import { createBoard, resetMetricsStoreForTests, useMetricsStore } from "./store";
 
@@ -530,5 +532,46 @@ describe("Metrics Board tab", () => {
     const objects = out.boards[0]!.objects as Array<{ allowWrites: unknown }>;
     expect(objects.length).toBeGreaterThan(0);
     expect(objects.every((o) => o.allowWrites === false)).toBe(true);
+  });
+});
+
+describe("Metrics Board tab of a session without a core dialect", () => {
+  /** A restored tab opens without the opener's check: the tab itself refuses. */
+  function restoredTab(connectionId: string): ToolTab {
+    openMetricsBoard(connectionId);
+    const tab = useTabsStore
+      .getState()
+      .tabs.find((t) => t.kind === "tool" && t.connectionId === connectionId);
+    if (!tab || tab.kind !== "tool") throw new Error("no metrics tab");
+    return tab;
+  }
+
+  it("refuses a Redshift session, naming its database, and runs nothing as PostgreSQL", async () => {
+    const run = vi.spyOn(ipc.metrics, "run");
+    const caps = capsOf(info);
+    useConnectionsStore.getState().add({
+      ...info,
+      connectionId: "rs",
+      capabilities: { ...caps, flavor: "redshift", dialect: "redshift" },
+    });
+    render(<TabBody tab={restoredTab("rs")} />);
+    expect(
+      await screen.findByText("Metrics boards is not available for Amazon Redshift connections"),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("listbox", { name: "Boards" })).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("refuses a session that does not offer boards, even with a core dialect", async () => {
+    const caps = capsOf(info);
+    useConnectionsStore.getState().add({
+      ...info,
+      connectionId: "nb",
+      capabilities: { ...caps, features: caps.features.filter((f) => f !== "metrics") },
+    });
+    render(<TabBody tab={restoredTab("nb")} />);
+    expect(
+      await screen.findByText("Metrics boards is not available for PostgreSQL connections"),
+    ).toBeInTheDocument();
   });
 });

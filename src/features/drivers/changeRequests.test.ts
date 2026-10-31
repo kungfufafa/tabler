@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildGridColumns } from "@/features/datagrid/types";
+import { notAvailableFor, rowsCanLackFields, sessionKind } from "@/features/drivers/catalog";
 import { insertModesFor } from "@/features/import/mapping";
 import {
   headerMenu,
@@ -32,6 +33,7 @@ import {
   BASE_CAPS,
   connectionDialect,
   dialectFor,
+  kindFor,
 } from "@/lib/caps";
 import type { BrowsePage, ColumnMeta, ConnectionInfo, Feature, TableMeta, Value } from "@/lib/ipc";
 import {
@@ -121,10 +123,10 @@ describe("redis: a composite key (key, type) with the type column read-only", ()
 
 describe("mongodb / dynamodb: Other{ty} values and missing fields", () => {
   it("shows a missing field apart from NULL and an empty string", () => {
-    expect(isMissingValue(MISSING)).toBe(true);
-    expect(isMissingValue(OID)).toBe(false);
-    expect(displayValue(MISSING)).toEqual({ text: MISSING_PLACEHOLDER, cls: "missing" });
-    expect(cellDisplay(MISSING)).toEqual({
+    expect(isMissingValue(MISSING, true)).toBe(true);
+    expect(isMissingValue(OID, true)).toBe(false);
+    expect(displayValue(MISSING, true)).toEqual({ text: MISSING_PLACEHOLDER, cls: "missing" });
+    expect(cellDisplay(MISSING, true)).toEqual({
       text: MISSING_PLACEHOLDER,
       cls: "missing",
       placeholder: true,
@@ -136,16 +138,51 @@ describe("mongodb / dynamodb: Other{ty} values and missing fields", () => {
   });
 
   it("stages what is typed into a missing field in the column's type, an ObjectId as one", () => {
-    expect(parseEditText("text", "shipped", MISSING)).toEqual({ ok: true, value: text("shipped") });
-    expect(parseEditText("int", "7", MISSING)).toEqual({ ok: true, value: { t: "int", v: 7 } });
+    expect(parseEditText("text", "shipped", MISSING, true)).toEqual({
+      ok: true,
+      value: text("shipped"),
+    });
+    expect(parseEditText("int", "7", MISSING, true)).toEqual({
+      ok: true,
+      value: { t: "int", v: 7 },
+    });
     // Never a "missing" that holds text: the column's kind, as for a NULL.
-    expect(parseEditText("other", "abc", MISSING)).toEqual({
+    expect(parseEditText("other", "abc", MISSING, true)).toEqual({
       ok: true,
       value: { t: "other", v: { ty: "other", text: "abc" } },
     });
-    expect(parseEditText("other", "65f0c0ffee0000000000002b", OID)).toEqual({
+    expect(parseEditText("other", "65f0c0ffee0000000000002b", OID, true)).toEqual({
       ok: true,
       value: { t: "other", v: { ty: "objectId", text: "65f0c0ffee0000000000002b" } },
+    });
+  });
+
+  it("reads Other{missing} as a missing field only on a session that can lack one", () => {
+    // A PostgreSQL value of a user type named "missing" (CREATE TYPE missing …): its text.
+    const pgMissing: Value = { t: "other", v: { ty: "missing", text: "(1,2)" } };
+    const pgEmpty: Value = { t: "other", v: { ty: "missing", text: "" } };
+    expect(rowsCanLackFields({ driver: "postgres" })).toBe(false);
+    expect(rowsCanLackFields({ driver: "mysql" })).toBe(false);
+    expect(rowsCanLackFields({ driver: "sqlite" })).toBe(false);
+    expect(rowsCanLackFields(null)).toBe(false);
+    expect(rowsCanLackFields({ driver: "mongodb" })).toBe(true);
+    expect(rowsCanLackFields({ driver: "duckdb" })).toBe(true);
+    const core = rowsCanLackFields({ driver: "postgres" });
+    expect(isMissingValue(pgMissing, core)).toBe(false);
+    expect(isMissingValue(pgEmpty, core)).toBe(false);
+    expect(displayValue(pgMissing)).toEqual({ text: "(1,2)", cls: "other" });
+    expect(cellDisplay(pgEmpty)).toMatchObject({ text: "EMPTY", cls: "empty" });
+    // An edit keeps the type, as for any other PostgreSQL type.
+    expect(parseEditText("other", "(3,4)", pgMissing)).toEqual({
+      ok: true,
+      value: { t: "other", v: { ty: "missing", text: "(3,4)" } },
+    });
+    // The same value from a document store is a missing field.
+    const doc = rowsCanLackFields({ driver: "mongodb" });
+    expect(cellDisplay(pgEmpty, doc)).toMatchObject({ text: MISSING_PLACEHOLDER, cls: "missing" });
+    expect(parseEditText("other", "x", pgEmpty, doc)).toEqual({
+      ok: true,
+      value: { t: "other", v: { ty: "other", text: "x" } },
     });
   });
 });
@@ -475,10 +512,26 @@ describe("openers of features a session lacks", () => {
       driver: "postgres",
       capabilities: {
         ...BASE_CAPS.postgres,
+        flavor: "redshift",
         dialect: "redshift",
         features: BASE_CAPS.postgres.features.filter((f) => !without.includes(f)),
       },
     });
+
+  it("name a session by its database: its flavor's, else its driver's", () => {
+    expect(sessionKind(redshift("x"))).toBe("redshift");
+    expect(sessionKind({ driver: "postgres", capabilities: null })).toBe("postgres");
+    expect(
+      sessionKind({ driver: "mysql", capabilities: { ...BASE_CAPS.mysql, flavor: "mariadb" } }),
+    ).toBe("mariadb");
+    expect(sessionKind({ driver: "redis", capabilities: null })).toBe("redis");
+    useConnectionsStore.getState().add(redshift("rs"));
+    expect(kindFor("rs", "postgres")).toBe("redshift");
+    expect(kindFor("closed", "postgres")).toBe("postgres");
+    expect(notAvailableFor(kindFor("rs", "postgres"), "Item Overview")).toBe(
+      "Item Overview is not available for Amazon Redshift connections",
+    );
+  });
 
   it("read a connection's dialect by its id: the session's, the driver's while closed", () => {
     useConnectionsStore.getState().add(redshift("rs"));
@@ -499,7 +552,8 @@ describe("openers of features a session lacks", () => {
       schema: "public",
       pinScope: null,
     };
-    const notFor = (what: string) => `${what} is not available for PostgreSQL connections`;
+    // Named as the picker names the session's database, not its driver's PostgreSQL.
+    const notFor = (what: string) => `${what} is not available for Amazon Redshift connections`;
     // New ▸ View… / Function… / Table…: no PostgreSQL template or dialog opens.
     runNew(ctx, "view");
     expect(toast.error).toHaveBeenCalledWith(notFor("Creating a view"));

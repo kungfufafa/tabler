@@ -3,6 +3,7 @@ import { memo } from "react";
 import type { Value } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { cellDisplay, type CellDisplayClass } from "@/lib/values";
+import { useLacksFields } from "./lacksFields";
 import { looksLikeWkt, splitEwkt } from "./geometry/wkt";
 import { fksOf, type GridColumn, type RowStatus } from "./types";
 
@@ -48,7 +49,7 @@ export const GridCell = memo(function GridCell({
   rowStatus,
   changed,
 }: GridCellProps) {
-  const d = cellDisplay(value);
+  const d = cellDisplay(value, useLacksFields());
   // A spatial value reads as its WKT; the SRID shows in the hover preview and Quick Look.
   const text =
     col.kind === "geometry" && value.t === "other" && looksLikeWkt(d.text)

@@ -26,10 +26,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { coreDialect } from "@/features/drivers/catalog";
+import { sessionKind } from "@/features/drivers/catalog";
 import { NotAvailable } from "@/features/drivers/NotAvailable";
 import { useAction } from "@/features/palette/actions";
 import type { ToolTabProps } from "@/features/tabs/toolTabs";
+import { connectionDialect, has } from "@/lib/caps";
 import { ipc, toIpcError, type Dialect, type MetricsBoard } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
@@ -316,9 +317,11 @@ export function MetricsBoardTab({ tab, params }: ToolTabProps<MetricsParams>) {
         Not connected.
       </div>
     );
-  // Its queries are split and classified by a core dialect.
-  const dialect = coreDialect(info.driver);
-  if (!dialect) return <NotAvailable driver={info.driver} what="Metrics boards" />;
+  // Its queries are split and classified by the session's core dialect, on a session that offers
+  // boards (a restored tab skips the opener's check): none for a Redshift session, although its
+  // driver is PostgreSQL's.
+  const dialect = has(info, "metrics") ? connectionDialect(info) : null;
+  if (!dialect) return <NotAvailable kind={sessionKind(info)} what="Metrics boards" />;
 
   return (
     <div data-slot="metrics-board" className="bg-background flex h-full min-h-0">

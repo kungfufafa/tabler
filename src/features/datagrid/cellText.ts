@@ -44,6 +44,7 @@ export function parseCellText(
   col: Pick<GridColumn, "kind" | "nullable">,
   text: string,
   previous?: Value,
+  lacksFields = false,
 ): ParseResult {
   if (NOW_KINDS.has(col.kind)) {
     const expr = parseServerExpr(text);
@@ -53,7 +54,7 @@ export function parseCellText(
     if (text.trim() === "" && col.nullable) return { ok: true, value: { t: "null" } };
     return parseHexBytes(text);
   }
-  return parseEditText(col.kind, text, previous);
+  return parseEditText(col.kind, text, previous, lacksFields);
 }
 
 /** Whether a blob value is held in full (only then can it be edited as hex). */

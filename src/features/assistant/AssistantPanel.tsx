@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { sessionKind } from "@/features/drivers/catalog";
 import { NotAvailable } from "@/features/drivers/NotAvailable";
 import { connectionDialect, has } from "@/lib/caps";
 import { formatCombo } from "@/lib/keys/combo";
@@ -77,7 +78,7 @@ export function AssistantPanel() {
   }
   // Its context and its SQL are a core dialect's, on a session that offers it.
   const dialect = has(connection.info, "assistant") ? connectionDialect(connection.info) : null;
-  if (!dialect) return <NotAvailable driver={connection.info.driver} what="The assistant" />;
+  if (!dialect) return <NotAvailable kind={sessionKind(connection.info)} what="The assistant" />;
   return (
     <AssistantChat key={connection.info.connectionId} connection={connection} dialect={dialect} />
   );

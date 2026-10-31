@@ -20,7 +20,7 @@ import {
   profileKeys,
   withHostKeyTrust,
 } from "@/features/connections/useConnections";
-import { notAvailableFor } from "@/features/drivers/catalog";
+import { notAvailableFor, sessionKind } from "@/features/drivers/catalog";
 import { editorOf } from "@/features/editor/language";
 import { baseName, readSqlFileGuarded } from "@/features/editor/files";
 import { openFileInNewQueryTab } from "@/features/editor/openSql";
@@ -376,7 +376,7 @@ export async function openSqlFile(connectionId: string, path: string): Promise<v
   const editor = editorOf(conn?.info);
   if (!editor) {
     toast.error("Could not open the file", {
-      description: conn ? notAvailableFor(conn.info.driver, "The SQL editor") : undefined,
+      description: conn ? notAvailableFor(sessionKind(conn.info), "The SQL editor") : undefined,
     });
     return;
   }

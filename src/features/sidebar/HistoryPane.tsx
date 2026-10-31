@@ -48,7 +48,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { notAvailableFor } from "@/features/drivers/catalog";
+import { notAvailableFor, sessionKind } from "@/features/drivers/catalog";
 import { insertSql, runQuery } from "@/features/editor/controller";
 import { editorOf } from "@/features/editor/language";
 import { HISTORY_RETENTION_LABELS } from "@/features/editor/editorSettings";
@@ -108,10 +108,10 @@ function hooks(qc: QueryClient, connectionId: string) {
 
 /** Opens `sql` in a new query tab of the connection; with `run`, runs it there. */
 function openEntry(qc: QueryClient, connection: OpenConnection, sql: string, run: boolean) {
-  const { connectionId, driver } = connection.info;
+  const { connectionId } = connection.info;
   const editor = editorOf(connection.info);
   if (!editor) {
-    toast.error(notAvailableFor(driver, "The SQL editor"));
+    toast.error(notAvailableFor(sessionKind(connection.info), "The SQL editor"));
     return;
   }
   const tabId = openSqlInNewQueryTab(connectionId, sql, editor.dialect);

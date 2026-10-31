@@ -20,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { jsonError, reformatJson } from "@/features/datagrid/editors/json";
+import { useLacksFields } from "@/features/datagrid/lacksFields";
 import { JsonEditorDialog } from "@/features/datagrid/editors/JsonEditorDialog";
 import { CodeView } from "@/features/datagrid/quicklook/CodeView";
 import { readSortKeys, writeSortKeys } from "@/features/datagrid/quicklook/jsonPrefs";
@@ -101,6 +102,7 @@ export function FieldBlock({
   onEdit,
   onViewCell,
 }: FieldBlockProps) {
+  const lacksFields = useLacksFields();
   /** The field's "Pretty JSON" (on: valid JSON shows indented; off: as stored). */
   const [prettyJson, setPrettyJson] = useState(true);
   /** "Sort keys" (remembered): the stored JSON's object entries in key order, for display only. */
@@ -174,7 +176,7 @@ export function FieldBlock({
       setError(null);
       return true;
     }
-    const result = parseFieldText(col, draft, value);
+    const result = parseFieldText(col, draft, value, lacksFields);
     if (!result.ok) {
       setError(result.error);
       return false;
@@ -193,7 +195,7 @@ export function FieldBlock({
       revert();
       return true;
     }
-    const result = parseFieldText(col, t, value);
+    const result = parseFieldText(col, t, value, lacksFields);
     if (result.ok) {
       stage(result.value);
       return true;
@@ -469,7 +471,7 @@ export function FieldBlock({
                       ? (indent) => {
                           const next = reformatJson(text, indent);
                           if (next === editText(value)) return revert();
-                          const result = parseFieldText(col, next, value);
+                          const result = parseFieldText(col, next, value, lacksFields);
                           if (result.ok) stage(result.value);
                         }
                       : undefined,
@@ -571,6 +573,7 @@ function ChoiceBox({
   className: string;
   onPick: (value: Value | null) => void;
 }) {
+  const lacksFields = useLacksFields();
   const choices = useMemo(() => choicesFor(col), [col]);
   const key = mixed ? null : choiceKeyOf(value, choices);
   const isNullish = mixed || value.t === "null" || value.t === "default";
@@ -582,7 +585,7 @@ function ChoiceBox({
         onChange={(e) => {
           const picked = e.target.value;
           if (picked === NULL_CHOICE) return onPick({ t: "null" });
-          const result = parseFieldText(col, picked, value);
+          const result = parseFieldText(col, picked, value, lacksFields);
           onPick(result.ok ? result.value : null);
         }}
         className={cn(className, "h-[26px] appearance-none pr-6", isNullish && "text-null italic")}

@@ -4,9 +4,11 @@ import {
   coreDialect,
   isCoreDriver,
   notAvailableFor,
+  sessionKind,
 } from "@/features/drivers/catalog";
 import type {
   ConnectionInfo,
+  DatabaseKind,
   Dialect,
   Driver,
   Feature,
@@ -86,6 +88,16 @@ export function dialectFor(connectionId: string | null, driver: Driver): Dialect
   const conn =
     connectionId === null ? undefined : useConnectionsStore.getState().byId[connectionId];
   return conn ? connectionDialect(conn.info) : coreDialect(driver);
+}
+
+/**
+ * `sessionKind` read outside React by the connection's id: the open session's database, the
+ * driver's own while it is not open.
+ */
+export function kindFor(connectionId: string | null, driver: Driver): DatabaseKind {
+  const conn =
+    connectionId === null ? undefined : useConnectionsStore.getState().byId[connectionId];
+  return sessionKind(conn?.info ?? { driver, capabilities: null });
 }
 
 /** What the sidebar and the tabs call the session's levels ("Collections", "Indexes"). */
@@ -173,6 +185,6 @@ export function allowFeature(connectionId: string, ...features: Feature[]): bool
   const caps = capsOf(conn.info);
   const missing = features.find((f) => !caps.features.includes(f));
   if (missing === undefined) return true;
-  toast.error(notAvailableFor(conn.info.driver, featureLabel(missing)));
+  toast.error(notAvailableFor(sessionKind(conn.info), featureLabel(missing)));
   return false;
 }

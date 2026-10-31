@@ -1,5 +1,6 @@
 import type {
   AppInfo,
+  ConnectionInfo,
   ConnectionProfile,
   DatabaseKind,
   Dialect,
@@ -176,9 +177,34 @@ export function coreDialect(driver: Driver): Dialect | null {
   return isCoreDriver(driver) ? driver : null;
 }
 
-/** What a core-only feature says on a connection of another driver. */
-export function notAvailableFor(driver: Driver, what: string): string {
-  return `${what} is not available for ${driverLabel(driver)} connections`;
+/**
+ * Whether a session's rows can lack a field (`Other{missing}`, `isMissingValue`): a driver beyond
+ * the core three. A core session's rows never do, whatever its flavor (Redshift reads its values
+ * with PostgreSQL's decoder), so its "missing" is a type's name.
+ */
+export function rowsCanLackFields(
+  info: Pick<ConnectionInfo, "driver"> | null | undefined,
+): boolean {
+  return !!info && !isCoreDriver(info.driver);
+}
+
+/**
+ * The database of the picker an open session is of: its flavor's (Redshift, MariaDB) when it found
+ * one at connect, else its driver's.
+ */
+export function sessionKind(info: Pick<ConnectionInfo, "driver" | "capabilities">): DatabaseKind {
+  const flavor = info.capabilities?.flavor ?? null;
+  return flavor === "mariadb"
+    ? databaseKind(info.driver, flavor)
+    : databaseKind(info.driver, null, flavor);
+}
+
+/**
+ * What a core-only feature says on a connection of another database, named as the picker names
+ * it (`sessionKind`: a Redshift session is not called a PostgreSQL one).
+ */
+export function notAvailableFor(kind: DatabaseKind, what: string): string {
+  return `${what} is not available for ${KIND_DESCRIPTORS[kind].label} connections`;
 }
 
 /**

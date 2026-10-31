@@ -7,9 +7,12 @@ export function isNull(v: Value): boolean {
 /**
  * A field the row does not have (`Other{missing}`: a document without it, an item without the
  * attribute). It is not NULL: it shows apart, and typing into it takes the column's type.
+ * `lacksFields`: the rows are a session's whose driver is not a core one (`rowsCanLackFields`);
+ * only those send the tag, and on a core session "missing" is the name of a type (a PostgreSQL
+ * type may be called that), shown and edited like any other.
  */
-export function isMissingValue(v: Value): boolean {
-  return v.t === "other" && v.v.ty === "missing";
+export function isMissingValue(v: Value, lacksFields: boolean): boolean {
+  return lacksFields && v.t === "other" && v.v.ty === "missing";
 }
 
 export function valuesEqual(a: Value, b: Value): boolean {
@@ -184,8 +187,8 @@ function bytesDisplay(b: { base64: string; len: number; truncated: boolean }): D
   return { text: `<blob ${formatBytes(b.len)}>`, cls: "bytes" };
 }
 
-/** Single-line display form for a grid cell. */
-export function displayValue(v: Value): DisplayValue {
+/** Single-line display form for a grid cell (`lacksFields`: see `isMissingValue`). */
+export function displayValue(v: Value, lacksFields = false): DisplayValue {
   switch (v.t) {
     case "null":
       return { text: "NULL", cls: "null" };
@@ -206,7 +209,7 @@ export function displayValue(v: Value): DisplayValue {
     case "array":
       return { text: pgArrayLiteral(v.v), cls: "json" };
     case "other":
-      return isMissingValue(v)
+      return isMissingValue(v, lacksFields)
         ? { text: MISSING_PLACEHOLDER, cls: "missing" }
         : { text: v.v.text, cls: "other" };
     case "date":
@@ -241,8 +244,8 @@ export const EMPTY_PLACEHOLDER = "EMPTY";
  * `EMPTY` instead of a blank cell. Display only: copy, export and editing keep using
  * `valueText` / `editText`, where an empty string stays empty.
  */
-export function cellDisplay(v: Value): CellDisplay {
-  const d = displayValue(v);
+export function cellDisplay(v: Value, lacksFields = false): CellDisplay {
+  const d = displayValue(v, lacksFields);
   if (d.cls === "null" || d.cls === "default" || d.cls === "missing")
     return { ...d, placeholder: true };
   if (d.text === "") return { text: EMPTY_PLACEHOLDER, cls: "empty", placeholder: true };
@@ -282,12 +285,20 @@ const DEC_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
  * The type an edit of an `Other` value keeps (an ObjectId stays an ObjectId); none for a missing
  * field, which takes the column's type like a NULL does.
  */
-function otherType(previous: Value | undefined): string | null {
-  return previous?.t === "other" && !isMissingValue(previous) ? previous.v.ty : null;
+function otherType(previous: Value | undefined, lacksFields: boolean): string | null {
+  return previous?.t === "other" && !isMissingValue(previous, lacksFields) ? previous.v.ty : null;
 }
 
-/** Turns editor text into a typed value; never uses `Number()` for integers/decimals. */
-export function parseEditText(kind: ValueKind, text: string, previous?: Value): ParseResult {
+/**
+ * Turns editor text into a typed value; never uses `Number()` for integers/decimals.
+ * `lacksFields`: see `isMissingValue`.
+ */
+export function parseEditText(
+  kind: ValueKind,
+  text: string,
+  previous?: Value,
+  lacksFields = false,
+): ParseResult {
   const t = text.trim();
   switch (kind) {
     case "int":
@@ -345,7 +356,7 @@ export function parseEditText(kind: ValueKind, text: string, previous?: Value): 
     case "array":
       return {
         ok: true,
-        value: { t: "other", v: { ty: otherType(previous) ?? "array", text } },
+        value: { t: "other", v: { ty: otherType(previous, lacksFields) ?? "array", text } },
       };
     case "bytes":
       return { ok: false, error: "Binary values cannot be edited inline" };
@@ -354,7 +365,7 @@ export function parseEditText(kind: ValueKind, text: string, previous?: Value): 
     case "other":
       return {
         ok: true,
-        value: { t: "other", v: { ty: otherType(previous) ?? kind, text } },
+        value: { t: "other", v: { ty: otherType(previous, lacksFields) ?? kind, text } },
       };
     default:
       return { ok: true, value: { t: "text", v: text } };

@@ -6,6 +6,7 @@ import { TableIcon } from "@/components/TypeIcon";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { sessionKind } from "@/features/drivers/catalog";
 import { NotAvailable } from "@/features/drivers/NotAvailable";
 import { invalidateSchema } from "@/features/structure/invalidate";
 import { registerToolTab, type ToolTabProps } from "@/features/tabs/toolTabs";
@@ -368,7 +369,7 @@ export function ItemOverviewTab({ tab, params }: ToolTabProps<OverviewParams>) {
   if (!info) return null;
   // Its operations generate a core dialect's SQL: the session's (none for a Redshift session).
   const dialect = connectionDialect(info);
-  if (!dialect) return <NotAvailable driver={info.driver} what="Item Overview" />;
+  if (!dialect) return <NotAvailable kind={sessionKind(info)} what="Item Overview" />;
   return (
     <ItemOverviewView
       key={`${tab.connectionId}:${params.schema}`}

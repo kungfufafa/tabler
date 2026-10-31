@@ -3,6 +3,7 @@ import { Info } from "lucide-react";
 import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { useGroupRef, usePanelRef, type Layout } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { sessionKind } from "@/features/drivers/catalog";
 import { NotAvailable } from "@/features/drivers/NotAvailable";
 import { actions, useAction } from "@/features/palette/actions";
 import { openAddToQueries } from "@/features/queries/dialogStore";
@@ -82,7 +83,10 @@ const isCollapsedLayout = (layout: Layout) => (layout.results ?? 100) < 0.01;
  * the editor and its bar.
  */
 export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
-  const driver = useConnectionsStore((s) => s.byId[tab.connectionId]?.info.driver);
+  const kind = useConnectionsStore((s) => {
+    const info = s.byId[tab.connectionId]?.info;
+    return info ? sessionKind(info) : null;
+  });
   // A core dialect, or the language of the session's lane (its SQL dialect or its console).
   const language = useEditorLanguage(tab.connectionId);
   if (language === undefined)
@@ -96,7 +100,7 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
     );
   if (language) return <QueryTabView tab={tab} dialect={language} />;
   // A session without an editor: the core lexers must not split or classify its statements.
-  return driver ? <NotAvailable driver={driver} what="The SQL editor" /> : null;
+  return kind ? <NotAvailable kind={kind} what="The SQL editor" /> : null;
 }
 
 function QueryTabView({

@@ -26,6 +26,7 @@ import { StructureTab } from "@/features/structure/StructureTab";
 import { TableTab } from "@/features/table-tab/TableTab";
 import { TabBody } from "@/features/tabs/TabContent";
 import { ipc, type ConnectionInfo, type Driver, type SqlDialectId } from "@/lib/ipc";
+import { isMac } from "@/lib/keys/combo";
 import { fakeMockDriver } from "@/lib/ipc/mock/drivers/fake";
 import { buildMockDrivers, registerMockDriver, resetMockBuild } from "@/lib/ipc/mock/drivers";
 import { mockProfiles } from "@/lib/ipc/mock/handlers";
@@ -70,6 +71,24 @@ vi.mock("@/features/datagrid/DataGrid", () => ({
   },
 }));
 const gridProps = () => grid.props!;
+
+/** The grid itself, for the tests that open its menus. */
+const { DataGrid: RealDataGrid } = await vi.importActual<
+  typeof import("@/features/datagrid/DataGrid")
+>("@/features/datagrid/DataGrid");
+
+const mod = { [isMac ? "metaKey" : "ctrlKey"]: true };
+
+/** jsdom has no layout: gives the grid a size so its virtualizers render rows and columns. */
+function sizeTheGrid() {
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(1200);
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(600);
+  vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(1200);
+  vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(600);
+  Element.prototype.setPointerCapture ??= () => {};
+  Element.prototype.hasPointerCapture ??= () => false;
+  Element.prototype.releasePointerCapture ??= () => {};
+}
 
 type Fake = "documents" | "sql";
 
@@ -447,6 +466,62 @@ describe("panes and menus reachable from either fake session (critique A10)", ()
         ),
       });
       await waitFor(() => expect(result.current).toBeTruthy());
+
+      // The grid's Copy As: its formats, and no SQL INSERTs in a dialect the session does not
+      // speak (they would be PostgreSQL's). The real grid, with the props the table tab gives it.
+      const tableView = wrap(<TableTab tab={tableTab(info, 10)} />);
+      await waitFor(() => expect(shownIds()).toHaveLength(10));
+      const props = gridProps();
+      tableView.unmount();
+      expect(props.copyContext).toBeUndefined();
+      sizeTheGrid();
+      const realGrid = wrap(<RealDataGrid {...props} active={false} />);
+      const first = document.querySelector<HTMLElement>('[data-cell][data-r="0"][data-c="0"]')!;
+      fireEvent.pointerDown(first, { button: 0 });
+      const scope = document.querySelector<HTMLElement>('[data-scope="grid"]')!;
+      fireEvent.keyDown(scope, { key: "ç", code: "KeyC", ...mod, altKey: true });
+      const offered = screen
+        .getAllByRole("menuitem")
+        .map((el) => el.textContent?.replace(/\d$/, "").trim());
+      expect(offered).toEqual([
+        "Plain text",
+        "JSON",
+        "HTML",
+        "Markdown",
+        "CSV",
+        "CSV with header",
+        "Raw",
+      ]);
+      realGrid.unmount();
+
+      // A view's Structure: never the core definition editor (`ViewDefinitionPane` edits a core
+      // dialect's CREATE VIEW). The SQL session shows it read-only with Show DDL, the document
+      // store its lane's view. The fakes have no views, so `orders` is described as one.
+      const describe = ipc.schema.table.bind(ipc.schema);
+      const asView = vi
+        .spyOn(ipc.schema, "table")
+        .mockImplementation(async (...args) => ({ ...(await describe(...args)), kind: "view" }));
+      wrap(
+        <StructureTab
+          tab={{
+            id: `v-${fake}`,
+            kind: "structure",
+            connectionId: info.connectionId,
+            table: { schema: null, name: "orders" },
+            title: "orders",
+          }}
+        />,
+      );
+      if (fake === "sql") {
+        expect(await screen.findByText(/Table \(read-only\)/)).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Show DDL" })).toBeInTheDocument();
+      } else {
+        expect(await screen.findByTestId("fake-structure")).toBeInTheDocument();
+      }
+      expect(screen.queryByLabelText("View definition")).toBeNull();
+      expect(screen.queryByRole("region", { name: "Definition" })).toBeNull();
+      if (fake === "sql") expect(asView).toHaveBeenCalled();
+      asView.mockRestore();
     });
   }
 });

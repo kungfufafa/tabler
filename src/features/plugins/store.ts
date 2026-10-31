@@ -1,6 +1,6 @@
 import { toast } from "sonner";
 import { create } from "zustand";
-import { notAvailableFor } from "@/features/drivers/catalog";
+import { notAvailableFor, sessionKind } from "@/features/drivers/catalog";
 import { allowFeature, connectionDialect, featureLabel } from "@/lib/caps";
 import { ipc, isMock, type PluginList } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
@@ -278,7 +278,7 @@ export function openDummyData(request: DummyDataRequest): void {
   if (!allowFeature(request.connectionId, "dummyData")) return;
   const conn = useConnectionsStore.getState().byId[request.connectionId];
   if (conn && !connectionDialect(conn.info)) {
-    toast.error(notAvailableFor(conn.info.driver, featureLabel("dummyData")));
+    toast.error(notAvailableFor(sessionKind(conn.info), featureLabel("dummyData")));
     return;
   }
   usePluginsStore.setState({ dummy: request });

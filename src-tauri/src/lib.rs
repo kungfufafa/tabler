@@ -506,10 +506,39 @@ pub mod shell {
     /// Where an exit request came from.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum ExitSource {
-        /// `RunEvent::ExitRequested` (an `exit()` call, or the last window went away).
+        /// `RunEvent::ExitRequested` with a code: an `exit()` call.
         App,
+        /// `RunEvent::ExitRequested` without a code: the runtime's last window went away.
+        LastWindowClosed,
         /// NSApp `terminate:` on macOS (see `terminate_guard`).
         System,
+    }
+
+    impl ExitSource {
+        /// The source of `RunEvent::ExitRequested { code, .. }`.
+        pub fn of_request(code: Option<i32>) -> ExitSource {
+            match code {
+                Some(_) => ExitSource::App,
+                None => ExitSource::LastWindowClosed,
+            }
+        }
+    }
+
+    /// `decide_exit` without the app. The last window going away is always let through: its own
+    /// close guard already ran, and with no window left no renderer can answer
+    /// `EVENT_QUIT_REQUESTED`, so keeping the app would leave a process without a window.
+    pub fn source_decision(
+        source: ExitSource,
+        confirmed: bool,
+        windows_open: usize,
+        unsaved: bool,
+        pending_for: Option<Duration>,
+    ) -> ExitDecision {
+        match source {
+            ExitSource::App => exit_decision(confirmed, windows_open, pending_for),
+            ExitSource::LastWindowClosed => ExitDecision::Allow,
+            ExitSource::System => terminate_decision(confirmed, windows_open, unsaved, pending_for),
+        }
     }
 
     /// Decides an exit request with the current quit state. When the renderer must be asked, the
@@ -522,19 +551,40 @@ pub mod shell {
         let now = Instant::now();
         let windows_open = app.webview_windows().len();
         let pending_for = quit.pending_for(now);
-        let decision = match source {
-            ExitSource::App => exit_decision(quit.is_confirmed(), windows_open, pending_for),
-            ExitSource::System => terminate_decision(
-                quit.is_confirmed(),
-                windows_open,
-                quit.has_unsaved(),
-                pending_for,
-            ),
-        };
+        let decision = source_decision(
+            source,
+            quit.is_confirmed(),
+            windows_open,
+            quit.has_unsaved(),
+            pending_for,
+        );
         if decision == ExitDecision::AskRenderer {
             quit.mark_requested(now);
         }
         decision
+    }
+
+    /// An exit request was handed to the renderer: when no window has answered it after
+    /// `RENDERER_ANSWER_TIMEOUT` (a hung or crashed webview), it is made again, and the timeout
+    /// lets it through. Without this an unanswered request kept the app running until another
+    /// request came, which may never happen.
+    pub fn retry_unanswered_exit<R: Runtime>(app: &AppHandle<R>, code: i32) {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(RENDERER_ANSWER_TIMEOUT).await;
+            let Some(quit) = app.try_state::<QuitState>() else {
+                return;
+            };
+            if unanswered(quit.pending_for(Instant::now())) {
+                log::warn!("the renderer did not answer the exit request: exiting");
+                app.exit(code);
+            }
+        });
+    }
+
+    /// Whether an exit request waiting `pending_for` has gone unanswered for good.
+    pub fn unanswered(pending_for: Option<Duration>) -> bool {
+        pending_for.is_some_and(|d| d >= RENDERER_ANSWER_TIMEOUT)
     }
 
     /// Managed state of the quit handshake with the renderer.
@@ -900,6 +950,63 @@ pub mod shell {
             state.set_unsaved(false);
             assert!(!state.has_unsaved());
         }
+
+        #[test]
+        fn never_holds_the_app_once_its_last_window_went_away() {
+            use ExitDecision::*;
+            // The runtime asks without a code when its last window is gone, `exit()` with one.
+            assert_eq!(ExitSource::of_request(None), ExitSource::LastWindowClosed);
+            assert_eq!(ExitSource::of_request(Some(0)), ExitSource::App);
+            // No renderer is left to answer: whatever the quit state says, the app ends. Even a
+            // window Tauri still lists (being torn down) or reported unsaved work must not keep a
+            // process without a window alive.
+            for windows_open in [0, 1] {
+                for unsaved in [false, true] {
+                    assert_eq!(
+                        source_decision(
+                            ExitSource::LastWindowClosed,
+                            false,
+                            windows_open,
+                            unsaved,
+                            None
+                        ),
+                        Allow
+                    );
+                }
+            }
+            // An `exit()` while a window is open still asks it, as before.
+            assert_eq!(
+                source_decision(ExitSource::App, false, 1, false, None),
+                AskRenderer
+            );
+            assert_eq!(
+                source_decision(ExitSource::System, false, 1, true, None),
+                AskRenderer
+            );
+            assert_eq!(
+                source_decision(ExitSource::System, false, 1, false, None),
+                Allow
+            );
+        }
+
+        #[test]
+        fn an_unanswered_request_ends_the_app_after_the_timeout() {
+            let state = QuitState::default();
+            let t0 = Instant::now();
+            assert!(!unanswered(state.pending_for(t0)));
+            state.mark_requested(t0);
+            assert!(!unanswered(state.pending_for(t0 + Duration::from_secs(1))));
+            let late = t0 + RENDERER_ANSWER_TIMEOUT;
+            assert!(unanswered(state.pending_for(late)));
+            // The retried request then goes through.
+            assert_eq!(
+                source_decision(ExitSource::App, false, 1, false, state.pending_for(late)),
+                ExitDecision::Allow
+            );
+            // A renderer that answered in time keeps the app (the user cancelled the dialog).
+            state.set_unsaved(true);
+            assert!(!unanswered(state.pending_for(late)));
+        }
     }
 }
 
@@ -1144,11 +1251,13 @@ pub fn run() {
         // Quit from the menu bar arrives as `app.quit` (a menu event), the red close button as the
         // window's close guard, Dock Quit / logout / shutdown as NSApp `terminate:`
         // (`shell::terminate_guard`); this catches exits requested any other way while a window
-        // is open.
-        RunEvent::ExitRequested { api, .. } => {
-            if shell::decide_exit(app, shell::ExitSource::App) == shell::ExitDecision::AskRenderer {
+        // is open. The runtime's own request when its last window went away is always let through.
+        RunEvent::ExitRequested { api, code, .. } => {
+            let source = shell::ExitSource::of_request(code);
+            if shell::decide_exit(app, source) == shell::ExitDecision::AskRenderer {
                 api.prevent_exit();
                 let _ = app.emit(shell::EVENT_QUIT_REQUESTED, ());
+                shell::retry_unanswered_exit(app, code.unwrap_or(0));
             }
         }
         // Exports still running never get to drop their temporary files.

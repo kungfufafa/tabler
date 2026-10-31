@@ -1,5 +1,7 @@
 import { Kbd } from "@/components/Kbd";
 import { Skeleton } from "@/components/ui/skeleton";
+import { LacksFieldsContext } from "@/features/datagrid/lacksFields";
+import { rowsCanLackFields } from "@/features/drivers/catalog";
 import { useDriverUi } from "@/features/drivers/registry";
 import { QueryTab } from "@/features/editor/QueryTab";
 import { ActionsEnabledContext } from "@/features/palette/actions";
@@ -80,6 +82,8 @@ function TableTabBody({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
  * shortcuts and menu items are off (`ActionsEnabledContext`) until that group gets the focus.
  */
 export function TabBody({ tab, focused = true }: { tab: Tab; focused?: boolean }) {
+  // Whether its rows can lack a field (`isMissingValue`): a session of a driver beyond the core ones.
+  const lacksFields = useConnectionsStore((s) => rowsCanLackFields(s.byId[tab.connectionId]?.info));
   let body;
   switch (tab.kind) {
     case "table":
@@ -95,7 +99,11 @@ export function TabBody({ tab, focused = true }: { tab: Tab; focused?: boolean }
       body = <ToolTabBody key={tab.id} tab={tab} focused={focused} />;
       break;
   }
-  return <ActionsEnabledContext.Provider value={focused}>{body}</ActionsEnabledContext.Provider>;
+  return (
+    <ActionsEnabledContext.Provider value={focused}>
+      <LacksFieldsContext.Provider value={lacksFields}>{body}</LacksFieldsContext.Provider>
+    </ActionsEnabledContext.Provider>
+  );
 }
 
 /** The tab a group of a split workspace shows (`group` set), else the active tab. */

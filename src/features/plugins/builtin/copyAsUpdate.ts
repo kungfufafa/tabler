@@ -1,5 +1,5 @@
 import { notAvailableFor } from "@/features/drivers/catalog";
-import { dialectFor } from "@/lib/caps";
+import { dialectFor, kindFor } from "@/lib/caps";
 import type { Dialect, TableRef, Value } from "@/lib/ipc";
 import { literal, qualify, quoteIdent } from "@/lib/sql/quote";
 import type { BuiltinPlugin, PluginRowData } from "../types";
@@ -59,7 +59,10 @@ export const COPY_AS_UPDATE: BuiltinPlugin = {
         // The session's core dialect: none for a Redshift session (PostgreSQL's driver).
         const dialect = dialectFor(inv.connectionId, inv.driver);
         if (!dialect) {
-          host.notify("Copy as UPDATE Statement", notAvailableFor(inv.driver, "Copy as UPDATE"));
+          host.notify(
+            "Copy as UPDATE Statement",
+            notAvailableFor(kindFor(inv.connectionId, inv.driver), "Copy as UPDATE"),
+          );
           return;
         }
         const sql = updateStatements(dialect, inv.item, rows);

@@ -8,7 +8,9 @@ import { formatCombo, isMac } from "@/lib/keys/combo";
 import { DEFAULT_PREFS, resetPrefsForTests } from "@/stores/prefs";
 import { useInspectorStore } from "@/stores/inspector";
 import { useUiStore } from "@/stores/ui";
+import { EMPTY_PLACEHOLDER, MISSING_PLACEHOLDER } from "@/lib/values";
 import { DataGrid, type DataGridProps } from "./DataGrid";
+import { LacksFieldsContext } from "./lacksFields";
 import {
   buildGridColumns,
   HEADER_H,
@@ -1513,7 +1515,10 @@ describe("DataGrid M8 grid features", () => {
       configurable: true,
       value: { writeText, readText: vi.fn() },
     });
-    const { grid, click } = setup(state, { active: false });
+    const { grid, click } = setup(state, {
+      active: false,
+      copyContext: { dialect: "postgres", schema: null, table: "people" },
+    });
     click(0, 1);
     fireEvent.keyDown(grid, { key: "ç", code: "KeyC", ...mod, altKey: true });
     const names = screen
@@ -1535,6 +1540,27 @@ describe("DataGrid M8 grid features", () => {
     });
     expect(writeText).toHaveBeenLastCalledWith(expect.stringContaining("<td>Ann</td>"));
     expect(toast.success).toHaveBeenLastCalledWith("Copied 1 row as HTML");
+  });
+
+  it("offers no SQL INSERTs without a core dialect to write them in, and numbers the rest", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText, readText: vi.fn() },
+    });
+    const { grid, click } = setup(state, { active: false });
+    click(0, 1);
+    fireEvent.keyDown(grid, { key: "ç", code: "KeyC", ...mod, altKey: true });
+    const names = screen
+      .getAllByRole("menuitem")
+      .map((el) => el.textContent?.replace(/\d$/, "").trim());
+    expect(names).not.toContain("SQL Insert statement");
+    expect(names.at(-1)).toBe("Raw");
+    // 7 is Raw now.
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "7" });
+    });
+    expect(toast.success).toHaveBeenLastCalledWith("Copied 1 row as raw values");
   });
 
   it("Copy Rows As ▸ CSV follows Settings ▸ CSV default options", async () => {
@@ -2387,5 +2413,35 @@ describe("DataGrid paste of CSV text", () => {
       type: "setValues",
       edits: [{ r: 0, c: 1, value: text("Zed") }],
     });
+  });
+});
+
+describe("DataGrid missing fields", () => {
+  // `Other{missing}`: a document without the field, or a PostgreSQL value of a type so named.
+  const other: Value = { t: "other", v: { ty: "missing", text: "" } };
+  const typed: Value = { t: "other", v: { ty: "missing", text: "(1,2)" } };
+  const page: ViewRow[] = [{ key: "pk:1", cells: [{ t: "int", v: 1 }, other, typed] }];
+  const state: ColumnState = { widths: {}, order: [], hidden: [] };
+  const grid = () => (
+    <DataGrid
+      columns={[col("id", "int"), col("status", "other"), col("shape", "other")]}
+      rowCount={1}
+      getRow={(i) => page[i]}
+      columnState={state}
+    />
+  );
+  const cell = (c: number) =>
+    document.querySelector<HTMLElement>(`[data-cell][data-r="0"][data-c="${c}"]`)!;
+
+  it("shows a missing field apart on a session whose rows can lack one", () => {
+    render(<LacksFieldsContext.Provider value>{grid()}</LacksFieldsContext.Provider>);
+    expect(cell(1)).toHaveTextContent(MISSING_PLACEHOLDER);
+    expect(cell(2)).toHaveTextContent(MISSING_PLACEHOLDER);
+  });
+
+  it("shows a value of a type named missing as itself on a core session", () => {
+    render(grid());
+    expect(cell(1)).toHaveTextContent(EMPTY_PLACEHOLDER);
+    expect(cell(2)).toHaveTextContent("(1,2)");
   });
 });

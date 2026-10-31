@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Toggle } from "@/components/ui/toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useLacksFields } from "@/features/datagrid/lacksFields";
 import type { CellPos, GridColumn, ViewRow } from "@/features/datagrid/types";
 import { formatCombo } from "@/lib/keys/combo";
 import { cn } from "@/lib/utils";
@@ -110,6 +111,7 @@ export function FindBar({
   onClose,
 }: FindBarProps) {
   const find = useFind(tabId);
+  const lacksFields = useLacksFields();
   const findRef = useRef<HTMLInputElement>(null);
   const text = useDeferredValue(find.text);
   const options: FindOptions = {
@@ -129,8 +131,10 @@ export function FindBar({
   );
   const matches = useMemo(
     () =>
-      compiled.kind === "ok" ? findMatches(rowCount, getRow, visibleColumns, compiled.matcher) : [],
-    [compiled, rowCount, getRow, visibleColumns],
+      compiled.kind === "ok"
+        ? findMatches(rowCount, getRow, visibleColumns, compiled.matcher, lacksFields)
+        : [],
+    [compiled, rowCount, getRow, visibleColumns, lacksFields],
   );
 
   // The current match follows the cell it was on as rows stream in or edits change the matches.
@@ -176,7 +180,14 @@ export function FindBar({
     if (compiled.kind !== "ok" || current === null) return;
     const cell = matches[current];
     if (!cell) return;
-    const plan = planReplace([cell], getRow, columns, compiled.matcher, find.replacement);
+    const plan = planReplace(
+      [cell],
+      getRow,
+      columns,
+      compiled.matcher,
+      find.replacement,
+      lacksFields,
+    );
     if (plan.edits.length === 0) {
       if (plan.skipped > 0)
         toast.message("This value can't be replaced", {
@@ -192,7 +203,14 @@ export function FindBar({
   };
   const replaceAll = () => {
     if (compiled.kind !== "ok") return;
-    const plan = planReplace(matches, getRow, columns, compiled.matcher, find.replacement);
+    const plan = planReplace(
+      matches,
+      getRow,
+      columns,
+      compiled.matcher,
+      find.replacement,
+      lacksFields,
+    );
     // Refused (another result holds changes, the edit target changed): its toast says so.
     if (plan.edits.length > 0 && !onReplace(plan.edits)) return;
     const n = plan.edits.length;

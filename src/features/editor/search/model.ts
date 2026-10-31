@@ -77,7 +77,7 @@ export function compileQuery(q: FindQuery): Compiled {
  * breaks and spacing (the grid folds them onto one line). NULL / DEFAULT placeholders and binary
  * values never match.
  */
-export function searchText(v: Value): string | null {
+export function searchText(v: Value, lacksFields = false): string | null {
   switch (v.t) {
     case "null":
     case "default":
@@ -88,7 +88,7 @@ export function searchText(v: Value): string | null {
     case "json":
       return v.v;
     default:
-      return displayValue(v).text;
+      return displayValue(v, lacksFields).text;
   }
 }
 
@@ -103,6 +103,7 @@ export function findMatches(
   getRow: (r: number) => ViewRow | undefined,
   columns: number | readonly number[],
   matcher: Matcher,
+  lacksFields = false,
 ): CellPos[] {
   const cols = typeof columns === "number" ? Array.from({ length: columns }, (_, c) => c) : columns;
   const out: CellPos[] = [];
@@ -111,7 +112,7 @@ export function findMatches(
     if (!row) continue;
     for (const c of cols) {
       const cell = row.cells[c];
-      const text = cell ? searchText(cell) : null;
+      const text = cell ? searchText(cell, lacksFields) : null;
       if (text === null || !matcher.test(text)) continue;
       out.push({ r, c });
       if (out.length >= MAX_MATCHES) return out;
@@ -180,6 +181,7 @@ export function planReplace(
   columns: readonly GridColumn[],
   matcher: Matcher,
   replacement: string,
+  lacksFields = false,
 ): ReplacePlan {
   const edits: ReplaceEdit[] = [];
   let skipped = 0;
@@ -187,14 +189,14 @@ export function planReplace(
     const row = getRow(r);
     const column = columns[c];
     const cell = row?.cells[c];
-    const text = cell ? searchText(cell) : null;
+    const text = cell ? searchText(cell, lacksFields) : null;
     if (!row || !column?.editable || row.status === "deleted" || !cell || text === null) {
       skipped++;
       continue;
     }
     const next = matcher.replace(text, replacement);
     if (next === text) continue;
-    const parsed = parseEditText(column.kind, next, cell);
+    const parsed = parseEditText(column.kind, next, cell, lacksFields);
     if (!parsed.ok) {
       skipped++;
       continue;

@@ -98,13 +98,14 @@ export function pastedValue(
   text: string,
   previous: Value = NULL,
   marker?: CopyMarker,
+  lacksFields = false,
 ): Value | null {
   if (marker === "null") return col.nullable ? NULL : null;
   if (marker === "default") return col.hasDefault ? { t: "default" } : null;
   if (text === "" && col.nullable && !TEXT_LIKE.has(col.kind)) return NULL;
   if (col.kind === "enum" && (col.enumValues?.length ?? 0) > 0 && !col.enumValues!.includes(text))
     return null;
-  const parsed = parseCellText(col, text, previous);
+  const parsed = parseCellText(col, text, previous, lacksFields);
   return parsed.ok ? parsed.value : null;
 }
 

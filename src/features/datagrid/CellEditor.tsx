@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { Value } from "@/lib/ipc";
 import { parseCellText } from "./cellText";
+import { useLacksFields } from "./lacksFields";
 import { ChoiceSelect } from "./editors/ChoiceSelect";
 import { InlineInput } from "./editors/InlineInput";
 import { reformatJson } from "./editors/json";
@@ -85,6 +86,7 @@ export function CellEditor({
   const [caret, setCaret] = useState<CaretPlacement>(typed ? "end" : "all");
   const [error, setError] = useState<string | null>(null);
   const done = useRef(false);
+  const lacksFields = useLacksFields();
   const anchorRef = useRef<HTMLDivElement>(null);
 
   const commitValue = (value: Value, exit: EditorExit) => {
@@ -110,7 +112,7 @@ export function CellEditor({
       return true;
     }
     // NOW() / CURRENT_TIMESTAMP in a date or time cell, hex in a binary one.
-    const result = parseCellText(col, t, previous);
+    const result = parseCellText(col, t, previous, lacksFields);
     if (!result.ok) {
       setError(result.error);
       if (exit === "blur" && !keepOpen) cancel();

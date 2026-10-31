@@ -94,14 +94,19 @@ export function clearedPlaceholder(
  * booleans, binary…) always, as pasting an empty cell does. Enum labels must be one of the
  * column's labels when known.
  */
-export function parseFieldText(col: GridColumn, text: string, previous: Value): ParseResult {
+export function parseFieldText(
+  col: GridColumn,
+  text: string,
+  previous: Value,
+  lacksFields = false,
+): ParseResult {
   if (text === "" && col.nullable && !TEXT_LIKE.has(col.kind) && !AUTO_NULL_KINDS.has(col.kind))
     return { ok: true, value: { t: "null" } };
   if (emptyBecomesNull(col, text)) return { ok: true, value: { t: "null" } };
   const labels = col.enumValues ?? [];
   if (col.kind === "enum" && labels.length > 0 && !labels.includes(text))
     return { ok: false, error: `Pick one of: ${labels.join(", ")}` };
-  return parseCellText(col, text, previous);
+  return parseCellText(col, text, previous, lacksFields);
 }
 
 /** Lower-cased search match on the column name. */

@@ -9,7 +9,7 @@ import { openExportTables } from "@/features/export/store";
 import { openImport, type ImportKind } from "@/features/import/store";
 import { actions } from "@/features/palette/actions";
 import { openGroupDialog } from "@/features/sidebar/groups";
-import { dialectFor } from "@/lib/caps";
+import { dialectFor, kindFor } from "@/lib/caps";
 import {
   ipc,
   toIpcError,
@@ -47,7 +47,7 @@ export interface ObjectContext {
 function requireSessionDialect(ctx: ObjectContext, what = "This"): Dialect {
   const dialect = dialectFor(ctx.connectionId, ctx.driver);
   if (dialect) return dialect;
-  throw new Error(notAvailableFor(ctx.driver, what));
+  throw new Error(notAvailableFor(kindFor(ctx.connectionId, ctx.driver), what));
 }
 
 export const refOf = (t: Pick<TableSummary, "schema" | "name">): TableRef => ({
@@ -146,7 +146,8 @@ export function runNew(ctx: ObjectContext, what: NewTarget, createTable?: () => 
       if (createTable) createTable();
       else {
         const dialect = dialectFor(ctx.connectionId, ctx.driver);
-        if (!dialect) toast.error(notAvailableFor(ctx.driver, "Creating a table"));
+        if (!dialect)
+          toast.error(notAvailableFor(kindFor(ctx.connectionId, ctx.driver), "Creating a table"));
         else
           openObjectDialog({
             connectionId: ctx.connectionId,

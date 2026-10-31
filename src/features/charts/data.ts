@@ -52,7 +52,8 @@ export function toNumber(v: Value | undefined): number | null {
   }
 }
 
-const categoryText = (v: Value | undefined) => (v ? displayValue(v).text : "");
+const categoryText = (v: Value | undefined, lacksFields: boolean) =>
+  v ? displayValue(v, lacksFields).text : "";
 
 /** The column named `name` (exactly, else ignoring case). */
 function findColumn(columns: readonly ResultColumn[], name: string): number {
@@ -79,6 +80,7 @@ export function buildChartData(
   directive: ChartDirective,
   columns: readonly ResultColumn[],
   rows: readonly Value[][],
+  lacksFields = false,
 ): ChartBuild {
   if (columns.length === 0) return { ok: false, error: "The result has no columns." };
   const notes: string[] = [];
@@ -111,7 +113,7 @@ export function buildChartData(
   }
   const xName = columns[xi]!.name;
   if (directive.kind === "pie")
-    return { ok: true, data: pieData(xi, yi[0]!, columns, rows, notes) };
+    return { ok: true, data: pieData(xi, yi[0]!, columns, rows, notes, lacksFields) };
 
   let picked = sampleIndexes(rows.length);
   if (picked.length < rows.length)
@@ -128,7 +130,7 @@ export function buildChartData(
       xValues = order.map((i) => xs[i]!);
     }
   }
-  const categories = picked.map((r) => categoryText(rows[r]?.[xi]));
+  const categories = picked.map((r) => categoryText(rows[r]?.[xi], lacksFields));
   const series = yi.map((c) => ({
     name: columns[c]!.name,
     values: picked.map((r) => toNumber(rows[r]?.[c])),
@@ -145,6 +147,7 @@ function pieData(
   columns: readonly ResultColumn[],
   rows: readonly Value[][],
   notes: string[],
+  lacksFields: boolean,
 ): ChartData {
   const slices: { label: string; value: number }[] = [];
   let skipped = 0;
@@ -154,7 +157,7 @@ function pieData(
       skipped++;
       continue;
     }
-    slices.push({ label: categoryText(row[xi]), value });
+    slices.push({ label: categoryText(row[xi], lacksFields), value });
   }
   if (skipped > 0) notes.push(`${plural(skipped, "row")} without a positive value left out.`);
   slices.sort((a, b) => b.value - a.value);

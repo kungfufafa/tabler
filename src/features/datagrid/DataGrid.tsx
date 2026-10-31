@@ -88,6 +88,7 @@ import {
 import { GeometryPreview } from "./geometry/GeometryView";
 import { parseWkt } from "./geometry/wkt";
 import { GridCell } from "./GridCell";
+import { useLacksFields } from "./lacksFields";
 import {
   renderGridMenuExtensions,
   setActiveGridMenuContext,
@@ -201,7 +202,10 @@ export interface DataGridProps {
    * hold its other columns.
    */
   onOpenFk?: (column: GridColumn, value: Value, fk?: FkRef, row?: readonly Value[]) => void;
-  /** Dialect/table used by "Copy as INSERT". */
+  /**
+   * Dialect/table used by "Copy as INSERT"; without one (a session of no core dialect) the grid
+   * offers no INSERTs rather than write PostgreSQL's.
+   */
   copyContext?: CopyContext;
   /** Enables inline editing and row actions. */
   editable?: boolean;
@@ -296,6 +300,11 @@ const COPY_CHOICES: CopyChoice[] = [
   { label: "Raw", short: "raw values", format: "raw" },
 ];
 
+/** The Copy As choices a grid offers: SQL INSERTs only with a core dialect to write them in. */
+function copyChoicesFor(copyContext: CopyContext | undefined): CopyChoice[] {
+  return copyContext ? COPY_CHOICES : COPY_CHOICES.filter((c) => c.format !== "insert");
+}
+
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** Most distinct values an IN / NOT IN quick filter collects from the selection. */
@@ -313,8 +322,8 @@ function MenuKeys({ id }: { id: ActionId }) {
 }
 
 /** Short single-line form of a value for menu labels. */
-function shortValue(v: Value): string {
-  const text = displayValue(v).text;
+function shortValue(v: Value, lacksFields: boolean): string {
+  const text = displayValue(v, lacksFields).text;
   return text.length > 24 ? `${text.slice(0, 23)}…` : text;
 }
 
@@ -331,6 +340,7 @@ function QuickFilterItems({
   onPick: (filter: QuickFilter) => void;
 }) {
   const [values] = useState(collect);
+  const lacksFields = useLacksFields();
   const name = column.name;
   const pick = (op: QuickFilter["op"], vals: Value[] = []) => onPick({ column, op, values: vals });
   return (
@@ -343,10 +353,10 @@ function QuickFilterItems({
       ) : (
         <>
           <ContextMenuItem onSelect={() => pick("eq", [value])}>
-            {name} = {shortValue(value)}
+            {name} = {shortValue(value, lacksFields)}
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => pick("ne", [value])}>
-            {name} ≠ {shortValue(value)}
+            {name} ≠ {shortValue(value, lacksFields)}
           </ContextMenuItem>
         </>
       )}
@@ -507,6 +517,9 @@ export function DataGrid({
     },
     [onColumnStateChange],
   );
+  // `Other{missing}` is a missing field only on a session that sends one (`isMissingValue`).
+  const lacksFields = useLacksFields();
+  const copyChoices = useMemo(() => copyChoicesFor(copyContext), [copyContext]);
   // General ▸ Table Data ▸ Auto expand text column.
   useAutoExpandColumns({ columns, columnState, setColumnState, rowCount, loading, getRow });
   // `cols` are the visible columns in display order; `src[c]` maps a visual column to its index in
@@ -1159,6 +1172,7 @@ export function DataGrid({
           t.text,
           row.cells[source] ?? NULL,
           markers?.get(`${t.br}:${t.bc}`),
+          lacksFields,
         );
         if (!value) {
           skipped++;
@@ -1174,7 +1188,7 @@ export function DataGrid({
       if (edits.length > 0) toast.success(msg);
       else toast.message(msg);
     },
-    [canPaste, readOnlyNotice, rowCount, cols, getRow, src, onAction],
+    [canPaste, readOnlyNotice, rowCount, cols, getRow, src, onAction, lacksFields],
   );
   const paste = useCallback(async () => {
     if (!canPaste) {
@@ -1224,7 +1238,7 @@ export function DataGrid({
       const texts: string[] = [];
       for (const vr of rowVirtualizer.getVirtualItems()) {
         const row = getRow(vr.index);
-        if (row) texts.push(cellDisplay(valueAt(row, vi)).text);
+        if (row) texts.push(cellDisplay(valueAt(row, vi), lacksFields).text);
       }
       const w = fitWidth(col, texts, gridFontSize) + (fksOf(col).length > 0 ? 16 : 0);
       setColumnState({
@@ -1241,6 +1255,7 @@ export function DataGrid({
       setColumnState,
       columnState,
       gridFontSize,
+      lacksFields,
     ],
   );
 
@@ -1686,7 +1701,7 @@ export function DataGrid({
     // Preferences ▸ Table Data ▸ Allows expansion Tool Tips: the whole value of a cut-off cell.
     if (expansionTips) {
       const text = el.firstElementChild as HTMLElement | null;
-      const d = cellDisplay(value);
+      const d = cellDisplay(value, lacksFields);
       if (text && text.scrollWidth > text.clientWidth && !d.placeholder)
         el.title = d.text.slice(0, 2000);
       else el.removeAttribute("title");
@@ -2136,7 +2151,7 @@ export function DataGrid({
                   onKeyDown={(e) => {
                     e.stopPropagation();
                     const n = Number(e.key);
-                    const choice = Number.isInteger(n) ? COPY_CHOICES[n - 1] : undefined;
+                    const choice = Number.isInteger(n) ? copyChoices[n - 1] : undefined;
                     if (choice && !e.metaKey && !e.ctrlKey && !e.altKey) {
                       e.preventDefault();
                       setCopyMenu(false);
@@ -2147,7 +2162,7 @@ export function DataGrid({
                   <DropdownMenuLabel className="text-muted-foreground py-1 text-[11px] font-medium">
                     Copy {plural(copyRows, "row")} as
                   </DropdownMenuLabel>
-                  {COPY_CHOICES.map((choice, i) => (
+                  {copyChoices.map((choice, i) => (
                     <DropdownMenuItem
                       key={choice.label}
                       className="text-[12.5px]"
@@ -2518,7 +2533,7 @@ export function DataGrid({
                 <MenuKeys id="grid.copy-as" />
               </ContextMenuSubTrigger>
               <ContextMenuSubContent className="w-48">
-                {COPY_CHOICES.map((choice) => (
+                {copyChoices.map((choice) => (
                   <ContextMenuItem key={choice.label} onSelect={() => void copyAs(choice)}>
                     {choice.label}
                   </ContextMenuItem>
@@ -2533,7 +2548,7 @@ export function DataGrid({
                 Copy Selected Cells As
               </ContextMenuSubTrigger>
               <ContextMenuSubContent className="w-48">
-                {COPY_CHOICES.map((choice) => (
+                {copyChoices.map((choice) => (
                   <ContextMenuItem key={choice.label} onSelect={() => void copyAs(choice, "cells")}>
                     {choice.label}
                   </ContextMenuItem>
