@@ -12,13 +12,15 @@
 //! text under a binary collation, so the plain variants are case-sensitive and the `…Case` ones
 //! (`LOWER(…) LIKE LOWER(…)`) are not, whatever the column's collation.
 //!
-//! The statements the driver sends for its own work (session setup, `USE`, `KILL`, showplan) are
-//! written here too, so its SQL text comes from sqlgen like every other.
+//! The statements the driver sends for its own work (session setup, the editor's probe, `KILL`,
+//! showplan, Show DDL) are written here too, so its SQL text comes from sqlgen like every other.
 
 use crate::error::AppError;
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::dialect::SqlDialect;
-use crate::sqlgen::dialect::lex::{ClassifyRules, LexProfile, PLAIN, TokenKind, scan};
+use crate::sqlgen::dialect::lex::{
+    ClassifyRules, LexProfile, PLAIN, Scan, Token, TokenKind, is_ident_start, scan,
+};
 use crate::sqlgen::dialect::spec::{
     DialectSpec, LimitOne, NullSafeEq, NullsSort, Paging, PlaceholderStyle, RedactRule, Returning,
     SqlHooks, SqlKnobs, bracketed, explain_unsupported, hex_0x, national_quoted, ph_at_p,
@@ -26,7 +28,7 @@ use crate::sqlgen::dialect::spec::{
 use crate::sqlgen::portable::classify;
 use crate::types::mutate::{Clock, ServerExpr};
 use crate::types::query::ExplainMode;
-use crate::types::schema::{ColumnMeta, ValueKind};
+use crate::types::schema::{ColumnMeta, IndexMeta, TableMeta, ValueKind};
 
 pub static LEX: LexProfile = LexProfile {
     ident_quotes: &[('[', ']'), ('"', '"')],
@@ -212,22 +214,222 @@ fn server_expr(expr: ServerExpr, kind: ValueKind) -> Option<String> {
 }
 
 /// Whether a batch switches the session's database: a `USE` anywhere in its code, since no
-/// terminator has to come before it (`SELECT 1 USE other`). `USE HINT` and `USE PLAN` are query
-/// hints.
+/// terminator has to come before it (`SELECT 1 USE other`), unless it opens a `USE HINT` or
+/// `USE PLAN` query hint (`query_hint_uses`).
 pub fn switches_database(sql: &str) -> bool {
     let s = scan(&LEX, PLAIN, sql);
-    let words: Vec<String> = s
-        .tokens
+    let code = code_tokens(&s);
+    let hints = query_hint_uses(&s, &code);
+    code.iter()
+        .zip(hints)
+        .any(|(t, hint)| !hint && t.kind == TokenKind::Word && s.upper(t) == "USE")
+}
+
+/// The tokens of a scan that are code: no space, no comment.
+fn code_tokens(s: &Scan) -> Vec<&Token> {
+    s.tokens
         .iter()
         .filter(|t| !matches!(t.kind, TokenKind::Space | TokenKind::Comment))
-        .map(|t| match t.kind {
-            TokenKind::Word => s.upper(t),
-            _ => String::new(),
+        .collect()
+}
+
+/// For each of `code`, whether it is the `USE` of a `USE HINT` or `USE PLAN` query hint: one
+/// that opens an item of an `OPTION (…)` list. Anywhere else `USE plan` switches to a database
+/// named plan.
+fn query_hint_uses(s: &Scan, code: &[&Token]) -> Vec<bool> {
+    let word = |t: Option<&&Token>, want: &[&str]| {
+        t.is_some_and(|t| t.kind == TokenKind::Word && want.contains(&s.upper(t).as_str()))
+    };
+    let mut hints = vec![false; code.len()];
+    // For each open parenthesis, whether it opens an OPTION list.
+    let mut parens: Vec<bool> = Vec::new();
+    for (i, t) in code.iter().enumerate() {
+        let before = i.checked_sub(1).and_then(|k| code.get(k));
+        if s.is_punct(t, '(') {
+            parens.push(word(before, &["OPTION"]));
+        } else if s.is_punct(t, ')') {
+            parens.pop();
+        } else if parens.last() == Some(&true)
+            && word(Some(t), &["USE"])
+            && before.is_some_and(|b| s.is_punct(b, '(') || s.is_punct(b, ','))
+            && word(code.get(i + 1), &["HINT", "PLAN"])
+            && let Some(hint) = hints.get_mut(i)
+        {
+            *hint = true;
+        }
+    }
+    hints
+}
+
+/// Whether a text holds a statement no word of `RULES` names: an ODBC call escape (`{call p}`,
+/// `{? = call p}`), which runs a procedure, a CALL, or the old DUMP and LOAD (BACKUP and
+/// RESTORE). `RULES` stays the shared test spec's (`portable::testing::TSQL_RULES`), so the
+/// session checks these besides the classifier. A word a number may hide (`1e0DUMP`) counts, and
+/// so does a scan another reader may end elsewhere.
+pub fn hides_statement(sql: &str) -> bool {
+    const WORDS: &[&str] = &["CALL", "DUMP", "LOAD"];
+    let s = scan(&LEX, PLAIN, sql);
+    if s.ambiguous {
+        return true;
+    }
+    let code = code_tokens(&s);
+    let digits = |i: usize| {
+        code.get(i).is_some_and(|t| {
+            t.kind == TokenKind::Word && s.text(t).starts_with(|c: char| c.is_ascii_digit())
         })
-        .collect();
-    words.iter().enumerate().any(|(i, w)| {
-        w == "USE" && !matches!(words.get(i + 1).map(String::as_str), Some("HINT" | "PLAN"))
+    };
+    code.iter().enumerate().any(|(i, t)| {
+        if s.is_punct(t, '{') {
+            // `{call p}` is a CALL word too.
+            return code.get(i + 1).is_some_and(|n| s.is_punct(n, '?'));
+        }
+        if t.kind != TokenKind::Word {
+            return false;
+        }
+        let upper = s.upper(t);
+        let folded = s.text(t).to_uppercase();
+        let number = digits(i)
+            || (i >= 2 && code.get(i - 1).is_some_and(|d| s.is_punct(d, '.')) && digits(i - 2));
+        let mut words = vec![upper.as_str(), folded.as_str()];
+        if number {
+            words.extend(hidden_in_number(&upper));
+            words.extend(hidden_in_number(&folded));
+        }
+        words.into_iter().any(|w| WORDS.contains(&w))
     })
+}
+
+/// Whether a batch is one INSERT, UPDATE, DELETE or MERGE, so that `@@ROWCOUNT` after it counts
+/// that statement's rows. Statements need no terminator, so every word of `RULES.writes` (and a
+/// `USE`) must be one the statement itself has where it stands: its first word, INTO right after
+/// an INSERT or MERGE, the one SET outside parentheses an UPDATE must have (`UPDATE STATISTICS t`
+/// has none), and a MERGE's `THEN UPDATE SET`, `THEN INSERT` and `THEN DELETE`. So must a read
+/// that could follow it outside parentheses (`DELETE FROM t SELECT 1`): a SELECT only as an
+/// INSERT's rows (before any VALUES, or after a set operator), a WITH only before a table hint,
+/// `TIES`, `ROLLUP` or `CUBE`, a FETCH only after OFFSET's `ROWS`, never a LINENO. A word a
+/// number may hide (`1e0SHUTDOWN`), a scan another reader may end elsewhere (`Scan::ambiguous`)
+/// or code after a `;` means no, and so does a statement `hides_statement` finds; unsure means
+/// no: the batch then reports no count.
+pub fn is_lone_dml(sql: &str) -> bool {
+    const DML: &[&str] = &["INSERT", "UPDATE", "DELETE", "MERGE"];
+    let s = scan(&LEX, PLAIN, sql);
+    if s.ambiguous || hides_statement(sql) {
+        return false;
+    }
+    let code = code_tokens(&s);
+    let hints = query_hint_uses(&s, &code);
+    if let Some(end) = code.iter().position(|t| s.is_punct(t, ';'))
+        && code[end..].iter().any(|t| !s.is_punct(t, ';'))
+    {
+        return false;
+    }
+    let word = |i: usize| {
+        code.get(i)
+            .filter(|t| t.kind == TokenKind::Word)
+            .map(|t| s.upper(t))
+    };
+    let Some(first) = word(0).filter(|w| DML.contains(&w.as_str())) else {
+        return false;
+    };
+    let digits = |i: usize| word(i).is_some_and(|w| w.starts_with(|c: char| c.is_ascii_digit()));
+    let stop = |w: &str| RULES.writes.contains(&w) || RULES.inspections.contains(&w);
+    // Words of a read that may follow the statement, which it may still hold itself.
+    let read = |w: &str| RULES.queries.contains(&w) || matches!(w, "FETCH" | "LINENO");
+    let mut depth = 0usize;
+    let mut set_seen = false;
+    let mut rows_seen = false;
+    let mut values_seen = false;
+    for (i, t) in code.iter().enumerate().skip(1) {
+        if s.is_punct(t, '(') {
+            depth += 1;
+        } else if s.is_punct(t, ')') {
+            depth = depth.saturating_sub(1);
+        }
+        let Some(w) = word(i) else {
+            continue;
+        };
+        // What else the server may read here, as the classifier counts it: a number may end
+        // before any letter of its word (`1e0SHUTDOWN`, `1.e5SET`), and a non-ASCII word counts
+        // upper-cased by Unicode rules too.
+        let number = digits(i) || (i >= 2 && s.is_punct(code[i - 1], '.') && digits(i - 2));
+        let text = s.text(t);
+        let folded = (!text.is_ascii()).then(|| text.to_uppercase());
+        let mut others: Vec<&str> = folded.as_deref().into_iter().collect();
+        if number {
+            others.extend(hidden_in_number(&w));
+            others.extend(folded.as_deref().into_iter().flat_map(hidden_in_number));
+        }
+        if others
+            .into_iter()
+            .any(|o| stop(o) || (depth == 0 && read(o)))
+        {
+            return false;
+        }
+        let after = |back: usize, want: &str| {
+            i.checked_sub(back)
+                .is_some_and(|k| word(k).as_deref() == Some(want))
+        };
+        if depth == 0 && read(&w) {
+            let set_operator = after(1, "UNION")
+                || after(1, "EXCEPT")
+                || after(1, "INTERSECT")
+                || (after(1, "ALL") && after(2, "UNION"));
+            let owned = match w.as_str() {
+                "SELECT" => first == "INSERT" && !values_seen && (!rows_seen || set_operator),
+                "WITH" => {
+                    code.get(i + 1).is_some_and(|n| s.is_punct(n, '('))
+                        || matches!(word(i + 1).as_deref(), Some("TIES" | "ROLLUP" | "CUBE"))
+                }
+                "FETCH" => after(1, "ROWS") || after(1, "ROW"),
+                _ => false,
+            };
+            if !owned {
+                return false;
+            }
+            rows_seen |= w == "SELECT";
+        }
+        values_seen |= depth == 0 && w == "VALUES";
+        // Query hints, not a switch of database.
+        if hints.get(i) == Some(&true) {
+            continue;
+        }
+        if !stop(&w) {
+            continue;
+        }
+        let allowed = match (first.as_str(), w.as_str()) {
+            ("INSERT" | "MERGE", "INTO") => i == 1,
+            ("UPDATE", "SET") if depth == 0 && !set_seen => {
+                set_seen = true;
+                true
+            }
+            ("MERGE", "UPDATE" | "INSERT" | "DELETE") => depth == 0 && after(1, "THEN"),
+            ("MERGE", "SET") => depth == 0 && after(1, "UPDATE") && after(2, "THEN"),
+            _ => false,
+        };
+        if !allowed {
+            return false;
+        }
+    }
+    first != "UPDATE" || set_seen
+}
+
+/// The words `w` may hide where it may be part of a number: each suffix after its first
+/// character that starts like a name (`1e0SHUTDOWN` may be `1e0` then SHUTDOWN).
+fn hidden_in_number(w: &str) -> impl Iterator<Item = &str> {
+    w.char_indices()
+        .skip(1)
+        .filter(|&(_, c)| is_ident_start(c))
+        .map(move |(k, _)| &w[k..])
+}
+
+/// Whether read-only Explain may show the plan of `sql`, which it does not run: one INSERT,
+/// UPDATE, DELETE or MERGE (`is_lone_dml`) that calls nothing of `RULES.write_calls` or the
+/// side-effect functions. Compiling a distributed query opens the linked server or OLE DB
+/// provider and has it describe the pass-through text, which some providers do by running it.
+pub fn plan_writes_nothing(sql: &str) -> bool {
+    is_lone_dml(sql)
+        && !classify::calls_listed_function(&LEX, RULES.write_calls, sql)
+        && !classify::calls_listed_function(&LEX, SPEC.knobs.side_effect_functions, sql)
 }
 
 pub static SPEC: DialectSpec = DialectSpec {
@@ -272,7 +474,7 @@ pub static SPEC: DialectSpec = DialectSpec {
             "HAS_DBACCESS",
         ],
         // `NEXT VALUE FOR s` advances a sequence: a read to Safe Mode, like `nextval('s')` in
-        // the core dialects, which the Metrics Board refuses too.
+        // the core dialects, which the Metrics Board and a read-only session refuse.
         side_effect_functions: &[
             "OPENQUERY",
             "OPENROWSET",
@@ -322,11 +524,23 @@ pub static SPEC: DialectSpec = DialectSpec {
 pub const SESSION_SETUP: &str =
     "SET ARITHABORT ON; SET TEXTSIZE 2147483647; SET IMPLICIT_TRANSACTIONS OFF";
 
-/// The editor's transaction depth (exact, unlike guessing from the statements).
-pub const TRANCOUNT: &str = "SELECT @@TRANCOUNT";
+/// Sent on the editor's connection after each batch: the rows its last statement touched (read
+/// before anything else resets `@@ROWCOUNT`) and the transaction depth, which is exact where
+/// guessing from the statements is not (a bare `BEGIN` opens a block, not a transaction).
+pub const AFTER_BATCH: &str = "SELECT @@ROWCOUNT, @@TRANCOUNT";
+
+/// The keep-alive of a worker connection.
+pub const PING: &str = "SELECT 1";
 
 /// Rolls back what an Attention left open, when the session is in a transaction it did not start.
 pub const ROLLBACK_IF_OPEN: &str = "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION";
+
+/// The statement `sqlgen::portable::select::build_fetch_cell` starts with under this spec
+/// (`LimitOne::Top`): the one read whose binary values the driver keeps whole, where every other
+/// read keeps the grid's preview of them.
+pub fn reads_one_cell(sql: &str) -> bool {
+    sql.starts_with("SELECT TOP (1) ")
+}
 
 /// A statement followed by its row count, as the last result set. `@@ROWCOUNT` counts the rows
 /// of the statement itself, where the DONE counts the client sums also hold its triggers'.
@@ -336,12 +550,6 @@ pub fn counted(sql: &str) -> String {
         s = rest.trim_end();
     }
     format!("{s};\nSELECT @@ROWCOUNT")
-}
-
-/// `USE [db]`: switches a pooled connection to another database (not on Azure SQL Database,
-/// where a connection belongs to one database).
-pub fn use_database(name: &str) -> String {
-    format!("USE {}", bracketed(name))
 }
 
 /// `KILL n` of a session id the process list showed.
@@ -360,12 +568,43 @@ pub fn kill(spid: i64) -> Result<String, AppError> {
 /// The statement that turns plan output on or off for `mode`: `SHOWPLAN_XML` plans without
 /// running, `STATISTICS XML` runs the statement and adds the actual plan. Each must be the only
 /// statement of its batch.
-pub fn showplan(mode: ExplainMode, on: bool) -> String {
-    let what = match mode {
-        ExplainMode::Plan => "SHOWPLAN_XML",
-        ExplainMode::Analyze => "STATISTICS XML",
-    };
-    format!("SET {what} {}", if on { "ON" } else { "OFF" })
+pub fn showplan(mode: ExplainMode, on: bool) -> &'static str {
+    match (mode, on) {
+        (ExplainMode::Plan, true) => "SET SHOWPLAN_XML ON",
+        (ExplainMode::Plan, false) => "SET SHOWPLAN_XML OFF",
+        (ExplainMode::Analyze, true) => "SET STATISTICS XML ON",
+        (ExplainMode::Analyze, false) => "SET STATISTICS XML OFF",
+    }
+}
+
+/// The one column of a result set that holds a plan.
+pub const SHOWPLAN_COLUMN: &str = "Microsoft SQL Server 2005 XML Showplan";
+
+/// Sent once `SET SHOWPLAN_XML ON` was answered, before the statement: under plan output it
+/// comes back as one plan, and anything else means the server took the SET without honouring it
+/// (Babelfish ignores it by default), so the statement would run.
+pub const PLAN_PROBE: &str = "SELECT 1 AS plan_probe";
+
+/// What the session's EXPLAIN (`DbSession::explain_form`) puts before a statement. No batch can
+/// run it as written (SHOWPLAN_XML must be alone in its batch), so the driver reads it back
+/// (`explain_of`) and runs the three batches it stands for. The comment tells it from a user's own
+/// `SET STATISTICS XML ON <statement>`, which runs as it is.
+pub fn explain_prefix(mode: ExplainMode) -> &'static str {
+    match mode {
+        ExplainMode::Plan => "SET SHOWPLAN_XML ON /* Tabler Explain */",
+        ExplainMode::Analyze => "SET STATISTICS XML ON /* Tabler Explain Analyze */",
+    }
+}
+
+/// The mode and the statement of a text `explain_prefix` wrapped (the prefix and one space).
+pub fn explain_of(sql: &str) -> Option<(ExplainMode, &str)> {
+    [ExplainMode::Plan, ExplainMode::Analyze]
+        .into_iter()
+        .find_map(|mode| {
+            let rest = sql.strip_prefix(explain_prefix(mode))?;
+            let inner = rest.strip_prefix(' ')?;
+            (!inner.trim().is_empty()).then_some((mode, inner))
+        })
 }
 
 /// The argument of `OBJECT_ID(@P1)` for a table: its name quoted and qualified, so dots and
@@ -375,6 +614,176 @@ pub fn object_name(schema: Option<&str>, name: &str) -> String {
         Some(s) => format!("{}.{}", bracketed(s), bracketed(name)),
         None => bracketed(name),
     }
+}
+
+// --- Show DDL ------------------------------------------------------------------------------------
+
+/// A table's CREATE TABLE and what completes it (its other indexes, its triggers and the
+/// `MS_Description` comments), from what the catalog says of it, since SQL Server has no SHOW
+/// CREATE. Batches end at `GO` lines, as SSMS scripts them: a trigger must start its own.
+pub fn create_table(meta: &TableMeta) -> String {
+    let table = object_name(meta.table.schema.as_deref(), &meta.table.name);
+    let mut lines: Vec<String> = meta.columns.iter().map(column_definition).collect();
+    let period = |marker: &str| {
+        meta.columns
+            .iter()
+            .find(|c| c.extra.as_deref().is_some_and(|e| e.ends_with(marker)))
+    };
+    if let (Some(start), Some(end)) = (period("AS ROW START"), period("AS ROW END")) {
+        lines.push(format!(
+            "PERIOD FOR SYSTEM_TIME ({}, {})",
+            bracketed(&start.name),
+            bracketed(&end.name)
+        ));
+    }
+    match meta.indexes.iter().find(|i| i.primary) {
+        Some(pk) => lines.push(format!(
+            "CONSTRAINT {} PRIMARY KEY {} ({})",
+            bracketed(&pk.name),
+            index_method(pk),
+            names(&pk.columns)
+        )),
+        None if !meta.primary_key.is_empty() => {
+            lines.push(format!("PRIMARY KEY ({})", names(&meta.primary_key)));
+        }
+        None => {}
+    }
+    for fk in &meta.foreign_keys {
+        let mut line = format!(
+            "CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})",
+            bracketed(&fk.name),
+            names(&fk.columns),
+            object_name(fk.ref_table.schema.as_deref(), &fk.ref_table.name),
+            names(&fk.ref_columns)
+        );
+        for (event, action) in [("DELETE", &fk.on_delete), ("UPDATE", &fk.on_update)] {
+            if let Some(action) = referential_action(action) {
+                line.push_str(&format!(" ON {event} {action}"));
+            }
+        }
+        lines.push(line);
+    }
+    for check in &meta.checks {
+        lines.push(format!(
+            "CONSTRAINT {} CHECK ({})",
+            bracketed(&check.name),
+            check.expression
+        ));
+    }
+    let mut out = format!(
+        "CREATE TABLE {table} (\n    {}\n);\n",
+        lines.join(",\n    ")
+    );
+    for index in meta.indexes.iter().filter(|i| !i.primary) {
+        out.push_str(&format!("GO\n{};\n", create_index(&table, index)));
+    }
+    for trigger in &meta.triggers {
+        out.push_str(&format!("GO\n{}\n", trigger.definition.trim()));
+        if !trigger.enabled {
+            out.push_str(&format!(
+                "GO\nDISABLE TRIGGER {} ON {table};\n",
+                bracketed(&trigger.name)
+            ));
+        }
+    }
+    if let Some(schema) = meta.table.schema.as_deref() {
+        let level = |column: Option<&str>| {
+            let mut s = format!(
+                "@level0type = N'SCHEMA', @level0name = {}, @level1type = N'TABLE', \
+                 @level1name = {}",
+                national_quoted(schema),
+                national_quoted(&meta.table.name)
+            );
+            if let Some(c) = column {
+                s.push_str(&format!(
+                    ", @level2type = N'COLUMN', @level2name = {}",
+                    national_quoted(c)
+                ));
+            }
+            s
+        };
+        let comments = std::iter::once((None, meta.comment.as_deref())).chain(
+            meta.columns
+                .iter()
+                .map(|c| (Some(c.name.as_str()), c.comment.as_deref())),
+        );
+        for (column, comment) in comments {
+            if let Some(comment) = comment {
+                out.push_str(&format!(
+                    "GO\nEXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = {}, \
+                     {};\n",
+                    national_quoted(comment),
+                    level(column)
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// A column as CREATE TABLE writes it: a computed one by its expression, the others by type,
+/// collation, identity or period, nullability and default.
+fn column_definition(c: &ColumnMeta) -> String {
+    let name = bracketed(&c.name);
+    if let Some(computed) = c.extra.as_deref().filter(|e| e.starts_with("AS (")) {
+        return format!("{name} {computed}");
+    }
+    let mut s = format!("{name} {}", c.data_type);
+    if let Some(collation) = c.collation.as_deref() {
+        s.push_str(&format!(" COLLATE {collation}"));
+    }
+    if let Some(extra) = c.extra.as_deref() {
+        s.push(' ');
+        s.push_str(extra);
+    }
+    s.push_str(if c.nullable { " NULL" } else { " NOT NULL" });
+    if let Some(default) = c.default_expr.as_deref() {
+        s.push_str(&format!(" DEFAULT ({default})"));
+    }
+    s
+}
+
+fn names(columns: &[String]) -> String {
+    columns
+        .iter()
+        .map(|c| bracketed(c))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `CLUSTERED`, `NONCLUSTERED COLUMNSTORE`…: the index's `type_desc` as DDL spells it.
+fn index_method(index: &IndexMeta) -> String {
+    index
+        .method
+        .as_deref()
+        .unwrap_or("nonclustered")
+        .to_ascii_uppercase()
+}
+
+/// An action other than the default, which DDL leaves out.
+fn referential_action(action: &str) -> Option<&str> {
+    let action = action.trim();
+    (!action.is_empty() && !action.eq_ignore_ascii_case("NO ACTION")).then_some(action)
+}
+
+fn create_index(table: &str, index: &IndexMeta) -> String {
+    let method = index_method(index);
+    let unique = if index.unique { "UNIQUE " } else { "" };
+    let mut s = format!(
+        "CREATE {unique}{method} INDEX {} ON {table}",
+        bracketed(&index.name)
+    );
+    // A clustered columnstore index holds every column and names none.
+    if method != "CLUSTERED COLUMNSTORE" {
+        s.push_str(&format!(" ({})", names(&index.columns)));
+    }
+    if !index.include.is_empty() {
+        s.push_str(&format!(" INCLUDE ({})", names(&index.include)));
+    }
+    if let Some(predicate) = index.predicate.as_deref() {
+        s.push_str(&format!(" WHERE {predicate}"));
+    }
+    s
 }
 
 #[cfg(test)]
@@ -513,7 +922,8 @@ mod tests {
     }
 
     /// `NEXT VALUE FOR` advances a sequence, and follows the core dialects' `nextval('s')`: a
-    /// read to Safe Mode, refused where side-effect calls are (the Metrics Board).
+    /// read to Safe Mode, refused where side-effect calls are (the Metrics Board, and a read-only
+    /// session: `drivers::sqlserver::tests`).
     #[test]
     fn next_value_for_is_a_side_effect_of_a_read() {
         use crate::sqlgen::sql::calls_side_effect_function;
@@ -937,6 +1347,44 @@ mod tests {
         assert!(!switches_database("SELECT 1 OPTION (USE HINT ('X'))"));
         assert!(!switches_database("SELECT 'USE x', [use] -- USE y"));
         assert!(!switches_database("SELECT used FROM t"));
+        assert!(!switches_database(
+            "SELECT 1 OPTION (MAXDOP 1, USE PLAN N'<x/>', USE HINT ('X'))"
+        ));
+        // A database named like the hint, outside an OPTION list.
+        assert!(switches_database("SELECT 1 USE plan"));
+        assert!(switches_database(
+            "SELECT 1 OPTION (USE PLAN N'x') USE plan"
+        ));
+        assert!(switches_database("SELECT f(1, USE HINT)"));
+        assert!(switches_database("SELECT (1) USE hint"));
+    }
+
+    /// What `RULES` cannot name without leaving the shared test spec.
+    #[test]
+    fn statements_the_rules_do_not_name_are_found() {
+        for sql in [
+            "SELECT 1 {call p}",
+            "SELECT 1 {CALL p}",
+            "SELECT 1 { ? = call p (1) }",
+            "SELECT 1 {/* x */?=call p}",
+            "SELECT 1 DUMP TRANSACTION x",
+            "SELECT 1 LOAD DATABASE x",
+            "SELECT 1 CALL p",
+            "SELECT 1 WHERE a = 1e0DUMP TRANSACTION x",
+            "SELECT 1.e5LOAD DATABASE x",
+            "SELECT 1 /* a /* b */ DUMP DATABASE x */",
+        ] {
+            assert!(hides_statement(sql), "{sql}");
+        }
+        for sql in [
+            "SELECT 1",
+            "SELECT {fn NOW()}, {d '2024-01-01'}",
+            "SELECT [call], 'DUMP', \"load\" -- CALL p",
+            "SELECT payload, download FROM t",
+            "SELECT 1e5",
+        ] {
+            assert!(!hides_statement(sql), "{sql}");
+        }
     }
 
     #[test]
@@ -970,8 +1418,259 @@ mod tests {
     }
 
     #[test]
+    fn explain_prefixes_read_back() {
+        for mode in [ExplainMode::Plan, ExplainMode::Analyze] {
+            let wrapped = crate::sqlgen::portable::explain::wrap_form(
+                crate::sqlgen::dialect::spec::ExplainForm::Prefix(explain_prefix(mode)),
+                "SQL Server",
+                "SELECT 1;",
+                mode,
+            )
+            .unwrap()
+            .0;
+            assert_eq!(explain_of(&wrapped), Some((mode, "SELECT 1")), "{mode:?}");
+            assert!(explain_prefix(mode).starts_with(showplan(mode, true)));
+        }
+        // A user's own statements are not the driver's Explain.
+        assert_eq!(explain_of("SET STATISTICS XML ON SELECT 1"), None);
+        assert_eq!(explain_of("SET SHOWPLAN_XML ON"), None);
+        assert_eq!(
+            explain_of(&format!("{}  ", explain_prefix(ExplainMode::Plan))),
+            None
+        );
+        // What the prefix holds is a write to Safe Mode, and never reaches it: the editor reads
+        // the statement out first.
+        assert_eq!(
+            classify_tsql(explain_prefix(ExplainMode::Plan)),
+            StatementClass::Write
+        );
+    }
+
+    #[test]
+    fn a_lone_dml_statement_is_told_from_a_batch() {
+        for sql in [
+            "UPDATE t SET a = 1 WHERE id = 2",
+            "update t with (rowlock) set a = case when b = 1 then 2 end;",
+            "DELETE FROM t OUTPUT DELETED.id WHERE id IN (SELECT id FROM u)",
+            "INSERT INTO t (a) SELECT a FROM u -- SET x\n",
+            "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = s.a \
+             WHEN NOT MATCHED THEN INSERT (id) VALUES (s.id);",
+            "UPDATE t SET [exec] = 'DROP x'",
+            "UPDATE t SET a = 1e5, b = 0x1F \
+             OPTION (USE HINT ('DISABLE_TSQL_SCALAR_UDF_INLINING'))",
+            "DELETE TOP (10) FROM t WHERE b IN (SELECT c FROM u ORDER BY c OFFSET 0 ROWS \
+             FETCH NEXT 5 ROWS ONLY)",
+            "INSERT t DEFAULT VALUES",
+            "MERGE t USING s ON t.id = s.id WHEN MATCHED AND s.gone = 1 THEN DELETE \
+             WHEN NOT MATCHED BY SOURCE THEN UPDATE SET a = 0;",
+            // The reads an INSERT's rows hold, and a table named like a statement.
+            "INSERT INTO t (a) SELECT a FROM u UNION ALL SELECT b FROM v EXCEPT SELECT 0",
+            "INSERT t SELECT TOP (2) WITH TIES a FROM u WITH (NOLOCK) ORDER BY a",
+            "INSERT t SELECT a FROM u ORDER BY a OFFSET 1 ROW FETCH FIRST 1 ROW ONLY",
+            "INSERT t SELECT a, COUNT(*) FROM u GROUP BY a WITH ROLLUP",
+            "UPDATE statistics SET a = 1",
+        ] {
+            assert!(is_lone_dml(sql), "{sql}");
+        }
+        for sql in [
+            "SELECT 1",
+            "WITH c AS (SELECT 1 AS a) UPDATE c SET a = 2",
+            "UPDATE t SET a = 1 UPDATE u SET b = 2",
+            "DELETE FROM t\nDROP TABLE u",
+            "INSERT INTO t VALUES (1); SELECT 1",
+            "INSERT INTO t VALUES (1) SET NOCOUNT ON",
+            "INSERT INTO t EXEC p",
+            "BEGIN TRAN UPDATE t SET a = 1",
+            "",
+            // Every word of `RULES.writes` but the statement's own starts another statement.
+            "DELETE FROM t SHUTDOWN WITH NOWAIT",
+            "DELETE FROM t RECONFIGURE WITH OVERRIDE",
+            "INSERT t VALUES (1) CHECKPOINT",
+            "UPDATE t SET a = 1 SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+            "UPDATE t SET a = 1 SET CONTEXT_INFO 0x01",
+            "UPDATE t SET a = (SELECT 1) WHERE b IN (SELECT c FROM u SET x)",
+            "DELETE FROM t REVERT",
+            "DELETE FROM t WITH (TABLOCKX)",
+            "DELETE FROM t USE master",
+            "DELETE FROM t OUTPUT deleted.id INTO log",
+            "INSERT t VALUES (1) DISABLE TRIGGER x ON t",
+            "MERGE t USING s ON 1 = 1 WHEN MATCHED THEN UPDATE SET a = 1 \
+             SET CONTEXT_INFO 0x01;",
+            "MERGE t USING s ON 1 = 1 WHEN MATCHED THEN DELETE DELETE FROM u;",
+            // A read after the statement, whose `@@ROWCOUNT` would be reported instead.
+            "DELETE FROM t SELECT 1",
+            "INSERT t VALUES (1) SELECT @@IDENTITY",
+            "INSERT t DEFAULT VALUES SELECT 1",
+            "INSERT t SELECT 1 SELECT 2",
+            "UPDATE t SET a = 1 FETCH NEXT FROM c",
+            "DELETE FROM t WITH c AS (SELECT 1 AS a) SELECT a FROM c",
+            "DELETE FROM t LINENO 0",
+            "MERGE t USING s ON 1 = 1 WHEN MATCHED THEN DELETE SELECT 1;",
+            // Not DML at all.
+            "UPDATE STATISTICS t",
+            "UPDATE STATISTICS t WITH FULLSCAN",
+            // Words a number may hide, and comments another reader may end elsewhere.
+            "DELETE FROM t WHERE a = 1SELECT 1",
+            "UPDATE t SET a = 1 WHERE b = 1e0SHUTDOWN",
+            "UPDATE t SET a = 1.e5SET CONTEXT_INFO 0x01",
+            "DELETE FROM t /* a /* b */ SHUTDOWN */",
+            // A switch to a database named like a hint, and statements `RULES` does not name.
+            "DELETE FROM t OPTION (USE PLAN N'x') USE plan",
+            "DELETE FROM t USE hint",
+            "DELETE FROM t WHERE 1 = 1 {call p}",
+            "DELETE FROM t DUMP TRANSACTION x",
+        ] {
+            assert!(!is_lone_dml(sql), "{sql}");
+        }
+    }
+
+    /// Read-only Explain plans a lone DML statement only when it reaches no other server.
+    #[test]
+    fn a_plan_that_calls_out_is_not_let_through() {
+        for sql in [
+            "DELETE FROM t WHERE id IN (SELECT id FROM u)",
+            "UPDATE t SET [openquery] = 1",
+        ] {
+            assert!(plan_writes_nothing(sql), "{sql}");
+        }
+        for sql in [
+            "DELETE FROM t WHERE id IN (SELECT id FROM \
+             OPENQUERY(srv, 'EXEC dbo.purge; SELECT 1 AS id'))",
+            "DELETE FROM OPENQUERY(srv, 'SELECT * FROM remote_t')",
+            "INSERT t VALUES ((SELECT TOP (1) a FROM OPENROWSET('SQLNCLI', \
+             'Server=.;Trusted_Connection=yes', 'SET FMTONLY OFF EXEC dbo.purge SELECT 1 a')))",
+            "DELETE FROM t WHERE EXISTS (SELECT 1 FROM OPENDATASOURCE('SQLNCLI', \
+             'Data Source=x;Integrated Security=SSPI').db.dbo.t2)",
+            "DELETE FROM t WHERE 1 = (SELECT master.dbo.xp_foo())",
+            "INSERT t VALUES (NEXT VALUE FOR s)",
+            "DELETE FROM t SHUTDOWN",
+            "DELETE FROM t WHERE 1 = 1 {call p}",
+            "DELETE FROM t OPTION (USE PLAN N'x') USE plan",
+        ] {
+            assert!(!plan_writes_nothing(sql), "{sql}");
+        }
+    }
+
+    /// The driver keeps binary values whole for `fetch_cell`'s statement only.
+    #[test]
+    fn only_fetch_cell_reads_one_cell() {
+        let t = TableRef::new(Some("dbo"), "t");
+        let cols = columns();
+        let pk = ["id".to_string()];
+        let target = TableTarget {
+            table: &t,
+            columns: &cols,
+        };
+        let key = RowKey::Pk(map([("id", Value::Int(7))]));
+        let (fetch, _) = select::build_fetch_cell(&SPEC, &target, by(&cols, "data"), &key).unwrap();
+        assert!(reads_one_cell(&fetch), "{fetch}");
+        let page = select::build_select(&SPEC, &query(&t, &cols, None, &[], &pk)).unwrap();
+        assert!(!reads_one_cell(&page.sql));
+        let count = select::build_count(&SPEC, &t, &cols, None).unwrap();
+        assert!(!reads_one_cell(&count.sql));
+    }
+
+    #[test]
+    fn create_table_scripts_what_the_catalog_says() {
+        use crate::types::schema::{CheckMeta, ForeignKeyMeta, TableKind, TableMeta, TriggerMeta};
+        let mut id = col("Id", "int", ValueKind::Int);
+        id.nullable = false;
+        id.extra = Some("IDENTITY(1,1)".into());
+        id.is_pk = true;
+        let mut name = col("Name", "nvarchar(50)", ValueKind::Text);
+        name.collation = Some("Latin1_General_CI_AS".into());
+        name.default_expr = Some("N'x'".into());
+        name.comment = Some("It's the name".into());
+        let mut twice = col("Twice", "int", ValueKind::Int);
+        twice.extra = Some("AS ([Id]*(2)) PERSISTED".into());
+        let mut from = col("From", "datetime2(7)", ValueKind::Timestamp);
+        from.nullable = false;
+        from.extra = Some("GENERATED ALWAYS AS ROW START".into());
+        let mut to = col("To", "datetime2(7)", ValueKind::Timestamp);
+        to.nullable = false;
+        to.extra = Some("GENERATED ALWAYS AS ROW END".into());
+        let index = |name: &str, columns: &[&str], primary: bool, method: &str| IndexMeta {
+            name: name.into(),
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+            unique: primary,
+            primary,
+            method: Some(method.into()),
+            predicate: None,
+            definition: None,
+            comment: None,
+            include: Vec::new(),
+        };
+        let mut by_name = index("IX_Name", &["Name"], false, "nonclustered");
+        by_name.include = vec!["Twice".into()];
+        by_name.predicate = Some("[Name]<>N''".into());
+        let meta = TableMeta {
+            table: TableRef::new(Some("dbo"), "Pe]ople"),
+            kind: TableKind::Table,
+            columns: vec![id, name, twice, from, to],
+            primary_key: vec!["Id".into()],
+            indexes: vec![
+                index("PK_People", &["Id"], true, "clustered"),
+                by_name,
+                index("CS", &[], false, "clustered columnstore"),
+            ],
+            foreign_keys: vec![ForeignKeyMeta {
+                name: "FK_Boss".into(),
+                columns: vec!["Twice".into()],
+                ref_table: TableRef::new(Some("hr"), "Boss"),
+                ref_columns: vec!["Id".into()],
+                on_update: "NO ACTION".into(),
+                on_delete: "SET NULL".into(),
+                definition: None,
+            }],
+            triggers: vec![TriggerMeta {
+                name: "trg".into(),
+                timing: Some("AFTER".into()),
+                events: vec!["INSERT".into()],
+                enabled: false,
+                definition: "CREATE TRIGGER trg ON dbo.People AFTER INSERT AS SELECT 1\n".into(),
+            }],
+            comment: None,
+            row_estimate: None,
+            ddl: None,
+            checks: vec![CheckMeta {
+                name: "CK_Id".into(),
+                expression: "[Id]>(0)".into(),
+                columns: vec!["Id".into()],
+            }],
+            options: None,
+        };
+        assert_eq!(
+            create_table(&meta),
+            "CREATE TABLE [dbo].[Pe]]ople] (\n    \
+             [Id] int IDENTITY(1,1) NOT NULL,\n    \
+             [Name] nvarchar(50) COLLATE Latin1_General_CI_AS NULL DEFAULT (N'x'),\n    \
+             [Twice] AS ([Id]*(2)) PERSISTED,\n    \
+             [From] datetime2(7) GENERATED ALWAYS AS ROW START NOT NULL,\n    \
+             [To] datetime2(7) GENERATED ALWAYS AS ROW END NOT NULL,\n    \
+             PERIOD FOR SYSTEM_TIME ([From], [To]),\n    \
+             CONSTRAINT [PK_People] PRIMARY KEY CLUSTERED ([Id]),\n    \
+             CONSTRAINT [FK_Boss] FOREIGN KEY ([Twice]) REFERENCES [hr].[Boss] ([Id]) ON \
+             DELETE SET NULL,\n    \
+             CONSTRAINT [CK_Id] CHECK ([Id]>(0))\n\
+             );\n\
+             GO\n\
+             CREATE NONCLUSTERED INDEX [IX_Name] ON [dbo].[Pe]]ople] ([Name]) INCLUDE ([Twice]) \
+             WHERE [Name]<>N'';\n\
+             GO\n\
+             CREATE CLUSTERED COLUMNSTORE INDEX [CS] ON [dbo].[Pe]]ople];\n\
+             GO\n\
+             CREATE TRIGGER trg ON dbo.People AFTER INSERT AS SELECT 1\n\
+             GO\n\
+             DISABLE TRIGGER [trg] ON [dbo].[Pe]]ople];\n\
+             GO\n\
+             EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'It''s the \
+             name', @level0type = N'SCHEMA', @level0name = N'dbo', @level1type = N'TABLE', \
+             @level1name = N'Pe]ople', @level2type = N'COLUMN', @level2name = N'Name';\n"
+        );
+    }
+
+    #[test]
     fn driver_statements() {
-        assert_eq!(use_database("a]b"), "USE [a]]b]");
         assert_eq!(kill(52).unwrap(), "KILL 52");
         assert_eq!(kill(37).unwrap(), "KILL 37");
         assert!(kill(0).is_err() && kill(-5).is_err() && kill(1 << 40).is_err());
@@ -990,6 +1689,6 @@ mod tests {
         for sql in [SESSION_SETUP, ROLLBACK_IF_OPEN] {
             assert_eq!(classify_tsql(sql), StatementClass::Write);
         }
-        assert_eq!(classify_tsql(TRANCOUNT), StatementClass::Read);
+        assert_eq!(classify_tsql(AFTER_BATCH), StatementClass::Read);
     }
 }

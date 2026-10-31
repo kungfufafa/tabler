@@ -273,10 +273,6 @@ fn clock_text(secs: u32, frac: u64, scale: u8) -> String {
     }
 }
 
-pub fn date_text_of_days(days: u32) -> Option<String> {
-    date_of(days).map(date_text)
-}
-
 pub fn datetime2_text(days: u32, increments: u64, scale: u8) -> Option<String> {
     let date = date_of(days)?;
     let (secs, frac) = split_increments(increments, scale)?;

@@ -89,17 +89,6 @@ pub fn line_position(sql: &str, line: u32) -> Option<ErrorPos> {
     (current == line).then(|| ErrorPos::from_offset(sql, offset))
 }
 
-/// Deadlock victim (1205) and lock timeout (1222): worth trying again.
-pub fn is_retryable(e: &AppError) -> bool {
-    matches!(
-        e,
-        AppError::Db {
-            vendor_code: Some(1205 | 1222),
-            ..
-        }
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

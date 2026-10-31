@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use crate::error::AppError;
 use crate::types::admin::ProcessRow;
+use crate::types::objects::{RoutineKind, RoutineSummary};
 use crate::types::schema::{
     CheckMeta, ColumnMeta, CompletionMetadata, DatabaseInfo, ForeignKeyMeta, IndexMeta, SchemaInfo,
     TableKind, TableMeta, TableRef, TableSummary, TriggerMeta, ValueKind,
@@ -80,11 +81,6 @@ impl MssqlServerInfo {
         self.product_version.split('.').next()?.parse().ok()
     }
 
-    /// Azure SQL Database: a connection belongs to one database (no `USE`).
-    pub fn is_azure_database(&self) -> bool {
-        self.engine_edition == Some(5)
-    }
-
     /// What the status pill shows: `SQL Server 2022 (16.0.4135.4)`, `Azure SQL Database (…)`.
     pub fn label(&self) -> String {
         let product = match self.engine_edition {
@@ -137,9 +133,33 @@ pub fn parse_server_info(rows: &[Vec<Value>]) -> Result<MssqlServerInfo, AppErro
     })
 }
 
-/// The editor's transaction depth: `dialect::tsql::TRANCOUNT`.
-pub fn parse_trancount(rows: &[Vec<Value>]) -> Option<bool> {
-    rows.first().and_then(|r| int(r, 0)).map(|n| n > 0)
+/// What `dialect::tsql::AFTER_BATCH` read on the editor's connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AfterBatch {
+    /// `@@ROWCOUNT`: the rows the batch's last statement touched.
+    pub rows: Option<u64>,
+    /// `@@TRANCOUNT > 0`.
+    pub in_transaction: Option<bool>,
+}
+
+pub fn parse_after_batch(rows: &[Vec<Value>]) -> AfterBatch {
+    let row = rows.first();
+    AfterBatch {
+        rows: row
+            .and_then(|r| int(r, 0))
+            .and_then(|n| u64::try_from(n).ok()),
+        in_transaction: row.and_then(|r| int(r, 1)).map(|n| n > 0),
+    }
+}
+
+/// Whether the session's connection is encrypted: `CONNECTIONPROPERTY` answers for the session's
+/// own connection without VIEW SERVER STATE.
+pub const SESSION_TLS: &str = "SELECT CAST(CONNECTIONPROPERTY('encrypt_option') AS NVARCHAR(10))";
+
+pub fn parse_session_tls(rows: &[Vec<Value>]) -> bool {
+    rows.first()
+        .and_then(|r| text(r, 0))
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("TRUE"))
 }
 
 // --- Databases and schemas -----------------------------------------------------------------------
@@ -740,17 +760,14 @@ pub const PROCESSES: &str = "SELECT s.session_id, s.login_name, \
      COALESCE(r.status, s.status), r.command, \
      CONVERT(NVARCHAR(30), COALESCE(r.start_time, s.last_request_start_time), 126), \
      DATEDIFF(SECOND, COALESCE(r.start_time, s.last_request_start_time), GETDATE()), \
-     r.wait_type, t.text FROM sys.dm_exec_sessions s \
+     r.wait_type, t.text, CASE WHEN s.session_id = @@SPID THEN 1 ELSE 0 END \
+     FROM sys.dm_exec_sessions s \
      LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id \
      OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t \
      WHERE s.is_user_process = 1 ORDER BY s.session_id";
 
-/// The process list; `own_spid` is the listing session, `application` Tabler's program name.
-pub fn parse_processes(
-    rows: &[Vec<Value>],
-    own_spid: Option<i64>,
-    application: &str,
-) -> Vec<ProcessRow> {
+/// The process list; `application` is Tabler's program name, which marks its own sessions.
+pub fn parse_processes(rows: &[Vec<Value>], application: &str) -> Vec<ProcessRow> {
     rows.iter()
         .filter_map(|r| {
             let id = int(r, 0)?;
@@ -768,7 +785,109 @@ pub fn parse_processes(
                 duration_ms: int(r, 8).map(|s| s.saturating_mul(1000)),
                 wait_event: non_empty(r, 9),
                 query: non_empty(r, 10),
-                current: own_spid == Some(id),
+                current: flag(r, 11),
+            })
+        })
+        .collect()
+}
+
+// --- Routines ------------------------------------------------------------------------------------
+
+/// The object types of routines: procedures (SQL, CLR, extended), functions (scalar, inline and
+/// multi-statement table-valued, CLR scalar and table-valued) and CLR aggregates.
+macro_rules! routine_types {
+    () => {
+        "('P', 'PC', 'X', 'FN', 'IF', 'TF', 'FS', 'FT', 'AF')"
+    };
+}
+
+/// The routines of the schema `@P1`.
+pub const ROUTINES: &str = concat!(
+    "SELECT o.name, o.type, CAST(ep.value AS NVARCHAR(MAX)) FROM sys.objects o \
+     LEFT JOIN sys.extended_properties ep ON ep.class = 1 AND ep.major_id = o.object_id AND \
+     ep.minor_id = 0 AND ep.name = N'MS_Description' \
+     WHERE o.schema_id = SCHEMA_ID(@P1) AND o.is_ms_shipped = 0 AND o.type IN ",
+    routine_types!(),
+    " ORDER BY o.name"
+);
+
+/// Their parameters in order; parameter 0 is a scalar function's result.
+pub const ROUTINE_PARAMETERS: &str = concat!(
+    "SELECT o.name, p.parameter_id, p.name, TYPE_NAME(p.user_type_id), p.max_length, \
+     p.precision, p.scale, p.is_output, p.is_readonly FROM sys.parameters p \
+     JOIN sys.objects o ON o.object_id = p.object_id \
+     WHERE o.schema_id = SCHEMA_ID(@P1) AND o.is_ms_shipped = 0 AND o.type IN ",
+    routine_types!(),
+    " ORDER BY o.name, p.parameter_id"
+);
+
+/// The kind of a routine, its language and whether it returns a table, by object type.
+fn routine_kind(code: &str) -> Option<(RoutineKind, &'static str, bool)> {
+    Some(match code.trim() {
+        "P" => (RoutineKind::Procedure, "SQL", false),
+        "PC" => (RoutineKind::Procedure, "CLR", false),
+        "X" => (RoutineKind::Procedure, "extended", false),
+        "FN" => (RoutineKind::Function, "SQL", false),
+        "IF" | "TF" => (RoutineKind::Function, "SQL", true),
+        "FS" => (RoutineKind::Function, "CLR", false),
+        "FT" => (RoutineKind::Function, "CLR", true),
+        "AF" => (RoutineKind::Aggregate, "CLR", false),
+        _ => return None,
+    })
+}
+
+/// A parameter's type as DDL spells it, with its direction (`@b nvarchar(50) OUTPUT`).
+fn parameter_text(r: &[Value]) -> Option<String> {
+    let name = text(r, 2)?;
+    let ty = full_type(&text(r, 3)?, int(r, 4), int(r, 5), int(r, 6));
+    let mut s = format!("{name} {ty}");
+    if flag(r, 7) {
+        s.push_str(" OUTPUT");
+    }
+    if flag(r, 8) {
+        s.push_str(" READONLY");
+    }
+    Some(s)
+}
+
+/// The routines of `schema` from the rows of ROUTINES and ROUTINE_PARAMETERS. SQL Server has no
+/// overloads, so a name is enough to address one.
+pub fn parse_routines(
+    routines: &[Vec<Value>],
+    parameters: &[Vec<Value>],
+    schema: &str,
+) -> Vec<RoutineSummary> {
+    let mut by_routine: BTreeMap<String, Vec<&Vec<Value>>> = BTreeMap::new();
+    for p in parameters {
+        if let Some(name) = text(p, 0) {
+            by_routine.entry(name).or_default().push(p);
+        }
+    }
+    routines
+        .iter()
+        .filter_map(|r| {
+            let name = text(r, 0)?;
+            let (kind, language, table) = routine_kind(&text(r, 1)?)?;
+            let params = by_routine.get(&name).map(Vec::as_slice).unwrap_or_default();
+            let arguments = params
+                .iter()
+                .filter(|p| int(p, 1).is_some_and(|id| id > 0))
+                .filter_map(|p| parameter_text(p))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let result = params
+                .iter()
+                .find(|p| int(p, 1) == Some(0))
+                .and_then(|p| Some(full_type(&text(p, 3)?, int(p, 4), int(p, 5), int(p, 6))));
+            Some(RoutineSummary {
+                schema: Some(schema.to_string()),
+                name,
+                kind,
+                arguments,
+                identity_arguments: String::new(),
+                return_type: if table { Some("TABLE".into()) } else { result },
+                language: Some(language.into()),
+                comment: non_empty(r, 2),
             })
         })
         .collect()
@@ -803,17 +922,33 @@ mod tests {
         let info = parse_server_info(&rows).unwrap();
         assert_eq!(info.label(), "SQL Server 2022 (16.0.4135.4)");
         assert_eq!(info.spid, Some(53));
-        assert!(!info.is_azure_database());
         let azure = MssqlServerInfo {
             product_version: "12.0.2000.8".into(),
             engine_edition: Some(5),
             ..MssqlServerInfo::default()
         };
         assert_eq!(azure.label(), "Azure SQL Database (12.0.2000.8)");
-        assert!(azure.is_azure_database());
         assert!(parse_server_info(&[]).is_err());
-        assert_eq!(parse_trancount(&[vec![n(2)]]), Some(true));
-        assert_eq!(parse_trancount(&[vec![n(0)]]), Some(false));
+        assert_eq!(
+            parse_after_batch(&[vec![n(3), n(2)]]),
+            AfterBatch {
+                rows: Some(3),
+                in_transaction: Some(true)
+            }
+        );
+        assert_eq!(
+            parse_after_batch(&[vec![n(0), n(0)]]).in_transaction,
+            Some(false)
+        );
+        assert_eq!(
+            parse_after_batch(&[]),
+            AfterBatch {
+                rows: None,
+                in_transaction: None
+            }
+        );
+        assert!(parse_session_tls(&[vec![t("TRUE")]]));
+        assert!(!parse_session_tls(&[vec![t("FALSE")]]) && !parse_session_tls(&[]));
     }
 
     #[test]
@@ -1150,8 +1285,8 @@ mod tests {
                 n(3),
                 NULL,
                 t("SELECT 1"),
+                n(1),
             ]],
-            Some(53),
             "Tabler",
         );
         assert!(p[0].current && p[0].own);
@@ -1159,6 +1294,63 @@ mod tests {
         assert_eq!(p[0].query.as_deref(), Some("SELECT 1"));
         assert_eq!(int(&[Value::Decimal("12.00".into())], 0), Some(12));
         assert_eq!(int(&[Value::Float(f64::NAN)], 0), None);
+    }
+
+    #[test]
+    fn routines_with_their_parameters() {
+        let param = |routine: &str, id: i64, name: &str, ty: &str, len: i64, out: bool| {
+            vec![
+                t(routine),
+                n(id),
+                t(name),
+                t(ty),
+                n(len),
+                n(0),
+                n(0),
+                Value::Bool(out),
+                Value::Bool(false),
+            ]
+        };
+        let mut tvp = param("load", 2, "@rows", "RowList", -1, false);
+        tvp[8] = Value::Bool(true);
+        let mut result = param("total", 0, "", "decimal", 9, false);
+        result[5] = n(18);
+        result[6] = n(2);
+        let routines = parse_routines(
+            &[
+                vec![t("load"), t("P "), t("Loads rows")],
+                vec![t("total"), t("FN"), NULL],
+                vec![t("rows_of"), t("IF"), NULL],
+                vec![t("Median"), t("AF"), NULL],
+                vec![t("odd"), t("ZZ"), NULL],
+            ],
+            &[
+                param("load", 1, "@name", "nvarchar", 100, false),
+                tvp,
+                param("load", 3, "@count", "int", 4, true),
+                result,
+                param("total", 1, "@id", "bigint", 8, false),
+            ],
+            "dbo",
+        );
+        assert_eq!(routines.len(), 4, "an unknown type is left out");
+        let load = &routines[0];
+        assert_eq!(load.kind, RoutineKind::Procedure);
+        assert_eq!(
+            load.arguments,
+            "@name nvarchar(50), @rows RowList READONLY, @count int OUTPUT"
+        );
+        assert_eq!(load.return_type, None);
+        assert_eq!(load.comment.as_deref(), Some("Loads rows"));
+        assert_eq!(load.schema.as_deref(), Some("dbo"));
+        let total = &routines[1];
+        assert_eq!(total.kind, RoutineKind::Function);
+        assert_eq!(total.arguments, "@id bigint");
+        assert_eq!(total.return_type.as_deref(), Some("decimal(18,2)"));
+        assert_eq!(routines[2].return_type.as_deref(), Some("TABLE"));
+        assert_eq!(routines[2].arguments, "");
+        assert_eq!(routines[3].kind, RoutineKind::Aggregate);
+        assert_eq!(routines[3].language.as_deref(), Some("CLR"));
     }
 
     /// The catalog queries take names as parameters only, and every one of them is a read to
@@ -1181,6 +1373,9 @@ mod tests {
             DEFINITION,
             COMPLETION,
             PROCESSES,
+            ROUTINES,
+            ROUTINE_PARAMETERS,
+            SESSION_TLS,
         ] {
             assert_eq!((SPEC.classify)(sql), StatementClass::Read, "{sql}");
             assert!(!sql.contains("@P2"), "{sql}");

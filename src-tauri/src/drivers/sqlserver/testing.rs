@@ -105,14 +105,65 @@ pub fn config() -> Config {
 pub fn serve(
     handler: impl FnMut(&Request) -> Reply + Send + 'static,
 ) -> (Compat<DuplexStream>, Seen) {
-    let (client, server) = tokio::io::duplex(64 * 1024);
     let seen = Seen::default();
-    let ended = seen.clone();
+    (serve_into(Box::new(handler), seen.clone()), seen)
+}
+
+/// `serve`, recording into `seen`.
+fn serve_into(handler: Handler, seen: Seen) -> Compat<DuplexStream> {
+    let (client, server) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
-        run(server, Box::new(handler), ended.clone()).await;
-        ended.ended.store(true, Ordering::SeqCst);
+        run(server, handler, seen.clone()).await;
+        seen.ended.store(true, Ordering::SeqCst);
     });
-    (client.compat(), seen)
+    client.compat()
+}
+
+/// One fake server for every connection a session opens: one handler answers them all, one log
+/// records what they asked.
+#[derive(Clone)]
+pub struct Server {
+    handler: Arc<Mutex<Handler>>,
+    pub seen: Seen,
+    logins: Arc<AtomicUsize>,
+}
+
+impl Server {
+    pub fn new(handler: impl FnMut(&Request) -> Reply + Send + 'static) -> Server {
+        Server {
+            handler: Arc::new(Mutex::new(Box::new(handler))),
+            seen: Seen::default(),
+            logins: Arc::default(),
+        }
+    }
+
+    /// Connections opened so far.
+    pub fn logins(&self) -> usize {
+        self.logins.load(Ordering::SeqCst)
+    }
+
+    /// A new connection, logged in (no setup yet).
+    pub async fn client(&self) -> Result<Client<Compat<DuplexStream>>, AppError> {
+        self.client_with(config()).await
+    }
+
+    /// A new connection logged in with `config`, which must not ask for encryption: the fake
+    /// speaks no TLS.
+    pub async fn client_with(
+        &self,
+        config: Config,
+    ) -> Result<Client<Compat<DuplexStream>>, AppError> {
+        self.logins.fetch_add(1, Ordering::SeqCst);
+        let shared = Arc::clone(&self.handler);
+        let handler: Handler = Box::new(move |r: &Request| match shared.lock() {
+            Ok(mut h) => h(r),
+            Err(_) => Reply::Close,
+        });
+        let io = serve_into(handler, self.seen.clone());
+        Client::connect(config, io)
+            .await
+            .map_err(|e| super::errors::map_error(e, super::errors::Phase::Connect, None))
+    }
 }
 
 /// A client logged in to a fake server (the login answered by the handler too).
@@ -458,6 +509,8 @@ pub enum Ty {
     Bit,
     Float,
     Money,
+    /// varbinary(max), sent in PLP chunks.
+    VarBinaryMax,
 }
 
 /// A value of a row.
@@ -472,6 +525,7 @@ pub enum Cell<'a> {
     Float(f64),
     /// Money as its value times 10^4.
     Money(i64),
+    Bytes(&'a [u8]),
 }
 
 fn b_varchar(out: &mut Vec<u8>, s: &str) {
@@ -503,6 +557,10 @@ pub fn columns(cols: &[(&str, Ty)]) -> Vec<u8> {
             Ty::Bit => out.extend_from_slice(&[0x68, 1]),
             Ty::Float => out.extend_from_slice(&[0x6D, 8]),
             Ty::Money => out.extend_from_slice(&[0x6E, 8]),
+            Ty::VarBinaryMax => {
+                out.push(0xA5);
+                out.extend_from_slice(&0xFFFFu16.to_le_bytes());
+            }
             Ty::NVarChar => {
                 out.push(0xE7);
                 out.extend_from_slice(&8000u16.to_le_bytes());
@@ -527,6 +585,7 @@ pub fn row(types: &[Ty], cells: &[Cell<'_>]) -> Vec<u8> {
     for (ty, cell) in types.iter().zip(cells) {
         match (ty, cell) {
             (Ty::NVarChar, Cell::Null) => out.extend_from_slice(&0xFFFFu16.to_le_bytes()),
+            (Ty::VarBinaryMax, Cell::Null) => out.extend_from_slice(&u64::MAX.to_le_bytes()),
             (_, Cell::Null) => out.push(0),
             (Ty::Int, Cell::Int(n)) => {
                 out.push(4);
@@ -551,6 +610,14 @@ pub fn row(types: &[Ty], cells: &[Cell<'_>]) -> Vec<u8> {
                 nvarchar(&mut out, &units);
             }
             (Ty::NVarChar, Cell::Units(units)) => nvarchar(&mut out, units),
+            (Ty::VarBinaryMax, Cell::Bytes(bytes)) => {
+                out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+                for chunk in bytes.chunks(8000) {
+                    out.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+                    out.extend_from_slice(chunk);
+                }
+                out.extend_from_slice(&0u32.to_le_bytes());
+            }
             (ty, cell) => panic!("a test row puts {cell:?} in a {ty:?} column"),
         }
     }

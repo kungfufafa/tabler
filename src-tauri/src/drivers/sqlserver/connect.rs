@@ -10,6 +10,8 @@
 //! "hostname in certificate" setting). No mode falls back to an unencrypted connection when TLS
 //! fails. Strict (TDS 8.0) starts TLS before the first packet.
 
+use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ::tiberius::error::Error;
@@ -18,11 +20,14 @@ use futures::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
+use super::conn::Conn;
 use super::errors::{Phase, map_error};
 use super::params::{MssqlAuth, MssqlParams};
+use crate::drivers::ConnectTarget;
 use crate::error::AppError;
+use crate::secrets::CommandPassword;
 use crate::sqlgen::dialect::tsql::SESSION_SETUP;
-use crate::types::profile::{ConnectionProfile, SslMode};
+use crate::types::profile::{ConnectionProfile, DEFAULT_CONNECT_TIMEOUT_SECS, SslMode};
 
 /// The client over a TCP connection.
 pub type TdsClient = Client<Compat<TcpStream>>;
@@ -176,8 +181,101 @@ pub fn named_instance<'a>(params: &'a MssqlParams, endpoint: &Endpoint) -> Optio
         .filter(|_| !endpoint.port_given && !endpoint.tunnelled)
 }
 
-/// Connects and logs in, following one redirect of the server (Azure SQL's gateway), then sends
-/// the session setup.
+impl Endpoint {
+    /// Where a target's connection goes: the SSH tunnel's listener when there is one, and the
+    /// profile's server behind it.
+    pub fn of(target: &ConnectTarget<'_>) -> Endpoint {
+        let profile = target.profile;
+        Endpoint {
+            connect_host: target.host(),
+            connect_port: target.port(),
+            server_host: trimmed(profile.host.as_deref())
+                .unwrap_or("localhost")
+                .to_string(),
+            server_port: profile
+                .port
+                .or_else(|| profile.default_port())
+                .unwrap_or(1433),
+            port_given: profile.port.is_some(),
+            tunnelled: target.host_override.is_some(),
+        }
+    }
+}
+
+/// The profile's Advanced ▸ Connect timeout, else the app's default.
+pub fn connect_timeout(profile: &ConnectionProfile) -> Duration {
+    Duration::from_secs(
+        profile
+            .options
+            .connect_timeout_secs
+            .filter(|s| *s > 0)
+            .map_or(DEFAULT_CONNECT_TIMEOUT_SECS, u64::from),
+    )
+}
+
+/// The profile's startup commands (Advanced ▸ Bootstrap commands), sent as one batch.
+pub fn startup_sql(profile: &ConnectionProfile) -> Option<&str> {
+    trimmed(profile.options.startup_sql.as_deref())
+}
+
+/// Opens the connections of one session: each logs in with the profile's settings (the password
+/// command's output while it is fresh) and runs the session setup and startup commands.
+pub struct Dial {
+    pub profile: ConnectionProfile,
+    pub params: MssqlParams,
+    pub endpoint: Endpoint,
+    pub timeout: Duration,
+    /// The password typed or stored; a Command password comes from `token` instead.
+    pub password: Option<String>,
+    pub token: Option<Arc<CommandPassword>>,
+}
+
+impl Dial {
+    pub async fn conn(&self) -> Result<Conn, AppError> {
+        match &self.token {
+            None => self.once(self.password.as_deref()).await,
+            Some(token) => {
+                with_token(
+                    token,
+                    |password| async move { self.once(Some(&password)).await },
+                )
+                .await
+            }
+        }
+    }
+
+    async fn once(&self, password: Option<&str>) -> Result<Conn, AppError> {
+        let config = build_config(
+            &self.profile,
+            &self.params,
+            password,
+            &self.endpoint,
+            self.timeout,
+        )?;
+        let mut client = connect(config, &self.params, &self.endpoint, self.timeout).await?;
+        ready(&mut client, startup_sql(&self.profile)).await?;
+        Ok(Conn::spawn(client))
+    }
+}
+
+/// Runs `dial` with the Command password (an Entra token expires within the hour): the one it
+/// printed while it is fresh, and once more with a new one when the server refused it.
+pub async fn with_token<T, F, Fut>(token: &CommandPassword, dial: F) -> Result<T, AppError>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = Result<T, AppError>>,
+{
+    match dial(token.password().await?).await {
+        Err(AppError::Auth(message)) => {
+            log::info!("SQL Server refused the command's password ({message}); running it again");
+            token.invalidate().await;
+            dial(token.password().await?).await
+        }
+        other => other,
+    }
+}
+
+/// Connects and logs in, following one redirect of the server (Azure SQL's gateway).
 pub async fn connect(
     config: Config,
     params: &MssqlParams,
@@ -185,7 +283,7 @@ pub async fn connect(
     timeout: Duration,
 ) -> Result<TdsClient, AppError> {
     let tcp = tcp_stream(&config, params, endpoint, timeout).await?;
-    let mut client = match Client::connect(config.clone(), tcp.compat_write()).await {
+    let client = match Client::connect(config.clone(), tcp.compat_write()).await {
         Err(Error::Routing { host, port }) => {
             if endpoint.tunnelled {
                 return Err(AppError::Connect(format!(
@@ -209,8 +307,27 @@ pub async fn connect(
         }
         other => other.map_err(|e| map_error(e, Phase::Connect, None))?,
     };
-    setup(&mut client).await?;
     Ok(client)
+}
+
+/// What every new connection runs after the login: the session setup, then the profile's startup
+/// commands.
+pub async fn ready<S>(client: &mut Client<S>, startup: Option<&str>) -> Result<(), AppError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    setup(client).await?;
+    if let Some(sql) = startup {
+        let run = async { client.simple_query(sql).await?.into_results().await };
+        run.await
+            .map_err(|e| match map_error(e, Phase::Connect, Some(sql)) {
+                AppError::Db { message, .. } => AppError::Connect(format!(
+                    "SQL Server: the startup commands failed: {message}"
+                )),
+                other => other,
+            })?;
+    }
+    Ok(())
 }
 
 async fn tcp_stream(
@@ -369,6 +486,19 @@ mod tests {
             assert!(format!("{config:?}").contains("db.example.com"));
             assert!(config.get_lossy_utf16_decoding());
         }
+        // The login names the profile's database (Switch Database opens a session from the
+        // profile with the other one), or none: the login's default.
+        for (database, logs_in) in [
+            (Some("shop"), r#"database: Some("shop")"#),
+            (Some(" archive "), r#"database: Some("archive")"#),
+            (Some("  "), "database: None"),
+            (None, "database: None"),
+        ] {
+            let mut p = profile(SslMode::Prefer);
+            p.database = database.map(str::to_string);
+            let config = build_config(&p, &params, Some("pw"), &endpoint(), timeout).unwrap();
+            assert!(format!("{config:?}").contains(logs_in), "{database:?}");
+        }
         // Over a tunnel the instance is not looked up: the port is the server's.
         assert_eq!(named_instance(&params, &endpoint()), None);
         let direct = Endpoint {
@@ -435,6 +565,102 @@ mod tests {
         assert_eq!(
             build_config(&no_user, &integrated, None, &endpoint(), timeout).is_ok(),
             cfg!(windows)
+        );
+    }
+
+    #[test]
+    fn endpoints_follow_the_tunnel_and_the_profile() {
+        let p = profile(SslMode::Prefer);
+        let direct = Endpoint::of(&ConnectTarget {
+            profile: &p,
+            password: None,
+            host_override: None,
+        });
+        assert_eq!(
+            direct,
+            Endpoint {
+                connect_host: "db.example.com".into(),
+                connect_port: 1433,
+                tunnelled: false,
+                ..endpoint()
+            }
+        );
+        let tunnel = Endpoint::of(&ConnectTarget {
+            profile: &p,
+            password: None,
+            host_override: Some(("127.0.0.1".into(), 50_000)),
+        });
+        assert_eq!(tunnel, endpoint());
+        let mut q = p.clone();
+        q.port = Some(14330);
+        q.options.connect_timeout_secs = Some(5);
+        q.options.startup_sql = Some("  \n".into());
+        let given = Endpoint::of(&ConnectTarget {
+            profile: &q,
+            password: None,
+            host_override: None,
+        });
+        assert!(given.port_given && given.connect_port == 14330 && given.server_port == 14330);
+        assert_eq!(connect_timeout(&q), Duration::from_secs(5));
+        assert_eq!(connect_timeout(&p), Duration::from_secs(60));
+        assert_eq!(startup_sql(&q), None);
+    }
+
+    /// An Entra token expires within the hour: a refused one is fetched again, once.
+    #[tokio::test]
+    async fn a_refused_token_is_fetched_again_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let fetched = Arc::new(AtomicUsize::new(0));
+        let token = {
+            let fetched = Arc::clone(&fetched);
+            CommandPassword::with_fetch(Duration::from_secs(3000), move || {
+                let n = fetched.fetch_add(1, Ordering::SeqCst) + 1;
+                Box::pin(async move { Ok(format!("tok-{n}")) })
+            })
+            .seeded(Some("tok-0"))
+        };
+        let tried = std::sync::Mutex::new(Vec::new());
+        let got = with_token(&token, |password: String| {
+            tried.lock().unwrap().push(password.clone());
+            async move {
+                if password == "tok-0" {
+                    Err(AppError::Auth("Login failed".into()))
+                } else {
+                    Ok(password)
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(got, "tok-1");
+        assert_eq!(*tried.lock().unwrap(), ["tok-0", "tok-1"]);
+        // Another failure is not the token's: the command does not run again.
+        let down = with_token(&token, |_| async {
+            Err::<(), _>(AppError::Connect("down".into()))
+        })
+        .await;
+        assert!(matches!(down, Err(AppError::Connect(_))));
+        // A second refusal is the answer.
+        let refused = with_token(&token, |_| async {
+            Err::<(), _>(AppError::Auth("Login failed".into()))
+        })
+        .await;
+        assert!(matches!(refused, Err(AppError::Auth(_))));
+        assert_eq!(fetched.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn ready_sets_the_session_up_then_runs_the_startup_commands() {
+        let (mut client, seen) = testing::client(testing::ok).await.unwrap();
+        ready(&mut client, Some("SET LANGUAGE us_english"))
+            .await
+            .unwrap();
+        assert_eq!(
+            seen.requests()[1..],
+            [
+                Request::Batch(SESSION_SETUP.into()),
+                Request::Batch("SET LANGUAGE us_english".into())
+            ]
         );
     }
 

@@ -118,20 +118,40 @@ impl Streaming {
     }
 }
 
-/// One statement of a transaction, with the rows it must affect (`TxStatement::expect_affected`)
-/// and whether its OUTPUT rows are wanted.
+/// One statement of a transaction, with the rows it must affect (`TxStatement::expect_affected`).
 #[derive(Debug, Clone)]
 pub struct TxRequest {
     pub sql: String,
     pub params: Vec<ColumnData<'static>>,
     pub expect_affected: Option<u64>,
-    pub returning: bool,
 }
 
+/// A statement that ran for its count: the rows it touched, the rows it sent (an OUTPUT clause)
+/// and how long it took.
 #[derive(Debug, Clone, Default)]
 pub struct TxDone {
     pub affected: u64,
     pub rows: Option<ResultSet>,
+    pub elapsed: Duration,
+}
+
+/// A transaction that was rolled back: why (the failed statement's index set when one failed),
+/// the statements that ran before it, and how long the failed step took.
+#[derive(Debug)]
+pub struct TxFailure {
+    pub error: AppError,
+    pub done: Vec<TxDone>,
+    pub elapsed: Duration,
+}
+
+impl TxFailure {
+    fn before_any(error: AppError) -> TxFailure {
+        TxFailure {
+            error,
+            done: Vec::new(),
+            elapsed: Duration::ZERO,
+        }
+    }
 }
 
 enum Job {
@@ -144,16 +164,10 @@ enum Job {
         items: mpsc::Sender<Item>,
         end: oneshot::Sender<Result<Summary, AppError>>,
     },
-    Execute {
-        sql: String,
-        params: Vec<ColumnData<'static>>,
-        stop: Stop,
-        end: oneshot::Sender<Result<Vec<u64>, AppError>>,
-    },
     Transaction {
         statements: Vec<TxRequest>,
         stop: Stop,
-        end: oneshot::Sender<Result<Vec<TxDone>, AppError>>,
+        end: oneshot::Sender<Result<Vec<TxDone>, TxFailure>>,
     },
     Close {
         end: oneshot::Sender<()>,
@@ -182,6 +196,12 @@ impl Conn {
     /// The transport failed or a cancel did not complete: the connection cannot be used again.
     pub fn is_broken(&self) -> bool {
         self.broken.load(Ordering::SeqCst) || self.jobs.is_closed()
+    }
+
+    /// Gives the connection up (a session option that could not be undone): it takes no more
+    /// jobs, and its socket closes with the last handle.
+    pub fn abandon(&self) {
+        self.broken.store(true, Ordering::SeqCst);
     }
 
     async fn submit(&self, job: Job) -> Result<(), AppError> {
@@ -236,22 +256,19 @@ impl Conn {
         Ok(sets)
     }
 
-    /// Runs a statement for its side effects: the row counts the server reports, in order.
-    pub async fn execute(
+    /// Runs one statement for its count (`tsql::counted`): the rows it touched by `@@ROWCOUNT`,
+    /// and the rows an OUTPUT clause sent.
+    pub async fn counted(
         &self,
-        sql: impl Into<String>,
+        sql: &str,
         params: Vec<ColumnData<'static>>,
         stop: Stop,
-    ) -> Result<Vec<u64>, AppError> {
-        let (end, end_rx) = oneshot::channel();
-        self.submit(Job::Execute {
-            sql: sql.into(),
-            params,
-            stop,
-            end,
-        })
-        .await?;
-        end_rx.await.unwrap_or(Err(AppError::NotConnected))
+    ) -> Result<TxDone, AppError> {
+        let started = std::time::Instant::now();
+        let sets = self
+            .query(tsql::counted(sql), params, Mode::Rpc, Bytes::Whole, stop)
+            .await?;
+        done_of(sets, started.elapsed())
     }
 
     /// Runs statements in one transaction, which rolls back at the first error or count that
@@ -260,15 +277,18 @@ impl Conn {
         &self,
         statements: Vec<TxRequest>,
         stop: Stop,
-    ) -> Result<Vec<TxDone>, AppError> {
+    ) -> Result<Vec<TxDone>, TxFailure> {
         let (end, end_rx) = oneshot::channel();
         self.submit(Job::Transaction {
             statements,
             stop,
             end,
         })
-        .await?;
-        end_rx.await.unwrap_or(Err(AppError::NotConnected))
+        .await
+        .map_err(TxFailure::before_any)?;
+        end_rx
+            .await
+            .unwrap_or(Err(TxFailure::before_any(AppError::NotConnected)))
     }
 
     /// Ends the connection; returns once the actor has closed it, or after 2 s, also when the
@@ -344,23 +364,15 @@ where
                 mark(broken, &result);
                 let _ = end.send(result);
             }
-            Job::Execute {
-                sql,
-                params,
-                stop,
-                end,
-            } => {
-                let result = execute(&mut client, &sql, &params, &stop, broken).await;
-                mark(broken, &result);
-                let _ = end.send(result);
-            }
             Job::Transaction {
                 statements,
                 stop,
                 end,
             } => {
                 let result = transaction(&mut client, &statements, &stop, broken).await;
-                mark(broken, &result);
+                if let Err(failure) = &result {
+                    mark_error(broken, &failure.error);
+                }
                 let _ = end.send(result);
             }
             Job::Close { end } => {
@@ -381,11 +393,8 @@ fn refuse(job: Job) {
         Job::Stream { end, .. } => {
             let _ = end.send(Err(AppError::NotConnected));
         }
-        Job::Execute { end, .. } => {
-            let _ = end.send(Err(AppError::NotConnected));
-        }
         Job::Transaction { end, .. } => {
-            let _ = end.send(Err(AppError::NotConnected));
+            let _ = end.send(Err(TxFailure::before_any(AppError::NotConnected)));
         }
         Job::Close { end } => {
             let _ = end.send(());
@@ -395,7 +404,13 @@ fn refuse(job: Job) {
 
 /// A lost transport ends the connection.
 fn mark<T>(broken: &AtomicBool, result: &Result<T, AppError>) {
-    if matches!(result, Err(AppError::NotConnected | AppError::Timeout)) {
+    if let Err(e) = result {
+        mark_error(broken, e);
+    }
+}
+
+fn mark_error(broken: &AtomicBool, e: &AppError) {
+    if matches!(e, AppError::NotConnected | AppError::Timeout) {
         broken.store(true, Ordering::SeqCst);
     }
 }
@@ -533,38 +548,24 @@ where
     Ok(Some(summary))
 }
 
-async fn execute<S>(
-    client: &mut Client<S>,
-    sql: &str,
-    params: &[ColumnData<'static>],
-    stop: &Stop,
-    broken: &AtomicBool,
-) -> Result<Vec<u64>, AppError>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
-{
-    if stop.is_fired() {
-        return Err(AppError::Cancelled);
-    }
-    let refs = refs(params);
-    let done = {
-        let request = client.execute(sql, &refs);
-        tokio::select! {
-            biased;
-            _ = stop.fired() => None,
-            r = request => Some(r),
-        }
-    };
-    match done {
-        None => Err(cancel(client, broken).await),
-        Some(Ok(result)) => Ok(result.rows_affected().to_vec()),
-        Some(Err(e)) => Err(map_error(e, Phase::Run, Some(sql))),
-    }
+/// A counted statement's result sets (`tsql::counted`): the last holds `@@ROWCOUNT`, which counts
+/// the statement's own rows where the DONE counts tiberius sums would add those of triggers; the
+/// one before it, if any, is what an OUTPUT clause sent.
+fn done_of(mut sets: Vec<ResultSet>, elapsed: Duration) -> Result<TxDone, AppError> {
+    let affected = sets
+        .pop()
+        .and_then(|set| set.rows.into_iter().next())
+        .and_then(|row| super::introspect::int(&row, 0))
+        .and_then(|n| u64::try_from(n).ok())
+        .ok_or_else(|| AppError::Internal("SQL Server sent no row count".into()))?;
+    Ok(TxDone {
+        affected,
+        rows: sets.pop(),
+        elapsed,
+    })
 }
 
-/// One statement of a transaction: its result sets, the last of which is `@@ROWCOUNT`
-/// (`tsql::counted`), which counts the statement's own rows where the DONE counts tiberius sums
-/// would add those of triggers.
+/// One statement of a transaction, run for its count.
 async fn counted<S>(
     client: &mut Client<S>,
     st: &TxRequest,
@@ -574,6 +575,7 @@ async fn counted<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    let started = std::time::Instant::now();
     let sql = tsql::counted(&st.sql);
     let (items, mut items_rx) = mpsc::channel(CHANNEL_ROWS);
     let statement = Statement {
@@ -587,16 +589,9 @@ where
         drop(items);
         r
     };
-    let (summary, mut sets) = tokio::join!(run, collect(&mut items_rx));
+    let (summary, sets) = tokio::join!(run, collect(&mut items_rx));
     summary?;
-    let affected = sets
-        .pop()
-        .and_then(|set| set.rows.into_iter().next())
-        .and_then(|row| super::introspect::int(&row, 0))
-        .and_then(|n| u64::try_from(n).ok())
-        .ok_or_else(|| AppError::Internal("SQL Server sent no row count".into()))?;
-    let rows = if st.returning { sets.pop() } else { None };
-    Ok(TxDone { affected, rows })
+    done_of(sets, started.elapsed())
 }
 
 async fn transaction<S>(
@@ -604,45 +599,52 @@ async fn transaction<S>(
     statements: &[TxRequest],
     stop: &Stop,
     broken: &AtomicBool,
-) -> Result<Vec<TxDone>, AppError>
+) -> Result<Vec<TxDone>, TxFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     if stop.is_fired() {
-        return Err(AppError::Cancelled);
+        return Err(TxFailure::before_any(AppError::Cancelled));
     }
     client
         .begin_transaction()
         .await
-        .map_err(|e| map_error(e, Phase::Run, None))?;
-    let mut out = Vec::with_capacity(statements.len());
+        .map_err(|e| TxFailure::before_any(map_error(e, Phase::Run, None)))?;
+    let mut done = Vec::with_capacity(statements.len());
     for (index, st) in statements.iter().enumerate() {
-        let done = match counted(client, st, stop, broken).await {
-            Ok(done) => done,
-            Err(e) => {
-                rollback(client, broken).await;
-                return Err(e.with_statement_index(index));
-            }
+        let started = std::time::Instant::now();
+        let error = match counted(client, st, stop, broken).await {
+            Ok(d) => match st.expect_affected {
+                Some(n) if d.affected != n => AppError::db(format!(
+                    "expected to affect {n} row(s) but matched {}; the row may have been changed \
+                     or deleted by someone else",
+                    d.affected
+                )),
+                _ => {
+                    done.push(d);
+                    continue;
+                }
+            },
+            Err(e) => e,
         };
-        if let Some(n) = st.expect_affected
-            && done.affected != n
-        {
-            rollback(client, broken).await;
-            return Err(AppError::db(format!(
-                "expected to affect {n} row(s) but matched {}; the row may have been changed or \
-                 deleted by someone else",
-                done.affected
-            ))
-            .with_statement_index(index));
-        }
-        out.push(done);
-    }
-    if let Err(e) = client.commit_transaction().await {
-        let e = map_error(e, Phase::Run, None);
         rollback(client, broken).await;
-        return Err(e);
+        return Err(TxFailure {
+            error: error.with_statement_index(index),
+            done,
+            elapsed: started.elapsed(),
+        });
     }
-    Ok(out)
+    let started = std::time::Instant::now();
+    if let Err(e) = client.commit_transaction().await {
+        let error = map_error(e, Phase::Run, None);
+        rollback(client, broken).await;
+        return Err(TxFailure {
+            error,
+            done,
+            elapsed: started.elapsed(),
+        });
+    }
+    Ok(done)
 }
 
 /// Rolls back after a failed statement. A connection that cannot even do that is broken, so it
@@ -924,26 +926,34 @@ mod tests {
         assert!(!conn.is_broken());
     }
 
+    /// The count is `@@ROWCOUNT` after the statement, not the DONE counts, which hold a trigger's
+    /// rows too; an OUTPUT clause's rows come back with it.
     #[tokio::test]
-    async fn execute_reports_the_counts() {
-        let (conn, _) = conn(|r: &Request| match r {
+    async fn counted_reads_the_statements_own_rows() {
+        let (conn, seen) = conn(|r: &Request| match r {
             Request::Rpc { .. } => {
-                let mut tokens = done(DONE_COUNT | DONE_MORE, 2);
-                tokens.extend(done(DONE_COUNT, 3));
+                let mut tokens = result(&[("id", Ty::Int)], &[vec![Cell::Int(7)]], true);
+                tokens.extend(done(DONE_COUNT | DONE_MORE, 5));
+                tokens.extend(rowcount(2));
                 Reply::Tokens(tokens)
             }
             _ => testing::ok(r),
         })
         .await;
-        let counts = conn
-            .execute(
-                "DELETE FROM t WHERE a = @P1",
+        let done = conn
+            .counted(
+                "DELETE FROM t OUTPUT DELETED.id WHERE a = @P1",
                 vec![ColumnData::I32(Some(1))],
                 Stop::new(),
             )
             .await
             .unwrap();
-        assert_eq!(counts, [2, 3]);
+        assert_eq!(done.affected, 2);
+        assert_eq!(done.rows.map(|r| r.rows), Some(vec![vec![Value::Int(7)]]));
+        assert!(seen.requests().contains(&Request::Rpc {
+            sql: "DELETE FROM t OUTPUT DELETED.id WHERE a = @P1;\nSELECT @@ROWCOUNT".into(),
+            params: vec!["1".into()],
+        }));
     }
 
     fn rowcount(n: i64) -> Vec<u8> {
@@ -957,7 +967,6 @@ mod tests {
             sql: "UPDATE t SET a = @P1 WHERE id = @P2".into(),
             params: vec![ColumnData::I32(Some(5)), ColumnData::I32(Some(1))],
             expect_affected: Some(1),
-            returning: false,
         }
     }
 
@@ -995,17 +1004,20 @@ mod tests {
             _ => testing::ok(r),
         })
         .await;
-        let err = conn
+        let failure = conn
             .transaction(vec![update(), update()], Stop::new())
             .await
             .unwrap_err();
+        let err = &failure.error;
         assert!(
             matches!(
-                &err,
+                err,
                 AppError::Db { statement_index: Some(1), message, .. } if message.contains("matched 0")
             ),
             "{err:?}"
         );
+        // The first statement ran (and was rolled back with the rest).
+        assert_eq!(failure.done.len(), 1);
         let requests = seen.requests();
         assert!(requests.contains(&Request::Transaction(8)));
         assert!(!requests.contains(&Request::Transaction(7)));
@@ -1027,10 +1039,12 @@ mod tests {
             _ => testing::ok(r),
         })
         .await;
-        let err = conn
+        let failure = conn
             .transaction(vec![update()], Stop::new())
             .await
             .unwrap_err();
+        let err = failure.error;
+        assert!(failure.done.is_empty());
         assert!(
             matches!(
                 err,
@@ -1063,7 +1077,15 @@ mod tests {
             .await;
         assert!(matches!(first, Err(AppError::NotConnected)), "{first:?}");
         assert!(conn.is_broken());
-        let again = conn.execute("SELECT 2", Vec::new(), Stop::new()).await;
+        let again = conn
+            .query(
+                "SELECT 2",
+                Vec::new(),
+                Mode::Batch,
+                Bytes::Preview,
+                Stop::new(),
+            )
+            .await;
         assert!(matches!(again, Err(AppError::NotConnected)));
         conn.close().await;
     }
@@ -1105,7 +1127,15 @@ mod tests {
         assert_eq!(seen.attentions(), 1);
         // A handle is still alive, yet the socket is closed: the server can end the session.
         until_ended(&seen).await;
-        let after = conn.execute("SELECT 1", Vec::new(), Stop::new()).await;
+        let after = conn
+            .query(
+                "SELECT 1",
+                Vec::new(),
+                Mode::Batch,
+                Bytes::Preview,
+                Stop::new(),
+            )
+            .await;
         assert!(matches!(after, Err(AppError::NotConnected)), "{after:?}");
         conn.close().await;
     }
@@ -1139,7 +1169,15 @@ mod tests {
             .await
             .expect("close returns");
         assert!(conn.is_broken());
-        let after = conn.execute("SELECT 1", Vec::new(), Stop::new()).await;
+        let after = conn
+            .query(
+                "SELECT 1",
+                Vec::new(),
+                Mode::Batch,
+                Bytes::Preview,
+                Stop::new(),
+            )
+            .await;
         assert!(matches!(after, Err(AppError::NotConnected)));
     }
 }
