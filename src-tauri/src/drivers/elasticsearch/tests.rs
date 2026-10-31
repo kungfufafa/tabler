@@ -2061,3 +2061,37 @@ fn a_huge_key_over_many_children_stays_linear() {
         started.elapsed()
     );
 }
+
+/// The cases the renderer's mirror of the splitter and classifier runs too
+/// (`src/features/drivers/elasticsearch/console.test.ts`): both must agree on every one.
+#[test]
+fn shared_console_cases() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/elasticsearch/console.cases.json"
+    ))
+    .expect("the case file is JSON");
+    let classify = cases["classify"].as_array().expect("classify cases");
+    assert!(classify.len() > 250);
+    for c in classify {
+        let text = c["sql"].as_str().expect("sql");
+        let want = match c["class"].as_str() {
+            Some("read") => StatementClass::Read,
+            _ => StatementClass::Write,
+        };
+        assert_eq!(super::classify::classify_text(text), want, "{text:?}");
+    }
+    for c in cases["split"].as_array().expect("split cases") {
+        let text = c["sql"].as_str().expect("sql");
+        let want: Vec<&str> = c["statements"]
+            .as_array()
+            .expect("statements")
+            .iter()
+            .filter_map(|s| s.as_str())
+            .collect();
+        let got: Vec<String> = super::console::split(text)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
+        assert_eq!(got, want, "{text:?}");
+    }
+}

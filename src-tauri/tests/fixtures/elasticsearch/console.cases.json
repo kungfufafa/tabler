@@ -1,0 +1,1265 @@
+{
+  "$comment": "Cases of the Elasticsearch console's splitter and read/write classifier (src-tauri/src/drivers/elasticsearch/console.rs and classify.rs). The backend's tests (drivers::elasticsearch::tests::shared_console_cases) and the renderer's mirror (src/features/drivers/elasticsearch/console.test.ts) both run them; `class` is one statement's (classify_text).",
+  "classify": [
+    {
+      "sql": "GET /",
+      "class": "read"
+    },
+    {
+      "sql": "HEAD /logs",
+      "class": "read"
+    },
+    {
+      "sql": "GET _cat/indices?format=json&bytes=b",
+      "class": "read"
+    },
+    {
+      "sql": "GET /logs/_mapping",
+      "class": "read"
+    },
+    {
+      "sql": "GET /logs/_settings?flat_settings=true",
+      "class": "read"
+    },
+    {
+      "sql": "GET /logs/_doc/1",
+      "class": "read"
+    },
+    {
+      "sql": "GET /logs/_doc/1?refresh=false",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_cluster/health?wait_for_status=yellow",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_cluster/health?wait_for_nodes=1000&timeout=30s",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_tasks?detailed=true",
+      "class": "read"
+    },
+    {
+      "sql": "GET /logs/_search\n{\"query\":{\"match\":{\"msg\":\"x\"}}}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"match_all\":{}},\"size\":5}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs,metrics/_search?scroll=1m",
+      "class": "read"
+    },
+    {
+      "sql": "POST /_all/_count",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_count\n{\"query\":{\"term\":{\"a\":1}}}",
+      "class": "read"
+    },
+    {
+      "sql": "POST _msearch\n{\"index\":\"a\"}\n{\"query\":{\"match_all\":{}}}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_mget\n{\"ids\":[\"1\",\"2\"]}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_field_caps?fields=*",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_validate/query?explain\n{\"query\":{\"match_all\":{}}}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_pit?keep_alive=1m",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_search/point_in_time?keep_alive=1m",
+      "class": "read"
+    },
+    {
+      "sql": "POST /_search/scroll\n{\"scroll\":\"1m\",\"scroll_id\":\"abc\"}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_explain/1\n{\"query\":{\"match_all\":{}}}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_termvectors/1",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_terms_enum\n{\"field\":\"tags\",\"string\":\"a\"}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/doc/_search",
+      "class": "read"
+    },
+    {
+      "sql": "POST /remote:logs/_search",
+      "class": "read"
+    },
+    {
+      "sql": "POST _render/template\n{\"source\":\"{}\"}",
+      "class": "read"
+    },
+    {
+      "sql": "POST _sql?format=json\n{\"query\":\"SELECT a FROM logs WHERE b = 'DELETE' LIMIT 5\"}",
+      "class": "read"
+    },
+    {
+      "sql": "POST _sql?format=txt\n{\"query\":\"\"\"SHOW TABLES\"\"\"}",
+      "class": "read"
+    },
+    {
+      "sql": "POST _sql\n{\"cursor\":\"sDXF1ZXJ5\"}",
+      "class": "read"
+    },
+    {
+      "sql": "POST _sql/translate\n{\"query\":\"DESCRIBE logs\"}",
+      "class": "read"
+    },
+    {
+      "sql": "POST _plugins/_sql\n{\"query\":\"SELECT * FROM `delete`\"}",
+      "class": "read"
+    },
+    {
+      "sql": "POST _plugins/_sql/_explain\n{\"query\":\"SELECT 1\"}",
+      "class": "read"
+    },
+    {
+      "sql": "GET _opendistro/_sql?sql=SELECT%20*%20FROM%20a",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_analyze\n{\"analyzer\":\"standard\",\"text\":\"x\"}",
+      "class": "read"
+    },
+    {
+      "sql": "POST _analyze\n{\"tokenizer\":\"standard\",\"filter\":[\"lowercase\"],\"text\":\"x\"}",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_security/_authenticate",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_snapshot/repo/_all",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_async_search/abc",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_transform/t/_stats",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_ml/datafeeds/d/_stats",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_ml/data_frame/analytics/a",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_application/search_application/app",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_all/_mapping",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_all",
+      "class": "read"
+    },
+    {
+      "sql": "GET /logs/doc/1/_source",
+      "class": "read"
+    },
+    {
+      "sql": "GET _nodes/_local/stats",
+      "class": "read"
+    },
+    {
+      "sql": "GET _nodes/_local,_master/stats",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_snapshot/repo/_current",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_snapshot/_all",
+      "class": "read"
+    },
+    {
+      "sql": "GET _ml/anomaly_detectors/_all/_stats",
+      "class": "read"
+    },
+    {
+      "sql": "GET _ml/trained_models/_all/_stats",
+      "class": "read"
+    },
+    {
+      "sql": "GET _security/_query/api_key",
+      "class": "read"
+    },
+    {
+      "sql": "GET _security/user/_privileges",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_ltr/store/_featureset/fs",
+      "class": "read"
+    },
+    {
+      "sql": "GET _plugins/_anomaly_detection/detectors/d/_profile",
+      "class": "read"
+    },
+    {
+      "sql": "GET _plugins/_alerting/monitors/_search",
+      "class": "read"
+    },
+    {
+      "sql": "GET _plugins/_ism/explain/logs",
+      "class": "read"
+    },
+    {
+      "sql": "GET _opendistro/_security/sslinfo",
+      "class": "read"
+    },
+    {
+      "sql": "GET _plugins/_alerting/monitors/m",
+      "class": "read"
+    },
+    {
+      "sql": "GET _ltr/_cachestats",
+      "class": "read"
+    },
+    {
+      "sql": "GET _xpack/usage",
+      "class": "read"
+    },
+    {
+      "sql": "GET _sql/_explain?sql=DELETE%20FROM%20logs",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"sparse_vector\":{\"field\":\"s\",\"query_vector\":{\"a\":1.0}}}}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"knn\":{\"field\":\"v\",\"k\":3,\"query_vector\":[0.1,0.2]}}}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"retriever\":{\"rrf\":{\"retrievers\":[{\"standard\":{\"query\":{\"match_all\":{}}}}]}}}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"match_all\":{}},\"rank\":{\"rrf\":{\"window_size\":50}}}",
+      "class": "read"
+    },
+    {
+      "sql": "PUT /logs",
+      "class": "write"
+    },
+    {
+      "sql": "DELETE /logs",
+      "class": "write"
+    },
+    {
+      "sql": "PATCH /logs",
+      "class": "write"
+    },
+    {
+      "sql": "OPTIONS /logs",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_doc\n{\"a\":1}",
+      "class": "write"
+    },
+    {
+      "sql": "PUT /logs/_doc/1\n{\"a\":1}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_update/1\n{\"doc\":{\"a\":1}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _bulk\n{\"delete\":{\"_index\":\"a\",\"_id\":\"1\"}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_update_by_query",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_delete_by_query\n{\"query\":{\"match_all\":{}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_close",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_open",
+      "class": "write"
+    },
+    {
+      "sql": "POST _reindex\n{\"source\":{\"index\":\"a\"},\"dest\":{\"index\":\"b\"}}",
+      "class": "write"
+    },
+    {
+      "sql": "PUT _snapshot/repo/snap",
+      "class": "write"
+    },
+    {
+      "sql": "POST _snapshot/repo/snap/_restore",
+      "class": "write"
+    },
+    {
+      "sql": "POST _snapshot/repo/_analyze",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_flush",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_refresh",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_flush/synced",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_optimize",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_cache/clear",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_FLUSH",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_fl%75sh",
+      "class": "write"
+    },
+    {
+      "sql": "HEAD /logs/_refresh",
+      "class": "write"
+    },
+    {
+      "sql": "GET _ingest/pipeline/p/_simulate\n{\"docs\":[]}",
+      "class": "write"
+    },
+    {
+      "sql": "GET _ingest/_simulate",
+      "class": "write"
+    },
+    {
+      "sql": "GET _scripts/painless/_execute\n{\"script\":{\"source\":\"1\"}}",
+      "class": "write"
+    },
+    {
+      "sql": "GET _plugins/_knn/warmup/logs",
+      "class": "write"
+    },
+    {
+      "sql": "GET _opendistro/_knn/warmup/logs",
+      "class": "write"
+    },
+    {
+      "sql": "GET _plugins/_notifications/feature/test/abc",
+      "class": "write"
+    },
+    {
+      "sql": "GET _security/enroll/kibana",
+      "class": "write"
+    },
+    {
+      "sql": "GET _security/enroll/node",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search/template\n{\"id\":\"stored\"}",
+      "class": "write"
+    },
+    {
+      "sql": "GET _msearch/template\n{}\n{\"id\":\"t\"}",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_rank_eval\n{\"requests\":[]}",
+      "class": "write"
+    },
+    {
+      "sql": "GET _application/search_application/app/_search\n{\"params\":{\"q\":\"x\"}}",
+      "class": "write"
+    },
+    {
+      "sql": "GET _application/search_application/app/_search",
+      "class": "write"
+    },
+    {
+      "sql": "GET _transform/_preview\n{\"source\":{\"index\":\"a\"},\"dest\":{\"index\":\"b\",\"pipeline\":\"p\"},\"pivot\":{}}",
+      "class": "write"
+    },
+    {
+      "sql": "GET _transform/t/_preview",
+      "class": "write"
+    },
+    {
+      "sql": "GET _data_frame/transforms/t/_preview",
+      "class": "write"
+    },
+    {
+      "sql": "GET _ml/datafeeds/d/_preview",
+      "class": "write"
+    },
+    {
+      "sql": "GET _xpack/ml/datafeeds/d/_preview",
+      "class": "write"
+    },
+    {
+      "sql": "GET _ml/data_frame/analytics/_preview\n{\"config\":{}}",
+      "class": "write"
+    },
+    {
+      "sql": "GET _ml/data_frame/analytics/a/_preview",
+      "class": "write"
+    },
+    {
+      "sql": "GET _ml/data_frame/analytics/_explain\n{\"source\":{\"index\":\"a\"}}",
+      "class": "write"
+    },
+    {
+      "sql": "GET _ml/data_frame/analytics/a/_explain",
+      "class": "write"
+    },
+    {
+      "sql": "GET _async_search/abc?keep_alive=5d",
+      "class": "write"
+    },
+    {
+      "sql": "GET _query/async/abc?keep_alive=1d",
+      "class": "write"
+    },
+    {
+      "sql": "GET _sql/async/abc?keep_alive=5d",
+      "class": "write"
+    },
+    {
+      "sql": "GET _plugins/_asynchronous_search/abc?keep_alive=1d",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_doc/1?refresh",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_doc/1?refresh=true",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_mget?refresh=wait_for",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search?source=%7B%7D",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search?search_pipeline=p",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search?search_pipeline=p",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"semantic\":{\"field\":\"f\",\"query\":\"q\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"neural\":{\"v\":{\"query_text\":\"q\",\"model_id\":\"m\"}}}}",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search\n{\"knn\":{\"field\":\"v\",\"query_vector_builder\":{\"text_embedding\":{}}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"retriever\":{\"text_similarity_reranker\":{}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"ext\":{\"generative_qa_parameters\":{}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _msearch\n{\"index\":\"a\"}\n{\"query\":{\"sparse_vector\":{\"inference_id\":\"x\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"knn\":{\"field\":\"s\",\"k\":10,\"query_vector_builder\":{\"text_embedding\":{\"model_text\":\"q\"}}}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"wrapper\":{\"query\":\"eyJzZW1hbnRpYyI6eyJmaWVsZCI6ImJvZHkiLCJxdWVyeSI6ImhlbGxvIn19\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search\n{\"query\":{\"bool\":{\"filter\":[{\"wrapper\":{\"query\":\"e30=\"}}]}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _msearch\n{\"index\":\"a\"}\n{\"query\":{\"wrapper\":{\"query\":\"e30=\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_count\n{\"query\":{\"wrapper\":{\"query\":\"e30=\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"sparse_vector\":{\"field\":\"s\",\"query\":\"q\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search\n{\"retriever\":{\"rrf\":{\"query\":\"q\",\"fields\":[\"a\",\"s\"]}}}",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search\n{\"retriever\":{\"linear\":{\"query\":\"q\",\"normalizer\":\"minmax\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"sltr\":{\"featureset\":\"f\",\"params\":{\"k\":\"x\"},\"model\":\"m\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_eql/search?keep_on_completion=true",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_async_search",
+      "class": "write"
+    },
+    {
+      "sql": "POST /_query\n{\"query\":\"FROM logs\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _plugins/_ppl\n{\"query\":\"source=logs\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search/template\n{\"id\":\"t\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /_bulk/_search",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_doc/_search",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_explain/_bulk",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_update/_search",
+      "class": "write"
+    },
+    {
+      "sql": "POST /_search/scroll/_bulk",
+      "class": "write"
+    },
+    {
+      "sql": "POST _sql/close\n{\"cursor\":\"x\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _tasks/n:1/_cancel",
+      "class": "write"
+    },
+    {
+      "sql": "POST _inference/text_embedding/e\n{\"input\":\"x\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _plugins/_sql\n{\"query\":\"DELETE FROM logs\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _opendistro/_sql\n{\"query\":\"SELECT 1; DELETE FROM logs\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _sql\n{\"query\":\"SELECT * INTO x FROM y\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _sql\n{\"query\":\"ſELECT 1\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _sql\n{\"query\":\"SELECT 'unterminated\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _sql\n{\"query\":\"SELECT 1 /* open\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _sql\n{\"query\":1}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _sql\n{\"fetch_size\":5}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _sql\n{\"query\":\"SELECT 1\",\"keep_on_completion\":true}",
+      "class": "write"
+    },
+    {
+      "sql": "GET _plugins/_sql?sql=DELETE%20FROM%20a",
+      "class": "write"
+    },
+    {
+      "sql": "POST _sql\n[]",
+      "class": "write"
+    },
+    {
+      "sql": "POST _sql\n{\"query\":\"SELECT 1\",\"sql\":\"DELETE FROM logs\"}",
+      "class": "write"
+    },
+    {
+      "sql": "GET _sql\n{\"query\":\"SELECT 1\",\"sql\":\"DELETE FROM logs\"}",
+      "class": "write"
+    },
+    {
+      "sql": "GET _sql\n{\"sql\":\"DELETE FROM logs\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _sql\n{\"query\":\"SELECT 1\",\"sql\":1}",
+      "class": "write"
+    },
+    {
+      "sql": "GET _sql?sql=SELECT%201&sql=DELETE%20FROM%20logs",
+      "class": "write"
+    },
+    {
+      "sql": "GET _sql?sql=DELETE%20FROM%20logs\n{\"query\":\"SELECT 1\"}",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_nlpcn/sql?sql=DELETE%20FROM%20logs",
+      "class": "write"
+    },
+    {
+      "sql": "HEAD /_nlpcn/sql?sql=DELETE%20FROM%20logs",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_nlpcn/sql\n{\"sql\":\"DELETE FROM logs\"}",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_nlpcn/sql?sql=SELECT%20*%20FROM%20logs",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_nlpcn/sql/explain?sql=SELECT%201",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_nlp%63n/sql?sql=DELETE%20FROM%20logs",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_zentity/models",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_data?format=csv&file=/tmp/out.csv",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_readonlyrest/admin/config",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_prometheus/metrics",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search_with_clusters",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_plugins/_directquery/_resources/prom/api/v1/labels",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_plugins/_async_query/q1",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_opendistro/_unknown/x",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_plugins",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_CAT/indices",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_search/script_template\n{\"id\":\"t\"}",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search/script_template",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_all/_data?format=csv&file=/tmp/out.csv",
+      "class": "write"
+    },
+    {
+      "sql": "HEAD /_all/_data?format=csv&file=/tmp/out.csv",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_all/doc/_data?format=csv&file=/tmp/out.csv",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_all/_search/_data?file=/tmp/out.csv",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_cat/_data?format=csv&file=/tmp/out.csv&ignore_unavailable=true",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_search/_data?format=csv&file=/tmp/out.csv&ignore_unavailable=true",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_nodes/_data?format=csv&file=/tmp/out.csv&ignore_unavailable=true",
+      "class": "write"
+    },
+    {
+      "sql": "HEAD /_cat/_data?file=/tmp/out.csv",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search/_data?file=/tmp/out.csv",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_doc/_data?file=/tmp/out.csv",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_cat/indices/_data",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_plugins/_ism/_data",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_all,logs/_data",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_cat/_featureset",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_doc/_x",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"match_all\":{}},\"ext\":{\"ubi\":{\"query_id\":\"q\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"ext\":{\"search_configuration\":{\"result_transformer\":{}}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"ext\":{\"personalize_request_parameters\":{\"user_id\":\"u\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST _analyze\n{\"tokenizer\":\"standard\",\"filter\":[{\"type\":\"synonym\",\"synonyms_path\":\"s.txt\"}],\"text\":\"x\"}",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_analyze\n{\"char_filter\":[{\"type\":\"mapping\",\"mappings_path\":\"m.txt\"}]}",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_snapshot/repo/_analyze",
+      "class": "write"
+    },
+    {
+      "sql": "",
+      "class": "write"
+    },
+    {
+      "sql": "hello",
+      "class": "write"
+    },
+    {
+      "sql": "GET /a/../_bulk",
+      "class": "write"
+    },
+    {
+      "sql": "POST /a/_search\n{",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs%2F_flush",
+      "class": "write"
+    },
+    {
+      "sql": "GET /x%2F..%2F_flush",
+      "class": "write"
+    },
+    {
+      "sql": "GET /x%2F..%2F_security%2Fenroll%2Fkibana",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_doc/x%2F..%2F..%2F_cache%2Fclear",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_explain/x%2F..%2F..%2F_delete_by_query\n{\"query\":{\"match_all\":{}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_termvectors/x%2F..%2F..%2F_update_by_query",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_doc/a%5C..%5C..%5C_flush",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_explain/x%2F_delete_by_query\n{\"query\":{\"match_all\":{}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_termvectors/x%5C_update_by_query",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs%2F_update_by_query/_search",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_doc/a%2F_flush",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_doc/a%2F_x",
+      "class": "write"
+    },
+    {
+      "sql": "HEAD /logs/_doc/a%5C_refresh",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_doc/a%3Frefresh=true",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search%3Fsearch_pipeline=p",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_async_search/abc%3Fkeep_alive=5d",
+      "class": "write"
+    },
+    {
+      "sql": "GET /_plugins/_sql%3Fsql=DELETE%20FROM%20logs",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_doc/a%2Fb",
+      "class": "read"
+    },
+    {
+      "sql": "GET /pages/_doc/https%3A%2F%2Fexample.com%2Fp%3Fq%3D1",
+      "class": "read"
+    },
+    {
+      "sql": "GET /%3Clogs-%7Bnow%2Fd%7D%3E/_search",
+      "class": "read"
+    },
+    {
+      "sql": "POST /%3Clogs-%7Bnow%2Fd%7D%3E/_search\n{\"query\":{\"match_all\":{}}}",
+      "class": "read"
+    },
+    {
+      "sql": "GET /logs/_source/a%5Cb",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT a FROM logs WHERE b = 'x'",
+      "class": "read"
+    },
+    {
+      "sql": "# all tables\nSHOW TABLES;",
+      "class": "read"
+    },
+    {
+      "sql": "describe logs",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT 1; DELETE FROM logs",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM logs WHERE a IN (SELECT 1) INTO x",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT 'unterminated",
+      "class": "write"
+    },
+    {
+      "sql": "DELETE FROM logs",
+      "class": "write"
+    },
+    {
+      "sql": "TRUNCATE logs",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search\n{\n  # a comment\n  \"query\": {\"match_all\": {}} // trailing\n}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_search\n{\n  /* block\n  comment */\n  \"size\": 1\n}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\": {\"query_string\": {\"query\": \"\"\"a \"b\" c\"\"\"}}}",
+      "class": "read"
+    },
+    {
+      "sql": "# note\nGET _cat/indices?v",
+      "class": "read"
+    },
+    {
+      "sql": "// note\n\nget /logs/_count",
+      "class": "read"
+    },
+    {
+      "sql": "GET\t/logs/_mapping",
+      "class": "read"
+    },
+    {
+      "sql": "HEAD /logs/_doc/1",
+      "class": "read"
+    },
+    {
+      "sql": "POST _msearch\n{}\n{\"query\":{\"match_all\":{}}}",
+      "class": "read"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"match\":{\"t\":\"x\"}}}\n",
+      "class": "read"
+    },
+    {
+      "sql": "GET /logs/_search?refresh=false",
+      "class": "read"
+    },
+    {
+      "sql": "GET /logs/_search?REFRESH=false",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search?Keep_Alive=1m",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search?Search_Pipeline=p",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"\\u0073emantic\":{\"field\":\"f\",\"query\":\"q\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"neural\":{}}}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"query\":{\"wrapper\":{\"query\":\"e30=\"}}}",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_search\n{}\n{}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n/* open",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"a\": tru}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"a\": 01}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"a\": \"\\x\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_search\n{\"a\": \"\"\"open}",
+      "class": "write"
+    },
+    {
+      "sql": "/* GET */ GET /logs/_search",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_count",
+      "class": "read"
+    },
+    {
+      "sql": "GET /logs/_count﻿",
+      "class": "write"
+    },
+    {
+      "sql": "POST _sql\n{\"query\":\"ſHOW TABLES\"}",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs/_Kount",
+      "class": "write"
+    },
+    {
+      "sql": "SHOW TABLES",
+      "class": "read"
+    },
+    {
+      "sql": "DESC logs;",
+      "class": "read"
+    },
+    {
+      "sql": "select a from logs where b = 'x;y'",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT a FROM logs\nWHERE b IN (\n  SELECT c FROM d)",
+      "class": "read"
+    },
+    {
+      "sql": "# all\n// tables\nshow tables",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT * FROM logs; DELETE FROM logs",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT * FROM logs WHERE a = 1 /* open",
+      "class": "write"
+    },
+    {
+      "sql": "SELECT drop FROM logs",
+      "class": "write"
+    },
+    {
+      "sql": "WITH x AS (SELECT 1) SELECT * FROM x",
+      "class": "write"
+    },
+    {
+      "sql": "INSERT INTO logs VALUES (1)",
+      "class": "write"
+    },
+    {
+      "sql": "explain SELECT 1",
+      "class": "write"
+    },
+    {
+      "sql": "GET /logs-*,metrics-*/_search?q=status:500",
+      "class": "read"
+    },
+    {
+      "sql": "GET /cluster_one:logs/_count",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_cluster/settings?include_defaults=true",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_nodes/stats/jvm",
+      "class": "read"
+    },
+    {
+      "sql": "GET /_cat/shards?v&h=index,shard,prirep,state",
+      "class": "read"
+    },
+    {
+      "sql": "GET _tasks?detailed&group_by=none",
+      "class": "read"
+    },
+    {
+      "sql": "POST _tasks/node:1/_cancel",
+      "class": "write"
+    },
+    {
+      "sql": "DELETE _pit\n{\"id\":\"x\"}",
+      "class": "write"
+    },
+    {
+      "sql": "DELETE _search/scroll\n{\"scroll_id\":\"x\"}",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_forcemerge?max_num_segments=1",
+      "class": "write"
+    },
+    {
+      "sql": "POST /logs/_cache/clear",
+      "class": "write"
+    },
+    {
+      "sql": "PUT /logs/_settings\n{\"index\":{\"number_of_replicas\":0}}",
+      "class": "write"
+    }
+  ],
+  "split": [
+    {
+      "sql": "# setup\nGET _cluster/health\n\nPUT /a\n{\n  \"settings\": {}\n}\n\n# next\nPOST _sql?format=json\n{\"query\": \"\"\"\nDELETE FROM x\nGET /y\n\"\"\"}\n",
+      "statements": [
+        "GET _cluster/health",
+        "PUT /a\n{\n  \"settings\": {}\n}\n\n# next",
+        "POST _sql?format=json\n{\"query\": \"\"\"\nDELETE FROM x\nGET /y\n\"\"\"}"
+      ]
+    },
+    {
+      "sql": "POST /a/_search\n{\n  /* GET /b\n  */\n  \"q\": \"x\" // GET /c\n}\n",
+      "statements": [
+        "POST /a/_search\n{\n  /* GET /b\n  */\n  \"q\": \"x\" // GET /c\n}"
+      ]
+    },
+    {
+      "sql": "POST /a/_doc\n{\"msg\": \"x\"}\nDELETE /a",
+      "statements": [
+        "POST /a/_doc\n{\"msg\": \"x\"}",
+        "DELETE /a"
+      ]
+    },
+    {
+      "sql": "hello\nGET /a",
+      "statements": [
+        "hello",
+        "GET /a"
+      ]
+    },
+    {
+      "sql": "  \n// x\n",
+      "statements": []
+    },
+    {
+      "sql": "/* x\nGET /a */",
+      "statements": [
+        "/* x\nGET /a */"
+      ]
+    },
+    {
+      "sql": "SELECT a,\n  b\nFROM logs\nWHERE c IN (\nSELECT d FROM e)\n\nshow tables;\nDESC logs\nGET /x\nselect 1;",
+      "statements": [
+        "SELECT a,\n  b\nFROM logs\nWHERE c IN (\nSELECT d FROM e)",
+        "show tables;",
+        "DESC logs",
+        "GET /x",
+        "select 1;"
+      ]
+    },
+    {
+      "sql": "SELECT a,\n  options\nFROM t\nWHERE x IN (\n  get AS g,\n  head\n)\nGET /x # next\nGET\n/y",
+      "statements": [
+        "SELECT a,\n  options\nFROM t\nWHERE x IN (\n  get AS g,\n  head\n)",
+        "GET /x # next",
+        "GET\n/y"
+      ]
+    },
+    {
+      "sql": "POST _sql\n{\"query\": \"\"\"\nSELECT 1\n\"\"\"}",
+      "statements": [
+        "POST _sql\n{\"query\": \"\"\"\nSELECT 1\n\"\"\"}"
+      ]
+    },
+    {
+      "sql": "  GET /a\n\t{\"x\": \"GET /b\"}\n  post /c\r\n{}\r\n",
+      "statements": [
+        "GET /a\n\t{\"x\": \"GET /b\"}",
+        "post /c\r\n{}"
+      ]
+    },
+    {
+      "sql": "GET /a\n{\"x\": \"unterminated\nGET /b",
+      "statements": [
+        "GET /a\n{\"x\": \"unterminated",
+        "GET /b"
+      ]
+    },
+    {
+      "sql": "GETS /a\nGET /b",
+      "statements": [
+        "GETS /a",
+        "GET /b"
+      ]
+    },
+    {
+      "sql": "# é😀\nGET /é\n\nGET /b",
+      "statements": [
+        "GET /é",
+        "GET /b"
+      ]
+    }
+  ]
+}
