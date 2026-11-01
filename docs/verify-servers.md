@@ -269,3 +269,25 @@ a statement time out on CockroachDB and Greenplum. What only a real server can c
 `pg_proc_info` and `SET TIME ZONE`, CockroachDB's `CANCEL` with a bound id, Greenplum 6's EXPLAIN
 options and role SQL under ORCA) is listed in the brief. Not run yet: no server was available when
 the lane landed (2026-11-01).
+
+### ClickHouse (`clickhouse`)
+
+| Suite                 | Variable                     | Server                                                                                                                                                                                                                                                                                   |
+| --------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/clickhouse.rs` | `TABLER_TEST_CLICKHOUSE_URL` | ClickHouse 23.3+ (`docker run -p 8123:8123 -e CLICKHOUSE_PASSWORD=<password> clickhouse/clickhouse-server`): `clickhouse://default:<password>@127.0.0.1:8123/default`; or ClickHouse Cloud over HTTPS as `clickhouses://default:<password>@<host>:8443/default`, which bills the queries |
+
+```sh
+node dev/scripts/lane.mjs clickhouse it
+```
+
+`clickhouse://` is plain HTTP and `clickhouses://` HTTPS with the certificate checked. The user
+needs to create and drop a table in the database; the test works in one of its own
+(`tabler_it_<pid>`) and drops it again. It covers connect and the version, the sidebar, the
+structure view, browse with paging and exact values, an exact count, a cell, a commit with one
+failing change, the editor's HTTP session and row cap, a cancel and a time out by `KILL QUERY`, the
+process list with Kill Query, and read-only: refused by the session, and `INSERT`, `CREATE`,
+`ALTER … UPDATE` and a statement's own `SETTINGS readonly = 0` refused by the server under
+`readonly=2`. What only a real server can confirm (`KILL QUERY` under `readonly=2`, the code a
+refused password's 403 carries, a non-ASCII password over HTTP Basic, an X.509 user's client
+certificate, the session time out's limits) is listed in the brief. Not run yet: no server was
+available when the lane landed (2026-11-01).
