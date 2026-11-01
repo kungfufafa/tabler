@@ -183,3 +183,22 @@ database, cancel, the query time out, Explain's plan XML, and a read-only sessio
 plan of a DELETE that leaves its row, `NEXT VALUE FOR` that leaves its sequence). TLS verify
 modes, Entra tokens, NTLM and integrated logins, SQL Browser and the Azure redirect need
 environments of their own. Not run yet: no server was available when the lane landed (2026-10-31).
+
+### DynamoDB (`dynamodb`)
+
+| Suite               | Variable                   | Server                                                                                                                                                                                                                                                                                                                                |
+| ------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/dynamodb.rs` | `TABLER_TEST_DYNAMODB_URL` | DynamoDB Local (`docker run -p 8000:8000 amazon/dynamodb-local`, or the jar with Java 17+): `dynamodb://local@127.0.0.1:8000/us-east-1`, where the user `local` signs with Local's dummy keys; or AWS itself with the host `aws`: `dynamodb://<access-key-id>:<secret>@aws/<region>`, keys allowed to create, write and delete tables |
+
+```sh
+node dev/scripts/lane.mjs dynamodb it
+```
+
+Each test creates its own on-demand table (`tabler_it_<uuid>`, waiting until it is active) and
+deletes it at the end; a test that fails leaves its table behind. It covers connect and the ping,
+the server info, the catalog, `definition()`, browse by cursor pages to the end, 2^53 + 1, decimals,
+timestamps as text and maps as JSON, a count, a cell, a commit with a failing change, a PartiQL
+read, an `UPDATE` ("1 row affected") and a `DELETE` of a missing key ("OK"), a cancel and the time
+out of a count in flight, and a read-only session's refusals (the console's writes, a commit's
+plan and a plan made by a writable session) leaving the table and its items as they were. On AWS
+the requests are billed. Not run yet: no server was available when the lane landed (2026-10-31).

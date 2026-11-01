@@ -1,10 +1,12 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { CORE_KINDS } from "@/features/drivers/catalog";
+import { CORE_KINDS, driverLabel } from "@/features/drivers/catalog";
+import { LANE_IDS, LANES } from "@/features/drivers/lanes";
 import type { AppInfo } from "../../bindings/AppInfo";
 import type { ApplyResult } from "../../bindings/ApplyResult";
 import type { BrowsePage } from "../../bindings/BrowsePage";
 import type { ConnectionInfo } from "../../bindings/ConnectionInfo";
 import type { ConnectionProfile } from "../../bindings/ConnectionProfile";
+import type { Driver } from "../../bindings/Driver";
 import type { KillOutcome } from "../../bindings/KillOutcome";
 import type { ProcessRow } from "../../bindings/ProcessRow";
 import type { QueryEvent } from "../../bindings/QueryEvent";
@@ -21,6 +23,7 @@ import {
   buildMockDrivers,
   enableMockDrivers,
   isMockBuilt,
+  loadMockDriver,
   mockBuiltDrivers,
   mockBuiltKinds,
   registerMockDriver,
@@ -99,11 +102,16 @@ describe("the mock's build", () => {
   });
 
   it("refuses a built database whose lane has no mock yet", async () => {
-    buildMockDrivers(["mongodb"]);
-    mockProfiles.set("p-fake-mongodb", fakeProfile());
+    // A driver whose lane's mock has none yet (MongoDB's lane has its own now).
+    const drivers = LANE_IDS.flatMap((lane): readonly Driver[] => LANES[lane].drivers);
+    const missing = await Promise.all(drivers.map(async (d) => !(await loadMockDriver(d))));
+    const driver = drivers.find((_, i) => missing[i]);
+    if (!driver) return;
+    buildMockDrivers([driver]);
+    mockProfiles.set("p-fake-mongodb", { ...fakeProfile(), driver });
     await expect(mockInvoke("connect", { profileId: "p-fake-mongodb" })).rejects.toMatchObject({
       code: "UNSUPPORTED",
-      message: "unsupported: the mock has no MongoDB driver yet",
+      message: `unsupported: the mock has no ${driverLabel(driver)} driver yet`,
     });
   });
 });
