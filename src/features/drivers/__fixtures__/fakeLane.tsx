@@ -98,9 +98,14 @@ export function fakeLane(kind: DatabaseKind, driver: Driver): LaneModule {
 /**
  * The fake lane of the second fake session (`fakeMockDriver(driver, { dialect })`): the same form
  * and object menu, no views of its own (the app's grid, structure and editor), and a `DialectUi`
- * for its extension SQL dialect.
+ * for its extension SQL dialect (with its own splitter when `split` is given).
  */
-export function fakeSqlLane(kind: DatabaseKind, driver: Driver, dialect: SqlDialectId): LaneModule {
+export function fakeSqlLane(
+  kind: DatabaseKind,
+  driver: Driver,
+  dialect: SqlDialectId,
+  split?: DialectUi["split"],
+): LaneModule {
   const doc = fakeLane(kind, driver);
   const sql: DialectUi = {
     label: "Fake SQL",
@@ -109,6 +114,7 @@ export function fakeSqlLane(kind: DatabaseKind, driver: Driver, dialect: SqlDial
     functions: [],
     columnTypes: [],
     quoteIdent: (name) => `"${name.replaceAll('"', '""')}"`,
+    split,
   };
   return {
     kinds: doc.kinds,

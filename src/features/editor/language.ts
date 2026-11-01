@@ -103,7 +103,7 @@ function dialectLanguage(
     language = {
       label: ui?.label ?? dialect,
       extension: () => (ui ? ui.codemirror().extension : []),
-      split: (text) => portableSplit(lex.lex, text),
+      split: ui?.split ?? ((text) => portableSplit(lex.lex, text)),
       formatter: ui?.formatter ?? null,
       fileExtension: "sql",
     };

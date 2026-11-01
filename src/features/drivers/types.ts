@@ -179,4 +179,9 @@ export interface DialectUi {
   functions: readonly string[];
   columnTypes: readonly string[];
   quoteIdent: (name: string) => string;
+  /**
+   * The statements of the text (UTF-16 offsets), for an engine that splits otherwise than the
+   * portable splitter over its lexer profile (a CQL batch is one statement).
+   */
+  split?: (text: string) => StatementRange[];
 }

@@ -291,3 +291,23 @@ process list with Kill Query, and read-only: refused by the session, and `INSERT
 refused password's 403 carries, a non-ASCII password over HTTP Basic, an X.509 user's client
 certificate, the session time out's limits) is listed in the brief. Not run yet: no server was
 available when the lane landed (2026-11-01).
+
+### Cassandra and ScyllaDB (`cassandra`)
+
+| Suite                | Variable                    | Server                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/cassandra.rs` | `TABLER_TEST_CASSANDRA_URL` | Cassandra 3.0+ (`docker run -p 9042:9042 cassandra:4.1`) or ScyllaDB (`docker run -p 9042:9042 scylladb/scylla --smp 1`), with a keyspace made first (`CREATE KEYSPACE tabler_dev WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}` in cqlsh): `cassandra://127.0.0.1:9042/tabler_dev`, or `cassandra://<user>:<password>@…` with PasswordAuthenticator on |
+
+```sh
+node dev/scripts/lane.mjs cassandra it
+```
+
+The keyspace must exist; each test works in a table of its own (`tabler_it_<uuid>`) and drops it
+again. It covers connect and the version, the keyspaces, the structure view and exact values
+(a `bigint` past 2^53, decimals, collections), browse page after page with the driver's paging
+state, an exact count, a cell, a commit with one change that does not apply
+(a lightweight transaction's `[applied]`), the editor's row cap, a cancel and a time out, and
+read-only refusals. What only a real server can confirm (prepared markers' types, schema agreement
+after DDL, TLS against a node's certificate through the IP mapping, single-node pinning over SSH,
+a Command password on reconnect, ScyllaDB's version and the server's `DESCRIBE`) is listed in the
+brief. Not run yet: no server was available when the lane landed (2026-11-01).

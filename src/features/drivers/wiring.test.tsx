@@ -41,6 +41,7 @@ import { fakeLane, fakeSqlLane } from "./__fixtures__/fakeLane";
 import { CORE_KINDS } from "./catalog";
 import type { LaneId } from "./lanes";
 import { awaitDialectUi, awaitDriverUi, registerLaneOverride } from "./registry";
+import type { DialectUi } from "./types";
 
 // F9b2: the app's tabs, grid, editor, sidebar and palette on the two fake sessions, a document
 // store (the fake standing in for MongoDB: a console, cursor pages, sequential edits, its own
@@ -98,7 +99,7 @@ const SESSIONS: Record<Fake, { driver: Driver; lane: LaneId; dialect: SqlDialect
 };
 
 /** Connects one of the fake sessions, with its lane and mock registered and built. */
-async function connect(fake: Fake): Promise<ConnectionInfo> {
+async function connect(fake: Fake, split?: DialectUi["split"]): Promise<ConnectionInfo> {
   const { driver, lane, dialect } = SESSIONS[fake];
   const mock = fakeMockDriver(driver, { dialect });
   registerMockDriver(driver, mock);
@@ -108,7 +109,7 @@ async function connect(fake: Fake): Promise<ConnectionInfo> {
   });
   registerLaneOverride(
     lane,
-    dialect ? fakeSqlLane(driver, driver, dialect) : fakeLane(driver, driver),
+    dialect ? fakeSqlLane(driver, driver, dialect, split) : fakeLane(driver, driver),
   );
   if (dialect) await awaitDialectUi(dialect);
   else await awaitDriverUi(driver);
@@ -370,6 +371,17 @@ describe("the SQL session of an extension dialect", () => {
       kind: "query",
       statements: ["SELECT * FROM orders", "SELECT * FROM users"],
     });
+  });
+
+  it("splits with the dialect's own splitter when its DialectUi has one", async () => {
+    // As CQL keeps a batch whole: here the whole text is one statement.
+    const info = await connect("sql", (text) => [{ start: 0, end: text.length, line: 1 }]);
+    await waitFor(() => expect(languageOf(info)).toMatchObject({ label: "Fake SQL" }));
+    const tabId = useTabsStore.getState().newQuery(info.connectionId);
+    const text = "SELECT * FROM orders; SELECT * FROM users";
+    seedEditor(tabId, text);
+    await runQuery(tabId);
+    expect(guard.calls.at(-1)).toEqual({ kind: "query", statements: [text] });
   });
 
   it("gives a plugin its editor's statements and runs its SQL, split the same way", async () => {

@@ -186,11 +186,8 @@ export function splitCql(text: string): SplitStatement[] {
 export const cqlStatements = (text: string): StatementRange[] =>
   splitCql(text).map(({ start, end, line }) => ({ start, end, line }));
 
-/**
- * The lane's dialect. `split` is not in `DialectUi` yet (a change request): until the editor
- * reads it, the editor splits with the portable splitter, which cuts a batch at its `;`.
- */
-export const cqlUi: DialectUi & { split: (text: string) => StatementRange[] } = {
+/** The lane's dialect; the editor splits with `cqlStatements`, so a batch stays whole. */
+export const cqlUi: DialectUi = {
   label: "CQL",
   codemirror: () => CQL_SQL,
   formatter: null,
