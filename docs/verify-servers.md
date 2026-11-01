@@ -311,3 +311,30 @@ read-only refusals. What only a real server can confirm (prepared markers' types
 after DDL, TLS against a node's certificate through the IP mapping, single-node pinning over SSH,
 a Command password on reconnect, ScyllaDB's version and the server's `DESCRIBE`) is listed in the
 brief. Not run yet: no server was available when the lane landed (2026-11-01).
+
+### BigQuery (`bigquery`)
+
+| Suite               | Variable                   | Server                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/bigquery.rs` | `TABLER_TEST_BIGQUERY_URL` | A Google Cloud project with billing (the sandbox refuses DML) and a dataset made first (`bq mk tabler_dev`), with a service-account key whose account has BigQuery Job User and Data Editor: `bigquery://<project>?keyFile=<path-to-key.json>&dataset=tabler_dev`, or an access token as `bigquery://:<token>@<project>?dataset=tabler_dev` (`gcloud auth print-access-token`); `location=` for a dataset outside the US and EU multi-regions |
+
+```sh
+node dev/scripts/lane.mjs bigquery it
+```
+
+The suite works in a table of its own (`tabler_it_<pid>`) and drops it again; it reads a few MB,
+which BigQuery bills. It covers connect, the datasets and the structure view with the declared key,
+free pages of `tabledata.list` with their cursor and a sorted page from one job, exact values (an
+INT64 past 2^53, NUMERIC, a TIMESTAMP, an array as JSON), a count and a cell, a commit with one
+failing change rolled back, the editor's row cap and its BigQuery session (a temp table kept between
+runs), a cancel on the server (`jobs.cancel`) and a time out, and read-only refusals.
+`the_readonly_scope_refuses_dml` (with a `keyFile=` URL) is the recorded test the brief asks for
+before read-only may be enforced by the server: a token with the `bigquery.readonly` scope runs a
+SELECT through `jobs.query` and must be refused a DELETE.
+`endpoint=http://localhost:9050/bigquery/v2` runs the suite on the emulator (`docker run -p
+9050:9050 ghcr.io/goccy/bigquery-emulator --project=<project>`), a beta that lacks some of BigQuery
+(sessions, scopes and job statistics may differ), so a failure there is not yet a driver bug. What
+only a real server can confirm (where `jobs.insert` puts a new session's id, the message of an
+expired session, the `reason` of a job stopped by `jobTimeoutMs`, `useInt64Timestamp` on
+`tabledata.list`, the NULL query parameter) is listed in the brief. Not run yet: no project was
+available when the lane landed (2026-11-01).
