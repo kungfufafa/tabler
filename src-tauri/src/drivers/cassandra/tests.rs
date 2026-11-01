@@ -859,3 +859,45 @@ async fn counter_tables_and_key_changes_are_refused_before_anything_is_sent() {
     };
     assert!(change_on(&narrowing, s.dialect(), &target, &key_change, false).is_err());
 }
+
+/// The caps of a session in `shop` (a password profile, and a Command one), kept in
+/// `tests/fixtures/cassandra/caps.json`: the renderer's mock tests read the same file, so the
+/// mock's caps cannot drift from these. `TABLER_BLESS=1` rewrites it.
+#[tokio::test]
+async fn caps_match_the_recorded_fixture() {
+    let mut all = serde_json::Map::new();
+    for (name, json) in [
+        ("password", serde_json::json!({})),
+        (
+            "command",
+            serde_json::json!({
+                "options": { "passwordMode": "command", "passwordCommand": "echo pw" }
+            }),
+        ),
+    ] {
+        let o = open_on(KvNode::new(1), json).await.expect("opens");
+        all.insert(
+            name.into(),
+            serde_json::to_value(o.session.capabilities()).expect("caps"),
+        );
+    }
+    let got = serde_json::Value::Object(all);
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/cassandra/caps.json");
+    if std::env::var("TABLER_BLESS").as_deref() == Ok("1") {
+        std::fs::create_dir_all(path.parent().expect("a folder")).expect("folder");
+        let text = serde_json::to_string_pretty(&got).expect("json");
+        std::fs::write(&path, text + "\n").expect("written");
+        return;
+    }
+    let want: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    assert!(
+        got == want,
+        "{} differs (TABLER_BLESS=1 rewrites it); now:\n{}",
+        path.display(),
+        serde_json::to_string_pretty(&got).expect("json")
+    );
+}

@@ -1,0 +1,132 @@
+{
+  "command": {
+    "data": {
+      "affected": "exact",
+      "count": "costly",
+      "defaultKeyword": false,
+      "filterOps": [
+        "eq",
+        "gt",
+        "lt",
+        "ge",
+        "le",
+        "in",
+        "like",
+        "between"
+      ],
+      "maxParams": 1000,
+      "paging": "cursor",
+      "rawFilter": "sqlWhere",
+      "serverExprs": [
+        "now",
+        "currentTimestamp",
+        "currentDate"
+      ],
+      "sort": false,
+      "transactions": "sequential",
+      "upsert": false
+    },
+    "dialect": "cql",
+    "driver": "cassandra",
+    "features": [
+      "editor",
+      "editRows",
+      "insertRows",
+      "deleteRows",
+      "serverExpressions",
+      "exactCount",
+      "structureView",
+      "tableDdl",
+      "viewDefinition",
+      "switchDatabase",
+      "startupCommands"
+    ],
+    "flavor": null,
+    "language": "cql",
+    "namespaces": {
+      "databases": true,
+      "defaultSchema": "shop",
+      "labels": {
+        "database": "Keyspace",
+        "schema": "Keyspace",
+        "table": "Table",
+        "tables": "Tables"
+      },
+      "schemas": "databaseIsSchema"
+    },
+    "safety": {
+      "confirm": "passcode",
+      "hardened": false,
+      "readOnly": "classifierOnly"
+    },
+    "session": {
+      "keepaliveSecs": 30,
+      "pingBilled": false
+    }
+  },
+  "password": {
+    "data": {
+      "affected": "exact",
+      "count": "costly",
+      "defaultKeyword": false,
+      "filterOps": [
+        "eq",
+        "gt",
+        "lt",
+        "ge",
+        "le",
+        "in",
+        "like",
+        "between"
+      ],
+      "maxParams": 1000,
+      "paging": "cursor",
+      "rawFilter": "sqlWhere",
+      "serverExprs": [
+        "now",
+        "currentTimestamp",
+        "currentDate"
+      ],
+      "sort": false,
+      "transactions": "sequential",
+      "upsert": false
+    },
+    "dialect": "cql",
+    "driver": "cassandra",
+    "features": [
+      "editor",
+      "editRows",
+      "insertRows",
+      "deleteRows",
+      "serverExpressions",
+      "exactCount",
+      "structureView",
+      "tableDdl",
+      "viewDefinition",
+      "switchDatabase",
+      "startupCommands"
+    ],
+    "flavor": null,
+    "language": "cql",
+    "namespaces": {
+      "databases": true,
+      "defaultSchema": "shop",
+      "labels": {
+        "database": "Keyspace",
+        "schema": "Keyspace",
+        "table": "Table",
+        "tables": "Tables"
+      },
+      "schemas": "databaseIsSchema"
+    },
+    "safety": {
+      "confirm": "password",
+      "hardened": false,
+      "readOnly": "classifierOnly"
+    },
+    "session": {
+      "keepaliveSecs": 30,
+      "pingBilled": false
+    }
+  }
+}

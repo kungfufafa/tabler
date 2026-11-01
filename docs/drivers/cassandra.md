@@ -109,7 +109,7 @@ Left for Phase B:
 
 ## Phase B status
 
-Part B1 (the backend driver) is done; B2 (renderer, mock) is still to come.
+Part B1 (the backend driver) and part B2 (the renderer and the mock) are done.
 
 **What works.**
 
@@ -150,6 +150,26 @@ Not granted: `CancelOnServer` (CQL has none), `Explain` (none either), `EditWith
 **Tests.** `node dev/scripts/lane.mjs cassandra test --snapshot`: value mapping both ways (2^53+1 → `BigInt`, decimals and varints exact, timestamps as text, collections, tuples, UDTs and vectors as JSON and back from it), quoting and injection (names `"` doubled, values bound), the classifier suite, and the session over a scripted node (`fake.rs`): connect, list, browse with paging, count, fetch cell, a commit with one failing change, the editor, a cancel and the query time out, and read-only refusals on every write path. The real-server suite `tests/cassandra.rs` covers the same against a server and skips without `TABLER_TEST_CASSANDRA_URL`.
 
 **Only a real server can confirm** (`lane.mjs cassandra it`): the scylla driver's own behaviour (paging states, prepared markers' types, LWT `[applied]` rows, schema agreement, request timeouts), TLS against a node's certificate through the IP mapping, single-node pinning over SSH, PasswordAuthenticator and a Command password on reconnect, ScyllaDB's version, and the server's `DESCRIBE`.
+
+### The renderer and the mock (part B2)
+
+**Renderer** (`src/features/drivers/cassandra/`; no views, session calls or form calls of its own, since the backend has none, so nothing the lane sends needs `guardExecution`):
+
+- **`form.ts`** (`KindUi`): host and port (9042), user and password (no user: no authentication), the keyspace as the database, and TLS as `entry::dial` maps it: Off, On with any certificate, verify-ca, verify-full. A node takes TLS on its port or not at all, so there is no Prefer: a profile with it is saved as Disable, without client files. `validate` checks the request timeout (1–3600 s) and the editor's page size (1–10,000 rows) as `CassandraParams::check` does; the host, a Command password's command and the client certificate pair are the shared checks. The summary is `host : port : user : keyspace`, with the consistency when it is not LOCAL_ONE.
+- **`params.ts`**: `CassandraParams` read leniently (a wrong type counts as unset) and saved with only what differs from the backend's defaults, numbers as numbers.
+- **`CassandraFields.tsx`**: consistency, serial consistency, local datacenter, request timeout, page size, compression, and single node, shown on and locked over SSH (the backend always pins one node there).
+- **`url.ts`**: `cassandra://user:password@host:port/keyspace?…` (TablePlus's scheme, the descriptor's only one): the password goes to the secret; `sslmode` (or `ssl` / `tls` as a flag, on being Require, or a mode's name; `prefer` reads as Disable) and the settings under their `CassandraParams` names, also as `localDC`, `fetchSize`, `requestTimeout`, `connectTimeout`. Values the backend would refuse are left out; an unknown `sslmode`, an `ssl` / `tls` value that is neither a flag nor a mode (rather than plaintext), a host with a space, `@`, `/`, `?` or `#`, or a malformed %-escape makes it no URL (`format` writes none for such a host either). `format` writes the SSL mode and the settings that differ from the defaults, never the password, and reads back to the same profile.
+- **`dialect.ts`** (`DialectUi`): CodeMirror's Cassandra dialect with cqlsh's and newer CQL's words, the CQL types, `$` bodies and `//` comments; names double-quoted with `"` doubled; CQL's functions and types for completion; no formatter (sql-formatter has no CQL). Safe Mode and splitting use the backend's lexer profile (`bindings/lex/cql.json`). `splitCql` is `split_cql` (a batch kept whole) and `cqlUi.split` offers it, but the editor does not read it yet (change request below): until then the editor cuts a batch at its `;` and the node refuses the parts.
+
+**Mock** (`src/lib/ipc/mock/drivers/cassandra/`, `?mockDrivers=cassandra`): a Cassandra 4.1.7 node (`shop`: users with a set and a map, orders by customer clustered newest first with a `bigint` past 2^53 and a decimal, page views as counters, a materialized view of the orders by status; `iot`: readings by a two-column partition key, with blobs) and a ScyllaDB 6.2.1 profile opened read-only at LOCAL_QUORUM. The session mirrors `session.rs`:
+
+- connecting checks what `validate` and `open` check, in the same words (the settings, the certificate pair, a missing keyspace, a read-only profile whose startup commands write, failing startup commands); the caps are the backend's, compared with `src-tauri/tests/fixtures/cassandra/caps.json`, which `drivers::cassandra::tests::caps_match_the_recorded_fixture` writes from a real session (password and Command profiles); no method the backend lacks;
+- keyspaces as databases (system ones hidden), the current one as the only schema, columns in key order with their roles, indexes, the server's DDL;
+- pages by a `cql1.` cursor bound to the statement, refused for an offset, a sort, or another query's cursor; AND-only filters with ALLOW FILTERING and the backend's refusals (OR, NULL, `Ne`, any column, a raw WHERE that writes or adds a statement); the size estimate as the count until filtered (a view, which has none, is counted);
+- edits as lightweight transactions by the full key, deletes first, sent one by one: a change that does not apply (`[applied]` false, or the node's refusal of a materialized view) fails with the backend's message, those before it stay applied and the rest are not sent; key changes, DEFAULT, counter tables and incomplete keys are refused as `change_hook` refuses them; a read-only profile's edits are refused outright;
+- the editor: cqlsh's commands with the backend's notices, `USE`, `SELECT` (with the ALLOW FILTERING rule and `count(*)`), `INSERT` / `UPDATE` / `DELETE` (lightweight transactions answer `[applied]`, counters move by deltas), batches (all or nothing: a failing statement puts the tables back, as a node refuses the whole batch), `TRUNCATE` and `DESCRIBE`; anything else is refused as the mock's limit; a read-only session refuses what the classifier calls a write before it runs.
+
+**Tests** (`node dev/scripts/lane.mjs cassandra ts`): `form.test.ts` (defaults, save and read back, Prefer, lenient reading, every check's message), `url.test.ts` (parse, other spellings, refusals, format round trips), `fields.test.tsx`, `dialect.test.ts` (quoting, the editor's dialect, the lexer profile, every case of `classify-generated/cql.json`, the brief's hard cases, `split_cql`'s cases and UTF-16 offsets), and the mock story in `mock/drivers/cassandra/index.test.ts` (caps against the fixture, connect checks, catalog, cursor pages, filters, counts, cells, an edit with one failing change, a view's refusal, the editor, read-only refusals).
 
 ## Definition of done (this lane)
 
