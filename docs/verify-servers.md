@@ -361,3 +361,26 @@ TLS. What else only a real server can confirm (the catalog queries' columns and 
 EXPORT_OBJECTS with quoted names and for procedures, whether the READ ONLY mode itself refuses
 `NEXTVAL`, the grid's NULL ordering and null-safe comparisons, complex-type cell text) is listed in
 the brief. Not run yet: no server was available when the lane landed (2026-11-01).
+
+### DuckDB (`duckdb`)
+
+| Suite             | Variable                  | Server                                                                                                                                                              |
+| ----------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/duckdb.rs` | `TABLER_TEST_DUCKDB_PATH` | none: DuckDB runs inside Tabler. A file holding the lane's sample (`tests/fixtures/duckdb/sample.sql`); `pnpm dev:duckdb:build` writes `dev/fixtures/sample.duckdb` |
+
+```sh
+pnpm dev:duckdb:build
+node dev/scripts/lane.mjs duckdb it
+```
+
+The suite works on a copy of the file in a temp folder, so the file itself is never changed. It
+covers connect and the version, the databases, schemas, tables and structure, browse with paging
+(exact values), a count and a cell, a commit with one failing change rolled back (the error naming
+the statement), the editor's transaction and row cap, a cancel and a time out interrupting the
+engine, and a read-only profile refused by the session and by the engine (writes and files named
+where a table goes). What only another program can confirm, checked by hand: a file the DuckDB CLI
+or Python holds read-write fails with the lock error and its hint (close it there or open the
+connection read-only), and a file written by a newer DuckDB is refused by the bundled 1.5.6.
+Everything else (hardened and unattended sessions, encrypted files, the logger guard) is covered by
+the lane's unit tests on temp files. Not run yet: the sample file was not built when the lane
+landed (2026-11-01).

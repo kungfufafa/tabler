@@ -96,8 +96,12 @@ async function rs(lanes) {
     ["test", ...m, "--lib"],
     ["test", ...m, ...suites],
   ];
+  // Every suite links DuckDB since it is a default driver: eight of those links at once ran
+  // rustc out of memory in 16 GB, so the suites build with four jobs.
+  const suiteEnv = { ...env, CARGO_BUILD_JOBS: "4" };
   for (const args of steps) {
-    if ((await run("cargo", args, { env, label })) !== 0) failed = 1;
+    const stepEnv = args.includes("--test") ? suiteEnv : env;
+    if ((await run("cargo", args, { env: stepEnv, label })) !== 0) failed = 1;
   }
   const { stdout } = await capture("git", ["status", "--short", "--", "src/lib/ipc/bindings"]);
   if (stdout.trim()) console.log(`[gates] bindings changed by cargo test:\n${stdout}`);
