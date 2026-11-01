@@ -47,4 +47,51 @@ mod tests {
         }
         assert_eq!(flavor::hooks(None).flavor(), None);
     }
+
+    /// The caps a session gets on each engine and version, as `PgSession::capabilities` builds
+    /// them, kept in `tests/fixtures/pg_flavors/caps.json`: the renderer's mock tests read the
+    /// same file, so the mock's caps cannot drift from these. `TABLER_BLESS=1` rewrites it.
+    #[test]
+    fn caps_match_the_recorded_fixture() {
+        use crate::types::caps::SessionCaps;
+        use crate::types::profile::Driver;
+
+        let engines = [
+            ("cockroachdb", PgFlavor::Cockroachdb, 130_000),
+            ("greenplum6", PgFlavor::Greenplum, 90_426),
+            ("greenplum7", PgFlavor::Greenplum, 120_012),
+            ("cloudberry", PgFlavor::Greenplum, 140_004),
+            ("redshift", PgFlavor::Redshift, 80_002),
+        ];
+        let mut all = serde_json::Map::new();
+        for (name, engine, version) in engines {
+            let hooks = flavor::hooks(Some(engine));
+            let mut caps = flavor::adjust_caps(SessionCaps::base(
+                Driver::Postgres,
+                hooks.sql_dialect(),
+                Some(flavor::session_flavor(engine)),
+            ));
+            hooks.adjust_caps(&mut caps, version);
+            all.insert(name.into(), serde_json::to_value(&caps).unwrap());
+        }
+        let got = serde_json::Value::Object(all);
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/pg_flavors/caps.json");
+        if std::env::var("TABLER_BLESS").as_deref() == Ok("1") {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let text = serde_json::to_string_pretty(&got).unwrap();
+            std::fs::write(&path, text + "\n").unwrap();
+            return;
+        }
+        let want: serde_json::Value = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        assert!(
+            got == want,
+            "{} differs (TABLER_BLESS=1 rewrites it); now:\n{}",
+            path.display(),
+            serde_json::to_string_pretty(&got).unwrap()
+        );
+    }
 }
