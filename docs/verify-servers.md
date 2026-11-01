@@ -224,3 +224,24 @@ path a decoding proxy would turn into a write). OpenSearch SQL cursors, Elastics
 (`_xpack/sql`), Elasticsearch Serverless, Amazon OpenSearch Service (SigV4, its `_tasks`
 permissions) and TLS verify modes need environments of their own. Not run yet: no server was
 available when the lane landed (2026-11-01).
+
+### MongoDB (`mongodb`)
+
+| Suite              | Variable                  | Server                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tests/mongodb.rs` | `TABLER_TEST_MONGODB_URL` | MongoDB 4.2+ (`docker run -p 27017:27017 -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=<password> mongo:8`): `mongodb://root:<password>@127.0.0.1:27017/?authSource=admin`; for transactions a one-node replica set (`mongod --replSet rs0`, then `rs.initiate()`) with `?replicaSet=rs0`; or Atlas with `mongodb+srv://<user>:<password>@<cluster>/` |
+
+```sh
+node dev/scripts/lane.mjs mongodb it
+```
+
+The connection string's password goes to the password field and the rest, options included, to the
+profile's URL. Each test works in a scratch database of its own (`tabler_it_<id>`) and drops it at
+the end. It covers connect and the version, the sidebar, the sampled columns with `_id` as the key,
+browse with paging, an exact count, a cell and the collection's definition, a commit with one
+failing change (rolled back on a replica set, the changes before it kept on a standalone server),
+a console run with a row cap, a cancel through `killOp` and the query time out on a slow `$where`,
+and a read-only session's refusals (a commit's plan, console writes, write calls) leaving the
+documents as they were. TLS with a CA file, a client certificate and an encrypted key, SRV, X.509,
+PLAIN and OIDC sign-in, mongos and the `$currentOp` privileges of Atlas need environments of their
+own. Not run yet: no server was available when the lane landed (2026-11-01).
