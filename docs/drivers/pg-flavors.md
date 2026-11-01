@@ -177,6 +177,8 @@ Change requests from B2:
 
 4. (Not blocking) `src/lib/ipc/mock/drivers/types.ts::MockLane`: an optional `flavors?: Partial<Record<PgFlavor, MockDriver>>`, and `handlers.ts::laneDriver` (with `seedMockDriverProfiles` for `?mockDrivers=`): a `postgres` profile whose `pgFlavor` is set and built is served by `(await importMockLane("pg-flavors")).flavors?.[flavor]` (its caps then reach `ConnectionInfo.capabilities`). The lane's module already exports `flavors` on its default object.
 
+Red-team review of the Redshift classifier (the lead, at landing, 2026-11-01): passed with no finding. 43 attempts to get a write read as a read, all written through `classify_redshift` (and the renderer's mirror over `lex/redshift.json`): `$$` glued to names, numbers, parameters and quoted names; comments nested and not, line comments ended by CR, VT, FF, NBSP or U+2028; backslash, `E` and `U&` strings; dollar tags that differ in case or hold characters the server refuses; write calls quoted, upper or mixed case, qualified, spaced, in FROM and in attribute notation across lines; statements outside the rules (CANCEL, ANALYZE, LOCK, EXECUTE, REFRESH, SET SESSION AUTHORIZATION, START TRANSACTION, END, EXPLAIN ANALYZE, `SELECT … INTO TEMP`). Each was a write; `SELECT "a"$$; DELETE …; --$$` stays a read, as the server reads the dollar body after a quoted name.
+
 ## Decisions and corrections for this lane
 
 - Starts after F8b, which puts `PgFlavorHooks` and `VANILLA` into the ungated `drivers/postgres/flavor/mod.rs`: there is nothing to implement before (critique B3). It still lands first (plan §6.1).

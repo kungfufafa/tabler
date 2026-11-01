@@ -245,3 +245,27 @@ and a read-only session's refusals (a commit's plan, console writes, write calls
 documents as they were. TLS with a CA file, a client certificate and an encrypted key, SRV, X.509,
 PLAIN and OIDC sign-in, mongos and the `$currentOp` privileges of Atlas need environments of their
 own. Not run yet: no server was available when the lane landed (2026-11-01).
+
+### CockroachDB, Greenplum and Amazon Redshift (`pg-flavors`)
+
+| Suite                 | Variable                    | Server                                                                                                                                                                                                                                                |
+| --------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/pg_flavors.rs` | `TABLER_TEST_CRDB_URL`      | CockroachDB (`docker run -p 26257:26257 cockroachdb/cockroach:latest start-single-node --insecure`): `postgres://root@127.0.0.1:26257/defaultdb`                                                                                                      |
+|                       | `TABLER_TEST_GREENPLUM_URL` | Greenplum 6 or 7, or Cloudberry, with a coordinator on 5432 (a Docker image of a single-node cluster): `postgres://gpadmin:<password>@127.0.0.1:5432/postgres`                                                                                        |
+|                       | `TABLER_TEST_REDSHIFT_URL`  | A Redshift Serverless workgroup (the free trial) or a provisioned cluster, reachable from this machine: `postgres://admin:<password>@<workgroup>.<account>.<region>.redshift-serverless.amazonaws.com:5439/dev?sslmode=require`; it bills the queries |
+
+```sh
+node dev/scripts/lane.mjs pg-flavors it
+```
+
+The variables are PostgreSQL URLs; the test names the engine as the connection form does, so the
+session's sniffed flavor must agree with it. Each test works in a table of its own
+(`public.tabler_it_<pid>`) and drops it again. Per engine it covers connect and the version, the
+sidebar, browse with paging, an exact count, a cell, a commit with one failing change, the process
+list, Show DDL, and creating, listing, showing and dropping a function; also CockroachDB's hidden
+`rowid` key and type modifiers, Greenplum's roles through the PostgreSQL driver's SQL, Redshift's
+edits in Redshift SQL on a SUPER column and a stored procedure's `SHOW PROCEDURE`, and a cancel and
+a statement time out on CockroachDB and Greenplum. What only a real server can confirm (Redshift's
+`pg_proc_info` and `SET TIME ZONE`, CockroachDB's `CANCEL` with a bound id, Greenplum 6's EXPLAIN
+options and role SQL under ORCA) is listed in the brief. Not run yet: no server was available when
+the lane landed (2026-11-01).
