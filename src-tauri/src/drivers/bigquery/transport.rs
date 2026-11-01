@@ -300,17 +300,38 @@ pub fn credentials_may_go_to(url: &str) -> bool {
     let host = u.host_str().unwrap_or_default();
     match u.scheme() {
         "https" => !host.is_empty(),
-        // The parser has lower-cased the name and written `127.1` as `127.0.0.1`.
-        "http" => {
-            host == "localhost"
-                || host
-                    .trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        }
+        "http" => this_machine(host),
         _ => false,
     }
+}
+
+/// Whether the tokens of a key file or of Application Default Credentials may be sent to `url`:
+/// Google's API hosts over HTTPS (`*.googleapis.com`, private endpoints too) or this machine.
+/// Only a profile's own access token may go to another HTTPS host, so an imported profile cannot
+/// send the user's Google sign-in elsewhere.
+pub fn google_credentials_may_go_to(url: &str) -> bool {
+    let Ok(u) = reqwest::Url::parse(url.trim()) else {
+        return false;
+    };
+    let host = u.host_str().unwrap_or_default();
+    match u.scheme() {
+        "https" => {
+            host == "googleapis.com" || host.ends_with(".googleapis.com") || this_machine(host)
+        }
+        "http" => this_machine(host),
+        _ => false,
+    }
+}
+
+/// `localhost` or a loopback address. The parser has lower-cased the name and written `127.1`
+/// as `127.0.0.1`.
+fn this_machine(host: &str) -> bool {
+    host == "localhost"
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// `a=1&b=x%20y` (also `+` for a space) decoded; invalid escapes stay as written.
@@ -385,6 +406,35 @@ mod tests {
             "",
         ] {
             assert!(!credentials_may_go_to(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn google_credentials_go_only_to_google_or_this_machine() {
+        for url in [
+            "https://bigquery.googleapis.com/bigquery/v2",
+            "https://bigquery-psc.p.googleapis.com/bigquery/v2",
+            "HTTPS://BigQuery.GoogleApis.com/bigquery/v2",
+            "http://localhost:9050/bigquery/v2",
+            "https://127.0.0.1:9050/bigquery/v2",
+            "http://[::1]:9050",
+        ] {
+            assert!(google_credentials_may_go_to(url), "{url}");
+        }
+        for url in [
+            "https://evil.example/bigquery/v2",
+            "https://googleapis.com.evil.example",
+            "https://evilgoogleapis.com/bigquery/v2",
+            "https://bigquery.googleapis.com@evil.example/bigquery/v2",
+            "https://evil.example/bigquery.googleapis.com",
+            "https://evil.example\\@bigquery.googleapis.com",
+            "https://bigquery.googleapis.com./bigquery/v2",
+            "http://bigquery.googleapis.com/bigquery/v2",
+            "http://localhost.evil.example",
+            "ftp://bigquery.googleapis.com",
+            "",
+        ] {
+            assert!(!google_credentials_may_go_to(url), "{url}");
         }
     }
 

@@ -569,6 +569,42 @@ async fn the_bearer_never_goes_in_clear_text_to_another_machine() {
     local.list_projects().await.unwrap();
 }
 
+#[tokio::test]
+async fn a_google_sign_in_goes_to_google_hosts_only() {
+    let fake = FakeBigquery::new();
+    fake.on(
+        "GET",
+        "/bigquery/v2/projects",
+        HttpResponse::json(200, &json!({"projects": []})),
+    );
+    for base in [
+        "https://evil.example/bigquery/v2",
+        "https://googleapis.com.evil.example/bigquery/v2",
+        "https://bigquery.googleapis.com@evil.example/bigquery/v2",
+    ] {
+        let c = Client::new(fake.transport(), base, "demo-proj").with_google_sign_in(true);
+        let e = c.list_projects().await.unwrap_err();
+        assert!(matches!(e, AppError::InvalidInput(_)), "{e:?}");
+    }
+    assert!(fake.requests().is_empty());
+    for base in [
+        "https://bigquery.googleapis.com/bigquery/v2",
+        "http://localhost:9050/bigquery/v2",
+    ] {
+        let c = Client::new(fake.transport(), base, "demo-proj").with_google_sign_in(true);
+        c.list_projects().await.unwrap();
+    }
+    // The profile's own access token may go to another https endpoint.
+    Client::new(
+        fake.transport(),
+        "https://evil.example/bigquery/v2",
+        "demo-proj",
+    )
+    .list_projects()
+    .await
+    .unwrap();
+}
+
 /// A profile for the wire tests (no SSH, no secret).
 fn wire_profile() -> crate::types::profile::ConnectionProfile {
     crate::drivers::common::token::tests::profile(crate::types::profile::Driver::Bigquery, None)

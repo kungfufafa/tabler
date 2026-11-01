@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::decode::is_json_number;
-use super::transport::credentials_may_go_to;
+use super::transport::{credentials_may_go_to, google_credentials_may_go_to};
 use crate::error::AppError;
 use crate::types::profile::{ConnectionProfile, DriverParams};
 use crate::types::value::Value;
@@ -107,6 +107,15 @@ impl BigqueryParams {
         if self.auth == BigqueryAuth::ServiceAccount && !set(&self.key_file_path) {
             return bad("BigQuery: choose the service account's key file (JSON).".into());
         }
+        if let Some(path) = self.key_file_path.as_deref().map(str::trim)
+            && !path.is_empty()
+            && !local_file_path(path)
+        {
+            return bad(format!(
+                "BigQuery: the key file \u{201c}{path}\u{201d} must be a full path on this machine \
+                 (C:\\keys\\sa.json or /keys/sa.json), not a network share."
+            ));
+        }
         if self.maximum_bytes_billed == Some(0) {
             return bad(
                 "BigQuery: Maximum bytes billed must be more than 0 (or empty for no limit)."
@@ -150,12 +159,29 @@ impl BigqueryParams {
             .as_deref()
             .map(str::trim)
             .filter(|e| !e.is_empty())
-            && !credentials_may_go_to(e)
         {
-            return bad(format!(
-                "BigQuery: the API endpoint \u{201c}{e}\u{201d} must be an https URL (plain http \
-                 only to this machine)."
-            ));
+            // The client appends the API's path after the endpoint: after a `?` or `#` it would
+            // land in the query or fragment, and the request would go to the endpoint's own path.
+            if e.contains(['?', '#']) {
+                return bad(format!(
+                    "BigQuery: the API endpoint \u{201c}{e}\u{201d} must be a base URL, without \
+                     a query (?) or fragment (#)."
+                ));
+            }
+            if !credentials_may_go_to(e) {
+                return bad(format!(
+                    "BigQuery: the API endpoint \u{201c}{e}\u{201d} must be an https URL (plain \
+                     http only to this machine)."
+                ));
+            }
+            // A key file's or ADC's token is the user's Google sign-in: Google's hosts only.
+            if self.auth != BigqueryAuth::AccessToken && !google_credentials_may_go_to(e) {
+                return bad(format!(
+                    "BigQuery: with a key file or Application Default Credentials, the API \
+                     endpoint \u{201c}{e}\u{201d} must be a googleapis.com host (or this \
+                     machine); another endpoint needs an access token."
+                ));
+            }
         }
         Ok(())
     }
@@ -183,6 +209,19 @@ impl BigqueryParams {
             .as_deref()
             .map(str::trim)
             .filter(|d| !d.is_empty())
+    }
+}
+
+/// A full path to a file on this machine: `C:\…` (or `C:/…`) or `/…`. Opening a UNC or device
+/// path (`\\host\share`, `//host/share`, `\\?\UNC\…`, `\\.\…`, `\??\…`) would make Windows sign in
+/// to that host and hand it the user's NTLM hash before the file is even read.
+pub fn local_file_path(path: &str) -> bool {
+    let sep = |c: char| c == '\\' || c == '/';
+    let mut c = path.chars();
+    match (c.next(), c.next(), c.next()) {
+        (Some(d), Some(':'), Some(s)) => d.is_ascii_alphabetic() && sep(s),
+        (Some(s), Some(n), _) => sep(s) && !sep(n) && n != '?',
+        _ => false,
     }
 }
 
@@ -346,6 +385,20 @@ mod tests {
             json!({"auth": "accessToken", "apiEndpoint": "http://127.0.0.1.nip.io/v2"}),
             json!({"auth": "accessToken", "apiEndpoint": "http://10.0.0.5:9050/bigquery/v2"}),
             json!({"auth": "accessToken", "jobTimeoutMs": 9007199254740992u64}),
+            // An imported profile must not send the user's Google sign-in to another host.
+            json!({"auth": "applicationDefault", "apiEndpoint": "https://evil.example/bigquery/v2"}),
+            json!({"keyFilePath": "C:\\k.json", "apiEndpoint": "https://evil.example"}),
+            json!({"auth": "applicationDefault", "apiEndpoint": "https://googleapis.com.evil.example"}),
+            json!({"auth": "applicationDefault", "apiEndpoint": "https://evilgoogleapis.com/v2"}),
+            json!({"auth": "applicationDefault", "apiEndpoint": "https://bigquery.googleapis.com@evil.example"}),
+            json!({"auth": "applicationDefault", "apiEndpoint": "http://bigquery.googleapis.com/bigquery/v2"}),
+            json!({"auth": "applicationDefault", "apiEndpoint": "http://localhost.evil.example"}),
+            // The client's path would land in the query or fragment.
+            json!({"auth": "accessToken", "apiEndpoint": "https://bq.example/v2?x=/bigquery/v2"}),
+            json!({"auth": "accessToken", "apiEndpoint": "https://bq.example/v2?"}),
+            json!({"auth": "accessToken", "apiEndpoint": "https://bq.example/v2#frag"}),
+            json!({"auth": "applicationDefault", "apiEndpoint": "https://bigquery.googleapis.com/bigquery/v2?alt=media"}),
+            json!({"auth": "applicationDefault", "apiEndpoint": "http://localhost:9050/#/bigquery/v2"}),
         ] {
             let p = BigqueryParams::from_value(Some(&bad)).unwrap();
             assert!(p.validate().is_err(), "{bad}");
@@ -353,6 +406,23 @@ mod tests {
         assert!(BigqueryParams::from_value(Some(&json!({"auth": "magic"}))).is_err());
         let ok = BigqueryParams::from_value(Some(&json!({"keyFilePath": "C:\\k.json"}))).unwrap();
         ok.validate().unwrap();
+        // Windows would sign in to the share's host (NTLM) before reading a byte.
+        for share in [
+            "\\\\attacker.example\\s\\k.json",
+            "//attacker.example/s/k.json",
+            "\\/attacker.example/s/k.json",
+            "\\\\?\\UNC\\attacker.example\\s\\k.json",
+            "\\\\.\\pipe\\x",
+            "\\??\\UNC\\attacker.example\\s\\k.json",
+            "keys\\k.json",
+            "C:k.json",
+        ] {
+            let p = BigqueryParams::from_value(Some(&json!({"keyFilePath": share}))).unwrap();
+            assert!(p.validate().is_err(), "{share}");
+        }
+        for local in ["C:/keys/k.json", "d:\\k.json", "/keys/sa.json", " /k.json "] {
+            assert!(local_file_path(local.trim()), "{local}");
+        }
         for e in [
             "https://bq.example/bigquery/v2",
             "http://127.0.0.1:9050/bigquery/v2",
@@ -362,6 +432,21 @@ mod tests {
                 BigqueryParams::from_value(Some(&json!({"auth": "accessToken", "apiEndpoint": e})))
                     .unwrap();
             p.validate().unwrap();
+        }
+        for e in [
+            "https://bigquery.googleapis.com/bigquery/v2",
+            "https://bigquery-psc.p.googleapis.com/bigquery/v2",
+            "http://localhost:9050/bigquery/v2",
+        ] {
+            for auth in [
+                json!({"auth": "applicationDefault", "apiEndpoint": e}),
+                json!({"keyFilePath": "C:\\k.json", "apiEndpoint": e}),
+            ] {
+                BigqueryParams::from_value(Some(&auth))
+                    .unwrap()
+                    .validate()
+                    .unwrap();
+            }
         }
     }
 

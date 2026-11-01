@@ -1283,6 +1283,31 @@ async fn processes_kills_ddl_routines_and_dry_runs() {
     let sent = fake.requests_to("/queries").pop().unwrap();
     assert_eq!(sent.json()["dryRun"], true);
     assert_eq!(inserts(&fake).len(), jobs_before);
+    // A full scan of one table: the statement is built here, by its whole quoted name.
+    s.call(
+        DRY_RUN,
+        json!({"table": {"schema": "my ds", "name": "a`b"}, "project": "other-proj"}),
+    )
+    .await
+    .unwrap();
+    let sent = fake.requests_to("/queries").pop().unwrap();
+    assert_eq!(
+        sent.json()["query"],
+        "SELECT * FROM `other-proj`.`my ds`.`a\\`b`"
+    );
+    s.call(
+        DRY_RUN,
+        json!({"table": {"schema": "shop", "name": "orders"}}),
+    )
+    .await
+    .unwrap();
+    let sent = fake.requests_to("/queries").pop().unwrap();
+    assert_eq!(sent.json()["query"], "SELECT * FROM `shop`.`orders`");
+    assert!(
+        s.call(DRY_RUN, json!({"table": {"name": "orders"}}))
+            .await
+            .is_err()
+    );
     assert!(s.call(DRY_RUN, json!({})).await.is_err());
     assert!(s.call("nope", json!({})).await.is_err());
 }
@@ -1552,5 +1577,49 @@ fn validate_and_the_cost_guard() {
     assert_eq!(
         opts.maximum_bytes_billed,
         Some(DEFAULT_MAXIMUM_BYTES_BILLED)
+    );
+}
+
+/// The caps of a session (with a default dataset, read-only, and without a default dataset),
+/// kept in `tests/fixtures/bigquery/caps.json`: the renderer's mock tests read the same file, so
+/// the mock's caps cannot drift from these. `TABLER_BLESS=1` rewrites it.
+#[tokio::test]
+async fn caps_match_the_recorded_fixture() {
+    let fake = FakeBigquery::new();
+    let mut all = serde_json::Map::new();
+    for (name, read_only, default) in [
+        ("editable", false, true),
+        ("readOnly", true, true),
+        ("noDefaultDataset", false, false),
+    ] {
+        let mut cfg = config(read_only);
+        if !default {
+            cfg.options.default_dataset = None;
+        }
+        let client = Client::new(fake.transport(), BASE, "demo-proj");
+        let s = BigquerySession::new(Arc::new(client), cfg);
+        all.insert(
+            name.into(),
+            serde_json::to_value(s.capabilities()).expect("caps"),
+        );
+    }
+    let got = serde_json::Value::Object(all);
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/bigquery/caps.json");
+    if std::env::var("TABLER_BLESS").as_deref() == Ok("1") {
+        std::fs::create_dir_all(path.parent().expect("a folder")).expect("folder");
+        let text = serde_json::to_string_pretty(&got).expect("json");
+        std::fs::write(&path, text + "\n").expect("written");
+        return;
+    }
+    let want: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    assert!(
+        got == want,
+        "{} differs (TABLER_BLESS=1 rewrites it); now:\n{}",
+        path.display(),
+        serde_json::to_string_pretty(&got).expect("json")
     );
 }

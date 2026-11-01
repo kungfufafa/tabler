@@ -1,0 +1,224 @@
+{
+  "editable": {
+    "data": {
+      "affected": "exact",
+      "count": "costly",
+      "defaultKeyword": false,
+      "filterOps": [
+        "eq",
+        "ne",
+        "gt",
+        "lt",
+        "ge",
+        "le",
+        "like",
+        "notLike",
+        "in",
+        "notIn",
+        "isNull",
+        "isNotNull",
+        "between",
+        "notBetween",
+        "contains",
+        "notContains",
+        "containsCase",
+        "notContainsCase",
+        "hasPrefix",
+        "hasSuffix",
+        "hasPrefixCase",
+        "hasSuffixCase",
+        "ilike"
+      ],
+      "maxParams": 10000,
+      "paging": "cursor",
+      "rawFilter": "sqlWhere",
+      "serverExprs": [],
+      "sort": true,
+      "transactions": "atomic",
+      "upsert": false
+    },
+    "dialect": "bigquery",
+    "driver": "bigquery",
+    "features": [
+      "editor",
+      "cancelOnServer",
+      "exactCount",
+      "structureView",
+      "tableDdl",
+      "viewDefinition",
+      "routines",
+      "processList",
+      "killProcess"
+    ],
+    "flavor": null,
+    "language": "sql",
+    "namespaces": {
+      "databases": true,
+      "defaultSchema": "shop",
+      "labels": {
+        "database": "Project",
+        "schema": "Dataset",
+        "table": "Table",
+        "tables": "Tables"
+      },
+      "schemas": "schemas"
+    },
+    "safety": {
+      "confirm": "passcode",
+      "hardened": false,
+      "readOnly": "classifierOnly"
+    },
+    "session": {
+      "keepaliveSecs": null,
+      "pingBilled": false
+    }
+  },
+  "noDefaultDataset": {
+    "data": {
+      "affected": "exact",
+      "count": "costly",
+      "defaultKeyword": false,
+      "filterOps": [
+        "eq",
+        "ne",
+        "gt",
+        "lt",
+        "ge",
+        "le",
+        "like",
+        "notLike",
+        "in",
+        "notIn",
+        "isNull",
+        "isNotNull",
+        "between",
+        "notBetween",
+        "contains",
+        "notContains",
+        "containsCase",
+        "notContainsCase",
+        "hasPrefix",
+        "hasSuffix",
+        "hasPrefixCase",
+        "hasSuffixCase",
+        "ilike"
+      ],
+      "maxParams": 10000,
+      "paging": "cursor",
+      "rawFilter": "sqlWhere",
+      "serverExprs": [],
+      "sort": true,
+      "transactions": "atomic",
+      "upsert": false
+    },
+    "dialect": "bigquery",
+    "driver": "bigquery",
+    "features": [
+      "editor",
+      "cancelOnServer",
+      "exactCount",
+      "structureView",
+      "tableDdl",
+      "viewDefinition",
+      "routines",
+      "processList",
+      "killProcess"
+    ],
+    "flavor": null,
+    "language": "sql",
+    "namespaces": {
+      "databases": true,
+      "defaultSchema": null,
+      "labels": {
+        "database": "Project",
+        "schema": "Dataset",
+        "table": "Table",
+        "tables": "Tables"
+      },
+      "schemas": "schemas"
+    },
+    "safety": {
+      "confirm": "passcode",
+      "hardened": false,
+      "readOnly": "classifierOnly"
+    },
+    "session": {
+      "keepaliveSecs": null,
+      "pingBilled": false
+    }
+  },
+  "readOnly": {
+    "data": {
+      "affected": "exact",
+      "count": "costly",
+      "defaultKeyword": false,
+      "filterOps": [
+        "eq",
+        "ne",
+        "gt",
+        "lt",
+        "ge",
+        "le",
+        "like",
+        "notLike",
+        "in",
+        "notIn",
+        "isNull",
+        "isNotNull",
+        "between",
+        "notBetween",
+        "contains",
+        "notContains",
+        "containsCase",
+        "notContainsCase",
+        "hasPrefix",
+        "hasSuffix",
+        "hasPrefixCase",
+        "hasSuffixCase",
+        "ilike"
+      ],
+      "maxParams": 10000,
+      "paging": "cursor",
+      "rawFilter": "sqlWhere",
+      "serverExprs": [],
+      "sort": true,
+      "transactions": "atomic",
+      "upsert": false
+    },
+    "dialect": "bigquery",
+    "driver": "bigquery",
+    "features": [
+      "editor",
+      "cancelOnServer",
+      "exactCount",
+      "structureView",
+      "tableDdl",
+      "viewDefinition",
+      "routines",
+      "processList",
+      "killProcess"
+    ],
+    "flavor": null,
+    "language": "sql",
+    "namespaces": {
+      "databases": true,
+      "defaultSchema": "shop",
+      "labels": {
+        "database": "Project",
+        "schema": "Dataset",
+        "table": "Table",
+        "tables": "Tables"
+      },
+      "schemas": "schemas"
+    },
+    "safety": {
+      "confirm": "passcode",
+      "hardened": false,
+      "readOnly": "classifierOnly"
+    },
+    "session": {
+      "keepaliveSecs": null,
+      "pingBilled": false
+    }
+  }
+}

@@ -265,6 +265,11 @@ pub fn table_path(project: Option<&str>, dataset: &str, table: &str) -> String {
     parts.join(".")
 }
 
+/// Every column of one table: what the `dryRun` call estimates for Estimate Full Scan….
+pub fn full_scan_query(project: Option<&str>, dataset: &str, table: &str) -> String {
+    format!("SELECT * FROM {}", table_path(project, dataset, table))
+}
+
 /// What the grid shows for a page read with `tabledata.list`, which runs no query.
 pub fn tabledata_display(project: Option<&str>, dataset: &str, table: &str) -> String {
     format!(

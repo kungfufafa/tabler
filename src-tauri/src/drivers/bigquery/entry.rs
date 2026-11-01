@@ -12,7 +12,7 @@ use super::auth::{
 };
 use super::client::Client;
 use super::jobs::{DatasetReference, QueryOptions};
-use super::params::{BigqueryAuth, BigqueryParams, DEFAULT_MAXIMUM_BYTES_BILLED};
+use super::params::{BigqueryAuth, BigqueryParams, DEFAULT_MAXIMUM_BYTES_BILLED, local_file_path};
 use super::session::{BigquerySession, SessionConfig};
 use super::transport::{HttpTransport, retry_policy};
 use crate::conn_options::effective_read_only;
@@ -100,6 +100,14 @@ async fn login(
                         "BigQuery: choose the service account's key file (JSON).".into(),
                     )
                 })?;
+            // `validate` refused a share already; never open one, even for a profile that skipped it.
+            if !local_file_path(path) {
+                return Err(AppError::InvalidInput(
+                    "BigQuery: the key file must be a full path on this machine, not a network \
+                     share."
+                        .into(),
+                ));
+            }
             read_credential_file(Path::new(path)).await?
         }
         BigqueryAuth::ApplicationDefault => {
@@ -146,7 +154,8 @@ async fn client_for(
         Credential::bearer(login.tokens),
     )?;
     let client = Client::new(Arc::new(transport), &params.endpoint(), &project)
-        .with_quota_project(login.quota_project.as_deref());
+        .with_quota_project(login.quota_project.as_deref())
+        .with_google_sign_in(params.auth != BigqueryAuth::AccessToken);
     Ok((client, login.user))
 }
 

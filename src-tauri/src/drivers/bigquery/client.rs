@@ -17,7 +17,10 @@ use super::catalog::{
 };
 use super::errors::{http_error, job_error};
 use super::jobs::{CancelReply, Job, JobList, JobReference, QueryOptions, QueryResponse};
-use super::transport::{HttpRequest, HttpResponse, Transport, credentials_may_go_to, encode};
+use super::transport::{
+    HttpRequest, HttpResponse, Transport, credentials_may_go_to, encode,
+    google_credentials_may_go_to,
+};
 use crate::drivers::CancelAction;
 use crate::error::AppError;
 
@@ -89,6 +92,9 @@ pub struct Client {
     project: String,
     /// User credentials (`authorized_user`) bill API calls to this project.
     quota_project: Option<String>,
+    /// The bearer is a key file's or ADC's token: it goes to Google's hosts (or this machine)
+    /// only.
+    google_sign_in: bool,
 }
 
 impl Client {
@@ -98,7 +104,14 @@ impl Client {
             base: base.trim_end_matches('/').to_string(),
             project: project.to_string(),
             quota_project: None,
+            google_sign_in: false,
         }
+    }
+
+    /// The bearer comes from a key file or Application Default Credentials.
+    pub fn with_google_sign_in(mut self, google: bool) -> Client {
+        self.google_sign_in = google;
+        self
     }
 
     pub fn with_quota_project(mut self, project: Option<&str>) -> Client {
@@ -137,6 +150,13 @@ impl Client {
             return Err(AppError::InvalidInput(
                 "BigQuery: the API endpoint must be an https URL (plain http only to this \
                  machine)."
+                    .into(),
+            ));
+        }
+        if self.google_sign_in && !google_credentials_may_go_to(&req.url) {
+            return Err(AppError::InvalidInput(
+                "BigQuery: with a key file or Application Default Credentials, the API endpoint \
+                 must be a googleapis.com host (or this machine)."
                     .into(),
             ));
         }

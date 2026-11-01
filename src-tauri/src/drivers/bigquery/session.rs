@@ -977,8 +977,9 @@ impl DbSession for BigquerySession {
         Some(self)
     }
 
-    /// `dryRun` `{sql}`: what the statement would process (and bill), and its columns. A dry run
-    /// runs nothing, whatever the statement.
+    /// `dryRun` `{sql}`, or `{table: {schema, name}, project?}` for a full scan of one table (the
+    /// statement built here, so the renderer writes no SQL): what it would process (and bill),
+    /// and its columns. A dry run runs nothing, whatever the statement.
     async fn call(
         &self,
         method: &str,
@@ -991,12 +992,26 @@ impl DbSession for BigquerySession {
             ));
         }
         self.check_open()?;
-        let sql = args
-            .get("sql")
-            .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| AppError::InvalidInput("BigQuery: dryRun needs the sql".into()))?;
-        let dry = self.client.dry_run(sql, &[], &self.config.options).await?;
+        fn text(v: Option<&serde_json::Value>) -> Option<&str> {
+            v.and_then(serde_json::Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+        }
+        let sql = match args.get("table") {
+            Some(table) => {
+                let (Some(dataset), Some(name)) =
+                    (text(table.get("schema")), text(table.get("name")))
+                else {
+                    return Err(AppError::InvalidInput(
+                        "BigQuery: dryRun needs the table's dataset and name".into(),
+                    ));
+                };
+                dialect::full_scan_query(text(args.get("project")), dataset, name)
+            }
+            None => text(args.get("sql"))
+                .ok_or_else(|| AppError::InvalidInput("BigQuery: dryRun needs the sql".into()))?
+                .to_owned(),
+        };
+        let dry = self.client.dry_run(&sql, &[], &self.config.options).await?;
         let columns: Vec<serde_json::Value> = dry
             .schema
             .map(|s| s.fields)
