@@ -273,17 +273,23 @@ fn classify_vertica(sql: &str) -> StatementClass {
 /// `sql` with each letter that case-folds to an ASCII letter written as that letter upper-cased.
 /// Vertica compares names case-insensitively in every alphabet, and the KELVIN SIGN (U+212A)
 /// folds to `k` but upper-cases to itself, so the shared deny-lists (which upper-case) would miss
-/// `\u{212A}MEANS(…)`. Only the classifier reads the folded text, and only next to the raw text:
+/// `\u{212A}MEANS(…)`; LONG S (U+017F) folds to `s` and would hide `CLO\u{17F}E_SESSION(…)`.
+/// Only the classifier reads the folded text, and only next to the raw text:
 /// folding also rewrites dollar tags (`$\u{212A}$` becomes `$K$`), which the server keeps apart.
 fn fold_ascii_lookalikes(sql: &str) -> Cow<'_, str> {
-    let folded = |c: char| {
-        let mut lower = c.to_lowercase();
-        match (lower.next(), lower.next()) {
-            (Some(l), None) if !c.is_ascii() && l.is_ascii_alphabetic() => {
-                Some(l.to_ascii_uppercase())
-            }
+    // Lower case finds the KELVIN SIGN; upper case finds LATIN SMALL LONG S (U+017F, which
+    // case-folds to `s` but lower-cases to itself) and the dotless i. Folding only adds writes.
+    fn one_ascii(mut it: impl Iterator<Item = char>) -> Option<char> {
+        match (it.next(), it.next()) {
+            (Some(l), None) if l.is_ascii_alphabetic() => Some(l.to_ascii_uppercase()),
             _ => None,
         }
+    }
+    let folded = |c: char| {
+        if c.is_ascii() {
+            return None;
+        }
+        one_ascii(c.to_lowercase()).or_else(|| one_ascii(c.to_uppercase()))
     };
     if sql.chars().any(|c| folded(c).is_some()) {
         Cow::Owned(sql.chars().map(|c| folded(c).unwrap_or(c)).collect())
@@ -706,6 +712,8 @@ mod tests {
             "SELECT BISECTING_\u{212A}MEANS('m','t','*',2)",
             "SELECT \u{212A}PROTOTYPES('m','t','*',2)",
             "SELECT CLO\u{17F}E_ALL_SESSIONS()",
+            "SELECT CLO\u{17F}E_SESSION('x')",
+            "SELECT \u{17F}HUTDOWN()",
         ] {
             assert_eq!(classify_vertica(sql), StatementClass::Write, "{sql}");
             let ascii = sql.replace('\u{212A}', "K").replace('\u{17F}', "S");
@@ -722,6 +730,7 @@ mod tests {
             StatementClass::Read
         );
         assert_eq!(fold_ascii_lookalikes("caf\u{e9} \u{212A}"), "caf\u{e9} K");
+        assert_eq!(fold_ascii_lookalikes("\u{17F}\u{131}"), "SI");
         assert!(advances_sequence("SELECT s.NEXTVAL"));
         // Dollar tags are byte-exact on the server, so folding must not make `$\u{212A}$` and
         // `$K$` one tag: the lexer's guard on a non-ASCII tag (or a `$$` after a non-ASCII
