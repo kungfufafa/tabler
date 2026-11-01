@@ -400,7 +400,11 @@ async fn a_failed_switch_keeps_the_native_session() {
         let err = connections::switch_database_on(&f.state, f.conn.id, "1".into())
             .await
             .unwrap_err();
-        assert_eq!(err.code(), "UNSUPPORTED", "{err}");
+        // With drv-redis built in, the switch reaches the real driver and fails to connect instead.
+        assert!(
+            matches!(err.code(), "UNSUPPORTED" | "CONNECT_FAILED"),
+            "{err}"
+        );
         assert!(matches!(f.conn.any_session().await, Session::Native(_)));
         assert!(!f.store.is_closed());
         assert_eq!(f.store.calls(), Vec::<String>::new());
