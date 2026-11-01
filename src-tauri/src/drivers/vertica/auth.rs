@@ -1,6 +1,6 @@
 //! What the client answers an Authentication request with: the password hashes of vertica-python's
-//! `Password` message (MD5 with md-5, SHA-512 with aws-lc-rs), the cleartext password (over TLS
-//! only), or an OAuth access token.
+//! `Password` message (MD5 with md-5, SHA-512 with aws-lc-rs), the cleartext password or an OAuth
+//! access token (both over TLS only).
 
 use aws_lc_rs::digest::{SHA512, digest};
 use md5::{Digest as _, Md5};
@@ -52,7 +52,7 @@ pub fn sha512_response(password: &[u8], user_salt: &[u8; 16], salt: &[u8; 4]) ->
 
 /// The body of the password message for `request`, or None when the request needs no answer
 /// (`Ok`, a grace-period warning). `tls`: the connection is encrypted, which a cleartext password
-/// requires.
+/// and a token require.
 pub fn response(
     request: &AuthRequest,
     user: &str,
@@ -63,7 +63,11 @@ pub fn response(
         Credential::Password(p) => p.as_bytes(),
         Credential::OAuthToken(t) => {
             return match request {
-                AuthRequest::OAuth => Ok(Some(t.as_bytes().to_vec())),
+                AuthRequest::OAuth if tls => Ok(Some(t.as_bytes().to_vec())),
+                AuthRequest::OAuth => Err(AppError::Auth(
+                    "the server asks for the OAuth token, which Tabler sends only over TLS: set SSL mode to Require or stricter"
+                        .into(),
+                )),
                 AuthRequest::Ok | AuthRequest::PasswordGrace => Ok(None),
                 other => Err(refused(other, "an OAuth token")),
             };
@@ -178,8 +182,14 @@ mod tests {
         // A token answers OAuth only, and a password never answers OAuth.
         let token = Credential::OAuthToken("eyJ.tok".into());
         assert_eq!(
-            response(&AuthRequest::OAuth, "", &token, false).unwrap(),
+            response(&AuthRequest::OAuth, "", &token, true).unwrap(),
             Some(b"eyJ.tok".to_vec())
+        );
+        // Never over a plain stream (`prefer` that fell back).
+        let err = response(&AuthRequest::OAuth, "", &token, false).unwrap_err();
+        assert!(
+            matches!(err, AppError::Auth(ref m) if m.contains("TLS")),
+            "{err}"
         );
         assert!(response(&md5, "u", &token, true).is_err());
         assert!(response(&AuthRequest::OAuth, "u", &pw, true).is_err());

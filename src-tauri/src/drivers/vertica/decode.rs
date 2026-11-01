@@ -156,6 +156,15 @@ fn be_i64(bytes: &[u8]) -> Option<i64> {
     Some(i64::from_be_bytes(bytes.try_into().ok()?))
 }
 
+/// The longest binary NUMERIC converted to digits: Vertica's 1024 digits fit in about 430 bytes,
+/// and the conversion is quadratic in the length, so a longer cell (only a hostile server sends
+/// one) stays hex.
+const MAX_BINARY_NUMERIC: usize = 512;
+
+/// Vertica's largest NUMERIC precision, so its largest scale. The scale comes from the field's
+/// modifier (up to 65535): a larger one stays hex rather than padding the cell with zeros.
+const MAX_NUMERIC_SCALE: i32 = 1024;
+
 /// A cell in the binary format.
 pub fn binary_value(ty: &TypeRef, bytes: &[u8]) -> Value {
     let decoded = match ty.oid {
@@ -170,7 +179,8 @@ pub fn binary_value(ty: &TypeRef, bytes: &[u8]) -> Value {
             .map(|b: [u8; 8]| Value::from_f64(&types::type_name(ty), f64::from_be_bytes(b))),
         types::NUMERIC => {
             let scale = types::scale(ty.oid, ty.modifier).unwrap_or(0);
-            (!bytes.is_empty()).then(|| Value::Decimal(numeric_text(bytes, scale)))
+            ((1..=MAX_BINARY_NUMERIC).contains(&bytes.len()) && scale <= MAX_NUMERIC_SCALE)
+                .then(|| Value::Decimal(numeric_text(bytes, scale)))
         }
         types::DATE => be_i64(bytes).and_then(date_text).map(Value::Date),
         types::TIME => be_i64(bytes)
@@ -587,6 +597,32 @@ mod tests {
         assert_eq!(
             binary_value(&ty, &[0x30, 0x39]),
             Value::Decimal("123.45".into())
+        );
+        // Longer than any Vertica NUMERIC: kept as hex, never converted.
+        let huge = vec![0x7f; 1 << 20];
+        assert_eq!(
+            binary_value(&ty, &huge),
+            Value::other("numeric(10,2)", hex::encode(&huge))
+        );
+        assert!(matches!(
+            binary_value(&ty, &[0x7f; MAX_BINARY_NUMERIC]),
+            Value::Decimal(_)
+        ));
+        // A scale above Vertica's largest (a hostile modifier) would pad a 1-byte cell to 65537
+        // characters: kept as hex.
+        let wide = TypeRef {
+            oid: types::NUMERIC,
+            user_type: None,
+            modifier: 0xFFFF + 4,
+        };
+        assert!(matches!(binary_value(&wide, &[1]), Value::Other(_)));
+        let widest = TypeRef {
+            modifier: (1024 << 16 | 1024) + 4,
+            ..wide
+        };
+        assert_eq!(
+            binary_value(&widest, &[1]),
+            Value::Decimal(format!("0.{}1", "0".repeat(1023)))
         );
     }
 

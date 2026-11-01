@@ -16,12 +16,14 @@
 //! The statements the driver sends for itself (session setup, EXPORT_OBJECTS, kills) are built
 //! here too.
 
+use std::borrow::Cow;
+
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::dialect::SqlDialect;
-use crate::sqlgen::dialect::lex::{ClassifyRules, LexProfile, PLAIN, reading};
+use crate::sqlgen::dialect::lex::{ClassifyRules, LexProfile, PLAIN, TokenKind, reading, scan};
 use crate::sqlgen::dialect::spec::{
-    CiLike, DialectSpec, NullSafeEq, NullsSort, PlaceholderStyle, RedactRule, SqlHooks, SqlKnobs,
-    double_quoted, ph_question, single_quoted,
+    CiLike, DialectSpec, NullSafeEq, NullsSort, PlaceholderStyle, RedactCall, RedactRule, SqlHooks,
+    SqlKnobs, double_quoted, ph_question, single_quoted,
 };
 use crate::sqlgen::portable::classify;
 use crate::sqlgen::split::leading_keywords;
@@ -258,8 +260,36 @@ pub static RULES: ClassifyRules = ClassifyRules {
     table_functions: None,
 };
 
+/// A write when either the text as sent or its folded spelling reads as one. The raw text keeps
+/// the server's byte-exact dollar tags and the lexer's guard on non-ASCII tags (ambiguous, so a
+/// write); the folded text catches names spelled with the KELVIN SIGN that the deny-lists miss.
 fn classify_vertica(sql: &str) -> StatementClass {
-    classify::with(&LEX, &RULES, sql)
+    match classify::with(&LEX, &RULES, sql) {
+        StatementClass::Write => StatementClass::Write,
+        _ => classify::with(&LEX, &RULES, &fold_ascii_lookalikes(sql)),
+    }
+}
+
+/// `sql` with each letter that case-folds to an ASCII letter written as that letter upper-cased.
+/// Vertica compares names case-insensitively in every alphabet, and the KELVIN SIGN (U+212A)
+/// folds to `k` but upper-cases to itself, so the shared deny-lists (which upper-case) would miss
+/// `\u{212A}MEANS(…)`. Only the classifier reads the folded text, and only next to the raw text:
+/// folding also rewrites dollar tags (`$\u{212A}$` becomes `$K$`), which the server keeps apart.
+fn fold_ascii_lookalikes(sql: &str) -> Cow<'_, str> {
+    let folded = |c: char| {
+        let mut lower = c.to_lowercase();
+        match (lower.next(), lower.next()) {
+            (Some(l), None) if !c.is_ascii() && l.is_ascii_alphabetic() => {
+                Some(l.to_ascii_uppercase())
+            }
+            _ => None,
+        }
+    };
+    if sql.chars().any(|c| folded(c).is_some()) {
+        Cow::Owned(sql.chars().map(|c| folded(c).unwrap_or(c)).collect())
+    } else {
+        Cow::Borrowed(sql)
+    }
 }
 
 /// Quotes doubled. A backslash is itself under `StandardConformingStrings` (on by default) and
@@ -342,12 +372,71 @@ pub static SPEC: DialectSpec = DialectSpec {
             RedactRule {
                 keyword: "AWS_SESSION_TOKEN",
             },
+            // The session parameter's own name: `ALTER SESSION SET AWSSessionToken = '…'`.
+            RedactRule {
+                keyword: "AWSSESSIONTOKEN",
+            },
             RedactRule { keyword: "GCSAUTH" },
+            // The per-bucket form of AWSAuth, which takes precedence over it.
+            RedactRule {
+                keyword: "S3BUCKETCREDENTIALS",
+            },
             RedactRule {
                 keyword: "AZURESTORAGECREDENTIALS",
             },
+            // LDAP Link's bind password, and an LDAP authentication's search-and-bind account
+            // (`ALTER AUTHENTICATION a SET bind_password='…'`).
+            RedactRule {
+                keyword: "LDAPLINKBINDPSWD",
+            },
+            RedactRule {
+                keyword: "BIND_PASSWORD",
+            },
             RedactRule {
                 keyword: "CLIENT_SECRET",
+            },
+            // UDx parameters: Voltage's `USING PARAMETERS shared_secret='…'`, the Kafka
+            // functions' `kafka_conf_secret='…'`.
+            RedactRule {
+                keyword: "SHARED_SECRET",
+            },
+            RedactRule {
+                keyword: "KAFKA_CONF_SECRET",
+            },
+            // librdkafka settings, which may carry `sasl.password=…`.
+            RedactRule {
+                keyword: "KAFKA_CONF",
+            },
+            // A notifier's adapter settings (`PARAMETERS 'sasl.password=…'`). This also masks
+            // the first value of a `USING PARAMETERS` list, where Vertica's UDxs take their
+            // credentials.
+            RedactRule {
+                keyword: "PARAMETERS",
+            },
+        ],
+        // A configuration value set by name, whatever the name: `AWS_SET_CONFIG(
+        // 'aws_secret_access_key', '…')`, `SET_CONFIG_PARAMETER('AWSAuth', 'id:secret')`.
+        redact_calls: &[
+            RedactCall {
+                function: "AWS_SET_CONFIG",
+                argument: 2,
+            },
+            RedactCall {
+                function: "SET_CONFIG_PARAMETER",
+                argument: 2,
+            },
+            // LDAP Link's dry runs take the bind password third: `(url, dn, password, …)`.
+            RedactCall {
+                function: "LDAP_LINK_DRYRUN_CONNECT",
+                argument: 3,
+            },
+            RedactCall {
+                function: "LDAP_LINK_DRYRUN_SEARCH",
+                argument: 3,
+            },
+            RedactCall {
+                function: "LDAP_LINK_DRYRUN_SYNC",
+                argument: 3,
             },
         ],
         ..SqlKnobs::ANSI
@@ -355,6 +444,45 @@ pub static SPEC: DialectSpec = DialectSpec {
     hooks: SqlHooks::NONE,
     ddl: None,
 };
+
+/// Whether `sql` names a sequence's next value the Vertica way, `seq.NEXTVAL` (or
+/// `"seq"."NEXTVAL"`): a qualified name, not a call, so `side_effect_functions` (which matches
+/// `NEXTVAL(`) misses it. A text the scanner cannot read for sure counts as one, and so does a
+/// Unicode-escaped name after a dot (`s.U&"\004EEXTVAL"`): its escapes may spell any name, the
+/// same reading the shared classifier gives `U&"…"`.
+pub fn advances_sequence(sql: &str) -> bool {
+    // The raw text keeps the server's dollar tags and the lexer's non-ASCII guard; the folded
+    // one spells `NEXTVAL` written with lookalike letters in ASCII.
+    let folded = fold_ascii_lookalikes(sql);
+    names_next_value(sql) || (matches!(folded, Cow::Owned(_)) && names_next_value(&folded))
+}
+
+fn names_next_value(sql: &str) -> bool {
+    LEX.readings.iter().any(|&r| {
+        let scan = scan(&LEX, r, sql);
+        let code: Vec<_> = scan
+            .tokens
+            .iter()
+            .filter(|t| !matches!(t.kind, TokenKind::Space | TokenKind::Comment))
+            .collect();
+        scan.ambiguous
+            || code.windows(2).any(|w| {
+                let next = match w[1].kind {
+                    TokenKind::Word => scan.upper(w[1]),
+                    TokenKind::Ident => scan.ident_name(w[1]).to_ascii_uppercase(),
+                    _ => return false,
+                };
+                scan.is_punct(w[0], '.') && next == "NEXTVAL"
+            })
+            || code.windows(4).any(|w| {
+                scan.is_punct(w[0], '.')
+                    && w[1].kind == TokenKind::Word
+                    && scan.upper(w[1]) == "U"
+                    && scan.is_punct(w[2], '&')
+                    && w[3].kind == TokenKind::Ident
+            })
+    })
+}
 
 // --- The driver's own statements -----------------------------------------------------------------
 
@@ -560,6 +688,189 @@ mod tests {
             "SHOW SEARCH_PATH",
         ] {
             assert_eq!(classify_vertica(sql), StatementClass::Read, "{sql}");
+        }
+    }
+
+    /// The KELVIN SIGN folds to `k` under Unicode case rules, which Vertica's names follow: each
+    /// listed write spelled with it stays a write, as with ASCII `K` and LATIN SMALL LONG S.
+    #[test]
+    fn a_kelvin_sign_hides_no_listed_write() {
+        for sql in [
+            "SELECT \u{212A}afkaListTopics('evil:9092')",
+            "SELECT LDAP_LIN\u{212A}_SYNC_START()",
+            "SELECT \u{212A}MEANS('m','t','*',2)",
+            "SELECT \"\u{212A}AFKAEXPORT\"(1,2,3) OVER ()",
+            "SELECT \u{212A}ERBEROS_CONFIG_CHECK()",
+            "SELECT MAR\u{212A}_DESIGN_\u{212A}SAFE(1)",
+            "SELECT v_txtindex.\u{212A}afkaExport(1) OVER ()",
+            "SELECT BISECTING_\u{212A}MEANS('m','t','*',2)",
+            "SELECT \u{212A}PROTOTYPES('m','t','*',2)",
+            "SELECT CLO\u{17F}E_ALL_SESSIONS()",
+        ] {
+            assert_eq!(classify_vertica(sql), StatementClass::Write, "{sql}");
+            let ascii = sql.replace('\u{212A}', "K").replace('\u{17F}', "S");
+            assert_eq!(classify_vertica(&ascii), StatementClass::Write, "{ascii}");
+        }
+        for call in WRITE_CALLS.iter().filter(|c| c.contains('K')) {
+            let name = call.trim_end_matches('*').replace('K', "\u{212A}");
+            let sql = format!("SELECT {name}(1)");
+            assert_eq!(classify_vertica(&sql), StatementClass::Write, "{sql}");
+        }
+        // A string or a name that only holds the sign stays a read; other letters stay as they are.
+        assert_eq!(
+            classify_vertica("SELECT '\u{212A}MEANS(1)', \u{212A}elvin FROM t"),
+            StatementClass::Read
+        );
+        assert_eq!(fold_ascii_lookalikes("caf\u{e9} \u{212A}"), "caf\u{e9} K");
+        assert!(advances_sequence("SELECT s.NEXTVAL"));
+        // Dollar tags are byte-exact on the server, so folding must not make `$\u{212A}$` and
+        // `$K$` one tag: the lexer's guard on a non-ASCII tag (or a `$$` after a non-ASCII
+        // letter) still makes each of these a write, and a sequence hidden the same way counts.
+        for sql in [
+            "SELECT $\u{212A}$ a $K$ b $\u{212A}$ AS x, KMEANS('m','t','*',2) -- $K$",
+            "SELECT $\u{212A}$ a $K$ b $\u{212A}$; SELECT CLOSE_ALL_SESSIONS() -- $K$",
+            "SELECT $\u{212A}$ x $\u{212A}$",
+            "SELECT $\u{212A}$ x $K$ ' $\u{212A}$, DROP_PARTITIONS('t', 1, 2) -- '",
+            "SELECT \u{212A}$$ '$$, DROP_PARTITIONS('t',1,2) -- '",
+            "SELECT a\u{212A}$$ '$$ ; DELETE FROM t --'",
+        ] {
+            assert_eq!(classify_vertica(sql), StatementClass::Write, "{sql}");
+            assert!(
+                crate::sqlgen::sql::writes(SqlDialect::Vertica, sql),
+                "{sql}"
+            );
+        }
+        assert!(advances_sequence(
+            "SELECT $\u{212A}$ x $K$ ' $\u{212A}$, s.NEXTVAL -- '"
+        ));
+    }
+
+    #[test]
+    fn a_sequence_s_next_value_is_found_in_either_form() {
+        for sql in [
+            "SELECT my_seq.NEXTVAL",
+            "SELECT s.nextval FROM t",
+            "SELECT \"my_seq\".\"NEXTVAL\"",
+            "SELECT app.s . /* x */ NextVal",
+            "INSERT INTO t SELECT s.NEXTVAL",
+            r#"SELECT s.U&"NEXTVAL""#,
+            r#"SELECT s.u&"nextval""#,
+            r#"SELECT s.U&"\004EEXTVAL""#,
+            r#"SELECT s.U&"!004EEXTVAL" UESCAPE '!'"#,
+        ] {
+            assert!(advances_sequence(sql), "{sql}");
+        }
+        for sql in [
+            "SELECT NEXTVAL('s')",
+            "SELECT s.CURRVAL",
+            "SELECT 's.NEXTVAL', \"a.NEXTVAL\" FROM t -- s.NEXTVAL",
+            "SELECT t.nextval_count FROM t",
+            r#"SELECT U&"nextval" FROM t"#,
+        ] {
+            assert!(!advances_sequence(sql), "{sql}");
+        }
+    }
+
+    /// The credentials Vertica statements carry are masked in the trace and history.
+    #[test]
+    fn redacts_passwords_and_cloud_credentials() {
+        let redact =
+            |sql: &str| crate::drivers::redact::redact_secrets(sql, SqlDialect::Vertica).sql;
+        let mask = crate::sqlgen::admin::PASSWORD_MASK;
+        for (sql, masked) in [
+            (
+                "ALTER USER u IDENTIFIED BY 'SECRETX' REPLACE 'OLDX'",
+                format!("ALTER USER u IDENTIFIED BY {mask} REPLACE {mask}"),
+            ),
+            (
+                "SELECT AWS_SET_CONFIG('aws_secret_access_key', 'SECRETX')",
+                format!("SELECT AWS_SET_CONFIG('aws_secret_access_key', {mask})"),
+            ),
+            (
+                "select aws_set_config('aws_session_token', 'SECRETX')",
+                format!("select aws_set_config('aws_session_token', {mask})"),
+            ),
+            (
+                "ALTER SESSION SET AWSSessionToken='SECRETX'",
+                format!("ALTER SESSION SET AWSSessionToken={mask}"),
+            ),
+            (
+                "ALTER SESSION SET UDPARAMETER FOR awslib aws_secret_access_key='SECRETX'",
+                format!("ALTER SESSION SET UDPARAMETER FOR awslib aws_secret_access_key={mask}"),
+            ),
+            (
+                "SELECT SET_CONFIG_PARAMETER('AWSAuth', 'id:SECRETX')",
+                format!("SELECT SET_CONFIG_PARAMETER('AWSAuth', {mask})"),
+            ),
+            (
+                "ALTER DATABASE DEFAULT SET AWSAuth = 'id:SECRETX'",
+                format!("ALTER DATABASE DEFAULT SET AWSAuth = {mask}"),
+            ),
+            (
+                "SELECT VoltageSecureConfigureGlobal(USING PARAMETERS server='v', shared_secret='SECRETX')",
+                format!(
+                    "SELECT VoltageSecureConfigureGlobal(USING PARAMETERS server={mask}, shared_secret={mask})"
+                ),
+            ),
+            (
+                "SELECT KafkaListTopics(USING PARAMETERS brokers='k', kafka_conf_secret='SECRETX')",
+                format!(
+                    "SELECT KafkaListTopics(USING PARAMETERS brokers={mask}, kafka_conf_secret={mask})"
+                ),
+            ),
+            (
+                r#"ALTER SESSION SET S3BucketCredentials='[{"bucket":"b","accessKey":"a","secretAccessKey":"SECRETX"}]'"#,
+                format!("ALTER SESSION SET S3BucketCredentials={mask}"),
+            ),
+            (
+                "ALTER DATABASE DEFAULT SET LDAPLinkBindPswd = 'SECRETX'",
+                format!("ALTER DATABASE DEFAULT SET LDAPLinkBindPswd = {mask}"),
+            ),
+            (
+                "ALTER DATABASE DEFAULT SET PARAMETER LDAPLinkBindPswd = 'SECRETX'",
+                format!("ALTER DATABASE DEFAULT SET PARAMETER LDAPLinkBindPswd = {mask}"),
+            ),
+            (
+                "ALTER AUTHENTICATION v_ldap SET host='ldap://h', binddn='cn=x', bind_password='SECRETX'",
+                format!(
+                    "ALTER AUTHENTICATION v_ldap SET host='ldap://h', binddn='cn=x', bind_password={mask}"
+                ),
+            ),
+            (
+                "SELECT LDAP_LINK_DRYRUN_CONNECT('ldap://h', 'cn=x', 'SECRETX')",
+                format!("SELECT LDAP_LINK_DRYRUN_CONNECT('ldap://h', 'cn=x', {mask})"),
+            ),
+            (
+                "SELECT ldap_link_dryrun_search('ldap://h', 'cn=x', 'SECRETX', 'dc=x', '')",
+                format!("SELECT ldap_link_dryrun_search('ldap://h', 'cn=x', {mask}, 'dc=x', '')"),
+            ),
+            (
+                "SELECT LDAP_LINK_DRYRUN_SYNC('ldap://h', 'cn=x', 'SECRETX', 'dc=x', '', 'dc=x', '')",
+                format!(
+                    "SELECT LDAP_LINK_DRYRUN_SYNC('ldap://h', 'cn=x', {mask}, 'dc=x', '', 'dc=x', '')"
+                ),
+            ),
+            (
+                "SELECT KafkaListTopics(USING PARAMETERS brokers='k', kafka_conf='sasl.password=SECRETX')",
+                format!(
+                    "SELECT KafkaListTopics(USING PARAMETERS brokers={mask}, kafka_conf={mask})"
+                ),
+            ),
+            (
+                "CREATE NOTIFIER n ACTION 'kafka://x' PARAMETERS 'sasl.password=SECRETX'",
+                format!("CREATE NOTIFIER n ACTION 'kafka://x' PARAMETERS {mask}"),
+            ),
+        ] {
+            let out = redact(sql);
+            assert_eq!(out, masked, "{sql}");
+            assert!(!out.contains("SECRETX"), "{sql}");
+        }
+        // Statements without a credential are left as written.
+        for sql in [
+            "SELECT 'x' AS a FROM t WHERE b = 'y'",
+            "SELECT GET_CONFIG_PARAMETER('AWSRegion')",
+        ] {
+            assert_eq!(redact(sql), sql, "{sql}");
         }
     }
 

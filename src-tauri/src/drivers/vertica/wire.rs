@@ -13,6 +13,7 @@
 //! Every parser here is total: a short or malformed message is an `Err`, never a panic, since
 //! release builds abort on one.
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use tokio::io::{AsyncRead, AsyncReadExt as _};
@@ -391,7 +392,6 @@ pub enum AuthRequest {
 
 pub const AUTH_OK: u32 = 0;
 pub const AUTH_CLEARTEXT: u32 = 3;
-pub const AUTH_CRYPT: u32 = 4;
 pub const AUTH_MD5: u32 = 5;
 pub const AUTH_CHANGE_PASSWORD: u32 = 9;
 pub const AUTH_PASSWORD_GRACE: u32 = 11;
@@ -566,6 +566,11 @@ pub struct Field {
     pub children: Vec<Field>,
 }
 
+/// How deep complex types may nest in a RowDescription. Vertica's own limit is far lower; the cap
+/// keeps a hostile description from building a tree whose Drop, Clone and Debug recurse without
+/// bound.
+const MAX_NESTING: usize = 100;
+
 /// Parses a RowDescription. `complex`: the session negotiated complex types (protocol 3.12 and
 /// `request_complex_types`), so each field carries its parent's attribute number; a field with a
 /// parent goes into that field's `children`.
@@ -576,9 +581,12 @@ pub fn parse_row_description(body: &[u8], complex: bool) -> Result<Vec<Field>, W
         return Ok(Vec::new());
     }
     let pool = parse_pool(&mut r)?;
-    let mut top: Vec<Field> = Vec::with_capacity(count as usize);
-    // Where each described field sits: (table OID, attribute) → path of indexes from `top`.
-    let mut paths: Vec<((u64, u16), Vec<usize>)> = Vec::new();
+    // Read flat first, each field with its parent's index and its depth, then build the tree:
+    // memory stays linear in the field count whatever the nesting.
+    let mut flat: Vec<(Option<Field>, Option<usize>)> = Vec::with_capacity(count as usize);
+    let mut depths: Vec<usize> = Vec::with_capacity(count as usize);
+    // The latest field described for each (table OID, attribute).
+    let mut index: HashMap<(u64, u16), usize> = HashMap::new();
     for _ in 0..count {
         let name = r.cstr()?;
         let table_oid = r.u64()?;
@@ -609,45 +617,50 @@ pub fn parse_row_description(body: &[u8], complex: bool) -> Result<Vec<Field>, W
             format,
             children: Vec::new(),
         };
-        let key = (table_oid, attribute);
-        if parent == 0 {
-            paths.push((key, vec![top.len()]));
-            top.push(field);
+        let (parent_at, depth) = if parent == 0 {
+            (None, 0)
         } else {
-            let path = paths
-                .iter()
-                .rev()
-                .find(|(k, _)| *k == (table_oid, parent))
-                .map(|(_, p)| p.clone())
-                .ok_or_else(|| {
-                    bad(format!(
-                        "complex type field {:?} without its parent",
-                        field.name
-                    ))
-                })?;
-            let holder =
-                field_at(&mut top, &path).ok_or_else(|| bad("complex type parent lost"))?;
-            let mut child_path = path;
-            child_path.push(holder.children.len());
-            holder.children.push(field);
-            paths.push((key, child_path));
-        }
+            let at = *index.get(&(table_oid, parent)).ok_or_else(|| {
+                bad(format!(
+                    "complex type field {:?} without its parent",
+                    field.name
+                ))
+            })?;
+            let depth = depths.get(at).map_or(0, |d| d + 1);
+            if depth > MAX_NESTING {
+                return Err(bad("complex types nested too deep in a RowDescription"));
+            }
+            (Some(at), depth)
+        };
+        index.insert((table_oid, attribute), flat.len());
+        flat.push((Some(field), parent_at));
+        depths.push(depth);
     }
     // Bytes left over mean the fields were read with the wrong layout (the version asked for
     // decides it): fail rather than decode cells by misread types.
     if r.remaining() != 0 {
         return Err(bad("bytes after the last field of a RowDescription"));
     }
-    Ok(top)
-}
-
-fn field_at<'f>(fields: &'f mut [Field], path: &[usize]) -> Option<&'f mut Field> {
-    let (&first, rest) = path.split_first()?;
-    let mut f = fields.get_mut(first)?;
-    for &i in rest {
-        f = f.children.get_mut(i)?;
+    // A parent always comes before its children, so walking backwards finishes each field's
+    // children before the field itself moves; they arrive last first.
+    let mut top = Vec::new();
+    for i in (0..flat.len()).rev() {
+        let (slot, parent_at) = &mut flat[i];
+        let parent_at = *parent_at;
+        let Some(mut field) = slot.take() else {
+            return Err(bad("complex type parent lost"));
+        };
+        field.children.reverse();
+        match parent_at {
+            None => top.push(field),
+            Some(p) => match flat.get_mut(p).and_then(|(f, _)| f.as_mut()) {
+                Some(holder) => holder.children.push(field),
+                None => return Err(bad("complex type parent lost")),
+            },
+        }
     }
-    Some(f)
+    top.reverse();
+    Ok(top)
 }
 
 /// A parameter of a ParameterDescription.
@@ -1050,6 +1063,28 @@ mod tests {
             true,
         );
         assert!(parse_row_description(&orphan[5..], true).is_err());
+    }
+
+    #[test]
+    fn deep_complex_nesting_fails_cleanly() {
+        // Field i is attribute i + 1 under attribute i: a chain as deep as the field count.
+        let chain = |depth: u16| {
+            let fields: Vec<_> = (0..depth)
+                .map(|i| msg::field("f", 0, None, i + 1, i, false, 6, 8, -1))
+                .collect();
+            msg::row_description(&[], &fields, true)
+        };
+        let ok = parse_row_description(&chain(MAX_NESTING as u16 + 1)[5..], true).unwrap();
+        assert_eq!(ok.len(), 1);
+        let mut depth = 0;
+        let mut f = &ok[0];
+        while let Some(c) = f.children.first() {
+            (f, depth) = (c, depth + 1);
+        }
+        assert_eq!(depth, MAX_NESTING);
+        for n in [MAX_NESTING as u16 + 2, 4000, u16::MAX] {
+            assert!(parse_row_description(&chain(n)[5..], true).is_err(), "{n}");
+        }
     }
 
     #[test]

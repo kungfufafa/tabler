@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::error::AppError;
-use crate::types::objects::{RoutineKind, RoutineSummary, SequenceSummary};
+use crate::types::objects::{RoutineKind, RoutineSummary};
 use crate::types::schema::{
     CheckMeta, ColumnMeta, CompletionMetadata, DatabaseInfo, ForeignKeyMeta, IndexMeta, SchemaInfo,
     TableKind, TableSummary,
@@ -209,6 +209,15 @@ pub fn parse_tables(rows: &[Vec<Value>], schema: &str) -> Vec<TableSummary> {
         .collect()
 }
 
+/// One table or view of `TABLES` (`?` four times: schema and name, for tables then views).
+pub const TABLE: &str = "SELECT t.table_name, CASE WHEN t.table_definition IS NOT NULL THEN \
+     'external' WHEN t.is_temp_table THEN 'temp' WHEN t.is_flextable THEN 'flex' ELSE 'table' END, \
+     c.comment FROM v_catalog.tables t LEFT JOIN v_catalog.comments c ON c.object_id = t.table_id \
+     AND c.object_type = 'TABLE' WHERE t.table_schema = ? AND t.table_name = ? UNION ALL SELECT \
+     v.table_name, 'view', c.comment FROM v_catalog.views v LEFT JOIN v_catalog.comments c ON \
+     c.object_id = v.table_id AND c.object_type = 'VIEW' WHERE v.table_schema = ? AND \
+     v.table_name = ?";
+
 /// Rows and bytes per table of a schema (`?`: the schema), from the projections' storage. A
 /// segmented projection spreads its rows over the nodes (their sum), an unsegmented one holds
 /// all of them on each node (their maximum); a super projection has every row, so a table's
@@ -317,26 +326,6 @@ pub fn apply_column_comments(columns: &mut [ColumnMeta], table: &str, rows: &[Ve
             c.comment = Some(comment);
         }
     }
-}
-
-/// The column a RowDescription field reads (`?`: the table OIDs of the fields, one each): the
-/// attribute number is the part of `column_id` after the table's id (`45035996273719486-1`).
-pub fn column_by_attribute(tables: usize) -> String {
-    let marks = vec!["?"; tables.max(1)].join(", ");
-    format!(
-        "SELECT table_id, column_id, column_name FROM v_catalog.columns WHERE table_id IN ({marks})"
-    )
-}
-
-/// (table OID, attribute number) → column name, from `column_by_attribute`'s rows.
-pub fn parse_attributes(rows: &[Vec<Value>]) -> BTreeMap<(u64, u16), String> {
-    rows.iter()
-        .filter_map(|r| {
-            let table = u64::try_from(int(r, 0)?).ok()?;
-            let attribute = text(r, 1)?.rsplit('-').next()?.trim().parse().ok()?;
-            Some(((table, attribute), non_empty(r, 2)?))
-        })
-        .collect()
 }
 
 // --- Keys and constraints ------------------------------------------------------------------------
@@ -539,7 +528,7 @@ pub fn parse_projections(rows: &[Vec<Value>]) -> Vec<IndexMeta> {
         .collect()
 }
 
-// --- Views, sequences, routines ------------------------------------------------------------------
+// --- Views, routines -----------------------------------------------------------------------------
 
 /// A view's text (`?`: schema, view).
 pub const VIEW_DEFINITION: &str =
@@ -555,25 +544,6 @@ pub fn parse_ddl(rows: &[Vec<Value>]) -> Option<String> {
         .and_then(|r| text(r, 0))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-}
-
-/// A schema's sequences (`?`: the schema); an IDENTITY / AUTO_INCREMENT column's names its
-/// table.
-pub const SEQUENCES: &str = "SELECT sequence_name, identity_table_name FROM v_catalog.sequences \
-     WHERE sequence_schema = ? ORDER BY sequence_name";
-
-pub fn parse_sequences(rows: &[Vec<Value>], schema: &str) -> Vec<SequenceSummary> {
-    rows.iter()
-        .filter_map(|r| {
-            Some(SequenceSummary {
-                schema: Some(schema.to_string()),
-                name: non_empty(r, 0)?,
-                data_type: Some("int".into()),
-                owned_by: non_empty(r, 1),
-                comment: None,
-            })
-        })
-        .collect()
 }
 
 /// A schema's functions (UDx and SQL functions) and stored procedures (`?` twice: the schema).
@@ -610,6 +580,15 @@ pub fn parse_routines(rows: &[Vec<Value>], schema: &str) -> Vec<RoutineSummary> 
         .collect()
 }
 
+/// The text of a SQL function (`?`: schema, name): its `RETURN` expression. UDx functions keep
+/// none, and stored procedures are read with `EXPORT_OBJECTS`.
+pub const FUNCTION_DEFINITION: &str = "SELECT function_definition FROM v_catalog.user_functions \
+     WHERE schema_name = ? AND function_name = ? ORDER BY 1";
+
+pub fn parse_function_definition(rows: &[Vec<Value>]) -> Option<String> {
+    rows.iter().find_map(|r| non_empty(r, 0))
+}
+
 // --- Completion ----------------------------------------------------------------------------------
 
 /// Every column of the user's tables and views, for the editor's completion.
@@ -643,10 +622,9 @@ pub const SESSIONS: &str = "SELECT session_id, user_name, client_hostname, clien
      login_timestamp, statement_start, current_statement, statement_id, transaction_id, \
      node_name, client_type FROM v_monitor.sessions ORDER BY login_timestamp";
 
-/// A row of `SESSIONS`. Vertica's session ids are text (`v_vmart_node0001-3104:0x1b2`), which
-/// `admin::ProcessRow::id` cannot hold (a change request).
+/// A row of `SESSIONS`. Vertica's session ids are text (`v_vmart_node0001-3104:0x1b2`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct VerticaSession {
+pub struct SessionRow {
     pub session_id: String,
     pub user: Option<String>,
     pub client_hostname: Option<String>,
@@ -663,18 +641,18 @@ pub struct VerticaSession {
     pub current: bool,
 }
 
-impl VerticaSession {
+impl SessionRow {
     /// One of Tabler's own sessions.
     pub fn own(&self) -> bool {
         self.client_type.as_deref() == Some("Tabler")
     }
 }
 
-pub fn parse_sessions(rows: &[Vec<Value>], current: Option<&str>) -> Vec<VerticaSession> {
+pub fn parse_sessions(rows: &[Vec<Value>], current: Option<&str>) -> Vec<SessionRow> {
     rows.iter()
         .filter_map(|r| {
             let session_id = non_empty(r, 0)?;
-            Some(VerticaSession {
+            Some(SessionRow {
                 current: current == Some(session_id.as_str()),
                 user: text(r, 1),
                 client_hostname: non_empty(r, 2),
@@ -874,24 +852,7 @@ mod tests {
     }
 
     #[test]
-    fn attributes_constraints_and_foreign_keys() {
-        assert_eq!(
-            column_by_attribute(2),
-            "SELECT table_id, column_id, column_name FROM v_catalog.columns WHERE table_id IN (?, ?)"
-        );
-        let attrs = parse_attributes(&[
-            vec![
-                Value::Int(45_035_996_273_719_486),
-                t("45035996273719486-2"),
-                t("name"),
-            ],
-            vec![t("45035996273719486"), t("45035996273719486-1"), t("id")],
-            vec![N, t("x-1"), t("lost")],
-            vec![Value::Int(1), t("garbage"), t("lost")],
-        ]);
-        assert_eq!(attrs.len(), 2);
-        assert_eq!(attrs[&(45_035_996_273_719_486, 2)], "name");
-
+    fn constraints_and_foreign_keys() {
         let fks = parse_foreign_keys(&[
             vec![
                 t("fk_a"),
@@ -1005,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn views_sequences_routines_completion_sessions() {
+    fn views_routines_completion_sessions() {
         assert_eq!(
             parse_view_definition(&[vec![t("SELECT 1")]]).as_deref(),
             Some("SELECT 1")
@@ -1016,9 +977,6 @@ mod tests {
             Some("CREATE TABLE t (a int);")
         );
         assert_eq!(parse_ddl(&[vec![t("  ")]]), None);
-
-        let seqs = parse_sequences(&[vec![t("s1"), N], vec![t("t_id_seq"), t("t")]], "public");
-        assert_eq!(seqs[1].owned_by.as_deref(), Some("t"));
 
         let routines = parse_routines(
             &[

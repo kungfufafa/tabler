@@ -3,12 +3,14 @@
 //! CancelRequest a second connection sends.
 //!
 //! The stream is the caller's: a socket, the rustls stream after `negotiate_tls` said yes, or an
-//! SSH tunnel's port (the session layer of `entry.rs` picks it, Phase B). Nothing here keeps a
-//! time limit either: the caller wraps a call in its timeout and cancels the statement on the
-//! server through `send_cancel`.
+//! SSH tunnel's port (`connect::Dial` picks it). Nothing here keeps a time limit either: the
+//! caller wraps a call in its timeout and cancels the statement on the server through
+//! `send_cancel`.
 //!
 //! A connection whose stream failed or whose server broke the protocol is broken: every later
-//! call fails with `NotConnected` without touching the stream.
+//! call fails with `NotConnected` without touching the stream. So is one left mid-exchange: a
+//! caller's future dropped between a message and its ReadyForQuery (a timeout around a ping)
+//! leaves replies unread, which the next statement would take for its own.
 
 use std::collections::BTreeMap;
 
@@ -69,8 +71,8 @@ impl StartupOptions {
     }
 
     /// The startup message's parameters. An OAuth token goes in them too (servers of protocol
-    /// 3.11 read it there rather than from the password message).
-    pub fn params(&self, credential: &Credential) -> Vec<(&'static str, String)> {
+    /// 3.11 read it there rather than from the password message), over TLS only (`tls`).
+    pub fn params(&self, credential: &Credential, tls: bool) -> Vec<(&'static str, String)> {
         let on = |b: bool| if b { "on" } else { "off" }.to_string();
         let mut out = vec![
             ("user", self.user.clone()),
@@ -97,7 +99,9 @@ impl StartupOptions {
         if let Some(w) = self.workload.as_ref().filter(|w| !w.is_empty()) {
             out.push(("workload", w.clone()));
         }
-        if let Credential::OAuthToken(token) = credential {
+        if let Credential::OAuthToken(token) = credential
+            && tls
+        {
             out.push(("oauth_access_token", token.clone()));
             out.push(("auth_category", "OAuth".to_string()));
         }
@@ -291,6 +295,10 @@ pub struct Prepared {
     pub command: String,
 }
 
+/// Notices kept until `take_notices`; later ones are dropped (a pooled connection's are never
+/// read, and a statement may send any number).
+const MAX_NOTICES: usize = 100;
+
 pub struct Connection<S> {
     io: BufReader<S>,
     hello: Hello,
@@ -298,6 +306,8 @@ pub struct Connection<S> {
     tx: TxStatus,
     notices: Vec<ServerMessage>,
     broken: bool,
+    /// A message was sent and its ReadyForQuery is not read yet.
+    busy: bool,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
@@ -318,8 +328,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             tx: TxStatus::Idle,
             notices: Vec::new(),
             broken: false,
+            busy: false,
         };
-        let params = options.params(credential);
+        let params = options.params(credential, tls);
         let params: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
         let startup = wire::startup(&params, wire::PROTOCOL_VERSION)
             .map_err(|e| AppError::InvalidInput(e.0))?;
@@ -335,7 +346,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 }
                 Backend::ParameterStatus { name, value } => conn.parameter(name, value),
                 Backend::BackendKey(key) => conn.hello.key = Some(key),
-                Backend::Notice(n) => conn.notices.push(n),
+                Backend::Notice(n) => conn.notice(n),
                 Backend::Error(e) => {
                     conn.broken = true;
                     return Err(match server_error(e, None, None) {
@@ -344,7 +355,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                     });
                 }
                 Backend::Ready(tx) => {
-                    conn.tx = tx;
+                    conn.ready(tx);
                     break;
                 }
                 other => {
@@ -368,22 +379,30 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         self.hello.key
     }
 
-    /// The transaction state of the last ReadyForQuery.
-    pub fn tx_status(&self) -> TxStatus {
-        self.tx
-    }
-
     pub fn in_transaction(&self) -> bool {
         self.tx != TxStatus::Idle
     }
 
+    /// Broken, or left mid-exchange by a dropped future: either way not to be used again.
     pub fn is_broken(&self) -> bool {
-        self.broken
+        self.broken || self.busy
     }
 
     /// The notices the server sent since the last call.
     pub fn take_notices(&mut self) -> Vec<ServerMessage> {
         std::mem::take(&mut self.notices)
+    }
+
+    fn notice(&mut self, n: ServerMessage) {
+        if self.notices.len() < MAX_NOTICES {
+            self.notices.push(n);
+        }
+    }
+
+    /// ReadyForQuery: the exchange is over.
+    fn ready(&mut self, tx: TxStatus) {
+        self.tx = tx;
+        self.busy = false;
     }
 
     fn parameter(&mut self, name: String, value: String) {
@@ -405,6 +424,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         if self.broken {
             return Err(AppError::NotConnected);
         }
+        // Until ReadyForQuery a reply is due (`ready` clears it).
+        self.busy = true;
         let mut res = self.io.get_mut().write_all(bytes).await;
         if res.is_ok() {
             res = self.io.get_mut().flush().await;
@@ -464,7 +485,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                         command: tag,
                     });
                 }
-                Backend::Notice(n) => self.notices.push(n),
+                Backend::Notice(n) => self.notice(n),
                 Backend::ParameterStatus { name, value } => self.parameter(name, value),
                 Backend::Error(e) => {
                     let err = server_error(e, Some(sql), None);
@@ -488,10 +509,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         loop {
             match self.next().await? {
                 Backend::Ready(tx) => {
-                    self.tx = tx;
+                    self.ready(tx);
                     return Ok(());
                 }
-                Backend::Notice(n) => self.notices.push(n),
+                Backend::Notice(n) => self.notice(n),
                 _ => {}
             }
         }
@@ -645,7 +666,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                         error = Some(server_error(e, Some(sql), Some(summary.tags.len())));
                     }
                 }
-                Backend::Notice(n) => self.notices.push(n),
+                Backend::Notice(n) => self.notice(n),
                 Backend::ParameterStatus { name, value } => self.parameter(name, value),
                 // COPY … FROM STDIN and COPY LOCAL: Tabler sends no files (v1). The server
                 // answers the refusal with an error, then ReadyForQuery.
@@ -660,7 +681,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                     self.send(&m).await?;
                 }
                 Backend::Ready(tx) => {
-                    self.tx = tx;
+                    self.ready(tx);
                     return match error {
                         Some(e) => Err(e),
                         None => Ok(summary),
@@ -840,12 +861,26 @@ mod tests {
                 .is_ok()
         );
 
-        // A token answers the OAuth request and rides in the startup message.
+        // A token answers the OAuth request and rides in the startup message, over TLS only:
+        // on a plain stream it is in neither.
         let oauth = Script::new(AuthPlan::OAuth, "tok.en", |_| Reply::Close);
-        let (conn, seen, _) = login(oauth, &Credential::OAuthToken("tok.en".into())).await;
-        assert!(conn.is_ok());
-        assert_eq!(seen.startups()[0]["oauth_access_token"], "tok.en");
-        assert_eq!(seen.passwords()[0], b"tok.en");
+        let token = Credential::OAuthToken("tok.en".into());
+        let (conn, seen, port) = login(oauth, &token).await;
+        assert!(matches!(conn, Err(AppError::Auth(ref m)) if m.contains("TLS")));
+        assert!(!seen.startups()[0].contains_key("oauth_access_token"));
+        assert!(seen.passwords().iter().all(|p| p.is_empty()));
+        let stream = testing::connect(port).await;
+        let options = StartupOptions::new("dbadmin", "VMart");
+        assert!(
+            Connection::startup(stream, &options, &token, true)
+                .await
+                .is_ok()
+        );
+        assert_eq!(seen.startups()[1]["oauth_access_token"], "tok.en");
+        assert_eq!(
+            seen.passwords().last().map(Vec::as_slice),
+            Some(&b"tok.en"[..])
+        );
 
         // TOTP and Kerberos are refused with a clear message.
         for code in [14, 2] {
@@ -1247,6 +1282,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_dropped_exchange_leaves_the_connection_unusable() {
+        // `SELECT 1` hangs; the caller gives up before the reply.
+        let script = Script::new(AuthPlan::Trust, "", |r| match r {
+            Request::Query(sql) if sql == "SELECT 1" => Reply::Hang(Vec::new()),
+            Request::Query(_) => Reply::Bytes(msg::select(&["v"], &[&["a"]], COMPLEX)),
+            _ => Reply::Close,
+        });
+        let (conn, _, _) = login(script, &pw("")).await;
+        let mut conn = conn.unwrap();
+        let dropped = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            conn.rows("SELECT 1", &[]),
+        )
+        .await;
+        assert!(dropped.is_err(), "the read was still waiting");
+        assert!(conn.is_broken(), "its reply is still due");
+        // A finished exchange leaves it usable.
+        let (conn, _, _) = login(
+            Script::new(AuthPlan::Trust, "", |r| match r {
+                Request::Query(_) => Reply::Bytes(msg::select(&["v"], &[&["a"]], COMPLEX)),
+                _ => Reply::Close,
+            }),
+            &pw(""),
+        )
+        .await;
+        let mut conn = conn.unwrap();
+        conn.rows("SELECT v", &[]).await.unwrap();
+        assert!(!conn.is_broken());
+    }
+
+    #[tokio::test]
+    async fn notices_are_kept_up_to_a_bound() {
+        let script = Script::new(AuthPlan::Trust, "", |r| match r {
+            Request::Query(_) => {
+                let mut out = Vec::new();
+                for _ in 0..MAX_NOTICES + 50 {
+                    out.extend(msg::notice(&[(b'S', "NOTICE"), (b'M', "again")]));
+                }
+                out.extend(msg::select(&["v"], &[&["a"]], COMPLEX));
+                Reply::Bytes(out)
+            }
+            _ => Reply::Close,
+        });
+        let (conn, _, _) = login(script, &pw("")).await;
+        let mut conn = conn.unwrap();
+        conn.rows("SELECT v", &[]).await.unwrap();
+        conn.rows("SELECT v", &[]).await.unwrap();
+        assert_eq!(conn.take_notices().len(), MAX_NOTICES);
+        assert!(conn.take_notices().is_empty());
+    }
+
+    #[tokio::test]
     async fn terminate_says_goodbye() {
         let script = Script::new(AuthPlan::Trust, "", |_| Reply::Close);
         let (conn, seen, _) = login(script, &pw("")).await;
@@ -1333,7 +1420,7 @@ mod tests {
             request_complex_types: false,
             ..StartupOptions::new("u", "d")
         };
-        let params = options.params(&pw("x"));
+        let params = options.params(&pw("x"), false);
         let get = |k: &str| {
             params
                 .iter()
@@ -1347,5 +1434,13 @@ mod tests {
             Some("{\"request_complex_types\":false}")
         );
         assert_eq!(get("auth_category"), None);
+        let token = Credential::OAuthToken("t".into());
+        let with = |tls: bool| {
+            options
+                .params(&token, tls)
+                .into_iter()
+                .any(|(k, _)| k == "oauth_access_token")
+        };
+        assert!(with(true) && !with(false), "the token goes over TLS only");
     }
 }

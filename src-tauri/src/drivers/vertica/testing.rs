@@ -158,23 +158,6 @@ pub mod msg {
         pub format: u16,
     }
 
-    impl FieldSpec {
-        pub fn not_null(mut self) -> FieldSpec {
-            self.nullable = false;
-            self
-        }
-
-        pub fn identity(mut self) -> FieldSpec {
-            self.identity = true;
-            self
-        }
-
-        pub fn binary(mut self) -> FieldSpec {
-            self.format = 1;
-            self
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn field(
         name: &str,
@@ -365,6 +348,8 @@ pub struct Script {
     pub password: String,
     /// The protocol version the server reports (None: an old server, no ParameterStatus).
     pub protocol_version: Option<u32>,
+    /// Answers a TLS request with `S` and this config (None: `N`).
+    pub tls: Option<Arc<rustls::ServerConfig>>,
     pub handler: Handler,
 }
 
@@ -378,10 +363,20 @@ impl Script {
             auth,
             password: password.into(),
             protocol_version: Some(super::wire::PROTOCOL_VERSION),
+            tls: None,
             handler: Arc::new(handler),
         }
     }
+
+    /// Takes TLS with `config`.
+    pub fn with_tls(mut self, config: Arc<rustls::ServerConfig>) -> Script {
+        self.tls = Some(config);
+        self
+    }
 }
+
+/// A TLS handshake: the name the client asked for (SNI) and whether it showed a certificate.
+pub type Handshake = (Option<String>, bool);
 
 /// What the server saw.
 #[derive(Clone, Default)]
@@ -394,6 +389,8 @@ pub struct Seen {
     pub cancels: Arc<Mutex<Vec<(u32, u32)>>>,
     pub ssl_requests: Arc<Mutex<usize>>,
     pub terminated: Arc<Mutex<usize>>,
+    /// Each TLS handshake.
+    pub tls: Arc<Mutex<Vec<Handshake>>>,
 }
 
 impl Seen {
@@ -411,6 +408,18 @@ impl Seen {
 
     pub fn cancels(&self) -> Vec<(u32, u32)> {
         self.cancels.lock().map(|v| v.clone()).unwrap_or_default()
+    }
+
+    pub fn tls(&self) -> Vec<Handshake> {
+        self.tls.lock().map(|v| v.clone()).unwrap_or_default()
+    }
+
+    pub fn terminated(&self) -> usize {
+        self.terminated.lock().map(|n| *n).unwrap_or_default()
+    }
+
+    pub fn logins(&self) -> usize {
+        self.startups.lock().map(|v| v.len()).unwrap_or_default()
     }
 
     fn push<T>(list: &Mutex<Vec<T>>, item: T) {
@@ -437,7 +446,12 @@ pub async fn serve(script: Script) -> (u16, Seen) {
         let mut pid = 1000;
         while let Ok((socket, _)) = listener.accept().await {
             pid += 1;
-            tokio::spawn(connection(socket, script.clone(), state.clone(), pid));
+            tokio::spawn(connection(
+                Box::new(socket),
+                script.clone(),
+                state.clone(),
+                pid,
+            ));
         }
     });
     (port, seen)
@@ -450,14 +464,18 @@ pub async fn connect(port: u16) -> TcpStream {
         .expect("connect to the fake server")
 }
 
-async fn untagged(socket: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+/// The server's side of a connection, plain or in TLS.
+trait Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Io for T {}
+
+async fn untagged(socket: &mut Box<dyn Io>) -> std::io::Result<Vec<u8>> {
     let len = socket.read_u32().await? as usize;
     let mut body = vec![0u8; len.saturating_sub(4)];
     socket.read_exact(&mut body).await?;
     Ok(body)
 }
 
-async fn tagged(socket: &mut TcpStream) -> std::io::Result<(u8, Vec<u8>)> {
+async fn tagged(socket: &mut Box<dyn Io>) -> std::io::Result<(u8, Vec<u8>)> {
     let tag = socket.read_u8().await?;
     Ok((tag, untagged(socket).await?))
 }
@@ -543,7 +561,7 @@ fn bind_request(sql: &str, body: &[u8]) -> Request {
 }
 
 async fn connection(
-    mut socket: TcpStream,
+    mut socket: Box<dyn Io>,
     script: Script,
     seen: Seen,
     pid: u32,
@@ -559,7 +577,20 @@ async fn connection(
                 if let Ok(mut n) = seen.ssl_requests.lock() {
                     *n += 1;
                 }
-                socket.write_all(b"N").await?;
+                let Some(config) = script.tls.clone() else {
+                    socket.write_all(b"N").await?;
+                    continue;
+                };
+                socket.write_all(b"S").await?;
+                let acceptor = tokio_rustls::TlsAcceptor::from(config);
+                let tls = acceptor.accept(socket).await?;
+                let (_, session) = tls.get_ref();
+                let shown = session.peer_certificates().is_some_and(|c| !c.is_empty());
+                Seen::push(
+                    &seen.tls,
+                    (session.server_name().map(str::to_string), shown),
+                );
+                socket = Box::new(tls);
             }
             _ => break body,
         }
@@ -668,4 +699,239 @@ async fn connection(
             }
         }
     }
+}
+
+// --- A server that answers SQL --------------------------------------------------------------------
+
+/// What `sql_script`'s handler answers a statement with.
+#[derive(Debug, Clone)]
+pub enum Answer {
+    /// Columns (name, type OID) and rows of text cells (None: NULL).
+    Rows {
+        columns: Vec<(String, u32)>,
+        rows: Vec<Vec<Option<String>>>,
+    },
+    /// A DML statement: its tag and the count of its `OUTPUT` row.
+    Count(String, u64),
+    /// A statement without rows (`SET`, `COMMIT`): its tag.
+    Done(String),
+    Error {
+        sqlstate: String,
+        message: String,
+        code: String,
+    },
+    /// Nothing until a cancel request for the connection arrives.
+    Hang,
+    /// Hang up.
+    Close,
+}
+
+/// Rows of `columns`; a cell `NULL` is NULL.
+pub fn rows(columns: &[(&str, u32)], cells: &[&[&str]]) -> Answer {
+    Answer::Rows {
+        columns: columns.iter().map(|(n, t)| (n.to_string(), *t)).collect(),
+        rows: cells
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|c| (*c != "NULL").then(|| c.to_string()))
+                    .collect()
+            })
+            .collect(),
+    }
+}
+
+pub fn failure(sqlstate: &str, message: &str, code: &str) -> Answer {
+    Answer::Error {
+        sqlstate: sqlstate.into(),
+        message: message.into(),
+        code: code.into(),
+    }
+}
+
+/// The parameters of a bound statement as text (None: NULL); None while it is prepared.
+pub type Params<'a> = Option<&'a [Option<String>]>;
+
+/// The `?` placeholders of `sql` outside strings and quoted names.
+fn placeholders(sql: &str) -> usize {
+    let mut n = 0;
+    let mut quote: Option<char> = None;
+    for c in sql.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '?') => n += 1,
+            _ => {}
+        }
+    }
+    n
+}
+
+fn first_word(sql: &str) -> String {
+    sql.split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase()
+}
+
+/// What every session runs that a test does not care about: its setup and transaction ends,
+/// who and where it is, the ping.
+pub fn standard(sql: &str) -> Option<Answer> {
+    let word = first_word(sql);
+    match word.as_str() {
+        "SET" => Some(Answer::Done("SET".into())),
+        "COMMIT" | "ROLLBACK" | "BEGIN" => Some(Answer::Done(word)),
+        _ if sql == super::catalog::SERVER_INFO => Some(rows(
+            &[
+                ("version", 9),
+                ("database", 9),
+                ("user", 9),
+                ("schema", 9),
+                ("session", 9),
+            ],
+            &[&[
+                "Vertica Analytic Database v24.1.0-0",
+                "VMart",
+                "dbadmin",
+                "public",
+                "v_vmart_node0001-31:0x1",
+            ]],
+        )),
+        _ if sql == "SELECT 1" => Some(rows(&[("?column?", 6)], &[&["1"]])),
+        _ => None,
+    }
+}
+
+fn row_bytes(rows: &[Vec<Option<String>>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for r in rows {
+        let cells: Vec<Option<&[u8]>> = r.iter().map(|c| c.as_deref().map(str::as_bytes)).collect();
+        out.extend(msg::data_row(&cells));
+    }
+    out
+}
+
+fn description(columns: &[(String, u32)]) -> Vec<u8> {
+    let specs: Vec<msg::FieldSpec> = columns
+        .iter()
+        .map(|(n, t)| msg::column(n, *t, -1))
+        .collect();
+    msg::row_description(&[], &specs, true)
+}
+
+/// A DML statement's answer after its description: the `OUTPUT` row and the tag.
+fn counted(tag: &str, n: u64) -> Vec<u8> {
+    let mut out = msg::row_description(&[], &[msg::column("OUTPUT", 6, -1)], true);
+    out.extend(msg::text_row(&[&n.to_string()]));
+    out.extend(msg::command_complete(tag));
+    out
+}
+
+/// A scripted server whose `handler` answers each statement's text: with the parameters of an
+/// execution, None while it is prepared (only the shape of the answer counts then). What it
+/// answers None to, `standard` answers, and anything else is a syntax error. BEGIN leaves the
+/// session in a transaction until COMMIT or ROLLBACK.
+pub fn sql_script(
+    handler: impl Fn(&str, Params<'_>) -> Option<Answer> + Send + Sync + 'static,
+) -> Script {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let in_tx = Arc::new(AtomicBool::new(false));
+    let answer = move |sql: &str, params: Params<'_>| {
+        handler(sql, params)
+            .or_else(|| standard(sql))
+            .unwrap_or_else(|| failure("42601", &format!("fake: no answer for {sql}"), "4856"))
+    };
+    let ready = move |sql: &str| {
+        match first_word(sql).as_str() {
+            "BEGIN" => in_tx.store(true, Ordering::SeqCst),
+            "COMMIT" | "ROLLBACK" => in_tx.store(false, Ordering::SeqCst),
+            _ => {}
+        }
+        msg::ready(if in_tx.load(Ordering::SeqCst) {
+            b'T'
+        } else {
+            b'I'
+        })
+    };
+    Script::new(AuthPlan::Trust, "", move |request| match request {
+        Request::Query(sql) => {
+            let mut out = Vec::new();
+            match answer(&sql, Some(&[])) {
+                Answer::Rows { columns, rows } => {
+                    out.extend(description(&columns));
+                    out.extend(row_bytes(&rows));
+                    out.extend(msg::command_complete("SELECT"));
+                }
+                Answer::Count(tag, n) => out.extend(counted(&tag, n)),
+                Answer::Done(tag) => out.extend(msg::command_complete(&tag)),
+                Answer::Error {
+                    sqlstate,
+                    message,
+                    code,
+                } => out.extend(msg::simple_error(&sqlstate, &message, &code)),
+                Answer::Hang => return Reply::Hang(Vec::new()),
+                Answer::Close => return Reply::Close,
+            }
+            out.extend(ready(&sql));
+            Reply::Bytes(out)
+        }
+        Request::Prepare(sql) => {
+            let mut out = msg::parse_complete();
+            let params: Vec<(u8, u32, i32, bool)> =
+                (0..placeholders(&sql)).map(|_| (0, 9, -1, false)).collect();
+            match answer(&sql, None) {
+                Answer::Rows { columns, .. } => {
+                    out.extend(msg::parameter_description(&params, &[]));
+                    out.extend(description(&columns));
+                }
+                Answer::Count(..) | Answer::Done(_) | Answer::Hang => {
+                    out.extend(msg::parameter_description(&params, &[]));
+                    out.extend(msg::no_data());
+                }
+                Answer::Error {
+                    sqlstate,
+                    message,
+                    code,
+                } => return Reply::Bytes(msg::simple_error(&sqlstate, &message, &code)),
+                Answer::Close => return Reply::Close,
+            }
+            out.extend(msg::command_description(&first_word(&sql), None));
+            Reply::Bytes(out)
+        }
+        Request::Execute { sql, values, .. } => {
+            let params: Vec<Option<String>> = values
+                .iter()
+                .map(|v| {
+                    v.as_deref()
+                        .map(|b| String::from_utf8_lossy(b).into_owned())
+                })
+                .collect();
+            let mut out = msg::bind_complete();
+            match answer(&sql, Some(&params)) {
+                Answer::Rows { rows, .. } => {
+                    out.extend(row_bytes(&rows));
+                    out.extend(msg::command_complete("SELECT"));
+                }
+                Answer::Count(tag, n) => out.extend(counted(&tag, n)),
+                Answer::Done(tag) => out.extend(msg::command_complete(&tag)),
+                Answer::Error {
+                    sqlstate,
+                    message,
+                    code,
+                } => out.extend(msg::simple_error(&sqlstate, &message, &code)),
+                Answer::Hang => return Reply::Hang(out),
+                Answer::Close => return Reply::Close,
+            }
+            out.extend(ready(&sql));
+            Reply::Bytes(out)
+        }
+        Request::Sync => Reply::Bytes(msg::ready(b'I')),
+        Request::CopyRefused(_) => {
+            let mut out = msg::simple_error("08000", "COPY refused by the client", "0");
+            out.extend(msg::ready(b'I'));
+            Reply::Bytes(out)
+        }
+    })
 }
