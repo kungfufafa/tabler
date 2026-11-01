@@ -512,6 +512,11 @@ fn quote_name(name: &str) -> String {
     crate::sqlgen::dialect::spec::backticked_backslash(name)
 }
 
+/// The `CREATE` text the server keeps for a table, view or dictionary (`create_table_query`).
+pub fn table_ddl(info: &[Vec<Value>]) -> Option<String> {
+    non_empty(info.first()?, 6)
+}
+
 /// The SELECT of a view (`as_select`), or its whole `CREATE` text.
 pub fn view_definition(info: &[Vec<Value>]) -> Option<String> {
     let row = info.first()?;

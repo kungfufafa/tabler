@@ -65,6 +65,8 @@ const RESERVED: &[&str] = &[
     "password",
     "quota_key",
     "readonly",
+    // Switches the settings profile, which may carry any of the settings below by name.
+    "profile",
     // These change how the body is framed, which the reader would no longer understand.
     "compress",
     "decompress",
@@ -170,6 +172,9 @@ impl Endpoint {
 pub enum Credentials {
     /// `X-ClickHouse-User` and `X-ClickHouse-Key`.
     Password { user: String, password: String },
+    /// `X-ClickHouse-User`; the transport adds `X-ClickHouse-Key` (`Credential::Header`), so a
+    /// Command Line password runs again once the server refuses it (`HttpTransport::refreshing`).
+    Key { user: String },
     /// X.509: the client certificate proves who `user` is (`IDENTIFIED WITH ssl_certificate`).
     Certificate { user: String },
 }
@@ -178,6 +183,7 @@ impl std::fmt::Debug for Credentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Credentials::Password { user, .. } => write!(f, "Password({user}, ***)"),
+            Credentials::Key { user } => write!(f, "Key({user})"),
             Credentials::Certificate { user } => write!(f, "Certificate({user})"),
         }
     }
@@ -186,7 +192,9 @@ impl std::fmt::Debug for Credentials {
 impl Credentials {
     pub fn user(&self) -> &str {
         match self {
-            Credentials::Password { user, .. } | Credentials::Certificate { user } => user,
+            Credentials::Password { user, .. }
+            | Credentials::Key { user }
+            | Credentials::Certificate { user } => user,
         }
     }
 
@@ -196,11 +204,24 @@ impl Credentials {
         } else {
             self.user()
         };
+        // A header value is ASCII only; HTTP Basic carries any password (and user, without a
+        // colon) as its UTF-8 bytes.
+        if let Credentials::Password { password, .. } = self
+            && !(user.is_ascii() && password.is_ascii())
+            && !user.contains(':')
+        {
+            use base64::Engine as _;
+            let pair =
+                base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"));
+            out.push((header::AUTHORIZATION.into(), format!("Basic {pair}")));
+            return;
+        }
         out.push((header::USER.into(), user.into()));
         match self {
             Credentials::Password { password, .. } => {
                 out.push((header::KEY.into(), password.clone()));
             }
+            Credentials::Key { .. } => {}
             Credentials::Certificate { .. } => out.push((header::CERT_AUTH.into(), "on".into())),
         }
     }
@@ -468,6 +489,43 @@ mod tests {
     }
 
     #[test]
+    fn a_password_no_header_can_carry_goes_as_http_basic() {
+        let creds = Credentials::Password {
+            user: "jürgen".into(),
+            password: "pässwort".into(),
+        };
+        let req = build(
+            &endpoint(),
+            &creds,
+            &ConnSettings::default(),
+            &Query::default(),
+        )
+        .unwrap();
+        assert_eq!(req.header(header::USER), None);
+        assert_eq!(req.header(header::KEY), None);
+        // base64("jürgen:pässwort") of the UTF-8 bytes.
+        assert_eq!(
+            req.header(header::AUTHORIZATION),
+            Some("Basic asO8cmdlbjpww6Rzc3dvcnQ=")
+        );
+        assert!(!format!("{req:?}").contains("asO8"));
+        // A user with a colon cannot go as Basic: the headers as before.
+        let creds = Credentials::Password {
+            user: "a:b".into(),
+            password: "pässwort".into(),
+        };
+        let req = build(
+            &endpoint(),
+            &creds,
+            &ConnSettings::default(),
+            &Query::default(),
+        )
+        .unwrap();
+        assert_eq!(req.header(header::AUTHORIZATION), None);
+        assert_eq!(req.header(header::USER), Some("a:b"));
+    }
+
+    #[test]
     fn certificates_and_profiles_that_change_nothing() {
         let conn = ConnSettings {
             output_settings: false,
@@ -541,6 +599,7 @@ mod tests {
             "timeout_overflow_mode_leaf",
             "GROUP_BY_OVERFLOW_MODE",
             "final",
+            "Profile",
             "parallel_replicas_count",
             "parallel_replica_offset",
             "url_base",

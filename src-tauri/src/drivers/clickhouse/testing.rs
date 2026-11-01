@@ -4,20 +4,31 @@
 //! server's own rules (credentials, `readonly=2` refusing writes and changes of `readonly`, a
 //! `readonly=1` profile refusing every setting, settings a constraint fixes, in the URL or in
 //! a statement's SETTINGS clause, `getSetting('readonly')`, `KILL QUERY`, `/ping`), bodies cut
-//! into small pieces, and every request recorded. `ReqwestTransport` sends the same requests over a socket to `testkit::fake_http`
-//! for the wire-level tests.
+//! into small pieces, and every request recorded. `serve` puts the same fake on a socket
+//! (`testkit::fake_http`) for the shared HTTP client, and `app_connection` holds a session in an
+//! app state for the command bodies.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt as _;
+use tokio::sync::{RwLock, watch};
 
+use crate::appdb::AppDb;
+use crate::drivers::Session;
+use crate::drivers::common::http::{Credential, HttpClient, HttpEndpoint, HttpOptions};
 use crate::error::AppError;
+use crate::secrets::{Backend, Secrets};
+use crate::state::{AppState, Connection as AppConnection};
+use crate::testkit::{FakeServer, Reply, Route};
+use crate::types::profile::{ConnStatus, ConnectionInfo, ConnectionProfile};
 
 use super::client::{READONLY_PROBE, SETTINGS_PROBE};
 use super::transport::{
-    ByteStream, HttpRequest, Method, ResponseHead, StreamingResponse, Transport, header,
+    ByteStream, HttpRequest, HttpTransport, Method, ResponseHead, StreamingResponse, Transport,
+    header,
 };
 
 /// A canned reply.
@@ -31,8 +42,11 @@ pub enum FakeReply {
     },
     /// A statement without output that wrote `written_rows` rows.
     Done { written_rows: u64 },
-    /// An error before any output (HTTP 500 with the exception text and code header).
+    /// An error of a started query before any output (HTTP 500, or 403 for 192, 193 and 516
+    /// raised while it runs, with the exception text, the code header and the query id).
     Error { code: i64, message: String },
+    /// A sign-in refused before the query starts: a 403 without `X-ClickHouse-Query-Id`.
+    Refused { code: i64, message: String },
     /// Rows, then an error in the tagged block.
     FailAfter {
         names: Vec<String>,
@@ -191,14 +205,14 @@ impl FakeClickhouse {
             let ok = req.header(header::USER) == Some(user.as_str())
                 && req.header(header::KEY) == Some(password.as_str());
             if !ok {
-                return fail(
-                    516,
-                    format!(
+                return FakeReply::Refused {
+                    code: 516,
+                    message: format!(
                         "{}: Authentication failed: password is incorrect, or there is no user \
                          with such name",
                         req.header(header::USER).unwrap_or("default")
                     ),
-                );
+                };
             }
         }
         let pairs = req.query_pairs();
@@ -383,8 +397,21 @@ impl Transport for FakeClickhouse {
                 ),
                 body: pieces(String::new(), self.piece, guard),
             },
+            // As the server: 192, 193 and 516 are a 403 whatever raised them
+            // (`exceptionCodeToHTTPStatus`); the query id is set once the query has started.
             FakeReply::Error { code, message } => StreamingResponse {
-                head: head(500, &[(header::EXCEPTION_CODE, code.to_string())]),
+                head: head(
+                    if matches!(code, 192 | 193 | 516) {
+                        403
+                    } else {
+                        500
+                    },
+                    &common(vec![(header::EXCEPTION_CODE, code.to_string())]),
+                ),
+                body: pieces(exception_text(code, &message), self.piece, guard),
+            },
+            FakeReply::Refused { code, message } => StreamingResponse {
+                head: head(403, &[(header::EXCEPTION_CODE, code.to_string())]),
                 body: pieces(exception_text(code, &message), self.piece, guard),
             },
             FakeReply::FailAfter {
@@ -438,66 +465,104 @@ impl Transport for FakeClickhouse {
     }
 }
 
-/// reqwest without proxies (the requests must reach 127.0.0.1).
-pub struct ReqwestTransport {
-    http: reqwest::Client,
+/// The shared HTTP client's transport to `server`, sending `credential` (no proxy, no retries).
+pub fn http_transport(server: &FakeServer, credential: Credential) -> HttpTransport {
+    crate::testkit::install_crypto();
+    let options = HttpOptions {
+        retry: crate::drivers::common::http::RetryPolicy::NONE,
+        ..HttpOptions::default()
+    };
+    let endpoint = HttpEndpoint::new(&server.url("/"), None).expect("an endpoint");
+    HttpTransport::new(HttpClient::new(endpoint, options, credential).expect("a client"))
 }
 
-impl ReqwestTransport {
-    pub fn new() -> ReqwestTransport {
-        crate::testkit::install_crypto();
-        ReqwestTransport {
-            http: reqwest::Client::builder()
-                .no_proxy()
-                .build()
-                .expect("a reqwest client"),
-        }
-    }
-}
-
-fn map_reqwest(e: reqwest::Error) -> AppError {
-    if e.is_timeout() {
-        AppError::Timeout
-    } else if e.is_connect() {
-        AppError::Connect(e.to_string())
-    } else {
-        AppError::NotConnected
-    }
-}
-
-#[async_trait]
-impl Transport for ReqwestTransport {
-    async fn send(&self, req: HttpRequest) -> Result<StreamingResponse, AppError> {
-        let mut builder = match req.method {
-            Method::Get => self.http.get(&req.url),
-            Method::Post => self.http.post(&req.url),
+/// `fake` on a socket: each request goes to it as the client sent it, and its reply (headers,
+/// status and the whole body) goes back. Replies that wait for a kill (`FakeReply::Hang`) need
+/// the in-process fake.
+pub async fn serve(fake: Arc<FakeClickhouse>) -> FakeServer {
+    crate::testkit::install_crypto();
+    let route = Route::new("*", "/*").handler(move |req| {
+        let url = match &req.query {
+            Some(q) => format!("http://fake{}?{q}", req.path),
+            None => format!("http://fake{}", req.path),
         };
-        for (k, v) in &req.headers {
-            builder = builder.header(k, v);
-        }
-        if !req.body.is_empty() {
-            builder = builder.body(req.body);
-        }
-        let resp = builder.send().await.map_err(map_reqwest)?;
-        let head = ResponseHead {
-            status: resp.status().as_u16(),
-            headers: resp
-                .headers()
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.as_str().to_ascii_lowercase(),
-                        String::from_utf8_lossy(v.as_bytes()).into_owned(),
-                    )
-                })
-                .collect(),
+        let method = if req.method.eq_ignore_ascii_case("GET") {
+            Method::Get
+        } else {
+            Method::Post
         };
-        let body = resp
-            .bytes_stream()
-            .map(|piece| piece.map(|b| b.to_vec()).map_err(map_reqwest));
-        Ok(StreamingResponse {
-            head,
-            body: Box::pin(body),
-        })
+        let sent = HttpRequest {
+            method,
+            url,
+            headers: req.headers.clone(),
+            body: req.body.clone(),
+        };
+        let replied = futures::executor::block_on(async {
+            let resp = fake.send(sent).await?;
+            resp.collect(usize::MAX).await
+        });
+        match replied {
+            Ok((head, body)) => {
+                let mut out = Reply::new(head.status).body(body);
+                for (k, v) in &head.headers {
+                    out = out.header(k, v);
+                }
+                out
+            }
+            Err(e) => Reply::text(500, e.to_string()),
+        }
+    });
+    FakeServer::start(vec![route]).await
+}
+
+/// A ClickHouse profile of `fields` over the defaults (plain HTTP, no host).
+pub fn profile(fields: serde_json::Value) -> ConnectionProfile {
+    let mut json = serde_json::json!({
+        "id": uuid::Uuid::new_v4(), "name": "ch", "driver": "clickhouse",
+        "ssl": "disable", "options": {}, "sortOrder": 0, "createdAt": "", "updatedAt": "",
+    });
+    if let (Some(base), Some(extra)) = (json.as_object_mut(), fields.as_object()) {
+        for (k, v) in extra {
+            base.insert(k.clone(), v.clone());
+        }
     }
+    serde_json::from_value(json).expect("a profile")
+}
+
+/// A new app state with one open connection of `profile` holding `session`, for the command
+/// bodies (`browse_rows`, `apply_changes_on`…).
+pub async fn app_connection(
+    profile: ConnectionProfile,
+    session: Session,
+) -> (Arc<AppState>, Arc<AppConnection>) {
+    let appdb = AppDb::open_in_memory().expect("an app database");
+    let profile = appdb.upsert_profile(&profile).expect("a saved profile");
+    let state = Arc::new(AppState::new(
+        appdb.clone(),
+        Secrets::new(Backend::File, appdb),
+    ));
+    let id = uuid::Uuid::new_v4();
+    let conn = Arc::new(AppConnection {
+        id,
+        profile: profile.clone(),
+        info: RwLock::new(ConnectionInfo {
+            connection_id: id,
+            profile_id: profile.id,
+            name: profile.name.clone(),
+            color: None,
+            driver: profile.driver,
+            server_version: String::new(),
+            current_database: None,
+            current_user: None,
+            tunnel: None,
+            read_only: profile.options.read_only,
+            capabilities: Some(session.capabilities()),
+        }),
+        session: RwLock::new(session),
+        schema_cache: RwLock::new(HashMap::new()),
+        status: watch::channel(ConnStatus::Connected).0,
+        tunnel: None,
+    });
+    state.insert_connection(conn.clone(), None).await;
+    (state, conn)
 }

@@ -5,6 +5,7 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::drivers::common::http::Credential;
 use crate::drivers::{CollectSink, RowSink, TxStatement};
 use crate::error::AppError;
 use crate::testkit::{FakeServer, Piece, Reply, Route};
@@ -15,9 +16,7 @@ use crate::types::value::Value;
 use super::catalog;
 use super::client::{Client, READONLY_PROBE, SETTINGS_PROBE};
 use super::request::{ConnSettings, Credentials, Endpoint, HttpSession, OUTPUT_FORMAT, Query};
-use super::testing::{
-    FakeClickhouse, FakeReply, ReqwestTransport, exception_block, exception_text,
-};
+use super::testing::{FakeClickhouse, FakeReply, exception_block, exception_text, http_transport};
 use super::transport::header;
 
 fn endpoint() -> Endpoint {
@@ -707,11 +706,65 @@ async fn ping_needs_no_credentials() {
     assert_eq!(fake.requests()[0].header(header::USER), None);
 }
 
+/// Answers every request with `status` and a body that never ends, counting the bytes read.
+struct Endless {
+    status: u16,
+    pulled: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl super::transport::Transport for Endless {
+    async fn send(
+        &self,
+        _req: super::transport::HttpRequest,
+    ) -> Result<super::transport::StreamingResponse, AppError> {
+        let pulled = self.pulled.clone();
+        let body = futures::stream::repeat_with(move || {
+            pulled.fetch_add(1 << 20, std::sync::atomic::Ordering::SeqCst);
+            Ok(vec![b'x'; 1 << 20])
+        });
+        Ok(super::transport::StreamingResponse {
+            head: super::transport::ResponseHead {
+                status: self.status,
+                headers: Vec::new(),
+            },
+            body: Box::pin(body),
+        })
+    }
+}
+
+#[tokio::test]
+async fn an_endless_error_or_ping_reply_is_read_only_so_far() {
+    for (status, ping) in [(500, false), (200, true), (503, true)] {
+        let pulled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = Client::new(
+            Arc::new(Endless {
+                status,
+                pulled: pulled.clone(),
+            }),
+            endpoint(),
+            creds(),
+            ConnSettings::default(),
+        );
+        let result = if ping {
+            client.ping().await
+        } else {
+            client.catalog("SELECT 1", &[]).await.map(|_| ())
+        };
+        assert!(result.is_err(), "{status}");
+        assert!(
+            pulled.load(std::sync::atomic::Ordering::SeqCst) <= 1 << 20,
+            "{status}: read {} bytes",
+            pulled.load(std::sync::atomic::Ordering::SeqCst)
+        );
+    }
+}
+
 // --- Over a socket ---------------------------------------------------------------------------
 
 fn socket_client(server: &FakeServer, read_only: bool) -> Client {
     Client::new(
-        Arc::new(ReqwestTransport::new()),
+        Arc::new(http_transport(server, Credential::None)),
         Endpoint {
             tls: false,
             host: "127.0.0.1".into(),

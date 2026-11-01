@@ -1,7 +1,7 @@
-//! The HTTP seam the client is written against. In Phase B the real implementation is the shared
-//! `drivers::common::http::HttpClient` (F8a: TLS through `tls_client`, client certificates,
-//! tunnels through `resolve`, the system proxy); the tests use the in-process fake of
-//! `testing`, or a plain reqwest transport against `testkit::fake_http`.
+//! The HTTP seam the client is written against. Sessions send through `HttpTransport`, the
+//! shared `drivers::common::http::HttpClient` (TLS through `tls_client`, the client certificate
+//! of X.509 users, the SSH tunnel, the system proxy, a Command Line password); the tests use the in-process fake of `testing`, or `HttpTransport` against
+//! `testkit::fake_http`.
 //!
 //! ClickHouse needs what the sqlite-remote seam has no room for: request headers (the user and
 //! key, the output format) and response headers (`X-ClickHouse-Summary`, `-Exception-Code`,
@@ -10,9 +10,13 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, StreamExt as _};
 
+use crate::drivers::common::http::{HttpClient, Repeat};
+use crate::drivers::common::token::TokenSource;
 use crate::error::AppError;
+
+use super::format::{code, parse_exception};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
@@ -24,6 +28,8 @@ pub enum Method {
 pub mod header {
     pub const USER: &str = "x-clickhouse-user";
     pub const KEY: &str = "x-clickhouse-key";
+    /// HTTP Basic, for a password a header value cannot carry.
+    pub const AUTHORIZATION: &str = "authorization";
     pub const CERT_AUTH: &str = "x-clickhouse-ssl-certificate-auth";
     pub const FORMAT: &str = "x-clickhouse-format";
     pub const SUMMARY: &str = "x-clickhouse-summary";
@@ -97,7 +103,11 @@ impl std::fmt::Debug for HttpRequest {
             .map(|(k, v)| {
                 (
                     k.as_str(),
-                    if k == header::KEY { "***" } else { v.as_str() },
+                    if k == header::KEY || k == header::AUTHORIZATION {
+                        "***"
+                    } else {
+                        v.as_str()
+                    },
                 )
             })
             .collect();
@@ -145,15 +155,31 @@ pub struct StreamingResponse {
     pub body: ByteStream,
 }
 
+/// How much of an error reply is read: its message comes first (and only 300 characters of a
+/// reply that is not ClickHouse's show), and a server or a proxy may send an endless one.
+pub const ERROR_BODY_LIMIT: usize = 64 * 1024;
+
 impl StreamingResponse {
-    /// The whole body (an error reply, a small answer). A transport error mid-body ends it.
-    pub async fn collect(self) -> Result<(ResponseHead, Vec<u8>), AppError> {
-        use futures::StreamExt as _;
+    /// A reply whose body is `body`, in one piece.
+    pub fn whole(head: ResponseHead, body: Vec<u8>) -> StreamingResponse {
+        StreamingResponse {
+            head,
+            body: Box::pin(futures::stream::iter([Ok(body)])),
+        }
+    }
+
+    /// The body (an error reply, a small answer) cut at `limit` bytes; the rest is never read
+    /// (dropping the stream closes the connection). A transport error mid-body ends it.
+    pub async fn collect(self, limit: usize) -> Result<(ResponseHead, Vec<u8>), AppError> {
         let mut body = Vec::new();
         let mut pieces = self.body;
-        while let Some(piece) = pieces.next().await {
+        while body.len() < limit {
+            let Some(piece) = pieces.next().await else {
+                break;
+            };
             body.extend_from_slice(&piece?);
         }
+        body.truncate(limit);
         Ok((self.head, body))
     }
 }
@@ -165,6 +191,118 @@ pub trait Transport: Send + Sync {
     /// closes the connection, which stops a read-only query on the server
     /// (`cancel_http_readonly_queries_on_client_close`).
     async fn send(&self, req: HttpRequest) -> Result<StreamingResponse, AppError>;
+}
+
+/// The sessions' transport: the shared HTTP client of the profile's server. A statement's POST
+/// is sent once on a server error (`Repeat::Safe`: it may have run), again only after a 429, or
+/// after a refused password when a Command Line password can bring a new one (`refreshing`).
+/// The session stops a request by dropping it (and `KILL QUERY`), so none is sent with a cancel
+/// slot here.
+pub struct HttpTransport {
+    client: HttpClient,
+    /// The source of the `X-ClickHouse-Key` the client sends, when it can refresh.
+    refresh: Option<TokenSource>,
+}
+
+impl HttpTransport {
+    pub fn new(client: HttpClient) -> HttpTransport {
+        HttpTransport {
+            client,
+            refresh: None,
+        }
+    }
+
+    /// Runs `token` again (once per request) when the server refuses the password it gave.
+    /// ClickHouse refuses one with HTTP 403 (`AUTHENTICATION_FAILED`, `WRONG_PASSWORD`; only
+    /// `REQUIRED_PASSWORD` is a 401), which the shared client's refresh on a 401 never sees.
+    pub fn refreshing(mut self, token: Option<TokenSource>) -> HttpTransport {
+        self.refresh = token.filter(TokenSource::refreshes);
+        self
+    }
+
+    async fn send_once(&self, req: HttpRequest) -> Result<StreamingResponse, AppError> {
+        let url = reqwest::Url::parse(&req.url)
+            .map_err(|e| AppError::InvalidInput(format!("invalid URL {}: {e}", req.url)))?;
+        let method = match req.method {
+            Method::Get => reqwest::Method::GET,
+            Method::Post => reqwest::Method::POST,
+        };
+        let mut builder = self.client.request_url(method, url);
+        for (k, v) in &req.headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+        if !req.body.is_empty() {
+            builder = builder.body(req.body);
+        }
+        let reply = self
+            .client
+            .send_repeating(builder, None, Repeat::Safe)
+            .await?;
+        let head = ResponseHead {
+            status: reply.status(),
+            // `HeaderName`s are lower case already; a value that is no text is kept lossily.
+            headers: reply
+                .headers()
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.as_str().to_string(),
+                        String::from_utf8_lossy(v.as_bytes()).into_owned(),
+                    )
+                })
+                .collect(),
+        };
+        let body = reply
+            .into_stream()
+            .map(|piece| piece.map(|bytes| bytes.to_vec()));
+        Ok(StreamingResponse {
+            head,
+            body: Box::pin(body),
+        })
+    }
+}
+
+#[async_trait]
+impl Transport for HttpTransport {
+    async fn send(&self, req: HttpRequest) -> Result<StreamingResponse, AppError> {
+        let Some(token) = &self.refresh else {
+            return self.send_once(req).await;
+        };
+        let resp = self.send_once(req.clone()).await?;
+        if resp.head.status != 403 {
+            return Ok(resp);
+        }
+        let (head, body) = resp.collect(ERROR_BODY_LIMIT).await?;
+        if !refused_password(&head, &body) {
+            return Ok(StreamingResponse::whole(head, body));
+        }
+        // Our own sign-in was refused before the query started, so sending it again runs it once.
+        token.invalidate().await;
+        self.send_once(req).await
+    }
+}
+
+/// Whether a 403 is ClickHouse refusing our password before the query started (not the user
+/// name or the address). A 516 or 193 can also come from a running query reaching another
+/// server (`remote()`, a Distributed insert, a dictionary source), after it may have written
+/// rows: the server sets `X-ClickHouse-Query-Id` once the query starts, after the sign-in, and
+/// a remote's exception says "Received from"; either one means the statement must not go again.
+fn refused_password(head: &ResponseHead, body: &[u8]) -> bool {
+    if head.header(header::QUERY_ID).is_some() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(body);
+    if text.contains("Received from") {
+        return false;
+    }
+    let code = parse_exception(&text).code.or_else(|| {
+        head.header(header::EXCEPTION_CODE)
+            .and_then(|c| c.trim().parse().ok())
+    });
+    matches!(
+        code,
+        Some(code::AUTHENTICATION_FAILED | code::WRONG_PASSWORD)
+    )
 }
 
 #[cfg(test)]

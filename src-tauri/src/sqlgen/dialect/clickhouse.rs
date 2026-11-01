@@ -20,6 +20,8 @@
 //!   (`EXPLAIN ANALYZE` runs its statement) or the setting
 //!   `stream_like_engine_allow_direct_select` (a read of a Kafka, RabbitMQ, NATS, FileLog or
 //!   S3Queue table then consumes its messages);
+//! - the column transformer `APPLY` (`SELECT * APPLY(file) FROM …`): it calls the function it
+//!   names on every column, and the name has no `(` after it, so no call list can see it;
 //! - a `SETTINGS` clause: settings whose values are SQL the server parses and runs (`select`,
 //!   `order`, `filter`, `additional_result_filter`, `additional_table_filters`,
 //!   `parallel_replicas_custom_key`, `implicit_table_at_top_level` beside a query-construction
@@ -30,8 +32,8 @@
 //! parser takes `PARALLEL WITH` after any statement, and the server runs the statements side by
 //! side and refuses one with a result only once it has run, so `SHOW TABLES PARALLEL WITH DROP
 //! TABLE t` and `EXPLAIN SELECT 1 PARALLEL WITH DROP TABLE t` drop the table. The price is that
-//! every `EXPLAIN ANALYZE`, every EXPLAIN of an `INSERT … INTO` and every query with a SETTINGS
-//! clause is a write too.
+//! every `EXPLAIN ANALYZE`, every EXPLAIN of an `INSERT … INTO`, every APPLY transformer and
+//! every query with a SETTINGS clause is a write too.
 //!
 //! `USE` is no read: it returns no result, so `USE db PARALLEL WITH DROP TABLE t` runs the
 //! DROP. What a SELECT reaches through objects that already exist (a dictionary's source, a
@@ -122,6 +124,11 @@ pub static RULES: ClassifyRules = ClassifyRules {
         "PARALLEL",
         "ANALYZE",
         "STREAM_LIKE_ENGINE_ALLOW_DIRECT_SELECT",
+        // The column transformer `* APPLY(f)` / `* APPLY f` calls `f(column)` for any function
+        // name, and no `(` follows the name, so `write_calls` never sees the callee
+        // (`SELECT * APPLY(file) FROM (SELECT '/etc/passwd' AS p)`). Every APPLY is a write: a
+        // known false write, the price SETTINGS pays too.
+        "APPLY",
         // A statement's settings reach the server only through SETTINGS (EXPLAIN's own options
         // are not settings). Several take SQL the server parses with every function at hand,
         // which `readonly=2` does not stop: the 26.8 query-construction settings `select`,
@@ -859,6 +866,25 @@ mod tests {
             "SELECT “--” PARALLEL WITH DROP TABLE t",
             // No escapes in them: the name ends at the first closing quote.
             "SELECT “\\”, file('/etc/passwd') --”",
+            // The APPLY transformer calls a function named with no `(` after it (red team,
+            // round 4), so every APPLY is a write, `APPLY(sum)` too (a known false write).
+            "SELECT * APPLY(generateSerialID) FROM (SELECT 'orders' AS p)",
+            "SELECT * APPLY(file) FROM (SELECT '/etc/passwd' AS p)",
+            "SELECT * APPLY(logTrace) FROM (SELECT 'x' AS p)",
+            "SELECT * APPLY(aiGenerate) FROM (SELECT 'x' AS p)",
+            "SELECT COLUMNS('p') APPLY(file) FROM (SELECT '/etc/passwd' AS p)",
+            "SELECT p APPLY(file) FROM (SELECT '/etc/passwd' AS p)",
+            "SELECT * EXCEPT (a) APPLY(file) FROM (SELECT 1 AS a, '/etc/passwd' AS p)",
+            "SELECT * APPLY file FROM (SELECT '/etc/passwd' AS p)",
+            "SELECT * APPLY (file) FROM (SELECT '/etc/passwd' AS p)",
+            "SELECT * APPLY(`file`) FROM (SELECT '/etc/passwd' AS p)",
+            "SELECT * APPLY(“file”) FROM (SELECT '/etc/passwd' AS p)",
+            "SELECT * APPLY(showCertificate) FROM (SELECT 1 AS p)",
+            "SELECT * APPLY(addressToSymbol) FROM (SELECT 1 AS p)",
+            "SELECT * APPLY(catboostEvaluate) FROM (SELECT '/m.bin' AS p)",
+            "SELECT * APPLY(hasColumnInTable) FROM (SELECT 'h' AS p)",
+            "SELECT * APPLY(filesystem) FROM (SELECT '/' AS p)",
+            "SELECT COLUMNS('^amount') APPLY(sum) FROM sales",
         ] {
             assert_eq!(classify_clickhouse(sql), StatementClass::Write, "{sql}");
         }

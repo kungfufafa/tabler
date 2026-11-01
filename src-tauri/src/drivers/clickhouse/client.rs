@@ -37,16 +37,23 @@ use super::request::{
     self, ConnSettings, Credentials, Endpoint, OUTPUT_FORMAT, OUTPUT_SETTINGS, PINNED_SETTINGS,
     Query,
 };
-use super::transport::{StreamingResponse, Transport, header};
+use super::transport::{ERROR_BODY_LIMIT, StreamingResponse, Transport, header};
 
 /// Settings an uncounted edit runs with: it returns once the mutation is done on every replica.
 const EDIT_SETTINGS: &[(&str, &str)] = &[("mutations_sync", "2")];
+
+/// Sent with the driver's own inserts (`execute`).
+const SYNC_INSERT: (&str, &str) = ("async_insert", "0");
 
 /// Sent with a refused request's settings and none of its statement: whether the settings alone
 /// are refused.
 pub const SETTINGS_PROBE: &str = "SELECT 1 AS settings_probe";
 /// Sent without any setting: the `readonly` level of the user's profile.
 pub const READONLY_PROBE: &str = "SELECT toUInt8(getSetting('readonly')) AS readonly";
+/// More than a probe's one-row answer ever is.
+const PROBE_BODY_LIMIT: usize = 64 * 1024;
+/// How much of a `/ping` reply is read.
+const PING_BODY_LIMIT: usize = 4 * 1024;
 
 fn is_output_setting(name: &str) -> bool {
     OUTPUT_SETTINGS
@@ -156,7 +163,7 @@ impl Client {
             if resp.head.status == 200 {
                 return Ok(resp);
             }
-            let (head, body) = resp.collect().await?;
+            let (head, body) = resp.collect(ERROR_BODY_LIMIT).await?;
             let err = status_error(&head, &body);
             if locked || settings_refusal(&err).is_none() {
                 return Err(err);
@@ -196,9 +203,17 @@ impl Client {
     /// The rows of a small request sent as it is (no retry).
     async fn probe(&self, conn: &ConnSettings, q: &Query<'_>) -> Result<Vec<Vec<Value>>, AppError> {
         let req = request::build(&self.endpoint, &self.creds, conn, q)?;
-        let (head, body) = self.transport.send(req).await?.collect().await?;
+        let (head, body) = self
+            .transport
+            .send(req)
+            .await?
+            .collect(PROBE_BODY_LIMIT)
+            .await?;
         if head.status != 200 {
             return Err(status_error(&head, &body));
+        }
+        if body.len() >= PROBE_BODY_LIMIT {
+            return Err(AppError::db("ClickHouse answered a probe with too much"));
         }
         let mut reader = ResultReader::new(&head);
         let mut events = Vec::new();
@@ -307,6 +322,11 @@ impl Client {
             .unwrap_or_default())
     }
 
+    /// The result of a statement with its columns (empty for a statement without output).
+    pub async fn result_set(&self, q: &Query<'_>) -> Result<ResultSet, AppError> {
+        Ok(self.result(q).await?.0.unwrap_or_default())
+    }
+
     async fn result(&self, q: &Query<'_>) -> Result<(Option<ResultSet>, RunOutcome), AppError> {
         let mut sink = CollectSink::default();
         let outcome = self.run(q, &mut sink).await?;
@@ -328,22 +348,50 @@ impl Client {
     }
 
     /// Runs a statement for its effect. The count is the summary's `written_rows` (an insert);
-    /// a statement whose count the server does not report is `affected_unknown`.
+    /// a statement whose count the server does not report is `affected_unknown`. An insert goes
+    /// with `async_insert=0`: a buffered one would answer before its rows are written, counting
+    /// none (and a profile may turn buffering on for everyone).
     pub async fn execute(
         &self,
         sql: &str,
         params: &[Value],
         settings: &[(&str, &str)],
     ) -> Result<ExecOutcome, AppError> {
+        self.execute_with(None, sql, params, settings).await
+    }
+
+    /// `execute` as the request `query_id` (which `kill` can stop).
+    pub async fn execute_as(
+        &self,
+        query_id: &str,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<ExecOutcome, AppError> {
+        self.execute_with(Some(query_id), sql, params, &[]).await
+    }
+
+    async fn execute_with(
+        &self,
+        query_id: Option<&str>,
+        sql: &str,
+        params: &[Value],
+        settings: &[(&str, &str)],
+    ) -> Result<ExecOutcome, AppError> {
+        let kind = edit_kind(sql);
+        let settings: Vec<(&str, &str)> = if kind == EditKind::Insert {
+            settings.iter().copied().chain([SYNC_INSERT]).collect()
+        } else {
+            settings.to_vec()
+        };
         let (set, outcome) = self
             .result(&Query {
                 sql,
                 params,
-                settings,
+                settings: &settings,
+                query_id,
                 ..Query::default()
             })
             .await?;
-        let kind = edit_kind(sql);
         let written = outcome.summary.map(|s| s.written_rows);
         Ok(ExecOutcome {
             affected: written.unwrap_or(0),
@@ -421,7 +469,8 @@ impl Client {
     /// `GET /ping`: free, needs no credentials.
     pub async fn ping(&self) -> Result<(), AppError> {
         let resp = self.transport.send(request::ping(&self.endpoint)).await?;
-        let (head, body) = resp.collect().await?;
+        // `Ok.` or an error's first lines: it runs unattended, so an endless reply is not read.
+        let (head, body) = resp.collect(PING_BODY_LIMIT).await?;
         if head.status == 200 && body.starts_with(b"Ok.") {
             Ok(())
         } else {

@@ -8,7 +8,8 @@
 //! files or programs or changes server state (`write_calls`), or holds `INTO`, `PARALLEL`
 //! (`SHOW TABLES PARALLEL WITH DROP TABLE t` drops the table), `ANALYZE` (every
 //! `EXPLAIN ANALYZE`), `stream_like_engine_allow_direct_select`, a setting whose value is SQL
-//! the server runs or a file or host it reaches, or any `SETTINGS` clause (`select`, `order`
+//! the server runs or a file or host it reaches, any `APPLY` column transformer (it calls the
+//! function it names, with no `(` after the name) or any `SETTINGS` clause (`select`, `order`
 //! and `filter` take SQL and are keywords). Strings and the ASCII quoted names take backslash
 //! escapes; the Unicode-quoted ones (`‘…’` strings, `“…”` names) take none and end at the first
 //! closing quote, so a reading without escapes in names goes with the one with them. `$tag$` heredocs are strings, block comments nest, and `--`, `#` and
@@ -54,7 +55,6 @@ const READS: &[&str] = &[
      argMax(price, ts), groupArray(10)(name) FROM orders",
     "SELECT topK(5)(word), anyHeavy(x), groupUniqArray(tag), sumMap(keys, vals) FROM t",
     "SELECT sumState(x) AS s, finalizeAggregation(s), uniqMerge(state) FROM agg GROUP BY k",
-    "SELECT COLUMNS('^amount') APPLY(sum) FROM sales",
     "SELECT * EXCEPT (secret, token) FROM users",
     "SELECT * REPLACE (lower(email) AS email) FROM users",
     "SELECT map('a', 1, 'b', 2)['a'], tupleElement((1, 'x'), 2), (1, 'x').1, [1, 2, 3][2]",
@@ -408,6 +408,26 @@ const WRITES: &[&str] = &[
     "SELECT addressToSymbol(1)",
     "SELECT hasColumnInTable('h', 'u', 'p', 'db', 't', 'c')",
     "SELECT catboostEvaluate('/models/m.bin', a, b) FROM t",
+    // The APPLY column transformer calls the function it names on every column, and no `(`
+    // follows the name (red team, round 4): every APPLY is a write, `APPLY(sum)` a known false
+    // one.
+    "SELECT * APPLY(generateSerialID) FROM (SELECT 'orders' AS p)",
+    "SELECT * APPLY(file) FROM (SELECT '/etc/passwd' AS p)",
+    "SELECT * APPLY(logTrace) FROM (SELECT 'x' AS p)",
+    "SELECT * APPLY(aiGenerate) FROM (SELECT 'x' AS p)",
+    "SELECT COLUMNS('p') APPLY(file) FROM (SELECT '/etc/passwd' AS p)",
+    "SELECT p APPLY(file) FROM (SELECT '/etc/passwd' AS p)",
+    "SELECT * EXCEPT (a) APPLY(file) FROM (SELECT 1 AS a, '/etc/passwd' AS p)",
+    "SELECT * APPLY file FROM (SELECT '/etc/passwd' AS p)",
+    "SELECT * APPLY (file) FROM (SELECT '/etc/passwd' AS p)",
+    "SELECT * APPLY(`file`) FROM (SELECT '/etc/passwd' AS p)",
+    "SELECT * APPLY(“file”) FROM (SELECT '/etc/passwd' AS p)",
+    "SELECT * APPLY(showCertificate) FROM (SELECT 1 AS p)",
+    "SELECT * APPLY(addressToSymbol) FROM (SELECT 1 AS p)",
+    "SELECT * APPLY(catboostEvaluate) FROM (SELECT '/m.bin' AS p)",
+    "SELECT * APPLY(hasColumnInTable) FROM (SELECT 'h' AS p)",
+    "SELECT * APPLY(filesystem) FROM (SELECT '/' AS p)",
+    "SELECT COLUMNS('^amount') APPLY(sum) FROM sales",
     "SELECT `file`('x')",
     "SELECT system.file('x')",
     "SELECT * FROM t WHERE x = file /* c */ ('x')",

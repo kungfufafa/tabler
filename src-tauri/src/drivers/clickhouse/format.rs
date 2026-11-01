@@ -34,6 +34,8 @@ const TRAILER_MAX: usize = 64 * 1024;
 const TRAILER_LIMIT: usize = 1024 * 1024;
 /// The longest line of names or of types: output in another format may hold no line break.
 const HEADER_LINE_MAX: usize = 16 * 1024 * 1024;
+/// The longest row line: a hostile server could otherwise send one row without end.
+const ROW_LINE_MAX: usize = 256 * 1024 * 1024;
 /// What marks an error in a trailer.
 const MARKERS: &[&[u8]] = &[b"__exception__", b"DB::Exception", b"Code: "];
 
@@ -110,6 +112,8 @@ pub struct ResultReader {
     /// The bad line and what follows it.
     trailer: Trailer,
     tag: Option<String>,
+    /// `ROW_LINE_MAX`, smaller in tests.
+    row_line_max: usize,
 }
 
 impl ResultReader {
@@ -126,6 +130,7 @@ impl ResultReader {
                 .map(str::trim)
                 .filter(|t| !t.is_empty())
                 .map(str::to_string),
+            row_line_max: ROW_LINE_MAX,
         }
     }
 
@@ -146,6 +151,7 @@ impl ResultReader {
             match rest.iter().position(|&b| b == b'\n') {
                 Some(i) => {
                     self.line.extend_from_slice(&rest[..i]);
+                    self.check_line_len()?;
                     rest = &rest[i + 1..];
                     let line = std::mem::take(&mut self.line);
                     self.take_line(line, out)?;
@@ -157,15 +163,26 @@ impl ResultReader {
                 None => {
                     self.line.extend_from_slice(rest);
                     rest = &[];
-                    if matches!(self.state, State::Names | State::Types)
-                        && self.line.len() > HEADER_LINE_MAX
-                    {
-                        return Err(unreadable(&self.line[..TRAILER_MAX]));
-                    }
+                    self.check_line_len()?;
                 }
             }
         }
         Ok(())
+    }
+
+    /// Bounds the unfinished line in every state, so no line grows without end.
+    fn check_line_len(&self) -> Result<(), AppError> {
+        let len = self.line.len();
+        match self.state {
+            State::Names | State::Types if len > HEADER_LINE_MAX => {
+                Err(unreadable(&self.line[..TRAILER_MAX]))
+            }
+            State::Rows if len > self.row_line_max => Err(AppError::db(format!(
+                "ClickHouse sent a row longer than {} MiB, the most Tabler reads in one row",
+                self.row_line_max / (1024 * 1024)
+            ))),
+            _ => Ok(()),
+        }
     }
 
     /// The end of the body: an error found in it, or a body cut short. `Ok(true)` when a result
@@ -615,6 +632,36 @@ mod tests {
         let (events, end) = read(&head(&[]), crlf.trim_end().as_bytes(), 5);
         assert!(end.unwrap());
         assert_eq!(events.len(), 3);
+    }
+
+    #[test]
+    fn a_row_without_end_stops_at_the_cap() {
+        let mut out = Vec::new();
+        let mut r = ResultReader::new(&head(&[]));
+        r.row_line_max = 1024 * 1024;
+        r.feed(b"[\"s\"]\n[\"String\"]\n[\"", &mut out).unwrap();
+        let piece = vec![b'a'; 64 * 1024];
+        let err = (0..32)
+            .find_map(|_| r.feed(&piece, &mut out).err())
+            .expect("the cap stops the row");
+        assert!(err.to_string().contains("longer than 1 MiB"), "{err}");
+        assert!(r.line.len() <= 1024 * 1024 + piece.len());
+        // A line that ends inside the same piece is checked too.
+        let mut r = ResultReader::new(&head(&[]));
+        r.row_line_max = 1024;
+        r.feed(b"[\"s\"]\n[\"String\"]\n", &mut out).unwrap();
+        let mut long = vec![b'a'; 2048];
+        long.push(b'\n');
+        assert!(r.feed(&long, &mut out).is_err());
+    }
+
+    #[test]
+    fn a_header_without_line_break_stops_at_the_cap() {
+        let mut out = Vec::new();
+        let mut r = ResultReader::new(&head(&[]));
+        let piece = vec![b'x'; 1024 * 1024];
+        let err = (0..17).find_map(|_| r.feed(&piece, &mut out).err());
+        assert!(err.is_some());
     }
 
     #[test]
