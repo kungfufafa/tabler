@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use super::catalog;
 use super::conn::{self, Worker, query_all};
+use super::decode::Bytes;
 use super::engine::{self, EngineConfig, Instance};
 use super::errors;
 use crate::drivers::{CancelSlot, CollectSink, TxState, cancel_portable, request_cancel};
@@ -709,7 +710,7 @@ fn statements_report_rows_counts_and_nothing() {
     let slot = CancelSlot::default();
     let run = |sql: &str, cap: Option<usize>| {
         let mut sink = CollectSink::default();
-        let out = conn::execute_streaming(&conn, sql, &[], cap, &mut sink, &slot)
+        let out = conn::execute_streaming(&conn, sql, &[], cap, &mut sink, &slot, Bytes::Preview)
             .unwrap_or_else(|e| panic!("{sql}: {e:?}"));
         (out, sink)
     };
@@ -760,7 +761,16 @@ fn statements_report_rows_counts_and_nothing() {
     assert_eq!(r, vec![vec![Value::BigInt("9007199254740994".into())]]);
     // A syntax error is a Db error with DuckDB's message.
     let mut sink = CollectSink::default();
-    let err = conn::execute_streaming(&conn, "SELEC 1", &[], None, &mut sink, &slot).unwrap_err();
+    let err = conn::execute_streaming(
+        &conn,
+        "SELEC 1",
+        &[],
+        None,
+        &mut sink,
+        &slot,
+        Bytes::Preview,
+    )
+    .unwrap_err();
     assert!(message(&err).starts_with("Parser Error"), "{err:?}");
 }
 
@@ -772,7 +782,15 @@ fn cancelled_slots_refuse_to_start() {
     request_cancel(&slot);
     let mut sink = CollectSink::default();
     assert!(matches!(
-        conn::execute_streaming(&conn, "SELECT 1", &[], None, &mut sink, &slot),
+        conn::execute_streaming(
+            &conn,
+            "SELECT 1",
+            &[],
+            None,
+            &mut sink,
+            &slot,
+            Bytes::Preview
+        ),
         Err(AppError::Cancelled)
     ));
 }

@@ -1,0 +1,352 @@
+{
+  "command": {
+    "data": {
+      "affected": "exact",
+      "count": "estimate",
+      "defaultKeyword": false,
+      "filterOps": [
+        "eq",
+        "ne",
+        "gt",
+        "lt",
+        "ge",
+        "le",
+        "like",
+        "notLike",
+        "in",
+        "notIn",
+        "isNull",
+        "isNotNull",
+        "between",
+        "notBetween",
+        "contains",
+        "notContains",
+        "containsCase",
+        "notContainsCase",
+        "hasPrefix",
+        "hasSuffix",
+        "hasPrefixCase",
+        "hasSuffixCase",
+        "ilike",
+        "jsonContains",
+        "jsonNotContains"
+      ],
+      "maxParams": 10000,
+      "paging": "offset",
+      "rawFilter": "sqlWhere",
+      "serverExprs": [
+        "now",
+        "currentTimestamp",
+        "default"
+      ],
+      "sort": true,
+      "transactions": "atomic",
+      "upsert": false
+    },
+    "dialect": "duckdb",
+    "driver": "duckdb",
+    "features": [
+      "editor",
+      "explain",
+      "explainAnalyze",
+      "cancelOnServer",
+      "editRows",
+      "insertRows",
+      "deleteRows",
+      "returning",
+      "serverExpressions",
+      "exactCount",
+      "structureView",
+      "tableDdl",
+      "viewDefinition",
+      "routines",
+      "switchDatabase",
+      "startupCommands",
+      "sessionDetails",
+      "mcp"
+    ],
+    "flavor": null,
+    "language": "sql",
+    "namespaces": {
+      "databases": true,
+      "defaultSchema": "main",
+      "labels": {
+        "database": "Database",
+        "schema": "Schema",
+        "table": "Table",
+        "tables": "Tables"
+      },
+      "schemas": "schemas"
+    },
+    "safety": {
+      "confirm": "passcode",
+      "hardened": false,
+      "readOnly": "classifierOnly"
+    },
+    "session": {
+      "keepaliveSecs": 30,
+      "pingBilled": false
+    }
+  },
+  "memory": {
+    "data": {
+      "affected": "exact",
+      "count": "estimate",
+      "defaultKeyword": false,
+      "filterOps": [
+        "eq",
+        "ne",
+        "gt",
+        "lt",
+        "ge",
+        "le",
+        "like",
+        "notLike",
+        "in",
+        "notIn",
+        "isNull",
+        "isNotNull",
+        "between",
+        "notBetween",
+        "contains",
+        "notContains",
+        "containsCase",
+        "notContainsCase",
+        "hasPrefix",
+        "hasSuffix",
+        "hasPrefixCase",
+        "hasSuffixCase",
+        "ilike",
+        "jsonContains",
+        "jsonNotContains"
+      ],
+      "maxParams": 10000,
+      "paging": "offset",
+      "rawFilter": "sqlWhere",
+      "serverExprs": [
+        "now",
+        "currentTimestamp",
+        "default"
+      ],
+      "sort": true,
+      "transactions": "atomic",
+      "upsert": false
+    },
+    "dialect": "duckdb",
+    "driver": "duckdb",
+    "features": [
+      "editor",
+      "explain",
+      "explainAnalyze",
+      "cancelOnServer",
+      "editRows",
+      "insertRows",
+      "deleteRows",
+      "returning",
+      "serverExpressions",
+      "exactCount",
+      "structureView",
+      "tableDdl",
+      "viewDefinition",
+      "routines",
+      "startupCommands",
+      "sessionDetails",
+      "mcp"
+    ],
+    "flavor": null,
+    "language": "sql",
+    "namespaces": {
+      "databases": false,
+      "defaultSchema": "main",
+      "labels": {
+        "database": "Database",
+        "schema": "Schema",
+        "table": "Table",
+        "tables": "Tables"
+      },
+      "schemas": "schemas"
+    },
+    "safety": {
+      "confirm": "password",
+      "hardened": false,
+      "readOnly": "classifierOnly"
+    },
+    "session": {
+      "keepaliveSecs": 30,
+      "pingBilled": false
+    }
+  },
+  "readOnly": {
+    "data": {
+      "affected": "exact",
+      "count": "estimate",
+      "defaultKeyword": false,
+      "filterOps": [
+        "eq",
+        "ne",
+        "gt",
+        "lt",
+        "ge",
+        "le",
+        "like",
+        "notLike",
+        "in",
+        "notIn",
+        "isNull",
+        "isNotNull",
+        "between",
+        "notBetween",
+        "contains",
+        "notContains",
+        "containsCase",
+        "notContainsCase",
+        "hasPrefix",
+        "hasSuffix",
+        "hasPrefixCase",
+        "hasSuffixCase",
+        "ilike",
+        "jsonContains",
+        "jsonNotContains"
+      ],
+      "maxParams": 10000,
+      "paging": "offset",
+      "rawFilter": "sqlWhere",
+      "serverExprs": [
+        "now",
+        "currentTimestamp",
+        "default"
+      ],
+      "sort": true,
+      "transactions": "atomic",
+      "upsert": false
+    },
+    "dialect": "duckdb",
+    "driver": "duckdb",
+    "features": [
+      "editor",
+      "explain",
+      "explainAnalyze",
+      "cancelOnServer",
+      "exactCount",
+      "structureView",
+      "tableDdl",
+      "viewDefinition",
+      "routines",
+      "switchDatabase",
+      "startupCommands",
+      "sessionDetails",
+      "mcp"
+    ],
+    "flavor": null,
+    "language": "sql",
+    "namespaces": {
+      "databases": true,
+      "defaultSchema": "main",
+      "labels": {
+        "database": "Database",
+        "schema": "Schema",
+        "table": "Table",
+        "tables": "Tables"
+      },
+      "schemas": "schemas"
+    },
+    "safety": {
+      "confirm": "password",
+      "hardened": true,
+      "readOnly": "server"
+    },
+    "session": {
+      "keepaliveSecs": 30,
+      "pingBilled": false
+    }
+  },
+  "readWrite": {
+    "data": {
+      "affected": "exact",
+      "count": "estimate",
+      "defaultKeyword": false,
+      "filterOps": [
+        "eq",
+        "ne",
+        "gt",
+        "lt",
+        "ge",
+        "le",
+        "like",
+        "notLike",
+        "in",
+        "notIn",
+        "isNull",
+        "isNotNull",
+        "between",
+        "notBetween",
+        "contains",
+        "notContains",
+        "containsCase",
+        "notContainsCase",
+        "hasPrefix",
+        "hasSuffix",
+        "hasPrefixCase",
+        "hasSuffixCase",
+        "ilike",
+        "jsonContains",
+        "jsonNotContains"
+      ],
+      "maxParams": 10000,
+      "paging": "offset",
+      "rawFilter": "sqlWhere",
+      "serverExprs": [
+        "now",
+        "currentTimestamp",
+        "default"
+      ],
+      "sort": true,
+      "transactions": "atomic",
+      "upsert": false
+    },
+    "dialect": "duckdb",
+    "driver": "duckdb",
+    "features": [
+      "editor",
+      "explain",
+      "explainAnalyze",
+      "cancelOnServer",
+      "editRows",
+      "insertRows",
+      "deleteRows",
+      "returning",
+      "serverExpressions",
+      "exactCount",
+      "structureView",
+      "tableDdl",
+      "viewDefinition",
+      "routines",
+      "switchDatabase",
+      "startupCommands",
+      "sessionDetails",
+      "mcp"
+    ],
+    "flavor": null,
+    "language": "sql",
+    "namespaces": {
+      "databases": true,
+      "defaultSchema": "main",
+      "labels": {
+        "database": "Database",
+        "schema": "Schema",
+        "table": "Table",
+        "tables": "Tables"
+      },
+      "schemas": "schemas"
+    },
+    "safety": {
+      "confirm": "password",
+      "hardened": false,
+      "readOnly": "classifierOnly"
+    },
+    "session": {
+      "keepaliveSecs": 30,
+      "pingBilled": false
+    }
+  }
+}

@@ -163,8 +163,8 @@ pub fn cell(arr: &dyn Array, row: usize, ty: &DuckType, bytes: Bytes) -> Value {
         },
         DuckType::Bignum => match text(arr, row) {
             Some(s) => Value::BigInt(s.to_string()),
-            None => match binary(arr, row).and_then(bignum_text) {
-                Some(s) => Value::BigInt(s),
+            None => match binary(arr, row).and_then(bignum_value) {
+                Some(v) => v,
                 None => fallback(arr, row, ty),
             },
         },
@@ -441,38 +441,74 @@ fn bit_text(b: &[u8]) -> Option<String> {
     Some(out)
 }
 
+/// The most magnitude bytes of a BIGNUM converted to digits (about 9,860 of them). Base 256 to
+/// base 10 is quadratic, and a file's cell can hold megabytes: converting that would keep the
+/// thread busy for hours, past cancel and the timeout (DuckDB checks them between chunks).
+pub const BIGNUM_MAX_BYTES: usize = 4096;
+
+/// A BIGNUM cell: its digits, or past [`BIGNUM_MAX_BYTES`] a note of its size.
+fn bignum_value(b: &[u8]) -> Option<Value> {
+    let len = b.len().checked_sub(3).filter(|&n| n > 0)?;
+    if len > BIGNUM_MAX_BYTES {
+        return Some(Value::other(
+            "bignum",
+            format!("(a BIGNUM of {len} bytes, too large to show)"),
+        ));
+    }
+    bignum_text(b).map(Value::BigInt)
+}
+
 /// DuckDB's BIGNUM layout: a 3-byte header (the sign in the top bit, set for positive values,
 /// and the byte count), then the magnitude big-endian (bytes inverted for negative values).
 fn bignum_text(b: &[u8]) -> Option<String> {
-    if b.len() < 4 {
-        return None;
-    }
-    let positive = b[0] & 0x80 != 0;
-    let data: Vec<u8> = if positive {
-        b[3..].to_vec()
-    } else {
-        b[3..].iter().map(|x| !x).collect()
+    let positive = b.first()? & 0x80 != 0;
+    let data = b.get(3..).filter(|d| !d.is_empty())?;
+    let byte = |x: &u8| if positive { *x } else { !*x };
+    let fold = |chunk: &[u8]| {
+        chunk
+            .iter()
+            .fold(0u32, |acc, x| acc << 8 | u32::from(byte(x)))
     };
-    // Base 256 to base 10, by repeated division of the big-endian magnitude.
-    let mut digits = Vec::new();
-    let mut num = data;
-    while num.iter().any(|&x| x != 0) {
-        let mut rem: u32 = 0;
-        for x in num.iter_mut() {
-            let cur = (rem << 8) | *x as u32;
-            *x = (cur / 10) as u8;
-            rem = cur % 10;
+    // Big-endian 32-bit limbs, most significant first.
+    let (head, rest) = data.split_at(data.len() % 4);
+    let mut limbs: Vec<u32> = Vec::with_capacity(data.len() / 4 + 1);
+    if !head.is_empty() {
+        limbs.push(fold(head));
+    }
+    limbs.extend(rest.as_chunks::<4>().0.iter().map(|c| fold(c.as_slice())));
+    // Base 2^32 to base 10^9 by repeated division (36 times fewer steps than byte by digit);
+    // least significant part first.
+    const BASE: u64 = 1_000_000_000;
+    let mut parts: Vec<u32> = Vec::new();
+    let mut start = 0;
+    loop {
+        while limbs.get(start) == Some(&0) {
+            start += 1;
         }
-        digits.push(b'0' + rem as u8);
+        let Some(num) = limbs.get_mut(start..).filter(|n| !n.is_empty()) else {
+            break;
+        };
+        let mut rem: u64 = 0;
+        for x in num.iter_mut() {
+            let cur = rem << 32 | u64::from(*x);
+            // rem < BASE, so the quotient fits 32 bits.
+            *x = (cur / BASE) as u32;
+            rem = cur % BASE;
+        }
+        parts.push(rem as u32);
     }
-    if digits.is_empty() {
+    let Some((top, lower)) = parts.split_last() else {
         return Some("0".into());
-    }
+    };
+    let mut out = String::with_capacity(parts.len() * 9 + 1);
     if !positive {
-        digits.push(b'-');
+        out.push('-');
     }
-    digits.reverse();
-    String::from_utf8(digits).ok()
+    out.push_str(&top.to_string());
+    for part in lower.iter().rev() {
+        let _ = write!(out, "{part:09}");
+    }
+    Some(out)
 }
 
 // --- Temporal values -----------------------------------------------------------------------
@@ -1073,6 +1109,56 @@ mod tests {
         );
         assert_eq!(bignum_text(&[0x80, 0, 2, 1, 0]).as_deref(), Some("256"));
         assert_eq!(bignum_text(&[1]), None);
+        assert_eq!(bignum_text(&[0x80, 0, 0]), None);
+        assert_eq!(bignum_text(&[0x80, 0, 2, 0, 0]).as_deref(), Some("0"));
+        // 2^64: the limbs and the parts both cross their bases.
+        let mut two64 = vec![0x80, 0, 9, 1];
+        two64.extend([0; 8]);
+        assert_eq!(bignum_text(&two64).as_deref(), Some("18446744073709551616"));
+        let negative: Vec<u8> = [0x7f, 0xff, 0xf6]
+            .into_iter()
+            .chain(two64.iter().skip(3).map(|x| !x))
+            .collect();
+        assert_eq!(
+            bignum_text(&negative).as_deref(),
+            Some("-18446744073709551616")
+        );
+        // 10^9 (a zero-padded lower part) and 10^9 - 1 (one part).
+        assert_eq!(
+            bignum_text(&[0x80, 0, 4, 0x3b, 0x9a, 0xca, 0x00]).as_deref(),
+            Some("1000000000")
+        );
+        assert_eq!(
+            bignum_text(&[0x80, 0, 4, 0x3b, 0x9a, 0xc9, 0xff]).as_deref(),
+            Some("999999999")
+        );
+    }
+
+    /// Past the cap a BIGNUM is a note of its size, at once; up to it, its digits.
+    #[test]
+    fn a_huge_bignum_is_not_converted() {
+        let size = 4 << 20;
+        let mut huge = vec![0x80, 0, 0];
+        huge.extend(std::iter::repeat_n(0xab, size));
+        let started = std::time::Instant::now();
+        assert_eq!(
+            bignum_value(&huge),
+            Some(Value::other(
+                "bignum",
+                format!("(a BIGNUM of {size} bytes, too large to show)")
+            ))
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let mut at_cap = vec![0x80, 0, 0];
+        at_cap.extend(std::iter::repeat_n(0xff, BIGNUM_MAX_BYTES));
+        let started = std::time::Instant::now();
+        let Some(Value::BigInt(digits)) = bignum_value(&at_cap) else {
+            panic!("digits at the cap")
+        };
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        // 2^32768 - 1 has 9,865 digits and ends in 5 (2^32768 ends in 6).
+        assert_eq!(digits.len(), 9865);
+        assert!(digits.ends_with('5'));
     }
 
     #[test]

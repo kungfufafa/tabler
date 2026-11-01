@@ -1,6 +1,9 @@
 //! DuckDB catalog queries (the `duckdb_*()` table functions of the current database) and the
 //! parsers of their rows.
 //!
+//! The builtins are called as `system.main.<fn>`: a macro the file stores under a builtin's
+//! name would otherwise answer in its place.
+//!
 //! Every query is limited to `current_database()` and leaves the internal objects out
 //! (`information_schema`, `pg_catalog`, the `system` and `temp` databases). Names travel as bind
 //! parameters (`$1` the schema, `$2` the table), so a dot or a quote in a name stays part of it.
@@ -78,8 +81,8 @@ pub fn list(row: &[Value], i: usize) -> Vec<String> {
 // --- Server and databases ------------------------------------------------------------------
 
 /// The engine's version and where the session is.
-pub const SERVER_INFO: &str = "SELECT library_version, source_id, current_database(), \
-     current_schema() FROM pragma_version()";
+pub const SERVER_INFO: &str = "SELECT library_version, source_id, system.main.current_database(), \
+     system.main.current_schema() FROM system.main.pragma_version()";
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DuckdbServerInfo {
@@ -114,7 +117,8 @@ pub fn parse_server_info(rows: &[Vec<Value>]) -> Result<DuckdbServerInfo, AppErr
 
 /// The attached databases (catalogs) a session can switch to.
 pub const DATABASES: &str = "SELECT database_name, path, type, readonly, comment, \
-     database_name = current_database() FROM duckdb_databases() WHERE NOT internal \
+     database_name = system.main.current_database() FROM system.main.duckdb_databases() WHERE NOT \
+     internal \
      ORDER BY database_name";
 
 /// An attached database as the catalog lists it.
@@ -158,8 +162,8 @@ pub fn parse_databases(rows: &[Vec<Value>]) -> Vec<DuckdbDatabase> {
 
 /// Schemas of the current database. `main` counts as internal in DuckDB's catalog, so the
 /// emulated catalogs are left out by name instead.
-pub const SCHEMAS: &str = "SELECT schema_name, schema_name = current_schema() \
-     FROM duckdb_schemas() WHERE database_name = current_database() \
+pub const SCHEMAS: &str = "SELECT schema_name, schema_name = system.main.current_schema() \
+     FROM system.main.duckdb_schemas() WHERE database_name = system.main.current_database() \
      AND schema_name NOT IN ('information_schema', 'pg_catalog') ORDER BY schema_name";
 
 pub fn parse_schemas(rows: &[Vec<Value>]) -> Vec<SchemaInfo> {
@@ -177,10 +181,11 @@ pub fn parse_schemas(rows: &[Vec<Value>]) -> Vec<SchemaInfo> {
 
 /// Tables and views of schema `$1`: name, kind, row estimate, comment.
 pub const TABLES: &str = "SELECT table_name, 'table', estimated_size, comment \
-     FROM duckdb_tables() WHERE database_name = current_database() AND schema_name = $1 \
+     FROM system.main.duckdb_tables() WHERE database_name = system.main.current_database() AND \
+     schema_name = $1 \
      AND NOT internal \
-     UNION ALL SELECT view_name, 'view', NULL, comment FROM duckdb_views() \
-     WHERE database_name = current_database() AND schema_name = $1 AND NOT internal \
+     UNION ALL SELECT view_name, 'view', NULL, comment FROM system.main.duckdb_views() \
+     WHERE database_name = system.main.current_database() AND schema_name = $1 AND NOT internal \
      ORDER BY 1";
 
 fn kind_of(s: Option<String>) -> TableKind {
@@ -206,10 +211,11 @@ pub fn parse_tables(rows: &[Vec<Value>], schema: &str) -> Vec<TableSummary> {
 }
 
 /// One table or view `$2` of schema `$1`: kind, row estimate, comment, its `CREATE` text.
-pub const TABLE: &str = "SELECT 'table', estimated_size, comment, sql FROM duckdb_tables() \
-     WHERE database_name = current_database() AND schema_name = $1 AND table_name = $2 \
-     UNION ALL SELECT 'view', NULL, comment, sql FROM duckdb_views() \
-     WHERE database_name = current_database() AND schema_name = $1 AND view_name = $2 \
+pub const TABLE: &str = "SELECT 'table', estimated_size, comment, sql FROM \
+     system.main.duckdb_tables() \
+     WHERE database_name = system.main.current_database() AND schema_name = $1 AND table_name = $2 \
+     UNION ALL SELECT 'view', NULL, comment, sql FROM system.main.duckdb_views() \
+     WHERE database_name = system.main.current_database() AND schema_name = $1 AND view_name = $2 \
      AND NOT internal";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,12 +246,14 @@ pub fn parse_table(rows: &[Vec<Value>], table: &TableRef) -> Result<TableInfo, A
 /// Columns of `$2` in schema `$1`, in order.
 pub const COLUMNS: &str = "SELECT column_name, column_index, data_type, is_nullable, \
      column_default, comment, character_maximum_length, numeric_precision, numeric_scale \
-     FROM duckdb_columns() WHERE database_name = current_database() AND schema_name = $1 \
+     FROM system.main.duckdb_columns() WHERE database_name = system.main.current_database() AND \
+     schema_name = $1 \
      AND table_name = $2 ORDER BY column_index";
 
 /// The ENUM types of the database with their labels, for columns typed by a type's name.
-pub const ENUM_TYPES: &str = "SELECT schema_name, type_name, labels FROM duckdb_types() \
-     WHERE database_name = current_database() AND NOT internal AND logical_type = 'ENUM'";
+pub const ENUM_TYPES: &str = "SELECT schema_name, type_name, labels \
+     FROM system.main.duckdb_types() WHERE database_name = system.main.current_database() \
+     AND NOT internal AND logical_type = 'ENUM'";
 
 /// User-defined types by name (`mood`) and by schema-qualified name, with their labels.
 pub type EnumLabels = BTreeMap<String, Vec<String>>;
@@ -358,7 +366,8 @@ pub fn parse_columns(rows: &[Vec<Value>], enums: &EnumLabels) -> Vec<ColumnMeta>
 /// CHECK expression, the constraint's text.
 pub const CONSTRAINTS: &str = "SELECT constraint_type, constraint_name, \
      constraint_column_names, referenced_table, referenced_column_names, expression, \
-     constraint_text FROM duckdb_constraints() WHERE database_name = current_database() \
+     constraint_text FROM system.main.duckdb_constraints() WHERE database_name = \
+     system.main.current_database() \
      AND schema_name = $1 AND table_name = $2 ORDER BY constraint_index";
 
 /// What the constraints of a table give its structure.
@@ -502,8 +511,9 @@ fn check_body(definition: &str) -> String {
 
 /// The indexes of `$2` in schema `$1` (CREATE INDEX ones; keys and UNIQUE constraints come from
 /// the constraints). `expressions` is NULL in DuckDB 1.5, so the columns come from `sql`.
-pub const INDEXES: &str = "SELECT index_name, is_unique, sql, comment FROM duckdb_indexes() \
-     WHERE database_name = current_database() AND schema_name = $1 AND table_name = $2 \
+pub const INDEXES: &str = "SELECT index_name, is_unique, sql, comment FROM \
+     system.main.duckdb_indexes() \
+     WHERE database_name = system.main.current_database() AND schema_name = $1 AND table_name = $2 \
      ORDER BY index_name";
 
 pub fn parse_indexes(rows: &[Vec<Value>]) -> Vec<IndexMeta> {
@@ -662,14 +672,14 @@ pub fn table_meta(
 // --- Definitions, sequences, macros, completion --------------------------------------------
 
 /// The `CREATE VIEW` text of view `$2` in schema `$1`.
-pub const VIEW_DEFINITION: &str = "SELECT sql FROM duckdb_views() \
-     WHERE database_name = current_database() AND schema_name = $1 AND view_name = $2";
+pub const VIEW_DEFINITION: &str = "SELECT sql FROM system.main.duckdb_views() \
+     WHERE database_name = system.main.current_database() AND schema_name = $1 AND view_name = $2";
 
 /// The `CREATE TABLE` text of `$2` in schema `$1`, then its indexes' `CREATE INDEX`.
-pub const TABLE_DDL: &str = "SELECT sql FROM duckdb_tables() \
-     WHERE database_name = current_database() AND schema_name = $1 AND table_name = $2 \
-     UNION ALL SELECT sql FROM (SELECT sql FROM duckdb_indexes() \
-     WHERE database_name = current_database() AND schema_name = $1 AND table_name = $2 \
+pub const TABLE_DDL: &str = "SELECT sql FROM system.main.duckdb_tables() \
+     WHERE database_name = system.main.current_database() AND schema_name = $1 AND table_name = $2 \
+     UNION ALL SELECT sql FROM (SELECT sql FROM system.main.duckdb_indexes() \
+     WHERE database_name = system.main.current_database() AND schema_name = $1 AND table_name = $2 \
      AND sql IS NOT NULL ORDER BY index_name)";
 
 /// The first row's text (a definition); None when there is none.
@@ -692,12 +702,14 @@ pub fn parse_table_ddl(rows: &[Vec<Value>]) -> Option<String> {
 
 /// Sequences of schema `$1`.
 pub const SEQUENCES: &str = "SELECT sequence_name, start_value, increment_by, last_value, \
-     comment, sql FROM duckdb_sequences() WHERE database_name = current_database() \
+     comment, sql FROM system.main.duckdb_sequences() WHERE database_name = \
+     system.main.current_database() \
      AND schema_name = $1 AND NOT temporary ORDER BY sequence_name";
 
 /// The columns whose default draws from a sequence (`nextval('s')`), for `owned_by`.
 pub const SEQUENCE_USERS: &str = "SELECT table_name, column_name, column_default \
-     FROM duckdb_columns() WHERE database_name = current_database() AND schema_name = $1 \
+     FROM system.main.duckdb_columns() WHERE database_name = system.main.current_database() AND \
+     schema_name = $1 \
      AND column_default ILIKE 'nextval(%'";
 
 pub fn parse_sequences(
@@ -740,12 +752,14 @@ fn nextval_target(default: &str) -> Option<String> {
 }
 
 /// The `CREATE SEQUENCE` text of sequence `$2` in schema `$1`.
-pub const SEQUENCE_DEFINITION: &str = "SELECT sql FROM duckdb_sequences() \
-     WHERE database_name = current_database() AND schema_name = $1 AND sequence_name = $2";
+pub const SEQUENCE_DEFINITION: &str = "SELECT sql FROM system.main.duckdb_sequences() \
+     WHERE database_name = system.main.current_database() AND schema_name = $1 \
+     AND sequence_name = $2";
 
 /// Macros of schema `$1` (DuckDB's user-defined functions), one row per overload.
 pub const MACROS: &str = "SELECT function_name, function_type, parameters, comment, \
-     macro_definition FROM duckdb_functions() WHERE database_name = current_database() \
+     macro_definition FROM system.main.duckdb_functions() WHERE database_name = \
+     system.main.current_database() \
      AND schema_name = $1 AND NOT internal AND function_type IN ('macro', 'table_macro') \
      ORDER BY function_name";
 
@@ -771,7 +785,8 @@ pub fn parse_macros(rows: &[Vec<Value>], schema: &str) -> Vec<RoutineSummary> {
 /// The definition of macro `$2` in schema `$1`, one row per overload: its type, parameters and
 /// body.
 pub const MACRO_DEFINITION: &str = "SELECT function_type, parameters, macro_definition \
-     FROM duckdb_functions() WHERE database_name = current_database() AND schema_name = $1 \
+     FROM system.main.duckdb_functions() WHERE database_name = system.main.current_database() AND \
+     schema_name = $1 \
      AND function_name = $2 AND function_type IN ('macro', 'table_macro') AND NOT internal";
 
 /// The `CREATE MACRO` text of macro `name` in `schema` from its MACRO_DEFINITION rows, every
@@ -798,7 +813,8 @@ pub fn parse_macro_definition(rows: &[Vec<Value>], schema: &str, name: &str) -> 
 
 /// Every column of every table and view of the current database, for completion.
 pub const COMPLETION: &str = "SELECT schema_name, table_name, column_name \
-     FROM duckdb_columns() WHERE database_name = current_database() AND NOT internal \
+     FROM system.main.duckdb_columns() WHERE database_name = system.main.current_database() AND \
+     NOT internal \
      ORDER BY schema_name, table_name, column_index";
 
 pub fn parse_completion(rows: &[Vec<Value>], default_schema: Option<String>) -> CompletionMetadata {

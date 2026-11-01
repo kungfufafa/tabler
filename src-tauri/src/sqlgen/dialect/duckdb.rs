@@ -33,16 +33,18 @@
 //! `FROM "C:/x.csv"`, `FROM x."/path"`, `FROM data.csv`, whose parts the binder joins into a
 //! path when no table has that name) reads like a table to it, and so do views and macros
 //! defined over a scanner. The engine refuses those reads: read-only sessions
-//! (`access_mode=READ_ONLY`), unattended ones (`registry::unattended`, MCP) and plugin-origin
-//! ones are opened without a temp directory, with `SET enable_external_access = false`, the
+//! (`access_mode=READ_ONLY`) and unattended ones (`registry::unattended`, MCP) are opened
+//! without a temp directory, with `SET enable_external_access = false`, the
 //! local file system off where no database file takes writes, and `SET lock_configuration =
 //! true` (so no statement can turn any of it back on), extension autoload and autoinstall off
 //! (`drivers::duckdb::engine`), and report `safety.hardened` (and `ReadOnlyMode::Server` when
-//! read-only).
+//! read-only). Plugin-origin sessions are not hardened yet: no signal tells the driver that a
+//! session is a plugin's (brief, change requests), so a plugin on a read-write profile reads
+//! the files those names reach.
 
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::dialect::SqlDialect;
-use crate::sqlgen::dialect::lex::{ClassifyRules, LexProfile, PLAIN};
+use crate::sqlgen::dialect::lex::{ClassifyRules, LexProfile, PLAIN, TokenKind};
 use crate::sqlgen::dialect::spec::{
     CiLike, DialectSpec, ExplainForm, PlaceholderStyle, RedactCall, RedactRule, Returning,
     SqlHooks, SqlKnobs, double_quoted, ph_dollar, single_quoted,
@@ -182,6 +184,48 @@ pub static RULES: ClassifyRules = ClassifyRules {
         "REGEXP_SPLIT_TO_TABLE",
         "TEST_ALL_TYPES",
         "TEST_VECTOR_TYPES",
+        // The aggregates, because `t PIVOT (sum(x) FOR …)` puts one where a table goes. Exact
+        // names of DuckDB 1.5.6's built-in aggregates, none of which is also a table function;
+        // only a user's table macro of such a name could be called there (its SELECT is the
+        // user's, and hardened sessions read no files through it).
+        "SUM",
+        "COUNT",
+        "COUNT_IF",
+        "AVG",
+        "MEAN",
+        "MIN",
+        "MAX",
+        "FIRST",
+        "LAST",
+        "ANY_VALUE",
+        "ARBITRARY",
+        "LIST",
+        "ARRAY_AGG",
+        "STRING_AGG",
+        "GROUP_CONCAT",
+        "LISTAGG",
+        "MEDIAN",
+        "MODE",
+        "QUANTILE_CONT",
+        "QUANTILE_DISC",
+        "STDDEV",
+        "STDDEV_POP",
+        "STDDEV_SAMP",
+        "VARIANCE",
+        "VAR_POP",
+        "VAR_SAMP",
+        "BOOL_AND",
+        "BOOL_OR",
+        "PRODUCT",
+        "ARG_MAX",
+        "ARG_MIN",
+        "MAX_BY",
+        "MIN_BY",
+        "FSUM",
+        "KAHAN_SUM",
+        "BIT_AND",
+        "BIT_OR",
+        "BIT_XOR",
     ]),
 };
 
@@ -194,8 +238,10 @@ fn from_hex(hex: &str) -> String {
 }
 
 /// The SQL-standard clocks, without a precision.
+/// `current_date` lives in the ICU extension, which the bundled build lacks (a catalog error).
 fn server_expr(expr: ServerExpr, kind: ValueKind) -> Option<String> {
     match expr.clock() {
+        _ if expr == ServerExpr::CurrentDate => None,
         Some((_, Some(_))) => None,
         _ => crate::sqlgen::dialect::spec::ansi_server_expr(expr, kind),
     }
@@ -341,6 +387,58 @@ pub fn use_database(name: &str) -> String {
     format!("USE {}", (SPEC.quote_ident)(name))
 }
 
+/// The names of DuckDB's logger switches: the `enable_logging()` table function and the
+/// `enable_logging` / `logging_storage` settings.
+const LOGGER_SWITCHES: [&str; 2] = ["ENABLE_LOGGING", "LOGGING_STORAGE"];
+
+/// DuckDB's functions that run the SQL text they are given (`query('…')`, …).
+const DYNAMIC_SQL: [&str; 3] = ["QUERY", "QUERY_TABLE", "JSON_EXECUTE_SERIALIZED_SQL"];
+
+/// Whether `sql` names DuckDB's logger switches anywhere in its code (a word or a quoted name,
+/// not a string or a comment), or calls dynamic SQL (`DYNAMIC_SQL`) with the letters `LOGGING`
+/// anywhere, strings included (a concatenation may split the switch's name). File storage the
+/// instance cannot write leaves a logger that fails every later statement, and closing a
+/// connection then aborts the process (DuckDB 1.5.6 throws from a destructor), so the driver
+/// refuses such a statement before it reaches the engine. A text the scanner may read otherwise
+/// than DuckDB is judged by its letters alone. Lexical only: a stored view or macro, a variable
+/// or a name built from smaller pieces still reaches the engine, and `engine` then keeps the
+/// connections the logger broke from closing.
+pub fn switches_logger(sql: &str) -> bool {
+    let named = |text: &str| {
+        let upper = text.to_ascii_uppercase();
+        LOGGER_SWITCHES.iter().any(|w| upper.contains(w))
+    };
+    let logging = sql.to_ascii_uppercase().contains("LOGGING");
+    if !logging {
+        return false;
+    }
+    let s = crate::sqlgen::dialect::lex::scan(&LEX, PLAIN, sql);
+    if s.ambiguous {
+        return true;
+    }
+    let code: Vec<_> = s
+        .tokens
+        .iter()
+        .filter(|t| !matches!(t.kind, TokenKind::Space | TokenKind::Comment))
+        .collect();
+    let dynamic = code.windows(2).any(|w| {
+        let name = match w[0].kind {
+            TokenKind::Word => s.upper(w[0]),
+            TokenKind::Ident => s.ident_name(w[0]).to_ascii_uppercase(),
+            _ => return false,
+        };
+        DYNAMIC_SQL.contains(&name.as_str()) && s.is_punct(w[1], '(')
+    });
+    if dynamic {
+        return true;
+    }
+    code.iter().any(|t| match t.kind {
+        TokenKind::Word => LOGGER_SWITCHES.contains(&s.upper(t).as_str()),
+        TokenKind::Ident => named(&s.text(t)),
+        _ => false,
+    })
+}
+
 /// One overload of a macro, as `duckdb_functions()` lists it.
 pub struct MacroOverload<'a> {
     pub parameters: &'a [String],
@@ -411,6 +509,60 @@ mod tests {
     #[test]
     fn export_bindings_lex_duckdb() {
         crate::sqlgen::dialect::lex::export_lex("duckdb", &LEX, &RULES);
+    }
+
+    #[test]
+    fn logger_switches_are_found_in_code_only() {
+        for sql in [
+            "CALL enable_logging(storage := 'file', storage_path := 'C:/x')",
+            "SELECT * FROM Enable_Logging()",
+            "SELECT * FROM main.\"enable_logging\"()",
+            "SET logging_storage = 'file'",
+            "SET GLOBAL enable_logging = true",
+            "SELECT 1; CALL enable_logging()",
+            // The scanner may end the comment elsewhere than DuckDB: judged by its letters.
+            "SELECT 1 /* /* */ CALL enable_logging() */",
+            // Dynamic SQL names them in a string, whole or in pieces.
+            "SELECT * FROM query('SELECT * FROM enable_logging(storage := ''file'', \
+             storage_path := ''Z:/nope'')')",
+            "SELECT * FROM query('SELECT * FROM enable_' || 'logging()')",
+            "FROM Query_Table('enable_' || 'logging')",
+            "SELECT * FROM main.\"query\" ('CALL enable_logging()')",
+            "SELECT json_execute_serialized_sql(json_serialize_sql('SELECT * FROM \
+             enable_logging()'))",
+            "SELECT * FROM query('SET logging_' || 'storage = ''file''')",
+        ] {
+            assert!(switches_logger(sql), "{sql}");
+        }
+        for sql in [
+            "SELECT 'enable_logging'",
+            "SELECT 1 -- enable_logging",
+            "SELECT * FROM duckdb_logs",
+            "CALL disable_logging()",
+            "SELECT enable_logging_x FROM t",
+            "SELECT * FROM query('SELECT 42')",
+            "SELECT query FROM t WHERE note = 'logging'",
+        ] {
+            assert!(!switches_logger(sql), "{sql}");
+        }
+    }
+
+    #[test]
+    fn pivot_aggregates_read_where_a_table_goes() {
+        for sql in [
+            "SELECT * FROM t PIVOT (sum(amount) FOR month IN ('jan', 'feb'))",
+            "FROM t PIVOT (count(*) FOR m IN (1, 2) GROUP BY region)",
+            "SELECT * FROM t PIVOT (avg(x) AS a, max(x) AS m FOR y IN (1))",
+        ] {
+            assert_eq!(classify_duckdb(sql), StatementClass::Read, "{sql}");
+        }
+        for sql in [
+            "SELECT * FROM t PIVOT (my_agg(amount) FOR month IN ('jan'))",
+            "SELECT * FROM main.sum(1)",
+            "SELECT * FROM t PIVOT (sum(x) FOR y IN (1)), read_csv('x.csv')",
+        ] {
+            assert_eq!(classify_duckdb(sql), StatementClass::Write, "{sql}");
+        }
     }
 
     #[test]

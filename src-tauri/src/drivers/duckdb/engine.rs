@@ -13,9 +13,10 @@
 //! instance, except `USE` and `SET schema` / `search_path`, which every new connection repeats.
 //!
 //! **Hardening.** The classifier cannot see a file named where a table goes (`FROM 'x.csv'`,
-//! `FROM data.csv`), so read-only, MCP and plugin sessions are opened with the engine refusing
-//! them. The open configuration turns extension autoload and autoinstall, community extensions
-//! and persistent secrets off, and sets no temp directory (`temp_directory = ''`: no spilling to
+//! `FROM data.csv`), so read-only and MCP sessions are opened with the engine refusing them
+//! (plugin sessions too, once the driver can tell them: the brief's change requests). The open
+//! configuration turns extension autoload and autoinstall, community extensions and persistent
+//! secrets off, and sets no temp directory (`temp_directory = ''`: no spilling to
 //! disk), because DuckDB lets SQL read and write its temp directory once external access is off
 //! (it adds it to `allowed_directories`; for an in-memory database that is `.tmp` under the
 //! process's working directory). The profile's startup SQL runs first (a core extension it
@@ -40,15 +41,42 @@
 //! the profiler (`enable_logging`, `enable_profiling`, `PRAGMA enable_profiling`, …) and the
 //! pragmas of the optimizer, verification, the progress bar and checkpoint-on-shutdown still
 //! change the instance or the connection. None of them reaches a file outside the paths above.
-//! `enable_logging` with file storage is refused where the local file system is off; where it
-//! is on, a path outside them leaves a logger that fails every later statement of the instance,
-//! and closing a connection of it then aborts the process (DuckDB throws from a destructor).
-//! `enable_profiling` with a save location fails the connection's statements until
-//! `disable_profiling`. The classifier calls them writes; a session that lets writes through
-//! has to refuse them itself (see the brief's Limits).
+//! `enable_logging` with file storage is refused where the local file system is off (always on
+//! a read-only profile); where it is on, any path is accepted and only fails when the logger
+//! flushes. DuckDB writes log entries inside destructors (a file handle opened while
+//! file-system logging is on logs its close from `~FileHandle`), so a flush that fails there
+//! throws from a destructor and aborts the process, in the middle of an ordinary read or write
+//! (a CSV read, `CREATE TABLE`), not only on close. `enable_profiling` with a save location
+//! fails the connection's statements until `disable_profiling`. The classifier calls them
+//! writes; a session that lets writes through has to refuse them itself (see the brief's
+//! Limits).
+//!
+//! **A switched logger.** No check of the SQL text finds every call of `enable_logging` (a view
+//! or a table macro stored in the file, dynamic SQL built from pieces), and no setting stops it
+//! (the configuration lock does not cover it). So every job of a connection runs through
+//! [`Instance::guarded`], which asks the logger's storage before the job and after it: anything
+//! but `memory` (or a check that fails, which a failing flush makes it do) breaks the instance,
+//! and from then on none of its connections runs a statement or opens again. A connection whose
+//! transaction failed cannot answer (the statement that switched the logger may have failed it
+//! on purpose), so the root connection answers for it: the storage is the instance's. Connections close through
+//! [`Instance::release`]: on a broken instance, or one whose logger is switched, they are
+//! leaked, never closed, and so is the root connection; otherwise it first ends the
+//! connection's transaction with a `ROLLBACK` of its own, since DuckDB's destructor would roll
+//! it back where nothing catches. The file stays held until the app quits, and the file stays
+//! refused for as long, after its last session closed too ([`refuse_broken_file`]): DuckDB's
+//! file lock (`fcntl` on macOS and Linux) belongs to the process, so it would not stop a second
+//! instance of the file. The guard's own queries call the builtins as `system.main.<fn>`, so a
+//! macro the file stores under a builtin's name cannot answer for them.
+//!
+//! What this cannot stop: the statement that switches the logger runs to its end, and so does
+//! a statement already running on another connection of the instance. If that same statement
+//! (or the other one) then opens and closes a file, or writes, the failing flush still aborts
+//! the process. Closing that needs DuckDB to refuse `enable_logging` once the configuration is
+//! locked (the brief's Limits).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Weak};
 
 use ::duckdb::{AccessMode, Config, Connection};
@@ -177,21 +205,98 @@ pub const LOCK: &str = "SET lock_configuration = true";
 /// Whether the instance may turn its local file system off (before the hardening): no attached
 /// database file takes writes (its WAL needs the file system), and the startup SQL set no temp
 /// directory and allowed no folder or file of its own (the profile asked for that access).
-pub const MAY_TURN_LOCAL_FILES_OFF: &str = "SELECT current_setting('temp_directory') = '' \
-     AND len(current_setting('allowed_directories')) = 0 \
-     AND len(current_setting('allowed_paths')) = 0 \
-     AND NOT EXISTS (SELECT 1 FROM duckdb_databases() WHERE path IS NOT NULL AND NOT readonly)";
+/// Every function is named `system.main.<fn>`: DuckDB resolves an unqualified name in the
+/// current database first, so a macro the file stores as `current_setting` or `len` would
+/// answer in the builtin's place and keep the file system on.
+pub const MAY_TURN_LOCAL_FILES_OFF: &str = "SELECT \
+     system.main.current_setting('temp_directory') = '' \
+     AND system.main.len(system.main.current_setting('allowed_directories')) = 0 \
+     AND system.main.len(system.main.current_setting('allowed_paths')) = 0 \
+     AND NOT EXISTS (SELECT 1 FROM system.main.duckdb_databases() \
+     WHERE path IS NOT NULL AND NOT readonly)";
 
 /// One open database: its settings and the connection the session connections are cloned from.
 pub struct Instance {
     config: EngineConfig,
     /// The registry key (the canonical path of a file).
     key: Option<PathBuf>,
-    root: Mutex<Connection>,
+    /// The instance's own connection, the one the others are cloned from; None once dropped.
+    root: Mutex<Option<Connection>>,
     /// What every new connection runs first (`USE …`, `SET schema …`).
     per_connection: Vec<String>,
     /// Hardened with the local file system off (`LOCAL_FILES_OFF`).
     local_files_off: bool,
+    /// Its logger was switched, or a connection stopped answering (module doc: a switched
+    /// logger): no connection runs or closes any more.
+    broken: AtomicBool,
+}
+
+/// DuckDB's refusal of a `ROLLBACK` outside a transaction.
+const NO_TRANSACTION: &str = "no transaction is active";
+
+/// DuckDB's refusal of any statement but `ROLLBACK` in a failed transaction.
+const ABORTED_TRANSACTION: &str = "Current transaction is aborted";
+
+/// Where the instance's logger keeps its entries. Only `memory` is safe: file storage that
+/// cannot be written throws from the destructors that log (module doc: a switched logger).
+/// The builtin by its full name: a `current_setting` macro of the file would answer `memory`.
+const LOGGER_STORAGE: &str = "SELECT system.main.current_setting('logging_storage')";
+
+/// Why nothing more runs on an instance whose logger was switched (module doc).
+pub const LOGGER_SWITCHED: &str = "This DuckDB database switched its logger away from memory \
+     (a view or macro of the file calls enable_logging), and a log file DuckDB cannot write \
+     would close the app. Its connections run nothing more and stay open until Tabler quits; \
+     restart Tabler to connect again, and do not call that view or macro.";
+
+/// What [`logger_state`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Logger {
+    /// Entries stay in memory.
+    Memory,
+    /// Another storage, or the check itself failed (a failing flush fails it).
+    Switched,
+    /// The connection's transaction failed, so it runs nothing but `ROLLBACK`: ask again later.
+    Unknown,
+}
+
+/// The logger's storage as `conn` sees it. A failing check is asked once more (a late
+/// interrupt of a closing session fails one statement) before it counts as switched.
+pub fn logger_state(conn: &Connection) -> Logger {
+    let ask = || conn.query_row(LOGGER_STORAGE, [], |r| r.get::<_, String>(0));
+    match ask().or_else(|_| ask()) {
+        Ok(storage) if storage == "memory" => Logger::Memory,
+        Ok(_) => Logger::Switched,
+        Err(e) if e.to_string().contains(ABORTED_TRANSACTION) => Logger::Unknown,
+        Err(_) => Logger::Switched,
+    }
+}
+
+/// Whether `conn` can be closed: its logger keeps to memory, its transaction ends here, as a
+/// statement, and then it still answers. Closing it with a transaction open would roll it back
+/// inside DuckDB's destructor, where a logger's failing flush throws and aborts the process;
+/// here that is an error.
+fn answers(conn: &Connection) -> bool {
+    if logger_state(conn) == Logger::Switched {
+        return false;
+    }
+    let ended = match conn.execute_batch("ROLLBACK") {
+        Ok(()) => true,
+        Err(e) => e.to_string().contains(NO_TRANSACTION),
+    };
+    ended && logger_state(conn) == Logger::Memory
+}
+
+impl Drop for Instance {
+    fn drop(&mut self) {
+        let root = self
+            .root
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(root) = root {
+            self.close_or_leak(root);
+        }
+    }
 }
 
 impl std::fmt::Debug for Instance {
@@ -207,6 +312,23 @@ static REGISTRY: LazyLock<Mutex<HashMap<PathBuf, Weak<Instance>>>> =
 
 fn registry() -> MutexGuard<'static, HashMap<PathBuf, Weak<Instance>>> {
     REGISTRY.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// The files whose instance broke (module doc: a switched logger), for the rest of the process.
+static BROKEN_FILES: LazyLock<Mutex<HashSet<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn broken_files() -> MutexGuard<'static, HashSet<PathBuf>> {
+    BROKEN_FILES.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Refuses a file whose instance broke in this process: its connections are leaked and still
+/// hold it until the app quits.
+pub fn refuse_broken_file(path: &Path) -> Result<(), AppError> {
+    if broken_files().contains(&file_key(path)) {
+        return Err(AppError::InvalidInput(LOGGER_SWITCHED.into()));
+    }
+    Ok(())
 }
 
 /// The registry key of a file: the same for every spelling of its path.
@@ -231,7 +353,9 @@ impl Instance {
         let key = file_key(&path);
         // Held across the open, so two sessions of one file cannot both create an instance.
         let mut reg = registry();
+        refuse_broken_file(&key)?;
         if let Some(live) = reg.get(&key).and_then(Weak::upgrade) {
+            live.usable()?;
             if live.config.same_settings(&config) {
                 return Ok(live);
             }
@@ -259,7 +383,22 @@ impl Instance {
             ));
         }
         let root = open_root(&config).map_err(|e| errors::open_error(&shown, e))?;
-        let mut per_connection = Vec::new();
+        // Built first, so a failed startup closes the root through `Drop` (`close_or_leak`).
+        let mut instance = Instance {
+            config,
+            key,
+            root: Mutex::new(None),
+            per_connection: Vec::new(),
+            local_files_off: false,
+            broken: AtomicBool::new(false),
+        };
+        let root = &*instance
+            .root
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(root);
+        let config = &instance.config;
+        let per_connection = &mut instance.per_connection;
         // The clones of the root start in its default database: an encrypted file's
         // connections switch to it first.
         if let (Location::File(path), Some(_)) = (&config.location, &config.encryption_key) {
@@ -271,16 +410,20 @@ impl Instance {
                 if text.is_empty() {
                     continue;
                 }
-                root.execute_batch(text)
-                    .map_err(|e| startup_error(text, e))?;
+                let ran = root.execute_batch(text);
+                // A view or macro the startup SQL calls can switch the logger as well.
+                if logger_state(root) == Logger::Switched {
+                    instance.mark_broken();
+                    return Err(AppError::InvalidInput(LOGGER_SWITCHED.into()));
+                }
+                ran.map_err(|e| startup_error(text, e))?;
                 if per_connection_statement(text) {
                     per_connection.push(text.to_string());
                 }
             }
         }
-        let mut local_files_off = false;
         if config.hardened {
-            local_files_off = may_turn_local_files_off(&root)?;
+            let local_files_off = may_turn_local_files_off(root)?;
             for stmt in HARDENING {
                 root.execute_batch(stmt).map_err(errors::map)?;
             }
@@ -288,29 +431,116 @@ impl Instance {
                 root.execute_batch(LOCAL_FILES_OFF).map_err(errors::map)?;
             }
             root.execute_batch(LOCK).map_err(errors::map)?;
+            instance.local_files_off = local_files_off;
         }
-        Ok(Instance {
-            config,
-            key,
-            root: Mutex::new(root),
-            per_connection,
-            local_files_off,
-        })
+        Ok(instance)
     }
 
     /// A new connection to the database, with the per-connection startup statements run.
     pub fn connect(&self) -> Result<Connection, AppError> {
+        self.usable()?;
         let conn = self
             .root
             .lock()
             .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .ok_or(AppError::NotConnected)?
             .try_clone()
             .map_err(errors::map)?;
         for stmt in &self.per_connection {
-            conn.execute_batch(stmt)
-                .map_err(|e| startup_error(stmt, e))?;
+            if let Err(e) = conn.execute_batch(stmt) {
+                self.release(conn);
+                return Err(startup_error(stmt, e));
+            }
         }
         Ok(conn)
+    }
+
+    /// Closes a connection of this instance, or leaks it and marks the instance broken when it
+    /// no longer answers (module doc: a broken logger).
+    pub fn release(&self, conn: Connection) {
+        self.close_or_leak(conn);
+    }
+
+    /// Closes `conn` unless it or the instance is broken (then it is leaked: closing it would
+    /// throw from DuckDB's destructor and abort the process). Marks the instance broken when
+    /// `conn` no longer answers.
+    fn close_or_leak(&self, conn: Connection) {
+        if self.broken.load(Ordering::SeqCst) || !answers(&conn) {
+            self.mark_broken();
+            log::warn!(
+                "duckdb: a switched logger or a connection that no longer answers: left open"
+            );
+            std::mem::forget(conn);
+        } else {
+            drop(conn);
+        }
+    }
+
+    /// Stops the instance, and refuses its file for the rest of the process at once: the
+    /// leaked connections hold it, and a second instance beside them (POSIX file locks are the
+    /// process's, so DuckDB's would not stop it) would be two instances of one file. Not left
+    /// to `Drop`, where a dead registry entry and no refusal yet would let one open.
+    fn mark_broken(&self) {
+        self.broken.store(true, Ordering::SeqCst);
+        if let Some(key) = &self.key {
+            broken_files().insert(key.clone());
+        }
+    }
+
+    /// Runs `f` on `conn` unless the instance is broken, looking at the logger before and
+    /// after: switched, it marks the instance broken, so nothing more runs on any of its
+    /// connections and none closes (module doc: a switched logger). Before, too, since a job of
+    /// another connection may have switched it while its own check could not tell (a failed
+    /// transaction). `f`'s own result stands.
+    pub fn guarded<R>(
+        &self,
+        conn: &mut Connection,
+        f: impl FnOnce(&mut Connection) -> Result<R, AppError>,
+    ) -> Result<R, AppError> {
+        self.usable()?;
+        if self.logger_switched(conn) {
+            self.mark_broken();
+            log::warn!("duckdb: the logger was switched away from memory: the instance stops");
+            return Err(AppError::InvalidInput(LOGGER_SWITCHED.into()));
+        }
+        let result = f(conn);
+        if self.logger_switched(conn) {
+            self.mark_broken();
+            log::warn!("duckdb: the logger was switched away from memory: the instance stops");
+        }
+        result
+    }
+
+    /// Whether the instance's logger left memory. The storage is the instance's, so when
+    /// `conn` cannot answer (its transaction failed, perhaps in the very statement that
+    /// switched it) the root connection answers for it, which never holds a user's
+    /// transaction; when neither can, it counts as switched.
+    fn logger_switched(&self, conn: &Connection) -> bool {
+        match logger_state(conn) {
+            Logger::Memory => false,
+            Logger::Switched => true,
+            Logger::Unknown => {
+                let root = self.root.lock().unwrap_or_else(|p| p.into_inner());
+                root.as_ref()
+                    .is_none_or(|root| logger_state(root) != Logger::Memory)
+            }
+        }
+    }
+
+    /// Refuses everything once the instance is broken.
+    fn usable(&self) -> Result<(), AppError> {
+        if self.broken.load(Ordering::SeqCst) {
+            return Err(AppError::InvalidInput(LOGGER_SWITCHED.into()));
+        }
+        Ok(())
+    }
+
+    /// Its logger was switched or a connection stopped answering, so none of them runs or
+    /// closes any more.
+    #[cfg(test)]
+    pub fn is_broken(&self) -> bool {
+        self.broken.load(Ordering::SeqCst)
     }
 
     pub fn config(&self) -> &EngineConfig {
@@ -457,6 +687,8 @@ pub const MAGIC: &[u8; 4] = b"DUCK";
 /// Refuses a path that is no DuckDB database: missing, a directory, or a file without DuckDB's
 /// magic bytes. An empty file is taken (DuckDB writes a new database into it).
 pub fn check_database_file(path: &str) -> Result<(), AppError> {
+    // Not readable beside the leaked instance on Windows: say why instead.
+    refuse_broken_file(Path::new(path))?;
     let meta = std::fs::metadata(path).map_err(|e| {
         AppError::InvalidInput(format!(
             "The database file \u{201c}{path}\u{201d} cannot be opened: {e}"
@@ -549,5 +781,33 @@ mod tests {
         assert_eq!(encrypted_name(Path::new("C:/d/sales.duckdb")), "sales");
         assert_eq!(encrypted_name(Path::new("Memory.duckdb")), "encrypted");
         assert_eq!(encrypted_name(Path::new("a\"b.db")), "a\"b");
+    }
+
+    /// A connection with an open transaction, released while a logger buffers until its buffer
+    /// is full and cannot flush (module doc): the rollback runs as a statement, not in DuckDB's
+    /// destructor, so the process lives on whichever entry fills the buffer.
+    #[test]
+    fn releasing_an_open_transaction_under_a_buffered_logger_does_not_abort() {
+        for size in 1..=6 {
+            let dir = tempfile::tempdir().unwrap();
+            let blocker = dir.path().join("blocker");
+            std::fs::write(&blocker, "x").unwrap();
+            let logs = super::super::testing::sql_path(&blocker.join("logs"));
+            let inst = Instance::open(EngineConfig::file(dir.path().join("x.duckdb"))).unwrap();
+            let a = inst.connect().unwrap();
+            let b = inst.connect().unwrap();
+            // A table read, so the transaction reaches the file (`SELECT 1` alone does not).
+            a.execute_batch("CREATE TABLE rt AS SELECT 1 AS x").unwrap();
+            b.execute_batch("BEGIN; SELECT * FROM rt").unwrap();
+            let _ = a.execute_batch(&format!(
+                "CALL enable_logging(level := 'debug', storage := 'file', \
+                 storage_path := {logs}, storage_buffer_size := {size}, \
+                 storage_config := {{'only_flush_on_full_buffer': true}})"
+            ));
+            inst.release(b);
+            inst.release(a);
+            drop(inst);
+            drop(dir);
+        }
     }
 }

@@ -5,6 +5,8 @@
 //! - `engine`: one instance per database file (`Sharing::SingleProcess`), the settings it is
 //!   opened with, read-only and hardened instances, the file checks of the connection form.
 //! - `conn`: a connection on its own thread, streaming execution, cancel by interrupt.
+//! - `session`: the `DbSession` on two connections of an instance (editor and worker), its caps.
+//! - `entry`: `open`, `validate` and the connection form's calls (`checkFile`, `createFile`).
 //! - `types`: DuckDB's logical types, their names and kinds.
 //! - `decode`: Arrow chunks as `Value`s (total), `Value`s as parameters.
 //! - `catalog`: the `duckdb_*()` catalog queries and the parsers of their rows.
@@ -22,6 +24,9 @@ pub mod engine;
 pub mod entry;
 pub mod errors;
 pub mod params;
+pub mod session;
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 pub mod testing;
 pub mod types;

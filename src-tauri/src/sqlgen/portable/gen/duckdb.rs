@@ -44,6 +44,9 @@ const READS: &[&str] = &[
     "UNPIVOT monthly ON COLUMNS(* EXCLUDE (id))",
     "PIVOT_LONGER monthly ON COLUMNS(* EXCLUDE (id)) INTO NAME month VALUE amount",
     "FROM monthly UNPIVOT (amount FOR month IN (jan, feb, mar))",
+    // The SQL-standard clause puts an aggregate where a table goes.
+    "SELECT * FROM sales PIVOT (sum(amount) FOR year IN (2023, 2024) GROUP BY region)",
+    "FROM sales PIVOT (count(*) AS n, avg(amount) AS a FOR year IN (2023))",
     "SELECT * FROM (PIVOT sales ON year USING sum(amount)) p",
     "SELECT * FROM trades t ASOF JOIN quotes q ON t.symbol = q.symbol AND t.ts >= q.ts",
     "SELECT * FROM a POSITIONAL JOIN b",
@@ -258,6 +261,8 @@ const WRITES: &[&str] = &[
     "SELECT http_get('https://example.com')",
     "SELECT * FROM load_aws_credentials()",
     "SELECT * FROM my_table_macro(3)",
+    "SELECT * FROM sales PIVOT (my_agg(amount) FOR year IN (2023))",
+    "SELECT * FROM main.sum(1)",
     "SELECT * FROM histogram('t', a)",
     "SELECT * FROM t, st_read('x.shp')",
     "FROM read_csv('x.csv')",

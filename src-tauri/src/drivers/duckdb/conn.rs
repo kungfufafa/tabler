@@ -38,7 +38,8 @@ use crate::sqlgen::portable::split::first_reading;
 use crate::types::query::{ResultColumn, StatementKind};
 use crate::types::value::Value;
 
-type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
+/// A job gets the connection and its instance (`Instance::guarded`).
+type Job = Box<dyn FnOnce(&mut Connection, &Instance) + Send + 'static>;
 
 /// How long [`Worker::close`] waits for the thread to end.
 const CLOSE_WAIT: Duration = Duration::from_secs(2);
@@ -54,8 +55,9 @@ pub struct Worker {
     /// Set by `close`: jobs still queued are answered with `NotConnected` instead of running.
     closed: Arc<AtomicBool>,
     thread: Mutex<Option<JoinHandle<()>>>,
-    /// Keeps the database open while the connection is (and its settings known).
-    instance: Arc<Instance>,
+    /// Keeps the database open while the connection is; let go by `close`, so a closed session
+    /// does not hold the file.
+    instance: Mutex<Option<Arc<Instance>>>,
 }
 
 impl Worker {
@@ -64,15 +66,17 @@ impl Worker {
         let conn = instance.connect()?;
         let interrupt = conn.interrupt_handle();
         let (tx, rx) = std_mpsc::channel::<Job>();
+        let owner = instance.clone();
         let thread = thread::Builder::new()
             .name("tabler-duckdb".into())
             .spawn(move || {
                 let mut conn = conn;
                 while let Ok(job) = rx.recv() {
-                    job(&mut conn);
+                    job(&mut conn, &owner);
                 }
-                // The connection closes here, on its thread; the file closes with the last one.
-                drop(conn);
+                // The connection closes here, on its thread (unless a switched logger would abort
+                // the process: `Instance::release`); the file closes with the last one.
+                owner.release(conn);
             })
             .map_err(|e| AppError::Internal(format!("spawn duckdb thread: {e}")))?;
         Ok(Worker {
@@ -80,15 +84,12 @@ impl Worker {
             interrupt,
             closed: Arc::new(AtomicBool::new(false)),
             thread: Mutex::new(Some(thread)),
-            instance,
+            instance: Mutex::new(Some(instance)),
         })
     }
 
-    pub fn instance(&self) -> &Arc<Instance> {
-        &self.instance
-    }
-
-    /// Runs `f` on the connection thread and awaits its result.
+    /// Runs `f` on the connection thread and awaits its result; nothing runs once the instance
+    /// is broken, and a logger `f` switched breaks it (`Instance::guarded`).
     pub async fn run<R, F>(&self, f: F) -> Result<R, AppError>
     where
         R: Send + 'static,
@@ -96,11 +97,11 @@ impl Worker {
     {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let closed = self.closed.clone();
-        let job: Job = Box::new(move |conn| {
+        let job: Job = Box::new(move |conn, instance| {
             let result = if closed.load(Ordering::SeqCst) {
                 Err(AppError::NotConnected)
             } else {
-                f(conn)
+                instance.guarded(conn, f)
             };
             let _ = reply_tx.send(result);
         });
@@ -124,11 +125,19 @@ impl Worker {
     }
 
     /// Stops the running statement, fails queued jobs with `NotConnected`, ends the thread
-    /// (closing the connection) and waits for that, at most 2 s.
+    /// (closing the connection) and waits for that, at most 2 s, then lets the instance go.
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         self.interrupt.interrupt();
         self.tx.lock().unwrap_or_else(|p| p.into_inner()).take();
+        self.join_thread();
+        self.instance
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+    }
+
+    fn join_thread(&self) {
         let handle = self.thread.lock().unwrap_or_else(|p| p.into_inner()).take();
         let Some(handle) = handle else {
             return;
@@ -229,6 +238,7 @@ pub fn execute_streaming(
     max_rows: Option<usize>,
     sink: &mut dyn RowSink,
     cancel: &CancelSlot,
+    bytes: Bytes,
 ) -> Result<StatementOutcome, AppError> {
     if cancel_requested(cancel) {
         return Err(AppError::Cancelled);
@@ -308,7 +318,7 @@ pub fn execute_streaming(
                 .iter()
                 .enumerate()
                 .map(|(i, t)| match cols.get(i) {
-                    Some(col) => decode::cell(col.as_ref(), row, t, Bytes::Preview),
+                    Some(col) => decode::cell(col.as_ref(), row, t, bytes),
                     None => Value::other("missing", ""),
                 })
                 .collect();
@@ -334,7 +344,15 @@ pub fn query_all(
     params: &[Value],
 ) -> Result<(Vec<ResultColumn>, Vec<Vec<Value>>), AppError> {
     let mut sink = CollectSink::default();
-    execute_streaming(conn, sql, params, None, &mut sink, &CancelSlot::default())?;
+    execute_streaming(
+        conn,
+        sql,
+        params,
+        None,
+        &mut sink,
+        &CancelSlot::default(),
+        Bytes::Preview,
+    )?;
     match sink.sets.into_iter().next() {
         Some(set) => Ok((set.columns, set.rows)),
         None => Ok((Vec::new(), Vec::new())),
@@ -420,7 +438,15 @@ pub async fn run(
         let action: Arc<dyn CancelAction> = Arc::new(Interrupt(interrupt));
         let result = match arm_cancel(&cancel, CancelHandle::Custom(action)) {
             Ok(armed) => {
-                let result = execute_streaming(conn, &sql, &params, max_rows, &mut chan, &cancel);
+                let result = execute_streaming(
+                    conn,
+                    &sql,
+                    &params,
+                    max_rows,
+                    &mut chan,
+                    &cancel,
+                    Bytes::Preview,
+                );
                 drop(armed);
                 if !settle_cancels_blocking(&cancel, CANCEL_SETTLE_LIMIT) {
                     log::warn!("duckdb: a cancel request did not finish in time");
