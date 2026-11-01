@@ -1,0 +1,257 @@
+{
+  "command": {
+    "data": {
+      "affected": "exact",
+      "count": "estimate",
+      "defaultKeyword": false,
+      "filterOps": [
+        "eq",
+        "ne",
+        "gt",
+        "lt",
+        "ge",
+        "le",
+        "like",
+        "notLike",
+        "in",
+        "notIn",
+        "isNull",
+        "isNotNull",
+        "between",
+        "notBetween",
+        "contains",
+        "notContains",
+        "containsCase",
+        "notContainsCase",
+        "hasPrefix",
+        "hasSuffix",
+        "hasPrefixCase",
+        "hasSuffixCase",
+        "ilike"
+      ],
+      "maxParams": 1000,
+      "paging": "offset",
+      "rawFilter": "sqlWhere",
+      "serverExprs": [
+        "now",
+        "currentTimestamp",
+        "currentDate",
+        "default"
+      ],
+      "sort": true,
+      "transactions": "sequential",
+      "upsert": false
+    },
+    "dialect": "clickhouse",
+    "driver": "clickhouse",
+    "features": [
+      "editor",
+      "explain",
+      "cancelOnServer",
+      "editRows",
+      "insertRows",
+      "deleteRows",
+      "serverExpressions",
+      "exactCount",
+      "structureView",
+      "tableDdl",
+      "viewDefinition",
+      "processList",
+      "killProcess",
+      "sessionDetails",
+      "mcp"
+    ],
+    "flavor": null,
+    "language": "sql",
+    "namespaces": {
+      "databases": false,
+      "defaultSchema": "default",
+      "labels": {
+        "database": "Database",
+        "schema": "Database",
+        "table": "Table",
+        "tables": "Tables"
+      },
+      "schemas": "schemas"
+    },
+    "safety": {
+      "confirm": "passcode",
+      "hardened": false,
+      "readOnly": "perRequest"
+    },
+    "session": {
+      "keepaliveSecs": 30,
+      "pingBilled": false
+    }
+  },
+  "password": {
+    "data": {
+      "affected": "exact",
+      "count": "estimate",
+      "defaultKeyword": false,
+      "filterOps": [
+        "eq",
+        "ne",
+        "gt",
+        "lt",
+        "ge",
+        "le",
+        "like",
+        "notLike",
+        "in",
+        "notIn",
+        "isNull",
+        "isNotNull",
+        "between",
+        "notBetween",
+        "contains",
+        "notContains",
+        "containsCase",
+        "notContainsCase",
+        "hasPrefix",
+        "hasSuffix",
+        "hasPrefixCase",
+        "hasSuffixCase",
+        "ilike"
+      ],
+      "maxParams": 1000,
+      "paging": "offset",
+      "rawFilter": "sqlWhere",
+      "serverExprs": [
+        "now",
+        "currentTimestamp",
+        "currentDate",
+        "default"
+      ],
+      "sort": true,
+      "transactions": "sequential",
+      "upsert": false
+    },
+    "dialect": "clickhouse",
+    "driver": "clickhouse",
+    "features": [
+      "editor",
+      "explain",
+      "cancelOnServer",
+      "editRows",
+      "insertRows",
+      "deleteRows",
+      "serverExpressions",
+      "exactCount",
+      "structureView",
+      "tableDdl",
+      "viewDefinition",
+      "processList",
+      "killProcess",
+      "sessionDetails",
+      "mcp"
+    ],
+    "flavor": null,
+    "language": "sql",
+    "namespaces": {
+      "databases": false,
+      "defaultSchema": "default",
+      "labels": {
+        "database": "Database",
+        "schema": "Database",
+        "table": "Table",
+        "tables": "Tables"
+      },
+      "schemas": "schemas"
+    },
+    "safety": {
+      "confirm": "password",
+      "hardened": false,
+      "readOnly": "perRequest"
+    },
+    "session": {
+      "keepaliveSecs": 30,
+      "pingBilled": false
+    }
+  },
+  "readOnly": {
+    "data": {
+      "affected": "exact",
+      "count": "estimate",
+      "defaultKeyword": false,
+      "filterOps": [
+        "eq",
+        "ne",
+        "gt",
+        "lt",
+        "ge",
+        "le",
+        "like",
+        "notLike",
+        "in",
+        "notIn",
+        "isNull",
+        "isNotNull",
+        "between",
+        "notBetween",
+        "contains",
+        "notContains",
+        "containsCase",
+        "notContainsCase",
+        "hasPrefix",
+        "hasSuffix",
+        "hasPrefixCase",
+        "hasSuffixCase",
+        "ilike"
+      ],
+      "maxParams": 1000,
+      "paging": "offset",
+      "rawFilter": "sqlWhere",
+      "serverExprs": [
+        "now",
+        "currentTimestamp",
+        "currentDate",
+        "default"
+      ],
+      "sort": true,
+      "transactions": "sequential",
+      "upsert": false
+    },
+    "dialect": "clickhouse",
+    "driver": "clickhouse",
+    "features": [
+      "editor",
+      "explain",
+      "cancelOnServer",
+      "editRows",
+      "insertRows",
+      "deleteRows",
+      "serverExpressions",
+      "exactCount",
+      "structureView",
+      "tableDdl",
+      "viewDefinition",
+      "processList",
+      "killProcess",
+      "sessionDetails",
+      "mcp"
+    ],
+    "flavor": null,
+    "language": "sql",
+    "namespaces": {
+      "databases": false,
+      "defaultSchema": "default",
+      "labels": {
+        "database": "Database",
+        "schema": "Database",
+        "table": "Table",
+        "tables": "Tables"
+      },
+      "schemas": "schemas"
+    },
+    "safety": {
+      "confirm": "password",
+      "hardened": true,
+      "readOnly": "perRequest"
+    },
+    "session": {
+      "keepaliveSecs": 30,
+      "pingBilled": false
+    }
+  }
+}

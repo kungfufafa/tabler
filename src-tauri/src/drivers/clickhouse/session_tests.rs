@@ -1296,3 +1296,61 @@ async fn explain_shows_the_plan_and_views_their_definition() {
         .unwrap();
     assert!(def.starts_with("CREATE TABLE"), "{def}");
 }
+
+/// The caps of a session (a stored password, a Command Line password, and a read-only profile),
+/// kept in `tests/fixtures/clickhouse/caps.json`: the renderer's mock tests read the same file,
+/// so the mock's caps cannot drift from these. `TABLER_BLESS=1` rewrites it.
+#[tokio::test]
+async fn caps_match_the_recorded_fixture() {
+    let fake = seeded();
+    let mut all = serde_json::Map::new();
+    for (name, read_only, confirm) in [
+        ("password", false, SafeConfirm::Password),
+        ("command", false, SafeConfirm::Passcode),
+        ("readOnly", true, SafeConfirm::Password),
+    ] {
+        let s = ClickhouseSession::start(
+            fake.clone(),
+            Endpoint {
+                tls: false,
+                host: "ch.example".into(),
+                port: 8123,
+            },
+            Credentials::Password {
+                user: "alice".into(),
+                password: "secret".into(),
+            },
+            conn_settings(read_only),
+            SessionOptions {
+                tls: false,
+                confirm,
+                session_timeout_secs: None,
+            },
+        )
+        .await
+        .expect("a session");
+        all.insert(
+            name.into(),
+            serde_json::to_value(s.capabilities()).expect("caps"),
+        );
+    }
+    let got = serde_json::Value::Object(all);
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/clickhouse/caps.json");
+    if std::env::var("TABLER_BLESS").as_deref() == Ok("1") {
+        std::fs::create_dir_all(path.parent().expect("a folder")).expect("folder");
+        let text = serde_json::to_string_pretty(&got).expect("json");
+        std::fs::write(&path, text + "\n").expect("written");
+        return;
+    }
+    let want: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    assert!(
+        got == want,
+        "{} differs (TABLER_BLESS=1 rewrites it); now:\n{}",
+        path.display(),
+        serde_json::to_string_pretty(&got).expect("json")
+    );
+}
