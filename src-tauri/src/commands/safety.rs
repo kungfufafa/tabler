@@ -11,10 +11,11 @@ use crate::drivers::native::{CallKind, NativeSession};
 use crate::error::AppError;
 use crate::passcode;
 use crate::secrets::{SecretKind, Secrets};
-use crate::sqlgen::SqlDialect;
 use crate::sqlgen::classify::StatementClass;
+use crate::sqlgen::dialect::DialectRef;
 use crate::sqlgen::split::is_meta_command;
-use crate::sqlgen::sql::{split_statements, writes};
+use crate::sqlgen::sql::{split_statements, wrap_explain, writes};
+use crate::sqlgen::{Dialect, SqlDialect};
 use crate::state::{AppState, Connection};
 use crate::types::profile::{ConnectionProfile, PasswordMode};
 use crate::types::query::ExplainMode;
@@ -101,26 +102,37 @@ pub async fn verify_connection_password(
 }
 
 /// Whether running `sql` (split like the editor does; meta-commands are refused anyway) writes.
-/// `explain`: each statement is wrapped in EXPLAIN (only planned: never a write) or EXPLAIN
-/// ANALYZE (runs it: a write when the statement is one). `first_only`: only the first statement
-/// is run (`explain`).
+/// `explain`: each statement is wrapped in EXPLAIN (only planned: never a write, except where
+/// SQLite applies a PRAGMA while preparing it) or EXPLAIN ANALYZE (runs it: a write when the
+/// statement is one). `first_only`: only the first statement is run (`explain`).
 pub fn run_writes(
     sql: &str,
     dialect: impl Into<SqlDialect>,
     explain: Option<ExplainMode>,
     first_only: bool,
 ) -> bool {
-    if explain == Some(ExplainMode::Plan) {
+    let dialect = dialect.into();
+    // SQLite applies a setting PRAGMA while it prepares the EXPLAIN of it, and the heap limits
+    // reach the whole process, so its plan is classified with the wrapper on (the classifier reads
+    // an EXPLAIN of a PRAGMA as the PRAGMA, any other EXPLAIN as a read). Other engines only plan.
+    let plan_only = explain == Some(ExplainMode::Plan);
+    if plan_only && !matches!(dialect.resolve(), DialectRef::Core(Dialect::Sqlite)) {
         return false;
     }
-    let dialect = dialect.into();
     let statements = split_statements(dialect, sql);
     let take = if first_only { 1 } else { statements.len() };
     statements
         .iter()
         .take(take)
         .filter(|st| !is_meta_command(&st.sql))
-        .any(|st| writes(dialect, &st.sql))
+        .any(|st| {
+            if plan_only {
+                wrap_explain(dialect, &st.sql, ExplainMode::Plan, false)
+                    .map_or(true, |wrapped| writes(dialect, &wrapped))
+            } else {
+                writes(dialect, &st.sql)
+            }
+        })
 }
 
 fn refuse(read_only: bool, writes: impl FnOnce() -> bool) -> Result<(), AppError> {
@@ -406,6 +418,25 @@ mod tests {
             sl,
             Some(ExplainMode::Analyze),
             false
+        ));
+        // SQLite applies a setting PRAGMA while it prepares the EXPLAIN of it.
+        assert!(run_writes(
+            "PRAGMA soft_heap_limit = 1",
+            sl,
+            Some(ExplainMode::Plan),
+            true
+        ));
+        assert!(!run_writes(
+            "PRAGMA table_info(t)",
+            sl,
+            Some(ExplainMode::Plan),
+            true
+        ));
+        assert!(!run_writes(
+            "PRAGMA soft_heap_limit = 1",
+            Dialect::Postgres,
+            Some(ExplainMode::Plan),
+            true
         ));
         // `explain` only runs the first statement.
         assert!(!run_writes(

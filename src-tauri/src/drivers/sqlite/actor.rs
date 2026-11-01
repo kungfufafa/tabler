@@ -228,18 +228,24 @@ mod tests {
         );
 
         // A job that does not look at the interrupt keeps the thread busy for a while.
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let busy = {
             let actor = actor.clone();
+            let running = running.clone();
             tokio::spawn(async move {
                 actor
-                    .run(|_| {
+                    .run(move |_| {
+                        running.store(true, std::sync::atomic::Ordering::SeqCst);
                         std::thread::sleep(Duration::from_millis(400));
                         Ok(())
                     })
                     .await
             })
         };
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        // Closed only once the job runs (a fixed pause raced it on a busy machine).
+        while !running.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         let started = Instant::now();
         actor.close();
         let waited = started.elapsed();

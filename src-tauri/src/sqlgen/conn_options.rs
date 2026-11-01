@@ -74,6 +74,16 @@ pub fn pg_client_encoding(name: &str) -> String {
     )
 }
 
+/// PostgreSQL `SET TIME ZONE '<zone>'`. A zone with a backslash goes in `E'…'`, which reads the
+/// same whatever `standard_conforming_strings` is: in a plain literal a server with it off would
+/// end the string at `\'` and run what follows before the read-only setting.
+pub fn pg_set_time_zone(zone: &str) -> String {
+    format!(
+        "SET TIME ZONE {};",
+        Dialect::Postgres.quote_literal_with(zone, MysqlLiteralMode::BackslashEscapes)
+    )
+}
+
 /// A server setting of the session (`set_config(name, value, false)`): the value is read the way
 /// `SET` reads it, list settings such as `search_path` included.
 pub fn pg_set_config(name: &str, value: &str) -> String {

@@ -214,6 +214,12 @@ export const connectionFormSchema = z
     /** "Command Line (IAM authentication)": the shell command that prints the password. */
     passwordCommand: z.string(),
     clearPassword: z.boolean(),
+    /**
+     * The second secrets of a driver that takes them (`DriverDescriptor.extraSecrets`): a private
+     * key's passphrase, an AWS session token. Stored with the password; empty keeps a stored one.
+     */
+    keyPassphrase: z.string(),
+    sessionToken: z.string(),
     /** MySQL "Use socket": connect through a Unix socket (host and port are not used). */
     useSocket: z.boolean(),
     /** Empty: auto-detected (/tmp/mysql.sock, /var/run/mysqld/mysqld.sock, Homebrew's). */
@@ -421,6 +427,8 @@ export const DEFAULT_FORM: ConnectionFormValues = {
   passwordMode: "keychain",
   passwordCommand: "",
   clearPassword: false,
+  keyPassphrase: "",
+  sessionToken: "",
   useSocket: false,
   socketPath: "",
   sshEnabled: false,
@@ -569,6 +577,14 @@ export function formToProfileInput(
 ): ProfileInput {
   const input = coreFormToProfileInput(v, existing, id);
   if (kindUi?.toProfile) input.profile = kindUi.toProfile(v, input.profile);
+  // A lane may keep no secret (an AWS profile, a machine's credentials): what the form still
+  // holds is not sent.
+  if ((input.profile.options.passwordMode ?? "keychain") !== "keychain") {
+    input.password = null;
+    input.clearPassword = false;
+    input.keyPassphrase = null;
+    input.sessionToken = null;
+  }
   return input;
 }
 
@@ -670,6 +686,15 @@ function coreFormToProfileInput(
     sshPassword: v.sshPassword === "" || !sshPasswordKept ? null : v.sshPassword,
     sshPassphrase: v.sshPassphrase === "" ? null : v.sshPassphrase,
     clearPassword: keychain && v.clearPassword,
+    // Only the second secrets the driver takes, and only typed ones (absent keeps a stored one).
+    keyPassphrase:
+      keychain && desc.extraSecrets.includes("keyPassphrase") && v.keyPassphrase !== ""
+        ? v.keyPassphrase
+        : null,
+    sessionToken:
+      keychain && desc.extraSecrets.includes("sessionToken") && v.sessionToken !== ""
+        ? v.sessionToken
+        : null,
   };
 }
 

@@ -17,6 +17,7 @@ use crate::sqlgen::{Dialect, SqlDialect};
 use crate::types::caps::SessionCaps;
 use crate::types::driver::ReadOnlyMode;
 use crate::types::profile::{ConnectionProfile, ConnectionTag, SafeModeLevel};
+use crate::types::query::ExplainMode;
 
 use super::prefs::McpPrefs;
 
@@ -323,6 +324,26 @@ pub fn check_query(
     }
 }
 
+/// `explain_query`: refuses the plan of a statement whose EXPLAIN changes something (a SQLite
+/// PRAGMA applied while it is prepared, `run_writes`) when writes are not allowed.
+pub fn check_explain(
+    profile: &ConnectionProfile,
+    prefs: &McpPrefs,
+    sql: &str,
+    dialect: impl Into<SqlDialect>,
+) -> Result<(), String> {
+    match write_block(profile, prefs) {
+        Some(block) if run_writes(sql, dialect, Some(ExplainMode::Plan), true) => Err(format!(
+            "Refused: explaining this statement changes the server. {}",
+            block.message(
+                &profile.name,
+                SessionCaps::for_profile(profile).safety.read_only
+            )
+        )),
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,6 +465,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("Allow MCP clients to change data"), "{err}");
+    }
+
+    #[test]
+    fn explaining_a_sqlite_setting_pragma_is_a_write() {
+        let p = profile(None, None, true);
+        let pr = prefs(true, true);
+        let pragma = "PRAGMA soft_heap_limit = 1";
+        let err = check_explain(&p, &pr, pragma, Dialect::Sqlite).unwrap_err();
+        assert!(err.starts_with("Refused: explaining"), "{err}");
+        assert!(check_explain(&p, &pr, "DELETE FROM t", Dialect::Sqlite).is_ok());
+        assert!(check_explain(&p, &pr, pragma, Dialect::Postgres).is_ok());
+        // Writes allowed: nothing is refused.
+        let open = profile(None, None, false);
+        assert!(check_explain(&open, &pr, pragma, Dialect::Sqlite).is_ok());
     }
 
     #[test]

@@ -79,7 +79,8 @@ export function fakeLane(kind: DatabaseKind, driver: Driver): LaneModule {
       {
         id: "stats",
         label: "Collection Stats",
-        run: () => ctx.call("stats", { collection: item.table.name }).then(() => undefined),
+        run: () =>
+          (ctx.read ?? ctx.call)("stats", { collection: item.table.name }).then(() => undefined),
       },
       {
         id: "compact",

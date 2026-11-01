@@ -1,8 +1,9 @@
 import { DESCRIPTORS, isCoreDriver, isCoreKind, KINDS } from "@/features/drivers/catalog";
-import { LANE_IDS, LANES, laneOfDriver, type LaneId } from "@/features/drivers/lanes";
+import { LANE_IDS, LANES, laneOfDriver, laneOfKind, type LaneId } from "@/features/drivers/lanes";
 import type { ConnectionProfile } from "../../bindings/ConnectionProfile";
 import type { DatabaseKind } from "../../bindings/DatabaseKind";
 import type { Driver } from "../../bindings/Driver";
+import type { PgFlavor } from "../../bindings/PgFlavor";
 import type { MockDriver, MockLane } from "./types";
 
 export type { MockDriver, MockLane, MockSession } from "./types";
@@ -55,6 +56,17 @@ export async function loadMockDriver(driver: Driver): Promise<MockDriver | null>
 }
 
 /**
+ * The mock of a PostgreSQL flavor's engine (its lane's `flavors`); null when the lane's mock has
+ * none, and the core PostgreSQL mock serves the profile.
+ */
+export async function loadMockFlavor(flavor: PgFlavor): Promise<MockDriver | null> {
+  const kind = KINDS.find((k) => k.pgFlavor === flavor);
+  const lane = kind ? laneOfKind(kind.kind) : null;
+  if (lane === null) return null;
+  return (await importMockLane(lane)).flavors?.[flavor] ?? null;
+}
+
+/**
  * Adds the seed profiles of the mock drivers `ids` to the mock's profiles (`?mockDrivers=`, and
  * tests); the core seed (`SEED_PROFILES`) stays as it is. Returns the profiles added.
  */
@@ -64,6 +76,22 @@ export async function seedMockDriverProfiles(ids: readonly Driver[]): Promise<Co
   const added: ConnectionProfile[] = [];
   for (const id of ids) {
     const mock = await loadMockDriver(id);
+    for (const p of mock?.seedProfiles() ?? []) {
+      mockProfiles.set(p.id, p);
+      added.push(p);
+    }
+  }
+  return added;
+}
+
+/** `seedMockDriverProfiles` for the PostgreSQL flavors `flavors` (their engines' mocks). */
+export async function seedMockFlavorProfiles(
+  flavors: readonly PgFlavor[],
+): Promise<ConnectionProfile[]> {
+  const { mockProfiles } = await import("../handlers");
+  const added: ConnectionProfile[] = [];
+  for (const flavor of flavors) {
+    const mock = await loadMockFlavor(flavor);
     for (const p of mock?.seedProfiles() ?? []) {
       mockProfiles.set(p.id, p);
       added.push(p);
@@ -150,7 +178,13 @@ export function enableMockDrivers(ids: readonly string[]): Promise<ConnectionPro
   const drivers = KINDS.filter((k) => kinds.includes(k.kind) && !isCoreDriver(k.driver)).map(
     (k) => k.driver,
   );
-  const seeded = seedMockDriverProfiles([...new Set(drivers)]);
+  const flavors = KINDS.filter((k) => kinds.includes(k.kind)).flatMap((k) =>
+    k.pgFlavor ? [k.pgFlavor] : [],
+  );
+  const seeded = Promise.all([
+    seedMockDriverProfiles([...new Set(drivers)]),
+    seedMockFlavorProfiles(flavors),
+  ]).then((lists) => lists.flat());
   seeding = seeded.catch((err: unknown) => console.error("[mock] seeding the drivers failed", err));
   return seeded;
 }

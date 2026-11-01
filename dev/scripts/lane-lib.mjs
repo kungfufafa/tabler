@@ -310,9 +310,9 @@ export function laneFeatureArgs(lane, manifest = MANIFEST) {
 
 // --- Locks ----------------------------------------------------------------------------------
 
-/** The lock file of a build slot (in the slot) or a TS slot (in `locks/`). */
+/** The lock file of a build slot (in the slot), or a TS slot or a snapshot (in `locks/`). */
 export function lockFile(name) {
-  return TS_SLOTS.includes(name)
+  return TS_SLOTS.includes(name) || name.startsWith("snap-")
     ? `${SLOT_ROOT}/locks/${name}.lock`
     : `${slotDir(name)}/.tabler-lane.lock`;
 }
@@ -450,6 +450,9 @@ export async function acquireAll(names, what, opts) {
  * paths are committed, whatever else is uncommitted. `git archive`, not a worktree.
  */
 export async function snapshot(name, overlay, { nodeModules = false } = {}) {
+  // Two runs of one lane (in two slots) share its snapshot folder: the second waits until the
+  // first has ended, since its build reads the folder until then (the lock is released at exit).
+  if (!held.has(`snap-${name}`)) await acquireAny([`snap-${name}`], `snapshot ${name}`);
   const dir = `${SLOT_ROOT}/snap/${name}`;
   unlinkNodeModules(dir);
   fs.rmSync(dir, { recursive: true, force: true });

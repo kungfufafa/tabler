@@ -10,7 +10,7 @@
 
 use crate::drivers::redact::Redaction;
 use crate::sqlgen::admin::PASSWORD_MASK;
-use crate::sqlgen::dialect::lex::{LexProfile, Scan, Token, TokenKind, scan};
+use crate::sqlgen::dialect::lex::{LexProfile, Scan, Token, TokenKind, scan, upper_folded};
 use crate::sqlgen::dialect::spec::{DialectSpec, RedactCall, RedactRule};
 
 /// Words that may stand between a password keyword and its literal.
@@ -45,7 +45,8 @@ fn redact_with(
         .map(|r| r.keyword)
         .chain(commands.iter().copied())
         .chain(calls.iter().map(|c| c.function));
-    if !keywords.any(|k| mentions(sql, k)) {
+    // Text with other letters may spell a keyword with ASCII lookalikes (`upper_folded`).
+    if sql.is_ascii() && !keywords.any(|k| mentions(sql, k)) {
         return redaction;
     }
     let chars: Vec<char> = sql.chars().collect();
@@ -108,10 +109,24 @@ fn secret_literals(
     let mut out: Vec<(usize, usize)> = Vec::new();
     for (k, &i) in code.iter().enumerate() {
         let t = scan.tokens[i];
+        let next_opens = || {
+            code.get(k + 1)
+                .is_some_and(|&j| scan.is_punct(&scan.tokens[j], '('))
+        };
+        // A quoted function name is still that function (`"AWS_SET_CONFIG"(…)`).
+        if t.kind == TokenKind::Ident && next_opens() {
+            let name = upper_folded(&quoted_name(&scan.text(&t)));
+            if let Some(call) = calls.iter().find(|c| c.function == name) {
+                argument_literals(scan, &code[k + 2..], call.argument, &mut out);
+            }
+            continue;
+        }
         if t.kind != TokenKind::Word {
             continue;
         }
-        let word = scan.upper(&t);
+        // Keywords and names with ASCII lookalikes count as their ASCII spelling (the KELVIN
+        // SIGN as `K`), as a server that folds them reads them.
+        let word = upper_folded(&scan.text(&t));
         let starts = k == 0 || scan.is_punct(&scan.tokens[code[k - 1]], ';');
         if starts && commands.contains(&word.as_str()) {
             // `LOGIN user 'password'`: the user is a word, a quoted name or a string.
@@ -128,9 +143,7 @@ fn secret_literals(
             continue;
         }
         if let Some(call) = calls.iter().find(|c| c.function == word)
-            && code
-                .get(k + 1)
-                .is_some_and(|&j| scan.is_punct(&scan.tokens[j], '('))
+            && next_opens()
         {
             argument_literals(scan, &code[k + 2..], call.argument, &mut out);
         }
@@ -138,13 +151,24 @@ fn secret_literals(
             continue;
         }
         let mut other_words = 0;
-        for &j in &code[k + 1..] {
+        let rest = &code[k + 1..];
+        for (r, &j) in rest.iter().enumerate() {
             let n = scan.tokens[j];
+            let next_is = |c: char| {
+                rest.get(r + 1)
+                    .is_some_and(|&x| scan.is_punct(&scan.tokens[x], c))
+            };
+            let after_u = r > 0
+                && scan.tokens[rest[r - 1]].kind == TokenKind::Word
+                && scan.upper(&scan.tokens[rest[r - 1]]) == "U";
             match n.kind {
                 _ if is_literal(scan, &n) => {
                     keep(scan, n, &mut out);
                     break;
                 }
+                // The prefix of a Unicode escape string, `U&'…'`.
+                TokenKind::Word if scan.upper(&n) == "U" && next_is('&') => {}
+                TokenKind::Punct if after_u && scan.is_punct(&n, '&') => {}
                 // `=`, `(`, and the named-argument arrows `:=` and `=>`.
                 TokenKind::Punct if ['=', '(', ':', '>'].iter().any(|&c| scan.is_punct(&n, c)) => {}
                 TokenKind::Word if LINKS.contains(&scan.upper(&n).as_str()) => {}
@@ -155,6 +179,20 @@ fn secret_literals(
     }
     out.sort_unstable();
     out
+}
+
+/// The text of a quoted name without its quotes, doubled quotes undone.
+fn quoted_name(raw: &str) -> String {
+    let mut chars = raw.chars();
+    let (Some(open), Some(close)) = (chars.next(), chars.next_back()) else {
+        return String::new();
+    };
+    let inner = chars.as_str();
+    if open == close {
+        inner.replace(&format!("{close}{close}"), &close.to_string())
+    } else {
+        inner.to_string()
+    }
 }
 
 /// Whether `t` is a string literal, or a `‘…’` quoted name (ClickHouse's other string).
@@ -393,5 +431,43 @@ mod tests {
             redact_spec(&spec, "SELECT encrypt(v, 'k')").secrets,
             ["k", "'k'"]
         );
+    }
+
+    /// Lookalike spellings, quoted function names and Unicode escape strings hide no secret.
+    #[test]
+    fn lookalikes_quoted_calls_and_unicode_strings_are_masked() {
+        use crate::sqlgen::dialect::spec::RedactCall;
+        let spec = ansi_with(|k| {
+            k.redact_calls = &[RedactCall {
+                function: "LDAP_LINK_DRYRUN_CONNECT",
+                argument: 3,
+            }]
+        });
+        for (sql, masked) in [
+            (
+                "SELECT LDAP_LIN\u{212A}_DRYRUN_CONNECT(u, d, 'pw')",
+                "SELECT LDAP_LIN\u{212A}_DRYRUN_CONNECT(u, d, '********')",
+            ),
+            (
+                "SELECT \"LDAP_LINK_DRYRUN_CONNECT\"(u, d, 'pw')",
+                "SELECT \"LDAP_LINK_DRYRUN_CONNECT\"(u, d, '********')",
+            ),
+            (
+                "SELECT s.\"ldap_link_dryrun_connect\"(u, d, 'pw')",
+                "SELECT s.\"ldap_link_dryrun_connect\"(u, d, '********')",
+            ),
+            (
+                "ALTER USER u PASSWORD U&'p\\0077'",
+                "ALTER USER u PASSWORD U&'********'",
+            ),
+            (
+                "ALTER USER u PA\u{17F}\u{17F}WORD 'pw'",
+                "ALTER USER u PA\u{17F}\u{17F}WORD '********'",
+            ),
+        ] {
+            assert_eq!(redact_spec(&spec, sql).sql, masked, "{sql}");
+        }
+        let sql = "SELECT \"other\"(u, d, 'pw')";
+        assert_eq!(redact_spec(&spec, sql).sql, sql);
     }
 }

@@ -24,7 +24,8 @@ registerMock("session_call", async ({ connectionId, method, args }) => {
 });
 
 registerMock("driver_util", async ({ input, method, args }) => {
-  const { profile } = input as ProfileInput;
+  const form = input as ProfileInput;
+  const { profile } = form;
   const kind = kindOf(profile);
   if (!isMockBuilt(kind))
     mockError(
@@ -32,6 +33,9 @@ registerMock("driver_util", async ({ input, method, args }) => {
       `unsupported: ${KIND_DESCRIPTORS[kind].label} is not built into this Tabler`,
     );
   const mock = await loadMockDriver(profile.driver);
-  if (mock?.util) return mock.util(String(method), args ?? null);
+  // A call that may write is refused on a read-only profile before it runs (`util_kind`).
+  if (profile.options.readOnly && (mock?.utilKind?.(String(method)) ?? "write") === "write")
+    mockError("INVALID_INPUT", "This connection is read-only");
+  if (mock?.util) return mock.util(String(method), args ?? null, form);
   unknownCall(profile.driver, method);
 });

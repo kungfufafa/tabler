@@ -7,7 +7,7 @@ use crate::sqlgen::dialect::qualify_with;
 use crate::sqlgen::dialect::spec::{
     CiLike, DialectSpec, LimitOne, NullSafeEq, NullsSort, Paging, RowLocator,
 };
-use crate::sqlgen::select::{BuiltSql, ROWID_ALIAS};
+use crate::sqlgen::select::{BuiltSql, ROWID_ALIAS, raw_filter_part};
 use crate::sqlgen::sql::{SelectQuery, TableTarget};
 use crate::sqlgen::transfer::{ExportSelect, export_alias};
 use crate::types::browse::{
@@ -474,7 +474,7 @@ fn group_sql(
             FilterNode::Raw { sql } => {
                 let trimmed = sql.trim();
                 if !trimmed.is_empty() {
-                    parts.push(format!("({trimmed})"));
+                    parts.push(raw_filter_part(trimmed));
                 }
             }
         }

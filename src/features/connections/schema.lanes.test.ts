@@ -134,3 +134,41 @@ describe("a lane database's form values", () => {
     );
   });
 });
+
+describe("a lane database's secrets", () => {
+  const dynamo: ConnectionFormValues = {
+    ...DEFAULT_FORM,
+    name: "Dynamo",
+    driver: "dynamodb",
+    database: "us-east-1",
+    user: "AKID",
+    password: "secret",
+    sessionToken: "token",
+    keyPassphrase: "not-taken",
+  };
+
+  it("send the second secrets the driver takes, typed ones only", () => {
+    const input = formToProfileInput(dynamo, null, "p-dy", null);
+    expect(input).toMatchObject({ password: "secret", sessionToken: "token" });
+    expect(input.keyPassphrase).toBeNull();
+    const kept = formToProfileInput({ ...dynamo, sessionToken: "" }, null, "p-dy", null);
+    expect(kept.sessionToken).toBeNull();
+  });
+
+  it("send none when the lane's profile keeps no secret", () => {
+    const noSecret = {
+      ...ui,
+      toProfile: (_v: ConnectionFormValues, base: ConnectionProfile) => ({
+        ...base,
+        options: { ...base.options, passwordMode: "none" as const },
+      }),
+    };
+    const input = formToProfileInput({ ...dynamo, clearPassword: true }, null, "p-dy", noSecret);
+    expect(input).toMatchObject({
+      password: null,
+      clearPassword: false,
+      sessionToken: null,
+      keyPassphrase: null,
+    });
+  });
+});

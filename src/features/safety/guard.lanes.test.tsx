@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fakeLane } from "@/features/drivers/__fixtures__/fakeLane";
+import { fakeLane, fakeSqlLane } from "@/features/drivers/__fixtures__/fakeLane";
 import { CORE_KINDS } from "@/features/drivers/catalog";
 import { registerLaneOverride } from "@/features/drivers/registry";
 import { BASE_CAPS } from "@/lib/caps";
@@ -78,6 +78,27 @@ describe("sessionWrites", () => {
 
   it("counts every console command as a write without the lane", async () => {
     await expect(sessionWrites(info("mongodb"), query("find orders"))).resolves.toBe(true);
+  });
+
+  it("adds the dialect's own classifier to the portable one", async () => {
+    built("redshift");
+    registerLaneOverride("pg-flavors", {
+      ...fakeSqlLane("redshift", "postgres", "redshift"),
+      dialects: {
+        redshift: {
+          ...fakeSqlLane("redshift", "postgres", "redshift").dialects!.redshift!,
+          classify: (s) => (s.includes("hidden") ? "write" : "read"),
+        },
+      },
+    });
+    try {
+      await expect(sessionWrites(redshift, query("SELECT 1"))).resolves.toBe(false);
+      await expect(sessionWrites(redshift, query("SELECT 'hidden'"))).resolves.toBe(true);
+      // The portable classifier's writes stay writes whatever the dialect's own says.
+      await expect(sessionWrites(redshift, query("DELETE FROM t"))).resolves.toBe(true);
+    } finally {
+      registerLaneOverride("pg-flavors", null);
+    }
   });
 
   it("reads an extension SQL dialect with the portable classifier", async () => {

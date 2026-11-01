@@ -25,6 +25,8 @@ pub struct FakeSession {
     trace: SqlTrace,
     /// Statements holding this text fail (`failing`).
     fail_on: Option<String>,
+    /// Plugin runs holding this text are refused (`refusing_plugin_runs`).
+    refuse_plugin: Option<String>,
 }
 
 impl FakeSession {
@@ -36,7 +38,14 @@ impl FakeSession {
             dialect,
             trace: SqlTrace::default(),
             fail_on: None,
+            refuse_plugin: None,
         }
+    }
+
+    /// The same session, which refuses a plugin's run holding `text` (`admit_plugin_run`).
+    pub fn refusing_plugin_runs(mut self, text: &str) -> FakeSession {
+        self.refuse_plugin = Some(text.to_string());
+        self
     }
 
     /// The same session, on which a statement holding `text` fails (after it is recorded).
@@ -87,6 +96,15 @@ impl DbSession for FakeSession {
 
     fn capabilities(&self) -> SessionCaps {
         self.caps.clone()
+    }
+
+    fn admit_plugin_run(&self, sql: &str) -> Result<(), AppError> {
+        match &self.refuse_plugin {
+            Some(text) if sql.contains(text.as_str()) => {
+                Err(AppError::Unsupported(format!("a plugin cannot run {sql}")))
+            }
+            _ => Ok(()),
+        }
     }
 
     async fn server_info(&self) -> Result<ServerInfo, AppError> {

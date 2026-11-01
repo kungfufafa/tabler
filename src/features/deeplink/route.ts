@@ -1,4 +1,5 @@
 import type { ConnectionFormValues } from "@/features/connections/schema";
+import { DESCRIPTORS } from "@/features/drivers/catalog";
 import { parseDeepLink, type UrlFilter, type UrlTarget } from "@/features/connections/url";
 import { ANY_COLUMN, OPS, RAW_SQL_COLUMN } from "@/features/table-tab/filters";
 import type { ConnectionProfile, FilterOp, OpenRequest } from "@/lib/ipc";
@@ -153,7 +154,9 @@ export function planOpen(request: OpenRequest, ctx: RouteContext): OpenPlan {
     return {
       kind: "profile",
       profileId: saved.id,
-      password: parsed.password,
+      // A link's token would sign the saved connection in as whoever made the link, at the
+      // user's own endpoint: a connection that signs in with a token keeps its own.
+      password: DESCRIPTORS[saved.driver]?.secretIsToken ? null : parsed.password,
       sshPassword: sshPassword || null,
       target: parsed.target ?? null,
       isolated,

@@ -318,7 +318,8 @@ describe("a document store's table tab", () => {
     await waitFor(() =>
       expect(call).toHaveBeenCalledWith(info.connectionId, "stats", { collection: "orders" }),
     );
-    expect(guard.calls).toContainEqual({ kind: "operation", label: "stats", write: true });
+    // A call the lane knows only reads is guarded as a read.
+    expect(guard.calls).toContainEqual({ kind: "operation", label: "stats", write: false });
   });
 
   it("shows the lane's structure view", async () => {

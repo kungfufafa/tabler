@@ -35,7 +35,7 @@ use crate::types::mutate::ApplyRequest;
 use crate::types::profile::{
     ConnStatus, ConnectionInfo, ConnectionProfile, Driver, ProfileInput, ProfileOptions, SslMode,
 };
-use crate::types::query::{QueryEvent, RunOptions, StatementResult};
+use crate::types::query::{QueryEvent, RunOptions, RunOrigin, StatementResult};
 use crate::types::schema::TableRef;
 use crate::types::value::Value;
 
@@ -880,6 +880,49 @@ async fn a_core_session_has_no_calls_of_its_own() {
         "unsupported: PostgreSQL: unknown call \u{201c}stats\u{201d}"
     );
     assert_eq!(fake.calls(), Vec::<String>::new());
+}
+
+/// A plugin's run reaches the session's `admit_plugin_run` before anything is sent; the user's
+/// own runs never do.
+#[tokio::test]
+async fn a_plugin_run_is_admitted_by_the_session_first() {
+    let mut profile = redis_profile();
+    profile.driver = Driver::Postgres;
+    let caps = SessionCaps::core(Driver::Postgres, Dialect::Postgres, None);
+    let fake = Arc::new(FakeSession::new(caps).refusing_plugin_runs("'x.csv'"));
+    let session = Session::Sql(fake.clone() as Arc<dyn DbSession>);
+    let (state, conn) = open_with(profile, session).await;
+    let plugin = RunOptions {
+        origin: RunOrigin::Plugin,
+        ..RunOptions::default()
+    };
+    let text = "SELECT * FROM 'x.csv'";
+    let err = query::run_sql_on(
+        &state,
+        conn.id,
+        "p".into(),
+        text.into(),
+        Some(plugin.clone()),
+        sink(),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("a plugin cannot run"), "{err}");
+    assert_eq!(fake.calls(), Vec::<String>::new());
+    query::run_sql_on(
+        &state,
+        conn.id,
+        "p".into(),
+        "SELECT 1".into(),
+        Some(plugin),
+        sink(),
+    )
+    .await
+    .unwrap();
+    query::run_sql_on(&state, conn.id, "u".into(), text.into(), None, sink())
+        .await
+        .unwrap();
+    assert_eq!(fake.calls().len(), 2);
 }
 
 /// The connection form's calls: the core drivers have none, and a driver this build lacks is

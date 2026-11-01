@@ -1,7 +1,7 @@
 import { toast } from "sonner";
 import { confirmsWithPasscode, CORE_DRIVERS } from "@/features/drivers/catalog";
 import { classifyDialect, loadDialectLex } from "@/features/drivers/portable/classify";
-import { awaitDriverUi } from "@/features/drivers/registry";
+import { awaitDialectUi, awaitDriverUi } from "@/features/drivers/registry";
 import { capsOf } from "@/lib/caps";
 import {
   ipc,
@@ -146,15 +146,21 @@ function coreDialectOf(caps: SessionCaps): Dialect | null {
 
 /**
  * The classifier of a session beyond the core dialects: the portable classifier over its
- * extension SQL dialect's lexer profile (`bindings/lex/<dialect>.json`), or its lane's console
- * classifier for a native store. Null when there is none (the lane is not built, or failed to
- * load): every query then counts as a write.
+ * extension SQL dialect's lexer profile (`bindings/lex/<dialect>.json`), with the dialect's own
+ * (`DialectUi.classify`) where its lane has one (a statement reads only when both say so), or its
+ * lane's console classifier for a native store. Null when there is none (the lane is not built,
+ * or failed to load): every query then counts as a write.
  */
 async function laneClassifier(caps: SessionCaps): Promise<Classifier | null> {
   try {
     if (caps.dialect !== null) {
       const lex = await loadDialectLex(caps.dialect);
-      return lex ? (statement) => classifyDialect(lex, statement) : null;
+      if (!lex) return null;
+      const own = (await awaitDialectUi(caps.dialect))?.classify;
+      return (statement) =>
+        classifyDialect(lex, statement) === "write" || own?.(statement) === "write"
+          ? "write"
+          : "read";
     }
     return (await awaitDriverUi(caps.driver))?.console?.classify ?? null;
   } catch {

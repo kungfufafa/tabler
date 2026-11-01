@@ -540,7 +540,9 @@ static LIBSQL: DriverDescriptor = DriverDescriptor {
     // SQLite underneath: a table without a primary key has a rowid (D1's edits are by key only).
     rowid: true,
     url_schemes: &["libsql"],
-    read_only: ReadOnlyMode::PerRequest,
+    // sqld and Turso refuse `PRAGMA query_only`; the session takes it only where the server does
+    // (asked once at connect), so the classifier is what always holds.
+    read_only: ReadOnlyMode::ClassifierOnly,
     cargo_feature: Some("drv-libsql"),
     ..BASE
 };
@@ -754,7 +756,7 @@ static ELASTICSEARCH: DriverDescriptor = DriverDescriptor {
     // The host, or the `urls` or `cloudId` param: the lane checks.
     required: &[],
     startup: StartupKind::None,
-    url_schemes: &["elasticsearch"],
+    url_schemes: &["elasticsearch", "opensearch"],
     cargo_feature: Some("drv-elasticsearch"),
     ..BASE
 };

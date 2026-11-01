@@ -131,14 +131,14 @@ impl PgSession {
         let hooks = pick(engine);
         flavor::refuse_unsupported(found, hooks.sql_dialect())?;
         let options = &profile.options;
-        let init = connect::SessionInit::new(
-            hooks.init_sql(
-                profile,
-                connect::read_only_session(options),
-                connect::session_init_statements(options),
-            ),
-            hooks.init_one_by_one(),
+        let read_only = connect::read_only_session(options);
+        let statements = hooks.init_sql(
+            profile,
+            read_only,
+            connect::session_init_statements(options),
         );
+        hooks.check_init(profile, read_only, &statements)?;
+        let init = connect::SessionInit::new(statements, hooks.init_one_by_one());
         init.run(&editor.client).await?;
         let pool_config = connect::pool_config(&profile_config, &editor.config);
         let token = CommandPassword::for_profile(profile, target.password);
@@ -1334,6 +1334,22 @@ mod tests {
             true
         }
 
+        fn check_init(
+            &self,
+            _: &ConnectionProfile,
+            read_only: bool,
+            init: &[InitStatement],
+        ) -> Result<(), AppError> {
+            let startup = init.iter().any(|s| s.kind == InitKind::Startup);
+            if read_only && startup {
+                Err(AppError::InvalidInput(
+                    "no startup commands when read-only".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
         async fn list_schemas(
             &self,
             c: &introspect::Traced<'_>,
@@ -1529,6 +1545,26 @@ mod tests {
             "unsupported: Amazon Redshift is not built into this Tabler"
         );
         // Refused before anything of PostgreSQL's was sent.
+        assert_eq!(pg.queries(), ["SELECT version()"]);
+    }
+
+    /// An engine's `check_init` refuses the connect before any of the session init is sent.
+    #[tokio::test]
+    async fn an_engines_check_refuses_the_connect_before_the_init() {
+        let pg = FakePg::new()
+            .server_version("8.0.2")
+            .version(REDSHIFT)
+            .start()
+            .await;
+        let mut profile = fake_profile(pg.port());
+        profile.options.pg_flavor = Some(PgFlavor::Redshift);
+        profile.options.read_only = true;
+        profile.options.startup_sql = Some("SET search_path = app".into());
+        let err = PgSession::open_with(target(&profile), test_hooks)
+            .await
+            .err()
+            .expect("refused");
+        assert_eq!(err.to_string(), "no startup commands when read-only");
         assert_eq!(pg.queries(), ["SELECT version()"]);
     }
 

@@ -9,8 +9,9 @@ import { ipc, type ConnectionInfo } from "@/lib/ipc";
 /**
  * A lane driver's items of a sidebar item's menu (`DriverUi.objectMenu`: Collection Stats, Flush
  * Index…), after the app's own, as menu entries. Their calls go to the session
- * (`ipc.sessionCall`) through Safe Mode first, as writes: the app cannot tell which of a
- * driver's calls only read (the backend refuses a writing call on a read-only connection).
+ * (`ipc.sessionCall`) through Safe Mode first: `ctx.call` as a write, `ctx.read` as a read, as
+ * the lane knows its driver's `call_kind` (the backend refuses a writing call on a read-only
+ * connection either way).
  */
 export function laneMenuEntries(
   ui: DriverUi | null | undefined,
@@ -21,19 +22,17 @@ export function laneMenuEntries(
   const build = ui?.objectMenu;
   if (!build) return [];
   const { connectionId } = info;
+  const send = async <T>(method: string, args: unknown, write: boolean): Promise<T> => {
+    const go = await guardExecution(connectionId, { kind: "operation", label: method, write });
+    if (!go) throw new Error("Cancelled");
+    return ipc.sessionCall<T>(connectionId, method, args ?? null);
+  };
   const ctx: ObjectMenuContext = {
     connectionId,
     info,
     caps: capsOf(info),
-    call: async <T>(method: string, args?: unknown): Promise<T> => {
-      const go = await guardExecution(connectionId, {
-        kind: "operation",
-        label: method,
-        write: true,
-      });
-      if (!go) throw new Error("Cancelled");
-      return ipc.sessionCall<T>(connectionId, method, args ?? null);
-    },
+    call: (method, args) => send(method, args, true),
+    read: (method, args) => send(method, args, false),
     refresh,
   };
   const items = build(item, ctx);

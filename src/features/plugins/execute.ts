@@ -25,8 +25,9 @@ export interface ExecuteOptions {
 /**
  * A plugin's `context.execute(sql)`: the SQL goes through the connection's Safe Mode first
  * (`guardExecution`, which also refuses writes on a read-only connection), then runs like the SQL
- * editor's (`run_sql`: logged, recorded in the history, the query time-out applies). Resolves to the
- * rows of the last statement that returned rows; rejects with the first statement's error.
+ * editor's (`run_sql` as a plugin's run, which a session may refuse more of; logged, recorded in
+ * the history, the query time-out applies). Resolves to the rows of the last statement that
+ * returned rows; rejects with the first statement's error.
  */
 export async function executeSql(
   connectionId: string | null,
@@ -57,7 +58,7 @@ export async function executeSql(
     connectionId,
     queryId,
     sql,
-    { stopOnError: true },
+    { stopOnError: true, origin: "plugin" },
     (e) => {
       if (e.event === "columns" && e.data.set === 0)
         sets.set(e.data.index, { columns: e.data.columns.map((c) => c.name), rows: [] });

@@ -93,6 +93,18 @@ pub(crate) trait PgFlavorHooks: Send + Sync {
         base
     }
 
+    /// Refuses the connect once `init_sql` gave `init`, before any of it is sent: an engine that
+    /// had to leave out a statement the session needs (a read-only profile's startup command that
+    /// would write) says so rather than connecting without it. The default connects.
+    fn check_init(
+        &self,
+        _profile: &ConnectionProfile,
+        _read_only: bool,
+        _init: &[InitStatement],
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
+
     /// Sends the init statements one at a time instead of as one batch.
     fn init_one_by_one(&self) -> bool {
         false

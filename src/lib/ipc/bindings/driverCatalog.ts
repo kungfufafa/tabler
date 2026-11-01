@@ -270,7 +270,7 @@ export const DRIVER_CATALOG = {
       ],
       "fileExtensions": [],
       "systemSchemas": [],
-      "readOnly": "perRequest",
+      "readOnly": "classifierOnly",
       "sharing": "independent",
       "coreReuse": [],
       "cargoFeature": "drv-libsql"
@@ -791,7 +791,8 @@ export const DRIVER_CATALOG = {
       "bootstrapScript": true,
       "rowid": false,
       "urlSchemes": [
-        "elasticsearch"
+        "elasticsearch",
+        "opensearch"
       ],
       "fileExtensions": [],
       "systemSchemas": [],

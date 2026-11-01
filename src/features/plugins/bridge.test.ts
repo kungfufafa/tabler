@@ -125,7 +125,8 @@ describe("the plugin bridge", () => {
       "c1",
       expect.stringMatching(/^plugin-/),
       "UPDATE t SET a = 1; SELECT count(*) AS n FROM t",
-      { stopOnError: true },
+      // A plugin's run, which the session may refuse more of.
+      { stopOnError: true, origin: "plugin" },
       expect.any(Function),
     );
     // Big integers stay exact (as text).

@@ -50,7 +50,7 @@ use std::ops::Range;
 
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::dialect::lex::{
-    ClassifyRules, LexProfile, Scan, Token, TokenKind, is_ident_start, listed, scan,
+    ClassifyRules, LexProfile, Scan, Token, TokenKind, is_ident_start, listed, scan, upper_folded,
 };
 use crate::sqlgen::portable::split::{first_reading, statements};
 
@@ -143,10 +143,11 @@ fn suffixes(w: &str, number: bool) -> impl Iterator<Item = &str> {
 /// The word at `i` and the words it may hide, for the deny-lists (`writes`, `write_calls`, the
 /// side-effect functions). Keywords match in ASCII only (`Scan::upper`), but a server may look a
 /// function's name up with Unicode case rules (`ſystem$x` as `SYSTEM$X`), so a word with other
-/// letters also counts with them upper-cased that way: no spelling hides a listed write.
+/// letters also counts with them upper-cased that way, ASCII lookalikes folded (`upper_folded`:
+/// the KELVIN SIGN as `K`): no spelling hides a listed write.
 fn spellings(code: &[Code], i: usize) -> impl Iterator<Item = Cow<'_, str>> {
     let folded = code[i].word().filter(|w| !w.is_ascii()).map(|w| {
-        let w = w.to_uppercase();
+        let w = upper_folded(w);
         let mut all: Vec<String> = suffixes(&w, in_number(code, i))
             .map(str::to_owned)
             .collect();
@@ -180,7 +181,7 @@ fn names_listed(code: &[Code], i: usize, list: &[&str]) -> bool {
             Part::At(k) => match &code[k] {
                 Code::AnyName => return true,
                 Code::Name(n) => slots.extend(
-                    n.to_uppercase()
+                    upper_folded(n)
                         .split('.')
                         .map(|s| vec![Cow::Owned(s.to_owned())]),
                 ),
@@ -219,7 +220,13 @@ fn part_allowed(code: &Code, entry: &str) -> bool {
 /// (`INFORMATION_SCHEMA.QUERY_HISTORY`, `SNOWFLAKE.CORE.GET_LINEAGE`) matches the call's last
 /// parts, so a database may stand before a schema; an empty part (`db..p`) matches nothing. A
 /// method entry (`!SPCS_GET_LOGS`) matches a method of that name only, whatever its instance.
-fn table_function_allowed(code: &[Code], parts: &[Part], method: bool, allowed: &[&str]) -> bool {
+fn table_function_allowed(
+    code: &[Code],
+    parts: &[Part],
+    method: bool,
+    pivot: bool,
+    allowed: &[&str],
+) -> bool {
     let token = |p: &Part| match p {
         Part::At(k) => Some(&code[*k]),
         Part::Empty => None,
@@ -230,7 +237,26 @@ fn table_function_allowed(code: &[Code], parts: &[Part], method: bool, allowed: 
     {
         return false;
     }
-    allowed.iter().any(|entry| match entry.strip_prefix('!') {
+    allowed.iter().any(|entry| {
+        if let Some(aggregate) = entry.strip_prefix('%') {
+            // A pivot's aggregate, unqualified, and nowhere else.
+            return pivot
+                && !method
+                && parts.len() == 1
+                && token(&parts[0]).is_some_and(|c| part_allowed(c, aggregate));
+        }
+        listed_table_function(code, parts, method, entry)
+    })
+}
+
+/// Whether the call `parts` matches the allow-list entry `entry` (`!NAME` a method, otherwise
+/// by its qualification).
+fn listed_table_function(code: &[Code], parts: &[Part], method: bool, entry: &str) -> bool {
+    let token = |p: &Part| match p {
+        Part::At(k) => Some(&code[*k]),
+        Part::Empty => None,
+    };
+    match entry.strip_prefix('!') {
         Some(m) => {
             method
                 && parts
@@ -251,7 +277,37 @@ fn table_function_allowed(code: &[Code], parts: &[Part], method: bool, allowed: 
                 .zip(&want)
                 .all(|(p, w)| token(p).is_some_and(|c| part_allowed(c, w)))
         }
-    })
+    }
+}
+
+/// The words after which a table, or a pivot's `(aggregate FOR …)`, goes.
+const PIVOT_WORDS: &[&str] = &["PIVOT", "UNPIVOT", "PIVOT_WIDER", "PIVOT_LONGER"];
+
+/// Whether the table position `at` opens a pivot's `(aggregate … FOR …)`: a `(` right after a
+/// PIVOT word whose group holds `FOR` at its own depth. DuckDB's `PIVOT (t) ON …` has no `FOR`
+/// there: its parenthesis holds a table.
+fn pivot_aggregate(code: &[Code], at: usize) -> bool {
+    let after_pivot = at
+        .checked_sub(1)
+        .and_then(|p| code[p].word())
+        .is_some_and(|w| PIVOT_WORDS.contains(&w));
+    if !after_pivot || !code.get(at).is_some_and(|c| c.is('(')) {
+        return false;
+    }
+    let mut depth = 0usize;
+    for c in &code[at..] {
+        if c.is('(') {
+            depth += 1;
+        } else if c.is(')') {
+            depth -= 1;
+            if depth == 0 {
+                return false;
+            }
+        } else if depth == 1 && c.word() == Some("FOR") {
+            return true;
+        }
+    }
+    false
 }
 
 /// Functions whose arguments may hold a `FROM` (`EXTRACT(YEAR FROM ts)`).
@@ -551,6 +607,7 @@ fn tables_read_only(rules: &ClassifyRules, code: &[Code]) -> bool {
         return true;
     };
     table_positions(code).into_iter().all(|mut p| {
+        let pivot = pivot_aggregate(code, p);
         // The first table of a parenthesized join goes here too (`FROM (url(…) CROSS JOIN t)`,
         // which DuckDB's PostgreSQL grammar takes); a subquery's own FROM has its own positions.
         let mut nested = false;
@@ -588,7 +645,14 @@ fn tables_read_only(rules: &ClassifyRules, code: &[Code]) -> bool {
                     }
                 }
                 let called = code.get(q + 1).is_some_and(|c| c.is('('));
-                !called || table_function_allowed(code, &qualified_parts(code, q), method, allowed)
+                !called
+                    || table_function_allowed(
+                        code,
+                        &qualified_parts(code, q),
+                        method,
+                        pivot,
+                        allowed,
+                    )
             }
             _ => true,
         }
@@ -893,6 +957,52 @@ mod tests {
                 "SELECT * FROM TABLE(s!FLATTEN(1))",
             ],
         );
+    }
+
+    #[test]
+    fn deny_lists_match_ascii_lookalike_spellings() {
+        assert_eq!(upper_folded("linK_x"), "LINK_X");
+        assert_eq!(upper_folded("ſystemı"), "SYSTEMI");
+        assert_eq!(upper_folded("straße"), "STRASSE");
+        check(
+            &["SELECT keyset_chain(1)", "SELECT KEYS"],
+            &[
+                // The KELVIN SIGN lower-cases to `k`; the long s and dotless i upper-case to ASCII.
+                "SELECT KEYS.KEYSET_CHAIN(1)",
+                "SELECT \"Keys\".keyset_chain(1)",
+                "SELECT ſystem$x(1)",
+                "SELECT 1 ıNTO t",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_pivot_aggregate_entry_allows_the_name_only_inside_a_pivot() {
+        const PIVOTS: ClassifyRules = ClassifyRules {
+            table_functions: Some(&["%AVG", "VALUES"]),
+            ..ANSI_RULES
+        };
+        let class = |sql: &str| with(&ANSI_LEX, &PIVOTS, sql);
+        for sql in [
+            "SELECT * FROM t PIVOT (AVG(a) FOR m IN ('JAN'))",
+            "SELECT * FROM t PIVOT (avg(a) AS x FOR m IN ('JAN'))",
+            "SELECT * FROM t UNPIVOT (v FOR m IN (a, b))",
+        ] {
+            assert_eq!(class(sql), Read, "{sql}");
+        }
+        for sql in [
+            // Where a table goes, the name is a table function (a table macro of that name).
+            "SELECT * FROM avg('x.csv')",
+            "SELECT * FROM t JOIN avg(1) ON true",
+            // A pivot whose parenthesis holds a table, not `aggregate FOR`.
+            "SELECT * FROM t PIVOT (avg('x.csv')) ON a",
+            // Qualified, it is a schema's object.
+            "SELECT * FROM t PIVOT (main.avg(a) FOR m IN ('JAN'))",
+            // Not on the list.
+            "SELECT * FROM t PIVOT (SUM(a) FOR m IN ('JAN'))",
+        ] {
+            assert_eq!(class(sql), Write, "{sql}");
+        }
     }
 
     #[test]

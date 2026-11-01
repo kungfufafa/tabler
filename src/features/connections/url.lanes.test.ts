@@ -1,11 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { planOpen } from "@/features/deeplink/route";
 import { fakeLane } from "@/features/drivers/__fixtures__/fakeLane";
 import { CORE_KINDS } from "@/features/drivers/catalog";
 import { registerLaneOverride } from "@/features/drivers/registry";
 import type { ConnectionProfile, DatabaseKind } from "@/lib/ipc";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
 import { useAppInfoStore } from "@/stores/appInfo";
-import { loadUrlSchemes, parseConnectionUrl, profileToUrl } from "./url";
+import {
+  loadUrlSchemes,
+  parseConnectionUrl,
+  parseDeepLink,
+  profileToUrl,
+  profileUrlQuery,
+} from "./url";
 
 // The URLs of a lane's database (F9b): its lane reads and writes them, found by scheme; the fake
 // lane stands in for MongoDB's (its scheme is `fake://host:port/authSource`).
@@ -89,6 +96,16 @@ describe("a lane's URLs", () => {
     expect(profileToUrl({ ...docs, ssh })).toBe("fake+ssh://me@bastion/db.example:27018/audit");
   });
 
+  it("can carry the common query a lane's format appends", () => {
+    const query = profileUrlQuery({
+      ...docs,
+      options: { ...docs.options, safeMode: "safe", lazyLoad: true },
+    });
+    expect(query.toString()).toBe(
+      "name=Docs&statusColor=2279DC&env=local&safeModeLevel=2&lazyload=true",
+    );
+  });
+
   it("fall back to a plain URL of the driver's scheme while no lane writes them", () => {
     const cache = { ...docs, driver: "redis" as const, port: 6379, user: "app" };
     expect(profileToUrl(cache, "s3cret")).toBe(
@@ -104,5 +121,63 @@ describe("a lane's URLs", () => {
       port: "5433",
     });
     expect(() => parseConnectionUrl("https://example.com")).toThrow(/postgres/);
+  });
+});
+
+describe("where a lane's URL comes from", () => {
+  const sources: string[] = [];
+  const base = fakeLane("bigquery", "bigquery").kinds!.bigquery!;
+  const tokenLane = {
+    kinds: {
+      bigquery: {
+        ...base,
+        url: {
+          schemes: ["faketoken"],
+          parse: (_url: string, source?: "link" | "paste") => {
+            sources.push(source ?? "none");
+            return { values: { host: "h", port: "443", database: "d" }, password: "tok" };
+          },
+          format: () => null,
+        },
+      },
+    },
+  };
+  const saved: ConnectionProfile = {
+    ...docs,
+    id: "44444444-4444-4444-8444-444444444444",
+    driver: "bigquery",
+    host: "h",
+    port: 443,
+    database: "d",
+  };
+
+  afterEach(() => registerLaneOverride("bigquery", null));
+
+  it("is told to the lane: pasted, or a clicked link", async () => {
+    registerLaneOverride("bigquery", tokenLane);
+    built("bigquery");
+    await loadUrlSchemes();
+    sources.length = 0;
+    parseConnectionUrl("faketoken://h/d");
+    parseDeepLink("faketoken://h/d");
+    parseDeepLink(`tabler://open?url=${encodeURIComponent("faketoken://h/d")}`);
+    expect(sources).toEqual(["paste", "link", "link"]);
+  });
+
+  it("never signs a saved token connection in with the link's token", async () => {
+    registerLaneOverride("bigquery", tokenLane);
+    built("bigquery");
+    await loadUrlSchemes();
+    const plan = planOpen(
+      { kind: "url", url: "faketoken://h/d" },
+      { profiles: [saved], temporary: new Set(), activeConnectionId: null },
+    );
+    expect(plan).toMatchObject({ kind: "profile", profileId: saved.id, password: null });
+    // A temporary connection is the link's own: its token is what it signs in with.
+    const temporary = planOpen(
+      { kind: "url", url: "faketoken://h/d" },
+      { profiles: [], temporary: new Set(), activeConnectionId: null },
+    );
+    expect(temporary).toMatchObject({ kind: "temporary", password: "tok" });
   });
 });

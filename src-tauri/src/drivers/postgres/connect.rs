@@ -370,7 +370,7 @@ pub fn session_init_statements(options: &ProfileOptions) -> Vec<InitStatement> {
     if let Some(tz) = options.timezone.as_deref().filter(|t| !t.trim().is_empty()) {
         sql.push(InitStatement::new(
             TimeZone,
-            format!("SET TIME ZONE '{}';", tz.trim().replace('\'', "''")),
+            opt_sql::pg_set_time_zone(tz.trim()),
         ));
     }
     if read_only_session(options) {
@@ -915,6 +915,9 @@ mod tests {
         assert!(sql.ends_with("SET search_path = app;"));
         opts.timezone = Some("it's".into());
         assert!(session_init_sql(&opts).contains("SET TIME ZONE 'it''s';"));
+        // A backslash cannot end the literal early when standard_conforming_strings is off.
+        opts.timezone = Some(r"UTC\'; DELETE FROM t; --".into());
+        assert!(session_init_sql(&opts).contains(r"SET TIME ZONE E'UTC\\''; DELETE FROM t; --';"));
     }
 
     /// The session init of plain PostgreSQL, byte for byte as it was before the flavor seam.

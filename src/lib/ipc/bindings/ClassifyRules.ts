@@ -34,8 +34,9 @@ writeCalls: Array<string>,
  * `DESCRIBE` or a comma of a `FROM` list); any other table function makes it a write.
  * A one-part entry allows an unqualified call only, an entry of several parts
  * (`INFORMATION_SCHEMA.QUERY_HISTORY`) the call's last parts, and `!NAME` a method call
- * (`svc!NAME(`); a quoted name matches only on its exact text. None: the dialect has none
- * to police. A file named where a table goes (DuckDB `FROM 'data.csv'`) is not a table
+ * (`svc!NAME(`), and `%NAME` an unqualified aggregate only where a pivot takes it
+ * (`PIVOT (sum(x) FOR …)`, never `FROM sum(…)`); a quoted name matches only on its exact
+ * text. None: the dialect has none to police. A file named where a table goes (DuckDB `FROM 'data.csv'`) is not a table
  * function: the engine settings of the session refuse it.
  */
 tableFunctions: Array<string> | null, };

@@ -511,7 +511,7 @@ fn group_sql(
             FilterNode::Raw { sql } => {
                 let trimmed = sql.trim();
                 if !trimmed.is_empty() {
-                    parts.push(format!("({trimmed})"));
+                    parts.push(raw_filter_part(trimmed));
                 }
             }
         }
@@ -524,6 +524,18 @@ fn group_sql(
         Conjunction::Or => " OR ",
     };
     Ok(Some(parts.join(joiner)))
+}
+
+/// A raw filter's text in parentheses. Text with a line comment (`--`, MySQL's `#`) keeps it on
+/// lines of its own, so `1=1) --` cannot comment out the paging that follows on the same line (a
+/// page read that would then collect the whole table): the closing parenthesis is left over and
+/// the server refuses the statement. Other text is written as before.
+pub(crate) fn raw_filter_part(trimmed: &str) -> String {
+    if trimmed.contains("--") || trimmed.contains('#') {
+        format!("(\n{trimmed}\n)")
+    } else {
+        format!("({trimmed})")
+    }
 }
 
 /// Builds the WHERE clause body (without the keyword) and appends its params.
@@ -1005,6 +1017,22 @@ mod tests {
         let preview = inline_params(Dialect::Postgres, &built.sql, &built.params);
         assert!(preview.contains("\"status\" = 'active'::user_status AND \"age\" >= 18::integer"));
         assert!(preview.contains("LIKE '%bob%'"));
+    }
+
+    #[test]
+    fn a_raw_filter_with_a_line_comment_keeps_it_on_its_own_line() {
+        let raw = |sql: &str| FilterGroup {
+            conjunction: Conjunction::And,
+            items: vec![FilterNode::Raw { sql: sql.into() }],
+        };
+        assert_eq!(raw_filter_part("age <> 7"), "(age <> 7)");
+        assert_eq!(raw_filter_part("1=1) --"), "(\n1=1) --\n)");
+        assert_eq!(raw_filter_part("1=1) #"), "(\n1=1) #\n)");
+        let cols = users();
+        let table = TableRef::new(None, "users");
+        let built = build_count(Dialect::Mysql, &table, &cols, Some(&raw("1=1) --"))).unwrap();
+        // The comment ends at its line: the parenthesis after it is still there.
+        assert!(built.sql.ends_with("WHERE (\n1=1) --\n)"), "{}", built.sql);
     }
 
     #[test]

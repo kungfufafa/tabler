@@ -105,7 +105,7 @@ import {
 import { DatabaseRow } from "./rows/DatabaseRow";
 import { FileRow } from "./rows/FileRow";
 import { HostPortRow } from "./rows/HostPortRow";
-import { SecretRow } from "./rows/SecretRow";
+import { ExtraSecretRows, SecretRow } from "./rows/SecretRow";
 import { SslRows } from "./rows/SslRows";
 import { UserRow } from "./rows/UserRow";
 import { CustomColorSwatch } from "./CustomColorSwatch";
@@ -245,13 +245,15 @@ function firstSslMode(tls: TlsStyle, modes: ReadonlyArray<readonly [SslMode, str
  */
 function descriptorRows(desc: DriverDescriptor): SharedRow[] {
   const ssl: SharedRow[] = desc.tls === "none" ? [] : ["ssl"];
+  const secret: SharedRow[] =
+    desc.extraSecrets.length > 0 ? ["secret", "extraSecrets"] : ["secret"];
   switch (desc.location) {
     case "file":
-      return ["file", "secret"];
+      return ["file", ...secret];
     case "cloud":
-      return ["user", "secret", "database"];
+      return ["user", ...secret, "database"];
     case "host":
-      return ["hostPort", "user", "secret", "database", ...ssl];
+      return ["hostPort", "user", ...secret, "database", ...ssl];
   }
 }
 
@@ -1256,6 +1258,8 @@ function LaneRows({
             passwordModes={desc.passwordModes}
           />
         );
+      case "extraSecrets":
+        return <ExtraSecretRows key={shared} form={form} secrets={desc.extraSecrets} />;
       case "database":
         return (
           <DatabaseRow
@@ -1273,6 +1277,7 @@ function LaneRows({
             form={form}
             label={label(shared, desc.labels.file ?? "Database file")}
             pickerTitle={`Open ${facts.label} database`}
+            onNew={ui?.newFile ? () => ui.newFile?.(form) : undefined}
             filters={
               desc.fileExtensions.length > 0
                 ? [{ name: facts.label, extensions: [...desc.fileExtensions] }]

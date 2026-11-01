@@ -100,16 +100,32 @@ function hiddenWords(code: readonly Code[], i: number): string[] {
 
 const isAsciiText = (s: string): boolean => [...s].every((c) => c.charCodeAt(0) < 0x80);
 
+const asciiLetter = (s: string): string | null => (/^[A-Za-z]$/.test(s) ? s.toUpperCase() : null);
+
+/**
+ * `w` upper-cased by Unicode rules, each letter whose lower or upper case is one ASCII letter
+ * written as that letter (the KELVIN SIGN as `K`, the long s as `S`, the dotless i as `I`), as
+ * the backend's `upper_folded` does.
+ */
+export function upperFolded(w: string): string {
+  let out = "";
+  for (const c of w) {
+    if (c.charCodeAt(0) < 0x80) out += c.toUpperCase();
+    else out += asciiLetter(c.toLowerCase()) ?? asciiLetter(c.toUpperCase()) ?? c.toUpperCase();
+  }
+  return out;
+}
+
 /**
  * The word at `i` and the words it may hide, for the deny-lists; a word with non-ASCII letters
- * also counts upper-cased by Unicode rules (`ſystem$x` as `SYSTEM$X`).
+ * also counts upper-cased by Unicode rules, lookalikes folded (`ſystem$x` as `SYSTEM$X`).
  */
 function spellings(code: readonly Code[], i: number): string[] {
   const w = wordOf(code[i]);
   if (w === null) return [];
   const out = [w, ...hiddenWords(code, i)];
   if (!isAsciiText(w)) {
-    const folded = w.toUpperCase();
+    const folded = upperFolded(w);
     out.push(...suffixes(folded, inNumber(code, i)), folded);
   }
   return out;
@@ -131,7 +147,7 @@ function namesListed(code: readonly Code[], i: number, list: readonly string[]):
     }
     const c = code[p]!;
     if (c.t === "anyName") return true;
-    if (c.t === "name") for (const s of c.n.toUpperCase().split(".")) slots.push([s]);
+    if (c.t === "name") for (const s of upperFolded(c.n).split(".")) slots.push([s]);
     else slots.push(spellings(code, p));
   }
   return list.some((entry) => {
@@ -162,11 +178,17 @@ function tableFunctionAllowed(
   code: readonly Code[],
   parts: readonly Part[],
   method: boolean,
+  pivot: boolean,
   allowed: readonly string[],
 ): boolean {
   const token = (p: Part | undefined) => (p === null || p === undefined ? null : code[p]!);
   if (parts.some((p) => token(p)?.t === "anyName")) return false;
   return allowed.some((entry) => {
+    if (entry.startsWith("%")) {
+      // A pivot's aggregate, unqualified, and nowhere else.
+      const only = parts.length === 1 ? token(parts[0]) : null;
+      return pivot && !method && only !== null && partAllowed(only, entry.slice(1));
+    }
     if (entry.startsWith("!")) {
       const last = token(parts[parts.length - 1]);
       return method && last !== null && partAllowed(last, entry.slice(1));
@@ -180,6 +202,28 @@ function tableFunctionAllowed(
       return c !== null && partAllowed(c, want[k]!);
     });
   });
+}
+
+/** The words after which a table, or a pivot's `(aggregate FOR …)`, goes. */
+const PIVOT_WORDS = ["PIVOT", "UNPIVOT", "PIVOT_WIDER", "PIVOT_LONGER"];
+
+/**
+ * Whether the table position `at` opens a pivot's `(aggregate … FOR …)`: a `(` right after a
+ * PIVOT word whose group holds `FOR` at its own depth (DuckDB's `PIVOT (t) ON …` holds a table).
+ */
+function pivotAggregate(code: readonly Code[], at: number): boolean {
+  const before = at > 0 ? wordOf(code[at - 1]) : null;
+  if (before === null || !PIVOT_WORDS.includes(before) || !is(code[at], "(")) return false;
+  let depth = 0;
+  for (let k = at; k < code.length; k++) {
+    const c = code[k];
+    if (is(c, "(")) depth++;
+    else if (is(c, ")")) {
+      depth--;
+      if (depth === 0) return false;
+    } else if (depth === 1 && c?.t === "word" && c.w === "FOR") return true;
+  }
+  return false;
 }
 
 /** Functions whose arguments may hold a `FROM` (`EXTRACT(YEAR FROM ts)`). */
@@ -500,6 +544,7 @@ function tablesReadOnly(rules: ClassifyRules, code: readonly Code[]): boolean {
   const allowed = rules.tableFunctions;
   if (allowed === null) return true;
   return tablePositions(code).every((at) => {
+    const pivot = pivotAggregate(code, at);
     // The first table of a parenthesized join goes here too (`FROM (url(…) CROSS JOIN t)`).
     let p = at;
     let nested = false;
@@ -527,7 +572,7 @@ function tablesReadOnly(rules: ClassifyRules, code: readonly Code[]): boolean {
       } else break;
     }
     const called = is(code[q + 1], "(");
-    return !called || tableFunctionAllowed(code, qualifiedParts(code, q), method, allowed);
+    return !called || tableFunctionAllowed(code, qualifiedParts(code, q), method, pivot, allowed);
   });
 }
 

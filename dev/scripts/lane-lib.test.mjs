@@ -360,5 +360,11 @@ describe("snapshot", () => {
     );
     assert.ok(!fs.existsSync(`${dir}/dev/not-a-file.txt`));
     assert.ok(!fs.existsSync(`${dir}/.git`));
+    // The folder is this process's until it ends: another run of the same name waits.
+    assert.equal(lib.lockFile("snap-test"), `${lib.SLOT_ROOT}/locks/snap-test.lock`);
+    assert.equal(lib.tryLock("snap-test", "other run")?.pid, process.pid);
+    // Taking it again in the same process does not wait.
+    assert.equal(await lib.snapshot("test", []), dir);
+    lib.release("snap-test");
   });
 });

@@ -10,8 +10,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { inSentence } from "@/features/drivers/catalog";
-import type { PasswordMode } from "@/lib/ipc";
+import { EXTRA_SECRET_LABEL, inSentence } from "@/features/drivers/catalog";
+import type { ExtraSecret, PasswordMode } from "@/lib/ipc";
 import { SECRET_STORE } from "@/lib/platform";
 import { PASSWORD_MODE_LABEL } from "../schema";
 import { Row, type ConnectionForm } from "./Row";
@@ -159,6 +159,42 @@ export function SecretRow({
           />
         </Row>
       )}
+    </>
+  );
+}
+
+/**
+ * The driver's second secrets (a key passphrase, a session token), kept with the secret: in the
+ * Keychain mode only, empty to keep a stored one.
+ */
+export function ExtraSecretRows({
+  form,
+  secrets,
+}: {
+  form: ConnectionForm;
+  secrets: readonly ExtraSecret[];
+}) {
+  const uid = useId();
+  const keychain = form.watch("passwordMode") === "keychain";
+  if (!keychain) return null;
+  return (
+    <>
+      {secrets.map((extra) => (
+        <Row
+          key={extra}
+          label={EXTRA_SECRET_LABEL[extra]}
+          htmlFor={`${uid}-${extra}`}
+          hint={`Optional. Stored in the ${SECRET_STORE}; leave empty to keep a stored one`}
+        >
+          <Input
+            id={`${uid}-${extra}`}
+            {...form.register(extra)}
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </Row>
+      ))}
     </>
   );
 }

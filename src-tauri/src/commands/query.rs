@@ -31,7 +31,7 @@ use crate::types::caps::Feature;
 use crate::types::history::NewHistoryEntry;
 use crate::types::query::{
     DEFAULT_MAX_ROWS, ExplainMode, ExplainResult, QueryEvent, ResultColumn, ResultSet, RunOptions,
-    ServerNotice, StatementKind, StatementResult, StatementSpan,
+    RunOrigin, ServerNotice, StatementKind, StatementResult, StatementSpan,
 };
 use crate::types::value::Value;
 
@@ -988,6 +988,9 @@ pub(crate) async fn run_sql_on(
                 session.dialect(),
                 options.explain,
             )?;
+            if options.origin == RunOrigin::Plugin {
+                session.admit_plugin_run(&sql)?;
+            }
         }
         // A store that speaks no SQL runs the text in its console.
         Session::Native(store) => console::check_console(&conn, store.as_ref(), &sql, &options)?,

@@ -365,6 +365,7 @@ export type {
   RunOptions,
   StatementResult,
 };
+export type { RunOrigin } from "./bindings/RunOrigin";
 
 /**
  * Reports in-band errors of one command run (`reportConnectionFailure`), at most one per run: a

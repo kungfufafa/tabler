@@ -119,6 +119,37 @@ describe("the portable classifier", () => {
     );
   });
 
+  it("matches deny-list entries in ASCII lookalike spellings", () => {
+    check(
+      ["SELECT keyset_chain(1)", "SELECT KEYS"],
+      [
+        "SELECT KEYS.KEYSET_CHAIN(1)",
+        'SELECT "Keys".keyset_chain(1)',
+        "SELECT ſystem$x(1)",
+        "SELECT 1 ıNTO t",
+      ],
+    );
+  });
+
+  it("allows a pivot aggregate entry only inside a pivot", () => {
+    check(
+      [
+        "SELECT * FROM t PIVOT (AVG(a) FOR m IN ('JAN'))",
+        "SELECT * FROM t PIVOT (avg(a) AS x FOR m IN ('JAN'))",
+        "SELECT * FROM t UNPIVOT (v FOR m IN (a, b))",
+      ],
+      [
+        "SELECT * FROM avg('x.csv')",
+        "SELECT * FROM t JOIN avg(1) ON true",
+        "SELECT * FROM t PIVOT (avg('x.csv')) ON a",
+        "SELECT * FROM t PIVOT (main.avg(a) FOR m IN ('JAN'))",
+        "SELECT * FROM t PIVOT (SUM(a) FOR m IN ('JAN'))",
+      ],
+      ANSI.lex,
+      { ...ANSI.classify, tableFunctions: ["%AVG", "VALUES"] },
+    );
+  });
+
   it("matches allow-list entries by their qualification", () => {
     check(
       [

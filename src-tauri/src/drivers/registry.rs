@@ -661,7 +661,9 @@ mod tests {
         );
         d1.options.driver_params = params(serde_json::json!({ "accountId": "  " }));
         assert!(validate(&d1).is_err());
-        d1.options.driver_params = params(serde_json::json!({ "accountId": "023e105f" }));
+        d1.options.driver_params = params(serde_json::json!({
+            "accountId": "023e105f4ecef8ad9ca31a8372d0c353"
+        }));
         validate(&d1).unwrap();
         // A token is always needed.
         d1.options.password_mode = Some(PasswordMode::None);

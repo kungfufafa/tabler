@@ -10,7 +10,7 @@ import {
   type CoreDriver,
 } from "@/features/drivers/catalog";
 import { awaitKindUi, loadKindUi } from "@/features/drivers/registry";
-import type { KindUi } from "@/features/drivers/types";
+import type { KindUi, UrlSource } from "@/features/drivers/types";
 import type {
   ConnectionProfile,
   DatabaseKind,
@@ -523,6 +523,7 @@ function parseLaneUrl(
   fullScheme: string,
   overSsh: boolean,
   lane: LaneUrlKind,
+  source: UrlSource,
 ): ParsedConnectionUrl {
   const label = KIND_DESCRIPTORS[lane.kind].label;
   if (lane.ui === undefined)
@@ -542,7 +543,7 @@ function parseLaneUrl(
     ssh = parseSshAuthority(rest.slice(0, slash));
     url = `${fullScheme.slice(0, -4)}://${rest.slice(slash + 1)}`;
   }
-  const parsed = reader.parse(url);
+  const parsed = reader.parse(url, source);
   if (!parsed) throw new Error(`This is not a valid ${label} URL.`);
   const params = new URLSearchParams(url.split("?")[1] ?? "");
   const values: Partial<ConnectionFormValues> = {
@@ -575,8 +576,15 @@ function parseLaneUrl(
   };
 }
 
-/** Parses a connection URL. Throws an Error with a user-facing message when it is not one. */
-export function parseConnectionUrl(input: string): ParsedConnectionUrl {
+/**
+ * Parses a connection URL the user pasted (`source` "paste") or a clicked link opens ("link":
+ * a lane's reader then picks no sign-in with the user's own credentials). Throws an Error with a
+ * user-facing message when it is not one.
+ */
+export function parseConnectionUrl(
+  input: string,
+  source: UrlSource = "paste",
+): ParsedConnectionUrl {
   const text = input.trim().replace(/^jdbc:/i, "");
   const fullScheme = /^([a-z][a-z0-9+.-]*):/i.exec(text)?.[1]?.toLowerCase();
   const overSsh = fullScheme?.endsWith("+ssh") ?? false;
@@ -584,7 +592,7 @@ export function parseConnectionUrl(input: string): ParsedConnectionUrl {
   const driver = scheme ? SCHEMES[scheme] : undefined;
   // Another database's scheme: its lane reads it, when this build has the database.
   const lane = fullScheme && scheme && !driver ? laneOfScheme(scheme) : null;
-  if (lane && fullScheme) return parseLaneUrl(text, fullScheme, overSsh, lane);
+  if (lane && fullScheme) return parseLaneUrl(text, fullScheme, overSsh, lane, source);
   if (!fullScheme || !scheme || !driver)
     throw new Error("Use a postgres://, mysql://, mariadb:// or sqlite:// URL.");
 
@@ -615,7 +623,7 @@ export function parseConnectionUrl(input: string): ParsedConnectionUrl {
         extras: extrasFromParams(params),
       };
     } else {
-      parsed = parseConnectionUrl(`${scheme}://${inner}`);
+      parsed = parseConnectionUrl(`${scheme}://${inner}`, source);
     }
     const usePrivateKey = boolParam(params.get("usePrivateKey"));
     parsed.values = {
@@ -718,7 +726,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 export function parseDeepLink(input: string): DeepLink {
   const text = input.trim();
-  if (!/^tabler:/i.test(text)) return { kind: "connection", parsed: parseConnectionUrl(text) };
+  if (!/^tabler:/i.test(text))
+    return { kind: "connection", parsed: parseConnectionUrl(text, "link") };
   let url: URL;
   try {
     url = new URL(text.replace(/^tabler:/i, "tabler:"));
@@ -727,7 +736,7 @@ export function parseDeepLink(input: string): DeepLink {
   }
   const params = url.searchParams;
   const inner = params.get("url");
-  if (inner) return { kind: "connection", parsed: parseConnectionUrl(inner) };
+  if (inner) return { kind: "connection", parsed: parseConnectionUrl(inner, "link") };
   // `tabler://connection/<id>`: the host is "connection", the id the first path segment.
   const segments = [url.hostname, ...url.pathname.split("/")].filter(Boolean).map(decode);
   const id =
@@ -785,6 +794,17 @@ function tailQuery(p: ConnectionProfile, query: URLSearchParams): void {
   if (version > 0) query.set("driverVersion", String(version));
   if (typeof p.options.lazyLoad === "boolean")
     query.set("lazyload", p.options.lazyLoad ? "true" : "false");
+}
+
+/**
+ * The query every connection URL carries for its profile: the name, colour, tag, Safe Mode level
+ * and lazy loading, as `parseConnectionUrl` reads them back. A lane's `KindUi.url.format` appends
+ * it, so Copy as URL and its import keep them.
+ */
+export function profileUrlQuery(p: ConnectionProfile): URLSearchParams {
+  const query = commonQuery(p);
+  tailQuery(p, query);
+  return query;
 }
 
 /**

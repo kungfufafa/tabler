@@ -2,6 +2,7 @@
 // read_text_file and write_text_file. They run against the same fixture data as browse_table.
 import { coreDialect } from "@/features/drivers/catalog";
 import { loadDialectLex } from "@/features/drivers/portable/classify";
+import { awaitDialectUi, awaitDriverUi } from "@/features/drivers/registry";
 import { split as splitPortable } from "@/features/drivers/portable/scanner";
 import { utf16ToChar } from "@/features/editor/offsets";
 import { splitStatements, type StatementRange } from "@/features/editor/scanner";
@@ -951,10 +952,21 @@ function commandLines(text: string): StatementRange[] {
   return out;
 }
 
-/** How the backend splits a session's text: its dialect's splitter, or its console's commands. */
+/**
+ * How the backend splits a session's text: its dialect's own splitter (`DialectUi.split`) or the
+ * portable one, or its console's (`ConsoleUi.split`); one command per line when the lane's module
+ * is not loaded.
+ */
 async function laneStatements(session: MockSession, text: string): Promise<StatementRange[]> {
-  const lex = session.caps.dialect === null ? null : await loadDialectLex(session.caps.dialect);
-  return lex ? splitPortable(lex.lex, text) : commandLines(text);
+  const { dialect, driver } = session.caps;
+  if (dialect !== null) {
+    const ui = await awaitDialectUi(dialect).catch(() => null);
+    if (ui?.split) return ui.split(text);
+    const lex = await loadDialectLex(dialect);
+    return lex ? splitPortable(lex.lex, text) : commandLines(text);
+  }
+  const console = (await awaitDriverUi(driver).catch(() => null))?.console;
+  return console ? console.split(text) : commandLines(text);
 }
 
 /**
@@ -1002,7 +1014,10 @@ async function runLane(
   options: unknown,
   onEvent: unknown,
 ): Promise<StatementResult[]> {
-  const stopOnError = (options as Partial<RunOptions> | undefined)?.stopOnError ?? true;
+  const opts = options as Partial<RunOptions> | undefined;
+  const stopOnError = opts?.stopOnError ?? true;
+  // A plugin's run is the session's to admit first (the backend's `admit_plugin_run`).
+  if (opts?.origin === "plugin") session.admitPluginRun?.(text);
   const channel = onEvent as { send?: (e: QueryEvent) => void } | undefined;
   const began = performance.now();
   const results: StatementResult[] = [];
@@ -1171,8 +1186,15 @@ registerMock("cancel_query", ({ queryId }) => {
 
 registerMock("explain", async ({ connectionId, sql, mode, queryId }) => {
   const info = await connectionInfo(connectionId);
-  const dialect = mockDialect(info);
   const text = String(sql ?? "");
+  const lane = mockLaneSession(info.connectionId);
+  if (lane?.explain) {
+    // A session beyond the core ones explains its own first statement.
+    const st = (await laneStatements(lane, text))[0];
+    if (!st) mockError("INVALID_INPUT", "nothing to explain");
+    return lane.explain(text.slice(st.start, st.end), mode as ExplainMode);
+  }
+  const dialect = mockDialect(info);
   const run: Running = { cancelled: false };
   const id = queryId ? String(queryId) : crypto.randomUUID();
   running.set(id, run);

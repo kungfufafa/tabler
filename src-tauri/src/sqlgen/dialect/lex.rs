@@ -142,8 +142,9 @@ pub struct ClassifyRules {
     /// `DESCRIBE` or a comma of a `FROM` list); any other table function makes it a write.
     /// A one-part entry allows an unqualified call only, an entry of several parts
     /// (`INFORMATION_SCHEMA.QUERY_HISTORY`) the call's last parts, and `!NAME` a method call
-    /// (`svc!NAME(`); a quoted name matches only on its exact text. None: the dialect has none
-    /// to police. A file named where a table goes (DuckDB `FROM 'data.csv'`) is not a table
+    /// (`svc!NAME(`), and `%NAME` an unqualified aggregate only where a pivot takes it
+    /// (`PIVOT (sum(x) FOR …)`, never `FROM sum(…)`); a quoted name matches only on its exact
+    /// text. None: the dialect has none to police. A file named where a table goes (DuckDB `FROM 'data.csv'`) is not a table
     /// function: the engine settings of the session refuse it.
     #[ts(as = "Option<Vec<String>>")]
     pub table_functions: Option<&'static [&'static str]>,
@@ -171,6 +172,31 @@ pub fn export_lex(name: &str, lex: &'static LexProfile, classify: &'static Class
         .expect("a lex profile serializes");
     json.push('\n');
     std::fs::write(dir.join(format!("{name}.json")), json).expect("write the lex binding");
+}
+
+/// `w` upper-cased by Unicode rules, with each letter whose lower or upper case is a single ASCII
+/// letter written as that letter: the KELVIN SIGN (U+212A, which upper-cases to itself) as `K`,
+/// the long s (U+017F) as `S`, the dotless i (U+0131) as `I`. A server may fold a name either
+/// way before it looks it up, so the deny-lists and the redaction match these spellings too.
+pub fn upper_folded(w: &str) -> String {
+    fn one_ascii(mut it: impl Iterator<Item = char>) -> Option<char> {
+        match (it.next(), it.next()) {
+            (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_uppercase()),
+            _ => None,
+        }
+    }
+    let mut out = String::with_capacity(w.len());
+    for c in w.chars() {
+        if c.is_ascii() {
+            out.push(c.to_ascii_uppercase());
+        } else if let Some(a) = one_ascii(c.to_lowercase()).or_else(|| one_ascii(c.to_uppercase()))
+        {
+            out.push(a);
+        } else {
+            out.extend(c.to_uppercase());
+        }
+    }
+    out
 }
 
 /// Whether `name` (upper case) is in `list`, whose `PREFIX*` entries match by prefix.

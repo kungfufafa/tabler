@@ -844,6 +844,7 @@ async fn session_database(session: &dyn DbSession) -> Option<Option<String>> {
         stop_on_error: true,
         explain: None,
         timeout_secs: 10,
+        ..RunOptions::default()
     };
     let mut probe = Collected::default();
     let results = run_sql_inner(
@@ -927,6 +928,7 @@ async fn run_query(
         stop_on_error: true,
         explain: None,
         timeout_secs: prefs.query_timeout_secs,
+        ..RunOptions::default()
     };
     let mut collected = Collected::default();
     let results = run_sql_inner(
@@ -1074,6 +1076,7 @@ async fn explain_query(
         req_str(args, "connection")?,
     )?;
     let sql = sql_arg(args)?.to_string();
+    gate::check_explain(&profile, prefs, &sql, dialect_of(&profile)?)?;
     let lease = lease(ctx, prefs, &profile, opt_str(args, "database")?).await?;
     cancel.attach(lease.session.clone());
     let current_db = lease

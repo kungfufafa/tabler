@@ -211,6 +211,28 @@ describe("a lane's form", () => {
     registerLaneOverride("redis", null);
   });
 
+  it("shows the driver's second secrets, and the lane's New… beside Choose…", async () => {
+    built("elasticsearch", "duckdb");
+    registerLaneOverride("elasticsearch", {});
+    const newFile = vi.fn((form: { setValue: (k: "sqlitePath", v: string) => void }) =>
+      form.setValue("sqlitePath", "/data/new.duckdb"),
+    );
+    registerLaneOverride("duckdb", { kinds: { duckdb: { rows: ["file"], newFile } } });
+    const user = userEvent.setup();
+    renderDialog({ ...mongo, id: "p-es", name: "Search", driver: "elasticsearch", port: 9200 });
+    const es = await screen.findByRole("dialog", { name: "Edit Search" });
+    expect(await within(es).findByLabelText("Session Token")).toHaveAttribute("type", "password");
+    cleanup();
+    renderDialog();
+    await user.dblClick(await screen.findByRole("radio", { name: "DuckDB" }));
+    const duck = await screen.findByRole("dialog", { name: "New DuckDB connection" });
+    await user.click(within(duck).getByRole("button", { name: /New…/ }));
+    expect(newFile).toHaveBeenCalledOnce();
+    expect(within(duck).getByLabelText("Database file")).toHaveValue("/data/new.duckdb");
+    registerLaneOverride("elasticsearch", null);
+    registerLaneOverride("duckdb", null);
+  });
+
   it("starts an HTTP API on HTTPS, and an on/off switch on Off", async () => {
     built("elasticsearch", "redis");
     registerLaneOverride("elasticsearch", {});

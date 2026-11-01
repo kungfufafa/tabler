@@ -145,6 +145,21 @@ pub struct RunOptions {
     /// Cancels a statement still running after this many seconds and reports it as timed out
     /// (Preferences ▸ Connections ▸ Query time out); 0 = no limit.
     pub timeout_secs: u32,
+    /// Who started the run: a plugin's `context.execute` is `Plugin`, which a session may
+    /// refuse more of (`DbSession::admit_plugin_run`).
+    pub origin: RunOrigin,
+}
+
+/// Who started a `run_sql` call.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum RunOrigin {
+    /// The user: the SQL editor, a console, an app action.
+    #[default]
+    User,
+    /// A plugin's `context.execute`.
+    Plugin,
 }
 
 pub const DEFAULT_MAX_ROWS: u32 = 10_000;
@@ -156,6 +171,7 @@ impl Default for RunOptions {
             stop_on_error: true,
             explain: None,
             timeout_secs: 0,
+            origin: RunOrigin::User,
         }
     }
 }

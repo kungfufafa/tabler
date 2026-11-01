@@ -745,8 +745,11 @@ pub fn tx_effect(
         "BEGIN" => succeeded.then_some(true),
         "START" if w(1) == "TRANSACTION" => succeeded.then_some(true),
         "COMMIT" | "ROLLBACK" | "END" | "ABORT" => {
-            if w(1) == "TO" || w(1) == "PREPARED" || (w(1) == "WORK" && w(2) == "TO") {
-                None // ROLLBACK TO SAVEPOINT, COMMIT/ROLLBACK PREPARED
+            if w(1) == "TO"
+                || w(1) == "PREPARED"
+                || (matches!(w(1), "WORK" | "TRANSACTION") && w(2) == "TO")
+            {
+                None // ROLLBACK [WORK | TRANSACTION] TO SAVEPOINT, COMMIT/ROLLBACK PREPARED
             } else if kw.iter().any(|k| k == "CHAIN") && !kw.iter().any(|k| k == "NO") {
                 // `… AND CHAIN` opens the next transaction only when it worked (PostgreSQL
                 // refuses it outside a transaction block; a failed COMMIT ends the transaction).
@@ -1031,6 +1034,14 @@ pub trait DbSession: Send + Sync {
             );
         }
         result
+    }
+
+    /// A run a plugin started (`RunOptions::origin`): refuses what the session does not let a
+    /// plugin run, before anything is sent (a file engine whose session is not hardened refusing
+    /// the files named where a table goes). The read-only checks have passed already; the
+    /// default admits everything.
+    fn admit_plugin_run(&self, _sql: &str) -> Result<(), AppError> {
+        Ok(())
     }
 
     /// Lock a whole editor run holds (`lock_editor_runs`), so the statements of concurrent runs
@@ -1771,6 +1782,7 @@ mod tests {
         assert_eq!(tx_effect("abort", pg, None), Some(false));
         assert_eq!(tx_effect("rollback to savepoint a", pg, None), None);
         assert_eq!(tx_effect("rollback work to a", my, None), None);
+        assert_eq!(tx_effect("rollback transaction to a", pg, None), None);
         assert_eq!(tx_effect("commit prepared 'x'", pg, None), None);
         assert_eq!(tx_effect("commit and chain", pg, None), Some(true));
         assert_eq!(tx_effect("commit and no chain", my, None), Some(false));

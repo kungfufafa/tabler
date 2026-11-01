@@ -35,8 +35,20 @@ export interface LaneModule {
   dialects?: Partial<Record<SqlDialectId, DialectUi>>;
 }
 
+/** Where a connection URL comes from (`KindUi.url.parse`). */
+export type UrlSource = "link" | "paste";
+
 /** The fields of the connection form every driver may use (`connections/rows`). */
-export type SharedRow = "hostPort" | "user" | "secret" | "database" | "file" | "ssl" | "socket";
+export type SharedRow =
+  | "hostPort"
+  | "user"
+  | "secret"
+  /** The driver's second secrets (`extraSecrets`: a key passphrase, a session token). */
+  | "extraSecrets"
+  | "database"
+  | "file"
+  | "ssl"
+  | "socket";
 
 /** A problem of the form a lane's `validate` reports, on the field it names. */
 export interface FormIssue {
@@ -74,14 +86,24 @@ export interface KindUi {
   toProfile?: (values: ConnectionFormValues, base: ConnectionProfile) => ConnectionProfile;
   /** The form values of a saved profile beyond the shared rows' (its driver params). */
   fromProfile?: (profile: ConnectionProfile) => Partial<ConnectionFormValues>;
-  /** Connection URLs of the database: the schemes, and reading and writing one. */
+  /**
+   * Connection URLs of the database: the schemes, and reading and writing one. `source` says where
+   * the URL comes from: "paste" when the user typed or pasted it (New connection from URL), "link"
+   * when a clicked link opens it, which must never pick a sign-in with the user's own credentials
+   * (a key file, the machine's default credentials).
+   */
   url?: {
     schemes: readonly string[];
-    parse(url: string): ParsedConnectionUrl | null;
+    parse(url: string, source?: UrlSource): ParsedConnectionUrl | null;
     format(profile: ConnectionProfile): string | null;
   };
   /** The connection list's one-line detail ("account.region / warehouse"). */
   summary?: (profile: ConnectionProfile) => string;
+  /**
+   * "New…" beside the file row's "Choose…": creates an empty database file and puts its path in
+   * the form (without it the row has no "New…").
+   */
+  newFile?: (form: UseFormReturn<ConnectionFormValues>) => void | Promise<void>;
 }
 
 /** A table, collection or index the sidebar lists, as an object menu sees it. */
@@ -102,6 +124,13 @@ export interface ObjectMenuContext {
    * (`guardExecution`) first, and refused when the connection is read-only.
    */
   call: <T = unknown>(method: string, args?: unknown) => Promise<T>;
+  /**
+   * A call the driver's `call_kind` says only reads (a table's details): Safe Mode asks only
+   * where it asks for reads too, and a read-only connection lets it through. The backend still
+   * refuses it on a read-only connection when its `call_kind` is `Write`. The app always gives
+   * it (optional for the contexts tests build).
+   */
+  read?: <T = unknown>(method: string, args?: unknown) => Promise<T>;
   /** Reloads the sidebar's listing after a change. */
   refresh: () => void;
 }
@@ -184,4 +213,11 @@ export interface DialectUi {
    * portable splitter over its lexer profile (a CQL batch is one statement).
    */
   split?: (text: string) => StatementRange[];
+  /**
+   * The dialect's own Safe Mode classifier of one statement, beside the portable one over its
+   * lexer profile: a statement reads only when both say it reads. For what the backend refuses
+   * beyond the portable rules (T-SQL's statements hidden in a read, names spelled with ASCII
+   * lookalikes).
+   */
+  classify?: (statement: string) => StatementClass;
 }
