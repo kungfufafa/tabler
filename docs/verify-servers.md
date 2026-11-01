@@ -202,3 +202,25 @@ read, an `UPDATE` ("1 row affected") and a `DELETE` of a missing key ("OK"), a c
 out of a count in flight, and a read-only session's refusals (the console's writes, a commit's
 plan and a plan made by a writable session) leaving the table and its items as they were. On AWS
 the requests are billed. Not run yet: no server was available when the lane landed (2026-10-31).
+
+### Elasticsearch and OpenSearch (`elasticsearch`)
+
+| Suite                    | Variable                        | Server                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tests/elasticsearch.rs` | `TABLER_TEST_ELASTICSEARCH_URL` | Elasticsearch 7.12+ or OpenSearch 2.x with one node (`docker run -p 9200:9200 -e discovery.type=single-node -e ELASTIC_PASSWORD=changeme docker.elastic.co/elasticsearch/elasticsearch:9.1.5`, or `opensearchproject/opensearch:2.19.1` with `OPENSEARCH_INITIAL_ADMIN_PASSWORD`): `elasticsearch://elastic:changeme@127.0.0.1:9200` for plain HTTP, `?ssl=true` for HTTPS without a certificate check |
+
+```sh
+node dev/scripts/lane.mjs elasticsearch it
+```
+
+The suite creates its own index (`tabler_it_<random>`) through the `createIndex` call and deletes it
+at the end. It covers connect, the version and the ping, inserts through a grid commit (one
+`_bulk`), the sidebar, the mapping as columns, cursor pages sorted by a field, `long`
+values past 2^53, dates as text and arrays as JSON, a count and a cell, a commit with one change
+that meets a version conflict, a console search and SQL where the cluster has it, a cancel and the
+query time out (a `_cluster/health` that waits for more nodes than the cluster has), Running
+Queries, an object operation refused on a pattern, and a read-only session's refusals (also of a
+path a decoding proxy would turn into a write). OpenSearch SQL cursors, Elasticsearch 6.x
+(`_xpack/sql`), Elasticsearch Serverless, Amazon OpenSearch Service (SigV4, its `_tasks`
+permissions) and TLS verify modes need environments of their own. Not run yet: no server was
+available when the lane landed (2026-11-01).
