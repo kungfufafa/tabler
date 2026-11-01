@@ -338,3 +338,26 @@ only a real server can confirm (where `jobs.insert` puts a new session's id, the
 expired session, the `reason` of a job stopped by `jobTimeoutMs`, `useInt64Timestamp` on
 `tabledata.list`, the NULL query parameter) is listed in the brief. Not run yet: no project was
 available when the lane landed (2026-11-01).
+
+### Vertica (`vertica`)
+
+| Suite              | Variable                  | Server                                                                                                                                                                                                                                                                                                                                  |
+| ------------------ | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/vertica.rs` | `TABLER_TEST_VERTICA_URL` | Vertica 12 or later; the Community Edition container (`docker run -p 5433:5433 opentext/vertica-ce`, the user `dbadmin` with no password and the database `VMart`) is enough: `vertica://dbadmin@127.0.0.1:5433/VMart`, or `vertica://<user>:<password>@<host>:5433/<database>` for a user that may create tables in its default schema |
+
+```sh
+node dev/scripts/lane.mjs vertica it
+```
+
+Each test works in a table of its own (`tabler_it_<uuid>`) and drops it again. The suite covers
+connect and the version, the schemas, Running Queries and completion, browse with paging, a count
+and a cell, exact values (an INT past 2^53), a commit with one failing change rolled back (the
+count of DML's `OUTPUT` row), the editor's transaction and row cap, a cancel on the server
+(`SELECT SLEEP(60)` stopped by a CancelRequest) and a time out, and a read-only profile refused
+by the session and by the server (`SHOW TRANSACTION_READ_ONLY`). The URL takes no query, so TLS,
+OAuth and client certificates are checked by hand: SSL mode `require` and `verify-full` against a
+server with TLS on, an OAuth token as the password, and a cancel reaching a server that requires
+TLS. What else only a real server can confirm (the catalog queries' columns and types,
+EXPORT_OBJECTS with quoted names and for procedures, whether the READ ONLY mode itself refuses
+`NEXTVAL`, the grid's NULL ordering and null-safe comparisons, complex-type cell text) is listed in
+the brief. Not run yet: no server was available when the lane landed (2026-11-01).
