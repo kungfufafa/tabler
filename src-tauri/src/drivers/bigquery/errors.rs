@@ -98,8 +98,11 @@ pub fn http_error(
 /// `errorResult`), with the others as detail.
 pub fn job_error(first: &ErrorProto, all: &[ErrorProto], sql: Option<&str>) -> AppError {
     let reason = first.reason.as_deref();
-    if reason == Some("stopped") {
-        return AppError::Cancelled;
+    match reason {
+        Some("stopped") => return AppError::Cancelled,
+        // The profile's job timeout (`jobTimeoutMs`) stopped it on the server.
+        Some("timeout") => return AppError::Timeout,
+        _ => {}
     }
     let message = first
         .message

@@ -1,7 +1,7 @@
 //! Introspection through the free REST metadata calls (`projects.list`, `datasets.list`,
 //! `tables.list`, `tables.get`, `routines.list`, `jobs.list`, `tabledata.list`) and what Tabler
-//! makes of them. INFORMATION_SCHEMA reads are billed (10 MB at least each), so only Show DDL and
-//! completion use them, on demand (`dialect::bigquery` builds them).
+//! makes of them. INFORMATION_SCHEMA reads are billed (10 MB at least each), so only Show DDL uses
+//! them, on demand (`dialect::bigquery` builds them).
 //!
 //! Projects are databases, datasets schemas. There are no indexes: partitioning and clustering
 //! stand in for them, and the primary and foreign keys of `tableConstraints` are listed as BigQuery
@@ -19,7 +19,6 @@ use crate::types::schema::{
     DatabaseInfo, ForeignKeyMeta, IndexMeta, SchemaInfo, TableKind, TableMeta, TableRef,
     TableSummary,
 };
-use crate::types::value::Value;
 
 /// The prefix of the jobs Tabler starts (`jobs::new_job_id`).
 pub const OWN_JOB_PREFIX: &str = "tabler_";
@@ -607,18 +606,6 @@ pub fn routine_summaries(items: &[Routine], dataset: &str) -> Vec<RoutineSummary
     out
 }
 
-/// Completion's tables and columns from the rows of `completion_columns_query` (table name,
-/// column name).
-pub fn completion_columns(rows: &[Vec<Value>]) -> BTreeMap<String, Vec<String>> {
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for row in rows {
-        if let (Some(Value::Text(t)), Some(Value::Text(c))) = (row.first(), row.get(1)) {
-            out.entry(t.clone()).or_default().push(c.clone());
-        }
-    }
-    out
-}
-
 /// A process id: BigQuery's own full job id, `project:LOCATION.job_id`.
 pub fn process_id(project: &str, location: Option<&str>, job_id: &str) -> String {
     match location.filter(|l| !l.is_empty()) {
@@ -856,16 +843,6 @@ mod tests {
 
     #[test]
     fn completion_and_processes() {
-        let rows = vec![
-            vec![Value::Text("orders".into()), Value::Text("id".into())],
-            vec![Value::Text("orders".into()), Value::Text("total".into())],
-            vec![Value::Text("users".into()), Value::Text("id".into())],
-            vec![Value::Null, Value::Text("x".into())],
-        ];
-        let c = completion_columns(&rows);
-        assert_eq!(c["orders"], ["id", "total"]);
-        assert_eq!(c.len(), 2);
-
         assert_eq!(process_id("p", Some("US"), "j1"), "p:US.j1");
         assert_eq!(
             parse_process_id("example.com:proj:asia-southeast2.tabler_1"),

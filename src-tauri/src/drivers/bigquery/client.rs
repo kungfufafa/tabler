@@ -1,8 +1,8 @@
-//! The REST v2 client: every call carries a bearer token from the session's `TokenSource`
-//! (fetched again once after a 401), lists follow their page tokens, and query jobs are polled
-//! with `jobs.getQueryResults` until they finish, with no client-side limit on how long a job
-//! may run (BigQuery answers each poll after about 10 s at most). A run stops when its
-//! `CancellationToken` fires; `JobCancel` fires it and asks BigQuery to cancel the job.
+//! The REST v2 client: the transport adds the bearer token (and fetches it again once after a
+//! 401), lists follow their page tokens, and query jobs are polled with `jobs.getQueryResults`
+//! until they finish, with no client-side limit on how long a job may run (BigQuery answers each
+//! poll after about 10 s at most). A run stops when its `CancellationToken` fires; `JobCancel`
+//! fires it and asks BigQuery to cancel the job.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +11,6 @@ use futures::future::BoxFuture;
 use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 
-use super::auth::TokenSource;
 use super::catalog::{
     DatasetItem, DatasetList, ProjectItem, ProjectList, Routine, RoutineList, Table, TableData,
     TableItem, TableList,
@@ -50,11 +49,13 @@ pub struct DataPage {
     pub selected_fields: Vec<String>,
 }
 
-/// A query job that finished: its reference and the first page of what it returned.
+/// A query job that finished: its reference, the first page of what it returned and, for a job
+/// that started a BigQuery session, the session's id.
 #[derive(Debug, Clone)]
 pub struct QueryRun {
     pub job: JobReference,
     pub first: QueryResponse,
+    pub session_id: Option<String>,
 }
 
 /// What a dry run says: the bytes the query would process (and bill) and its result's schema.
@@ -64,9 +65,24 @@ pub struct DryRun {
     pub schema: Option<super::decode::TableSchema>,
 }
 
+/// Why a run failed: BigQuery refused the job at `jobs.insert` (none of it ran), or the job
+/// failed, or was stopped, after it was created (part of a script may have run).
+#[derive(Debug)]
+pub enum RunError {
+    Refused(AppError),
+    Failed(AppError),
+}
+
+impl RunError {
+    pub fn into_error(self) -> AppError {
+        match self {
+            RunError::Refused(e) | RunError::Failed(e) => e,
+        }
+    }
+}
+
 pub struct Client {
     transport: Arc<dyn Transport>,
-    tokens: Arc<dyn TokenSource>,
     /// The REST base, without a trailing slash.
     base: String,
     /// The project jobs run (and are billed) in.
@@ -76,15 +92,9 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(
-        transport: Arc<dyn Transport>,
-        tokens: Arc<dyn TokenSource>,
-        base: &str,
-        project: &str,
-    ) -> Client {
+    pub fn new(transport: Arc<dyn Transport>, base: &str, project: &str) -> Client {
         Client {
             transport,
-            tokens,
             base: base.trim_end_matches('/').to_string(),
             project: project.to_string(),
             quota_project: None,
@@ -118,8 +128,8 @@ impl Client {
         url
     }
 
-    /// Sends `req` with a bearer token; on a 401 forgets the token and tries once more with a
-    /// new one. A status that is not a success is the API's error (`sql`: for its position).
+    /// Sends `req` (the transport adds the bearer). A status that is not a success is the API's
+    /// error (`sql`: for its position).
     async fn send(&self, req: HttpRequest, sql: Option<&str>) -> Result<HttpResponse, AppError> {
         // `BigqueryParams::validate` refuses such an endpoint already; a profile that skipped it
         // still never sends the bearer in clear text to another machine.
@@ -130,30 +140,38 @@ impl Client {
                     .into(),
             ));
         }
-        let mut retried = false;
-        loop {
-            let token = self.tokens.token().await?;
-            let mut r = req
-                .clone()
-                .with_header("authorization", &format!("Bearer {token}"));
-            if let Some(q) = &self.quota_project {
-                r = r.with_header("x-goog-user-project", q);
-            }
-            let reply = self.transport.send(r).await?;
-            if reply.status == 401 && !retried && self.tokens.invalidate() {
-                retried = true;
-                continue;
-            }
-            if !reply.is_success() {
-                return Err(http_error(
-                    reply.status,
-                    &reply.body,
-                    reply.content_type.as_deref(),
-                    sql,
-                ));
-            }
-            return Ok(reply);
+        // A name that is exactly `.` or `..` would be resolved by the URL parser (`%2E` too) and
+        // reach another path; no BigQuery object is called that.
+        if dot_segment(&req.url) {
+            return Err(AppError::InvalidInput(
+                "BigQuery: a project, dataset, table or job cannot be named `.` or `..`".into(),
+            ));
         }
+        let req = match &self.quota_project {
+            Some(q) => req.with_header("x-goog-user-project", q),
+            None => req,
+        };
+        let reply = self.transport.send(req).await?;
+        if !reply.is_success() {
+            return Err(http_error(
+                reply.status,
+                &reply.body,
+                reply.content_type.as_deref(),
+                sql,
+            ));
+        }
+        Ok(reply)
+    }
+
+    /// A free call that proves the token and the project: one dataset of the project.
+    pub async fn ping(&self) -> Result<(), AppError> {
+        let url = self.url(
+            &["projects", &self.project, "datasets"],
+            &[("maxResults", "1".into())],
+        );
+        self.get::<DatasetList>(url, "datasets.list")
+            .await
+            .map(|_| ())
     }
 
     async fn get<T: DeserializeOwned>(&self, url: String, what: &str) -> Result<T, AppError> {
@@ -476,21 +494,58 @@ impl Client {
         max_results: Option<u32>,
         stop: &CancellationToken,
     ) -> Result<QueryRun, AppError> {
+        self.try_run_query(job_id, sql, params, opts, max_results, stop)
+            .await
+            .map_err(RunError::into_error)
+    }
+
+    /// `run_query`, saying whether BigQuery refused the job before it existed.
+    pub async fn try_run_query(
+        &self,
+        job_id: &str,
+        sql: &str,
+        params: &[serde_json::Value],
+        opts: &QueryOptions,
+        max_results: Option<u32>,
+        stop: &CancellationToken,
+    ) -> Result<QueryRun, RunError> {
+        if stop.is_cancelled() {
+            return Err(RunError::Failed(AppError::Cancelled));
+        }
         let body = super::jobs::insert_body(&self.project, job_id, sql, params, opts);
-        let inserted = tokio::select! {
-            biased;
-            _ = stop.cancelled() => return Err(AppError::Cancelled),
-            r = self.insert_job(&body, sql) => r?,
-        };
-        let job = inserted.job_reference.unwrap_or_else(|| JobReference {
-            project_id: self.project.clone(),
-            job_id: job_id.to_string(),
-            location: opts.location.clone(),
-        });
+        // Not cut short by a cancel: a cancel that reached BigQuery before the job existed would
+        // find nothing, and the job would then run. Once it exists it is cancelled here too.
+        let inserted = self
+            .insert_job(&body, sql)
+            .await
+            .map_err(RunError::Refused)?;
+        let job = inserted
+            .job_reference
+            .clone()
+            .unwrap_or_else(|| JobReference {
+                project_id: self.project.clone(),
+                job_id: job_id.to_string(),
+                location: opts.location.clone(),
+            });
+        if stop.is_cancelled() {
+            let _ = self.cancel_job(&job).await;
+            return Err(RunError::Failed(AppError::Cancelled));
+        }
         let first = self
             .wait_for_results(&job, max_results, Some(sql), stop)
-            .await?;
-        Ok(QueryRun { job, first })
+            .await
+            .map_err(RunError::Failed)?;
+        let mut session_id = session_of(&inserted).map(str::to_string);
+        if opts.create_session && session_id.is_none() {
+            // The insert's reply may come before BigQuery has filled in the job's statistics.
+            let job = self.get_job(&job).await.map_err(RunError::Failed)?;
+            session_id = session_of(&job).map(str::to_string);
+        }
+        Ok(QueryRun {
+            job,
+            first,
+            session_id,
+        })
     }
 
     /// Polls the job until it has finished, then returns its first page.
@@ -507,17 +562,27 @@ impl Client {
         };
         let mut pause = POLL_PAUSE;
         loop {
-            let r = tokio::select! {
+            let polled = tokio::select! {
                 biased;
-                _ = stop.cancelled() => return Err(AppError::Cancelled),
-                r = self.get_query_results(job, &page, POLL_WAIT_MS, sql) => r?,
+                _ = stop.cancelled() => None,
+                r = self.get_query_results(job, &page, POLL_WAIT_MS, sql) => Some(r?),
+            };
+            let Some(r) = polled else {
+                // Cancelled here too, with the job's own location (a cancel armed before the
+                // insert answered may not have known it). The canceller hears of a failed
+                // request; this run ends cancelled anyway.
+                let _ = self.cancel_job(job).await;
+                return Err(AppError::Cancelled);
             };
             if r.complete() {
                 return Ok(r);
             }
             tokio::select! {
                 biased;
-                _ = stop.cancelled() => return Err(AppError::Cancelled),
+                _ = stop.cancelled() => {
+                    let _ = self.cancel_job(job).await;
+                    return Err(AppError::Cancelled);
+                }
                 _ = tokio::time::sleep(pause) => {}
             }
             pause = (pause * 2).min(POLL_PAUSE_MAX);
@@ -556,6 +621,38 @@ impl Client {
             bytes_processed: r.total_bytes_processed,
             schema: r.schema,
         })
+    }
+}
+
+/// Whether the path of `url` (after `scheme://host`) has a `.` or `..` segment.
+fn dot_segment(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    path.split('/').skip(3).any(|s| s == "." || s == "..")
+}
+
+/// The BigQuery session a job ran in, from its statistics.
+fn session_of(job: &Job) -> Option<&str> {
+    job.statistics
+        .as_ref()?
+        .session_info
+        .as_ref()?
+        .session_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+}
+
+/// Stops a read that runs no job (`tabledata.list`, a page of a finished job): only the local
+/// wait ends, nothing runs on the server.
+pub struct StopOnly(pub CancellationToken);
+
+impl CancelAction for StopOnly {
+    fn fire(&self) -> BoxFuture<'static, Result<(), AppError>> {
+        self.0.cancel();
+        Box::pin(async { Ok(()) })
+    }
+
+    fn label(&self) -> &'static str {
+        "client-side stop"
     }
 }
 

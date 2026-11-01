@@ -265,6 +265,14 @@ pub fn table_path(project: Option<&str>, dataset: &str, table: &str) -> String {
     parts.join(".")
 }
 
+/// What the grid shows for a page read with `tabledata.list`, which runs no query.
+pub fn tabledata_display(project: Option<&str>, dataset: &str, table: &str) -> String {
+    format!(
+        "SELECT * FROM {} -- read with tabledata.list: no job, nothing billed",
+        table_path(project, dataset, table)
+    )
+}
+
 /// A dataset's INFORMATION_SCHEMA view (`TABLES`, `COLUMNS`, `ROUTINES`): views of a dataset
 /// must be qualified by it. Every read of one is billed (10 MB at least), so the driver reads
 /// them only on demand.
@@ -290,14 +298,13 @@ pub fn routine_ddl_query(project: Option<&str>, dataset: &str) -> String {
     )
 }
 
-/// Every column of a dataset, for completion (one billed read per dataset, cached by the
-/// session).
-pub fn completion_columns_query(project: Option<&str>, dataset: &str) -> String {
-    format!(
-        "SELECT table_name, column_name FROM {} ORDER BY table_name, ordinal_position",
-        information_schema(project, dataset, "COLUMNS")
-    )
-}
+/// A staged commit runs in a BigQuery session of its own, as one multi-statement transaction
+/// whose statements are separate jobs (so each one's affected rows can be checked).
+pub const BEGIN_TRANSACTION: &str = "BEGIN TRANSACTION";
+pub const COMMIT_TRANSACTION: &str = "COMMIT TRANSACTION";
+pub const ROLLBACK_TRANSACTION: &str = "ROLLBACK TRANSACTION";
+/// Ends a session at once, with its temp tables and an open transaction.
+pub const ABORT_SESSION: &str = "CALL BQ.ABORT_SESSION()";
 
 #[cfg(test)]
 mod tests {
@@ -474,6 +481,10 @@ mod tests {
         );
         assert_eq!(table_path(None, "ds", "t"), "`ds`.`t`");
         assert_eq!(
+            tabledata_display(Some("p"), "d", "t"),
+            "SELECT * FROM `p`.`d`.`t` -- read with tabledata.list: no job, nothing billed"
+        );
+        assert_eq!(
             table_ddl_query(Some("p"), "d"),
             "SELECT ddl FROM `p`.`d`.INFORMATION_SCHEMA.TABLES WHERE table_name = @name"
         );
@@ -481,18 +492,20 @@ mod tests {
             routine_ddl_query(None, "d"),
             "SELECT ddl FROM `d`.INFORMATION_SCHEMA.ROUTINES WHERE routine_name = @name"
         );
-        assert_eq!(
-            completion_columns_query(Some("p"), "d"),
-            "SELECT table_name, column_name FROM `p`.`d`.INFORMATION_SCHEMA.COLUMNS ORDER BY \
-             table_name, ordinal_position"
-        );
-        // The driver's reads are reads.
+        // The driver's reads are reads, its transaction statements writes.
         for sql in [
             table_ddl_query(Some("p"), "d"),
-            routine_ddl_query(Some("p"), "d"),
-            completion_columns_query(Some("delete"), "drop"),
+            routine_ddl_query(Some("delete"), "drop"),
         ] {
             assert_eq!(classify_bigquery(&sql), StatementClass::Read, "{sql}");
+        }
+        for sql in [
+            BEGIN_TRANSACTION,
+            COMMIT_TRANSACTION,
+            ROLLBACK_TRANSACTION,
+            ABORT_SESSION,
+        ] {
+            assert_eq!(classify_bigquery(sql), StatementClass::Write, "{sql}");
         }
     }
 }

@@ -1,16 +1,21 @@
-//! The HTTP seam the client is written against. In Phase B the real implementation is the shared
-//! `drivers::common::http::HttpClient` (F8a: TLS through `tls_client`, the system proxy,
-//! retries); the tests use the scripted fake of `testing`, or a plain reqwest transport against
-//! `testkit::fake_http`.
+//! The HTTP seam the client is written against. Sessions send through `HttpTransport`, the shared
+//! `drivers::common::http::HttpClient` (the bearer token and its one refetch after a 401, TLS,
+//! the system proxy, retries of GETs that failed on the server's side); the tests use the scripted
+//! fake of `testing`.
 //!
-//! Unlike the sqlite-remote seam, requests carry their own `authorization` header: the token
-//! endpoint takes none and the REST API takes the bearer the client got from it, so the client
-//! (`client::Client`) owns the credentials and refreshes them once on a 401.
+//! Requests carry no credential: the API's transport adds the bearer to the requests for its own
+//! endpoint, and the token endpoint's transport adds none (the signed assertion or the refresh
+//! token is in the form it posts).
 
 use async_trait::async_trait;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::de::DeserializeOwned;
 
+use crate::drivers::ConnectTarget;
+pub use crate::drivers::common::http::body_excerpt;
+use crate::drivers::common::http::{
+    Credential, HttpClient, HttpEndpoint, HttpOptions, Repeat, RetryPolicy, form_body,
+};
 use crate::error::AppError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +26,10 @@ pub enum Method {
 
 pub const JSON: &str = "application/json";
 pub const FORM: &str = "application/x-www-form-urlencoded";
+
+/// The most of one reply read: BigQuery pages hold about 10 MB at most, so anything far beyond
+/// is a broken or hostile server, refused before it exhausts the app's memory.
+pub const MAX_REPLY: usize = 64 << 20;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
@@ -53,16 +62,11 @@ impl HttpRequest {
 
     /// A form post (the OAuth token endpoint).
     pub fn post_form(url: impl Into<String>, fields: &[(&str, &str)]) -> HttpRequest {
-        let body = fields
-            .iter()
-            .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
-            .collect::<Vec<_>>()
-            .join("&");
         HttpRequest {
             method: Method::Post,
             url: url.into(),
             headers: vec![("content-type".into(), FORM.into())],
-            body: Some(body.into_bytes()),
+            body: Some(form_body(fields).into_bytes()),
         }
     }
 
@@ -123,7 +127,7 @@ impl HttpRequest {
     }
 }
 
-/// Tokens, assertions, client secrets and refresh tokens never show in logs or panics.
+/// Assertions, client secrets and refresh tokens never show in logs or panics.
 impl std::fmt::Debug for HttpRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let headers: Vec<(&str, &str)> = self
@@ -198,6 +202,81 @@ pub trait Transport: Send + Sync {
     async fn send(&self, req: HttpRequest) -> Result<HttpResponse, AppError>;
 }
 
+/// The retries of every BigQuery call: a 429, and a GET that failed on the server's side
+/// (`backendError` comes as a 500 or 503); a POST (an inserted job) is sent once.
+pub fn retry_policy() -> RetryPolicy {
+    RetryPolicy {
+        repeat: Repeat::ServerErrors,
+        ..RetryPolicy::default()
+    }
+}
+
+/// The sessions' transport: the shared HTTP client, which adds its credential to the requests for
+/// its own endpoint only. A request is stopped by dropping it: the client's runs arm their cancel
+/// slot themselves.
+pub struct HttpTransport {
+    client: HttpClient,
+}
+
+impl HttpTransport {
+    /// The API at `base` as `target` reaches it, with the bearer of `credential`.
+    pub fn for_target(
+        target: &ConnectTarget<'_>,
+        base: &str,
+        options: HttpOptions,
+        credential: Credential,
+    ) -> Result<HttpTransport, AppError> {
+        Ok(HttpTransport {
+            client: HttpClient::for_target(target, base, options, credential)?,
+        })
+    }
+
+    /// A token endpoint: no credential (the form carries the grant).
+    pub fn token_endpoint(uri: &str, options: HttpOptions) -> Result<HttpTransport, AppError> {
+        Ok(HttpTransport {
+            client: HttpClient::new(HttpEndpoint::new(uri, None)?, options, Credential::None)?,
+        })
+    }
+}
+
+#[async_trait]
+impl Transport for HttpTransport {
+    async fn send(&self, req: HttpRequest) -> Result<HttpResponse, AppError> {
+        let method = match req.method {
+            Method::Get => reqwest::Method::GET,
+            Method::Post => reqwest::Method::POST,
+        };
+        // The client's URLs are encoded already: they go byte for byte.
+        let mut builder = self.client.request_exact(method, &req.url)?;
+        for (k, v) in &req.headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+        if let Some(body) = req.body {
+            builder = builder.body(body);
+        }
+        let mut reply = self.client.send(builder, None).await?;
+        let status = reply.status();
+        let retry_after = reply.retry_after().map(|wait| wait.as_secs());
+        let content_type = reply.content_type().map(str::to_string);
+        let mut body = Vec::new();
+        while let Some(piece) = reply.chunk().await? {
+            if body.len() + piece.len() > MAX_REPLY {
+                return Err(AppError::db(format!(
+                    "BigQuery sent more than {} MB at once",
+                    MAX_REPLY >> 20
+                )));
+            }
+            body.extend_from_slice(&piece);
+        }
+        Ok(HttpResponse {
+            status,
+            retry_after,
+            content_type,
+            body,
+        })
+    }
+}
+
 /// What a URL component escapes: everything but the unreserved characters.
 const COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
@@ -252,46 +331,6 @@ fn decode(s: &str) -> String {
         .into_owned()
 }
 
-/// At most this many characters of an unexpected body go into an error message.
-const EXCERPT_CHARS: usize = 300;
-
-/// A short plain-text form of a reply body for an error message: HTML loses its tags, and
-/// whitespace runs collapse.
-pub fn body_excerpt(body: &[u8], content_type: Option<&str>) -> String {
-    let text = String::from_utf8_lossy(body);
-    let html =
-        content_type.is_some_and(|c| c.contains("html")) || text.trim_start().starts_with('<');
-    let plain = if html {
-        strip_tags(&text)
-    } else {
-        text.into_owned()
-    };
-    let collapsed = plain.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() > EXCERPT_CHARS {
-        let cut: String = collapsed.chars().take(EXCERPT_CHARS).collect();
-        format!("{cut}…")
-    } else {
-        collapsed
-    }
-}
-
-fn strip_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' if in_tag => {
-                in_tag = false;
-                out.push(' ');
-            }
-            _ if !in_tag => out.push(c),
-            _ => {}
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,7 +345,7 @@ mod tests {
         assert_eq!(r.param("pageToken").as_deref(), Some("a+b c"));
         assert_eq!(HttpRequest::get("http://h").path(), "/");
         let f = HttpRequest::post_form("https://t/token", &[("a", "x y&z"), ("b", "é=")]);
-        assert_eq!(f.body.as_deref(), Some(&b"a=x%20y%26z&b=%C3%A9%3D"[..]));
+        assert_eq!(f.body.as_deref(), Some(&b"a=x+y%26z&b=%C3%A9%3D"[..]));
         assert_eq!(
             f.form(),
             [("a".into(), "x y&z".into()), ("b".into(), "é=".into())]
@@ -359,17 +398,15 @@ mod tests {
     }
 
     #[test]
-    fn excerpts_are_short_plain_text() {
-        let html = b"<html><body><h1>502 Bad Gateway</h1>\n<p>gfe</p></body></html>";
-        assert_eq!(body_excerpt(html, Some("text/html")), "502 Bad Gateway gfe");
-        let long = "a".repeat(1000);
-        assert_eq!(
-            body_excerpt(long.as_bytes(), None).chars().count(),
-            EXCERPT_CHARS + 1
-        );
+    fn unexpected_bodies_are_quoted_short() {
         let e = HttpResponse::text(200, "not json")
             .parse::<serde_json::Value>("jobs.query")
             .unwrap_err();
         assert!(e.to_string().contains("not json"), "{e}");
+    }
+
+    #[test]
+    fn gets_are_retried_after_server_errors_and_posts_are_not() {
+        assert_eq!(retry_policy().repeat, Repeat::ServerErrors);
     }
 }

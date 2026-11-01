@@ -2,34 +2,31 @@
 //! Application Default Credentials (`gcloud auth application-default login` writes an
 //! `authorized_user` file holding a refresh token; `GOOGLE_APPLICATION_CREDENTIALS` may name a
 //! service-account key instead), or a fixed token (Command mode, `gcloud auth
-//! print-access-token`). Access tokens live in memory only; a new one is fetched a few minutes
-//! before the old one expires, and once after the API refuses one (a 401).
+//! print-access-token`, through `TokenSource::for_profile`). Access tokens live in memory only
+//! (`TokenSource::issued`): a new one is fetched a few minutes before the old one expires, and
+//! once after the API refuses one (a 401).
 //!
 //! The key file is read at connect from the path in the profile's params and never stored
-//! (plan A18). Read-only profiles ask a service account for the `bigquery.readonly` scope; an
-//! `authorized_user` refresh keeps the scopes granted at login, so it is not narrowed.
+//! (plan A18). A service account asks for the full `bigquery` scope on every profile, read-only
+//! ones too: `jobs.insert` refuses `bigquery.readonly`. An `authorized_user` refresh keeps the
+//! scopes granted at login.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde::Deserialize;
-use tokio::time::Instant;
 
-use super::jwt::{JwtSigner, token_claims};
 use super::transport::{HttpRequest, Transport, body_excerpt, credentials_may_go_to};
+use crate::drivers::common::jwt::{JWT_BEARER_GRANT, Rs256Key, token_request_claims};
+use crate::drivers::common::token::{IssuedToken, TokenSource};
 use crate::error::AppError;
 
 pub const SCOPE_BIGQUERY: &str = "https://www.googleapis.com/auth/bigquery";
 pub const SCOPE_BIGQUERY_READONLY: &str = "https://www.googleapis.com/auth/bigquery.readonly";
 pub const GOOGLE_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
-const JWT_BEARER: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 /// A credential file is a few KB; anything this big is not one.
 const CREDENTIAL_FILE_LIMIT: u64 = 1 << 20;
-/// A cached token is replaced this long before it expires.
-const REFRESH_MARGIN: Duration = Duration::from_secs(300);
 /// When the token endpoint does not say how long its token lasts.
 const DEFAULT_LIFETIME: Duration = Duration::from_secs(3600);
 
@@ -178,57 +175,12 @@ pub fn adc_path_with(var: impl Fn(&str) -> Option<String>, windows: bool) -> Opt
     }
 }
 
-/// A bearer token and when it stops working.
-#[derive(Clone)]
-pub struct AccessToken {
-    pub token: String,
-    pub expires_at: Option<Instant>,
-}
-
-impl std::fmt::Debug for AccessToken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AccessToken")
-            .field("expires_at", &self.expires_at)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Where the client's bearer tokens come from.
-#[async_trait]
-pub trait TokenSource: Send + Sync {
-    /// A token that should still work.
-    async fn token(&self) -> Result<String, AppError>;
-    /// Forgets the token the API just refused; whether the next `token` can be a new one (a
-    /// fixed token cannot).
-    fn invalidate(&self) -> bool;
-}
-
-/// A token given as it is (Command mode reuses it for the descriptor's TTL).
-pub struct FixedToken(String);
-
-impl FixedToken {
-    pub fn new(token: impl Into<String>) -> FixedToken {
-        FixedToken(token.into())
-    }
-}
-
-#[async_trait]
-impl TokenSource for FixedToken {
-    async fn token(&self) -> Result<String, AppError> {
-        if self.0.trim().is_empty() {
-            return Err(AppError::Auth("the access token is empty".into()));
-        }
-        Ok(self.0.trim().to_string())
-    }
-
-    fn invalidate(&self) -> bool {
-        false
-    }
-}
-
+/// What a credential file trades for access tokens at its token endpoint.
 enum Grant {
     ServiceAccount {
-        signer: JwtSigner,
+        key: Rs256Key,
+        /// The key file's `private_key_id`, sent as the assertion's `kid`.
+        key_id: Option<String>,
         client_email: String,
         token_uri: String,
         scope: String,
@@ -239,60 +191,56 @@ enum Grant {
     },
 }
 
-/// Tokens from Google's OAuth endpoint, cached until shortly before they expire.
-pub struct OAuthTokens {
-    transport: Arc<dyn Transport>,
-    grant: Grant,
-    cache: tokio::sync::Mutex<Option<AccessToken>>,
-    /// Set by `invalidate`, read under the cache's lock.
-    stale: AtomicBool,
-}
-
-impl OAuthTokens {
+impl Grant {
     /// For a credential file: a service account asks for `scope`, a user's refresh token keeps
     /// the scopes of its login.
-    pub fn from_file(
-        transport: Arc<dyn Transport>,
-        file: &CredentialFile,
-        scope: &str,
-    ) -> Result<OAuthTokens, AppError> {
-        let grant = match file {
-            CredentialFile::ServiceAccount(key) => {
-                let token_uri = token_uri(key.token_uri.as_deref())?;
-                Grant::ServiceAccount {
-                    signer: JwtSigner::from_pem(&key.private_key, key.private_key_id.as_deref())?,
-                    client_email: key.client_email.clone(),
-                    token_uri,
-                    scope: scope.to_string(),
-                }
-            }
+    fn of(file: &CredentialFile, scope: &str) -> Result<Grant, AppError> {
+        Ok(match file {
+            CredentialFile::ServiceAccount(key) => Grant::ServiceAccount {
+                token_uri: token_uri(key.token_uri.as_deref())?,
+                key: Rs256Key::from_pem(&key.private_key).map_err(|e| match e {
+                    AppError::Auth(why) => AppError::Auth(format!("the key file: {why}")),
+                    other => other,
+                })?,
+                key_id: key.private_key_id.clone().filter(|k| !k.is_empty()),
+                client_email: key.client_email.clone(),
+                scope: scope.to_string(),
+            },
             CredentialFile::AuthorizedUser(user) => Grant::AuthorizedUser {
                 token_uri: token_uri(user.token_uri.as_deref())?,
                 user: user.clone(),
             },
-        };
-        Ok(OAuthTokens {
-            transport,
-            grant,
-            cache: tokio::sync::Mutex::new(None),
-            stale: AtomicBool::new(false),
         })
+    }
+
+    fn token_uri(&self) -> &str {
+        match self {
+            Grant::ServiceAccount { token_uri, .. } | Grant::AuthorizedUser { token_uri, .. } => {
+                token_uri
+            }
+        }
     }
 
     /// The token request: a signed assertion, or the refresh token.
     fn request(&self) -> Result<HttpRequest, AppError> {
-        Ok(match &self.grant {
+        Ok(match self {
             Grant::ServiceAccount {
-                signer,
+                key,
+                key_id,
                 client_email,
                 token_uri,
                 scope,
             } => {
                 let now = chrono::Utc::now().timestamp();
-                let assertion = signer.sign(&token_claims(client_email, scope, token_uri, now))?;
+                let header = match key_id {
+                    Some(id) => serde_json::json!({ "kid": id }),
+                    None => serde_json::Value::Null,
+                };
+                let claims = token_request_claims(client_email, scope, token_uri, now);
+                let assertion = key.sign(&header, &claims)?;
                 HttpRequest::post_form(
                     token_uri.clone(),
-                    &[("grant_type", JWT_BEARER), ("assertion", &assertion)],
+                    &[("grant_type", JWT_BEARER_GRANT), ("assertion", &assertion)],
                 )
             }
             Grant::AuthorizedUser { user, token_uri } => HttpRequest::post_form(
@@ -306,36 +254,36 @@ impl OAuthTokens {
             ),
         })
     }
-
-    async fn fetch(&self) -> Result<AccessToken, AppError> {
-        let reply = self.transport.send(self.request()?).await?;
-        parse_token_reply(reply.status, &reply.body, reply.content_type.as_deref())
-    }
 }
 
-#[async_trait]
-impl TokenSource for OAuthTokens {
-    async fn token(&self) -> Result<String, AppError> {
-        let mut cache = self.cache.lock().await;
-        if self.stale.swap(false, Ordering::SeqCst) {
-            *cache = None;
-        }
-        if let Some(t) = cache.as_ref()
-            && t.expires_at
-                .is_none_or(|at| Instant::now() + REFRESH_MARGIN < at)
-        {
-            return Ok(t.token.clone());
-        }
-        let fresh = self.fetch().await?;
-        let token = fresh.token.clone();
-        *cache = Some(fresh);
-        Ok(token)
-    }
+/// The token endpoint a credential file names (checked: HTTPS, or plain HTTP to this machine).
+pub fn token_endpoint(file: &CredentialFile) -> Result<String, AppError> {
+    token_uri(match file {
+        CredentialFile::ServiceAccount(k) => k.token_uri.as_deref(),
+        CredentialFile::AuthorizedUser(u) => u.token_uri.as_deref(),
+    })
+}
 
-    fn invalidate(&self) -> bool {
-        self.stale.store(true, Ordering::SeqCst);
-        true
-    }
+/// The access tokens of a credential file, fetched from its token endpoint through `transport`
+/// when first needed, again shortly before they expire and once after the API refused one
+/// (`TokenSource::issued`, which the API's `HttpClient` asks).
+pub fn issued_tokens(
+    transport: Arc<dyn Transport>,
+    file: &CredentialFile,
+    scope: &str,
+) -> Result<TokenSource, AppError> {
+    let grant = Arc::new(Grant::of(file, scope)?);
+    Ok(TokenSource::issued(Arc::new(move || {
+        let grant = Arc::clone(&grant);
+        let transport = Arc::clone(&transport);
+        Box::pin(async move { fetch_token(transport.as_ref(), &grant).await })
+    })))
+}
+
+async fn fetch_token(transport: &dyn Transport, grant: &Grant) -> Result<IssuedToken, AppError> {
+    debug_assert!(credentials_may_go_to(grant.token_uri()));
+    let reply = transport.send(grant.request()?).await?;
+    parse_token_reply(reply.status, &reply.body, reply.content_type.as_deref())
 }
 
 /// The token endpoint of a credential file: Google's by default. Another one must be HTTPS
@@ -374,7 +322,7 @@ pub fn parse_token_reply(
     status: u16,
     body: &[u8],
     content_type: Option<&str>,
-) -> Result<AccessToken, AppError> {
+) -> Result<IssuedToken, AppError> {
     let reply: Option<TokenReply> = serde_json::from_slice(body).ok();
     let ok = (200..300).contains(&status);
     match reply {
@@ -389,9 +337,9 @@ pub fn parse_token_reply(
                 _ => None,
             });
             let lifetime = secs.map_or(DEFAULT_LIFETIME, Duration::from_secs);
-            Ok(AccessToken {
+            Ok(IssuedToken {
                 token,
-                expires_at: Instant::now().checked_add(lifetime),
+                expires_in: Some(lifetime),
             })
         }
         Some(TokenReply {
@@ -543,7 +491,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ok.token, "ya29.a");
-        assert!(ok.expires_at.is_some());
+        assert_eq!(ok.expires_in, Some(Duration::from_secs(3599)));
         assert!(!format!("{ok:?}").contains("ya29"));
         let refused = parse_token_reply(
             400,
@@ -602,6 +550,13 @@ mod tests {
         }
     }
 
+    fn claims_of(assertion: &str) -> serde_json::Value {
+        let (_, claims) =
+            crate::drivers::common::jwt::verify_rs256(&test_key().public_key, assertion)
+                .expect("an assertion signed with the test key");
+        claims
+    }
+
     #[tokio::test]
     async fn a_service_account_signs_once_and_reuses_its_token() {
         let fake = FakeBigquery::new();
@@ -614,31 +569,37 @@ mod tests {
             ),
         );
         let file = parse_credential_file(&sa_key_json("https://oauth2.example/token")).unwrap();
-        let tokens =
-            OAuthTokens::from_file(fake.transport(), &file, SCOPE_BIGQUERY_READONLY).unwrap();
-        assert_eq!(tokens.token().await.unwrap(), "tok-1");
-        assert_eq!(tokens.token().await.unwrap(), "tok-1");
+        let tokens = issued_tokens(fake.transport(), &file, SCOPE_BIGQUERY_READONLY).unwrap();
+        assert_eq!(tokens.get().await.unwrap().as_deref(), Some("tok-1"));
+        assert_eq!(tokens.get().await.unwrap().as_deref(), Some("tok-1"));
         let sent = fake.requests();
         assert_eq!(sent.len(), 1, "the token is cached");
         let form = sent[0].form();
-        assert_eq!(form[0], ("grant_type".into(), JWT_BEARER.into()));
+        assert_eq!(form[0], ("grant_type".into(), JWT_BEARER_GRANT.into()));
         assert_eq!(form[1].0, "assertion");
-        // The assertion asks for the read-only scope at the file's token endpoint.
-        let claims = form[1].1.split('.').nth(1).unwrap();
-        use base64::Engine as _;
-        let claims: serde_json::Value = serde_json::from_slice(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(claims)
-                .unwrap(),
-        )
-        .unwrap();
+        // Signed with the file's key, named by its id; the read-only scope at the file's token
+        // endpoint.
+        let header: serde_json::Value = {
+            use base64::Engine as _;
+            let part = form[1].1.split('.').next().unwrap();
+            serde_json::from_slice(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(part)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(header["kid"], "k1");
+        assert_eq!(header["alg"], "RS256");
+        let claims = claims_of(&form[1].1);
         assert_eq!(claims["scope"], SCOPE_BIGQUERY_READONLY);
         assert_eq!(claims["aud"], "https://oauth2.example/token");
+        assert_eq!(claims["iss"], "tabler@demo-proj.iam.gserviceaccount.com");
         // After a refusal the next call fetches a new one.
-        assert!(tokens.invalidate());
-        assert_eq!(tokens.token().await.unwrap(), "tok-1");
+        assert!(tokens.refreshes());
+        tokens.invalidate().await;
+        assert_eq!(tokens.get().await.unwrap().as_deref(), Some("tok-1"));
         assert_eq!(fake.requests().len(), 2);
-        let _ = test_key();
     }
 
     #[tokio::test(start_paused = true)]
@@ -654,28 +615,62 @@ mod tests {
                 ),
                 HttpResponse::json(
                     200,
-                    &serde_json::json!({"access_token": "b", "expires_in": 600}),
+                    &serde_json::json!({"access_token": "b", "expires_in": "600"}),
                 ),
             ],
         );
         let file = parse_credential_file(&user_json("https://oauth2.example/token")).unwrap();
-        let tokens = OAuthTokens::from_file(fake.transport(), &file, SCOPE_BIGQUERY).unwrap();
-        assert_eq!(tokens.token().await.unwrap(), "a");
-        tokio::time::advance(Duration::from_secs(200)).await;
-        assert_eq!(tokens.token().await.unwrap(), "a");
-        // Within five minutes of the end: a new one.
-        tokio::time::advance(Duration::from_secs(150)).await;
-        assert_eq!(tokens.token().await.unwrap(), "b");
+        let tokens = issued_tokens(fake.transport(), &file, SCOPE_BIGQUERY).unwrap();
+        assert_eq!(tokens.get().await.unwrap().as_deref(), Some("a"));
+        tokio::time::advance(Duration::from_secs(400)).await;
+        assert_eq!(tokens.get().await.unwrap().as_deref(), Some("a"));
+        // Within a quarter of its life (150 s) of the end: a new one.
+        tokio::time::advance(Duration::from_secs(60)).await;
+        assert_eq!(tokens.get().await.unwrap().as_deref(), Some("b"));
         let form = fake.requests()[0].form();
         assert_eq!(form[0], ("grant_type".into(), "refresh_token".into()));
         assert!(form.contains(&("refresh_token".into(), "refresh-secret".into())));
+        assert!(form.contains(&("client_secret".into(), "client-secret".into())));
     }
 
     #[tokio::test]
-    async fn fixed_tokens_cannot_be_refreshed() {
-        let t = FixedToken::new(" ya29.x \n");
-        assert_eq!(t.token().await.unwrap(), "ya29.x");
-        assert!(!t.invalidate());
-        assert!(FixedToken::new("  ").token().await.is_err());
+    async fn a_refused_login_is_an_auth_error_and_names_no_secret() {
+        let fake = FakeBigquery::new();
+        fake.on(
+            "POST",
+            "/token",
+            HttpResponse::json(
+                400,
+                &serde_json::json!({"error": "invalid_grant", "error_description": "Bad Request"}),
+            ),
+        );
+        let file = parse_credential_file(&user_json("https://oauth2.example/token")).unwrap();
+        let tokens = issued_tokens(fake.transport(), &file, SCOPE_BIGQUERY).unwrap();
+        let e = tokens.get().await.unwrap_err();
+        assert!(
+            matches!(&e, AppError::Auth(m) if m.contains("invalid_grant") && !m.contains("refresh-secret")),
+            "{e:?}"
+        );
+    }
+
+    #[test]
+    fn a_key_that_is_not_rsa_pem_is_refused_at_once() {
+        let mut key: serde_json::Value =
+            serde_json::from_str(&sa_key_json(GOOGLE_TOKEN_URI)).unwrap();
+        key["private_key"] = "not a key".into();
+        let file = parse_credential_file(&key.to_string()).unwrap();
+        let e = issued_tokens(FakeBigquery::new().transport(), &file, SCOPE_BIGQUERY)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(&e, AppError::Auth(m) if m.starts_with("the key file")),
+            "{e:?}"
+        );
+        // A token endpoint the bearer may not reach is refused before anything is signed.
+        key["private_key"] = test_key().pem.clone().into();
+        key["token_uri"] = "http://evil.example/token".into();
+        let file = parse_credential_file(&key.to_string()).unwrap();
+        assert!(token_endpoint(&file).is_err());
+        assert!(issued_tokens(FakeBigquery::new().transport(), &file, SCOPE_BIGQUERY).is_err());
     }
 }

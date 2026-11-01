@@ -9,6 +9,7 @@ use ts_rs::TS;
 use super::decode::is_json_number;
 use super::transport::credentials_may_go_to;
 use crate::error::AppError;
+use crate::types::profile::{ConnectionProfile, DriverParams};
 use crate::types::value::Value;
 
 /// 1 GiB: the cost guard a new profile starts with (plan §1.5 Q8).
@@ -87,6 +88,16 @@ impl BigqueryParams {
             Some(v) => serde_json::from_value(v.clone())
                 .map_err(|e| AppError::InvalidInput(format!("BigQuery settings: {e}"))),
         }
+    }
+
+    /// The settings of a profile (`options.driver_params`).
+    pub fn of(profile: &ConnectionProfile) -> Result<BigqueryParams, AppError> {
+        let params = profile
+            .options
+            .driver_params
+            .as_ref()
+            .map(|DriverParams(map)| serde_json::Value::Object(map.clone()));
+        BigqueryParams::from_value(params.as_ref())
     }
 
     /// The checks of a profile being saved or tested.

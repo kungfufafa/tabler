@@ -1,7 +1,6 @@
 //! Fakes for the tests: a scripted BigQuery transport (canned replies per method and path,
-//! every request recorded), canned REST payloads, credential files with a test RSA key made
-//! once per run, and a plain reqwest transport for the wire tests against
-//! `testkit::fake_http`.
+//! every request recorded), canned REST payloads and credential files with a test RSA key made
+//! once per run.
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -288,69 +287,4 @@ pub fn user_json(token_uri: &str) -> String {
         "universe_domain": "googleapis.com"
     })
     .to_string()
-}
-
-/// reqwest without proxies (the requests must reach 127.0.0.1).
-pub struct ReqwestTransport {
-    http: reqwest::Client,
-}
-
-impl ReqwestTransport {
-    pub fn new() -> ReqwestTransport {
-        crate::testkit::install_crypto();
-        ReqwestTransport {
-            http: reqwest::Client::builder()
-                .no_proxy()
-                .build()
-                .expect("a reqwest client"),
-        }
-    }
-}
-
-impl Default for ReqwestTransport {
-    fn default() -> Self {
-        ReqwestTransport::new()
-    }
-}
-
-#[async_trait]
-impl Transport for ReqwestTransport {
-    async fn send(&self, req: HttpRequest) -> Result<HttpResponse, AppError> {
-        let mut b = match req.method {
-            Method::Get => self.http.get(&req.url),
-            Method::Post => self.http.post(&req.url),
-        };
-        for (k, v) in &req.headers {
-            b = b.header(k, v);
-        }
-        if let Some(body) = req.body {
-            b = b.body(body);
-        }
-        let resp = b.send().await.map_err(|e| {
-            if e.is_timeout() {
-                AppError::Timeout
-            } else if e.is_connect() {
-                AppError::Connect(e.to_string())
-            } else {
-                AppError::NotConnected
-            }
-        })?;
-        let status = resp.status().as_u16();
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|_| AppError::NotConnected)?
-            .to_vec();
-        Ok(HttpResponse {
-            status,
-            retry_after: None,
-            content_type,
-            body,
-        })
-    }
 }
