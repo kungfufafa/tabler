@@ -28,6 +28,8 @@ pub type CellRow = Vec<Option<CqlValue>>;
 pub const LOCAL: &str = "SELECT release_version, cql_version, native_protocol_version, \
                          cluster_name, data_center, rack, partitioner FROM system.local WHERE \
                          key = 'local'";
+/// The keep-alive: one row of the node's own table, which every node answers locally.
+pub const PING: &str = "SELECT key FROM system.local WHERE key = 'local'";
 /// ScyllaDB's version; Cassandra has no such table, so an error here means Cassandra.
 pub const SCYLLA_VERSION: &str = "SELECT version FROM system.versions WHERE key = 'local'";
 pub const PEERS: &str =

@@ -107,6 +107,50 @@ Left for Phase B:
 - Running the cqlsh commands in the session, cancel, consistency, tracing, the renderer (whose splitter must keep batches whole too), the mock, and the real-server suite.
 - `lane.mjs cassandra bindings` once the tree builds: `src/lib/ipc/bindings/lex/cql.json` is still F4's, without the cqlsh inspections.
 
+## Phase B status
+
+Part B1 (the backend driver) is done; B2 (renderer, mock) is still to come.
+
+**What works.**
+
+- **`entry.rs`**: `open` builds a `Dial` from the profile (`dial`): the contact point (the tunnel's local end through SSH), TLS by the SSL mode with the CA file and client certificate, checked for the profile's host (`ConnectTarget::tls_host`), PasswordAuthenticator when the profile has a user, the keyspace (the profile's database, matched exactly as the keyspace picker lists it), and `CassandraParams`. `validate` parses `CassandraParams` and wants both files of a client certificate. `util` knows no call; `util_kind` is `Write`.
+- **`params.rs`**: `CassandraParams` (ts-exported with `CassandraConsistency`, `CassandraSerialConsistency`, `CassandraCompression`): consistency (default `LOCAL_ONE`), serial consistency (`LOCAL_SERIAL`), local datacenter, request timeout (30 s), editor page size (100, as cqlsh), compression (none, LZ4, Snappy), single node.
+- **`client.rs`**: the scylla side. The contact point is resolved here and given to the driver as an address, because the driver names a node to rustls by its IP address: `tls_client::rustls_config_through` checks that address's certificate for the profile's host. Single node (always over SSH): a host filter keeps only the contact point and an address translator sends any peer back to it. A Command password is read by an own `AuthenticatorProvider` for each new connection (`CommandPassword`, TTL 600 s). Schema metadata is not fetched by the driver (the catalog reads `system_schema` when asked). Values are bound through a prepared statement whose markers give their types (`encode.rs`).
+- **`session.rs`** (`DbSession` + `TableSource`) over the `wire.rs` seam:
+  - introspection: keyspaces (system ones hidden), the current keyspace as the only schema (`SchemaMode::DatabaseIsSchema`), tables and materialized views, structure in key order with indexes, triggers, options and the size estimate, Show DDL (the server's `DESCRIBE` on Cassandra 4.0+ / ScyllaDB 5.2+, else rebuilt from `system_schema`), view definitions, completion;
+  - the grid through `table_source()`: pages with the driver's paging state as the cursor (`cursor.rs`, bound to the statement and values), AND-only filters with `ALLOW FILTERING`, the size estimate as the count until an exact `count(*)` is asked for, whole cells by full primary key;
+  - edits as lightweight transactions by the full primary key (`UPDATE … IF EXISTS`, `INSERT … IF NOT EXISTS`, `DELETE … IF EXISTS`), sent one by one; `[applied]` = false fails the change with a message that says why, and the changes before it stay applied (`TxMode::Sequential`);
+  - the editor (`editor.rs`): cqlsh's `CONSISTENCY`, `SERIAL CONSISTENCY`, `TRACING`, `PAGING`, `EXPAND` are the session's own and never sent; `USE` switches every connection; anything else runs at the editor's consistency, page by page up to the row cap; DDL waits for schema agreement; server warnings and a traced statement's trace come back as notices;
+  - cancel: a `CancelHandle::Custom` that drops the run on this side (CQL has no server cancel; the node finishes within its own timeout); the query time out goes through it;
+  - read-only (`ClassifierOnly`, from `conn_options::effective_read_only`): every statement the CQL classifier calls a write, or does not know, is refused before it is sent on every path (query, execute, transaction, editor, stream, startup commands); a read-only profile whose startup commands write does not open;
+  - startup commands: cqlsh commands, `USE` and CQL statements, at connect;
+  - keep-alive: `SELECT key FROM system.local WHERE key = 'local'` every 30 s, answered by the node itself.
+- **`sqlgen/dialect/cql.rs`**: the grid's statements (`where_clause`, `browse_select`, `count_select`, `fetch_cell_select`) and the spec's hooks (select with `LIMIT` before `ALLOW FILTERING`, count, fetch, change).
+- **`errors.rs`**: bad credentials → `Auth`, a lost connection → `NotConnected`, the driver's request timeout → `Timeout`, server errors → `Db` with the CQL error code in `vendor_code`.
+
+**Caps granted, and the test that proves each** (`drivers::cassandra::tests` unless named):
+
+| Feature / cap                                                        | Test                                                                                                                                                     |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Editor`                                                             | `the_editor_pages_to_its_cap_and_runs_cqlsh_commands_itself`, `traced_runs_bring_their_trace_back_as_notices`                                            |
+| `StructureView`                                                      | `lists_keyspaces_tables_and_their_structure`, `browses_page_after_page_with_the_paging_state`, `counts_by_estimate_unless_asked_and_fetches_whole_cells` |
+| `EditRows`, `InsertRows`, `DeleteRows`                               | `a_commit_stops_at_the_change_that_did_not_apply`; `sqlgen::dialect::cql::tests::edits_are_lightweight_transactions_by_full_key`                         |
+| `ServerExpressions` (`now()`, `toTimestamp(now())`, `toDate(now())`) | `edits_are_lightweight_transactions_by_full_key`, `server_expressions_are_the_cql_clocks`                                                                |
+| `ExactCount`, `CountMode::Costly`                                    | `counts_by_estimate_unless_asked_and_fetches_whole_cells`                                                                                                |
+| `TableDdl`, `ViewDefinition`                                         | `lists_keyspaces_tables_and_their_structure`                                                                                                             |
+| `SwitchDatabase` (a new session in the keyspace)                     | `connects_with_the_profile_and_reads_who_the_node_is` (the dial's keyspace), `entry::tests::dial_reads_the_profile`                                      |
+| `StartupCommands`                                                    | `startup_commands_run_at_connect`, `read_only_refuses_every_write_before_sending_it`                                                                     |
+| `Paging::Cursor`, no sort, AND-only filter ops, raw WHERE            | `browses_page_after_page_with_the_paging_state`, `filters_with_and_and_allow_filtering_only`, `the_grid_selects_with_limit_before_allow_filtering`       |
+| `TxMode::Sequential`, `Affected::Exact` (the LWT's `[applied]`)      | `a_commit_stops_at_the_change_that_did_not_apply`                                                                                                        |
+| `ReadOnlyMode::ClassifierOnly`                                       | `read_only_refuses_every_write_before_sending_it`                                                                                                        |
+| keep-alive 30 s                                                      | `caps_grant_what_the_session_does`                                                                                                                       |
+
+Not granted: `CancelOnServer` (CQL has none), `Explain` (none either), `EditWithoutKey` (every row has a key, and edits need all of it), `Returning`, `StructureEdit` and the DDL features, `Routines`, `Users`, `ProcessList`, `SessionDetails`, exports and imports (core SQL), and `Mcp`, which waits for the classifier's red-team review and the lead.
+
+**Tests.** `node dev/scripts/lane.mjs cassandra test --snapshot`: value mapping both ways (2^53+1 → `BigInt`, decimals and varints exact, timestamps as text, collections, tuples, UDTs and vectors as JSON and back from it), quoting and injection (names `"` doubled, values bound), the classifier suite, and the session over a scripted node (`fake.rs`): connect, list, browse with paging, count, fetch cell, a commit with one failing change, the editor, a cancel and the query time out, and read-only refusals on every write path. The real-server suite `tests/cassandra.rs` covers the same against a server and skips without `TABLER_TEST_CASSANDRA_URL`.
+
+**Only a real server can confirm** (`lane.mjs cassandra it`): the scylla driver's own behaviour (paging states, prepared markers' types, LWT `[applied]` rows, schema agreement, request timeouts), TLS against a node's certificate through the IP mapping, single-node pinning over SSH, PasswordAuthenticator and a Command password on reconnect, ScyllaDB's version, and the server's `DESCRIBE`.
+
 ## Definition of done (this lane)
 
 Beyond the shared list in [README.md](README.md#definition-of-done-v1):
@@ -353,4 +397,16 @@ The same driver serves ScyllaDB (shard-aware), Cassandra 3/4/5, DataStax Enterpr
 
 ## Limits
 
-_The lane lists here what v1 does not do, before it lands (definition of done, item 10)._
+What v1 does not do, and where it differs from TablePlus on purpose:
+
+- **Protocol v4 only** (the scylla driver): Cassandra 3.0+ and ScyllaDB. No DataStax Astra (Secure Connect Bundle), no AWS Keyspaces SigV4 (its service-specific credentials work as a password), no protocol v5.
+- **No sort**: CQL orders by clustering columns within one partition only, so the grid keeps the table's order.
+- **Filters**: AND only, `=`, `<`, `>`, `<=`, `>=`, `IN`, `LIKE` (SASI/SAI indexes only, the server refuses it otherwise) and BETWEEN (as `>=` and `<=`); no OR, NULL tests, negations or Any column. A filtered page adds `ALLOW FILTERING`, which can scan the cluster.
+- **Paging** is Previous / Next only (the paging state); there is no jump to page N.
+- **Counts**: the size estimate counts partitions, not rows; an exact count reads every partition and may hit the request timeout.
+- **Edits**: by the whole primary key only, as lightweight transactions (Paxos, about four round trips each); key columns cannot be changed (delete and insert instead); counter tables cannot be edited in the grid (`UPDATE … SET c = c + n` in the editor); no DEFAULT. Changes apply one by one: a failed one leaves those before it applied.
+- **Cancel** stops the run on this side only; the node finishes the statement within its own timeout.
+- **Collections in edits** are read back from the grid's JSON; a number inside one keeps the precision `serde_json` gives it (exact for 64-bit integers, an f64 otherwise).
+- **TLS with verify-full** checks the contact point's certificate for the profile's host; other nodes of a multi-node session are checked for their IP addresses (turn on single node, or give their certificates IP SANs).
+- **Keyspace names**: the profile's keyspace is matched exactly (as the keyspace picker lists it); the editor's `USE` folds a bare name to lower case, as CQL does.
+- **No Explain, process list, users, routines, structure editing, exports or imports** in v1; `EXPAND` is accepted and changes nothing in the grid.

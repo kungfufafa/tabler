@@ -12,6 +12,7 @@
 //! before EditRows is on. The DDL text of `table_meta` (when the server has no DESCRIBE) is
 //! rebuilt here from `system_schema` rows.
 
+use crate::error::AppError;
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::dialect::SqlDialect;
 use crate::sqlgen::dialect::lex::{ClassifyRules, LexProfile, PLAIN, TokenKind, scan};
@@ -19,10 +20,16 @@ use crate::sqlgen::dialect::spec::{
     CiLike, DialectSpec, NullSafeEq, NullsSort, Paging, PlaceholderStyle, RedactRule, SqlHooks,
     SqlKnobs, double_quoted, explain_unsupported, hex_0x, ph_question, single_quoted,
 };
+use crate::sqlgen::mutate::{Cell, cells};
+use crate::sqlgen::portable::select::{Params, find_column, ident, table_name};
 use crate::sqlgen::portable::{classify, split};
+use crate::sqlgen::select::BuiltSql;
 use crate::sqlgen::split::SplitStatement;
-use crate::types::mutate::ServerExpr;
-use crate::types::schema::{ColumnMeta, ValueKind};
+use crate::sqlgen::sql::{SelectQuery, TableTarget};
+use crate::types::browse::{Conjunction, FilterGroup, FilterNode, FilterOp, RowKey};
+use crate::types::mutate::{ServerExpr, StagedChange};
+use crate::types::schema::{ColumnMeta, TableRef, ValueKind};
+use crate::types::value::Value;
 
 pub static LEX: LexProfile = LexProfile {
     ident_quotes: &[('"', '"')],
@@ -162,6 +169,386 @@ fn closes_batch(words: &[String]) -> bool {
     matches!(words, [.., a, b] if a == "APPLY" && b == "BATCH")
 }
 
+// The grid's statements. CQL filters with AND only, on a column and a value (no OR, no IS NULL,
+// no casts, no negation), and a filter on anything but the partition key needs ALLOW FILTERING,
+// which comes after LIMIT. There is no OFFSET: the session pages with the driver's paging state.
+// Rows are written by their full primary key, as lightweight transactions (`IF EXISTS`, `IF NOT
+// EXISTS`) whose `[applied]` proves that the one row was there (or was not), since a plain CQL
+// write is an upsert that reports nothing.
+
+/// The filter operators the grid's WHERE takes.
+pub const FILTER_OPS: [FilterOp; 8] = [
+    FilterOp::Eq,
+    FilterOp::Gt,
+    FilterOp::Lt,
+    FilterOp::Ge,
+    FilterOp::Le,
+    FilterOp::In,
+    FilterOp::Like,
+    FilterOp::Between,
+];
+
+fn refused(why: &str) -> AppError {
+    AppError::InvalidInput(format!("CQL {why}"))
+}
+
+/// The conditions of a filter (AND-ed), appending their values.
+fn conditions(
+    columns: &[ColumnMeta],
+    group: &FilterGroup,
+    params: &mut Params<'_>,
+    out: &mut Vec<String>,
+) -> Result<(), AppError> {
+    let counted = group
+        .items
+        .iter()
+        .filter(|i| !matches!(i, FilterNode::Raw { sql } if sql.trim().is_empty()))
+        .count();
+    if group.conjunction == Conjunction::Or && counted > 1 {
+        return Err(refused("has no OR: combine the filters with AND"));
+    }
+    for item in &group.items {
+        match item {
+            FilterNode::Condition { column, op, values } => {
+                let col = find_column(columns, column)?;
+                let id = ident(&SPEC, &col.name);
+                let one = |values: &[Value]| -> Result<Value, AppError> {
+                    match values.first() {
+                        None => Err(AppError::InvalidInput(format!(
+                            "filter on \"{column}\" needs a value"
+                        ))),
+                        Some(Value::Null) => Err(refused("cannot match NULL")),
+                        Some(v) => Ok(v.clone()),
+                    }
+                };
+                match op {
+                    FilterOp::Eq
+                    | FilterOp::Gt
+                    | FilterOp::Lt
+                    | FilterOp::Ge
+                    | FilterOp::Le
+                    | FilterOp::Like => {
+                        let sign = match op {
+                            FilterOp::Eq => "=",
+                            FilterOp::Gt => ">",
+                            FilterOp::Lt => "<",
+                            FilterOp::Ge => ">=",
+                            FilterOp::Le => "<=",
+                            _ => "LIKE",
+                        };
+                        let ph = params.push(one(values)?, Some(col));
+                        out.push(format!("{id} {sign} {ph}"));
+                    }
+                    FilterOp::In => {
+                        if values.is_empty() || values.iter().any(Value::is_null) {
+                            return Err(refused("IN needs values and cannot match NULL"));
+                        }
+                        let phs: Vec<String> = values
+                            .iter()
+                            .map(|v| params.push(v.clone(), Some(col)))
+                            .collect();
+                        out.push(format!("{id} IN ({})", phs.join(", ")));
+                    }
+                    FilterOp::Between => {
+                        let low = one(values)?;
+                        let high = one(values.get(1..).unwrap_or_default())?;
+                        let a = params.push(low, Some(col));
+                        let b = params.push(high, Some(col));
+                        out.push(format!("{id} >= {a}"));
+                        out.push(format!("{id} <= {b}"));
+                    }
+                    other => {
+                        return Err(AppError::InvalidInput(format!(
+                            "CQL cannot filter with {other:?}"
+                        )));
+                    }
+                }
+            }
+            FilterNode::Group(g) => conditions(columns, g, params, out)?,
+            // The user's own relations, as they are: CQL takes no parentheses around them.
+            FilterNode::Raw { sql } => {
+                let trimmed = sql.trim();
+                if !trimmed.is_empty() {
+                    out.push(trimmed.to_string());
+                }
+            }
+            FilterNode::AnyColumn { .. } => {
+                return Err(refused("cannot filter on any column: pick one"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The WHERE body of a filter and its values; None without conditions.
+pub fn where_clause(
+    columns: &[ColumnMeta],
+    filter: Option<&FilterGroup>,
+    values: &mut Vec<Value>,
+) -> Result<Option<String>, AppError> {
+    let Some(filter) = filter else {
+        return Ok(None);
+    };
+    let mut parts = Vec::new();
+    conditions(columns, filter, &mut Params::new(&SPEC, values), &mut parts)?;
+    if values.len() > SPEC.max_params as usize {
+        return Err(AppError::InvalidInput(format!(
+            "the filter needs {} values, more than one query can bind ({})",
+            values.len(),
+            SPEC.max_params
+        )));
+    }
+    Ok((!parts.is_empty()).then(|| parts.join(" AND ")))
+}
+
+/// `SELECT cols FROM "ks"."t" [WHERE …] [LIMIT n] [ALLOW FILTERING]`. The session pages it
+/// without a limit; `select` (the facade's) caps it at the page.
+pub fn browse_select(q: &SelectQuery<'_>, limit: Option<u32>) -> Result<BuiltSql, AppError> {
+    if !q.sort.is_empty() {
+        return Err(refused(
+            "sorts only by clustering columns within one partition: the grid keeps the table's \
+             order",
+        ));
+    }
+    if q.offset > 0 {
+        return Err(refused("cannot skip rows: pages follow one another"));
+    }
+    let names: Vec<&str> = match q.selected {
+        Some(names) => names.iter().map(String::as_str).collect(),
+        None => q.columns.iter().map(|c| c.name.as_str()).collect(),
+    };
+    if names.is_empty() {
+        return Err(AppError::InvalidInput("no columns to select".into()));
+    }
+    let mut list = Vec::with_capacity(names.len());
+    for n in names {
+        find_column(q.columns, n)?;
+        list.push(ident(&SPEC, n));
+    }
+    let mut params = Vec::new();
+    let condition = where_clause(q.columns, q.filter, &mut params)?;
+    let mut sql = format!(
+        "SELECT {} FROM {}",
+        list.join(", "),
+        table_name(&SPEC, q.table)
+    );
+    if let Some(w) = &condition {
+        sql.push_str(" WHERE ");
+        sql.push_str(w);
+    }
+    if let Some(n) = limit {
+        sql.push_str(&format!(" LIMIT {n}"));
+    }
+    if condition.is_some() {
+        sql.push_str(" ALLOW FILTERING");
+    }
+    Ok(BuiltSql { sql, params })
+}
+
+fn select_hook(_: &DialectSpec, q: &SelectQuery<'_>) -> Result<BuiltSql, AppError> {
+    browse_select(q, Some(q.limit))
+}
+
+fn count_hook(
+    _: &DialectSpec,
+    table: &TableRef,
+    columns: &[ColumnMeta],
+    filter: Option<&FilterGroup>,
+) -> Result<BuiltSql, AppError> {
+    count_select(table, columns, filter)
+}
+
+/// `SELECT count(*) FROM "ks"."t" [WHERE …] [ALLOW FILTERING]`: a scan of every partition.
+pub fn count_select(
+    table: &TableRef,
+    columns: &[ColumnMeta],
+    filter: Option<&FilterGroup>,
+) -> Result<BuiltSql, AppError> {
+    let mut params = Vec::new();
+    let condition = where_clause(columns, filter, &mut params)?;
+    let mut sql = format!("SELECT count(*) FROM {}", table_name(&SPEC, table));
+    if let Some(w) = condition {
+        sql.push_str(&format!(" WHERE {w} ALLOW FILTERING"));
+    }
+    Ok(BuiltSql { sql, params })
+}
+
+/// `"pk" = ? AND "ck" = ?` of a row's full primary key: every key column and no other, so a
+/// write or a read never reaches more than that row (a partial clustering key would delete a
+/// range of rows).
+fn key_condition(
+    columns: &[ColumnMeta],
+    key: &RowKey,
+    params: &mut Params<'_>,
+) -> Result<String, AppError> {
+    let RowKey::Pk(map) = key else {
+        return Err(refused("addresses a row by its primary key only"));
+    };
+    let key_columns: Vec<&ColumnMeta> = columns.iter().filter(|c| c.is_pk).collect();
+    if key_columns.is_empty() || map.len() != key_columns.len() {
+        return Err(refused(
+            "addresses a row by its whole primary key (partition and clustering columns)",
+        ));
+    }
+    let mut parts = Vec::with_capacity(key_columns.len());
+    for col in key_columns {
+        let value = map.get(&col.name).ok_or_else(|| {
+            refused("addresses a row by its whole primary key (partition and clustering columns)")
+        })?;
+        if value.is_null() {
+            return Err(refused("key columns are never NULL"));
+        }
+        let ph = params.push(value.clone(), Some(col));
+        parts.push(format!("{} = {ph}", ident(&SPEC, &col.name)));
+    }
+    Ok(parts.join(" AND "))
+}
+
+fn fetch_cell_hook(
+    _: &DialectSpec,
+    t: &TableTarget<'_>,
+    column: &ColumnMeta,
+    key: &RowKey,
+) -> Result<(String, Vec<Value>), AppError> {
+    let built = fetch_cell_select(t, column, key)?;
+    Ok((built.sql, built.params))
+}
+
+/// `SELECT "c" FROM "ks"."t" WHERE <full key>`.
+pub fn fetch_cell_select(
+    t: &TableTarget<'_>,
+    column: &ColumnMeta,
+    key: &RowKey,
+) -> Result<BuiltSql, AppError> {
+    let mut params = Vec::new();
+    let condition = key_condition(t.columns, key, &mut Params::new(&SPEC, &mut params))?;
+    Ok(BuiltSql {
+        sql: format!(
+            "SELECT {} FROM {} WHERE {condition}",
+            ident(&SPEC, &column.name),
+            table_name(&SPEC, t.table)
+        ),
+        params,
+    })
+}
+
+/// A value or server expression of a written cell.
+fn cell_sql(
+    cell: &Cell<'_>,
+    col: &ColumnMeta,
+    params: &mut Params<'_>,
+) -> Result<String, AppError> {
+    match cell {
+        Cell::Value(Value::Default) | Cell::Expr(ServerExpr::Default) => {
+            Err(refused("has no DEFAULT: enter the value explicitly"))
+        }
+        Cell::Expr(e) => cql_server_expr(*e, col.kind).ok_or_else(|| {
+            AppError::Unsupported(format!("CQL has no {} for \"{}\"", e.wire(), col.name))
+        }),
+        Cell::Value(Value::Null) => Ok("NULL".into()),
+        Cell::Value(v) => Ok(params.push((*v).clone(), Some(col))),
+    }
+}
+
+/// UPDATE … IF EXISTS, INSERT … IF NOT EXISTS, DELETE … IF EXISTS of one staged change: each
+/// must apply to exactly one row, which its `[applied]` says.
+fn change_hook(
+    _: &DialectSpec,
+    t: &TableTarget<'_>,
+    change: &StagedChange,
+    _returning: bool,
+) -> Result<(BuiltSql, Option<u64>), AppError> {
+    // Counter tables take no lightweight transactions, and a counter is never set, only moved.
+    if t.columns.iter().any(|c| c.data_type == "counter") {
+        return Err(refused(
+            "counter tables cannot be edited in the grid: run UPDATE … SET c = c + n in the \
+             editor",
+        ));
+    }
+    let table = table_name(&SPEC, t.table);
+    let mut values = Vec::new();
+    let mut params = Params::new(&SPEC, &mut values);
+    let sql = match change {
+        StagedChange::Update {
+            key,
+            changes,
+            exprs,
+            ..
+        } => {
+            let cells = cells(changes, exprs.as_ref());
+            if cells.is_empty() {
+                return Err(AppError::InvalidInput(
+                    "update has no changed columns".into(),
+                ));
+            }
+            let mut sets = Vec::with_capacity(cells.len());
+            for (name, cell) in &cells {
+                let col = find_column(t.columns, name)?;
+                if col.is_pk {
+                    return Err(refused(
+                        "cannot change a primary key column: delete the row and insert it again",
+                    ));
+                }
+                sets.push(format!(
+                    "{} = {}",
+                    ident(&SPEC, name),
+                    cell_sql(cell, col, &mut params)?
+                ));
+            }
+            let condition = key_condition(t.columns, key, &mut params)?;
+            format!(
+                "UPDATE {table} SET {} WHERE {condition} IF EXISTS",
+                sets.join(", ")
+            )
+        }
+        StagedChange::Insert {
+            values: row, exprs, ..
+        } => {
+            let cells = cells(row, exprs.as_ref());
+            let mut names = Vec::new();
+            let mut exprs_sql = Vec::new();
+            for (name, cell) in &cells {
+                let col = find_column(t.columns, name)?;
+                // Left out, a cell stays empty: CQL columns have no defaults.
+                if matches!(
+                    cell,
+                    Cell::Value(Value::Default) | Cell::Expr(ServerExpr::Default)
+                ) {
+                    continue;
+                }
+                names.push(ident(&SPEC, name));
+                exprs_sql.push(cell_sql(cell, col, &mut params)?);
+            }
+            if let Some(missing) = t
+                .columns
+                .iter()
+                .find(|c| c.is_pk && !cells.contains_key(c.name.as_str()))
+            {
+                return Err(AppError::InvalidInput(format!(
+                    "a new row needs its key column \"{}\"",
+                    missing.name
+                )));
+            }
+            format!(
+                "INSERT INTO {table} ({}) VALUES ({}) IF NOT EXISTS",
+                names.join(", "),
+                exprs_sql.join(", ")
+            )
+        }
+        StagedChange::Delete { key, .. } => {
+            let condition = key_condition(t.columns, key, &mut params)?;
+            format!("DELETE FROM {table} WHERE {condition} IF EXISTS")
+        }
+    };
+    Ok((
+        BuiltSql {
+            sql,
+            params: values,
+        },
+        Some(1),
+    ))
+}
+
 pub static SPEC: DialectSpec = DialectSpec {
     dialect: SqlDialect::Cql,
     label: "CQL",
@@ -215,8 +602,11 @@ pub static SPEC: DialectSpec = DialectSpec {
         ..SqlKnobs::ANSI
     },
     hooks: SqlHooks {
+        build_select: Some(select_hook),
+        build_count: Some(count_hook),
+        build_fetch_cell: Some(fetch_cell_hook),
+        build_change: Some(change_hook),
         split: Some(split_cql),
-        ..SqlHooks::NONE
     },
     ddl: None,
 };
@@ -480,6 +870,294 @@ mod tests {
     #[test]
     fn export_bindings_lex_cql() {
         crate::sqlgen::dialect::lex::export_lex("cql", &LEX, &RULES);
+    }
+
+    fn col(name: &str, ty: &str, pk: Option<u32>) -> ColumnMeta {
+        ColumnMeta {
+            name: name.into(),
+            ordinal: 1,
+            data_type: ty.into(),
+            kind: crate::drivers::cassandra::types::native_kind(ty),
+            nullable: pk.is_none(),
+            default_expr: None,
+            is_pk: pk.is_some(),
+            pk_ordinal: pk,
+            is_auto_increment: false,
+            is_generated: false,
+            is_unsigned: false,
+            comment: None,
+            enum_values: None,
+            char_max_len: None,
+            numeric_precision: None,
+            numeric_scale: None,
+            collation: None,
+            array_elem_type: None,
+            extra: None,
+            base_type: None,
+        }
+    }
+
+    /// `"My""Ks"."t"`: `PRIMARY KEY (("Id"), seq)`, a text and a timestamp.
+    fn table() -> (TableRef, Vec<ColumnMeta>) {
+        (
+            TableRef::new(Some("My\"Ks"), "t"),
+            vec![
+                col("Id", "int", Some(1)),
+                col("seq", "int", Some(2)),
+                col("val", "text", None),
+                col("at", "timestamp", None),
+            ],
+        )
+    }
+
+    fn eq(column: &str, v: Value) -> FilterNode {
+        FilterNode::Condition {
+            column: column.into(),
+            op: FilterOp::Eq,
+            values: vec![v],
+        }
+    }
+
+    fn key(id: i64, seq: Option<i64>) -> RowKey {
+        let mut map = std::collections::BTreeMap::from([("Id".to_string(), Value::Int(id))]);
+        if let Some(seq) = seq {
+            map.insert("seq".into(), Value::Int(seq));
+        }
+        RowKey::Pk(map)
+    }
+
+    #[test]
+    fn the_grid_selects_with_limit_before_allow_filtering() {
+        let (t, cols) = table();
+        let filter = FilterGroup {
+            conjunction: Conjunction::And,
+            items: vec![
+                eq("val", Value::Text("x'; DROP TABLE t; --".into())),
+                FilterNode::Condition {
+                    column: "seq".into(),
+                    op: FilterOp::Between,
+                    values: vec![Value::Int(1), Value::Int(5)],
+                },
+                FilterNode::Condition {
+                    column: "Id".into(),
+                    op: FilterOp::In,
+                    values: vec![Value::Int(1), Value::Int(2)],
+                },
+            ],
+        };
+        let q = SelectQuery {
+            table: &t,
+            columns: &cols,
+            selected: None,
+            filter: Some(&filter),
+            sort: &[],
+            limit: 300,
+            offset: 0,
+            pk: &[],
+            identity: crate::types::browse::RowIdentity::Pk,
+        };
+        let built = crate::sqlgen::portable::select::build_select(&SPEC, &q).unwrap();
+        assert_eq!(
+            built.sql,
+            "SELECT \"Id\", \"seq\", \"val\", \"at\" FROM \"My\"\"Ks\".\"t\" WHERE \"val\" = ? \
+             AND \"seq\" >= ? AND \"seq\" <= ? AND \"Id\" IN (?, ?) LIMIT 300 ALLOW FILTERING"
+        );
+        // Values are bound, never written into the text.
+        assert_eq!(built.params.len(), 5);
+        assert_eq!(built.params[0], Value::Text("x'; DROP TABLE t; --".into()));
+        let paged = browse_select(&q, None).unwrap();
+        assert!(
+            paged.sql.ends_with("IN (?, ?) ALLOW FILTERING"),
+            "{}",
+            paged.sql
+        );
+        let none = SelectQuery { filter: None, ..q };
+        assert_eq!(
+            browse_select(&none, Some(10)).unwrap().sql,
+            "SELECT \"Id\", \"seq\", \"val\", \"at\" FROM \"My\"\"Ks\".\"t\" LIMIT 10"
+        );
+        let count = count_select(&t, &cols, Some(&filter)).unwrap();
+        assert!(
+            count
+                .sql
+                .starts_with("SELECT count(*) FROM \"My\"\"Ks\".\"t\" WHERE")
+        );
+        assert!(count.sql.ends_with(" ALLOW FILTERING"));
+        assert_eq!(
+            count_select(&t, &cols, None).unwrap().sql,
+            "SELECT count(*) FROM \"My\"\"Ks\".\"t\""
+        );
+        // What CQL cannot filter, sort or skip is refused.
+        let sorted = [crate::types::browse::SortSpec {
+            column: "seq".into(),
+            dir: crate::types::browse::SortDir::Desc,
+            nulls: None,
+        }];
+        assert!(browse_select(&SelectQuery { sort: &sorted, ..q }, None).is_err());
+        assert!(browse_select(&SelectQuery { offset: 300, ..q }, None).is_err());
+        for bad in [
+            FilterGroup {
+                conjunction: Conjunction::Or,
+                items: vec![eq("val", Value::Text("a".into())), eq("seq", Value::Int(1))],
+            },
+            FilterGroup {
+                conjunction: Conjunction::And,
+                items: vec![eq("val", Value::Null)],
+            },
+            FilterGroup {
+                conjunction: Conjunction::And,
+                items: vec![FilterNode::Condition {
+                    column: "val".into(),
+                    op: FilterOp::NotLike,
+                    values: vec![Value::Text("a".into())],
+                }],
+            },
+            FilterGroup {
+                conjunction: Conjunction::And,
+                items: vec![FilterNode::AnyColumn {
+                    op: FilterOp::Eq,
+                    values: vec![Value::Text("a".into())],
+                }],
+            },
+            FilterGroup {
+                conjunction: Conjunction::And,
+                items: vec![eq("nope", Value::Int(1))],
+            },
+        ] {
+            assert!(count_select(&t, &cols, Some(&bad)).is_err(), "{bad:?}");
+        }
+        // One raw relation in an OR group is still just that relation.
+        let raw = FilterGroup {
+            conjunction: Conjunction::Or,
+            items: vec![FilterNode::Raw {
+                sql: " token(\"Id\") > 0 ".into(),
+            }],
+        };
+        assert!(
+            count_select(&t, &cols, Some(&raw))
+                .unwrap()
+                .sql
+                .ends_with("WHERE token(\"Id\") > 0 ALLOW FILTERING")
+        );
+    }
+
+    #[test]
+    fn edits_are_lightweight_transactions_by_full_key() {
+        let (t, cols) = table();
+        let target = TableTarget {
+            table: &t,
+            columns: &cols,
+        };
+        let change = |c: &StagedChange| (SPEC.hooks.build_change.unwrap())(&SPEC, &target, c, true);
+        let update = StagedChange::Update {
+            row_id: "r".into(),
+            key: key(1, Some(2)),
+            changes: std::collections::BTreeMap::from([
+                ("val".to_string(), Value::Null),
+                ("at".to_string(), Value::Text("x".into())),
+            ]),
+            exprs: Some(std::collections::BTreeMap::from([(
+                "at".to_string(),
+                ServerExpr::Now,
+            )])),
+        };
+        let (built, expect) = change(&update).unwrap();
+        assert_eq!(
+            built.sql,
+            "UPDATE \"My\"\"Ks\".\"t\" SET \"at\" = toTimestamp(now()), \"val\" = NULL WHERE \
+             \"Id\" = ? AND \"seq\" = ? IF EXISTS"
+        );
+        assert_eq!(built.params, [Value::Int(1), Value::Int(2)]);
+        assert_eq!(expect, Some(1));
+        let insert = StagedChange::Insert {
+            row_id: "n".into(),
+            values: std::collections::BTreeMap::from([
+                ("Id".to_string(), Value::Int(1)),
+                ("seq".to_string(), Value::Int(2)),
+                ("val".to_string(), Value::Text("v".into())),
+                ("at".to_string(), Value::Default),
+            ]),
+            exprs: None,
+        };
+        let (built, _) = change(&insert).unwrap();
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"My\"\"Ks\".\"t\" (\"Id\", \"seq\", \"val\") VALUES (?, ?, ?) IF NOT \
+             EXISTS"
+        );
+        let delete = StagedChange::Delete {
+            row_id: "r".into(),
+            key: key(1, Some(2)),
+        };
+        assert_eq!(
+            change(&delete).unwrap().0.sql,
+            "DELETE FROM \"My\"\"Ks\".\"t\" WHERE \"Id\" = ? AND \"seq\" = ? IF EXISTS"
+        );
+        let fetch = fetch_cell_select(&target, &cols[2], &key(1, Some(2))).unwrap();
+        assert_eq!(
+            fetch.sql,
+            "SELECT \"val\" FROM \"My\"\"Ks\".\"t\" WHERE \"Id\" = ? AND \"seq\" = ?"
+        );
+
+        // A partial key would reach a range of rows; a key column cannot be set; no DEFAULT.
+        let partial = StagedChange::Delete {
+            row_id: "r".into(),
+            key: key(1, None),
+        };
+        assert!(change(&partial).is_err());
+        assert!(fetch_cell_select(&target, &cols[2], &key(1, None)).is_err());
+        let all_columns = StagedChange::Delete {
+            row_id: "r".into(),
+            key: RowKey::AllColumns(std::collections::BTreeMap::from([(
+                "val".to_string(),
+                Value::Text("v".into()),
+            )])),
+        };
+        assert!(change(&all_columns).is_err());
+        let set_key = StagedChange::Update {
+            row_id: "r".into(),
+            key: key(1, Some(2)),
+            changes: std::collections::BTreeMap::from([("seq".to_string(), Value::Int(3))]),
+            exprs: None,
+        };
+        assert!(change(&set_key).is_err());
+        let set_default = StagedChange::Update {
+            row_id: "r".into(),
+            key: key(1, Some(2)),
+            changes: std::collections::BTreeMap::from([("val".to_string(), Value::Default)]),
+            exprs: None,
+        };
+        assert!(change(&set_default).is_err());
+        let keyless_insert = StagedChange::Insert {
+            row_id: "n".into(),
+            values: std::collections::BTreeMap::from([("val".to_string(), Value::Int(1))]),
+            exprs: None,
+        };
+        assert!(change(&keyless_insert).is_err());
+        let null_key = StagedChange::Delete {
+            row_id: "r".into(),
+            key: RowKey::Pk(std::collections::BTreeMap::from([
+                ("Id".to_string(), Value::Null),
+                ("seq".to_string(), Value::Int(1)),
+            ])),
+        };
+        assert!(change(&null_key).is_err());
+        // Counter tables take no lightweight transactions.
+        let counters = vec![col("Id", "int", Some(1)), col("n", "counter", None)];
+        let counter_target = TableTarget {
+            table: &t,
+            columns: &counters,
+        };
+        let bump = StagedChange::Update {
+            row_id: "r".into(),
+            key: RowKey::Pk(std::collections::BTreeMap::from([(
+                "Id".to_string(),
+                Value::Int(1),
+            )])),
+            changes: std::collections::BTreeMap::from([("n".to_string(), Value::Int(1))]),
+            exprs: None,
+        };
+        assert!((SPEC.hooks.build_change.unwrap())(&SPEC, &counter_target, &bump, false).is_err());
     }
 
     #[test]
