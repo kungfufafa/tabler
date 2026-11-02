@@ -384,3 +384,27 @@ connection read-only), and a file written by a newer DuckDB is refused by the bu
 Everything else (hardened and unattended sessions, encrypted files, the logger guard) is covered by
 the lane's unit tests on temp files. Not run yet: the sample file was not built when the lane
 landed (2026-11-01).
+
+### Redis and Valkey (`redis`)
+
+| Suite            | Variable                | Server                                                                                                                                                                                                                                                                                                                                |
+| ---------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/redis.rs` | `TABLER_TEST_REDIS_URL` | Redis or Valkey (`docker run -p 6379:6379 redis:8 redis-server --enable-debug-command yes`, or `valkey/valkey:8`): `redis://127.0.0.1:6379/0`, with an ACL user `redis://<user>:<password>@…`; `rediss://…` for TLS without a certificate check, `rediss://…?verify=full` to check it (`&ca=<path to the CA's PEM>` for a private CA) |
+
+```sh
+node dev/scripts/lane.mjs redis it
+```
+
+The tests write only keys under a prefix of their own (`tabler:it:<uuid>:`) in the URL's database
+and delete them at the end. They cover connect and the product and version, the databases in the
+sidebar, the key browser page by page by SCAN cursor, counts, whole cells, a commit with one failing
+change and the inserts the grid sends, the console with `SELECT` and `MULTI`, verified TLS (and,
+with a CA, the refusal without it), and a read-only profile's refusals on every write path (console
+writes, the module writes Redis Stack flags `readonly`, a commit's plan and apply, the write calls,
+a kill, a writing bootstrap command), checking nothing was written. The cancel and the query time
+out need `DEBUG SLEEP`, so they run only where the server enables `DEBUG` (Redis 7+:
+`enable-debug-command`) and are skipped otherwise. ACL users without `@transaction` or `CONFIG`,
+Cluster refusals, managed services (ElastiCache, Upstash, Azure's TLS on 6380), Redis Stack's
+modules and other servers (KeyDB, Dragonfly, Garnet, Memurai) need environments of their own (the
+brief's "What only a real server can confirm"). Not run yet: no server was available when the lane
+landed (2026-11-02).

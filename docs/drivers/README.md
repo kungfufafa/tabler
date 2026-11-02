@@ -26,12 +26,11 @@ MariaDB and SingleStore stay `mysql` with `mysql_version`. The PostgreSQL flavor
 
 ## Status
 
-Phase B is over (L2). Landed, so in `release-drivers` and every default build: pg-flavors, sqlite-remote, sqlserver, dynamodb, elasticsearch, mongodb, clickhouse, cassandra, bigquery, vertica and duckdb (`docs/tableplus-parity.md`, "More databases", has a row for each).
+Phase B is over (L2). Landed, so in `release-drivers` and every default build: pg-flavors, sqlite-remote, sqlserver, dynamodb, elasticsearch, mongodb, clickhouse, cassandra, bigquery, vertica, duckdb and redis (landed 2026-11-02) (`docs/tableplus-parity.md`, "More databases", has a row for each).
 
 Open, not landed:
 
-- **redis** (Redis, Valkey): part B1 (the backend driver) did not pass its review, so B2 (the renderer module, the mock, the URL schemes) was not run. Its Phase B work sits uncommitted in the lane's files; the brief's Phase B status says what it has.
-- **snowflake** (Snowflake): the same, part B1 did not pass and B2 was not run; uncommitted work in the lane's files, described in the brief's Phase B status.
+- **snowflake** (Snowflake): its Phase B work is in the lane's files; the brief's Phase B status says what it has and what is left.
 
 An open lane still builds with its `drv-*` feature or `all-drivers`; landing it is the steps of Landing below, then this list. The change requests marked "Deferred" stay open too.
 
@@ -303,7 +302,7 @@ node dev/scripts/gates.mjs ts               # tsc without lane diagnostics, esli
 5. Update `docs/tableplus-parity.md`, `docs/verify-servers.md`, `.env.example` and the README.
 6. Commit with `git commit --only -- …`; the lead pushes.
 
-After the last lane: the `src-tauri/Cargo.toml` description, the CLAUDE.md header and its milestone line, and Status above (done in L2 for the eleven landed lanes; landing redis or snowflake later adds it to each).
+After the last lane: the `src-tauri/Cargo.toml` description, the CLAUDE.md header and its milestone line, and Status above (done in L2 for the eleven landed lanes and with the landing of redis; landing snowflake later adds it to each).
 
 ## Change requests
 
