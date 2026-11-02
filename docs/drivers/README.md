@@ -28,7 +28,7 @@ MariaDB and SingleStore stay `mysql` with `mysql_version`. The PostgreSQL flavor
 
 Phase B is over (L2). Landed, so in `release-drivers` and every default build: pg-flavors, sqlite-remote, sqlserver, dynamodb, elasticsearch, mongodb, clickhouse, cassandra, bigquery, vertica, duckdb, redis and snowflake (both landed 2026-11-02): all 13 lanes (`docs/tableplus-parity.md`, "More databases", has a row for each).
 
-The change requests marked "Deferred" stay open.
+What stays open: the change requests marked "Deferred", the rows marked "Open" (mongodb's TLS over an SSH tunnel; clickhouse's `SETTINGS` rule, `writes` inside inspections and the shared engine's false writes, all on the safe side; duckdb's plugin-session signal, a documented limit), and the rows that need a real server or account (sqlserver's ODBC and Synapse cases, snowflake's quoted `NEXTVAL`), which no lane could reach; their real-server suites skip without their `TABLER_TEST_*` variable (`docs/verify-servers.md`). After redis's and snowflake's Phase B3, the final L2 ran every foundation gate and each lane's clippy and test-all on the working tree, all green.
 
 ## Phases and order
 
@@ -298,7 +298,7 @@ node dev/scripts/gates.mjs ts               # tsc without lane diagnostics, esli
 5. Update `docs/tableplus-parity.md`, `docs/verify-servers.md`, `.env.example` and the README.
 6. Commit with `git commit --only -- …`; the lead pushes.
 
-After the last lane: the `src-tauri/Cargo.toml` description, the CLAUDE.md header and its milestone line, and Status above (done in L2 for the eleven landed lanes and with the landings of redis and snowflake).
+After the last lane: the `src-tauri/Cargo.toml` description, the CLAUDE.md header and its milestone line, and Status above (done in L2 for the eleven landed lanes and with the landings of redis and snowflake; the final L2 reran the full gates).
 
 ## Change requests
 
