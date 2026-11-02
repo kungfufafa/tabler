@@ -1,12 +1,5 @@
-import { callsListedFunction, classifyDialect } from "@/features/drivers/portable/classify";
-import {
-  isIdentStart,
-  isPunct,
-  PLAIN,
-  scan,
-  text,
-  upper,
-} from "@/features/drivers/portable/scanner";
+import { classifyDialect } from "@/features/drivers/portable/classify";
+import { callsSideEffect, hidesStatement } from "@/features/drivers/sqlserver/classify";
 import type { ApplyRequest } from "../../../bindings/ApplyRequest";
 import type { ApplyResult } from "../../../bindings/ApplyResult";
 import type { BrowsePage } from "../../../bindings/BrowsePage";
@@ -49,8 +42,9 @@ import { type Batch, runBatch } from "./sql";
  * `(SELECT NULL)`), exact counts, staged commits in one transaction that a failing change rolls
  * back whole (each statement guarded by `@@ROWCOUNT`), the editor's GO batches, Running Queries
  * with Kill Connection only, routines, Show DDL and session details. A read-only session refuses
- * what the backend's `refused_read_only` refuses, before anything runs, and every session refuses
- * a raw filter that adds a statement (`refuse_added_statement`).
+ * what the backend's `refused_read_only` refuses (T-SQL's own checks are the renderer's,
+ * `features/drivers/sqlserver/classify.ts`, which Safe Mode uses too), before anything runs, and
+ * every session refuses a raw filter that adds a statement (`refuse_added_statement`).
  */
 
 const LEX = TSQL_LEX as DialectLex;
@@ -62,59 +56,13 @@ export const READ_ONLY_MESSAGE = "This connection is read-only";
 export const ADDED_STATEMENT_MESSAGE =
   "A filter or an exported query can only read rows: this one would run another statement";
 
-/** `tsql.rs` `SPEC.knobs.side_effect_functions`. */
-export const SIDE_EFFECT_FUNCTIONS = [
-  "OPENQUERY",
-  "OPENROWSET",
-  "OPENDATASOURCE",
-  "XP_*",
-  "SP_*",
-  "NEXT VALUE FOR",
-] as const;
-
-/**
- * `tsql::hides_statement`, token for token: a text another reader may scan otherwise, an ODBC
- * `{? = call p}` escape, or the words CALL, DUMP and LOAD in code, also hidden in a number (any
- * tail of a word that starts with a digit, or follows one and a dot, from a letter on).
- */
-export function hidesStatement(sql: string): boolean {
-  const s = scan(LEX.lex, PLAIN, sql);
-  if (s.ambiguous) return true;
-  const code = s.tokens.filter((t) => t.kind !== "space" && t.kind !== "comment");
-  const digits = (i: number) => {
-    const t = code[i];
-    return t !== undefined && t.kind === "word" && /^[0-9]/.test(text(s, t));
-  };
-  return code.some((t, i) => {
-    if (isPunct(s, t, "{")) {
-      const next = code[i + 1];
-      return next !== undefined && isPunct(s, next, "?");
-    }
-    if (t.kind !== "word") return false;
-    const words = [upper(s, t), text(s, t).toUpperCase()];
-    const dot = code[i - 1];
-    const number =
-      digits(i) || (i >= 2 && dot !== undefined && isPunct(s, dot, ".") && digits(i - 2));
-    if (number) words.push(...words.flatMap(hiddenInNumber));
-    return words.some((w) => HIDDEN_WORDS.includes(w));
-  });
-}
-
-const HIDDEN_WORDS = ["CALL", "DUMP", "LOAD"];
-
-/** `tsql::hidden_in_number`: every tail of a word from a letter or `_` after its first character. */
-function hiddenInNumber(w: string): string[] {
-  const chars = [...w];
-  return chars.flatMap((c, k) => (k > 0 && isIdentStart(c) ? [chars.slice(k).join("")] : []));
-}
-
 /** `session::adds_a_statement`: a write to the classifier, or a statement it has no word for. */
 export const addsAStatement = (sql: string): boolean =>
   classifyDialect(LEX, sql) === "write" || hidesStatement(sql);
 
 /** `session::refused_read_only`. */
 export const refusedReadOnly = (sql: string): boolean =>
-  addsAStatement(sql) || callsListedFunction(LEX.lex, SIDE_EFFECT_FUNCTIONS, sql);
+  addsAStatement(sql) || callsSideEffect(sql);
 
 /** The features `session::FEATURES` grants, in `Feature`'s order. */
 export const FEATURES: SessionCaps["features"] = [

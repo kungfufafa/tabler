@@ -1,11 +1,12 @@
 import { MSSQL } from "@codemirror/lang-sql";
 import type { DialectUi } from "../types";
+import { classifyTsql } from "./classify";
 
 /**
  * T-SQL in the editor: CodeMirror's MSSQL dialect (brackets, `N''`, `@variables`) and the names
  * completion offers; no formatter (see `tsqlUi.formatter`). Splitting and Safe Mode come from the
  * backend's lexer profile (`bindings/lex/tsql.json`), so `GO` batches split as the server's
- * tools split them.
+ * tools split them; Safe Mode adds T-SQL's own checks (`classify.ts`).
  */
 
 /** Built-in functions completion offers (upper case, as SQL Server documents them). */
@@ -169,4 +170,6 @@ export const tsqlUi: DialectUi = {
   functions: TSQL_FUNCTIONS,
   columnTypes: TSQL_COLUMN_TYPES,
   quoteIdent: bracketed,
+  // A statement hidden in a read, or a side-effect function, needs Safe Mode's confirmation too.
+  classify: classifyTsql,
 };

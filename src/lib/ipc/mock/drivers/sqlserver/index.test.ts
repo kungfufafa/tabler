@@ -19,12 +19,12 @@ import type { TableSummary } from "../../../bindings/TableSummary";
 import { mockProfiles } from "../../handlers";
 import { mockInvoke } from "../../transport";
 import { enableMockDrivers, resetMockBuild } from "..";
+import { hidesStatement } from "@/features/drivers/sqlserver/classify";
 import lane from ".";
 import { resetSqlServer } from "./data";
 import {
   ADDED_STATEMENT_MESSAGE,
   FEATURES,
-  hidesStatement,
   READ_ONLY_MESSAGE,
   refusedReadOnly,
   resetProcesses,
