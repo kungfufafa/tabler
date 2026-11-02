@@ -415,6 +415,11 @@ const WRITES: &[&str] = &[
     "SELECT * FROM TABLE(s.CORTEX_SEARCH_DATA_SCAN(SERVICE_NAME => 'c'))",
     "SELECT * FROM TABLE(s.MODEL_MONITOR_DRIFT_METRIC('m'))",
     "SELECT * FROM t PIVOT (s.SUM(amount) FOR month IN ('JAN')) AS p",
+    // An aggregate's name reads only inside a pivot's `(… FOR …)`: elsewhere it is the user's.
+    "SELECT * FROM TABLE(SUM(1))",
+    "SELECT * FROM SUM(1)",
+    "SELECT * FROM t, LATERAL ARRAY_AGG(t.a)",
+    "SELECT * FROM t PIVOT (SUM(amount)) AS p",
     "SELECT * FROM s.SEMANTIC_VIEW(sv DIMENSIONS a)",
     // A stage (`@`), and GET or START chained by the flow operator.
     "SELECT $1 FROM @stage/file.csv",

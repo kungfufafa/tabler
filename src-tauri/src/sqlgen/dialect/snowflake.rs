@@ -131,7 +131,8 @@ const WRITE_CALLS: &[&str] = &[
 /// stored procedure (`FROM TABLE(proc())` runs it), a user table function (it may reach other
 /// services), `INFER_SCHEMA`, `VALIDATE` and `DIRECTORY` over staged files. `TABLE` and `VALUES`
 /// are here because `FROM TABLE(…)` and `FROM VALUES (…)` read like calls, and the aggregates
-/// because `PIVOT(SUM(a) FOR …)` puts one where a table goes.
+/// because `PIVOT(SUM(a) FOR …)` puts one where a table goes: as `%NAME`, which allows the
+/// unqualified name inside a pivot's `(… FOR …)` only, so `FROM TABLE(SUM(1))` stays a write.
 ///
 /// Exact names only, never a `PREFIX*`: Snowflake resolves a name no built-in has to the user's
 /// procedure or table function in the current schema, so a pattern would let
@@ -253,19 +254,19 @@ const TABLE_FUNCTIONS: &[&str] = &[
     "INFORMATION_SCHEMA.TASK_HISTORY",
     "INFORMATION_SCHEMA.WAREHOUSE_LOAD_HISTORY",
     "INFORMATION_SCHEMA.WAREHOUSE_METERING_HISTORY",
-    // PIVOT's aggregates.
-    "AVG",
-    "COUNT",
-    "COUNT_IF",
-    "MAX",
-    "MIN",
-    "SUM",
-    "ANY_VALUE",
-    "MEDIAN",
-    "LISTAGG",
-    "ARRAY_AGG",
-    "STDDEV",
-    "VARIANCE",
+    // PIVOT's aggregates, inside its `(… FOR …)` only.
+    "%AVG",
+    "%COUNT",
+    "%COUNT_IF",
+    "%MAX",
+    "%MIN",
+    "%SUM",
+    "%ANY_VALUE",
+    "%MEDIAN",
+    "%LISTAGG",
+    "%ARRAY_AGG",
+    "%STDDEV",
+    "%VARIANCE",
 ];
 
 pub static RULES: ClassifyRules = ClassifyRules {
@@ -956,6 +957,11 @@ mod tests {
             // PUBLIC's call is checked, named with its schema or through `db..`.
             "SELECT * FROM TABLE(db.public.my_proc())",
             "SELECT * FROM t PIVOT (my_agg(amount) FOR month IN ('JAN')) AS p",
+            // An aggregate's name reads only inside a pivot's `(… FOR …)`.
+            "SELECT * FROM TABLE(SUM(1))",
+            "SELECT * FROM SUM(1)",
+            "SELECT * FROM t, LATERAL COUNT(t.a)",
+            "SELECT * FROM t JOIN TABLE(MAX(1)) x ON true",
         ] {
             assert_eq!(classify_snowflake(sql), StatementClass::Write, "{sql}");
         }
@@ -970,6 +976,8 @@ mod tests {
             "SELECT SEQ4() FROM TABLE(GENERATOR(ROWCOUNT => 10))",
             "SELECT * FROM VALUES (1, 'a'), (2, 'b') AS v (n, s)",
             "SELECT * FROM t PIVOT (SUM(amount) FOR month IN ('JAN', 'FEB')) AS p",
+            "SELECT * FROM t PIVOT (avg(amount) FOR month IN (ANY ORDER BY month)) AS p",
+            "SELECT * FROM t PIVOT (COUNT_IF(amount > 0) FOR m IN ('A')) p",
             "SELECT * FROM t UNPIVOT (sales FOR month IN (jan, feb))",
             "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b', ','))",
         ] {

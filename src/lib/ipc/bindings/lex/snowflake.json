@@ -207,18 +207,18 @@
       "INFORMATION_SCHEMA.TASK_HISTORY",
       "INFORMATION_SCHEMA.WAREHOUSE_LOAD_HISTORY",
       "INFORMATION_SCHEMA.WAREHOUSE_METERING_HISTORY",
-      "AVG",
-      "COUNT",
-      "COUNT_IF",
-      "MAX",
-      "MIN",
-      "SUM",
-      "ANY_VALUE",
-      "MEDIAN",
-      "LISTAGG",
-      "ARRAY_AGG",
-      "STDDEV",
-      "VARIANCE"
+      "%AVG",
+      "%COUNT",
+      "%COUNT_IF",
+      "%MAX",
+      "%MIN",
+      "%SUM",
+      "%ANY_VALUE",
+      "%MEDIAN",
+      "%LISTAGG",
+      "%ARRAY_AGG",
+      "%STDDEV",
+      "%VARIANCE"
     ]
   }
 }

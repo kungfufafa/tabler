@@ -248,7 +248,7 @@ describe("New connection from URL with a snowflake:// URL", () => {
     useAppInfoStore.setState({ info: null });
   });
 
-  it("reads the lane's part, and the name, tag and Safe Mode every URL carries", async () => {
+  it("reads the lane's part, and the name, colour, tag and Safe Mode every URL carries", async () => {
     useAppInfoStore.setState({
       info: { version: "1", platform: "test", debug: true, kinds: [...CORE_KINDS, "snowflake"] },
     });
@@ -257,16 +257,23 @@ describe("New connection from URL with a snowflake:// URL", () => {
     const p = saved(
       base({
         name: "Shop",
+        color: "red",
         tag: "production",
         safeMode: "alert",
         user: "u",
         driverParams: formParams({ account: "a", auth: "pat" }),
       }),
     );
-    const parsed = parseConnectionUrl(formatSnowflakeUrl(p)!);
+    const url = formatSnowflakeUrl(p)!;
+    // The lane's keys, then the query every URL carries (`profileUrlQuery`).
+    expect(url).toMatch(
+      /^snowflake:\/\/u@a\?auth=pat&name=Shop&statusColor=[0-9A-F]{6}&env=production&/,
+    );
+    const parsed = parseConnectionUrl(url);
     expect(parsed.values).toMatchObject({
       driver: "snowflake",
       name: "Shop",
+      color: "red",
       tag: "production",
       safeMode: "alert",
       user: "u",
