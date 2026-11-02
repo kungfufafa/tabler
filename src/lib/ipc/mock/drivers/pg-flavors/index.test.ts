@@ -2,13 +2,24 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { classifyDialect } from "@/features/drivers/portable/classify";
+import { split } from "@/features/drivers/portable/scanner";
+import type { DialectLex } from "../../../bindings/DialectLex";
+import REDSHIFT_LEX from "../../../bindings/lex/redshift.json";
 import type { ConnectionProfile } from "../../../bindings/ConnectionProfile";
 import type { QueryEvent } from "../../../bindings/QueryEvent";
 import type { SessionCaps } from "../../../bindings/SessionCaps";
 import type { MockSession } from "../types";
 import lane, { engineOf, flavors } from ".";
 import { type Engine, flavorCaps } from "./caps";
-import { GUARD_MESSAGE, READ_ONLY_EDIT, READ_ONLY_MESSAGE } from "./session";
+import {
+  GUARD_MESSAGE,
+  READ_ONLY_EDIT,
+  READ_ONLY_MESSAGE,
+  READ_ONLY_STARTUP,
+  readOnlyByEncoding,
+  startupWrites,
+} from "./session";
 
 // The mock's CockroachDB, Greenplum and Redshift: caps equal to the backend's recorded ones
 // (`imp::tests::caps_match_the_recorded_fixture` writes the same file), the catalog, pages,
@@ -245,6 +256,83 @@ describe("the pg-flavors mock lane", () => {
     expect(thrown(() => rs.run("SELECT (123).pg_terminate_backend", () => {})).message).toBe(
       READ_ONLY_MESSAGE,
     );
+  });
+
+  it("refuses a read-only Redshift connect whose startup commands may write", () => {
+    const open = (id: string, readOnly: boolean, startupSql: string) => {
+      const p = seedOf(id);
+      return () =>
+        flavors[p.options.pgFlavor!].connect({
+          ...p,
+          options: { ...p.options, readOnly, startupSql },
+        });
+    };
+    for (const sql of [
+      "SET search_path = app; DELETE FROM t",
+      "CALL purge()",
+      "SET search_path = 'a\\'; DELETE FROM t; --'",
+    ]) {
+      expect(thrown(open("p-redshift", true, sql)), sql).toEqual({
+        code: "INVALID_INPUT",
+        message: READ_ONLY_STARTUP,
+      });
+      expect(open("p-redshift", false, sql)()).toBeTruthy();
+      // The other engines' read-only is the server's own.
+      expect(open("p-cockroachdb", true, sql)()).toBeTruthy();
+    }
+    for (const sql of ["SET search_path = app, public; RESET query_group", "SELECT 1", ""])
+      expect(open("p-redshift", true, sql)(), sql).toBeTruthy();
+    expect(startupWrites("set datestyle to 'ISO'")).toBe(false);
+    // Comments the server may end elsewhere, outside every statement, `$$` that a server may
+    // read as code, and a DELETE that only the plain reading's split shows, each piece cut where a
+    // backslash escapes being one SET to every reading (`imp/redshift.rs::startup_writes`).
+    const dollars = "SELECT $$; DELETE FROM t; --$$;";
+    for (const sql of [
+      "SET search_path = app; /* /* */ DELETE FROM t; */",
+      "/* /* */ DELETE FROM t; */ SET search_path = app;",
+      dollars,
+      String.raw`SET a = '\'' ; SET b = ' ; DELETE FROM t ; '`,
+      String.raw`RESET a; SET b = '\'' ; SET c = ' ; DELETE FROM t ; --'`,
+    ]) {
+      expect(startupWrites(sql), sql).toBe(true);
+      expect(thrown(open("p-redshift", true, sql)), sql).toEqual({
+        code: "INVALID_INPUT",
+        message: READ_ONLY_STARTUP,
+      });
+    }
+    expect(startupWrites("SET search_path = app; /* plain */ RESET query_group")).toBe(false);
+    expect(startupWrites("SET search_path = '$user', app")).toBe(false);
+    // Under Redshift SQL's lexer alone the `$$` text is one read-only SELECT: only the reading
+    // with dollar quotes off sees the DELETE.
+    const lex = REDSHIFT_LEX as DialectLex;
+    expect(split(lex.lex, dollars)).toHaveLength(1);
+    expect(classifyDialect(lex, dollars)).toBe("read");
+  });
+
+  it("refuses a Redshift connect that a non-UTF-8 encoding made read-only", () => {
+    const p = seedOf("p-redshift");
+    const open = (encoding: string, readOnly: boolean, startupSql: string) => () =>
+      flavors.redshift.connect({ ...p, options: { ...p.options, encoding, readOnly, startupSql } });
+    const writes = "SET search_path = app; INSERT INTO audit VALUES (1)";
+    // Nothing on Redshift enforces an encoding's read-only, so it is refused whatever the startup
+    // commands are; with the profile's read-only on, only a writing command is.
+    for (const sql of [writes, "SET search_path = app", ""])
+      expect(thrown(open(" LATIN1 ", false, sql)), sql).toEqual({
+        code: "INVALID_INPUT",
+        message: readOnlyByEncoding("LATIN1"),
+      });
+    expect(thrown(open("LATIN1", true, writes))).toEqual({
+      code: "INVALID_INPUT",
+      message: READ_ONLY_STARTUP,
+    });
+    expect(open("LATIN1", true, "SET search_path = app")()).toBeTruthy();
+    expect(open("UTF8", false, writes)()).toBeTruthy();
+    expect(open("unicode", false, "")()).toBeTruthy();
+    // The other engines' servers enforce it.
+    const g = seedOf("p-greenplum7");
+    expect(
+      flavors.greenplum.connect({ ...g, options: { ...g.options, encoding: "LATIN1" } }),
+    ).toBeTruthy();
   });
 
   it("runs the editor's statements as each server answers them", async () => {

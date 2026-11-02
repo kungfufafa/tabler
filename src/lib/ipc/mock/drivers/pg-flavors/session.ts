@@ -1,4 +1,5 @@
-import { classifyDialect } from "@/features/drivers/portable/classify";
+import { classifyDialect, codeOnly, isSingleStatement } from "@/features/drivers/portable/classify";
+import { scan, split } from "@/features/drivers/portable/scanner";
 import { classifyStatement } from "@/features/safety/classify";
 import type { ApplyRequest } from "../../../bindings/ApplyRequest";
 import type { ApplyResult } from "../../../bindings/ApplyResult";
@@ -40,6 +41,57 @@ export const READ_ONLY_MESSAGE = "This connection is read-only";
 
 /** `mutate::plan_rows`' refusal on a read-only connection. */
 export const READ_ONLY_EDIT = "unsupported: this connection is read-only";
+
+/** `imp/redshift.rs::check_init`'s refusal of a read-only profile's writing startup commands. */
+export const READ_ONLY_STARTUP =
+  "This connection is read-only, and Redshift has no read-only setting to stop a startup command that may write. Remove the commands that write from Startup commands, or turn read-only off.";
+
+/** `check_init`'s refusal of a session that only its encoding made read-only. */
+export const readOnlyByEncoding = (encoding: string): string =>
+  `Redshift speaks only UTF-8, and the encoding ${encoding} would make this connection read-only with nothing on the server to enforce it. Set Encoding to UTF-8, or turn read-only on.`;
+
+/** `conn_options::is_utf8_encoding`'s names. */
+const UTF8_ENCODINGS = ["utf8", "utf-8", "utf8mb3", "utf8mb4", "unicode"];
+
+/**
+ * The encoding that makes a PostgreSQL-driver session read-only (`connect::read_only_session`):
+ * the profile's, when it is a valid name that is not UTF-8.
+ */
+export function nonUtf8Encoding(profile: ConnectionProfile): string | null {
+  const encoding = profile.options.encoding?.trim() ?? "";
+  const valid = encoding.length > 0 && encoding.length <= 40 && /^[A-Za-z0-9_-]+$/.test(encoding);
+  return valid && !UTF8_ENCODINGS.includes(encoding.toLowerCase()) ? encoding : null;
+}
+
+/** `imp/redshift.rs::startup_lexes`: Redshift SQL's lexer, and the same without dollar quotes. */
+const STARTUP_LEXES: DialectLex[] = [
+  LEX,
+  { ...LEX, lex: { ...LEX.lex, dollarQuotes: false, dollarTags: false } },
+];
+
+/**
+ * Whether a Redshift startup command writes (`imp/redshift.rs::startup_writes`): SET and RESET
+ * stay where every reading sees one statement; anything else is the classifier's. The text is
+ * split under each reading on its own, since a `;` one reading sees inside a string ends a
+ * statement to the other. A comment a server may end elsewhere is looked for in the whole text,
+ * since `split` leaves the comments around a statement out of its text.
+ */
+export function startupWrites(text: string): boolean {
+  return STARTUP_LEXES.some((dialect) =>
+    dialect.lex.readings.some(
+      (r) =>
+        scan(dialect.lex, r, text).ambiguous ||
+        // `split` cuts under a lexer's first reading: one lexer per reading.
+        split({ ...dialect.lex, readings: [r] }, text).some(({ sql }) => {
+          const first = codeOnly(dialect.lex, sql).trim().split(/\s+/)[0]?.toUpperCase();
+          const setting =
+            (first === "SET" || first === "RESET") &&
+            isSingleStatement(dialect.lex, dialect.classify, sql);
+          return !setting && classifyDialect(dialect, sql) === "write";
+        }),
+    ),
+  );
+}
 
 /** `drivers::check_affected`'s words. */
 export const GUARD_MESSAGE =
@@ -109,6 +161,15 @@ export function flavorSession(engine: Engine, profile: ConnectionProfile): MockS
   const has = (f: (typeof caps.features)[number]) => caps.features.includes(f);
   const data = engineData(engine);
   const readOnly = profile.options.readOnly;
+  // The backend refuses the connect rather than leave a command out (`check_init`). A non-UTF-8
+  // encoding makes the session read-only (`connect::read_only_session`) with nothing on Redshift
+  // to enforce it, so that is refused whatever the startup commands are.
+  if (engine === "redshift" && !readOnly) {
+    const encoding = nonUtf8Encoding(profile);
+    if (encoding !== null) mockError("INVALID_INPUT", readOnlyByEncoding(encoding));
+  }
+  if (engine === "redshift" && readOnly && startupWrites(profile.options.startupSql ?? ""))
+    mockError("INVALID_INPUT", READ_ONLY_STARTUP);
   const database = profile.database ?? data.databases[0]!;
 
   const table = (ref: TableRef): Table =>

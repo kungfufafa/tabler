@@ -6,7 +6,8 @@
 //!
 //! - Session init: no IntervalStyle, client_encoding or default_transaction_read_only (not
 //!   Redshift settings), and extra_float_digits 2 (its maximum). A read-only session is
-//!   enforced by Tabler's classifier only (`ReadOnlyMode::ClassifierOnly`).
+//!   enforced by Tabler's classifier only (`ReadOnlyMode::ClassifierOnly`), and an encoding
+//!   that is not UTF-8, which makes a PostgreSQL session read-only, is refused (`check_init`).
 //! - Tables: `pg_class` plus `svv_table_info` (row counts, sizes in 1 MB blocks), the
 //!   materialized views of `svv_mv_info` and the Spectrum tables of `svv_external_tables`.
 //!   Columns carry DISTKEY, SORTKEY and ENCODE in `extra`, and the table's DISTSTYLE and sort
@@ -233,6 +234,53 @@ impl PgFlavorHooks for Redshift {
             .collect()
     }
 
+    /// A read-only profile whose init lost a statement to `init_sql` is refused rather than
+    /// connected without it: the user's startup commands (a search path, a query group) would
+    /// otherwise be missing without a word. What the init would be without read-only, against
+    /// what it is, names the statement left out.
+    fn check_init(
+        &self,
+        profile: &ConnectionProfile,
+        read_only: bool,
+        init: &[InitStatement],
+    ) -> Result<(), AppError> {
+        if !read_only {
+            return Ok(());
+        }
+        // `read_only_session` also holds for an encoding that is not UTF-8, which PostgreSQL
+        // enforces with default_transaction_read_only. Redshift is sent neither that nor
+        // client_encoding, and the backend's refusals read the profile's read-only alone, so
+        // such a session would show as read-only with nothing to stop a write.
+        if !profile.options.read_only {
+            let encoding = profile.options.encoding().unwrap_or_default();
+            return Err(AppError::InvalidInput(format!(
+                "Redshift speaks only UTF-8, and the encoding {encoding} would make this \
+                 connection read-only with nothing on the server to enforce it. Set Encoding to \
+                 UTF-8, or turn read-only on."
+            )));
+        }
+        let full = self.init_sql(
+            profile,
+            false,
+            crate::drivers::postgres::connect::session_init_statements(&profile.options),
+        );
+        let Some(lost) = full.iter().find(|s| !init.contains(s)) else {
+            return Ok(());
+        };
+        Err(AppError::InvalidInput(if lost.kind == InitKind::Startup {
+            "This connection is read-only, and Redshift has no read-only setting to stop a \
+             startup command that may write. Remove the commands that write from Startup \
+             commands, or turn read-only off."
+                .to_string()
+        } else {
+            format!(
+                "This connection is read-only, and Redshift could read its {} as more than one \
+                 statement. Change it, or turn read-only off.",
+                init_label(lost.kind)
+            )
+        }))
+    }
+
     /// One failing statement then names itself.
     fn init_one_by_one(&self) -> bool {
         true
@@ -398,19 +446,65 @@ fn time_zone(profile: &ConnectionProfile) -> Option<String> {
     (!tz.is_empty()).then(|| format!("SET TIME ZONE {};", (SPEC.quote_literal)(tz)))
 }
 
+/// What the connection form calls the option an init statement comes from.
+fn init_label(kind: InitKind) -> &'static str {
+    match kind {
+        InitKind::TimeZone => "time zone",
+        InitKind::Setting => "extra parameters",
+        // Startup commands have their own refusal (`check_init`).
+        _ => "session settings",
+    }
+}
+
 /// Whether a startup command writes, as Redshift SQL reads it (default-deny: a statement the
 /// classifier does not know writes). `SET` and `RESET` change the session's settings only
 /// (their values are constants, never a query), so they stay, but only where every lexer
 /// reading sees one statement: a backslash in a string or a nested comment can hide a second.
+/// The text is split under each reading on its own: a `;` that one reading sees inside a string
+/// ends a statement to the other, and each piece one reading cuts may be a single SET to both.
+/// A comment a server may end elsewhere (`Scan::ambiguous`) is looked for in the whole text,
+/// since the comments around a statement are not part of its split text.
 fn startup_writes(text: &str) -> bool {
-    sql::split_statements(SqlDialect::Redshift, text)
-        .iter()
-        .filter(|st| {
-            let first = leading_keywords(&st.sql, 1);
-            !matches!(first.first().map(String::as_str), Some("SET" | "RESET"))
-                || !sql::is_single_statement(SqlDialect::Redshift, &st.sql)
+    use crate::sqlgen::dialect::lex::{LexProfile, scan};
+    use crate::sqlgen::dialect::redshift::RULES;
+    use crate::sqlgen::portable::{classify as portable_classify, split as portable_split};
+    startup_lexes().iter().any(|lex| {
+        lex.readings.iter().any(|r| {
+            // `split` cuts under a lexer's first reading: one lexer per reading.
+            let one = LexProfile {
+                readings: std::slice::from_ref(r),
+                ..*lex
+            };
+            scan(lex, *r, text).ambiguous
+                || portable_split::split(&one, text)
+                    .iter()
+                    .filter(|st| {
+                        let first = leading_keywords(&st.sql, 1);
+                        !matches!(first.first().map(String::as_str), Some("SET" | "RESET"))
+                            || !portable_split::is_single_statement(lex, &RULES, &st.sql)
+                    })
+                    .any(|st| {
+                        portable_classify::with(lex, &RULES, &st.sql)
+                            == crate::sqlgen::classify::StatementClass::Write
+                    })
         })
-        .any(|st| sql::writes(SqlDialect::Redshift, &st.sql))
+    })
+}
+
+/// Redshift SQL's lexer, and the same without dollar quotes: AWS documents `$$…$$` only as the
+/// body of CREATE FUNCTION and CREATE PROCEDURE, so a startup command must read the same whether
+/// the server takes a `$$` of a plain statement as a quote or not.
+fn startup_lexes() -> [crate::sqlgen::dialect::lex::LexProfile; 2] {
+    use crate::sqlgen::dialect::lex::LexProfile;
+    use crate::sqlgen::dialect::redshift::LEX;
+    [
+        LEX,
+        LexProfile {
+            dollar_quotes: false,
+            dollar_tags: false,
+            ..LEX
+        },
+    ]
 }
 
 /// Text a CHAR column of a system view pads with spaces.
@@ -2481,14 +2575,168 @@ mod tests {
         session.close().await;
     }
 
-    /// Read-only is Tabler's alone on Redshift: a startup command that writes is not sent, and
-    /// the editor's refusal (`commands::safety::run_writes`, which `run_sql` and the Metrics
-    /// Board ask) reads Redshift SQL. Grid edits, imports, DDL, object operations, users and
-    /// workspace commits refuse any read-only connection before they reach the session.
+    /// A read-only profile whose init had to lose a statement is refused before any of the init
+    /// is sent, and the refusal says which option to change; one that loses nothing connects,
+    /// and without read-only nothing is left out or refused.
+    #[tokio::test]
+    async fn a_read_only_connect_that_lost_a_statement_is_refused() {
+        use crate::drivers::postgres::connect::session_init_statements;
+        let check = |profile: &ConnectionProfile, read_only: bool| {
+            let init = REDSHIFT.init_sql(
+                profile,
+                read_only,
+                session_init_statements(&profile.options),
+            );
+            REDSHIFT.check_init(profile, read_only, &init)
+        };
+        let mut profile = testkit::profile(5439);
+        profile.options.read_only = true;
+        assert!(check(&profile, true).is_ok());
+        profile.options.timezone = Some("UTC\\'; DELETE FROM t; --".into());
+        profile.options.startup_sql =
+            Some("SET search_path = app, public; RESET query_group".into());
+        profile.options.pg_params = Some("query_group=etl".into());
+        assert!(check(&profile, true).is_ok());
+
+        profile.options.startup_sql = Some("SET search_path = app; DELETE FROM t".into());
+        let err = check(&profile, true).unwrap_err().to_string();
+        assert!(err.contains("Startup commands"), "{err}");
+        assert!(err.contains("turn read-only off"), "{err}");
+        assert!(check(&profile, false).is_ok());
+
+        // Read-only through the encoding alone is refused whatever the startup commands are
+        // (`a_session_read_only_by_its_encoding_is_refused`); with the profile's read-only on
+        // as well, the startup refusal says to turn that off.
+        let mut latin1 = testkit::profile(5439);
+        latin1.options.encoding = Some("LATIN1".into());
+        latin1.options.startup_sql =
+            Some("SET search_path = app; INSERT INTO audit VALUES (1)".into());
+        let read_only = crate::drivers::postgres::connect::read_only_session(&latin1.options);
+        assert!(read_only && !latin1.options.read_only);
+        let err = check(&latin1, read_only).unwrap_err().to_string();
+        assert!(
+            err.contains("LATIN1") && err.contains("Set Encoding to UTF-8"),
+            "{err}"
+        );
+        assert!(!err.contains("Startup commands"), "{err}");
+        latin1.options.read_only = true;
+        let err = check(&latin1, true).unwrap_err().to_string();
+        assert!(
+            err.contains("turn read-only off") && !err.contains("LATIN1"),
+            "{err}"
+        );
+
+        // A comment the server may end elsewhere, outside every statement, is refused too, and
+        // so is a write that only the plain reading's split shows.
+        let mut commented = testkit::profile(5439);
+        commented.options.read_only = true;
+        for startup in [
+            "SET search_path = app; /* /* */ DELETE FROM t; */",
+            "/* /* */ DELETE FROM t; */ SET search_path = app;",
+            r"SET a = '\'' ; SET b = ' ; DELETE FROM t ; '",
+        ] {
+            commented.options.startup_sql = Some(startup.into());
+            let err = check(&commented, true).unwrap_err().to_string();
+            assert!(err.contains("Startup commands"), "{startup}: {err}");
+        }
+
+        // Any statement `init_sql` leaves out is named by the option it comes from.
+        for (kind, label) in [
+            (InitKind::Setting, "extra parameters"),
+            (InitKind::TimeZone, "time zone"),
+            (InitKind::DateStyle, "session settings"),
+        ] {
+            assert_eq!(init_label(kind), label);
+        }
+        profile.options.startup_sql = None;
+        let full = REDSHIFT.init_sql(&profile, false, session_init_statements(&profile.options));
+        let lost: Vec<InitStatement> = full
+            .iter()
+            .filter(|s| s.kind != InitKind::Setting)
+            .cloned()
+            .collect();
+        assert_ne!(lost, full);
+        let err = REDSHIFT.check_init(&profile, true, &lost).unwrap_err();
+        assert!(err.to_string().contains("extra parameters"), "{err}");
+        assert!(REDSHIFT.check_init(&profile, false, &lost).is_ok());
+        // `pg_set_config` puts a backslash only in an E-string, which every reading escapes, so
+        // a real extra parameter is one statement to all of them and is kept: the refusal above
+        // is reached through the hand-built `lost`.
+        profile.options.startup_sql = None;
+        for value in ["a\\'; DELETE FROM t; --", "a'b", "C:\\x"] {
+            profile.options.pg_params = Some(format!(
+                "query_group={}",
+                value
+                    .replace('%', "%25")
+                    .replace(';', "%3B")
+                    .replace(' ', "%20")
+            ));
+            let full =
+                REDSHIFT.init_sql(&profile, false, session_init_statements(&profile.options));
+            let kept = REDSHIFT.init_sql(&profile, true, session_init_statements(&profile.options));
+            assert!(full.iter().any(|s| s.kind == InitKind::Setting), "{value}");
+            assert_eq!(kept, full, "{value}");
+            assert!(check(&profile, true).is_ok(), "{value}");
+        }
+
+        // Through the driver's own open: nothing of the init goes out.
+        let pg = fake().start().await;
+        let mut profile = testkit::profile(pg.port());
+        profile.options.read_only = true;
+        profile.options.startup_sql = Some("SET search_path = app; CALL purge()".into());
+        let err = testkit::refused(&profile).await;
+        assert!(matches!(err, AppError::InvalidInput(_)), "{err:?}");
+        for part in ["SET DateStyle", "search_path", "CALL"] {
+            assert!(testkit::sent(&pg, part).is_empty(), "{:?}", pg.queries());
+        }
+        // The same commands without a write connect and are sent.
+        let pg = fake().start().await;
+        profile.port = Some(pg.port());
+        profile.options.startup_sql = Some("SET search_path = app".into());
+        testkit::session(&profile).await.close().await;
+        assert_eq!(testkit::sent(&pg, "SET search_path = app").len(), 1);
+    }
+
+    /// A non-UTF-8 encoding makes a PostgreSQL-driver session read-only
+    /// (`connect::read_only_session`), which PostgreSQL enforces on the server. Redshift is sent
+    /// no read-only setting and the backend's refusals read the profile's read-only, so such a
+    /// connect is refused, startup commands or not; a plain PostgreSQL profile that turns out to
+    /// be Redshift (the fake's version) too. Nothing of the init is sent.
+    #[tokio::test]
+    async fn a_session_read_only_by_its_encoding_is_refused() {
+        for startup in [None, Some("SET search_path = app")] {
+            let pg = fake().command("DELETE FROM t", "DELETE 1").start().await;
+            let mut profile = testkit::profile(pg.port());
+            profile.options.encoding = Some("LATIN1".into());
+            profile.options.startup_sql = startup.map(Into::into);
+            let err = testkit::refused(&profile).await;
+            assert!(
+                matches!(&err, AppError::InvalidInput(m) if m.contains("LATIN1") && m.contains("Set Encoding to UTF-8")),
+                "{err:?}"
+            );
+            for part in ["SET DateStyle", "search_path", "DELETE"] {
+                assert!(testkit::sent(&pg, part).is_empty(), "{:?}", pg.queries());
+            }
+        }
+        // UTF-8 under another name, or read-only from the profile, connects.
+        for (encoding, read_only) in [("utf-8", false), ("UNICODE", false), ("LATIN1", true)] {
+            let pg = fake().start().await;
+            let mut profile = testkit::profile(pg.port());
+            profile.options.encoding = Some(encoding.into());
+            profile.options.read_only = read_only;
+            testkit::session(&profile).await.close().await;
+        }
+    }
+
+    /// Read-only is Tabler's alone on Redshift: a startup command that writes is not sent (the
+    /// connect is refused, `check_init`), and the editor's refusal
+    /// (`commands::safety::run_writes`, which `run_sql` and the Metrics Board ask) reads
+    /// Redshift SQL. Grid edits, imports, DDL, object operations, users and workspace commits
+    /// refuse any read-only connection before they reach the session.
     #[tokio::test]
     async fn a_read_only_profile_sends_no_write() {
         let startup = "SET search_path = app; INSERT INTO audit VALUES (1)";
-        for (read_only, sent) in [(true, false), (false, true)] {
+        for read_only in [true, false] {
             let pg = fake()
                 .command("INSERT INTO audit", "INSERT 0 1")
                 .start()
@@ -2496,14 +2744,17 @@ mod tests {
             let mut profile = testkit::profile(pg.port());
             profile.options.read_only = read_only;
             profile.options.startup_sql = Some(startup.into());
-            let session = testkit::session(&profile).await;
+            if read_only {
+                testkit::refused(&profile).await;
+            } else {
+                testkit::session(&profile).await.close().await;
+            }
             assert_eq!(
-                !testkit::sent(&pg, "INSERT INTO audit").is_empty(),
-                sent,
+                testkit::sent(&pg, "INSERT INTO audit").is_empty(),
+                read_only,
                 "{:?}",
                 pg.queries()
             );
-            session.close().await;
         }
         let base = |sql: &str| vec![InitStatement::new(InitKind::Startup, sql)];
         let profile = testkit::profile(5439);
@@ -2521,6 +2772,13 @@ mod tests {
             ("SET search_path TO E'\\'; DELETE FROM t; --'", false),
             ("SET search_path = 'a', E'\\'; DELETE FROM t; --'", false),
             ("SET a = 'x\\'; SET b = '; DELETE FROM t; --'", false),
+            // Cut where a backslash escapes, each piece is one SET to every reading; read
+            // plain, the DELETE is code between two strings.
+            (r"SET a = '\'' ; SET b = ' ; DELETE FROM t ; '", false),
+            (
+                r"RESET a; SET b = '\'' ; SET c = ' ; DELETE FROM t ; --'",
+                false,
+            ),
             (
                 "SET search_path = app /* /* */ ; DELETE FROM t; /* */",
                 false,
@@ -2529,6 +2787,14 @@ mod tests {
                 "SET search_path = app /* x */; SET x = 1 /* /* */ ; INSERT INTO a VALUES (1); /* */",
                 false,
             ),
+            // A comment between or around statements is in no statement's text: a server that
+            // does not nest it runs the DELETE.
+            ("SET search_path = app; /* /* */ DELETE FROM t; */", false),
+            ("/* /* */ DELETE FROM t; */ SET search_path = app;", false),
+            ("SET search_path = app; /* plain */ RESET query_group", true),
+            // A server that reads `$$` outside a function body as code runs the DELETE.
+            ("SELECT $$; DELETE FROM t; --$$;", false),
+            ("SET search_path = '$user', app", true),
         ] {
             assert_eq!(
                 REDSHIFT.init_sql(&profile, true, base(sql)).len(),

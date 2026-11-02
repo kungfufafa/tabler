@@ -54,13 +54,31 @@ function redshiftPassword(v: ConnectionFormValues): FormIssue[] {
   ];
 }
 
+/** `connections/encoding.ts::isUtf8Encoding`'s names, without its store and toast imports. */
+const UTF8_ENCODINGS = ["utf8", "utf-8", "utf8mb3", "utf8mb4", "unicode"];
+
+/**
+ * Another encoding makes the session read-only, which Redshift has no setting to enforce, so
+ * the backend refuses that connect (`imp/redshift.rs::check_init`) unless read-only is on.
+ */
+function redshiftEncoding(v: ConnectionFormValues): FormIssue[] {
+  const encoding = v.encoding.trim().toLowerCase();
+  if (v.readOnly || !encoding || UTF8_ENCODINGS.includes(encoding)) return [];
+  return [
+    {
+      path: "encoding",
+      message: "Redshift speaks only UTF-8: leave Encoding empty, or turn read-only on",
+    },
+  ];
+}
+
 function kindUi(kind: FlavorKind, extra: Partial<KindUi>): KindUi {
   return {
     rows: ROWS,
     sslModes: PG_SSL_MODES,
     url: {
       schemes: FLAVOR_SCHEMES[kind],
-      parse: (url) => parseFlavorUrl(kind, url),
+      parse: (url, source) => parseFlavorUrl(kind, url, source),
       format: (p) => formatFlavorUrl(kind, p),
     },
     ...extra,
@@ -77,5 +95,5 @@ export const greenplumUi = kindUi("greenplum", {});
 export const redshiftUi = kindUi("redshift", {
   defaults: () => ({ ssl: "require" }),
   Fields: RedshiftFields,
-  validate: redshiftPassword,
+  validate: (v) => [...redshiftPassword(v), ...redshiftEncoding(v)],
 });

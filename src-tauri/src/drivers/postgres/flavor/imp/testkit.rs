@@ -70,6 +70,21 @@ pub(super) async fn session(profile: &ConnectionProfile) -> PgSession {
     .unwrap()
 }
 
+/// Why the driver's own open refuses `profile`.
+pub(super) async fn refused(profile: &ConnectionProfile) -> crate::error::AppError {
+    crate::testkit::install_crypto();
+    match PgSession::open(ConnectTarget {
+        profile,
+        password: Some("pw"),
+        host_override: None,
+    })
+    .await
+    {
+        Ok(_) => panic!("the open was not refused"),
+        Err(e) => e,
+    }
+}
+
 /// The statements `pg` received whose text contains `part`.
 pub(super) fn sent(pg: &FakePg, part: &str) -> Vec<String> {
     pg.queries()

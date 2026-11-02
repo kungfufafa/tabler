@@ -103,4 +103,16 @@ describe("the PostgreSQL flavors' forms", () => {
     ).toEqual([]);
     expect(issues("greenplum", form("greenplum", { passwordMode: "none" }))).toEqual([]);
   });
+
+  it("refuse a Redshift encoding other than UTF-8 unless read-only is on", () => {
+    expect(issues("redshift", form("redshift", { encoding: "LATIN1" }))).toEqual([
+      "encoding: Redshift speaks only UTF-8: leave Encoding empty, or turn read-only on",
+    ]);
+    for (const encoding of ["", "UTF8", " utf-8 ", "UNICODE"])
+      expect(issues("redshift", form("redshift", { encoding })), encoding).toEqual([]);
+    expect(issues("redshift", form("redshift", { encoding: "LATIN1", readOnly: true }))).toEqual(
+      [],
+    );
+    expect(issues("greenplum", form("greenplum", { encoding: "LATIN1" }))).toEqual([]);
+  });
 });

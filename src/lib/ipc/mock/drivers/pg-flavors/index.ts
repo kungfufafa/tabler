@@ -11,11 +11,8 @@ import { flavorSession, VERSION_TEXT } from "./session";
  * gives one mock per engine in `flavors`: a PostgreSQL profile whose `pgFlavor` names it is
  * served by that engine's session (`session.ts`), with the caps and refusals the backend's hooks
  * give. A Greenplum profile is Greenplum 6 when its host names `gp6` (the backend reads the
- * version from the server), 7 otherwise.
- *
- * Until the mock's handlers send such a profile here (a change request to the lead: today a
- * flavor profile is served by the core PostgreSQL mock), `flavors` is reached by tests and by
- * whoever imports this module.
+ * version from the server), 7 otherwise. The handlers send each flavor profile here
+ * (`loadMockFlavor`), and `?mockDrivers=` seeds these profiles.
  */
 
 /** The engine a profile of `flavor` connects to. */

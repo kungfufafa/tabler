@@ -4,6 +4,7 @@ import {
   profileToUrl,
   type ParsedConnectionUrl,
 } from "@/features/connections/url";
+import type { UrlSource } from "@/features/drivers/types";
 import type { ConnectionProfile, DatabaseKind } from "@/lib/ipc";
 
 /**
@@ -34,14 +35,21 @@ function urlPort(url: string): string | null {
   }
 }
 
-/** Reads a URL of `kind` (its SSH part already taken off by the app). */
-export function parseFlavorUrl(kind: FlavorKind, url: string): ParsedConnectionUrl | null {
+/**
+ * Reads a URL of `kind` (its SSH part already taken off by the app). `source` goes on to the
+ * PostgreSQL reader, so a link reads as a link there too; none is read as a link, the safer.
+ */
+export function parseFlavorUrl(
+  kind: FlavorKind,
+  url: string,
+  source: UrlSource = "link",
+): ParsedConnectionUrl | null {
   const scheme = SCHEME.exec(url.trim())?.[1]?.toLowerCase();
   if (!scheme || !FLAVOR_SCHEMES[kind].includes(scheme)) return null;
   const pg = url.trim().replace(SCHEME, "postgresql://");
   let parsed: ParsedConnectionUrl;
   try {
-    parsed = parseConnectionUrl(pg);
+    parsed = parseConnectionUrl(pg, source);
   } catch {
     return null;
   }
