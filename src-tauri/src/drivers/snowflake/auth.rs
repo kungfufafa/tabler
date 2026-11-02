@@ -11,7 +11,7 @@ use aws_lc_rs::signature::KeyPair as _;
 use base64::Engine as _;
 use snowflake_connector_rs::{AuthConfig, KeyPairConfig, PasswordConfig};
 
-use super::params::SnowflakeAuth;
+use super::params::{SnowflakeAuth, local_key_path};
 use crate::error::AppError;
 
 /// A private key file larger than this is no PEM key.
@@ -72,6 +72,8 @@ pub fn key_format(pem: &str) -> Result<KeyFormat, AppError> {
 /// Reads the private key file of key-pair sign-in.
 pub fn read_private_key(path: &str) -> Result<PrivateKey, AppError> {
     let path = path.trim();
+    // Before the file system is asked anything: a share's host hears of it at once.
+    local_key_path(path)?;
     let meta = std::fs::metadata(path).map_err(|e| {
         AppError::InvalidInput(format!("Snowflake: cannot read the key file {path}: {e}"))
     })?;

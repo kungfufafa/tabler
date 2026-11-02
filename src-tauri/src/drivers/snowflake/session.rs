@@ -71,10 +71,12 @@ const MAX_REPLAY: usize = 64;
 /// `EditWithoutKey` (rows are addressed by primary key only, and a key that is only
 /// informational is guarded by the count before the commit), not `ServerExpressions` (no
 /// `DEFAULT` keyword in VALUES or SET).
-const FEATURES: [Feature; 17] = [
+const FEATURES: [Feature; 18] = [
     Feature::Editor,
     Feature::Explain,
     Feature::CancelOnServer,
+    // The renderer formats Snowflake SQL (sql-formatter's `snowflake` language).
+    Feature::Format,
     Feature::EditRows,
     Feature::InsertRows,
     Feature::DeleteRows,
@@ -136,6 +138,21 @@ pub(super) struct Live {
     conn: RwLock<Arc<SnowflakeConn>>,
     startup: Vec<String>,
     replay: std::sync::Mutex<Vec<String>>,
+    /// The app's session (its own, or the shared MFA one): `APP_PARAMETERS` are set back after
+    /// what ran first, which a procedure or `EXECUTE IMMEDIATE` may have changed unseen.
+    app: bool,
+}
+
+/// Runs what a new session runs first; on the app's session, then sets `APP_PARAMETERS` back
+/// (the sign-in set them, and nothing ran before when there is nothing to run).
+async fn run_first(conn: &SnowflakeConn, statements: &[String], app: bool) -> Result<(), AppError> {
+    for sql in statements {
+        conn.query(sql, &[], Some(0)).await?;
+    }
+    if app && !statements.is_empty() {
+        conn.query(&sf::PIN_SESSION, &[], Some(0)).await?;
+    }
+    Ok(())
 }
 
 pub(super) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -144,15 +161,14 @@ pub(super) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Live {
     /// Signs in and runs the startup commands.
-    async fn open(signin: &SignIn, startup: Vec<String>) -> Result<Live, AppError> {
+    async fn open(signin: &SignIn, startup: Vec<String>, app: bool) -> Result<Live, AppError> {
         let conn = signin.connect().await?;
-        for sql in &startup {
-            conn.query(sql, &[], Some(0)).await?;
-        }
+        run_first(&conn, &startup, app).await?;
         Ok(Live {
             conn: RwLock::new(Arc::new(conn)),
             startup,
             replay: std::sync::Mutex::new(Vec::new()),
+            app,
         })
     }
 
@@ -184,10 +200,9 @@ impl Live {
         }
         on_replace();
         let conn = signin.connect().await?;
-        let replay = lock(&self.replay).clone();
-        for sql in self.startup.iter().chain(&replay) {
-            conn.query(sql, &[], Some(0)).await?;
-        }
+        let mut first = self.startup.clone();
+        first.extend(lock(&self.replay).iter().cloned());
+        run_first(&conn, &first, self.app).await?;
         *slot = Arc::new(conn);
         Ok(Arc::clone(&slot))
     }
@@ -268,6 +283,10 @@ impl SnowflakeSession {
         if startup.iter().any(|s| editor::sets_autocommit(s)) {
             return Err(editor::autocommit_error());
         }
+        // They run on the app's session too.
+        if startup.iter().any(|s| editor::sets_ignore_case(s)) {
+            return Err(editor::ignore_case_error());
+        }
         if read_only && startup.iter().any(|s| writes(DIALECT, s)) {
             return Err(AppError::InvalidInput(
                 "Snowflake: this connection is read-only, and its startup commands write (or are \
@@ -275,7 +294,8 @@ impl SnowflakeSession {
                     .into(),
             ));
         }
-        let editor = Live::open(&signin, startup.clone()).await?;
+        // An MFA sign-in is made once: the editor's session is the app's too.
+        let editor = Live::open(&signin, startup.clone(), signin.asks_mfa()).await?;
         let trace = SqlTrace::default();
         let conn = editor.current().await;
         let rows = trace
@@ -297,7 +317,7 @@ impl SnowflakeSession {
         let worker = if signin.asks_mfa() {
             None
         } else {
-            Some(Live::open(&signin, startup).await?)
+            Some(Live::open(&signin, startup, true).await?)
         };
         Ok(SnowflakeSession {
             signin,
@@ -318,6 +338,11 @@ impl SnowflakeSession {
 
     fn worker(&self) -> &Live {
         self.worker.as_ref().unwrap_or(&self.editor)
+    }
+
+    /// Whether the editor runs on the app's session (an MFA sign-in, made once).
+    pub(super) fn shares_editor(&self) -> bool {
+        self.worker.is_none()
     }
 
     /// Signs the app's session in again in place of `stale`. On a shared (MFA) session that is
@@ -448,7 +473,14 @@ impl SnowflakeSession {
 
     /// Reads which database the editor's session `conn` is in, and keeps it; true when it holds
     /// a transaction (one AUTOCOMMIT = FALSE opened implicitly included).
+    /// On a shared (MFA) session, `APP_PARAMETERS` are set back first: the editor's statement may
+    /// have changed them where its text does not say (`EXECUTE IMMEDIATE $q`, a procedure run
+    /// with the caller's rights). Until that succeeds the database stays not known, so the app's
+    /// next statement probes (and sets them back) again before it is sent.
     pub(super) async fn probe_editor(&self, conn: &SnowflakeConn) -> Result<bool, AppError> {
+        if self.shares_editor() {
+            conn.query(&sf::PIN_SESSION, &[], Some(0)).await?;
+        }
         let out = conn.query(sf::EDITOR_STATE, &[], Some(1)).await?;
         let Some([database, transaction, ..]) = out.rows.first().map(Vec::as_slice) else {
             return Err(AppError::Internal(

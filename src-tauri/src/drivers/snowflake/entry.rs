@@ -164,6 +164,32 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("encrypted"), "{err}");
+        // A share is never opened: neither the form's nor an imported profile's.
+        for share in ["\\\\attacker\\share\\k.p8", "/\\attacker\\share\\k.p8"] {
+            let input = UtilInput {
+                profile: &p,
+                secret: None,
+            };
+            let err = util(
+                input,
+                KEY_FINGERPRINT,
+                serde_json::json!({ "privateKeyPath": share }),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.to_string().contains("not a network share"), "{err}");
+            let imported = profile(serde_json::json!({ "options": { "driverParams": {
+                "account": "myorg-acct", "privateKeyPath": share } } }));
+            assert!(validate(&imported).is_err());
+            let input = UtilInput {
+                profile: &imported,
+                secret: None,
+            };
+            let err = util(input, KEY_FINGERPRINT, serde_json::Value::Null)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("not a network share"), "{err}");
+        }
 
         crate::testkit::install_crypto();
         let fake = FakeSnowflake::start(

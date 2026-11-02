@@ -596,6 +596,40 @@ pub fn alter_session_set(name: &str, value: &serde_json::Value) -> Result<String
     ))
 }
 
+/// The session parameters the app's session keeps at these values, whatever the profile, the
+/// account, the startup commands or (on a shared MFA session) the editor set: quoted names match
+/// in their own case only (with QUOTED_IDENTIFIERS_IGNORE_CASE on, `"Orders"` finds ORDERS), and
+/// the grid's dates, times and timestamps, bound as text in the ISO form the decoder shows, are
+/// read in that form (with DATE_INPUT_FORMAT = 'YYYY-DD-MM', 2024-05-01 would store 2024-01-05).
+pub const APP_PARAMETERS: [(&str, &str); 4] = [
+    ("QUOTED_IDENTIFIERS_IGNORE_CASE", "FALSE"),
+    ("DATE_INPUT_FORMAT", "AUTO"),
+    ("TIME_INPUT_FORMAT", "AUTO"),
+    ("TIMESTAMP_INPUT_FORMAT", "AUTO"),
+];
+
+/// `APP_PARAMETERS` as a JSON value (a boolean or text), for the login's session parameters.
+pub fn app_parameter_value(value: &str) -> serde_json::Value {
+    match value {
+        "FALSE" => false.into(),
+        "TRUE" => true.into(),
+        text => text.into(),
+    }
+}
+
+/// Sets `APP_PARAMETERS` again in one statement (ALTER SESSION takes a comma separated list).
+/// Not DDL: an open transaction stays open.
+pub static PIN_SESSION: LazyLock<String> = LazyLock::new(|| {
+    let set: Vec<String> = APP_PARAMETERS
+        .iter()
+        .map(|(name, value)| {
+            let value = parameter_value(&app_parameter_value(value)).unwrap_or_default();
+            format!("{name} = {value}")
+        })
+        .collect();
+    format!("ALTER SESSION SET {}", set.join(", "))
+});
+
 /// What `USE` switches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UseKind {
@@ -1142,6 +1176,14 @@ mod tests {
 
     #[test]
     fn builds_the_drivers_statements() {
+        assert_eq!(
+            *PIN_SESSION,
+            "ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE, \
+             DATE_INPUT_FORMAT = 'AUTO', TIME_INPUT_FORMAT = 'AUTO', \
+             TIMESTAMP_INPUT_FORMAT = 'AUTO'"
+        );
+        // It leaves the editor's transaction open.
+        assert!(!implicit_commit(&PIN_SESSION));
         assert_eq!(
             alter_session_set("timezone", &serde_json::json!("Asia/Jakarta")).unwrap(),
             "ALTER SESSION SET TIMEZONE = 'Asia/Jakarta'"

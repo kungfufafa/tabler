@@ -18,12 +18,14 @@ use std::sync::Arc;
 
 use super::conn::{Outcome, Part, SnowflakeConn};
 use super::errors::StatementError;
+use super::params::IGNORE_CASE;
 use super::session::{DIALECT, SnowflakeSession, cancel_handle, lock, may_have_run, may_resend};
 use crate::drivers::{
     CancelSlot, LATE_CANCEL_NOTICE, RowChunker, RowSink, StatementOutcome, arm_cancel,
     cancel_requested, cancel_safe_on_stop, contains_word, is_dml, tx_effect,
 };
 use crate::error::AppError;
+use crate::sqlgen::dialect::snowflake::APP_PARAMETERS;
 use crate::sqlgen::split::leading_keywords;
 use crate::sqlgen::sql::writes;
 use crate::types::query::StatementKind;
@@ -41,10 +43,52 @@ const EXPIRED_IN_TRANSACTION: &str = "Snowflake ended the session, and its open 
 /// set the default of new sessions (Tabler's sign-in sets its own). Tabler's commits and its
 /// transaction tracking need every statement outside BEGIN … COMMIT committed on its own.
 pub(super) fn sets_autocommit(sql: &str) -> bool {
+    sets_parameter(sql, "AUTOCOMMIT")
+}
+
+/// Whether a statement may change the session's QUOTED_IDENTIFIERS_IGNORE_CASE, in the same
+/// coarse way: on the app's session, its quoted names would then find tables of another case.
+pub(super) fn sets_ignore_case(sql: &str) -> bool {
+    sets_parameter(sql, IGNORE_CASE)
+}
+
+fn sets_parameter(sql: &str, name: &str) -> bool {
     let kw = leading_keywords(sql, 2);
     let defaults = kw.first().is_some_and(|w| w == "ALTER")
         && matches!(kw.get(1).map(String::as_str), Some("USER" | "ACCOUNT"));
-    !defaults && writes(DIALECT, sql) && contains_word(&sql.to_uppercase(), "AUTOCOMMIT")
+    !defaults && writes(DIALECT, sql) && contains_word(&sql.to_uppercase(), name)
+}
+
+/// Why a statement that may turn QUOTED_IDENTIFIERS_IGNORE_CASE on is refused on the app's
+/// session (the startup commands', and the editor's when an MFA sign-in shares one).
+pub(super) fn ignore_case_error() -> AppError {
+    AppError::InvalidInput(format!(
+        "Snowflake: Tabler keeps {IGNORE_CASE} off on the session its grid and commits use \
+         (with it on, a quoted name such as \"Orders\" would find ORDERS, another table)"
+    ))
+}
+
+/// The first of `APP_PARAMETERS` a statement may change, in the same coarse way: on a shared
+/// (MFA) session the editor's statement would change the app's session too. The text only: what
+/// it misses (`EXECUTE IMMEDIATE $q`, a procedure) is set back after the statement
+/// (`SnowflakeSession::probe_editor`).
+pub(super) fn sets_app_parameter(sql: &str) -> Option<&'static str> {
+    APP_PARAMETERS
+        .iter()
+        .map(|(name, _)| *name)
+        .find(|name| sets_parameter(sql, name))
+}
+
+/// Why the editor may not change one of `APP_PARAMETERS` on a shared (MFA) session.
+pub(super) fn app_parameter_error(name: &str) -> AppError {
+    if name == IGNORE_CASE {
+        return ignore_case_error();
+    }
+    AppError::InvalidInput(format!(
+        "Snowflake: Tabler keeps {name} = 'AUTO' on the session its grid and commits use (the grid \
+         writes dates, times and timestamps in ISO form), and this sign-in asks MFA, so the editor \
+         shares that session"
+    ))
 }
 
 pub(super) fn autocommit_error() -> AppError {
@@ -101,6 +145,12 @@ pub(super) async fn run(
     session.refuse_write(sql)?;
     if sets_autocommit(sql) {
         return Err(autocommit_error());
+    }
+    // The editor's own session is the user's to set up; a shared one is the app's too.
+    if session.shares_editor()
+        && let Some(name) = sets_app_parameter(sql)
+    {
+        return Err(app_parameter_error(name));
     }
     let may_move = writes(DIALECT, sql);
     // On a shared session, the app's reads in flight end before the session may move, and none

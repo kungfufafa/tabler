@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::error::AppError;
-use crate::sqlgen::dialect::snowflake::parameter_name;
+use crate::sqlgen::dialect::snowflake::{APP_PARAMETERS, app_parameter_value, parameter_name};
 use crate::types::profile::DriverParams;
 
 /// How the login proves who it is.
@@ -97,8 +97,20 @@ impl SnowflakeParams {
                 "Snowflake: key pair sign-in needs the private key file".into(),
             ));
         }
-        if let Some(url) = &self.base_url {
-            base_url(url)?;
+        if self.auth == SnowflakeAuth::KeyPair
+            && let Some(path) = &self.private_key_path
+        {
+            local_key_path(path)?;
+        }
+        if let Some(input) = &self.base_url {
+            let url = base_url(input)?;
+            // A profile from a connections file could pair the user's own key with another
+            // host, which could then sign in as the user with the JWT for up to an hour.
+            if self.auth == SnowflakeAuth::KeyPair && !snowflake_host(&url) {
+                return Err(AppError::InvalidInput(format!(
+                    "Snowflake endpoint \u{201c}{input}\u{201d}: {KEY_PAIR_HOST}"
+                )));
+            }
         }
         for (name, value) in &self.session_parameters {
             parameter_name(name)?;
@@ -117,6 +129,9 @@ impl SnowflakeParams {
     /// would run a second statement; at 1 Snowflake refuses the whole request. AUTOCOMMIT stays on
     /// whatever the profile, the user or the account says: with it off, the app's own writes
     /// would wait in a transaction nobody commits, and the editor's in one Tabler cannot see.
+    /// `APP_PARAMETERS` keep their values too: with QUOTED_IDENTIFIERS_IGNORE_CASE on, the app's
+    /// quoted `"Orders"` would find ORDERS, and an edit could land in that other table; with
+    /// another DATE_INPUT_FORMAT (or TIME_ / TIMESTAMP_), the grid's ISO text another date.
     pub fn login_parameters(&self) -> BTreeMap<String, serde_json::Value> {
         let mut out: BTreeMap<String, serde_json::Value> = self
             .session_parameters
@@ -128,8 +143,52 @@ impl SnowflakeParams {
         }
         out.insert("MULTI_STATEMENT_COUNT".into(), 1.into());
         out.insert("AUTOCOMMIT".into(), true.into());
+        for (name, value) in APP_PARAMETERS {
+            out.insert(name.into(), app_parameter_value(value));
+        }
         out
     }
+}
+
+/// The session parameter that makes quoted identifiers match in any case.
+pub const IGNORE_CASE: &str = "QUOTED_IDENTIFIERS_IGNORE_CASE";
+
+/// Why a key pair's endpoint is refused when it is not Snowflake's or this machine's.
+const KEY_PAIR_HOST: &str = "a key pair signs in only at Snowflake's own endpoint \
+     (*.snowflakecomputing.com) or a test server on this machine (another host could sign in \
+     as you with the token)";
+
+/// Refuses a key file that is no full path on this machine: `C:\…` / `C:/…`, or `/…` with one
+/// leading separator. Two leading separators in any mix (`\\host\share`, `/\host`,
+/// `\\?\UNC\…`) name a share or a device: Windows reads `/` as `\`, and opening a share signs in
+/// to its host (with the user's NTLM hash) before anything is read. A `?` is in no Windows file
+/// name, only in the object manager's prefixes (`\??\UNC\…`).
+pub fn local_key_path(path: &str) -> Result<(), AppError> {
+    let path = path.trim();
+    let sep = |c: u8| c == b'/' || c == b'\\';
+    let local = match path.as_bytes() {
+        [a, b, ..] if sep(*a) && sep(*b) => false,
+        [drive, b':', s, ..] => drive.is_ascii_alphabetic() && sep(*s),
+        [b'/', ..] => true,
+        _ => false,
+    };
+    if local && !path.contains('?') {
+        Ok(())
+    } else {
+        Err(AppError::InvalidInput(format!(
+            "Snowflake: the key file \u{201c}{path}\u{201d} must be a full path on this machine \
+             (C:\\keys\\rsa_key.p8 or /keys/rsa_key.p8), not a network share"
+        )))
+    }
+}
+
+/// Whether an endpoint is Snowflake's own (`*.snowflakecomputing.com` / `.cn`, PrivateLink
+/// included) or this machine: where a key pair may sign in.
+pub fn snowflake_host(url: &reqwest::Url) -> bool {
+    let host = url.host_str().unwrap_or_default();
+    host.ends_with(".snowflakecomputing.com")
+        || host.ends_with(".snowflakecomputing.cn")
+        || loopback(url)
 }
 
 /// The account identifier of what a user pastes: `https://xy12345.eu-west-1.snowflakecomputing.com/`,
@@ -313,6 +372,25 @@ mod tests {
             "sessionParameters": {"autocommit": false}}))
         .unwrap();
         assert_eq!(p.login_parameters()["AUTOCOMMIT"], true);
+        // Quoted names match in their own case only, whatever the profile says.
+        assert_eq!(login[IGNORE_CASE], false);
+        let p = params(serde_json::json!({"account": "a", "auth": "pat",
+            "sessionParameters": {"quoted_identifiers_ignore_case": true}}))
+        .unwrap();
+        assert_eq!(p.login_parameters()[IGNORE_CASE], false);
+        // The grid's dates are read as it writes them, whatever the profile (or a link) says.
+        let p = params(serde_json::json!({"account": "a", "auth": "pat",
+            "sessionParameters": {"DATE_INPUT_FORMAT": "YYYY-DD-MM",
+                "time_input_format": "HH24MISS", "TIMESTAMP_INPUT_FORMAT": "DD/MM/YYYY HH24:MI"}}))
+        .unwrap();
+        let login = p.login_parameters();
+        for name in [
+            "DATE_INPUT_FORMAT",
+            "TIME_INPUT_FORMAT",
+            "TIMESTAMP_INPUT_FORMAT",
+        ] {
+            assert_eq!(login[name], "AUTO", "{name}");
+        }
 
         // Key pair needs its file; settings must be names and plain values.
         assert!(params(serde_json::json!({"account": "a"})).is_err());
@@ -376,6 +454,88 @@ mod tests {
         assert!(
             params(serde_json::json!({"account": "a", "auth": "pat", "baseUrl": "https://x/y"}))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn a_key_file_is_a_local_path() {
+        for local in [
+            "C:\\keys\\rsa_key.p8",
+            "c:/keys/rsa_key.p8",
+            "/Users/me/.snowflake/rsa_key.p8",
+            "  /keys/k.p8  ",
+        ] {
+            assert!(local_key_path(local).is_ok(), "{local}");
+        }
+        // Shares and device paths in every mix of separators, and anything relative.
+        for bad in [
+            "\\\\host\\share\\k.p8",
+            "//host/share/k.p8",
+            "/\\host\\share\\k.p8",
+            "\\/host/share/k.p8",
+            "/\\?\\UNC\\host\\s\\k",
+            "\\\\?\\UNC\\host\\s\\k",
+            "\\\\.\\pipe\\k",
+            "\\??\\UNC\\host\\s\\k",
+            "/??/UNC/host/s/k",
+            "\\keys\\k.p8",
+            "keys/k.p8",
+            "C:keys\\k.p8",
+            "",
+        ] {
+            let err = local_key_path(bad).unwrap_err();
+            assert!(
+                err.to_string().contains("not a network share"),
+                "{bad}: {err}"
+            );
+        }
+        // The profile's check refuses it, as a connections file may carry one.
+        let share = params(serde_json::json!({"account": "a", "auth": "keyPair",
+            "privateKeyPath": "\\\\attacker\\share\\k.p8"}));
+        assert!(
+            share
+                .unwrap_err()
+                .to_string()
+                .contains("not a network share")
+        );
+        // A path other sign-ins never open is left alone.
+        assert!(
+            params(serde_json::json!({"account": "a", "auth": "pat",
+                "privateKeyPath": "\\\\host\\share\\k.p8"}))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_key_pair_signs_in_only_at_snowflake_or_this_machine() {
+        let key = |base: &str| {
+            params(serde_json::json!({"account": "a", "auth": "keyPair",
+                "privateKeyPath": "C:/keys/rsa_key.p8", "baseUrl": base}))
+        };
+        for ok in [
+            "https://xy12345.us-east-1.privatelink.snowflakecomputing.com",
+            "https://myorg-acct.snowflakecomputing.cn",
+            "http://127.0.0.1:8080",
+            "https://localhost:8443",
+        ] {
+            assert!(key(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "https://attacker.example",
+            "https://snowflakecomputing.com.attacker.example",
+            "https://xsnowflakecomputing.com",
+        ] {
+            let err = key(bad).unwrap_err();
+            assert!(
+                err.to_string().contains("a key pair signs in only"),
+                "{bad}: {err}"
+            );
+        }
+        // A token or password the profile's secret holds may go to a proxy.
+        assert!(
+            params(serde_json::json!({"account": "a", "auth": "pat",
+                "baseUrl": "https://proxy.example"}))
+            .is_ok()
         );
     }
 }

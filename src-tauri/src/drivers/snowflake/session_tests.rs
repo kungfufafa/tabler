@@ -59,6 +59,7 @@ async fn fake(login: Login) -> FakeSnowflake {
     let fake = FakeSnowflake::start(ACCOUNT, USER, login).await;
     fake.server_info();
     fake.editor_state(Some("DB"), None);
+    fake.status(&sf::PIN_SESSION);
     fake
 }
 
@@ -242,6 +243,7 @@ async fn caps_grant_what_the_driver_does() {
         Feature::Editor,
         Feature::Explain,
         Feature::CancelOnServer,
+        Feature::Format,
         Feature::EditRows,
         Feature::InsertRows,
         Feature::DeleteRows,
@@ -268,6 +270,7 @@ async fn caps_grant_what_the_driver_does() {
         Feature::Users,
         Feature::Sequences,
         Feature::Backup,
+        Feature::CopyAsInsert,
     ] {
         assert!(!caps.has(f), "{f:?}");
     }
@@ -962,11 +965,13 @@ async fn an_expired_session_signs_in_again_and_is_set_up_as_before() {
     assert_eq!(fake.logins().len(), 3);
     let sent = fake.sent();
     let n = sent.len();
-    assert_eq!(sent[n - 3], (2, sf::PING.to_string()));
+    assert_eq!(sent[n - 4], (2, sf::PING.to_string()));
     assert_eq!(
-        sent[n - 2],
+        sent[n - 3],
         (3, "ALTER SESSION SET QUERY_TAG = 'tabler'".to_string())
     );
+    // The app's session sets its parameters back after the startup commands.
+    assert_eq!(sent[n - 2], (3, sf::PIN_SESSION.to_string()));
     assert_eq!(sent[n - 1], (3, sf::PING.to_string()));
 
     // The editor: its USE runs again on the new session, and the run says what was lost.
@@ -1217,6 +1222,16 @@ async fn startup_commands_run_on_both_sessions() {
             ]
         );
     }
+    // A startup command (a procedure, say) may change the app's parameters unseen: its session
+    // (the second sign-in) sets them back after them; the editor's own session is the user's.
+    let after = |session: usize| {
+        sent.iter()
+            .filter(|(s, _)| *s == session)
+            .nth(2)
+            .map(|(_, q)| q.clone())
+    };
+    assert_eq!(after(2).as_deref(), Some(sf::PIN_SESSION.as_str()));
+    assert_ne!(after(1).as_deref(), Some(sf::PIN_SESSION.as_str()));
 }
 
 #[tokio::test]
@@ -1471,8 +1486,8 @@ async fn on_a_shared_mfa_session_the_apps_new_sign_in_under_the_editors_transact
         assert_eq!(s.in_transaction(), Some(false), "{path}");
         assert_eq!(
             fake.sent().len(),
-            sent + 2,
-            "{path}: ROLLBACK and its read-back"
+            sent + 3,
+            "{path}: ROLLBACK, the app's parameters set back, and its read-back"
         );
     }
 
@@ -1690,6 +1705,164 @@ async fn autocommit_stays_on_and_a_transaction_the_text_hides_is_seen() {
     .expect("refused");
     assert!(err.to_string().contains("AUTOCOMMIT"), "{err}");
     assert_eq!(fake.logins().len(), logins);
+}
+
+#[tokio::test]
+async fn quoted_names_keep_their_case_on_the_apps_session() {
+    let fake = fake(Login::Password {
+        password: "pw".into(),
+        passcode: None,
+    })
+    .await;
+    // The sign-in turns it off, whatever the profile says.
+    let s = open_mfa(&fake).await;
+    assert_eq!(
+        fake.logins()[0].body["data"]["SESSION_PARAMETERS"]["QUOTED_IDENTIFIERS_IGNORE_CASE"],
+        false
+    );
+    // On the shared (MFA) session the editor may not turn it back on.
+    let sent = fake.sent().len();
+    for sql in [
+        "ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE",
+        "alter session unset quoted_identifiers_ignore_case",
+        "EXECUTE IMMEDIATE 'ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE'",
+    ] {
+        let err = run(&s, sql, 10).await.unwrap_err();
+        assert!(
+            err.to_string().contains("QUOTED_IDENTIFIERS_IGNORE_CASE"),
+            "{sql}: {err}"
+        );
+    }
+    assert_eq!(fake.sent().len(), sent, "nothing was sent");
+    // The grid's dates are written as ISO text, which only AUTO reads as such.
+    for sql in [
+        "ALTER SESSION SET DATE_INPUT_FORMAT = 'YYYY-DD-MM'",
+        "alter session set timestamp_input_format = 'DD/MM/YYYY HH24:MI'",
+    ] {
+        let err = run(&s, sql, 10).await.unwrap_err();
+        assert!(err.to_string().contains("INPUT_FORMAT"), "{sql}: {err}");
+    }
+    assert_eq!(fake.sent().len(), sent, "nothing was sent");
+    // Text that hides the parameter (a session variable, a procedure with the caller's rights)
+    // runs, and the session's parameters are set back before it is read back.
+    for sql in ["EXECUTE IMMEDIATE $q", "CALL util.setup_session()"] {
+        fake.status(sql);
+        let before = fake.sent().len();
+        run(&s, sql, 10).await.unwrap();
+        let after: Vec<String> = fake.sent()[before..]
+            .iter()
+            .map(|(_, q)| q.clone())
+            .collect();
+        assert_eq!(
+            after,
+            [sql, sf::PIN_SESSION.as_str(), sf::EDITOR_STATE],
+            "{sql}"
+        );
+    }
+    // A read changes nothing: nothing is set back after it.
+    let read = "SELECT 2";
+    fake.answer(
+        read,
+        Answer::rows(
+            vec![FakeColumn::new("2", "fixed").precision(1, 0)],
+            vec![vec![Some("2".into())]],
+        ),
+    );
+    let before = fake.sent().len();
+    run(&s, read, 10).await.unwrap();
+    assert_eq!(fake.sent().len(), before + 1);
+
+    // When setting them back fails, the grid's next statement sets them back first, and is not
+    // sent while that fails.
+    let count = "SELECT COUNT(*) FROM \"PUBLIC\".\"ITEMS\"";
+    fake.answer(
+        count,
+        Answer::rows(
+            vec![FakeColumn::new("COUNT(*)", "fixed").precision(18, 0)],
+            vec![vec![Some("3".into())]],
+        ),
+    );
+    fake.answer(
+        &sf::PIN_SESSION,
+        Answer::error("000603", "SQL execution internal error."),
+    );
+    let sql = "CALL util.setup_session()";
+    run(&s, sql, 10).await.unwrap();
+    assert!(s.query(count, &[]).await.is_err());
+    assert!(!fake.sent().iter().any(|(_, q)| q == count), "not sent");
+    fake.status(&sf::PIN_SESSION);
+    s.query(count, &[]).await.unwrap();
+    let tail: Vec<String> = fake
+        .sent()
+        .iter()
+        .rev()
+        .take(3)
+        .rev()
+        .map(|(_, q)| q.clone())
+        .collect();
+    assert_eq!(tail, [sf::PIN_SESSION.as_str(), sf::EDITOR_STATE, count]);
+
+    // The editor's own session (no MFA) is the user's to set.
+    let fake = fake_with_key().await;
+    let s = open(&fake).await;
+    let set = "ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE";
+    fake.status(set);
+    run(&s, set, 10).await.unwrap();
+    assert!(fake.sent().iter().any(|(_, q)| q == set));
+    assert!(
+        !fake
+            .sent()
+            .iter()
+            .any(|(_, q)| q == sf::PIN_SESSION.as_str())
+    );
+    // The sign-in sets the grid's input formats, whatever the profile says.
+    let login = &fake.logins()[0].body["data"]["SESSION_PARAMETERS"];
+    assert_eq!(login["DATE_INPUT_FORMAT"], "AUTO");
+    assert_eq!(login["TIMESTAMP_INPUT_FORMAT"], "AUTO");
+
+    // Startup commands run on the app's session too: refused before signing in.
+    let logins = fake.logins().len();
+    let err = open_with(
+        &fake,
+        serde_json::json!({}),
+        serde_json::json!({ "startupSql": "ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE" }),
+        None,
+    )
+    .await
+    .err()
+    .expect("refused");
+    assert!(
+        err.to_string().contains("QUOTED_IDENTIFIERS_IGNORE_CASE"),
+        "{err}"
+    );
+    assert_eq!(fake.logins().len(), logins);
+}
+
+#[tokio::test]
+async fn an_imported_profile_never_opens_a_share_or_sends_the_key_elsewhere() {
+    let fake = fake_with_key().await;
+    // A connections file is saved without the form's checks: the connect checks again.
+    for (params, want) in [
+        (
+            serde_json::json!({ "privateKeyPath": "\\\\attacker\\share\\k.p8" }),
+            "not a network share",
+        ),
+        (
+            serde_json::json!({ "privateKeyPath": "/\\attacker\\share\\k.p8" }),
+            "not a network share",
+        ),
+        (
+            serde_json::json!({ "baseUrl": "https://attacker.example" }),
+            "a key pair signs in only",
+        ),
+    ] {
+        let err = open_with(&fake, params.clone(), serde_json::json!({}), None)
+            .await
+            .err()
+            .expect("refused");
+        assert!(err.to_string().contains(want), "{params}: {err}");
+    }
+    assert!(fake.logins().is_empty(), "nothing signed in");
 }
 
 #[tokio::test]
