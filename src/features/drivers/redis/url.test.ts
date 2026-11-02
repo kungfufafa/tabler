@@ -1,10 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_FORM,
   formToProfileInput,
   type ConnectionFormValues,
 } from "@/features/connections/schema";
+import { loadUrlSchemes, parseConnectionUrl, profileToUrl } from "@/features/connections/url";
+import { CORE_KINDS } from "@/features/drivers/catalog";
 import type { SslMode } from "@/lib/ipc";
+import { useAppInfoStore } from "@/stores/appInfo";
 import lane from ".";
 import { formatRedisUrl, parseRedisUrl } from "./url";
 
@@ -80,11 +83,18 @@ describe("Redis URLs", () => {
   it("read TLS from rediss:// and how its certificate is checked", () => {
     const ssl = (url: string) => parseRedisUrl(url)?.values.ssl;
     expect(ssl("redis://h")).toBe("disable");
-    expect(ssl("rediss://h")).toBe("require");
+    // A bare rediss:// verifies, as redis-cli, redis-py and node-redis do: never TLS unchecked.
+    expect(ssl("rediss://h")).toBe("verify-full");
+    expect(ssl("REDISS://h/0")).toBe("verify-full");
+    expect(ssl("rediss://default:tok@x.upstash.io:6379")).toBe("verify-full");
     expect(ssl("rediss://h?verify=full")).toBe("verify-full");
     expect(ssl("rediss://h?verify=ca")).toBe("verify-ca");
+    expect(ssl("rediss://h?verify=none")).toBe("require");
     expect(ssl("rediss://h?ssl_cert_reqs=required")).toBe("verify-full");
+    // Python's CERT_OPTIONAL checks the certificate on a client like CERT_REQUIRED.
+    expect(ssl("rediss://h?ssl_cert_reqs=optional")).toBe("verify-full");
     expect(ssl("rediss://h?ssl_cert_reqs=none")).toBe("require");
+    expect(ssl("rediss://h?ssl_cert_reqs=NONE")).toBe("require");
     // A mode this does not know is no URL: the form's default could be weaker.
     expect(parseRedisUrl("rediss://h?verify=sometimes")).toBeNull();
   });
@@ -154,7 +164,10 @@ describe("Redis URLs", () => {
       expect(back.options.driverParams, url).toEqual(p.options.driverParams);
       expect(back.options.connectTimeoutSecs, url).toEqual(p.options.connectTimeoutSecs);
     }
-    expect(formatRedisUrl(profiles[1]!)).toMatch(/^rediss:\/\/app:@cache\.example\.com:6380\/3/);
+    // Unchecked TLS says so, since a bare rediss:// reads back as verified.
+    expect(formatRedisUrl(profiles[1]!)).toMatch(
+      /^rediss:\/\/app:@cache\.example\.com:6380\/3\?verify=none/,
+    );
     expect(formatRedisUrl(profiles[2]!)).toMatch(/^rediss:\/\/\[::1\]:6379\/db2\?verify=full/);
   });
 
@@ -168,5 +181,44 @@ describe("Redis URLs", () => {
   it("carry the common query (name, Safe Mode) for every connection URL", () => {
     const url = formatRedisUrl(saved(base({ name: "Cache" })))!;
     expect(new URL(url).searchParams.get("name")).toBe("Cache");
+  });
+});
+
+describe("Redis Copy as URL", () => {
+  beforeEach(() =>
+    useAppInfoStore.setState({
+      info: { version: "1", platform: "test", debug: true, kinds: [...CORE_KINDS, "redis"] },
+    }),
+  );
+  afterEach(() => useAppInfoStore.setState({ info: null }));
+
+  it("keep the name, colour, tag, Safe Mode and lazy loading, never the password", async () => {
+    await loadUrlSchemes();
+    const p = saved(base({ name: "Prod cache", user: "app", database: "2", ssl: "verify-full" }));
+    const url = profileToUrl(
+      {
+        ...p,
+        color: "red",
+        options: { ...p.options, tag: "production", safeMode: "alertNonSelect", lazyLoad: true },
+      },
+      "s3cret",
+    )!;
+    expect(url).toMatch(
+      /^rediss:\/\/app:@cache\.example\.com:6379\/2\?verify=full&name=Prod\+cache&/,
+    );
+    expect(url).not.toContain("s3cret");
+    const back = parseConnectionUrl(url);
+    expect(back.values).toMatchObject({
+      driver: "redis",
+      name: "Prod cache",
+      color: "red",
+      tag: "production",
+      safeMode: "alertNonSelect",
+      user: "app",
+      database: "2",
+      ssl: "verify-full",
+    });
+    expect(back.extras?.lazyload).toBe(true);
+    expect(back.password).toBeNull();
   });
 });

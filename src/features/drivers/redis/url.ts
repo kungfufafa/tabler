@@ -11,7 +11,7 @@ import { databaseIndex, formParams, redisForm, type RedisForm, redisFormOf } fro
  *
  * Keys read: `db` (redis-py, in place of the path), `verify=full|ca|none` (the real-server suite's)
  * or redis-py's `ssl_cert_reqs=required|optional|none` for how a `rediss://` certificate is
- * checked, `protocol=2|3`, `socket_connect_timeout` (seconds), and Tabler's own `scan_count`,
+ * checked (verified unless `none`), `protocol=2|3`, `socket_connect_timeout` (seconds), and Tabler's own `scan_count`,
  * `preview_bytes`, `preview_elements`, `memory_column=false` and `key_separator`. Writing uses the
  * same keys, then the query every connection URL carries (`profileUrlQuery`).
  */
@@ -29,18 +29,22 @@ function decode(s: string): string {
 /** A host that would not read back as itself: a URL delimiter or a space in it. */
 const badHost = (host: string) => /[\s@/?#]/.test(host);
 
-/** How a `rediss://` URL checks the certificate; "bad" for a word this does not know. */
+/**
+ * How a `rediss://` URL checks the certificate; "bad" for a word this does not know. A bare
+ * `rediss://` verifies, as redis-cli, redis-py and node-redis do, and so does `optional` (Python's
+ * CERT_OPTIONAL checks like CERT_REQUIRED on a client); only an explicit `none` skips the check.
+ */
 function verifyOf(q: URLSearchParams): SslMode | "bad" {
   const word = (q.get("verify") ?? q.get("ssl_cert_reqs"))?.trim().toLowerCase();
-  if (word === undefined) return "require";
+  if (word === undefined) return "verify-full";
   switch (word) {
     case "full":
     case "required":
+    case "optional":
       return "verify-full";
     case "ca":
       return "verify-ca";
     case "none":
-    case "optional":
       return "require";
     default:
       return "bad";
@@ -107,7 +111,7 @@ export const parseRedisConnectionUrl = (input: string): ParsedConnectionUrl | nu
 const TLS: ReadonlySet<SslMode> = new Set(["require", "verify-ca", "verify-full"]);
 
 /**
- * The URL of a profile: `rediss://` over TLS (`verify=` for the checked modes), the user, host,
+ * The URL of a profile: `rediss://` over TLS (`verify=` for every mode, `none` when unchecked), the user, host,
  * port and DB index, the params that differ from the defaults and the common query; never a
  * password. `Prefer` is plain text, as the backend reads it (Redis has no TLS negotiation).
  */
@@ -116,6 +120,8 @@ export function formatRedisUrl(p: ConnectionProfile): string | null {
   const tls = TLS.has(p.ssl);
   const f = redisForm(p);
   const query: [string, string][] = [];
+  // `none` spelled out: a bare `rediss://` reads back as verified.
+  if (p.ssl === "require") query.push(["verify", "none"]);
   if (p.ssl === "verify-full") query.push(["verify", "full"]);
   if (p.ssl === "verify-ca") query.push(["verify", "ca"]);
   if (f.protocol !== "auto") query.push(["protocol", f.protocol === "resp2" ? "2" : "3"]);
