@@ -1,14 +1,15 @@
 //! Read or write: the console's classifier (read-only connections, Safe Mode). An allow-list,
-//! default-deny: a command is a read only when it is in the static list below, or when the
-//! server's `COMMAND INFO` flags it `readonly` without `admin`, `may_replicate`, `noscript` or
-//! `blocking` (modules' read commands). Scripts (`EVAL*`, `FCALL*`, `SCRIPT`, `FUNCTION`), server
-//! administration (`CONFIG`, `CLIENT`, `DEBUG`, `SHUTDOWN`, …), transactions, connection state
-//! (`HELLO`, `AUTH`) and `KEYS` (it blocks the server; use SCAN) are writes whatever the server
-//! says. A line that cannot be read is a write.
+//! default-deny: a command is a read only when it is in the static list below, or when it is a
+//! core command the server's `COMMAND INFO` flags `readonly` without `admin`, `may_replicate`,
+//! `noscript` or `blocking` (core reads newer than the list). A module's command reads only
+//! through the static list: modules flag commands `readonly` that change data. Scripts (`EVAL*`,
+//! `FCALL*`, `SCRIPT`, `FUNCTION`), server administration (`CONFIG`, `CLIENT`, `DEBUG`,
+//! `SHUTDOWN`, …), transactions, connection state (`HELLO`, `AUTH`) and `KEYS` (it blocks the
+//! server; use SCAN) are writes whatever the server says. A line that cannot be read is a write.
 
 use std::collections::HashSet;
 
-use super::cli::{command_name, split_console, tokenize};
+use super::cli::{command_name, tokenize};
 use crate::sqlgen::classify::StatementClass;
 
 /// Commands that are never reads, even when a server flags them `readonly`. A module command
@@ -28,6 +29,8 @@ const NEVER_READ: &[&str] = &[
     "AUTH",
     "BGREWRITEAOF",
     "BGSAVE",
+    // RedisBloom flags it `readonly`, yet it rewrites the filter and replicates.
+    "CF.COMPACT",
     "CLIENT",
     "CLUSTER",
     "CONFIG",
@@ -41,6 +44,13 @@ const NEVER_READ: &[&str] = &[
     "FAILOVER",
     "FCALL",
     "FCALL_RO",
+    // RediSearch before 8 (Redis Stack up to 7.4) flags its alias and dictionary edits
+    // `readonly`.
+    "FT.ALIASADD",
+    "FT.ALIASDEL",
+    "FT.ALIASUPDATE",
+    "FT.DICTADD",
+    "FT.DICTDEL",
     "FUNCTION",
     "HELLO",
     "KEYS",
@@ -48,6 +58,8 @@ const NEVER_READ: &[&str] = &[
     "MODULE",
     "MONITOR",
     "MULTI",
+    // Stores the cardinality it computes in the key (before 6.2 it is flagged plain readonly).
+    "PFCOUNT",
     "PSUBSCRIBE",
     "PSYNC",
     "QUIT",
@@ -87,7 +99,8 @@ enum Rule {
 }
 
 /// The static allow-list: Redis's read-only commands (core and RedisJSON / TimeSeries / Bloom /
-/// Search reads), plus the harmless server commands that carry no `readonly` flag.
+/// Search / Graph reads), plus the harmless server commands that carry no `readonly` flag. A
+/// module's read must be listed here: the server's flags never make a module's command a read.
 const READS: &[(&str, Rule)] = &[
     // Strings and bitmaps.
     ("GET", Rule::Read),
@@ -96,6 +109,8 @@ const READS: &[(&str, Rule)] = &[
     ("MGET", Rule::Read),
     ("STRLEN", Rule::Read),
     ("LCS", Rule::Read),
+    // `LCS` before 7.0.
+    ("STRALGO", Rule::Sub(&["LCS"])),
     ("GETBIT", Rule::Read),
     ("BITCOUNT", Rule::Read),
     ("BITPOS", Rule::Read),
@@ -199,6 +214,7 @@ const READS: &[(&str, Rule)] = &[
     ("INFO", Rule::Read),
     ("LASTSAVE", Rule::Read),
     ("ROLE", Rule::Read),
+    ("LOLWUT", Rule::Read),
     // Changes only which database the console's own connection reads, like `USE`.
     ("SELECT", Rule::Read),
     (
@@ -249,22 +265,52 @@ const READS: &[(&str, Rule)] = &[
     ("BF.MEXISTS", Rule::Read),
     ("BF.INFO", Rule::Read),
     ("BF.CARD", Rule::Read),
+    ("BF.SCANDUMP", Rule::Read),
     ("CF.EXISTS", Rule::Read),
     ("CF.MEXISTS", Rule::Read),
     ("CF.COUNT", Rule::Read),
     ("CF.INFO", Rule::Read),
+    ("CF.SCANDUMP", Rule::Read),
+    ("CMS.QUERY", Rule::Read),
+    ("CMS.INFO", Rule::Read),
+    ("TOPK.QUERY", Rule::Read),
+    ("TOPK.COUNT", Rule::Read),
+    ("TOPK.LIST", Rule::Read),
+    ("TOPK.INFO", Rule::Read),
+    ("TDIGEST.MIN", Rule::Read),
+    ("TDIGEST.MAX", Rule::Read),
+    ("TDIGEST.QUANTILE", Rule::Read),
+    ("TDIGEST.CDF", Rule::Read),
+    ("TDIGEST.RANK", Rule::Read),
+    ("TDIGEST.REVRANK", Rule::Read),
+    ("TDIGEST.BYRANK", Rule::Read),
+    ("TDIGEST.BYREVRANK", Rule::Read),
+    ("TDIGEST.TRIMMED_MEAN", Rule::Read),
+    ("TDIGEST.INFO", Rule::Read),
     // RediSearch.
     ("FT.SEARCH", Rule::Read),
     ("FT.AGGREGATE", Rule::Read),
+    ("FT.PROFILE", Rule::Read),
     ("FT.INFO", Rule::Read),
     ("FT.EXPLAIN", Rule::Read),
+    ("FT.EXPLAINCLI", Rule::Read),
+    ("FT.SPELLCHECK", Rule::Read),
+    ("FT.TAGVALS", Rule::Read),
+    ("FT.SUGGET", Rule::Read),
+    ("FT.SUGLEN", Rule::Read),
+    ("FT.SYNDUMP", Rule::Read),
+    ("FT.DICTDUMP", Rule::Read),
     ("FT._LIST", Rule::Read),
+    // Reads an `FT.AGGREGATE … WITHCURSOR` cursor; `DEL` and `GC` drop cursors.
+    ("FT.CURSOR", Rule::Sub(&["READ"])),
+    // RedisGraph / FalkorDB: the slow log, unless it is reset.
+    ("GRAPH.SLOWLOG", Rule::Unless(&["RESET"])),
 ];
 
 /// The flags that keep a `readonly` command out of the allow-list.
 const EXCLUDING_FLAGS: &[&str] = &["admin", "may_replicate", "noscript", "blocking"];
 
-/// The read commands a server declares in `COMMAND INFO` (names lower-case, subcommands as
+/// The core read commands a server declares in `COMMAND INFO` (names lower-case, subcommands as
 /// `object|encoding`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServerReads {
@@ -280,14 +326,10 @@ impl ServerReads {
         let mut reads = ServerReads::default();
         if let Some(entries) = items(reply) {
             for entry in entries {
-                collect(entry, &mut reads);
+                collect(entry, false, &mut reads);
             }
         }
         reads
-    }
-
-    pub fn contains(&self, name: &str) -> bool {
-        self.names.contains(name)
     }
 
     /// Whether `argv` (its name lower-case in `lower`) reads by the server's flags.
@@ -297,28 +339,14 @@ impl ServerReads {
         if lower.contains('|') {
             return false;
         }
-        // A module's configuration and debugging commands, and internal `_…` ones, change the
-        // server whatever flags the module gave them.
-        if lower.starts_with('_')
-            || lower
-                .rsplit_once('.')
-                .is_some_and(|(_, c)| matches!(c, "config" | "debug"))
-        {
-            return false;
-        }
-        let sub = argv
-            .get(1)
-            .and_then(|a| std::str::from_utf8(a).ok())
-            .map(str::to_ascii_lowercase);
         if self.containers.contains(lower) {
+            let sub = argv
+                .get(1)
+                .and_then(|a| std::str::from_utf8(a).ok())
+                .map(str::to_ascii_lowercase);
             return sub.is_some_and(|s| self.names.contains(&format!("{lower}|{s}")));
         }
-        // Without subcommand entries (Redis 6, modules) the command's own flags decide.
         self.names.contains(lower)
-    }
-
-    pub fn len(&self) -> usize {
-        self.names.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -344,8 +372,9 @@ fn text(v: &::redis::Value) -> Option<String> {
     }
 }
 
-/// One entry: `[name, arity, flags, first, last, step, acl, tips, key specs, subcommands]`.
-fn collect(entry: &::redis::Value, reads: &mut ServerReads) {
+/// One entry: `[name, arity, flags, first, last, step, acl, tips, key specs, subcommands]`;
+/// `in_module`: a subcommand of a module's command.
+fn collect(entry: &::redis::Value, in_module: bool, reads: &mut ServerReads) {
     let Some(fields) = items(entry) else { return };
     let Some(name) = fields.first().and_then(text) else {
         return;
@@ -361,12 +390,22 @@ fn collect(entry: &::redis::Value, reads: &mut ServerReads) {
                 .collect()
         })
         .unwrap_or_default();
-    let read = flags.iter().any(|f| f == "readonly")
-        && !flags.iter().any(|f| EXCLUDING_FLAGS.contains(&f.as_str()));
+    let flag = |f: &str| flags.iter().any(|g| g == f);
+    // Modules flag commands `readonly` that change data (RediSearch before 8 its alias and
+    // dictionary edits, RedisBloom `CF.COMPACT`), so the flags only add core commands. A module's
+    // command is dotted (`FT.ALIASUPDATE`), internal (`_FT.X`) or, from Redis 7 on, flagged
+    // `module`. Before 7 (entries of fewer than 10 fields) nothing marks an undotted module
+    // command, so those entries add nothing: the static list covers every core read of Redis 6.
+    let untrusted = in_module
+        || fields.len() < 10
+        || flag("module")
+        || name.contains('.')
+        || name.starts_with('_');
+    let read = !untrusted && flag("readonly") && !EXCLUDING_FLAGS.iter().any(|f| flag(f));
     if let Some(subs) = fields.get(9).and_then(items).filter(|s| !s.is_empty()) {
         reads.containers.insert(name.clone());
         for sub in subs {
-            collect(sub, reads);
+            collect(sub, untrusted, reads);
         }
     }
     if read {
@@ -396,9 +435,9 @@ pub fn classify_argv(argv: &[Vec<u8>], server: Option<&ServerReads>) -> Statemen
                 Some(sub) => subs.contains(&sub.as_str()),
                 None => argv.len() == 1 && subs.contains(&""),
             },
-            Rule::Unless(words) => !(1..argv.len())
-                .filter_map(arg_upper)
-                .any(|a| words.contains(&a.as_str())),
+            Rule::Unless(words) => !argv[1..]
+                .iter()
+                .any(|a| words.iter().any(|w| is_option(a, w))),
         };
         return if read {
             StatementClass::Read
@@ -412,6 +451,14 @@ pub fn classify_argv(argv: &[Vec<u8>], server: Option<&ServerReads>) -> Statemen
     }
 }
 
+/// Whether an argument selects an option word the way the server reads it: Redis compares
+/// options with `strcasecmp`, which stops at the first NUL, so `"STORE\x00junk"` is STORE too.
+fn is_option(arg: &[u8], word: &str) -> bool {
+    let end = arg.iter().position(|&b| b == 0).unwrap_or(arg.len());
+    arg.get(..end)
+        .is_some_and(|a| a.eq_ignore_ascii_case(word.as_bytes()))
+}
+
 /// The class of one command line; a line that cannot be read is a write.
 pub fn classify_line(line: &str, server: Option<&ServerReads>) -> StatementClass {
     match tokenize(line) {
@@ -420,32 +467,21 @@ pub fn classify_line(line: &str, server: Option<&ServerReads>) -> StatementClass
     }
 }
 
-/// The class of console text: a read when it holds commands and all of them read.
-pub fn classify_script(text: &str, server: Option<&ServerReads>) -> StatementClass {
-    let commands = split_console(text);
-    if commands.is_empty() {
-        return StatementClass::Write;
-    }
-    if commands
-        .iter()
-        .all(|c| classify_line(&c.sql, server) == StatementClass::Read)
-    {
-        StatementClass::Read
-    } else {
-        StatementClass::Write
-    }
-}
-
 /// Commands the console refuses to run: they block the connection or turn it into a stream that
 /// never answers a command again (pub/sub, MONITOR), or change its protocol and identity.
 pub fn refused_in_console(argv: &[Vec<u8>]) -> Option<&'static str> {
+    // Redis looks names up with `strcasecmp`, which stops at a NUL, so `"CLIENT\x00a"` can run
+    // as CLIENT and would slip past every exact-name check here and in the bootstrap check.
+    if argv.first().is_some_and(|a| a.contains(&0)) {
+        return Some("a command name cannot contain a NUL byte");
+    }
     let name = command_name(argv)?;
     let blocking = matches!(
         name.as_str(),
         "BLPOP" | "BRPOP" | "BLMOVE" | "BRPOPLPUSH" | "BLMPOP" | "BZPOPMIN" | "BZPOPMAX" | "BZMPOP"
     );
     let block_arg = matches!(name.as_str(), "XREAD" | "XREADGROUP")
-        && argv[1..].iter().any(|a| a.eq_ignore_ascii_case(b"BLOCK"));
+        && argv[1..].iter().any(|a| is_option(a, "BLOCK"));
     if blocking || block_arg || matches!(name.as_str(), "WAIT" | "WAITAOF") {
         return Some(
             "blocking commands are not run in the console: they would hold the connection",
@@ -465,17 +501,19 @@ const CHANGES_CONNECTION: &str =
     "this command changes the connection itself; edit the connection instead";
 
 /// `CLIENT REPLY`, `CLIENT TRACKING`, `CLIENT CACHING` change what the connection answers.
+/// Redis 6 matches CLIENT subcommands with `strcasecmp` too, so `"REPLY\x00"` is REPLY.
 fn is_client_state_change(argv: &[Vec<u8>]) -> bool {
     argv.get(1).is_some_and(|sub| {
-        [b"REPLY".as_slice(), b"TRACKING", b"CACHING"]
+        ["REPLY", "TRACKING", "CACHING"]
             .iter()
-            .any(|s| sub.eq_ignore_ascii_case(s))
+            .any(|s| is_option(sub, s))
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::drivers::redis::cli::split_console;
     use ::redis::parse_redis_value;
     use StatementClass::{Read, Write};
 
@@ -517,6 +555,17 @@ mod tests {
             "GEORADIUS g 0 0 1 km WITHDIST",
             "GEORADIUSBYMEMBER g m 1 km ASC",
             "  \"GET\"   'k'",
+            "STRALGO LCS KEYS a b",
+            "LOLWUT VERSION 5",
+            "FT.SPELLCHECK idx helo",
+            "FT.CURSOR READ idx 1 COUNT 10",
+            "ft.cursor read idx 1",
+            "CMS.QUERY c a b",
+            "TDIGEST.QUANTILE t 0.5",
+            "GRAPH.SLOWLOG g",
+            // Only the part before a NUL is the option word.
+            "SORT l GET \"#\\x00STORE\"",
+            "SORT l BY \"STORES\"",
         ] {
             assert_eq!(c(line), Read, "{line}");
         }
@@ -581,6 +630,24 @@ mod tests {
             "SPOP s",
             "SUBSCRIBE c",
             "MONITOR",
+            "STRALGO",
+            "FT.CURSOR DEL idx 1",
+            "FT.CURSOR GC idx 0",
+            "FT.CURSOR",
+            "GRAPH.SLOWLOG g RESET",
+            "graph.slowlog g reset",
+            // strcasecmp stops at a NUL: these are STORE, STOREDIST, RESET and BLOCK.
+            "SORT list:1 \"STORE\\x00\" dst",
+            "SORT src \"store\\x00junk\" dst",
+            "GEORADIUS g 0 0 1 km \"STORE\\x00\" dst",
+            "GEORADIUSBYMEMBER g m 1 km \"STOREDIST\\x00\" dst",
+            "GRAPH.SLOWLOG g \"RESET\\x00\"",
+            "XREAD \"BLOCK\\x00\" 0 STREAMS s $",
+            "GRAPH.QUERY g \"MATCH (n) DELETE n\"",
+            "CF.COMPACT cf",
+            "FT.ALIASUPDATE alias idx",
+            "FT.DICTADD dict word",
+            "FT.SUGADD sug hello 1",
             "NOSUCHCOMMAND x",
             "",
             "   ",
@@ -594,134 +661,250 @@ mod tests {
         assert_eq!(classify_argv(&[], None), Write);
     }
 
-    #[test]
-    fn scripts_are_reads_only_when_every_command_reads() {
-        assert_eq!(classify_script("GET a\nTYPE b; PTTL b", None), Read);
-        assert_eq!(classify_script("GET a\nDEL b", None), Write);
-        assert_eq!(classify_script("GET a; SET \"x;y\" 1", None), Write);
-        // A `;` inside quotes does not hide a second command, and a write after it counts.
-        assert_eq!(classify_script("GET \"a;b\"; FLUSHALL", None), Write);
-        assert_eq!(classify_script("", None), Write);
-        assert_eq!(classify_script(" ;\n", None), Write);
+    /// Console text the way Safe Mode reads it: split like the console, then each command.
+    fn classes(text: &str) -> Vec<StatementClass> {
+        split_console(text)
+            .iter()
+            .map(|c| classify_line(&c.sql, None))
+            .collect()
     }
 
-    /// `COMMAND INFO` entries as Redis 7 sends them over RESP2.
-    fn command_info() -> ::redis::Value {
-        let entry = |name: &str, flags: &[&str], subs: &str| {
-            let mut s = format!(
-                "*10\r\n${}\r\n{name}\r\n:2\r\n*{}\r\n",
-                name.len(),
-                flags.len()
-            );
-            for f in flags {
-                s.push_str(&format!("+{f}\r\n"));
-            }
-            s.push_str(":1\r\n:1\r\n:1\r\n*0\r\n*0\r\n*0\r\n");
-            s.push_str(subs);
-            s
-        };
+    #[test]
+    fn console_text_is_classified_command_by_command() {
+        assert_eq!(classes("GET a\nTYPE b; PTTL b"), [Read, Read, Read]);
+        assert_eq!(classes("GET a\nDEL b"), [Read, Write]);
+        assert_eq!(classes("GET a; SET \"x;y\" 1"), [Read, Write]);
+        // A `;` inside quotes does not hide a second command, and a write after it counts.
+        assert_eq!(classes("GET \"a;b\"; FLUSHALL"), [Read, Write]);
+        assert!(classes("").is_empty());
+        assert!(classes(" ;\n").is_empty());
+    }
+
+    const NO_SUBS: &str = "*0\r\n";
+
+    /// One `COMMAND INFO` entry as Redis 7 sends it over RESP2 (ten fields).
+    fn entry(name: &str, flags: &[&str], subs: &str) -> String {
+        let mut s = format!(
+            "*10\r\n${}\r\n{name}\r\n:2\r\n*{}\r\n",
+            name.len(),
+            flags.len()
+        );
+        for f in flags {
+            s.push_str(&format!("+{f}\r\n"));
+        }
+        s.push_str(":1\r\n:1\r\n:1\r\n*0\r\n*0\r\n*0\r\n");
+        s.push_str(subs);
+        s
+    }
+
+    fn reads_of(entries: &[String]) -> ServerReads {
+        let text = format!("*{}\r\n{}", entries.len(), entries.concat());
+        ServerReads::from_reply(&parse_redis_value(text.as_bytes()).unwrap())
+    }
+
+    /// A Redis 7 `COMMAND` reply: core commands, newer core ones the static list lacks, and
+    /// modules' commands.
+    fn command_info() -> ServerReads {
         let object_subs = format!(
             "*2\r\n{}{}",
-            entry("object|encoding", &["readonly"], "*0\r\n"),
-            entry("object|freeze", &["write"], "*0\r\n")
+            entry("object|encoding", &["readonly"], NO_SUBS),
+            entry("object|freeze", &["write"], NO_SUBS)
         );
-        // A container that is itself flagged `readonly` but lists a write subcommand.
-        let mod_subs = format!(
+        // A newer core container, itself flagged `readonly`, that lists a write subcommand.
+        let newcmd_subs = format!(
             "*2\r\n{}{}",
-            entry("mod.cmd|get", &["readonly"], "*0\r\n"),
-            entry("mod.cmd|set", &["write"], "*0\r\n")
+            entry("newcmd|get", &["readonly"], NO_SUBS),
+            entry("newcmd|set", &["write"], NO_SUBS)
         );
-        let all = [
-            entry("ts.range", &["readonly"], "*0\r\n"),
-            entry("ts.add", &["write", "denyoom"], "*0\r\n"),
-            entry("pfcount", &["readonly", "may_replicate"], "*0\r\n"),
-            entry("blpop2", &["readonly", "blocking"], "*0\r\n"),
-            entry("myadmin", &["readonly", "admin"], "*0\r\n"),
-            entry("noscr", &["readonly", "noscript"], "*0\r\n"),
-            entry("keys", &["readonly"], "*0\r\n"),
-            entry("mod.read", &["READONLY", "fast"], "*0\r\n"),
+        // A module's containers: their subcommands are the module's too, whatever their flags.
+        let modcmd_subs = format!("*1\r\n{}", entry("modcmd|get", &["readonly"], NO_SUBS));
+        let dotted_subs = format!("*1\r\n{}", entry("mod.cmd|get", &["readonly"], NO_SUBS));
+        reads_of(&[
+            entry("newread", &["READONLY", "fast"], NO_SUBS),
+            entry("newwrite", &["write", "denyoom"], NO_SUBS),
+            entry("pfcount", &["readonly", "may_replicate"], NO_SUBS),
+            entry("blpop2", &["readonly", "blocking"], NO_SUBS),
+            entry("myadmin", &["readonly", "admin"], NO_SUBS),
+            entry("noscr", &["readonly", "noscript"], NO_SUBS),
+            entry("keys", &["readonly"], NO_SUBS),
             entry("object", &[], &object_subs),
-            entry("mod.cmd", &["readonly"], &mod_subs),
-            entry("ft.config", &["readonly"], "*0\r\n"),
-            entry("json.debug", &["readonly"], "*0\r\n"),
-            entry("_ft.search", &["readonly"], "*0\r\n"),
+            entry("newcmd", &["readonly"], &newcmd_subs),
+            entry("modcmd", &["readonly", "module"], &modcmd_subs),
+            entry("modread", &["readonly", "fast", "module"], NO_SUBS),
+            entry("mod.read", &["readonly", "fast"], NO_SUBS),
+            entry("mod.cmd", &["readonly"], &dotted_subs),
+            entry("ts.range", &["readonly"], NO_SUBS),
+            entry("ft.config", &["readonly"], NO_SUBS),
+            entry("_ft.search", &["readonly"], NO_SUBS),
+            entry("_internal", &["readonly"], NO_SUBS),
             // Forks or modules that flag these `readonly`.
-            entry("sort", &["readonly"], "*0\r\n"),
-            entry("georadius", &["readonly"], "*0\r\n"),
-            entry("rg.pyexecute", &["readonly"], "*0\r\n"),
-            entry("tfcall", &["readonly"], "*0\r\n"),
-            entry("ai.dagexecute_ro", &["readonly"], "*0\r\n"),
-        ];
-        let text = format!("*{}\r\n{}", all.len(), all.concat());
-        parse_redis_value(text.as_bytes()).unwrap()
+            entry("sort", &["readonly"], NO_SUBS),
+            entry("georadius", &["readonly"], NO_SUBS),
+            entry("tfcall", &["readonly"], NO_SUBS),
+        ])
     }
 
     #[test]
-    fn server_flags_extend_the_allow_list() {
-        let reads = ServerReads::from_reply(&command_info());
-        assert!(reads.contains("ts.range"));
-        assert!(reads.contains("mod.read"));
-        assert!(reads.contains("object|encoding"));
-        for name in [
-            "ts.add",
-            "pfcount",
-            "blpop2",
-            "myadmin",
-            "noscr",
-            "object",
-            "object|freeze",
-        ] {
-            assert!(!reads.contains(name), "{name}");
-        }
+    fn server_flags_add_newer_core_reads() {
+        let reads = command_info();
+        // `keys`, `sort`, `georadius` and `tfcall` are kept; the static lists decide them.
+        let mut names: Vec<&str> = reads.names.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "georadius",
+                "keys",
+                "newcmd",
+                "newcmd|get",
+                "newread",
+                "object|encoding",
+                "sort",
+                "tfcall"
+            ]
+        );
         let s = Some(&reads);
-        assert_eq!(classify_line("MOD.READ x", s), Read);
-        assert_eq!(classify_line("BLPOP2 x", s), Write);
-        assert_eq!(classify_line("TS.ADD x * 1", s), Write);
+        assert_eq!(classify_line("NEWREAD x", s), Read);
+        assert_eq!(classify_line("newread x", s), Read);
+        for line in [
+            "NEWWRITE x",
+            "PFCOUNT h",
+            "BLPOP2 x",
+            "MYADMIN",
+            "NOSCR",
+            "UNKNOWN x",
+        ] {
+            assert_eq!(classify_line(line, s), Write, "{line}");
+        }
         // The never-read list wins over the server's flags.
         assert_eq!(classify_line("KEYS *", s), Write);
         // Static subcommand rules still apply to listed commands.
         assert_eq!(classify_line("OBJECT FREEZE k", s), Write);
-        assert_eq!(classify_line("UNKNOWN x", s), Write);
         assert!(ServerReads::from_reply(&::redis::Value::Nil).is_empty());
         assert!(
             ServerReads::from_reply(&::redis::Value::Array(vec![::redis::Value::Int(1)]))
                 .is_empty()
         );
-        // `keys` is flagged readonly; the never-read list keeps it a write.
-        assert_eq!(reads.len(), 14);
     }
 
     #[test]
     fn containers_read_only_through_listed_read_subcommands() {
-        let reads = ServerReads::from_reply(&command_info());
+        let reads = command_info();
         let s = Some(&reads);
-        assert_eq!(classify_line("MOD.CMD GET k", s), Read);
-        assert_eq!(classify_line("mod.cmd get k", s), Read);
+        assert_eq!(classify_line("NEWCMD GET k", s), Read);
+        assert_eq!(classify_line("newcmd get k", s), Read);
         // The container's own `readonly` flag does not cover its other subcommands.
-        assert_eq!(classify_line("MOD.CMD SET k v", s), Write);
-        assert_eq!(classify_line("MOD.CMD OTHER k", s), Write);
-        assert_eq!(classify_line("MOD.CMD", s), Write);
+        assert_eq!(classify_line("NEWCMD SET k v", s), Write);
+        assert_eq!(classify_line("NEWCMD OTHER k", s), Write);
+        assert_eq!(classify_line("NEWCMD", s), Write);
         assert_eq!(
-            classify_argv(&[b"MOD.CMD".to_vec(), b"\xff".to_vec()], s),
+            classify_argv(&[b"NEWCMD".to_vec(), b"\xff".to_vec()], s),
             Write
         );
-        // A module's configuration, debugging and internal commands, whatever their flags.
-        assert_eq!(classify_line("FT.CONFIG SET TIMEOUT 0", s), Write);
-        assert_eq!(classify_line("FT.CONFIG GET *", s), Write);
-        assert_eq!(classify_line("JSON.DEBUG MEMORY k", s), Write);
-        assert_eq!(classify_line("_FT.SEARCH idx *", s), Write);
+    }
+
+    #[test]
+    fn module_commands_never_read_by_their_flags() {
+        let reads = command_info();
+        let s = Some(&reads);
+        for line in [
+            // Flagged `module` (Redis 7), and a subcommand of such a command.
+            "MODREAD x",
+            "MODCMD GET k",
+            // Dotted, with or without the `module` flag; a subcommand of one too.
+            "MOD.READ x",
+            "MOD.CMD GET k",
+            "mod.cmd|get k",
+            "FT.CONFIG GET *",
+            // Internal commands.
+            "_FT.SEARCH idx *",
+            "_INTERNAL x",
+        ] {
+            assert_eq!(classify_line(line, s), Write, "{line}");
+        }
+        // A module's read on the static list reads by the list.
+        assert_eq!(classify_line("TS.RANGE t - +", s), Read);
+    }
+
+    /// Commands that change data, with the flags RediSearch 2.6 to 2.10 (Redis Stack 6.2.6 to
+    /// 7.4), RedisBloom 2.6 and RedisGraph register them with: with Redis 7's `module` flag, and
+    /// without it.
+    #[test]
+    fn writes_that_modules_flag_readonly_stay_writes() {
+        let flagged = |module: &[&str]| {
+            let e = |name: &str, flags: &[&str]| entry(name, &[flags, module].concat(), NO_SUBS);
+            reads_of(&[
+                e("ft.dictadd", &["readonly"]),
+                e("ft.dictdel", &["readonly"]),
+                e("ft.aliasadd", &["readonly"]),
+                e("ft.aliasupdate", &["readonly"]),
+                e("ft.aliasdel", &["readonly"]),
+                e("ft.cursor", &["readonly"]),
+                e("cf.compact", &["readonly", "fast"]),
+                e("graph.slowlog", &["readonly"]),
+            ])
+        };
+        for reads in [flagged(&["module"]), flagged(&[])] {
+            assert!(reads.is_empty());
+            let s = Some(&reads);
+            for line in [
+                "FT.DICTADD dict word",
+                "FT.DICTDEL dict word",
+                "FT.ALIASADD alias idx",
+                "FT.ALIASUPDATE alias idx2",
+                "FT.ALIASDEL alias",
+                "FT.CURSOR DEL idx 1",
+                "FT.CURSOR GC idx 0",
+                "CF.COMPACT cf",
+                "GRAPH.SLOWLOG g RESET",
+            ] {
+                assert_eq!(classify_line(line, s), Write, "{line}");
+            }
+            // Their read forms read by the static list.
+            assert_eq!(classify_line("FT.CURSOR READ idx 1", s), Read);
+            assert_eq!(classify_line("GRAPH.SLOWLOG g", s), Read);
+        }
+    }
+
+    #[test]
+    fn entries_older_than_redis_7_add_nothing() {
+        // Redis 6 sends seven fields (Redis 5 six) and no `module` flag: a module's undotted
+        // command looks like a core one.
+        let text = "*2\r\n*7\r\n$7\r\nmodread\r\n:2\r\n*1\r\n+readonly\r\n:1\r\n:1\r\n:1\r\n*0\r\n*6\r\n$7\r\nnewread\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n";
+        let reads = ServerReads::from_reply(&parse_redis_value(text.as_bytes()).unwrap());
+        assert!(reads.is_empty());
+        assert_eq!(classify_line("MODREAD x", Some(&reads)), Write);
+        assert_eq!(classify_line("NEWREAD x", Some(&reads)), Write);
+        assert_eq!(classify_line("GET k", Some(&reads)), Read);
+    }
+
+    #[test]
+    fn pfcount_and_internals_stay_writes_whatever_their_flags() {
+        // Flagged plain `readonly`, as Redis before 6.2 flags PFCOUNT.
+        let reads = reads_of(&[
+            entry("pfcount", &["readonly"], NO_SUBS),
+            entry("ft._alterifnx", &["readonly"], NO_SUBS),
+        ]);
+        assert!(reads.names.contains("pfcount"));
+        let s = Some(&reads);
+        assert_eq!(classify_line("PFCOUNT h", s), Write);
+        assert_eq!(
+            classify_line("FT._ALTERIFNX idx SCHEMA ADD f TEXT", s),
+            Write
+        );
+        assert_eq!(classify_line("ft._alterifnx idx", s), Write);
     }
 
     #[test]
     fn flags_never_promote_pipe_names_stores_or_user_code() {
-        let reads = ServerReads::from_reply(&command_info());
+        let reads = command_info();
         let s = Some(&reads);
         // Subcommands are kept as `container|sub`; typed as a name they never match.
-        assert!(reads.contains("object|encoding"));
+        assert!(reads.names.contains("object|encoding"));
         assert_eq!(classify_line("OBJECT ENCODING k", s), Read);
         assert_eq!(classify_line("object|encoding k", s), Write);
         assert_eq!(classify_line("OBJECT|ENCODING k", s), Write);
-        assert_eq!(classify_line("mod.cmd|get k", s), Write);
+        assert_eq!(classify_line("newcmd|get k", s), Write);
         // The static rules win over the flags: the STORE forms stay writes.
         assert_eq!(classify_line("SORT l", s), Read);
         assert_eq!(classify_line("SORT l STORE x", s), Write);
@@ -734,9 +917,9 @@ mod tests {
 
     #[test]
     fn server_flags_over_resp3_sets() {
-        let text = "*1\r\n*10\r\n$7\r\nmod.get\r\n:2\r\n~1\r\n+readonly\r\n:1\r\n:1\r\n:1\r\n~0\r\n*0\r\n*0\r\n*0\r\n";
+        let text = "*1\r\n*10\r\n$7\r\nnewread\r\n:2\r\n~1\r\n+readonly\r\n:1\r\n:1\r\n:1\r\n~0\r\n*0\r\n*0\r\n*0\r\n";
         let reads = ServerReads::from_reply(&parse_redis_value(text.as_bytes()).unwrap());
-        assert!(reads.contains("mod.get"));
+        assert!(reads.names.contains("newread"));
     }
 
     #[test]
@@ -747,12 +930,25 @@ mod tests {
             "BZPOPMIN z 1",
             "XREAD BLOCK 100 STREAMS s $",
             "xreadgroup group g c block 0 streams s >",
+            "XREAD \"BLOCK\\x00\" 0 STREAMS s $",
+            "XREADGROUP GROUP g c \"block\\x00x\" 0 STREAMS s >",
             "SUBSCRIBE ch",
             "MONITOR",
             "HELLO 2",
             "AUTH x",
             "CLIENT REPLY OFF",
+            "CLIENT \"REPLY\\x00\" OFF",
+            "client \"tracking\\x00x\" on",
+            "CLIENT \"CACHING\\x00\" yes",
             "WAIT 1 0",
+            "\"CLIENT\\x00a\" REPLY OFF",
+            "\"MONITOR\\x00a\"",
+            "\"SUBSCRIBE\\x00a\" ch",
+            "\"HELLO\\x00a\" 3",
+            "\"BLPOP\\x00a\" k 0",
+            "\"SELECT\\x00a\" 5",
+            "\"get\\x00\" k",
+            "\"client\\x00\\xff\" reply off",
         ] {
             assert!(refused(l), "{l}");
         }

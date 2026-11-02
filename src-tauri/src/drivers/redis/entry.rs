@@ -1,42 +1,44 @@
-//! The entry points `drivers::registry` calls (docs/drivers/FOUNDATION.md). The lane owns this
-//! file; until its driver is done, `open` reports that it is not implemented yet.
+//! The entry points `drivers::registry` calls (docs/drivers/FOUNDATION.md).
 
-use crate::drivers::native::CallKind;
+use std::sync::Arc;
+
+use crate::drivers::native::{CallKind, NativeSession, unknown_call};
 use crate::drivers::registry::UtilInput;
 use crate::drivers::{ConnectTarget, Session};
 use crate::error::AppError;
 use crate::types::profile::{ConnectionProfile, Driver};
 
+use super::conn::startup_commands;
+use super::params::{RedisParams, database_index};
+use super::session::RedisSession;
+
 const DRIVER: Driver = Driver::Redis;
 
-/// Opens a session on the profile's server: `Session::Sql` for a SQL engine, `Session::Native`
-/// for a store that speaks no SQL.
-pub async fn open(_target: ConnectTarget<'_>) -> Result<Session, AppError> {
-    Err(AppError::Unsupported(format!(
-        "{} driver: not implemented yet",
-        DRIVER.label()
-    )))
+/// Opens a session on the profile's server (a native store: it speaks no SQL).
+pub async fn open(target: ConnectTarget<'_>) -> Result<Session, AppError> {
+    let session = RedisSession::connect(target).await?;
+    Ok(Session::Native(Arc::new(session) as Arc<dyn NativeSession>))
 }
 
-/// The driver's own checks of a profile being saved or tested (its `driver_params`), after the
-/// registry's common ones.
-pub fn validate(_profile: &ConnectionProfile) -> Result<(), AppError> {
+/// The driver's own checks of a profile being saved or tested, after the registry's common
+/// ones: its settings, its DB index and its bootstrap commands.
+pub fn validate(profile: &ConnectionProfile) -> Result<(), AppError> {
+    RedisParams::from_driver_params(profile.options.driver_params.as_ref())?;
+    database_index(profile)?;
+    startup_commands(profile, crate::conn_options::effective_read_only(profile))?;
     Ok(())
 }
 
-/// A call of the connection form that needs no session (pickers, probes, creating a file).
+/// The connection form has no call of its own for Redis.
 pub async fn util(
     _input: UtilInput<'_>,
     method: &str,
     _args: serde_json::Value,
 ) -> Result<serde_json::Value, AppError> {
-    Err(AppError::Unsupported(format!(
-        "{}: unknown call \u{201c}{method}\u{201d}",
-        DRIVER.label()
-    )))
+    Err(unknown_call(DRIVER, method))
 }
 
-/// Whether a `util` call only reads; anything unknown changes something.
+/// Whether a `util` call only reads; there is none, and anything unknown changes something.
 pub fn util_kind(_method: &str) -> CallKind {
     CallKind::Write
 }

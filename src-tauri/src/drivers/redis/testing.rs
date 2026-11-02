@@ -4,16 +4,18 @@
 //! positions), expiry, MULTI / EXEC / WATCH with Redis's semantics (no rollback, a nil EXEC when a
 //! watched key changed), CLIENT ID / KILL and DEBUG SLEEP for cancel tests, and the INFO /
 //! CONFIG / COMMAND replies introspection reads. It answers like Redis 7.2; `Options` pick the
-//! version (older ones lack HELLO, KEEPTTL, SCAN TYPE, COPY, UNLINK), a product, a password and
-//! a CONFIG refused like on managed services.
+//! version (older ones lack HELLO, KEEPTTL, SCAN TYPE, COPY, UNLINK), a product, a password, a
+//! CONFIG refused like on managed services, and TLS (`testkit::tls`'s certificates). A command can
+//! be made slow (`FakeRedis::set_slow`) for the time-out and cancel tests; `CLIENT LIST` and
+//! `SLOWLOG GET` answer for the process list and the server panel.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
@@ -131,6 +133,8 @@ pub struct Options {
     /// CONFIG answers "unknown command" (ElastiCache, Upstash).
     pub refuse_config: bool,
     pub databases: u32,
+    /// The server side of TLS: every connection starts with a TLS handshake.
+    pub tls: Option<Arc<rustls::ServerConfig>>,
 }
 
 impl Default for Options {
@@ -142,6 +146,7 @@ impl Default for Options {
             password: None,
             refuse_config: false,
             databases: 16,
+            tls: None,
         }
     }
 }
@@ -375,6 +380,10 @@ struct Store {
     log: Vec<Vec<Vec<u8>>>,
     clients: HashMap<i64, Arc<Notify>>,
     next_id: i64,
+    /// A command name (upper-case) answered only after this long.
+    slow: Option<(String, Duration)>,
+    /// Command names (upper-case) the ACL refuses.
+    denied: Vec<String>,
 }
 
 const WRONGTYPE: &str = "WRONGTYPE Operation against a key holding the wrong kind of value";
@@ -509,6 +518,12 @@ impl Store {
         if !c.authed && !matches!(name.as_str(), "AUTH" | "HELLO" | "QUIT") {
             return Reply::err("NOAUTH Authentication required.");
         }
+        if self.denied.contains(&name) {
+            return Reply::Err(format!(
+                "NOPERM User default has no permissions to run the '{}' command",
+                name.to_ascii_lowercase()
+            ));
+        }
         if let Some(queue) = &mut c.multi {
             match name.as_str() {
                 "EXEC" | "DISCARD" | "MULTI" | "WATCH" => {}
@@ -575,6 +590,23 @@ impl Store {
                 }
                 Some("GETNAME") => c.name.as_deref().map_or(Reply::Nil, Reply::bulk),
                 Some("SETINFO") => Reply::Ok,
+                Some("LIST") => {
+                    let mut ids: Vec<i64> = self.clients.keys().copied().collect();
+                    ids.sort_unstable();
+                    let lines: String = ids
+                        .iter()
+                        .map(|id| {
+                            let db = if *id == c.id { c.db } else { 0 };
+                            format!(
+                                "id={id} addr=127.0.0.1:{} laddr=127.0.0.1:6379 fd=8 name= age=1 \
+                                 idle=0 flags=N db={db} cmd=client|list user=default \
+                                 lib-name=fake\n",
+                                40000 + id
+                            )
+                        })
+                        .collect();
+                    Reply::Verbatim(lines)
+                }
                 Some("KILL") if a(2).map(upper).as_deref() == Some("ID") => {
                     match a(3).and_then(int).and_then(|id| self.clients.remove(&id)) {
                         Some(n) => {
@@ -597,6 +629,16 @@ impl Store {
                 _ => Reply::err(SYNTAX),
             },
             "COMMAND" => command_table(),
+            "SLOWLOG" if a(1).map(upper).as_deref() == Some("GET") => {
+                Reply::Array(vec![Reply::Array(vec![
+                    Reply::Int(14),
+                    Reply::Int(1_700_000_000),
+                    Reply::Int(15_000),
+                    Reply::Array(vec![Reply::text("KEYS"), Reply::text("*")]),
+                    Reply::text("127.0.0.1:52555"),
+                    Reply::text(""),
+                ])])
+            }
             "DBSIZE" => Reply::Int(self.live_keys(db).len() as i64),
             "FLUSHDB" => {
                 for k in self.live_keys(db) {
@@ -1577,9 +1619,18 @@ fn command_table() -> Reply {
         entry("get", &["readonly", "fast"], Vec::new()),
         entry("set", &["write", "denyoom"], Vec::new()),
         entry("keys", &["readonly"], Vec::new()),
-        entry("json.get", &["readonly"], Vec::new()),
-        entry("ts.range", &["readonly"], Vec::new()),
+        entry("json.get", &["readonly", "module"], Vec::new()),
+        entry("ts.range", &["readonly", "module"], Vec::new()),
         entry("pfcount", &["readonly", "may_replicate"], Vec::new()),
+        // A core read newer than the classifier's static list, and a module's read.
+        entry("newread", &["readonly", "fast"], Vec::new()),
+        entry("modread", &["readonly", "module"], Vec::new()),
+        // Writes that RediSearch before 8, RedisBloom and RedisGraph flag `readonly`.
+        entry("ft.aliasupdate", &["readonly", "module"], Vec::new()),
+        entry("ft.dictadd", &["readonly", "module"], Vec::new()),
+        entry("ft.cursor", &["readonly", "module"], Vec::new()),
+        entry("cf.compact", &["readonly", "fast", "module"], Vec::new()),
+        entry("graph.slowlog", &["readonly", "module"], Vec::new()),
         entry(
             "object",
             &[],
@@ -1627,11 +1678,26 @@ impl FakeRedis {
             log: Vec::new(),
             clients: HashMap::new(),
             next_id: 0,
+            slow: None,
+            denied: Vec::new(),
         }));
         let shared = store.clone();
+        let tls = lock(&store).opts.tls.clone();
         let task = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
-                tokio::spawn(serve(stream, shared.clone()));
+                let store = shared.clone();
+                match &tls {
+                    None => drop(tokio::spawn(serve(stream, store))),
+                    Some(config) => {
+                        let acceptor = tokio_rustls::TlsAcceptor::from(config.clone());
+                        tokio::spawn(async move {
+                            // A client that refuses the certificate (or is refused) is dropped.
+                            if let Ok(tls) = acceptor.accept(stream).await {
+                                serve(tls, store).await;
+                            }
+                        });
+                    }
+                }
             }
         });
         FakeRedis { addr, store, task }
@@ -1696,6 +1762,43 @@ impl FakeRedis {
     pub fn clients(&self) -> usize {
         lock(&self.store).clients.len()
     }
+
+    /// Answers `name` (upper-case) only after `delay`, on the connection that sent it; `None`
+    /// makes every command fast again.
+    pub fn set_slow(&self, slow: Option<(&str, Duration)>) {
+        lock(&self.store).slow = slow.map(|(n, d)| (n.to_string(), d));
+    }
+
+    /// Refuses `names` (upper-case) with NOPERM, as an ACL user without them gets (`+@read
+    /// +@write` has no `@transaction`); none allows every command again.
+    pub fn deny(&self, names: &[&str]) {
+        lock(&self.store).denied = names.iter().map(|n| n.to_string()).collect();
+    }
+}
+
+/// The server side of TLS with `testkit::tls`'s certificate, wanting a client certificate its
+/// CA signed (`CLIENT_CERT_PEM`).
+pub fn tls_requiring_client_cert() -> Arc<rustls::ServerConfig> {
+    use crate::testkit::tls::{CA_PEM, SERVER_CERT_PEM, SERVER_KEY_PEM, cert_der};
+    use rustls::pki_types::PrivateKeyDer;
+    use rustls::pki_types::pem::PemObject as _;
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert_der(CA_PEM)).expect("the CA");
+    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::new(roots),
+        provider.clone(),
+    )
+    .build()
+    .expect("a client verifier");
+    let key = PrivateKeyDer::from_pem_slice(SERVER_KEY_PEM.as_bytes()).expect("a key");
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("protocol versions")
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(vec![cert_der(SERVER_CERT_PEM), cert_der(CA_PEM)], key)
+        .expect("a server config");
+    Arc::new(config)
 }
 
 /// `DEBUG SLEEP <seconds>`: the one command that waits.
@@ -1707,7 +1810,7 @@ fn sleep_of(argv: &[Vec<u8>]) -> Option<Duration> {
     (secs.is_finite() && secs >= 0.0).then(|| Duration::from_secs_f64(secs))
 }
 
-async fn serve(mut stream: TcpStream, store: Arc<Mutex<Store>>) {
+async fn serve<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, store: Arc<Mutex<Store>>) {
     let (id, kill, authed) = {
         let mut s = lock(&store);
         s.next_id += 1;
@@ -1744,7 +1847,20 @@ async fn serve(mut stream: TcpStream, store: Arc<Mutex<Store>>) {
             if argv.is_empty() {
                 continue;
             }
-            lock(&store).log.push(argv.clone());
+            let slow = {
+                let mut s = lock(&store);
+                s.log.push(argv.clone());
+                s.slow
+                    .as_ref()
+                    .filter(|(name, _)| *name == upper(&argv[0]))
+                    .map(|(_, d)| *d)
+            };
+            if let Some(d) = slow {
+                tokio::select! {
+                    _ = tokio::time::sleep(d) => {}
+                    _ = kill.notified() => break 'outer,
+                }
+            }
             let reply = match sleep_of(&argv).filter(|_| conn.multi.is_none()) {
                 Some(d) => {
                     tokio::select! {

@@ -298,7 +298,7 @@ pub fn detail_commands(rows: &[KeyRow], limits: &Limits, with_memory: bool) -> D
         };
         let size = push(row.ty.size_command(&row.key));
         let preview = push(row.ty.preview_command(&row.key, limits));
-        let memory = push(with_memory.then(|| cmd::memory_usage(&row.key)));
+        let memory = push(with_memory.then(|| cmd::memory_usage(&row.key, None)));
         plan.slots.push([size, preview, memory]);
     }
     plan
@@ -591,14 +591,14 @@ mod tests {
             [
                 "STRLEN s",
                 "GETRANGE s 0 3",
-                "MEMORY USAGE s SAMPLES 0",
+                "MEMORY USAGE s",
                 "HLEN h",
                 "HSCAN h 0 COUNT 2",
-                "MEMORY USAGE h SAMPLES 0",
-                "MEMORY USAGE ts SAMPLES 0",
+                "MEMORY USAGE h",
+                "MEMORY USAGE ts",
                 "LLEN \"\\xff\"",
                 "LRANGE \"\\xff\" 0 1",
-                "MEMORY USAGE \"\\xff\" SAMPLES 0",
+                "MEMORY USAGE \"\\xff\"",
             ]
         );
         let details = [

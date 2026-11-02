@@ -9,7 +9,8 @@ use ::redis::AsyncConnectionConfig;
 use ::redis::Value as Resp;
 use ::redis::aio::{ConnectionLike, MultiplexedConnection};
 
-use super::classify::{ServerReads, classify_script};
+use super::apply::check;
+use super::classify::{ServerReads, classify_line};
 use super::cli::{split_console, tokenize};
 use super::errors::redis_error;
 use super::info::{self, Info, Server};
@@ -20,7 +21,6 @@ use super::scan::{
     parse_meta, parse_scan, scan_keys,
 };
 use super::testing::{Data, FakeRedis, Options};
-use super::values::as_bytes;
 use crate::error::AppError;
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::native::redis::{
@@ -233,11 +233,22 @@ async fn introspection_with_fallbacks() {
     assert_eq!((ks[0].db, ks[0].keys, ks[0].expires), (1, 22, 1));
     let config = info::config_databases(&send(&mut con, &cmd::config_get("databases")).await);
     assert_eq!(info::database_count(config, &ks), 32);
-    let tables = info::tables(info::database_count(config, &ks), &ks, "db0");
+    let tables = info::tables(info::database_count(config, &ks), &ks);
     assert_eq!(tables[1].row_estimate, Some(22));
     let reads = ServerReads::from_reply(&send(&mut con, &cmd::command_table()).await);
-    assert!(reads.contains("ts.range") && reads.contains("object|freq"));
-    assert!(!reads.contains("pfcount") && !reads.contains("set"));
+    let class = |line: &str| classify_line(line, Some(&reads));
+    // The server's flags add a core read the static list lacks, never a module's command.
+    assert_eq!(class("NEWREAD k"), StatementClass::Read);
+    assert_eq!(class("OBJECT FREQ k"), StatementClass::Read);
+    for line in [
+        "MODREAD k",
+        "FT.ALIASUPDATE a idx",
+        "CF.COMPACT cf",
+        "PFCOUNT h",
+        "SET k v",
+    ] {
+        assert_eq!(class(line), StatementClass::Write, "{line}");
+    }
 
     // A managed service: CONFIG refused, an old version.
     let managed = FakeRedis::with(Options {
@@ -456,17 +467,6 @@ async fn apply(con: &mut MultiplexedConnection, plan: &[KeyEdit]) -> Vec<Result<
         out.push(result);
     }
     out
-}
-
-fn check(c: &Command, reply: &Resp) -> Result<(), String> {
-    match (&c.expect, reply) {
-        (_, Resp::ServerError(e)) => Err(super::values::error_text(e)),
-        (Expect::Any, _) => Ok(()),
-        (Expect::Ok(_), Resp::Okay) => Ok(()),
-        (Expect::Int(n, _), Resp::Int(m)) if n == m => Ok(()),
-        (Expect::Bytes(want, _), r) if as_bytes(r).as_ref() == Some(want) => Ok(()),
-        (Expect::Ok(msg) | Expect::Int(_, msg) | Expect::Bytes(_, msg), _) => Err(msg.to_string()),
-    }
 }
 
 fn pk(key: &str, ty: &str) -> RowKey {
@@ -840,7 +840,13 @@ async fn console_runs_and_shapes_in_both_protocols() {
     let fake = FakeRedis::start().await;
     seed(&fake);
     let script = "HGETALL hash:1\nZRANGE zset:1 0 -1 WITHSCORES; SCAN 0 MATCH user:* COUNT 5\nGET \"str:plain\"\nINFO keyspace";
-    assert_eq!(classify_script(script, None), StatementClass::Read);
+    let classes = |text: &str| {
+        split_console(text)
+            .iter()
+            .map(|st| classify_line(&st.sql, None))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(classes(script), [StatementClass::Read; 5]);
     let mut shaped = Vec::new();
     for resp3 in [false, true] {
         let mut con = connect(&fake, 1, resp3).await;
@@ -863,7 +869,10 @@ async fn console_runs_and_shapes_in_both_protocols() {
     assert_eq!(s[3].rows, [[Value::Text("hello".into())]]);
     assert_eq!(s[4].rows[0][1], Value::Text("db1".into()));
     // A write is classified as one, and a server error is the command's error.
-    assert_eq!(classify_script("GET a\nDEL a", None), StatementClass::Write);
+    assert_eq!(
+        classes("GET a\nDEL a"),
+        [StatementClass::Read, StatementClass::Write]
+    );
     let mut con = connect(&fake, 1, false).await;
     let argv = tokenize("LPUSH hash:1 x").unwrap();
     let reply = send(

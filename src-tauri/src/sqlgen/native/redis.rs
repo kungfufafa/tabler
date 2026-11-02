@@ -66,6 +66,8 @@ pub enum Expect {
     Ok(&'static str),
     /// Exactly this integer; another one fails with the message.
     Int(i64, &'static str),
+    /// An integer above zero (`LINSERT`'s new length; -1 without its pivot, 0 without its key).
+    Positive(&'static str),
     /// Exactly these bytes, as a bulk or status reply (a guard's `TYPE`, `HGET` or `LINDEX`);
     /// anything else, nil included, fails with the message.
     Bytes(Vec<u8>, &'static str),
@@ -397,13 +399,14 @@ pub fn pttl(key: &[u8]) -> Command {
     Command::new("PTTL").arg(key)
 }
 
-/// `MEMORY USAGE key SAMPLES 0` (every element counted).
-pub fn memory_usage(key: &[u8]) -> Command {
-    Command::new("MEMORY")
-        .arg("USAGE")
-        .arg(key)
-        .arg("SAMPLES")
-        .arg("0")
+/// `MEMORY USAGE key [SAMPLES n]`: without samples the server's default (an estimate from a few
+/// elements of a container, cheap enough for a page of keys); `SAMPLES 0` counts every element.
+pub fn memory_usage(key: &[u8], samples: Option<u32>) -> Command {
+    let c = Command::new("MEMORY").arg("USAGE").arg(key);
+    match samples {
+        Some(n) => c.arg("SAMPLES").arg(n.to_string()),
+        None => c,
+    }
 }
 
 /// The size of a key of type `ty`: its length or number of elements; `None` for types without
@@ -475,14 +478,6 @@ pub fn hash_scan(key: &[u8], cursor: &str, count: u32, novalues: bool) -> Comman
     if novalues { c.arg("NOVALUES") } else { c }
 }
 
-pub fn zset_scan(key: &[u8], cursor: &str, count: u32) -> Command {
-    Command::new("ZSCAN")
-        .arg(key)
-        .arg(cursor)
-        .arg("COUNT")
-        .arg(count.to_string())
-}
-
 /// `ZRANGE key start stop WITHSCORES` (by rank).
 pub fn zset_range(key: &[u8], start: i64, stop: i64) -> Command {
     Command::new("ZRANGE")
@@ -490,16 +485,6 @@ pub fn zset_range(key: &[u8], start: i64, stop: i64) -> Command {
         .arg(start.to_string())
         .arg(stop.to_string())
         .arg("WITHSCORES")
-}
-
-/// `XRANGE key start end COUNT n`.
-pub fn stream_range(key: &[u8], start: &str, end: &str, count: u32) -> Command {
-    Command::new("XRANGE")
-        .arg(key)
-        .arg(start)
-        .arg(end)
-        .arg("COUNT")
-        .arg(count.to_string())
 }
 
 /// `XREVRANGE key end start COUNT n` (newest first).
@@ -558,6 +543,26 @@ pub fn client_kill(id: i64) -> Command {
         .arg("KILL")
         .arg("ID")
         .arg(id.to_string())
+}
+
+/// The server's connections (the process list).
+pub fn client_list() -> Command {
+    Command::new("CLIENT").arg("LIST")
+}
+
+/// The newest `count` entries of the slow log.
+pub fn slowlog(count: u32) -> Command {
+    Command::new("SLOWLOG").arg("GET").arg(count.to_string())
+}
+
+/// Every member of a set (`fetch_cell` of a set whose size was checked).
+pub fn set_members(key: &[u8]) -> Command {
+    Command::new("SMEMBERS").arg(key)
+}
+
+/// Every field and value of a hash (`fetch_cell` of a hash whose size was checked).
+pub fn hash_all(key: &[u8]) -> Command {
+    Command::new("HGETALL").arg(key)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -785,6 +790,7 @@ pub fn list_insert(key: &[u8], before: bool, pivot: &[u8], value: &[u8]) -> Comm
         .arg(if before { "BEFORE" } else { "AFTER" })
         .arg(pivot)
         .arg(value)
+        .expect(Expect::Positive("the pivot element no longer exists"))
 }
 
 /// The guard of a positional list edit: a push or pop elsewhere shifts the positions, so the
@@ -1151,24 +1157,37 @@ fn plan_update(
     })
 }
 
+/// The renderer's cell of a field a new row was not given (`Other{ty: "missing"}`).
+const TY_MISSING: &str = "missing";
+
+/// Whether a cell of an inserted row was left as the renderer started it: a field not typed in,
+/// or `DEFAULT` (what it sends for a column the row has no value for). Either is no value.
+fn absent(v: &Value) -> bool {
+    match v {
+        Value::Default => true,
+        Value::Other(o) => o.ty == TY_MISSING,
+        _ => false,
+    }
+}
+
 fn plan_insert(index: usize, values: &BTreeMap<String, Value>) -> Result<KeyEdit, AppError> {
     let mut key = None;
     let mut ty = None;
     let mut value = None;
     let mut ttl = None;
     for (column, v) in values {
+        let given = !absent(v);
         match column.as_str() {
-            col::KEY => key = Some(key_arg(v)?),
-            col::TYPE => match v {
+            col::KEY if given && !v.is_null() => key = Some(key_arg(v)?),
+            col::TYPE if given => match v {
                 Value::Null => {}
                 Value::Text(t) | Value::Enum(t) => ty = Some(t.as_str()),
                 _ => return Err(AppError::InvalidInput("the type is a name".into())),
             },
-            col::VALUE => value = Some(v),
-            col::TTL => ttl = ttl_ms(v)?,
-            // Computed by the server: an insert may carry the renderer's empty cells.
-            col::SIZE | col::MEMORY if v.is_null() => {}
-            col::SIZE | col::MEMORY => return Err(read_only_column(column)),
+            col::VALUE if given => value = Some(v),
+            col::TTL if given => ttl = ttl_ms(v)?,
+            // Not given; or computed by the server, which a duplicated or pasted row copies.
+            col::KEY | col::TYPE | col::VALUE | col::TTL | col::SIZE | col::MEMORY => {}
             other => {
                 return Err(AppError::InvalidInput(format!(
                     "a Redis key has no column “{other}”"
@@ -1176,7 +1195,10 @@ fn plan_insert(index: usize, values: &BTreeMap<String, Value>) -> Result<KeyEdit
             }
         }
     }
-    let key = key.ok_or_else(|| AppError::InvalidInput("a new key needs a name".into()))?;
+    // An empty name too: it is a cell left blank, not a key anyone means to create.
+    let key = key
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| AppError::InvalidInput("a new key needs a name".into()))?;
     let new = match ty.unwrap_or(TYPE_STRING) {
         TYPE_STRING => NewKey::String(match value {
             None | Some(Value::Null) => Vec::new(),
@@ -1597,6 +1619,87 @@ mod tests {
     }
 
     #[test]
+    fn inserts_take_the_payloads_the_grid_sends() {
+        let g = Gates::default();
+        let missing = || Value::other(TY_MISSING, "");
+        let insert = |cells: &[(&str, Value)]| StagedChange::Insert {
+            row_id: "new:1".into(),
+            values: cells
+                .iter()
+                .map(|(c, v)| (c.to_string(), v.clone()))
+                .collect(),
+            exprs: None,
+        };
+        // A new row: every column it was not given is missing (the type cannot be typed in).
+        let new_row = |key: Value| {
+            insert(&[
+                (col::KEY, key),
+                (col::TYPE, missing()),
+                (col::TTL, missing()),
+                (col::SIZE, missing()),
+                (col::MEMORY, missing()),
+                (col::VALUE, Value::Text("v".into())),
+            ])
+        };
+        let edit = plan_change(0, &new_row(Value::Text("k:new".into())), &g).unwrap();
+        assert_eq!(texts(&edit), ["SET k:new v NX"]);
+        for no_name in [
+            missing(),
+            Value::Default,
+            Value::Null,
+            Value::Text(String::new()),
+        ] {
+            let err = plan_change(0, &new_row(no_name.clone()), &g).unwrap_err();
+            assert!(
+                err.to_string().contains("needs a name"),
+                "{no_name:?}: {err}"
+            );
+        }
+        // A column without a value in the row is sent as DEFAULT.
+        let defaults = insert(&[
+            (col::KEY, Value::Text("k".into())),
+            (col::TYPE, Value::Default),
+            (col::TTL, Value::Default),
+            (col::SIZE, Value::Default),
+            (col::MEMORY, Value::Default),
+            (col::VALUE, Value::Default),
+        ]);
+        assert_eq!(
+            texts(&plan_change(0, &defaults, &g).unwrap()),
+            ["SET k \"\" NX"]
+        );
+        // A duplicated (or pasted) row copies every cell, the server's size and memory too.
+        let copy = |ty: &str, ttl: Value| {
+            insert(&[
+                (col::KEY, Value::Text("copy".into())),
+                (col::TYPE, Value::Text(ty.into())),
+                (col::TTL, ttl),
+                (col::SIZE, Value::Int(5)),
+                (col::MEMORY, Value::Int(72)),
+                (col::VALUE, Value::Text("hello".into())),
+            ])
+        };
+        assert_eq!(
+            texts(&plan_change(0, &copy(TYPE_STRING, Value::Int(10)), &g).unwrap()),
+            ["SET copy hello NX PX 10000"]
+        );
+        assert_eq!(
+            texts(&plan_change(0, &copy(TYPE_STRING, Value::Null), &g).unwrap()),
+            ["SET copy hello NX"]
+        );
+        let hash = plan_change(0, &copy("hash", Value::Null), &g).unwrap_err();
+        assert!(hash.to_string().contains("New key"), "{hash}");
+        // Still refused: a column the table does not have, a type that is no name.
+        let unknown = insert(&[(col::KEY, Value::Text("k".into())), ("nope", missing())]);
+        assert!(plan_change(0, &unknown, &g).is_err());
+        let bad_type = insert(&[
+            (col::KEY, Value::Text("k".into())),
+            (col::TYPE, Value::Int(1)),
+        ]);
+        assert!(plan_change(0, &bad_type, &g).is_err());
+    }
+
+    #[test]
     fn binary_keys_round_trip() {
         let mut m = BTreeMap::new();
         m.insert(
@@ -1877,7 +1980,11 @@ mod tests {
             "SCAN 0 MATCH \"a b*\" COUNT 10"
         );
         assert_eq!(pttl(k).text(), "PTTL user:1");
-        assert_eq!(memory_usage(k).text(), "MEMORY USAGE user:1 SAMPLES 0");
+        assert_eq!(
+            memory_usage(k, Some(0)).text(),
+            "MEMORY USAGE user:1 SAMPLES 0"
+        );
+        assert_eq!(memory_usage(k, None).text(), "MEMORY USAGE user:1");
         let sizes: Vec<String> = ["string", "list", "set", "zset", "hash", "stream"]
             .iter()
             .map(|t| size_of(t, k).unwrap().text())
@@ -1919,11 +2026,6 @@ mod tests {
         assert_eq!(
             hash_scan(k, "5", 10, true).text(),
             "HSCAN user:1 5 COUNT 10 NOVALUES"
-        );
-        assert_eq!(zset_scan(k, "0", 10).text(), "ZSCAN user:1 0 COUNT 10");
-        assert_eq!(
-            stream_range(k, "-", "+", 2).text(),
-            "XRANGE user:1 - + COUNT 2"
         );
         assert_eq!(json_get(k, Some("$.a")).text(), "JSON.GET user:1 $.a");
         assert_eq!(get(k).text(), "GET user:1");

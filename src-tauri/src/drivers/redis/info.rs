@@ -5,7 +5,7 @@
 //! (ElastiCache, Upstash; TablePlus #3304): every reader here has a fallback.
 
 use crate::sqlgen::native::redis::Gates;
-use crate::types::schema::{DatabaseInfo, SchemaInfo, TableKind, TableSummary};
+use crate::types::schema::{DatabaseInfo, TableKind, TableSummary};
 
 use super::values::{as_pairs, as_text};
 
@@ -59,13 +59,6 @@ impl Info {
             .flat_map(|(_, f)| f)
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
-    }
-
-    pub fn section(&self, name: &str) -> Option<&[(String, String)]> {
-        self.sections
-            .iter()
-            .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, f)| f.as_slice())
     }
 }
 
@@ -265,23 +258,16 @@ pub fn databases(count: u32, current: u32) -> Vec<DatabaseInfo> {
         .collect()
 }
 
-/// The one schema of a connection: its current database.
-pub fn schemas(current: u32) -> Vec<SchemaInfo> {
-    vec![SchemaInfo {
-        name: db_name(current),
-        is_default: true,
-    }]
-}
-
 /// Every database as a table of keys (TablePlus lists them without a reconnect), with its key
 /// count and how many of them expire.
-pub fn tables(count: u32, keyspace: &[Keyspace], schema: &str) -> Vec<TableSummary> {
+pub fn tables(count: u32, keyspace: &[Keyspace]) -> Vec<TableSummary> {
     (0..count)
         .map(|i| {
             let ks = keyspace.iter().find(|k| k.db == i);
             TableSummary {
                 name: db_name(i),
-                schema: Some(schema.to_string()),
+                // One list of databases: no schema (`SchemaMode::Single`).
+                schema: None,
                 kind: TableKind::Table,
                 row_estimate: Some(ks.map_or(0, |k| k.keys)),
                 size_bytes: None,
@@ -305,7 +291,8 @@ mod tests {
         let info = Info::parse(SERVER);
         assert_eq!(info.sections.len(), 2);
         assert_eq!(info.get("os"), Some("Linux 6.1"));
-        assert_eq!(info.section("keyspace").map(<[_]>::len), Some(2));
+        assert_eq!(info.sections[1].0, "Keyspace");
+        assert_eq!(info.sections[1].1.len(), 2);
         assert_eq!(info.get("nope"), None);
         // Lines before any header still count; junk lines are skipped.
         let loose = Info::parse("redis_version:5.0.7\nnot a field\n");
@@ -416,14 +403,13 @@ mod tests {
             ["db0", "db1", "db2"]
         );
         assert!(dbs[1].is_current && !dbs[0].is_current);
-        assert_eq!(schemas(4)[0].name, "db4");
         let ks = keyspace(&Info::parse(SERVER));
-        let t = tables(6, &ks, "db0");
+        let t = tables(6, &ks);
         assert_eq!(t.len(), 6);
         assert_eq!(t[0].row_estimate, Some(12));
         assert_eq!(t[0].comment.as_deref(), Some("3 keys with a TTL"));
         assert_eq!(t[1].row_estimate, Some(0));
         assert_eq!(t[5].comment, None);
-        assert_eq!(t[5].schema.as_deref(), Some("db0"));
+        assert_eq!(t[5].schema, None);
     }
 }

@@ -65,22 +65,25 @@ fn scored(name: &str, argv: &[Vec<u8>]) -> bool {
 /// Shapes a reply of the command `argv`; a server error is the command's error.
 pub fn shape(argv: &[Vec<u8>], reply: &Resp, max_rows: usize) -> Result<Shaped, AppError> {
     let name = command_name(argv).unwrap_or_default();
+    // One row past the cap tells that rows were dropped; none further is built (a huge
+    // LRANGE would otherwise cost its size again in cells).
+    let limit = max_rows.saturating_add(1);
     let mut out = match reply {
         Resp::ServerError(e) => return Err(super::errors::server_error(e)),
         Resp::Attribute { data, .. } => return shape(argv, data, max_rows),
-        _ if name == "INFO" && as_text(reply).is_some() => info_rows(reply),
+        _ if name == "INFO" && as_text(reply).is_some() => info_rows(reply, limit),
         _ if matches!(name.as_str(), "SCAN" | "SSCAN" | "HSCAN" | "ZSCAN") => {
-            scan_rows(&name, argv, reply).unwrap_or_else(|| indexed(reply))
+            scan_rows(&name, argv, reply, limit).unwrap_or_else(|| indexed(reply, limit))
         }
-        Resp::Map(_) => pair_rows(reply, "field"),
+        Resp::Map(_) => pair_rows(reply, "field", limit),
         Resp::Array(_) if scored(&name, argv) => {
-            scored_rows(reply).unwrap_or_else(|| indexed(reply))
+            scored_rows(reply, limit).unwrap_or_else(|| indexed(reply, limit))
         }
         Resp::Array(_) if flat_pairs(&name, argv) => match as_pairs(reply) {
-            Some(_) => pair_rows(reply, "field"),
-            None => indexed(reply),
+            Some(_) => pair_rows(reply, "field", limit),
+            None => indexed(reply, limit),
         },
-        Resp::Array(_) | Resp::Set(_) => indexed(reply),
+        Resp::Array(_) | Resp::Set(_) => indexed(reply, limit),
         scalar => Shaped {
             columns: vec![column("value", "reply", ValueKind::Other)],
             rows: vec![vec![cell(scalar)]],
@@ -94,7 +97,7 @@ pub fn shape(argv: &[Vec<u8>], reply: &Resp, max_rows: usize) -> Result<Shaped, 
     Ok(out)
 }
 
-fn indexed(reply: &Resp) -> Shaped {
+fn indexed(reply: &Resp, limit: usize) -> Shaped {
     let items = as_items(reply).unwrap_or_default();
     Shaped {
         columns: vec![
@@ -103,6 +106,7 @@ fn indexed(reply: &Resp) -> Shaped {
         ],
         rows: items
             .iter()
+            .take(limit)
             .enumerate()
             .map(|(i, v)| vec![Value::from_u64(i as u64 + 1), cell(v)])
             .collect(),
@@ -110,19 +114,23 @@ fn indexed(reply: &Resp) -> Shaped {
     }
 }
 
-fn pair_rows(reply: &Resp, first: &str) -> Shaped {
+fn pair_rows(reply: &Resp, first: &str, limit: usize) -> Shaped {
     let pairs = as_pairs(reply).unwrap_or_default();
     Shaped {
         columns: vec![
             column(first, "reply", ValueKind::Text),
             column("value", "reply", ValueKind::Other),
         ],
-        rows: pairs.iter().map(|(k, v)| vec![cell(k), cell(v)]).collect(),
+        rows: pairs
+            .iter()
+            .take(limit)
+            .map(|(k, v)| vec![cell(k), cell(v)])
+            .collect(),
         ..Shaped::default()
     }
 }
 
-fn scored_rows(reply: &Resp) -> Option<Shaped> {
+fn scored_rows(reply: &Resp, limit: usize) -> Option<Shaped> {
     // ZPOPMIN without a count answers one pair, not a list of them (RESP3).
     let pairs = as_scored(reply)?;
     Some(Shaped {
@@ -132,20 +140,21 @@ fn scored_rows(reply: &Resp) -> Option<Shaped> {
         ],
         rows: pairs
             .iter()
+            .take(limit)
             .map(|(m, s)| vec![cell(m), number_cell(s)])
             .collect(),
         ..Shaped::default()
     })
 }
 
-fn scan_rows(name: &str, argv: &[Vec<u8>], reply: &Resp) -> Option<Shaped> {
+fn scan_rows(name: &str, argv: &[Vec<u8>], reply: &Resp, limit: usize) -> Option<Shaped> {
     let [cursor, items] = as_items(reply)? else {
         return None;
     };
     let cursor = as_text(cursor)?;
     let mut out = match name {
-        "HSCAN" if !has_word(argv, "NOVALUES") => pair_rows(items, "field"),
-        "ZSCAN" => scored_rows(items)?,
+        "HSCAN" if !has_word(argv, "NOVALUES") => pair_rows(items, "field", limit),
+        "ZSCAN" => scored_rows(items, limit)?,
         _ => {
             let label = match name {
                 "SCAN" => "key",
@@ -156,6 +165,7 @@ fn scan_rows(name: &str, argv: &[Vec<u8>], reply: &Resp) -> Option<Shaped> {
                 columns: vec![column(label, "reply", ValueKind::Text)],
                 rows: as_items(items)?
                     .iter()
+                    .take(limit)
                     .map(|k| {
                         vec![match k {
                             Resp::BulkString(b) => key_value(b),
@@ -175,7 +185,7 @@ fn scan_rows(name: &str, argv: &[Vec<u8>], reply: &Resp) -> Option<Shaped> {
     Some(out)
 }
 
-fn info_rows(reply: &Resp) -> Shaped {
+fn info_rows(reply: &Resp, limit: usize) -> Shaped {
     let info = Info::from_reply(reply);
     Shaped {
         columns: vec![
@@ -195,6 +205,7 @@ fn info_rows(reply: &Resp) -> Shaped {
                     ]
                 })
             })
+            .take(limit)
             .collect(),
         ..Shaped::default()
     }
@@ -368,6 +379,36 @@ mod tests {
         .unwrap();
         assert_eq!(many.rows.len(), 2);
         assert!(many.truncated);
+        // Every shape stops at the cap.
+        let capped = |line: &str, reply: &[u8]| {
+            shape(
+                &tokenize(line).unwrap(),
+                &parse_redis_value(reply).unwrap(),
+                1,
+            )
+            .unwrap()
+        };
+        for s in [
+            capped(
+                "HGETALL h",
+                b"*4\r\n$1\r\nf\r\n$1\r\nv\r\n$1\r\ng\r\n$1\r\nw\r\n",
+            ),
+            capped(
+                "HGETALL h",
+                b"%2\r\n$1\r\nf\r\n$1\r\nv\r\n$1\r\ng\r\n$1\r\nw\r\n",
+            ),
+            capped(
+                "ZRANGE z 0 -1 WITHSCORES",
+                b"*2\r\n*2\r\n$1\r\na\r\n,1\r\n*2\r\n$1\r\nb\r\n,2\r\n",
+            ),
+            capped("SCAN 0", b"*2\r\n$1\r\n7\r\n*2\r\n$1\r\na\r\n$1\r\nb\r\n"),
+            capped("INFO", b"$20\r\n# S\r\na:1\r\nb:2\r\nc:3\r\n\r\n"),
+        ] {
+            assert_eq!(s.rows.len(), 1, "{s:?}");
+            assert!(s.truncated, "{s:?}");
+        }
+        let exact = capped("LRANGE l 0 -1", b"*1\r\n:1\r\n");
+        assert!(!exact.truncated);
         let attr = run("GET k", b"|1\r\n+ttl\r\n:3\r\n$1\r\nv\r\n");
         assert_eq!(attr.rows, [[Value::Text("v".into())]]);
         assert_eq!(

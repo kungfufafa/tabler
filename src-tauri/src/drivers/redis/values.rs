@@ -269,6 +269,16 @@ pub fn int_cell(v: &Resp) -> Value {
     }
 }
 
+/// Whether a reply is `+OK`.
+pub fn is_ok(v: &Resp) -> bool {
+    match v {
+        Resp::Okay => true,
+        Resp::SimpleString(s) => s == "OK",
+        Resp::Attribute { data, .. } => is_ok(data),
+        _ => false,
+    }
+}
+
 /// An integer reply as `i64`.
 pub fn as_int(v: &Resp) -> Option<i64> {
     match v {
@@ -501,6 +511,30 @@ mod tests {
         assert_eq!(int_cell(&p("-ERR x\r\n")), Value::Null);
         assert_eq!(as_int(&p("$2\r\n12\r\n")), Some(12));
         assert_eq!(as_int(&p("$2\r\nab\r\n")), None);
+    }
+
+    /// Redis stores decimals and times as strings: they stay text, digit for digit (an
+    /// `INCRBYFLOAT` result, a `TIME` reply, an ISO date a key holds), never a float.
+    #[test]
+    fn decimals_and_timestamps_stay_text() {
+        assert_eq!(
+            cell(&p("$22\r\n10.5000000000000000001\r\n")),
+            Value::Text("10.5000000000000000001".into())
+        );
+        assert_eq!(
+            cell(&p("$20\r\n2026-10-30T09:00:00Z\r\n")),
+            Value::Text("2026-10-30T09:00:00Z".into())
+        );
+        let time = p("*2\r\n$10\r\n1793955600\r\n$6\r\n123456\r\n");
+        assert_eq!(
+            cell(&time),
+            Value::Json(r#"["1793955600","123456"]"#.into())
+        );
+        // An integer reply past 2^53 is exact text too.
+        assert_eq!(
+            cell(&p(":9007199254740993\r\n")),
+            Value::BigInt("9007199254740993".into())
+        );
     }
 
     #[test]
