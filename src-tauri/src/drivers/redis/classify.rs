@@ -669,6 +669,37 @@ mod tests {
             .collect()
     }
 
+    /// The cases the renderer's mirror of the splitter and classifier runs too
+    /// (`src/features/drivers/redis/console.test.ts`): both must agree on every one.
+    #[test]
+    fn shared_console_cases() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/redis/console.cases.json"
+        ))
+        .expect("the case file is JSON");
+        let classify = cases["classify"].as_array().expect("classify cases");
+        assert!(classify.len() > 200);
+        for case in classify {
+            let text = case["sql"].as_str().expect("sql");
+            let want = match case["class"].as_str() {
+                Some("read") => Read,
+                _ => Write,
+            };
+            assert_eq!(c(text), want, "{text:?}");
+        }
+        for case in cases["split"].as_array().expect("split cases") {
+            let text = case["sql"].as_str().expect("sql");
+            let want: Vec<&str> = case["statements"]
+                .as_array()
+                .expect("statements")
+                .iter()
+                .filter_map(|s| s.as_str())
+                .collect();
+            let got: Vec<String> = split_console(text).into_iter().map(|s| s.sql).collect();
+            assert_eq!(got, want, "{text:?}");
+        }
+    }
+
     #[test]
     fn console_text_is_classified_command_by_command() {
         assert_eq!(classes("GET a\nTYPE b; PTTL b"), [Read, Read, Read]);

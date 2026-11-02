@@ -1,0 +1,1337 @@
+{
+  "$comment": "Cases of the Redis console's splitter and read/write classifier (src-tauri/src/drivers/redis/cli.rs and classify.rs, without the server's COMMAND flags). The backend's tests (drivers::redis::classify::tests::shared_console_cases) and the renderer's mirror (src/features/drivers/redis/console.test.ts) both run them; `class` is one command line's (classify_line).",
+  "classify": [
+    {
+      "sql": "GET k",
+      "class": "read"
+    },
+    {
+      "sql": "get k",
+      "class": "read"
+    },
+    {
+      "sql": "MGET a b",
+      "class": "read"
+    },
+    {
+      "sql": "GETRANGE k 0 10",
+      "class": "read"
+    },
+    {
+      "sql": "SCAN 0 MATCH user:* COUNT 100 TYPE hash",
+      "class": "read"
+    },
+    {
+      "sql": "TYPE k",
+      "class": "read"
+    },
+    {
+      "sql": "PTTL k",
+      "class": "read"
+    },
+    {
+      "sql": "HGETALL h",
+      "class": "read"
+    },
+    {
+      "sql": "HSCAN h 0 COUNT 10 NOVALUES",
+      "class": "read"
+    },
+    {
+      "sql": "LRANGE l 0 -1",
+      "class": "read"
+    },
+    {
+      "sql": "SMEMBERS s",
+      "class": "read"
+    },
+    {
+      "sql": "ZRANGE z 0 -1 WITHSCORES",
+      "class": "read"
+    },
+    {
+      "sql": "XRANGE s - + COUNT 10",
+      "class": "read"
+    },
+    {
+      "sql": "XREVRANGE s + - COUNT 10",
+      "class": "read"
+    },
+    {
+      "sql": "XINFO STREAM s",
+      "class": "read"
+    },
+    {
+      "sql": "XREAD COUNT 10 STREAMS s 0",
+      "class": "read"
+    },
+    {
+      "sql": "OBJECT ENCODING k",
+      "class": "read"
+    },
+    {
+      "sql": "MEMORY USAGE k SAMPLES 0",
+      "class": "read"
+    },
+    {
+      "sql": "INFO keyspace",
+      "class": "read"
+    },
+    {
+      "sql": "PING",
+      "class": "read"
+    },
+    {
+      "sql": "DBSIZE",
+      "class": "read"
+    },
+    {
+      "sql": "SELECT 3",
+      "class": "read"
+    },
+    {
+      "sql": "COMMAND",
+      "class": "read"
+    },
+    {
+      "sql": "COMMAND DOCS get",
+      "class": "read"
+    },
+    {
+      "sql": "PUBSUB CHANNELS",
+      "class": "read"
+    },
+    {
+      "sql": "JSON.GET doc $",
+      "class": "read"
+    },
+    {
+      "sql": "SORT l",
+      "class": "read"
+    },
+    {
+      "sql": "SORT l BY w_* GET # LIMIT 0 10 ALPHA",
+      "class": "read"
+    },
+    {
+      "sql": "GEORADIUS g 0 0 1 km WITHDIST",
+      "class": "read"
+    },
+    {
+      "sql": "GEORADIUSBYMEMBER g m 1 km ASC",
+      "class": "read"
+    },
+    {
+      "sql": "  \"GET\"   'k'",
+      "class": "read"
+    },
+    {
+      "sql": "STRALGO LCS KEYS a b",
+      "class": "read"
+    },
+    {
+      "sql": "LOLWUT VERSION 5",
+      "class": "read"
+    },
+    {
+      "sql": "FT.SPELLCHECK idx helo",
+      "class": "read"
+    },
+    {
+      "sql": "FT.CURSOR READ idx 1 COUNT 10",
+      "class": "read"
+    },
+    {
+      "sql": "ft.cursor read idx 1",
+      "class": "read"
+    },
+    {
+      "sql": "CMS.QUERY c a b",
+      "class": "read"
+    },
+    {
+      "sql": "TDIGEST.QUANTILE t 0.5",
+      "class": "read"
+    },
+    {
+      "sql": "GRAPH.SLOWLOG g",
+      "class": "read"
+    },
+    {
+      "sql": "SORT l GET \"#\u0000STORE\"",
+      "class": "read"
+    },
+    {
+      "sql": "SORT l BY \"STORES\"",
+      "class": "read"
+    },
+    {
+      "sql": "EXISTS a b c",
+      "class": "read"
+    },
+    {
+      "sql": "TTL k",
+      "class": "read"
+    },
+    {
+      "sql": "STRLEN k",
+      "class": "read"
+    },
+    {
+      "sql": "GETBIT k 7",
+      "class": "read"
+    },
+    {
+      "sql": "BITCOUNT k 0 -1",
+      "class": "read"
+    },
+    {
+      "sql": "BITFIELD_RO k GET u8 0",
+      "class": "read"
+    },
+    {
+      "sql": "LCS a b",
+      "class": "read"
+    },
+    {
+      "sql": "SUBSTR k 0 3",
+      "class": "read"
+    },
+    {
+      "sql": "LLEN l",
+      "class": "read"
+    },
+    {
+      "sql": "LINDEX l 0",
+      "class": "read"
+    },
+    {
+      "sql": "LPOS l x",
+      "class": "read"
+    },
+    {
+      "sql": "SISMEMBER s m",
+      "class": "read"
+    },
+    {
+      "sql": "SMISMEMBER s a b",
+      "class": "read"
+    },
+    {
+      "sql": "SCARD s",
+      "class": "read"
+    },
+    {
+      "sql": "SRANDMEMBER s 2",
+      "class": "read"
+    },
+    {
+      "sql": "SSCAN s 0",
+      "class": "read"
+    },
+    {
+      "sql": "SINTER a b",
+      "class": "read"
+    },
+    {
+      "sql": "SUNION a b",
+      "class": "read"
+    },
+    {
+      "sql": "SDIFF a b",
+      "class": "read"
+    },
+    {
+      "sql": "SINTERCARD 2 a b",
+      "class": "read"
+    },
+    {
+      "sql": "ZRANGEBYSCORE z -inf +inf",
+      "class": "read"
+    },
+    {
+      "sql": "ZREVRANGE z 0 -1",
+      "class": "read"
+    },
+    {
+      "sql": "ZCARD z",
+      "class": "read"
+    },
+    {
+      "sql": "ZCOUNT z 0 10",
+      "class": "read"
+    },
+    {
+      "sql": "ZSCORE z m",
+      "class": "read"
+    },
+    {
+      "sql": "ZRANK z m",
+      "class": "read"
+    },
+    {
+      "sql": "ZSCAN z 0",
+      "class": "read"
+    },
+    {
+      "sql": "ZRANDMEMBER z",
+      "class": "read"
+    },
+    {
+      "sql": "ZUNION 2 a b",
+      "class": "read"
+    },
+    {
+      "sql": "HGET h f",
+      "class": "read"
+    },
+    {
+      "sql": "HMGET h a b",
+      "class": "read"
+    },
+    {
+      "sql": "HKEYS h",
+      "class": "read"
+    },
+    {
+      "sql": "HVALS h",
+      "class": "read"
+    },
+    {
+      "sql": "HLEN h",
+      "class": "read"
+    },
+    {
+      "sql": "HEXISTS h f",
+      "class": "read"
+    },
+    {
+      "sql": "HSTRLEN h f",
+      "class": "read"
+    },
+    {
+      "sql": "HRANDFIELD h 2 WITHVALUES",
+      "class": "read"
+    },
+    {
+      "sql": "HTTL h FIELDS 1 f",
+      "class": "read"
+    },
+    {
+      "sql": "XLEN s",
+      "class": "read"
+    },
+    {
+      "sql": "XPENDING s g",
+      "class": "read"
+    },
+    {
+      "sql": "XINFO GROUPS s",
+      "class": "read"
+    },
+    {
+      "sql": "XINFO CONSUMERS s g",
+      "class": "read"
+    },
+    {
+      "sql": "GEOPOS g m",
+      "class": "read"
+    },
+    {
+      "sql": "GEODIST g a b",
+      "class": "read"
+    },
+    {
+      "sql": "GEOSEARCH g FROMMEMBER m BYRADIUS 1 km",
+      "class": "read"
+    },
+    {
+      "sql": "ECHO hello",
+      "class": "read"
+    },
+    {
+      "sql": "TIME",
+      "class": "read"
+    },
+    {
+      "sql": "LASTSAVE",
+      "class": "read"
+    },
+    {
+      "sql": "ROLE",
+      "class": "read"
+    },
+    {
+      "sql": "RANDOMKEY",
+      "class": "read"
+    },
+    {
+      "sql": "DUMP k",
+      "class": "read"
+    },
+    {
+      "sql": "TOUCH k",
+      "class": "read"
+    },
+    {
+      "sql": "SORT_RO l",
+      "class": "read"
+    },
+    {
+      "sql": "EXPIRETIME k",
+      "class": "read"
+    },
+    {
+      "sql": "OBJECT FREQ k",
+      "class": "read"
+    },
+    {
+      "sql": "OBJECT help",
+      "class": "read"
+    },
+    {
+      "sql": "MEMORY HELP",
+      "class": "read"
+    },
+    {
+      "sql": "COMMAND COUNT",
+      "class": "read"
+    },
+    {
+      "sql": "COMMAND INFO get",
+      "class": "read"
+    },
+    {
+      "sql": "PUBSUB NUMSUB c",
+      "class": "read"
+    },
+    {
+      "sql": "JSON.TYPE doc $",
+      "class": "read"
+    },
+    {
+      "sql": "JSON.MGET a b $",
+      "class": "read"
+    },
+    {
+      "sql": "TS.RANGE t - +",
+      "class": "read"
+    },
+    {
+      "sql": "BF.EXISTS b x",
+      "class": "read"
+    },
+    {
+      "sql": "CF.COUNT c x",
+      "class": "read"
+    },
+    {
+      "sql": "TOPK.LIST t",
+      "class": "read"
+    },
+    {
+      "sql": "FT.SEARCH idx *",
+      "class": "read"
+    },
+    {
+      "sql": "FT.AGGREGATE idx * LOAD 1 @a",
+      "class": "read"
+    },
+    {
+      "sql": "FT.INFO idx",
+      "class": "read"
+    },
+    {
+      "sql": "FT._LIST",
+      "class": "read"
+    },
+    {
+      "sql": "GET \"a;b\"",
+      "class": "read"
+    },
+    {
+      "sql": "GET \"ÿ\"",
+      "class": "read"
+    },
+    {
+      "sql": "SCAN 0 MATCH \"user:*\" COUNT 10",
+      "class": "read"
+    },
+    {
+      "sql": "info",
+      "class": "read"
+    },
+    {
+      "sql": "Ping",
+      "class": "read"
+    },
+    {
+      "sql": "SORT l BY nosort GET # DESC",
+      "class": "read"
+    },
+    {
+      "sql": "XREAD COUNT 1 STREAMS \"BLOCKS\" 0",
+      "class": "read"
+    },
+    {
+      "sql": "COMMAND GETKEYS",
+      "class": "read"
+    },
+    {
+      "sql": "XINFO STREAM",
+      "class": "read"
+    },
+    {
+      "sql": "OBJECT ENCODING",
+      "class": "read"
+    },
+    {
+      "sql": "SET k v",
+      "class": "write"
+    },
+    {
+      "sql": "DEL k",
+      "class": "write"
+    },
+    {
+      "sql": "UNLINK k",
+      "class": "write"
+    },
+    {
+      "sql": "HSET h f v",
+      "class": "write"
+    },
+    {
+      "sql": "LPUSH l v",
+      "class": "write"
+    },
+    {
+      "sql": "ZADD z 1 m",
+      "class": "write"
+    },
+    {
+      "sql": "XADD s * f v",
+      "class": "write"
+    },
+    {
+      "sql": "EXPIRE k 10",
+      "class": "write"
+    },
+    {
+      "sql": "RENAME a b",
+      "class": "write"
+    },
+    {
+      "sql": "FLUSHALL",
+      "class": "write"
+    },
+    {
+      "sql": "FLUSHDB ASYNC",
+      "class": "write"
+    },
+    {
+      "sql": "KEYS *",
+      "class": "write"
+    },
+    {
+      "sql": "EVAL \"return 1\" 0",
+      "class": "write"
+    },
+    {
+      "sql": "EVAL_RO \"return 1\" 0",
+      "class": "write"
+    },
+    {
+      "sql": "EVALSHA abc 0",
+      "class": "write"
+    },
+    {
+      "sql": "FCALL f 0",
+      "class": "write"
+    },
+    {
+      "sql": "FCALL_RO f 0",
+      "class": "write"
+    },
+    {
+      "sql": "SCRIPT EXISTS abc",
+      "class": "write"
+    },
+    {
+      "sql": "FUNCTION LIST",
+      "class": "write"
+    },
+    {
+      "sql": "CONFIG GET maxmemory",
+      "class": "write"
+    },
+    {
+      "sql": "CONFIG SET maxmemory 1",
+      "class": "write"
+    },
+    {
+      "sql": "CLIENT LIST",
+      "class": "write"
+    },
+    {
+      "sql": "CLIENT KILL ID 1",
+      "class": "write"
+    },
+    {
+      "sql": "SHUTDOWN NOSAVE",
+      "class": "write"
+    },
+    {
+      "sql": "DEBUG SLEEP 1",
+      "class": "write"
+    },
+    {
+      "sql": "MULTI",
+      "class": "write"
+    },
+    {
+      "sql": "EXEC",
+      "class": "write"
+    },
+    {
+      "sql": "WATCH k",
+      "class": "write"
+    },
+    {
+      "sql": "HELLO 3",
+      "class": "write"
+    },
+    {
+      "sql": "AUTH pass",
+      "class": "write"
+    },
+    {
+      "sql": "XREAD BLOCK 0 STREAMS s $",
+      "class": "write"
+    },
+    {
+      "sql": "XREADGROUP GROUP g c STREAMS s >",
+      "class": "write"
+    },
+    {
+      "sql": "BLPOP l 0",
+      "class": "write"
+    },
+    {
+      "sql": "OBJECT",
+      "class": "write"
+    },
+    {
+      "sql": "OBJECT FREEZE k",
+      "class": "write"
+    },
+    {
+      "sql": "MEMORY PURGE",
+      "class": "write"
+    },
+    {
+      "sql": "XINFO",
+      "class": "write"
+    },
+    {
+      "sql": "SORT l STORE x",
+      "class": "write"
+    },
+    {
+      "sql": "GEORADIUS g 0 0 1 km STORE x",
+      "class": "write"
+    },
+    {
+      "sql": "sort l store x",
+      "class": "write"
+    },
+    {
+      "sql": "GEORADIUS g 0 0 1 km STOREDIST x",
+      "class": "write"
+    },
+    {
+      "sql": "GEORADIUSBYMEMBER g m 1 km STORE x",
+      "class": "write"
+    },
+    {
+      "sql": "TFCALL lib.f 0",
+      "class": "write"
+    },
+    {
+      "sql": "TFCALLASYNC lib.f 0",
+      "class": "write"
+    },
+    {
+      "sql": "TFUNCTION LIST",
+      "class": "write"
+    },
+    {
+      "sql": "RG.PYEXECUTE \"GB().run()\"",
+      "class": "write"
+    },
+    {
+      "sql": "rg.pystats",
+      "class": "write"
+    },
+    {
+      "sql": "AI.SCRIPTEXECUTE s f KEYS 1 k",
+      "class": "write"
+    },
+    {
+      "sql": "AI.DAGEXECUTE_RO KEYS 1 k |> AI.TENSORGET k",
+      "class": "write"
+    },
+    {
+      "sql": "OBJECT|ENCODING k",
+      "class": "write"
+    },
+    {
+      "sql": "PFCOUNT h",
+      "class": "write"
+    },
+    {
+      "sql": "GETEX k PERSIST",
+      "class": "write"
+    },
+    {
+      "sql": "GETDEL k",
+      "class": "write"
+    },
+    {
+      "sql": "SPOP s",
+      "class": "write"
+    },
+    {
+      "sql": "SUBSCRIBE c",
+      "class": "write"
+    },
+    {
+      "sql": "MONITOR",
+      "class": "write"
+    },
+    {
+      "sql": "STRALGO",
+      "class": "write"
+    },
+    {
+      "sql": "FT.CURSOR DEL idx 1",
+      "class": "write"
+    },
+    {
+      "sql": "FT.CURSOR GC idx 0",
+      "class": "write"
+    },
+    {
+      "sql": "FT.CURSOR",
+      "class": "write"
+    },
+    {
+      "sql": "GRAPH.SLOWLOG g RESET",
+      "class": "write"
+    },
+    {
+      "sql": "graph.slowlog g reset",
+      "class": "write"
+    },
+    {
+      "sql": "SORT list:1 \"STORE\u0000\" dst",
+      "class": "write"
+    },
+    {
+      "sql": "SORT src \"store\u0000junk\" dst",
+      "class": "write"
+    },
+    {
+      "sql": "GEORADIUS g 0 0 1 km \"STORE\u0000\" dst",
+      "class": "write"
+    },
+    {
+      "sql": "GEORADIUSBYMEMBER g m 1 km \"STOREDIST\u0000\" dst",
+      "class": "write"
+    },
+    {
+      "sql": "GRAPH.SLOWLOG g \"RESET\u0000\"",
+      "class": "write"
+    },
+    {
+      "sql": "XREAD \"BLOCK\u0000\" 0 STREAMS s $",
+      "class": "write"
+    },
+    {
+      "sql": "GRAPH.QUERY g \"MATCH (n) DELETE n\"",
+      "class": "write"
+    },
+    {
+      "sql": "CF.COMPACT cf",
+      "class": "write"
+    },
+    {
+      "sql": "FT.ALIASUPDATE alias idx",
+      "class": "write"
+    },
+    {
+      "sql": "FT.DICTADD dict word",
+      "class": "write"
+    },
+    {
+      "sql": "FT.SUGADD sug hello 1",
+      "class": "write"
+    },
+    {
+      "sql": "NOSUCHCOMMAND x",
+      "class": "write"
+    },
+    {
+      "sql": "",
+      "class": "write"
+    },
+    {
+      "sql": "   ",
+      "class": "write"
+    },
+    {
+      "sql": "GET \"unbalanced",
+      "class": "write"
+    },
+    {
+      "sql": "\"\" k",
+      "class": "write"
+    },
+    {
+      "sql": "SET k v",
+      "class": "write"
+    },
+    {
+      "sql": "\"ÿGET\" k",
+      "class": "write"
+    },
+    {
+      "sql": "GET 'unbalanced",
+      "class": "write"
+    },
+    {
+      "sql": "SET a\"b c\"d",
+      "class": "write"
+    },
+    {
+      "sql": "GET 'a'b",
+      "class": "write"
+    },
+    {
+      "sql": "ACL WHOAMI",
+      "class": "write"
+    },
+    {
+      "sql": "ACL LIST",
+      "class": "write"
+    },
+    {
+      "sql": "CLUSTER INFO",
+      "class": "write"
+    },
+    {
+      "sql": "MODULE LIST",
+      "class": "write"
+    },
+    {
+      "sql": "SAVE",
+      "class": "write"
+    },
+    {
+      "sql": "BGSAVE",
+      "class": "write"
+    },
+    {
+      "sql": "REPLICAOF NO ONE",
+      "class": "write"
+    },
+    {
+      "sql": "FAILOVER",
+      "class": "write"
+    },
+    {
+      "sql": "MIGRATE h 1 k 0 1",
+      "class": "write"
+    },
+    {
+      "sql": "WAIT 1 0",
+      "class": "write"
+    },
+    {
+      "sql": "QUIT",
+      "class": "write"
+    },
+    {
+      "sql": "RESET",
+      "class": "write"
+    },
+    {
+      "sql": "UNWATCH",
+      "class": "write"
+    },
+    {
+      "sql": "DISCARD",
+      "class": "write"
+    },
+    {
+      "sql": "READONLY",
+      "class": "write"
+    },
+    {
+      "sql": "SWAPDB 0 1",
+      "class": "write"
+    },
+    {
+      "sql": "MOVE k 1",
+      "class": "write"
+    },
+    {
+      "sql": "COPY a b",
+      "class": "write"
+    },
+    {
+      "sql": "RESTORE k 0 x",
+      "class": "write"
+    },
+    {
+      "sql": "APPEND k v",
+      "class": "write"
+    },
+    {
+      "sql": "INCR k",
+      "class": "write"
+    },
+    {
+      "sql": "DECRBY k 2",
+      "class": "write"
+    },
+    {
+      "sql": "SETNX k v",
+      "class": "write"
+    },
+    {
+      "sql": "GETSET k v",
+      "class": "write"
+    },
+    {
+      "sql": "MSET a 1 b 2",
+      "class": "write"
+    },
+    {
+      "sql": "PSETEX k 10 v",
+      "class": "write"
+    },
+    {
+      "sql": "PERSIST k",
+      "class": "write"
+    },
+    {
+      "sql": "PEXPIRE k 1",
+      "class": "write"
+    },
+    {
+      "sql": "RPOP l",
+      "class": "write"
+    },
+    {
+      "sql": "LTRIM l 0 1",
+      "class": "write"
+    },
+    {
+      "sql": "LMOVE a b LEFT RIGHT",
+      "class": "write"
+    },
+    {
+      "sql": "SMOVE a b m",
+      "class": "write"
+    },
+    {
+      "sql": "SINTERSTORE d a b",
+      "class": "write"
+    },
+    {
+      "sql": "ZINCRBY z 1 m",
+      "class": "write"
+    },
+    {
+      "sql": "ZPOPMIN z",
+      "class": "write"
+    },
+    {
+      "sql": "ZRANGESTORE d z 0 -1",
+      "class": "write"
+    },
+    {
+      "sql": "ZUNIONSTORE d 2 a b",
+      "class": "write"
+    },
+    {
+      "sql": "HDEL h f",
+      "class": "write"
+    },
+    {
+      "sql": "HINCRBY h f 1",
+      "class": "write"
+    },
+    {
+      "sql": "HEXPIRE h 10 FIELDS 1 f",
+      "class": "write"
+    },
+    {
+      "sql": "XDEL s 1-0",
+      "class": "write"
+    },
+    {
+      "sql": "XTRIM s MAXLEN 10",
+      "class": "write"
+    },
+    {
+      "sql": "XGROUP CREATE s g $",
+      "class": "write"
+    },
+    {
+      "sql": "XACK s g 1-0",
+      "class": "write"
+    },
+    {
+      "sql": "XCLAIM s g c 0 1-0",
+      "class": "write"
+    },
+    {
+      "sql": "XAUTOCLAIM s g c 0 0",
+      "class": "write"
+    },
+    {
+      "sql": "PFADD h a",
+      "class": "write"
+    },
+    {
+      "sql": "PFMERGE d a",
+      "class": "write"
+    },
+    {
+      "sql": "SETRANGE k 0 x",
+      "class": "write"
+    },
+    {
+      "sql": "SETBIT k 1 1",
+      "class": "write"
+    },
+    {
+      "sql": "BITOP AND d a b",
+      "class": "write"
+    },
+    {
+      "sql": "BITFIELD k SET u8 0 1",
+      "class": "write"
+    },
+    {
+      "sql": "GEOADD g 0 0 m",
+      "class": "write"
+    },
+    {
+      "sql": "GEOSEARCHSTORE d g FROMMEMBER m BYRADIUS 1 km",
+      "class": "write"
+    },
+    {
+      "sql": "JSON.SET doc $ 1",
+      "class": "write"
+    },
+    {
+      "sql": "JSON.DEL doc $",
+      "class": "write"
+    },
+    {
+      "sql": "JSON.ARRAPPEND doc $ 1",
+      "class": "write"
+    },
+    {
+      "sql": "TS.ADD t * 1",
+      "class": "write"
+    },
+    {
+      "sql": "BF.ADD b x",
+      "class": "write"
+    },
+    {
+      "sql": "FT.CREATE idx SCHEMA a TEXT",
+      "class": "write"
+    },
+    {
+      "sql": "FT.DROPINDEX idx",
+      "class": "write"
+    },
+    {
+      "sql": "FT.CONFIG GET *",
+      "class": "write"
+    },
+    {
+      "sql": "FT._ALTERIFNX idx",
+      "class": "write"
+    },
+    {
+      "sql": "PUBLISH c m",
+      "class": "write"
+    },
+    {
+      "sql": "SPUBLISH c m",
+      "class": "write"
+    },
+    {
+      "sql": "PUBSUB",
+      "class": "write"
+    },
+    {
+      "sql": "PUBSUB x",
+      "class": "write"
+    },
+    {
+      "sql": "LATENCY RESET",
+      "class": "write"
+    },
+    {
+      "sql": "SLOWLOG RESET",
+      "class": "write"
+    },
+    {
+      "sql": "SLOWLOG GET",
+      "class": "write"
+    },
+    {
+      "sql": "MEMORY STATS",
+      "class": "write"
+    },
+    {
+      "sql": "SET\u0000k v",
+      "class": "write"
+    },
+    {
+      "sql": "INFO",
+      "class": "write"
+    },
+    {
+      "sql": "SORT l GET \"#\\x00STORE\"",
+      "class": "read"
+    },
+    {
+      "sql": "SORT list:1 \"STORE\\x00\" dst",
+      "class": "write"
+    },
+    {
+      "sql": "SORT src \"store\\x00junk\" dst",
+      "class": "write"
+    },
+    {
+      "sql": "GEORADIUS g 0 0 1 km \"STORE\\x00\" dst",
+      "class": "write"
+    },
+    {
+      "sql": "GEORADIUSBYMEMBER g m 1 km \"STOREDIST\\x00\" dst",
+      "class": "write"
+    },
+    {
+      "sql": "GRAPH.SLOWLOG g \"RESET\\x00\"",
+      "class": "write"
+    },
+    {
+      "sql": "XREAD \"BLOCK\\x00\" 0 STREAMS s $",
+      "class": "write"
+    },
+    {
+      "sql": "XREAD \"BL\\x4fCK\" 0 STREAMS s $",
+      "class": "write"
+    },
+    {
+      "sql": "SORT l \"\\x53TORE\" d",
+      "class": "write"
+    },
+    {
+      "sql": "GET \"\\xff\"",
+      "class": "read"
+    },
+    {
+      "sql": "\"\\xffGET\" k",
+      "class": "write"
+    },
+    {
+      "sql": "\"G\\x45T\" k",
+      "class": "read"
+    },
+    {
+      "sql": "\"\\x47ET\" k",
+      "class": "read"
+    },
+    {
+      "sql": "SET\\x00k v",
+      "class": "write"
+    },
+    {
+      "sql": "\"FLUSH\\x41LL\"",
+      "class": "write"
+    },
+    {
+      "sql": "GET \"a\\\"b\"",
+      "class": "read"
+    },
+    {
+      "sql": "GET 'it\\'s'",
+      "class": "read"
+    },
+    {
+      "sql": "GET \"\\\"",
+      "class": "write"
+    },
+    {
+      "sql": "GET \"a\\",
+      "class": "write"
+    },
+    {
+      "sql": "OBJECT \"ENCODING\\x00\" k",
+      "class": "write"
+    },
+    {
+      "sql": "OBJECT \"\\xff\" k",
+      "class": "write"
+    },
+    {
+      "sql": "\"OBJECT\" \"encoding\" k",
+      "class": "read"
+    },
+    {
+      "sql": "get\"\" k",
+      "class": "read"
+    },
+    {
+      "sql": "G\"E\"T k",
+      "class": "write"
+    },
+    {
+      "sql": "KEYS\t*",
+      "class": "write"
+    },
+    {
+      "sql": "\tGET\tk\t",
+      "class": "read"
+    },
+    {
+      "sql": "GET\u000bk",
+      "class": "write"
+    },
+    {
+      "sql": "﻿GET k",
+      "class": "write"
+    },
+    {
+      "sql": "\"\\xef\\xbb\\xbfGET\" k",
+      "class": "write"
+    },
+    {
+      "sql": "MEMORY ﻿USAGE k",
+      "class": "write"
+    },
+    {
+      "sql": "﻿COMMAND INFO",
+      "class": "write"
+    },
+    {
+      "sql": "﻿OBJECT ENCODING k",
+      "class": "write"
+    },
+    {
+      "sql": "﻿SET k v",
+      "class": "write"
+    },
+    {
+      "sql": "OBJECT \"\\xef\\xbb\\xbfENCODING\" k",
+      "class": "write"
+    }
+  ],
+  "split": [
+    {
+      "sql": "GET a\n\n  SET b \"x;y\nz\" ; DEL c;\r\nPING",
+      "statements": [
+        "GET a",
+        "SET b \"x;y\nz\"",
+        "DEL c",
+        "PING"
+      ]
+    },
+    {
+      "sql": "SET k \"a\\\";b\"; SET j 'it\\'s;x'; GET z",
+      "statements": [
+        "SET k \"a\\\";b\"",
+        "SET j 'it\\'s;x'",
+        "GET z"
+      ]
+    },
+    {
+      "sql": "ECHO é;GET b",
+      "statements": [
+        "ECHO é",
+        "GET b"
+      ]
+    },
+    {
+      "sql": " ;\n ; ",
+      "statements": []
+    },
+    {
+      "sql": "",
+      "statements": []
+    },
+    {
+      "sql": "GET \"a\nb",
+      "statements": [
+        "GET \"a\nb"
+      ]
+    },
+    {
+      "sql": "GET a\nTYPE b; PTTL b",
+      "statements": [
+        "GET a",
+        "TYPE b",
+        "PTTL b"
+      ]
+    },
+    {
+      "sql": "GET \"a;b\"; FLUSHALL",
+      "statements": [
+        "GET \"a;b\"",
+        "FLUSHALL"
+      ]
+    },
+    {
+      "sql": " GET 😀 ;SET x 'y'　",
+      "statements": [
+        "GET 😀",
+        "SET x 'y'"
+      ]
+    },
+    {
+      "sql": "SET k 'a\\\\';GET k",
+      "statements": [
+        "SET k 'a\\\\';GET k"
+      ]
+    },
+    {
+      "sql": "SET k \"a\\\\\";GET k",
+      "statements": [
+        "SET k \"a\\\\\"",
+        "GET k"
+      ]
+    },
+    {
+      "sql": "HSET h f 'line\none'\nHGET h f",
+      "statements": [
+        "HSET h f 'line\none'",
+        "HGET h f"
+      ]
+    },
+    {
+      "sql": "﻿GET a",
+      "statements": [
+        "﻿GET a"
+      ]
+    }
+  ]
+}
