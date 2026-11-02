@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useForm } from "react-hook-form";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GRID } from "@/features/connections/rows/Row";
 import { DEFAULT_FORM, type ConnectionFormValues } from "@/features/connections/schema";
 import { ipc, type BrowsePage, type ColumnMeta, type TableMeta, type Value } from "@/lib/ipc";
@@ -186,11 +186,13 @@ describe("a table's menu", () => {
     database: null,
   };
   const call = vi.fn();
+  const read = vi.fn();
   const ctx = {
     connectionId: "c1",
     info: {},
     caps: {},
     call,
+    read,
     refresh: vi.fn(),
   } as unknown as ObjectMenuContext;
   const meta = {
@@ -200,6 +202,11 @@ describe("a table's menu", () => {
       { name: "ByYear", method: "LSI", columns: ["Artist", "Year"] },
     ],
   } as unknown as TableMeta;
+
+  beforeEach(() => {
+    call.mockReset();
+    read.mockReset();
+  });
 
   it("offers the info panel and the index browser on a table only", () => {
     expect(dynamoObjectMenu(item, ctx).map((i) => i.label)).toEqual([
@@ -213,38 +220,45 @@ describe("a table's menu", () => {
     ]);
   });
 
-  it("reads the table info as is (no Safe Mode prompt) and shows it", async () => {
-    const read = vi.spyOn(ipc, "sessionCall").mockResolvedValue({
+  it("reads the table info as a read (ctx.read) and shows it", async () => {
+    const session = vi.spyOn(ipc, "sessionCall");
+    read.mockResolvedValue({
       table: { TableStatus: "ACTIVE", ItemCount: 3 },
       timeToLive: null,
       continuousBackups: null,
     });
     await dynamoObjectMenu(item, ctx)[0]!.run();
-    expect(read).toHaveBeenCalledWith("c1", "tableInfo", { table: "Music" });
+    expect(read).toHaveBeenCalledWith("tableInfo", { table: "Music" });
     expect(call).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
     expect(await screen.findByTestId("dynamo-table-info")).toHaveTextContent("ACTIVE");
   });
 
-  it("pages an index forward and back by its cursors", async () => {
+  it("guards the call as a write where a context gives no read", async () => {
+    call.mockResolvedValue({ table: { TableStatus: "ACTIVE" } });
+    await dynamoObjectMenu(item, { ...ctx, read: undefined })[0]!.run();
+    expect(call).toHaveBeenCalledWith("tableInfo", { table: "Music" });
+  });
+
+  it("pages an index forward and back by its cursors, each page a read", async () => {
     vi.spyOn(ipc.schema, "table").mockResolvedValue(meta);
+    const session = vi.spyOn(ipc, "sessionCall");
     const page = (n: string, next: string | null): BrowsePage =>
       ({
         columns: [{ name: "Genre" }],
         rows: [[{ t: "text", v: n }]],
         nextCursor: next,
       }) as unknown as BrowsePage;
-    const browse = vi
-      .spyOn(ipc, "sessionCall")
-      .mockImplementation((_c, _m, args) =>
-        Promise.resolve(
-          (args as { request: { cursor: string | null } }).request.cursor === "c2"
-            ? page("Jazz", null)
-            : page("Rock", "c2"),
-        ),
-      );
+    read.mockImplementation((_m: string, args: unknown) =>
+      Promise.resolve(
+        (args as { request: { cursor: string | null } }).request.cursor === "c2"
+          ? page("Jazz", null)
+          : page("Rock", "c2"),
+      ),
+    );
     await dynamoObjectMenu(item, ctx)[1]!.run();
     expect(await screen.findByText("Rock")).toBeInTheDocument();
-    expect(browse).toHaveBeenCalledWith("c1", "browseIndex", {
+    expect(read).toHaveBeenCalledWith("browseIndex", {
       table: "Music",
       index: "ByGenre",
       request: expect.objectContaining({ cursor: null, limit: 50 }),
@@ -254,13 +268,14 @@ describe("a table's menu", () => {
     expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Previous" }));
     expect(await screen.findByText("Rock")).toBeInTheDocument();
+    expect(call).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
   });
 
   it("says when a table has no secondary index", async () => {
     vi.spyOn(ipc.schema, "table").mockResolvedValue({ indexes: [] } as unknown as TableMeta);
-    const browse = vi.spyOn(ipc, "sessionCall");
     await dynamoObjectMenu(item, ctx)[1]!.run();
-    expect(browse).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
     expect(screen.queryByTestId("dynamo-index-page")).toBeNull();
   });
 });
@@ -299,6 +314,30 @@ describe("the form's rows", () => {
     expect(util).toHaveBeenCalledWith(expect.objectContaining({ password: null }), "regions");
     expect(screen.queryByText("SSL mode")).toBeNull();
     expect(screen.queryByLabelText("Profile")).toBeNull();
+  });
+
+  it("show the session token after the secret access key, kept in the Keychain only", () => {
+    vi.spyOn(ipc, "driverUtil").mockResolvedValue([]);
+    const { unmount } = render(<Harness values={{}} />);
+    const labels = screen.getAllByText(/^(Secret Access Key|Session Token|Region)$/);
+    expect(labels.map((l) => l.textContent)).toEqual([
+      "Secret Access Key",
+      "Session Token",
+      "Region",
+    ]);
+    expect(screen.getByLabelText("Session Token")).toHaveAttribute("type", "password");
+    unmount();
+    render(<Harness values={{ passwordMode: "ask" }} />);
+    expect(screen.queryByLabelText("Session Token")).toBeNull();
+  });
+
+  it("show no session token for a source that takes none", () => {
+    vi.spyOn(ipc, "driverUtil").mockResolvedValue([]);
+    for (const auth of ["profile", "environment", "local", "command"]) {
+      const { unmount } = render(<Harness values={{ driverParams: params({ auth }) }} />);
+      expect(screen.queryByLabelText("Session Token"), auth).toBeNull();
+      unmount();
+    }
   });
 
   it("show a profile's name with this machine's profiles, and no key or secret", async () => {

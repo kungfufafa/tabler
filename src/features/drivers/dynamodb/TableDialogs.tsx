@@ -16,11 +16,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ipc, toIpcError, type BrowsePage, type TableRef } from "@/lib/ipc";
+import { toIpcError, type BrowsePage, type TableRef } from "@/lib/ipc";
 import { displayValue } from "@/lib/values";
 import { tableFacts, type IndexChoice, type TableInfo } from "./info";
 
 /** The table info panel and the index browser, opened from a table's menu (`dialogs.ts`). */
+
+/** A session call that only reads (`ObjectMenuContext.read`). */
+export type ReadCall = <T = unknown>(method: string, args?: unknown) => Promise<T>;
 
 function useOpen(close: () => void) {
   const [open, setOpen] = useState(true);
@@ -85,12 +88,12 @@ type PageState =
  * pages' cursors to go back: an index's items are read only (the grid edits the table's).
  */
 export function IndexBrowserDialog({
-  connectionId,
+  read,
   table,
   indexes,
   close,
 }: {
-  connectionId: string;
+  read: ReadCall;
   table: TableRef;
   indexes: readonly IndexChoice[];
   close: () => void;
@@ -114,7 +117,7 @@ export function IndexBrowserDialog({
         offset: 0,
         cursor,
       };
-      const p = await ipc.sessionCall<BrowsePage>(connectionId, "browseIndex", {
+      const p = await read<BrowsePage>("browseIndex", {
         table: table.name,
         index,
         request,
@@ -123,7 +126,7 @@ export function IndexBrowserDialog({
     } catch (err) {
       setPage({ state: "failed", message: toIpcError(err).message });
     }
-  }, [connectionId, table, index, cursor]);
+  }, [read, table, index, cursor]);
 
   useEffect(() => {
     void load();

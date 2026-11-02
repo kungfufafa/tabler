@@ -106,7 +106,8 @@ function summary(p: ConnectionProfile): string {
 }
 
 export const dynamoUi: KindUi = {
-  // Every row is the lane's: which ones show depends on the credential source.
+  // Every row is the lane's: which ones show depends on the credential source. The shared
+  // `extraSecrets` row (the session token) shows in `Fields` after the secret, for access keys.
   rows: [],
   labels: { user: "Access key ID", secret: "Secret Access Key", database: "Region" },
   sslModes: DYNAMO_SSL_MODES,

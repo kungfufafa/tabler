@@ -135,7 +135,11 @@ pub async fn source_with(
     }
     match params.auth {
         DynamoAuth::AccessKey => {
-            let token = secrets::extra_secret(ExtraSecret::SessionToken);
+            // The form shows the token only with a Keychain secret, so a token kept from then
+            // must not ride along with a secret asked for or left out now.
+            let token = (profile.options.password_mode() == PasswordMode::Keychain)
+                .then(|| secrets::extra_secret(ExtraSecret::SessionToken))
+                .flatten();
             Ok(Source::fixed(Credentials::static_keys(
                 key_id.unwrap_or_default(),
                 password.unwrap_or_default(),
@@ -328,6 +332,7 @@ mod tests {
         let mut extras = ExtraSecrets::default();
         extras.set(ExtraSecret::SessionToken, "tok".into());
         let source = extras
+            .clone()
             .scope(source_with(
                 &p,
                 &params(DynamoAuth::AccessKey),
@@ -346,6 +351,19 @@ mod tests {
             ("AKID", "sk", Some("tok"))
         );
         assert!(source.command.is_none());
+        // A secret asked every time takes no token kept from a Keychain secret.
+        let asked = profile(Some("AKID"), PasswordMode::Ask, None);
+        let source = extras
+            .scope(source_with(
+                &asked,
+                &params(DynamoAuth::AccessKey),
+                Some("sk"),
+                &no_env,
+            ))
+            .await
+            .unwrap();
+        let creds = source.provider.get(Utc::now()).await.unwrap();
+        assert_eq!(creds.session_token, None);
         // No secret: refused before anything is sent.
         assert!(matches!(
             source_with(&p, &params(DynamoAuth::AccessKey), None, &no_env).await,

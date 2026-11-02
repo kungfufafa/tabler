@@ -2,7 +2,7 @@ import { createElement, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { TableRef } from "@/lib/ipc";
 import type { IndexChoice, TableInfo } from "./info";
-import { IndexBrowserDialog, TableInfoDialog } from "./TableDialogs";
+import { IndexBrowserDialog, TableInfoDialog, type ReadCall } from "./TableDialogs";
 
 /**
  * Opens the dialogs of a table's menu. A menu item has no place in the tree of its own: each
@@ -26,11 +26,11 @@ export function openTableInfo(table: string, info: TableInfo): void {
   openDialog((close) => createElement(TableInfoDialog, { table, info, close }));
 }
 
-/** Opens the index browser of `table`. */
+/** Opens the index browser of `table`, its pages read through `read` (the menu's `ctx.read`). */
 export function openIndexBrowser(
-  connectionId: string,
+  read: ReadCall,
   table: TableRef,
   indexes: readonly IndexChoice[],
 ): void {
-  openDialog((close) => createElement(IndexBrowserDialog, { connectionId, table, indexes, close }));
+  openDialog((close) => createElement(IndexBrowserDialog, { read, table, indexes, close }));
 }

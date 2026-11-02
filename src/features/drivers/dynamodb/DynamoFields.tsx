@@ -10,7 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Row } from "@/features/connections/rows/Row";
-import { SecretRow } from "@/features/connections/rows/SecretRow";
+import { ExtraSecretRows, SecretRow } from "@/features/connections/rows/SecretRow";
 import { SslRows } from "@/features/connections/rows/SslRows";
 import { UserRow } from "@/features/connections/rows/UserRow";
 import { formToProfileInput, type ConnectionFormValues } from "@/features/connections/schema";
@@ -75,7 +75,7 @@ export function DynamoFields({ form, hasStoredPassword }: KindFieldsProps) {
   const uid = useId();
   const errors = formState.errors.driverParams as Record<string, { message?: string }> | undefined;
   const params = dynamoFormOf(watch("driverParams"));
-  const { passwordModes } = DESCRIPTORS.dynamodb;
+  const { passwordModes, extraSecrets } = DESCRIPTORS.dynamodb;
   const [regions, setRegions] = useState<string[]>([]);
   const [profiles, setProfiles] = useState<Listing>({ state: "idle" });
 
@@ -202,13 +202,9 @@ export function DynamoFields({ form, hasStoredPassword }: KindFieldsProps) {
           commandExample="aws configure export-credentials --profile dev --format process"
         />
       )}
-      {params.auth === "accessKey" && (
-        <Row label="">
-          <p className="text-muted-foreground text-[11px]">
-            Temporary keys with a session token: use an AWS profile or the Command source.
-          </p>
-        </Row>
-      )}
+      {/* The shared `extraSecrets` row, here rather than in `rows`: only access keys take a
+          token, and the shared rows would show above the credential source. */}
+      {params.auth === "accessKey" && <ExtraSecretRows form={form} secrets={extraSecrets} />}
       {params.auth === "profile" && (
         <>
           {text("profileName", "Profile", "default", profileHint, `${uid}-profiles`)}

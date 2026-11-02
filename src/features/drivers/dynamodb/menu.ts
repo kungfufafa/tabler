@@ -8,7 +8,8 @@ import { openIndexBrowser, openTableInfo } from "./dialogs";
  * A table's items of the sidebar menu, over the session's calls (`drivers/dynamodb/session.rs`),
  * both reads: Table Info… (`tableInfo`: billing, counts, stream, TTL, point-in-time recovery,
  * protection) and Browse Index… (`browseIndex`: pages of a global or local secondary index).
- * Reads are sent as they are (no Safe Mode prompt), so they work on a read-only connection.
+ * Both go through `ctx.read` (`session.rs` gives both `CallKind::Read`): Safe Mode asks only
+ * where it asks for reads too, and a read-only connection lets them through.
  */
 
 /** The secondary indexes of a table's structure. */
@@ -21,14 +22,14 @@ export function indexChoices(meta: TableMeta): IndexChoice[] {
 export function dynamoObjectMenu(item: SidebarItemRef, ctx: ObjectMenuContext): ObjectMenuItem[] {
   if (item.kind !== "table") return [];
   const { table } = item;
+  // The app always gives `read`; a context without one guards the call as a write.
+  const read = ctx.read ?? ctx.call;
   return [
     {
       id: "table-info",
       label: "Table Info…",
       run: async () => {
-        const info = await ipc.sessionCall<TableInfo>(ctx.connectionId, "tableInfo", {
-          table: table.name,
-        });
+        const info = await read<TableInfo>("tableInfo", { table: table.name });
         openTableInfo(table.name, info);
       },
     },
@@ -41,7 +42,7 @@ export function dynamoObjectMenu(item: SidebarItemRef, ctx: ObjectMenuContext): 
           toast.info(`${table.name} has no secondary index`);
           return;
         }
-        openIndexBrowser(ctx.connectionId, table, indexes);
+        openIndexBrowser(read, table, indexes);
       },
     },
   ];
