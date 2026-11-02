@@ -25,8 +25,8 @@ pub enum SnowflakeAuth {
     Pat,
     /// An OAuth access token, usually from the password's Command mode.
     Oauth,
-    /// User and password, with an MFA passcode (or a Duo push) asked at connect when `mfa` is
-    /// set. Refused unattended: nobody is there to answer.
+    /// User and password; when `mfa` is set, every sign-in waits for an MFA push to be approved
+    /// (no passcode reaches a connect yet). Refused unattended: nobody is there to approve it.
     Password,
 }
 
@@ -48,7 +48,7 @@ pub struct SnowflakeParams {
     /// The private key file of `KeyPair` (never stored in the app database).
     #[ts(optional = nullable)]
     pub private_key_path: Option<String>,
-    /// `Password`: the account asks a second factor (a passcode typed at connect, or a push).
+    /// `Password`: the account asks a second factor, approved as a push at each sign-in.
     pub mfa: bool,
     #[ts(optional = nullable)]
     pub warehouse: Option<String>,
@@ -114,7 +114,9 @@ impl SnowflakeParams {
     /// The session parameters sent at login: the profile's, then the statement timeout, then one
     /// statement per request. Tabler splits scripts itself, and with the account's or the
     /// profile's MULTI_STATEMENT_COUNT at 0 a `;` the classifier took for a comment or a string
-    /// would run a second statement; at 1 Snowflake refuses the whole request.
+    /// would run a second statement; at 1 Snowflake refuses the whole request. AUTOCOMMIT stays on
+    /// whatever the profile, the user or the account says: with it off, the app's own writes
+    /// would wait in a transaction nobody commits, and the editor's in one Tabler cannot see.
     pub fn login_parameters(&self) -> BTreeMap<String, serde_json::Value> {
         let mut out: BTreeMap<String, serde_json::Value> = self
             .session_parameters
@@ -125,6 +127,7 @@ impl SnowflakeParams {
             out.insert("STATEMENT_TIMEOUT_IN_SECONDS".into(), secs.into());
         }
         out.insert("MULTI_STATEMENT_COUNT".into(), 1.into());
+        out.insert("AUTOCOMMIT".into(), true.into());
         out
     }
 }
@@ -304,6 +307,12 @@ mod tests {
             "sessionParameters": {"multi_statement_count": 0}}))
         .unwrap();
         assert_eq!(p.login_parameters()["MULTI_STATEMENT_COUNT"], 1);
+        // AUTOCOMMIT stays on, whatever the profile says.
+        assert_eq!(login["AUTOCOMMIT"], true);
+        let p = params(serde_json::json!({"account": "a", "auth": "pat",
+            "sessionParameters": {"autocommit": false}}))
+        .unwrap();
+        assert_eq!(p.login_parameters()["AUTOCOMMIT"], true);
 
         // Key pair needs its file; settings must be names and plain values.
         assert!(params(serde_json::json!({"account": "a"})).is_err());

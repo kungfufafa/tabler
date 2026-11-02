@@ -31,7 +31,7 @@ use std::sync::LazyLock;
 use crate::error::AppError;
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::dialect::SqlDialect;
-use crate::sqlgen::dialect::lex::{ClassifyRules, LexProfile, reading};
+use crate::sqlgen::dialect::lex::{ClassifyRules, LexProfile, TokenKind, reading, scan};
 use crate::sqlgen::dialect::spec::{
     CiLike, DialectSpec, ExplainForm, PlaceholderStyle, RedactCall, RedactRule, SqlHooks, SqlKnobs,
     double_quoted, ph_question, single_quoted_backslash,
@@ -286,7 +286,22 @@ pub static RULES: ClassifyRules = ClassifyRules {
 };
 
 fn classify_snowflake(sql: &str) -> StatementClass {
+    if quotes_nextval(sql) {
+        return StatementClass::Write;
+    }
     classify::with(&LEX, &RULES, sql)
+}
+
+/// Whether a quoted name is NEXTVAL (`seq."NEXTVAL"`, in any case): the rules match words only,
+/// and that Snowflake does not advance the sequence for it is unproven, so it writes. A column
+/// literally named "NEXTVAL" is the only false write.
+fn quotes_nextval(sql: &str) -> bool {
+    LEX.readings.iter().any(|&r| {
+        let s = scan(&LEX, r, sql);
+        s.tokens
+            .iter()
+            .any(|t| t.kind == TokenKind::Ident && s.ident_name(t).eq_ignore_ascii_case("NEXTVAL"))
+    })
 }
 
 /// A column as text for pattern filters and "Any column"; binary columns have none.
@@ -385,12 +400,19 @@ fn explain(mode: ExplainMode) -> ExplainForm {
     }
 }
 
-/// DDL commits the open transaction.
+/// DDL commits the open transaction. ALTER SESSION is not DDL: of its settings only AUTOCOMMIT
+/// commits (coarse: the word anywhere in the statement counts).
 fn implicit_commit(sql: &str) -> bool {
-    matches!(
-        leading_keywords(sql, 1).first().map(String::as_str),
-        Some("CREATE" | "ALTER" | "DROP" | "UNDROP" | "TRUNCATE" | "GRANT" | "REVOKE" | "COMMENT")
-    )
+    let kw = leading_keywords(sql, 2);
+    match kw.first().map(String::as_str) {
+        Some("ALTER") if kw.get(1).is_some_and(|w| w == "SESSION") => {
+            sql.to_ascii_uppercase().contains("AUTOCOMMIT")
+        }
+        Some(
+            "CREATE" | "ALTER" | "DROP" | "UNDROP" | "TRUNCATE" | "GRANT" | "REVOKE" | "COMMENT",
+        ) => true,
+        _ => false,
+    }
 }
 
 pub static SPEC: DialectSpec = DialectSpec {
@@ -526,6 +548,9 @@ pub static SPEC: DialectSpec = DialectSpec {
 /// The session's state, without a warehouse (`ping` must never resume one).
 pub const SERVER_INFO: &str = "SELECT CURRENT_VERSION(), CURRENT_ACCOUNT(), CURRENT_REGION(), \
      CURRENT_USER(), CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_DATABASE(), CURRENT_SCHEMA()";
+/// Where the editor left a session: its database, and the open transaction's id (NULL: none,
+/// an implicit transaction of AUTOCOMMIT = FALSE included). No warehouse resumes for it.
+pub const EDITOR_STATE: &str = "SELECT CURRENT_DATABASE(), CURRENT_TRANSACTION()";
 /// Runs in the cloud services layer: no warehouse resumes for it.
 pub const PING: &str = "SELECT 1";
 pub const SHOW_DATABASES: &str = "SHOW DATABASES";
@@ -751,7 +776,16 @@ pub const RUNNING_QUERIES: &str = "SELECT query_id, session_id, user_name, wareh
 /// How many rows a table holds, from its metadata (no warehouse): the `rows` column of `SHOW
 /// TABLES LIKE 'name' IN SCHEMA …`. LIKE takes a pattern, so `_` and `%` are escaped.
 pub fn show_table_like(database: &str, schema: &str, table: &str) -> String {
-    let pattern: String = table
+    show_like("TABLES", database, schema, table)
+}
+
+/// The row of one view (`SHOW VIEWS LIKE 'name' IN SCHEMA …`): its kind and its text.
+pub fn show_views_like(database: &str, schema: &str, view: &str) -> String {
+    show_like("VIEWS", database, schema, view)
+}
+
+fn show_like(what: &str, database: &str, schema: &str, name: &str) -> String {
+    let pattern: String = name
         .chars()
         .flat_map(|c| match c {
             '\\' | '_' | '%' => vec!['\\', c],
@@ -759,17 +793,23 @@ pub fn show_table_like(database: &str, schema: &str, table: &str) -> String {
         })
         .collect();
     format!(
-        "SHOW TABLES LIKE {} IN SCHEMA {}",
+        "SHOW {what} LIKE {} IN SCHEMA {}",
         single_quoted_backslash(&pattern),
         qualified(&[database, schema])
     )
 }
+
+/// The statements around a commit of staged changes, on the session's own connection.
+pub const BEGIN: &str = "BEGIN TRANSACTION";
+pub const COMMIT: &str = "COMMIT";
+pub const ROLLBACK: &str = "ROLLBACK";
 
 /// Every statement above, for the tests that check how they classify.
 pub static DRIVER_READS: LazyLock<Vec<String>> = LazyLock::new(|| {
     vec![
         SERVER_INFO.to_string(),
         PING.to_string(),
+        EDITOR_STATE.to_string(),
         SHOW_DATABASES.to_string(),
         SHOW_WAREHOUSES.to_string(),
         SHOW_ROLES.to_string(),
@@ -779,6 +819,7 @@ pub static DRIVER_READS: LazyLock<Vec<String>> = LazyLock::new(|| {
         get_ddl(DdlKind::Table, &qualified(&["DB", "S", "T"])),
         RUNNING_QUERIES.to_string(),
         show_table_like("DB", "S", "T_1"),
+        show_views_like("DB", "S", "V%"),
     ]
 });
 
@@ -823,6 +864,10 @@ mod tests {
         );
         assert!(implicit_commit("create table t (a int)"));
         assert!(!implicit_commit("insert into t values (1)"));
+        assert!(implicit_commit("ALTER TABLE t ADD COLUMN b INT"));
+        assert!(!implicit_commit("ALTER SESSION SET TIMEZONE = 'UTC'"));
+        assert!(!implicit_commit("alter session unset query_tag"));
+        assert!(implicit_commit("ALTER SESSION SET AUTOCOMMIT = TRUE"));
     }
 
     #[test]
@@ -898,17 +943,27 @@ mod tests {
         }
     }
 
-    /// The hole the rules cannot close, under Limits in the brief: it reads today; when it closes
-    /// and the case turns into a write, move it to the suite's WRITES. To verify on a real
-    /// account: whether a quoted NEXTVAL advances the sequence.
+    /// A quoted NEXTVAL writes (the rules match words only, so `quotes_nextval` does). Not in the
+    /// generated suite's WRITES: the renderer's mirror of the rules reads it (see the brief).
     #[test]
-    fn documented_holes_read_until_their_change_requests() {
-        let sql = "SELECT seq.\"NEXTVAL\"";
-        assert_eq!(
-            classify_snowflake(sql),
-            StatementClass::Read,
-            "{sql} writes now: move it to the suite's WRITES and update the brief's Limits"
-        );
+    fn a_quoted_nextval_writes() {
+        for sql in [
+            "SELECT seq.\"NEXTVAL\"",
+            "SELECT \"SEQ\".\"NEXTVAL\" FROM TABLE(GENERATOR(ROWCOUNT => 1000000))",
+            "SELECT db.s.seq.\"nextval\", id FROM t",
+            "SELECT * FROM t WHERE id = s.\"NEXTVAL\"",
+        ] {
+            assert_eq!(classify_snowflake(sql), StatementClass::Write, "{sql}");
+        }
+        for sql in [
+            "SELECT 'seq.\"NEXTVAL\"'",
+            "SELECT \"NEXTVAL_AT\" FROM t",
+            "SELECT \"nExTvAl t\" FROM x",
+            "SELECT 1 -- seq.\"NEXTVAL\"\n",
+            "SELECT $$ seq.\"NEXTVAL\" $$",
+        ] {
+            assert_eq!(classify_snowflake(sql), StatementClass::Read, "{sql}");
+        }
     }
 
     /// Every secret parameter of the CREATE / ALTER syntax keeps its literal out of the trace.

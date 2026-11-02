@@ -23,6 +23,59 @@ pub fn connect_error(e: Error) -> AppError {
     }
 }
 
+/// A statement's error, whether Snowflake answered that the session expired, and the query id
+/// it named. A statement Snowflake had accepted (it has a query id) may still finish, since an
+/// expiry while it is polled does not stop it: only one without a query id never ran.
+#[derive(Debug)]
+pub struct StatementError {
+    pub error: AppError,
+    pub expired: bool,
+    pub query_id: Option<String>,
+}
+
+impl From<StatementError> for AppError {
+    fn from(e: StatementError) -> AppError {
+        e.error
+    }
+}
+
+impl From<AppError> for StatementError {
+    fn from(error: AppError) -> StatementError {
+        StatementError {
+            error,
+            expired: false,
+            query_id: None,
+        }
+    }
+}
+
+/// Codes of a session or token Snowflake no longer takes (`390112` session gone, `390113` to
+/// `390115` master token missing, expired or invalid); the connector only tells `390112` apart.
+const EXPIRED_CODES: [&str; 4] = ["390112", "390113", "390114", "390115"];
+
+fn is_expired(e: &Error) -> bool {
+    e.kind() == ErrorKind::SessionExpired
+        || (e.kind() == ErrorKind::Server
+            && e.snowflake_code()
+                .is_some_and(|c| EXPIRED_CODES.contains(&c.trim())))
+}
+
+/// `map_error`, keeping whether the session expired and the statement's query id.
+pub fn statement_error(e: Error, sql: Option<&str>) -> StatementError {
+    let expired = is_expired(&e);
+    let query_id = e.query_id().map(str::to_string);
+    let error = if expired {
+        AppError::NotConnected
+    } else {
+        map_error(e, sql)
+    };
+    StatementError {
+        error,
+        expired,
+        query_id,
+    }
+}
+
 /// An error of a statement (`sql`, when known, places a compilation error in it).
 pub fn map_error(e: Error, sql: Option<&str>) -> AppError {
     match e.kind() {

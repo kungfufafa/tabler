@@ -20,7 +20,7 @@ use snowflake_connector_rs::{
 
 use super::catalog::Rows;
 use super::decode::{ValueRow, result_column};
-use super::errors::{connect_error, map_error};
+use super::errors::{StatementError, connect_error, map_error, statement_error};
 use crate::drivers::CancelAction;
 use crate::error::AppError;
 use crate::types::query::ResultColumn;
@@ -105,9 +105,9 @@ pub fn client(spec: &ConnectSpec) -> Result<Client, AppError> {
     Client::new(config).map_err(connect_error)
 }
 
-/// A signed-in session.
+/// A signed-in session. A new sign-in builds a new one (`signin`): the token of a Command
+/// password may have changed since.
 pub struct SnowflakeConn {
-    client: Client,
     session: Session,
 }
 
@@ -121,7 +121,7 @@ impl std::fmt::Debug for SnowflakeConn {
 pub async fn connect(spec: &ConnectSpec) -> Result<SnowflakeConn, AppError> {
     let client = client(spec)?;
     let session = client.create_session().await.map_err(connect_error)?;
-    Ok(SnowflakeConn { client, session })
+    Ok(SnowflakeConn { session })
 }
 
 /// A statement's result: its columns and rows (DML and DDL answer with rows too: `number of
@@ -280,37 +280,61 @@ impl SnowflakeConn {
         Ok((handle, cancel))
     }
 
-    /// Runs a prepared statement and reads up to `max_rows` rows.
-    pub async fn fetch(
+    /// Runs a prepared statement: `on_start` gets its columns, `on_rows` its rows partition by
+    /// partition until it breaks. Snowflake answers once the statement has finished, so a break
+    /// only leaves partitions undownloaded. Returns the query id and whether rows were left.
+    pub async fn run(
         handle: QueryHandle,
         sql: &str,
-        max_rows: Option<usize>,
-    ) -> Result<Outcome, AppError> {
-        let mut out = Outcome::default();
+        mut on: impl FnMut(Part) -> ControlFlow<()>,
+    ) -> Result<(String, bool), StatementError> {
         let mut cursor = handle
             .execute()
             .await
-            .map_err(|e| map_error(e, Some(sql)))?;
-        out.query_id = cursor.query_id().to_string();
-        out.columns = cursor
+            .map_err(|e| statement_error(e, Some(sql)))?;
+        let query_id = cursor.query_id().to_string();
+        let columns = cursor
             .schema()
             .columns()
             .iter()
             .map(result_column)
             .collect();
-        let rows = &mut out.rows;
-        let truncated = stream(&mut cursor, sql, |batch| {
-            for row in batch {
-                if max_rows.is_some_and(|m| rows.len() >= m) {
-                    return ControlFlow::Break(());
+        if on(Part::Columns(columns)).is_break() {
+            return Ok((query_id, true));
+        }
+        let truncated = stream(&mut cursor, sql, |rows| on(Part::Rows(rows))).await?;
+        Ok((query_id, truncated))
+    }
+
+    /// Runs a prepared statement and reads up to `max_rows` rows.
+    pub async fn fetch(
+        handle: QueryHandle,
+        sql: &str,
+        max_rows: Option<usize>,
+    ) -> Result<Outcome, StatementError> {
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+        let (query_id, truncated) = Self::run(handle, sql, |part| {
+            match part {
+                Part::Columns(c) => columns = c,
+                Part::Rows(batch) => {
+                    for row in batch {
+                        if max_rows.is_some_and(|m| rows.len() >= m) {
+                            return ControlFlow::Break(());
+                        }
+                        rows.push(row);
+                    }
                 }
-                rows.push(row);
             }
             ControlFlow::Continue(())
         })
         .await?;
-        out.truncated = truncated;
-        Ok(out)
+        Ok(Outcome {
+            query_id,
+            columns,
+            rows,
+            truncated,
+        })
     }
 
     /// Runs one statement (no cancel handle kept).
@@ -319,28 +343,29 @@ impl SnowflakeConn {
         sql: &str,
         params: &[Value],
         max_rows: Option<usize>,
-    ) -> Result<Outcome, AppError> {
+    ) -> Result<Outcome, StatementError> {
         let (handle, _) = self.prepare(sql, params)?;
         Self::fetch(handle, sql, max_rows).await
     }
 
     /// Free: answered by the cloud services layer, no warehouse resumes.
-    pub async fn ping(&self) -> Result<(), AppError> {
+    pub async fn ping(&self) -> Result<(), StatementError> {
         self.query(crate::sqlgen::dialect::snowflake::PING, &[], Some(1))
             .await
             .map(|_| ())
     }
+}
 
-    /// Signs in again (an expired session); the session's state is the caller's to re-apply.
-    pub async fn relogin(&mut self) -> Result<(), AppError> {
-        self.session = self.client.create_session().await.map_err(connect_error)?;
-        Ok(())
-    }
+/// What `SnowflakeConn::run` hands on: the result's columns first, then its rows partition by
+/// partition.
+pub enum Part {
+    Columns(Vec<ResultColumn>),
+    Rows(Vec<Vec<Value>>),
 }
 
 /// Reads a result partition by partition into `on_rows` until it breaks; whether rows were
 /// left unread.
-pub async fn stream(
+async fn stream(
     cursor: &mut ResultCursor,
     sql: &str,
     mut on_rows: impl FnMut(Vec<Vec<Value>>) -> ControlFlow<()>,
@@ -733,7 +758,11 @@ mod tests {
                 "SQL compilation error:\nsyntax error line 2 at position 0 unexpected 'FORM'.",
             ),
         );
-        let err = conn.query("SELECT 1\nFORM t", &[], None).await.unwrap_err();
+        let err = conn
+            .query("SELECT 1\nFORM t", &[], None)
+            .await
+            .unwrap_err()
+            .error;
         match err {
             AppError::Db {
                 vendor_code,
@@ -772,7 +801,7 @@ mod tests {
         fake.wait_for_queries(1).await;
         let action: std::sync::Arc<dyn CancelAction> = std::sync::Arc::new(cancel);
         action.fire().await.unwrap();
-        let err = run.await.unwrap().unwrap_err();
+        let err = run.await.unwrap().unwrap_err().error;
         assert!(matches!(err, AppError::Cancelled), "{err:?}");
         // The abort names this statement's request (the fake's hung statement answers only its
         // own abort).
@@ -807,13 +836,17 @@ mod tests {
             "SELECT slow",
             Answer::Slow(Duration::from_secs(5), Box::new(Answer::error("1", "late"))),
         );
-        let err = conn.query("SELECT slow", &[], None).await.unwrap_err();
+        let err = conn
+            .query("SELECT slow", &[], None)
+            .await
+            .unwrap_err()
+            .error;
         assert!(matches!(err, AppError::Timeout), "{err:?}");
     }
 
     #[tokio::test]
-    async fn an_expired_session_signs_in_again() {
-        let (fake, mut conn) = key_pair_session().await;
+    async fn an_expired_session_is_told_apart() {
+        let (fake, conn) = key_pair_session().await;
         fake.answer(
             "SELECT 1",
             Answer::rows(
@@ -823,10 +856,14 @@ mod tests {
         );
         conn.ping().await.unwrap();
         fake.expire_session();
+        // The statement never ran, so the session may sign in again and send it again.
         let err = conn.ping().await.unwrap_err();
-        assert!(matches!(err, AppError::NotConnected), "{err:?}");
-        conn.relogin().await.unwrap();
-        conn.ping().await.unwrap();
+        assert!(err.expired && err.query_id.is_none());
+        assert!(matches!(err.error, AppError::NotConnected), "{err:?}");
+        let failed = conn.query("SELECT nothing", &[], None).await.unwrap_err();
+        assert!(!failed.expired);
+        let again = connect(&spec(&fake, key_auth(KEY, false))).await.unwrap();
+        again.ping().await.unwrap();
         assert_eq!(fake.logins().len(), 2);
     }
 }

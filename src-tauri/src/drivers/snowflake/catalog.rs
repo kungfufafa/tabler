@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::types::admin::ProcessRow;
 use crate::types::objects::{RoutineKind, RoutineSummary, SequenceSummary};
 use crate::types::schema::{
     ColumnMeta, DatabaseInfo, ForeignKeyMeta, IndexMeta, SchemaInfo, TableKind, TableRef,
@@ -525,6 +526,37 @@ pub fn row_count(rows: &Rows, table: &str) -> Option<i64> {
     rows.iter()
         .find(|r| r.text("name").as_deref() == Some(table))
         .and_then(|r| r.int("rows"))
+}
+
+/// The running and queued queries of `RUNNING_QUERIES`, by query id (Kill Query cancels one).
+pub fn processes(rows: &Rows) -> Vec<ProcessRow> {
+    rows.iter()
+        .filter_map(|r| {
+            Some(ProcessRow {
+                id: r.text("query_id")?,
+                user: r.some("user_name"),
+                database: None,
+                application: r.some("warehouse_name"),
+                client: r.some("session_id"),
+                state: r.some("execution_status"),
+                command: None,
+                started_at: r.some("start_time"),
+                duration_ms: None,
+                wait_event: None,
+                query: r.some("query_text"),
+                current: false,
+                own: false,
+            })
+        })
+        .collect()
+}
+
+/// The one text cell of a `GET_DDL`.
+pub fn first_text(rows: &Rows) -> Option<String> {
+    rows.rows
+        .first()
+        .and_then(|r| r.first())
+        .and_then(Value::as_text)
 }
 
 /// Completion: `SHOW COLUMNS IN SCHEMA …` as table → columns.

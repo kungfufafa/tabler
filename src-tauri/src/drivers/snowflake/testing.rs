@@ -195,6 +195,8 @@ pub struct Recorded {
     pub query: String,
     pub headers: Vec<(String, String)>,
     pub body: serde_json::Value,
+    /// Which sign-in's session sent it (1 the first; 0 a token the fake never issued).
+    pub session: usize,
 }
 
 impl Recorded {
@@ -231,6 +233,7 @@ struct State {
     aborted: HashSet<String>,
     expire: bool,
     next_id: u64,
+    tokens: Vec<String>,
 }
 
 struct Shared {
@@ -276,6 +279,7 @@ impl FakeSnowflake {
                 aborted: HashSet::new(),
                 expire: false,
                 next_id: 0,
+                tokens: Vec::new(),
             }),
             aborts: Notify::new(),
             base: format!("http://{addr}"),
@@ -331,6 +335,91 @@ impl FakeSnowflake {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    /// The statements received, in order, with the sign-in whose session sent each.
+    pub fn sent(&self) -> Vec<(usize, String)> {
+        self.shared
+            .state()
+            .queries
+            .iter()
+            .map(|q| {
+                let sql = q.body["sqlText"].as_str().unwrap_or_default();
+                (q.session, sql.trim().to_string())
+            })
+            .collect()
+    }
+
+    /// Rows of text columns (what SHOW answers with).
+    pub fn show(&self, sql: &str, columns: &[&str], rows: &[&[Option<&str>]]) {
+        self.answer(
+            sql,
+            Answer::rows(
+                columns.iter().map(|c| FakeColumn::new(c, "text")).collect(),
+                rows.iter()
+                    .map(|r| r.iter().map(|c| c.map(str::to_string)).collect())
+                    .collect(),
+            ),
+        );
+    }
+
+    /// The one `status` row of a statement that changes the session or the schema.
+    pub fn status(&self, sql: &str) {
+        self.show(
+            sql,
+            &["status"],
+            &[&[Some("Statement executed successfully.")]],
+        );
+    }
+
+    /// The counts DML answers with: one `number of rows <what>` column.
+    pub fn counts(&self, sql: &str, what: &str, n: u64) {
+        let n = n.to_string();
+        self.answer(
+            sql,
+            Answer::rows(
+                vec![FakeColumn::new(&format!("number of rows {what}"), "fixed").precision(38, 0)],
+                vec![vec![Some(n)]],
+            ),
+        );
+    }
+
+    /// What `EDITOR_STATE` answers: the session's database, and its open transaction's id.
+    pub fn editor_state(&self, database: Option<&str>, transaction: Option<&str>) {
+        self.show(
+            crate::sqlgen::dialect::snowflake::EDITOR_STATE,
+            &["CURRENT_DATABASE()", "CURRENT_TRANSACTION()"],
+            &[&[database, transaction]],
+        );
+    }
+
+    /// What `SERVER_INFO` answers: version 9.30.1, account MYORG_ACCT, user TABLER_USER, role
+    /// ANALYST, warehouse COMPUTE_WH, database DB, schema PUBLIC.
+    pub fn server_info(&self) {
+        let cols = [
+            "CURRENT_VERSION()",
+            "CURRENT_ACCOUNT()",
+            "CURRENT_REGION()",
+            "CURRENT_USER()",
+            "CURRENT_ROLE()",
+            "CURRENT_WAREHOUSE()",
+            "CURRENT_DATABASE()",
+            "CURRENT_SCHEMA()",
+        ];
+        self.show(
+            crate::sqlgen::dialect::snowflake::SERVER_INFO,
+            &cols,
+            &[&[
+                Some("9.30.1"),
+                Some("MYORG_ACCT"),
+                Some("AWS_US_EAST_1"),
+                Some("TABLER_USER"),
+                Some("ANALYST"),
+                Some("COMPUTE_WH"),
+                Some("DB"),
+                Some("PUBLIC"),
+            ]],
+        );
     }
 }
 
@@ -527,12 +616,26 @@ fn login(shared: &Shared, req: &Request, body: serde_json::Value) -> String {
             }
         }
     };
-    shared.state().logins.push(record);
+    let token = {
+        let mut s = shared.state();
+        s.logins.push(record);
+        // Each sign-in its own session: the first token is SESSION_TOKEN, then `…-2`, `…-3`.
+        let n = s.tokens.len() + 1;
+        let token = if n == 1 {
+            SESSION_TOKEN.to_string()
+        } else {
+            format!("{SESSION_TOKEN}-{n}")
+        };
+        if verdict.is_ok() {
+            s.tokens.push(token.clone());
+        }
+        token
+    };
     match verdict {
         Ok(()) => json!({
             "success": true,
             "data": {
-                "token": SESSION_TOKEN,
+                "token": token,
                 "masterToken": "fake-master-token",
                 "validityInSeconds": 3600,
                 "sessionInfo": {"databaseName": "DB", "schemaName": "PUBLIC"}
@@ -571,19 +674,25 @@ async fn query(shared: &Shared, req: &Request, body: serde_json::Value) -> Vec<u
         .to_string();
     let answer = {
         let mut s = shared.state();
+        let session = req
+            .headers
+            .iter()
+            .find(|(k, _)| k == "authorization")
+            .and_then(|(_, v)| {
+                s.tokens
+                    .iter()
+                    .position(|t| *v == format!("Snowflake Token=\"{t}\""))
+            })
+            .map(|i| i + 1);
         s.queries.push(Recorded {
             method: req.method.clone(),
             path: req.path.clone(),
             query: req.query.clone(),
             headers: req.headers.clone(),
             body: body.clone(),
+            session: session.unwrap_or(0),
         });
-        let token = format!("Snowflake Token=\"{SESSION_TOKEN}\"");
-        let authorized = req
-            .headers
-            .iter()
-            .any(|(k, v)| k == "authorization" && *v == token);
-        if !authorized {
+        if session.is_none() {
             return rejected("390104", "Authentication token is invalid.").into_bytes();
         }
         if std::mem::take(&mut s.expire) {
