@@ -1,7 +1,7 @@
 [package]
 name = "tabler"
 version = "0.1.0"
-description = "Tabler - a desktop database client for PostgreSQL, MySQL/MariaDB and SQLite"
+description = "Tabler - a desktop database client for PostgreSQL (and CockroachDB, Greenplum, Redshift), MySQL/MariaDB, SQLite, LibSQL, Cloudflare D1, DuckDB, SQL Server, ClickHouse, BigQuery, Vertica, DynamoDB, Cassandra/ScyllaDB, MongoDB and Elasticsearch/OpenSearch"
 authors = ["Ocean Space <developer@oceanspace.co.id>"]
 edition = "2024"
 
