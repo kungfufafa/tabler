@@ -1,4 +1,12 @@
-import { isPunct, scan, text, upper, type Token } from "@/features/drivers/portable/scanner";
+import { upperFolded } from "@/features/drivers/portable/classify";
+import {
+  identName,
+  isPunct,
+  scan,
+  text,
+  upper,
+  type Token,
+} from "@/features/drivers/portable/scanner";
 import { LEX } from "./classify";
 
 /**
@@ -54,30 +62,45 @@ export function redact(sql: string): string {
     const keep = (t: Token) => {
       if (text(s, t) !== MASK) spans.push([t.start, t.end]);
     };
-    code.forEach((t, k) => {
-      if (t.kind !== "word") return;
-      const word = upper(s, t);
-      const argument = CALLS.get(word);
-      const open = code[k + 1];
-      if (argument !== undefined && open !== undefined && isPunct(s, open, "(")) {
-        let depth = 0;
-        let at = 1;
-        for (const a of code.slice(k + 2)) {
-          if (isPunct(s, a, "(")) depth++;
-          else if (isPunct(s, a, ")")) {
-            if (depth === 0) break;
-            depth--;
-          } else if (depth === 0 && isPunct(s, a, ",")) at++;
-          else if (at === argument && a.kind === "str") keep(a);
-        }
+    const argumentLiterals = (k: number, argument: number) => {
+      let depth = 0;
+      let at = 1;
+      for (const a of code.slice(k + 2)) {
+        if (isPunct(s, a, "(")) depth++;
+        else if (isPunct(s, a, ")")) {
+          if (depth === 0) break;
+          depth--;
+        } else if (depth === 0 && isPunct(s, a, ",")) at++;
+        else if (at === argument && a.kind === "str") keep(a);
       }
+    };
+    code.forEach((t, k) => {
+      const open = code[k + 1];
+      const opens = open !== undefined && isPunct(s, open, "(");
+      // A quoted function name is still that function (`"AWS_SET_CONFIG"(…)`).
+      if (t.kind === "ident") {
+        const argument = CALLS.get(upperFolded(identName(s, t)));
+        if (argument !== undefined && opens) argumentLiterals(k, argument);
+        return;
+      }
+      if (t.kind !== "word") return;
+      // Lookalike spellings count as their ASCII one (the KELVIN SIGN as `K`), as the server reads them.
+      const word = upperFolded(text(s, t));
+      const argument = CALLS.get(word);
+      if (argument !== undefined && opens) argumentLiterals(k, argument);
       if (!KEYWORDS.includes(word)) return;
       let otherWords = 0;
-      for (const n of code.slice(k + 1)) {
+      const rest = code.slice(k + 1);
+      for (const [r, n] of rest.entries()) {
         if (n.kind === "str") {
           keep(n);
           break;
         }
+        // The prefix of a Unicode escape string, `U&'…'`.
+        const next = rest[r + 1];
+        const prev = rest[r - 1];
+        if (n.kind === "word" && upper(s, n) === "U" && next && isPunct(s, next, "&")) continue;
+        if (prev?.kind === "word" && upper(s, prev) === "U" && isPunct(s, n, "&")) continue;
         // `=`, `(`, and the named-argument arrows `:=` and `=>`.
         if (n.kind === "punct" && ["=", "(", ":", ">"].some((c) => isPunct(s, n, c))) continue;
         if (n.kind === "word" && LINKS.includes(upper(s, n))) continue;

@@ -883,6 +883,41 @@ mod tests {
         }
     }
 
+    /// The shared redactor reads lookalike spellings, quoted function names and `U&'…'`
+    /// literals (L1), which Vertica takes like their plain forms.
+    #[test]
+    fn redacts_lookalike_quoted_and_unicode_escaped_credentials() {
+        let redact =
+            |sql: &str| crate::drivers::redact::redact_secrets(sql, SqlDialect::Vertica).sql;
+        let mask = crate::sqlgen::admin::PASSWORD_MASK;
+        for (sql, masked) in [
+            (
+                "SELECT \"AWS_SET_CONFIG\"('aws_secret_access_key', 'SECRETX')",
+                format!("SELECT \"AWS_SET_CONFIG\"('aws_secret_access_key', {mask})"),
+            ),
+            (
+                "SELECT public.\"ldap_link_dryrun_connect\"('ldap://h', 'cn=x', 'SECRETX')",
+                format!("SELECT public.\"ldap_link_dryrun_connect\"('ldap://h', 'cn=x', {mask})"),
+            ),
+            (
+                "SELECT LDAP_LIN\u{212A}_DRYRUN_CONNECT('ldap://h', 'cn=x', 'SECRETX')",
+                format!("SELECT LDAP_LIN\u{212A}_DRYRUN_CONNECT('ldap://h', 'cn=x', {mask})"),
+            ),
+            (
+                "ALTER USER u IDENTIFIED BY U&'SECRETX\\0021'",
+                format!("ALTER USER u IDENTIFIED BY U&{mask}"),
+            ),
+            (
+                "ALTER SESSION SET AW\u{17F}Auth = 'id:SECRETX'",
+                format!("ALTER SESSION SET AW\u{17F}Auth = {mask}"),
+            ),
+        ] {
+            let out = redact(sql);
+            assert_eq!(out, masked, "{sql}");
+            assert!(!out.contains("SECRETX"), "{sql}");
+        }
+    }
+
     #[test]
     fn block_comments_nest_when_splitting() {
         // A flat reader would send `SELECT 1 /* x /* y */`, an unterminated comment.

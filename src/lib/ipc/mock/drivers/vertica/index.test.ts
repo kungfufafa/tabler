@@ -611,9 +611,8 @@ describe("the backend's classifier in the mock", () => {
     expect(foldAsciiLookalikes("SELECT 1")).toBe("SELECT 1");
     expect(foldAsciiLookalikes("ſı")).toBe("SI");
     expect(foldAsciiLookalikes("ſı")).toBe("SI");
-    // The shared classifier (Safe Mode's) reads the raw text only: the backend refuses this on a
-    // read-only session, Safe Mode does not ask (docs/drivers/vertica.md, Limits).
-    expect(classifyDialect(LEX, "SELECT KMEANS('m', 't', '*', 3)")).toBe("read");
+    // The shared classifier folds the KELVIN SIGN in its deny-lists too (`upperFolded`).
+    expect(classifyDialect(LEX, "SELECT KMEANS('m', 't', '*', 3)")).toBe("write");
     expect(classifyVertica("SELECT KMEANS('m', 't', '*', 3)")).toBe("write");
     expect(classifyVertica("SELECT 'K'")).toBe("read");
   });

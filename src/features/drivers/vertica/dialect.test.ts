@@ -7,7 +7,8 @@ import { classifyDialect, loadDialectLex } from "@/features/drivers/portable/cla
 import { split } from "@/features/drivers/portable/scanner";
 import type { DialectLex } from "@/lib/ipc/bindings/DialectLex";
 import lane from ".";
-import { doubleQuoted, VERTICA_SQL } from "./dialect";
+import { classifyVertica, foldAsciiLookalikes } from "./classify";
+import { doubleQuoted, VERTICA_SQL, verticaSqlUi } from "./dialect";
 
 // Vertica SQL in the editor: quoting as `sqlgen::dialect::vertica` quotes, and the backend's
 // splitter and classifier (its lexer profile and rules, exported to `bindings/lex/vertica.json`)
@@ -67,6 +68,25 @@ describe("the backend's classifier in the renderer", () => {
     expect(cls("SELECT * INTO t2 FROM t")).toBe("write");
     expect(cls("SELECT 1 /* a /* b */ ; DELETE FROM t */")).toBe("write");
     expect(cls("frobnicate")).toBe("write");
+  });
+
+  it("gives Safe Mode the backend's lookalike folding (`classify_vertica`)", () => {
+    expect(verticaSqlUi.classify).toBe(classifyVertica);
+    expect(lane.dialects?.vertica?.classify).toBe(classifyVertica);
+    expect(foldAsciiLookalikes("ſıK")).toBe("SIK");
+    expect(foldAsciiLookalikes("café")).toBe("café");
+    // The KELVIN SIGN (U+212A), the long s (U+017F) and the dotless i spell listed writes.
+    for (const sql of [
+      "SELECT KMEANS('m', 't', '*', 3)",
+      "SELECT KafkaListTopics(USING PARAMETERS brokers='b:9092')",
+      "SELECT CLOſE_ſEſſION('s')",
+      "SELECT ANALYZE_ſTATıSTICS('t')",
+      'SELECT "KMEANS"(1)',
+      "ſELECT 1",
+    ])
+      expect(classifyVertica(sql), sql).toBe("write");
+    for (const sql of ["SELECT 'K'", "SELECT $$KMEANS(1)$$", "SELECT café FROM t"])
+      expect(classifyVertica(sql), sql).toBe("read");
   });
 
   it("splits at semicolons outside strings, dollar quotes and nested comments", () => {

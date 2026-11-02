@@ -1,5 +1,6 @@
 import { PostgreSQL, SQLDialect } from "@codemirror/lang-sql";
 import type { DialectUi } from "../types";
+import { classifyVertica } from "./classify";
 
 /**
  * Vertica SQL in the editor: PostgreSQL's highlighting (double-quoted names, `E''` strings, dollar
@@ -231,4 +232,6 @@ export const verticaSqlUi: DialectUi = {
   functions: VERTICA_FUNCTIONS,
   columnTypes: VERTICA_COLUMN_TYPES,
   quoteIdent: doubleQuoted,
+  // Safe Mode reads lookalike spellings as the backend does (`classify_vertica`).
+  classify: classifyVertica,
 };
