@@ -560,7 +560,8 @@ export function parseTsc(output) {
   for (const line of output.split(/\r?\n/)) {
     const m = /^(.+?)\((\d+),(\d+)\): (?:error|warning) (TS\d+): (.*)$/.exec(line);
     if (m) {
-      out.push({ file: posix(m[1]), line: Number(m[2]), code: m[4], text: line });
+      // tsc keeps a path's backslashes on every platform, so posix() alone misses them on macOS.
+      out.push({ file: m[1].replace(/\\/g, "/"), line: Number(m[2]), code: m[4], text: line });
     } else if (/^(?:error|warning) TS\d+:/.test(line)) {
       out.push({ file: null, line: 0, code: "", text: line });
     } else if (line.startsWith(" ") && out.length) {
