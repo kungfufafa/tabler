@@ -1,4 +1,5 @@
 import type { ParsedConnectionUrl } from "@/features/connections/url";
+import type { UrlSource } from "@/features/drivers/types";
 import type { ConnectionProfile } from "@/lib/ipc";
 import type { BigqueryAuth } from "@/lib/ipc/bindings/BigqueryAuth";
 import {
@@ -25,11 +26,12 @@ import {
  * ids hold a colon (`example.com:analytics`). A token comes out of the URL into the secret and is
  * never written back.
  *
- * The kind's `url.parse` is what a deep link reaches and connects with unasked, so it never picks
+ * A clicked link (`url.parse` with source "link", or none) connects unasked, so it never picks
  * the user's own Google sign-in (Application Default Credentials or a key file on this machine):
- * a clicked link would sign that identity in to a project the link names, and read a key file the
- * link chose. Such a URL reads as an access token sign-in instead (the link's own token, or the
- * connect asks for one). Only the form's Import box, where the user sees the sign-in it picks,
+ * it would sign that identity in to a project the link names, and read a key file the link
+ * chose. Such a URL reads as an access token sign-in instead (the link's own token, or the
+ * connect asks for one). A URL the user pastes (source "paste": New connection from URL, or the
+ * form's Import box) opens in the form first, where the user sees the sign-in it picks, so it
  * keeps ADC and the key file, and a profile's URL round-trips through it. A URL also cannot
  * loosen the cost guard (`maximumBytesBilled` above the default, or `none`, reads as the default;
  * the form raises it, where the user sees it), and `endpoint` must be a `googleapis.com` host or
@@ -144,21 +146,21 @@ function readUrl(input: string, ambient: Ambient): ParsedConnectionUrl | null {
 }
 
 /**
- * A `bigquery://` URL as form values, for `url.parse` (a deep link, New connection from URL):
- * never ADC or a key file, an access token sign-in instead.
+ * A `bigquery://` URL as form values, for `url.parse`: ADC and key files only from a paste, which
+ * the form shows first; a link (or no source) reads as an access token sign-in.
  */
-export const parseBigqueryUrl = (input: string): ParsedConnectionUrl | null =>
-  readUrl(input, "drop");
+export const parseBigqueryUrl = (input: string, source?: UrlSource): ParsedConnectionUrl | null =>
+  readUrl(input, source === "paste" ? "keep" : "drop");
 
-/** The same for the form's Import box, where the user sees the sign-in: ADC and key files kept. */
+/** The same for the form's Import box, where the user sees the sign-in: a paste. */
 export const importBigqueryUrl = (input: string): ParsedConnectionUrl | null =>
-  readUrl(input, "keep");
+  parseBigqueryUrl(input, "paste");
 
 /**
  * The `bigquery://` URL of a profile: its project, sign-in and params, never its token. What the
  * Import box would not take back is left out (a looser guard, an endpoint that needs the token),
- * so the URL reads as the same project with the default guard and Google's endpoint. A link
- * reads an ADC or key file URL as an access token sign-in.
+ * so the URL reads as the same project with the default guard and Google's endpoint. Pasted, it
+ * reads back as the same profile; a link reads an ADC or key file URL as an access token sign-in.
  */
 export function formatBigqueryUrl(p: ConnectionProfile): string | null {
   const project = (p.database ?? "").trim();

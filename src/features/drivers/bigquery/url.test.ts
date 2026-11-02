@@ -4,6 +4,7 @@ import {
   formToProfileInput,
   type ConnectionFormValues,
 } from "@/features/connections/schema";
+import { parseConnectionUrl } from "@/features/connections/url";
 import { planOpen } from "@/features/deeplink/route";
 import { CORE_KINDS } from "@/features/drivers/catalog";
 import { awaitKindUi, registerLaneOverride } from "@/features/drivers/registry";
@@ -14,14 +15,15 @@ import { formatBigqueryUrl, importBigqueryUrl, parseBigqueryUrl } from "./url";
 
 // `bigquery://` URLs as the real-server suite writes them (`tests/bigquery.rs`), read into the
 // form and written back from a profile: a key file, a token (into the secret, never written
-// back), ADC, and every setting, round-tripping through the form's Import box. A link (`url.parse`)
-// never signs in with ADC or a key file.
+// back), ADC, and every setting, round-tripping through a paste (New connection from URL, the
+// form's Import box). A link (`url.parse` with source "link", or none) never signs in with ADC or
+// a key file.
 
 const ui = lane.kinds!.bigquery!;
 
-/** The profile the form would save from a URL pasted into its Import box. */
+/** The profile the form would save from a URL pasted into New connection from URL. */
 function profileOf(url: string): ConnectionProfile {
-  const parsed = importBigqueryUrl(url);
+  const parsed = ui.url!.parse(url, "paste");
   if (!parsed) throw new Error(url);
   const values: ConnectionFormValues = {
     ...DEFAULT_FORM,
@@ -100,6 +102,43 @@ describe("bigquery:// URLs", () => {
     const own = parseBigqueryUrl("bigquery://:t@p?auth=adc&keyFile=/k.json")!;
     expect(own.password).toBe("t");
     expect(own.values.driverParams).toMatchObject({ auth: "accessToken", keyFilePath: "" });
+    for (const source of ["link", undefined] as const)
+      expect(
+        ui.url!.parse("bigquery://p?keyFile=/k.json", source)!.values.driverParams,
+        String(source),
+      ).toMatchObject({ auth: "accessToken", keyFilePath: "" });
+  });
+
+  // A paste opens in the form first, where the user sees the sign-in it picks.
+  it("as a paste, keep ADC and the key file, as the Import box does", () => {
+    for (const url of [
+      "bigquery://p",
+      "bigquery://p?auth=adc",
+      "bigquery://p?keyFile=/keys/sa.json&dataset=shop",
+      "bigquery://p?keyFilePath=C%3A%5Ckeys%5Csa.json&auth=serviceAccount",
+      "bigquery://:t@p/analytics",
+      "bigquery://p?auth=adc&endpoint=http://localhost:9050&maximumBytesBilled=none",
+    ])
+      expect(ui.url!.parse(url, "paste"), url).toEqual(importBigqueryUrl(url));
+    expect(
+      ui.url!.parse("bigquery://p?keyFile=/k.json", "paste")!.values.driverParams,
+    ).toMatchObject({ auth: "serviceAccount", keyFilePath: "/k.json" });
+    expect(ui.url!.parse("bigquery://p", "paste")!.values.driverParams).toMatchObject({
+      auth: "applicationDefault",
+    });
+  });
+
+  it("as a paste, still refuse a share's key file and ambient credentials sent elsewhere", () => {
+    for (const bad of [
+      `bigquery://p?keyFile=${encodeURIComponent("\\\\attacker.example\\s\\k.json")}`,
+      `bigquery://p?keyFile=${encodeURIComponent("//attacker.example/s/k.json")}`,
+      "bigquery://p?auth=adc&endpoint=https://evil.example/bigquery/v2",
+      "bigquery://p?keyFile=/k.json&endpoint=https://evil.example",
+    ])
+      expect(ui.url!.parse(bad, "paste"), bad).toBeNull();
+    expect(
+      ui.url!.parse("bigquery://p?maximumBytesBilled=none", "paste")!.values.driverParams,
+    ).toMatchObject({ maximumBytesBilled: "1 GB" });
   });
 
   it("read every setting, and refuse values that cannot be read", () => {
@@ -239,6 +278,54 @@ describe("bigquery:// URLs", () => {
     ]) {
       const once = formatBigqueryUrl(profileOf(url))!;
       expect(formatBigqueryUrl(profileOf(once)), url).toBe(once);
+    }
+  });
+});
+
+describe("New connection from URL with a bigquery:// URL", () => {
+  afterEach(() => {
+    registerLaneOverride("bigquery", null);
+    useAppInfoStore.setState({ info: null });
+  });
+
+  async function load() {
+    useAppInfoStore.setState({
+      info: { version: "1", platform: "test", debug: true, kinds: [...CORE_KINDS, "bigquery"] },
+    });
+    registerLaneOverride("bigquery", lane);
+    await awaitKindUi("bigquery");
+  }
+
+  it("keeps the pasted URL's ADC or key file, and a link's reads as a token sign-in", async () => {
+    await load();
+    const key = parseConnectionUrl("bigquery://demo-proj?keyFile=/keys/sa.json");
+    expect(key.values).toMatchObject({ driver: "bigquery", database: "demo-proj" });
+    expect(key.values.driverParams).toMatchObject({
+      auth: "serviceAccount",
+      keyFilePath: "/keys/sa.json",
+    });
+    expect(parseConnectionUrl("bigquery://p?auth=adc").values.driverParams).toMatchObject({
+      auth: "applicationDefault",
+    });
+    const link = parseConnectionUrl("bigquery://demo-proj?keyFile=/keys/sa.json", "link");
+    expect(link.values.driverParams).toMatchObject({ auth: "accessToken", keyFilePath: "" });
+  });
+
+  it("round-trips a profile's URL: the pasted profile writes the same URL", async () => {
+    await load();
+    for (const url of [
+      "bigquery://demo-proj?auth=serviceAccount&keyFile=%2Fk.json&dataset=shop",
+      "bigquery://p?auth=applicationDefault&location=EU",
+    ]) {
+      const parsed = parseConnectionUrl(url);
+      const values = {
+        ...DEFAULT_FORM,
+        ...ui.defaults!(),
+        name: "n",
+        ...parsed.values,
+      } as ConnectionFormValues;
+      const profile = formToProfileInput(values, null, "id", ui).profile;
+      expect(formatBigqueryUrl(profile), url).toBe(url);
     }
   });
 });
