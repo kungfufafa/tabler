@@ -229,7 +229,7 @@ missing. The builds are not code-signed, so SmartScreen warns on the first run (
 
 ### Both platforms from CI
 
-The `build` workflow ([.github/workflows/build.yml](.github/workflows/build.yml)) builds a universal
+The "Release installers" workflow ([.github/workflows/build.yml](.github/workflows/build.yml)) builds a universal
 macOS DMG (Apple Silicon and Intel) and the Windows installers. Run it from the Actions tab, or push
 a `v*` tag; the installers are attached to the run as artifacts.
 
