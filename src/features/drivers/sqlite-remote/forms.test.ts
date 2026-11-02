@@ -42,6 +42,19 @@ describe("the LibSQL form", () => {
   it("starts on HTTPS that checks the certificate, with the port of the SSL mode", () => {
     expect(libsqlUi.defaults?.()).toEqual({ host: "", port: "", ssl: "verify-full" });
     expect(libsqlUi.rows).toEqual(["hostPort", "secret", "ssl"]);
+    // Its menu says what each mode checks, verifying first (`certificate_check`).
+    expect(libsqlUi.sslModes).toEqual([
+      ["disable", "HTTP"],
+      ["verify-full", "HTTPS, verify the certificate"],
+      ["require", "HTTPS, without checking the certificate"],
+    ]);
+  });
+
+  it("reads a stored prefer as verify-full, which the backend checks it as", () => {
+    const stored = formToProfileInput(values, null, "id-1", libsqlUi).profile;
+    expect(profileToForm({ ...stored, ssl: "prefer" }, libsqlUi).ssl).toBe("verify-full");
+    expect(profileToForm({ ...stored, ssl: "require" }, libsqlUi).ssl).toBe("require");
+    expect(profileToForm({ ...stored, ssl: "disable" }, libsqlUi).ssl).toBe("disable");
   });
 
   it("saves host, port and SSL with no params, and reads them back", () => {

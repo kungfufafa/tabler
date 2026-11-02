@@ -138,6 +138,7 @@ export const libsqlMock: MockDriver = {
       // The mock's servers are `sqld` and Turso, which refuse `PRAGMA query_only = 1`.
       queryOnly: false,
       databases: () => [{ name: host, isCurrent: true }],
+      currentDatabase: host,
     });
   },
 };
@@ -236,12 +237,15 @@ export const d1Mock: MockDriver = {
       readOnly: p.options.readOnly,
       tls,
       databases: () => D1_DATABASES.map((d) => ({ name: d.name, isCurrent: d.uuid === db.uuid })),
+      currentDatabase: db.name,
     });
   },
-  // The backend also checks the account here; the mock's calls get no profile.
-  util: (method) => {
+  // `d1/entry.rs::util`: the account and the API base of the form's profile are checked first.
+  util: (method, _args, input) => {
     if (method !== "listDatabases")
       return mockError("UNSUPPORTED", `unsupported: Cloudflare D1: unknown call “${method}”`);
+    checkAccount(input.profile);
+    checkApiBase(input.profile);
     return D1_DATABASES.map(({ uuid, name, createdAt, fileSize }) => ({
       uuid,
       name,
@@ -249,6 +253,8 @@ export const d1Mock: MockDriver = {
       fileSize,
     }));
   },
+  // `util_kind`: the picker only reads, so a read-only profile lists its account's databases too.
+  utilKind: (method) => (method === "listDatabases" ? "read" : "write"),
 };
 
 const lane: MockLane = { drivers: [libsqlMock, d1Mock] };

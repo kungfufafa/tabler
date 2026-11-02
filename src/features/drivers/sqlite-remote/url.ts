@@ -1,4 +1,4 @@
-import type { ParsedConnectionUrl } from "@/features/connections/url";
+import { type ParsedConnectionUrl, profileUrlQuery } from "@/features/connections/url";
 import type { ConnectionProfile } from "@/lib/ipc";
 import { d1Params, libsqlParams } from "./params";
 
@@ -133,6 +133,17 @@ export function parseLibsqlConnectionUrl(input: string): ParsedConnectionUrl | n
   };
 }
 
+/**
+ * `url` with the lane's own query (`own`, first) and then the one every connection URL carries
+ * for its profile (name, colour, tag, Safe Mode), which the shared reader reads back.
+ */
+function withProfileQuery(url: string, own: URLSearchParams, p: ConnectionProfile): string {
+  const query = new URLSearchParams(own);
+  for (const [k, v] of profileUrlQuery(p)) query.append(k, v);
+  const text = query.toString();
+  return text === "" ? url : `${url}?${text}`;
+}
+
 /** The `libsql://` URL of a profile: its host or `url` param, the user of Basic auth, no secret. */
 export function formatLibsqlUrl(p: ConnectionProfile): string | null {
   const params = libsqlParams(p);
@@ -155,7 +166,11 @@ export function formatLibsqlUrl(p: ConnectionProfile): string | null {
   }
   if (tls && port === 443) port = null;
   const authority = `${user}${hostForUrl(host)}${port === null ? "" : `:${port}`}`;
-  return `libsql://${authority}${path}${tls ? "" : "?tls=0"}`;
+  return withProfileQuery(
+    `libsql://${authority}${path}`,
+    new URLSearchParams(tls ? {} : { tls: "0" }),
+    p,
+  );
 }
 
 /**
@@ -210,6 +225,9 @@ export function formatD1Url(p: ConnectionProfile): string | null {
   const { accountId, apiBase: stored } = d1Params(p);
   if (accountId === "") return null;
   const apiBase = apiBaseForLink(stored);
-  const query = apiBase ? `?apiBase=${encodeURIComponent(apiBase)}` : "";
-  return `d1://${encodeURIComponent(accountId)}/${encodeURIComponent(p.database ?? "")}${query}`;
+  return withProfileQuery(
+    `d1://${encodeURIComponent(accountId)}/${encodeURIComponent(p.database ?? "")}`,
+    new URLSearchParams(apiBase ? { apiBase } : {}),
+    p,
+  );
 }

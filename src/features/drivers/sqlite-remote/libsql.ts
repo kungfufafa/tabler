@@ -1,4 +1,5 @@
 import type { ConnectionFormValues } from "@/features/connections/schema";
+import type { SslMode } from "@/lib/ipc";
 import type { FormIssue, KindUi } from "../types";
 import { LibsqlFields } from "./LibsqlFields";
 import { libsqlParams, libsqlParamsOf } from "./params";
@@ -51,8 +52,19 @@ function validate(v: ConnectionFormValues): FormIssue[] {
   return out;
 }
 
+/**
+ * The SSL menu, as `libsql/entry.rs::certificate_check` reads it: verifying first, so a profile
+ * whose mode is not on the menu starts there; plain "HTTPS" (`require`) says it checks nothing.
+ */
+export const LIBSQL_SSL_MODES: ReadonlyArray<readonly [SslMode, string]> = [
+  ["disable", "HTTP"],
+  ["verify-full", "HTTPS, verify the certificate"],
+  ["require", "HTTPS, without checking the certificate"],
+];
+
 export const libsqlUi: KindUi = {
   rows: ["hostPort", "secret", "ssl"],
+  sslModes: LIBSQL_SSL_MODES,
   defaults: () => ({ host: "", port: "", ssl: "verify-full" }),
   Fields: LibsqlFields,
   validate,
@@ -70,7 +82,11 @@ export const libsqlUi: KindUi = {
       },
     };
   },
-  fromProfile: (p) => ({ driverParams: { ...libsqlParams(p) } }),
+  fromProfile: (p) => ({
+    driverParams: { ...libsqlParams(p) },
+    // `prefer` (a profile from before the menu) is not on it: the backend checks it fully.
+    ...(p.ssl === "prefer" ? { ssl: "verify-full" as const } : {}),
+  }),
   url: {
     schemes: ["libsql"],
     parse: parseLibsqlConnectionUrl,

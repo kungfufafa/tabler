@@ -216,6 +216,8 @@ export function remoteSession(
     /** LibSQL: the server took `PRAGMA query_only = 1` at connect. */
     queryOnly?: boolean;
     databases: () => { name: string; isCurrent: boolean }[];
+    /** What the backend's `server_info` names: LibSQL's host, D1's database by its name. */
+    currentDatabase: string;
   },
 ): MockSession {
   const caps = remoteCaps(engine, options.queryOnly);
@@ -265,6 +267,7 @@ export function remoteSession(
 
   return {
     caps,
+    currentDatabase: options.currentDatabase,
     listDatabases: () => options.databases().map((d) => ({ ...d, owner: null, encoding: null })),
     listSchemas: () => [{ name: "main", isDefault: true }],
     listTables: (schema) =>

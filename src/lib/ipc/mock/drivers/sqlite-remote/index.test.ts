@@ -596,4 +596,50 @@ describe("the form's calls", () => {
     ).rejects.toMatchObject({ message: "unsupported: LibSQL: unknown call “listDatabases”" });
     expect(D1_ACCOUNT).toMatch(/^[0-9a-f]{32}$/);
   });
+
+  it("list D1's databases on a read-only profile, after the form's account and API base pass", async () => {
+    const d1 = mockProfiles.get("p-mock-d1-ro")!;
+    expect(d1.options.readOnly).toBe(true);
+    const util = (p: typeof d1) =>
+      mockInvoke<{ name: string }[]>("driver_util", {
+        input: { profile: p, password: "tok" },
+        method: "listDatabases",
+      });
+    expect((await util(d1)).map((d) => d.name)).toEqual(["shop", "analytics"]);
+    const params = (driverParams: Record<string, string>) => ({
+      ...d1,
+      options: { ...d1.options, driverParams },
+    });
+    await expect(util(params({ accountId: "nope" }))).rejects.toMatchObject({
+      message: expect.stringMatching(/32 hexadecimal characters/),
+    });
+    await expect(
+      util(params({ accountId: D1_ACCOUNT, apiBase: "https://u:p@gw.example/x" })),
+    ).rejects.toMatchObject({ message: expect.stringMatching(/no user, password, query/) });
+    // A call the driver does not call a read is refused on a read-only profile first.
+    await expect(
+      mockInvoke("driver_util", { input: { profile: d1, password: "tok" }, method: "dropAll" }),
+    ).rejects.toMatchObject({ message: "This connection is read-only" });
+  });
+});
+
+describe("the current database", () => {
+  it("is LibSQL's host and D1's database by name, and follows a D1 switch", async () => {
+    expect((await connect("p-mock-libsql")).currentDatabase).toBe(
+      "shop-acme.aws-eu-west-1.turso.io",
+    );
+    expect((await connect("p-mock-sqld")).currentDatabase).toBe("127.0.0.1");
+    const d1 = await connect("p-mock-d1");
+    expect(d1.currentDatabase).toBe("shop");
+    const switched = await mockInvoke<ConnectionInfo>("switch_database", {
+      connectionId: d1.connectionId,
+      database: "analytics",
+    });
+    expect(switched.currentDatabase).toBe("analytics");
+    // The session is opened again on the other database, as the backend reconnects.
+    const dbs = await mockInvoke<DatabaseInfo[]>("list_databases", {
+      connectionId: d1.connectionId,
+    });
+    expect(dbs.find((d) => d.isCurrent)?.name).toBe("analytics");
+  });
 });

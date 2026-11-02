@@ -20,6 +20,9 @@ import {
 // `d1://<account>/<database>`, each written back without its secret and read again unchanged.
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
+/** The profile's own query (`profileUrlQuery`) each written URL ends with. */
+const EDGE = "name=Edge&statusColor=2279DC";
+const D1Q = "name=D1&statusColor=2279DC";
 
 const libsql = (p: Partial<ConnectionProfile> = {}): ConnectionProfile =>
   profile({
@@ -124,7 +127,7 @@ describe("a LibSQL connection URL", () => {
     const upper = libsql({
       options: { ...libsql().options, driverParams: { url: "libsql://h/db?TLS=0" } },
     });
-    expect(formatLibsqlUrl(upper)).toBe("libsql://h:80/db?tls=0");
+    expect(formatLibsqlUrl(upper)).toBe(`libsql://h:80/db?tls=0&${EDGE}`);
     // Without a port a plain URL means port 80, which the form's empty port does not.
     expect(parseLibsqlConnectionUrl("ws://sqld.lan")?.values.port).toBe("80");
   });
@@ -142,28 +145,31 @@ describe("a LibSQL connection URL", () => {
 
   it("is written without the secret and read back to the same form", () => {
     const cases: [ConnectionProfile, string][] = [
-      [libsql(), "libsql://db-org.turso.io"],
-      [libsql({ port: 443 }), "libsql://db-org.turso.io"],
-      [libsql({ host: "127.0.0.1", port: 8080, ssl: "disable" }), "libsql://127.0.0.1:8080?tls=0"],
-      [libsql({ host: "::1", port: 9000, ssl: "disable" }), "libsql://[::1]:9000?tls=0"],
+      [libsql(), `libsql://db-org.turso.io?${EDGE}`],
+      [libsql({ port: 443 }), `libsql://db-org.turso.io?${EDGE}`],
+      [
+        libsql({ host: "127.0.0.1", port: 8080, ssl: "disable" }),
+        `libsql://127.0.0.1:8080?tls=0&${EDGE}`,
+      ],
+      [libsql({ host: "::1", port: 9000, ssl: "disable" }), `libsql://[::1]:9000?tls=0&${EDGE}`],
       [
         libsql({
           user: "me",
           options: { ...libsql().options, driverParams: { basicAuth: true } },
         }),
-        "libsql://me@db-org.turso.io",
+        `libsql://me@db-org.turso.io?${EDGE}`,
       ],
       [
         libsql({
           options: { ...libsql().options, driverParams: { url: "https://gw.example.com/ns/db" } },
         }),
-        "libsql://gw.example.com/ns/db",
+        `libsql://gw.example.com/ns/db?${EDGE}`,
       ],
       [
         libsql({
           options: { ...libsql().options, driverParams: { url: "http://10.0.0.5:8080/db" } },
         }),
-        "libsql://10.0.0.5:8080/db?tls=0",
+        `libsql://10.0.0.5:8080/db?tls=0&${EDGE}`,
       ],
     ];
     for (const [p, url] of cases) {
@@ -182,7 +188,9 @@ describe("a LibSQL connection URL", () => {
       }
     }
     // The profile's empty port is 8080 without TLS: written out.
-    expect(formatLibsqlUrl(libsql({ host: "h", ssl: "disable" }))).toBe("libsql://h:8080?tls=0");
+    expect(formatLibsqlUrl(libsql({ host: "h", ssl: "disable" }))).toBe(
+      `libsql://h:8080?tls=0&${EDGE}`,
+    );
     expect(formatLibsqlUrl(libsql({ host: null }))).toBeNull();
   });
 });
@@ -229,7 +237,7 @@ describe("a D1 connection URL", () => {
       expect(back.values.driverParams).toEqual(form.driverParams);
       expect(back.password).toBeNull();
     }
-    expect(formatD1Url(d1({ accountId: ACCOUNT }))).toBe(`d1://${ACCOUNT}/shop`);
+    expect(formatD1Url(d1({ accountId: ACCOUNT }))).toBe(`d1://${ACCOUNT}/shop?${D1Q}`);
     expect(formatD1Url(d1({}))).toBeNull();
     // An API base stored before it was checked leaves its credentials out of the link.
     for (const [apiBase, kept] of [
@@ -284,8 +292,41 @@ describe("the lane's URLs in the app", () => {
       database: "shop",
       driverParams: { accountId: ACCOUNT, apiBase: "" },
     });
-    expect(profileToUrl(d1({ accountId: ACCOUNT }), "secret")).toBe(`d1://${ACCOUNT}/shop`);
-    expect(profileToUrl(libsql(), "secret")).toBe("libsql://db-org.turso.io");
+    expect(profileToUrl(d1({ accountId: ACCOUNT }), "secret")).toBe(`d1://${ACCOUNT}/shop?${D1Q}`);
+    expect(profileToUrl(libsql(), "secret")).toBe(`libsql://db-org.turso.io?${EDGE}`);
     expect(() => parseConnectionUrl("d1+ssh://me@bastion/x/y")).toThrow(/cannot go over SSH/);
+  });
+
+  it("keep the profile's name, colour, tag and Safe Mode through Copy as URL", async () => {
+    await loadUrlSchemes();
+    const extra = (p: ConnectionProfile): ConnectionProfile => ({
+      ...p,
+      name: "Prod edge",
+      color: "red",
+      options: { ...p.options, tag: "production", safeMode: "alertNonSelect", lazyLoad: true },
+    });
+    const ls = profileToUrl(extra(libsql({ host: "10.0.0.5", port: 8080, ssl: "disable" })), null);
+    expect(ls).toMatch(/^libsql:\/\/10\.0\.0\.5:8080\?tls=0&name=Prod\+edge&/);
+    const d = profileToUrl(
+      extra(d1({ accountId: ACCOUNT, apiBase: "http://127.0.0.1:8787/client/v4" })),
+      null,
+    );
+    expect(d).toMatch(/^d1:\/\/[0-9a-f]{32}\/shop\?apiBase=http%3A%2F%2F127\.0\.0\.1%3A8787/);
+    for (const url of [ls, d]) {
+      const back = parseConnectionUrl(url);
+      expect(back.values).toMatchObject({
+        name: "Prod edge",
+        color: "red",
+        tag: "production",
+        safeMode: "alertNonSelect",
+      });
+      expect(back.extras?.lazyload).toBe(true);
+      expect(back.password).toBeNull();
+    }
+    expect(parseConnectionUrl(d).values.driverParams).toEqual({
+      accountId: ACCOUNT,
+      apiBase: "http://127.0.0.1:8787/client/v4",
+    });
+    expect(parseConnectionUrl(ls).values).toMatchObject({ ssl: "disable", port: "8080" });
   });
 });
