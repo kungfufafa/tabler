@@ -408,3 +408,27 @@ Cluster refusals, managed services (ElastiCache, Upstash, Azure's TLS on 6380), 
 modules and other servers (KeyDB, Dragonfly, Garnet, Memurai) need environments of their own (the
 brief's "What only a real server can confirm"). Not run yet: no server was available when the lane
 landed (2026-11-02).
+
+### Snowflake (`snowflake`)
+
+| Suite                | Variable                    | Server                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/snowflake.rs` | `TABLER_TEST_SNOWFLAKE_URL` | A Snowflake account (a 30-day trial does) with a warehouse, and a user whose role may create tables in the URL's schema: `snowflake://<user>@<account>/<database>/<schema>?warehouse=<w>&role=<r>&privateKeyPath=<key.p8>` for a key pair (`&passphrase=<…>` for an encrypted key; register the public key with `ALTER USER … SET RSA_PUBLIC_KEY`), `snowflake://<user>:<token>@<account>/…?auth=pat` for a programmatic access token, or `auth=password` for a password without MFA (an MFA push cannot be approved by a test). `baseUrl=` points it at a PrivateLink or proxy endpoint |
+
+```sh
+node dev/scripts/lane.mjs snowflake it
+```
+
+The tests create tables of their own (`TABLER_IT_<uuid>` in the URL's schema) and drop them; the
+queries resume the warehouse, which Snowflake bills. They cover connect and the version, `SHOW`
+listing, the structure view and `GET_DDL`, browse with paging, an exact count and a whole cell, a
+commit guarded by its counts with one failing change rolled back, the editor's session state
+(variables and a transaction across runs), a cancel on the server (`SYSTEM$WAIT` held until the abort
+arrives) and the time out, and a read-only profile's refusals with its reads still running.
+Everything else (the sign-in methods and the JWT, expired sessions and the state replayed, the
+shared MFA session, the pinned session parameters) is covered by the lane's unit tests against the
+scripted Snowflake of `drivers/snowflake/testing.rs`. What only an account can confirm (the result
+format, VECTOR's `data_type` keys, `SHOW … LIMIT … FROM` paging, `PARSE_JSON(?)` binds, the codes
+of a rejected JWT, of MFA and of an expired session, whether Snowflake takes a quoted
+`seq."NEXTVAL"`, `MULTI_STATEMENT_COUNT = 1` over an account default of 0) is listed in the brief.
+Not run yet: no account was available when the lane landed (2026-11-02).

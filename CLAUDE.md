@@ -1,6 +1,6 @@
 # Tabler — repo guide for Claude
 
-Desktop database client (PostgreSQL with CockroachDB, Greenplum and Redshift, MySQL/MariaDB, SQLite, LibSQL, Cloudflare D1, DuckDB, SQL Server, ClickHouse, BigQuery, Vertica, DynamoDB, Cassandra/ScyllaDB, MongoDB, Elasticsearch/OpenSearch, Redis/Valkey; Snowflake is an open lane outside the default build) built to feel like TablePlus.
+Desktop database client (PostgreSQL with CockroachDB, Greenplum and Redshift, MySQL/MariaDB, SQLite, LibSQL, Cloudflare D1, DuckDB, SQL Server, ClickHouse, BigQuery, Vertica, DynamoDB, Cassandra/ScyllaDB, MongoDB, Elasticsearch/OpenSearch, Redis/Valkey, Snowflake) built to feel like TablePlus.
 Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwind v4 + shadcn (radix) renderer (`src/`).
 
 ## Commands
@@ -49,5 +49,5 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
 - [x] M6 tunnel + export + palette + settings + polish
 - [x] M7 packaging + docs (icon, production CSP, `pnpm tauri build` → Tabler.app + DMG, README, docs/qa-macos.md)
 - [x] M8 TablePlus parity — roadmap and status in `docs/tableplus-parity.md` (B1 muscle memory/layout ✅, UX pass ✅, B2 safety/connections/session ✅, B3 SQL workflow/objects ✅, B4 data transfer/admin ✅, wave 2 ✅, wave 3 ✅ incl. a second full audit; nothing on the checklist is left, "Still open" only lists documented limits and deliberate differences; real-server checks in `docs/verify-servers.md`). The behaviour checklist is `docs/research/tableplus-functional-spec.md` (public sources only). Copy TablePlus's _behaviour_.
-- [ ] M9 driver lanes — 16 more databases as 13 lanes (`docs/drivers/README.md`, Status): 12 landed in `release-drivers` (pg-flavors, sqlite-remote, sqlserver, dynamodb, elasticsearch, mongodb, clickhouse, cassandra, bigquery, vertica, duckdb, redis); snowflake is open (it builds only with its `drv-*` feature or `all-drivers`).
+- [x] M9 driver lanes — 16 more databases as 13 lanes (`docs/drivers/README.md`, Status): all 13 landed in `release-drivers` (pg-flavors, sqlite-remote, sqlserver, dynamodb, elasticsearch, mongodb, clickhouse, cassandra, bigquery, vertica, duckdb, redis, snowflake); the "Deferred" change requests stay open.
 - Cross-feature contracts: `guardExecution` (src/features/safety/guard.ts) must be awaited before every IPC call that sends user SQL or changes the server; dialogs of other features open through their stores (`openImport`, `openExportTables`, `openBackup`, `openAdmin…`).

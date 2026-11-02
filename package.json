@@ -99,5 +99,5 @@
     "vite": "^8.0.16",
     "vitest": "^5.0.3"
   },
-  "description": "Tabler — a desktop database client for PostgreSQL (and CockroachDB, Greenplum, Redshift), MySQL/MariaDB, SQLite, LibSQL, Cloudflare D1, DuckDB, SQL Server, ClickHouse, BigQuery, Vertica, DynamoDB, Cassandra/ScyllaDB, MongoDB, Elasticsearch/OpenSearch and Redis/Valkey"
+  "description": "Tabler — a desktop database client for PostgreSQL (and CockroachDB, Greenplum, Redshift), MySQL/MariaDB, SQLite, LibSQL, Cloudflare D1, DuckDB, SQL Server, ClickHouse, BigQuery, Vertica, DynamoDB, Cassandra/ScyllaDB, MongoDB, Elasticsearch/OpenSearch, Redis/Valkey and Snowflake"
 }
