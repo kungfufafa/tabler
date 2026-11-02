@@ -1,5 +1,5 @@
 import type { ConnectionFormValues } from "@/features/connections/schema";
-import type { ParsedConnectionUrl } from "@/features/connections/url";
+import { type ParsedConnectionUrl, profileUrlQuery } from "@/features/connections/url";
 import type { ConnectionProfile } from "@/lib/ipc";
 import { duckdbParams, isMemory, MEMORY } from "./params";
 
@@ -79,14 +79,20 @@ export function parseDuckdbUrl(input: string): ParsedConnectionUrl | null {
 /** A path as the URL writes it: what would end the path (`?`, `#`, `%`) escaped. */
 const encodePath = (path: string) => encodeURI(path).replaceAll("?", "%3F").replaceAll("#", "%23");
 
-/** The `duckdb://` URL of a profile: the file, read-only and autoload; never the key. */
+/**
+ * The `duckdb://` URL of a profile: the file, read-only and autoload, then the query every URL
+ * carries (name, colour, tag, Safe Mode: `profileUrlQuery`); never the key.
+ */
 export function formatDuckdbUrl(p: ConnectionProfile): string | null {
   const file = (p.sqlitePath ?? "").trim();
   const path = isMemory(file) ? MEMORY : file;
   const query: [string, string][] = [];
   if (p.options.readOnly) query.push(["access_mode", "read_only"]);
   if (duckdbParams(p).autoloadExtensions) query.push(["autoload_known_extensions", "true"]);
-  const search = query.length > 0 ? `?${new URLSearchParams(query).toString()}` : "";
+  const params = new URLSearchParams(query);
+  for (const [k, v] of profileUrlQuery(p)) params.append(k, v);
+  const text = params.toString();
+  const search = text === "" ? "" : `?${text}`;
   // `///abs` and `//~/x`; a slash before a Windows path and `:memory:`.
   const root = path.startsWith("/") || path.startsWith("~/") ? "" : "/";
   return `duckdb://${root}${encodePath(path)}${search}`;

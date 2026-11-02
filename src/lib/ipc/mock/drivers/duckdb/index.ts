@@ -5,6 +5,7 @@ import {
   CREATE_FILE,
   isMemory,
   MEMORY_READ_ONLY,
+  NO_ENCRYPTED_FILES,
 } from "@/features/drivers/duckdb/params";
 import type { ConnectionProfile } from "../../../bindings/ConnectionProfile";
 import { profile } from "../../fixtures";
@@ -170,13 +171,17 @@ export const duckdbMock: MockDriver = {
       },
     });
   },
-  // `entry::util`: each call answers `{ path }`.
-  util: (method, args) => {
+  // `entry::util`: each call answers `{ path }`, the path of its args or the form's file. A
+  // read-only profile's `createFile` never gets here (`utilKind`).
+  util: (method, args, input) => {
     if (method !== CHECK_FILE && method !== CREATE_FILE)
       mockError("UNSUPPORTED", `unsupported: DuckDB: unknown call “${method}”`);
     const raw = (args as { path?: unknown } | null)?.path;
-    const path = typeof raw === "string" ? raw.trim() : "";
+    const named = typeof raw === "string" ? raw : (input.profile.sqlitePath ?? "");
+    const path = named.trim();
     if (path === "") mockError("INVALID_INPUT", "DuckDB: choose a database file");
+    if (method === CREATE_FILE && (input.password ?? "") !== "")
+      mockError("INVALID_INPUT", NO_ENCRYPTED_FILES);
     seedFiles();
     if (method === CHECK_FILE) checkFile(path);
     else {
@@ -185,6 +190,8 @@ export const duckdbMock: MockDriver = {
     }
     return { path };
   },
+  // `entry::util_kind`: `checkFile` only reads.
+  utilKind: (method) => (method === CHECK_FILE ? "read" : "write"),
 };
 
 const lane: MockLane = { drivers: [duckdbMock] };

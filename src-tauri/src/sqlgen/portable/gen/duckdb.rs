@@ -263,6 +263,11 @@ const WRITES: &[&str] = &[
     "SELECT * FROM my_table_macro(3)",
     "SELECT * FROM sales PIVOT (my_agg(amount) FOR year IN (2023))",
     "SELECT * FROM main.sum(1)",
+    // An aggregate's name reads only inside a pivot's `(… FOR …)`: elsewhere it is a table macro.
+    "SELECT * FROM sum('x.csv')",
+    "FROM first(1)",
+    "SELECT * FROM t JOIN list(1) ON true",
+    "SELECT * FROM t PIVOT (sum('x.csv')) ON a",
     "SELECT * FROM histogram('t', a)",
     "SELECT * FROM t, st_read('x.shp')",
     "FROM read_csv('x.csv')",

@@ -107,12 +107,20 @@ describe("DuckDB URLs", () => {
       expect(back.options.readOnly, url).toBe(p.options.readOnly);
       expect(back.options.driverParams, url).toEqual(p.options.driverParams);
     }
-    expect(formatDuckdbUrl(saved(base({ sqlitePath: "/x.duckdb" })))).toBe("duckdb:///x.duckdb");
+    expect(formatDuckdbUrl(saved(base({ sqlitePath: "/x.duckdb" })))).toBe(
+      "duckdb:///x.duckdb?name=n&statusColor=2279DC&env=local",
+    );
     expect(formatDuckdbUrl(saved(base({ sqlitePath: ":memory:", readOnly: false })))).toBe(
-      "duckdb:///:memory:",
+      "duckdb:///:memory:?name=n&statusColor=2279DC&env=local",
     );
     expect(formatDuckdbUrl(saved(base({ sqlitePath: "C:/d/x.duckdb", readOnly: true })))).toBe(
-      "duckdb:///C:/d/x.duckdb?access_mode=read_only",
+      "duckdb:///C:/d/x.duckdb?access_mode=read_only&name=n&statusColor=2279DC&env=local",
+    );
+    // The query every URL carries (`profileUrlQuery`), after DuckDB's own keys.
+    const tagged = saved(base({ sqlitePath: "/x.duckdb", name: "Sales" }));
+    tagged.options = { ...tagged.options, tag: "prod", safeMode: "safe" };
+    expect(formatDuckdbUrl(tagged)).toBe(
+      "duckdb:///x.duckdb?name=Sales&statusColor=2279DC&env=prod&safeModeLevel=2",
     );
   });
 });

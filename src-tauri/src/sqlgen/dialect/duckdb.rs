@@ -38,13 +38,15 @@
 //! local file system off where no database file takes writes, and `SET lock_configuration =
 //! true` (so no statement can turn any of it back on), extension autoload and autoinstall off
 //! (`drivers::duckdb::engine`), and report `safety.hardened` (and `ReadOnlyMode::Server` when
-//! read-only). Plugin-origin sessions are not hardened yet: no signal tells the driver that a
-//! session is a plugin's (brief, change requests), so a plugin on a read-write profile reads
-//! the files those names reach.
+//! read-only). A plugin's run on a session that is not hardened is refused before it runs when
+//! it reaches files, extensions, secrets or settings (`reads_files`, the session's
+//! `admit_plugin_run`): lexical too, so a view or macro of the file over a scanner still reads.
 
 use crate::sqlgen::classify::StatementClass;
 use crate::sqlgen::dialect::SqlDialect;
-use crate::sqlgen::dialect::lex::{ClassifyRules, LexProfile, PLAIN, TokenKind};
+use crate::sqlgen::dialect::lex::{
+    ClassifyRules, LexProfile, PLAIN, Scan, Token, TokenKind, listed,
+};
 use crate::sqlgen::dialect::spec::{
     CiLike, DialectSpec, ExplainForm, PlaceholderStyle, RedactCall, RedactRule, Returning,
     SqlHooks, SqlKnobs, double_quoted, ph_dollar, single_quoted,
@@ -184,48 +186,48 @@ pub static RULES: ClassifyRules = ClassifyRules {
         "REGEXP_SPLIT_TO_TABLE",
         "TEST_ALL_TYPES",
         "TEST_VECTOR_TYPES",
-        // The aggregates, because `t PIVOT (sum(x) FOR …)` puts one where a table goes. Exact
-        // names of DuckDB 1.5.6's built-in aggregates, none of which is also a table function;
-        // only a user's table macro of such a name could be called there (its SELECT is the
-        // user's, and hardened sessions read no files through it).
-        "SUM",
-        "COUNT",
-        "COUNT_IF",
-        "AVG",
-        "MEAN",
-        "MIN",
-        "MAX",
-        "FIRST",
-        "LAST",
-        "ANY_VALUE",
-        "ARBITRARY",
-        "LIST",
-        "ARRAY_AGG",
-        "STRING_AGG",
-        "GROUP_CONCAT",
-        "LISTAGG",
-        "MEDIAN",
-        "MODE",
-        "QUANTILE_CONT",
-        "QUANTILE_DISC",
-        "STDDEV",
-        "STDDEV_POP",
-        "STDDEV_SAMP",
-        "VARIANCE",
-        "VAR_POP",
-        "VAR_SAMP",
-        "BOOL_AND",
-        "BOOL_OR",
-        "PRODUCT",
-        "ARG_MAX",
-        "ARG_MIN",
-        "MAX_BY",
-        "MIN_BY",
-        "FSUM",
-        "KAHAN_SUM",
-        "BIT_AND",
-        "BIT_OR",
-        "BIT_XOR",
+        // The aggregates, because `t PIVOT (sum(x) FOR …)` puts one where a table goes: a `%`
+        // entry allows the unqualified name inside a pivot's `(… FOR …)` only, so `FROM sum(…)`
+        // stays a write (a table macro of that name in the file would run its body there). Exact
+        // names of DuckDB 1.5.6's built-in aggregates.
+        "%SUM",
+        "%COUNT",
+        "%COUNT_IF",
+        "%AVG",
+        "%MEAN",
+        "%MIN",
+        "%MAX",
+        "%FIRST",
+        "%LAST",
+        "%ANY_VALUE",
+        "%ARBITRARY",
+        "%LIST",
+        "%ARRAY_AGG",
+        "%STRING_AGG",
+        "%GROUP_CONCAT",
+        "%LISTAGG",
+        "%MEDIAN",
+        "%MODE",
+        "%QUANTILE_CONT",
+        "%QUANTILE_DISC",
+        "%STDDEV",
+        "%STDDEV_POP",
+        "%STDDEV_SAMP",
+        "%VARIANCE",
+        "%VAR_POP",
+        "%VAR_SAMP",
+        "%BOOL_AND",
+        "%BOOL_OR",
+        "%PRODUCT",
+        "%ARG_MAX",
+        "%ARG_MIN",
+        "%MAX_BY",
+        "%MIN_BY",
+        "%FSUM",
+        "%KAHAN_SUM",
+        "%BIT_AND",
+        "%BIT_OR",
+        "%BIT_XOR",
     ]),
 };
 
@@ -439,6 +441,528 @@ pub fn switches_logger(sql: &str) -> bool {
     })
 }
 
+/// Words that name a file, an extension or a secret in any statement (`COPY`, `ATTACH`,
+/// `INSTALL`, `LOAD`, `EXPORT` / `IMPORT DATABASE`, `PRAGMA`, `CREATE SECRET`, `UPDATE
+/// EXTENSIONS`), wherever they stand.
+const FILE_WORDS: [&str; 9] = [
+    "COPY",
+    "ATTACH",
+    "INSTALL",
+    "LOAD",
+    "EXPORT",
+    "IMPORT",
+    "PRAGMA",
+    "SECRET",
+    "EXTENSIONS",
+];
+
+/// Statements that change the instance's settings or call a procedure (a hardened instance's
+/// configuration is locked): `SET`, `RESET`, `CALL`, `FORCE INSTALL` / `FORCE CHECKPOINT`.
+const SETTING_STATEMENTS: [&str; 4] = ["SET", "RESET", "CALL", "FORCE"];
+
+/// Calls of `write_calls` that touch no file: the state of the session.
+const SESSION_CALLS: [&str; 2] = ["NEXTVAL", "SETSEED"];
+
+/// The last part of a name a replacement scan reads as a file (`FROM data.csv`, `FROM
+/// logs.json.gz`): DuckDB's CSV, JSON and Parquet suffixes, their compressions, and the formats
+/// of well-known extensions.
+const FILE_SUFFIXES: [&str; 37] = [
+    "CSV", "TSV", "TBL", "TXT", "DAT", "PSV", "PARQUET", "PARQ", "PQ", "JSON", "JSONL", "NDJSON",
+    "GEOJSON", "GZ", "GZIP", "ZST", "ZSTD", "BZ2", "XZ", "LZ4", "ZIP", "XLSX", "XLS", "ARROW",
+    "IPC", "FEATHER", "AVRO", "ORC", "SHP", "GPKG", "FGB", "SQLITE", "SQLITE3", "DB", "DUCKDB",
+    "DDB", "VORTEX",
+];
+
+/// Words after which a table goes (a call there is a table function); `FROM` lists also go on
+/// after a comma.
+const TABLE_AT: [&str; 11] = [
+    "FROM",
+    "JOIN",
+    "TABLE",
+    "DESCRIBE",
+    "DESC",
+    "SUMMARIZE",
+    "SHOW",
+    "PIVOT",
+    "UNPIVOT",
+    "PIVOT_WIDER",
+    "PIVOT_LONGER",
+];
+
+/// Words after which a table's name may go but a call is no table; after `USING` a call is one
+/// except in a pivot (`PIVOT … USING sum(x)`) or an index (`CREATE INDEX … USING art (a)`).
+const NAME_AT: [&str; 3] = ["USING", "INTO", "UPDATE"];
+
+/// Words after which `TABLE` names the table a statement defines or drops, so that `(` after the
+/// name opens its columns (`CREATE TEMP TABLE t (x INT)`), not a call.
+const TABLE_DEFINED_AFTER: [&str; 8] = [
+    "CREATE",
+    "TEMP",
+    "TEMPORARY",
+    "REPLACE",
+    "UNLOGGED",
+    "ALTER",
+    "DROP",
+    "TRUNCATE",
+];
+
+/// Words that end a `FROM` list at its own depth: reserved words only, which no alias can be
+/// (`FROM range(1) AS set, 'x.csv'` goes on with the list).
+const FROM_LIST_ENDS: [&str; 13] = [
+    "WHERE",
+    "GROUP",
+    "HAVING",
+    "QUALIFY",
+    "WINDOW",
+    "ORDER",
+    "LIMIT",
+    "OFFSET",
+    "UNION",
+    "EXCEPT",
+    "INTERSECT",
+    "RETURNING",
+    "SELECT",
+];
+
+/// Words that start a query in a table's place (`FROM (VALUES …)`, `FROM (FROM t)`): its own
+/// tables are looked at where they stand. Every start of DuckDB's `select_with_parens`, which
+/// takes `(DESC SELECT …)` and `(SHOW …)` too.
+const QUERY_AT: [&str; 13] = [
+    "SELECT",
+    "VALUES",
+    "FROM",
+    "WITH",
+    "TABLE",
+    "PIVOT",
+    "UNPIVOT",
+    "PIVOT_WIDER",
+    "PIVOT_LONGER",
+    "SUMMARIZE",
+    "DESCRIBE",
+    "DESC",
+    "SHOW",
+];
+
+/// Statements whose table follows without a word of `TABLE_AT` (`TRUNCATE "x.csv"`, `VACUUM
+/// ANALYZE "x.csv"`), which their binder runs the replacement scan on all the same.
+const MAINTENANCE_STATEMENTS: [&str; 4] = ["TRUNCATE", "VACUUM", "ANALYZE", "ANALYSE"];
+
+/// Words that may stand between a `MAINTENANCE_STATEMENTS` word and its table (`TRUNCATE TABLE
+/// ONLY t`, `VACUUM FULL FREEZE VERBOSE ANALYZE t`).
+const MAINTENANCE_OPTIONS: [&str; 7] = [
+    "TABLE", "ONLY", "FULL", "FREEZE", "VERBOSE", "ANALYZE", "ANALYSE",
+];
+
+/// Functions whose arguments may say `FROM` (`EXTRACT(YEAR FROM ts)`), which no table follows;
+/// a group that opens with a query is a table's (`INSERT INTO substr (SELECT …)`), not theirs.
+const FROM_IN_ARGUMENTS: [&str; 6] = [
+    "EXTRACT",
+    "SUBSTRING",
+    "SUBSTR",
+    "TRIM",
+    "OVERLAY",
+    "POSITION",
+];
+
+/// What a session that is not hardened refuses of a plugin's run (`admit_plugin_run`): what a
+/// hardened one's engine refuses, so a plugin reads no file through a read-write profile. A text
+/// reaches files when, in its code (never a string or a comment):
+///
+/// - it says a word of `FILE_WORDS` anywhere (`COPY`, `ATTACH`, `INSTALL`, `LOAD`, `EXPORT`,
+///   `IMPORT`, `PRAGMA`, `SECRET`, `EXTENSIONS`), or a statement starts with `SET`, `RESET`,
+///   `CALL` or `FORCE`;
+/// - a statement that binds a table without a word of `TABLE_AT` names a file there:
+///   `TRUNCATE`, `VACUUM` and `ANALYZE` past their options, and `ON` in `CREATE [UNIQUE] INDEX`,
+///   also behind `EXPLAIN` with its options or `PREPARE … AS` (`statement_verb`);
+/// - it calls a function of `write_calls` other than `nextval` and `setseed` (the scanners,
+///   other servers, dynamic SQL, the environment), spelled any way the classifier knows;
+/// - where a table goes it names a string (`FROM 'x.csv'`, `DESCRIBE 'x.csv'`), a quoted name
+///   holding a path's characters (`FROM "C:/x.csv"`, `FROM x."/path"`), a name of several parts
+///   whose last one is a file's suffix (`FROM data.csv`, which the binder joins into a path), a
+///   Unicode-escaped name, or a call outside `table_functions` (a table macro of the file may
+///   scan a file; an aggregate only right inside `PIVOT (`), looking past a prefix alias
+///   (`FROM f: 'x.csv'`) and taking an unreserved word before `.` as a name (`FROM values.csv`);
+/// - the scanner may read it otherwise than DuckDB (`Scan::ambiguous`, or a non-ASCII
+///   character in code that it splits a word at, `splits_names`), or a number runs into
+///   letters (`1FROM`, which DuckDB reads as `1 FROM`).
+///
+/// Lexical, like the classifier: a view or a macro of the file that scans a file still reads it
+/// when queried by its plain name (brief, Limits).
+pub fn reads_files(sql: &str) -> bool {
+    let s = crate::sqlgen::dialect::lex::scan(&LEX, PLAIN, sql);
+    if s.ambiguous || splits_names(&s) {
+        return true;
+    }
+    let calls: Vec<&str> = RULES
+        .write_calls
+        .iter()
+        .copied()
+        .filter(|c| !SESSION_CALLS.contains(c))
+        .collect();
+    if classify::calls_listed_function(&LEX, &calls, sql) {
+        return true;
+    }
+    let code: Vec<&Token> = s
+        .tokens
+        .iter()
+        .filter(|t| !matches!(t.kind, TokenKind::Space | TokenKind::Comment))
+        .collect();
+    let word = |i: usize| {
+        code.get(i)
+            .filter(|t| t.kind == TokenKind::Word)
+            .map(|t| s.upper(t))
+    };
+    let punct = |i: usize, c: char| code.get(i).is_some_and(|t| s.is_punct(t, c));
+    // Per open parenthesis: whether it holds the arguments of `FROM_IN_ARGUMENTS`.
+    let mut parens: Vec<bool> = Vec::new();
+    // The depths of the open FROM lists, innermost last.
+    let mut froms: Vec<usize> = Vec::new();
+    // The depths of the PIVOT words, where `USING` takes aggregates.
+    let mut pivots: Vec<usize> = Vec::new();
+    // The statement's first words from its verb on, for `CREATE [UNIQUE] INDEX … USING art (a)`.
+    let mut head: Vec<String> = Vec::new();
+    // Where the statement's verb stands; the words up to it lead the statement.
+    let mut verb = statement_verb(&s, &code, 0);
+    for i in 0..code.len() {
+        let w = word(i);
+        if w.as_deref().is_some_and(glued_number) {
+            return true;
+        }
+        let leading = i <= verb;
+        if let Some(w) = w
+            .as_deref()
+            .filter(|_| i >= verb && head.len() < 3 && parens.is_empty())
+        {
+            head.push(w.to_string());
+        }
+        let index = matches!(
+            head.iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            ["CREATE", "INDEX", ..] | ["CREATE", "UNIQUE", "INDEX"]
+        );
+        if leading
+            && w.as_deref()
+                .is_some_and(|w| MAINTENANCE_STATEMENTS.contains(&w))
+            && maintenance_reads_files(&s, &code, i + 1)
+        {
+            return true;
+        }
+        if leading
+            && w.as_deref()
+                .is_some_and(|w| SETTING_STATEMENTS.contains(&w))
+        {
+            return true;
+        }
+        // `U&"…"` may spell any name.
+        if w.as_deref() == Some("U") && punct(i + 1, '&') {
+            return true;
+        }
+        let in_from = froms.last() == Some(&parens.len());
+        let reaches = if punct(i, ';') {
+            parens.clear();
+            froms.clear();
+            pivots.clear();
+            head.clear();
+            verb = statement_verb(&s, &code, i + 1);
+            false
+        } else if punct(i, '(') {
+            let args = i.checked_sub(1).and_then(word);
+            let query =
+                punct(i + 1, '(') || word(i + 1).is_some_and(|n| QUERY_AT.contains(&n.as_str()));
+            parens.push(!query && args.is_some_and(|p| FROM_IN_ARGUMENTS.contains(&p.as_str())));
+            false
+        } else if punct(i, ')') {
+            parens.pop();
+            while froms.last().is_some_and(|&d| d > parens.len()) {
+                froms.pop();
+            }
+            while pivots.last().is_some_and(|&d| d > parens.len()) {
+                pivots.pop();
+            }
+            false
+        } else if punct(i, ',') {
+            in_from && table_reads_files(&s, &code, i + 1, true)
+        } else if let Some(w) = w.as_deref() {
+            // `a IS [NOT] DISTINCT FROM b` compares.
+            let distinct = i.checked_sub(1).and_then(word).as_deref() == Some("DISTINCT")
+                && matches!(
+                    i.checked_sub(2).and_then(word).as_deref(),
+                    Some("IS" | "NOT")
+                );
+            if FILE_WORDS.contains(&w) {
+                true
+            } else if w == "FROM" {
+                if distinct || parens.last().copied().unwrap_or(false) {
+                    false
+                } else {
+                    if !in_from {
+                        froms.push(parens.len());
+                    }
+                    table_reads_files(&s, &code, i + 1, true)
+                }
+            } else if w == "TABLE" {
+                let defined = i
+                    .checked_sub(1)
+                    .and_then(word)
+                    .is_some_and(|p| TABLE_DEFINED_AFTER.contains(&p.as_str()));
+                table_reads_files(&s, &code, i + 1, !defined)
+            } else if TABLE_AT.contains(&w) {
+                if w.contains("PIVOT") {
+                    pivots.push(parens.len());
+                }
+                table_reads_files(&s, &code, i + 1, true)
+            } else if w == "ON" && index && parens.is_empty() {
+                // `CREATE INDEX i ON "x.csv" (a)` binds its table as a query would.
+                table_reads_files(&s, &code, i + 1, false)
+            } else if w == "USING" {
+                // A table macro after `MERGE … USING` or `DELETE … USING` may scan a file.
+                let aggregates = index || pivots.last() == Some(&parens.len());
+                table_reads_files(&s, &code, i + 1, !aggregates)
+            } else if NAME_AT.contains(&w) {
+                table_reads_files(&s, &code, i + 1, false)
+            } else {
+                if in_from && FROM_LIST_ENDS.contains(&w) {
+                    froms.pop();
+                }
+                false
+            }
+        } else {
+            false
+        };
+        if reaches {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the scanner splits a word where DuckDB does not: libpg_query's lexer reads every
+/// byte of 0x80 or above as part of a name, so `r€where` is one alias to DuckDB, while the
+/// scanner ends the word at `€` (punctuation) or at a Unicode space and sees `WHERE`.
+fn splits_names(s: &Scan) -> bool {
+    s.tokens.iter().any(|t| {
+        matches!(t.kind, TokenKind::Punct | TokenKind::Space)
+            && s.chars
+                .get(t.start..t.end)
+                .is_some_and(|cs| cs.iter().any(|c| !c.is_ascii()))
+    })
+}
+
+/// Whether a word that starts with a digit runs into letters other than a number's (`1FROM`,
+/// which DuckDB reads as `1 FROM`): `1e5`, `1e` before `-5`, `0x1F` and `0b101` are numbers.
+fn glued_number(w: &str) -> bool {
+    let Some(rest) = w.strip_prefix(|c: char| c.is_ascii_digit()) else {
+        return false;
+    };
+    let all = |t: &str, ok: fn(char) -> bool| t.chars().all(|c| ok(c) || c == '_');
+    let zero = w.starts_with('0');
+    let number = match rest.strip_prefix('X').or_else(|| rest.strip_prefix('B')) {
+        Some(n) if zero && rest.starts_with('X') => all(n, |c| c.is_ascii_hexdigit()),
+        Some(n) if zero => all(n, |c| c == '0' || c == '1'),
+        _ => match rest.split_once('E') {
+            Some((m, e)) => all(m, |c| c.is_ascii_digit()) && all(e, |c| c.is_ascii_digit()),
+            None => all(rest, |c| c.is_ascii_digit()),
+        },
+    };
+    !number
+}
+
+/// Where the verb of the statement that starts at `at` stands, past what may come in front of it
+/// and still bind its table: `(`, `EXPLAIN [( options )] [ANALYZE] [VERBOSE]` and `PREPARE name
+/// [( types )] AS` (`EXPLAIN (FORMAT JSON) TRUNCATE "x.csv"`, `PREPARE p AS TRUNCATE "x.csv"`).
+fn statement_verb(s: &Scan, code: &[&Token], mut at: usize) -> usize {
+    let is_punct = |i: usize, c: char| code.get(i).is_some_and(|t| s.is_punct(t, c));
+    let upper = |i: usize| {
+        code.get(i)
+            .filter(|t| t.kind == TokenKind::Word)
+            .map(|t| s.upper(t))
+    };
+    // Past the group that opens at `at`, or `at` when none does.
+    let past_group = |mut at: usize| {
+        if !is_punct(at, '(') {
+            return at;
+        }
+        let mut depth = 0usize;
+        while code.get(at).is_some() {
+            if is_punct(at, '(') {
+                depth += 1;
+            } else if is_punct(at, ')') {
+                depth = depth.saturating_sub(1);
+            }
+            at += 1;
+            if depth == 0 {
+                break;
+            }
+        }
+        at
+    };
+    loop {
+        if is_punct(at, '(') {
+            at += 1;
+            continue;
+        }
+        match upper(at).as_deref() {
+            Some("EXPLAIN") => {
+                at = past_group(at + 1);
+                while upper(at)
+                    .is_some_and(|w| matches!(w.as_str(), "ANALYZE" | "ANALYSE" | "VERBOSE"))
+                {
+                    at += 1;
+                }
+            }
+            Some("PREPARE") => {
+                at = past_group(at + 2);
+                if upper(at).as_deref() == Some("AS") {
+                    at += 1;
+                }
+            }
+            _ => return at,
+        }
+    }
+}
+
+/// Whether the table of a `MAINTENANCE_STATEMENTS` statement, after its options from `at` on
+/// (`VACUUM (ANALYZE) t`), reaches a file; every word on the way is looked at as a table too.
+fn maintenance_reads_files(s: &Scan, code: &[&Token], mut at: usize) -> bool {
+    let is_punct = |i: usize, c: char| code.get(i).is_some_and(|t| s.is_punct(t, c));
+    loop {
+        if table_reads_files(s, code, at, false) {
+            return true;
+        }
+        let option = code
+            .get(at)
+            .filter(|t| t.kind == TokenKind::Word)
+            .is_some_and(|t| MAINTENANCE_OPTIONS.contains(&s.upper(t).as_str()));
+        if option && !is_punct(at + 1, '.') && !is_punct(at + 1, ':') {
+            at += 1;
+        } else if is_punct(at, '(') {
+            let mut depth = 0usize;
+            loop {
+                if is_punct(at, '(') {
+                    depth += 1;
+                } else if is_punct(at, ')') {
+                    depth = depth.saturating_sub(1);
+                } else if code.get(at).is_none() {
+                    return false;
+                }
+                at += 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+        } else {
+            return false;
+        }
+    }
+}
+
+/// Whether the group opened at `open` holds `FOR` at its own depth: a pivot's `(aggregate …
+/// FOR …)`, not `PIVOT (t) ON …`, whose parenthesis holds a table.
+fn pivot_for(s: &Scan, code: &[&Token], open: usize) -> bool {
+    let mut depth = 0usize;
+    for t in code.iter().skip(open) {
+        if s.is_punct(t, '(') {
+            depth += 1;
+        } else if s.is_punct(t, ')') {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return false;
+            }
+        } else if depth == 1 && t.kind == TokenKind::Word && s.upper(t) == "FOR" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether what stands at the table position `at` reaches a file (`reads_files`); `calls`:
+/// whether a call there is a table function (after `USING`, `sum(x)` is a pivot's aggregate).
+fn table_reads_files(s: &Scan, code: &[&Token], mut at: usize, calls: bool) -> bool {
+    let is_punct = |i: usize, c: char| code.get(i).is_some_and(|t| s.is_punct(t, c));
+    let upper = |i: usize| {
+        code.get(i)
+            .filter(|t| t.kind == TokenKind::Word)
+            .map(|t| s.upper(t))
+    };
+    // Right inside a pivot's `(… FOR …)`, an aggregate may be called (`PIVOT (sum(x) FOR …)`).
+    let pivot = is_punct(at, '(')
+        && at
+            .checked_sub(1)
+            .and_then(upper)
+            .is_some_and(|w| w.contains("PIVOT"))
+        && pivot_for(s, code, at);
+    while is_punct(at, '(') || matches!(upper(at).as_deref(), Some("LATERAL" | "ONLY")) {
+        at += 1;
+    }
+    let Some(first) = code.get(at) else {
+        return false;
+    };
+    match first.kind {
+        TokenKind::Str => return true,
+        TokenKind::Word if query_at(s, code, at) => return false,
+        TokenKind::Word | TokenKind::Ident => {}
+        _ => return false,
+    }
+    // The name's parts: a word in upper case, a quoted name as written.
+    let mut parts: Vec<(TokenKind, String)> = Vec::new();
+    let mut i = at;
+    loop {
+        match code.get(i) {
+            Some(t) if t.kind == TokenKind::Word => parts.push((t.kind, s.upper(t))),
+            Some(t) if t.kind == TokenKind::Ident => parts.push((t.kind, s.ident_name(t))),
+            _ => break,
+        }
+        if is_punct(i + 1, '.') && code.get(i + 2).is_some() {
+            i += 2;
+        } else {
+            break;
+        }
+    }
+    let path_like = |n: &str| n.contains(['.', '/', '\\', ':', '*', '?', '~', '[', '{', '%']);
+    if parts
+        .iter()
+        .any(|(k, n)| *k == TokenKind::Ident && path_like(n))
+    {
+        return true;
+    }
+    let suffix = parts
+        .last()
+        .is_some_and(|(_, n)| FILE_SUFFIXES.contains(&n.to_ascii_uppercase().as_str()));
+    if parts.len() > 1 && suffix {
+        return true;
+    }
+    // A prefix alias (`FROM f: 'x.csv'`): the table follows the colon.
+    if is_punct(i + 1, ':') {
+        return table_reads_files(s, code, i + 2, calls);
+    }
+    if !(calls && is_punct(i + 1, '(')) {
+        return false;
+    }
+    // A call: only unqualified and unquoted, on the list (an aggregate right inside `PIVOT (`).
+    let allowed = RULES.table_functions.unwrap_or(&[]);
+    match parts.as_slice() {
+        [(TokenKind::Word, name)] => !allowed.iter().any(|entry| match entry.strip_prefix('%') {
+            Some(aggregate) => pivot && aggregate == name.as_str(),
+            None => listed(&[*entry], name),
+        }),
+        _ => true,
+    }
+}
+
+/// Whether the word at the table position `at` starts a query rather than a name: words such
+/// as `VALUES` and `SUMMARIZE` are unreserved, so `FROM values.csv` names a file and
+/// `FROM summarize: 'x.csv'` an alias; `VALUES` lists rows only before `(`.
+fn query_at(s: &Scan, code: &[&Token], at: usize) -> bool {
+    let next = |c: char| code.get(at + 1).is_some_and(|t| s.is_punct(t, c));
+    match code.get(at).map(|t| s.upper(t)).as_deref() {
+        Some("VALUES") => next('('),
+        Some(w) => QUERY_AT.contains(&w) && !next('.') && !next(':'),
+        None => false,
+    }
+}
+
 /// One overload of a macro, as `duckdb_functions()` lists it.
 pub struct MacroOverload<'a> {
     pub parameters: &'a [String],
@@ -560,8 +1084,50 @@ mod tests {
             "SELECT * FROM t PIVOT (my_agg(amount) FOR month IN ('jan'))",
             "SELECT * FROM main.sum(1)",
             "SELECT * FROM t PIVOT (sum(x) FOR y IN (1)), read_csv('x.csv')",
+            // Where a table goes, outside a pivot's `(… FOR …)`, the name is a table macro.
+            "SELECT * FROM sum('x.csv')",
+            "FROM first(1)",
+            "SELECT * FROM t, list(1)",
         ] {
             assert_eq!(classify_duckdb(sql), StatementClass::Write, "{sql}");
+        }
+    }
+
+    /// `reads_files` on the cases the mock's `readsFiles` runs too (`plugin-files.json`).
+    #[test]
+    fn plugin_runs_reach_no_files_on_the_shared_cases() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/duckdb/plugin-files.json"
+        ))
+        .expect("the plugin cases");
+        let list = |key: &str| -> Vec<String> {
+            cases[key]
+                .as_array()
+                .expect("a list")
+                .iter()
+                .map(|v| v.as_str().expect("a text").to_string())
+                .collect()
+        };
+        let (refused, admitted) = (list("refused"), list("admitted"));
+        assert!(refused.len() > 50 && admitted.len() > 25);
+        for sql in &refused {
+            assert!(reads_files(sql), "refused: {sql}");
+        }
+        for sql in &admitted {
+            assert!(!reads_files(sql), "admitted: {sql}");
+        }
+    }
+
+    /// A word that ends a FROM list must be one no alias can be, or `FROM t AS <word>, 'x.csv'`
+    /// would close the list before the file.
+    #[test]
+    fn from_lists_end_at_reserved_words_only() {
+        for w in FROM_LIST_ENDS {
+            let lower = w.to_ascii_lowercase();
+            assert!(
+                RESERVED_WORDS.split_ascii_whitespace().any(|r| r == lower),
+                "{w}"
+            );
         }
     }
 

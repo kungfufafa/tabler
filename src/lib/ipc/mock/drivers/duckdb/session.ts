@@ -1,4 +1,5 @@
 import { classifyDialect } from "@/features/drivers/portable/classify";
+import { PLUGIN_FILES_REFUSED, readsFiles } from "@/features/drivers/duckdb/files";
 import { LEX, LOGGER_REFUSED, switchesLogger } from "@/features/drivers/duckdb/logger";
 import type { ApplyRequest } from "../../../bindings/ApplyRequest";
 import type { ApplyResult } from "../../../bindings/ApplyResult";
@@ -479,6 +480,12 @@ export function duckdbSession(o: DuckdbOptions): MockSession {
 
   return {
     caps,
+    // `current_database()`: the catalog's name (the file's stem), not the path.
+    currentDatabase: db.name,
+    // `admit_plugin_run`: a hardened engine refuses files itself.
+    admitPluginRun: (text) => {
+      if (!o.facts.hardened && readsFiles(text)) mockError("INVALID_INPUT", PLUGIN_FILES_REFUSED);
+    },
     listDatabases: () => [{ name: db.name, owner: null, encoding: null, isCurrent: true }],
     listSchemas: () => [...db.schemas].sort().map((name) => ({ name, isDefault: name === "main" })),
     listTables: (schema) =>

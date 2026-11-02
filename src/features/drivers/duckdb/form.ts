@@ -3,13 +3,14 @@ import type { ConnectionProfile } from "@/lib/ipc";
 import type { FormIssue, KindUi } from "../types";
 import { DuckdbFields } from "./DuckdbFields";
 import { LOGGER_REFUSED, switchesLogger } from "./logger";
+import { newDuckdbFile } from "./newFile";
 import { duckdbParams, duckdbParamsOf, isMemory, MEMORY_READ_ONLY, toDuckdbParams } from "./params";
 import { formatDuckdbUrl, parseDuckdbUrl } from "./url";
 
 /**
- * DuckDB's form, as TablePlus has it: the database file (Choose…, and New… among the lane's
- * fields), or `:memory:` for a database that lives as long as the connection, and the encryption
- * key of an encrypted file in the password field (the file then opens read-only: DuckDB's
+ * DuckDB's form, as TablePlus has it: the database file (Choose…, and New…: `newDuckdbFile`), or
+ * `:memory:` for a database that lives as long as the connection, and the encryption key of an
+ * encrypted file in the password field (the file then opens read-only: DuckDB's
  * built-in crypto only decrypts). Read-only opens the file with `access_mode=READ_ONLY` and
  * reads no other file. No host, TLS or SSH: the descriptor offers none.
  */
@@ -50,4 +51,5 @@ export const duckdbUi: KindUi = {
     format: formatDuckdbUrl,
   },
   summary,
+  newFile: newDuckdbFile,
 };

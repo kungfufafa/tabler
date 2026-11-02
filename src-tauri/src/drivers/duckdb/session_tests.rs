@@ -1028,6 +1028,154 @@ async fn an_unattended_session_reads_no_files_and_keeps_its_settings() {
     drop(dir);
 }
 
+/// A plugin's run (`RunOrigin::Plugin`) through `run_sql_on`: a read-write session, which is
+/// not hardened, refuses before anything runs what reaches a file (`reads_files`), and runs the
+/// rest, writes included; the user's own run of the same text reads the file. A hardened
+/// session admits the text and its engine refuses the file.
+#[tokio::test]
+async fn a_plugin_run_reads_no_files_unless_the_engine_refuses_them() {
+    use crate::commands::query::run_sql_on;
+    use crate::types::query::{RunOptions, RunOrigin};
+    use tauri::ipc::Channel;
+    let (dir, path) = sample();
+    let csv = dir.path().join("x.csv");
+    std::fs::write(&csv, "a\n1\n").unwrap();
+    let plugin = || {
+        Some(RunOptions {
+            origin: RunOrigin::Plugin,
+            ..RunOptions::default()
+        })
+    };
+    let sink = || Channel::new(|_| Ok(()));
+    let reads = format!("SELECT * FROM {}", sql_path(&csv));
+    let ident = format!("\"{}\"", csv.to_string_lossy().replace('\\', "/"));
+
+    let p = file_profile(&path, json!({}));
+    let s = Arc::new(open(&p, None, false).await);
+    assert!(!s.capabilities().safety.hardened);
+    let (state, conn) = app_connection(p, Session::Sql(s.clone())).await;
+    for sql in [
+        reads.clone(),
+        format!("SELECT * FROM read_csv({})", sql_path(&csv)),
+        format!(
+            "COPY customers TO {}",
+            sql_path(&dir.path().join("out.csv"))
+        ),
+        "SET threads = 1".to_string(),
+        // DuckDB reads `1FROM` as `1 FROM`; `set` is an alias, not the end of the list; a
+        // table named like `substr` takes a query; a table macro may stand after `USING`.
+        format!("SELECT *, 1FROM {}", sql_path(&csv)),
+        format!("SELECT * FROM range(1) AS set, {}", sql_path(&csv)),
+        format!("INSERT INTO substr (SELECT a FROM {})", sql_path(&csv)),
+        "MERGE INTO customers USING plugin_macro(1) s ON true WHEN MATCHED THEN DELETE".to_string(),
+        // DuckDB reads any non-ASCII character as part of a name: one alias, no WHERE.
+        format!("SELECT * FROM range(1) r\u{20ac}where, {}", sql_path(&csv)),
+        format!(
+            "SELECT * FROM range(1) AS \u{20ac}limit, {}",
+            sql_path(&csv)
+        ),
+        format!("SELECT * FROM range(1) x\u{b7}select, {}", sql_path(&csv)),
+        // A prefix alias names the table after its colon.
+        format!("SELECT * FROM f: {}", sql_path(&csv)),
+        format!(
+            "SELECT * FROM range(1) r JOIN f: {} ON true",
+            sql_path(&csv)
+        ),
+        "SELECT * FROM f: plugin_macro(1)".to_string(),
+        // These bind their table without a word such as FROM; a string takes a name's place.
+        format!("TRUNCATE {ident}"),
+        format!("TRUNCATE {}", sql_path(&csv)),
+        format!("VACUUM {ident}"),
+        format!("ANALYZE {ident}"),
+        format!("VACUUM ANALYZE {ident}"),
+        format!("CREATE INDEX plugin_i ON {ident} (a)"),
+        format!("EXPLAIN TRUNCATE {ident}"),
+        // EXPLAIN's options and PREPARE … AS stand in front of the statement that binds it.
+        format!("EXPLAIN (FORMAT JSON) TRUNCATE {ident}"),
+        format!("EXPLAIN (ANALYZE) TRUNCATE {ident}"),
+        format!("PREPARE plugin_p AS TRUNCATE {ident}"),
+        format!("EXPLAIN CREATE INDEX plugin_i ON {ident} (a)"),
+        format!("EXPLAIN (FORMAT JSON) CREATE UNIQUE INDEX plugin_i ON {ident} (a)"),
+        // `DESC` and `SHOW` start a query in parentheses, so this FROM is no `trim(… FROM …)`.
+        format!("INSERT INTO trim (DESC SELECT * FROM {})", sql_path(&csv)),
+        format!("INSERT INTO trim (SHOW SELECT * FROM {})", sql_path(&csv)),
+    ] {
+        s.drain_trace();
+        let e = run_sql_on(&state, conn.id, "p".into(), sql.clone(), plugin(), sink())
+            .await
+            .unwrap_err();
+        assert_eq!(message(&e), super::session::PLUGIN_FILES_REFUSED, "{sql}");
+        assert!(s.drain_trace().is_empty(), "nothing ran: {sql}");
+    }
+    assert!(!dir.path().join("out.csv").exists());
+    let done = run_sql_on(
+        &state,
+        conn.id,
+        "p".into(),
+        "CREATE TABLE plugin_made AS SELECT 1 AS a; SELECT count(*) FROM plugin_made; CREATE TEMP TABLE plugin_cols (x INT, y TEXT); INSERT INTO plugin_cols VALUES (1, 'a')"
+            .into(),
+        plugin(),
+        sink(),
+    )
+    .await
+    .unwrap();
+    assert!(done.iter().all(|r| r.error.is_none()), "{done:?}");
+    // The user's own run is not a plugin's.
+    let user = run_sql_on(&state, conn.id, "u".into(), reads.clone(), None, sink())
+        .await
+        .unwrap();
+    assert!(user[0].error.is_none(), "{user:?}");
+    // The engine reads the file through such an alias, so the refusal above is needed.
+    let glued = format!("SELECT * FROM range(1) r\u{20ac}where, {}", sql_path(&csv));
+    let user = run_sql_on(&state, conn.id, "u".into(), glued, None, sink())
+        .await
+        .unwrap();
+    assert!(user[0].columns.iter().any(|c| c.name == "a"), "{user:?}");
+    let aliased = format!("SELECT * FROM f: {}", sql_path(&csv));
+    let user = run_sql_on(&state, conn.id, "u".into(), aliased, None, sink())
+        .await
+        .unwrap();
+    assert!(user[0].columns.iter().any(|c| c.name == "a"), "{user:?}");
+    // TRUNCATE binds the file (it is no base table), and DESC in parentheses reads its header.
+    let user = run_sql_on(
+        &state,
+        conn.id,
+        "u".into(),
+        format!("TRUNCATE {ident}"),
+        None,
+        sink(),
+    )
+    .await
+    .unwrap();
+    let e = user[0].error.as_ref().map(|e| e.message.clone());
+    assert!(e.is_some_and(|m| m.contains("base table")), "{user:?}");
+    let header = format!(
+        "CREATE TABLE trim (a VARCHAR, b VARCHAR, c VARCHAR, d VARCHAR, e VARCHAR, f VARCHAR); \
+         INSERT INTO trim (DESC SELECT * FROM {}); SELECT * FROM trim WHERE a = 'a'",
+        sql_path(&csv)
+    );
+    let user = run_sql_on(&state, conn.id, "u".into(), header, None, sink())
+        .await
+        .unwrap();
+    assert!(user.iter().all(|r| r.error.is_none()), "{user:?}");
+    // The header line (column `a`) reached the table.
+    assert_eq!(user.last().map(|r| r.row_count), Some(1), "{user:?}");
+    s.close().await;
+
+    // Read-only, hardened: admitted, and the engine refuses the file.
+    let ro = file_profile(&path, json!({ "readOnly": true }));
+    let s = Arc::new(open(&ro, None, false).await);
+    assert!(s.capabilities().safety.hardened);
+    assert!(s.admit_plugin_run(&reads).is_ok());
+    let (state, conn) = app_connection(ro, Session::Sql(s.clone())).await;
+    let out = run_sql_on(&state, conn.id, "p".into(), reads, plugin(), sink())
+        .await
+        .unwrap();
+    assert!(out[0].error.is_some(), "{out:?}");
+    s.close().await;
+    drop(dir);
+}
+
 #[tokio::test]
 async fn a_closed_session_lets_the_file_go() {
     let dir = tempfile::tempdir().unwrap();

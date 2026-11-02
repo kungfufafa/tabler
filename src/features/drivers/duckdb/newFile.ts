@@ -1,5 +1,7 @@
+import type { UseFormReturn } from "react-hook-form";
+import { toast } from "sonner";
 import { formToProfileInput, type ConnectionFormValues } from "@/features/connections/schema";
-import { ipc, isMock, type ProfileInput } from "@/lib/ipc";
+import { ipc, isMock, toIpcError, type ProfileInput } from "@/lib/ipc";
 import { CREATE_FILE, duckdbParamsOf, toDuckdbParams } from "./params";
 
 /**
@@ -50,4 +52,28 @@ export function createFileInput(v: ConnectionFormValues): ProfileInput {
 export async function createDuckdbFile(v: ConnectionFormValues, path: string): Promise<string> {
   const out = await ipc.driverUtil<{ path: string }>(createFileInput(v), CREATE_FILE, { path });
   return out.path;
+}
+
+/** Why New… does nothing on a read-only profile (the backend refuses the call too). */
+export const NEW_FILE_READ_ONLY = "Turn off Read-only to create a file";
+
+/**
+ * The file row's New… (`KindUi.newFile`): the save panel, then `createFile`; the path the
+ * backend wrote goes in the form. A read-only profile and a refusal end in a toast.
+ */
+export async function newDuckdbFile(form: UseFormReturn<ConnectionFormValues>): Promise<void> {
+  const fail = (description: string) =>
+    toast.error("Could not create the DuckDB file", { description });
+  if (form.getValues("readOnly")) {
+    fail(NEW_FILE_READ_ONLY);
+    return;
+  }
+  const path = (await pickNewDuckdbFile())?.trim();
+  if (!path) return;
+  try {
+    const made = await createDuckdbFile(form.getValues(), path);
+    form.setValue("sqlitePath", made, { shouldValidate: true, shouldDirty: true });
+  } catch (err) {
+    fail(toIpcError(err).message);
+  }
 }

@@ -35,7 +35,7 @@ use crate::drivers::{
 };
 use crate::error::AppError;
 use crate::sqlgen::dialect::SqlDialect;
-use crate::sqlgen::dialect::duckdb::{LEX, switches_logger, use_database};
+use crate::sqlgen::dialect::duckdb::{LEX, reads_files, switches_logger, use_database};
 use crate::sqlgen::dialect::lex::{PLAIN, TokenKind, scan};
 use crate::sqlgen::sql::{max_params, writes};
 use crate::types::browse::{FilterOp, TraceCategory, TracedSql};
@@ -64,6 +64,10 @@ const KEEPALIVE_SECS: u32 = 30;
 pub const LOGGER_REFUSED: &str = "DuckDB's logger cannot be switched from Tabler: file storage \
      it cannot write stops the database and closes the app. Use the startup SQL of another \
      DuckDB to log.";
+
+/// A plugin's run that reaches files on a session that is not hardened (`admit_plugin_run`).
+pub const PLUGIN_FILES_REFUSED: &str = "A plugin cannot read files, extensions, secrets or settings \
+     through this DuckDB connection: open it read-only, or run the statement in the SQL editor.";
 
 /// What every session offers beyond the structure view and the editor, each proven by the
 /// lane's tests (docs/drivers/duckdb.md, Phase B status). Nothing that writes a core dialect's
@@ -694,6 +698,15 @@ impl DbSession for DuckdbSession {
 
     fn editor_run_lock(&self) -> Option<&tokio::sync::Mutex<()>> {
         Some(&self.editor_runs)
+    }
+
+    /// A hardened instance's engine refuses files itself; on any other, a plugin's run that
+    /// reaches files, extensions, secrets or settings is refused before it runs.
+    fn admit_plugin_run(&self, sql: &str) -> Result<(), AppError> {
+        if !self.facts.hardened && reads_files(sql) {
+            return Err(AppError::InvalidInput(PLUGIN_FILES_REFUSED.into()));
+        }
+        Ok(())
     }
 
     fn capabilities(&self) -> SessionCaps {

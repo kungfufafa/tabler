@@ -3,7 +3,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { LOGGER_REFUSED } from "@/features/drivers/duckdb/logger";
-import { EXTERNAL_ACCESS_HINT, MEMORY_READ_ONLY } from "@/features/drivers/duckdb/params";
+import { PLUGIN_FILES_REFUSED } from "@/features/drivers/duckdb/files";
+import {
+  EXTERNAL_ACCESS_HINT,
+  MEMORY_READ_ONLY,
+  NO_ENCRYPTED_FILES,
+} from "@/features/drivers/duckdb/params";
 import type { ApplyResult } from "../../../bindings/ApplyResult";
 import type { BrowsePage } from "../../../bindings/BrowsePage";
 import type { ConnectionInfo } from "../../../bindings/ConnectionInfo";
@@ -63,13 +68,13 @@ const sample = () => connect("p-mock-duckdb");
 const archive = () => connect("p-mock-duckdb-ro");
 const memory = () => connect("p-mock-duckdb-memory");
 
-async function run(connectionId: string, sql: string) {
+async function run(connectionId: string, sql: string, options: object = {}) {
   const events: QueryEvent[] = [];
   const results = await mockInvoke<StatementResult[]>("run_sql", {
     connectionId,
     queryId: "q",
     sql,
-    options: {},
+    options,
     onEvent: { send: (e: QueryEvent) => events.push(e) },
   });
   const rows = events.flatMap((e) => (e.event === "rows" ? e.data.rows : []));
@@ -441,6 +446,39 @@ describe("the mock driver", () => {
     ).rejects.toMatchObject({ message: READ_ONLY_EDIT });
   });
 
+  it("refuses a plugin's run that reaches files unless the engine is hardened", async () => {
+    const plugin = { origin: "plugin" };
+    const c = (await sample()).connectionId;
+    for (const sql of [
+      "SELECT * FROM 'x.csv'",
+      "DESCRIBE 'x.csv'",
+      "SELECT * FROM read_csv('x.csv')",
+      "SELECT 1; COPY orders TO 'x.csv'",
+      "SET threads = 1",
+    ])
+      await expect(run(c, sql, plugin), sql).rejects.toMatchObject({
+        message: PLUGIN_FILES_REFUSED,
+      });
+    const ran = await run(
+      c,
+      "SELECT count(*) FROM orders; DELETE FROM orders WHERE id = 1001",
+      plugin,
+    );
+    expect(ran.results.map((r) => r.error)).toEqual([null, null]);
+    // The user's own run is not a plugin's: the engine looks for the file.
+    expect((await run(c, "SELECT * FROM 'x.csv'")).results[0]!.error?.message).toMatch(/^IO Error/);
+    // Hardened: admitted, and the engine refuses the file.
+    const ro = (await archive()).connectionId;
+    expect(
+      (await run(ro, "SELECT * FROM 'C:/data/x.csv'", plugin)).results[0]!.error?.message,
+    ).toMatch(/^Permission Error/);
+  });
+
+  it("reports the file's catalog as the current database", async () => {
+    expect((await sample()).currentDatabase).toBe("sample");
+    expect((await memory()).currentDatabase).toBe("memory");
+  });
+
   it("keeps an in-memory database to its session", async () => {
     const a = (await memory()).connectionId;
     expect(await mockInvoke<DatabaseInfo[]>("list_databases", { connectionId: a })).toEqual([
@@ -453,11 +491,16 @@ describe("the mock driver", () => {
 });
 
 describe("the form's calls (entry::util)", () => {
-  const util = (method: string, args: unknown) =>
+  const util = (
+    method: string,
+    args: unknown,
+    from = "p-mock-duckdb",
+    password: string | null = null,
+  ) =>
     mockInvoke("driver_util", {
       input: {
-        profile: mockProfiles.get("p-mock-duckdb"),
-        password: null,
+        profile: mockProfiles.get(from),
+        password,
         sshPassword: null,
         sshPassphrase: null,
         clearPassword: false,
@@ -484,7 +527,13 @@ describe("the form's calls (entry::util)", () => {
     expect(await util("checkFile", { path: "/Users/me/new.duckdb" })).toEqual({
       path: "/Users/me/new.duckdb",
     });
+    // Without a path, the form's file.
+    expect(await util("checkFile", {})).toEqual({ path: "/Users/me/data/sample.duckdb" });
     await expect(util("createFile", {})).rejects.toMatchObject({
+      message: "“/Users/me/data/sample.duckdb” already exists.",
+    });
+    variant("p-mock-duckdb", "p-no-file", () => ({ sqlitePath: " " }));
+    await expect(util("createFile", {}, "p-no-file")).rejects.toMatchObject({
       message: "DuckDB: choose a database file",
     });
     await expect(util("vacuum", null)).rejects.toMatchObject({ code: "UNSUPPORTED" });
@@ -494,5 +543,21 @@ describe("the form's calls (entry::util)", () => {
     expect(await mockInvoke<DatabaseInfo[]>("list_databases", { connectionId: c })).toEqual([
       { name: "new", owner: null, encoding: null, isCurrent: true },
     ]);
+  });
+
+  it("refuses a key and, on a read-only profile, anything but a check", async () => {
+    buildMockDrivers(["duckdb"]);
+    expect(lane.drivers[0]!.utilKind?.("checkFile")).toBe("read");
+    expect(lane.drivers[0]!.utilKind?.("createFile")).toBe("write");
+    expect(lane.drivers[0]!.utilKind?.("vacuum")).toBe("write");
+    await expect(
+      util("createFile", { path: "/Users/me/k.duckdb" }, "p-mock-duckdb", "s3cret"),
+    ).rejects.toMatchObject({ message: NO_ENCRYPTED_FILES });
+    await expect(
+      util("createFile", { path: "/Users/me/ro.duckdb" }, "p-mock-duckdb-ro"),
+    ).rejects.toMatchObject({ message: "This connection is read-only" });
+    expect(await util("checkFile", {}, "p-mock-duckdb-ro")).toEqual({
+      path: "/Users/me/data/archive-2023.duckdb",
+    });
   });
 });
