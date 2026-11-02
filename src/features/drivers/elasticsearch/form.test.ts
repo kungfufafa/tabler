@@ -42,7 +42,7 @@ const save = (values: ConnectionFormValues) => formToProfileInput(values, null, 
 
 describe("the Elasticsearch form", () => {
   it("starts on 127.0.0.1:9200 as elastic, over checked HTTPS", () => {
-    expect(ui.rows).toEqual(["hostPort", "user", "secret", "ssl"]);
+    expect(ui.rows).toEqual(["hostPort", "user", "secret", "extraSecrets", "ssl"]);
     const d = ui.defaults!();
     expect(d).toMatchObject({
       host: "127.0.0.1",
@@ -114,6 +114,36 @@ describe("the Elasticsearch form", () => {
       awsProfile: "prod",
       awsService: "es",
     });
+  });
+
+  it("sends a Session Token with SigV4 access keys, and refuses one anywhere else", () => {
+    const sigv4 = form({
+      host: "https://search-logs-abc.eu-west-1.es.amazonaws.com",
+      user: "AKID",
+      sessionToken: "tok",
+      driverParams: params({ auth: "awsSigv4", awsCredentials: "accessKey" }),
+    });
+    expect(issues(sigv4)).toEqual([]);
+    expect(formToProfileInput(sigv4, null, "id-1", ui)).toMatchObject({
+      password: "pw",
+      sessionToken: "tok",
+      keyPassphrase: null,
+    });
+    // Empty keeps the stored one.
+    expect(formToProfileInput({ ...sigv4, sessionToken: "" }, null, "id-1", ui).sessionToken).toBe(
+      null,
+    );
+    const unused =
+      "driverParams.auth: A Session Token goes with AWS SigV4 access keys only: clear it, or sign in with SigV4";
+    expect(issues(form({ sessionToken: "tok" }))).toEqual([unused]);
+    expect(
+      issues({
+        ...sigv4,
+        driverParams: params({ auth: "awsSigv4", awsCredentials: "profile" }),
+      }),
+    ).toEqual([unused]);
+    // Another password mode sends none, so a leftover one is no issue.
+    expect(issues(form({ sessionToken: "tok", passwordMode: "ask" }))).toEqual([]);
   });
 
   it("accepts a plain profile, a Cloud ID and node URLs", () => {

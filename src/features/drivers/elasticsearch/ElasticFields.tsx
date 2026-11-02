@@ -135,7 +135,7 @@ export function ElasticFields({ form }: KindFieldsProps) {
             AWS_CREDENTIALS,
             "accessKey",
             params.awsCredentials === "accessKey"
-              ? "User is the access key id, Password the secret access key (or a command's credential_process JSON)"
+              ? "User is the access key id, Password the secret access key (or a command's credential_process JSON), Session Token the temporary keys' token"
               : undefined,
           )}
           {params.awsCredentials === "profile" && text("awsProfile", "AWS profile", "default")}

@@ -82,6 +82,18 @@ function validate(v: ConnectionFormValues): FormIssue[] {
   const issue = (path: FormIssue["path"], message: string) => out.push({ path, message });
   if (f.cloudId !== "" && urlList(f.urls).length > 0)
     issue("driverParams.cloudId", "Give either a Cloud ID or URLs, not both");
+  // The backend reads the Session Token only with SigV4 access keys: never store one unused.
+  // On the sign-in row, since the shared Session Token row shows no error.
+  // Only the Keychain mode sends one (`formToProfileInput`).
+  if (
+    v.passwordMode === "keychain" &&
+    v.sessionToken !== "" &&
+    !(f.auth === "awsSigv4" && f.awsCredentials === "accessKey")
+  )
+    issue(
+      "driverParams.auth",
+      "A Session Token goes with AWS SigV4 access keys only: clear it, or sign in with SigV4",
+    );
   const prefix = f.pathPrefix.replace(/\/+$/, "");
   const prefixIssue = prefix === "" ? null : prefixProblem(prefix);
   if (prefixIssue) issue("driverParams.pathPrefix", prefixIssue);
@@ -147,7 +159,8 @@ function validate(v: ConnectionFormValues): FormIssue[] {
 }
 
 export const elasticUi: KindUi = {
-  rows: ["hostPort", "user", "secret", "ssl"],
+  // "extraSecrets": the Session Token of temporary AWS keys (SigV4 with an access key).
+  rows: ["hostPort", "user", "secret", "extraSecrets", "ssl"],
   sslModes: ES_SSL_MODES,
   defaults: () => ({
     host: "127.0.0.1",
