@@ -508,20 +508,13 @@ describe("Launcher", () => {
         .getAllByRole("menuitem")
         .map((i) => i.textContent?.trim());
 
-    it("the … menu offers New ▸, Sort by ▸, Import / Export Connections and Backup / Restore", async () => {
+    it("the … menu offers only what the window has no button for: New Group…, Sort by ▸, Export", async () => {
       const user = userEvent.setup();
       renderLauncher();
       await row("Local Postgres");
       await user.click(screen.getByRole("button", { name: "More connection actions" }));
       const menu = await screen.findByRole("menu");
-      expect(menuItems(menu)).toEqual([
-        "New",
-        "Sort by",
-        "Import Connections…",
-        "Export Connections",
-        "Backup…",
-        "Restore…",
-      ]);
+      expect(menuItems(menu)).toEqual(["New Group…", "Sort by", "Export Connections"]);
     });
 
     it("Sort by ▸ Name reorders each group and is remembered", async () => {

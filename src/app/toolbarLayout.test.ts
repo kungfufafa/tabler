@@ -4,6 +4,7 @@ import {
   DEFAULT_TOOLBAR_ITEMS,
   insertItem,
   isToolbarItems,
+  LEGACY_DEFAULT_TOOLBAR_ITEMS,
   moveItem,
   paletteItems,
   removeItemAt,
@@ -42,7 +43,7 @@ describe("toolbar layout", () => {
 
   it("centres the pill: the items split at the status item", () => {
     expect(splitAtStatus(DEFAULT_TOOLBAR_ITEMS)).toEqual({
-      left: ["sidebar", "actions", "safeMode", "databases"],
+      left: ["actions", "safeMode"],
       status: true,
       right: ["refresh", "openAnything", "workspaces", "users", "metrics", "panels"],
     });
@@ -65,5 +66,15 @@ describe("toolbar layout", () => {
       DEFAULT_TOOLBAR_ITEMS,
     );
     expect(sanitizePrefs({ toolbarDisplay: "text" }).toolbarDisplay).toBe("icon");
+  });
+
+  it("drops the duplicate buttons from an untouched previous default, not from a customised one", () => {
+    expect(DEFAULT_TOOLBAR_ITEMS).not.toContain("sidebar");
+    expect(DEFAULT_TOOLBAR_ITEMS).not.toContain("databases");
+    expect(sanitizePrefs({ toolbarItems: [...LEGACY_DEFAULT_TOOLBAR_ITEMS] }).toolbarItems).toEqual(
+      DEFAULT_TOOLBAR_ITEMS,
+    );
+    const custom = ["sidebar", "databases", "status"];
+    expect(sanitizePrefs({ toolbarItems: custom }).toolbarItems).toEqual(custom);
   });
 });

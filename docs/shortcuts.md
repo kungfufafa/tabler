@@ -217,17 +217,17 @@ New Tab, Open in New Tab, Insert to SQL Editor, Add to Queries…, Delete. In th
 selects, a double-click (or ↩) inserts the statement at the cursor without running it, and ⌘↩ (or the
 entry's Run button) runs it.
 
-Three icon buttons sit above the Items | Queries | History switch (TablePlus's left sidebar, §2.2).
+Two icon buttons sit above the Items | Queries | History switch (TablePlus's left sidebar, §2.2).
 Each tooltip shows the key as it is bound now, so a remapped key shows up there.
 
-| Button            | Key | What it does                                                                              | TablePlus |
-| ----------------- | --- | ----------------------------------------------------------------------------------------- | --------- |
-| Show Connections  | ⇧⌘K | Opens the connection palette                                                              | Same      |
-| Show Databases    | ⌘K  | Opens the database palette                                                                | Same      |
-| Open Query Editor | ⌘↩  | Opens a new SQL tab (the button always opens a new one; in a SQL tab ⌘↩ runs a statement) | Same      |
+| Button            | Key | What it does                                                                                | TablePlus      |
+| ----------------- | --- | ------------------------------------------------------------------------------------------- | -------------- |
+| Show Connections  | ⇧⌘K | Opens the connection palette                                                                | Same           |
+| Show Databases    | ⌘K  | Opens the database palette                                                                  | Same           |
+| Open Query Editor | ⌘↩  | No sidebar button: the tab strip's + opens a new SQL tab (in a SQL tab ⌘↩ runs a statement) | A third button |
 
-Show Databases and Open Query Editor belong to a connection and are disabled while none is open;
-Show Connections is always enabled, it is how you open one.
+Show Databases belongs to a connection and is disabled while none is open; Show Connections is
+always enabled, it is how you open one.
 
 ## Welcome screen and palette
 

@@ -129,7 +129,7 @@ describe("Sidebar", () => {
     renderSidebar();
     expect(screen.getByRole("button", { name: "Show Connections" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Show Databases" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Open Query Editor" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Open Query Editor" })).not.toBeInTheDocument();
   });
 
   it("switches between Items and History and remembers the pane", async () => {

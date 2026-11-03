@@ -247,7 +247,8 @@ const fileNameOf = (s: string) => s.replace(/[/\\:*?"<>|]+/g, "-").trim() || "Co
 /**
  * The welcome screen and connection manager: the first screen, and reachable later from the
  * workspace rail's Connection manager button, File ▸ Connection Manager and ⌘K (it has no key).
- * Drawn as a compact centred window (like TablePlus's welcome window) on the window background.
+ * Drawn as a compact centred window (like TablePlus's welcome window) on the window background;
+ * with connections open it fills its panel instead, flush like the rest of the workspace.
  * Left: app name, version and the "new connection" actions, Backup… / Restore… at the bottom.
  * Right: the saved connections, the ungrouped ones first without a header, then the group tree
  * (nested, collapsible headers; empty groups too); click selects, double-click / ↩ connects,
@@ -510,6 +511,16 @@ export function Launcher() {
     separator,
     ...backupItems,
   ];
+  /**
+   * The "…" button: only what the window does not already show as a button (New Connection,
+   * From URL, Import, Backup and Restore are on the left).
+   */
+  const paneMenu: MenuEntry[] = [
+    { ...newGroupItem, label: "New Group…", icon: FolderPlus },
+    sortMenu,
+    separator,
+    exportMenu(selected, groupOf(selected)),
+  ];
 
   /** The group tree as menu items (indented by level, each with its icon). */
   const groupTreeItems = (
@@ -756,16 +767,39 @@ export function Launcher() {
   };
 
   const version = appInfo.data?.version;
+  /**
+   * With connections open (the workspace rail beside it) the manager is a panel of the workspace:
+   * drawn flush to the edges like the sidebar and tabs, not as a floating welcome window.
+   */
+  const docked = openIds.length > 0;
 
   return (
     // The window background, with the welcome "window" centred on it (16px clear of the edges).
     <div
       ref={rootRef}
-      className="bg-surface-2 dark:bg-background flex h-full min-h-0 min-w-0 items-center justify-center p-4"
+      className={cn(
+        "flex h-full min-h-0 min-w-0",
+        docked
+          ? "bg-background"
+          : "bg-surface-2 dark:bg-background items-center justify-center p-4",
+      )}
     >
-      <div className="bg-background border-border dark:bg-surface-2 flex h-[560px] max-h-full min-h-0 w-full max-w-[860px] overflow-hidden rounded-xl border shadow-sm dark:shadow-black/40">
+      <div
+        data-docked={docked || undefined}
+        className={cn(
+          "flex min-h-0 w-full overflow-hidden",
+          docked
+            ? "h-full"
+            : "bg-background border-border dark:bg-surface-2 h-[560px] max-h-full max-w-[860px] rounded-xl border shadow-sm dark:shadow-black/40",
+        )}
+      >
         {/* As wide as its longest action (at least 240px), so no action is ever cut off. */}
-        <aside className="border-border flex min-w-60 shrink-0 flex-col border-r px-3 pb-3">
+        <aside
+          className={cn(
+            "border-border flex min-w-60 shrink-0 flex-col border-r px-3 pb-3",
+            docked && "bg-sidebar",
+          )}
+        >
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-3 py-6 text-center">
             {/* The app icon, as the Dock shows it (its tile has the macOS margin built in). */}
             <img src={appIcon} alt="" aria-hidden draggable={false} className="mb-2 size-20" />
@@ -842,13 +876,13 @@ export function Launcher() {
                   variant="ghost"
                   size="icon-sm"
                   aria-label="More connection actions"
-                  title="New, sort, import / export, backup"
+                  title="New group, sort, export"
                 >
                   <MoreHorizontal />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-52">
-                <DropdownMenuEntries entries={listMenu} />
+                <DropdownMenuEntries entries={paneMenu} />
               </DropdownMenuContent>
             </DropdownMenu>
           </div>

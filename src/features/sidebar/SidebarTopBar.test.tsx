@@ -42,7 +42,6 @@ function renderBar() {
 
 const connections = () => screen.getByRole("button", { name: "Show Connections" });
 const databases = () => screen.getByRole("button", { name: "Show Databases" });
-const editor = () => screen.getByRole("button", { name: "Open Query Editor" });
 
 /** The tooltip a button shows on keyboard focus. */
 function tooltipOf(button: HTMLElement): HTMLElement {
@@ -63,32 +62,28 @@ describe("SidebarTopBar (TablePlus §2.2 quick navigation)", () => {
     disconnect();
   });
 
-  it("has Show Connections, Show Databases and Open Query Editor, in that order", () => {
+  it("has Show Connections and Show Databases, in that order (the tab strip's + opens SQL tabs)", () => {
     renderBar();
     const bar = screen.getByRole("toolbar", { name: "Quick navigation" });
     expect(
       within(bar)
         .getAllByRole("button")
         .map((b) => b.getAttribute("aria-label")),
-    ).toEqual(["Show Connections", "Show Databases", "Open Query Editor"]);
+    ).toEqual(["Show Connections", "Show Databases"]);
   });
 
-  it("opens the connection palette, the database palette and a NEW SQL tab", () => {
+  it("opens the connection palette and the database palette", () => {
     renderBar();
     fireEvent.click(connections());
     expect(run).toHaveBeenLastCalledWith("palette.connections");
     fireEvent.click(databases());
     expect(run).toHaveBeenLastCalledWith("palette.databases");
-    fireEvent.click(editor());
-    // `tab.new-query`, not `query.open-editor`: in a SQL tab the latter would run its statement.
-    expect(run).toHaveBeenLastCalledWith("tab.new-query");
-    expect(run).toHaveBeenCalledTimes(3);
+    expect(run).toHaveBeenCalledTimes(2);
   });
 
-  it("shows each button's shortcut in its tooltip (⇧⌘K, ⌘K, ⌘↩)", () => {
+  it("shows each button's shortcut in its tooltip (⇧⌘K, ⌘K)", () => {
     expect(shortcutFor("palette.connections")).toBe("Mod+Shift+K");
     expect(shortcutFor("palette.databases")).toBe("Mod+K");
-    expect(shortcutFor("query.open-editor")).toBe("Mod+Enter");
     renderBar();
     const tip = (button: HTMLElement, label: string, combo: string) => {
       const t = tooltipOf(button);
@@ -98,7 +93,6 @@ describe("SidebarTopBar (TablePlus §2.2 quick navigation)", () => {
     };
     tip(connections(), "Show Connections", "Mod+Shift+K");
     tip(databases(), "Show Databases", "Mod+K");
-    tip(editor(), "Open Query Editor", "Mod+Enter");
   });
 
   it("follows a remapped key", () => {
@@ -109,25 +103,22 @@ describe("SidebarTopBar (TablePlus §2.2 quick navigation)", () => {
     ).toBeInTheDocument();
   });
 
-  it("disables Show Databases and Open Query Editor without a connection, not Show Connections", () => {
+  it("disables Show Databases without a connection, not Show Connections", () => {
     disconnect();
     renderBar();
     expect(connections()).toBeEnabled();
     expect(databases()).toBeDisabled();
-    expect(editor()).toBeDisabled();
     fireEvent.click(databases());
-    fireEvent.click(editor());
     expect(run).not.toHaveBeenCalled();
     fireEvent.click(connections());
     expect(run).toHaveBeenCalledWith("palette.connections");
   });
 
-  it("enables them as soon as a connection opens", () => {
+  it("enables Show Databases as soon as a connection opens", () => {
     disconnect();
     renderBar();
     expect(databases()).toBeDisabled();
     act(() => connect());
     expect(databases()).toBeEnabled();
-    expect(editor()).toBeEnabled();
   });
 });

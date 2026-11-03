@@ -58,8 +58,25 @@ export const TOOLBAR_ITEM_SHORT: Record<ToolbarItemId, string> = {
   flexibleSpace: "",
 };
 
-/** The default set, left → right (TablePlus's toolbar). */
+/**
+ * The default set, left → right (TablePlus's toolbar), without the items that repeat a button
+ * already on screen: Toggle Sidebar is the first of the panel switches, and Databases & SQL is the
+ * sidebar's Show Databases and the tab strip's +. Both stay in the palette.
+ */
 export const DEFAULT_TOOLBAR_ITEMS: readonly ToolbarItemId[] = Object.freeze([
+  "actions",
+  "safeMode",
+  "status",
+  "refresh",
+  "openAnything",
+  "workspaces",
+  "users",
+  "metrics",
+  "panels",
+]);
+
+/** The previous default: a stored layout still equal to it moves to the current default. */
+export const LEGACY_DEFAULT_TOOLBAR_ITEMS: readonly ToolbarItemId[] = Object.freeze([
   "sidebar",
   "actions",
   "safeMode",
@@ -72,6 +89,14 @@ export const DEFAULT_TOOLBAR_ITEMS: readonly ToolbarItemId[] = Object.freeze([
   "metrics",
   "panels",
 ]);
+
+/** `items`, or the current default when it is the untouched previous default. */
+export function migrateToolbarItems(items: readonly ToolbarItemId[]): readonly ToolbarItemId[] {
+  const legacy =
+    items.length === LEGACY_DEFAULT_TOOLBAR_ITEMS.length &&
+    items.every((id, i) => id === LEGACY_DEFAULT_TOOLBAR_ITEMS[i]);
+  return legacy ? DEFAULT_TOOLBAR_ITEMS : items;
+}
 
 export const TOOLBAR_DISPLAYS = ["icon", "iconAndText"] as const;
 export type ToolbarDisplay = (typeof TOOLBAR_DISPLAYS)[number];

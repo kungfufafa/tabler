@@ -196,7 +196,7 @@ export function Sidebar() {
 
   return (
     <aside className="bg-sidebar text-sidebar-foreground flex h-full flex-col" data-scope="sidebar">
-      {/* Show Connections / Show Databases / Open Query Editor (disabled without a connection). */}
+      {/* Show Connections / Show Databases (disabled without a connection). */}
       <SidebarTopBar />
       {active ? (
         <>

@@ -273,8 +273,12 @@ describe("Toolbar", () => {
       "8px",
     );
     const labels = screen.getAllByRole("button").map((b) => b.getAttribute("aria-label"));
-    expect(labels.slice(0, 2)).toEqual(["Toggle sidebar", "Menu"]);
+    // The default has no sidebar toggle in front (the panel switches have it): the menu leads.
+    expect(labels[0]).toBe("Menu");
     expect(labels.slice(-3)).toEqual(["Minimize", "Maximize", "Close"]);
+    act(() => setPref("toolbarItems", ["sidebar", "refresh"]));
+    const reordered = screen.getAllByRole("button").map((b) => b.getAttribute("aria-label"));
+    expect(reordered.slice(0, 2)).toEqual(["Toggle sidebar", "Menu"]);
   });
 
   it("enables the action control while the workspace has pending changes, in any of its tabs", () => {
@@ -342,6 +346,8 @@ describe("Toolbar", () => {
       "palette.open",
     ];
     const spies = ids.map(spyAction);
+    // Toggle Sidebar and Databases & SQL are palette items now (not in the default set).
+    setPref("toolbarItems", ["sidebar", "databases", "refresh", "openAnything"]);
     wrap(<Toolbar launcher={false} />);
     for (const name of ["Toggle sidebar", "Switch database", "New query", "Refresh"])
       fireEvent.click(screen.getByRole("button", { name }));

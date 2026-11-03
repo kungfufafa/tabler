@@ -6,6 +6,7 @@ import { EMPTY_OVERRIDES, isKeymapOverrides, type KeymapOverrides } from "@/lib/
 import {
   DEFAULT_TOOLBAR_ITEMS,
   isToolbarItems,
+  migrateToolbarItems,
   TOOLBAR_DISPLAYS,
   type ToolbarDisplay,
   type ToolbarItemId,
@@ -541,6 +542,7 @@ export function sanitizePrefs(raw: unknown, base: Readonly<Prefs> = DEFAULT_PREF
   for (const key of PREF_KEYS) {
     if (Object.hasOwn(src, key) && VALID[key](src[key])) assign(out, key, src[key]);
   }
+  out.toolbarItems = migrateToolbarItems(out.toolbarItems);
   return out;
 }
 
