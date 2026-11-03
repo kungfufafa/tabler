@@ -59,11 +59,16 @@ export function DriverBadge(
         <span
           data-slot="database-logo"
           className={cn(logoClass, "bg-current")}
+          // Prefixed too: WKWebView on macOS 12.0–12.2 (Safari < 15.4) knows only -webkit-mask.
           style={{
             maskImage: `url("${DATABASE_LOGOS[kind]}")`,
             maskSize: "contain",
             maskPosition: "center",
             maskRepeat: "no-repeat",
+            WebkitMaskImage: `url("${DATABASE_LOGOS[kind]}")`,
+            WebkitMaskSize: "contain",
+            WebkitMaskPosition: "center",
+            WebkitMaskRepeat: "no-repeat",
           }}
         />
       )}
