@@ -238,9 +238,9 @@ def build_masters():
 
 
 # --------------------------------------------------------------------------- app icon
-def icon_cells(n):
+def icon_cells(n, tile=824):
     """Largest whole-pixel (cell, gap) whose elephant fits ~65 % of the tile at an n-px icon."""
-    limit = 0.65 * n * 824 / 1024
+    limit = 0.65 * n * tile / 1024
     best = (1, 0)
     for cell in range(1, 200):
         options = [0] if cell <= 2 else ([0, 1] if cell == 3 else [max(1, round(cell * GAP_RATIO))])
@@ -251,33 +251,39 @@ def icon_cells(n):
     return best
 
 
-def app_icon_svg(n, vector=False):
+def app_icon_svg(n, vector=False, windows=False):
     """macOS-style icon on an n-px canvas: the 824/1024 tile with 100/1024 margins (Big Sur grid).
-    vector=True keeps fractional master proportions (for the 1024 master file)."""
+    vector=True keeps fractional master proportions (for the 1024 master file).
+    windows=True fills the canvas with the tile, without the margins and the drop shadow: Windows
+    draws no frame of its own, so a Big Sur tile looks small next to the other taskbar icons."""
     k = n / 1024
-    t0, ts, tr = 100 * k, 824 * k, 185 * k
-    if vector:
-        cell, gap = 54 * k, 14 * k
+    if windows:
+        t0, ts, tr = 0, n, 230 * k
     else:
-        cell, gap = icon_cells(n)
+        t0, ts, tr = 100 * k, 824 * k, 185 * k
+    if vector:
+        cell, gap = 54 * k * ts / (824 * k), 14 * k * ts / (824 * k)
+    else:
+        cell, gap = icon_cells(n, tile=1024 if windows else 824)
     w, h = grid_size(cell, gap)
     x0, y0 = (n - w) / 2, (n - h) / 2 - 0.012 * n
     if not vector:
         x0, y0 = round(x0), round(y0)
     radius = cell * RADIUS_RATIO if cell >= 6 else 0
     eye = "hole" if cell >= 6 else ("square" if cell >= 3 else "gap")
-    # ids carry the size: all sizes share one HTML page when rendered, and ids must not collide
-    defs = (f'<linearGradient id="tile-{n}" x1="0" y1="{f(t0)}" x2="0" y2="{f(t0 + ts)}" gradientUnits="userSpaceOnUse">'
+    # ids carry the size and variant: all sizes share one HTML page when rendered, and ids must not collide
+    tag = f"win-{n}" if windows else f"{n}"
+    defs = (f'<linearGradient id="tile-{tag}" x1="0" y1="{f(t0)}" x2="0" y2="{f(t0 + ts)}" gradientUnits="userSpaceOnUse">'
             f'<stop offset="0" stop-color="{TILE[0]}"/><stop offset="1" stop-color="{TILE[1]}"/></linearGradient>')
     shadow = ""
-    if n >= 128:
-        defs += (f'<filter id="shadow-{n}" x="-20%" y="-20%" width="140%" height="140%">'
+    if n >= 128 and not windows:
+        defs += (f'<filter id="shadow-{tag}" x="-20%" y="-20%" width="140%" height="140%">'
                  f'<feDropShadow dx="0" dy="{f(10 * k)}" stdDeviation="{f(12 * k)}" flood-color="{INK}" '
                  f'flood-opacity="0.30"/></filter>')
-        shadow = f' filter="url(#shadow-{n})"'
+        shadow = f' filter="url(#shadow-{tag})"'
     border_w = max(1.0, 2 * k) if n >= 32 else 0.75
     body = (f"<defs>{defs}</defs>\n"
-            f'<rect x="{f(t0)}" y="{f(t0)}" width="{f(ts)}" height="{f(ts)}" rx="{f(tr)}" fill="url(#tile-{n})"{shadow}/>\n'
+            f'<rect x="{f(t0)}" y="{f(t0)}" width="{f(ts)}" height="{f(ts)}" rx="{f(tr)}" fill="url(#tile-{tag})"{shadow}/>\n'
             f'<rect x="{f(t0 + border_w / 2)}" y="{f(t0 + border_w / 2)}" width="{f(ts - border_w)}" '
             f'height="{f(ts - border_w)}" rx="{f(tr - border_w / 2)}" fill="none" stroke="{INK}" '
             f'stroke-opacity="0.10" stroke-width="{f(border_w)}"/>\n'
@@ -294,7 +300,7 @@ def find_chrome():
     sys.exit("Google Chrome or Chromium is needed to render the PNGs")
 
 
-def render_sheet(sizes):
+def render_sheet(sizes, windows=False):
     """Render every icon size in one headless-Chrome screenshot (1 CSS px = 1 device px) and crop."""
     pad = 8
     width = sum(sizes) + pad * (len(sizes) + 1)
@@ -302,7 +308,7 @@ def render_sheet(sizes):
     x, items, html = pad, {}, []
     for n in sizes:
         html.append(f'<div style="position:absolute;left:{x}px;top:{pad}px;width:{n}px;height:{n}px">'
-                    f'{app_icon_svg(n, vector=(n >= 512))}</div>')
+                    f'{app_icon_svg(n, vector=(n >= 512), windows=windows)}</div>')
         items[n] = (x, pad)
         x += n + pad
     tmp = tempfile.mkdtemp(prefix="tabler-icons-")
@@ -341,17 +347,21 @@ def build_icons():
     save(png[1024], os.path.join(ROOT, "src-tauri", "app-icon.png"))
     save(png[32], os.path.join(ROOT, "public", "favicon.png"))
     for n, name in ((32, "32x32.png"), (64, "64x64.png"), (128, "128x128.png"), (256, "128x128@2x.png"),
-                    (512, "icon.png"), (50, "StoreLogo.png")):
+                    (512, "icon.png")):
         save(png[n], os.path.join(icons, name))
-    for n in (30, 44, 71, 89, 107, 142, 150, 284, 310):
-        save(png[n], os.path.join(icons, f"Square{n}x{n}Logo.png"))
 
-    # Windows .ico (largest first so Pillow keeps every size from its own drawing)
+    # Windows: the full-bleed variant for everything only Windows reads (the .ico, the MSIX logos)
+    write(os.path.join(ROOT, "design", "app-icon-windows.svg"), app_icon_svg(1024, vector=True, windows=True))
+    win = render_sheet([16, 24, 30, 32, 44, 48, 50, 64, 71, 89, 107, 142, 150, 256, 284, 310], windows=True)
+    save(win[50], os.path.join(icons, "StoreLogo.png"))
+    for n in (30, 44, 71, 89, 107, 142, 150, 284, 310):
+        save(win[n], os.path.join(icons, f"Square{n}x{n}Logo.png"))
+    # .ico (largest first so Pillow keeps every size from its own drawing)
     ico_sizes = [256, 64, 48, 32, 24, 16]
     ico = os.path.join(icons, "icon.ico")
     os.makedirs(icons, exist_ok=True)
-    png[256].save(ico, format="ICO", sizes=[(n, n) for n in ico_sizes],
-                  append_images=[png[n] for n in ico_sizes[1:]])
+    win[256].save(ico, format="ICO", sizes=[(n, n) for n in ico_sizes],
+                  append_images=[win[n] for n in ico_sizes[1:]])
     print("wrote", os.path.relpath(ico, ROOT))
 
     # macOS .icns via iconutil

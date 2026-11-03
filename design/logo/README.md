@@ -27,10 +27,17 @@ Google Chrome (for rendering) and macOS `iconutil`. It rewrites everything in th
 | `*-dark.svg`                 | Colour version for dark backgrounds                        |
 | `*-black.svg`, `*-white.svg` | One-colour versions (print, engraving, single-ink, photos) |
 | `../app-icon.svg`            | macOS app icon master (tile on the Big Sur 1024 grid)      |
+| `../app-icon-windows.svg`    | Windows app icon master (the tile fills the canvas)        |
 
 The app icons in `src-tauri/icons/` are not scaled down from 1024. Each size is drawn on its own
 whole-pixel grid. 16 and 32 px are gapless pixel elephants, and from 64 px up the cells get gaps
 and the eye gets a hole. The `.icns` and `.ico` files are assembled from those drawings.
+
+Windows draws no frame around an app icon, so the Big Sur tile with its margins and shadow looks
+small next to the other taskbar icons. Everything only Windows reads (`icon.ico`, `StoreLogo.png`,
+the `Square*Logo.png` files) comes from `app-icon-windows.svg`, where the tile fills the canvas.
+Until the next `build.py` run on a Mac, those files were rendered from that SVG with
+`tauri icon design/app-icon-windows.svg` (downsampled, not drawn per size).
 
 ## Colour
 
