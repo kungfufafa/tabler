@@ -205,8 +205,8 @@ const GROUP_ORDER: Array<[TableSummary["kind"][], SidebarSection]> = [
  * sidebar group (`groups`, in their order, even an empty one: items are dragged into it) with the
  * tables it holds (rows keyed `g:<id>:t:`); those leave Tables / Views / Materialized views. A
  * `collapsed` section (or group) keeps its header (with its count) but leaves its rows out, so
- * ↑/↓ skip them. Without `groupByKind` (TablePlus), the rest is one list by name with no header:
- * tables, views and materialized views together, their icons telling them apart.
+ * ↑/↓ skip them. Without `groupByKind` (TablePlus), the rest is one list by name under a single
+ * "Tables" header: tables, views and materialized views together, their icons telling them apart.
  */
 export function buildTreeRows(
   tables: TableSummary[],
@@ -273,11 +273,13 @@ export function buildTreeRows(
     }
   }
   if (!groupByKind) {
-    const items = ungrouped
-      .filter((t) => !pinned.has(tableKey(t)) && matches(t))
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-    for (const t of items)
-      rows.push({ type: "table", key: `t:${t.schema ?? ""}.${t.name}`, table: t });
+    section(
+      "Tables",
+      "t",
+      ungrouped
+        .filter((t) => !pinned.has(tableKey(t)) && matches(t))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })),
+    );
     return rows;
   }
   for (const [kinds, label] of GROUP_ORDER)

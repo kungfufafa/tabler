@@ -121,12 +121,19 @@ describe("Sidebar", () => {
     expect(screen.queryByText("No tables")).toBeNull();
   });
 
-  it("lists tables and views in one list by name, without headers, until Group Items by Type is on", async () => {
+  it("lists tables and views by name under one Tables header until Group Items by Type is on", async () => {
     setSidebarOption("groupByKind", false);
     renderSidebar();
     expect(await screen.findByRole("button", { name: /^users/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Tables/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Tables/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Views/ })).toBeNull();
+    // One list by name: the view sits between the tables.
+    const names = screen
+      .getAllByRole("button", { name: /^(users|posts|user_stats)/ })
+      .map((b) => b.textContent);
+    expect(names.findIndex((n) => n?.startsWith("user_stats"))).toBeLessThan(
+      names.findIndex((n) => n?.startsWith("users")),
+    );
   });
 
   it("switches between Items and History and remembers the pane", async () => {

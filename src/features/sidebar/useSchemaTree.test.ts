@@ -47,20 +47,22 @@ describe("buildTreeRows", () => {
     ]);
   });
 
-  it("lists everything by name with no header while not grouping by kind (TablePlus)", () => {
+  it("lists everything by name under one Tables header while not grouping by kind (TablePlus)", () => {
     const flat = (search = "", pinned?: Set<string>) =>
       keys(buildTreeRows(tables, search, pinned, undefined, undefined, undefined, "fuzzy", false));
     expect(flat()).toEqual([
+      "h:Tables",
       "t:inventory.orders",
       "t:public.posts",
       "t:public.user_stats",
       "t:public.users",
     ]);
-    expect(flat("user")).toEqual(["t:public.user_stats", "t:public.users"]);
+    expect(flat("user")).toEqual(["h:Tables", "t:public.user_stats", "t:public.users"]);
     // Pinned tables still come first, under their header.
     expect(flat("", new Set(["public.posts"]))).toEqual([
       "h:Pinned",
       "p:public.posts",
+      "h:Tables",
       "t:inventory.orders",
       "t:public.user_stats",
       "t:public.users",
