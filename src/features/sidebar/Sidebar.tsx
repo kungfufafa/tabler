@@ -100,6 +100,7 @@ function ItemsPane({
   const collapsed = useSidebarPrefs((s) => s.collapsed);
   const showRecent = useSidebarPrefs((s) => s.options.showRecent);
   const showRowCounts = useSidebarPrefs((s) => s.options.showRowCounts);
+  const groupByKind = useSidebarPrefs((s) => s.options.groupByKind);
   const strategy = useSidebarPrefs((s) => s.matchStrategy);
   const { settings, set } = useSidebarSettings(connection);
   // Pins and recent tables follow the saved connection and its database, not the (per-session)
@@ -117,6 +118,7 @@ function ItemsPane({
     collapsed,
     groups,
     strategy,
+    groupByKind,
   );
   const lazyTree = useLazySchemaTree(connection, lazy, {
     search,

@@ -71,17 +71,17 @@ export const DEFAULT_TOOLBAR_ITEMS: readonly ToolbarItemId[] = Object.freeze([
   "safeMode",
   "databases",
   "status",
+  "metrics",
   "refresh",
   "openAnything",
-  "workspaces",
-  "users",
-  "metrics",
   "panels",
 ]);
 
 /**
- * The previous default (without the sidebar toggle and Databases & SQL): a stored layout still
- * equal to it moves to the current default.
+ * The previous defaults: a stored layout still equal to one of them moves to the current default.
+ * The first lacked the sidebar toggle and Databases & SQL; the second had Show Workspaces and
+ * User Management on the right, which TablePlus's toolbar does not (its right group is Metrics
+ * Board, Refresh, Open Anything and the panel switches).
  */
 export const LEGACY_DEFAULT_TOOLBAR_ITEMS: readonly ToolbarItemId[] = Object.freeze([
   "actions",
@@ -94,13 +94,27 @@ export const LEGACY_DEFAULT_TOOLBAR_ITEMS: readonly ToolbarItemId[] = Object.fre
   "metrics",
   "panels",
 ]);
+const LEGACY_DEFAULT_TOOLBAR_ITEMS_2: readonly ToolbarItemId[] = Object.freeze([
+  "sidebar",
+  "actions",
+  "safeMode",
+  "databases",
+  "status",
+  "refresh",
+  "openAnything",
+  "workspaces",
+  "users",
+  "metrics",
+  "panels",
+]);
 
 /** `items`, or the current default when it is the untouched previous default. */
 export function migrateToolbarItems(items: readonly ToolbarItemId[]): readonly ToolbarItemId[] {
-  const legacy =
-    items.length === LEGACY_DEFAULT_TOOLBAR_ITEMS.length &&
-    items.every((id, i) => id === LEGACY_DEFAULT_TOOLBAR_ITEMS[i]);
-  return legacy ? DEFAULT_TOOLBAR_ITEMS : items;
+  const same = (legacy: readonly ToolbarItemId[]) =>
+    items.length === legacy.length && items.every((id, i) => id === legacy[i]);
+  return same(LEGACY_DEFAULT_TOOLBAR_ITEMS) || same(LEGACY_DEFAULT_TOOLBAR_ITEMS_2)
+    ? DEFAULT_TOOLBAR_ITEMS
+    : items;
 }
 
 export const TOOLBAR_DISPLAYS = ["icon", "iconAndText"] as const;

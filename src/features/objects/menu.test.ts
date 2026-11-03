@@ -270,6 +270,7 @@ describe("sidebar menus", () => {
         showSystemSchemas: false,
         showRowCounts: true,
         showColumns: false,
+        groupByKind: false,
       },
       vi.fn(),
     );
@@ -293,6 +294,7 @@ describe("sidebar menus", () => {
           "Show System Schemas",
           "Show Row Counts",
           "Show Columns",
+          "Group Items by Type",
         ],
       },
     ]);
@@ -308,6 +310,7 @@ describe("sidebar menus", () => {
         showSystemSchemas: true,
         showRowCounts: false,
         showColumns: true,
+        groupByKind: false,
       },
       vi.fn(),
     );
@@ -316,11 +319,13 @@ describe("sidebar menus", () => {
       "Show Function Section",
       "Show Row Counts",
       "Show Columns",
+      "Group Items by Type",
     ]);
     expect(labels(settingsEntries("sqlite", {} as never, vi.fn()))).toEqual([
       "Show Recently Section",
       "Show Row Counts",
       "Show Columns",
+      "Group Items by Type",
     ]);
   });
 
@@ -333,6 +338,7 @@ describe("sidebar menus", () => {
       showSystemSchemas: false,
       showRowCounts: false,
       showColumns: false,
+      groupByKind: false,
     };
     const pg = settingsEntries("postgres", { ...base, lazyLoad: true }, set);
     expect(labels(pg)).toContain("Lazy Load Schema Items");

@@ -24,6 +24,7 @@ export function useSidebarSettings(connection: OpenConnection): {
       showSystemSchemas: options.showSystemSchemas,
       showRowCounts: options.showRowCounts,
       showColumns: options.showColumns,
+      groupByKind: options.groupByKind,
       lazyLoad: supportsLazyLoad(driver) ? lazy : null,
     },
     set: (key, value) => {

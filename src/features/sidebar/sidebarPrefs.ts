@@ -38,6 +38,11 @@ export interface SidebarOptions {
   historyAllConnections: boolean;
   /** Table / view rows expand to list their columns (TablePlus b670, off by default). */
   showColumns: boolean;
+  /**
+   * Tables, views and materialized views under a header each. Off (TablePlus): one list of all
+   * of them by name, their icons telling the kinds apart.
+   */
+  groupByKind: boolean;
 }
 
 export const DEFAULT_SIDEBAR_OPTIONS: SidebarOptions = {
@@ -49,6 +54,7 @@ export const DEFAULT_SIDEBAR_OPTIONS: SidebarOptions = {
   showSystemSchemas: false,
   historyAllConnections: false,
   showColumns: false,
+  groupByKind: false,
 };
 
 const SECTIONS: readonly SidebarSection[] = [

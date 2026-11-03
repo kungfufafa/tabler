@@ -44,6 +44,7 @@ describe("sidebar preferences", () => {
       showSystemSchemas: false,
       historyAllConnections: false,
       showColumns: false,
+      groupByKind: false,
     });
   });
 

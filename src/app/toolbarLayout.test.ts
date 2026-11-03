@@ -45,7 +45,7 @@ describe("toolbar layout", () => {
     expect(splitAtStatus(DEFAULT_TOOLBAR_ITEMS)).toEqual({
       left: ["sidebar", "actions", "safeMode", "databases"],
       status: true,
-      right: ["refresh", "openAnything", "workspaces", "users", "metrics", "panels"],
+      right: ["metrics", "refresh", "openAnything", "panels"],
     });
     expect(splitAtStatus(["refresh"])).toEqual({ left: ["refresh"], status: false, right: [] });
     expect(visibleItems(DEFAULT_TOOLBAR_ITEMS, { metrics: false })).not.toContain("metrics");
@@ -71,6 +71,22 @@ describe("toolbar layout", () => {
   it("moves an untouched previous default to TablePlus's set, not a customised layout", () => {
     expect(DEFAULT_TOOLBAR_ITEMS[0]).toBe("sidebar");
     expect(DEFAULT_TOOLBAR_ITEMS).toContain("databases");
+    expect(DEFAULT_TOOLBAR_ITEMS).not.toContain("workspaces");
+    expect(DEFAULT_TOOLBAR_ITEMS).not.toContain("users");
+    const second = [
+      "sidebar",
+      "actions",
+      "safeMode",
+      "databases",
+      "status",
+      "refresh",
+      "openAnything",
+      "workspaces",
+      "users",
+      "metrics",
+      "panels",
+    ];
+    expect(sanitizePrefs({ toolbarItems: second }).toolbarItems).toEqual(DEFAULT_TOOLBAR_ITEMS);
     expect(sanitizePrefs({ toolbarItems: [...LEGACY_DEFAULT_TOOLBAR_ITEMS] }).toolbarItems).toEqual(
       DEFAULT_TOOLBAR_ITEMS,
     );

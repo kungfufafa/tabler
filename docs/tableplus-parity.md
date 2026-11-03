@@ -340,3 +340,9 @@ out of the repository: its screenshots show the user's hosts) against the mock b
   default). The sidebar starts with Items | Queries | History: the Show Connections / Show
   Databases buttons above it are gone (⇧⌘K and ⌘K still open the palettes, and the toolbar has
   Databases / SQL).
+- Sidebar items: one list of tables, views and materialized views by name, their icons telling
+  the kinds apart (TablePlus); ⚙ ▸ **Group Items by Type** brings the Tables / Views /
+  Materialized views headers back. Functions and Sequences keep their sections.
+- Toolbar right group: Metrics Board, Refresh, Open Anything and the panel switches, TablePlus's
+  set; Show Workspaces and User Management left the default (still in Customize Toolbar…, and
+  the rail and the admin menu reach both).

@@ -205,7 +205,8 @@ const GROUP_ORDER: Array<[TableSummary["kind"][], SidebarSection]> = [
  * sidebar group (`groups`, in their order, even an empty one: items are dragged into it) with the
  * tables it holds (rows keyed `g:<id>:t:`); those leave Tables / Views / Materialized views. A
  * `collapsed` section (or group) keeps its header (with its count) but leaves its rows out, so
- * ↑/↓ skip them.
+ * ↑/↓ skip them. Without `groupByKind` (TablePlus), the rest is one list by name with no header:
+ * tables, views and materialized views together, their icons telling them apart.
  */
 export function buildTreeRows(
   tables: TableSummary[],
@@ -215,6 +216,7 @@ export function buildTreeRows(
   collapsed: ReadonlySet<SidebarSection> = EMPTY_COLLAPSED,
   groups: readonly SidebarGroup[] = EMPTY_GROUPS,
   strategy: MatchStrategy = "fuzzy",
+  groupByKind = true,
 ): TreeRow[] {
   const matchName = compileSearch(search, strategy);
   const matches = (t: TableSummary) => matchName(t.name);
@@ -270,6 +272,14 @@ export function buildTreeRows(
           rows.push({ type: "table", key: `g:${g.id}:t:${t.schema ?? ""}.${t.name}`, table: t });
     }
   }
+  if (!groupByKind) {
+    const items = ungrouped
+      .filter((t) => !pinned.has(tableKey(t)) && matches(t))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    for (const t of items)
+      rows.push({ type: "table", key: `t:${t.schema ?? ""}.${t.name}`, table: t });
+    return rows;
+  }
   for (const [kinds, label] of GROUP_ORDER)
     section(
       label,
@@ -287,10 +297,12 @@ export function useTreeRows(
   collapsed: ReadonlySet<SidebarSection> = EMPTY_COLLAPSED,
   groups: readonly SidebarGroup[] = EMPTY_GROUPS,
   strategy: MatchStrategy = "fuzzy",
+  groupByKind = true,
 ): TreeRow[] {
   return useMemo(
-    () => buildTreeRows(tables ?? [], search, pinned, recent, collapsed, groups, strategy),
-    [tables, search, pinned, recent, collapsed, groups, strategy],
+    () =>
+      buildTreeRows(tables ?? [], search, pinned, recent, collapsed, groups, strategy, groupByKind),
+    [tables, search, pinned, recent, collapsed, groups, strategy, groupByKind],
   );
 }
 

@@ -720,6 +720,8 @@ export interface SidebarSettings {
   showRowCounts: boolean;
   /** Each table / view row expands to its columns. */
   showColumns: boolean;
+  /** Tables, views and materialized views under headers, instead of one list by name. */
+  groupByKind: boolean;
   /** "Lazy Load Schema Items" of the connection; null where it does not apply (SQLite). */
   lazyLoad?: boolean | null;
 }
@@ -751,7 +753,11 @@ export function settingsEntries(
     );
   if (s.lazyLoad !== undefined && s.lazyLoad !== null)
     out.push(check("lazyLoad", "Lazy Load Schema Items"));
-  out.push(check("showRowCounts", "Show Row Counts"), check("showColumns", "Show Columns"));
+  out.push(
+    check("showRowCounts", "Show Row Counts"),
+    check("showColumns", "Show Columns"),
+    check("groupByKind", "Group Items by Type"),
+  );
   return out;
 }
 

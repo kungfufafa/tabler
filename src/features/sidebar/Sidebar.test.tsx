@@ -18,6 +18,7 @@ import {
   OPTIONS_STORAGE_KEY,
   PANE_STORAGE_KEY,
   reloadSidebarPrefs,
+  setSidebarOption,
   setSidebarPane,
   useSidebarPrefs,
 } from "./sidebarPrefs";
@@ -86,6 +87,9 @@ describe("Sidebar", () => {
     ])
       localStorage.removeItem(key);
     reloadSidebarPrefs();
+    // These tests read the tree by its Tables / Views headers (off by default: TablePlus lists
+    // everything in one list; the test below covers that).
+    setSidebarOption("groupByKind", true);
     resetLazyLoad();
     useRecentStore.setState({ recent: {} });
     useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
@@ -115,6 +119,14 @@ describe("Sidebar", () => {
     expect(await screen.findByText("Could not load tables")).toBeInTheDocument();
     expect(screen.getByText("permission denied")).toBeInTheDocument();
     expect(screen.queryByText("No tables")).toBeNull();
+  });
+
+  it("lists tables and views in one list by name, without headers, until Group Items by Type is on", async () => {
+    setSidebarOption("groupByKind", false);
+    renderSidebar();
+    expect(await screen.findByRole("button", { name: /^users/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Tables/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Views/ })).toBeNull();
   });
 
   it("switches between Items and History and remembers the pane", async () => {
