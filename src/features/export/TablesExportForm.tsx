@@ -484,8 +484,9 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
           void submit();
         }
       }}
+      className="flex min-h-0 flex-1 flex-col"
     >
-      <DialogHeader className="border-border gap-1 border-b px-4 py-3 pr-12">
+      <DialogHeader className="border-border shrink-0 gap-1 border-b px-4 py-3 pr-12">
         <DialogTitle className="flex items-center gap-2 text-sm">
           <FileDown className="text-brand size-4" />
           Export
@@ -499,135 +500,142 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
         </DialogDescription>
       </DialogHeader>
 
-      <fieldset disabled={running} className="flex min-w-0 flex-col gap-3 px-4 py-4">
-        <div className="border-border flex flex-col overflow-hidden rounded-md border">
-          <div className="border-border bg-surface-2/60 flex items-center gap-2 border-b px-2 py-1">
-            <Checkbox
-              aria-label="Select all tables"
-              checked={allState}
-              onCheckedChange={(v) =>
-                setKeys(
-                  shownTables.map((t) => t.key),
-                  v === true,
-                )
-              }
-            />
-            <div className="relative min-w-0 flex-1">
-              <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-1.5 size-3.5 -translate-y-1/2" />
-              <Input
-                aria-label="Search tables"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={leveled ? "Search tables and databases" : "Search tables"}
-                spellCheck={false}
-                className="h-6 border-0 bg-transparent pl-6 text-xs shadow-none focus-visible:ring-0"
+      {/* The wrapper scrolls: a fieldset does not clip its own overflow in every engine. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <fieldset disabled={running} className="flex min-w-0 flex-col gap-3 px-4 py-4">
+          <div className="border-border flex flex-col overflow-hidden rounded-md border">
+            <div className="border-border bg-surface-2/60 flex items-center gap-2 border-b px-2 py-1">
+              <Checkbox
+                aria-label="Select all tables"
+                checked={allState}
+                onCheckedChange={(v) =>
+                  setKeys(
+                    shownTables.map((t) => t.key),
+                    v === true,
+                  )
+                }
               />
+              <div className="relative min-w-0 flex-1">
+                <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-1.5 size-3.5 -translate-y-1/2" />
+                <Input
+                  aria-label="Search tables"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={leveled ? "Search tables and databases" : "Search tables"}
+                  spellCheck={false}
+                  className="h-6 border-0 bg-transparent pl-6 text-xs shadow-none focus-visible:ring-0"
+                />
+              </div>
+            </div>
+            <div className="max-h-56 min-h-16 overflow-y-auto py-0.5">
+              {leveled ? (
+                <ul aria-label="Databases">
+                  {dbList.isError && (
+                    <li className="text-error px-2 py-1.5 text-xs">
+                      {toIpcError(dbList.error).message}
+                    </li>
+                  )}
+                  {shownDbs.map((db) => {
+                    const isOpen = expanded.has(db) || (searching && shownOf(db).length > 0);
+                    const tables = loaded.get(db);
+                    const n = tables?.filter((t) => checked.has(t.key)).length ?? 0;
+                    return (
+                      <li key={db ?? ""}>
+                        <div className="hover:bg-accent/60 flex h-7 items-center gap-1 pr-2 text-xs">
+                          <button
+                            type="button"
+                            aria-label={`${isOpen ? "Close" : "Open"} ${db}`}
+                            aria-expanded={isOpen}
+                            onClick={() => toggleOpen(db)}
+                            className="text-muted-foreground hover:text-foreground flex size-6 shrink-0 items-center justify-center"
+                          >
+                            <ChevronRight
+                              className={cn("size-3.5 transition-transform", isOpen && "rotate-90")}
+                            />
+                          </button>
+                          <Checkbox
+                            aria-label={`Select all tables of ${db}`}
+                            checked={databaseState(
+                              tables,
+                              checked,
+                              pending.get(db)?.kind === "all",
+                            )}
+                            onCheckedChange={(v) => toggleDatabase(db, v === true)}
+                          />
+                          <Database className="text-muted-foreground ml-1 size-3.5 shrink-0" />
+                          <span
+                            className="min-w-0 cursor-default truncate font-mono"
+                            onDoubleClick={() => toggleOpen(db)}
+                          >
+                            {db}
+                          </span>
+                          {db === currentDb && (
+                            <span className="text-muted-foreground shrink-0 text-[10px]">
+                              current
+                            </span>
+                          )}
+                          {tables && (
+                            <span className="text-muted-foreground ml-auto shrink-0 tabular-nums">
+                              {n > 0 ? `${formatCount(n)} / ` : ""}
+                              {formatCount(tables.length)}
+                            </span>
+                          )}
+                        </div>
+                        {isOpen && tablesOf(db)}
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                tablesOf(null)
+              )}
             </div>
           </div>
-          <div className="max-h-56 min-h-16 overflow-y-auto py-0.5">
-            {leveled ? (
-              <ul aria-label="Databases">
-                {dbList.isError && (
-                  <li className="text-error px-2 py-1.5 text-xs">
-                    {toIpcError(dbList.error).message}
-                  </li>
-                )}
-                {shownDbs.map((db) => {
-                  const isOpen = expanded.has(db) || (searching && shownOf(db).length > 0);
-                  const tables = loaded.get(db);
-                  const n = tables?.filter((t) => checked.has(t.key)).length ?? 0;
-                  return (
-                    <li key={db ?? ""}>
-                      <div className="hover:bg-accent/60 flex h-7 items-center gap-1 pr-2 text-xs">
-                        <button
-                          type="button"
-                          aria-label={`${isOpen ? "Close" : "Open"} ${db}`}
-                          aria-expanded={isOpen}
-                          onClick={() => toggleOpen(db)}
-                          className="text-muted-foreground hover:text-foreground flex size-6 shrink-0 items-center justify-center"
-                        >
-                          <ChevronRight
-                            className={cn("size-3.5 transition-transform", isOpen && "rotate-90")}
-                          />
-                        </button>
-                        <Checkbox
-                          aria-label={`Select all tables of ${db}`}
-                          checked={databaseState(tables, checked, pending.get(db)?.kind === "all")}
-                          onCheckedChange={(v) => toggleDatabase(db, v === true)}
-                        />
-                        <Database className="text-muted-foreground ml-1 size-3.5 shrink-0" />
-                        <span
-                          className="min-w-0 cursor-default truncate font-mono"
-                          onDoubleClick={() => toggleOpen(db)}
-                        >
-                          {db}
-                        </span>
-                        {db === currentDb && (
-                          <span className="text-muted-foreground shrink-0 text-[10px]">
-                            current
-                          </span>
-                        )}
-                        {tables && (
-                          <span className="text-muted-foreground ml-auto shrink-0 tabular-nums">
-                            {n > 0 ? `${formatCount(n)} / ` : ""}
-                            {formatCount(tables.length)}
-                          </span>
-                        )}
-                      </div>
-                      {isOpen && tablesOf(db)}
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              tablesOf(null)
-            )}
-          </div>
-        </div>
 
-        <Row id="export-format" label="Format">
-          <Segmented<FormatKind>
-            id="export-format"
-            value={options.format}
-            onChange={(format) => setOptions((o) => ({ ...o, format }))}
-            options={formats}
+          <Row id="export-format" label="Format">
+            <Segmented<FormatKind>
+              id="export-format"
+              value={options.format}
+              onChange={(format) => setOptions((o) => ({ ...o, format }))}
+              options={formats}
+            />
+          </Row>
+          {layoutRow}
+          <FormatOptions
+            options={options}
+            setOptions={setOptions}
+            tableSource
+            encodingFollows={following ? `Follows View Using Encoding (${charset})` : undefined}
+            onEncodingChange={() => setEncodingTouched(true)}
+            sqlExtra={
+              options.sql.content && (
+                <Row id="export-batch" label="Batch size" hint="Rows per INSERT statement">
+                  <Input
+                    id="export-batch"
+                    type="number"
+                    inputMode="numeric"
+                    min={BATCH_SIZE_RANGE.min}
+                    max={BATCH_SIZE_RANGE.max}
+                    value={batchText}
+                    onChange={(e) => setBatchText(e.target.value)}
+                    onBlur={() =>
+                      setBatchText(String(clampBatchSize(Number.parseInt(batchText, 10))))
+                    }
+                    className="h-7 w-24 font-mono text-xs tabular-nums"
+                  />
+                </Row>
+              )
+            }
           />
-        </Row>
-        {layoutRow}
-        <FormatOptions
-          options={options}
-          setOptions={setOptions}
-          tableSource
-          encodingFollows={following ? `Follows View Using Encoding (${charset})` : undefined}
-          onEncodingChange={() => setEncodingTouched(true)}
-          sqlExtra={
-            options.sql.content && (
-              <Row id="export-batch" label="Batch size" hint="Rows per INSERT statement">
-                <Input
-                  id="export-batch"
-                  type="number"
-                  inputMode="numeric"
-                  min={BATCH_SIZE_RANGE.min}
-                  max={BATCH_SIZE_RANGE.max}
-                  value={batchText}
-                  onChange={(e) => setBatchText(e.target.value)}
-                  onBlur={() =>
-                    setBatchText(String(clampBatchSize(Number.parseInt(batchText, 10))))
-                  }
-                  className="h-7 w-24 font-mono text-xs tabular-nums"
-                />
-              </Row>
-            )
-          }
-        />
-        {nothing && (
-          <div className="text-warning text-[11px] leading-4">
-            Nothing to export: include the table structure or its content.
-          </div>
-        )}
-      </fieldset>
+          {nothing && (
+            <div className="text-warning text-[11px] leading-4">
+              Nothing to export: include the table structure or its content.
+            </div>
+          )}
+        </fieldset>
+      </div>
 
-      <div className="border-border bg-surface-2/60 flex min-h-12 items-center gap-2 rounded-b-xl border-t px-4 py-2">
+      <div className="border-border bg-surface-2 flex min-h-12 shrink-0 items-center gap-2 rounded-b-xl border-t px-4 py-2">
         <div className="min-w-0 flex-1">
           {run ? (
             <div className="flex min-w-0 flex-col gap-0.5">

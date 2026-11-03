@@ -406,8 +406,9 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
           void submit();
         }
       }}
+      className="flex min-h-0 flex-1 flex-col"
     >
-      <DialogHeader className="border-border gap-1 border-b px-4 py-3 pr-12">
+      <DialogHeader className="border-border shrink-0 gap-1 border-b px-4 py-3 pr-12">
         <DialogTitle className="flex items-center gap-2 text-sm">
           <FileDown className="text-brand size-4" />
           Export
@@ -432,174 +433,177 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
         )}
       </DialogHeader>
 
-      <fieldset disabled={running} className="flex min-w-0 flex-col gap-3 px-4 py-4">
-        {src.fromTab && (
-          <Row id="export-rows" label="Rows" hint={rowsHint(src, scope, problem)}>
-            <Segmented<RowScope>
-              id="export-rows"
-              value={scope}
-              onChange={setScope}
-              options={[
-                { value: "all", label: "All rows", title: "Every row matching the filter" },
-                {
-                  value: "page",
-                  label: "Current page",
-                  title: src.pageExportable
-                    ? "Only the rows on screen"
-                    : "Load the page first to export it",
-                },
-              ]}
-            />
-          </Row>
-        )}
-        {runResults && held && (
-          <Row
-            id="export-results"
-            label="Results"
-            hint={
-              allResults ? (
-                <>
-                  {allResultsHint(options.format, fileExtension(options), allResults)}
-                  {problem?.field === "rows" && problemHint(problem)}
-                </>
-              ) : undefined
-            }
-          >
-            <Segmented<ResultsScope>
-              id="export-results"
-              value={resultsScope}
-              onChange={setResultsScope}
-              options={[
-                {
-                  value: "this",
-                  label: "This result",
-                  title: `Only ${held.label}, as shown`,
-                },
-                {
-                  value: "all",
-                  label: `All results (${runResults.length})`,
-                  title: "Every finished result of the run",
-                },
-              ]}
-            />
-          </Row>
-        )}
-        {held &&
-          !allResults &&
-          (rerunSql !== null ||
-            held.truncated ||
-            held.stopped !== null ||
-            problem?.field === "rows") && (
-            <Row
-              id="export-result-rows"
-              label="Rows"
-              hint={heldRowsHint(held, rerun, rerunSql !== null, capped, problem)}
-            >
-              {rerunSql !== null ? (
-                <Segmented<"shown" | "all">
-                  id="export-result-rows"
-                  value={allRows ? "all" : "shown"}
-                  onChange={(v) => setAllRows(v === "all")}
-                  options={[
-                    {
-                      value: "shown",
-                      label: `The ${formatCount(held.rows.length)} rows shown`,
-                      title: "Write the rows the result holds",
-                    },
-                    {
-                      value: "all",
-                      label: "All rows",
-                      title: "All rows — runs the statement again",
-                    },
-                  ]}
-                />
-              ) : (
-                <span id="export-result-rows" className="pt-1.5 text-xs leading-4">
-                  The {formatCount(held.rows.length)} rows shown
-                </span>
-              )}
+      {/* The wrapper scrolls: a fieldset does not clip its own overflow in every engine. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <fieldset disabled={running} className="flex min-w-0 flex-col gap-3 px-4 py-4">
+          {src.fromTab && (
+            <Row id="export-rows" label="Rows" hint={rowsHint(src, scope, problem)}>
+              <Segmented<RowScope>
+                id="export-rows"
+                value={scope}
+                onChange={setScope}
+                options={[
+                  { value: "all", label: "All rows", title: "Every row matching the filter" },
+                  {
+                    value: "page",
+                    label: "Current page",
+                    title: src.pageExportable
+                      ? "Only the rows on screen"
+                      : "Load the page first to export it",
+                  },
+                ]}
+              />
             </Row>
           )}
-        {!isSql && !held && (src.columns.hidden || src.columns.reordered) && (
-          <Row
-            id="export-columns"
-            label="Columns"
-            hint={problem?.field === "columns" ? problemHint(problem) : undefined}
-          >
-            <Check checked={visibleOnly} onChange={setVisibleOnly}>
-              {src.columns.hidden
-                ? `Only visible columns${src.columns.reordered ? ", in grid order" : ""} (${src.columns.visible} of ${src.columns.total})`
-                : "Columns in grid order"}
-            </Check>
+          {runResults && held && (
+            <Row
+              id="export-results"
+              label="Results"
+              hint={
+                allResults ? (
+                  <>
+                    {allResultsHint(options.format, fileExtension(options), allResults)}
+                    {problem?.field === "rows" && problemHint(problem)}
+                  </>
+                ) : undefined
+              }
+            >
+              <Segmented<ResultsScope>
+                id="export-results"
+                value={resultsScope}
+                onChange={setResultsScope}
+                options={[
+                  {
+                    value: "this",
+                    label: "This result",
+                    title: `Only ${held.label}, as shown`,
+                  },
+                  {
+                    value: "all",
+                    label: `All results (${runResults.length})`,
+                    title: "Every finished result of the run",
+                  },
+                ]}
+              />
+            </Row>
+          )}
+          {held &&
+            !allResults &&
+            (rerunSql !== null ||
+              held.truncated ||
+              held.stopped !== null ||
+              problem?.field === "rows") && (
+              <Row
+                id="export-result-rows"
+                label="Rows"
+                hint={heldRowsHint(held, rerun, rerunSql !== null, capped, problem)}
+              >
+                {rerunSql !== null ? (
+                  <Segmented<"shown" | "all">
+                    id="export-result-rows"
+                    value={allRows ? "all" : "shown"}
+                    onChange={(v) => setAllRows(v === "all")}
+                    options={[
+                      {
+                        value: "shown",
+                        label: `The ${formatCount(held.rows.length)} rows shown`,
+                        title: "Write the rows the result holds",
+                      },
+                      {
+                        value: "all",
+                        label: "All rows",
+                        title: "All rows — runs the statement again",
+                      },
+                    ]}
+                  />
+                ) : (
+                  <span id="export-result-rows" className="pt-1.5 text-xs leading-4">
+                    The {formatCount(held.rows.length)} rows shown
+                  </span>
+                )}
+              </Row>
+            )}
+          {!isSql && !held && (src.columns.hidden || src.columns.reordered) && (
+            <Row
+              id="export-columns"
+              label="Columns"
+              hint={problem?.field === "columns" ? problemHint(problem) : undefined}
+            >
+              <Check checked={visibleOnly} onChange={setVisibleOnly}>
+                {src.columns.hidden
+                  ? `Only visible columns${src.columns.reordered ? ", in grid order" : ""} (${src.columns.visible} of ${src.columns.total})`
+                  : "Columns in grid order"}
+              </Check>
+            </Row>
+          )}
+          <Row id="export-format" label="Format">
+            <Segmented<FormatKind>
+              id="export-format"
+              value={options.format}
+              onChange={(format) => setOptions((o) => ({ ...o, format }))}
+              options={formats}
+            />
           </Row>
-        )}
-        <Row id="export-format" label="Format">
-          <Segmented<FormatKind>
-            id="export-format"
-            value={options.format}
-            onChange={(format) => setOptions((o) => ({ ...o, format }))}
-            options={formats}
-          />
-        </Row>
 
-        <FormatOptions
-          options={options}
-          setOptions={setOptions}
-          tableSource={tableSource}
-          encodingFollows={following ? `Follows View Using Encoding (${charset})` : undefined}
-          onEncodingChange={() => setEncodingTouched(true)}
-          sqlExtra={
-            options.sql.content && (
-              <>
-                {!allResults && (
-                  <Row
-                    id="export-table-name"
-                    label="Table name"
-                    hint={
-                      scriptsTable
-                        ? "The script creates and fills the source table"
-                        : src.defaultTableName
-                          ? "Target of the INSERT statements"
-                          : "Target of the INSERT statements; without a name they go into untitled"
-                    }
-                  >
-                    <Input
+          <FormatOptions
+            options={options}
+            setOptions={setOptions}
+            tableSource={tableSource}
+            encodingFollows={following ? `Follows View Using Encoding (${charset})` : undefined}
+            onEncodingChange={() => setEncodingTouched(true)}
+            sqlExtra={
+              options.sql.content && (
+                <>
+                  {!allResults && (
+                    <Row
                       id="export-table-name"
-                      value={scriptsTable ? "" : tableName}
-                      disabled={scriptsTable}
-                      onChange={(e) => setTableName(e.target.value)}
-                      placeholder={src.defaultTableName ?? UNTITLED_TABLE}
-                      spellCheck={false}
-                      autoComplete="off"
-                      className="h-7 w-56 font-mono text-xs"
+                      label="Table name"
+                      hint={
+                        scriptsTable
+                          ? "The script creates and fills the source table"
+                          : src.defaultTableName
+                            ? "Target of the INSERT statements"
+                            : "Target of the INSERT statements; without a name they go into untitled"
+                      }
+                    >
+                      <Input
+                        id="export-table-name"
+                        value={scriptsTable ? "" : tableName}
+                        disabled={scriptsTable}
+                        onChange={(e) => setTableName(e.target.value)}
+                        placeholder={src.defaultTableName ?? UNTITLED_TABLE}
+                        spellCheck={false}
+                        autoComplete="off"
+                        className="h-7 w-56 font-mono text-xs"
+                      />
+                    </Row>
+                  )}
+                  <Row id="export-batch" label="Batch size" hint="Rows per INSERT statement">
+                    <Input
+                      id="export-batch"
+                      type="number"
+                      inputMode="numeric"
+                      min={BATCH_SIZE_RANGE.min}
+                      max={BATCH_SIZE_RANGE.max}
+                      value={batchText}
+                      onChange={(e) => setBatchText(e.target.value)}
+                      onBlur={() =>
+                        setBatchText(String(clampBatchSize(Number.parseInt(batchText, 10))))
+                      }
+                      className="h-7 w-24 font-mono text-xs tabular-nums"
                     />
                   </Row>
-                )}
-                <Row id="export-batch" label="Batch size" hint="Rows per INSERT statement">
-                  <Input
-                    id="export-batch"
-                    type="number"
-                    inputMode="numeric"
-                    min={BATCH_SIZE_RANGE.min}
-                    max={BATCH_SIZE_RANGE.max}
-                    value={batchText}
-                    onChange={(e) => setBatchText(e.target.value)}
-                    onBlur={() =>
-                      setBatchText(String(clampBatchSize(Number.parseInt(batchText, 10))))
-                    }
-                    className="h-7 w-24 font-mono text-xs tabular-nums"
-                  />
-                </Row>
-              </>
-            )
-          }
-        />
-        {problem?.field === "options" && (
-          <div className="text-warning text-[11px] leading-4">{problem.message}</div>
-        )}
-      </fieldset>
+                </>
+              )
+            }
+          />
+          {problem?.field === "options" && (
+            <div className="text-warning text-[11px] leading-4">{problem.message}</div>
+          )}
+        </fieldset>
+      </div>
 
-      <div className="border-border bg-surface-2/60 flex min-h-12 items-center gap-2 rounded-b-xl border-t px-4 py-2">
+      <div className="border-border bg-surface-2 flex min-h-12 shrink-0 items-center gap-2 rounded-b-xl border-t px-4 py-2">
         <div className="min-w-0 flex-1">
           {run ? (
             <div className="flex min-w-0 flex-col gap-0.5">
@@ -670,7 +674,9 @@ export function ExportDialog() {
   return (
     <Dialog open={open} onOpenChange={(next) => !next && closeExport()}>
       <DialogContent
-        className="gap-0 p-0 sm:max-w-[480px]"
+        // Capped to the window: the header and footer stay put, the options scroll (a short
+        // window otherwise cut both off).
+        className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[480px]"
         showCloseButton
         // Closed and animated out: the source (a shown result's rows) is no longer needed.
         onCloseAutoFocus={releaseExportTarget}
