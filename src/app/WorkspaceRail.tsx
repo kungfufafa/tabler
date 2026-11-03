@@ -218,8 +218,8 @@ function RailItem({
 /**
  * TablePlus's workspace rail at the window's far left, shown while any connection is open (even
  * one, so the connection list is always a click away): one icon per workspace — the database's
- * initials in the connection's colour, with the database and connection names under it (the
- * right-click menu hides either) — that switches to it, drags to reorder (kept across restarts)
+ * initials in the connection's colour, the names in its tooltip (the right-click menu can show
+ * the database or connection name under it) — that switches to it, drags to reorder (kept across restarts)
  * and right-clicks to open it in a new window or disconnect; a `+` opens the connection manager
  * (highlighted while it shows).
  */

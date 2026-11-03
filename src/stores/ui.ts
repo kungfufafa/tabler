@@ -58,8 +58,9 @@ export const useUiStore = create<UiState>()(
       consoleOpen: false,
       view: "launcher",
       railOrder: [],
-      railShowDatabase: true,
-      railShowConnection: true,
+      // TablePlus's rail is the icons alone; the names are in the tooltip and the right-click menu.
+      railShowDatabase: false,
+      railShowConnection: false,
       setThemePref: (themePref) => set({ themePref }),
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
       toggleInspector: () => set((s) => ({ inspectorOpen: !s.inspectorOpen })),
@@ -71,7 +72,18 @@ export const useUiStore = create<UiState>()(
     }),
     {
       name: "tabler.ui",
-      version: 1,
+      version: 2,
+      // v1 showed the database and connection names under the rail icons by default; v2 hides
+      // them (TablePlus), and a v1 store takes the new default rather than keep the old one.
+      migrate: (persisted, version) => {
+        const stored = (persisted ?? {}) as Partial<UiState>;
+        if (version < 2) {
+          delete stored.railShowDatabase;
+          delete stored.railShowConnection;
+        }
+        // `merge` below fills whatever a partial store lacks from the defaults.
+        return stored as UiState;
+      },
       // A stored theme choice that is not one (hand-edited, from a newer version) falls back to Auto.
       merge: (persisted, current) => {
         const stored = (persisted ?? {}) as Partial<UiState>;

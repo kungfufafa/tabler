@@ -40,13 +40,13 @@ describe("WorkspaceRail database icons", () => {
     useUiStore.setState({
       view: "workspace",
       railOrder: [],
-      railShowDatabase: true,
-      railShowConnection: true,
+      railShowDatabase: false,
+      railShowConnection: false,
     });
     vi.restoreAllMocks();
   });
 
-  it("shows one icon per workspace: the database's initials and names, in the saved order", () => {
+  it("shows one icon per workspace: the database's initials, in the saved order", () => {
     useConnectionsStore.getState().add(info("a", "tabler_dev"));
     useConnectionsStore.getState().add(info("b", "shop"));
     useUiStore.setState({ railOrder: ["p1\u0000shop"] });
@@ -57,7 +57,7 @@ describe("WorkspaceRail database icons", () => {
       "tabler_dev (Local PG)",
     ]);
     expect(buttons[1]).toHaveTextContent("TD");
-    expect(buttons[1]).toHaveTextContent("tabler_dev");
+    expect(buttons[1]).not.toHaveTextContent("tabler_dev");
     expect(buttons[0]).toHaveAttribute("aria-current", "true");
   });
 
@@ -81,18 +81,19 @@ describe("WorkspaceRail database icons", () => {
     expect(button.querySelector("[data-slot=rail-read-only]")).toBeNull();
   });
 
-  it("hides the database or connection name from the right-click menu", () => {
+  it("is icons alone (TablePlus); the right-click menu adds the database or connection name", () => {
     useConnectionsStore.getState().add(info("a", "tabler_dev"));
     renderRail();
     const button = within(rail()).getByRole("button", { name: /tabler_dev/ });
-    expect(button.querySelector("[data-slot=rail-database]")).not.toBeNull();
+    expect(button.querySelector("[data-slot=rail-database]")).toBeNull();
+    expect(button.querySelector("[data-slot=rail-connection]")).toBeNull();
     fireEvent.contextMenu(button);
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Show Database Name" }));
-    expect(useUiStore.getState().railShowDatabase).toBe(false);
-    expect(button.querySelector("[data-slot=rail-database]")).toBeNull();
+    expect(useUiStore.getState().railShowDatabase).toBe(true);
+    expect(button.querySelector("[data-slot=rail-database]")).not.toBeNull();
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Show Connection Name" }));
-    expect(useUiStore.getState().railShowConnection).toBe(false);
-    expect(button.querySelector("[data-slot=rail-connection]")).toBeNull();
+    expect(useUiStore.getState().railShowConnection).toBe(true);
+    expect(button.querySelector("[data-slot=rail-connection]")).not.toBeNull();
   });
 
   it("opens a workspace in a new window", async () => {

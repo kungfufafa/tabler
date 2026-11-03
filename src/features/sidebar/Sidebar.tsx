@@ -24,7 +24,6 @@ import { lazyKey, useLazyLoad } from "./lazyLoad";
 import { SchemaTree, type SchemaTreeHandle } from "./SchemaTree";
 import { SidebarFooter } from "./SidebarFooter";
 import { SidebarSearch } from "./SidebarSearch";
-import { SidebarTopBar } from "./SidebarTopBar";
 import { setMatchStrategy, useSidebarPrefs } from "./sidebarPrefs";
 import { useLazySchemaTree } from "./useLazySchemaTree";
 import { useCurrentSchema, useSchemas, useTables, useTreeRows } from "./useSchemaTree";
@@ -196,8 +195,6 @@ export function Sidebar() {
 
   return (
     <aside className="bg-sidebar text-sidebar-foreground flex h-full flex-col" data-scope="sidebar">
-      {/* Show Connections / Show Databases (disabled without a connection). */}
-      <SidebarTopBar />
       {active ? (
         <>
           <div className="flex h-8 shrink-0 items-center px-2">

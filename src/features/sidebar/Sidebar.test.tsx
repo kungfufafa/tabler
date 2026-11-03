@@ -117,21 +117,6 @@ describe("Sidebar", () => {
     expect(screen.queryByText("No tables")).toBeNull();
   });
 
-  it("shows the quick navigation buttons above the pane switch, disabled without a connection", () => {
-    const { unmount } = renderSidebar();
-    const bar = screen.getByRole("toolbar", { name: "Quick navigation" });
-    const switcher = screen.getByRole("radiogroup", { name: "Sidebar pane" });
-    expect(bar.compareDocumentPosition(switcher) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Show Databases" })).toBeEnabled();
-    unmount();
-
-    useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
-    renderSidebar();
-    expect(screen.getByRole("button", { name: "Show Connections" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Show Databases" })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Open Query Editor" })).not.toBeInTheDocument();
-  });
-
   it("switches between Items and History and remembers the pane", async () => {
     const { unmount } = renderSidebar();
     expect(radio("Items")).toHaveAttribute("aria-checked", "true");

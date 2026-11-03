@@ -335,3 +335,8 @@ out of the repository: its screenshots show the user's hosts) against the mock b
   showing the indexes alone, with + Index, DDL and Refresh as its footer; Structure shows
   everything again. Read-only engines get the same switch over their index list.
 - Not copied: the Chart tab of query results (the Charts feature has its own tab).
+- Workspace rail: icons alone, as TablePlus's; the database and connection names moved to the
+  tooltip (the right-click menu can still show either under the icon; a v1 store takes the new
+  default). The sidebar starts with Items | Queries | History: the Show Connections / Show
+  Databases buttons above it are gone (⇧⌘K and ⌘K still open the palettes, and the toolbar has
+  Databases / SQL).
