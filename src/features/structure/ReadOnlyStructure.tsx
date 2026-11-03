@@ -62,11 +62,14 @@ export function ReadOnlyStructure({
   connectionId,
   table,
   caps,
+  indexesOnly = false,
 }: {
   tabId: string;
   connectionId: string;
   table: TableRef;
   caps: SessionCaps;
+  /** The footer's Index segment: the indexes alone. */
+  indexesOnly?: boolean;
 }) {
   const qc = useQueryClient();
   const key = schemaKeys.table(connectionId, table.schema, table.name);
@@ -103,19 +106,24 @@ export function ReadOnlyStructure({
               {` · ${noun} (read-only)`}
               {m.comment ? ` · ${m.comment}` : ""}
             </p>
-            <Section title="Columns">
-              <Table
-                head={["Name", "Type", "Nullable", "Default", "Key", "Comment"]}
-                rows={m.columns.map((c) => [
-                  c.name,
-                  c.dataType,
-                  c.nullable ? "YES" : "NO",
-                  c.defaultExpr ?? "",
-                  c.isPk ? "PRIMARY" : "",
-                  c.comment ?? "",
-                ])}
-              />
-            </Section>
+            {!indexesOnly && (
+              <Section title="Columns">
+                <Table
+                  head={["Name", "Type", "Nullable", "Default", "Key", "Comment"]}
+                  rows={m.columns.map((c) => [
+                    c.name,
+                    c.dataType,
+                    c.nullable ? "YES" : "NO",
+                    c.defaultExpr ?? "",
+                    c.isPk ? "PRIMARY" : "",
+                    c.comment ?? "",
+                  ])}
+                />
+              </Section>
+            )}
+            {indexesOnly && m.indexes.length === 0 && (
+              <p className="text-muted-foreground text-xs">No indexes.</p>
+            )}
             {m.indexes.length > 0 && (
               <Section title="Indexes">
                 <Table
@@ -124,7 +132,7 @@ export function ReadOnlyStructure({
                 />
               </Section>
             )}
-            {m.foreignKeys.length > 0 && (
+            {!indexesOnly && m.foreignKeys.length > 0 && (
               <Section title="Foreign keys">
                 <Table
                   head={["Name", "Columns", "References"]}
@@ -136,7 +144,7 @@ export function ReadOnlyStructure({
                 />
               </Section>
             )}
-            {options.length > 0 && (
+            {!indexesOnly && options.length > 0 && (
               <Section title="Options">
                 <Table head={["Option", "Value"]} rows={options} />
               </Section>
@@ -145,7 +153,7 @@ export function ReadOnlyStructure({
         ) : null}
       </div>
       <BottomBarFrame aria-label="Table structure">
-        <ViewSwitch tabId={tabId} view="structure" />
+        <ViewSwitch tabId={tabId} view="structure" section={indexesOnly ? "indexes" : "columns"} />
         <span className="flex-1" />
         {showsDdl && (
           <BarIconButton

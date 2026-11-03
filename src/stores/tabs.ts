@@ -25,6 +25,11 @@ export type Tab =
       table: TableRef;
       title: string;
       preview?: boolean;
+      /**
+       * The footer's Index segment (TablePlus: Data | Structure | Index): the structure view shows
+       * the indexes alone. Absent: the columns and everything else.
+       */
+      section?: StructureSection;
     }
   | {
       id: string;
@@ -51,6 +56,8 @@ export type Tab =
 
 export type TabKind = Tab["kind"];
 export type TableView = "table" | "structure";
+/** What a structure tab shows: everything (`columns`, the default) or the indexes alone. */
+export type StructureSection = "columns" | "indexes";
 /** A table's tab, in either view. */
 export type TableTab = Extract<Tab, { kind: "table" | "structure" }>;
 export type ToolTab = Extract<Tab, { kind: "tool" }>;
@@ -139,8 +146,11 @@ interface TabsState {
     kind?: TableView,
     options?: OpenTableOptions,
   ) => string;
-  /** Switches a table tab between its rows and its structure. */
-  setView: (id: string, kind: TableView) => void;
+  /**
+   * Switches a table tab between its rows and its structure; `section` picks what the structure
+   * view shows (the indexes alone for the footer's Index segment; everything by default).
+   */
+  setView: (id: string, kind: TableView, section?: StructureSection) => void;
   /** Turns a preview tab into a regular one. */
   pin: (id: string) => void;
   newQuery: (connectionId: string) => string;
@@ -779,11 +789,27 @@ export const useTabsStore = create<TabsState>()(
       return id;
     },
 
-    setView: (id, kind) =>
+    setView: (id, kind, section = "columns") =>
       set((s) => {
         const tab = s.tabs.find((t) => t.id === id);
-        if (!isTableTab(tab) || tab.kind === kind) return s;
-        return { tabs: s.tabs.map((t) => (t.id === id ? { ...tab, kind } : t)) };
+        if (!isTableTab(tab)) return s;
+        const was = tab.kind === "structure" ? (tab.section ?? "columns") : "columns";
+        if (tab.kind === kind && (kind === "table" || was === section)) return s;
+        const common: {
+          id: string;
+          connectionId: string;
+          table: TableRef;
+          title: string;
+          preview?: boolean;
+        } = { id: tab.id, connectionId: tab.connectionId, table: tab.table, title: tab.title };
+        if (tab.preview !== undefined) common.preview = tab.preview;
+        const next: Tab =
+          kind === "table"
+            ? { ...common, kind: "table" }
+            : section === "indexes"
+              ? { ...common, kind: "structure", section }
+              : { ...common, kind: "structure" };
+        return { tabs: s.tabs.map((t) => (t.id === id ? next : t)) };
       }),
 
     pin: (id) =>

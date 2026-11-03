@@ -331,6 +331,7 @@ out of the repository: its screenshots show the user's hosts) against the mock b
   well as in the welcome column.
 - Structure footer: a **DDL** button next to Open in SQL (TablePlus: + Column, Triggers, DDL);
   the header keeps Triggers and Info.
-- Not copied: a third Data / Structure / **Index** segment (Tabler's Structure view lists the
-  indexes under the columns on one page) and the Chart tab of query results (the Charts feature
-  has its own tab).
+- Table footer: the third **Index** segment (Data | Structure | Index). It is the structure view
+  showing the indexes alone, with + Index, DDL and Refresh as its footer; Structure shows
+  everything again. Read-only engines get the same switch over their index list.
+- Not copied: the Chart tab of query results (the Charts feature has its own tab).

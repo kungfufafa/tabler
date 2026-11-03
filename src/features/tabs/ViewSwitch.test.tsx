@@ -50,4 +50,26 @@ describe("ViewSwitch", () => {
     fireEvent.click(structure);
     expect(kind(id)).toBe("structure");
   });
+
+  it("has TablePlus's Index segment: the structure view showing the indexes alone", () => {
+    const id = useTabsStore.getState().openTable("c1", { schema: "public", name: "users" });
+    const tab = () => useTabsStore.getState().tabs.find((t) => t.id === id)!;
+    const { rerender } = render(<ViewSwitch tabId={id} view="table" />);
+    fireEvent.click(screen.getByRole("radio", { name: "Index" }));
+    expect(tab()).toMatchObject({ kind: "structure", section: "indexes" });
+    rerender(<ViewSwitch tabId={id} view="structure" section="indexes" />);
+    expect(screen.getByRole("radio", { name: "Index" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "Structure" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    // Structure shows everything again; Data drops the section.
+    fireEvent.click(screen.getByRole("radio", { name: "Structure" }));
+    expect(tab()).toMatchObject({ kind: "structure" });
+    expect(tab()).not.toHaveProperty("section");
+    fireEvent.click(screen.getByRole("radio", { name: "Index" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Data" }));
+    expect(tab()).toMatchObject({ kind: "table" });
+    expect(tab()).not.toHaveProperty("section");
+  });
 });

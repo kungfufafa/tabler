@@ -148,12 +148,16 @@ type Reducer = (meta: TableMeta, ops: DdlOp[]) => DdlOp[];
 
 /**
  * The bottom bar of the structure view: the same strip as the data view's, with the Data |
- * Structure switch on the left and the structure's own actions after it.
+ * Structure | Index switch on the left and the structure's own actions after it.
  */
 function BottomBar({ tabId, children }: { tabId: string; children?: ReactNode }) {
+  const section = useTabsStore((s) => {
+    const tab = s.tabs.find((t) => t.id === tabId);
+    return tab?.kind === "structure" ? (tab.section ?? "columns") : "columns";
+  });
   return (
     <BottomBarFrame aria-label="Table structure">
-      <ViewSwitch tabId={tabId} view="structure" />
+      <ViewSwitch tabId={tabId} view="structure" section={section} />
       {children}
     </BottomBarFrame>
   );
@@ -231,6 +235,7 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
         connectionId={tab.connectionId}
         table={tab.table}
         caps={caps}
+        indexesOnly={tab.section === "indexes"}
       />
     );
   return <StructureTabView tab={tab} dialect={dialect} canEdit={has(caps, "structureEdit")} />;
@@ -247,6 +252,8 @@ function StructureTabView({
   canEdit: boolean;
 }) {
   const { connectionId, table } = tab;
+  /** The footer's Index segment: the indexes alone, with + Index as the only footer action. */
+  const indexesOnly = tab.section === "indexes";
   const qc = useQueryClient();
   // Without editing the structure, it shows as on a read-only connection.
   const readOnlyConnection =
@@ -1009,6 +1016,18 @@ function StructureTabView({
                     apply((mm, current) => setTriggerEnabled(mm, current, key, enabled))
                   }
                 />
+              ) : indexesOnly ? (
+                <IndexesSection
+                  rows={v.indexes}
+                  dialect={dialect}
+                  editable={editable}
+                  columns={liveColumns}
+                  columnTypes={columnTypes}
+                  onAdd={onAddIndex}
+                  onEdit={onEditIndex}
+                  onDrop={(key) => apply((mm, current) => dropIndex(mm, current, key))}
+                  onRestore={(key) => apply((mm, current) => restoreIndex(mm, current, key))}
+                />
               ) : (
                 <>
                   <ColumnsSection
@@ -1062,16 +1081,18 @@ function StructureTabView({
       <BottomBar tabId={tab.id}>
         {editable && (
           <>
-            <BarTooltip label="Add a column" action="grid.new-row">
-              <Button
-                variant="ghost"
-                size="xs"
-                className="h-6 shrink-0 px-1.5"
-                onClick={() => onAddColumn()}
-              >
-                <Plus /> Column
-              </Button>
-            </BarTooltip>
+            {!indexesOnly && (
+              <BarTooltip label="Add a column" action="grid.new-row">
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="h-6 shrink-0 px-1.5"
+                  onClick={() => onAddColumn()}
+                >
+                  <Plus /> Column
+                </Button>
+              </BarTooltip>
+            )}
             <BarTooltip
               label={`Add an index (${formatCombo(shortcutFor("grid.new-row") ?? "Mod+I")} while the index grid has focus)`}
             >
@@ -1086,7 +1107,7 @@ function StructureTabView({
             </BarTooltip>
           </>
         )}
-        {!isView && (
+        {!isView && !indexesOnly && (
           <div
             className={cn(
               "border-border focus-within:border-ring bg-background ml-1 flex h-6 w-40 min-w-24 shrink items-center gap-1 rounded-md border px-1.5",
@@ -1114,7 +1135,7 @@ function StructureTabView({
             />
           </div>
         )}
-        {!isView && (
+        {!isView && !indexesOnly && (
           <DropdownMenu>
             <BarTooltip label="Order the columns by name or by their position in the table">
               <DropdownMenuTrigger asChild>
