@@ -1,6 +1,9 @@
 name: Release installers
 
 # Installers for macOS and Windows, for anyone to download and install:
+#   - every push to `main` (but docs-only ones): the installers replace the ones on the rolling
+#     `nightly` pre-release, once CI has passed on that same commit (a red commit builds, but is
+#     never published). A newer push cancels the build of the one before it;
 #   - push a `v*` tag (`git tag v0.1.0 && git push origin v0.1.0`): a GitHub Release for that tag,
 #     with the installers attached and release notes generated from the commits;
 #   - run it from the Actions tab with "publish" set to `nightly`: the installers replace the ones
@@ -16,7 +19,13 @@ on:
         default: artifacts
         options: [artifacts, nightly]
   push:
+    branches: [main]
     tags: ["v*"]
+    # Docs and design sources change no installer (tags ignore path filters).
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "design/**"
 
 concurrency:
   group: build-${{ github.ref }}
@@ -95,16 +104,37 @@ jobs:
   release:
     name: Publish · ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'nightly' }}
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish == 'nightly'
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') || inputs.publish == 'nightly' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Room to wait for CI on the commit (it can outlast the installer builds).
+    timeout-minutes: 60
     permissions:
       contents: write
+      # Reads the CI run of the commit (`gh run list` / `gh run watch`).
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'nightly' }}
     steps:
       - uses: actions/checkout@v4
+
+      # A push to main publishes only a commit CI passed (check.yml runs on every push to main).
+      # Manual runs and tags publish as before.
+      - name: Wait for CI on this commit
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          id=""
+          for _ in $(seq 1 30); do
+            id=$(gh run list --workflow check.yml --commit "$GITHUB_SHA" --event push --json databaseId -q '.[0].databaseId')
+            [ -n "$id" ] && break
+            sleep 10
+          done
+          if [ -z "$id" ]; then echo "::error::No CI run found for $GITHUB_SHA"; exit 1; fi
+          gh run watch "$id" --exit-status --interval 30 > /dev/null
+          echo "CI passed on ${GITHUB_SHA::7}"
 
       - uses: actions/download-artifact@v4
         with:

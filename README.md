@@ -26,8 +26,8 @@
 
 Installers for macOS and Windows are on the
 [Releases page](https://github.com/kungfufafa/tabler/releases): a numbered release for each `v*`
-tag, and a rolling [nightly](https://github.com/kungfufafa/tabler/releases/tag/nightly) built from
-`main`.
+tag, and a rolling [nightly](https://github.com/kungfufafa/tabler/releases/tag/nightly) rebuilt
+automatically from every change to `main` that passes CI (about 35 minutes after the push).
 
 | Platform                         | File                             | Install                                                       |
 | -------------------------------- | -------------------------------- | ------------------------------------------------------------- |
@@ -253,11 +253,14 @@ The "Release installers" workflow ([.github/workflows/build.yml](.github/workflo
 macOS DMG (Apple Silicon and Intel) and the Windows installers, and publishes them on the
 [Releases page](https://github.com/kungfufafa/tabler/releases):
 
+- every push to `main` (docs-only pushes aside) rebuilds them and replaces the ones on the
+  rolling `nightly` pre-release once CI has passed on that commit; a red commit is never
+  published, and a newer push cancels the build before it;
 - `git tag v0.2.0 && git push origin v0.2.0` makes a release for that tag, with notes generated
   from the commits since the previous one (bump `version` in `package.json`,
   `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` first);
 - running it from the Actions tab with **publish** set to `nightly` replaces the installers on the
-  rolling `nightly` pre-release;
+  rolling `nightly` pre-release by hand (without waiting for CI);
 - running it with **publish** left at `artifacts` only attaches them to the run.
 
 ## Troubleshooting
