@@ -51,7 +51,8 @@ export function SidebarSearch({
   useKeymapVersion();
   const focusCombo = shortcutFor("sidebar.focus-search");
   return (
-    <div className={cn("relative min-w-0 flex-1", className)}>
+    // A size container: the shortcut badge shows only where it fits beside the placeholder.
+    <div className={cn("@container/search relative min-w-0 flex-1", className)}>
       {menu ? (
         <DropdownMenu>
           <DropdownMenuTrigger
@@ -86,7 +87,9 @@ export function SidebarSearch({
         aria-label={label}
         title={hint}
         className={cn(
-          "bg-surface h-6.5 rounded-md pr-10 text-xs md:text-xs",
+          // Room on the right for the clear button, or for the badge once it shows.
+          "bg-surface h-6.5 rounded-md pr-7 text-xs md:text-xs",
+          kbdHint && !value && "@min-[15rem]/search:pr-24",
           menu ? "pl-9" : "pl-7",
         )}
         data-scope="sidebar"
@@ -102,7 +105,10 @@ export function SidebarSearch({
             <X className="size-3.5" />
           </button>
         ) : (
-          kbdHint && focusCombo && <Kbd combo={focusCombo} />
+          kbdHint &&
+          focusCombo && (
+            <Kbd combo={focusCombo} className="hidden @min-[15rem]/search:inline-flex" />
+          )
         )}
       </div>
     </div>

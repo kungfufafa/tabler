@@ -1146,7 +1146,9 @@ function StructureTabView({
                   aria-label="Order columns by"
                 >
                   {columnOrder === "name" ? <ArrowDownAZ /> : <ListOrdered />}
-                  {columnOrder === "name" ? "Name" : "Ordinal position"}
+                  <span className="@max-3xl:hidden">
+                    {columnOrder === "name" ? "Name" : "Ordinal position"}
+                  </span>
                 </Button>
               </DropdownMenuTrigger>
             </BarTooltip>

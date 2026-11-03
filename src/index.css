@@ -399,4 +399,13 @@
   ::-webkit-scrollbar-corner {
     background: transparent;
   }
+  /* No dialog grows past the window: a tall one scrolls inside it instead of losing its title
+     and buttons off the top and bottom. A dialog that lays out its own scrolling (a fixed header
+     and footer) sets these with utility classes, which win over this base layer. */
+  [data-slot="dialog-content"],
+  [data-slot="alert-dialog-content"],
+  [data-slot="safety-dialog"] {
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+  }
 }

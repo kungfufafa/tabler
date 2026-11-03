@@ -282,7 +282,8 @@ export function CustomizeToolbarDialog({
       <DialogContent
         data-slot="customize-toolbar"
         data-scope="dialog"
-        className="top-14 translate-y-0 sm:max-w-2xl"
+        // Hangs from under the toolbar (top-14), so it may use the window less that and a margin.
+        className="top-14 max-h-[calc(100dvh-4.5rem)] translate-y-0 overflow-y-auto sm:max-w-2xl"
       >
         <DialogHeader>
           <DialogTitle>Customize Toolbar</DialogTitle>
@@ -304,9 +305,12 @@ export function CustomizeToolbarDialog({
               items={paletteItems(items)}
               onAdd={(id) => setItems(insertItem(items, id, items.length))}
             />
-            <div className="flex items-center gap-3">
-              <span className="text-muted-foreground text-xs">…or the default set:</span>
-              <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden opacity-70">
+            <div className="flex items-start gap-3">
+              <span className="text-muted-foreground shrink-0 pt-1 text-xs">
+                …or the default set:
+              </span>
+              {/* Wraps: the whole set shows, never four items and a hard edge. */}
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1 opacity-70">
                 {DEFAULT_TOOLBAR_ITEMS.map((id) => (
                   <Chip key={id} id={id} className="h-6 px-1.5 text-[10px] shadow-none" />
                 ))}
