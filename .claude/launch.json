@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "tabler-mock",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["dev:mock"],
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["node_modules/vite/bin/vite.js", "--mode", "mock"],
       "port": 1420
     },
     {
