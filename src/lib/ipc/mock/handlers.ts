@@ -488,7 +488,8 @@ registerMock("list_schemas", ({ connectionId }) => {
       { name: "public", isDefault: true },
       { name: "inventory", isDefault: false },
     ]);
-  if (c.driver === "mysql") return [{ name: c.currentDatabase ?? "tabler_dev", isDefault: true }];
+  if (c.driver === "mysql")
+    return c.currentDatabase ? [{ name: c.currentDatabase, isDefault: true }] : [];
   return [
     { name: "main", isDefault: true },
     { name: "temp", isDefault: false },

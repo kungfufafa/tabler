@@ -151,10 +151,16 @@ export function useDatabases(connectionId: string | null) {
 }
 
 export function useSchemas(connectionId: string | null) {
+  const caps = useCaps(connectionId);
+  const database = useConnectionsStore((s) =>
+    connectionId ? s.byId[connectionId]?.info.currentDatabase : null,
+  );
+  const databaseIsSchema = caps?.namespaces.schemas === "databaseIsSchema";
   return useQuery({
     queryKey: schemaKeys.schemas(connectionId ?? ""),
     queryFn: () => ipc.schema.schemas(connectionId!),
-    enabled: connectionId !== null,
+    enabled: connectionId !== null && (!caps?.namespaces.databases || !!database),
+    select: (schemas) => (databaseIsSchema ? schemas.filter((s) => s.name === database) : schemas),
     staleTime: 5 * 60_000,
   });
 }
@@ -167,17 +173,30 @@ export function useSchemas(connectionId: string | null) {
 export function useCurrentSchema(connectionId: string | null): string | null {
   const caps = useCaps(connectionId);
   const single = caps?.namespaces.schemas === "single";
+  const database = useConnectionsStore((s) =>
+    connectionId ? s.byId[connectionId]?.info.currentDatabase : null,
+  );
+  const databaseIsSchema = caps?.namespaces.schemas === "databaseIsSchema";
   const schemas = useSchemas(single ? null : connectionId);
   const selected = useConnectionsStore((s) =>
     connectionId ? (s.byId[connectionId]?.currentSchema ?? null) : null,
   );
   const setCurrentSchema = useConnectionsStore((s) => s.setCurrentSchema);
-  const fallback = schemas.data?.find((s) => s.isDefault)?.name ?? schemas.data?.[0]?.name ?? null;
+  const fallback = databaseIsSchema
+    ? (database ?? null)
+    : (schemas.data?.find((s) => s.isDefault)?.name ?? schemas.data?.[0]?.name ?? null);
   useEffect(() => {
-    if (connectionId && selected === null && fallback !== null)
+    if (
+      connectionId &&
+      selected === null &&
+      fallback !== null &&
+      (!caps?.namespaces.databases || database)
+    )
       setCurrentSchema(connectionId, fallback);
-  }, [connectionId, selected, fallback, setCurrentSchema]);
+  }, [connectionId, selected, fallback, setCurrentSchema, caps?.namespaces.databases, database]);
+  if (caps?.namespaces.databases && !database) return null;
   if (single) return selected ?? caps.namespaces.defaultSchema ?? "";
+  if (databaseIsSchema) return database ?? null;
   return selected ?? fallback;
 }
 

@@ -180,14 +180,15 @@ describe("resetDatabaseCaches", () => {
     );
     expect(result.current).toEqual({ schema: "tabler_dev", tables: oldTables });
 
-    // DatabasePicker's onSuccess after `switch_database`.
+    // What `switchDatabase` does after `switch_database`: the new database, then the resets.
     act(() => {
+      useConnectionsStore.getState().setInfo({ ...info, currentDatabase: "other_db" });
       useConnectionsStore.getState().setCurrentSchema(id, null);
       resetDatabaseCaches(qc, id);
     });
-    expect(result.current.tables).toBeUndefined();
-    expect(result.current.schema).toBeNull();
-    expect(useConnectionsStore.getState().byId[id]?.currentSchema).toBeNull();
+    // MySQL's schema is the open database: the new one at once, never the old tables.
+    expect(result.current.schema).toBe("other_db");
+    expect(result.current.tables).not.toEqual(oldTables);
 
     act(() => resolveSchemas([{ name: "other_db", isDefault: true }]));
     await waitFor(() => expect(result.current).toEqual({ schema: "other_db", tables: [] }));

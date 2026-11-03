@@ -841,7 +841,7 @@ export function databaseItems(
       icon: { type: "database" },
       current,
       run: () => ctx.switchTo(d.name),
-      verb: "Switch",
+      verb: "Open",
       // Switching closes every tab of the connection: never the ↩ default of an empty query.
       noRecent: true,
       ...(ctx.menu ? { menu: ctx.menu(d.name, current) } : {}),

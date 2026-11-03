@@ -217,7 +217,7 @@ pub async fn list_databases(conn: &mut Traced<'_>) -> Result<Vec<DatabaseInfo>, 
 }
 
 /// MySQL has no schemas inside a database: the current database is the single default schema.
-/// Without a selected database every non-system database is offered, none default.
+/// Without a selected database there are no schemas to browse; use list_databases to pick one.
 pub async fn list_schemas(conn: &mut Traced<'_>) -> Result<Vec<SchemaInfo>, AppError> {
     if let Some(db) = current_database(conn).await? {
         return Ok(vec![SchemaInfo {
@@ -225,15 +225,7 @@ pub async fn list_schemas(conn: &mut Traced<'_>) -> Result<Vec<SchemaInfo>, AppE
             is_default: true,
         }]);
     }
-    Ok(list_databases(conn)
-        .await?
-        .into_iter()
-        .filter(|d| !SYSTEM_SCHEMAS.contains(&d.name.as_str()))
-        .map(|d| SchemaInfo {
-            name: d.name,
-            is_default: false,
-        })
-        .collect())
+    Ok(vec![])
 }
 
 pub async fn list_tables(

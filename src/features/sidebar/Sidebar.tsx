@@ -1,4 +1,4 @@
-import { Plug } from "lucide-react";
+import { Database, Plug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import {
   type SidebarPaneId,
 } from "@/features/queries/sidebarPane";
 import { cn } from "@/lib/utils";
+import { capsOf } from "@/lib/caps";
 import { useActiveConnection, type OpenConnection } from "@/stores/connections";
 import { pinScope, usePinned } from "@/stores/pins";
 import { EMPTY_RECENT, useRecent } from "@/stores/recent";
@@ -71,7 +72,7 @@ function PaneSwitch({ pane }: { pane: SidebarPaneId }) {
  * The Items pane: the search field (with its menu) and the schema tree (Recent, Pinned, Tables,
  * Views…), or with "Lazy Load Schema Items" one node per schema / database.
  */
-function ItemsPane({
+function DatabaseItemsPane({
   connection,
   hidden,
   focusSearch,
@@ -181,6 +182,29 @@ function ItemsPane({
       />
     </div>
   );
+}
+
+function ItemsPane(props: Parameters<typeof DatabaseItemsPane>[0]) {
+  const { info } = props.connection;
+  if (capsOf(info).namespaces.databases && info.currentDatabase === null)
+    return (
+      <div hidden={props.hidden} className="min-h-0 flex-1">
+        <EmptyState
+          icon={Database}
+          title="Choose a database"
+          description="Open a database to browse its tables and queries."
+        >
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => usePaletteStore.getState().openPalette("databases")}
+          >
+            Choose database
+          </Button>
+        </EmptyState>
+      </div>
+    );
+  return <DatabaseItemsPane {...props} />;
 }
 
 export function Sidebar() {

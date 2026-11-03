@@ -800,7 +800,7 @@ describe("CommandPalette", () => {
     it("⌘K lists only the databases and schemas of the active connection", () => {
       useTabsStore.getState().newQuery("c1");
       const input = renderPalette(undefined, { mode: "databases", setup: withDatabases });
-      expect(input).toHaveAttribute("placeholder", "Switch database…");
+      expect(input).toHaveAttribute("placeholder", "Search for database…");
       expect(groupLabels()).toEqual(["Databases", "Schemas"]);
       expect(optionTexts()).toEqual([
         expect.stringMatching(/^app/),
@@ -810,7 +810,7 @@ describe("CommandPalette", () => {
         expect.stringMatching(/^inventory/),
         expect.stringMatching(/^New Schema…/),
       ]);
-      expect(screen.getByText("Switch")).toBeInTheDocument();
+      expect(screen.getByText("Open")).toBeInTheDocument();
       fireEvent.change(input, { target: { value: "inv" } });
       expect(optionTexts()).toEqual([expect.stringMatching(/^inventory/)]);
     });
@@ -864,7 +864,7 @@ describe("CommandPalette", () => {
       const input = renderPalette(undefined, { setup: withDatabases });
       press(input, "k");
       expect(usePaletteStore.getState()).toMatchObject({ open: true, mode: "databases" });
-      expect(screen.getByRole("combobox")).toHaveAttribute("placeholder", "Switch database…");
+      expect(screen.getByRole("combobox")).toHaveAttribute("placeholder", "Search for database…");
       press(screen.getByRole("combobox"), "k", true);
       expect(usePaletteStore.getState()).toMatchObject({ open: true, mode: "connections" });
       expect(groupLabels()).toEqual(["Connections"]);

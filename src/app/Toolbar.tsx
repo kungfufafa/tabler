@@ -216,7 +216,7 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
     case "databases":
       return (
         <div className="flex items-center gap-0.5">
-          <ToolbarButton label="Switch database" action="palette.databases" text={caption}>
+          <ToolbarButton label="Open database" action="palette.databases" text={caption}>
             <Database className="size-3.5" />
           </ToolbarButton>
           <ToolbarTip label="New query" action="tab.new-query">

@@ -203,6 +203,8 @@ export async function openDatabaseWorkspace(
     showConnection(connectionId);
     return true;
   }
+  // Finish an initial server-only login in place: it has no database workspace to preserve.
+  if (conn.info.currentDatabase === null) return switchDatabase(qc, connectionId, database);
   // SQLite has one database per file: nothing to open beside it.
   if (conn.info.driver === "sqlite") return false;
   const open = workspaceOf(conn.info.profileId, database);

@@ -43,6 +43,19 @@ function setup() {
   return { qc, tab };
 }
 
+it("finishes a server-only login in the same connection when a database is chosen", async () => {
+  const qc = new QueryClient();
+  useConnectionsStore.getState().add({ ...info, driver: "mysql", currentDatabase: null });
+  const switchSpy = vi
+    .spyOn(ipc.connections, "switchDatabase")
+    .mockResolvedValue({ ...info, driver: "mysql", currentDatabase: "shop" });
+  const connectSpy = vi.spyOn(ipc.connections, "connect");
+  expect(await openDatabaseWorkspace(qc, "c1", "shop")).toBe(true);
+  expect(switchSpy).toHaveBeenCalledWith("c1", "shop");
+  expect(connectSpy).not.toHaveBeenCalled();
+  expect(useConnectionsStore.getState().byId.c1!.info.currentDatabase).toBe("shop");
+});
+
 /** Each backend switch waits until the test settles it. */
 function holdSwitch() {
   let resolve!: (info: ConnectionInfo) => void;

@@ -119,11 +119,11 @@ const MODE_TEXT: Record<
     empty: "Nothing to show",
   },
   databases: {
-    title: "Switch database",
-    description: "Switch the active connection to another database or schema.",
-    placeholder: "Switch database…",
-    verb: "Switch",
-    empty: "No other databases on this connection",
+    title: "Open database",
+    description: "Open a database in its own workspace, or return to one already open.",
+    placeholder: "Search for database…",
+    verb: "Open",
+    empty: "No databases on this server",
   },
   connections: {
     title: "Switch connection",

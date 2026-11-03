@@ -106,6 +106,29 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("radiogroup")).toBeNull();
   });
 
+  it("asks for a database after a server-only login without loading other databases' tables", () => {
+    connect("mysql");
+    const connection = useConnectionsStore.getState().byId.c1!;
+    useConnectionsStore.getState().setInfo({ ...connection.info, currentDatabase: null });
+    renderSidebar();
+    expect(screen.getByText("Choose a database")).toBeInTheDocument();
+    expect(ipc.schema.tables).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Choose database" }));
+    expect(usePaletteStore.getState().mode).toBe("databases");
+  });
+
+  it("keeps MySQL objects in the active database even when the schema list includes others", async () => {
+    connect("mysql");
+    vi.mocked(ipc.schema.schemas).mockResolvedValue([
+      { name: "other_database", isDefault: true },
+      { name: "tabler_dev", isDefault: false },
+    ]);
+    useConnectionsStore.getState().setCurrentSchema("c1", "other_database");
+    renderSidebar();
+    await waitFor(() => expect(ipc.schema.tables).toHaveBeenCalledWith("c1", "tabler_dev"));
+    expect(ipc.schema.tables).not.toHaveBeenCalledWith("c1", "other_database");
+  });
+
   it("shows the loading skeleton, not an empty schema, while the schemas load", () => {
     vi.spyOn(ipc.schema, "schemas").mockReturnValue(new Promise(() => {}));
     const { container } = renderSidebar();

@@ -359,7 +359,7 @@ describe("Toolbar", () => {
     // Toggle Sidebar and Databases & SQL are palette items now (not in the default set).
     setPref("toolbarItems", ["sidebar", "databases", "refresh", "openAnything"]);
     wrap(<Toolbar launcher={false} />);
-    for (const name of ["Toggle sidebar", "Switch database", "New query", "Refresh"])
+    for (const name of ["Toggle sidebar", "Open database", "New query", "Refresh"])
       fireEvent.click(screen.getByRole("button", { name }));
     fireEvent.click(screen.getByRole("button", { name: "Open anything" }));
     for (const spy of spies) expect(spy).toHaveBeenCalledTimes(1);
