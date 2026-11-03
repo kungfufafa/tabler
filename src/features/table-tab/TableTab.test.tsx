@@ -1117,7 +1117,7 @@ describe("TableTab M8 grid features", () => {
     expect(ref.rows).toHaveLength(1);
     expect(ref.rows[0]![ref.columns.findIndex((c) => c.name === "id")]).toEqual(userId);
     expect(gridProps().quickLookKey).toBe(true);
-    expect(gridProps().rowNumbers).toBe(false);
+    expect(gridProps().rowNumbers).toBe(true);
   });
 });
 

@@ -364,7 +364,7 @@ export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
   gridEstimateCount: true,
   gridEstimateThreshold: 500_000,
   gridAutoNullEmpty: true,
-  gridRowNumbers: false,
+  gridRowNumbers: true,
   structureColumnOrder: "ordinal",
   gridExpansionTooltips: false,
   gridAutoHideScrollers: false,

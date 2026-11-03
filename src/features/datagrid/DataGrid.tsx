@@ -1259,6 +1259,31 @@ export function DataGrid({
     ],
   );
 
+  /** The gutter corner's button (TablePlus): every column sized to its visible values. */
+  const fitAllColumns = useCallback(() => {
+    const widths = { ...columnState.widths };
+    const visible = rowVirtualizer.getVirtualItems();
+    cols.forEach((col, vi) => {
+      const texts: string[] = [];
+      for (const vr of visible) {
+        const row = getRow(vr.index);
+        if (row) texts.push(cellDisplay(valueAt(row, vi), lacksFields).text);
+      }
+      const w = fitWidth(col, texts, gridFontSize) + (fksOf(col).length > 0 ? 16 : 0);
+      widths[col.id] = Math.min(MAX_COL_W, w);
+    });
+    setColumnState({ ...columnState, widths });
+  }, [
+    cols,
+    rowVirtualizer,
+    getRow,
+    valueAt,
+    setColumnState,
+    columnState,
+    gridFontSize,
+    lacksFields,
+  ]);
+
   const commitReorder = (r: Reorder) => {
     const allIds = columns.map((c) => c.id);
     const beforeId = r.before ? r.targetId : idAfter(allIds, columnState, r.targetId);
@@ -1326,6 +1351,8 @@ export function DataGrid({
       }
       return;
     }
+    // The corner's fit-all button handles its own click.
+    if (target.closest("[data-fit-all]")) return;
     const header = target.closest<HTMLElement>("[data-header]");
     if (header) {
       const id = header.dataset.header!;
@@ -1973,9 +2000,21 @@ export function DataGrid({
             >
               <div
                 data-header="__corner"
-                className="border-border bg-surface-2 sticky left-0 z-[4] float-left h-full border-r border-b"
+                className="border-border bg-surface-2 sticky left-0 z-[4] float-left flex h-full items-center justify-center border-r border-b"
                 style={{ width: gutterW }}
-              />
+              >
+                {/* TablePlus's corner icon: size every column to fit; the corner itself selects all. */}
+                <button
+                  type="button"
+                  data-fit-all=""
+                  aria-label="Size all columns to fit"
+                  title="Size all columns to fit"
+                  onClick={fitAllColumns}
+                  className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex size-4 items-center justify-center rounded-sm outline-none focus-visible:ring-2"
+                >
+                  <MoveHorizontal className="size-3" />
+                </button>
+              </div>
               {virtualCols.map((vc) => {
                 const col = cols[vc.index]!;
                 const s = sort.find((x) => x.column === col.id);

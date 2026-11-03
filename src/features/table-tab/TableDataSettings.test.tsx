@@ -12,7 +12,7 @@ describe("Table Data preferences", () => {
       gridEstimateCount: true,
       gridEstimateThreshold: 500_000,
       gridAutoNullEmpty: true,
-      gridRowNumbers: false,
+      gridRowNumbers: true,
       filterDefaultColumn: "primaryKey",
       filterDefaultOperator: "eq",
       filterDefaultState: "restore",
@@ -25,7 +25,7 @@ describe("Table Data preferences", () => {
       filterDefaultState: "hide",
     });
     expect(p.gridEstimateThreshold).toBe(500_000);
-    expect(p.gridRowNumbers).toBe(false);
+    expect(p.gridRowNumbers).toBe(true);
     expect(p.filterDefaultColumn).toBe("anyColumn");
     expect(p.filterDefaultOperator).toBe("eq");
     expect(p.filterDefaultState).toBe("hide");
@@ -37,7 +37,7 @@ describe("Table Data preferences", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Alternating row background colors" }));
     expect(getPrefs().gridAlternatingRows).toBe(false);
     fireEvent.click(screen.getByRole("switch", { name: "Show row numbers" }));
-    expect(getPrefs().gridRowNumbers).toBe(true);
+    expect(getPrefs().gridRowNumbers).toBe(false);
     fireEvent.click(
       screen.getByRole("switch", {
         name: "Auto convert empty Numeric, UUID, JSON or Array to NULL",
