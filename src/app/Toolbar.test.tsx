@@ -667,13 +667,13 @@ describe("customisable toolbar", () => {
 });
 
 describe("WorkspaceRail", () => {
-  it("shows while any connection is open, even a single one", () => {
+  it("shows once a second connection is open (TablePlus): one workspace has the whole window", () => {
     const { container } = wrap(<WorkspaceRail />);
     expect(container).toBeEmptyDOMElement();
     act(() => useConnectionsStore.getState().add(info("a")));
-    expect(screen.getByRole("navigation", { name: "Open connections" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Connection manager" })).toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
     act(() => useConnectionsStore.getState().add(info("b", { driver: "mysql" })));
+    expect(screen.getByRole("button", { name: "Connection manager" })).toBeInTheDocument();
     const rail = screen.getByRole("navigation", { name: "Open connections" });
     // One icon per workspace: the database's initials (tabler_dev → TD).
     expect(within(rail).getByRole("button", { name: /Conn a/ })).toHaveTextContent("TD");
@@ -697,6 +697,7 @@ describe("WorkspaceRail", () => {
 
   it("opens the connection manager from +, highlighted while it shows", () => {
     useConnectionsStore.getState().add(info("a"));
+    useConnectionsStore.getState().add(info("b"));
     const launcher = spyAction("ui.launcher");
     wrap(<WorkspaceRail />);
     const plus = screen.getByRole("button", { name: "Connection manager" });

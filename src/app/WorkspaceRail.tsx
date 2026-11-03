@@ -216,8 +216,8 @@ function RailItem({
 }
 
 /**
- * TablePlus's workspace rail at the window's far left, shown while any connection is open (even
- * one, so the connection list is always a click away): one icon per workspace — the database's
+ * TablePlus's workspace rail at the window's far left, shown once a second workspace is open (a
+ * single one has the whole window; the connection list is a keystroke away): one icon per workspace — the database's
  * initials in the connection's colour, the names in its tooltip (the right-click menu can show
  * the database or connection name under it) — that switches to it, drags to reorder (kept across restarts)
  * and right-clicks to open it in a new window or disconnect; a `+` opens the connection manager
@@ -229,7 +229,7 @@ export function WorkspaceRail() {
   const launcher = useUiStore((s) => s.view === "launcher");
   const { mutate: disconnect } = useDisconnect();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  if (order.length === 0) return null;
+  if (order.length < 2) return null;
   const onDragEnd = (e: DragEndEvent) => {
     if (!e.over || e.active.id === e.over.id) return;
     moveWorkspace(order.indexOf(String(e.active.id)), order.indexOf(String(e.over.id)));

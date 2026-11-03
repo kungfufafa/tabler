@@ -43,6 +43,8 @@ describe("WorkspaceRail database icons", () => {
       railShowDatabase: false,
       railShowConnection: false,
     });
+    // The rail shows from the second workspace on: one more, named apart from the ones under test.
+    useConnectionsStore.getState().add({ ...info("other", "scratch", "p9"), name: "Other" });
     vi.restoreAllMocks();
   });
 
