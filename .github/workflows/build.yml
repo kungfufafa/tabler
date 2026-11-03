@@ -111,8 +111,13 @@ jobs:
           path: installers
           merge-multiple: true
 
+      # The Windows artifact keeps its `msi/` and `nsis/` folders (upload-artifact keeps the
+      # common parent of several paths); the release wants the files alone.
       - name: Installers to publish
-        run: ls -l installers
+        run: |
+          find installers -mindepth 2 -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) -exec mv -t installers {} +
+          find installers -mindepth 1 -type d -exec rm -r {} +
+          ls -l installers
 
       # The nightly pre-release is one rolling release: its tag moves to this commit and the
       # installers replace the previous ones. A `v*` tag gets a release of its own, with notes
