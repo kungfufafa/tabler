@@ -17,10 +17,30 @@
 
 ---
 
-**Contents:** [Highlights](#highlights) · [Features](#features) ·
+**Contents:** [Download](#download) · [Highlights](#highlights) · [Features](#features) ·
 [Getting started](#getting-started) · [Keyboard shortcuts](#keyboard-shortcuts) ·
 [Development](#development) · [Building the app](#building-the-app) ·
 [Troubleshooting](#troubleshooting) · [Documentation](#documentation)
+
+## Download
+
+Installers for macOS and Windows are on the
+[Releases page](https://github.com/kungfufafa/tabler/releases): a numbered release for each `v*`
+tag, and a rolling [nightly](https://github.com/kungfufafa/tabler/releases/tag/nightly) built from
+`main`.
+
+| Platform                         | File                             | Install                                                       |
+| -------------------------------- | -------------------------------- | ------------------------------------------------------------- |
+| macOS 12+ (Apple Silicon, Intel) | `Tabler_<version>_universal.dmg` | Open the DMG and drag Tabler to Applications                  |
+| Windows 10 / 11 (64-bit)         | `Tabler_<version>_x64-setup.exe` | Run it; installs for the current user, no admin rights needed |
+| Windows 10 / 11 (64-bit)         | `Tabler_<version>_x64_en-US.msi` | For an all-users or scripted install                          |
+
+The builds are not code-signed yet, so each platform warns once:
+
+- **macOS** blocks the first launch (Gatekeeper). Right-click Tabler in Applications and choose
+  **Open**, or run `xattr -cr /Applications/Tabler.app`.
+- **Windows** shows a SmartScreen warning. Click **More info** → **Run anyway**. WebView2 is
+  downloaded by the installer when Windows does not have it yet.
 
 ## Highlights
 
@@ -230,8 +250,15 @@ missing. The builds are not code-signed, so SmartScreen warns on the first run (
 ### Both platforms from CI
 
 The "Release installers" workflow ([.github/workflows/build.yml](.github/workflows/build.yml)) builds a universal
-macOS DMG (Apple Silicon and Intel) and the Windows installers. Run it from the Actions tab, or push
-a `v*` tag; the installers are attached to the run as artifacts.
+macOS DMG (Apple Silicon and Intel) and the Windows installers, and publishes them on the
+[Releases page](https://github.com/kungfufafa/tabler/releases):
+
+- `git tag v0.2.0 && git push origin v0.2.0` makes a release for that tag, with notes generated
+  from the commits since the previous one (bump `version` in `package.json`,
+  `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` first);
+- running it from the Actions tab with **publish** set to `nightly` replaces the installers on the
+  rolling `nightly` pre-release;
+- running it with **publish** left at `artifacts` only attaches them to the run.
 
 ## Troubleshooting
 
