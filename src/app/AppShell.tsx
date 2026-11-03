@@ -61,7 +61,8 @@ function Workspace() {
     <ResizablePanelGroup orientation="horizontal" className="min-h-0 min-w-0 flex-1">
       {sidebarOpen && (
         <>
-          <ResizablePanel id="sidebar" defaultSize={260} minSize={180} maxSize={480}>
+          {/* TablePlus opens with a ~200px object sidebar and a ~200px Details panel at 1280px. */}
+          <ResizablePanel id="sidebar" defaultSize={224} minSize={180} maxSize={480}>
             <Sidebar />
           </ResizablePanel>
           <ResizableHandle />
@@ -90,7 +91,7 @@ function Workspace() {
       {inspectorOpen && (
         <>
           <ResizableHandle />
-          <ResizablePanel id="inspector" defaultSize={300} minSize={220} maxSize={600}>
+          <ResizablePanel id="inspector" defaultSize={256} minSize={220} maxSize={600}>
             <InspectorPanel />
           </ResizablePanel>
         </>

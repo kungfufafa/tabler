@@ -89,20 +89,35 @@ const tiles = async () =>
 describe("the picker", () => {
   it("shows a lane's tile only when this build has its database", async () => {
     renderDialog();
-    expect(await tiles()).toEqual(["PGPostgreSQL", "MYMySQL", "MAMariaDB", "SQSQLite"]);
+    expect(await tiles()).toEqual(["PostgreSQL", "MySQL", "MariaDB", "SQLite"]);
   });
 
   it("lists every database of a fuller build, in the picker's order", async () => {
     built("mongodb", "cockroachdb");
     renderDialog();
     expect(await tiles()).toEqual([
-      "PGPostgreSQL",
-      "CRCockroachDB",
-      "MYMySQL",
-      "MAMariaDB",
-      "SQSQLite",
-      "MOMongoDB",
+      "PostgreSQL",
+      "CockroachDB",
+      "MySQL",
+      "MariaDB",
+      "SQLite",
+      "MongoDB",
     ]);
+  });
+
+  it("searches a fuller build's tiles (TablePlus's field above the grid); ↩ picks the match", async () => {
+    built("mongodb", "cockroachdb");
+    const user = userEvent.setup();
+    renderDialog();
+    const search = await screen.findByRole("textbox", { name: "Search databases" });
+    await user.type(search, "mongo");
+    expect(await tiles()).toEqual(["MongoDB"]);
+    // The selection followed the search: the only match is the picked tile, and ↩ opens its form.
+    expect(screen.getByRole("radio", { name: "MongoDB" })).toHaveAttribute("aria-checked", "true");
+    await user.keyboard("{Enter}");
+    expect(
+      await screen.findByRole("dialog", { name: "New MongoDB connection" }),
+    ).toBeInTheDocument();
   });
 });
 

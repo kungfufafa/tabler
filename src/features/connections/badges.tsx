@@ -1,14 +1,16 @@
 import { ChevronRight, Folder, Loader2 } from "lucide-react";
 import { Fragment } from "react";
+import { DATABASE_LOGOS } from "@/features/drivers/logos";
 import type { ConnectionTag, DatabaseKind, Driver, MysqlVersion, PgFlavor } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
-import { databaseKind, KIND_SHORT, TINTED, tintStyle } from "./colors";
+import { badgeContrastStyle } from "./badgeContrast";
+import { databaseKind, KIND_LABEL, TINTED, tintStyle } from "./colors";
 import { GROUP_ICONS, isGroupImage, splitPath, type GroupIconId } from "./groups";
 import { tagColorOf, tagLabel, useCustomTags } from "./tags";
 
 /**
  * Which database a badge is for: its `kind` (a profile's `kindOf`), or a driver with the flavor
- * settings that pick its kind (a MySQL connection set to Ver. ▸ MariaDB reads MA).
+ * settings that pick its kind (a MySQL connection set to Ver. ▸ MariaDB uses its logo).
  */
 type BadgeDatabase =
   | { kind: DatabaseKind; driver?: never; mysqlVersion?: never; pgFlavor?: never }
@@ -25,32 +27,46 @@ function badgeKind(db: BadgeDatabase): DatabaseKind {
 }
 
 /**
- * Rounded square with the database's short label (PG / MY / MA / SQ / CR…), tinted with a
- * connection colour.
+ * Rounded square with the database's logo, tinted with a connection colour.
  */
 export function DriverBadge(
   props: BadgeDatabase & {
     color: string | null | undefined;
-    /** Shows a spinner instead of the label (connecting). */
+    /** Shows a spinner instead of the logo (connecting). */
     busy?: boolean;
     size?: "md" | "lg";
     className?: string;
   },
 ) {
   const { color, busy = false, size = "md", className } = props;
-  const label = KIND_SHORT[badgeKind(props)];
+  const kind = badgeKind(props);
+  const logoClass = size === "md" ? "size-[18px]" : "size-8";
   return (
     <span
       aria-hidden
-      style={tintStyle(color)}
+      title={KIND_LABEL[kind]}
+      style={badgeContrastStyle(color)}
       className={cn(
-        TINTED,
-        "flex shrink-0 items-center justify-center font-mono font-semibold tracking-tight",
-        size === "md" ? "size-7 rounded-md text-[10px]" : "size-12 rounded-xl text-sm",
+        "bg-[var(--db-badge-bg)] text-[var(--db-badge-fg)] dark:bg-[var(--db-badge-dark-bg)] dark:text-[var(--db-badge-dark-fg)] forced-colors:bg-[Canvas] forced-colors:text-[CanvasText]",
+        "flex shrink-0 items-center justify-center",
+        size === "md" ? "size-7 rounded-md" : "size-12 rounded-xl",
         className,
       )}
     >
-      {busy ? <Loader2 className="size-3.5 animate-spin" /> : label}
+      {busy ? (
+        <Loader2 className="size-3.5 animate-spin" />
+      ) : (
+        <span
+          data-slot="database-logo"
+          className={cn(logoClass, "bg-current")}
+          style={{
+            maskImage: `url("${DATABASE_LOGOS[kind]}")`,
+            maskSize: "contain",
+            maskPosition: "center",
+            maskRepeat: "no-repeat",
+          }}
+        />
+      )}
     </span>
   );
 }

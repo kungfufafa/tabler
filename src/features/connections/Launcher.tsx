@@ -851,6 +851,27 @@ export function Launcher() {
 
         <section className="group/pane bg-surface flex min-w-0 flex-1 flex-col">
           <div className="border-border flex h-11 shrink-0 items-center gap-1.5 border-b px-3">
+            {/* TablePlus: + and New group sit left of the search, in the connection list's own header. */}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="New connection"
+              title="Create a new connection"
+              onClick={() => openConnectionDialog()}
+            >
+              <Plus />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="New group"
+              title="New group"
+              onClick={() => openGroupDialog({ kind: "new", parent: "", moveIds: [] })}
+            >
+              <FolderPlus />
+            </Button>
             <div className="relative min-w-0 flex-1">
               <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
               <Input

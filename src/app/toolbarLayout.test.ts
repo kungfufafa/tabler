@@ -43,7 +43,7 @@ describe("toolbar layout", () => {
 
   it("centres the pill: the items split at the status item", () => {
     expect(splitAtStatus(DEFAULT_TOOLBAR_ITEMS)).toEqual({
-      left: ["actions", "safeMode"],
+      left: ["sidebar", "actions", "safeMode", "databases"],
       status: true,
       right: ["refresh", "openAnything", "workspaces", "users", "metrics", "panels"],
     });
@@ -68,13 +68,13 @@ describe("toolbar layout", () => {
     expect(sanitizePrefs({ toolbarDisplay: "text" }).toolbarDisplay).toBe("icon");
   });
 
-  it("drops the duplicate buttons from an untouched previous default, not from a customised one", () => {
-    expect(DEFAULT_TOOLBAR_ITEMS).not.toContain("sidebar");
-    expect(DEFAULT_TOOLBAR_ITEMS).not.toContain("databases");
+  it("moves an untouched previous default to TablePlus's set, not a customised layout", () => {
+    expect(DEFAULT_TOOLBAR_ITEMS[0]).toBe("sidebar");
+    expect(DEFAULT_TOOLBAR_ITEMS).toContain("databases");
     expect(sanitizePrefs({ toolbarItems: [...LEGACY_DEFAULT_TOOLBAR_ITEMS] }).toolbarItems).toEqual(
       DEFAULT_TOOLBAR_ITEMS,
     );
-    const custom = ["sidebar", "databases", "status"];
+    const custom = ["actions", "status", "refresh"];
     expect(sanitizePrefs({ toolbarItems: custom }).toolbarItems).toEqual(custom);
   });
 });

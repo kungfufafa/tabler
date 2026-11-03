@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowDownAZ,
+  FileCode2,
   ListOrdered,
   Lock,
   Plus,
@@ -1200,6 +1201,18 @@ function StructureTabView({
             <BarSeparator />
           </>
         )}
+        {/* TablePlus keeps DDL in the structure footer, next to + Column and Triggers. */}
+        <BarTooltip label="The CREATE statement, as the server gives it">
+          <Button
+            variant="ghost"
+            size="xs"
+            aria-label="DDL"
+            onClick={() => setShowDdl(true)}
+            className="text-muted-foreground hover:text-foreground h-6 shrink-0 px-1.5"
+          >
+            <FileCode2 /> DDL
+          </Button>
+        </BarTooltip>
         <BarIconButton
           label="Open in SQL"
           tooltip="Open the CREATE statement in a new SQL editor tab"

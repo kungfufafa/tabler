@@ -200,6 +200,8 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
   const active = useActiveConnection();
   const hasConnection = active !== null;
   const caption = text ? TOOLBAR_ITEM_SHORT[id] : undefined;
+  // The panel switches leave the left sidebar to the Toggle Sidebar item when the toolbar has it.
+  const sidebarItem = usePrefs((p) => p.toolbarItems.includes("sidebar"));
   switch (id) {
     case "sidebar":
       return (
@@ -274,7 +276,7 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
         </ToolbarButton>
       );
     case "panels":
-      return <PanelToggles />;
+      return <PanelToggles leftSidebar={!sidebarItem} />;
     case "space":
       return <div data-tauri-drag-region data-slot="toolbar-space" className="w-5 shrink-0" />;
     case "flexibleSpace":

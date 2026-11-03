@@ -59,13 +59,17 @@ export const TOOLBAR_ITEM_SHORT: Record<ToolbarItemId, string> = {
 };
 
 /**
- * The default set, left → right (TablePlus's toolbar), without the items that repeat a button
- * already on screen: Toggle Sidebar is the first of the panel switches, and Databases & SQL is the
- * sidebar's Show Databases and the tab strip's +. Both stay in the palette.
+ * The default set, left → right, TablePlus's toolbar as observed on Windows (27.2): the sidebar
+ * toggle first, then the staged-changes action control, the safe-mode lock, Databases & SQL, the
+ * centred status pill, and Refresh, Open Anything, Show Workspaces, User Management, Metrics Board
+ * and the panel switches on the right (those drop their own sidebar toggle while the first item
+ * is here).
  */
 export const DEFAULT_TOOLBAR_ITEMS: readonly ToolbarItemId[] = Object.freeze([
+  "sidebar",
   "actions",
   "safeMode",
+  "databases",
   "status",
   "refresh",
   "openAnything",
@@ -75,12 +79,13 @@ export const DEFAULT_TOOLBAR_ITEMS: readonly ToolbarItemId[] = Object.freeze([
   "panels",
 ]);
 
-/** The previous default: a stored layout still equal to it moves to the current default. */
+/**
+ * The previous default (without the sidebar toggle and Databases & SQL): a stored layout still
+ * equal to it moves to the current default.
+ */
 export const LEGACY_DEFAULT_TOOLBAR_ITEMS: readonly ToolbarItemId[] = Object.freeze([
-  "sidebar",
   "actions",
   "safeMode",
-  "databases",
   "status",
   "refresh",
   "openAnything",

@@ -144,7 +144,9 @@ const redis: ConnectionProfile = {
 describe("a profile of another driver in the launcher", () => {
   it("gets a badge and a place in the driver sort", () => {
     const { container } = render(<DriverBadge driver="redis" color="red" />);
-    expect(container).toHaveTextContent("RE");
+    expect(container.querySelector('[data-slot="database-logo"]')).not.toBeNull();
+    expect(container.firstChild).toHaveAttribute("title", "Redis");
+    expect(container).toHaveTextContent("");
     const sorted = sortProfiles([redis, SEED_PROFILES[0]!], "driver").map((p) => p.driver);
     expect(sorted).toEqual(["postgres", "redis"]);
   });

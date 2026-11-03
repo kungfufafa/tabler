@@ -10,6 +10,7 @@ import {
   Loader2,
   Network,
   ScrollText,
+  Search,
   ShieldOff,
   Tags,
   X,
@@ -525,26 +526,40 @@ function SslFileButton({
   );
 }
 
+/** The databases whose name contains `query` (all of them for a blank one), in the picker's order. */
+function matchingKinds(kinds: readonly DatabaseKind[], query: string): DatabaseKind[] {
+  const q = query.trim().toLowerCase();
+  if (q === "") return [...kinds];
+  return kinds.filter(
+    (k) => KIND_LABEL[k].toLowerCase().includes(q) || k.toLowerCase().includes(q),
+  );
+}
+
 /**
  * New connection, step 1: one big tile per database (TablePlus's list; MariaDB apart from MySQL). A click selects, a double-click or ↩ (or the
  * dialog's Create button) goes on to the form; ←/→ move between the tiles.
  */
 function DriverPicker({
   kinds,
+  wide = kinds.length > 4,
   value,
   onChange,
   onConfirm,
 }: {
-  /** The databases this build has, in the picker's order (up to 20). */
+  /** The databases this build has that match the search, in the picker's order (up to 20). */
   kinds: readonly DatabaseKind[];
+  /**
+   * The core four fit one row of big tiles; a fuller build wraps smaller ones (TablePlus's 7-column
+   * grid), and ↑/↓ then move by a row. Given by the dialog so a search that leaves few tiles keeps
+   * the layout.
+   */
+  wide?: boolean;
   value: DatabaseKind;
   onChange: (kind: DatabaseKind) => void;
   onConfirm: (kind: DatabaseKind) => void;
 }) {
   const tiles = useRef(new Map<DatabaseKind, HTMLButtonElement>());
   const grid = useRef<HTMLDivElement>(null);
-  // The core four fit one row; a fuller build wraps its tiles, and ↑/↓ then move by a row.
-  const wide = kinds.length > 4;
   const rowStep = () => {
     if (!wide || !grid.current) return 1;
     const columns = getComputedStyle(grid.current).gridTemplateColumns.split(" ").filter(Boolean);
@@ -556,10 +571,15 @@ function DriverPicker({
       role="radiogroup"
       aria-label="Database"
       className={cn(
-        "grid gap-3",
-        wide ? "grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))]" : "grid-cols-4",
+        "grid",
+        wide ? "grid-cols-[repeat(auto-fill,minmax(5.75rem,1fr))] gap-2.5" : "grid-cols-4 gap-3",
       )}
     >
+      {kinds.length === 0 && (
+        <p className="text-muted-foreground col-span-full py-6 text-center text-sm">
+          No database matches.
+        </p>
+      )}
       {kinds.map((d, i) => (
         <button
           key={d}
@@ -593,8 +613,8 @@ function DriverPicker({
             tiles.current.get(next)?.focus();
           }}
           className={cn(
-            "flex flex-col items-center gap-3 rounded-xl border px-3 text-center transition-colors outline-none",
-            wide ? "pt-4 pb-3" : "pt-6 pb-5",
+            "flex flex-col items-center rounded-xl border text-center transition-colors outline-none",
+            wide ? "gap-2 px-1.5 pt-3.5 pb-2.5" : "gap-3 px-3 pt-6 pb-5",
             "focus-visible:ring-ring/50 focus-visible:ring-3",
             value === d
               ? "border-brand bg-brand-soft"
@@ -602,7 +622,9 @@ function DriverPicker({
           )}
         >
           <DriverBadge kind={d} color={KIND_TINT[d]} size="lg" />
-          <span className="text-[13px] font-medium">{KIND_LABEL[d]}</span>
+          <span className={cn("font-medium", wide ? "text-xs leading-tight" : "text-[13px]")}>
+            {KIND_LABEL[d]}
+          </span>
         </button>
       ))}
     </div>
@@ -2062,6 +2084,8 @@ export function ConnectionDialog({
   );
   const [step, setStep] = useState<"driver" | "form">("form");
   const [pickedDriver, setPickedDriver] = useState<DatabaseKind>("postgres");
+  /** The picker's search (TablePlus: a search field above the tiles). */
+  const [kindQuery, setKindQuery] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [bootstrapOpen, setBootstrapOpen] = useState(false);
   const [tagsOpen, setTagsOpen] = useState(false);
@@ -2098,6 +2122,7 @@ export function ConnectionDialog({
     // A prefill without a driver ("New ▸ Connection in this group…") still picks one first.
     setStep(profile || prefill?.values.driver !== undefined ? "form" : "driver");
     setPickedDriver("postgres");
+    setKindQuery("");
     setAdvancedOpen(false);
     setBootstrapOpen(false);
     setTagsOpen(false);
@@ -2289,19 +2314,50 @@ export function ConnectionDialog({
       <DialogContent
         className={cn(
           "flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0",
-          step === "form" ? "sm:max-w-[600px]" : built.length > 4 ? "sm:max-w-2xl" : "sm:max-w-lg",
+          step === "form" ? "sm:max-w-[600px]" : built.length > 4 ? "sm:max-w-3xl" : "sm:max-w-lg",
         )}
         showCloseButton
       >
         {step === "driver" ? (
           <>
-            <DialogHeader className="border-border shrink-0 border-b py-4 pr-12 pl-5">
-              <DialogTitle>New connection</DialogTitle>
-              <DialogDescription>Choose the database you are connecting to.</DialogDescription>
+            <DialogHeader className="border-border shrink-0 gap-3 border-b py-4 pr-12 pl-5">
+              <div className="flex flex-col gap-1.5">
+                <DialogTitle>New connection</DialogTitle>
+                <DialogDescription>Choose the database you are connecting to.</DialogDescription>
+              </div>
+              {built.length > 4 && (
+                <div className="relative">
+                  <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
+                  <Input
+                    value={kindQuery}
+                    onChange={(e) => {
+                      const q = e.target.value;
+                      setKindQuery(q);
+                      // The selection follows the search: the first match once the picked one is gone.
+                      const shown = matchingKinds(built, q);
+                      if (shown.length > 0 && !shown.includes(pickedDriver))
+                        setPickedDriver(shown[0]!);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && matchingKinds(built, kindQuery).length > 0) {
+                        e.preventDefault();
+                        pickDriver(pickedDriver);
+                      }
+                    }}
+                    aria-label="Search databases"
+                    placeholder="Search…"
+                    className="h-7 pl-7"
+                    spellCheck={false}
+                    autoComplete="off"
+                    autoFocus
+                  />
+                </div>
+              )}
             </DialogHeader>
             <div className="min-h-0 overflow-y-auto px-5 py-5">
               <DriverPicker
-                kinds={built}
+                kinds={matchingKinds(built, kindQuery)}
+                wide={built.length > 4}
                 value={pickedDriver}
                 onChange={setPickedDriver}
                 onConfirm={pickDriver}

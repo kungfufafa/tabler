@@ -273,12 +273,13 @@ describe("Toolbar", () => {
       "8px",
     );
     const labels = screen.getAllByRole("button").map((b) => b.getAttribute("aria-label"));
-    // The default has no sidebar toggle in front (the panel switches have it): the menu leads.
-    expect(labels[0]).toBe("Menu");
+    // The default leads with the sidebar toggle (TablePlus for Windows), the menu after it.
+    expect(labels.slice(0, 2)).toEqual(["Toggle sidebar", "Menu"]);
     expect(labels.slice(-3)).toEqual(["Minimize", "Maximize", "Close"]);
-    act(() => setPref("toolbarItems", ["sidebar", "refresh"]));
+    // Without the sidebar toggle in front, the menu leads.
+    act(() => setPref("toolbarItems", ["refresh", "sidebar"]));
     const reordered = screen.getAllByRole("button").map((b) => b.getAttribute("aria-label"));
-    expect(reordered.slice(0, 2)).toEqual(["Toggle sidebar", "Menu"]);
+    expect(reordered.slice(0, 3)).toEqual(["Menu", "Refresh", "Toggle sidebar"]);
   });
 
   it("enables the action control while the workspace has pending changes, in any of its tabs", () => {
@@ -318,6 +319,15 @@ describe("Toolbar", () => {
     useConnectionsStore.getState().add(info("a"));
     const toggleConsole = spyAction("ui.toggle-console");
     wrap(<Toolbar launcher={false} />);
+    // The default set has the Toggle Sidebar item up front, so the panel switches skip it…
+    expect(
+      within(screen.getByRole("group", { name: "Panels" })).queryByRole("button", {
+        name: "Left sidebar",
+      }),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Toggle sidebar" })).toBeInTheDocument();
+    // …and have it once that item is gone.
+    act(() => setPref("toolbarItems", ["status", "panels"]));
     const panels = screen.getByRole("group", { name: "Panels" });
     expect(within(panels).getByRole("button", { name: "Left sidebar" })).toHaveAttribute(
       "aria-pressed",

@@ -1,6 +1,36 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { GroupIcon } from "./badges";
+import { KINDS } from "@/features/drivers/catalog";
+import { DATABASE_LOGOS } from "@/features/drivers/logos";
+import { DriverBadge, GroupIcon } from "./badges";
+
+describe("DriverBadge", () => {
+  it("shows a bundled logo for every database instead of an abbreviation", () => {
+    for (const { kind, label } of KINDS) {
+      const { container, unmount } = render(<DriverBadge kind={kind} color="blue" />);
+      expect(container.firstChild).toHaveAttribute("title", label);
+      expect(container).toHaveTextContent("");
+      const image = container.querySelector("img");
+      if (image) expect(image).toHaveAttribute("src", DATABASE_LOGOS[kind]);
+      else
+        expect(container.querySelector('[data-slot="database-logo"]')).toHaveStyle({
+          maskImage: `url("${DATABASE_LOGOS[kind]}")`,
+        });
+      unmount();
+    }
+  });
+
+  it("uses the flavor logo and replaces it with a spinner while connecting", () => {
+    const { container, rerender } = render(
+      <DriverBadge driver="mysql" mysqlVersion="mariadb" color="purple" size="lg" />,
+    );
+    expect(container.firstChild).toHaveAttribute("title", "MariaDB");
+    expect(container.querySelector('[data-slot="database-logo"]')).toHaveClass("size-8");
+    rerender(<DriverBadge driver="mysql" color="purple" busy />);
+    expect(container.querySelector('[data-slot="database-logo"]')).toBeNull();
+    expect(container.querySelector("svg.animate-spin")).not.toBeNull();
+  });
+});
 
 const PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==";

@@ -91,12 +91,7 @@ describe("ConnectionDialog — new connection", () => {
     renderDialog();
     const picker = await screen.findByRole("dialog", { name: "New connection" });
     const tiles = within(picker).getAllByRole("radio");
-    expect(tiles.map((t) => t.textContent)).toEqual([
-      "PGPostgreSQL",
-      "MYMySQL",
-      "MAMariaDB",
-      "SQSQLite",
-    ]);
+    expect(tiles.map((t) => t.textContent)).toEqual(["PostgreSQL", "MySQL", "MariaDB", "SQLite"]);
     expect(tiles[0]).toHaveAttribute("aria-checked", "true");
     await user.dblClick(within(picker).getByRole("radio", { name: "MySQL" }));
     const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
