@@ -1,9 +1,8 @@
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/features/settings/controls";
+import { mono } from "./glyph";
 import { CSV_DECIMALS, decimalProblem, isCustomDecimal } from "./options";
-
-const mono = (label: string) => <span className="font-mono">{label}</span>;
 
 /**
  * The decimal separator: `.`, `,` or "Other…" with a one-character field (TablePlus's custom

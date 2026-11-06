@@ -167,8 +167,8 @@ export function encodingForCharset(charset: string | null | undefined): ExportEn
 }
 
 export const CSV_QUOTES: ReadonlyArray<{ value: CsvQuote; label: string; title: string }> = [
-  { value: "double", label: '"', title: "Put every value in double quotes" },
-  { value: "single", label: "'", title: "Put every value in single quotes" },
+  { value: "double", label: '"…"', title: "Put every value in double quotes" },
+  { value: "single", label: "'…'", title: "Put every value in single quotes" },
   {
     value: "space",
     label: "Space",
@@ -254,6 +254,47 @@ export interface RowsExportInput {
 
 /** What is being exported, resolved from the dialog's source and the table tab's state. */
 export type ExportInput = { kind: "sql"; sql: string } | TableExportInput | RowsExportInput;
+
+/**
+ * "Select fields to export" (TablePlus): field names separated by commas, spaces around them
+ * ignored, each once, in the order typed. Empty = every field (or the grid's visible ones).
+ */
+export function parseFieldList(text: string): string[] {
+  const out: string[] = [];
+  for (const part of text.split(",")) {
+    const name = part.trim();
+    if (name !== "" && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+/** Why the typed fields cannot be exported (names the source does not have), or null. */
+export function fieldsProblem(
+  fields: readonly string[],
+  available: readonly string[],
+): string | null {
+  const known = new Set(available);
+  const unknown = fields.filter((f) => !known.has(f));
+  if (unknown.length === 0) return null;
+  const list = unknown.map((f) => `"${f}"`).join(", ");
+  return `No field named ${list}. Separate field names with commas.`;
+}
+
+/**
+ * The export narrowed to the typed fields, in their order: a table export reads only those
+ * columns (overriding the grid's visible ones), held rows are cut to them. A query is unchanged.
+ */
+export function withFields(input: ExportInput, fields: readonly string[]): ExportInput {
+  if (fields.length === 0 || input.kind === "sql") return input;
+  if (input.kind === "table") return { ...input, columns: [...fields] };
+  const at = fields.map((f) => input.columns.findIndex((c) => c.name === f));
+  if (at.some((i) => i < 0)) return input;
+  return {
+    ...input,
+    columns: at.map((i) => input.columns[i]!),
+    rows: input.rows.map((row) => at.map((i) => row[i]!)),
+  };
+}
 
 export function toExportFormat(options: ExportOptions, tableName: string): ExportFormat {
   switch (options.format) {

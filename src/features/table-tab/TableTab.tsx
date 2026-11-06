@@ -311,8 +311,14 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   );
   // grid3: a new page (or another sort / filter) starts at the grid's top.
   const pageKey = useMemo(
-    () => ({ offset: state.offset, cursor: cursorAt, sort: state.sort, filters: state.filters }),
-    [state.offset, cursorAt, state.sort, state.filters],
+    () => ({
+      offset: state.offset,
+      limit: state.limit,
+      cursor: cursorAt,
+      sort: state.sort,
+      filters: state.filters,
+    }),
+    [state.offset, state.limit, cursorAt, state.sort, state.filters],
   );
   const rows = useTableRows(connectionId, table, request, state.refreshToken, pending > 0);
   const rowNumbers = usePrefs((p) => p.gridRowNumbers);
@@ -1197,6 +1203,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
             onLoadReferenced={loadReferenced}
             onLoadFullValue={loadFullValue}
             scrollResetKey={pageKey}
+            viewport={state.viewport}
             deselectKey={committedGeneration}
           />
         )}

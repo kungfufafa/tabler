@@ -10,6 +10,7 @@ import {
 import { Segmented } from "@/features/settings/controls";
 import { cn } from "@/lib/utils";
 import { DecimalChoice } from "./DecimalChoice";
+import { glyphOptions } from "./glyph";
 import {
   CSV_DELIMITERS,
   CSV_LINE_BREAKS,
@@ -80,8 +81,6 @@ export function Check({
     </label>
   );
 }
-
-const mono = (label: string) => <span className="font-mono">{label}</span>;
 
 /**
  * "Encoding" of the text formats (CSV, JSON, SQL, HTML). `follows` is shown while the choice is
@@ -198,7 +197,15 @@ function FormatSpecificOptions({
     case "csv":
       return (
         <>
-          <Row id="export-csv-options" label="Options">
+          <Row
+            id="export-csv-options"
+            label="Options"
+            hint={
+              options.csv.nullToEmpty
+                ? "NULL and empty text both write an empty field."
+                : "NULL is written as the word NULL."
+            }
+          >
             <div className="flex flex-col">
               <Check
                 checked={options.csv.nullToEmpty}
@@ -222,10 +229,7 @@ function FormatSpecificOptions({
               id="export-delimiter"
               value={options.csv.delimiter}
               onChange={(delimiter) => set("csv", { delimiter })}
-              options={CSV_DELIMITERS.map((d) => ({
-                ...d,
-                label: d.label === "Tab" ? d.label : mono(d.label),
-              }))}
+              options={glyphOptions(CSV_DELIMITERS)}
             />
           </Row>
           <Row
@@ -239,10 +243,7 @@ function FormatSpecificOptions({
               id="export-quote"
               value={options.csv.quote}
               onChange={(quote) => set("csv", { quote })}
-              options={CSV_QUOTES.map((q) => ({
-                ...q,
-                label: q.value === "ifNeeded" || q.value === "space" ? q.label : mono(q.label),
-              }))}
+              options={glyphOptions(CSV_QUOTES)}
             />
           </Row>
           <Row id="export-line-break" label="Line break">
@@ -250,7 +251,7 @@ function FormatSpecificOptions({
               id="export-line-break"
               value={options.csv.lineBreak}
               onChange={(lineBreak) => set("csv", { lineBreak })}
-              options={CSV_LINE_BREAKS.map((l) => ({ ...l, label: mono(l.label) }))}
+              options={glyphOptions(CSV_LINE_BREAKS)}
             />
           </Row>
           <Row

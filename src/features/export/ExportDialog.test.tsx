@@ -532,6 +532,30 @@ describe("ExportDialog", () => {
       expect(toast.success).toHaveBeenCalledWith("Exported 2 rows", expect.anything());
     });
 
+    it("Fields writes only the typed fields, in their order, and refuses unknown names", async () => {
+      const user = userEvent.setup();
+      await setup();
+      act(() => openExport({ connectionId: info.connectionId, source: held() }));
+      const dialog = await screen.findByRole("dialog");
+      const fields = within(dialog).getByLabelText("Fields");
+      expect(fields).toHaveAttribute("placeholder", "Export all fields…");
+      await user.type(fields, "email, nope");
+      expect(within(dialog).getByText(/No field named "nope"/)).toBeInTheDocument();
+      expect(exportButton(dialog)).toBeDisabled();
+      await user.clear(fields);
+      await user.type(fields, "email,id");
+      expect(within(dialog).getByText("2 of 2 fields, in the order typed")).toBeInTheDocument();
+      const run = spyRun("/Users/me/Downloads/users.csv");
+      await user.click(exportButton(dialog));
+      await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
+      expect(requestOf(run).source).toEqual({
+        kind: "rows",
+        columns: [columns[1], columns[0]],
+        rows: rows.map(([id, email]) => [email, id]),
+        table: "users",
+      });
+    });
+
     it("inserts into untitled when the result's table is unknown", async () => {
       const user = userEvent.setup();
       await setup();

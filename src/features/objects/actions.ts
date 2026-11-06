@@ -5,7 +5,7 @@ import { markDefinition } from "@/features/commit/definitions";
 import { notAvailableFor } from "@/features/drivers/catalog";
 import { applyToEditor } from "@/features/editor/editorStates";
 import { openSqlInNewQueryTab } from "@/features/editor/openSql";
-import { openExportTables } from "@/features/export/store";
+import { openExport, openExportTables } from "@/features/export/store";
 import { openImport, type ImportKind } from "@/features/import/store";
 import { actions } from "@/features/palette/actions";
 import { openGroupDialog } from "@/features/sidebar/groups";
@@ -182,6 +182,15 @@ export function togglePins(scope: string, tables: readonly TableRef[]): void {
 
 export function exportTables(ctx: ObjectContext, tables: readonly TableSummary[]): void {
   openExportTables(ctx.connectionId, tables.map(refOf));
+}
+
+/** Export this Table with Column Selection… (TablePlus): one table, the Fields box focused. */
+export function exportTableColumns(ctx: ObjectContext, table: TableSummary): void {
+  openExport({
+    connectionId: ctx.connectionId,
+    source: { kind: "table", table: refOf(table) },
+    focus: "fields",
+  });
 }
 
 export function importInto(ctx: ObjectContext, kind: ImportKind, table: TableSummary | null): void {

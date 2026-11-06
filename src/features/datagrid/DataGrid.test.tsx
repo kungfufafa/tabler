@@ -9,7 +9,7 @@ import { DEFAULT_PREFS, resetPrefsForTests } from "@/stores/prefs";
 import { useInspectorStore } from "@/stores/inspector";
 import { useUiStore } from "@/stores/ui";
 import { EMPTY_PLACEHOLDER, MISSING_PLACEHOLDER } from "@/lib/values";
-import { DataGrid, type DataGridProps } from "./DataGrid";
+import { DataGrid, type DataGridProps, type GridViewport } from "./DataGrid";
 import { LacksFieldsContext } from "./lacksFields";
 import {
   buildGridColumns,
@@ -120,6 +120,70 @@ function setup(columnState: ColumnState, extra: Partial<DataGridProps> = {}) {
   const click = (r: number, c: number) => fireEvent.pointerDown(cell(r, c), { button: 0 });
   return { ...props, grid, cell, click, unmount };
 }
+
+describe("tab browsing context", () => {
+  const layout: ColumnState = { widths: {}, order: [], hidden: [] };
+
+  it("restores selection and both scroll axes after switching away and back", () => {
+    const viewport: GridViewport = {};
+    const first = setup(layout, { viewport, scrollResetKey: { offset: 0 } });
+    first.click(1, 1);
+    first.grid.scrollTop = 120;
+    first.grid.scrollLeft = 80;
+    fireEvent.scroll(first.grid);
+    first.unmount();
+
+    const second = setup(layout, { viewport, scrollResetKey: { offset: 0 } });
+    expect(second.grid.scrollTop).toBe(120);
+    expect(second.grid.scrollLeft).toBe(80);
+    expect(second.onFocusCell).toHaveBeenLastCalledWith(
+      expect.objectContaining({ pos: { r: 1, c: 1 } }),
+    );
+    second.unmount();
+  });
+
+  it("⇥ in an editor opens the next cell's editor; ⇥ in selection mode only moves", () => {
+    const { grid, click, unmount } = setup(layout);
+    click(1, 1);
+    fireEvent.keyDown(grid, { key: "Tab" });
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    fireEvent.keyDown(grid, { key: "Tab", shiftKey: true });
+    fireEvent.keyDown(grid, { key: "Enter" });
+    const name = screen.getByRole("textbox", { name: "Edit name" });
+    fireEvent.keyDown(name, { key: "Tab" });
+    expect(screen.getByRole("textbox", { name: "Edit email" })).toHaveValue("bob@x.io");
+    // Last column: the editor closes and nothing reopens.
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit email" }), { key: "Tab" });
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    fireEvent.keyDown(grid, { key: "Enter" });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit email" }), {
+      key: "Tab",
+      shiftKey: true,
+    });
+    expect(screen.getByRole("textbox", { name: "Edit name" })).toHaveValue("Bob");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit name" }), { key: "Escape" });
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    unmount();
+  });
+
+  it("does not restore a different page's selection or scroll", () => {
+    const viewport: GridViewport = {};
+    const first = setup(layout, { viewport, scrollResetKey: 0 });
+    first.click(1, 1);
+    first.grid.scrollTop = 120;
+    fireEvent.scroll(first.grid);
+    first.unmount();
+
+    const second = setup(layout, { viewport, scrollResetKey: 200 });
+    expect(second.grid.scrollTop).toBe(0);
+    expect(second.onFocusCell).toHaveBeenLastCalledWith(null);
+    second.unmount();
+
+    const third = setup(layout, { viewport, scrollResetKey: 200 });
+    expect(third.grid.scrollTop).toBe(0);
+    third.unmount();
+  });
+});
 
 describe("DataGrid with hidden / reordered columns", () => {
   // Visual order: email, name (id hidden). Source indexes: email = 2, name = 1.
@@ -1509,7 +1573,7 @@ describe("DataGrid M8 grid features", () => {
     expect(onAction).toHaveBeenLastCalledWith({ type: "setEmpty", cells: [{ r: 1, c: 1 }] });
   });
 
-  it("Copy Rows As offers TablePlus's seven formats and Raw, numbered in the ⌘⌥C popup", async () => {
+  it("Copy Rows As offers TablePlus's nine formats and Raw, numbered in the ⌘⌥C popup", async () => {
     const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -1529,12 +1593,26 @@ describe("DataGrid M8 grid features", () => {
       "JSON",
       "HTML",
       "Markdown",
+      "TSV",
+      "TSV with header",
       "CSV",
       "CSV with header",
       "SQL Insert statement",
       "Raw",
     ]);
+    // 6 is TSV with header.
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "6" });
+    });
+    expect(writeText).toHaveBeenLastCalledWith("id\tname\temail\n1\tAnn\tann@x.io");
+    // 0 is the tenth, Raw.
+    fireEvent.keyDown(grid, { key: "ç", code: "KeyC", ...mod, altKey: true });
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "0" });
+    });
+    expect(toast.success).toHaveBeenLastCalledWith("Copied 1 row as raw values");
     // 3 is HTML.
+    fireEvent.keyDown(grid, { key: "ç", code: "KeyC", ...mod, altKey: true });
     await act(async () => {
       fireEvent.keyDown(screen.getByRole("menu"), { key: "3" });
     });
@@ -1556,9 +1634,9 @@ describe("DataGrid M8 grid features", () => {
       .map((el) => el.textContent?.replace(/\d$/, "").trim());
     expect(names).not.toContain("SQL Insert statement");
     expect(names.at(-1)).toBe("Raw");
-    // 7 is Raw now.
+    // 9 is Raw now.
     await act(async () => {
-      fireEvent.keyDown(screen.getByRole("menu"), { key: "7" });
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "9" });
     });
     expect(toast.success).toHaveBeenLastCalledWith("Copied 1 row as raw values");
   });
@@ -1573,9 +1651,9 @@ describe("DataGrid M8 grid features", () => {
     const { grid, click } = setup(state, { active: false });
     click(0, 1);
     fireEvent.keyDown(grid, { key: "ç", code: "KeyC", ...mod, altKey: true });
-    // 6 is CSV with header.
+    // 8 is CSV with header.
     await act(async () => {
-      fireEvent.keyDown(screen.getByRole("menu"), { key: "6" });
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "8" });
     });
     expect(writeText).toHaveBeenLastCalledWith('"id";"name";"email"\n"1";"Ann";"ann@x.io"');
     resetPrefsForTests();

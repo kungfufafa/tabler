@@ -1,6 +1,7 @@
 import {
   ChevronsDownUp,
   Code,
+  Columns3,
   Copy,
   CopyPlus,
   DatabaseZap,
@@ -81,6 +82,7 @@ const sep = (id: string): MenuEntry => ({ kind: "separator", id });
 const ENTRY_FEATURE: Readonly<Record<string, Feature>> = {
   "open-structure": "structureView",
   export: "exportTables",
+  "export-columns": "exportTables",
   "import-csv": "importCsv",
   "import-json": "importJson",
   "import-sql": "importSqlDump",
@@ -272,6 +274,8 @@ export interface TableMenuHandlers extends NewMenuHandlers {
   copyName: () => void;
   togglePin: () => void;
   exportItems: () => void;
+  /** Export this Table with Column Selection… (one target). */
+  exportColumns?: () => void;
   importCsv: () => void;
   importJson: () => void;
   importSql: () => void;
@@ -353,6 +357,17 @@ export function tableMenu(
       icon: Download,
       onSelect: on.exportItems,
     },
+    ...(on.exportColumns && o.count === 1
+      ? [
+          {
+            kind: "item",
+            id: "export-columns",
+            label: "Export this Table with Column Selection…",
+            icon: Columns3,
+            onSelect: on.exportColumns,
+          } satisfies MenuEntry,
+        ]
+      : []),
     {
       kind: "sub",
       id: "import",

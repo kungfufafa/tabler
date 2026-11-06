@@ -78,6 +78,8 @@ export type ExportSourceSpec =
 export interface OpenExportArgs {
   connectionId: string;
   source: ExportSourceSpec;
+  /** The control that takes focus: "fields" for Export this Table with Column Selection…. */
+  focus?: "fields";
 }
 
 export interface ExportRun {
@@ -99,6 +101,8 @@ export interface ExportDraft {
   options: ExportOptions;
   scope: RowScope;
   visibleOnly: boolean;
+  /** "Fields": the field names typed, comma-separated (empty = all, or the visible ones). */
+  fieldsText?: string;
   tableName: string;
   batchText: string;
   /** A cut-off editor result: export all its rows by running its statement again. */

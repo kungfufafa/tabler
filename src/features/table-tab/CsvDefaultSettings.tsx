@@ -1,4 +1,5 @@
 import { DecimalChoice } from "@/features/export/DecimalChoice";
+import { glyphOptions } from "@/features/export/glyph";
 import { CSV_DELIMITERS, CSV_LINE_BREAKS, CSV_QUOTES } from "@/features/export/options";
 import { Segmented, SettingGroup, SettingRow } from "@/features/settings/controls";
 import { setPref, usePrefs } from "@/stores/prefs";
@@ -22,7 +23,7 @@ export function CsvDefaultSettings() {
         <Segmented
           id="pref-csv-delimiter"
           value={delimiter}
-          options={CSV_DELIMITERS}
+          options={glyphOptions(CSV_DELIMITERS)}
           onChange={(v) => setPref("csvDelimiter", v)}
         />
       </SettingRow>
@@ -30,7 +31,7 @@ export function CsvDefaultSettings() {
         <Segmented
           id="pref-csv-quote"
           value={quote}
-          options={CSV_QUOTES}
+          options={glyphOptions(CSV_QUOTES)}
           onChange={(v) => setPref("csvQuote", v)}
         />
       </SettingRow>
@@ -38,7 +39,7 @@ export function CsvDefaultSettings() {
         <Segmented
           id="pref-csv-line-break"
           value={lineBreak}
-          options={CSV_LINE_BREAKS}
+          options={glyphOptions(CSV_LINE_BREAKS)}
           onChange={(v) => setPref("csvLineBreak", v)}
         />
       </SettingRow>

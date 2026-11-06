@@ -501,6 +501,8 @@ describe("panes and menus reachable from either fake session (critique A10)", ()
         "JSON",
         "HTML",
         "Markdown",
+        "TSV",
+        "TSV with header",
         "CSV",
         "CSV with header",
         "Raw",

@@ -25,6 +25,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useLayoutEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -181,6 +182,14 @@ export interface FocusedCell {
   row: ViewRow;
 }
 
+/** Browsing context owned by a tab, discarded when the tab closes. */
+export interface GridViewport {
+  scope?: string;
+  selection?: SelectionState;
+  scrollTop?: number;
+  scrollLeft?: number;
+}
+
 export interface DataGridProps {
   columns: GridColumn[];
   rowCount: number;
@@ -258,6 +267,7 @@ export interface DataGridProps {
   revealCell?: CellPos | null;
   /** The grid scrolls back to the top whenever this changes (a table tab's page, TablePlus). */
   scrollResetKey?: unknown;
+  viewport?: GridViewport;
   /**
    * The grid drops its selection whenever this changes: a successful commit deselects the rows it
    * edited (TablePlus #2979).
@@ -286,14 +296,17 @@ interface CopyChoice {
 }
 
 /**
- * Copy Rows As ▸ / Copy Selected Cells As ▸ (TablePlus's list and order, then "Raw": the values
- * without any quoting); ⌘⌥C opens it with number keys 1–8.
+ * Copy Rows As ▸ / Copy Selected Cells As ▸ (TablePlus's list and order — macOS's HTML and the
+ * Windows build's TSV pair included — then "Raw": the values without any quoting); ⌘⌥C opens it
+ * with number keys 1–9 and 0 for the tenth.
  */
 const COPY_CHOICES: CopyChoice[] = [
   { label: "Plain text", short: "plain text", format: "tsv" },
   { label: "JSON", short: "JSON", format: "json" },
   { label: "HTML", short: "HTML", format: "html" },
   { label: "Markdown", short: "Markdown", format: "markdown" },
+  { label: "TSV", short: "TSV", format: "tsv" },
+  { label: "TSV with header", short: "TSV with header", format: "tsv", headers: true },
   { label: "CSV", short: "CSV", format: "csv" },
   { label: "CSV with header", short: "CSV with header", format: "csv", headers: true },
   { label: "SQL Insert statement", short: "INSERT statements", format: "insert" },
@@ -503,6 +516,7 @@ export function DataGrid({
   onLoadFullValue,
   revealCell,
   scrollResetKey,
+  viewport,
   deselectKey,
   className,
 }: DataGridProps) {
@@ -547,7 +561,12 @@ export function DataGrid({
     [src],
   );
 
-  const [selection, setSelection] = useState<SelectionState>(EMPTY_SELECTION);
+  const [restoredViewport] = useState(() =>
+    viewport?.scope === JSON.stringify(scrollResetKey) ? { ...viewport } : undefined,
+  );
+  const [selection, setSelection] = useState<SelectionState>(
+    restoredViewport?.selection ?? EMPTY_SELECTION,
+  );
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
   const bounds = useMemo(() => ({ rows: rowCount, cols: cols.length }), [rowCount, cols.length]);
@@ -616,15 +635,40 @@ export function DataGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [widths]);
 
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    if (!el || !restoredViewport) return;
+    el.scrollTop = restoredViewport.scrollTop ?? 0;
+    el.scrollLeft = restoredViewport.scrollLeft ?? 0;
+  }, [restoredViewport]);
+  useEffect(() => {
+    if (!viewport) return;
+    const scope = JSON.stringify(scrollResetKey);
+    if (viewport.scope !== scope) {
+      viewport.scrollTop = scrollerRef.current?.scrollTop ?? 0;
+      viewport.scrollLeft = scrollerRef.current?.scrollLeft ?? 0;
+    }
+    viewport.scope = scope;
+    viewport.selection = selection;
+  }, [viewport, scrollResetKey, selection]);
+  const previousFocusKey = useRef(
+    restoredViewport?.selection?.focus
+      ? `${restoredViewport.selection.focus.r}:${restoredViewport.selection.focus.c}`
+      : "",
+  );
   const focusKey = selection.focus ? `${selection.focus.r}:${selection.focus.c}` : "";
   useEffect(() => {
     const f = selection.focus;
     if (!f) {
+      previousFocusKey.current = "";
       onFocusCell?.(null);
       return;
     }
-    rowVirtualizer.scrollToIndex(f.r, { align: "auto" });
-    colVirtualizer.scrollToIndex(f.c, { align: "auto" });
+    if (previousFocusKey.current !== focusKey) {
+      rowVirtualizer.scrollToIndex(f.r, { align: "auto" });
+      colVirtualizer.scrollToIndex(f.c, { align: "auto" });
+    }
+    previousFocusKey.current = focusKey;
     const row = getRow(f.r);
     const column = cols[f.c];
     const sourceIndex = src[f.c];
@@ -652,7 +696,8 @@ export function DataGrid({
     }
     const el = scrollerRef.current;
     if (el) el.scrollTop = 0;
-  }, [scrollResetKey]);
+    if (viewport) viewport.scrollTop = 0;
+  }, [scrollResetKey, viewport]);
 
   // A commit deselects the rows it edited (TablePlus #2979).
   const firstDeselect = useRef(true);
@@ -747,9 +792,14 @@ export function DataGrid({
     if (!current) return;
     if (value) onEditCommit?.(current.pos.r, current.source, value);
     if (exit === "enter") dispatch({ type: "move", dr: 1, dc: 0, shift: false, jump: false });
-    else if (exit === "tab") dispatch({ type: "move", dr: 0, dc: 1, shift: false, jump: false });
-    else if (exit === "shiftTab")
-      dispatch({ type: "move", dr: 0, dc: -1, shift: false, jump: false });
+    else if (exit === "tab" || exit === "shiftTab") {
+      const dc = exit === "tab" ? 1 : -1;
+      dispatch({ type: "move", dr: 0, dc, shift: false, jump: false });
+      // ⇥ in an editor keeps editing: the next cell of the row opens its editor (TablePlus), unless
+      // the row ends there or that cell cannot be edited (then only the selection moves).
+      const next = { r: current.pos.r, c: current.pos.c + dc };
+      if (next.c >= 0 && next.c < cols.length && canEditCell(next)) startEdit(next);
+    }
   };
 
   // ---- grid-scoped actions (only the active grid registers them) -----------
@@ -1765,6 +1815,10 @@ export function DataGrid({
     [],
   );
   const onScroll = () => {
+    if (viewport && scrollerRef.current) {
+      viewport.scrollTop = scrollerRef.current.scrollTop;
+      viewport.scrollLeft = scrollerRef.current.scrollLeft;
+    }
     if (hoverKey.current !== null) clearHover();
     if (!autoHideScrollers) return;
     setScrolling(true);
@@ -2189,8 +2243,8 @@ export function DataGrid({
                   }}
                   onKeyDown={(e) => {
                     e.stopPropagation();
-                    const n = Number(e.key);
-                    const choice = Number.isInteger(n) ? copyChoices[n - 1] : undefined;
+                    const n = /^\d$/.test(e.key) ? Number(e.key) : -1;
+                    const choice = n >= 0 ? copyChoices[n === 0 ? 9 : n - 1] : undefined;
                     if (choice && !e.metaKey && !e.ctrlKey && !e.altKey) {
                       e.preventDefault();
                       setCopyMenu(false);
@@ -2208,7 +2262,7 @@ export function DataGrid({
                       onSelect={() => void copyAs(choice)}
                     >
                       {choice.label}
-                      <DropdownMenuShortcut>{i + 1}</DropdownMenuShortcut>
+                      {i < 10 && <DropdownMenuShortcut>{(i + 1) % 10}</DropdownMenuShortcut>}
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuContent>

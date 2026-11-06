@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { GridViewport } from "@/features/datagrid/DataGrid";
 import type { ColumnState } from "@/features/datagrid/types";
 import { emptyStaging } from "@/features/staging/model";
 import type { StagingState } from "@/features/staging/types";
@@ -40,6 +41,7 @@ export interface TableTabState {
    */
   cursorPages: { scope: string; stack: CursorPage[] } | null;
   columnState: ColumnState;
+  viewport: GridViewport;
   /** Set after a page loads (its rows, query time and SELECT show in the bottom bar). */
   page: PageInfo | null;
   count: RowCount | null;
@@ -71,6 +73,7 @@ function initial(init?: Partial<TableTabState>): TableTabState {
     offset: 0,
     cursorPages: null,
     columnState: { widths: {}, order: [], hidden: [] },
+    viewport: {},
     page: null,
     count: null,
     refreshToken: 0,

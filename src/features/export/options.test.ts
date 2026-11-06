@@ -19,6 +19,7 @@ import {
   buildExportTablesRequest,
   exportProblem,
   exportsQueries,
+  fieldsProblem,
   fileFilter,
   filterTables,
   FORMATS,
@@ -29,6 +30,7 @@ import {
   hasCappedBytes,
   loadExportOptions,
   parseExportOptions,
+  parseFieldList,
   resultsLayout,
   resultsProblem,
   safeFileBase,
@@ -36,6 +38,7 @@ import {
   toExportFormat,
   UNTITLED_TABLE,
   visibleColumnNames,
+  withFields,
   withOfferedFormat,
   type ExportInput,
   type ExportOptions,
@@ -77,6 +80,62 @@ function tableInput(patch: Partial<Extract<ExportInput, { kind: "table" }>> = {}
 
 const build = (input: ExportInput, options = opts(), sqlTableName = "") =>
   buildExportRequest({ exportId: "e1", path: "/tmp/out", input, options, sqlTableName });
+
+describe("Select fields to export", () => {
+  it("parses comma-separated names, trimming spaces and dropping repeats and blanks", () => {
+    expect(parseFieldList("")).toEqual([]);
+    expect(parseFieldList(" email, id ,,email,name ")).toEqual(["email", "id", "name"]);
+  });
+
+  it("names the fields the source does not have", () => {
+    expect(fieldsProblem(["id", "email"], ["id", "email", "name"])).toBeNull();
+    expect(fieldsProblem(["id", "mail", "x y"], ["id", "email"])).toBe(
+      'No field named "mail", "x y". Separate field names with commas.',
+    );
+  });
+
+  it("reads only the typed columns of a table, overriding the grid's visible ones", () => {
+    const input = tableInput({ columns: ["id", "name"] });
+    const narrowed = withFields(input, ["email", "id"]);
+    expect(narrowed).toMatchObject({ kind: "table", columns: ["email", "id"] });
+    expect(build(narrowed).source).toMatchObject({ kind: "table", columns: ["email", "id"] });
+    expect(withFields(input, [])).toBe(input);
+  });
+
+  it("cuts held rows to the typed fields, in their order", () => {
+    const input: ExportInput = {
+      kind: "rows",
+      columns: [
+        { name: "id", dataType: "int" },
+        { name: "name", dataType: "text" },
+        { name: "role", dataType: "text" },
+      ] as Extract<ExportInput, { kind: "rows" }>["columns"],
+      rows: [
+        [
+          { t: "int", v: 1 },
+          { t: "text", v: "Ann" },
+          { t: "text", v: "admin" },
+        ],
+      ],
+      table: "users",
+    };
+    const narrowed = withFields(input, ["role", "id"]);
+    expect(narrowed).toMatchObject({
+      columns: [{ name: "role" }, { name: "id" }],
+      rows: [
+        [
+          { t: "text", v: "admin" },
+          { t: "int", v: 1 },
+        ],
+      ],
+      table: "users",
+    });
+    expect(withFields({ kind: "sql", sql: "select 1" }, ["id"])).toEqual({
+      kind: "sql",
+      sql: "select 1",
+    });
+  });
+});
 
 describe("formatsFor", () => {
   it("offers a SQL script only to a session with SQL export", () => {

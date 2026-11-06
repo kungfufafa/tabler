@@ -42,6 +42,7 @@ import {
   copySequenceScript,
   copyTableScript,
   exportTables,
+  exportTableColumns,
   importInto,
   openRoutine,
   openSequence,
@@ -764,6 +765,7 @@ export function SchemaTree({
           if (pinScope !== null) togglePins(pinScope, tables.map(refOf));
         },
         exportItems: () => exportTables(ctx, tables),
+        exportColumns: () => exportTableColumns(ctx, t),
         importCsv: () => importInto(ctx, "csv", t),
         importJson: () => importInto(ctx, "json", t),
         importSql: () => importInto(ctx, "sql", null),

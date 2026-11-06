@@ -32,6 +32,7 @@ import {
   encodingForCharset,
   exportProblem,
   exportsQueries,
+  fieldsProblem,
   fileExtension,
   fileFilter,
   formatBytes,
@@ -41,11 +42,13 @@ import {
   hasCappedBytes,
   loadExportOptions,
   loadLastDir,
+  parseFieldList,
   resultsLayout,
   resultsProblem,
   saveExportOptions,
   saveLastDir,
   sqlWritesStructure,
+  withFields,
   withOfferedFormat,
   type ExportInput,
   type ExportOptions,
@@ -244,6 +247,7 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
   const [resultsScope, setResultsScope] = useState<ResultsScope>(draft?.resultsScope ?? "this");
   const allResults = runResults !== null && resultsScope === "all" ? runResults : null;
   const [visibleOnly, setVisibleOnly] = useState(draft?.visibleOnly ?? true);
+  const [fieldsText, setFieldsText] = useState(draft?.fieldsText ?? "");
   const [tableName, setTableName] = useState(draft?.tableName ?? "");
   // The rows shown by default, unless they can't be written as they are.
   const [allRows, setAllRows] = useState(draft?.allRows ?? (capped && rerunSql !== null));
@@ -253,10 +257,18 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
   const [picking, setPicking] = useState(false);
   const src = useExportSource(target, scope, visibleOnly);
   const rerun = rerunSql !== null && allRows;
-  const input = useMemo<ExportInput | null>(
-    () => (rerun && rerunSql !== null ? { kind: "sql", sql: rerunSql } : src.input),
-    [rerun, rerunSql, src.input],
+  // "Fields" narrows a table or a shown result; running a statement again writes what it returns.
+  const offersFields = src.fieldNames !== null && !rerun && allResults === null;
+  const fields = useMemo(
+    () => (offersFields ? parseFieldList(fieldsText) : []),
+    [offersFields, fieldsText],
   );
+  const fieldsIssue =
+    fields.length > 0 && src.fieldNames ? fieldsProblem(fields, src.fieldNames) : null;
+  const input = useMemo<ExportInput | null>(() => {
+    if (rerun && rerunSql !== null) return { kind: "sql", sql: rerunSql };
+    return src.input && fieldsIssue === null ? withFields(src.input, fields) : src.input;
+  }, [rerun, rerunSql, src.input, fields, fieldsIssue]);
   const statementText = target.source.kind === "sql" ? target.source.sql : (held?.sql ?? null);
   useEffect(
     () =>
@@ -264,6 +276,7 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
         options,
         scope,
         visibleOnly,
+        fieldsText,
         tableName,
         batchText,
         allRows,
@@ -271,7 +284,17 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
         encodingTouched,
         rememberedEncoding: rememberedEncoding.current,
       }),
-    [options, scope, visibleOnly, tableName, batchText, allRows, resultsScope, encodingTouched],
+    [
+      options,
+      scope,
+      visibleOnly,
+      fieldsText,
+      tableName,
+      batchText,
+      allRows,
+      resultsScope,
+      encodingTouched,
+    ],
   );
 
   const resultsFiles = allResults !== null && resultsLayout(options.format) === "filePerTable";
@@ -302,7 +325,13 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
   const problem = allResults ? allProblem : singleProblem;
   const csvIssue = options.format === "csv" ? csvProblem(options.csv) : null;
   const canSubmit =
-    !running && !picking && input !== null && !emptySql && !problem && csvIssue === null;
+    !running &&
+    !picking &&
+    input !== null &&
+    !emptySql &&
+    !problem &&
+    csvIssue === null &&
+    fieldsIssue === null;
 
   /** "All results": one file (Excel, HTML, SQL) or a folder with a file per result (CSV, JSON). */
   const submitAllResults = async (results: readonly RunResult[], finalOptions: ExportOptions) => {
@@ -523,19 +552,49 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
                 )}
               </Row>
             )}
-          {!isSql && !held && (src.columns.hidden || src.columns.reordered) && (
+          {offersFields && (
             <Row
-              id="export-columns"
-              label="Columns"
-              hint={problem?.field === "columns" ? problemHint(problem) : undefined}
+              id="export-fields"
+              label="Fields"
+              hint={
+                fieldsIssue ? (
+                  <span className="text-warning">{fieldsIssue}</span>
+                ) : fields.length > 0 ? (
+                  `${fields.length} of ${src.fieldNames!.length} fields, in the order typed`
+                ) : (
+                  "Field names separated by commas, in the order to write them"
+                )
+              }
             >
-              <Check checked={visibleOnly} onChange={setVisibleOnly}>
-                {src.columns.hidden
-                  ? `Only visible columns${src.columns.reordered ? ", in grid order" : ""} (${src.columns.visible} of ${src.columns.total})`
-                  : "Columns in grid order"}
-              </Check>
+              <Input
+                id="export-fields"
+                value={fieldsText}
+                onChange={(e) => setFieldsText(e.target.value)}
+                placeholder="Export all fields…"
+                autoFocus={target.focus === "fields"}
+                aria-invalid={fieldsIssue ? true : undefined}
+                spellCheck={false}
+                autoComplete="off"
+                className="h-7 w-full font-mono text-xs"
+              />
             </Row>
           )}
+          {!isSql &&
+            !held &&
+            fields.length === 0 &&
+            (src.columns.hidden || src.columns.reordered) && (
+              <Row
+                id="export-columns"
+                label="Columns"
+                hint={problem?.field === "columns" ? problemHint(problem) : undefined}
+              >
+                <Check checked={visibleOnly} onChange={setVisibleOnly}>
+                  {src.columns.hidden
+                    ? `Only visible columns${src.columns.reordered ? ", in grid order" : ""} (${src.columns.visible} of ${src.columns.total})`
+                    : "Columns in grid order"}
+                </Check>
+              </Row>
+            )}
           <Row id="export-format" label="Format">
             <Segmented<FormatKind>
               id="export-format"

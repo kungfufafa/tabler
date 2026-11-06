@@ -17,7 +17,7 @@ describe("CsvDefaultSettings", () => {
       within(quotes)
         .getAllByRole("radio")
         .map((r) => r.textContent),
-    ).toEqual(['"', "'", "Space", "Quote if needed"]);
+    ).toEqual(['"…"', "'…'", "Space", "Quote if needed"]);
     await user.click(within(quotes).getByRole("radio", { name: "Space" }));
     expect(getPrefs().csvQuote).toBe("space");
     // Copy as CSV, new exports and the CSV import read it.

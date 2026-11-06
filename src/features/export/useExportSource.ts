@@ -46,6 +46,8 @@ export interface ResolvedExportSource {
    * columns, columns dragged into another order).
    */
   columns: { visible: number; total: number; hidden: boolean; reordered: boolean };
+  /** Every field the source has, for "Fields" (null for a query, or while the table loads). */
+  fieldNames: string[] | null;
   loading: boolean;
   error: string | null;
 }
@@ -97,6 +99,7 @@ export function useExportSource(
         page: null,
         pageExportable: false,
         columns: { visible: n, total: n, hidden: false, reordered: false },
+        fieldNames: held.columns.map((c) => c.name),
         loading: false,
         error: null,
       };
@@ -114,6 +117,7 @@ export function useExportSource(
         page: null,
         pageExportable: false,
         columns: { visible: 0, total: 0, hidden: false, reordered: false },
+        fieldNames: null,
         loading: false,
         error: null,
       };
@@ -165,6 +169,7 @@ export function useExportSource(
         hidden: changes?.hidden ?? false,
         reordered: changes?.reordered ?? false,
       },
+      fieldNames: meta.data ? columns.map((c) => c.name) : null,
       loading: meta.isPending && table !== null,
       error: meta.isError ? meta.error.message : null,
     };

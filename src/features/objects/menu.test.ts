@@ -104,6 +104,16 @@ describe("sidebar menus", () => {
     ]);
   });
 
+  it("offers Export this Table with Column Selection… for one target only", () => {
+    const on = { ...tableHandlers(), exportColumns: vi.fn() };
+    const one = labels(tableMenu(TABLE, on));
+    expect(one.slice(6, 8)).toEqual(["Export…", "Export this Table with Column Selection…"]);
+    const e = find(tableMenu(TABLE, on), "export-columns");
+    if (e?.kind === "item") e.onSelect();
+    expect(on.exportColumns).toHaveBeenCalledOnce();
+    expect(find(tableMenu({ ...TABLE, count: 2 }, on), "export-columns")).toBeUndefined();
+  });
+
   it("imports into the table from CSV, JSON or an SQL dump", () => {
     const on = tableHandlers();
     const m = tableMenu(TABLE, on);
