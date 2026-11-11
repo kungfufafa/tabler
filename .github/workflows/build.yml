@@ -127,7 +127,11 @@ jobs:
             echo "::warning::Signed but not notarized: APPLE_ID, APPLE_PASSWORD or APPLE_TEAM_ID is missing"
           fi
 
+      # On CI (CI=true) the bundler passes --skip-jenkins to bundle_dmg.sh, which skips the Finder
+      # AppleScript that places the .dmg background, window size and icons; this keeps it.
       - name: Build the installer
+        env:
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
         run: pnpm tauri build ${{ matrix.args }}
 
       - name: Upload the installer
