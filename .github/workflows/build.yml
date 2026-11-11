@@ -91,6 +91,42 @@ jobs:
         shell: pwsh
         run: echo "OPENSSL_SRC_PERL=$((Get-Command perl.exe).Source)" >> $env:GITHUB_ENV
 
+      # With the repository's Apple secrets the bundler signs the .app with the Developer ID
+      # certificate and notarizes it, so it opens without the Gatekeeper steps. Without them (a
+      # fork, say) the build stays ad-hoc signed (`signingIdentity: "-"` in tauri.conf.json).
+      #   APPLE_CERTIFICATE           the "Developer ID Application" certificate, .p12 in base64
+      #   APPLE_CERTIFICATE_PASSWORD  the password of that .p12
+      #   APPLE_SIGNING_IDENTITY      "Developer ID Application: <name> (<team id>)"
+      #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID   notarization (an app-specific password)
+      - name: Apple signing and notarization
+        if: matrix.name == 'macos'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "::notice::No Apple signing secrets: the macOS build is ad-hoc signed"
+            exit 0
+          fi
+          {
+            echo "APPLE_CERTIFICATE=$APPLE_CERTIFICATE"
+            echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+          } >> "$GITHUB_ENV"
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            {
+              echo "APPLE_ID=$APPLE_ID"
+              echo "APPLE_PASSWORD=$APPLE_PASSWORD"
+              echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+            } >> "$GITHUB_ENV"
+          else
+            echo "::warning::Signed but not notarized: APPLE_ID, APPLE_PASSWORD or APPLE_TEAM_ID is missing"
+          fi
+
       - name: Build the installer
         run: pnpm tauri build ${{ matrix.args }}
 

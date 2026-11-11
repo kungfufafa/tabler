@@ -31,6 +31,7 @@
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text",
     "notification:default",
-    "window-state:default"
+    "window-state:default",
+    "sentry:default"
   ]
 }

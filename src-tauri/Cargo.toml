@@ -107,6 +107,12 @@ libc = "0.2"
 # (rustls with aws-lc-rs and the platform verifier; already in the lock via tauri).
 # `system-proxy`: the macOS System Settings proxy (a Finder-launched app has no HTTPS_PROXY).
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "system-proxy"] }
+# Crash and error reports (src/telemetry.rs). Without the default features: those bring
+# native-tls, and the plugin's `minidump` a second crash-reporter process. `reqwest` + `rustls`
+# is the app's own HTTP stack (reqwest 0.13 on aws-lc-rs).
+sentry = { version = "0.49.5", default-features = false, features = ["backtrace", "contexts", "debug-images", "panic", "release-health", "reqwest", "rustls"] }
+# Renderer errors and breadcrumbs through IPC into the Rust SDK (injects @sentry/browser).
+tauri-plugin-sentry = { version = "0.8", default-features = false }
 
 # The drivers beyond PostgreSQL, MySQL and SQLite. Every crate here is optional and only `drv-*`
 # or `common-*` features turn it on, so a default build compiles none of them. TLS is rustls on

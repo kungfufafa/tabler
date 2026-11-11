@@ -33,6 +33,7 @@ pub mod recent;
 pub mod secrets;
 pub mod sqlgen;
 pub mod state;
+pub mod telemetry;
 #[cfg(test)]
 pub mod testkit;
 #[cfg(feature = "common-tls")]
@@ -1023,7 +1024,16 @@ pub fn run() {
         log::LevelFilter::Info
     };
 
-    let app = tauri::Builder::default()
+    // Crash and error reports (release builds, or `TABLER_SENTRY_DSN`). Held until `run` returns;
+    // the plugin is only there when reporting is on, since it needs the Sentry client.
+    let telemetry = telemetry::init();
+    let builder = tauri::Builder::default();
+    let builder = match &telemetry {
+        Some(telemetry) => builder.plugin(telemetry.plugin()),
+        None => builder,
+    };
+
+    let app = builder
         .manage(shell::QuitState::default())
         .manage(windows::WindowRegistry::default())
         .on_window_event(windows::on_window_event)
