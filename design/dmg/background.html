@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- The picture behind the icons of the macOS disk image (660 × 400 pt). Finder draws the two
+     icons and their names; this is the rest. `sh dev/scripts/build-dmg-background.sh` renders
+     it into src-tauri/dmg/background.tiff (1x and 2x). -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 660px;
+        height: 400px;
+        overflow: hidden;
+      }
+      body {
+        position: relative;
+        font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+        background: linear-gradient(135deg, #f6f8fc 0%, #eef3fb 45%, #d9e6fb 100%);
+        -webkit-font-smoothing: antialiased;
+      }
+      /* A faint grid that only shows towards the corners. */
+      .grid {
+        position: absolute;
+        inset: 0;
+        background-image:
+          linear-gradient(to right, rgba(60, 110, 200, 0.16) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(60, 110, 200, 0.16) 1px, transparent 1px);
+        background-size: 22px 22px;
+        mask-image: radial-gradient(ellipse 62% 62% at 38% 36%, transparent 58%, #000 125%);
+        -webkit-mask-image: radial-gradient(ellipse 62% 62% at 38% 36%, transparent 58%, #000 125%);
+      }
+      h1 {
+        position: absolute;
+        top: 42px;
+        left: 0;
+        right: 0;
+        margin: 0;
+        text-align: center;
+        font-size: 32px;
+        line-height: 40px;
+        font-weight: 700;
+        letter-spacing: -0.4px;
+        color: #14264f;
+      }
+      svg {
+        position: absolute;
+        left: 314px;
+        top: 180px;
+      }
+      p {
+        position: absolute;
+        top: 330px;
+        left: 0;
+        right: 0;
+        margin: 0;
+        text-align: center;
+        font-size: 14px;
+        line-height: 20px;
+        color: #3d4f75;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="grid"></div>
+    <h1>Install Tabler</h1>
+    <svg
+      width="32"
+      height="20"
+      viewBox="0 0 32 20"
+      fill="none"
+      stroke="#3d4f75"
+      stroke-width="1.6"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M2 10h27M21 2.5 29 10l-8 7.5" />
+    </svg>
+    <p>Drag Tabler to Applications</p>
+  </body>
+</html>

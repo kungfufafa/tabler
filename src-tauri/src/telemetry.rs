@@ -7,6 +7,7 @@
 //! what a server answered (the console, text inputs) are dropped: this is a database client.
 
 use sentry::Breadcrumb;
+use sentry::protocol::Event;
 use tauri_plugin_sentry::Sentry as SentryPlugin;
 
 /// Overrides where reports go: a DSN sends them there (debug builds included), an empty value
@@ -53,6 +54,16 @@ pub fn keep_breadcrumb(breadcrumb: Breadcrumb) -> Option<Breadcrumb> {
     }
 }
 
+/// Takes out what names the machine or its network: the host name (the SDK's default
+/// `server_name`) and an IP address on the user.
+pub fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
+    event.server_name = None;
+    if let Some(user) = event.user.as_mut() {
+        user.ip_address = None;
+    }
+    Some(event)
+}
+
 /// Starts reporting, or returns `None` when it is off (a debug build without [`DSN_ENV`]). Call
 /// it once, before the Tauri builder: the plugin needs the client to exist.
 pub fn init() -> Option<Telemetry> {
@@ -70,6 +81,7 @@ pub fn init() -> Option<Telemetry> {
         })
         .send_default_pii(false)
         .auto_session_tracking(true)
+        .before_send(scrub_event)
         .before_breadcrumb(keep_breadcrumb);
     let guard = sentry::init(options);
     guard.is_enabled().then_some(Telemetry {
@@ -96,6 +108,21 @@ mod tests {
         assert_eq!(resolve_dsn(None, true).as_deref(), Some(RELEASE_DSN));
         assert_eq!(resolve_dsn(Some(""), true), None);
         assert_eq!(resolve_dsn(Some("  "), true), None);
+    }
+
+    #[test]
+    fn events_carry_no_host_name_or_ip_address() {
+        let event = Event {
+            server_name: Some("a-mac".into()),
+            user: Some(sentry::User {
+                ip_address: Some(sentry::protocol::IpAddress::Auto),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let event = scrub_event(event).expect("the event is kept");
+        assert_eq!(event.server_name, None);
+        assert_eq!(event.user.and_then(|u| u.ip_address), None);
     }
 
     #[test]
