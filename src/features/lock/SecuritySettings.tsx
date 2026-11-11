@@ -1,4 +1,3 @@
-import { Loader2 } from "lucide-react";
 import { useId, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Kbd } from "@/components/Kbd";
@@ -190,7 +189,6 @@ function PasscodeForm({ mode, onDone }: { mode: PasscodeDialogMode; onDone: () =
           variant={mode === "disable" ? "destructive" : "default"}
           disabled={busy}
         >
-          {busy && <Loader2 className="animate-spin" aria-hidden />}
           {text.ok}
         </Button>
       </DialogFooter>

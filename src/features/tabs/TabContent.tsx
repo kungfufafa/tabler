@@ -1,5 +1,5 @@
 import { Kbd } from "@/components/Kbd";
-import { Skeleton } from "@/components/ui/skeleton";
+import { QuietLoading } from "@/components/QuietLoading";
 import { LacksFieldsContext } from "@/features/datagrid/lacksFields";
 import { rowsCanLackFields } from "@/features/drivers/catalog";
 import { useDriverUi } from "@/features/drivers/registry";
@@ -56,13 +56,7 @@ function TableTabBody({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   const info = useConnectionsStore((s) => s.byId[tab.connectionId]?.info);
   const ui = useDriverUi(info?.driver ?? null);
   // The lane's module is still loading.
-  if (ui === undefined)
-    return (
-      <div className="flex flex-col gap-2 p-4" data-slot="lane-loading">
-        <Skeleton className="h-5 w-48" />
-        <Skeleton className="h-64 w-full" />
-      </div>
-    );
+  if (ui === undefined) return <QuietLoading header data-slot="lane-loading" />;
   const View = ui?.TableView;
   if (!View || !info) return <TableTab tab={tab} />;
   return (

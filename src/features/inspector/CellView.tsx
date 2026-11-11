@@ -1,4 +1,4 @@
-import { Copy, Download, Loader2 } from "lucide-react";
+import { Copy, Download } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ValueKindIcon } from "@/components/TypeIcon";
 import { Button } from "@/components/ui/button";
@@ -62,9 +62,11 @@ export function CellView({ cell }: { cell: InspectedCell }) {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="border-border flex h-8 shrink-0 items-center gap-2 border-b px-3 font-mono text-xs">
         <ValueKindIcon kind={column.kind} />
-        <span className="truncate font-semibold">{column.name}</span>
+        <span className="truncate text-[12px] font-medium">{column.name}</span>
         <span className="flex-1" />
-        <span className="text-muted-foreground shrink-0 text-[10px]">row {cell.rowIndex + 1}</span>
+        <span className="text-muted-foreground shrink-0 font-sans tabular-nums">
+          Row {cell.rowIndex + 1}
+        </span>
         <Button
           variant="ghost"
           size="icon-xs"
@@ -75,7 +77,7 @@ export function CellView({ cell }: { cell: InspectedCell }) {
           <Copy />
         </Button>
       </div>
-      <div className="border-border text-muted-foreground flex min-h-7 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-1 text-[11px]">
+      <div className="border-border text-muted-foreground flex min-h-8 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-1 text-[12px]">
         <span className="font-mono">{column.dataType}</span>
         {stats && <span>· {stats}</span>}
         {sortable && (
@@ -104,7 +106,7 @@ export function CellView({ cell }: { cell: InspectedCell }) {
             disabled={current?.status === "loading"}
             onClick={() => void loadFull()}
           >
-            {current?.status === "loading" ? <Loader2 className="animate-spin" /> : <Download />}
+            <Download />
             Load full value
           </Button>
         )}

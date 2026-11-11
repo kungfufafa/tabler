@@ -1,4 +1,4 @@
-import { ChevronRight, Folder, Loader2 } from "lucide-react";
+import { ChevronRight, Folder } from "lucide-react";
 import { Fragment } from "react";
 import { DATABASE_LOGOS } from "@/features/drivers/logos";
 import type { ConnectionTag, DatabaseKind, Driver, MysqlVersion, PgFlavor } from "@/lib/ipc";
@@ -45,6 +45,7 @@ export function DriverBadge(
     <span
       aria-hidden
       title={KIND_LABEL[kind]}
+      data-busy={busy || undefined}
       style={badgeContrastStyle(color)}
       className={cn(
         "bg-[var(--db-badge-bg)] text-[var(--db-badge-fg)] dark:bg-[var(--db-badge-dark-bg)] dark:text-[var(--db-badge-dark-fg)] forced-colors:bg-[Canvas] forced-colors:text-[CanvasText]",
@@ -53,25 +54,21 @@ export function DriverBadge(
         className,
       )}
     >
-      {busy ? (
-        <Loader2 className="size-3.5 animate-spin" />
-      ) : (
-        <span
-          data-slot="database-logo"
-          className={cn(logoClass, "bg-current")}
-          // Prefixed too: WKWebView on macOS 12.0–12.2 (Safari < 15.4) knows only -webkit-mask.
-          style={{
-            maskImage: `url("${DATABASE_LOGOS[kind]}")`,
-            maskSize: "contain",
-            maskPosition: "center",
-            maskRepeat: "no-repeat",
-            WebkitMaskImage: `url("${DATABASE_LOGOS[kind]}")`,
-            WebkitMaskSize: "contain",
-            WebkitMaskPosition: "center",
-            WebkitMaskRepeat: "no-repeat",
-          }}
-        />
-      )}
+      <span
+        data-slot="database-logo"
+        className={cn(logoClass, "bg-current")}
+        // Prefixed too: WKWebView on macOS 12.0–12.2 (Safari < 15.4) knows only -webkit-mask.
+        style={{
+          maskImage: `url("${DATABASE_LOGOS[kind]}")`,
+          maskSize: "contain",
+          maskPosition: "center",
+          maskRepeat: "no-repeat",
+          WebkitMaskImage: `url("${DATABASE_LOGOS[kind]}")`,
+          WebkitMaskSize: "contain",
+          WebkitMaskPosition: "center",
+          WebkitMaskRepeat: "no-repeat",
+        }}
+      />
     </span>
   );
 }

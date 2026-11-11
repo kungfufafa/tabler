@@ -1,5 +1,4 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -121,7 +120,6 @@ function EncodingDialog() {
                   <option key={c} value={c} />
                 ))}
               </datalist>
-              {current.isFetching && <Loader2 className="size-3.5 animate-spin" />}
             </div>
             <p className="text-muted-foreground text-[11px]">
               Now: <span className="font-mono">{current.data ?? "…"}</span>
@@ -147,7 +145,6 @@ function EncodingDialog() {
                 Cancel
               </Button>
               <Button type="submit" size="sm" disabled={!valid || busy}>
-                {busy && <Loader2 className="animate-spin" />}
                 Apply
               </Button>
             </DialogFooter>

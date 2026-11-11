@@ -409,3 +409,16 @@
     overflow-y: auto;
   }
 }
+
+/* Reduce Motion (system setting): no transitions, no looping animations — everywhere, so no
+   component has to opt out on its own. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}

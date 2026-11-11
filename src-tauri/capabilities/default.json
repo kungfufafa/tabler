@@ -17,11 +17,20 @@
     "core:window:allow-set-theme",
     "core:app:allow-set-app-theme",
     "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-size",
+    "core:window:allow-set-min-size",
+    "core:window:allow-set-position",
+    "core:window:allow-center",
+    "core:window:allow-set-resizable",
+    "core:window:allow-set-maximizable",
+    "core:window:allow-unmaximize",
     "opener:default",
     "dialog:default",
     "log:default",
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text",
-    "notification:default"
+    "notification:default",
+    "window-state:default"
   ]
 }

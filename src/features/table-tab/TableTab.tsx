@@ -1,3 +1,4 @@
+import { QuietLoading } from "@/components/QuietLoading";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -12,7 +13,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   DataGrid,
   type FocusedCell,
@@ -1098,10 +1098,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       <div className="flex h-full min-h-0 flex-col">
         <div className="min-h-0 flex-1">
           {meta.isPending ? (
-            <div className="flex flex-col gap-2 p-4">
-              <Skeleton className="h-5 w-48" />
-              <Skeleton className="h-64 w-full" />
-            </div>
+            <QuietLoading header />
           ) : (
             <EmptyState title="Could not load table" description={errorWithHint(meta.error)} />
           )}

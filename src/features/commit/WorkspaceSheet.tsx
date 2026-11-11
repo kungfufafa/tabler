@@ -1,4 +1,5 @@
-import { AlertTriangle, CheckCircle2, Eraser, Loader2, Trash2, X } from "lucide-react";
+import { QuietStatus } from "@/components/QuietLoading";
+import { AlertTriangle, CheckCircle2, Eraser, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
@@ -215,7 +216,7 @@ function Statements({
   loading: boolean;
   dialect: Dialect | null;
 }) {
-  if (loading) return <Loader2 className="text-muted-foreground size-3.5 animate-spin" />;
+  if (loading) return <QuietStatus />;
   if (plan?.error) return <p className="text-error text-xs">{plan.error.message}</p>;
   return (
     <>
@@ -438,7 +439,6 @@ export function WorkspaceSheet() {
             onClick={commit}
             disabled={committing || sources.length === 0 || problems.length > 0}
           >
-            {committing && <Loader2 className="animate-spin" />}
             Commit
             <kbd className="ml-1 text-[10px] opacity-70">{formatCombo("Mod+Enter")}</kbd>
           </Button>

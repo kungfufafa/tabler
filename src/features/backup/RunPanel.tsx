@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, Loader2, TriangleAlert } from "lucide-react";
+import { CircleAlert, CircleCheck, TriangleAlert } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { isErrorLine } from "./logLines";
@@ -37,9 +37,7 @@ export function RunPanel({ run }: { run: BackupRun }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 py-3">
       <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
-        {running ? (
-          <Loader2 className="text-brand size-4 shrink-0 animate-spin" />
-        ) : run.status === "failed" ? (
+        {running ? null : run.status === "failed" ? (
           <CircleAlert className="text-error size-4 shrink-0" />
         ) : run.errors > 0 ? (
           <TriangleAlert className="text-warning size-4 shrink-0" />

@@ -1,5 +1,5 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -174,7 +174,7 @@ function OpDialog({
               <SqlBlock sql={sql} dialect={dialect} />
             </div>
           ) : (
-            <Loader2 className="text-muted-foreground size-3.5 animate-spin" />
+            <QuietStatus />
           )}
         </div>
         {preview.data?.warnings.map((w) => (
@@ -193,7 +193,6 @@ function OpDialog({
             onClick={() => void run()}
             disabled={busy || op === null || preview.isError || !preview.data || stale}
           >
-            {busy && <Loader2 className="animate-spin" />}
             {confirmLabel}
           </Button>
         </DialogFooter>

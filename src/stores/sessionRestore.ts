@@ -41,6 +41,7 @@ import {
 import { useTableTabsStore } from "./tableTabs";
 import { useTabsStore, type Tab } from "./tabs";
 import { useUiStore } from "./ui";
+import { startupOpening } from "./windowShape";
 
 /**
  * Rebuilds saved workspaces: at startup ("Reopen closed workspaces at startup") every workspace
@@ -349,6 +350,8 @@ export async function restoreAtStartup(deps: StartupDeps): Promise<void> {
     closeRemembered();
     return;
   }
+  // The window is a workspace window from here on (not the Welcome window, then a workspace).
+  startupOpening();
   toast.loading(toOpen.length === 1 ? "Reopening workspace…" : "Reopening workspaces…", {
     id: RESTORE_TOAST_ID,
   });
@@ -544,6 +547,8 @@ export async function openHandoff(deps: HandoffDeps): Promise<string | null> {
   const handoff = await ipc.windows.takeHandoff().catch(() => null);
   const ws = handoffWorkspace(handoff);
   if (!ws) return null;
+  // Opened with a connection: a workspace window from the start.
+  startupOpening();
   await Promise.all([
     deps.prefsLoaded().catch(() => undefined),
     // An "Ask every time" profile's password mode comes from the list.

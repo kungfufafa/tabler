@@ -848,7 +848,7 @@ describe("DataGrid row selection (TablePlus)", () => {
     fireEvent.keyDown(grid, { key: "ArrowLeft" });
     expect(focusOf(onFocusCell)).toEqual({ r: 4, c: 0 });
     expect(selected()).toEqual([2, 3, 4]);
-    // ⇧→ selects a cell range over those rows (TablePlus's red-border cell selection).
+    // ⇧→ selects a cell range over those rows.
     fireEvent.keyDown(grid, { key: "ArrowRight", shiftKey: true });
     expect(selected()).toEqual([]);
     expect(document.querySelector('[data-selection="cells"]')).not.toBeNull();
@@ -1433,14 +1433,22 @@ describe("DataGrid look (TablePlus)", () => {
     });
   });
 
-  it("centres the header name and keeps the key icon and the type tooltip", () => {
-    setup(state, { sort: [{ column: "name", dir: "desc", nulls: null }], onSortChange: vi.fn() });
+  it("aligns header labels with values and shows types where space permits", () => {
+    setup(
+      { ...state, widths: { id: 120, email: 80 } },
+      { sort: [{ column: "name", dir: "desc", nulls: null }], onSortChange: vi.fn() },
+    );
     const id = document.querySelector<HTMLElement>('[data-header="id"]')!;
     const name = document.querySelector<HTMLElement>('[data-header="name"]')!;
-    expect(id).toHaveClass("justify-center", "font-semibold", "text-[12px]");
+    const email = document.querySelector<HTMLElement>('[data-header="email"]')!;
+    expect(id).toHaveClass("flex-row-reverse", "font-medium", "text-[12px]");
+    expect(name).not.toHaveClass("flex-row-reverse");
     expect(id.querySelector("[data-pk]")).not.toBeNull();
     expect(name.querySelector("[data-pk]")).toBeNull();
     expect(id.title).toBe("id · int");
+    expect(id).toHaveTextContent("int");
+    expect(email.title).toBe("email · text");
+    expect(email).toHaveTextContent(/^email$/);
     expect(name.querySelector('[data-sort="desc"]')).not.toBeNull();
     expect(name.querySelector("[data-resize]")).not.toBeNull();
   });
@@ -1472,7 +1480,7 @@ describe("DataGrid look (TablePlus)", () => {
     expect(band).not.toHaveClass("ring-1");
     expect(band.style.top).toBe(`${HEADER_H + ROW_H}px`);
     const ring = document.querySelector<HTMLElement>("[data-focus-ring]")!;
-    expect(ring).toHaveClass("ring-brand", "ring-1");
+    expect(ring).toHaveClass("group-focus-within/grid:ring-brand", "ring-1");
     expect(ring.style.top).toBe(`${HEADER_H + ROW_H}px`);
 
     // A row number selects its row too; ⌘A selects every row.
@@ -1857,7 +1865,8 @@ describe("DataGrid grid3 features", () => {
     expect(cell(0, 1)).toHaveAttribute("title", "Ann");
   });
 
-  it("shows the loading wallpaper while the first page loads (a preference)", () => {
+  it("shows the loading wallpaper while the first page loads (a preference, off by default)", () => {
+    act(() => resetPrefsForTests({ ...DEFAULT_PREFS, gridLoadingWallpaper: true }));
     const view = render(
       <DataGrid columns={columns} rowCount={0} getRow={() => undefined} loading />,
     );

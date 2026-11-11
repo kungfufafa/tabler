@@ -1,4 +1,4 @@
-import { CheckCircle2, Loader2, ShieldCheck, XCircle } from "lucide-react";
+import { CheckCircle2, ShieldCheck, XCircle } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -226,7 +226,6 @@ function TestRow({ settings }: { settings: Settings }) {
         }
       >
         <Button size="sm" variant="outline" disabled={state.kind === "busy"} onClick={test}>
-          {state.kind === "busy" && <Loader2 className="animate-spin" />}
           Test
         </Button>
       </SettingRow>

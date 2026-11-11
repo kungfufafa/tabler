@@ -42,7 +42,7 @@ function PaneSwitch({ pane }: { pane: SidebarPaneId }) {
     <div
       role="radiogroup"
       aria-label="Sidebar pane"
-      className="border-border bg-surface flex h-5.5 w-full items-center rounded-md border p-px"
+      className="border-sidebar-border bg-surface-2 flex h-8 w-full items-center gap-0.5 rounded-lg border p-0.5"
     >
       {PANES.map((p) => {
         const checked = p.id === pane;
@@ -54,9 +54,9 @@ function PaneSwitch({ pane }: { pane: SidebarPaneId }) {
             aria-checked={checked}
             onClick={() => showSidebarPane(p.id)}
             className={cn(
-              "focus-visible:ring-ring/50 h-full flex-1 rounded-[5px] text-[11px] leading-none outline-none focus-visible:ring-2",
+              "focus-visible:ring-sidebar-ring h-full min-w-0 flex-1 truncate rounded-md border border-transparent px-1 text-xs leading-4 transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset",
               checked
-                ? "bg-background text-foreground font-medium shadow-xs"
+                ? "border-sidebar-border bg-surface text-foreground font-medium forced-colors:border-[Highlight]"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
@@ -156,7 +156,7 @@ function DatabaseItemsPane({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" hidden={hidden}>
-      <div className="flex shrink-0 px-2 pb-1.5">
+      <div className="flex shrink-0 px-2 pb-2">
         <SidebarSearch
           ref={searchRef}
           value={search}
@@ -220,10 +220,14 @@ export function Sidebar() {
   });
 
   return (
-    <aside className="bg-sidebar text-sidebar-foreground flex h-full flex-col" data-scope="sidebar">
+    <aside
+      aria-label="Database sidebar"
+      className="bg-sidebar text-sidebar-foreground flex h-full flex-col"
+      data-scope="sidebar"
+    >
       {active ? (
         <>
-          <div className="flex h-8 shrink-0 items-center px-2">
+          <div className="flex shrink-0 items-center p-2">
             <PaneSwitch pane={pane} />
           </div>
           <ItemsPane

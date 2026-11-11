@@ -1,3 +1,4 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import {
   AlertCircle,
   ChartColumnBig,
@@ -6,7 +7,6 @@ import {
   Check,
   Hash,
   ListFilter,
-  Loader2,
   MousePointerClick,
   Pencil,
   Plus,
@@ -144,10 +144,11 @@ function BoardView({
           variant="ghost"
           size="icon-sm"
           aria-label="Refresh all"
+          aria-busy={anyRunning}
           title={`Refresh all (${formatCombo(shortcutFor("workspace.reload") ?? "Mod+R")})`}
           onClick={runtime.refreshAll}
         >
-          <RefreshCw className={anyRunning ? "animate-spin" : undefined} />
+          <RefreshCw />
         </Button>
         {editing && (
           <DropdownMenu>
@@ -346,7 +347,7 @@ export function MetricsBoardTab({ tab, params }: ToolTabProps<MetricsParams>) {
       ) : (
         <div className="text-muted-foreground flex min-w-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-xs">
           {status === "loading" || status === undefined ? (
-            <Loader2 className="size-4 animate-spin" />
+            <QuietStatus />
           ) : (
             <>
               <p>

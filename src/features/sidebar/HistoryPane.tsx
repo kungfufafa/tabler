@@ -7,7 +7,6 @@ import {
   History,
   Layers,
   ListFilter,
-  Loader2,
   Play,
   SquareStack,
   TextCursorInput,
@@ -612,12 +611,6 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
         aria-multiselectable
         role="region"
       >
-        {history.isFetching && !history.isPending && (
-          <Loader2
-            aria-hidden
-            className="text-muted-foreground absolute top-1 right-2 z-[2] size-3 animate-spin"
-          />
-        )}
         {body}
       </div>
       <AlertDialog open={confirmClear} onOpenChange={setConfirmClear}>

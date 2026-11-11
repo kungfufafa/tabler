@@ -6,7 +6,6 @@ import {
   Copy,
   Eraser,
   Info,
-  Loader2,
   Settings2,
   ShieldCheck,
   Square,
@@ -479,10 +478,7 @@ function MessageView({
       </div>
       {m.content && <Markdown text={m.content} dialect={dialect} streaming={streaming} sql={sql} />}
       {streaming && (m.thinking || !m.content) && (
-        <span className="text-muted-foreground flex items-center gap-1 text-[11px]">
-          <Loader2 className="size-3 animate-spin" />
-          {m.thinking ? "Thinking…" : "Waiting for the reply…"}
-        </span>
+        <span className="sr-only">{m.thinking ? "Thinking…" : "Waiting for the reply…"}</span>
       )}
       {m.notices?.map((n, i) => (
         <p key={i} className="text-muted-foreground text-[11px]">
@@ -546,7 +542,7 @@ function ContextButton({ context }: { context: AssistantContextRequest }) {
         <p className="text-muted-foreground text-[11px] leading-4">{STRUCTURE_ONLY_NOTE}</p>
         {state?.kind === "loading" && (
           <span className="text-muted-foreground flex items-center gap-1 text-[11px]">
-            <Loader2 className="size-3 animate-spin" /> Reading the structure…
+            <span className="sr-only">Reading the structure…</span>
           </span>
         )}
         {state?.kind === "error" && <p className="text-destructive text-[11px]">{state.message}</p>}

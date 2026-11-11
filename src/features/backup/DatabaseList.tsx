@@ -1,4 +1,4 @@
-import { CircleAlert, Loader2, RotateCw, Search } from "lucide-react";
+import { CircleAlert, RotateCw, Search } from "lucide-react";
 import { useMemo, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -73,7 +73,7 @@ export function DatabaseList({
       >
         {loading && (
           <div className="text-muted-foreground flex items-center gap-2 px-3 py-2 text-xs">
-            <Loader2 className="size-3.5 animate-spin" /> Loading databases…
+            <span className="sr-only">Loading databases…</span>
           </div>
         )}
         {error !== null && (

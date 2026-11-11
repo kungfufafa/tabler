@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, FileUp, Loader2 } from "lucide-react";
+import { CircleAlert, FileUp } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Kbd } from "@/components/Kbd";
@@ -516,7 +516,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                     aria-label="Table"
                     className="bg-surface h-7 min-w-0 flex-1 font-mono text-xs"
                   >
-                    <SelectValue placeholder={tables.isPending ? "Loading…" : "Choose a table"} />
+                    <SelectValue placeholder="Choose a table" />
                   </SelectTrigger>
                   <SelectContent>
                     {tableList.map((t) => (
@@ -600,9 +600,6 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                 onChange={(encoding) => setFormat((f) => ({ ...f, encoding }))}
                 className="w-48"
               />
-              {preview.isFetching && (
-                <Loader2 className="text-muted-foreground size-3.5 animate-spin" />
-              )}
             </Field>
           </div>
         </fieldset>
@@ -615,7 +612,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
             </div>
           ) : !data ? (
             <div className="text-muted-foreground flex items-center gap-2 p-4 text-xs">
-              <Loader2 className="size-3.5 animate-spin" /> Reading the file…
+              <span className="sr-only">Reading the file…</span>
             </div>
           ) : (
             <table className="w-max min-w-full border-separate border-spacing-0 text-xs">
@@ -754,7 +751,6 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
             {run ? (
               <div role="status" aria-live="polite" className="flex min-w-0 flex-col gap-1">
                 <div className="flex items-center gap-2 text-xs">
-                  <Loader2 className="text-brand size-3.5 shrink-0 animate-spin" />
                   <span className="tabular-nums">
                     {progress?.phase === "writing" ? "Writing" : "Reading"} ·{" "}
                     {formatCount(progress?.rowsRead ?? 0)} rows read
@@ -768,7 +764,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                   <div
                     className={cn(
                       "bg-brand h-full rounded-full transition-[width] duration-200",
-                      pct === null && "w-1/3 animate-pulse",
+                      pct === null && "w-0",
                     )}
                     style={pct === null ? undefined : { width: `${pct}%` }}
                   />

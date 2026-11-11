@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Loader2, Lock, ShieldCheck, SquareTerminal, TriangleAlert } from "lucide-react";
+import { KeyRound, Lock, ShieldCheck, SquareTerminal, TriangleAlert } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -271,7 +271,7 @@ export function ImportConnectionsDialog({
 
         {phase.kind === "loading" && (
           <div className="text-muted-foreground flex items-center gap-2 py-6 text-xs">
-            <Loader2 className="size-4 animate-spin" /> Reading the file…
+            <span className="sr-only">Reading the file…</span>
           </div>
         )}
 
@@ -392,7 +392,6 @@ export function ImportConnectionsDialog({
           </Button>
           {phase.kind === "password" ? (
             <Button type="submit" size="sm" form={`${id}-unlock`} disabled={busy}>
-              {busy ? <Loader2 className="animate-spin" /> : null}
               Continue
             </Button>
           ) : (
@@ -402,7 +401,6 @@ export function ImportConnectionsDialog({
               onClick={() => void runImport()}
               disabled={busy || phase.kind !== "preview" || selected.size === 0}
             >
-              {busy ? <Loader2 className="animate-spin" /> : null}
               Import
             </Button>
           )}

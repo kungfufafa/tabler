@@ -1,4 +1,4 @@
-import { FingerprintPattern, Loader2, LockKeyhole, ShieldAlert } from "lucide-react";
+import { FingerprintPattern, LockKeyhole, ShieldAlert } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import {
   AlertDialog,
@@ -239,11 +239,7 @@ function PasswordBody({ prompt }: { prompt: PasswordPrompt }) {
             onClick={() => void askTouchId()}
             className="sm:mr-auto"
           >
-            {touchId === "asking" ? (
-              <Loader2 className="animate-spin" aria-hidden />
-            ) : (
-              <FingerprintPattern aria-hidden />
-            )}
+            <FingerprintPattern aria-hidden />
             Use Touch ID
           </Button>
         )}
@@ -251,7 +247,6 @@ function PasswordBody({ prompt }: { prompt: PasswordPrompt }) {
           Cancel
         </AlertDialogCancel>
         <Button type="submit" size="sm" disabled={checking || value === ""}>
-          {checking && <Loader2 className="animate-spin" aria-hidden />}
           {prompt.confirmLabel}
         </Button>
       </AlertDialogFooter>

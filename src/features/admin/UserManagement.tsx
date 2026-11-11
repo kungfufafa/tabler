@@ -1,10 +1,10 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
   ChevronRight,
   Eye,
   EyeOff,
-  Loader2,
   Minus,
   Plus,
   ShieldCheck,
@@ -305,9 +305,6 @@ function UserManagementBody({
             {driver === "postgres" ? "Roles" : "Users"}
           </span>
           <span className="text-muted-foreground/70 text-[11px] tabular-nums">{list.length}</span>
-          {users.isFetching && (
-            <Loader2 className="text-muted-foreground ml-auto size-3 animate-spin" />
-          )}
         </div>
         <ul role="listbox" aria-label="Users" className="min-h-0 flex-1 overflow-y-auto py-1">
           {users.isError && (
@@ -389,7 +386,7 @@ function UserManagementBody({
             />
           ) : (
             <div className="text-muted-foreground flex flex-1 items-center justify-center gap-2 text-xs">
-              <Loader2 className="size-3.5 animate-spin" /> Loading…
+              <span className="sr-only">Loading…</span>
             </div>
           )
         ) : (
@@ -915,7 +912,7 @@ function DatabasePrivileges({
             onChange={(e) => setPicked(e.target.value)}
           >
             {database === null && (
-              <option value="">{databases.isPending ? "Loading…" : "No databases"}</option>
+              <option value="">{databases.isPending ? "" : "No databases"}</option>
             )}
             {choices.map((d) => (
               <option key={d} value={d}>
@@ -1138,7 +1135,7 @@ function UserFooter({
               dialect={coreDialect(driver)}
             />
           ) : (
-            <Loader2 className="text-muted-foreground size-3.5 animate-spin" />
+            <QuietStatus />
           )}
         </div>
       )}
@@ -1166,7 +1163,6 @@ function UserFooter({
           {draft.original ? "Discard" : "Cancel"}
         </Button>
         <Button size="sm" disabled={busy || !dirty || problems.length > 0} onClick={onApply}>
-          {busy && <Loader2 className="animate-spin" />}
           {draft.original ? "Apply" : "Create"}
         </Button>
       </div>

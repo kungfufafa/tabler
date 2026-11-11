@@ -26,7 +26,7 @@ export function SidebarSearch({
   value,
   onChange,
   onArrowDown,
-  placeholder = "Search for item…",
+  placeholder = ITEMS_LABEL,
   label = ITEMS_LABEL,
   hint = label === ITEMS_LABEL ? ITEMS_SEARCH_HINT : undefined,
   kbdHint = true,
@@ -58,17 +58,20 @@ export function SidebarSearch({
           <DropdownMenuTrigger
             aria-label="Search options"
             title="Search options"
-            className="text-muted-foreground hover:text-foreground data-[state=open]:text-foreground focus-visible:ring-ring/50 absolute top-1/2 left-1 z-10 flex h-5 -translate-y-1/2 items-center rounded-sm pr-0.5 pl-1 outline-none focus-visible:ring-2"
+            className="text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground focus-visible:ring-sidebar-ring absolute top-1/2 left-1 z-10 flex h-6 w-8 -translate-y-1/2 items-center justify-center rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-inset"
           >
-            <Search className="size-3.5" />
-            <ChevronDown className="size-2.5" />
+            <Search aria-hidden className="size-3.5" />
+            <ChevronDown aria-hidden className="size-2.5" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
             <SearchMenuEntries build={menu} />
           </DropdownMenuContent>
         </DropdownMenu>
       ) : (
-        <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
+        <Search
+          aria-hidden
+          className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2"
+        />
       )}
       <Input
         ref={ref}
@@ -88,21 +91,21 @@ export function SidebarSearch({
         title={hint}
         className={cn(
           // Room on the right for the clear button, or for the badge once it shows.
-          "bg-surface h-6.5 rounded-md pr-7 text-xs md:text-xs",
+          "bg-surface h-8 rounded-md pr-8 text-xs md:text-xs",
           kbdHint && !value && "@min-[15rem]/search:pr-24",
-          menu ? "pl-9" : "pl-7",
+          menu ? "pl-10" : "pl-7",
         )}
         data-scope="sidebar"
       />
-      <div className="pointer-events-none absolute top-1/2 right-1.5 -translate-y-1/2">
+      <div className="pointer-events-none absolute top-1/2 right-1 -translate-y-1/2">
         {value ? (
           <button
             type="button"
-            className="text-muted-foreground hover:text-foreground pointer-events-auto flex"
+            className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-sidebar-ring pointer-events-auto flex size-6 items-center justify-center rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-inset"
             onClick={() => onChange("")}
             aria-label="Clear search"
           >
-            <X className="size-3.5" />
+            <X aria-hidden className="size-3.5" />
           </button>
         ) : (
           kbdHint &&

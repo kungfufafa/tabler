@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Ban, CircleCheck, CircleX, Info, Loader2, TriangleAlert } from "lucide-react";
+import { Ban, CircleCheck, CircleX, Info, TriangleAlert } from "lucide-react";
 import { memo, useMemo, useState } from "react";
 import { useLacksFields } from "@/features/datagrid/lacksFields";
 import { formatDuration } from "@/lib/format/time";
@@ -29,7 +29,7 @@ const ROW_CLASS = "border-gridline border-b px-3 py-1.5";
 function StatusIcon({ status }: { status: StatementStatus }) {
   switch (status) {
     case "running":
-      return <Loader2 className="text-brand size-3.5 shrink-0 animate-spin" aria-label="Running" />;
+      return <span role="status" aria-label="Running" className="sr-only" />;
     case "ok":
       return <CircleCheck className="text-success size-3.5 shrink-0" aria-label="Succeeded" />;
     case "error":
@@ -311,7 +311,7 @@ export function MessagesView({ tabId, run }: { tabId: string; run: RunState }) {
       )}
       {waiting && (
         <div className="text-muted-foreground flex shrink-0 items-center gap-2 px-3 py-2">
-          <Loader2 className="size-3.5 animate-spin" /> Waiting for the server…
+          <span className="sr-only">Waiting for the server…</span>
         </div>
       )}
       {extra > 0 && (

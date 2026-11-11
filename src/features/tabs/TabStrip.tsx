@@ -7,7 +7,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { actions } from "@/features/palette/actions";
 import { isTauri } from "@/lib/ipc";
 import { shortcutFor, useKeymapVersion } from "@/lib/keys/keymap";
-import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
 import {
   canGoBack,
@@ -66,7 +65,7 @@ function BarButton({
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
-      className="text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-ring/50 flex size-5.5 shrink-0 items-center justify-center rounded outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-35"
+      className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring flex size-6 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-1 focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-45"
     >
       {children}
     </button>
@@ -185,20 +184,17 @@ export function TabStrip({ group = 0, shared = false }: { group?: TabGroup; shar
     <div
       data-slot="tab-bar"
       data-tab-group={split ? group : undefined}
-      // The bar is a shade darker than the window; the visible tab takes the window background.
-      className={cn(
-        "border-border bg-surface-2 flex h-7 shrink-0 items-stretch border-b dark:bg-black/20",
-      )}
+      className="border-border bg-surface-2 flex h-8 shrink-0 items-stretch border-b"
     >
       {group === 0 && (
-        <div className="border-border flex shrink-0 items-center gap-px border-r px-1">
+        <div className="border-border flex shrink-0 items-center gap-1 border-r px-1">
           <BarButton
             label="Back"
             combo={shortcutFor("tab.back")}
             disabled={!backEnabled}
             onClick={back}
           >
-            <ChevronLeft className="size-3.5" />
+            <ChevronLeft aria-hidden className="size-4" />
           </BarButton>
           <BarButton
             label="Forward"
@@ -206,7 +202,7 @@ export function TabStrip({ group = 0, shared = false }: { group?: TabGroup; shar
             disabled={!forwardEnabled}
             onClick={forward}
           >
-            <ChevronRight className="size-3.5" />
+            <ChevronRight aria-hidden className="size-4" />
           </BarButton>
         </div>
       )}
@@ -224,7 +220,7 @@ export function TabStrip({ group = 0, shared = false }: { group?: TabGroup; shar
           disabled={!hasConnection}
           onClick={newQuery}
         >
-          <Plus className="size-3.5" />
+          <Plus aria-hidden className="size-4" />
         </BarButton>
       </div>
     </div>

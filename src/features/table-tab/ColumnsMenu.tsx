@@ -51,12 +51,12 @@ export function ColumnsMenu({
             size="xs"
             aria-label="Columns"
             className={cn(
-              "text-muted-foreground hover:text-foreground h-6 px-1.5",
+              "text-muted-foreground hover:text-foreground h-6 gap-1 px-2 transition-colors @max-sm:px-1",
               someHidden && "text-brand hover:text-brand",
             )}
           >
             <Columns3 />
-            <span className="@max-2xl:hidden">Columns</span>
+            <span className="@max-3xl:hidden">Columns</span>
             {someHidden && (
               <span className="tabular-nums">
                 {shown}/{columns.length}

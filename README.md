@@ -274,13 +274,15 @@ macOS DMG (Apple Silicon and Intel) and the Windows installers, and publishes th
 
 ## Documentation
 
-| Document                                             | What it covers                                             |
-| ---------------------------------------------------- | ---------------------------------------------------------- |
-| [docs/features.md](docs/features.md)                 | Every feature in detail, including edge cases              |
-| [docs/shortcuts.md](docs/shortcuts.md)               | Every keyboard shortcut and how it compares with TablePlus |
-| [docs/tableplus-parity.md](docs/tableplus-parity.md) | TablePlus parity roadmap and status                        |
-| [docs/verify-servers.md](docs/verify-servers.md)     | Checks against real servers (SSL, MariaDB, SSH)            |
-| [docs/qa-macos.md](docs/qa-macos.md)                 | Manual release checklist                                   |
-| [dev/README.md](dev/README.md)                       | Sample databases and the Docker setup                      |
-| [design/logo/README.md](design/logo/README.md)       | Logo, colours and usage rules                              |
-| [CLAUDE.md](CLAUDE.md)                               | Contributor conventions                                    |
+| Document                                                                      | What it covers                                             |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| [docs/features.md](docs/features.md)                                          | Every feature in detail, including edge cases              |
+| [docs/shortcuts.md](docs/shortcuts.md)                                        | Every keyboard shortcut and how it compares with TablePlus |
+| [docs/tableplus-parity.md](docs/tableplus-parity.md)                          | TablePlus parity roadmap and status                        |
+| [TablePlus behavior scenarios](docs/research/tableplus-behavior-scenarios.md) | Repeatable comparisons with Tabler                         |
+| [TablePlus macOS behavior log](docs/research/tableplus-macos-2026-11-11.md)   | Observations on TablePlus 27.2.0 with SQLite               |
+| [docs/verify-servers.md](docs/verify-servers.md)                              | Checks against real servers (SSL, MariaDB, SSH)            |
+| [docs/qa-macos.md](docs/qa-macos.md)                                          | Manual release checklist                                   |
+| [dev/README.md](dev/README.md)                                                | Sample databases and the Docker setup                      |
+| [design/logo/README.md](design/logo/README.md)                                | Logo, colours and usage rules                              |
+| [CLAUDE.md](CLAUDE.md)                                                        | Contributor conventions                                    |

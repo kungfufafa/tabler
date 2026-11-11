@@ -1,6 +1,6 @@
 import { toggleLineComment } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
-import { FileCode2, FolderOpen, Info, Loader2, Save } from "lucide-react";
+import { FileCode2, FolderOpen, Info, Save } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Kbd } from "@/components/Kbd";
@@ -205,7 +205,6 @@ export function SqlViewer({ viewerKey, active, onOpenPath, notice }: SqlViewerPr
             — Edited
           </span>
         )}
-        {doc?.loading && <Loader2 className="text-brand size-3 shrink-0 animate-spin" />}
         <span className="text-muted-foreground ml-1 hidden shrink-0 text-[11px] sm:inline">
           SQL Viewer · runs nothing
         </span>

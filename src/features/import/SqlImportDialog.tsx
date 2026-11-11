@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, FileUp, Loader2, TriangleAlert } from "lucide-react";
+import { CircleAlert, FileUp, TriangleAlert } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { Kbd } from "@/components/Kbd";
@@ -233,7 +233,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
             </div>
           ) : !data ? (
             <div className="text-muted-foreground flex items-center gap-2 text-xs">
-              <Loader2 className="size-3.5 animate-spin" /> Reading the file…
+              <span className="sr-only">Reading the file…</span>
             </div>
           ) : (
             <>
@@ -280,7 +280,6 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
             {run ? (
               <div role="status" aria-live="polite" className="flex min-w-0 flex-col gap-1">
                 <div className="flex items-center gap-2 text-xs">
-                  <Loader2 className="text-brand size-3.5 shrink-0 animate-spin" />
                   <span className="tabular-nums">
                     {statements(progress?.statements ?? 0)}
                     {progress && progress.failed > 0
@@ -296,7 +295,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
                   <div
                     className={cn(
                       "bg-brand h-full rounded-full transition-[width] duration-200",
-                      pct === null && "w-1/3 animate-pulse",
+                      pct === null && "w-0",
                     )}
                     style={pct === null ? undefined : { width: `${pct}%` }}
                   />

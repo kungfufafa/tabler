@@ -1,6 +1,6 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
-import { Skeleton } from "@/components/ui/skeleton";
 import { ipc, type DdlOp, type Dialect, type TableKind, type TableRef } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
 import { ddlKey } from "./invalidate";
@@ -46,13 +46,7 @@ export function ViewDefinitionPane({
     },
     [original, onStage, dialect, kind, table],
   );
-  if (ddl.isPending)
-    return (
-      <div className="flex flex-col gap-2 p-4">
-        <Skeleton className="h-4 w-56" />
-        <Skeleton className="h-40 w-full" />
-      </div>
-    );
+  if (ddl.isPending) return <QuietStatus />;
   if (ddl.isError)
     return (
       <p className="text-error p-4 text-xs" role="alert">

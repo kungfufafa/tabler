@@ -1,3 +1,4 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import {
   ChevronDown,
   Copy,
@@ -5,7 +6,6 @@ import {
   FileImage,
   Focus,
   LayoutTemplate,
-  Loader2,
   Maximize,
   RefreshCw,
   Search,
@@ -590,7 +590,7 @@ export function DiagramDialog({
     ? `${visible.length === data.tables.length ? data.tables.length : `${visible.length} of ${data.tables.length}`} ${data.tables.length === 1 ? "table" : "tables"} · ${drawn.length} ${drawn.length === 1 ? "relation" : "relations"}${external > 0 ? ` · ${external} to other schemas not shown` : ""}`
     : query.isError
       ? "Could not load the schema"
-      : "Loading…";
+      : "";
   const grid = 20 * view.k;
 
   return (
@@ -705,7 +705,7 @@ export function DiagramDialog({
             onClick={() => void query.refetch()}
             disabled={query.isFetching || schema === null}
           >
-            <RefreshCw className={cn(query.isFetching && "animate-spin")} />
+            <RefreshCw />
           </Button>
         </DialogHeader>
 
@@ -744,7 +744,7 @@ export function DiagramDialog({
           )}
           {(query.isPending || (data && !positions)) && schema !== null && (
             <div className="absolute inset-0 grid place-items-center">
-              <Loader2 className="text-muted-foreground size-4 animate-spin" />
+              <QuietStatus />
             </div>
           )}
           {query.isError && (

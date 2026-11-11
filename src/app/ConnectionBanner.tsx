@@ -38,7 +38,7 @@ export function ConnectionBanner() {
       data-slot="connection-banner"
       className="border-warning/30 bg-warning/10 text-warning flex h-7 min-w-0 shrink-0 items-center gap-2 border-b pr-1.5 pl-3 text-xs"
     >
-      <Icon className={state.spinning ? "size-3.5 shrink-0 animate-spin" : "size-3.5 shrink-0"} />
+      <Icon className="size-3.5 shrink-0" />
       {/* Title and message truncate (the message first: it only gets the space the title leaves)
           so the Reconnect button always stays in view, even at the panel's minimum width. */}
       <span

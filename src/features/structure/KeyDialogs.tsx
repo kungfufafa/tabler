@@ -1,3 +1,4 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import { useQuery } from "@tanstack/react-query";
 import { useId, useMemo, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
@@ -159,7 +160,7 @@ export function ForeignKeyForm({
             className="w-full font-mono text-xs"
             aria-label="Referenced table"
           >
-            <SelectValue placeholder={tables.isPending ? "Loading tables…" : "Pick a table"} />
+            <SelectValue placeholder="Pick a table" />
           </SelectTrigger>
           <SelectContent>
             {tableOptions.map((t) => (
@@ -173,7 +174,7 @@ export function ForeignKeyForm({
       {refTable && (
         <Field label="Referenced columns (same order)">
           {refMeta.isPending ? (
-            <p className="text-muted-foreground text-[11px]">Loading columns…</p>
+            <QuietStatus>Loading columns…</QuietStatus>
           ) : (
             <OrderedPicker
               label="Referenced columns"

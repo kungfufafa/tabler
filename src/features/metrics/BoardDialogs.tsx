@@ -1,4 +1,3 @@
-import { Loader2 } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -120,7 +119,6 @@ export function ExportBoardDialog({
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={busy}>
-              {busy && <Loader2 className="animate-spin" />}
               Export…
             </Button>
           </DialogFooter>
@@ -205,7 +203,6 @@ export function ImportPasswordDialog({
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={busy || password === ""}>
-              {busy && <Loader2 className="animate-spin" />}
               Import
             </Button>
           </DialogFooter>

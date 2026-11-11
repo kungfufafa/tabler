@@ -41,3 +41,5 @@ coverage
 
 # local multi-agent workflow scripts (absolute paths)
 .claude/workflows/
+# ts-rs fallback export dir (the real bindings are in src/lib/ipc/bindings)
+src-tauri/bindings

@@ -12,7 +12,7 @@ edition = "2024"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "tabler_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [features]
 default = ["release-drivers"]
@@ -70,6 +70,7 @@ tauri-plugin-log = "2"
 tauri-plugin-clipboard-manager = "2"
 # Native notifications when a long export / import / backup finishes in the background.
 tauri-plugin-notification = "2"
+tauri-plugin-window-state = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs", "process"] }
 tokio-util = "0.7"
 futures = "0.3"
@@ -158,9 +159,6 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
-
-[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-window-state = "2"
 
 # SQLCipher's crypto: CommonCrypto on macOS, OpenSSL elsewhere. Windows has no system OpenSSL, so
 # it is built from source and linked in statically (needs Perl and NASM at build time).

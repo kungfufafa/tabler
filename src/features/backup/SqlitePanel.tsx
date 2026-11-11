@@ -1,4 +1,4 @@
-import { CloudDownload, Copy, Database, Loader2, TriangleAlert } from "lucide-react";
+import { CloudDownload, Copy, Database, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -97,7 +97,7 @@ export function SqlitePanel({
       <div className="flex flex-wrap items-center justify-center gap-2">
         {mode === "backup" && (
           <Button type="button" size="sm" onClick={() => void copy()} disabled={copying || !file}>
-            {copying ? <Loader2 className="animate-spin" /> : <Copy />}
+            <Copy />
             {overSsh && cached
               ? "Copy Cached File…"
               : overSsh

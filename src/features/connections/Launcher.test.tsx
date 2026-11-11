@@ -39,7 +39,9 @@ function renderLauncher() {
 }
 
 const row = async (name: string) =>
-  (await screen.findByText(name)).closest<HTMLElement>("[role='option']")!;
+  (
+    await within(await screen.findByRole("listbox", { name: "Connections" })).findByText(name)
+  ).closest<HTMLElement>("[role='option']")!;
 const list = () => screen.getByRole("listbox", { name: "Connections" });
 /** Profile id of the selected row. */
 const selectedId = () =>
@@ -250,6 +252,46 @@ describe("Launcher", () => {
       expect(connect).toHaveBeenCalledTimes(1);
       expect(useUiStore.getState().view).toBe("workspace");
       await vi.waitFor(() => expect(usePaletteStore.getState().connecting).toEqual([]));
+    });
+
+    it("Connect follows the visible selection and disables when there is no match", async () => {
+      const connect = vi.spyOn(ipc.connections, "connect");
+      const user = userEvent.setup();
+      renderLauncher();
+      const connectButton = () => screen.getByRole("button", { name: "Connect" });
+      const mysql = await row("Shop MySQL");
+      expect(connectButton()).toBeDisabled();
+
+      await user.click(mysql);
+      expect(connectButton()).toBeEnabled();
+      expect(connect).not.toHaveBeenCalled();
+
+      const search = screen.getByRole("textbox", { name: "Search connections" });
+      await user.type(search, "no-such-profile");
+      expect(connectButton()).toBeDisabled();
+      await user.clear(search);
+      await user.type(search, "local postgres");
+      expect(connectButton()).toBeEnabled();
+      await user.click(connectButton());
+
+      expect(connect).toHaveBeenCalledExactlyOnceWith("p-local-pg");
+      await vi.waitFor(() => expect(useUiStore.getState().view).toBe("workspace"));
+      await vi.waitFor(() => expect(usePaletteStore.getState().connecting).toEqual([]));
+    });
+
+    it("Open workspace switches to the selected profile's existing connection", async () => {
+      const connect = vi.spyOn(ipc.connections, "connect");
+      useConnectionsStore.getState().add(info("postgres", "p-local-pg"));
+      useConnectionsStore.getState().add(info("mysql", "p-shop-mysql"));
+      const user = userEvent.setup();
+      renderLauncher();
+
+      await user.click(await row("Local Postgres"));
+      await user.click(screen.getByRole("button", { name: "Open workspace" }));
+
+      expect(connect).not.toHaveBeenCalled();
+      expect(useConnectionsStore.getState().activeId).toBe("postgres");
+      expect(useUiStore.getState().view).toBe("workspace");
     });
 
     it("switches to an already open profile instead of connecting again", async () => {

@@ -299,7 +299,7 @@ export function FieldBlock({
   if (isBytes) {
     box = (
       <div
-        className={cn(BOX, "flex h-[26px] items-center gap-1.5", changed && "bg-changed")}
+        className={cn(BOX, "flex h-7 items-center gap-2", changed && "bg-changed")}
         title={truncatedBlob ? "Only a preview is loaded" : undefined}
       >
         <Binary className="text-muted-foreground size-3 shrink-0" />
@@ -333,7 +333,7 @@ export function FieldBlock({
     );
   } else if (mixed && col.kind === "bytes") {
     box = (
-      <div className={cn(BOX, "text-null flex h-[26px] items-center italic")}>Multiple values</div>
+      <div className={cn(BOX, "text-muted-foreground flex h-7 items-center")}>Multiple values</div>
     );
   } else if (typeable && isChoiceColumn(col)) {
     box = (
@@ -377,7 +377,7 @@ export function FieldBlock({
             : undefined
         }
         className={cn(
-          "bg-surface focus-within:border-ring focus-within:ring-ring/30 min-h-[26px] w-full min-w-0 font-mono focus-within:ring-2",
+          "bg-surface focus-within:border-ring focus-within:ring-ring/30 min-h-7 w-full min-w-0 font-mono focus-within:ring-2",
           changed && "bg-changed [&_.cm-editor]:bg-transparent",
           error && "border-error focus-within:border-error focus-within:ring-error/30",
         )}
@@ -413,7 +413,7 @@ export function FieldBlock({
               }
             : undefined
         }
-        className={cn(boxClass, "h-[26px] tabular-nums")}
+        className={cn(boxClass, "h-7 tabular-nums")}
       />
     );
   }
@@ -425,28 +425,28 @@ export function FieldBlock({
       role="listitem"
       data-focused={focused || undefined}
       className={cn(
-        "group/field rounded-md px-1.5 pt-1 pb-1.5",
-        focused && "bg-brand-soft",
-        hidden && "opacity-60",
+        "group/field relative rounded-md px-2 pt-1 pb-2",
+        focused &&
+          "bg-brand-soft before:bg-brand before:pointer-events-none before:absolute before:inset-y-3 before:left-0 before:w-0.5 before:rounded-full",
       )}
     >
-      <div className="flex h-5 items-center gap-1 text-[11px] leading-4">
+      <div className="flex h-6 items-center gap-1 text-[12px] leading-4">
         {col.isPk && (
           <KeyRound className="text-warning size-3 shrink-0" aria-label="Primary key" role="img" />
         )}
         <span
-          className="text-muted-foreground min-w-0 truncate"
+          className={cn("min-w-0 truncate font-medium", hidden && "text-muted-foreground")}
           title={`${col.name} · ${col.dataType}${col.nullable ? "" : " · not null"}${col.editable ? "" : " · read-only"}`}
         >
           {col.name}
         </span>
         {hidden && (
-          <span className="text-muted-foreground border-border shrink-0 rounded border px-1 text-[9px] leading-3 tracking-wide uppercase">
+          <span className="text-muted-foreground border-border shrink-0 rounded border px-1 text-[10px] leading-3">
             hidden
           </span>
         )}
         <span className="flex-1" />
-        <span className="text-muted-foreground/80 max-w-[55%] shrink-0 truncate font-mono text-[10px]">
+        <span className="text-muted-foreground max-w-[50%] shrink-0 truncate font-mono text-xs">
           {col.dataType}
         </span>
         {editable ? (
@@ -588,7 +588,7 @@ function ChoiceBox({
           const result = parseFieldText(col, picked, value, lacksFields);
           onPick(result.ok ? result.value : null);
         }}
-        className={cn(className, "h-[26px] appearance-none pr-6", isNullish && "text-null italic")}
+        className={cn(className, "h-7 appearance-none pr-6", isNullish && "text-null italic")}
       >
         {key === null && (
           <option value="" disabled>

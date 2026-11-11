@@ -32,7 +32,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Skeleton } from "@/components/ui/skeleton";
+import { QuietLoading } from "@/components/QuietLoading";
 import { NotAvailable } from "@/features/drivers/NotAvailable";
 import { isCoreDriver, sessionKind } from "@/features/drivers/catalog";
 import { laneBuiltFor, useDriverUi } from "@/features/drivers/registry";
@@ -192,13 +192,7 @@ export function StructureTab({ tab }: { tab: Extract<Tab, { kind: "structure" }>
   const driver = info?.driver ?? "postgres";
   const ui = useDriverUi(info?.driver ?? null);
   // The lane's module is still loading.
-  if (ui === undefined)
-    return (
-      <div className="flex flex-col gap-2 p-4" data-slot="lane-loading">
-        <Skeleton className="h-5 w-48" />
-        <Skeleton className="h-64 w-full" />
-      </div>
-    );
+  if (ui === undefined) return <QuietLoading header data-slot="lane-loading" />;
   const caps = capsOf(info ?? { driver, capabilities: null });
   // A session of a lane this build lacks: nothing of the lane's, nor the core editor.
   if (!isCoreDriver(driver) && !laneBuiltFor({ driver }))
@@ -868,10 +862,7 @@ function StructureTabView({
   if (meta.isPending) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <div className="flex min-h-0 flex-1 flex-col gap-2 p-4">
-          <Skeleton className="h-5 w-48" />
-          <Skeleton className="h-64 w-full" />
-        </div>
+        <QuietLoading header className="h-auto flex-1" />
         <BottomBar tabId={tab.id} />
       </div>
     );
@@ -1249,7 +1240,7 @@ function StructureTabView({
           onClick={() => void refresh()}
           disabled={meta.isFetching}
         >
-          <RefreshCw className={cn(meta.isFetching && "animate-spin")} />
+          <RefreshCw />
         </BarIconButton>
       </BottomBar>
 

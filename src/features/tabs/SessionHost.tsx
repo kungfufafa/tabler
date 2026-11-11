@@ -4,6 +4,7 @@ import { useOpenProfile } from "@/features/connections/openProfile";
 import { installMenuAcceleratorSync } from "@/lib/keys/menuSync";
 import { loadPrefs } from "@/stores/prefs";
 import { installSessionOwnership, openHandoff, restoreAtStartup } from "@/stores/sessionRestore";
+import { startupDone } from "@/stores/windowShape";
 import { MAIN_WINDOW, windowLabel } from "./windowHandoff";
 
 /**
@@ -25,15 +26,17 @@ export function SessionHost() {
     let cancelled = false;
     void windowLabel().then((label) => {
       if (cancelled) return;
+      // Either way the window knows its shape once this is over: a workspace window while
+      // something opens, else the Welcome window (`stores/windowShape`).
       if (label === MAIN_WINDOW)
         void restoreAtStartup({
           qc,
           openProfile: (profileId) => openRef.current(profileId),
           prefsLoaded: loadPrefs,
-        });
+        }).finally(startupDone);
       else {
         void loadPrefs();
-        void openHandoff({ qc, prefsLoaded: loadPrefs });
+        void openHandoff({ qc, prefsLoaded: loadPrefs }).finally(startupDone);
       }
     });
     return () => {

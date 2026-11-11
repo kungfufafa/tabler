@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Loader2, RefreshCw, Server, TriangleAlert } from "lucide-react";
+import { ArrowDown, ArrowUp, RefreshCw, Server, TriangleAlert } from "lucide-react";
 import { useMemo, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
@@ -181,7 +181,7 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
           onClick={() => void list.refetch()}
           disabled={list.isFetching}
         >
-          <RefreshCw className={cn(list.isFetching && "animate-spin")} />
+          <RefreshCw />
           Refresh
         </Button>
       </div>
@@ -206,7 +206,7 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
           </EmptyState>
         ) : list.isPending ? (
           <div className="text-muted-foreground flex h-full items-center justify-center gap-2 text-xs">
-            <Loader2 className="size-3.5 animate-spin" /> Loading processes…
+            <span className="sr-only">Loading processes…</span>
           </div>
         ) : (
           <table className="w-full min-w-[900px] table-fixed border-collapse text-xs">
@@ -299,7 +299,6 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
           disabled={picked.length === 0 || killing}
           onClick={() => setConfirm("connection")}
         >
-          {killing && <Loader2 className="animate-spin" />}
           Kill Connection
         </Button>
       </footer>

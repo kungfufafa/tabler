@@ -1,5 +1,4 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
 import { useId, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import {
@@ -134,7 +133,6 @@ export function CreateSchemaDialog({
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={busy}>
-              {busy && <Loader2 className="animate-spin" />}
               Create
             </Button>
           </DialogFooter>
@@ -201,7 +199,7 @@ export function DropSchemaDialog({
               onChange={(e) => setPicked(e.target.value)}
             >
               <option value="" disabled>
-                {schemas.isPending ? "Loading…" : "Choose a schema"}
+                Choose a schema
               </option>
               {(schemas.data ?? []).map((s) => (
                 <option key={s.name} value={s.name}>
@@ -226,7 +224,6 @@ export function DropSchemaDialog({
             onClick={() => void run()}
             disabled={busy || target === ""}
           >
-            {busy && <Loader2 className="animate-spin" />}
             Drop
           </Button>
         </AlertDialogFooter>

@@ -3,7 +3,6 @@ import {
   ChevronRight,
   Download,
   ExternalLink,
-  Loader2,
   PictureInPicture2,
   X,
 } from "lucide-react";
@@ -255,7 +254,7 @@ function ReferencedBody({
   if (state.status === "loading")
     return (
       <div className="text-muted-foreground flex flex-1 items-center justify-center gap-2 text-xs">
-        <Loader2 className="size-3.5 animate-spin" /> Loading the referenced row…
+        <span className="sr-only">Loading the referenced row…</span>
       </div>
     );
   if (state.status === "error")
@@ -708,7 +707,7 @@ export function QuickLook({
           disabled={fullState?.status === "loading"}
           onClick={() => void loadWhole()}
         >
-          {fullState?.status === "loading" ? <Loader2 className="animate-spin" /> : <Download />}
+          <Download />
           Load full value
         </Button>
       )}

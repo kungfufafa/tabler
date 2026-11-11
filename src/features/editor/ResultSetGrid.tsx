@@ -553,7 +553,7 @@ export function ResultFooter({
   const rowNumbers = usePrefs((p) => p.resultRowNumbers);
   const duration = durationLabel(info.durationMs);
   return (
-    <BottomBarFrame aria-label="Result" className="h-7 gap-1.5">
+    <BottomBarFrame aria-label="Result" className="h-7 px-3 text-[12px]">
       <span className="truncate tabular-nums" data-slot="result-rows">
         {info.truncated ? (
           <BarTooltip label="The row limit stopped reading more rows (the editor bar's limit).">
@@ -576,10 +576,11 @@ export function ResultFooter({
         <Button
           variant="ghost"
           size="xs"
-          className="text-muted-foreground hover:text-foreground h-5 gap-1 px-1.5 text-[11px]"
+          aria-label="Show Message"
+          className="text-muted-foreground hover:text-foreground gap-1 px-2 text-[12px] transition-colors"
           onClick={onShowMessage}
         >
-          <MessageSquareText className="size-3" />
+          <MessageSquareText className="size-3.5" />
           <span className="@max-[420px]:hidden">Show Message</span>
         </Button>
       )}
@@ -590,7 +591,7 @@ export function ResultFooter({
         className={cn(pinned && "text-brand hover:text-brand")}
         onClick={onTogglePin}
       >
-        {pinned ? <PinOff /> : <Pin />}
+        {pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
       </BarIconButton>
       <BarIconButton
         label={rowNumbers ? "Hide Row Numbers" : "Show Row Numbers"}
@@ -598,13 +599,13 @@ export function ResultFooter({
         className={cn(rowNumbers && "text-foreground")}
         onClick={() => setPref("resultRowNumbers", !rowNumbers)}
       >
-        <Hash />
+        <Hash className="size-3.5" />
       </BarIconButton>
       <BarSeparator />
       <Button
         variant="ghost"
         size="xs"
-        className="text-muted-foreground hover:text-foreground h-5 px-1.5 text-[11px]"
+        className="text-muted-foreground hover:text-foreground px-2 text-[12px] transition-colors"
         onClick={onExport}
       >
         Export…

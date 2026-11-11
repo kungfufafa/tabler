@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, DatabaseBackup, FileUp, Loader2, Undo2 } from "lucide-react";
+import { CircleAlert, DatabaseBackup, FileUp, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Kbd } from "@/components/Kbd";
@@ -456,7 +456,6 @@ function BackupForm({ request }: { request: BackupRequest }) {
           Cancel
         </Button>
         <Button type="submit" size="sm" disabled={!canStart}>
-          {busy ? <Loader2 className="animate-spin" /> : null}
           {startLabel}
           <Kbd
             combo="Mod+Enter"

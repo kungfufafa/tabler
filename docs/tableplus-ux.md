@@ -219,3 +219,10 @@ audit" pass; the TablePlus behaviour is the target.
     a full-bleed page.
 17. **No "Ungrouped" header:** connections without a group come first, without a header.
 18. **No pre-selected row** with a strong highlight on load; selection appears on click / ↑↓.
+19. **The Welcome window is a window of its own shape (macOS):** a window with nothing open is
+    760 × 480 and fixed, the list edge to edge, with its own toolbar beside the traffic lights (new
+    connection, new group, "Search for connection…"). Opening a connection turns the same window
+    into the workspace window (its last size and place, else 1280 × 820); closing the last one
+    turns it back. ⌘N shows the one Welcome window rather than opening another. A full-screen
+    window keeps its size and draws the centred panel of item 16. Windows and Linux keep the
+    in-window list. (`stores/windowShape`, `lib/windowDriver`, `app/WindowShapeHost`.)

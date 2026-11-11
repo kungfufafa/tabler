@@ -1,12 +1,14 @@
 import { toast } from "sonner";
 import { getEditorState } from "@/features/editor/editorStates";
 import { ipc, toIpcError, type Conjunction, type WindowHandoff } from "@/lib/ipc";
+import { focusWelcomeWindow } from "@/lib/windowDriver";
 import { useConnectionsStore, type OpenConnection } from "@/stores/connections";
 import { getQueryTab } from "@/stores/queryTabs";
 import { parseTab, type SessionTab, type SessionWorkspace } from "@/stores/session";
 import { useTableTabsStore, type FilterRowSpec } from "@/stores/tableTabs";
 import { isTableTab, unsavedCount, useTabsStore, type Tab } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
+import { shapedWindows, useWindowShape } from "@/stores/windowShape";
 
 /**
  * Multi-window (TablePlus: File ▸ New Window ⌘N, "Open in New Window" on a connection, Window ▸
@@ -125,8 +127,15 @@ export function moveRefusal(tab: Tab): string | null {
 
 const errorText = (e: unknown) => toIpcError(e).message;
 
-/** File ▸ New Window (⌘N): an empty window (its connection list). */
+/**
+ * File ▸ New Window (⌘N): an empty window (its connection list). On macOS that is the Welcome
+ * window, and there is one of it: this window when it is, else an open one comes to the front.
+ */
 export async function openNewWindow(): Promise<boolean> {
+  if (shapedWindows) {
+    if (useWindowShape.getState().shape === "welcome") return true;
+    if (await focusWelcomeWindow()) return true;
+  }
   try {
     await ipc.windows.open(null);
     return true;

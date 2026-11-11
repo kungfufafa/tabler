@@ -4,7 +4,6 @@ import {
   CircleCheck,
   CircleX,
   History,
-  Loader2,
   Play,
   Regex,
   Search,
@@ -276,9 +275,6 @@ export function HistorySheet({
               className="h-7 pr-20 pl-7 text-xs md:text-xs"
             />
             <div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-px">
-              {history.isFetching && (
-                <Loader2 className="text-muted-foreground mr-1 size-3.5 animate-spin" />
-              )}
               <OptionToggle
                 pressed={options.matchCase}
                 onPressedChange={(on) => setOptions({ matchCase: on })}

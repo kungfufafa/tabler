@@ -6,7 +6,6 @@ import {
   FolderOpen,
   History,
   ListTree,
-  Loader2,
   PanelBottomClose,
   PanelBottomOpen,
   Play,
@@ -122,11 +121,14 @@ function IconButton({
     <Tip label={label} action={action}>
       <Button
         variant="ghost"
-        size="icon-xs"
+        size="icon-sm"
         aria-label={label}
         onClick={onClick}
         disabled={disabled}
-        className={cn("text-muted-foreground hover:text-foreground", className)}
+        className={cn(
+          "text-muted-foreground hover:text-foreground rounded-md transition-colors",
+          className,
+        )}
       >
         <Icon />
       </Button>
@@ -135,7 +137,7 @@ function IconButton({
 }
 
 const Divider = ({ className }: { className?: string }) => (
-  <div className={cn("bg-border mx-1 h-4 w-px shrink-0", className)} aria-hidden />
+  <div className={cn("bg-border h-4 w-px shrink-0", className)} aria-hidden />
 );
 
 /** An action's primary shortcut, right-aligned in a menu item. */
@@ -149,8 +151,8 @@ function ButtonKbd({ action, className }: { action: ActionId; className?: string
   const combo = shortcutFor(action);
   if (!combo) return null;
   return (
-    <span aria-hidden className={cn("font-sans text-[10px] opacity-70", className)}>
-      {formatCombo(combo)}
+    <span aria-hidden className={className}>
+      <Kbd combo={combo} className="h-4 border-current/30 bg-transparent text-inherit" />
     </span>
   );
 }
@@ -159,8 +161,9 @@ function ButtonKbd({ action, className }: { action: ActionId; className?: string
 const SHIFT_CLICK = isMac ? "⇧-click" : "Shift+Click";
 
 /** Styles shared by the bar's split buttons (a labelled button + its ⌄ menu). */
-const splitMain = "h-6 gap-1 rounded-r-none px-1.5 text-[11px] font-normal";
-const splitMenu = "h-6 w-4 rounded-l-none px-0";
+const splitMain = "h-7 gap-1 rounded-l-md rounded-r-none px-1 text-[12px] transition-colors";
+const splitMenu = "h-7 w-5 rounded-l-none rounded-r-md px-0 transition-colors";
+const runTone = "bg-foreground text-background hover:bg-foreground/90";
 
 /**
  * "Line 4, Column 13, Location 40" (+ the selection size) of the pane used last when split. It
@@ -173,7 +176,7 @@ function CursorPosition({ tabId }: { tabId: string }) {
     <span
       data-testid="cursor-position"
       title={label}
-      className="text-muted-foreground min-w-0 truncate px-1 text-[11px] whitespace-nowrap tabular-nums @max-[520px]:hidden"
+      className="text-muted-foreground min-w-0 truncate px-1 text-[12px] whitespace-nowrap tabular-nums @max-[760px]:max-w-28 @max-[560px]:hidden"
     >
       {label}
     </span>
@@ -192,13 +195,12 @@ function RunSummary({ tabId }: { tabId: string }) {
   const active = resolvePane(pane, results ?? [], plan);
   const shown = results?.find((r) => r.id === active) ?? null;
   const rows = useResultRowCount(shown?.id ?? null);
-  const box = "flex min-w-0 items-center gap-1.5 truncate text-[11px] whitespace-nowrap";
+  const box = "flex min-w-0 items-center gap-1 truncate text-[12px] whitespace-nowrap";
 
   if (run?.status === "running") {
     const n = run.statements.length;
     return (
-      <span className={cn(box, "text-muted-foreground")}>
-        <Loader2 className="text-brand size-3 shrink-0 animate-spin" />
+      <span className="sr-only">
         <span className="truncate">
           {run.cancelling ? "Stopping…" : n > 1 ? `Running statement ${n}…` : "Running…"}
         </span>
@@ -208,8 +210,7 @@ function RunSummary({ tabId }: { tabId: string }) {
   }
   if (plan?.status === "running") {
     return (
-      <span className={cn(box, "text-muted-foreground")}>
-        <Loader2 className="text-brand size-3 shrink-0 animate-spin" />
+      <span className="sr-only">
         <span className="truncate">Explaining…</span>
         <ElapsedTimer since={plan.startedAt} />
       </span>
@@ -272,7 +273,7 @@ function RowLimitSelect({ tabId }: { tabId: string }) {
           size="sm"
           aria-label="Row limit"
           className={cn(
-            "text-muted-foreground hover:text-foreground hover:bg-muted dark:hover:bg-muted/50 gap-1 border-transparent bg-transparent px-1.5 text-[11px] shadow-none data-[size=sm]:h-6 dark:bg-transparent [&_svg]:size-3",
+            "text-muted-foreground hover:text-foreground hover:bg-muted dark:hover:bg-muted/50 gap-1 rounded-md border-transparent bg-transparent px-2 text-[12px] tabular-nums shadow-none data-[size=sm]:h-7 dark:bg-transparent [&_svg]:size-3.5",
             "data-[state=open]:bg-muted data-[state=open]:text-foreground",
           )}
         >
@@ -318,17 +319,14 @@ function RunButton({
           size="xs"
           variant="destructive"
           aria-label={cancelling ? "Stopping…" : "Cancel"}
-          className="h-6 min-w-[7.5rem] gap-1 px-2 text-[11px] @max-[640px]:min-w-0"
+          // As wide as Run, so the buttons beside it stay put when a run starts.
+          className="h-7 min-w-[7.5rem] gap-2 rounded-md px-2 text-[12px] transition-colors @max-[760px]:min-w-0"
           onClick={handlers.cancel}
           disabled={cancelling}
         >
-          {cancelling ? (
-            <Loader2 className="size-3 animate-spin" />
-          ) : (
-            <Square className="size-2.5 fill-current" />
-          )}
+          <Square className="size-3 fill-current" />
           <span className="@max-[440px]:hidden">{cancelling ? "Stopping…" : "Cancel"}</span>
-          <ButtonKbd action="query.cancel" className="@max-[640px]:hidden" />
+          <ButtonKbd action="query.cancel" className="@max-[760px]:hidden" />
         </Button>
       </Tip>
     );
@@ -340,12 +338,12 @@ function RunButton({
         <Button
           size="xs"
           aria-label={label.caption}
-          className="h-6 gap-1 rounded-r-none px-2 text-[11px]"
+          className={cn(splitMain, runTone, "gap-2 px-2")}
           onClick={mode === "all" ? handlers.run : handlers.runCurrent}
         >
-          <Play className="size-3 fill-current" />
+          <Play className="size-3.5 fill-current" />
           <span className="@max-[440px]:hidden">{label.caption}</span>
-          <ButtonKbd action={RUN_BUTTON_ACTION[mode]} className="@max-[640px]:hidden" />
+          <ButtonKbd action={RUN_BUTTON_ACTION[mode]} className="@max-[760px]:hidden" />
         </Button>
       </Tip>
       <DropdownMenu>
@@ -353,9 +351,9 @@ function RunButton({
           <Button
             size="xs"
             aria-label="Run options"
-            className="border-primary-foreground/20 h-6 w-4 rounded-l-none border-l px-0"
+            className={cn(splitMenu, runTone, "border-l-background/20")}
           >
-            <ChevronDown className="size-3" />
+            <ChevronDown className="size-3.5" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-60">
@@ -405,14 +403,14 @@ function BeautifyButton({ handlers }: { handlers: EditorBarHandlers }) {
           className={splitMain}
           onClick={handlers.format}
         >
-          <TextAlignStart className="size-3.5" />
-          <span className="@max-[640px]:hidden">Beautify</span>
+          <TextAlignStart className="size-4" />
+          <span className="@max-[760px]:hidden">Beautify</span>
         </Button>
       </Tip>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="xs" aria-label="Format options" className={splitMenu}>
-            <ChevronDown className="size-3" />
+            <ChevronDown className="size-3.5" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
@@ -474,8 +472,8 @@ function ExplainButton({
           onClick={(e) => (e.shiftKey && analyze ? handlers.analyze() : handlers.explain())}
           disabled={busy}
         >
-          <ListTree className="size-3.5" />
-          <span className="@max-[640px]:hidden">Explain</span>
+          <ListTree className="size-4" />
+          <span className="@max-[760px]:hidden">Explain</span>
         </Button>
       </Tip>
       <DropdownMenu>
@@ -487,7 +485,7 @@ function ExplainButton({
             className={splitMenu}
             disabled={busy}
           >
-            <ChevronDown className="size-3" />
+            <ChevronDown className="size-3.5" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
@@ -514,7 +512,7 @@ function ExplainButton({
 function FileActions({ handlers }: { handlers: EditorBarHandlers }) {
   return (
     <>
-      <div className="flex shrink-0 items-center gap-px @max-[760px]:hidden">
+      <div className="hidden shrink-0 items-center @min-[840px]:flex">
         <IconButton
           icon={History}
           label="History"
@@ -541,13 +539,13 @@ function FileActions({ handlers }: { handlers: EditorBarHandlers }) {
         />
       </div>
       <DropdownMenu>
-        <Tip label="More">
+        <Tip label="More query actions">
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
-              size="icon-xs"
+              size="icon-sm"
               aria-label="More query actions"
-              className="text-muted-foreground hover:text-foreground @min-[760px]:hidden"
+              className="text-muted-foreground hover:text-foreground rounded-md transition-colors @min-[840px]:hidden"
             >
               <Ellipsis />
             </Button>
@@ -595,8 +593,8 @@ function FileActions({ handlers }: { handlers: EditorBarHandlers }) {
  * The bar under the SQL editor, as in TablePlus: the ⚙ settings, the cursor position, the file
  * actions and the outcome of the last run on the left; the row limit, Beautify, Explain and Run on
  * the right. It is a size container so it degrades instead of overflowing when the main panel is
- * narrow: below 760px the file actions fold into a "⋯" menu, below 640px the Beautify / Explain
- * captions and the shortcut hints go, below 520px the cursor position, below 440px the Run caption.
+ * narrow. File actions fold into an overflow menu, status and secondary controls get less space,
+ * and the groups wrap on the narrowest split workspaces.
  */
 export function EditorBar({ tabId, handlers }: { tabId: string; handlers: EditorBarHandlers }) {
   const run = useQueryTabField(tabId, "run");
@@ -613,33 +611,40 @@ export function EditorBar({ tabId, handlers }: { tabId: string; handlers: Editor
     <div
       role="toolbar"
       aria-label="Query"
-      className="border-border bg-surface-2 @container flex h-8 shrink-0 items-center gap-1 border-t px-1.5"
+      className="border-border bg-surface-2 @container shrink-0 border-t"
     >
-      <EditorSettingsMenu />
-      <IconButton
-        icon={resultsCollapsed ? PanelBottomOpen : PanelBottomClose}
-        label={resultsCollapsed ? "Show results" : "Hide results"}
-        action="query.toggle-results"
-        onClick={handlers.toggleResults}
-      />
-      <CursorPosition tabId={tabId} />
-      <Divider className="@max-[520px]:hidden" />
-      <FileActions handlers={handlers} />
-      <Divider />
-      <div className="flex min-w-0 flex-1 items-center">
-        <RunSummary tabId={tabId} />
+      <div className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1 @max-[440px]:gap-x-1">
+        <div className="flex min-w-0 items-center gap-1">
+          <EditorSettingsMenu />
+          <IconButton
+            icon={resultsCollapsed ? PanelBottomOpen : PanelBottomClose}
+            label={resultsCollapsed ? "Show results" : "Hide results"}
+            action="query.toggle-results"
+            onClick={handlers.toggleResults}
+          />
+          <CursorPosition tabId={tabId} />
+          <Divider className="@max-[560px]:hidden" />
+          <FileActions handlers={handlers} />
+        </div>
+        <Divider className="@max-[440px]:hidden" />
+        {/* On the narrowest panes the outcome of the run takes a row of its own. */}
+        <div className="flex min-w-0 flex-1 items-center empty:hidden @max-[440px]:order-last @max-[440px]:basis-full">
+          <RunSummary tabId={tabId} />
+        </div>
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1">
+          <RowLimitSelect tabId={tabId} />
+          {offers("format") && <BeautifyButton handlers={handlers} />}
+          {offers("explain") && (
+            <ExplainButton
+              handlers={handlers}
+              busy={busy}
+              analyze={offers("explainAnalyze")}
+              rollsBack={caps === null || !appliesPartially(caps.data.transactions)}
+            />
+          )}
+          <RunButton handlers={handlers} busy={busy} cancelling={cancelling} />
+        </div>
       </div>
-      <RowLimitSelect tabId={tabId} />
-      {offers("format") && <BeautifyButton handlers={handlers} />}
-      {offers("explain") && (
-        <ExplainButton
-          handlers={handlers}
-          busy={busy}
-          analyze={offers("explainAnalyze")}
-          rollsBack={caps === null || !appliesPartially(caps.data.transactions)}
-        />
-      )}
-      <RunButton handlers={handlers} busy={busy} cancelling={cancelling} />
     </div>
   );
 }

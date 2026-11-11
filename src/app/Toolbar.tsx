@@ -130,7 +130,7 @@ function SafeModeLock() {
             data-level={level}
             data-read-only={readOnly}
             disabled={!active}
-            className="text-muted-foreground hover:text-foreground data-[level=alert]:text-foreground data-[level=alertNonSelect]:text-foreground data-[level=safe]:text-brand data-[level=safeNonSelect]:text-brand aria-expanded:bg-muted aria-expanded:text-foreground relative size-6.5"
+            className="text-muted-foreground hover:text-foreground data-[level=alert]:text-foreground data-[level=alertNonSelect]:text-foreground data-[level=safe]:text-brand data-[level=safeNonSelect]:text-brand aria-expanded:bg-muted aria-expanded:text-foreground relative size-7 rounded-md transition-colors"
           >
             <Icon className="size-3.5" />
             {readOnly && (
@@ -215,7 +215,7 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
       return <SafeModeLock />;
     case "databases":
       return (
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1">
           <ToolbarButton label="Open database" action="palette.databases" text={caption}>
             <Database className="size-3.5" />
           </ToolbarButton>
@@ -226,7 +226,7 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
               aria-label="New query"
               disabled={!hasConnection}
               onClick={() => void actions.run("tab.new-query")}
-              className="text-muted-foreground hover:text-foreground h-6.5 px-1.5 text-[11px] font-semibold tracking-wide"
+              className="text-muted-foreground hover:text-foreground h-7 rounded-md px-2 text-xs font-medium transition-colors"
             >
               SQL
             </Button>
@@ -382,7 +382,7 @@ export function Toolbar({ launcher }: { launcher: boolean }) {
             data-slot="toolbar"
             data-display={display}
             className={cn(
-              "border-border bg-surface-2 flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b",
+              "border-border bg-surface-2 @container/toolbar flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b",
               !ownTitleBar && "pr-2",
             )}
             style={{ paddingLeft: inset }}
@@ -392,7 +392,7 @@ export function Toolbar({ launcher }: { launcher: boolean }) {
                 {/* Equal-growth sides keep the pill centred while there is room. */}
                 <div
                   data-tauri-drag-region
-                  className="flex h-full min-w-fit flex-1 basis-0 items-center gap-1.5"
+                  className="flex h-full min-w-fit flex-1 basis-0 items-center gap-1"
                 >
                   <LeftItems items={rows.left} text={text} />
                 </div>
@@ -405,10 +405,7 @@ export function Toolbar({ launcher }: { launcher: boolean }) {
                 </div>
               </>
             ) : (
-              <div
-                data-tauri-drag-region
-                className="flex h-full min-w-0 flex-1 items-center gap-1.5"
-              >
+              <div data-tauri-drag-region className="flex h-full min-w-0 flex-1 items-center gap-1">
                 <LeftItems items={rows.left} text={text} />
               </div>
             )}

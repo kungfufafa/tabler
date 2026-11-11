@@ -1,4 +1,4 @@
-import { FingerprintPattern, Loader2, LockKeyhole } from "lucide-react";
+import { FingerprintPattern, LockKeyhole } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -191,7 +191,6 @@ export function LockScreen() {
             disabled={busy !== null || value === "" || coolingDown}
             className="w-full"
           >
-            {busy === "passcode" && <Loader2 className="animate-spin" aria-hidden />}
             Unlock
           </Button>
           {canTouchId && (
@@ -203,11 +202,7 @@ export function LockScreen() {
               onClick={() => void touchId()}
               className="w-full"
             >
-              {busy === "touchId" ? (
-                <Loader2 className="animate-spin" aria-hidden />
-              ) : (
-                <FingerprintPattern aria-hidden />
-              )}
+              <FingerprintPattern aria-hidden />
               Use Touch ID
             </Button>
           )}

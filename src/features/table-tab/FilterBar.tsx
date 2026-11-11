@@ -1,6 +1,7 @@
 import { ChevronDown, Copy, FileDown, Minus, Plus, Settings } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -64,6 +65,7 @@ import {
 } from "./filters";
 
 const RAW_SQL_PLACEHOLDER = "e.g. age > 30 AND name LIKE 'A%'";
+const FIELD_CLASS = "bg-surface h-7 rounded-md font-mono text-xs";
 
 /** How the raw filter row reads for each kind of raw filter a session takes. */
 const RAW_FILTER: Record<RawFilter, { label: string; hint: string; placeholder: string }> = {
@@ -85,7 +87,7 @@ function valuePlaceholder(def: OpDef, any: boolean, hex: boolean): string {
 const keysOf = (id: ActionId) => formatCombo(shortcutFor(id) ?? "");
 
 const COLUMN_LABELS: Record<FilterDefaultColumn, string> = {
-  primaryKey: "Primary key (if exist)",
+  primaryKey: "Primary key when available",
   anyColumn: "Any column",
   rawSql: "Raw SQL",
 };
@@ -263,14 +265,19 @@ function ApplyAll({
   title: string;
   onApply: (conjunction: Conjunction) => void;
 }) {
+  const variant = dirty ? "default" : "outline";
+  const actionClass = cn(
+    "transition-colors",
+    dirty && "bg-foreground text-background hover:bg-foreground/90",
+  );
   return (
     <div className="flex items-center">
       <Button
         size="xs"
         onClick={() => onApply("and")}
-        variant={dirty ? "default" : "outline"}
+        variant={variant}
         title={title}
-        className="rounded-r-none"
+        className={cn(actionClass, "rounded-r-none")}
       >
         Apply All
       </Button>
@@ -278,9 +285,13 @@ function ApplyAll({
         <DropdownMenuTrigger asChild>
           <Button
             size="xs"
-            variant={dirty ? "default" : "outline"}
+            variant={variant}
             aria-label="Apply All options"
-            className="-ml-px rounded-l-none px-1"
+            className={cn(
+              actionClass,
+              "border-l-border -ml-px rounded-l-none px-1",
+              dirty && "border-l-background/30",
+            )}
           >
             <ChevronDown />
           </Button>
@@ -551,6 +562,7 @@ export function FilterBar({
     ) ?? false;
   const columnNames = columns.map((c) => c.name);
   const applyTitle = `Apply all checked filters (${formatCombo("Enter")} in a value, ${keysOf("filter.apply")} with AND, ${keysOf("filter.apply-or")} with OR)`;
+  const applyShortcut = shortcutFor("filter.apply");
   // AND / OR sits in its own column once there is more than one condition to join.
   const joined = rows.length > 1;
   const popupProps = (row: FilterRowSpec, part: Popup["part"]) => ({
@@ -560,6 +572,8 @@ export function FilterBar({
   return (
     <div
       ref={barRef}
+      role="region"
+      aria-label="Filters"
       className="border-border bg-surface-2 @container flex shrink-0 flex-col border-b"
       data-scope="filter"
       onKeyDown={onKeyDown}
@@ -570,7 +584,7 @@ export function FilterBar({
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHasFocus(false);
       }}
     >
-      <div className="flex flex-col gap-1 px-2 pt-1.5 pb-1">
+      <div className="flex flex-col gap-1 px-2 py-2">
         {rows.map((row, i) => {
           const def = opDef(row.op);
           const raw = isRawSqlRow(row);
@@ -581,21 +595,24 @@ export function FilterBar({
           const valueError = rowValueError(row, columns);
           const hex = columns.find((c) => c.name === row.column)?.kind === "bytes";
           return (
-            <div key={row.id} data-filter-row={row.id} className="flex items-center gap-1.5">
+            <div
+              key={row.id}
+              data-filter-row={row.id}
+              className="flex min-w-0 flex-wrap items-center gap-1 @lg:flex-nowrap"
+            >
               <Checkbox
                 checked={row.enabled}
                 onCheckedChange={(v) => update(row.id, { enabled: v === true })}
                 aria-label="Enable filter"
                 data-filter-part="check"
                 title={`${row.enabled ? "Applied (uncheck to skip it)" : "Skipped (check to apply it)"} · ${keysOf("filter.toggle")}`}
-                className="mx-0.5"
               />
               {joined && (
                 <div className="flex w-10 shrink-0 justify-center">
                   {i > 0 && (
                     <button
                       type="button"
-                      className="text-brand hover:bg-brand-soft rounded px-1 font-mono text-[11px] leading-5"
+                      className="text-brand hover:bg-brand-soft focus-visible:outline-ring rounded px-1 font-mono text-[11px] leading-5"
                       title="Toggle AND / OR for all conditions"
                       onClick={() => onChange(rows, conjunction === "and" ? "or" : "and")}
                     >
@@ -615,8 +632,9 @@ export function FilterBar({
                   data-filter-part="column"
                   title={`Column (${keysOf("filter.column")})`}
                   className={cn(
-                    "bg-surface h-7 shrink-0 font-mono text-xs",
-                    raw ? "w-28" : "w-40 @max-xl:w-32",
+                    FIELD_CLASS,
+                    "shrink-0",
+                    raw ? "w-28" : "w-40 @max-xl:w-32 @max-md:w-24",
                   )}
                 >
                   <SelectValue placeholder="Column" />
@@ -657,7 +675,7 @@ export function FilterBar({
                   spellCheck={false}
                   autoCapitalize="off"
                   autoCorrect="off"
-                  className="bg-surface h-7 font-mono text-xs"
+                  className={FIELD_CLASS}
                   autoFocus={i === rows.length - 1 && row.value === ""}
                 />
               ) : (
@@ -671,7 +689,7 @@ export function FilterBar({
                     aria-label="Filter operator"
                     data-filter-part="op"
                     title={`Operator (${keysOf("filter.operator")})`}
-                    className="bg-surface h-7 w-28 shrink-0 font-mono text-xs @max-xl:w-24"
+                    className={cn(FIELD_CLASS, "w-28 shrink-0 @max-xl:w-24 @max-md:w-20")}
                   >
                     <SelectValue>{opLabel(row.op, dialect)}</SelectValue>
                   </SelectTrigger>
@@ -695,7 +713,7 @@ export function FilterBar({
                   data-filter-value
                   data-filter-part="value"
                   placeholder={valuePlaceholder(def, any, hex && !isTextValueOp(row.op))}
-                  className="bg-surface h-7 min-w-20 flex-1 font-mono text-xs"
+                  className={cn(FIELD_CLASS, "min-w-12 flex-1")}
                   autoFocus={i === rows.length - 1 && row.value === ""}
                 />
               )}
@@ -711,50 +729,55 @@ export function FilterBar({
                     title={valueError ?? undefined}
                     placeholder={hex ? "hex, e.g. ffff" : undefined}
                     data-filter-part="value2"
-                    className="bg-surface h-7 min-w-20 flex-1 font-mono text-xs"
+                    className={cn(FIELD_CLASS, "min-w-12 flex-1")}
                   />
                 </>
               )}
               {!hasValue && <span className="flex-1" />}
-              <Button
-                variant="outline"
-                size="xs"
-                className={cn("h-7 shrink-0", isApplied(row) && "text-muted-foreground")}
-                data-filter-part="apply"
-                onClick={() => applyRow(row.id)}
-                title={
-                  onApplyRow
-                    ? `Apply this filter alone (${formatCombo("Enter")} in its value); Apply All applies the checked ones`
-                    : applyTitle
-                }
-              >
-                {isApplied(row) ? "Applied" : "Apply"}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="text-muted-foreground hover:text-foreground size-7 shrink-0"
-                aria-label="Remove filter"
-                title={`Remove this condition (${keysOf("filter.remove")})`}
-                onClick={() => remove(row.id)}
-              >
-                <Minus />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="text-muted-foreground hover:text-foreground -ml-1 size-7 shrink-0"
-                aria-label="Add filter"
-                title={`Add a condition below (${keysOf("filter.duplicate")} duplicates this one)`}
-                onClick={() => addAfter(row.id)}
-              >
-                <Plus />
-              </Button>
+              <div className="ml-auto flex shrink-0 items-center">
+                <Button
+                  variant={isApplied(row) ? "ghost" : "outline"}
+                  size="xs"
+                  className={cn(
+                    "mr-1 h-7 w-16 transition-colors",
+                    isApplied(row) && "text-muted-foreground",
+                  )}
+                  data-filter-part="apply"
+                  onClick={() => applyRow(row.id)}
+                  title={
+                    onApplyRow
+                      ? `Apply this filter alone (${formatCombo("Enter")} in its value); Apply All applies the checked ones`
+                      : applyTitle
+                  }
+                >
+                  {isApplied(row) ? "Applied" : "Apply"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="text-muted-foreground hover:text-foreground size-7 transition-colors"
+                  aria-label="Remove filter"
+                  title={`Remove this condition (${keysOf("filter.remove")})`}
+                  onClick={() => remove(row.id)}
+                >
+                  <Minus />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="text-muted-foreground hover:text-foreground size-7 transition-colors"
+                  aria-label="Add filter"
+                  title={`Add a condition below (${keysOf("filter.duplicate")} duplicates this one)`}
+                  onClick={() => addAfter(row.id)}
+                >
+                  <Plus />
+                </Button>
+              </div>
             </div>
           );
         })}
       </div>
-      <div className="border-border/60 flex h-7 items-center gap-1 border-t px-2">
+      <div className="border-border/60 flex h-8 items-center gap-1 border-t px-2">
         <FilterSettings />
         {onExport && (
           <Button
@@ -769,13 +792,6 @@ export function FilterBar({
           </Button>
         )}
         <SqlButton sql={sql} dirty={dirty} dialect={dialect} />
-        <span className="text-muted-foreground/80 min-w-0 truncate px-1 text-[11px] @max-2xl:hidden">
-          {keysOf("filter.apply")} apply all · {keysOf("filter.apply-or")} with OR ·{" "}
-          {keysOf("filter.duplicate")} duplicate · {keysOf("filter.remove")} remove ·{" "}
-          {keysOf("filter.prev")}
-          {keysOf("filter.next")} move · {keysOf("filter.toggle")} check · {formatCombo("Escape")}{" "}
-          close
-        </span>
         <span className="flex-1" />
         <Button
           variant="ghost"
@@ -786,6 +802,7 @@ export function FilterBar({
         >
           Clear
         </Button>
+        {applyShortcut && <Kbd combo={applyShortcut} className="mr-1 @max-lg:hidden" />}
         <ApplyAll dirty={dirty} title={applyTitle} onApply={onApply} />
       </div>
     </div>

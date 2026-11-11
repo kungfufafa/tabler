@@ -1,5 +1,6 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Loader2 } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { toast } from "sonner";
 import { Kbd } from "@/components/Kbd";
@@ -166,7 +167,7 @@ export function CreateDatabaseDialog({
                 disabled={loading}
                 onChange={(e) => setEncoding(e.target.value)}
               >
-                {loading && <option value="">Loading…</option>}
+                {loading && <option value="" />}
                 {options.data?.encodings.map((e) => (
                   <option key={e.name} value={e.name}>
                     {e.description ? `${e.name} — ${e.description}` : e.name}
@@ -239,7 +240,7 @@ export function CreateDatabaseDialog({
               ) : preview.data ? (
                 <SqlBlock sql={preview.data.join(";\n")} dialect={coreDialect(driver)} />
               ) : (
-                <Loader2 className="text-muted-foreground size-3.5 animate-spin" />
+                <QuietStatus />
               )}
             </div>
           )}
@@ -249,7 +250,6 @@ export function CreateDatabaseDialog({
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={busy}>
-              {busy && <Loader2 className="animate-spin" />}
               Create
               <Kbd
                 combo="Mod+Enter"
@@ -334,7 +334,6 @@ export function RenameDatabaseDialog({
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={busy || isCurrent || problem !== null}>
-              {busy && <Loader2 className="animate-spin" />}
               Rename
             </Button>
           </DialogFooter>
@@ -418,7 +417,7 @@ export function DropDatabaseDialog({
                 }}
               >
                 <option value="" disabled>
-                  {databases.isPending ? "Loading…" : "Choose a database"}
+                  Choose a database
                 </option>
                 {choices.map((n) => (
                   <option key={n} value={n}>
@@ -451,7 +450,6 @@ export function DropDatabaseDialog({
               Cancel
             </AlertDialogCancel>
             <Button type="submit" variant="destructive" size="sm" disabled={!confirmed || busy}>
-              {busy && <Loader2 className="animate-spin" />}
               Drop
             </Button>
           </AlertDialogFooter>

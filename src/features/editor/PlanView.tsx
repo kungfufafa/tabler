@@ -1,4 +1,4 @@
-import { Copy, Loader2 } from "lucide-react";
+import { Copy } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { writeClipboard } from "@/features/datagrid/clipboard";
@@ -37,8 +37,7 @@ export function PlanView({
         <span className="text-foreground/80 font-semibold tracking-wide">{title}</span>
         <span className="min-w-0 flex-1 truncate font-mono">{firstLine(plan.sql)}</span>
         {plan.status === "running" && (
-          <span className="flex items-center gap-1.5">
-            <Loader2 className="size-3 animate-spin" />
+          <span className="sr-only">
             <ElapsedTimer since={plan.startedAt} />
           </span>
         )}
@@ -70,7 +69,7 @@ export function PlanView({
       <div className="min-h-0 flex-1">
         {plan.status === "running" ? (
           <div className="text-muted-foreground flex items-center gap-2 p-3 text-xs">
-            <Loader2 className="size-3.5 animate-spin" /> Explaining…
+            <span className="sr-only">Explaining…</span>
           </div>
         ) : plan.status === "cancelled" ? (
           <div className="text-warning p-3 text-xs">

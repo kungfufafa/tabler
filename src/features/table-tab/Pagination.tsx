@@ -109,7 +109,7 @@ export function Pagination({
     go({ offset: Math.floor(offsetValue), limit: Number(draft.limit) });
   };
   return (
-    <div className="flex shrink-0 items-center">
+    <div className="border-border bg-surface flex h-7 shrink-0 items-center gap-1 rounded-md border @max-sm:gap-0">
       <BarIconButton
         label="Previous page"
         disabled={atFirst}
@@ -124,17 +124,23 @@ export function Pagination({
           <PopoverTrigger asChild>
             <Button
               variant="ghost"
-              size="icon-xs"
+              size="xs"
               aria-label="Pagination settings"
-              className="text-muted-foreground hover:text-foreground"
+              className="text-muted-foreground hover:text-foreground h-6 min-w-6 gap-1 px-1 transition-colors"
             >
+              <span className="tabular-nums @max-lg:hidden">Page {page.toLocaleString()}</span>
               <Settings2 />
             </Button>
           </PopoverTrigger>
         </BarTooltip>
-        <PopoverContent side="top" align="end" className="w-60 gap-2 p-2.5 text-xs">
-          <div className="text-muted-foreground flex items-center justify-between tabular-nums">
-            <span>
+        <PopoverContent
+          side="top"
+          align="end"
+          aria-label="Pagination"
+          className="w-64 gap-3 p-3 text-xs"
+        >
+          <div className="text-muted-foreground flex items-center justify-between gap-2 tabular-nums">
+            <span className="text-foreground font-medium">
               Page {page.toLocaleString()}
               {pages !== null ? ` of ${pages.toLocaleString()}` : ""}
             </span>
@@ -144,10 +150,7 @@ export function Pagination({
               </span>
             )}
           </div>
-          <form
-            onSubmit={submit}
-            className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1.5"
-          >
+          <form onSubmit={submit} className="grid grid-cols-[auto_1fr] items-center gap-2">
             <label htmlFor={`${id}-limit`} className="text-muted-foreground">
               Limit
             </label>
@@ -189,7 +192,7 @@ export function Pagination({
                 />
               </>
             )}
-            <div className="col-span-2 flex items-center gap-1 pt-0.5">
+            <div className="col-span-2 flex items-center gap-1">
               {!cursor && (
                 <>
                   <Button

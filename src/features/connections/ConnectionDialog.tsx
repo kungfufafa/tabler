@@ -7,7 +7,6 @@ import {
   FolderOpen,
   Info,
   Link2,
-  Loader2,
   Network,
   ScrollText,
   Search,
@@ -1242,7 +1241,7 @@ function LaneRows({
     return (
       <Row label="">
         <p className="text-muted-foreground flex h-8 items-center gap-2 text-xs" role="status">
-          <Loader2 className="size-3.5 animate-spin" /> Loading the {KIND_LABEL[kind]} form…
+          <span className="sr-only">Loading the {KIND_LABEL[kind]} form…</span>
         </p>
       </Row>
     );
@@ -2469,7 +2468,6 @@ export function ConnectionDialog({
                   disabled={test.isPending || testing || busy !== null}
                   title="Save and test the connection"
                 >
-                  {test.isPending || testing ? <Loader2 className="animate-spin" /> : null}
                   Test
                 </Button>
                 <Button
@@ -2479,11 +2477,9 @@ export function ConnectionDialog({
                   onClick={submit(false)}
                   disabled={busy !== null}
                 >
-                  {busy === "save" ? <Loader2 className="animate-spin" /> : null}
                   Save
                 </Button>
                 <Button type="submit" size="sm" disabled={busy !== null}>
-                  {busy === "connect" ? <Loader2 className="animate-spin" /> : null}
                   Connect
                 </Button>
               </div>

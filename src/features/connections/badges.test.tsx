@@ -20,15 +20,16 @@ describe("DriverBadge", () => {
     }
   });
 
-  it("uses the flavor logo and replaces it with a spinner while connecting", () => {
+  it("uses the flavor logo and keeps it, without a spinner, while connecting", () => {
     const { container, rerender } = render(
       <DriverBadge driver="mysql" mysqlVersion="mariadb" color="purple" size="lg" />,
     );
     expect(container.firstChild).toHaveAttribute("title", "MariaDB");
     expect(container.querySelector('[data-slot="database-logo"]')).toHaveClass("size-8");
     rerender(<DriverBadge driver="mysql" color="purple" busy />);
-    expect(container.querySelector('[data-slot="database-logo"]')).toBeNull();
-    expect(container.querySelector("svg.animate-spin")).not.toBeNull();
+    expect(container.querySelector('[data-slot="database-logo"]')).not.toBeNull();
+    expect(container.firstChild).toHaveAttribute("data-busy", "true");
+    expect(container.querySelector("svg.animate-spin")).toBeNull();
   });
 });
 

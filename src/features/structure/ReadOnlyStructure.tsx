@@ -1,8 +1,8 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, SquareTerminal } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { EmptyState } from "@/components/EmptyState";
-import { Skeleton } from "@/components/ui/skeleton";
 import { schemaKeys } from "@/features/sidebar/useSchemaTree";
 import { BarIconButton, BottomBarFrame } from "@/features/table-tab/BarParts";
 import { ViewSwitch } from "@/features/tabs/ViewSwitch";
@@ -87,10 +87,7 @@ export function ReadOnlyStructure({
     <div className="flex h-full min-h-0 flex-col" data-slot="read-only-structure">
       <div className="min-h-0 flex-1 overflow-auto p-3">
         {meta.isPending ? (
-          <div className="flex flex-col gap-2">
-            <Skeleton className="h-5 w-48" />
-            <Skeleton className="h-40 w-full" />
-          </div>
+          <QuietStatus />
         ) : meta.isError ? (
           <EmptyState
             title={`Could not load the ${noun.toLowerCase()}`}
@@ -172,7 +169,7 @@ export function ReadOnlyStructure({
           }}
           disabled={meta.isFetching}
         >
-          <RefreshCw className={cn(meta.isFetching && "animate-spin")} />
+          <RefreshCw />
         </BarIconButton>
       </BottomBarFrame>
       {showsDdl && (

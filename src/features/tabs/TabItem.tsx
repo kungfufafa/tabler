@@ -1,7 +1,7 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -187,7 +187,7 @@ function TitleInput({ tab }: { tab: Tab }) {
       // Typing and selecting text must not drag, activate or close the tab.
       onPointerDown={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
-      className="bg-background ring-brand h-5 w-full min-w-0 rounded px-1 text-center text-xs ring-1 outline-none select-text"
+      className="bg-background ring-brand h-6 w-full min-w-0 rounded px-1 text-center text-[12px] leading-4 ring-1 outline-none select-text"
     />
   );
 }
@@ -228,15 +228,14 @@ export function TabItem({
       <ContextMenuTrigger asChild>
         <div
           ref={setNodeRef}
-          style={{
-            transform: CSS.Translate.toString(transform),
-            transition,
-            // A subtle line in the connection's colour under the visible tab (fainter in the
-            // group of a split workspace that does not have the focus).
-            boxShadow: active
-              ? `inset 0 -2px 0 color-mix(in oklab, ${accentColor(color)} ${groupFocused ? 75 : 30}%, transparent)`
-              : undefined,
-          }}
+          style={
+            {
+              transform: CSS.Translate.toString(transform),
+              transition,
+              // The line under the visible tab is in the connection's colour.
+              "--tab-accent": accentColor(color),
+            } as CSSProperties
+          }
           {...attributes}
           {...listeners}
           role="tab"
@@ -270,18 +269,22 @@ export function TabItem({
           className={cn(
             // macOS document tabs (TablePlus): the tabs share the whole bar in equal widths (one tab
             // spans it), down to 110px each; past that the row scrolls.
-            "group border-border relative flex h-full min-w-[110px] flex-[1_1_0] cursor-default items-center border-r text-xs select-none last:border-r-0",
+            "group border-border focus-visible:ring-ring relative flex h-full min-w-[110px] flex-[1_1_0] cursor-default items-center border-r text-[12px] leading-4 select-none last:border-r-0 focus-visible:ring-1 focus-visible:ring-inset",
             active
-              ? "bg-background text-foreground"
-              : "text-muted-foreground hover:text-foreground hover:bg-black/[0.03] dark:hover:bg-white/[0.04]",
-            isDragging && "z-10 opacity-80 shadow-md",
+              ? [
+                  "bg-background text-foreground font-medium after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 forced-colors:outline forced-colors:-outline-offset-1 forced-colors:outline-[Highlight]",
+                  "after:bg-(--tab-accent)",
+                  // Fainter in the group of a split workspace that does not have the focus.
+                  !groupFocused && "after:opacity-40",
+                ]
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            isDragging && "bg-surface z-10 opacity-80 shadow-sm dark:shadow-none",
           )}
         >
           <button
             type="button"
             aria-label={`Close ${tab.title}`}
-            // Not a tab stop: it is invisible until hover, and ⌘W / the context menu already
-            // close tabs from the keyboard (one invisible stop per tab would sit before `+`).
+            // ⌘W and the context menu close tabs from the keyboard without a stop per tab.
             tabIndex={-1}
             onPointerDown={(e) => {
               e.stopPropagation();
@@ -296,11 +299,11 @@ export function TabItem({
             }}
             className={cn(
               // macOS puts the close button at the tab's left edge.
-              "text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring/50 absolute top-1/2 left-1.5 flex size-4 -translate-y-1/2 items-center justify-center rounded outline-none focus-visible:ring-2",
-              // Clean tabs show the close button on hover; tabs with unsaved work show a dot that
-              // turns into the close button on hover. Focus (e.g. from assistive tech) reveals it
-              // the same way.
-              unsaved > 0 ? "" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+              "text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring absolute top-1/2 left-1 flex size-6 -translate-y-1/2 items-center justify-center rounded-md outline-none focus-visible:ring-1 focus-visible:ring-inset",
+              // The open tab shows its close button. Tabs with unsaved work show a dot until hover.
+              unsaved === 0 &&
+                !active &&
+                "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
             )}
           >
             {unsaved > 0 && (
@@ -310,17 +313,18 @@ export function TabItem({
               />
             )}
             <X
+              aria-hidden
               className={cn(
-                "size-3",
+                "size-3.5",
                 unsaved > 0 && "hidden group-hover:block group-has-[button:focus-visible]:block",
               )}
             />
           </button>
-          <span className="flex min-w-0 flex-1 items-center justify-center gap-1.5 px-6">
+          <span className="flex min-w-0 flex-1 items-center justify-center gap-2 px-7">
             <Icon
               className={cn(
-                "size-3.5 shrink-0",
-                active && groupFocused ? "text-brand" : "opacity-70",
+                "size-4 shrink-0",
+                active && groupFocused ? "text-brand" : "text-muted-foreground",
               )}
               aria-hidden
             />

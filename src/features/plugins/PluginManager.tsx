@@ -1,4 +1,5 @@
-import { FolderOpen, Loader2, Puzzle, RotateCw, Trash2, Upload } from "lucide-react";
+import { QuietStatus } from "@/components/QuietLoading";
+import { FolderOpen, Puzzle, RotateCw, Trash2, Upload } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
   AlertDialog,
@@ -178,7 +179,7 @@ export function PluginManager() {
             {builtin.map(row)}
             <h3 className="text-muted-foreground mt-3 mb-1 flex items-center gap-1.5 px-1 text-[11px] font-medium tracking-wide uppercase">
               Installed
-              {loading && <Loader2 className="size-3 animate-spin" aria-label="Loading" />}
+              {loading && <QuietStatus />}
             </h3>
             {installed.map(row)}
             {installed.length === 0 && !loading && (

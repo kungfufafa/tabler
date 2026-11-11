@@ -1,5 +1,4 @@
 import { useId, useState } from "react";
-import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Row } from "@/features/connections/rows/Row";
@@ -114,7 +113,6 @@ export function D1Fields({ form, hasStoredPassword }: KindFieldsProps) {
             disabled={listing.state === "loading"}
             onClick={() => void list()}
           >
-            {listing.state === "loading" && <Loader2 className="size-3.5 animate-spin" />}
             List databases
           </Button>
         </div>

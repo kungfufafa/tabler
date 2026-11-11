@@ -1,5 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -193,8 +201,9 @@ describe("a document store's table tab", () => {
     fireEvent.click(prev);
     await waitFor(() => expect(shownIds()[0]).toBe("o11"));
     fireEvent.click(screen.getByRole("button", { name: "Pagination settings" }));
-    expect(await screen.findByText("Page 2")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Offset")).toBeNull();
+    const pagination = within(await screen.findByRole("dialog", { name: "Pagination" }));
+    expect(pagination.getByText("Page 2")).toBeInTheDocument();
+    expect(pagination.queryByLabelText("Offset")).toBeNull();
   });
 
   it("offers the session's filter operators and its JSON raw filter, and no sorting", async () => {

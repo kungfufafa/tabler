@@ -368,7 +368,7 @@ export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
   structureColumnOrder: "ordinal",
   gridExpansionTooltips: false,
   gridAutoHideScrollers: false,
-  gridLoadingWallpaper: true,
+  gridLoadingWallpaper: false,
   geometryToWkt: true,
   reopenWorkspaces: true,
   startupAction: "welcome",

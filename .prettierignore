@@ -8,5 +8,5 @@ src/lib/ipc/bindings
 pnpm-lock.yaml
 src/components/ui
 .claude
-# stale generated copies of the ts-rs bindings (the real ones are in src/lib/ipc/bindings)
+# never the export target (that is src/lib/ipc/bindings); ts-rs falls back to it without TS_RS_EXPORT_DIR
 src-tauri/bindings

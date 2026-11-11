@@ -1,5 +1,6 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import { useQueryClient } from "@tanstack/react-query";
-import { Dices, Loader2 } from "lucide-react";
+import { Dices } from "lucide-react";
 import { useId, useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -117,7 +118,7 @@ function DummyDataForm({ request }: { request: DummyDataRequest }) {
       </div>
       <div className="bg-muted/50 min-h-32 overflow-auto rounded-md border p-2">
         {meta.isPending ? (
-          <Loader2 className="text-muted-foreground size-4 animate-spin" aria-label="Loading" />
+          <QuietStatus />
         ) : meta.isError ? (
           <p className="text-error text-xs">{errorText(meta.error)}</p>
         ) : (
@@ -131,7 +132,6 @@ function DummyDataForm({ request }: { request: DummyDataRequest }) {
           Cancel
         </Button>
         <Button type="submit" size="sm" disabled={busy || !countOk || sql === ""}>
-          {busy && <Loader2 className="animate-spin" />}
           Insert {countOk ? count : ""} {count === 1 ? "Row" : "Rows"}
         </Button>
       </DialogFooter>

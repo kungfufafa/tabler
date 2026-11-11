@@ -1,4 +1,4 @@
-import { FileDown, Filter, Loader2, Plus } from "lucide-react";
+import { FileDown, Filter, Plus } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { formatCount, formatDuration } from "@/lib/format/time";
@@ -50,15 +50,15 @@ function RowSummary({
   return (
     <span
       data-testid="row-summary"
-      className="flex min-w-0 items-center gap-1 whitespace-nowrap tabular-nums"
+      className="flex min-w-0 items-center gap-2 text-[12px] leading-4 whitespace-nowrap tabular-nums"
       title={sql ?? undefined}
     >
       {selectedRows > 0 ? (
-        <span className="text-foreground/80 min-w-0 truncate">
+        <span className="text-foreground min-w-0 truncate font-medium">
           {`${formatCount(selectedRows)} of ${formatCount(outOf, outOfEstimated)} ${outOf === 1 ? "row" : "rows"} selected`}
         </span>
       ) : (
-        <span className="text-foreground/80 min-w-0 truncate">
+        <span className="text-muted-foreground min-w-0 truncate">
           {range}
           {total !== null && total > 0 ? (
             <>
@@ -68,7 +68,7 @@ function RowSummary({
               ) : (
                 <button
                   type="button"
-                  className="hover:text-foreground underline decoration-dotted underline-offset-2"
+                  className="hover:text-foreground focus-visible:outline-ring rounded-sm underline decoration-dotted underline-offset-2"
                   title="Estimated — click for an exact count"
                   onClick={onCountExact}
                 >
@@ -83,10 +83,11 @@ function RowSummary({
         </span>
       )}
       {loading ? (
-        <Loader2 aria-label="Loading" className="size-3 shrink-0 animate-spin" />
+        // Nothing to look at while a page loads: the rows and the time appear when it is in.
+        <span role="status" aria-label="Loading" className="sr-only" />
       ) : (
         durationMs !== null && (
-          <span className="text-muted-foreground/80 shrink-0 @max-xl:hidden">
+          <span className="text-muted-foreground shrink-0 @max-xl:hidden">
             · {formatDuration(durationMs)}
           </span>
         )
@@ -162,10 +163,10 @@ export function TableBottomBar(p: TableBottomBarProps) {
           aria-label="Add row"
           disabled={!p.canAddRow}
           onClick={p.onAddRow}
-          className="text-muted-foreground hover:text-foreground h-6 px-1.5"
+          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 transition-colors @max-sm:px-1"
         >
           <Plus />
-          Row
+          <span className="@max-sm:hidden">Add row</span>
         </Button>
       </BarTooltip>
       <div className="flex min-w-0 flex-1 justify-center px-1">
@@ -191,15 +192,15 @@ export function TableBottomBar(p: TableBottomBarProps) {
           disabled={p.filterable === false}
           onClick={p.onToggleFilters}
           className={cn(
-            "text-muted-foreground hover:text-foreground h-6 px-1.5",
-            p.filtersVisible && "bg-muted text-foreground",
+            "text-muted-foreground hover:text-foreground h-6 gap-1 px-2 transition-colors @max-sm:px-1",
+            p.filtersVisible && "bg-accent text-foreground",
             filtered && "text-brand hover:text-brand",
           )}
         >
           <Filter />
-          <span className="@max-2xl:hidden">Filters</span>
+          <span className="@max-3xl:hidden">Filters</span>
           {filtered && (
-            <span className="bg-brand-soft text-brand rounded px-1 text-[10px] leading-4 font-semibold tabular-nums">
+            <span className="text-[11px] leading-4 font-medium tabular-nums">
               {p.activeFilters}
             </span>
           )}

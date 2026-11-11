@@ -1,3 +1,4 @@
+import { QuietLoading } from "@/components/QuietLoading";
 import { useQueryClient } from "@tanstack/react-query";
 import { Info } from "lucide-react";
 import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
@@ -89,15 +90,7 @@ export function QueryTab({ tab }: { tab: Extract<Tab, { kind: "query" }> }) {
   });
   // A core dialect, or the language of the session's lane (its SQL dialect or its console).
   const language = useEditorLanguage(tab.connectionId);
-  if (language === undefined)
-    return (
-      <div
-        data-slot="lane-loading"
-        className="text-muted-foreground flex h-full items-center justify-center p-6 text-xs"
-      >
-        Loading the editor…
-      </div>
-    );
+  if (language === undefined) return <QuietLoading data-slot="lane-loading" />;
   if (language) return <QueryTabView tab={tab} dialect={language} />;
   // A session without an editor: the core lexers must not split or classify its statements.
   return kind ? <NotAvailable kind={kind} what="The SQL editor" /> : null;

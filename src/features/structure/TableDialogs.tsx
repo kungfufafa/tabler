@@ -1,5 +1,6 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, ChevronRight, Loader2, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, Plus, Trash2 } from "lucide-react";
 import {
   useEffect,
   useId,
@@ -481,7 +482,7 @@ export function CreateTableDialog({
                 ))}
               </>
             ) : (
-              <Loader2 className="text-muted-foreground size-3.5 animate-spin" />
+              <QuietStatus />
             )}
           </div>
         )}
@@ -498,7 +499,6 @@ export function CreateTableDialog({
             Cancel
           </Button>
           <Button size="sm" onClick={() => void create()} disabled={busy}>
-            {busy && <Loader2 className="animate-spin" />}
             Create table
             <Kbd
               combo="Mod+Enter"
@@ -583,7 +583,6 @@ export function RenameTableDialog({
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={busy || nameError !== null}>
-              {busy && <Loader2 className="animate-spin" />}
               Rename
             </Button>
           </DialogFooter>
@@ -652,7 +651,6 @@ export function TruncateTableDialog({
             Cancel
           </AlertDialogCancel>
           <Button variant="destructive" size="sm" onClick={() => void run()} disabled={busy}>
-            {busy && <Loader2 className="animate-spin" />}
             Truncate
           </Button>
         </AlertDialogFooter>
@@ -758,7 +756,6 @@ export function DropTableDialog({
               Cancel
             </AlertDialogCancel>
             <Button type="submit" variant="destructive" size="sm" disabled={!confirmed || busy}>
-              {busy && <Loader2 className="animate-spin" />}
               Drop {what}
             </Button>
           </AlertDialogFooter>

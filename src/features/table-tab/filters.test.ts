@@ -861,7 +861,7 @@ describe("filters", () => {
       const menu = await screen.findByRole("menu");
       expect(within(menu).getByText("Default filter column")).toBeInTheDocument();
       expect(
-        within(menu).getByRole("menuitemradio", { name: "Primary key (if exist)" }),
+        within(menu).getByRole("menuitemradio", { name: "Primary key when available" }),
       ).toHaveAttribute("aria-checked", "true");
       fireEvent.click(within(menu).getByRole("menuitemradio", { name: "Any column" }));
       expect(getPrefs().filterDefaultColumn).toBe("anyColumn");

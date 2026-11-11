@@ -63,7 +63,7 @@ export function InstallHelpNote({
           disabled={disabled || loading}
           onClick={onRescan}
         >
-          <RotateCw className={loading ? "animate-spin" : undefined} /> Rescan
+          <RotateCw /> Rescan
         </Button>
         <Button
           type="button"

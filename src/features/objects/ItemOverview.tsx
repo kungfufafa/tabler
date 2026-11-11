@@ -1,5 +1,6 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, LayoutList, Loader2, RefreshCw } from "lucide-react";
+import { ArrowDown, ArrowUp, LayoutList, RefreshCw } from "lucide-react";
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { toast } from "sonner";
 import { TableIcon } from "@/components/TypeIcon";
@@ -124,7 +125,6 @@ function CommentCell({
         onDoubleClick={(e) => e.stopPropagation()}
         className="h-6 rounded-sm px-1 text-xs md:text-xs"
       />
-      {saving && <Loader2 className="text-muted-foreground size-3 shrink-0 animate-spin" />}
     </div>
   );
 }
@@ -200,7 +200,7 @@ export function ItemOverviewView({
   const summary = (
     <>
       <span className="font-mono">{schema}</span> ·{" "}
-      {overview.data ? `${overview.data.length} items` : "Loading…"}
+      {overview.data ? `${overview.data.length} items` : ""}
     </>
   );
   return (
@@ -233,7 +233,7 @@ export function ItemOverviewView({
           disabled={overview.isFetching}
           className={cn(layout === "dialog" && "mr-6")}
         >
-          <RefreshCw className={cn(overview.isFetching && "animate-spin")} />
+          <RefreshCw />
         </Button>
       </div>
       <div className="border-border min-h-0 flex-1 overflow-auto rounded-md border">
@@ -315,7 +315,7 @@ export function ItemOverviewView({
               {overview.isPending && (
                 <tr>
                   <td colSpan={columns.length} className="p-3">
-                    <Loader2 className="text-muted-foreground size-3.5 animate-spin" />
+                    <QuietStatus />
                   </td>
                 </tr>
               )}

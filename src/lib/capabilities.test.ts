@@ -36,12 +36,7 @@ describe("window capabilities", () => {
     expect(granted.has("core:window:allow-set-theme")).toBe(true);
   });
 
-  it("grants them in default.json and desktop.json", () => {
-    for (const file of ["default.json", "desktop.json"]) {
-      const c = JSON.parse(readFileSync(path.join(dir, file), "utf8")) as Capability;
-      const ids = c.permissions.map((p) => (typeof p === "string" ? p : p.identifier));
-      expect(ids, file).toContain("core:app:allow-set-app-theme");
-      expect(ids, file).toContain("core:window:allow-set-theme");
-    }
+  it.each(["main", "w-2"])("lets the window-state plugin restore %s", (window) => {
+    expect(grantedTo(window).has("window-state:default")).toBe(true);
   });
 });

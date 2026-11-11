@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import { useState, type KeyboardEvent, type ReactNode } from "react";
+import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
 import { hideAssistant, showAssistant, useAssistantStore } from "@/features/assistant/store";
@@ -70,7 +71,7 @@ export function InspectorPanel() {
         aria-label="Row details"
         className="border-border bg-sidebar text-sidebar-foreground flex h-full min-w-0 flex-col border-l"
       >
-        <div className="border-border flex h-7 shrink-0 items-center gap-1 border-b pr-1 pl-2">
+        <div className="border-border flex h-8 shrink-0 items-center gap-1 border-b px-2">
           <ModeSwitch
             mode={assistantActive ? "assistant" : mode}
             modes={assistantEnabled ? MODES : ROW_MODES}
@@ -79,7 +80,7 @@ export function InspectorPanel() {
           <Button
             variant="ghost"
             size="icon-xs"
-            className="size-5"
+            className="text-muted-foreground hover:text-foreground"
             onClick={toggle}
             aria-label="Close row details"
             title={closeKeys ? `Close (${formatCombo(closeKeys)})` : "Close"}
@@ -93,9 +94,7 @@ export function InspectorPanel() {
           // Columns selected in a structure view: their attributes, edited together.
           <ColumnsPane selection={columns} />
         ) : !cell || !shown ? (
-          <div className="text-muted-foreground flex flex-1 items-center justify-center p-6 text-xs">
-            No row selected
-          </div>
+          <EmptyState title="No row selected" description="Select a cell to inspect its row" />
         ) : mode === "row" && cell.slot ? (
           <LaneInspector
             slot={cell.slot}
@@ -147,7 +146,7 @@ function LaneInspector({ slot, fallback }: { slot: InspectorSlotRow; fallback: R
   );
 }
 
-/** Compact segmented Details | Cell (| Assistant) control; ←/→ switch. */
+/** Details | Cell (| Assistant) control; ←/→ switch. */
 function ModeSwitch({
   mode,
   modes,
@@ -171,7 +170,7 @@ function ModeSwitch({
     <div
       role="radiogroup"
       aria-label="Sidebar view"
-      className="border-border bg-surface-2 dark:bg-background/40 flex h-5.5 min-w-0 flex-1 items-center rounded-md border p-px"
+      className="flex h-full min-w-0 flex-1 items-stretch gap-1"
     >
       {modes.map((m) => {
         const checked = m.mode === mode;
@@ -186,10 +185,10 @@ function ModeSwitch({
             onClick={() => onChange(m.mode)}
             onKeyDown={onKeyDown}
             className={cn(
-              "focus-visible:ring-ring/50 h-full flex-1 rounded-[5px] px-2 text-[11px] leading-none outline-none focus-visible:ring-2",
+              "focus-visible:ring-ring/60 min-w-0 flex-auto truncate rounded-t-sm border-b-2 border-transparent px-1 text-[12px] leading-4 outline-none focus-visible:ring-2 focus-visible:ring-inset",
               checked
-                ? "bg-surface text-foreground dark:bg-accent font-medium shadow-xs"
-                : "text-muted-foreground hover:text-foreground",
+                ? "border-brand text-foreground font-medium"
+                : "text-muted-foreground hover:bg-row-hover hover:text-foreground",
             )}
           >
             {m.label}

@@ -1,5 +1,5 @@
 import { LoaderCircle, Unplug } from "lucide-react";
-import { Fragment, useState } from "react";
+import { useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useCustomTags } from "@/features/connections/tags";
 import { useProfiles } from "@/features/connections/useConnections";
@@ -15,28 +15,23 @@ import { useSessionDetails } from "./statusDetailsModel";
 import { pillModel, pillText, tagLabel, type SegmentRole } from "./statusPillModel";
 import { ToolbarTip } from "./ToolbarButton";
 
-/** Narrow pill: the middle parts truncate first, the server and the visible object last. */
+/** Preserve the profile and visible object as long as possible at narrow widths. */
 const SHRINK: Record<SegmentRole, string> = {
   state: "shrink-0",
-  server: "shrink",
+  server: "shrink-[3]",
   transport: "shrink-[6]",
-  name: "shrink-[8]",
-  database: "shrink-[8]",
+  name: "shrink",
+  database: "shrink-[4]",
   schema: "shrink-[8]",
-  object: "shrink-[2]",
+  object: "shrink",
 };
 
 const PILL =
-  "flex h-6.5 min-w-70 max-w-160 flex-[0_1_640px] items-center justify-center gap-1.5 overflow-hidden rounded-md border px-2 font-mono text-[11.5px] leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
-
-/** A tag's colour (a custom tag's own, gray for one nobody defines). */
-function tagBackground(tag: string): string {
-  return tagColor(tag);
-}
+  "border-border bg-surface hover:bg-accent aria-expanded:bg-accent focus-visible:ring-ring/60 flex h-8 min-w-48 max-w-160 items-center justify-center gap-2 overflow-hidden rounded-md border px-2 text-[12px] leading-4 outline-none transition-colors focus-visible:ring-2";
 
 /**
  * The toolbar's centred status pill: the active connection (tag, server, SSH / TLS, name,
- * database) and what the visible tab shows, tinted with the connection colour. Click → the
+ * database) and what the visible tab shows, marked with the connection colour. Click → the
  * session's details with the connection colour (TablePlus: "click the status bar to see details
  * and recolour the connection"); without a connection → switch connection (⇧⌘K).
  */
@@ -58,7 +53,7 @@ export function StatusPill() {
           data-slot="status-pill"
           aria-label="No connection (switch connection)"
           onClick={() => void actions.run("palette.connections")}
-          className={cn(PILL, "border-border bg-surface text-muted-foreground font-sans text-xs")}
+          className={cn(PILL, "text-muted-foreground")}
         >
           No connection
         </button>
@@ -69,7 +64,6 @@ export function StatusPill() {
   const profile = profiles.data?.find((p) => p.id === active.info.profileId) ?? null;
   const tag = profile?.options.tag ?? null;
   const model = pillModel(active, tab, tag, busy, details?.tls ?? false);
-  const tint = model.problem ? "var(--warning)" : accentColor(active.info.color);
   const text = pillText(model);
   const StateIcon = model.problem === "reconnecting" ? LoaderCircle : Unplug;
   return (
@@ -81,49 +75,61 @@ export function StatusPill() {
             data-slot="status-pill"
             data-state={model.problem ?? "connected"}
             aria-label={`${text} (connection details)`}
-            className={cn(
-              PILL,
-              "transition-[filter] hover:brightness-[0.97] aria-expanded:brightness-[0.95] dark:hover:brightness-110",
-            )}
-            style={{
-              backgroundColor: `color-mix(in oklab, ${tint} 13%, var(--surface))`,
-              borderColor: `color-mix(in oklab, ${tint} 35%, transparent)`,
-              color: `color-mix(in oklab, ${tint} 50%, var(--foreground))`,
-            }}
+            className={PILL}
+            style={
+              model.problem
+                ? {
+                    backgroundColor: "color-mix(in oklab, var(--warning) 12%, var(--surface))",
+                    borderColor: "color-mix(in oklab, var(--warning) 40%, var(--border))",
+                  }
+                : undefined
+            }
           >
+            {model.problem ? (
+              <StateIcon aria-hidden className={cn("size-4 shrink-0")} />
+            ) : (
+              <span
+                aria-hidden
+                className="size-2 shrink-0 rounded-full"
+                style={{ backgroundColor: accentColor(active.info.color) }}
+              />
+            )}
             {model.tag && (
               <span
                 data-slot="status-pill-tag"
-                className="shrink-0 rounded-[3px] px-1 py-0.5 font-sans text-[9.5px] leading-none font-semibold tracking-wide text-white"
-                style={{ backgroundColor: tagBackground(model.tag) }}
+                className="text-foreground max-w-24 shrink-0 truncate rounded px-1 text-xs font-medium"
+                style={{
+                  backgroundColor: `color-mix(in oklab, ${tagColor(model.tag)} 18%, var(--surface))`,
+                }}
               >
                 {tagLabel(model.tag)}
               </span>
             )}
-            {model.problem && (
-              <StateIcon
-                aria-hidden
-                className={cn(
-                  "size-3 shrink-0",
-                  model.problem === "reconnecting" && "animate-spin",
-                )}
-              />
-            )}
             <span className="flex min-w-0 items-center" aria-hidden>
               {model.segments.map((s, i) => (
-                <Fragment key={`${s.role}:${i}`}>
-                  {i > 0 && <span className="shrink-0 px-1 opacity-50">:</span>}
+                <span
+                  key={`${s.role}:${i}`}
+                  data-role={s.role}
+                  className={cn(
+                    "flex min-w-0 items-center",
+                    SHRINK[s.role],
+                    s.role === "schema" && "hidden @min-[920px]/toolbar:flex",
+                  )}
+                >
+                  {i > 0 && <span className="text-muted-foreground shrink-0 px-0.5">·</span>}
                   <span
-                    data-role={s.role}
                     className={cn(
                       "min-w-0 truncate",
-                      SHRINK[s.role],
-                      (s.role === "object" || s.role === "state") && "font-semibold",
+                      s.role === "object" || s.role === "state" || s.role === "name"
+                        ? "text-foreground font-medium"
+                        : "text-muted-foreground",
+                      (s.role === "database" || s.role === "schema" || s.role === "object") &&
+                        "font-mono",
                     )}
                   >
                     {s.text}
                   </span>
-                </Fragment>
+                </span>
               ))}
             </span>
           </button>

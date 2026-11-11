@@ -280,10 +280,13 @@ export function ChartView({ resultId, columns, directive, done }: ChartViewProps
   const notes = built.ok ? built.data.notes : [];
   const tooltip = scene && shown ? scene.tooltip(shown.i) : null;
   return (
-    <div className="tabler-chart bg-surface flex h-full min-h-0 flex-col" data-slot="result-chart">
+    <div
+      className="tabler-chart bg-surface flex h-full min-h-0 flex-col"
+      data-slot="result-chart"
+      aria-busy={!done}
+    >
       <div className="border-border flex h-7 shrink-0 items-center gap-1 border-b px-2 text-[11px]">
         <span className="text-muted-foreground min-w-0 flex-1 truncate" title={notes.join(" ")}>
-          {!done && "Loading rows… "}
           {notes.join(" ")}
         </span>
         <BarIconButton

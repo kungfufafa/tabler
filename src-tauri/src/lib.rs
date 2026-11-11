@@ -1010,7 +1010,6 @@ pub mod shell {
     }
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // One process-wide TLS crypto provider for russh, mysql_async and tokio-postgres-rustls.
     // Mixing providers panics at runtime, so install it before any connection is made.

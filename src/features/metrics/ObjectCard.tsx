@@ -1,4 +1,4 @@
-import { AlertCircle, Loader2 } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import {
   ContextMenu,
@@ -168,12 +168,7 @@ export function ObjectCard({
             {body}
           </div>
           {(running || waiting) && info.data && (
-            <span
-              className="text-muted-foreground pointer-events-none absolute top-2 right-2"
-              aria-label="Running"
-            >
-              <Loader2 className="size-3.5 animate-spin" />
-            </span>
+            <span className="sr-only" role="status" aria-label="Running"></span>
           )}
           {editing && info.source && (
             <span

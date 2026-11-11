@@ -1,3 +1,4 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import { Ellipsis, Gauge, Globe, Plus } from "lucide-react";
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -175,7 +176,7 @@ export function BoardList({
         ))}
         {boards.length === 0 && (
           <li className="text-muted-foreground px-1.5 py-2 text-[11px] italic">
-            {loading ? "Loading…" : (error ?? "No boards yet")}
+            {loading ? <QuietStatus /> : (error ?? "No boards yet")}
           </li>
         )}
       </ul>

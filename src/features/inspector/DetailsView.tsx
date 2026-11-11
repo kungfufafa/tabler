@@ -8,7 +8,7 @@ import { matchesField } from "./fields";
 const NULL: Value = { t: "null" };
 
 /**
- * The Details view: a "Search for field…" box, then one block per column of the focused row
+ * The Details view: a search box, then one block per column of the focused row
  * (hidden grid columns too, muted). On a table tab with an editable table the boxes stage edits
  * through `row.edit`; everywhere else they are read-only and copyable. With several rows selected
  * it reads "N rows selected": fields whose values differ show "Multiple values", and an edit
@@ -51,7 +51,7 @@ export function DetailsView({
       {bulk && (
         <div
           role="status"
-          className="border-border text-foreground bg-brand-soft shrink-0 border-b px-3 py-1.5 text-xs font-medium"
+          className="border-border text-foreground bg-brand-soft shrink-0 border-b px-4 py-2 text-xs font-medium tabular-nums"
         >
           {bulk.count.toLocaleString()} rows selected
           {edit && (
@@ -59,9 +59,12 @@ export function DetailsView({
           )}
         </div>
       )}
-      <div className="shrink-0 px-2 pt-2 pb-1">
+      <div className="shrink-0 p-2">
         <div className="relative">
-          <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3 -translate-y-1/2" />
+          <Search
+            aria-hidden
+            className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2"
+          />
           <input
             type="search"
             value={query}
@@ -72,11 +75,11 @@ export function DetailsView({
                 setQuery("");
               }
             }}
-            placeholder="Search for field…"
+            placeholder="Search fields"
             aria-label="Search for field"
             spellCheck={false}
             autoComplete="off"
-            className="border-border bg-surface placeholder:text-muted-foreground focus:border-ring focus:ring-ring/30 h-6 w-full min-w-0 rounded-md border pr-2 pl-6 text-xs outline-none focus:ring-2 [&::-webkit-search-cancel-button]:hidden"
+            className="border-border bg-surface placeholder:text-muted-foreground focus:border-ring focus:ring-ring/30 h-7 w-full min-w-0 rounded-md border pr-2 pl-8 text-[12px] outline-none focus:ring-2 [&::-webkit-search-cancel-button]:hidden"
           />
         </div>
       </div>
@@ -84,7 +87,7 @@ export function DetailsView({
         ref={listRef}
         role="list"
         aria-label="Row fields"
-        className="min-h-0 flex-1 overflow-y-auto px-1 pb-2"
+        className="min-h-0 flex-1 overflow-y-auto px-2 pb-2"
       >
         {fields.length === 0 && (
           <div className="text-muted-foreground px-2 py-4 text-center text-xs">

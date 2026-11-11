@@ -1,14 +1,5 @@
 import { useQueries, type UseQueryResult } from "@tanstack/react-query";
-import {
-  ChevronRight,
-  CircleAlert,
-  Database,
-  Eye,
-  FileDown,
-  Loader2,
-  Search,
-  Table2,
-} from "lucide-react";
+import { ChevronRight, CircleAlert, Database, Eye, FileDown, Search, Table2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Kbd } from "@/components/Kbd";
@@ -449,7 +440,7 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
       >
         {q?.isPending && (
           <li className="text-muted-foreground flex items-center gap-2 py-1.5 pl-8 text-xs">
-            <Loader2 className="size-3.5 animate-spin" /> Loading tables…
+            <span className="sr-only">Loading tables…</span>
           </li>
         )}
         {q?.isError && (
@@ -698,7 +689,6 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={!canSubmit}>
-              {picking ? <Loader2 className="animate-spin" /> : null}
               Export…
               <Kbd
                 combo="Mod+Enter"

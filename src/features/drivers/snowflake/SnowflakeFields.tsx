@@ -1,4 +1,4 @@
-import { FolderOpen, Loader2 } from "lucide-react";
+import { FolderOpen } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { Controller, type Path } from "react-hook-form";
 import { Button } from "@/components/ui/button";
@@ -98,7 +98,6 @@ export function SnowflakeFields({ form, hasStoredPassword }: KindFieldsProps) {
 
   const button = (label: string, loading: boolean, onClick: () => void) => (
     <Button type="button" variant="outline" size="sm" disabled={loading} onClick={onClick}>
-      {loading && <Loader2 className="size-3.5 animate-spin" />}
       {label}
     </Button>
   );

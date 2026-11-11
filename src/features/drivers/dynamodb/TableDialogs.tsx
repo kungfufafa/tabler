@@ -1,5 +1,5 @@
+import { QuietStatus } from "@/components/QuietLoading";
 import { useCallback, useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -166,7 +166,7 @@ export function IndexBrowserDialog({
           </Select>
           <span className="text-muted-foreground text-xs" role="status">
             {page.state === "loading" ? (
-              <Loader2 className="size-3.5 animate-spin" />
+              <QuietStatus />
             ) : page.state === "failed" ? (
               page.message
             ) : (

@@ -455,6 +455,8 @@ interface Reorder {
 
 /** Zebra stripe on every other row: a faint foreground tint, so it works in both themes. */
 const ZEBRA = "bg-foreground/[2.5%]";
+/** Narrower columns keep the header for the name; the type stays in the tooltip. */
+const TYPE_LABEL_MIN_WIDTH = 112;
 
 const layer = (color: string) => `linear-gradient(${color}, ${color})`;
 
@@ -1898,14 +1900,14 @@ export function DataGrid({
     selectedRows(selectionRef.current).some((r) => !!getRow(r)?.status);
 
   // Selected rows get a full-row accent tint (row number included), selected columns a full-height
-  // one, a cell range a tinted box with a red border (TablePlus). Drawn above the cells, so staged
+  // one, a cell range a tinted box with an accent border. Drawn above the cells, so staged
   // colours show through.
   const rowSelected = (r: number) => !byColumn && !rect && isRowSelected(selection, r);
   const inRangeRows = (r: number) => !!rect && r >= rect.r0 && r <= rect.r1;
   const overlay = rect ? (
     <div
       data-selection="cells"
-      className="ring-error/80 pointer-events-none absolute z-[1] bg-(--grid-selection) ring-1 ring-inset"
+      className="ring-brand/60 pointer-events-none absolute z-[1] bg-(--grid-selection) ring-1 ring-inset"
       style={{
         left: gutterW + (offsets[rect.c0] ?? 0),
         top: HEADER_H + rect.r0 * ROW_H,
@@ -2016,10 +2018,10 @@ export function DataGrid({
           tabIndex={0}
           data-scope="grid"
           className={cn(
-            "bg-surface focus-visible:ring-brand/40 relative h-full w-full overflow-auto outline-none select-none focus-visible:ring-1 focus-visible:ring-inset",
+            "group/grid bg-surface focus-visible:ring-brand/40 relative h-full w-full overflow-auto outline-none select-none focus-visible:ring-1 focus-visible:ring-inset",
             // Selected rows (macOS table style): the accent while the grid has the focus, grey
             // otherwise.
-            "[--grid-selection:color-mix(in_oklab,var(--foreground)_8%,transparent)] focus-within:[--grid-selection:color-mix(in_oklab,var(--brand)_26%,transparent)] dark:focus-within:[--grid-selection:color-mix(in_oklab,var(--brand)_38%,transparent)]",
+            "[--grid-selection:color-mix(in_oklab,var(--foreground)_8%,transparent)] focus-within:[--grid-selection:color-mix(in_oklab,var(--brand)_18%,transparent)] dark:focus-within:[--grid-selection:color-mix(in_oklab,var(--brand)_28%,transparent)]",
             // Preferences ▸ Table Data ▸ Auto hide table scrollers: thin bars, shown only while
             // scrolling or hovering them.
             autoHideScrollers &&
@@ -2045,12 +2047,12 @@ export function DataGrid({
         >
           <div
             ref={contentRef}
-            className="relative"
+            className="relative min-w-full"
             style={{ width: gutterW + totalWidth, height: totalHeight }}
           >
             <div
-              className="sticky top-0 z-[3]"
-              style={{ height: HEADER_H, width: gutterW + totalWidth }}
+              className="bg-surface-2 sticky top-0 z-[3] shadow-[inset_0_-1px_0_var(--border)]"
+              style={{ height: HEADER_H }}
             >
               <div
                 data-header="__corner"
@@ -2064,9 +2066,9 @@ export function DataGrid({
                   aria-label="Size all columns to fit"
                   title="Size all columns to fit"
                   onClick={fitAllColumns}
-                  className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex size-4 items-center justify-center rounded-sm outline-none focus-visible:ring-2"
+                  className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring/50 flex size-5 max-h-full items-center justify-center rounded-sm outline-none focus-visible:ring-2"
                 >
-                  <MoveHorizontal className="size-3" />
+                  <MoveHorizontal className="size-3.5" />
                 </button>
               </div>
               {virtualCols.map((vc) => {
@@ -2079,10 +2081,8 @@ export function DataGrid({
                     data-header={col.id}
                     title={`${col.name} · ${col.dataType}${col.nullable ? "" : " · not null"}${col.editable ? "" : " · read-only"}`}
                     className={cn(
-                      // Name centred (TablePlus); a sort badge reserves the same room on both
-                      // sides so the name stays centred and never runs under it.
-                      "border-border bg-surface-2 text-foreground hover:bg-accent absolute top-0 flex h-full items-center justify-center border-r border-b text-[12px] font-semibold",
-                      s ? (sortIndex ? "px-7" : "px-5") : "px-2",
+                      "border-border bg-surface-2 text-foreground hover:bg-accent absolute top-0 flex h-full items-center justify-between gap-2 border-r border-b px-2 text-[12px] font-medium",
+                      col.align === "right" && "flex-row-reverse",
                       reorder?.id === col.id && "opacity-50",
                     )}
                     style={{ left: vc.start, width: vc.size }}
@@ -2096,18 +2096,28 @@ export function DataGrid({
                         />
                       )}
                       <span className="truncate">{col.name}</span>
+                      {s && (
+                        <span
+                          data-sort={s.dir}
+                          role="img"
+                          aria-label={s.dir === "asc" ? "Sorted ascending" : "Sorted descending"}
+                          className={cn(
+                            "text-brand flex shrink-0 items-center tabular-nums",
+                            col.align === "right" && "order-first",
+                          )}
+                        >
+                          {s.dir === "asc" ? (
+                            <ArrowUp className="size-3" />
+                          ) : (
+                            <ArrowDown className="size-3" />
+                          )}
+                          {sortIndex && <span className="text-[10px]">{sortIndex}</span>}
+                        </span>
+                      )}
                     </span>
-                    {s && (
-                      <span
-                        data-sort={s.dir}
-                        className="text-brand absolute right-2 flex items-center"
-                      >
-                        {s.dir === "asc" ? (
-                          <ArrowUp className="size-3" />
-                        ) : (
-                          <ArrowDown className="size-3" />
-                        )}
-                        {sortIndex && <span className="text-[9px]">{sortIndex}</span>}
+                    {vc.size >= TYPE_LABEL_MIN_WIDTH && (
+                      <span className="text-muted-foreground max-w-[40%] min-w-0 shrink-[100] truncate text-[11px] font-normal">
+                        {col.dataType}
                       </span>
                     )}
                     <div
@@ -2188,9 +2198,7 @@ export function DataGrid({
                           key={vc.key}
                           className="border-gridline absolute top-0 flex h-full items-center border-r border-b px-2"
                           style={{ left: vc.start, width: vc.size }}
-                        >
-                          <div className="bg-muted h-2.5 w-2/3 animate-pulse rounded" />
-                        </div>
+                        />
                       ))}
                 </div>
               );
@@ -2200,7 +2208,7 @@ export function DataGrid({
             {selection.focus && !editing && (
               <div
                 data-focus-ring=""
-                className="ring-brand pointer-events-none absolute z-[1] ring-1 ring-inset"
+                className="ring-brand/55 group-focus-within/grid:ring-brand pointer-events-none absolute z-[1] ring-1 ring-inset forced-colors:outline forced-colors:-outline-offset-1 forced-colors:outline-[Highlight]"
                 style={{
                   left: gutterW + (offsets[selection.focus.c] ?? 0),
                   top: HEADER_H + selection.focus.r * ROW_H,
@@ -2412,9 +2420,7 @@ export function DataGrid({
                   "repeating-linear-gradient(135deg, color-mix(in oklab, var(--foreground) 5%, transparent) 0 1px, transparent 1px 14px), radial-gradient(color-mix(in oklab, var(--foreground) 6%, transparent) 1px, transparent 1px)",
                 backgroundSize: "auto, 14px 14px",
               }}
-            >
-              <span className="bg-surface/80 rounded px-2 py-0.5">Loading…</span>
-            </div>
+            />
           )}
           {geoHover &&
             geoPreview &&

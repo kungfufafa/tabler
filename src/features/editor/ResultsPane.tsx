@@ -3,9 +3,7 @@ import {
   ChartColumn,
   ChartLine,
   ChartPie,
-  Loader2,
   Pin,
-  Play,
   Rows3,
   Search,
   Settings2,
@@ -14,6 +12,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { EmptyState } from "@/components/EmptyState";
+import { Kbd } from "@/components/Kbd";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -98,12 +97,18 @@ function PaneTab({
       title={title}
       onClick={onSelect}
       className={cn(
-        "flex h-full shrink-0 items-center gap-1.5 rounded-[4px] px-2 text-[11px] whitespace-nowrap transition-colors outline-none",
+        "flex h-full shrink-0 items-center gap-2 px-2 text-[12px] whitespace-nowrap transition-colors outline-none",
         // Tailwind v4: `outline-none` sets --tw-outline-style:none, so the ring needs its style.
         "focus-visible:outline-ring/70 focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-solid",
+        role === "tab" ? "relative" : "rounded-sm",
         active
-          ? "bg-surface text-foreground ring-border-strong/70 dark:bg-accent shadow-xs ring-1"
-          : "text-muted-foreground hover:text-foreground",
+          ? cn(
+              "text-foreground font-medium",
+              role === "tab"
+                ? "after:bg-brand after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5"
+                : "bg-accent",
+            )
+          : "text-muted-foreground hover:text-foreground hover:bg-row-hover",
       )}
     >
       {children}
@@ -128,8 +133,7 @@ function ResultTab({
   const pending = useResultsStore((s) => stagingOf(s, info.id).changes.size);
   return (
     <PaneTab active={active} onSelect={onSelect} title={pinned ? "Pinned result" : undefined}>
-      {pinned && <Pin className="text-brand size-3" aria-label="Pinned" />}
-      {!info.done && <Loader2 className="text-brand size-3 animate-spin" />}
+      {pinned && <Pin className="size-3.5" aria-label="Pinned" />}
       <span className="tabular-nums">{resultTabText(label, rows, info.durationMs)}</span>
       {info.truncated && <TriangleAlert className="text-warning size-3" aria-label="Truncated" />}
       {pending > 0 && (
@@ -144,13 +148,32 @@ function ResultTab({
 }
 
 function ResultsEmpty() {
-  const k = (id: Parameters<typeof shortcutFor>[0]) => formatCombo(shortcutFor(id) ?? "");
+  const shortcuts = [
+    { label: "Run current", combo: shortcutFor("query.run-current") },
+    { label: "Run all", combo: shortcutFor("query.run") },
+    { label: "Explain", combo: shortcutFor("query.explain") },
+  ].flatMap(({ label, combo }) =>
+    combo
+      ? [
+          <li key={label} className="flex items-center gap-1 whitespace-nowrap">
+            {label}
+            <Kbd combo={combo} />
+          </li>,
+        ]
+      : [],
+  );
   return (
     <EmptyState
-      icon={Play}
       title="Run a query"
-      description={`${k("query.run-current")} runs the statement under the cursor (or the selection), ${k("query.run")} runs everything, ${k("query.explain")} explains it.`}
-    />
+      description="Results appear here after a statement runs"
+      className="justify-center-safe overflow-y-auto p-4"
+    >
+      {shortcuts.length > 0 && (
+        <ul className="text-muted-foreground flex flex-wrap justify-center gap-x-4 gap-y-2 text-[12px]">
+          {shortcuts}
+        </ul>
+      )}
+    </EmptyState>
   );
 }
 
@@ -171,9 +194,9 @@ function ResultsMenu({
       <DropdownMenuTrigger
         aria-label="Result options"
         title="Result options"
-        className="text-muted-foreground hover:text-foreground hover:bg-muted focus-visible:ring-ring/50 ml-auto flex size-6 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2"
+        className="text-muted-foreground hover:text-foreground hover:bg-row-hover focus-visible:ring-ring/50 flex size-7 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
       >
-        <Settings2 className="size-3.5" />
+        <Settings2 className="size-4" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-60">
         <DropdownMenuLabel className="text-muted-foreground text-[11px]">
@@ -228,14 +251,14 @@ function ViewSwitch({ resultId, kind }: { resultId: string; kind: ChartKind }) {
     <div
       role="radiogroup"
       aria-label="Result view"
-      className="border-border bg-surface-2 dark:bg-background flex h-6.5 shrink-0 items-stretch gap-0.5 rounded-md border p-0.5"
+      className="border-border bg-surface-2 flex h-7 shrink-0 items-stretch rounded-md border p-0.5"
     >
       <PaneTab
         role="radio"
         active={view === "chart"}
         onSelect={() => setResultView(resultId, "chart")}
       >
-        <ChartIcon className="size-3" />
+        <ChartIcon className="size-3.5" />
         Chart
       </PaneTab>
       <PaneTab
@@ -243,7 +266,7 @@ function ViewSwitch({ resultId, kind }: { resultId: string; kind: ChartKind }) {
         active={view === "grid"}
         onSelect={() => setResultView(resultId, "grid")}
       >
-        <Table2 className="size-3" />
+        <Table2 className="size-3.5" />
         Grid
       </PaneTab>
     </div>
@@ -467,11 +490,11 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
 
   return (
     <div className="bg-surface flex h-full min-h-0 flex-col">
-      <div className="border-border bg-surface flex h-8 shrink-0 items-center gap-1 border-b px-1.5">
+      <div className="border-border flex h-9 shrink-0 items-center gap-2 border-b px-2">
         <div
           role="tablist"
           aria-label="Results"
-          className="border-border bg-surface-2 dark:bg-background flex h-6.5 max-w-full min-w-0 [scrollbar-width:none] items-stretch gap-0.5 overflow-x-auto rounded-md border p-0.5"
+          className="flex h-full min-w-0 [scrollbar-width:none] items-stretch gap-1 overflow-x-auto"
           onKeyDown={onKeyDown}
         >
           {pins.map((p) => (
@@ -489,7 +512,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
               active={!!activeResult}
               onSelect={() => select(activeResult ? activeResult.id : results[0]!.id)}
             >
-              <Rows3 className="size-3" />
+              <Rows3 className="size-3.5" />
               Results
               <span className="text-muted-foreground tabular-nums">{results.length}</span>
             </PaneTab>
@@ -507,11 +530,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
           {run && (
             <PaneTab active={active === "messages"} onSelect={() => select("messages")}>
               Messages
-              {errors > 0 && (
-                <span className="bg-error/15 text-error rounded-full px-1.5 text-[10px] leading-4 font-medium tabular-nums">
-                  {errors}
-                </span>
-              )}
+              {errors > 0 && <span className="text-error text-[12px] tabular-nums">{errors}</span>}
             </PaneTab>
           )}
           {plan && (
@@ -532,18 +551,18 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
             disabled={!activeShown}
             onClick={() => (findOpen ? closeFind(tabId) : openFindHere())}
             className={cn(
-              "text-muted-foreground hover:text-foreground hover:bg-muted focus-visible:ring-ring/50 flex size-6 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-40",
+              "text-muted-foreground hover:text-foreground hover:bg-row-hover focus-visible:ring-ring/50 flex size-7 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-40",
               findOpen && "bg-muted text-foreground",
             )}
           >
-            <Search className="size-3.5" />
+            <Search className="size-4" />
           </button>
+          <ResultsMenu
+            mode={mode}
+            pinTarget={activeShown ? { pinned: activeShown.pin !== null } : null}
+            onTogglePin={() => activeShown && togglePin(activeShown)}
+          />
         </div>
-        <ResultsMenu
-          mode={mode}
-          pinTarget={activeShown ? { pinned: activeShown.pin !== null } : null}
-          onTogglePin={() => activeShown && togglePin(activeShown)}
-        />
       </div>
       <div className="min-h-0 flex-1" role="tabpanel">
         {active === "plan" && plan ? (
@@ -602,11 +621,10 @@ function AppendedResult({
     >
       <header
         className={cn(
-          "bg-surface-2 text-muted-foreground border-border flex h-6 items-center gap-1.5 border-b px-3 text-[11px] tabular-nums",
-          selected && "text-foreground",
+          "bg-surface-2 text-muted-foreground border-border flex h-6 items-center gap-2 border-b px-3 text-[12px] tabular-nums",
+          selected && "text-foreground font-medium",
         )}
       >
-        {!info.done && <Loader2 className="text-brand size-3 animate-spin" />}
         {appendedHeader(n, rows, info.durationMs)}
         {info.truncated && <TriangleAlert className="text-warning size-3" aria-label="Truncated" />}
       </header>

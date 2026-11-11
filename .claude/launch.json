@@ -4,14 +4,34 @@
     {
       "name": "tabler-mock",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["node_modules/vite/bin/vite.js", "--mode", "mock"],
+      "runtimeArgs": [
+        "node_modules/vite/bin/vite.js",
+        "--mode",
+        "mock"
+      ],
       "port": 1420
     },
     {
       "name": "tabler-mock-node",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["node_modules/vite/bin/vite.js", "--mode", "mock"],
+      "runtimeArgs": [
+        "node_modules/vite/bin/vite.js",
+        "--mode",
+        "mock"
+      ],
       "port": 1420
+    },
+    {
+      "name": "tabler-mock-1421",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "node_modules/vite/bin/vite.js",
+        "--mode",
+        "mock",
+        "--port",
+        "1421"
+      ],
+      "port": 1421
     }
   ]
 }

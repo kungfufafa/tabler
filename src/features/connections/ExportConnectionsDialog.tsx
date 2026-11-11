@@ -1,4 +1,3 @@
-import { Loader2 } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -153,7 +152,6 @@ export function ExportConnectionsDialog({
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={busy || count === 0}>
-              {busy ? <Loader2 className="animate-spin" /> : null}
               Export…
             </Button>
           </DialogFooter>

@@ -96,7 +96,7 @@ export function VersionPicker({
           onClick={onRescan}
           disabled={disabled || loading}
         >
-          <RotateCw className={loading ? "animate-spin" : undefined} />
+          <RotateCw />
         </Button>
       </div>
       {help && (

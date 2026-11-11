@@ -1,4 +1,4 @@
-import { CircleAlert, FileDown, Loader2 } from "lucide-react";
+import { CircleAlert, FileDown } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Kbd } from "@/components/Kbd";
@@ -110,7 +110,6 @@ export function Progress({ run }: { run: ExportRun }) {
   return (
     <div role="status" aria-live="polite" className="flex min-w-0 flex-col gap-1">
       <div className="flex min-w-0 items-center gap-2 text-xs">
-        <Loader2 className="text-brand size-3.5 shrink-0 animate-spin" />
         <span className="tabular-nums">
           {formatCount(run.rows)} row{run.rows === 1 ? "" : "s"}
         </span>
@@ -123,7 +122,7 @@ export function Progress({ run }: { run: ExportRun }) {
         <div
           className={cn(
             "bg-brand h-full rounded-full transition-[width] duration-200",
-            pct === null && "w-1/3 animate-pulse",
+            pct === null && "w-0",
           )}
           style={pct === null ? undefined : { width: `${pct}%` }}
         />
@@ -711,7 +710,6 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={!canSubmit}>
-              {picking || src.loading ? <Loader2 className="animate-spin" /> : null}
               Export…
               <Kbd
                 combo="Mod+Enter"

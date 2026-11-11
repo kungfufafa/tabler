@@ -129,10 +129,10 @@ describe("Sidebar", () => {
     expect(ipc.schema.tables).not.toHaveBeenCalledWith("c1", "other_database");
   });
 
-  it("shows the loading skeleton, not an empty schema, while the schemas load", () => {
+  it("shows a quiet empty pane, not an empty schema, while the schemas load", () => {
     vi.spyOn(ipc.schema, "schemas").mockReturnValue(new Promise(() => {}));
     const { container } = renderSidebar();
-    expect(container.querySelector('[data-slot="skeleton"]')).not.toBeNull();
+    expect(container.querySelector('[data-slot="tree-loading"]')).not.toBeNull();
     expect(screen.queryByText("No tables")).toBeNull();
   });
 

@@ -8,7 +8,6 @@ import {
   KeyRound,
   Layers,
   ListOrdered,
-  Loader2,
   Pin,
   Sigma,
   SquareFunction,
@@ -32,7 +31,7 @@ import {
 import { EmptyState } from "@/components/EmptyState";
 import { TableIcon } from "@/components/TypeIcon";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { Skeleton } from "@/components/ui/skeleton";
+import { QuietLoading } from "@/components/QuietLoading";
 import { openDiagram } from "@/features/diagram/store";
 import { useDriverUi } from "@/features/drivers/registry";
 import {
@@ -159,14 +158,25 @@ function rulesSummary(g: SidebarGroup): string {
 }
 
 /** Row height of the tree (headers and items). */
-export const ROW_H = 22;
+export const ROW_H = 24;
 
 /**
  * Keyboard focus is a thin inset ring, never a fill: the one filled row is the open table
  * (TablePlus). Inset, so the neighbouring rows (absolutely positioned) do not cover it.
  */
 const FOCUS_RING =
-  "outline-none ring-inset focus-visible:ring-1 focus-visible:ring-sidebar-ring/70";
+  "outline-none ring-inset focus-visible:ring-1 focus-visible:ring-sidebar-ring forced-colors:focus-visible:outline forced-colors:focus-visible:-outline-offset-1 forced-colors:focus-visible:outline-[Highlight]";
+
+/** Keep the context menu's origin visible while the menu owns focus. */
+const MENU_FOCUS_RING = cn(
+  FOCUS_RING,
+  "data-[state=open]:ring-sidebar-ring data-[state=open]:ring-1",
+);
+
+const BRANCH_ROW =
+  "text-muted-foreground hover:bg-row-hover hover:text-foreground flex items-center gap-2 rounded-md pr-2 text-left text-xs font-medium";
+
+const DISCLOSURE_ICON = "size-3.5 shrink-0 transition-transform";
 
 /** Headers whose menu offers the Item Overview (spec §2.3: the "Tables" header). */
 const OVERVIEW_HEADERS = new Set(["Tables", "Views", "Materialized views"]);
@@ -516,13 +526,7 @@ export function SchemaTree({
   };
 
   if (loading) {
-    return (
-      <div className="flex flex-col gap-1.5 px-3 py-2">
-        {[0, 1, 2, 3, 4, 5].map((i) => (
-          <Skeleton key={i} className="h-4 w-[70%]" />
-        ))}
-      </div>
-    );
+    return <QuietLoading data-slot="tree-loading" className="min-h-0 flex-1 bg-transparent" />;
   }
   if (error) return <EmptyState title="Could not load tables" description={error} />;
   if (rows.length === 0) {
@@ -997,7 +1001,11 @@ export function SchemaTree({
   };
 
   return (
-    <div ref={parentRef} className="min-h-0 flex-1 overflow-auto" data-scope="sidebar">
+    <div
+      ref={parentRef}
+      className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2"
+      data-scope="sidebar"
+    >
       <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
         {virtualizer.getVirtualItems().map((v) => {
           const row = rows[v.index]!;
@@ -1027,33 +1035,28 @@ export function SchemaTree({
                     onClick={() => toggleNode(row)}
                     onKeyDown={(e) => onNodeKeyDown(e, v.index, row)}
                     className={cn(
-                      "hover:text-foreground flex items-center gap-1 pr-3 pl-1.5 text-left text-xs font-medium",
+                      BRANCH_ROW,
+                      "pl-2",
                       row.system ? "text-muted-foreground" : "text-sidebar-foreground",
-                      FOCUS_RING,
-                      "data-[state=open]:ring-sidebar-ring/70 data-[state=open]:ring-1",
+                      MENU_FOCUS_RING,
                     )}
                   >
                     <ChevronRight
                       aria-hidden
                       className={cn(
-                        "text-muted-foreground size-3 shrink-0 transition-transform duration-100",
+                        DISCLOSURE_ICON,
+                        "text-muted-foreground",
                         row.expanded && "rotate-90",
                       )}
                     />
                     {driver === "mysql" ? (
-                      <Database aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
+                      <Database aria-hidden className="text-muted-foreground size-4 shrink-0" />
                     ) : (
-                      <Layers aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
+                      <Layers aria-hidden className="text-muted-foreground size-4 shrink-0" />
                     )}
                     <span className="truncate">{row.schema}</span>
-                    {row.loading && (
-                      <Loader2
-                        aria-label="Loading"
-                        className="text-muted-foreground size-3 shrink-0 animate-spin"
-                      />
-                    )}
                     {row.count !== null && (
-                      <span className="text-muted-foreground/70 ml-auto pl-2 text-[11px] font-normal tabular-nums">
+                      <span className="text-muted-foreground ml-auto shrink-0 text-xs font-normal tabular-nums">
                         {row.count}
                       </span>
                     )}
@@ -1072,13 +1075,10 @@ export function SchemaTree({
                 style={style}
                 data-row-index={v.index}
                 role="status"
-                className="text-muted-foreground flex items-center gap-1.5 pr-3 pl-8 text-[11px]"
+                className="text-muted-foreground flex items-center gap-2 pr-2 pl-8 text-xs"
               >
                 {row.status === "loading" ? (
-                  <>
-                    <Loader2 aria-hidden className="size-3 shrink-0 animate-spin" />
-                    Loading items…
-                  </>
+                  <span className="sr-only">Loading items…</span>
                 ) : (
                   <span className="text-error truncate" title={row.message ?? undefined}>
                     {row.message ?? "Could not load the items"}
@@ -1110,27 +1110,19 @@ export function SchemaTree({
                       else toggleSection(row.label);
                     }}
                     onKeyDown={(e) => onHeaderKeyDown(e, v.index, row)}
-                    className={cn(
-                      "text-muted-foreground hover:text-foreground flex items-center gap-1 pr-3 text-left text-[11px] font-semibold",
-                      isNested(row.key) ? "pl-4" : "pl-1.5",
-                      FOCUS_RING,
-                      "data-[state=open]:ring-sidebar-ring/70 data-[state=open]:ring-1",
-                    )}
+                    className={cn(BRANCH_ROW, isNested(row.key) ? "pl-5" : "pl-2", MENU_FOCUS_RING)}
                   >
                     <span
                       aria-hidden
                       data-slot="disclosure"
-                      className="-my-1 -ml-1 flex items-center self-stretch py-1 pl-1"
+                      className="-ml-1 flex w-5 shrink-0 items-center justify-center self-stretch"
                     >
                       <ChevronRight
-                        className={cn(
-                          "size-3 shrink-0 transition-transform duration-100",
-                          !row.collapsed && "rotate-90",
-                        )}
+                        className={cn(DISCLOSURE_ICON, !row.collapsed && "rotate-90")}
                       />
                     </span>
                     <span className="truncate">{sectionLabel(row.label)}</span>
-                    <span className="text-muted-foreground/70 ml-auto pl-2 font-normal tabular-nums">
+                    <span className="text-muted-foreground ml-auto shrink-0 font-normal tabular-nums">
                       {row.count}
                     </span>
                   </button>
@@ -1201,22 +1193,18 @@ export function SchemaTree({
                       if (pinScope !== null && keys.length > 0) addToGroup(pinScope, g.id, keys);
                     }}
                     className={cn(
-                      "text-muted-foreground hover:text-foreground flex items-center gap-1 pr-3 text-left text-[11px] font-semibold",
-                      isNested(row.key) ? "pl-4" : "pl-1.5",
-                      FOCUS_RING,
-                      "data-[state=open]:ring-sidebar-ring/70 data-[state=open]:ring-1",
+                      BRANCH_ROW,
+                      isNested(row.key) ? "pl-5" : "pl-2",
+                      MENU_FOCUS_RING,
                       dropping &&
                         "bg-sidebar-accent/60 text-foreground ring-sidebar-ring/70 ring-1",
                     )}
                   >
                     <ChevronRight
                       aria-hidden
-                      className={cn(
-                        "size-3 shrink-0 transition-transform duration-100",
-                        !row.collapsed && "rotate-90",
-                      )}
+                      className={cn(DISCLOSURE_ICON, !row.collapsed && "rotate-90")}
                     />
-                    <Folder aria-hidden className="size-3 shrink-0" />
+                    <Folder aria-hidden className="size-4 shrink-0" />
                     <span className="truncate">{g.name}</span>
                     {warning && (
                       <TriangleAlert
@@ -1224,7 +1212,7 @@ export function SchemaTree({
                         className="text-warning size-3 shrink-0"
                       />
                     )}
-                    <span className="text-muted-foreground/70 ml-auto pl-2 font-normal tabular-nums">
+                    <span className="text-muted-foreground ml-auto shrink-0 font-normal tabular-nums">
                       {row.count}
                     </span>
                   </button>
@@ -1263,10 +1251,9 @@ export function SchemaTree({
                   remember(row.table, true);
                 }}
                 className={cn(
-                  "flex items-center gap-1.5 pr-3 text-left text-[11px] select-none",
-                  isNested(row.key) ? "pl-13" : "pl-10",
+                  "hover:bg-row-hover flex items-center gap-2 rounded-md pr-2 text-left text-xs select-none",
+                  isNested(row.key) ? "pl-14" : "pl-11",
                   FOCUS_RING,
-                  "hover:bg-black/[0.035] dark:hover:bg-white/[0.05]",
                 )}
               >
                 {row.pk ? (
@@ -1280,7 +1267,7 @@ export function SchemaTree({
                   <span aria-hidden className="size-3 shrink-0" />
                 )}
                 <span className="truncate">{row.name}</span>
-                <span className="text-muted-foreground/70 ml-auto truncate pl-2 font-mono text-[10px]">
+                <span className="text-muted-foreground ml-auto truncate font-mono text-[10px]">
                   {row.dataType}
                 </span>
               </button>
@@ -1294,15 +1281,12 @@ export function SchemaTree({
                 data-row-index={v.index}
                 role="status"
                 className={cn(
-                  "text-muted-foreground flex items-center gap-1.5 pr-3 text-[11px]",
-                  isNested(row.key) ? "pl-13" : "pl-10",
+                  "text-muted-foreground flex items-center gap-2 pr-2 text-xs",
+                  isNested(row.key) ? "pl-14" : "pl-11",
                 )}
               >
                 {row.status === "loading" ? (
-                  <>
-                    <Loader2 aria-hidden className="size-3 shrink-0 animate-spin" />
-                    Loading columns…
-                  </>
+                  <span className="sr-only">Loading columns…</span>
                 ) : (
                   <span className="text-error truncate" title={row.message ?? undefined}>
                     {row.message ?? "Could not load the columns"}
@@ -1320,16 +1304,14 @@ export function SchemaTree({
             (activeTab.table.schema ?? "") === (row.table.schema ?? "");
           const nested = isNested(row.key);
           const rowClass = cn(
-            "flex items-center gap-1.5 pr-3 text-left text-xs select-none",
-            nested ? "pl-8" : "pl-5",
-            FOCUS_RING,
-            // The right-clicked row is outlined like a focused one while its menu is open.
-            "data-[state=open]:ring-sidebar-ring/70 data-[state=open]:ring-1",
+            "flex items-center gap-2 rounded-md pr-2 text-left text-xs select-none",
+            nested ? "pl-9" : "pl-6",
+            MENU_FOCUS_RING,
             isActive
-              ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+              ? "bg-sidebar-accent text-sidebar-accent-foreground before:bg-sidebar-primary font-medium before:pointer-events-none before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full forced-colors:outline forced-colors:-outline-offset-1 forced-colors:outline-[Highlight]"
               : selected
-                ? "bg-sidebar-accent/55 text-sidebar-accent-foreground"
-                : "hover:bg-black/[0.035] dark:hover:bg-white/[0.05]",
+                ? "bg-accent text-accent-foreground"
+                : "hover:bg-row-hover",
           );
           const common = {
             style,
@@ -1419,19 +1401,20 @@ export function SchemaTree({
                     }}
                     onDoubleClick={(e) => e.stopPropagation()}
                     className={cn(
-                      "text-muted-foreground hover:text-foreground absolute top-1/2 flex size-3.5 -translate-y-1/2 items-center justify-center",
+                      "text-muted-foreground hover:text-foreground absolute inset-y-0 flex w-5 items-center justify-center",
                       nested ? "left-4" : "left-1",
                     )}
                   >
-                    <ChevronRight
-                      className={cn(
-                        "size-3 transition-transform duration-100",
-                        open && "rotate-90",
-                      )}
-                    />
+                    <ChevronRight className={cn(DISCLOSURE_ICON, open && "rotate-90")} />
                   </span>
                 )}
-                <TableIcon kind={t.kind} />
+                <TableIcon
+                  kind={t.kind}
+                  className={cn(
+                    "size-4",
+                    isActive ? "text-sidebar-primary" : "text-muted-foreground",
+                  )}
+                />
                 <span
                   className={cn(
                     "truncate",
@@ -1452,11 +1435,11 @@ export function SchemaTree({
                 {isPinned && (
                   <Pin
                     aria-label="Pinned"
-                    className="text-muted-foreground/60 size-3 shrink-0 -rotate-45"
+                    className="text-muted-foreground size-3 shrink-0 -rotate-45"
                   />
                 )}
                 {showRowCounts && t.rowEstimate !== null && (
-                  <span className="text-muted-foreground/70 ml-auto pl-2 font-mono text-[10px] tabular-nums">
+                  <span className="text-muted-foreground ml-auto shrink-0 font-mono text-[10px] tabular-nums">
                     {formatCount(t.rowEstimate, t.rowEstimate > 1000)}
                   </span>
                 )}
@@ -1495,19 +1478,19 @@ export function SchemaTree({
                 data-pending={dropping ? "drop" : undefined}
                 className={rowClass}
               >
-                <Icon
-                  aria-hidden
+                <Icon aria-hidden className="text-muted-foreground size-4 shrink-0" />
+                <span
                   className={cn(
-                    "size-3.5 shrink-0",
-                    row.type === "routine" ? "text-brand/80" : "text-muted-foreground",
+                    "truncate",
+                    isOverloaded && "max-w-[55%] shrink-0",
+                    dropping && "text-muted-foreground line-through",
                   )}
-                />
-                <span className={cn("truncate", dropping && "text-muted-foreground line-through")}>
+                >
                   {itemName(row)}
                 </span>
                 {isOverloaded && (
                   // Overloads share a name: their argument types tell them apart.
-                  <span className="text-muted-foreground/70 truncate font-mono text-[10px]">
+                  <span className="text-muted-foreground truncate font-mono text-[10px]">
                     ({row.type === "routine" ? row.routine.identityArguments : ""})
                   </span>
                 )}

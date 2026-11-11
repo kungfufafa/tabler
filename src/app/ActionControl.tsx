@@ -64,7 +64,7 @@ export function ActionControl() {
       role="group"
       aria-label="Staged changes"
       data-slot="action-control"
-      className="border-border bg-surface divide-border flex h-6 shrink-0 items-stretch divide-x overflow-hidden rounded-md border"
+      className="border-border bg-surface divide-border flex h-7 shrink-0 items-stretch divide-x overflow-hidden rounded-md border"
     >
       <Segment
         label="Discard changes"
@@ -78,12 +78,12 @@ export function ActionControl() {
         action="grid.commit"
         icon={ArrowUpFromLine}
         disabled={none || committing}
-        className={cn(!none && "text-brand hover:text-brand")}
+        className={cn(!none && "bg-accent text-foreground")}
       >
         {!none && (
           <span
             data-slot="pending-badge"
-            className="bg-brand text-primary-foreground flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold tabular-nums"
+            className="bg-foreground text-background flex h-4 min-w-4 items-center justify-center rounded px-1 text-[10px] leading-none font-medium tabular-nums"
           >
             {pending > 999 ? "999+" : pending}
           </span>

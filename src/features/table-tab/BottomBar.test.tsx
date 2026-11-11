@@ -212,7 +212,9 @@ describe("TableBottomBar", () => {
 
   it("the ⚙ popover validates the offset and shows the page", async () => {
     const { onPageChange } = mount({ offset: 400 });
-    fireEvent.click(screen.getByRole("button", { name: "Pagination settings" }));
+    const settings = screen.getByRole("button", { name: "Pagination settings" });
+    expect(settings).toHaveTextContent("Page 3");
+    fireEvent.click(settings);
     expect(await screen.findByText("Page 3 of 5")).toBeInTheDocument();
     const offset = screen.getByRole("spinbutton", { name: "Offset" });
     expect(offset).toHaveValue(400);

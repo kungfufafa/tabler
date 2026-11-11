@@ -7,7 +7,6 @@ import {
   FileCode2,
   Layers,
   LayoutGrid,
-  LoaderCircle,
   Search,
   Table2,
   TableProperties,
@@ -422,8 +421,7 @@ function caretAtEnd(e: ReactKeyboardEvent): boolean {
 /** Stands in for items that are still loading (tables, databases…). */
 function LoadingRow({ what }: { what: string }) {
   return (
-    <div className="text-muted-foreground flex h-7 items-center gap-2 px-2 text-xs">
-      <LoaderCircle className="size-3.5 animate-spin" />
+    <div role="status" className="sr-only">
       Loading {what}…
     </div>
   );

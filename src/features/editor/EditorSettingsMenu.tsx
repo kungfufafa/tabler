@@ -111,9 +111,9 @@ export function EditorSettingsMenu() {
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
-              size="icon-xs"
+              size="icon-sm"
               aria-label="Editor settings"
-              className="text-muted-foreground hover:text-foreground data-[state=open]:bg-muted"
+              className="text-muted-foreground hover:text-foreground data-[state=open]:bg-muted rounded-md transition-colors"
             >
               <Settings />
             </Button>

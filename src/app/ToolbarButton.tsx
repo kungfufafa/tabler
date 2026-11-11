@@ -64,9 +64,9 @@ export function ToolbarButton({
         disabled={disabled}
         onClick={onClick ?? (() => void actions.run(action))}
         className={cn(
-          "text-muted-foreground hover:text-foreground size-6.5",
-          text && "w-auto gap-1 px-1.5 text-[11px] font-medium",
-          pressed && "bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand",
+          "text-muted-foreground hover:text-foreground size-7 rounded-md transition-colors",
+          text && "w-auto gap-1 px-2 text-xs font-medium",
+          pressed && "border-border bg-accent text-foreground hover:bg-accent",
           className,
         )}
       >

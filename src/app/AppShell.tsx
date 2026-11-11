@@ -43,8 +43,10 @@ import { useKeymapVersion } from "@/lib/keys/keymap";
 import { applyAccent, type AccentPreset } from "@/lib/theme";
 import { useActiveConnection } from "@/stores/connections";
 import { useUiStore } from "@/stores/ui";
+import { useIsWelcomeWindow } from "@/stores/windowShape";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { Toolbar } from "./Toolbar";
+import { WindowShapeHost } from "./WindowShapeHost";
 import { WorkspaceRail } from "./WorkspaceRail";
 
 /**
@@ -103,7 +105,10 @@ function Workspace() {
 export function AppShell() {
   const view = useUiStore((s) => s.view);
   const active = useActiveConnection();
-  const showLauncher = view === "launcher" || !active;
+  // macOS: a window with nothing open is the Welcome window (small, its own toolbar). It keeps
+  // that layout until it has the workspace window's size (`WindowShapeHost`).
+  const welcome = useIsWelcomeWindow();
+  const showLauncher = view === "launcher" || !active || welcome;
   // Window close / quit while tabs hold unsaved work (the dialog below asks).
   useUnsavedGuard();
   // A remapped shortcut re-renders the shell, so menus and tooltips show the new keys.
@@ -117,9 +122,9 @@ export function AppShell() {
 
   return (
     <div className="bg-background text-foreground flex h-screen w-screen flex-col overflow-hidden">
-      <Toolbar launcher={showLauncher} />
+      {!welcome && <Toolbar launcher={showLauncher} />}
       <div className="flex min-h-0 flex-1">
-        <WorkspaceRail />
+        {!welcome && <WorkspaceRail />}
         {showLauncher ? (
           <main className="min-w-0 flex-1">
             <Launcher />
@@ -166,6 +171,8 @@ export function AppShell() {
       <WorkspaceSwitcherHost />
       {/* New Window (⌘N), Move Tab to New Window, Split Right (⇧⌘D); this window's connections. */}
       <WindowHost />
+      {/* macOS: the Welcome window while nothing is open, the workspace window otherwise. */}
+      <WindowShapeHost />
       {/* "Discard N uncommitted result changes and run?" before a SQL editor run. */}
       <RerunConfirmDialog />
       {/* Settings ▸ Data Decoder ▸ spatial values as WKT (sent to the backend). */}

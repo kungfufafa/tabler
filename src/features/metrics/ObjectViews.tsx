@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDown, ArrowUp, Loader2, Minus } from "lucide-react";
+import { ArrowDown, ArrowUp, Minus } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -258,10 +258,9 @@ export function DropdownView({
   const byKey = useMemo(() => new Map(options.map((o) => [valueKey(o.value), o])), [options]);
   const selected = current ? valueKey(current) : undefined;
   return (
-    <div className="flex h-full min-h-0 flex-col justify-center gap-1 px-3">
+    <div className="flex h-full min-h-0 flex-col justify-center gap-1 px-3" aria-busy={running}>
       <span className="text-muted-foreground flex items-center gap-1 truncate text-[11px] font-medium">
         {object.title}
-        {running && <Loader2 className="size-3 animate-spin" />}
       </span>
       <Select
         value={selected !== undefined && byKey.has(selected) ? selected : ""}
@@ -311,7 +310,6 @@ export function ButtonView({
         disabled={disabled || running}
         onClick={onClick}
       >
-        {running && <Loader2 className="animate-spin" />}
         <span className="truncate">{object.title}</span>
       </Button>
     </div>

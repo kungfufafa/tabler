@@ -14,6 +14,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   AppWindow,
   ArchiveRestore,
+  ArrowRight,
   ArrowUpDown,
   ChevronRight,
   Copy,
@@ -58,7 +59,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
+import { QuietLoading } from "@/components/QuietLoading";
 import { openBackup } from "@/features/backup/store";
 import { kindOf } from "@/features/drivers/catalog";
 import { usePaletteStore } from "@/features/palette/store";
@@ -69,6 +70,7 @@ import { comboFromEvent } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
+import { useIsWelcomeWindow } from "@/stores/windowShape";
 import { DriverBadge, GroupIcon } from "./badges";
 import { ConnectionRow, INDENT_PX } from "./ConnectionRow";
 import {
@@ -116,31 +118,32 @@ import { useDeleteProfile, useDuplicateProfile, useProfiles } from "./useConnect
 function WelcomeAction({
   icon: Icon,
   combo,
-  disabled,
+  variant = "ghost",
   onClick,
   children,
 }: {
   icon: LucideIcon;
   combo?: string;
-  disabled?: boolean;
-  onClick?: () => void;
-  children: ReactNode;
+  variant?: "default" | "outline" | "ghost";
+  onClick: () => void;
+  children: string;
 }) {
   return (
-    <button
+    <Button
       type="button"
-      disabled={disabled}
+      variant={variant}
+      title={children}
       onClick={onClick}
       className={cn(
-        "flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] whitespace-nowrap transition-colors outline-none",
-        "hover:bg-accent focus-visible:ring-ring/50 focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-50",
+        "w-full justify-start gap-2 rounded-md px-2 text-left transition-colors",
+        variant === "default" && "bg-foreground text-background hover:bg-foreground/90",
       )}
     >
-      <Icon className="text-muted-foreground size-4 shrink-0" />
+      <Icon aria-hidden className="size-4" />
       {/* No truncation: the welcome column is as wide as its longest action. */}
-      <span className="grow">{children}</span>
-      {combo && <Kbd combo={combo} className="ml-2 shrink-0" />}
-    </button>
+      <span className="flex-1">{children}</span>
+      {combo && <Kbd combo={combo} className="shrink-0" />}
+    </Button>
   );
 }
 
@@ -190,19 +193,20 @@ function GroupHeader({
             drag.listeners?.onPointerDown as React.PointerEventHandler<HTMLElement> | undefined
           }
           onClick={onToggle}
-          style={{ paddingLeft: 6 + node.depth * INDENT_PX }}
+          style={{ paddingLeft: 8 + node.depth * INDENT_PX }}
           className={cn(
-            "text-muted-foreground hover:text-foreground mx-1.5 flex h-7 w-[calc(100%-0.75rem)] items-center gap-1 rounded-md pt-1 pr-1.5 text-left text-[11px] font-semibold",
+            "text-muted-foreground hover:text-foreground hover:bg-row-hover flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-[12px] leading-4 font-medium transition-colors",
             drop.isOver && "bg-brand-soft text-brand ring-brand/50 ring-1",
             drag.isDragging && "opacity-50",
           )}
         >
           <ChevronRight
-            className={cn("size-3 shrink-0 transition-transform", !collapsed && "rotate-90")}
+            aria-hidden
+            className={cn("size-4 shrink-0 transition-transform", !collapsed && "rotate-90")}
           />
-          <GroupIcon icon={icon} image={image} className="size-3" />
-          <span className="truncate tracking-wide uppercase">{node.name}</span>
-          <span className="font-normal tabular-nums">{node.count}</span>
+          <GroupIcon icon={icon} image={image} className="size-4" />
+          <span className="truncate">{node.name}</span>
+          <span className="shrink-0 font-normal tabular-nums">{node.count}</span>
         </button>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-52">
@@ -223,7 +227,7 @@ function TopLevelDropZone({ label }: { label: string }) {
       ref={drop.setNodeRef}
       data-drop-over={drop.isOver || undefined}
       className={cn(
-        "border-border text-muted-foreground mx-1.5 mb-1 flex h-8 items-center justify-center rounded-md border border-dashed text-[11px]",
+        "border-border text-muted-foreground mb-2 flex h-8 items-center justify-center rounded-md border border-dashed text-xs",
         drop.isOver && "border-brand bg-brand-soft text-brand",
       )}
     >
@@ -246,12 +250,15 @@ const fileNameOf = (s: string) => s.replace(/[/\\:*?"<>|]+/g, "-").trim() || "Co
 
 /**
  * The welcome screen and connection manager: the first screen, and reachable later from the
- * workspace rail's Connection manager button, File ▸ Connection Manager and ⌘K (it has no key).
+ * workspace rail's Connection manager button, File ▸ Connection Manager and the command palette.
  * Drawn as a compact centred window (like TablePlus's welcome window) on the window background;
- * with connections open it fills its panel instead, flush like the rest of the workspace.
- * Left: app name, version and the "new connection" actions, Backup… / Restore… at the bottom.
+ * with connections open it fills its panel instead, flush like the rest of the workspace. On
+ * macOS a window with nothing open *is* the Welcome window (`stores/windowShape`): the list fills
+ * it edge to edge, and its header is the window's toolbar (new connection, new group, search)
+ * beside the traffic lights.
+ * Left: app name, version and connection setup actions, with Backup… / Restore… at the bottom.
  * Right: the saved connections, the ungrouped ones first without a header, then the group tree
- * (nested, collapsible headers; empty groups too); click selects, double-click / ↩ connects,
+ * (nested, collapsible headers; empty groups too); click selects, Connect / double-click / ↩ opens,
  * ↑/↓ move, ⌫ deletes, ⌘F searches (matches listed flat, with their group path). New Connection
  * has no key (⌘N is New Window, ⇧⌘O New SQL Viewer): it is "Create a new connection…" here, the
  * context menu's New ▸ Connection… and File ▸ New Connection….
@@ -318,6 +325,8 @@ export function Launcher() {
    */
   const selected =
     visible.find((p) => p.id === selectedId) ?? (searching ? (visible[0] ?? null) : null);
+  const selectedConnecting = selected !== null && connecting.includes(selected.id);
+  const selectedOpen = selected !== null && openIds.includes(selected.id);
   /** Where ↑/↓/↩ start from: the selection, else the first row on screen (ringed, not filled). */
   const current = selected ?? visible[0] ?? null;
   const hasList = searching
@@ -501,7 +510,7 @@ export function Launcher() {
       },
     ],
   };
-  /** Right-click on empty space, and the "…" button of the list. */
+  /** Right-click on empty space in the list. */
   const listMenu: MenuEntry[] = [
     newMenu,
     sortMenu,
@@ -511,10 +520,7 @@ export function Launcher() {
     separator,
     ...backupItems,
   ];
-  /**
-   * The "…" button: only what the window does not already show as a button (New Connection,
-   * From URL, Import, Backup and Restore are on the left).
-   */
+  /** The list header's overflow menu. */
   const paneMenu: MenuEntry[] = [
     { ...newGroupItem, label: "New Group…", icon: FolderPlus },
     sortMenu,
@@ -743,7 +749,7 @@ export function Launcher() {
   const renderGroup = (node: GroupNode): ReactNode => {
     const isCollapsed = collapsed.includes(node.path);
     return (
-      <div key={node.path} role="group" aria-label={node.path}>
+      <div key={node.path} role="group" aria-label={node.path} className="mt-2">
         <GroupHeader
           node={node}
           icon={iconOf(records, node.path)}
@@ -772,46 +778,106 @@ export function Launcher() {
    * drawn flush to the edges like the sidebar and tabs, not as a floating welcome window.
    */
   const docked = openIds.length > 0;
+  /** The window itself is the Welcome window: nothing to centre, and the header is its toolbar. */
+  const windowed = useIsWelcomeWindow();
+  const flush = docked || windowed;
+
+  const searchField = (
+    <div className="relative min-w-0 flex-1">
+      <Search
+        aria-hidden
+        className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2"
+      />
+      <Input
+        ref={searchRef}
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={onSearchKeyDown}
+        aria-label="Search connections"
+        placeholder={windowed ? "Search for connection…" : "Search connections"}
+        className={cn("pr-12 pl-8", windowed ? "h-7 rounded-full" : "rounded-md")}
+        spellCheck={false}
+        autoComplete="off"
+      />
+      <Kbd
+        combo="Mod+F"
+        className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2"
+      />
+    </div>
+  );
+  const newGroupButton = (
+    <Button
+      type="button"
+      variant="ghost"
+      size={windowed ? "icon-sm" : "icon"}
+      aria-label="New group"
+      title="New group"
+      className="rounded-md transition-colors"
+      onClick={() => openGroupDialog({ kind: "new", parent: "", moveIds: [] })}
+    >
+      <FolderPlus />
+    </Button>
+  );
+  const moreButton = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size={windowed ? "icon-sm" : "icon"}
+          aria-label="More connection actions"
+          title="More connection actions"
+          className="rounded-md transition-colors"
+        >
+          <MoreHorizontal />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-52">
+        <DropdownMenuEntries entries={paneMenu} />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 
   return (
-    // The window background, with the welcome "window" centred on it (16px clear of the edges).
     <div
       ref={rootRef}
       className={cn(
         "flex h-full min-h-0 min-w-0",
-        docked
-          ? "bg-background"
-          : "bg-surface-2 dark:bg-background items-center justify-center p-4",
+        flush ? "bg-background" : "bg-surface-2 dark:bg-background items-center justify-center p-4",
       )}
     >
       <div
         data-docked={docked || undefined}
+        data-windowed={windowed || undefined}
         className={cn(
           "flex min-h-0 w-full overflow-hidden",
-          docked
+          flush
             ? "h-full"
-            : "bg-background border-border dark:bg-surface-2 h-[560px] max-h-full max-w-[860px] rounded-xl border shadow-sm dark:shadow-black/40",
+            : "border-border h-[608px] max-h-full max-w-[920px] rounded-2xl border shadow-sm dark:shadow-none",
         )}
       >
-        {/* As wide as its longest action (at least 240px), so no action is ever cut off. */}
         <aside
+          // The Welcome window: the traffic lights sit above the app name, and the strip drags.
+          data-tauri-drag-region={windowed || undefined}
           className={cn(
-            "border-border flex min-w-60 shrink-0 flex-col border-r px-3 pb-3",
-            docked && "bg-sidebar",
+            "border-border bg-sidebar flex min-w-64 shrink-0 flex-col overflow-y-auto border-r px-4",
+            windowed ? "pt-12" : "pt-4",
           )}
         >
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-3 py-6 text-center">
-            {/* The app icon, as the Dock shows it (its tile has the macOS margin built in). */}
-            <img src={appIcon} alt="" aria-hidden draggable={false} className="mb-2 size-20" />
-            <h1 className="text-xl font-semibold tracking-tight">Tabler</h1>
-            <p className="text-muted-foreground mt-1 h-4 text-xs">
-              {version ? `Version ${version}` : null}
-            </p>
+          <div className="flex items-center gap-2">
+            <img src={appIcon} alt="" draggable={false} className="size-12 shrink-0" />
+            <div>
+              <h1 className="text-lg leading-6 font-semibold">Tabler</h1>
+              {version && <p className="text-muted-foreground text-xs">Version {version}</p>}
+            </div>
           </div>
-          <nav aria-label="Get started" className="flex flex-col gap-0.5">
+          <nav aria-label="Connection setup" className="mt-6 flex flex-col gap-1">
             <WelcomeAction
               icon={Plus}
               combo={shortcutFor("connection.new")}
+              variant={
+                !profiles.isPending && !profiles.isError && all.length === 0 ? "default" : "outline"
+              }
               onClick={() => openConnectionDialog()}
             >
               Create a new connection…
@@ -823,15 +889,14 @@ export function Launcher() {
               Import connections…
             </WelcomeAction>
           </nav>
-          {/* TablePlus keeps Backup and Restore at the bottom of the welcome window. */}
           <nav
             aria-label="Backup and restore"
-            className="border-border mt-2 grid grid-cols-2 gap-1.5 border-t pt-3"
+            className="border-border mt-auto grid grid-cols-2 gap-1 border-t py-3"
           >
             <Button
               type="button"
-              variant="outline"
-              size="sm"
+              variant="ghost"
+              className="justify-start gap-2 rounded-md px-2 transition-colors"
               onClick={() => backup("backup")}
               title="Back up a database with its native dump tool"
             >
@@ -839,8 +904,8 @@ export function Launcher() {
             </Button>
             <Button
               type="button"
-              variant="outline"
-              size="sm"
+              variant="ghost"
+              className="justify-start gap-2 rounded-md px-2 transition-colors"
               onClick={() => backup("restore")}
               title="Restore a database from a dump file"
             >
@@ -850,76 +915,47 @@ export function Launcher() {
         </aside>
 
         <section className="group/pane bg-surface flex min-w-0 flex-1 flex-col">
-          <div className="border-border flex h-11 shrink-0 items-center gap-1.5 border-b px-3">
-            {/* TablePlus: + and New group sit left of the search, in the connection list's own header. */}
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label="New connection"
-              title="Create a new connection"
-              onClick={() => openConnectionDialog()}
+          {windowed ? (
+            // The Welcome window's toolbar: it is the title bar, so its empty space drags.
+            <header
+              data-tauri-drag-region
+              data-slot="welcome-toolbar"
+              className="border-border flex h-12 shrink-0 items-center gap-1 border-b px-3"
             >
-              <Plus />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label="New group"
-              title="New group"
-              onClick={() => openGroupDialog({ kind: "new", parent: "", moveIds: [] })}
-            >
-              <FolderPlus />
-            </Button>
-            <div className="relative min-w-0 flex-1">
-              <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
-              <Input
-                ref={searchRef}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={onSearchKeyDown}
-                aria-label="Search connections"
-                placeholder="Search for connection…"
-                className="h-7 pr-10 pl-7"
-                spellCheck={false}
-                autoComplete="off"
-              />
-              <Kbd
-                combo="Mod+F"
-                className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2"
-              />
-            </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="More connection actions"
-                  title="New group, sort, export"
-                >
-                  <MoreHorizontal />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-52">
-                <DropdownMenuEntries entries={paneMenu} />
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="New connection"
+                title="Create a new connection"
+                className="rounded-md transition-colors"
+                onClick={() => openConnectionDialog()}
+              >
+                <Plus />
+              </Button>
+              {newGroupButton}
+              <div className="ml-1 flex min-w-0 flex-1">{searchField}</div>
+              {moreButton}
+            </header>
+          ) : (
+            <header className="border-border flex shrink-0 flex-col gap-2 border-b px-4 pt-4 pb-3">
+              <div className="flex min-h-8 items-center gap-2 pl-2">
+                <h2 className="min-w-0 flex-1 text-xl leading-7 font-medium">Connections</h2>
+                {newGroupButton}
+                {moreButton}
+              </div>
+              <div className="flex min-w-0">{searchField}</div>
+            </header>
+          )}
 
           <ContextMenu>
             <ContextMenuTrigger asChild>
               <div
                 data-testid="connection-list-area"
-                className="min-h-0 flex-1 overflow-y-auto py-1.5"
+                className="min-h-0 flex-1 overflow-y-auto px-4 py-2"
               >
                 {profiles.isPending ? (
-                  <div className="flex flex-col gap-1 px-1.5">
-                    {[0, 1, 2].map((i) => (
-                      <Skeleton key={i} className="h-11 rounded-md" />
-                    ))}
-                  </div>
+                  <QuietLoading aria-label="Loading connections" />
                 ) : profiles.isError ? (
                   <EmptyState
                     title="Could not load connections"
@@ -927,20 +963,14 @@ export function Launcher() {
                   />
                 ) : !hasList ? (
                   <EmptyState
-                    icon={Plug}
+                    icon={searching ? Search : Plug}
                     title={searching ? "No matching connections" : "No connections yet"}
                     description={
                       searching
-                        ? "Try another search term."
-                        : "Create a connection to PostgreSQL, MySQL or SQLite to get started."
+                        ? "Try another search term"
+                        : "Enter your database details, paste a connection URL, or import saved connections"
                     }
-                  >
-                    {!searching && (
-                      <Button size="sm" onClick={() => openConnectionDialog()}>
-                        <Plus /> Create a new connection…
-                      </Button>
-                    )}
-                  </EmptyState>
+                  />
                 ) : (
                   <DndContext
                     sensors={sensors}
@@ -969,23 +999,23 @@ export function Launcher() {
                     </div>
                     <DragOverlay dropAnimation={null}>
                       {dragging?.kind === "connection" ? (
-                        <div className="bg-popover border-border flex h-9 w-56 items-center gap-2 rounded-md border px-2 shadow-md">
+                        <div className="bg-popover border-border flex h-12 w-56 items-center gap-2 rounded-md border px-2 shadow-sm dark:shadow-none">
                           <DriverBadge
                             kind={kindOf(dragging.profile)}
                             color={dragging.profile.color}
                           />
-                          <span className="truncate text-[13px] font-semibold">
+                          <span className="truncate text-sm font-medium">
                             {dragging.profile.name}
                           </span>
                         </div>
                       ) : dragging?.kind === "group" ? (
-                        <div className="bg-popover border-border flex h-8 w-56 items-center gap-1.5 rounded-md border px-2 shadow-md">
+                        <div className="bg-popover border-border flex h-8 w-56 items-center gap-2 rounded-md border px-2 shadow-sm dark:shadow-none">
                           <GroupIcon
                             icon={iconOf(records, dragging.path)}
                             image={imageOf(records, dragging.path)}
                             fallback
                           />
-                          <span className="truncate text-[11px] font-semibold tracking-wide uppercase">
+                          <span className="truncate text-xs font-medium">
                             {leafName(dragging.path)}
                           </span>
                         </div>
@@ -999,6 +1029,24 @@ export function Launcher() {
               <ContextMenuEntries entries={listMenu} />
             </ContextMenuContent>
           </ContextMenu>
+          <footer className="border-border flex min-h-14 shrink-0 items-center gap-4 border-t px-4 py-3">
+            <p
+              className="text-muted-foreground min-w-0 flex-1 truncate pl-2 text-sm"
+              title={selected?.name}
+            >
+              {selected?.name ?? (current && "Select a connection")}
+            </p>
+            <Button
+              type="button"
+              className="bg-foreground text-background hover:bg-foreground/90 min-w-24 gap-2 rounded-md px-3 transition-colors"
+              disabled={!selected || selectedConnecting}
+              aria-busy={selectedConnecting || undefined}
+              onClick={() => selected && openProfile(selected.id)}
+            >
+              {selectedConnecting ? "Connecting…" : selectedOpen ? "Open workspace" : "Connect"}
+              <ArrowRight />
+            </Button>
+          </footer>
         </section>
       </div>
 
