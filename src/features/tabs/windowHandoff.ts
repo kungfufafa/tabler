@@ -1,6 +1,8 @@
 import { toast } from "sonner";
 import { getEditorState } from "@/features/editor/editorStates";
+import { requestWindowClose } from "@/hooks/useUnsavedGuard";
 import { ipc, toIpcError, type Conjunction, type WindowHandoff } from "@/lib/ipc";
+import { isTauri } from "@/lib/ipc/transport";
 import { focusWelcomeWindow } from "@/lib/windowDriver";
 import { useConnectionsStore, type OpenConnection } from "@/stores/connections";
 import { getQueryTab } from "@/stores/queryTabs";
@@ -129,7 +131,10 @@ const errorText = (e: unknown) => toIpcError(e).message;
 
 /**
  * File ▸ New Window (⌘N): an empty window (its connection list). On macOS that is the Welcome
- * window, and there is one of it: this window when it is, else an open one comes to the front.
+ * window, and there is one of it: this window when it is, else an open one comes to the front,
+ * else the backend builds it (at its own size, shown once the list is laid out). A workspace
+ * window's connection list (the rail's +, ⇧⌘K) comes up the same way: in the Welcome window,
+ * never inside the workspace window.
  */
 export async function openNewWindow(): Promise<boolean> {
   if (shapedWindows) {
@@ -137,12 +142,56 @@ export async function openNewWindow(): Promise<boolean> {
     if (await focusWelcomeWindow()) return true;
   }
   try {
-    await ipc.windows.open(null);
+    await ipc.windows.open(null, shapedWindows);
     return true;
   } catch (e) {
     toast.error("Could not open a new window", { description: errorText(e) });
     return false;
   }
+}
+
+/**
+ * A workspace window's connection list is the Welcome window (macOS, like TablePlus), never the
+ * list drawn inside it: asked for (the rail's +, ⇧⌘K, the palette) while a connection is open,
+ * the Welcome window comes up and this window keeps its workspace. True when it did. The browser
+ * mock has one window, and a window with nothing open is the Welcome window itself.
+ */
+export function showListInWelcomeWindow(): boolean {
+  if (!shapedWindows || !isTauri()) return false;
+  if (useWindowShape.getState().shape !== "workspace") return false;
+  if (useConnectionsStore.getState().order.length === 0) return false;
+  void openNewWindow();
+  return true;
+}
+
+/**
+ * Whether this window is the macOS Welcome window of a native build: what is picked in its list
+ * may open in a workspace window (`routeProfileToWorkspace`).
+ */
+export function isWelcomeWindow(): boolean {
+  return shapedWindows && isTauri() && useWindowShape.getState().shape === "welcome";
+}
+
+/**
+ * A connection picked in the Welcome window while a workspace window is open (TablePlus: a new
+ * workspace in the same window): that window opens the profile and comes to the front, and the
+ * Welcome window closes. Resolves false when no window holds a connection (or it could not be
+ * asked): the Welcome window opens the profile itself and becomes the workspace window.
+ */
+export async function routeProfileToWorkspace(
+  profileId: string,
+  close: () => Promise<unknown> = requestWindowClose,
+): Promise<boolean> {
+  let label: string | null;
+  try {
+    label = await ipc.windows.routeProfile(profileId);
+  } catch (e) {
+    console.warn("[window] could not hand the connection to a workspace window", e);
+    return false;
+  }
+  if (label === null) return false;
+  await close();
+  return true;
 }
 
 /** "Open in New Window" on a connection: a new window connects to it. */

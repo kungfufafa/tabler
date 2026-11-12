@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { useOpenProfile } from "@/features/connections/openProfile";
+import { listenWindowEvent } from "@/lib/ipc/events";
 import { installMenuAcceleratorSync } from "@/lib/keys/menuSync";
 import { loadPrefs } from "@/stores/prefs";
 import { installSessionOwnership, openHandoff, restoreAtStartup } from "@/stores/sessionRestore";
@@ -43,6 +44,23 @@ export function SessionHost() {
       cancelled = true;
     };
   }, [qc]);
+
+  // A connection picked in the Welcome window while this (workspace) window is open opens here
+  // (macOS, `routeProfileToWorkspace`).
+  useEffect(() => {
+    let gone = false;
+    let unlisten: (() => void) | null = null;
+    void listenWindowEvent("window:open-profile", (profileId) => openRef.current(profileId)).then(
+      (u) => {
+        if (gone) u();
+        else unlisten = u;
+      },
+    );
+    return () => {
+      gone = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => installSessionOwnership(qc), [qc]);
   useEffect(() => installMenuAcceleratorSync(), []);

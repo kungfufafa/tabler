@@ -29,11 +29,24 @@ function grantedTo(window: string): Set<string> {
 }
 
 describe("window capabilities", () => {
-  it.each(["main", "w-2"])("lets the renderer set the native theme in %s", (window) => {
+  it.each(["main", "w-2", "welcome"])("lets the renderer set the native theme in %s", (window) => {
     const granted = grantedTo(window);
     // Theme (Settings ▸ Appearance) also sets the menu bar, file panels and dialogs.
     expect(granted.has("core:app:allow-set-app-theme")).toBe(true);
     expect(granted.has("core:window:allow-set-theme")).toBe(true);
+  });
+
+  // The macOS Welcome window (`welcome`) is shown by its renderer once the list is laid out.
+  it.each(["main", "w-2", "welcome"])("lets the renderer shape and show %s", (window) => {
+    const granted = grantedTo(window);
+    for (const permission of [
+      "core:window:allow-show",
+      "core:window:allow-set-focus",
+      "core:window:allow-set-size",
+      "core:window:allow-set-resizable",
+      "core:window:allow-close",
+    ])
+      expect(granted.has(permission)).toBe(true);
   });
 
   it.each(["main", "w-2"])("lets the window-state plugin restore %s", (window) => {

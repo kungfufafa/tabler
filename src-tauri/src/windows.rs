@@ -26,6 +26,17 @@ pub const MAIN_WINDOW: &str = "main";
 pub const WINDOW_PREFIX: &str = "w-";
 /// How far a new window is offset from the one it was opened from (logical pixels).
 const CASCADE_OFFSET: f64 = 28.0;
+/// macOS: the Welcome window a workspace window asks for (the connection list in a window of its
+/// own, like TablePlus). Built at its size and hidden until its renderer has laid the list out;
+/// the window-state plugin leaves it alone (it is always the same size, centred).
+pub const WELCOME_WINDOW: &str = "welcome";
+/// The Welcome window's size in logical pixels (`WELCOME_SIZE` in `src/stores/windowShape.ts`).
+const WELCOME_SIZE: (f64, f64) = (760.0, 480.0);
+/// How long the Welcome window may stay hidden: its renderer shows it once the list is laid out,
+/// and a renderer that never gets there must not leave a window nobody can see.
+const WELCOME_REVEAL: std::time::Duration = std::time::Duration::from_millis(2500);
+/// Sent to a workspace window: open this profile here (picked in the Welcome window).
+pub const EVENT_OPEN_PROFILE: &str = "window:open-profile";
 
 /// The lowest free `w-N` label (N ≥ 2: the main window is the first).
 pub fn next_window_label<'a>(taken: impl IntoIterator<Item = &'a str>) -> String {
@@ -49,7 +60,8 @@ struct Inner {
     /// A quit is under way: windows that answered it with nothing left to keep (`quit_app`).
     quit_ready: HashSet<String>,
     quitting: bool,
-    last_focused: Option<String>,
+    /// The open windows that had the focus, the latest one last.
+    focused: Vec<String>,
     /// Windows built after the main one, oldest first (labels are reused, so their numbers do not
     /// tell their age).
     born: Vec<String>,
@@ -211,9 +223,7 @@ impl WindowRegistry {
         inner.reserved.remove(label);
         inner.unsaved.remove(label);
         inner.quit_ready.remove(label);
-        if inner.last_focused.as_deref() == Some(label) {
-            inner.last_focused = None;
-        }
+        inner.focused.retain(|l| l != label);
         let mut connections: Vec<Uuid> = inner
             .connections
             .remove(label)
@@ -238,11 +248,37 @@ impl WindowRegistry {
     }
 
     pub fn set_focused(&self, label: &str) {
-        self.lock().last_focused = Some(label.to_string());
+        let mut inner = self.lock();
+        inner.focused.retain(|l| l != label);
+        inner.focused.push(label.to_string());
     }
 
     pub fn last_focused(&self) -> Option<String> {
-        self.lock().last_focused.clone()
+        self.lock().focused.last().cloned()
+    }
+
+    /// Whether a window holds an open connection (it is a workspace window).
+    pub fn has_connections(&self, label: &str) -> bool {
+        self.lock().connections.contains_key(label)
+    }
+
+    /// The workspace window a connection picked in the window `from` opens in: of the windows in
+    /// `open` that hold a connection, the one that had the focus last, else the oldest. `None`
+    /// when no other window holds one.
+    pub fn workspace_window(&self, from: &str, open: &[String]) -> Option<String> {
+        let inner = self.lock();
+        let candidates: Vec<String> = open
+            .iter()
+            .filter(|l| *l != from && inner.connections.contains_key(*l))
+            .cloned()
+            .collect();
+        inner
+            .focused
+            .iter()
+            .rev()
+            .find(|l| candidates.contains(l))
+            .cloned()
+            .or_else(|| inner.oldest(&candidates))
     }
 }
 
@@ -331,22 +367,102 @@ pub fn emit_to_window<R: Runtime, S: Serialize + Clone>(
 /// Sent to the window that keeps the session saved from now on (the one that did closed).
 pub const EVENT_SESSION_OWNER: &str = "window:session-owner";
 
-/// Opens a new window like the main one (cascaded from the focused window), with `handoff` parked
-/// for its renderer. Returns its label.
-pub fn open_window<R: Runtime>(
-    app: &AppHandle<R>,
-    handoff: Option<WindowHandoff>,
-) -> tauri::Result<String> {
-    let registry = app.state::<WindowRegistry>();
-    let label = registry.reserve(&open_labels(app), handoff);
-    let mut config = app
-        .config()
+/// The main window's configuration (tauri.conf.json): what every other window starts from.
+fn main_window_config<R: Runtime>(app: &AppHandle<R>) -> tauri::utils::config::WindowConfig {
+    app.config()
         .app
         .windows
         .iter()
         .find(|w| w.label == MAIN_WINDOW)
         .cloned()
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// Brings a window to the front.
+fn raise<R: Runtime>(window: &tauri::WebviewWindow<R>) -> tauri::Result<()> {
+    if window.is_minimized()? {
+        window.unminimize()?;
+    }
+    window.show()?;
+    window.set_focus()
+}
+
+/// macOS: shows the Welcome window ([`WELCOME_WINDOW`]), building it when it is not open. `None`
+/// when the window of that label holds a connection (the list in it was used to connect with no
+/// workspace window open, so it became one): the caller opens a plain window instead.
+fn show_welcome_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Option<String>> {
+    let registry = app.state::<WindowRegistry>();
+    if let Some(open) = app.get_webview_window(WELCOME_WINDOW) {
+        if registry.has_connections(WELCOME_WINDOW) {
+            return Ok(None);
+        }
+        raise(&open)?;
+        return Ok(Some(WELCOME_WINDOW.to_string()));
+    }
+    let mut config = main_window_config(app);
+    config.label = WELCOME_WINDOW.to_string();
+    (config.width, config.height) = WELCOME_SIZE;
+    (config.min_width, config.min_height) = (None, None);
+    (config.x, config.y) = (None, None);
+    config.center = true;
+    config.resizable = false;
+    config.maximizable = false;
+    // Shown by its renderer once the list is laid out (`applyShape`), so it never shows empty.
+    config.visible = false;
+    let window = WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build())?;
+    registry.born(WELCOME_WINDOW);
+    log::info!("opened the Welcome window");
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(WELCOME_REVEAL).await;
+        if !window.is_visible().unwrap_or(true) {
+            log::warn!("the Welcome window was still hidden: showing it");
+            let _ = raise(&window);
+        }
+    });
+    Ok(Some(WELCOME_WINDOW.to_string()))
+}
+
+/// A connection picked in the Welcome window `from` opens in a workspace window when one is open
+/// (TablePlus: a new workspace in the same window): that window is told to open the profile and
+/// comes to the front. Returns its label; `None` when no window holds a connection (the Welcome
+/// window opens it itself).
+pub fn route_profile<R: Runtime>(
+    app: &AppHandle<R>,
+    from: &str,
+    profile_id: Uuid,
+) -> Option<String> {
+    let registry = app.try_state::<WindowRegistry>()?;
+    let label = registry.workspace_window(from, &open_labels(app))?;
+    let window = app.get_webview_window(&label)?;
+    let target = EventTarget::webview_window(label.as_str());
+    if let Err(e) = app.emit_to(target, EVENT_OPEN_PROFILE, profile_id) {
+        log::warn!("could not emit {EVENT_OPEN_PROFILE}: {e}");
+        return None;
+    }
+    if let Err(e) = raise(&window) {
+        log::warn!("could not bring window {label} to the front: {e}");
+    }
+    Some(label)
+}
+
+/// Opens a new window like the main one (cascaded from the focused window), with `handoff` parked
+/// for its renderer. Returns its label. `welcome` (macOS, no handoff): the window is asked for to
+/// show the connection list, so the one Welcome window comes up instead of another plain window.
+pub fn open_window<R: Runtime>(
+    app: &AppHandle<R>,
+    handoff: Option<WindowHandoff>,
+    welcome: bool,
+) -> tauri::Result<String> {
+    if welcome
+        && handoff.is_none()
+        && cfg!(target_os = "macos")
+        && let Some(label) = show_welcome_window(app)?
+    {
+        return Ok(label);
+    }
+    let registry = app.state::<WindowRegistry>();
+    let label = registry.reserve(&open_labels(app), handoff);
+    let mut config = main_window_config(app);
     config.label = label.clone();
     // Cascaded from the window it was opened from (the window-state plugin moves it to where
     // this window number was last, if it was open before).
@@ -740,6 +856,51 @@ mod tests {
         assert_eq!(registry.last_focused().as_deref(), Some("w-2"));
         registry.forget("w-2", &labels(&["main"]));
         assert_eq!(registry.last_focused(), None);
+        // The window focused before the one that closed is the last one again.
+        registry.set_focused("main");
+        registry.set_focused("w-2");
+        registry.forget("w-2", &labels(&["main"]));
+        assert_eq!(registry.last_focused().as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_picked_connection_goes_to_the_workspace_window_focused_last() {
+        let registry = WindowRegistry::default();
+        let open = labels(&["main", "w-2", "w-3", WELCOME_WINDOW]);
+        // No window holds a connection: the Welcome window opens it itself.
+        assert_eq!(registry.workspace_window(WELCOME_WINDOW, &open), None);
+        registry.set_connections("main", [Uuid::new_v4()]);
+        registry.set_connections("w-3", [Uuid::new_v4()]);
+        assert!(registry.has_connections("main"));
+        assert!(!registry.has_connections("w-2"));
+        // Never focused: the oldest one (the main window).
+        assert_eq!(
+            registry.workspace_window(WELCOME_WINDOW, &open).as_deref(),
+            Some("main")
+        );
+        registry.set_focused("main");
+        registry.set_focused("w-3");
+        // A window without a connection (w-2) and the asking window do not count.
+        registry.set_focused("w-2");
+        registry.set_focused(WELCOME_WINDOW);
+        assert_eq!(
+            registry.workspace_window(WELCOME_WINDOW, &open).as_deref(),
+            Some("w-3")
+        );
+        // Never the window that asks, and not one that closed.
+        assert_eq!(
+            registry.workspace_window("w-3", &open).as_deref(),
+            Some("main")
+        );
+        registry.forget("w-3", &labels(&["main", "w-2", WELCOME_WINDOW]));
+        assert_eq!(
+            registry
+                .workspace_window(WELCOME_WINDOW, &labels(&["main", "w-2", WELCOME_WINDOW]))
+                .as_deref(),
+            Some("main")
+        );
+        registry.set_connections("main", []);
+        assert_eq!(registry.workspace_window(WELCOME_WINDOW, &open), None);
     }
 
     #[test]

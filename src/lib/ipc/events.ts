@@ -28,6 +28,8 @@ type EventMap = {
   "sqlite-ssh:status": SqliteSshEvent;
   /** The window that kept the session saved closed: this one does from now on. */
   "window:session-owner": null;
+  /** A connection was picked in the Welcome window: this (workspace) window opens the profile. */
+  "window:open-profile": string;
   /** Another window saved the preferences (`changed`: the keys it changed, with their values). */
   "prefs:changed": { from: string; changed: Record<string, unknown> };
   /** Another window set, changed or turned off the passcode. */

@@ -80,7 +80,8 @@ export async function applyShape(
     if (to === "welcome") {
       await driver.setMinSize(null);
       await driver.setSize(WELCOME_SIZE.width, WELCOME_SIZE.height);
-      if (change.kind === "toWelcome") await driver.center();
+      // A Welcome window built hidden is centred here too: it is placed before it has its size.
+      if (change.kind === "toWelcome" || !visible) await driver.center();
       await driver.setResizable(false);
       await driver.setMaximizable(false);
     } else {
@@ -101,7 +102,8 @@ export async function applyShape(
       });
     }
     onSized(to);
-    if (hidden) await pause(SETTLE_MS);
+    // A window built hidden (the Welcome window) is given the same time before it first shows.
+    if (hidden || !visible) await pause(SETTLE_MS);
   } finally {
     // Whatever happened, the window is never left hidden.
     if (hidden || !(await driver.isVisible().catch(() => false))) await driver.reveal();

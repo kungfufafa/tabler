@@ -208,3 +208,27 @@ describe("applyShape", () => {
     expect(state.visible).toBe(true);
   });
 });
+
+describe("the Welcome window built hidden", () => {
+  it("is laid out before it first shows, and never hidden again", async () => {
+    // Opened before: it has the Welcome shape already, and is centred all the same.
+    storeSavedShape("main", { shape: "welcome", frame: null });
+    const { driver, state, calls } = fakeWindow({ frame: SMALL, visible: false });
+    const steps: string[] = [];
+    const shape = await applyShape(
+      "welcome",
+      driver,
+      (to) => steps.push(`sized ${to}`),
+      async () => {
+        steps.push(`pause while ${state.visible ? "shown" : "hidden"}`);
+      },
+    );
+    expect(shape).toBe("welcome");
+    expect(steps).toEqual(["sized welcome", "pause while hidden"]);
+    expect(calls).not.toContain("hide");
+    expect(calls).toContain("center");
+    expect(calls.at(-1)).toBe("reveal");
+    expect(state.visible).toBe(true);
+    expect(state.resizable).toBe(false);
+  });
+});

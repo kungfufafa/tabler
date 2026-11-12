@@ -226,3 +226,11 @@ audit" pass; the TablePlus behaviour is the target.
     turns it back. ⌘N shows the one Welcome window rather than opening another. A full-screen
     window keeps its size and draws the centred panel of item 16. Windows and Linux keep the
     in-window list. (`stores/windowShape`, `lib/windowDriver`, `app/WindowShapeHost`.)
+20. **A workspace window never draws the connection list (macOS):** asked for while a connection
+    is open (the rail's `+`, ⇧⌘K, the palette, ⌘N), the list comes up in the Welcome window, a
+    window of its own (label `welcome`, built at 760 × 480 and shown once the list is laid out),
+    and the workspace stays as it is. A connection picked there opens as a new workspace in the
+    workspace window that had the focus last, which comes to the front, and the Welcome window
+    closes. With no workspace window open the Welcome window opens the connection itself and
+    becomes the workspace window (item 19). (`windows.rs` `show_welcome_window` /
+    `route_profile`, `features/tabs/windowHandoff`.)

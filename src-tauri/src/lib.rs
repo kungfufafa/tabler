@@ -1049,6 +1049,8 @@ pub fn run() {
                     tauri_plugin_window_state::StateFlags::all()
                         - tauri_plugin_window_state::StateFlags::DECORATIONS,
                 )
+                // The Welcome window is always the same size and centred.
+                .with_denylist(&[windows::WELCOME_WINDOW])
                 .build(),
         )
         .plugin(
@@ -1098,6 +1100,7 @@ pub fn run() {
             commands::app::set_unsaved,
             commands::app::cancel_quit,
             commands::app::window_open,
+            commands::app::window_route_profile,
             commands::app::window_take_handoff,
             commands::app::window_set_connections,
             commands::app::window_label,

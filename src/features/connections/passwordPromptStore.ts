@@ -115,6 +115,11 @@ export function dropHandedOverPassword(profileId: string): void {
   handedOver.delete(profileId);
 }
 
+/** Whether the connection form handed a password over for the profile's next Connect. */
+export function hasHandedOverPassword(profileId: string): boolean {
+  return handedOver.has(profileId);
+}
+
 export function takeHandedOverPassword(profileId: string): string | undefined {
   const password = handedOver.get(profileId);
   handedOver.delete(profileId);

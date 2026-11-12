@@ -49,6 +49,18 @@ interface UiState {
   toggleRailConnection: () => void;
 }
 
+/**
+ * Asked when the connection list is to show (`setView("launcher")`): true when it showed
+ * somewhere else, so this window keeps what it shows. macOS: a workspace window's list is the
+ * Welcome window (`app/WindowShapeHost`).
+ */
+let launcherElsewhere: (() => boolean) | null = null;
+
+/** Sets (null: removes) who shows the connection list instead of this window. */
+export function setLauncherElsewhere(show: (() => boolean) | null): void {
+  launcherElsewhere = show;
+}
+
 export const useUiStore = create<UiState>()(
   persist(
     (set) => ({
@@ -65,7 +77,10 @@ export const useUiStore = create<UiState>()(
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
       toggleInspector: () => set((s) => ({ inspectorOpen: !s.inspectorOpen })),
       toggleConsole: () => set((s) => ({ consoleOpen: !s.consoleOpen })),
-      setView: (view) => set({ view }),
+      setView: (view) => {
+        if (view === "launcher" && launcherElsewhere?.()) return;
+        set({ view });
+      },
       setRailOrder: (railOrder) => set({ railOrder }),
       toggleRailDatabase: () => set((s) => ({ railShowDatabase: !s.railShowDatabase })),
       toggleRailConnection: () => set((s) => ({ railShowConnection: !s.railShowConnection })),

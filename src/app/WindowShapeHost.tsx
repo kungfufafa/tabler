@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import { useSqlViewerStore } from "@/features/sqlviewer/store";
+import { showListInWelcomeWindow } from "@/features/tabs/windowHandoff";
 import { useWindowFullscreen } from "@/hooks/useWindowFullscreen";
 import { applyShape, windowDriver } from "@/lib/windowDriver";
 import { useConnectionsStore } from "@/stores/connections";
+import { setLauncherElsewhere } from "@/stores/ui";
 import {
   desiredShape,
   shapedWindows,
@@ -34,6 +36,11 @@ function requestShape(to: WindowShape): void {
  */
 export function WindowShapeHost() {
   const connections = useConnectionsStore((s) => s.order.length);
+  useEffect(() => {
+    if (!shapedWindows) return;
+    setLauncherElsewhere(showListInWelcomeWindow);
+    return () => setLauncherElsewhere(null);
+  }, []);
   const opening = useWindowShape((s) => s.opening);
   const decided = useWindowShape((s) => s.decided);
   // The standalone SQL Viewer (no connection) needs a workspace window's room.

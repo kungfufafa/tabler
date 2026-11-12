@@ -53,6 +53,17 @@ registerMock("window_open", ({ handoff }) => {
   return label;
 });
 
+/** The label `window_route_profile` answers with (tests set it: a workspace window is open). */
+export const mockWorkspaceWindow: { label: string | null } = { label: null };
+/** Profiles the Welcome window sent to a workspace window. */
+export const mockRoutedProfiles: string[] = [];
+
+// Every mock window is its own app: no other window holds a connection.
+registerMock("window_route_profile", ({ profileId }) => {
+  if (mockWorkspaceWindow.label !== null) mockRoutedProfiles.push(String(profileId));
+  return mockWorkspaceWindow.label;
+});
+
 registerMock("window_take_handoff", () => {
   const key = HANDOFF_PREFIX + mockWindowLabel();
   const raw = storage()?.getItem(key) ?? null;

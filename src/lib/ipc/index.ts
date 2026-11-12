@@ -760,8 +760,18 @@ export const ipc = {
     /**
      * File ▸ New Window, "Open in New Window", Move Tab to New Window: opens a window; `handoff`
      * (what it opens with) waits for its renderer. Resolves with the new window's label.
+     * `welcome` (macOS, no handoff): the window is asked for to show the connection list, so the
+     * one Welcome window comes up (built when it is not open) instead of another plain window.
      */
-    open: (handoff: WindowHandoff | null = null) => invoke<string>("window_open", { handoff }),
+    open: (handoff: WindowHandoff | null = null, welcome = false) =>
+      invoke<string>("window_open", { handoff, welcome }),
+    /**
+     * A connection picked in this window (the Welcome window) opens in a workspace window when
+     * one is open: that window is told to open the profile (`window:open-profile`) and comes to
+     * the front. Resolves with its label, or null when no other window holds a connection.
+     */
+    routeProfile: (profileId: string) =>
+      invoke<string | null>("window_route_profile", { profileId }),
     /** What this window was opened with (once; null for the main window and plain new ones). */
     takeHandoff: () => invoke<WindowHandoff | null>("window_take_handoff"),
     /** This window's open connections: the backend closes them when the window goes away. */

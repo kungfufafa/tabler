@@ -69,8 +69,18 @@ pub fn set_unsaved(
 pub async fn window_open(
     app: AppHandle,
     handoff: Option<WindowHandoff>,
+    welcome: Option<bool>,
 ) -> Result<String, AppError> {
-    windows::open_window(&app, handoff).map_err(|e| AppError::Internal(e.to_string()))
+    windows::open_window(&app, handoff, welcome.unwrap_or(false))
+        .map_err(|e| AppError::Internal(e.to_string()))
+}
+
+/// A connection picked in this window (the Welcome window) opens in a workspace window when one
+/// is open: returns that window's label once it was told to open the profile, `None` when no
+/// other window holds a connection.
+#[tauri::command]
+pub fn window_route_profile(app: AppHandle, webview: Webview, profile_id: Uuid) -> Option<String> {
+    windows::route_profile(&app, webview.label(), profile_id)
 }
 
 /// What this window was opened with (once; `None` for the main window and plain new windows).

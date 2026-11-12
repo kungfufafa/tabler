@@ -8,6 +8,7 @@ import { mockWindowConnections } from "@/lib/ipc/mock/windows";
 import { useConnectionsStore } from "@/stores/connections";
 import { groupTabs, registerUnsavedSource, useTabsStore, type Tab } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
+import { shapedWindows } from "@/stores/windowShape";
 import { dropTab, groupDropId } from "./tabDrag";
 import { registerToolTab, type ToolTabProps } from "./toolTabs";
 import { UnsavedChangesDialog } from "./UnsavedChangesDialog";
@@ -139,7 +140,8 @@ describe("window actions", () => {
     state().open(note("a", "Alpha"));
     renderWorkspace();
     await act(() => actions.run("window.new"));
-    expect(open).toHaveBeenLastCalledWith(null);
+    // macOS: the one Welcome window is asked for instead of another plain window.
+    expect(open).toHaveBeenLastCalledWith(null, shapedWindows);
     await act(() => actions.run("window.move-tab"));
     await vi.waitFor(() => expect(state().tabs).toEqual([]));
     expect(open).toHaveBeenLastCalledWith({

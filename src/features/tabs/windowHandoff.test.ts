@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { seedEditor } from "@/features/editor/editorStates";
 import { emptyStaging, insertRow } from "@/features/staging/model";
 import type { ConnectionInfo } from "@/lib/ipc";
-import { mockOpenedWindows } from "@/lib/ipc/mock/windows";
+import { mockOpenedWindows, mockRoutedProfiles, mockWorkspaceWindow } from "@/lib/ipc/mock/windows";
 import { useConnectionsStore, type OpenConnection } from "@/stores/connections";
 import { updateQueryTab, useQueryTabsStore } from "@/stores/queryTabs";
 import { newFilterRow, useTableTabsStore } from "@/stores/tableTabs";
@@ -15,6 +15,8 @@ import {
   moveTabToNewWindow,
   openNewWindow,
   openProfileInNewWindow,
+  routeProfileToWorkspace,
+  showListInWelcomeWindow,
 } from "./windowHandoff";
 
 const toast = vi.hoisted(() => ({ error: vi.fn() }));
@@ -206,5 +208,33 @@ describe("moving a tab to a new window", () => {
       null,
       { profileId: "p1", database: null, schema: null, tab: null },
     ]);
+  });
+
+  describe("the Welcome window's pick", () => {
+    afterEach(() => {
+      mockWorkspaceWindow.label = null;
+      mockRoutedProfiles.length = 0;
+    });
+
+    it("stays in the Welcome window while no window holds a connection", async () => {
+      const close = vi.fn(() => Promise.resolve());
+      await expect(routeProfileToWorkspace("p1", close)).resolves.toBe(false);
+      expect(mockRoutedProfiles).toEqual([]);
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it("opens in the workspace window, and the Welcome window closes", async () => {
+      mockWorkspaceWindow.label = "main";
+      const close = vi.fn(() => Promise.resolve());
+      await expect(routeProfileToWorkspace("p1", close)).resolves.toBe(true);
+      expect(mockRoutedProfiles).toEqual(["p1"]);
+      expect(close).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the connection list in the one window of the browser mock", () => {
+      useConnectionsStore.setState({ byId: { c1: conn }, order: ["c1"], activeId: "c1" });
+      expect(showListInWelcomeWindow()).toBe(false);
+      expect(mockOpenedWindows).toHaveLength(0);
+    });
   });
 });
