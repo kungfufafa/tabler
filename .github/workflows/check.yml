@@ -110,16 +110,18 @@ jobs:
           for f in $added; do echo "::warning::binding not committed yet: ${f#"$out"/}"; done
 
   check-windows:
-    name: Windows · app (TypeScript + Rust)
-    # The same checks on Windows, which build.yml also ships.
+    name: Windows · app (Rust)
+    # The Rust checks on Windows, which build.yml also ships. Building the test programs takes
+    # most of this job (each file in src-tauri/tests links the whole app), so the TypeScript tests
+    # run next to it in a job of their own instead of before it.
     runs-on: windows-latest
     timeout-minutes: 120
     defaults:
       run:
         shell: bash
     steps:
-      # LF files as in the repository: prettier expects LF, and CRLF copies would make every
-      # generated binding differ from what `cargo test` writes.
+      # LF files as in the repository: CRLF copies would make every generated binding differ from
+      # what `cargo test` writes.
       - run: git config --global core.autocrlf false
 
       - uses: actions/checkout@v4
@@ -146,14 +148,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: TypeScript — typecheck, lint, format, tests
-        run: |
-          pnpm typecheck
-          pnpm lint
-          pnpm format:check
-          pnpm test
-          pnpm test:lanes
-
       # rusqlite builds the vendored OpenSSL here (SQLCipher), with `perl` from PATH unless
       # OPENSSL_SRC_PERL says otherwise. Under bash that is Git's MSYS perl, which cannot build
       # it; under pwsh Strawberry Perl comes first, as in build.yml. (Get-Command, not
@@ -174,3 +168,35 @@ jobs:
 
       - name: Generated TypeScript bindings are committed
         run: git diff --exit-code -- src/lib/ipc/bindings
+
+  check-windows-ts:
+    name: Windows · app (TypeScript)
+    # The renderer's tests on Windows (paths, line endings, key names). The typecheck, lint and
+    # format check read the same files on every system: the macOS job runs them.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # LF files as in the repository: the tests read fixtures and committed bindings as text.
+      - run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript — tests
+        run: |
+          pnpm test
+          pnpm test:lanes
