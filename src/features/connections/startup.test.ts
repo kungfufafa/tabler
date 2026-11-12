@@ -3,26 +3,17 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { MAIN_WINDOW, resetWindowLabelForTests } from "@/features/tabs/windowHandoff";
 import { ipc } from "@/lib/ipc";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
-import { useConnectionsStore } from "@/stores/connections";
+import { resetMockSettings } from "@/lib/ipc/mock/settings";
 import { resetPrefsForTests, setPref } from "@/stores/prefs";
-import type { Session } from "@/stores/session";
-import { openStartupConnection, resetStartupConnection, restoreReopens } from "./startup";
+import { SESSION_KEY, SESSION_VERSION, type Session } from "@/stores/session";
+import { useWindowShape } from "@/stores/windowShape";
+import { openStartupConnection, resetStartupConnection } from "./startup";
 import { useConnectionDialog } from "./store";
 import { profileKeys } from "./useConnections";
 
 const PG = SEED_PROFILES[0]!;
 
-function session(open: boolean): Session {
-  return {
-    version: 1,
-    workspaces: [
-      { profileId: PG.id, open, database: null, schema: null, tabs: [], activeTab: null },
-    ],
-    activeProfileId: PG.id,
-  } as unknown as Session;
-}
-
-function deps(s: Session, label = MAIN_WINDOW) {
+function deps(label = MAIN_WINDOW) {
   const qc = new QueryClient();
   qc.setQueryData(profileKeys.all, SEED_PROFILES);
   const openProfile = vi.fn();
@@ -33,7 +24,6 @@ function deps(s: Session, label = MAIN_WINDOW) {
         qc,
         openProfile,
         prefsLoaded: () => Promise.resolve(),
-        session: () => Promise.resolve(s),
         windowLabel: () => Promise.resolve(label),
       }),
   };
@@ -44,8 +34,10 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  resetMockSettings();
   resetPrefsForTests();
   resetStartupConnection();
+  useWindowShape.setState({ decided: false, opening: false });
 });
 
 afterEach(() => {
@@ -55,7 +47,7 @@ afterEach(() => {
 
 describe("At launch: the default connection (§10.1 Connection startup)", () => {
   it("shows the welcome screen by default", async () => {
-    const d = deps(session(false));
+    const d = deps();
     expect(await d.run()).toBe("welcome");
     expect(d.openProfile).not.toHaveBeenCalled();
   });
@@ -63,9 +55,11 @@ describe("At launch: the default connection (§10.1 Connection startup)", () => 
   it("opens the chosen connection, once", async () => {
     setPref("startupAction", "connection");
     setPref("startupProfileId", PG.id);
-    const d = deps(session(false));
+    const d = deps();
     expect(await d.run()).toBe("opened");
     expect(d.openProfile).toHaveBeenCalledWith(PG.id);
+    // The window takes the workspace shape while it connects, not the Welcome one.
+    expect(useWindowShape.getState().opening).toBe(true);
     expect(await d.run()).toBe("welcome");
     expect(d.openProfile).toHaveBeenCalledTimes(1);
   });
@@ -74,25 +68,42 @@ describe("At launch: the default connection (§10.1 Connection startup)", () => 
     setPref("startupAction", "connection");
     setPref("startupProfileId", PG.id);
     setPref("startupPromptForm", true);
-    const d = deps(session(false));
+    const d = deps();
     expect(await d.run()).toBe("form");
     expect(d.openProfile).not.toHaveBeenCalled();
     expect(useConnectionDialog.getState()).toMatchObject({ open: true, profile: { id: PG.id } });
   });
 
-  it("reopened workspaces win; a deleted connection opens nothing", async () => {
+  it("opens the chosen connection even if another workspace was open at quit", async () => {
+    const chosen = SEED_PROFILES[1]!;
+    await ipc.settings.set(SESSION_KEY, {
+      version: SESSION_VERSION,
+      workspaces: [
+        { profileId: PG.id, open: true, database: null, schema: null, tabs: [], activeTab: null },
+      ],
+      activeProfileId: PG.id,
+    } satisfies Session);
     setPref("startupAction", "connection");
-    setPref("startupProfileId", PG.id);
-    expect(await deps(session(true)).run()).toBe("restored");
-    expect(restoreReopens(session(true), SEED_PROFILES, false)).toBe(false);
-    resetStartupConnection();
-    setPref("reopenWorkspaces", false);
-    const d = deps(session(true));
+    setPref("startupProfileId", chosen.id);
+    const d = deps();
     expect(await d.run()).toBe("opened");
-    resetStartupConnection();
+    expect(d.openProfile).toHaveBeenCalledExactlyOnceWith(chosen.id);
+  });
+
+  it("does nothing for the saved profile when the launch action is to reopen workspaces", async () => {
+    setPref("startupAction", "workspaces");
+    setPref("startupProfileId", PG.id);
+    const d = deps();
+    await d.run();
+    expect(d.openProfile).not.toHaveBeenCalled();
+  });
+
+  it("opens nothing when the chosen connection was deleted", async () => {
+    setPref("startupAction", "connection");
     setPref("startupProfileId", "gone");
-    expect(await deps(session(false)).run()).toBe("missing");
-    expect(useConnectionsStore.getState().order).toEqual([]);
+    const d = deps();
+    expect(await d.run()).toBe("missing");
+    expect(d.openProfile).not.toHaveBeenCalled();
   });
 });
 
@@ -103,7 +114,7 @@ describe("At launch: only the main window runs it", () => {
   });
 
   it("does nothing in a window opened later (File ▸ New Window, Open in New Window)", async () => {
-    const d = deps(session(false), "w-2");
+    const d = deps("w-2");
     expect(await d.run()).toBe("other-window");
     expect(d.openProfile).not.toHaveBeenCalled();
     expect(useConnectionDialog.getState().open).toBe(false);
@@ -111,12 +122,12 @@ describe("At launch: only the main window runs it", () => {
 
   it("does not pop the connection form in another window either", async () => {
     setPref("startupPromptForm", true);
-    expect(await deps(session(false), "w-3").run()).toBe("other-window");
+    expect(await deps("w-3").run()).toBe("other-window");
     expect(useConnectionDialog.getState().open).toBe(false);
   });
 
   it("still opens the chosen connection once in the main window", async () => {
-    const d = deps(session(false), MAIN_WINDOW);
+    const d = deps(MAIN_WINDOW);
     expect(await d.run()).toBe("opened");
     expect(d.openProfile).toHaveBeenCalledTimes(1);
   });
@@ -131,7 +142,6 @@ describe("At launch: only the main window runs it", () => {
       qc,
       openProfile,
       prefsLoaded: () => Promise.resolve(),
-      session: () => Promise.resolve(session(false)),
     });
     expect(outcome).toBe("other-window");
     expect(openProfile).not.toHaveBeenCalled();

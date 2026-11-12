@@ -39,7 +39,7 @@ import {
 } from "@/stores/prefs";
 import { useUiStore } from "@/stores/ui";
 import { NumberField, SectionShell, Segmented, SettingGroup, SettingRow } from "./controls";
-import { AutoSaveQueryTabsRow, ReopenWorkspacesRow } from "./sessionRows";
+import { AutoSaveQueryTabsRow, RestoreWorkspaceTabsRow } from "./sessionRows";
 import { openSettings } from "./store";
 
 const FONT_SIZE_LABELS: Record<UiFontSize, string> = {
@@ -104,8 +104,8 @@ export function GeneralSection() {
       </SettingGroup>
 
       <SettingGroup title="Application">
-        <ReopenWorkspacesRow />
         <StartupConnectionRow />
+        <RestoreWorkspaceTabsRow />
         <NewTabOpensRow />
         <LoadingWallpaperRow />
       </SettingGroup>

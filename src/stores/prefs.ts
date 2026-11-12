@@ -117,7 +117,7 @@ export const ESTIMATE_COUNT_RANGE = { min: 1_000, max: 1_000_000_000 } as const;
 export const AUTO_SAVE_QUERY_TABS = ["none", "first", "all"] as const;
 
 /** General ▸ Application ▸ "At launch" (TablePlus's older "Connection startup" preference). */
-export const STARTUP_ACTIONS = ["welcome", "connection"] as const;
+export const STARTUP_ACTIONS = ["welcome", "workspaces", "connection"] as const;
 export type StartupAction = (typeof STARTUP_ACTIONS)[number];
 export type AutoSaveQueryTabs = (typeof AUTO_SAVE_QUERY_TABS)[number];
 
@@ -232,11 +232,11 @@ export interface Prefs {
   gridLoadingWallpaper: boolean;
   /** General ▸ Data Decoder: PostGIS / MySQL spatial values decode to WKT instead of hex. */
   geometryToWkt: boolean;
-  /** General ▸ Application: reconnect the workspaces (and their tabs) open at the last quit. */
+  /** Restore remembered table and tool tabs after opening a connection. */
   reopenWorkspaces: boolean;
   /**
-   * General ▸ Application ▸ "At launch": the welcome screen, or open the connection
-   * `startupProfileId` (its form instead with `startupPromptForm`). Reopened workspaces win.
+   * General ▸ Application ▸ "At launch": show Welcome, reopen previous workspaces, or open
+   * `startupProfileId` (its form instead with `startupPromptForm`).
    */
   startupAction: StartupAction;
   startupProfileId: string;

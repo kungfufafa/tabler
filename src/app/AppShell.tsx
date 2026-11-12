@@ -151,7 +151,7 @@ export function AppShell() {
       <SshPromptHost />
       <DeepLinkHost />
       <ConnectionDialogHost />
-      {/* Connection ▸ View Using Encoding…, and Settings ▸ General ▸ "At launch". */}
+      {/* Connection ▸ View Using Encoding…. */}
       <ConnectionExtrasHost />
       {/* Process List…, User Management…, the database / schema dialogs. */}
       <AdminHost />
@@ -166,7 +166,7 @@ export function AppShell() {
       <MetricsHost />
       {/* Safe-mode alerts and password prompts (guardExecution). */}
       <SafetyHost />
-      {/* Session restore / auto-save, and Show Workspaces (⇧⌘\). */}
+      {/* Startup, session restore / auto-save, and Show Workspaces (⇧⌘\). */}
       <SessionHost />
       <WorkspaceSwitcherHost />
       {/* New Window (⌘N), Move Tab to New Window, Split Right (⇧⌘D); this window's connections. */}

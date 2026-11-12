@@ -77,7 +77,7 @@ Built from the public-source checklist in [`research/tableplus-functional-spec.m
 | SSL Key… / Cert… / CA Cert…, Bootstrap commands… (§1.2, §1.6)                             | same; SQLite runs bootstrap SQL too                                                         | ✅     |
 | SSH: `~/.ssh/config` fallback, local port, keep-alive (§1.7)                              | HostName / User / Port / IdentityFile from the config (`Include` and `Match` since wave 3)  | ✅     |
 | Keep connection alive (ping every 30 s), query time out 300 s (§1.11)                     | prefs in Settings → Connections                                                             | ✅     |
-| Reopen closed workspaces at startup, Auto Save SQL Query Tab (§2.1, §5.1)                 | settings key `session`; staged edits are never restored                                     | ✅     |
+| Reopen closed workspaces at startup, Auto Save SQL Query Tab (§2.1, §5.1)                 | "At launch" ▸ Reopen previous workspaces; staged edits are never restored                   | ✅     |
 | Editable row-detail panel with bulk edit ("Multiple values") (§3.5)                       | same                                                                                        | ✅     |
 | Keymap: remap any shortcut (§10.1)                                                        | Settings → Shortcuts, also updates the native menu accelerators                             | ✅     |
 
@@ -277,6 +277,10 @@ Deliberate differences:
   worker script has none and `new Function` works in it, while the page itself stays blocked from `eval` and
   a `blob:` worker cannot start. Checked in WebKit against the production CSP (`dev/csp-worker-check`); the
   sandbox removes the network APIs itself, since the CSP does not reach the worker.
+
+- TablePlus reopens the workspaces of the last quit by default (since b556); Tabler starts on the Welcome
+  window and reconnects them only with General ▸ "At launch" ▸ Reopen previous workspaces. Remembered tabs
+  still come back when a connection is picked ("Restore workspace tabs").
 
 Out of scope: iCloud sync (Locations can point at an iCloud Drive folder instead).
 

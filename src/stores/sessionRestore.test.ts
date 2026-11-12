@@ -14,7 +14,7 @@ import { mockEmit } from "@/lib/ipc/mock/transport";
 import { mockSessionOwner } from "@/lib/ipc/mock/windows";
 import { installActiveSync } from "./activeSync";
 import { useConnectionsStore } from "./connections";
-import { resetPrefsForTests, setPref } from "./prefs";
+import { loadPrefs, PREFS_KEY, resetPrefsForTests, setPref } from "./prefs";
 import { getQueryTab, useQueryTabsStore } from "./queryTabs";
 import {
   parseSession,
@@ -318,6 +318,7 @@ describe("restoreAtStartup", () => {
     ipc.settings.set(SESSION_KEY, { version: SESSION_VERSION, ...session });
 
   it("reconnects the open workspaces in order and shows the one that was active", async () => {
+    setPref("startupAction", "workspaces");
     await stored({
       activeProfileId: "p-local-pg",
       workspaces: [
@@ -356,7 +357,38 @@ describe("restoreAtStartup", () => {
     expect(ofConnection(order[1]!).map((t) => t.title)).toEqual(["Query 2"]);
   });
 
-  it("does nothing with the preference off; a later connect brings the query tabs back", async () => {
+  it("keeps the connection picker open with legacy preferences and restores tabs on selection", async () => {
+    await ipc.settings.set(PREFS_KEY, { startupAction: "welcome", reopenWorkspaces: true });
+    await stored({
+      activeProfileId: "p-local-pg",
+      workspaces: [
+        workspace({
+          tabs: [
+            { kind: "table", table: users, view: "table", title: "users" },
+            { kind: "query", title: "Query 3", sql: "select 3;", filePath: null, cursor: 0 },
+          ],
+        }),
+        workspace({ profileId: "p-shop-mysql" }),
+      ],
+    });
+    const openAtLaunch = vi.fn(openProfile);
+    await restoreAtStartup({
+      qc: new QueryClient(),
+      openProfile: openAtLaunch,
+      prefsLoaded: loadPrefs,
+    });
+    expect(openAtLaunch).not.toHaveBeenCalled();
+    expect(useConnectionsStore.getState().order).toEqual([]);
+    expect(useUiStore.getState().view).toBe("launcher");
+
+    const connection = await connect("p-local-pg");
+    await vi.waitFor(() =>
+      expect(ofConnection(connection).map((tab) => tab.title)).toEqual(["users", "Query 3"]),
+    );
+    expect(useConnectionsStore.getState().order).toEqual([connection]);
+  });
+
+  it("restores only query tabs on a later connect when table tab restoration is off", async () => {
     setPref("reopenWorkspaces", false);
     await stored({
       activeProfileId: null,
@@ -376,6 +408,7 @@ describe("restoreAtStartup", () => {
   });
 
   it("leaves a workspace whose connect fails closed and remembered", async () => {
+    setPref("startupAction", "workspaces");
     await stored({
       activeProfileId: null,
       workspaces: [workspace({ profileId: "p-deleted" }), workspace({ profileId: "p-prod-pg" })],
@@ -412,6 +445,7 @@ describe("restoring onto another database", () => {
   };
 
   it("keeps the SQL tabs and says so when the saved database cannot be opened", async () => {
+    setPref("startupAction", "workspaces");
     const warning = vi.spyOn(toast, "warning");
     vi.spyOn(ipc.connections, "switchDatabase").mockRejectedValue(new Error("gone"));
     await stored({
@@ -429,6 +463,7 @@ describe("restoring onto another database", () => {
   });
 
   it("says so too when the switch lands on another database", async () => {
+    setPref("startupAction", "workspaces");
     const warning = vi.spyOn(toast, "warning");
     const real = ipc.connections.switchDatabase;
     vi.spyOn(ipc.connections, "switchDatabase").mockImplementation((id) => real(id, "postgres"));
@@ -445,6 +480,7 @@ describe("restoring onto another database", () => {
   });
 
   it("is quiet when the workspace is back on its database", async () => {
+    setPref("startupAction", "workspaces");
     const warning = vi.spyOn(toast, "warning");
     await stored({
       activeProfileId: "p-local-pg",
@@ -456,14 +492,12 @@ describe("restoring onto another database", () => {
   });
 
   it("a later connect on another database brings back the SQL tabs only, and says so", async () => {
-    setPref("reopenWorkspaces", false);
     const warning = vi.spyOn(toast, "warning");
     await stored({
       activeProfileId: null,
       workspaces: [workspace({ database: "analytics", tabs: savedTabs })],
     });
     await restoreOnce();
-    setPref("reopenWorkspaces", true);
     const c = await connect("p-local-pg");
     await vi.waitFor(() =>
       expect(ofConnection(c).map((t) => t.title)).toEqual(["Query 1", "Query 2"]),
@@ -540,6 +574,7 @@ describe("several workspaces of one profile", () => {
     ipc.settings.set(SESSION_KEY, { version: SESSION_VERSION, ...session });
 
   it("reopens each on its own database and shows the one that was on screen", async () => {
+    setPref("startupAction", "workspaces");
     await stored({
       activeProfileId: "p-local-pg",
       activeDatabase: "ecommerce_sales",
@@ -585,9 +620,8 @@ describe("a profile's second workspace and reconnects", () => {
     cursor: 0,
   });
 
-  /** "Reopen closed workspaces" off, two closed workspaces of p-local-pg remembered. */
+  /** Two closed workspaces of p-local-pg are remembered. */
   async function startWithTwoClosedWorkspaces(qc: QueryClient) {
-    setPref("reopenWorkspaces", false);
     await stored({
       activeProfileId: null,
       workspaces: [

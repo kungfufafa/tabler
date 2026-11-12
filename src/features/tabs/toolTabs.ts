@@ -24,7 +24,7 @@ export interface ToolTabDefinition<P = unknown> {
   /** The tab's default title for its params. */
   title: (params: P) => string;
   /**
-   * Saved with the session and reopened at startup (with "Reopen closed workspaces"). A function
+   * Saved with the session and reopened with their workspace (with "Restore workspace tabs"). A function
    * decides per tab from its params, for tools whose tabs cannot all come back (an untitled
    * SQL Viewer has nothing to reopen).
    */

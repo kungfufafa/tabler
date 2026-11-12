@@ -6,7 +6,7 @@ import type { Tab, TableView } from "./tabs";
 
 /**
  * The saved session: the workspaces (connections) that were open, each with its database, schema
- * and tabs, so the next start can reopen them (General ▸ "Reopen closed workspaces at startup") and
+ * and tabs, so the next start can reopen them (General ▸ "At launch" ▸ Reopen previous workspaces) and
  * SQL Query tabs keep their text (Editor ▸ "Auto Save SQL Query Tab"). Stored as JSON under the
  * `session` key of the app DB settings. Staged edits are never part of it.
  *

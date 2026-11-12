@@ -16,14 +16,14 @@ const AUTO_SAVE_LABELS: Record<AutoSaveQueryTabs, string> = {
   all: "Save all SQL Query tabs",
 };
 
-/** General ▸ Application: "Reopen closed workspaces at startup". */
-export function ReopenWorkspacesRow() {
+/** General ▸ Application ▸ "Restore workspace tabs". */
+export function RestoreWorkspaceTabsRow() {
   const reopen = usePrefs((p) => p.reopenWorkspaces);
   return (
     <SettingRow
       id="pref-reopen-workspaces"
-      label="Reopen closed workspaces at startup"
-      description="Reconnects the connections that were open, with their database and tabs."
+      label="Restore workspace tabs"
+      description="Bring back table and tool tabs when you reopen a workspace."
     >
       <Switch
         id="pref-reopen-workspaces"

@@ -32,10 +32,10 @@ function useProfileList(): { list: readonly ConnectionProfile[]; loaded: boolean
 }
 
 const WELCOME = "welcome";
+const WORKSPACES = "workspaces";
 
 /**
- * General ▸ Application ▸ "At launch" (TablePlus's "Connection startup"): show the welcome
- * screen, or open a connection, optionally with its form first ("Prompt the input form").
+ * Choose what opens at launch. A specific connection can show its form first.
  */
 export function StartupConnectionRow() {
   const action = usePrefs((p) => p.startupAction);
@@ -43,22 +43,22 @@ export function StartupConnectionRow() {
   const promptForm = usePrefs((p) => p.startupPromptForm);
   const { list, loaded } = useProfileList();
   const chosen = action === "connection" ? list.find((p) => p.id === profileId) : undefined;
-  const value = action === "connection" && profileId !== "" ? profileId : WELCOME;
+  const value = action === "connection" ? profileId || WELCOME : action;
   return (
     <SettingRow
       id="pref-startup-connection"
       label="At launch"
       description={
         action === "connection" && profileId !== "" && !chosen && loaded
-          ? "The chosen connection was deleted: the welcome screen shows."
-          : "Reopened workspaces come first; otherwise this opens."
+          ? "The chosen connection was deleted. Tabler opens the welcome screen."
+          : "Show your saved connections or open a workspace automatically."
       }
     >
       <div className="flex flex-col items-end gap-1.5">
         <Select
           value={value}
           onValueChange={(v) => {
-            if (v === WELCOME) setPref("startupAction", "welcome");
+            if (v === WELCOME || v === WORKSPACES) setPref("startupAction", v);
             else {
               setPref("startupAction", "connection");
               setPref("startupProfileId", v);
@@ -78,20 +78,23 @@ export function StartupConnectionRow() {
             <SelectItem value={WELCOME} className="text-xs">
               Show the welcome screen
             </SelectItem>
+            <SelectItem value={WORKSPACES} className="text-xs">
+              Reopen previous workspaces
+            </SelectItem>
             {list.length > 0 && <SelectSeparator />}
             {list.map((p) => (
               <SelectItem key={p.id} value={p.id} className="text-xs">
                 Open connection ▸ {p.name}
               </SelectItem>
             ))}
-            {value !== WELCOME && !chosen && (
+            {action === "connection" && profileId !== "" && !chosen && (
               <SelectItem value={value} className="text-xs" disabled>
                 Open connection ▸ (deleted)
               </SelectItem>
             )}
           </SelectContent>
         </Select>
-        {value !== WELCOME && (
+        {action === "connection" && profileId !== "" && (
           <label className="text-muted-foreground flex items-center gap-1.5 text-xs">
             <Checkbox
               checked={promptForm}

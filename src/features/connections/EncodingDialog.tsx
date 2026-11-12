@@ -24,7 +24,6 @@ import {
   useEncodingDialog,
 } from "./encoding";
 import { ENCODING_CHOICES } from "./schema";
-import { StartupConnectionHost } from "./StartupConnection";
 import { useProfiles } from "./useConnections";
 
 /**
@@ -166,16 +165,8 @@ function useEncodingAction() {
   useAction("connection.encoding", id && server ? open : null);
 }
 
-/**
- * Connection extras mounted once by the app shell: View Using Encoding… and the "At launch"
- * default connection.
- */
+/** View Using Encoding…, mounted once by the app shell. */
 export function ConnectionExtrasHost() {
   useEncodingAction();
-  return (
-    <>
-      <EncodingDialog />
-      <StartupConnectionHost />
-    </>
-  );
+  return <EncodingDialog />;
 }

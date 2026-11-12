@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { useOpenProfile } from "@/features/connections/openProfile";
+import { openStartupConnection } from "@/features/connections/startup";
 import { listenWindowEvent } from "@/lib/ipc/events";
 import { installMenuAcceleratorSync } from "@/lib/keys/menuSync";
 import { loadPrefs } from "@/stores/prefs";
@@ -9,11 +10,9 @@ import { startupDone } from "@/stores/windowShape";
 import { MAIN_WINDOW, windowLabel } from "./windowHandoff";
 
 /**
- * App-wide session wiring, mounted once by the app shell. The main window reads the saved session
- * and reopens its workspaces (General ▸ "Reopen closed workspaces at startup"), and keeps it saved
- * from then on; a window opened later shows what it was opened with (a connection, a moved tab)
- * and is not part of the saved session until the main window closes: then the oldest window left
- * keeps it saved. Every window keeps the native menu's accelerators on the user's keymap.
+ * The main window loads the saved session before applying "At launch". A later window shows
+ * its handoff and takes over saving the session if it becomes the oldest window left.
+ * Every window keeps the native menu's accelerators on the user's keymap.
  */
 export function SessionHost() {
   const qc = useQueryClient();
@@ -29,13 +28,18 @@ export function SessionHost() {
       if (cancelled) return;
       // Either way the window knows its shape once this is over: a workspace window while
       // something opens, else the Welcome window (`stores/windowShape`).
-      if (label === MAIN_WINDOW)
-        void restoreAtStartup({
+      if (label === MAIN_WINDOW) {
+        const startupDeps = {
           qc,
-          openProfile: (profileId) => openRef.current(profileId),
+          openProfile: (profileId: string) => openRef.current(profileId),
           prefsLoaded: loadPrefs,
-        }).finally(startupDone);
-      else {
+        };
+        void restoreAtStartup(startupDeps)
+          .then(() => {
+            if (!cancelled) return openStartupConnection(startupDeps);
+          })
+          .finally(startupDone);
+      } else {
         void loadPrefs();
         void openHandoff({ qc, prefsLoaded: loadPrefs }).finally(startupDone);
       }

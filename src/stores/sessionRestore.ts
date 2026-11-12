@@ -44,10 +44,8 @@ import { useUiStore } from "./ui";
 import { startupOpening } from "./windowShape";
 
 /**
- * Rebuilds saved workspaces: at startup ("Reopen closed workspaces at startup") every workspace
- * that was open is reconnected through the regular open-profile flow and gets its database,
- * schema and tabs back; later, connecting a profile whose workspace was not reopened brings back
- * its SQL Query tabs (and, with the preference on, its table tabs).
+ * Rebuilds saved workspaces when a connection opens. "At launch" controls whether previous
+ * workspaces reconnect automatically. Remembered tabs can also come back after choosing a profile.
  */
 
 const RESTORE_TOAST_ID = "session-restore";
@@ -323,11 +321,9 @@ export interface StartupDeps {
 }
 
 /**
- * Startup: reads the session, starts persisting it, and with "Reopen closed workspaces at startup"
- * on (and nothing opened yet) reconnects the workspaces that were open, one after the other in rail
- * order, then shows the workspace and tab that were on screen. A profile that fails to connect
- * stays closed (its connect toast says why); its tabs come back when it is connected later. Runs
- * once per app session.
+ * Reads the saved session and starts persisting it. When "At launch" is set to reopen previous
+ * workspaces, reconnects them in rail order and shows the workspace and tab that were on screen.
+ * A failed connection keeps its remembered tabs for the next time it opens. Runs once per session.
  */
 export async function restoreAtStartup(deps: StartupDeps): Promise<void> {
   if (started) return;
@@ -346,7 +342,7 @@ export async function restoreAtStartup(deps: StartupDeps): Promise<void> {
   const pristine =
     useConnectionsStore.getState().order.length === 0 && useTabsStore.getState().tabs.length === 0;
   const toOpen = workspaces.filter((w) => w.open);
-  if (!getPrefs().reopenWorkspaces || !pristine || toOpen.length === 0) {
+  if (getPrefs().startupAction !== "workspaces" || !pristine || toOpen.length === 0) {
     closeRemembered();
     return;
   }
@@ -375,7 +371,7 @@ export async function restoreAtStartup(deps: StartupDeps): Promise<void> {
         const located = await restoreLocation(deps.qc, connectionId, ws);
         // Off the saved database only the SQL Query tabs come back (`restored` counts them).
         const { restored, skipped } = await restoreWorkspaceTabs(deps.qc, connectionId, ws, {
-          tables: located,
+          tables: located && getPrefs().reopenWorkspaces,
         });
         const info = useConnectionsStore.getState().byId[connectionId]?.info;
         const name = info?.name ?? "the workspace";
@@ -437,8 +433,8 @@ function isReconnect(s: ConnectionsSnapshot, prev: ConnectionsSnapshot, id: stri
 
 /**
  * A profile connected later whose workspace is still remembered (not reopened at startup, or its
- * reconnect failed) gets its tabs back, unless it already has some: SQL Query tabs per the
- * auto-save setting, table tabs too with "Reopen closed workspaces" on and the same database.
+ * reconnect failed) gets its tabs back, unless it already has some. SQL Query tabs follow the
+ * auto-save setting. Table and tool tabs require the same database and "Restore workspace tabs".
  */
 export function installConnectRestore(qc: QueryClient): void {
   if (uninstallConnectRestore) return;
