@@ -87,3 +87,17 @@ export function pillText(model: PillModel): string {
   const body = model.segments.map((s) => s.text).join(" : ");
   return model.tag ? `${tagLabel(model.tag)} │ ${body}` : body;
 }
+
+/** The app's name: the title of a window with no connection (the Welcome window). */
+export const APP_TITLE = "Tabler";
+
+/**
+ * The window's title (taskbar, Alt+Tab, the Window menu): the pill's text, as TablePlus titles its
+ * windows (`LOCAL | SQLite 3.51.1 : TABLER SAMPLE : SAMPLE.SQLITE : posts`), so windows can be
+ * told apart there; `Tabler` with no connection.
+ */
+export function windowTitle(model: PillModel | null): string {
+  if (!model) return APP_TITLE;
+  const body = model.segments.map((s) => s.text).join(" : ");
+  return model.tag ? `${tagLabel(model.tag)} | ${body}` : body;
+}

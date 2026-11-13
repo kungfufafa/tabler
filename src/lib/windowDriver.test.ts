@@ -3,6 +3,7 @@ import {
   desiredShape,
   loadSavedShape,
   planReshape,
+  rememberMaximized,
   savedWelcomeLabels,
   storeSavedShape,
   type WindowFrame,
@@ -14,7 +15,13 @@ const SMALL: WindowFrame = { x: 580, y: 300, width: 760, height: 480 };
 
 /** A window that records what it was asked to do. */
 function fakeWindow(
-  init: { frame?: WindowFrame; fullscreen?: boolean; maximized?: boolean; visible?: boolean } = {},
+  init: {
+    frame?: WindowFrame;
+    fullscreen?: boolean;
+    maximized?: boolean;
+    visible?: boolean;
+    workArea?: WindowFrame;
+  } = {},
 ) {
   const state = {
     frame: init.frame ?? BIG,
@@ -34,6 +41,11 @@ function fakeWindow(
     unmaximize: async () => {
       calls.push("unmaximize");
       state.maximized = false;
+    },
+    workArea: async () => init.workArea ?? null,
+    maximize: async () => {
+      calls.push("maximize");
+      state.maximized = true;
     },
     hide: async () => {
       calls.push("hide");
@@ -117,6 +129,16 @@ describe("saved shapes", () => {
     expect(loadSavedShape("w-3")).toBeNull();
     expect(loadSavedShape("w-4")).toEqual({ shape: "welcome", frame: null });
   });
+
+  it("follows the workspace window's maximize, not the Welcome window's", () => {
+    rememberMaximized("main", true);
+    expect(loadSavedShape("main")).toEqual({ shape: "workspace", frame: null, maximized: true });
+    rememberMaximized("main", false);
+    expect(loadSavedShape("main")).toEqual({ shape: "workspace", frame: null });
+    storeSavedShape("main", { shape: "welcome", frame: BIG, maximized: true });
+    rememberMaximized("main", false);
+    expect(loadSavedShape("main")).toEqual({ shape: "welcome", frame: BIG, maximized: true });
+  });
 });
 
 describe("applyShape", () => {
@@ -147,7 +169,7 @@ describe("applyShape", () => {
       "resizable true",
       "size 1400x900",
       "position 100,80",
-      "min 960x600",
+      "min 620x600",
       "reveal",
     ]);
     expect(state.frame).toEqual(BIG);
@@ -162,10 +184,19 @@ describe("applyShape", () => {
     expect(calls).toContain("center");
   });
 
+  it("fits the default size to a screen too small for it, maximized", async () => {
+    storeSavedShape("main", { shape: "welcome", frame: null });
+    const workArea = { x: 0, y: 0, width: 1280, height: 752 };
+    const { driver, calls } = fakeWindow({ frame: SMALL, workArea });
+    await applyShape("workspace", driver, undefined, noPause);
+    expect(calls).toContain("size 1280x752");
+    expect(calls.indexOf("maximize")).toBeGreaterThan(calls.indexOf("center"));
+  });
+
   it("only sets the constraints of a window that has the shape already", async () => {
     const workspace = fakeWindow();
     await applyShape("workspace", workspace.driver, undefined, noPause);
-    expect(workspace.calls).toEqual(["resizable true", "min 960x600"]);
+    expect(workspace.calls).toEqual(["resizable true", "min 620x600"]);
 
     // Restarted as the Welcome window: the restored geometry is kept where it was.
     storeSavedShape("main", { shape: "welcome", frame: BIG });
@@ -179,6 +210,11 @@ describe("applyShape", () => {
     expect(await applyShape("welcome", full.driver, undefined, noPause)).toBe("workspace");
     expect(full.calls).toEqual([]);
     expect(loadSavedShape("main")).toBeNull();
+
+    // Built hidden and restored full screen (startup): nothing else would show it.
+    const hidden = fakeWindow({ fullscreen: true, visible: false });
+    expect(await applyShape("welcome", hidden.driver, undefined, noPause)).toBe("workspace");
+    expect(hidden.calls).toEqual(["reveal"]);
 
     const zoomed = fakeWindow({ maximized: true });
     expect(await applyShape("welcome", zoomed.driver, undefined, noPause)).toBe("workspace");
@@ -197,6 +233,45 @@ describe("applyShape", () => {
     await applyShape("workspace", stays.driver, undefined, noPause);
     // Below the workspace minimum: the default size, not a 760 px workspace.
     expect(stays.calls).toContain("size 1280x820");
+  });
+
+  it("Windows: makes a maximized workspace window the Welcome window and maximizes it again after", async () => {
+    const zoomed = fakeWindow({ maximized: true });
+    const windows = { keepZoomed: false };
+    expect(await applyShape("welcome", zoomed.driver, undefined, noPause, windows)).toBe("welcome");
+    // Hidden before it is restored, so neither the restore nor the resize is seen.
+    expect(zoomed.calls.slice(0, 2)).toEqual(["hide", "unmaximize"]);
+    expect(zoomed.calls.at(-1)).toBe("reveal");
+    expect(loadSavedShape("main")).toEqual({ shape: "welcome", frame: BIG, maximized: true });
+
+    zoomed.state.frame = SMALL;
+    expect(await applyShape("workspace", zoomed.driver, undefined, noPause, windows)).toBe(
+      "workspace",
+    );
+    expect(zoomed.calls.slice(-5)).toEqual([
+      "size 1400x900",
+      "position 100,80",
+      "min 620x600",
+      "maximize",
+      "reveal",
+    ]);
+    expect(zoomed.state.maximized).toBe(true);
+  });
+
+  it("Windows: a workspace window that was maximized at the last quit first shows maximized", async () => {
+    storeSavedShape("main", { shape: "workspace", frame: null, maximized: true });
+    const { driver, calls } = fakeWindow({ visible: false });
+    await applyShape("workspace", driver, undefined, noPause, { keepZoomed: false });
+    expect(calls).toEqual(["resizable true", "min 620x600", "maximize", "reveal"]);
+  });
+
+  it("Windows: the Welcome window at startup remembers that the workspace was maximized", async () => {
+    storeSavedShape("main", { shape: "workspace", frame: BIG, maximized: true });
+    const { driver, calls } = fakeWindow({ visible: false });
+    await applyShape("welcome", driver, undefined, noPause, { keepZoomed: false });
+    expect(calls).not.toContain("maximize");
+    expect(calls).not.toContain("unmaximize");
+    expect(loadSavedShape("main")).toEqual({ shape: "welcome", frame: BIG, maximized: true });
   });
 
   it("never leaves the window hidden when a step fails", async () => {

@@ -1,7 +1,9 @@
 import { isTauri } from "@/lib/ipc/transport";
+import { isWindows } from "@/lib/platform";
 import {
   loadSavedShape,
   planReshape,
+  type Reshape,
   savedWelcomeLabels,
   storeSavedShape,
   WELCOME_SIZE,
@@ -18,10 +20,13 @@ export interface WindowDriver {
   readonly label: string;
   /** Where the window is now (logical pixels). */
   frame(): Promise<WindowFrame>;
+  /** Its monitor's work area, without the taskbar (logical pixels; null: not known). */
+  workArea(): Promise<WindowFrame | null>;
   isFullscreen(): Promise<boolean>;
   isMaximized(): Promise<boolean>;
   isVisible(): Promise<boolean>;
   unmaximize(): Promise<void>;
+  maximize(): Promise<void>;
   hide(): Promise<void>;
   /** Shows the window and gives it the focus. */
   reveal(): Promise<void>;
@@ -44,38 +49,59 @@ const fitsWorkspace = (frame: WindowFrame | null): frame is WindowFrame =>
   frame.height >= WORKSPACE_SIZE.minHeight;
 
 /**
+ * macOS: a zoomed window on screen stays a workspace window (the list is drawn inside it).
+ * Windows: like TablePlus for Windows, a maximized workspace window still becomes the small
+ * Welcome window, and is maximized again when it next becomes a workspace window.
+ */
+const KEEP_ZOOMED: boolean = !isWindows;
+
+/**
  * Gives the window the shape `to` and resolves with the shape it has then. A full-screen window
- * (or a zoomed one on screen) is not made the Welcome window: it stays a workspace window and the
- * connection list is drawn inside it. While its size changes the window is hidden, so neither
- * layout is seen at the other's size; `onSized` runs once the size is right and before it shows
- * again (the renderer switches its layout there).
+ * (or, `keepZoomed`, a zoomed one on screen) is not made the Welcome window: it stays a workspace
+ * window and the connection list is drawn inside it. While its size changes the window is hidden,
+ * so neither layout is seen at the other's size; `onSized` runs once the size is right and before
+ * it shows again (the renderer switches its layout there).
  */
 export async function applyShape(
   to: WindowShape,
   driver: WindowDriver,
   onSized: (shape: WindowShape) => void = () => undefined,
   pause: (ms: number) => Promise<void> = sleep,
+  { keepZoomed = KEEP_ZOOMED }: { keepZoomed?: boolean } = {},
 ): Promise<WindowShape> {
   const saved = loadSavedShape(driver.label);
   const visible = await driver.isVisible();
+  /** Hidden before anything else: a maximized window is restored out of sight. */
+  let hiddenFirst = false;
+  let maximized = false;
   if (to === "welcome" && (saved?.shape ?? "workspace") === "workspace") {
-    if (await driver.isFullscreen()) return "workspace";
+    if (await driver.isFullscreen()) {
+      // Built hidden and restored full screen: it keeps that shape, and shows.
+      if (!visible) await driver.reveal();
+      return "workspace";
+    }
     if (await driver.isMaximized()) {
-      if (visible) return "workspace";
+      if (visible && keepZoomed) return "workspace";
+      if (visible) {
+        await driver.hide();
+        hiddenFirst = true;
+      }
       await driver.unmaximize();
+      // Also a zoomed macOS window found hidden (startup): zoomed again as a workspace window.
+      maximized = true;
     }
   }
   const current = await driver.frame().catch(() => null);
-  const plan = planReshape(saved, to, fitsWorkspace(current) ? current : null);
+  const plan = planReshape(saved, to, fitsWorkspace(current) ? current : null, maximized);
   storeSavedShape(driver.label, plan.saved);
   // A workspace window found at less than its minimum (the saved geometry was the Welcome
   // window's, e.g. after a crash) takes the default size.
-  const change =
+  const change: Reshape =
     to === "workspace" && plan.change.kind === "keep" && !fitsWorkspace(current)
-      ? ({ kind: "toWorkspace", frame: plan.saved.frame } as const)
+      ? { kind: "toWorkspace", frame: plan.saved.frame }
       : plan.change;
-  const hidden = change.kind !== "keep" && visible;
-  if (hidden) await driver.hide();
+  const hidden = hiddenFirst || (change.kind !== "keep" && visible);
+  if (hidden && !hiddenFirst) await driver.hide();
   try {
     if (to === "welcome") {
       await driver.setMinSize(null);
@@ -85,21 +111,40 @@ export async function applyShape(
       await driver.setResizable(false);
       await driver.setMaximizable(false);
     } else {
+      // Maximized again when it was maximized as a workspace window, or (still hidden, at
+      // startup) when it was when the app last closed or its window was built maximized.
+      let maximize =
+        change.kind === "toWorkspace"
+          ? change.maximized === true
+          : !visible && (plan.saved.maximized === true || (await driver.isMaximized()));
       await driver.setResizable(true);
       await driver.setMaximizable(true);
       if (change.kind === "toWorkspace") {
+        // The frame it gets here is where it goes when it is restored.
         if (fitsWorkspace(change.frame)) {
           await driver.setSize(change.frame.width, change.frame.height);
           await driver.setPosition(change.frame.x, change.frame.y);
         } else {
-          await driver.setSize(WORKSPACE_SIZE.width, WORKSPACE_SIZE.height);
+          // The default size; a screen too small for it (1280×820 is taller than a 768 px
+          // screen's work area) gets a window that fits, maximized (`fit_to_work_area`).
+          const area = await driver.workArea().catch(() => null);
+          const fits =
+            !area || (WORKSPACE_SIZE.width <= area.width && WORKSPACE_SIZE.height <= area.height);
+          await driver.setSize(
+            fits ? WORKSPACE_SIZE.width : Math.min(WORKSPACE_SIZE.width, area.width),
+            fits ? WORKSPACE_SIZE.height : Math.min(WORKSPACE_SIZE.height, area.height),
+          );
           await driver.center();
+          if (!fits) maximize = true;
         }
       }
       await driver.setMinSize({
         width: WORKSPACE_SIZE.minWidth,
         height: WORKSPACE_SIZE.minHeight,
       });
+      // Last, right before it shows: a hidden window is maximized only once it shows, and a
+      // resize before that (the minimum size above) would drop it.
+      if (maximize) await driver.maximize();
     }
     onSized(to);
     // A window built hidden (the Welcome window) is given the same time before it first shows.
@@ -117,7 +162,7 @@ let driver: Promise<WindowDriver | null> | null = null;
 export function windowDriver(): Promise<WindowDriver | null> {
   driver ??= (async (): Promise<WindowDriver | null> => {
     if (!isTauri()) return null;
-    const { getCurrentWindow, LogicalPosition, LogicalSize } =
+    const { currentMonitor, getCurrentWindow, LogicalPosition, LogicalSize } =
       await import("@tauri-apps/api/window");
     const win = getCurrentWindow();
     return {
@@ -135,10 +180,23 @@ export function windowDriver(): Promise<WindowDriver | null> {
           height: size.height / scale,
         };
       },
+      workArea: async () => {
+        const monitor = await currentMonitor();
+        if (!monitor) return null;
+        const { position, size } = monitor.workArea;
+        const scale = monitor.scaleFactor;
+        return {
+          x: position.x / scale,
+          y: position.y / scale,
+          width: size.width / scale,
+          height: size.height / scale,
+        };
+      },
       isFullscreen: () => win.isFullscreen(),
       isMaximized: () => win.isMaximized(),
       isVisible: () => win.isVisible(),
       unmaximize: () => win.unmaximize(),
+      maximize: () => win.maximize(),
       hide: () => win.hide(),
       reveal: async () => {
         await win.show();

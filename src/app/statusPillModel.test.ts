@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ConnectionInfo } from "@/lib/ipc";
 import type { OpenConnection } from "@/stores/connections";
 import type { Tab } from "@/stores/tabs";
-import { pillModel, pillText } from "./statusPillModel";
+import { pillModel, pillText, windowTitle } from "./statusPillModel";
 
 const info: ConnectionInfo = {
   connectionId: "a",
@@ -33,6 +33,21 @@ const tool = (name: string, connectionId = "a"): Tab => ({
 });
 
 const BASE = "PostgreSQL 17.6 : Dev : db : public";
+
+describe("the window title", () => {
+  it("is the pill's text, with TablePlus's plain bar after the tag", () => {
+    const table = { schema: "public", name: "users" };
+    const tab: Tab = { id: "t", kind: "table", connectionId: "a", table, title: "users" };
+    expect(windowTitle(pillModel(conn, tab, "local", false))).toBe(
+      "LOCAL | PostgreSQL 17.6 : Dev : db : public.users",
+    );
+    expect(windowTitle(pillModel(conn, null, null, false))).toBe(BASE);
+  });
+
+  it("is the app's name with no connection", () => {
+    expect(windowTitle(null)).toBe("Tabler");
+  });
+});
 
 describe("the status pill's last segment", () => {
   it("says SQL Query for a query tab", () => {

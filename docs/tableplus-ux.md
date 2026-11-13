@@ -219,14 +219,21 @@ audit" pass; the TablePlus behaviour is the target.
     a full-bleed page.
 17. **No "Ungrouped" header:** connections without a group come first, without a header.
 18. **No pre-selected row** with a strong highlight on load; selection appears on click / ↑↓.
-19. **The Welcome window is a window of its own shape (macOS):** a window with nothing open is
-    760 × 480 and fixed, the list edge to edge, with its own toolbar beside the traffic lights (new
-    connection, new group, "Search for connection…"). Opening a connection turns the same window
-    into the workspace window (its last size and place, else 1280 × 820); closing the last one
-    turns it back. ⌘N shows the one Welcome window rather than opening another. A full-screen
-    window keeps its size and draws the centred panel of item 16. Windows and Linux keep the
-    in-window list. (`stores/windowShape`, `lib/windowDriver`, `app/WindowShapeHost`.)
-20. **A workspace window never draws the connection list (macOS):** asked for while a connection
+19. **The Welcome window is a window of its own shape (macOS and Windows):** a window with
+    nothing open is fixed at 760 × 480 (macOS) or 746 × 529 (Windows, TablePlus for Windows's
+    client area), the list edge to edge, with its own toolbar beside the traffic lights (macOS) or with the ⋮ app
+    menu above the app name and the window buttons (maximize greyed out) at the toolbar's right
+    (Windows). Opening a connection turns the same window into the workspace window (its last size
+    and place, else 1280 × 820); closing the last one turns it back. ⌘N shows the one Welcome window
+    rather than opening another. A full-screen window keeps its size and draws the centred panel of
+    item 16; so does a zoomed one on macOS. On Windows a maximized workspace window still becomes the
+    Welcome window and is maximized again when it next becomes a workspace window (or at the next
+    start, `rememberMaximized`); a macOS window found zoomed and hidden at startup does the same.
+    Windows and macOS build every window hidden (`tauri.windows.conf.json` with
+    `decorations: false`, `tauri.macos.conf.json`) and show it once it has its shape, so no native
+    title bar, menu bar, blank page or size jump is seen at startup. Linux keeps the in-window
+    list. (`stores/windowShape`, `lib/windowDriver`, `app/WindowShapeHost`.)
+20. **A workspace window never draws the connection list (macOS and Windows):** asked for while a connection
     is open (the rail's `+`, ⇧⌘K, the palette, ⌘N), the list comes up in the Welcome window, a
     window of its own (label `welcome`, built at 760 × 480 and shown once the list is laid out),
     and the workspace stays as it is. A connection picked there opens as a new workspace in the
@@ -234,3 +241,19 @@ audit" pass; the TablePlus behaviour is the target.
     closes. With no workspace window open the Welcome window opens the connection itself and
     becomes the workspace window (item 19). (`windows.rs` `show_welcome_window` /
     `route_profile`, `features/tabs/windowHandoff`.)
+21. **A narrow window keeps its controls (Windows split screen, macOS tiling):** the workspace
+    window may be as narrow as 620, so it snaps to half of a 1920 px screen at 150 % and tiles to
+    half of a 1280-point MacBook screen. In a
+    narrow window the toolbar items clip before the window buttons do (never the minimize /
+    maximize / close buttons), Metrics Board and Open Anything give way first and the status pill
+    shrinks; the bottom bars drop their button labels (+ Add row, + Column, + Index, DDL), compact
+    the Data | Structure | Index switch and, if still too narrow, scroll sideways instead of cutting
+    off their last controls (pagination, Review, Refresh). (`app/Toolbar`, `table-tab/BarParts`.)
+22. **Closing a workspace window (macOS and Windows):** like TablePlus, closing the last window
+    that holds connections (its close button, Alt+F4, the taskbar; on macOS also ⌘W with no tab
+    left) goes back to the Welcome window instead of ending the app (`windows.rs`
+    `reopens_welcome`); a quit and closing the Welcome window itself still end it. On Windows
+    Ctrl+W closes the visible tab and, with no tab left, does nothing (macOS: ⌘W then closes the
+    window). Every window is titled after what it shows, the status pill's text
+    (`LOCAL | SQLite 3.51.1 : Sample : main : users`; `Tabler` with no connection), so the
+    taskbar and Alt+Tab tell windows apart (`app/WindowTitleHost`).

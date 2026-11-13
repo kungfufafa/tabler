@@ -1080,7 +1080,8 @@ function StructureTabView({
                   className="h-6 shrink-0 px-1.5"
                   onClick={() => onAddColumn()}
                 >
-                  <Plus /> Column
+                  {/* Icon only in a narrow bar (a window snapped to half the screen). */}
+                  <Plus /> <span className="@max-lg:sr-only">Column</span>
                 </Button>
               </BarTooltip>
             )}
@@ -1093,7 +1094,7 @@ function StructureTabView({
                 className="h-6 shrink-0 px-1.5"
                 onClick={onAddIndex}
               >
-                <Plus /> Index
+                <Plus /> <span className="@max-lg:sr-only">Index</span>
               </Button>
             </BarTooltip>
           </>
@@ -1101,7 +1102,7 @@ function StructureTabView({
         {!isView && !indexesOnly && (
           <div
             className={cn(
-              "border-border focus-within:border-ring bg-background ml-1 flex h-6 w-40 min-w-24 shrink items-center gap-1 rounded-md border px-1.5",
+              "border-border focus-within:border-ring bg-background ml-1 flex h-6 w-40 min-w-24 shrink items-center gap-1 rounded-md border px-1.5 @max-md:min-w-16",
               filter && "border-ring",
             )}
           >
@@ -1224,7 +1225,7 @@ function StructureTabView({
             onClick={() => setShowDdl(true)}
             className="text-muted-foreground hover:text-foreground h-6 shrink-0 px-1.5"
           >
-            <FileCode2 /> DDL
+            <FileCode2 /> <span className="@max-lg:hidden">DDL</span>
           </Button>
         </BarTooltip>
         <BarIconButton

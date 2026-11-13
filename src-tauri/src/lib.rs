@@ -41,6 +41,7 @@ pub mod tls_client;
 pub mod tls_files;
 pub mod tunnel;
 pub mod types;
+pub mod version;
 pub mod windows;
 
 use tauri::{Emitter, Manager, RunEvent};
@@ -84,7 +85,12 @@ pub mod shell {
         ("window.new", "New Window", "CmdOrCtrl+N"),
         ("tab.new-query", "New Query Tab", "CmdOrCtrl+T"),
         ("query.open", "Open SQL File…", "CmdOrCtrl+O"),
-        ("tab.close", "Close Tab / Window", "CmdOrCtrl+W"),
+        // Ctrl+W with no tab left closes the window on macOS only (TablePlus for Windows keeps it).
+        (
+            "tab.close",
+            mac_or("Close Tab / Window", "Close Tab"),
+            "CmdOrCtrl+W",
+        ),
         ("tab.close-all", "Close All Tabs", "CmdOrCtrl+Shift+W"),
         ("tab.reopen", "Reopen Closed Tab", "CmdOrCtrl+Shift+T"),
         ("export.open", "Export…", "CmdOrCtrl+Shift+E"),
@@ -417,7 +423,9 @@ pub mod shell {
             // Without metadata the predefined About item does nothing outside macOS.
             let about = tauri::menu::AboutMetadataBuilder::new()
                 .name(Some(name.clone()))
-                .version(Some(app.package_info().version.to_string()))
+                .version(Some(crate::version::app_version(
+                    &app.package_info().version.to_string(),
+                )))
                 .build();
             help.append(&PredefinedMenuItem::separator(app)?)?;
             help.append(&PredefinedMenuItem::about(
@@ -1040,19 +1048,7 @@ pub fn run() {
         .menu(shell::build_menu)
         .on_menu_event(|app, event| shell::on_menu_event(app, event.id().as_ref()))
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(
-            // Not the decorations: the app sets those itself (off on Windows, `own_title_bar`),
-            // and a saved "undecorated" would leave a build without its own window buttons with
-            // none at all.
-            tauri_plugin_window_state::Builder::new()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::all()
-                        - tauri_plugin_window_state::StateFlags::DECORATIONS,
-                )
-                // The Welcome window is always the same size and centred.
-                .with_denylist(&[windows::WELCOME_WINDOW])
-                .build(),
-        )
+        .plugin(windows::window_state_plugin())
         .plugin(
             // The SSH client's debug records go to the log while Help ▸ Enable SSH Debug Log is on.
             tunnel::debug_log::configure(tauri_plugin_log::Builder::new().level(log_level)).build(),
@@ -1079,12 +1075,17 @@ pub fn run() {
             shell::terminate_guard::install(app.handle());
             // The main window (built from tauri.conf.json and restored by the window-state
             // plugin before `setup`) back inside the screen.
-            #[cfg(windows)]
-            if let Some(main) = app.get_webview_window(windows::MAIN_WINDOW)
-                && let Err(e) =
-                    windows::own_title_bar(&main).and_then(|()| windows::fit_to_work_area(&main))
-            {
-                log::warn!("could not set up the main window: {e}");
+            if let Some(main) = app.get_webview_window(windows::MAIN_WINDOW) {
+                #[cfg(windows)]
+                if let Err(e) = windows::restore_main_frame(&main)
+                    .and_then(|()| windows::own_title_bar(&main))
+                    .and_then(|()| windows::fit_to_work_area(&main, false))
+                {
+                    log::warn!("could not set up the main window: {e}");
+                }
+                // Built hidden on Windows and macOS (tauri.windows.conf.json,
+                // tauri.macos.conf.json): its renderer shows it. Linux builds it visible.
+                windows::reveal_if_still_hidden(main);
             }
             // The app lock: sleep and screen lock lock every window.
             biometrics::watch_system_lock(app.handle().clone());
@@ -1265,6 +1266,16 @@ pub fn run() {
         // (`shell::terminate_guard`); this catches exits requested any other way while a window
         // is open. The runtime's own request when its last window went away is always let through.
         RunEvent::ExitRequested { api, code, .. } => {
+            // macOS and Windows: the last workspace window closed and the Welcome window is on
+            // its way (`windows::reopens_welcome`): the runtime's own last-window exit waits.
+            if code.is_none()
+                && app
+                    .try_state::<windows::WindowRegistry>()
+                    .is_some_and(|r| r.welcome_pending())
+            {
+                api.prevent_exit();
+                return;
+            }
             let source = shell::ExitSource::of_request(code);
             if shell::decide_exit(app, source) == shell::ExitDecision::AskRenderer {
                 api.prevent_exit();
