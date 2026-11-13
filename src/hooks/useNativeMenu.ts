@@ -89,6 +89,8 @@ export const MENU_ACTIONS = [
   "window.move-tab",
   "workspace.split-right",
   "app.lock",
+  // The app menu (Help off macOS).
+  "app.check-updates",
   // Plugins.
   "plugins.manage",
 ] as const satisfies readonly ActionId[];

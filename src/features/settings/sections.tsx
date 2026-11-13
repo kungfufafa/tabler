@@ -19,6 +19,7 @@ import { PasscodeSettings, SafeModeTouchIdRow } from "@/features/lock/SecuritySe
 import { SAFE_MODE_OPTIONS } from "@/features/safety/levels";
 import { LazyLoadSettingRow } from "@/features/sidebar/LazyLoadSettingRow";
 import { CsvDefaultSettings } from "@/features/table-tab/CsvDefaultSettings";
+import { UpdateSettingRow } from "@/features/updater/UpdateSettingRow";
 import {
   DataDecoderSettings,
   LoadingWallpaperRow,
@@ -108,6 +109,7 @@ export function GeneralSection() {
         <RestoreWorkspaceTabsRow />
         <NewTabOpensRow />
         <LoadingWallpaperRow />
+        <UpdateSettingRow />
       </SettingGroup>
 
       <SettingGroup title="Tables">

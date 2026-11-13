@@ -34,6 +34,7 @@ import { SqlViewerHost } from "@/features/sqlviewer/SqlViewerHost";
 import { SessionHost } from "@/features/tabs/SessionHost";
 import { TabStrip } from "@/features/tabs/TabStrip";
 import { UnsavedChangesDialog } from "@/features/tabs/UnsavedChangesDialog";
+import { UpdaterHost } from "@/features/updater/UpdaterHost";
 import { WindowHost } from "@/features/tabs/WindowHost";
 import { WorkspaceGroups } from "@/features/tabs/WorkspaceGroups";
 import { useActiveSplit } from "@/features/tabs/workspaces";
@@ -187,6 +188,8 @@ export function AppShell() {
       <PluginsHost />
       {/* The palette's "Ask Assistant…" (right sidebar, Assistant tab). */}
       <AssistantHost />
+      {/* Check for Updates… (the app menu), the quiet check at launch and the update dialog. */}
+      <UpdaterHost />
     </div>
   );
 }

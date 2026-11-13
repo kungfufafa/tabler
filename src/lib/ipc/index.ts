@@ -126,6 +126,8 @@ import type { InstalledPlugin } from "./bindings/InstalledPlugin";
 import type { PluginList } from "./bindings/PluginList";
 import type { PluginMenuEntry } from "./bindings/PluginMenuEntry";
 import type { TracedSql } from "./bindings/TracedSql";
+import type { UpdateCheck } from "./bindings/UpdateCheck";
+import type { UpdateProgress } from "./bindings/UpdateProgress";
 import {
   markTraceSeen,
   maskSecrets,
@@ -1066,6 +1068,27 @@ export const ipc = {
     restart: () => invoke<void>("restart_app"),
   },
 
+  // Check for Updates…: the app menu's item, the quiet check at launch and the update dialog.
+  updater: {
+    /**
+     * Looks for a newer build of this build's channel. `launch`: the quiet check a window makes
+     * when it opens; only the first window of a run gets an answer other than `skipped`.
+     */
+    check: (launch = false) => invoke<UpdateCheck>("update_check", { launch }),
+    /** Downloads the update the last check found and verifies its signature. */
+    download: async (onProgress: (p: UpdateProgress) => void) => {
+      const channel = await makeChannel<UpdateProgress>(onProgress);
+      return invoke<void>("update_download", { onProgress: channel });
+    },
+    /** Stops the download under way (it then rejects with `CANCELLED`). */
+    cancel: () => invoke<void>("update_cancel"),
+    /**
+     * Installs the downloaded update and restarts into it. Refused while another window has
+     * unsaved work; the caller checks its own window first.
+     */
+    install: () => invoke<void>("update_install"),
+  },
+
   // Settings ▸ Connections ▸ MCP Server: `tabler --mcp` and registering it with MCP clients.
   mcp: {
     /** The command line of the running app's MCP server and which clients are installed. */
@@ -1681,6 +1704,8 @@ export const ipc = {
 };
 
 export type { InstalledPlugin, PluginList, PluginMenuEntry };
+export type { UpdateCheck, UpdateProgress };
+export type { UpdateChannel } from "./bindings/UpdateChannel";
 export type { InvalidPlugin } from "./bindings/InvalidPlugin";
 export type { PluginCommand } from "./bindings/PluginCommand";
 export type { PluginContextKind } from "./bindings/PluginContextKind";

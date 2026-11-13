@@ -10,6 +10,23 @@ name: Release installers
 #     on the rolling `nightly` pre-release (https://github.com/<owner>/<repo>/releases/tag/nightly);
 #   - run it with "publish" left at `artifacts`: the installers only hang off the run, as artifacts
 #     (a GitHub login to download, gone after 90 days).
+#
+# Versions (docs/updates.md): every release from `main` gets the next patch number
+# (0.1.1, 0.1.2, …): the publish job tags its commit `v0.1.2`, and the
+# next build counts from the highest `v*` tag. A `v*` tag pushed by hand builds exactly that
+# version. The version is written into package.json, src-tauri/Cargo.toml and
+# src-tauri/tauri.conf.json of the CI checkout before the build (never committed), and the
+# release says what changed in it (dev/scripts/release-notes.mjs, from the commits).
+#
+# In-app updates: with the updater's signing key in the repository secrets the builds also produce
+# signed updater bundles, and the release carries the `latest.json` the app asks for updates:
+#   TAURI_SIGNING_PRIVATE_KEY           the private key `tauri signer generate` wrote
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (leave the secret out for a key without one)
+# Without the key (a fork) the installers are built as before, with no updater bundles, no
+# `latest.json` and no update address in the app.
+#
+# Set the SENTRY_AUTH_TOKEN repository secret to a Sentry organization token with `org:ci`
+# scope to generate and upload macOS crash symbols to the Tabler project.
 on:
   workflow_dispatch:
     inputs:
@@ -27,6 +44,7 @@ concurrency:
   queue: max
 
 jobs:
+  # One version for every job of the run: computed once, from the tags as they are now.
   version:
     name: Version
     runs-on: ubuntu-latest
@@ -34,9 +52,11 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
+      # The whole history, with the tags the version counts from.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -54,19 +74,26 @@ jobs:
       matrix:
         include:
           # One .app / .dmg for Apple Silicon and Intel.
+          # The updater bundle is the .app in a .tar.gz, with its signature.
           - os: macos-latest
             name: macos
             label: macOS (.dmg)
             args: --target universal-apple-darwin
-            bundle: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-          # The NSIS setup .exe and the .msi (src-tauri/tauri.windows.conf.json).
+            bundle: |
+              src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+              src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+          # The NSIS setup .exe and the .msi (src-tauri/tauri.windows.conf.json); the installers
+          # are their own updater bundles, each with its signature.
           - os: windows-latest
             name: windows
             label: Windows (.msi, .exe)
             args: ""
             bundle: |
               src-tauri/target/release/bundle/nsis/*.exe
+              src-tauri/target/release/bundle/nsis/*.exe.sig
               src-tauri/target/release/bundle/msi/*.msi
+              src-tauri/target/release/bundle/msi/*.msi.sig
     runs-on: ${{ matrix.os }}
     # A cold build compiles every driver, DuckDB's C++ included, twice on macOS (both architectures).
     timeout-minutes: 120
@@ -88,6 +115,24 @@ jobs:
       - name: Intel target for the universal macOS build
         if: matrix.name == 'macos'
         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: Configure macOS crash symbols
+        if: matrix.name == 'macos' && github.repository == 'kungfufafa/tabler'
+        id: macos-symbols
+        shell: bash
+        env:
+          SENTRY_UPLOAD_ENABLED: ${{ secrets.SENTRY_AUTH_TOKEN != '' }}
+        run: |
+          if [[ "$SENTRY_UPLOAD_ENABLED" != true ]]; then
+            echo "::notice::Skipping macOS crash symbols because SENTRY_AUTH_TOKEN is unavailable"
+            exit 0
+          fi
+          # Keep line tables in separate dSYMs while Cargo still strips the distributed binary.
+          {
+            echo 'CARGO_PROFILE_RELEASE_DEBUG=line-tables-only'
+            echo 'CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO=packed'
+          } >> "$GITHUB_ENV"
+          echo 'enabled=true' >> "$GITHUB_OUTPUT"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -142,18 +187,27 @@ jobs:
             echo "::warning::Signed but not notarized: APPLE_ID, APPLE_PASSWORD or APPLE_TEAM_ID is missing"
           fi
 
-      - name: Apply the installer version
+      # The build's version goes into package.json, Cargo.toml (crash reports are tagged with it)
+      # and tauri.conf.json of this checkout. Whether the build updates itself: with the signing
+      # key it produces updater bundles and follows its channel's latest.json; without it (a
+      # fork) neither. That part is a Tauri config the build merges over tauri.conf.json.
+      - name: Version and updater configuration
         shell: bash
         env:
+          TABLER_UPDATER_SIGNED: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          RELEASE_REF: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('refs/tags/v{0}', needs.version.outputs.version) || github.ref }}
           VERSION: ${{ needs.version.outputs.version }}
-        run: node dev/scripts/build-version.mjs --apply "$VERSION" "$RUNNER_TEMP/release-version.json"
+        run: node dev/scripts/release-config.mjs --apply --build-version "$VERSION" --out "$RUNNER_TEMP/release.conf.json" --ref "$RELEASE_REF"
 
       # On CI (CI=true) the bundler passes --skip-jenkins to bundle_dmg.sh, which skips the Finder
       # AppleScript that places the .dmg background, window size and icons; this keeps it.
+      # The signing key is only read when the configuration above turned the updater bundles on.
       - name: Build the installer
         env:
           TAURI_BUNDLER_DMG_IGNORE_CI: "true"
-        run: pnpm tauri build ${{ matrix.args }} --config "${{ runner.temp }}/release-version.json"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build ${{ matrix.args }} --config "${{ runner.temp }}/release.conf.json"
 
       - name: Upload the installer
         uses: actions/upload-artifact@v4
@@ -161,6 +215,40 @@ jobs:
           name: tabler-${{ matrix.name }}
           path: ${{ matrix.bundle }}
           if-no-files-found: error
+
+      - name: Upload macOS crash symbols to Sentry
+        if: steps.macos-symbols.outputs.enabled == 'true'
+        continue-on-error: true
+        timeout-minutes: 10
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          # The token selects the organization. This is the project ID in the release DSN.
+          SENTRY_PROJECT: "4512413446963280"
+        run: |
+          target=src-tauri/target
+          binary="$target/universal-apple-darwin/release/bundle/macos/Tabler.app/Contents/MacOS/tabler"
+          symbols=(
+            "$target/aarch64-apple-darwin/release/tabler.dSYM"
+            "$target/x86_64-apple-darwin/release/tabler.dSYM"
+          )
+          binary_uuids=$(dwarfdump --uuid "$binary" | awk '{print $2, $3}' | sort)
+          symbol_uuids=$(dwarfdump --uuid "${symbols[@]}" | awk '{print $2, $3}' | sort)
+          if [[ -z "$binary_uuids" || "$binary_uuids" != "$symbol_uuids" ]]; then
+            echo '::error::The dSYM UUIDs do not match the bundled macOS executable'
+            exit 1
+          fi
+
+          sentry_cli="$RUNNER_TEMP/sentry-cli"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/getsentry/sentry-cli/releases/download/3.8.2/sentry-cli-Darwin-universal \
+            --output "$sentry_cli"
+          echo "2d1b118fa46960ba5e8e0cca9a6e197366905776a0ddc5a89c7d05a3908b77db  $sentry_cli" | shasum -a 256 -c
+          chmod +x "$sentry_cli"
+          for dsym in "${symbols[@]}"; do
+            "$sentry_cli" debug-files check "$dsym"/Contents/Resources/DWARF/*
+          done
+          "$sentry_cli" debug-files upload --wait "${symbols[@]}"
 
   release:
     name: Publish · ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || needs.version.outputs.version }}
@@ -180,6 +268,7 @@ jobs:
       TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'nightly' }}
       VERSION: ${{ needs.version.outputs.version }}
     steps:
+      # The whole history, with the tags: the notes list the commits of each version.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -208,13 +297,32 @@ jobs:
           path: installers
           merge-multiple: true
 
-      # The Windows artifact keeps its `msi/` and `nsis/` folders (upload-artifact keeps the
-      # common parent of several paths); the release wants the files alone.
+      # The artifacts keep their `dmg/`, `macos/`, `msi/` and `nsis/` folders (upload-artifact
+      # keeps the common parent of several paths); the release wants the files alone.
       - name: Installers to publish
         run: |
-          find installers -mindepth 2 -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) -exec mv -t installers {} +
+          find installers -mindepth 2 -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.app.tar.gz' -o -name '*.sig' \) -exec mv -t installers {} +
           find installers -mindepth 1 -type d -exec rm -r {} +
           ls -l installers
+
+      # What changed in this version and the ones before it, from the commits between their
+      # tags: as text for the update dialog (latest.json), as Markdown for the release.
+      - name: Release notes
+        run: |
+          set -euo pipefail
+          node dev/scripts/release-notes.mjs --version "$VERSION" --format text > "$RUNNER_TEMP/notes.txt"
+          node dev/scripts/release-notes.mjs --version "$VERSION" --format markdown > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.txt"
+
+      # What the in-app updater reads: the version, the notes and, per platform, the updater
+      # bundle and its signature. Not written when the builds were not signed.
+      - name: latest.json for the in-app updater
+        run: |
+          node dev/scripts/updater-manifest.mjs \
+            --dir installers \
+            --version "$VERSION" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.txt"
 
       - name: Reserve the build version
         if: env.TAG == 'nightly'
@@ -223,22 +331,42 @@ jobs:
 
       - name: Publish the numbered release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nightly_version.outputs.publish == 'true'
-        run: bash dev/scripts/publish-stable.sh "v$VERSION" --generate-notes
+        run: |
+          set -euo pipefail
+          node dev/scripts/updater-manifest.mjs \
+            --dir installers \
+            --version "$VERSION" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.txt"
+          bash dev/scripts/publish-stable.sh "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          node dev/scripts/updater-manifest.mjs \
+            --dir installers \
+            --version "$VERSION" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/nightly" \
+            --notes-file "$RUNNER_TEMP/notes.txt"
 
       # The Nightly tag moves to this commit and its installers replace the previous ones.
-      # A manually pushed `v*` tag gets a release of its own, with notes
-      # generated from the commits since the previous tag.
+      # A manually pushed `v*` tag pushed by hand gets a release of its own;
+      # one with a pre-release suffix (`v1.0.0-rc.1`) is a pre-release, which the stable
+      # channel's "latest release" skips. Both are titled with the version and say what changed.
       - name: Create or update the release
         if: env.TAG != 'nightly' || steps.nightly_version.outputs.publish == 'true'
         run: |
           set -euo pipefail
+          body="$RUNNER_TEMP/body.md"
+          {
+            cat "$RUNNER_TEMP/notes.md"
+            printf '\n---\n\nBuilt from `%s` on %s. ' "${GITHUB_SHA::7}" "$(date -u +%Y-%m-%d)"
+            printf 'An installed Tabler updates itself (Check for Updates…). '
+            printf 'Unsigned builds: see the README for the first-launch steps on macOS (Gatekeeper) and Windows (SmartScreen).\n'
+          } > "$body"
           if [ "$TAG" = nightly ]; then
             gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
             gh release create nightly installers/* \
               --prerelease \
               --target "$GITHUB_SHA" \
               --title "Tabler $VERSION (nightly)" \
-              --notes "$(printf 'Built from `%s` on `main`. Unsigned builds: see the README for the first-launch steps on macOS (Gatekeeper) and Windows (SmartScreen).' "${GITHUB_SHA::7}")"
+              --notes-file "$body"
           elif gh release view "$TAG" >/dev/null 2>&1; then
             # A release made by hand for the tag (a draft, say): just attach the installers.
             gh release upload "$TAG" installers/* --clobber
@@ -247,7 +375,7 @@ jobs:
             case "$VERSION" in *-*) prerelease=(--prerelease) ;; esac
             gh release create "$TAG" installers/* \
               --verify-tag \
-              --title "Tabler $TAG" \
-              --generate-notes \
+              --title "Tabler $VERSION" \
+              --notes-file "$body" \
               "${prerelease[@]}"
           fi

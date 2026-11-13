@@ -331,6 +331,8 @@ export interface Prefs {
   gridNoElastic: boolean;
   /** General ▸ Table Data ▸ Auto expand text column: text columns open as wide as their content. */
   gridAutoExpandText: boolean;
+  /** General ▸ Application: look for a newer build at launch (Check for Updates… always can). */
+  autoCheckUpdates: boolean;
 }
 
 export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
@@ -422,6 +424,7 @@ export const DEFAULT_PREFS: Readonly<Prefs> = Object.freeze({
   colorOverrides: EMPTY_COLOR_OVERRIDES,
   gridNoElastic: false,
   gridAutoExpandText: false,
+  autoCheckUpdates: true,
 });
 
 const PREF_KEYS = Object.keys(DEFAULT_PREFS) as (keyof Prefs)[];
@@ -525,6 +528,7 @@ const VALID: { [K in keyof Prefs]: (v: unknown) => boolean } = {
   colorOverrides: isColorOverrides,
   gridNoElastic: isBool,
   gridAutoExpandText: isBool,
+  autoCheckUpdates: isBool,
 };
 
 function assign<K extends keyof Prefs>(target: Prefs, key: K, value: unknown): void {

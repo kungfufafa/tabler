@@ -40,6 +40,26 @@ fn the_http_client_reads_the_system_proxy() {
     );
 }
 
+/// The updater plugin's default `rustls-tls` turns on rustls's ring provider (a second crypto
+/// library next to aws-lc-rs), and `native-tls` would bring SChannel / Secure Transport. It uses
+/// the app's reqwest build instead, whose `rustls` feature must therefore stay on.
+#[test]
+fn the_updater_uses_the_apps_tls_stack() {
+    let updater = dependency("tauri-plugin-updater");
+    assert!(updater.contains("default-features = false"), "{updater}");
+    for feature in features(&updater) {
+        assert!(
+            !feature.contains("tls"),
+            "tauri-plugin-updater turns on {feature}: {updater}"
+        );
+    }
+    let reqwest = dependency("reqwest");
+    assert!(
+        features(&reqwest).iter().any(|f| f == "rustls"),
+        "the updater's HTTPS needs reqwest's rustls feature: {reqwest}"
+    );
+}
+
 /// The crates only the drivers beyond PostgreSQL, MySQL and SQLite use.
 const DRIVER_CRATES: [&str; 13] = [
     "tiberius",

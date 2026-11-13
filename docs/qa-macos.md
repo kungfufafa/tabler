@@ -17,7 +17,7 @@ Prepare: `cp .env.example .env`, `pnpm dev:db:seed`, `pnpm dev:sqlite:build`, `p
 
 ## Menu bar & quitting
 
-- [ ] The menu bar shows Tabler (About, Settings… ⌘,, Services, Hide, Hide Others, Show All, Quit Tabler ⌘Q), File (New Window ⌘N, New Connection… (no key), New Workspace (no key), New SQL Viewer ⇧⌘O, Reload Workspace ⌘R, New Query Tab ⌘T, Open SQL File… ⌘O, Open Recent, Close Tab / Window ⌘W, Reopen Closed Tab ⇧⌘T, Export… ⇧⌘E, Connection Manager (no key)), Edit, View (Open Anything… ⌘P, Switch Database… ⌘K, Switch Connection… ⇧⌘K, Data ⌃⌘[, Structure ⌃⌘], Toggle Sidebar ⌘0, Toggle Row Detail ⇧⌘I, Toggle Console Log ⇧⌘C, Refresh ⌥⌘R, Enter Full Screen), Connection (Reconnect ⇧⌘R), Navigate and Window (Minimize, Zoom).
+- [ ] The menu bar shows Tabler (About, Check for Updates…, Settings… ⌘,, Services, Hide, Hide Others, Show All, Quit Tabler ⌘Q), File (New Window ⌘N, New Connection… (no key), New Workspace (no key), New SQL Viewer ⇧⌘O, Reload Workspace ⌘R, New Query Tab ⌘T, Open SQL File… ⌘O, Open Recent, Close Tab / Window ⌘W, Reopen Closed Tab ⇧⌘T, Export… ⇧⌘E, Connection Manager (no key)), Edit, View (Open Anything… ⌘P, Switch Database… ⌘K, Switch Connection… ⇧⌘K, Data ⌃⌘[, Structure ⌃⌘], Toggle Sidebar ⌘0, Toggle Row Detail ⇧⌘I, Toggle Console Log ⇧⌘C, Refresh ⌥⌘R, Enter Full Screen), Connection (Reconnect ⇧⌘R), Navigate and Window (Minimize, Zoom).
 - [ ] Every File / View item works when chosen with the mouse; Open SQL File… outside a query tab opens a new query tab first.
 - [ ] ⌘C / ⌘V / ⌘X / ⌘Z / ⌘A still work in text fields (connection form, filter bar, search) and in the SQL editor; in the grid ⌘C / ⌘V / ⌘Z keep their grid meaning (one action, not two).
 - [ ] With a staged edit or an unsaved query: Tabler → Quit Tabler (mouse) and ⌘Q both show "Discard N pending changes?" (⌘Q sends the same quit request to every window as the menu item does); Cancel keeps the app open with everything intact; Discard closes that window, and the app exits once no window is left holding unsaved work. With a second window open: ⌘Q in the dirty one, or the menu's Quit while only a background window is dirty, brings the dirty window to the front with its dialog (a minimised one is restored); Discard there quits the whole app when the other windows have nothing unsaved, and Cancel in any window calls the quit off.
@@ -129,3 +129,9 @@ These need the real app (`pnpm tauri build` or `pnpm tauri dev`); the browser mo
 - [ ] `pnpm tauri build` produces `Tabler.app` and a `.dmg`; the app launches from /Applications; icon looks right in Dock and Finder (light and dark).
 - [ ] Ad-hoc signature (`signingIdentity: "-"`): `codesign -dv --verbose=2 src-tauri/target/release/bundle/macos/Tabler.app` shows `Identifier=com.mekayastudio.tabler`, `Signature=adhoc` and `Sealed Resources`; `codesign --verify --deep --strict --verbose=2 …/Tabler.app` passes (prints "valid on disk" and "satisfies its Designated Requirement").
 - [ ] The DMG copied to another Mac opens after right-click → Open (not "damaged").
+- [ ] For the GitHub release, run `codesign --verify --deep --strict /Applications/Tabler.app` and
+      `spctl --assess --type execute --verbose /Applications/Tabler.app`. Confirm Gatekeeper reports
+      `source=Notarized Developer ID`.
+- [ ] In the release workflow, check that **Upload macOS crash symbols to Sentry** succeeds for
+      Apple Silicon and Intel. The step uses the `SENTRY_AUTH_TOKEN` GitHub Actions secret. Create an
+      organization token with `org:ci` in the Sentry organization that owns the Tabler project.

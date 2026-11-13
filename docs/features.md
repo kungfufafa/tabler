@@ -64,6 +64,9 @@ The native macOS menu bar is wired to the same actions as the app:
 | Window     | Show Workspaces, Select Next / Previous Workspace                                                                                                           |
 | Help       | Changelog, Report a Bug / Send Feedback… (the project's releases and issue tracker), Enable SSH Debug Log, Show Log File                                    |
 
+The app menu has **About Tabler** (the build's version and commit) and **Check for Updates…**
+(in Help on Windows): see [updates.md](updates.md).
+
 Menu shortcuts only act when the focused part of the page does not handle the key itself.
 
 ### Look and feel

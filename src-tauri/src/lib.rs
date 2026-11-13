@@ -41,6 +41,7 @@ pub mod tls_client;
 pub mod tls_files;
 pub mod tunnel;
 pub mod types;
+pub mod updater;
 pub mod windows;
 
 use tauri::{Emitter, Manager, RunEvent};
@@ -53,7 +54,8 @@ pub mod shell {
     use std::time::{Duration, Instant};
 
     use tauri::menu::{
-        Menu, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+        AboutMetadata, AboutMetadataBuilder, Menu, MenuBuilder, MenuItem, MenuItemBuilder,
+        PredefinedMenuItem, SubmenuBuilder,
     };
     use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -194,6 +196,8 @@ pub mod shell {
     /// log, ⌘D the editor's next occurrence): the page resolves those keys by focus
     /// (`MENU_UNBOUND_ACTIONS` in useNativeMenu.ts).
     const PLAIN_MENU_ACTIONS: &[(&str, &str)] = &[
+        // The app menu (Help elsewhere): looks for a newer build (`crate::updater`).
+        ("app.check-updates", "Check for Updates…"),
         ("connection.new", "New Connection…"),
         // File ▸ New Workspace (the connection picker); File ▸ Connection Manager.
         ("workspace.new", "New Workspace"),
@@ -254,11 +258,30 @@ pub mod shell {
             .build(app)
     }
 
+    /// What the About dialog says: the name, the version, and the commit the build was made from
+    /// in parentheses after it ("Version 0.1.7 (1a2b3c4)").
+    pub fn about_metadata(
+        name: &str,
+        version: &str,
+        commit: Option<&str>,
+    ) -> AboutMetadata<'static> {
+        AboutMetadataBuilder::new()
+            .name(Some(name))
+            .version(Some(version))
+            .short_version(commit)
+            .build()
+    }
+
     /// App / File / Edit / View / Connection / Navigate / Window, TablePlus's menu bar. Edit keeps
     /// the predefined items: they are what makes ⌘C / ⌘V / ⌘Z work in text fields on macOS.
     /// Elsewhere there is no app menu: Settings and Exit end File, About ends Help.
     pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         let name = app.package_info().name.clone();
+        let about = about_metadata(
+            &name,
+            &app.package_info().version.to_string(),
+            crate::updater::build_commit(),
+        );
         let quit_label = if cfg!(target_os = "macos") {
             format!("Quit {name}")
         } else {
@@ -269,7 +292,8 @@ pub mod shell {
             .build(app)?;
         #[cfg(target_os = "macos")]
         let app_menu = SubmenuBuilder::new(app, &name)
-            .about(None)
+            .about(Some(about))
+            .item(&action_item(app, "app.check-updates")?)
             .separator()
             .item(&action_item(app, "settings.open")?)
             .separator()
@@ -415,11 +439,8 @@ pub mod shell {
         #[cfg(not(target_os = "macos"))]
         {
             // Without metadata the predefined About item does nothing outside macOS.
-            let about = tauri::menu::AboutMetadataBuilder::new()
-                .name(Some(name.clone()))
-                .version(Some(app.package_info().version.to_string()))
-                .build();
             help.append(&PredefinedMenuItem::separator(app)?)?;
+            help.append(&action_item(app, "app.check-updates")?)?;
             help.append(&PredefinedMenuItem::about(
                 app,
                 Some(&format!("About {name}")),
@@ -790,6 +811,7 @@ pub mod shell {
                 Some("admin.process-list")
             );
             assert_eq!(menu_action("admin.users"), Some("admin.users"));
+            assert_eq!(menu_action("app.check-updates"), Some("app.check-updates"));
             assert_eq!(
                 menu_action("connection.disconnect"),
                 Some("connection.disconnect")
@@ -864,6 +886,18 @@ pub mod shell {
                     "{id} must have no accelerator"
                 );
             }
+        }
+
+        #[test]
+        fn the_about_dialog_names_the_version_and_the_commit() {
+            let about = about_metadata("Tabler", "0.1.7", Some("1a2b3c4"));
+            assert_eq!(about.name.as_deref(), Some("Tabler"));
+            assert_eq!(about.version.as_deref(), Some("0.1.7"));
+            assert_eq!(about.short_version.as_deref(), Some("1a2b3c4"));
+            // A development build has no commit: the version stands alone.
+            let about = about_metadata("Tabler", "0.1.0", None);
+            assert_eq!(about.version.as_deref(), Some("0.1.0"));
+            assert_eq!(about.short_version, None);
         }
 
         #[test]
@@ -1011,6 +1045,36 @@ pub mod shell {
     }
 }
 
+/// What an exit owes the user's work, whichever way the process ends: `RunEvent::Exit`, and the
+/// Windows installer of an update, which ends the process without the exit events
+/// (`updater::before_installer_exit`).
+pub fn exit_cleanup(app: &tauri::AppHandle) {
+    // Exports still running never get to drop their temporary files.
+    let removed = export::remove_partial_files();
+    if removed > 0 {
+        log::info!("removed {removed} partial export file(s) on exit");
+    }
+    // Dump / restore binaries still running are killed; partial backups removed.
+    let removed = backup::shutdown();
+    if removed > 0 {
+        log::info!("removed {removed} partial backup file(s) on exit");
+    }
+    // Every open session is closed (`app.exit()` runs no window handlers): a SQLite file in WAL
+    // mode is checkpointed and loses its -wal / -shm files. Before the SQLite over SSH uploads
+    // below, which send the main file of the local copy.
+    if let Some(state) = app.try_state::<state::AppState>()
+        && shell::block_on_for(
+            std::time::Duration::from_secs(3),
+            state.close_all_sessions(),
+        )
+        .is_none()
+    {
+        log::warn!("closing the open sessions at exit timed out");
+    }
+    // SQLite over SSH: the last changes go back to the server.
+    commands::sqlite_ssh::shutdown();
+}
+
 pub fn run() {
     // One process-wide TLS crypto provider for russh, mysql_async and tokio-postgres-rustls.
     // Mixing providers panics at runtime, so install it before any connection is made.
@@ -1036,6 +1100,7 @@ pub fn run() {
     let app = builder
         .manage(shell::QuitState::default())
         .manage(windows::WindowRegistry::default())
+        .manage(updater::UpdaterState::default())
         .on_window_event(windows::on_window_event)
         .menu(shell::build_menu)
         .on_menu_event(|app, event| shell::on_menu_event(app, event.id().as_ref()))
@@ -1060,7 +1125,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        // In-app updates; the page reaches it only through `commands::update`.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // Which build this is: the first thing a log sent with a bug report has to say.
+            log::info!(
+                "Tabler {}",
+                updater::describe_build(
+                    &app.package_info().version.to_string(),
+                    updater::channel(&app.config().plugins.0),
+                )
+            );
             let dir = app.path().app_data_dir()?;
             // Settings ▸ Locations may put the app DB elsewhere (a pointer file in `dir`).
             let (appdb, locations) = locations::open_app_db(dir)?;
@@ -1255,6 +1330,10 @@ pub fn run() {
             commands::assistant::assistant_key_status,
             commands::assistant::assistant_set_key,
             commands::assistant::assistant_test,
+            commands::update::update_check,
+            commands::update::update_download,
+            commands::update::update_cancel,
+            commands::update::update_install,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -1272,32 +1351,7 @@ pub fn run() {
                 shell::retry_unanswered_exit(app, code.unwrap_or(0));
             }
         }
-        // Exports still running never get to drop their temporary files.
-        RunEvent::Exit => {
-            let removed = export::remove_partial_files();
-            if removed > 0 {
-                log::info!("removed {removed} partial export file(s) on exit");
-            }
-            // Dump / restore binaries still running are killed; partial backups removed.
-            let removed = backup::shutdown();
-            if removed > 0 {
-                log::info!("removed {removed} partial backup file(s) on exit");
-            }
-            // Every open session is closed (`app.exit()` runs no window handlers): a SQLite file
-            // in WAL mode is checkpointed and loses its -wal / -shm files. Before the SQLite over
-            // SSH uploads below, which send the main file of the local copy.
-            if let Some(state) = app.try_state::<state::AppState>()
-                && shell::block_on_for(
-                    std::time::Duration::from_secs(3),
-                    state.close_all_sessions(),
-                )
-                .is_none()
-            {
-                log::warn!("closing the open sessions at exit timed out");
-            }
-            // SQLite over SSH: the last changes go back to the server.
-            commands::sqlite_ssh::shutdown();
-        }
+        RunEvent::Exit => exit_cleanup(app),
         // Finder (double-clicked files), `open -a Tabler "<url>"` and links to Tabler's schemes.
         #[cfg(target_os = "macos")]
         RunEvent::Opened { urls } => deeplink::on_opened(app, &urls),

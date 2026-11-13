@@ -149,6 +149,8 @@ export type ActionId =
   | "ui.prev-pane"
   /** Window ▸ Lock Tabler (⌃⌘L): the passcode lock screen (Settings ▸ Security ▸ Passcode). */
   | "app.lock"
+  /** Check for Updates… (the app menu on macOS, Help elsewhere): looks for a newer build. */
+  | "app.check-updates"
   /** Plugins ▸ Manage Plugins… (⌘L). */
   | "plugins.manage"
   /** Plugins ▸ SQL Format (⌃I in the SQL editor): the built-in SQL Formatter plugin. */
