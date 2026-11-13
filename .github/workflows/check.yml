@@ -54,6 +54,7 @@ jobs:
           pnpm test
           pnpm test:lanes
           node --test dev/scripts/build-version.test.mjs
+          node --test dev/scripts/pr-title.test.mjs
 
       - name: Rust — fmt, clippy, tests
         # Integration tests self-skip while the TABLER_TEST_* URLs are unset.
