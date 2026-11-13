@@ -125,6 +125,9 @@ struct Inner {
     born: Vec<String>,
     /// The window that keeps the session saved (`None`: the main window).
     session_owner: Option<String>,
+    /// Windows: the last workspace window closed and the Welcome window is being built in its
+    /// place ([`reopens_welcome`]); the runtime's last-window exit is held meanwhile.
+    welcome_pending: bool,
 }
 
 impl Inner {
@@ -269,6 +272,15 @@ impl WindowRegistry {
         self.lock().quitting
     }
 
+    /// See `Inner::welcome_pending`.
+    pub fn set_welcome_pending(&self, pending: bool) {
+        self.lock().welcome_pending = pending;
+    }
+
+    pub fn welcome_pending(&self) -> bool {
+        self.lock().welcome_pending
+    }
+
     /// Windows whose label is reserved and that Tauri does not list yet (being built).
     pub fn building(&self) -> usize {
         self.lock().reserved.len()
@@ -347,6 +359,50 @@ impl WindowRegistry {
 /// process without any window. macOS keeps its behaviour (the runtime's own last-window exit).
 pub fn exits_with_last_window(macos: bool, left: usize, building: usize) -> bool {
     !macos && left == 0 && building == 0
+}
+
+/// Windows, like TablePlus for Windows: closing the last workspace window (one that held
+/// connections) with its ✕, Alt+F4 or the taskbar shows the Welcome window instead of ending the
+/// app. A quit (File ▸ Quit, every window asked) still ends it, and so does closing the Welcome
+/// window itself.
+pub fn reopens_welcome(
+    windows: bool,
+    quitting: bool,
+    held_connections: bool,
+    left: usize,
+    building: usize,
+) -> bool {
+    windows && !quitting && held_connections && left == 0 && building == 0
+}
+
+/// Builds the Welcome window in place of the last workspace window, which just closed. Its label
+/// may be the Welcome window's own, still held a moment while it goes away. Ends the app when the
+/// Welcome window cannot be shown: a process without a window cannot be reached.
+fn reopen_welcome<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..40 {
+            if app.get_webview_window(WELCOME_WINDOW).is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let shown = show_welcome_window(&app);
+        if let Some(registry) = app.try_state::<WindowRegistry>() {
+            registry.set_welcome_pending(false);
+        }
+        match shown {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                log::warn!("the Welcome window could not be shown: exiting");
+                app.exit(0);
+            }
+            Err(e) => {
+                log::warn!("could not open the Welcome window: {e}; exiting");
+                app.exit(0);
+            }
+        }
+    });
 }
 
 // --- Tauri glue --------------------------------------------------------------------------------
@@ -675,6 +731,7 @@ pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
                 .filter(|l| *l != label)
                 .collect();
             let gone = registry.forget(&label, &remaining);
+            let held_connections = !gone.connections.is_empty();
             if let Some(quit) = app.try_state::<crate::shell::QuitState>() {
                 quit.set_unsaved(gone.unsaved);
             }
@@ -698,7 +755,17 @@ pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
                     }
                 });
             }
-            if gone.quit_now && !remaining.is_empty() {
+            if reopens_welcome(
+                cfg!(windows),
+                registry.is_quitting(),
+                held_connections,
+                remaining.len(),
+                registry.building(),
+            ) {
+                log::info!("window {label} closed: it was the last workspace, showing Welcome");
+                registry.set_welcome_pending(true);
+                reopen_welcome(app);
+            } else if gone.quit_now && !remaining.is_empty() {
                 log::info!("quit: the last window that held it up closed");
                 if let Some(quit) = app.try_state::<crate::shell::QuitState>() {
                     quit.confirm();
@@ -818,6 +885,24 @@ mod tests {
         assert_eq!(registry.owner_of(c), None);
         registry.set_connections("main", []);
         assert_eq!(registry.forget("main", &[]).connections, Vec::<Uuid>::new());
+    }
+
+    #[test]
+    fn closing_the_last_workspace_window_shows_welcome_on_windows() {
+        // The last window, holding connections, closed by its user: the Welcome window comes up.
+        assert!(reopens_welcome(true, false, true, 0, 0));
+        // A quit ends the app; so does closing the Welcome window (no connections).
+        assert!(!reopens_welcome(true, true, true, 0, 0));
+        assert!(!reopens_welcome(true, false, false, 0, 0));
+        // Other windows left (or on their way): nothing to replace.
+        assert!(!reopens_welcome(true, false, true, 1, 0));
+        assert!(!reopens_welcome(true, false, true, 0, 1));
+        // macOS and Linux keep their behaviour.
+        assert!(!reopens_welcome(false, false, true, 0, 0));
+        let reg = WindowRegistry::default();
+        assert!(!reg.welcome_pending());
+        reg.set_welcome_pending(true);
+        assert!(reg.welcome_pending());
     }
 
     #[test]

@@ -84,7 +84,12 @@ pub mod shell {
         ("window.new", "New Window", "CmdOrCtrl+N"),
         ("tab.new-query", "New Query Tab", "CmdOrCtrl+T"),
         ("query.open", "Open SQL File…", "CmdOrCtrl+O"),
-        ("tab.close", "Close Tab / Window", "CmdOrCtrl+W"),
+        // Ctrl+W with no tab left closes the window on macOS only (TablePlus for Windows keeps it).
+        (
+            "tab.close",
+            mac_or("Close Tab / Window", "Close Tab"),
+            "CmdOrCtrl+W",
+        ),
         ("tab.close-all", "Close All Tabs", "CmdOrCtrl+Shift+W"),
         ("tab.reopen", "Reopen Closed Tab", "CmdOrCtrl+Shift+T"),
         ("export.open", "Export…", "CmdOrCtrl+Shift+E"),
@@ -1257,6 +1262,16 @@ pub fn run() {
         // (`shell::terminate_guard`); this catches exits requested any other way while a window
         // is open. The runtime's own request when its last window went away is always let through.
         RunEvent::ExitRequested { api, code, .. } => {
+            // Windows: the last workspace window closed and the Welcome window is on its way
+            // (`windows::reopens_welcome`): the runtime's own last-window exit waits for it.
+            if code.is_none()
+                && app
+                    .try_state::<windows::WindowRegistry>()
+                    .is_some_and(|r| r.welcome_pending())
+            {
+                api.prevent_exit();
+                return;
+            }
             let source = shell::ExitSource::of_request(code);
             if shell::decide_exit(app, source) == shell::ExitDecision::AskRenderer {
                 api.prevent_exit();

@@ -247,3 +247,10 @@ audit" pass; the TablePlus behaviour is the target.
     shrinks; the bottom bars drop their button labels (+ Add row, + Column, + Index, DDL), compact
     the Data | Structure | Index switch and, if still too narrow, scroll sideways instead of cutting
     off their last controls (pagination, Review, Refresh). (`app/Toolbar`, `table-tab/BarParts`.)
+22. **Closing a workspace window (Windows):** like TablePlus for Windows, closing the last window
+    that holds connections (its ✕, Alt+F4, the taskbar) goes back to the Welcome window instead of
+    ending the app (`windows.rs` `reopens_welcome`); a quit and closing the Welcome window itself
+    still end it. Ctrl+W closes the visible tab and, with no tab left, does nothing (macOS: ⌘W then
+    closes the window). Every window is titled after what it shows, the status pill's text
+    (`LOCAL | SQLite 3.51.1 : Sample : main : users`; `Tabler` with no connection), so the
+    taskbar and Alt+Tab tell windows apart (`app/WindowTitleHost`).
