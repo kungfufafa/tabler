@@ -38,6 +38,7 @@
     "active": true,
     "targets": ["app", "dmg"],
     "category": "DeveloperTool",
+    "createUpdaterArtifacts": false,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -69,5 +70,12 @@
         "rank": "Default"
       }
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZGNEYzMkU2NzVBNEQ1OUYKUldTZjFhUjE1akpQLzB0NzdmUDkwUUN5ODdGZlVlNXZKODMzSzdjem9NbjZwL1RJSXdQU1pRRmQK",
+      "endpoints": ["https://github.com/kungfufafa/tabler/releases/latest/download/latest.json"],
+      "requireSignedVersion": true
+    }
   }
 }

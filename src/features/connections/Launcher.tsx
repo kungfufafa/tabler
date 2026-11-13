@@ -71,6 +71,7 @@ import { ipc, type ConnectionProfile } from "@/lib/ipc";
 import { comboFromEvent } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
+import { buildLabel } from "@/stores/appInfo";
 import { useConnectionsStore } from "@/stores/connections";
 import { useIsWelcomeWindow } from "@/stores/windowShape";
 import { DriverBadge, GroupIcon } from "./badges";
@@ -774,7 +775,8 @@ export function Launcher() {
     );
   };
 
-  const version = appInfo.data?.version;
+  // The version and the commit of the build, as About Tabler names it.
+  const version = buildLabel(appInfo.data);
   /**
    * With connections open (the workspace rail beside it) the manager is a panel of the workspace:
    * drawn flush to the edges like the sidebar and tabs, not as a floating welcome window.

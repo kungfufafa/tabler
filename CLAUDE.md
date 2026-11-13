@@ -22,6 +22,7 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
 - The renderer talks to the backend only through `src/lib/ipc/` (facade + real/mock transport). Every new command gets a mock implementation.
 - `src/components/ui/` is shadcn-generated; do not hand-edit (re-add instead).
 - Pin `tauri = "2"` and `@tauri-apps/*@^2` (3.0 alpha exists). Keep the template's TypeScript version.
+- Versions and in-app updates: `docs/updates.md`. Never bump a version by hand: CI gives every published build of `main` the next patch number and tags the commit (`v0.1.2`); a `v*` tag pushed by hand builds that version (`dev/scripts/release-config.mjs`). `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` keep one common base version. Release notes come from the commit subjects (`feat:` New, `fix:` Fixed, `ui:` Improved; `ci:` / `test:` / `docs:` / `chore:` are left out), so write subjects as what changed for the user. The updater's private key exists only in the repository secrets: never generate, print or store one.
 
 ## Drivers
 

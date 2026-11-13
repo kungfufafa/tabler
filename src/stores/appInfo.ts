@@ -12,6 +12,15 @@ export function useAppInfo(): AppInfo | null {
   return useAppInfoStore((s) => s.info);
 }
 
+/**
+ * "0.1.0-nightly.172 (1a2b3c4)": a build as the About dialog names it, its version and the commit
+ * it was made from (a development build has none).
+ */
+export function buildLabel(info: Pick<AppInfo, "version" | "commit"> | null | undefined): string {
+  if (!info) return "";
+  return info.commit ? `${info.version} (${info.commit})` : info.version;
+}
+
 /** Asks the backend once, at boot (`Providers`). */
 export async function loadAppInfo(): Promise<void> {
   try {

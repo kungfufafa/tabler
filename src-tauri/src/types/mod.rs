@@ -25,5 +25,6 @@ pub mod saved_query;
 pub mod schema;
 pub mod security;
 pub mod sql_file;
+pub mod update;
 pub mod value;
 pub mod window;

@@ -71,6 +71,10 @@ tauri-plugin-clipboard-manager = "2"
 # Native notifications when a long export / import / backup finishes in the background.
 tauri-plugin-notification = "2"
 tauri-plugin-window-state = "2"
+# In-app updates (src/updater.rs). Without the default features: `rustls-tls` builds rustls on ring
+# next to the app's aws-lc-rs, and `zip` only reads Tauri v1 update bundles. HTTPS comes from the
+# app's own reqwest features below (same reqwest, one build), on the provider `run` installs.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["system-proxy"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs", "process"] }
 tokio-util = "0.7"
 futures = "0.3"

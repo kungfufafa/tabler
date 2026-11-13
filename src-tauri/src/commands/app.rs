@@ -11,11 +11,14 @@ use crate::windows::{self, WindowRegistry};
 #[tauri::command]
 pub fn app_info(app: AppHandle) -> AppInfo {
     log::debug!("renderer ready: app_info requested");
+    let version = app.package_info().version.to_string();
     AppInfo {
+        channel: Some(crate::updater::channel(&app.config().plugins.0)),
         // The release this build follows, not the repository's base version (`version.rs`).
-        version: crate::version::app_version(&app.package_info().version.to_string()),
+        version: crate::version::app_version(&version),
         platform: std::env::consts::OS.to_string(),
         debug: cfg!(debug_assertions),
+        commit: crate::updater::build_commit().map(str::to_string),
         drivers: Some(registry::built_drivers()),
         kinds: Some(registry::built_kinds()),
     }

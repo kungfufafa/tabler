@@ -38,4 +38,5 @@ pub mod schema;
 pub mod settings;
 pub mod sql_files;
 pub mod sqlite_ssh;
+pub mod update;
 pub mod workspace_commit;

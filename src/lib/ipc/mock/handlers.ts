@@ -45,6 +45,7 @@ import { mockCheckHostKey } from "./export";
 import { SEED_PROFILES, tableMetaFor, tablesFor } from "./fixtures";
 import { matchesGroup, rowsFor, sortRows } from "./rows";
 import { mockEmit, mockError, registerMock } from "./transport";
+import { MOCK_APP_VERSION } from "./updater";
 
 const profiles = new Map<string, ConnectionProfile>(SEED_PROFILES.map((p) => [p.id, p]));
 const secrets = new Map<string, string>([["p-local-pg", "secret"]]);
@@ -146,9 +147,11 @@ function conn(connectionId: string) {
 // The mock is a build of the core drivers (their databases in the picker's order), and of those
 // `?mockDrivers=` names.
 registerMock("app_info", () => ({
-  version: "0.1.0",
+  version: MOCK_APP_VERSION,
   platform: "mock",
   debug: true,
+  commit: null,
+  channel: "stable",
   drivers: mockBuiltDrivers(),
   kinds: mockBuiltKinds(),
 }));

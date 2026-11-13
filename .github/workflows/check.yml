@@ -54,6 +54,7 @@ jobs:
           pnpm test
           pnpm test:lanes
           node --test dev/scripts/build-version.test.mjs
+          pnpm test:release
           node --test dev/scripts/pr-title.test.mjs
 
       - name: Rust — fmt, clippy, tests
@@ -206,3 +207,4 @@ jobs:
         run: |
           pnpm test
           pnpm test:lanes
+          pnpm test:release

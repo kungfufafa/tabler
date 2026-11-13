@@ -71,7 +71,7 @@ pub async fn reveal_location(
 /// Whether the app may restart now: not while any window holds unsaved work. The renderer checks
 /// its own window before it calls `restart_app`; the other windows have their own tabs and
 /// staging, which the quit handshake of a normal quit asks about and a restart must not skip.
-fn restart_decision(any_window_unsaved: bool) -> Result<(), AppError> {
+pub(crate) fn restart_decision(any_window_unsaved: bool) -> Result<(), AppError> {
     if any_window_unsaved {
         return Err(AppError::InvalidInput(
             "Another window has unsaved work. Save or close it first, then restart.".into(),

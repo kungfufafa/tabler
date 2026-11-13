@@ -42,6 +42,11 @@ The builds are not code-signed yet, so each platform warns once:
 - **Windows** shows a SmartScreen warning. Click **More info** → **Run anyway**. WebView2 is
   downloaded by the installer when Windows does not have it yet.
 
+An installed build updates itself: it checks at launch (Settings ▸ General turns that off) and on
+**Check for Updates…** in the app menu, shows what changed, and follows the channel it came from,
+the nightlies or the numbered releases. About Tabler shows the version and commit of the build.
+See [docs/updates.md](docs/updates.md).
+
 ## Highlights
 
 - **Feels like TablePlus.** Same layout, same menus, same shortcuts.
@@ -220,8 +225,8 @@ pnpm tauri build --bundles app   # Tabler.app only, no DMG
 The output is in `src-tauri/target/release/bundle/` (`macos/Tabler.app` and `dmg/*.dmg`).
 
 > [!NOTE]
-> Builds are ad-hoc signed, not notarized (that needs an Apple Developer ID). On another Mac,
-> Gatekeeper blocks the first launch. Right-click the app and choose **Open**, or run:
+> Local builds use ad-hoc signing by default. Gatekeeper may block their first launch on another
+> Mac. Right-click the app and choose **Open**, or run the command below.
 >
 > ```bash
 > xattr -cr /Applications/Tabler.app
@@ -270,11 +275,16 @@ macOS DMG (Apple Silicon and Intel) and the Windows installers, and publishes th
 - the build applies the version to its temporary checkout. The source manifests keep their base
   version. Rerunning the same tagged commit keeps its version and can finish an interrupted
   release. A failed CI or installer build leaves the previous release available;
-- `git tag v0.2.0 && git push origin v0.2.0` makes a release at exactly that version, with notes
-  generated from the commits since the previous one. The next automatic version is `0.2.1`;
+- `git tag v0.2.0 && git push origin v0.2.0` makes a numbered release of exactly that version,
+  and the automatic versions continue from it (`0.2.1`, …);
 - running it from the Actions tab with **publish** set to `nightly` replaces the installers on the
   rolling `nightly` pre-release by hand (without waiting for CI);
 - running it with **publish** left at `artifacts` only attaches them to the run.
+
+With the updater's signing key in the repository secrets (`TAURI_SIGNING_PRIVATE_KEY`,
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) the builds also carry signed updater bundles and the
+`latest.json` that installed builds ask for updates; without it (a fork) the installers are built
+the same, minus those. The setup is in [docs/updates.md](docs/updates.md).
 
 ## Troubleshooting
 
@@ -296,6 +306,7 @@ macOS DMG (Apple Silicon and Intel) and the Windows installers, and publishes th
 | [TablePlus macOS behavior log](docs/research/tableplus-macos-2026-11-11.md)   | Observations on TablePlus 27.2.0 with SQLite               |
 | [docs/verify-servers.md](docs/verify-servers.md)                              | Checks against real servers (SSL, MariaDB, SSH)            |
 | [docs/qa-macos.md](docs/qa-macos.md)                                          | Manual release checklist                                   |
+| [docs/updates.md](docs/updates.md)                                            | In-app updates: channels, versions, the signing key        |
 | [dev/README.md](dev/README.md)                                                | Sample databases and the Docker setup                      |
 | [design/logo/README.md](design/logo/README.md)                                | Logo, colours and usage rules                              |
 | [CLAUDE.md](CLAUDE.md)                                                        | Contributor conventions                                    |

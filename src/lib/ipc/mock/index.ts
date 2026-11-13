@@ -27,5 +27,6 @@ import "./metrics";
 import "./workspace";
 import "./native";
 import "./trace";
+import "./updater";
 
 export { mockEmit, mockInvoke, mockListen, registerMock, setMockLatency } from "./transport";
