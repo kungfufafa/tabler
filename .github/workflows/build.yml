@@ -3,7 +3,7 @@ name: Release installers
 # Installers for macOS and Windows, for anyone to download and install:
 #   - every push to `main` (but docs-only ones): the installers replace the ones on the rolling
 #     `nightly` pre-release, once CI has passed on that same commit (a red commit builds, but is
-#     never published). A newer push cancels the build of the one before it;
+#     never published). Each nightly gets the next patch version. A newer push cancels the previous build;
 #   - push a `v*` tag (`git tag v0.1.0 && git push origin v0.1.0`): a GitHub Release for that tag,
 #     with the installers attached and release notes generated from the commits;
 #   - run it from the Actions tab with "publish" set to `nightly`: the installers replace the ones
@@ -28,12 +28,32 @@ on:
       - "design/**"
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ inputs.publish == 'nightly' && 'refs/heads/main' || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test installer versioning
+        run: node --test dev/scripts/build-version.test.mjs
+      - name: Version of this build
+        id: version
+        run: node dev/scripts/build-version.mjs --version
+
   build:
     name: Installer · ${{ matrix.label }}
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -127,12 +147,18 @@ jobs:
             echo "::warning::Signed but not notarized: APPLE_ID, APPLE_PASSWORD or APPLE_TEAM_ID is missing"
           fi
 
+      - name: Apply the installer version
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: node dev/scripts/build-version.mjs --apply "$VERSION" "$RUNNER_TEMP/release-version.json"
+
       # On CI (CI=true) the bundler passes --skip-jenkins to bundle_dmg.sh, which skips the Finder
       # AppleScript that places the .dmg background, window size and icons; this keeps it.
       - name: Build the installer
         env:
           TAURI_BUNDLER_DMG_IGNORE_CI: "true"
-        run: pnpm tauri build ${{ matrix.args }}
+        run: pnpm tauri build ${{ matrix.args }} --config "${{ runner.temp }}/release-version.json"
 
       - name: Upload the installer
         uses: actions/upload-artifact@v4
@@ -143,7 +169,7 @@ jobs:
 
   release:
     name: Publish · ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'nightly' }}
-    needs: build
+    needs: [version, build]
     if: >-
       startsWith(github.ref, 'refs/tags/v') || inputs.publish == 'nightly' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -157,8 +183,14 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'nightly' }}
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       # A push to main publishes only a commit CI passed (check.yml runs on every push to main).
       # Manual runs and tags publish as before.
@@ -189,10 +221,16 @@ jobs:
           find installers -mindepth 1 -type d -exec rm -r {} +
           ls -l installers
 
+      - name: Reserve the nightly version
+        if: env.TAG == 'nightly'
+        id: nightly_version
+        run: node dev/scripts/build-version.mjs --tag-nightly "$VERSION"
+
       # The nightly pre-release is one rolling release: its tag moves to this commit and the
       # installers replace the previous ones. A `v*` tag gets a release of its own, with notes
       # generated from the commits since the previous tag.
       - name: Create or update the release
+        if: env.TAG != 'nightly' || steps.nightly_version.outputs.publish == 'true'
         run: |
           set -euo pipefail
           if [ "$TAG" = nightly ]; then
@@ -200,14 +238,17 @@ jobs:
             gh release create nightly installers/* \
               --prerelease \
               --target "$GITHUB_SHA" \
-              --title "Nightly ($(date -u +%Y-%m-%d), ${GITHUB_SHA::7})" \
+              --title "Tabler $VERSION (nightly)" \
               --notes "$(printf 'Built from `%s` on `main`. Unsigned builds: see the README for the first-launch steps on macOS (Gatekeeper) and Windows (SmartScreen).' "${GITHUB_SHA::7}")"
           elif gh release view "$TAG" >/dev/null 2>&1; then
             # A release made by hand for the tag (a draft, say): just attach the installers.
             gh release upload "$TAG" installers/* --clobber
           else
+            prerelease=()
+            case "$VERSION" in *-*) prerelease=(--prerelease) ;; esac
             gh release create "$TAG" installers/* \
               --verify-tag \
               --title "Tabler $TAG" \
-              --generate-notes
+              --generate-notes \
+              "${prerelease[@]}"
           fi

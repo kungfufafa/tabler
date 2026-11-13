@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  macOS 12+ · Tauri 2 + Rust · React + TypeScript · version 0.1.0
+  macOS 12+ · Tauri 2 + Rust · React + TypeScript
 </p>
 
 ---
@@ -27,7 +27,8 @@
 Installers for macOS and Windows are on the
 [Releases page](https://github.com/kungfufafa/tabler/releases): a numbered release for each `v*`
 tag, and a rolling [nightly](https://github.com/kungfufafa/tabler/releases/tag/nightly) rebuilt
-automatically from every change to `main` that passes CI (about 35 minutes after the push).
+automatically from changes to `main` that pass CI. Published nightlies increase the patch number
+automatically (`0.1.1`, `0.1.2`, …).
 
 | Platform                         | File                             | Install                                                       |
 | -------------------------------- | -------------------------------- | ------------------------------------------------------------- |
@@ -255,10 +256,11 @@ macOS DMG (Apple Silicon and Intel) and the Windows installers, and publishes th
 
 - every push to `main` (docs-only pushes aside) rebuilds them and replaces the ones on the
   rolling `nightly` pre-release once CI has passed on that commit; a red commit is never
-  published, and a newer push cancels the build before it;
-- `git tag v0.2.0 && git push origin v0.2.0` makes a release for that tag, with notes generated
-  from the commits since the previous one (bump `version` in `package.json`,
-  `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` first);
+  published, and a newer push cancels the build before it. The workflow tags the version
+  (for example, `v0.1.1`) after the installers and CI pass. Rebuilding the same tagged commit
+  reuses its version;
+- `git tag v0.2.0 && git push origin v0.2.0` makes a release at exactly that version, with notes
+  generated from the commits since the previous one. The next automatic version is `0.2.1`;
 - running it from the Actions tab with **publish** set to `nightly` replaces the installers on the
   rolling `nightly` pre-release by hand (without waiting for CI);
 - running it with **publish** left at `artifacts` only attaches them to the run.
