@@ -12,7 +12,8 @@ use crate::windows::{self, WindowRegistry};
 pub fn app_info(app: AppHandle) -> AppInfo {
     log::debug!("renderer ready: app_info requested");
     AppInfo {
-        version: app.package_info().version.to_string(),
+        // The release this build follows, not the repository's base version (`version.rs`).
+        version: crate::version::app_version(&app.package_info().version.to_string()),
         platform: std::env::consts::OS.to_string(),
         debug: cfg!(debug_assertions),
         drivers: Some(registry::built_drivers()),

@@ -41,6 +41,7 @@ pub mod tls_client;
 pub mod tls_files;
 pub mod tunnel;
 pub mod types;
+pub mod version;
 pub mod windows;
 
 use tauri::{Emitter, Manager, RunEvent};
@@ -422,7 +423,9 @@ pub mod shell {
             // Without metadata the predefined About item does nothing outside macOS.
             let about = tauri::menu::AboutMetadataBuilder::new()
                 .name(Some(name.clone()))
-                .version(Some(app.package_info().version.to_string()))
+                .version(Some(crate::version::app_version(
+                    &app.package_info().version.to_string(),
+                )))
                 .build();
             help.append(&PredefinedMenuItem::separator(app)?)?;
             help.append(&PredefinedMenuItem::about(
