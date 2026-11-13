@@ -24,11 +24,10 @@
 
 ## Download
 
-Installers for macOS and Windows are on the
-[Releases page](https://github.com/kungfufafa/tabler/releases): a numbered release for each `v*`
-tag, and a rolling [nightly](https://github.com/kungfufafa/tabler/releases/tag/nightly) rebuilt
-automatically from changes to `main` that pass CI. Published nightlies increase the patch number
-automatically (`0.1.1`, `0.1.2`, …).
+Download the macOS or Windows installer from the
+[latest release](https://github.com/kungfufafa/tabler/releases/latest). Each push to `main` that
+passes CI and builds both installers publishes the next patch version (`0.1.1`, `0.1.2`, …).
+The [nightly preview](https://github.com/kungfufafa/tabler/releases/tag/nightly) is also available.
 
 | Platform                         | File                             | Install                                                       |
 | -------------------------------- | -------------------------------- | ------------------------------------------------------------- |
@@ -248,17 +247,22 @@ per-user, no admin rights) and an MSI (`bundle/msi/*.msi`); both download WebVie
 missing. The builds are not code-signed, so SmartScreen warns on the first run (**More info** →
 **Run anyway**).
 
-### Both platforms from CI
+### Develop and release from Git
 
 The "Release installers" workflow ([.github/workflows/build.yml](.github/workflows/build.yml)) builds a universal
 macOS DMG (Apple Silicon and Intel) and the Windows installers, and publishes them on the
 [Releases page](https://github.com/kungfufafa/tabler/releases):
 
-- every push to `main` (docs-only pushes aside) rebuilds them and replaces the ones on the
-  rolling `nightly` pre-release once CI has passed on that commit; a red commit is never
-  published, and a newer push cancels the build before it. The workflow tags the version
-  (for example, `v0.1.1`) after the installers and CI pass. Rebuilding the same tagged commit
-  reuses its version;
+Run `pnpm dev:mock` for UI work or `pnpm tauri dev` for the desktop app. Check the change locally,
+commit it with a descriptive subject such as `fix: keep the query editor focused`, then push to
+`main` when the commits are ready to ship.
+
+- each push to `main` queues a build. After both installers and CI pass, the workflow publishes
+  a numbered release, then refreshes the rolling `nightly` preview. One push creates one build
+  even when it contains several commits. The tag records the exact commit shipped.
+- the build applies the version to its temporary checkout. The source manifests keep their base
+  version. Rerunning the same tagged commit keeps its version and can finish an interrupted
+  release. A failed CI or installer build leaves the previous release available;
 - `git tag v0.2.0 && git push origin v0.2.0` makes a release at exactly that version, with notes
   generated from the commits since the previous one. The next automatic version is `0.2.1`;
 - running it from the Actions tab with **publish** set to `nightly` replaces the installers on the

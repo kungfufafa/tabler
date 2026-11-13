@@ -1,9 +1,9 @@
 name: Release installers
 
 # Installers for macOS and Windows, for anyone to download and install:
-#   - every push to `main` (but docs-only ones): the installers replace the ones on the rolling
-#     `nightly` pre-release, once CI has passed on that same commit (a red commit builds, but is
-#     never published). Each nightly gets the next patch version. A newer push cancels the previous build;
+#   - every push to `main`: when both installers and CI pass, publish a numbered GitHub Release
+#     with the next patch version, then refresh the rolling `nightly` pre-release.
+#     Builds wait in the queue when a push arrives during an active build.
 #   - push a `v*` tag (`git tag v0.1.0 && git push origin v0.1.0`): a GitHub Release for that tag,
 #     with the installers attached and release notes generated from the commits;
 #   - run it from the Actions tab with "publish" set to `nightly`: the installers replace the ones
@@ -21,15 +21,10 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
-    # Docs and design sources change no installer (tags ignore path filters).
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
-      - "design/**"
 
 concurrency:
   group: build-${{ inputs.publish == 'nightly' && 'refs/heads/main' || github.ref }}
-  cancel-in-progress: true
+  queue: max
 
 jobs:
   version:
@@ -168,7 +163,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Publish · ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'nightly' }}
+    name: Publish · ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || needs.version.outputs.version }}
     needs: [version, build]
     if: >-
       startsWith(github.ref, 'refs/tags/v') || inputs.publish == 'nightly' ||
@@ -221,13 +216,17 @@ jobs:
           find installers -mindepth 1 -type d -exec rm -r {} +
           ls -l installers
 
-      - name: Reserve the nightly version
+      - name: Reserve the build version
         if: env.TAG == 'nightly'
         id: nightly_version
         run: node dev/scripts/build-version.mjs --tag-nightly "$VERSION"
 
-      # The nightly pre-release is one rolling release: its tag moves to this commit and the
-      # installers replace the previous ones. A `v*` tag gets a release of its own, with notes
+      - name: Publish the numbered release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nightly_version.outputs.publish == 'true'
+        run: bash dev/scripts/publish-stable.sh "v$VERSION" --generate-notes
+
+      # The Nightly tag moves to this commit and its installers replace the previous ones.
+      # A manually pushed `v*` tag gets a release of its own, with notes
       # generated from the commits since the previous tag.
       - name: Create or update the release
         if: env.TAG != 'nightly' || steps.nightly_version.outputs.publish == 'true'

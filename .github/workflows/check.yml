@@ -6,8 +6,9 @@ on:
     branches: [main]
 
 concurrency:
-  group: check-${{ github.ref }}
-  cancel-in-progress: true
+  # Every main push has its own CI gate. Cancel superseded runs for pull requests only.
+  group: check-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
