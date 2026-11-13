@@ -64,7 +64,8 @@ export function ViewSwitch({
             onClick={() => setView(tabId, v.kind, v.section)}
             className={cn(
               // Inset focus ring: the group clips anything drawn outside a segment.
-              "min-w-14 px-2.5 text-[11px] leading-none font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset",
+              // Narrower in a narrow bar (a window snapped to half the screen).
+              "min-w-14 px-2.5 text-[11px] leading-none font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset @max-md:min-w-0 @max-md:px-1.5",
               checked
                 ? "bg-primary text-primary-foreground focus-visible:ring-primary-foreground/60"
                 : "text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-ring/50",

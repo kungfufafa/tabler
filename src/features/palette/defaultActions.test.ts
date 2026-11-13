@@ -13,6 +13,13 @@ import { openEditorFromTab, reloadWorkspace, useDefaultActions } from "./default
 import { usePaletteStore } from "./store";
 
 const windowClose = vi.hoisted(() => vi.fn(async () => true));
+const platform = vi.hoisted(() => ({ windows: false }));
+vi.mock("@/lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/platform")>()),
+  get isWindows() {
+    return platform.windows;
+  },
+}));
 vi.mock("@/hooks/useUnsavedGuard", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/hooks/useUnsavedGuard")>()),
   requestWindowClose: windowClose,
@@ -20,6 +27,7 @@ vi.mock("@/hooks/useUnsavedGuard", async (importOriginal) => ({
 
 beforeEach(() => {
   windowClose.mockClear();
+  platform.windows = false;
   useTabsStore.setState({ tabs: [], activeId: null, closed: [], closeRequest: null });
   useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
   useTableTabsStore.setState({ slices: {} });
@@ -83,6 +91,20 @@ describe("default tab.close (⌘W: close tab / window)", () => {
     useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
     await actions.run("tab.close");
     expect(windowClose).toHaveBeenCalledTimes(2);
+    unmount();
+  });
+
+  it("leaves the window open on Windows when there is no tab to close (TablePlus for Windows)", async () => {
+    platform.windows = true;
+    const { unmount } = renderHook(() => useDefaultActions());
+    useConnectionsStore.getState().add(info("c1"));
+    const id = useTabsStore.getState().newQuery("c1");
+    await actions.run("tab.close");
+    expect(useTabsStore.getState().tabs).toEqual([]);
+    // Once more with nothing left: the workspace and its connection stay.
+    await actions.run("tab.close");
+    expect(windowClose).not.toHaveBeenCalled();
+    expect(id).toBeTruthy();
     unmount();
   });
 

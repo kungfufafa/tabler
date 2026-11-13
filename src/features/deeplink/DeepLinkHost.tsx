@@ -6,6 +6,7 @@ import { usePaletteStore } from "@/features/palette/store";
 import { ipc, type OpenRequest } from "@/lib/ipc";
 import { listenWindowEvent, type Unlisten } from "@/lib/ipc/events";
 import { useConnectionsStore } from "@/stores/connections";
+import { linkOpening } from "@/stores/windowShape";
 import { FilterConfirmDialog } from "./FilterConfirmDialog";
 import { dropTemporary, openSqlFile, PENDING_FILE_TTL_MS, runPlan } from "./open";
 import { planOpen } from "./route";
@@ -43,21 +44,28 @@ export function DeepLinkHost() {
           while (!locked()) {
             const requests = held.length > 0 ? held.splice(0) : await ipc.deeplink.takePending();
             if (requests.length === 0 || gone) break;
-            for (const [i, request] of requests.entries()) {
-              if (locked()) {
-                held = requests.slice(i);
-                break;
+            // Connecting from a file or link: a workspace window already, not the Welcome window
+            // first (marked before the profiles load, which the startup may not wait for).
+            const linked = linkOpening();
+            try {
+              for (const [i, request] of requests.entries()) {
+                if (locked()) {
+                  held = requests.slice(i);
+                  break;
+                }
+                const [profiles, temporary] = await Promise.all([
+                  qc.ensureQueryData({ queryKey: profileKeys.all, queryFn: ipc.profiles.list }),
+                  ipc.deeplink.temporaryProfiles(),
+                ]);
+                const plan = planOpen(request, {
+                  profiles,
+                  temporary: new Set(temporary),
+                  activeConnectionId: useConnectionsStore.getState().activeId,
+                });
+                await runPlan(qc, plan);
               }
-              const [profiles, temporary] = await Promise.all([
-                qc.ensureQueryData({ queryKey: profileKeys.all, queryFn: ipc.profiles.list }),
-                ipc.deeplink.temporaryProfiles(),
-              ]);
-              const plan = planOpen(request, {
-                profiles,
-                temporary: new Set(temporary),
-                activeConnectionId: useConnectionsStore.getState().activeId,
-              });
-              await runPlan(qc, plan);
+            } finally {
+              linked();
             }
           }
         } catch (e) {

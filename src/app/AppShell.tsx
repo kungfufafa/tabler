@@ -47,6 +47,7 @@ import { useIsWelcomeWindow } from "@/stores/windowShape";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { Toolbar } from "./Toolbar";
 import { WindowShapeHost } from "./WindowShapeHost";
+import { WindowTitleHost } from "./WindowTitleHost";
 import { WorkspaceRail } from "./WorkspaceRail";
 
 /**
@@ -171,8 +172,10 @@ export function AppShell() {
       <WorkspaceSwitcherHost />
       {/* New Window (⌘N), Move Tab to New Window, Split Right (⇧⌘D); this window's connections. */}
       <WindowHost />
-      {/* macOS: the Welcome window while nothing is open, the workspace window otherwise. */}
+      {/* macOS and Windows: the Welcome window while nothing is open, the workspace window otherwise. */}
       <WindowShapeHost />
+      {/* The window's title: the connection and the visible tab (taskbar, Alt+Tab). */}
+      <WindowTitleHost />
       {/* "Discard N uncommitted result changes and run?" before a SQL editor run. */}
       <RerunConfirmDialog />
       {/* Settings ▸ Data Decoder ▸ spatial values as WKT (sent to the backend). */}
