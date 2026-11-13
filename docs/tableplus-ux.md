@@ -240,3 +240,10 @@ audit" pass; the TablePlus behaviour is the target.
     closes. With no workspace window open the Welcome window opens the connection itself and
     becomes the workspace window (item 19). (`windows.rs` `show_welcome_window` /
     `route_profile`, `features/tabs/windowHandoff`.)
+21. **A narrow window keeps its controls (Windows split screen):** the workspace window may be as
+    narrow as 620 (Windows; 960 on macOS), so it snaps to half of a 1920 px screen at 150 %. In a
+    narrow window the toolbar items clip before the window buttons do (never the minimize /
+    maximize / close buttons), Metrics Board and Open Anything give way first and the status pill
+    shrinks; the bottom bars drop their button labels (+ Add row, + Column, + Index, DDL), compact
+    the Data | Structure | Index switch and, if still too narrow, scroll sideways instead of cutting
+    off their last controls (pagination, Review, Refresh). (`app/Toolbar`, `table-tab/BarParts`.)

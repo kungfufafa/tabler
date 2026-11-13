@@ -24,8 +24,17 @@ export const shapedWindows: boolean = isMac || isWindows;
 export const WELCOME_SIZE: { readonly width: number; readonly height: number } = isWindows
   ? { width: 746, height: 529 }
   : { width: 760, height: 480 };
-/** The workspace window's size and minimum: tauri.conf.json's main window. */
-export const WORKSPACE_SIZE = { width: 1280, height: 820, minWidth: 960, minHeight: 600 } as const;
+/**
+ * The workspace window's size and minimum: tauri.conf.json's main window. Windows lets it be
+ * narrower (`tauri.windows.conf.json`): a window snapped to half of a 1920 px screen at 150 % is
+ * 640 wide, and the toolbar and bottom bars fit it.
+ */
+export const WORKSPACE_SIZE: {
+  readonly width: number;
+  readonly height: number;
+  readonly minWidth: number;
+  readonly minHeight: number;
+} = { width: 1280, height: 820, minWidth: isWindows ? 620 : 960, minHeight: 600 };
 
 /** A window's place on screen, in logical pixels. */
 export interface WindowFrame {

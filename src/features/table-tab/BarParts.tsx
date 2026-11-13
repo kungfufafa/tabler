@@ -20,7 +20,9 @@ export function BottomBarFrame({
     <div
       role="toolbar"
       className={cn(
-        "border-border bg-surface-2 text-muted-foreground @container flex h-8 shrink-0 items-center gap-1 overflow-hidden border-t px-2 text-xs",
+        // Too narrow for every control (a window snapped to half the screen): the strip scrolls
+        // sideways (Shift+wheel, trackpad) rather than cutting off the controls at its end.
+        "border-border bg-surface-2 text-muted-foreground @container flex h-8 shrink-0 [scrollbar-width:none] items-center gap-1 overflow-x-auto overflow-y-hidden border-t px-2 text-xs",
         className,
       )}
       {...props}

@@ -27,7 +27,7 @@ const SHRINK: Record<SegmentRole, string> = {
 };
 
 const PILL =
-  "border-border bg-surface hover:bg-accent aria-expanded:bg-accent focus-visible:ring-ring/60 flex h-8 min-w-48 max-w-160 items-center justify-center gap-2 overflow-hidden rounded-md border px-2 text-[12px] leading-4 outline-none transition-colors focus-visible:ring-2";
+  "border-border bg-surface hover:bg-accent aria-expanded:bg-accent focus-visible:ring-ring/60 flex h-8 min-w-48 max-w-160 items-center @max-3xl/toolbar:min-w-28 justify-center gap-2 overflow-hidden rounded-md border px-2 text-[12px] leading-4 outline-none transition-colors focus-visible:ring-2";
 
 /**
  * The toolbar's centred status pill: the active connection (tag, server, SSH / TLS, name,

@@ -242,10 +242,13 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
         </ToolbarButton>
       );
     case "openAnything":
+      // Gives way in a narrow window: Ctrl/⌘P opens it all the same.
       return (
-        <ToolbarButton label="Open anything" action="palette.open" text={caption}>
-          <Search className="size-3.5" />
-        </ToolbarButton>
+        <span data-slot="toolbar-open-anything" className="flex @max-3xl/toolbar:hidden">
+          <ToolbarButton label="Open anything" action="palette.open" text={caption}>
+            <Search className="size-3.5" />
+          </ToolbarButton>
+        </span>
       );
     case "workspaces":
       return (
@@ -265,15 +268,18 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
         </ToolbarButton>
       );
     case "metrics":
+      // Gives way first in a narrow window (also on the View menu and the palette).
       return (
-        <ToolbarButton
-          label="Metrics board"
-          action="metrics.open"
-          text={caption}
-          disabled={!hasConnection || (!!active && !has(active.info, "metrics"))}
-        >
-          <Gauge className="size-3.5" />
-        </ToolbarButton>
+        <span data-slot="toolbar-metrics" className="flex @max-3xl/toolbar:hidden">
+          <ToolbarButton
+            label="Metrics board"
+            action="metrics.open"
+            text={caption}
+            disabled={!hasConnection || (!!active && !has(active.info, "metrics"))}
+          >
+            <Gauge className="size-3.5" />
+          </ToolbarButton>
+        </span>
       );
     case "panels":
       return <PanelToggles leftSidebar={!sidebarItem} />;
@@ -382,34 +388,45 @@ export function Toolbar({ launcher }: { launcher: boolean }) {
             data-slot="toolbar"
             data-display={display}
             className={cn(
-              "border-border bg-surface-2 @container/toolbar flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b",
+              "border-border bg-surface-2 @container/toolbar flex h-10 shrink-0 items-center overflow-hidden border-b",
               !ownTitleBar && "pr-2",
             )}
             style={{ paddingLeft: inset }}
           >
-            {rows.status ? (
-              <>
-                {/* Equal-growth sides keep the pill centred while there is room. */}
+            {/* The items clip when the window is too narrow for them (a window snapped to half
+                the screen), never the window buttons after them. */}
+            <div
+              data-tauri-drag-region
+              data-slot="toolbar-items"
+              className="flex h-full min-w-0 flex-1 items-center gap-2 overflow-hidden"
+            >
+              {rows.status ? (
+                <>
+                  {/* Equal-growth sides keep the pill centred while there is room. */}
+                  <div
+                    data-tauri-drag-region
+                    className="flex h-full min-w-fit flex-1 basis-0 items-center gap-1"
+                  >
+                    <LeftItems items={rows.left} text={text} />
+                  </div>
+                  <StatusPill />
+                  <div
+                    data-tauri-drag-region
+                    className="flex h-full min-w-fit flex-1 basis-0 items-center justify-end gap-1"
+                  >
+                    <Items items={rows.right} text={text} />
+                  </div>
+                </>
+              ) : (
                 <div
                   data-tauri-drag-region
-                  className="flex h-full min-w-fit flex-1 basis-0 items-center gap-1"
+                  className="flex h-full min-w-0 flex-1 items-center gap-1"
                 >
                   <LeftItems items={rows.left} text={text} />
                 </div>
-                <StatusPill />
-                <div
-                  data-tauri-drag-region
-                  className="flex h-full min-w-fit flex-1 basis-0 items-center justify-end gap-1"
-                >
-                  <Items items={rows.right} text={text} />
-                </div>
-              </>
-            ) : (
-              <div data-tauri-drag-region className="flex h-full min-w-0 flex-1 items-center gap-1">
-                <LeftItems items={rows.left} text={text} />
-              </div>
-            )}
-            {ownTitleBar && <WindowControls className="ml-1" />}
+              )}
+            </div>
+            {ownTitleBar && <WindowControls className="ml-3" />}
           </header>
         </ContextMenuTrigger>
         <ContextMenuContent className="min-w-44">
