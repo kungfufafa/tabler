@@ -228,9 +228,10 @@ audit" pass; the TablePlus behaviour is the target.
     rather than opening another. A full-screen window keeps its size and draws the centred panel of
     item 16; so does a zoomed one on macOS. On Windows a maximized workspace window still becomes the
     Welcome window and is maximized again when it next becomes a workspace window (or at the next
-    start, `rememberMaximized`). Windows builds every window hidden
-    (`tauri.windows.conf.json`, `decorations: false`) and shows it once it has its shape, so no
-    native title bar, menu bar, blank page or size jump is seen at startup. Linux keeps the in-window
+    start, `rememberMaximized`); a macOS window found zoomed and hidden at startup does the same.
+    Windows and macOS build every window hidden (`tauri.windows.conf.json` with
+    `decorations: false`, `tauri.macos.conf.json`) and show it once it has its shape, so no native
+    title bar, menu bar, blank page or size jump is seen at startup. Linux keeps the in-window
     list. (`stores/windowShape`, `lib/windowDriver`, `app/WindowShapeHost`.)
 20. **A workspace window never draws the connection list (macOS and Windows):** asked for while a connection
     is open (the rail's `+`, ⇧⌘K, the palette, ⌘N), the list comes up in the Welcome window, a
@@ -240,17 +241,19 @@ audit" pass; the TablePlus behaviour is the target.
     closes. With no workspace window open the Welcome window opens the connection itself and
     becomes the workspace window (item 19). (`windows.rs` `show_welcome_window` /
     `route_profile`, `features/tabs/windowHandoff`.)
-21. **A narrow window keeps its controls (Windows split screen):** the workspace window may be as
-    narrow as 620 (Windows; 960 on macOS), so it snaps to half of a 1920 px screen at 150 %. In a
+21. **A narrow window keeps its controls (Windows split screen, macOS tiling):** the workspace
+    window may be as narrow as 620, so it snaps to half of a 1920 px screen at 150 % and tiles to
+    half of a 1280-point MacBook screen. In a
     narrow window the toolbar items clip before the window buttons do (never the minimize /
     maximize / close buttons), Metrics Board and Open Anything give way first and the status pill
     shrinks; the bottom bars drop their button labels (+ Add row, + Column, + Index, DDL), compact
     the Data | Structure | Index switch and, if still too narrow, scroll sideways instead of cutting
     off their last controls (pagination, Review, Refresh). (`app/Toolbar`, `table-tab/BarParts`.)
-22. **Closing a workspace window (Windows):** like TablePlus for Windows, closing the last window
-    that holds connections (its ✕, Alt+F4, the taskbar) goes back to the Welcome window instead of
-    ending the app (`windows.rs` `reopens_welcome`); a quit and closing the Welcome window itself
-    still end it. Ctrl+W closes the visible tab and, with no tab left, does nothing (macOS: ⌘W then
-    closes the window). Every window is titled after what it shows, the status pill's text
+22. **Closing a workspace window (macOS and Windows):** like TablePlus, closing the last window
+    that holds connections (its close button, Alt+F4, the taskbar; on macOS also ⌘W with no tab
+    left) goes back to the Welcome window instead of ending the app (`windows.rs`
+    `reopens_welcome`); a quit and closing the Welcome window itself still end it. On Windows
+    Ctrl+W closes the visible tab and, with no tab left, does nothing (macOS: ⌘W then closes the
+    window). Every window is titled after what it shows, the status pill's text
     (`LOCAL | SQLite 3.51.1 : Sample : main : users`; `Tabler` with no connection), so the
     taskbar and Alt+Tab tell windows apart (`app/WindowTitleHost`).

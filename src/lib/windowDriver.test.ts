@@ -169,7 +169,7 @@ describe("applyShape", () => {
       "resizable true",
       "size 1400x900",
       "position 100,80",
-      "min 960x600",
+      "min 620x600",
       "reveal",
     ]);
     expect(state.frame).toEqual(BIG);
@@ -196,7 +196,7 @@ describe("applyShape", () => {
   it("only sets the constraints of a window that has the shape already", async () => {
     const workspace = fakeWindow();
     await applyShape("workspace", workspace.driver, undefined, noPause);
-    expect(workspace.calls).toEqual(["resizable true", "min 960x600"]);
+    expect(workspace.calls).toEqual(["resizable true", "min 620x600"]);
 
     // Restarted as the Welcome window: the restored geometry is kept where it was.
     storeSavedShape("main", { shape: "welcome", frame: BIG });
@@ -210,6 +210,11 @@ describe("applyShape", () => {
     expect(await applyShape("welcome", full.driver, undefined, noPause)).toBe("workspace");
     expect(full.calls).toEqual([]);
     expect(loadSavedShape("main")).toBeNull();
+
+    // Built hidden and restored full screen (startup): nothing else would show it.
+    const hidden = fakeWindow({ fullscreen: true, visible: false });
+    expect(await applyShape("welcome", hidden.driver, undefined, noPause)).toBe("workspace");
+    expect(hidden.calls).toEqual(["reveal"]);
 
     const zoomed = fakeWindow({ maximized: true });
     expect(await applyShape("welcome", zoomed.driver, undefined, noPause)).toBe("workspace");
@@ -246,7 +251,7 @@ describe("applyShape", () => {
     expect(zoomed.calls.slice(-5)).toEqual([
       "size 1400x900",
       "position 100,80",
-      "min 960x600",
+      "min 620x600",
       "maximize",
       "reveal",
     ]);
@@ -257,7 +262,7 @@ describe("applyShape", () => {
     storeSavedShape("main", { shape: "workspace", frame: null, maximized: true });
     const { driver, calls } = fakeWindow({ visible: false });
     await applyShape("workspace", driver, undefined, noPause, { keepZoomed: false });
-    expect(calls).toEqual(["resizable true", "min 960x600", "maximize", "reveal"]);
+    expect(calls).toEqual(["resizable true", "min 620x600", "maximize", "reveal"]);
   });
 
   it("Windows: the Welcome window at startup remembers that the workspace was maximized", async () => {

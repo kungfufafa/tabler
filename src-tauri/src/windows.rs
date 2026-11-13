@@ -37,8 +37,9 @@ const WELCOME_SIZE: (f64, f64) = (746.0, 529.0);
 #[cfg(not(windows))]
 const WELCOME_SIZE: (f64, f64) = (760.0, 480.0);
 /// How long a window built hidden may stay so: its renderer shows it once it is laid out (the
-/// Welcome window; on Windows every window, `tauri.windows.conf.json`), and a renderer that never
-/// gets there must not leave a window nobody can see.
+/// Welcome window; every window on Windows and macOS, `tauri.windows.conf.json` and
+/// `tauri.macos.conf.json`), and a renderer that never gets there must not leave a window nobody
+/// can see.
 const HIDDEN_REVEAL: std::time::Duration = std::time::Duration::from_millis(2500);
 
 /// What the window-state plugin keeps of a window. Not the decorations: the app sets those itself
@@ -125,8 +126,8 @@ struct Inner {
     born: Vec<String>,
     /// The window that keeps the session saved (`None`: the main window).
     session_owner: Option<String>,
-    /// Windows: the last workspace window closed and the Welcome window is being built in its
-    /// place ([`reopens_welcome`]); the runtime's last-window exit is held meanwhile.
+    /// macOS and Windows: the last workspace window closed and the Welcome window is being built
+    /// in its place([`reopens_welcome`]); the runtime's last-window exit is held meanwhile.
     welcome_pending: bool,
 }
 
@@ -356,23 +357,24 @@ impl WindowRegistry {
 /// `building` ones on their way. On Windows and Linux an app without a window cannot be reached
 /// (no Dock, no menu bar, no tray): it ends even when the runtime itself would keep running (a
 /// window it holds that Tauri does not list, an exit request kept waiting), which left a Tabler
-/// process without any window. macOS keeps its behaviour (the runtime's own last-window exit).
+/// process without any window. macOS keeps its behaviour (the runtime's own last-window exit,
+/// held while the Welcome window takes a closed workspace window's place, [`reopens_welcome`]).
 pub fn exits_with_last_window(macos: bool, left: usize, building: usize) -> bool {
     !macos && left == 0 && building == 0
 }
 
-/// Windows, like TablePlus for Windows: closing the last workspace window (one that held
-/// connections) with its ✕, Alt+F4 or the taskbar shows the Welcome window instead of ending the
-/// app. A quit (File ▸ Quit, every window asked) still ends it, and so does closing the Welcome
-/// window itself.
+/// macOS and Windows, like TablePlus: closing the last workspace window (one that held
+/// connections) with its close button, ⌘W / Alt+F4 or the taskbar shows the Welcome window instead
+/// of ending the app. A quit (File ▸ Quit, ⌘Q, every window asked) still ends it, and so does
+/// closing the Welcome window itself. Linux has no Welcome window (`shapedWindows`).
 pub fn reopens_welcome(
-    windows: bool,
+    shaped: bool,
     quitting: bool,
     held_connections: bool,
     left: usize,
     building: usize,
 ) -> bool {
-    windows && !quitting && held_connections && left == 0 && building == 0
+    shaped && !quitting && held_connections && left == 0 && building == 0
 }
 
 /// Builds the Welcome window in place of the last workspace window, which just closed. Its label
@@ -601,7 +603,7 @@ pub fn open_window<R: Runtime>(
     if let Err(e) = own_title_bar(&window).and_then(|()| fit_to_work_area(&window, true)) {
         log::warn!("could not set up window {label}: {e}");
     }
-    // Windows: built hidden like the main window; its renderer shows it.
+    // Windows and macOS: built hidden like the main window; its renderer shows it.
     reveal_if_still_hidden(window);
     registry.born(&label);
     log::info!("opened window {label}");
@@ -756,7 +758,7 @@ pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
                 });
             }
             if reopens_welcome(
-                cfg!(windows),
+                cfg!(any(target_os = "macos", windows)),
                 registry.is_quitting(),
                 held_connections,
                 remaining.len(),
@@ -888,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn closing_the_last_workspace_window_shows_welcome_on_windows() {
+    fn closing_the_last_workspace_window_shows_welcome() {
         // The last window, holding connections, closed by its user: the Welcome window comes up.
         assert!(reopens_welcome(true, false, true, 0, 0));
         // A quit ends the app; so does closing the Welcome window (no connections).
@@ -897,7 +899,7 @@ mod tests {
         // Other windows left (or on their way): nothing to replace.
         assert!(!reopens_welcome(true, false, true, 1, 0));
         assert!(!reopens_welcome(true, false, true, 0, 1));
-        // macOS and Linux keep their behaviour.
+        // Linux (no Welcome window) keeps its behaviour.
         assert!(!reopens_welcome(false, false, true, 0, 0));
         let reg = WindowRegistry::default();
         assert!(!reg.welcome_pending());

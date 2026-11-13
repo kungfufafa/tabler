@@ -25,16 +25,11 @@ export const WELCOME_SIZE: { readonly width: number; readonly height: number } =
   ? { width: 746, height: 529 }
   : { width: 760, height: 480 };
 /**
- * The workspace window's size and minimum: tauri.conf.json's main window. Windows lets it be
- * narrower (`tauri.windows.conf.json`): a window snapped to half of a 1920 px screen at 150 % is
- * 640 wide, and the toolbar and bottom bars fit it.
+ * The workspace window's size and minimum: tauri.conf.json's main window (and its Windows and
+ * macOS copies). At least 620 wide: a window snapped to half of a 1920 px screen at 150 %, or tiled
+ * to half of a 1280-point MacBook screen, is 640 wide, and the toolbar and bottom bars fit it.
  */
-export const WORKSPACE_SIZE: {
-  readonly width: number;
-  readonly height: number;
-  readonly minWidth: number;
-  readonly minHeight: number;
-} = { width: 1280, height: 820, minWidth: isWindows ? 620 : 960, minHeight: 600 };
+export const WORKSPACE_SIZE = { width: 1280, height: 820, minWidth: 620, minHeight: 600 } as const;
 
 /** A window's place on screen, in logical pixels. */
 export interface WindowFrame {
@@ -53,10 +48,10 @@ export interface SavedShape {
   shape: WindowShape;
   frame: WindowFrame | null;
   /**
-   * Windows: the workspace shape is maximized (kept current while it is the workspace window,
-   * `rememberMaximized`, and remembered while it is the Welcome window). The window-state plugin
-   * does not maximize the main window itself there: a maximized window cannot be un-maximized
-   * while hidden without showing it.
+   * The workspace shape is maximized (zoomed on macOS; kept current while it is the workspace
+   * window, `rememberMaximized`, and remembered while it is the Welcome window). On Windows the
+   * window-state plugin does not maximize the main window itself: a maximized window cannot be
+   * un-maximized while hidden without showing it.
    */
   maximized?: boolean;
 }
@@ -102,7 +97,7 @@ export function planReshape(
 }
 
 /**
- * Windows: the workspace window was maximized or restored by the user. Kept only while the window
+ * The workspace window was maximized (zoomed) or restored by the user. Kept only while the window
  * is remembered as a workspace window (a reshape to Welcome records it itself).
  */
 export function rememberMaximized(label: string, maximized: boolean): void {

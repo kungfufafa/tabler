@@ -16,7 +16,7 @@
         "title": "Tabler",
         "width": 1280,
         "height": 820,
-        "minWidth": 960,
+        "minWidth": 620,
         "minHeight": 600,
         "center": true,
         "decorations": true,

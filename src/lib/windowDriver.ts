@@ -75,7 +75,11 @@ export async function applyShape(
   let hiddenFirst = false;
   let maximized = false;
   if (to === "welcome" && (saved?.shape ?? "workspace") === "workspace") {
-    if (await driver.isFullscreen()) return "workspace";
+    if (await driver.isFullscreen()) {
+      // Built hidden and restored full screen: it keeps that shape, and shows.
+      if (!visible) await driver.reveal();
+      return "workspace";
+    }
     if (await driver.isMaximized()) {
       if (visible && keepZoomed) return "workspace";
       if (visible) {
@@ -83,7 +87,8 @@ export async function applyShape(
         hiddenFirst = true;
       }
       await driver.unmaximize();
-      maximized = !keepZoomed;
+      // Also a zoomed macOS window found hidden (startup): zoomed again as a workspace window.
+      maximized = true;
     }
   }
   const current = await driver.frame().catch(() => null);

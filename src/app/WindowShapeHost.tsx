@@ -3,7 +3,6 @@ import { useSqlViewerStore } from "@/features/sqlviewer/store";
 import { showListInWelcomeWindow } from "@/features/tabs/windowHandoff";
 import { useWindowFullscreen } from "@/hooks/useWindowFullscreen";
 import { isTauri } from "@/lib/ipc/transport";
-import { isWindows } from "@/lib/platform";
 import { applyShape, windowDriver } from "@/lib/windowDriver";
 import { useConnectionsStore } from "@/stores/connections";
 import { setLauncherElsewhere } from "@/stores/ui";
@@ -40,12 +39,12 @@ function requestShape(to: WindowShape): void {
 }
 
 /**
- * Windows: keeps whether the workspace window is maximized (`rememberMaximized`), so it opens
- * maximized again, like TablePlus for Windows, after being the Welcome window or a restart.
+ * Keeps whether the workspace window is maximized (zoomed on macOS; `rememberMaximized`), so it
+ * opens maximized again, like TablePlus, after being the Welcome window or a restart.
  */
 function useRememberMaximized(): void {
   useEffect(() => {
-    if (!shapedWindows || !isWindows || !isTauri()) return;
+    if (!shapedWindows || !isTauri()) return;
     let off: (() => void) | undefined;
     let cancelled = false;
     void (async () => {

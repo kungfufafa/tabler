@@ -1075,15 +1075,16 @@ pub fn run() {
             shell::terminate_guard::install(app.handle());
             // The main window (built from tauri.conf.json and restored by the window-state
             // plugin before `setup`) back inside the screen.
-            #[cfg(windows)]
             if let Some(main) = app.get_webview_window(windows::MAIN_WINDOW) {
+                #[cfg(windows)]
                 if let Err(e) = windows::restore_main_frame(&main)
                     .and_then(|()| windows::own_title_bar(&main))
                     .and_then(|()| windows::fit_to_work_area(&main, false))
                 {
                     log::warn!("could not set up the main window: {e}");
                 }
-                // Built hidden (tauri.windows.conf.json): its renderer shows it.
+                // Built hidden on Windows and macOS (tauri.windows.conf.json,
+                // tauri.macos.conf.json): its renderer shows it. Linux builds it visible.
                 windows::reveal_if_still_hidden(main);
             }
             // The app lock: sleep and screen lock lock every window.
@@ -1265,8 +1266,8 @@ pub fn run() {
         // (`shell::terminate_guard`); this catches exits requested any other way while a window
         // is open. The runtime's own request when its last window went away is always let through.
         RunEvent::ExitRequested { api, code, .. } => {
-            // Windows: the last workspace window closed and the Welcome window is on its way
-            // (`windows::reopens_welcome`): the runtime's own last-window exit waits for it.
+            // macOS and Windows: the last workspace window closed and the Welcome window is on
+            // its way (`windows::reopens_welcome`): the runtime's own last-window exit waits.
             if code.is_none()
                 && app
                     .try_state::<windows::WindowRegistry>()
