@@ -26,15 +26,73 @@ pub const MAIN_WINDOW: &str = "main";
 pub const WINDOW_PREFIX: &str = "w-";
 /// How far a new window is offset from the one it was opened from (logical pixels).
 const CASCADE_OFFSET: f64 = 28.0;
-/// macOS: the Welcome window a workspace window asks for (the connection list in a window of its
-/// own, like TablePlus). Built at its size and hidden until its renderer has laid the list out;
-/// the window-state plugin leaves it alone (it is always the same size, centred).
+/// macOS and Windows: the Welcome window a workspace window asks for (the connection list in a
+/// window of its own, like TablePlus). Built at its size and hidden until its renderer has laid
+/// the list out; the window-state plugin leaves it alone (it is always the same size, centred).
 pub const WELCOME_WINDOW: &str = "welcome";
-/// The Welcome window's size in logical pixels (`WELCOME_SIZE` in `src/stores/windowShape.ts`).
+/// The Welcome window's size in logical pixels (`WELCOME_SIZE` in `src/stores/windowShape.ts`):
+/// TablePlus for Windows's client area is 746×529, the macOS one 760×480.
+#[cfg(windows)]
+const WELCOME_SIZE: (f64, f64) = (746.0, 529.0);
+#[cfg(not(windows))]
 const WELCOME_SIZE: (f64, f64) = (760.0, 480.0);
-/// How long the Welcome window may stay hidden: its renderer shows it once the list is laid out,
-/// and a renderer that never gets there must not leave a window nobody can see.
-const WELCOME_REVEAL: std::time::Duration = std::time::Duration::from_millis(2500);
+/// How long a window built hidden may stay so: its renderer shows it once it is laid out (the
+/// Welcome window; on Windows every window, `tauri.windows.conf.json`), and a renderer that never
+/// gets there must not leave a window nobody can see.
+const HIDDEN_REVEAL: std::time::Duration = std::time::Duration::from_millis(2500);
+
+/// What the window-state plugin keeps of a window. Not the decorations: the app sets those itself
+/// (off on Windows, `own_title_bar`), and a saved "undecorated" would leave a build without its
+/// own window buttons with none at all. Not the visibility: a window built hidden is shown by its
+/// renderer once it has its shape (`applyShape`), so it never shows half laid out.
+fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
+    use tauri_plugin_window_state::StateFlags;
+    StateFlags::all() - StateFlags::DECORATIONS - StateFlags::VISIBLE
+}
+
+/// The window-state plugin. Windows: the main window's frame is restored by
+/// [`restore_main_frame`] instead, without maximizing it.
+pub fn window_state_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    let builder = tauri_plugin_window_state::Builder::new()
+        .with_state_flags(window_state_flags())
+        // The Welcome window is always the same size and centred.
+        .with_denylist(&[WELCOME_WINDOW]);
+    #[cfg(windows)]
+    let builder = builder.skip_initial_state(MAIN_WINDOW);
+    builder.build()
+}
+
+/// Windows: the main window's saved size and position, not whether it was maximized. It is built
+/// hidden and its renderer decides what it shows: the small Welcome window, or the workspace
+/// window, maximized when it was (`rememberMaximized` in `src/stores/windowShape.ts`). Un-maximizing
+/// a hidden window shows it, so it is never maximized before the renderer asks.
+pub fn restore_main_frame<R: Runtime>(window: &tauri::WebviewWindow<R>) -> tauri::Result<()> {
+    #[cfg(windows)]
+    {
+        use tauri_plugin_window_state::{StateFlags, WindowExt};
+        window.restore_state(window_state_flags() - StateFlags::MAXIMIZED)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        Ok(())
+    }
+}
+
+/// Shows `window` when it is still hidden after [`HIDDEN_REVEAL`] (its renderer did not).
+pub fn reveal_if_still_hidden<R: Runtime>(window: tauri::WebviewWindow<R>) {
+    if window.is_visible().unwrap_or(true) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(HIDDEN_REVEAL).await;
+        if !window.is_visible().unwrap_or(true) {
+            log::warn!("window {} was still hidden: showing it", window.label());
+            let _ = raise(&window);
+        }
+    });
+}
+
 /// Sent to a workspace window: open this profile here (picked in the Welcome window).
 pub const EVENT_OPEN_PROFILE: &str = "window:open-profile";
 
@@ -387,9 +445,10 @@ fn raise<R: Runtime>(window: &tauri::WebviewWindow<R>) -> tauri::Result<()> {
     window.set_focus()
 }
 
-/// macOS: shows the Welcome window ([`WELCOME_WINDOW`]), building it when it is not open. `None`
-/// when the window of that label holds a connection (the list in it was used to connect with no
-/// workspace window open, so it became one): the caller opens a plain window instead.
+/// macOS and Windows: shows the Welcome window ([`WELCOME_WINDOW`]), building it when it is not
+/// open. `None` when the window of that label holds a connection (the list in it was used to
+/// connect with no workspace window open, so it became one): the caller opens a plain window
+/// instead.
 fn show_welcome_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Option<String>> {
     let registry = app.state::<WindowRegistry>();
     if let Some(open) = app.get_webview_window(WELCOME_WINDOW) {
@@ -410,15 +469,13 @@ fn show_welcome_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Option<S
     // Shown by its renderer once the list is laid out (`applyShape`), so it never shows empty.
     config.visible = false;
     let window = WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build())?;
+    #[cfg(windows)]
+    if let Err(e) = own_title_bar(&window) {
+        log::warn!("could not set up the Welcome window: {e}");
+    }
     registry.born(WELCOME_WINDOW);
     log::info!("opened the Welcome window");
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(WELCOME_REVEAL).await;
-        if !window.is_visible().unwrap_or(true) {
-            log::warn!("the Welcome window was still hidden: showing it");
-            let _ = raise(&window);
-        }
-    });
+    reveal_if_still_hidden(window);
     Ok(Some(WELCOME_WINDOW.to_string()))
 }
 
@@ -446,8 +503,9 @@ pub fn route_profile<R: Runtime>(
 }
 
 /// Opens a new window like the main one (cascaded from the focused window), with `handoff` parked
-/// for its renderer. Returns its label. `welcome` (macOS, no handoff): the window is asked for to
-/// show the connection list, so the one Welcome window comes up instead of another plain window.
+/// for its renderer. Returns its label. `welcome` (macOS and Windows, no handoff): the window is
+/// asked for to show the connection list, so the one Welcome window comes up instead of another
+/// plain window.
 pub fn open_window<R: Runtime>(
     app: &AppHandle<R>,
     handoff: Option<WindowHandoff>,
@@ -455,7 +513,7 @@ pub fn open_window<R: Runtime>(
 ) -> tauri::Result<String> {
     if welcome
         && handoff.is_none()
-        && cfg!(target_os = "macos")
+        && cfg!(any(target_os = "macos", windows))
         && let Some(label) = show_welcome_window(app)?
     {
         return Ok(label);
@@ -484,11 +542,11 @@ pub fn open_window<R: Runtime>(
         }
     };
     #[cfg(windows)]
-    if let Err(e) = own_title_bar(&window).and_then(|()| fit_to_work_area(&window)) {
+    if let Err(e) = own_title_bar(&window).and_then(|()| fit_to_work_area(&window, true)) {
         log::warn!("could not set up window {label}: {e}");
     }
-    #[cfg(not(windows))]
-    let _ = window;
+    // Windows: built hidden like the main window; its renderer shows it.
+    reveal_if_still_hidden(window);
     registry.born(&label);
     log::info!("opened window {label}");
     Ok(label)
@@ -549,10 +607,14 @@ pub fn own_title_bar<R: Runtime>(window: &tauri::WebviewWindow<R>) -> tauri::Res
 
 /// Windows: the configured size (1280×820) is taller than a 768 px screen's work area, and a size
 /// saved on a bigger monitor may not fit either, so a window that sticks out of its monitor's work
-/// area (under the taskbar) is moved in, or maximized when it is too big. Call it after the
-/// window-state plugin has restored the window (that happens while it is built); a restored size
-/// that fits is left alone.
-pub fn fit_to_work_area<R: Runtime>(window: &tauri::WebviewWindow<R>) -> tauri::Result<()> {
+/// area (under the taskbar) is moved in, or resized to fit and (`maximize`) maximized when it is
+/// too big. Call it after the window-state plugin has restored the window (that happens while it
+/// is built); a restored size that fits is left alone. The main window on Windows is not maximized
+/// here: it is hidden until its renderer has given it its shape, and maximizes it then if need be.
+pub fn fit_to_work_area<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    maximize: bool,
+) -> tauri::Result<()> {
     if window.is_maximized()? || window.is_fullscreen()? || window.is_minimized()? {
         return Ok(());
     }
@@ -589,7 +651,9 @@ pub fn fit_to_work_area<R: Runtime>(window: &tauri::WebviewWindow<R>) -> tauri::
                 height: to.height.saturating_sub(bars_height),
             })?;
             window.set_position(tauri::PhysicalPosition { x: to.x, y: to.y })?;
-            window.maximize()?;
+            if maximize {
+                window.maximize()?;
+            }
         }
     }
     Ok(())

@@ -66,8 +66,16 @@ const CAPTION =
 /**
  * Minimize, maximize / restore and close at the right end of the toolbar (Windows, no native
  * title bar). Full-height and square-cornered like the system's caption buttons; close turns red.
+ * `maximizable` false (the fixed-size Welcome window): maximize is shown greyed out, as Windows
+ * does for a window that cannot be resized.
  */
-export function WindowControls({ className }: { className?: string }) {
+export function WindowControls({
+  className,
+  maximizable = true,
+}: {
+  className?: string;
+  maximizable?: boolean;
+}) {
   const maximized = useMaximized();
   const run = (f: (w: Awaited<ReturnType<typeof currentWindow>>) => Promise<void>) => {
     if (isTauri()) void currentWindow().then(f);
@@ -85,7 +93,8 @@ export function WindowControls({ className }: { className?: string }) {
       <button
         type="button"
         aria-label={maximized ? "Restore" : "Maximize"}
-        className={CAPTION}
+        disabled={!maximizable}
+        className={cn(CAPTION, "disabled:text-foreground/30 disabled:hover:bg-transparent")}
         onClick={() => run((w) => w.toggleMaximize())}
       >
         {maximized ? (

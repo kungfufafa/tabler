@@ -2,11 +2,14 @@ import { useEffect } from "react";
 import { useSqlViewerStore } from "@/features/sqlviewer/store";
 import { showListInWelcomeWindow } from "@/features/tabs/windowHandoff";
 import { useWindowFullscreen } from "@/hooks/useWindowFullscreen";
+import { isTauri } from "@/lib/ipc/transport";
+import { isWindows } from "@/lib/platform";
 import { applyShape, windowDriver } from "@/lib/windowDriver";
 import { useConnectionsStore } from "@/stores/connections";
 import { setLauncherElsewhere } from "@/stores/ui";
 import {
   desiredShape,
+  rememberMaximized,
   shapedWindows,
   useWindowShape,
   type WindowShape,
@@ -14,9 +17,12 @@ import {
 
 /** One reshape at a time, in the order they were asked for. */
 let queue: Promise<void> = Promise.resolve();
+/** Reshapes asked for and not done yet (their own resizes are not the user's). */
+let pending = 0;
 
 function requestShape(to: WindowShape): void {
   const setShape = useWindowShape.getState().setShape;
+  pending++;
   queue = queue
     .then(async () => {
       const driver = await windowDriver();
@@ -27,12 +33,48 @@ function requestShape(to: WindowShape): void {
       // Never stuck on the Welcome layout with a workspace open: fall back to the in-window list.
       console.warn("[window] could not take the shape", to, e);
       setShape(to === "workspace" ? "workspace" : null);
+    })
+    .finally(() => {
+      pending--;
     });
 }
 
 /**
- * Keeps the window in the shape its content calls for (macOS): the Welcome window while nothing
- * is open, the workspace window otherwise. Mounted once by the app shell.
+ * Windows: keeps whether the workspace window is maximized (`rememberMaximized`), so it opens
+ * maximized again, like TablePlus for Windows, after being the Welcome window or a restart.
+ */
+function useRememberMaximized(): void {
+  useEffect(() => {
+    if (!shapedWindows || !isWindows || !isTauri()) return;
+    let off: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const win = getCurrentWindow();
+      const unlisten = await win.onResized(() => {
+        if (pending > 0 || useWindowShape.getState().shape !== "workspace") return;
+        void (async () => {
+          const [visible, minimized, maximized] = await Promise.all([
+            win.isVisible(),
+            win.isMinimized(),
+            win.isMaximized(),
+          ]);
+          if (visible && !minimized && pending === 0) rememberMaximized(win.label, maximized);
+        })().catch(() => undefined);
+      });
+      if (cancelled) unlisten();
+      else off = unlisten;
+    })().catch((e: unknown) => console.warn("[window] could not follow maximize", e));
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, []);
+}
+
+/**
+ * Keeps the window in the shape its content calls for (macOS and Windows): the Welcome window while
+ * nothing is open, the workspace window otherwise. Mounted once by the app shell.
  */
 export function WindowShapeHost() {
   const connections = useConnectionsStore((s) => s.order.length);
@@ -41,7 +83,8 @@ export function WindowShapeHost() {
     setLauncherElsewhere(showListInWelcomeWindow);
     return () => setLauncherElsewhere(null);
   }, []);
-  const opening = useWindowShape((s) => s.opening);
+  useRememberMaximized();
+  const opening = useWindowShape((s) => s.opening || s.linking > 0);
   const decided = useWindowShape((s) => s.decided);
   // The standalone SQL Viewer (no connection) needs a workspace window's room.
   const roomy = useSqlViewerStore((s) => s.standaloneOpen);

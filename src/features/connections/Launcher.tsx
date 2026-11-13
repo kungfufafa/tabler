@@ -11,6 +11,8 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { useQuery } from "@tanstack/react-query";
+import { ownTitleBar } from "@/app/titleBar";
+import { AppMenuButton, WindowControls } from "@/app/WindowControls";
 import {
   AppWindow,
   ArchiveRestore,
@@ -857,13 +859,19 @@ export function Launcher() {
         )}
       >
         <aside
-          // The Welcome window: the traffic lights sit above the app name, and the strip drags.
+          // The Welcome window: the traffic lights (macOS) or the ⋮ app menu (Windows, like
+          // TablePlus for Windows) sit above the app name, and the strip drags.
           data-tauri-drag-region={windowed || undefined}
           className={cn(
             "border-border bg-sidebar flex min-w-64 shrink-0 flex-col overflow-y-auto border-r px-4",
-            windowed ? "pt-12" : "pt-4",
+            windowed ? (ownTitleBar ? "pt-0" : "pt-12") : "pt-4",
           )}
         >
+          {windowed && ownTitleBar && (
+            <div data-tauri-drag-region className="-ml-1.5 flex h-12 shrink-0 items-center">
+              <AppMenuButton />
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <img src={appIcon} alt="" draggable={false} className="size-12 shrink-0" />
             <div>
@@ -920,7 +928,10 @@ export function Launcher() {
             <header
               data-tauri-drag-region
               data-slot="welcome-toolbar"
-              className="border-border flex h-12 shrink-0 items-center gap-1 border-b px-3"
+              className={cn(
+                "border-border flex h-12 shrink-0 items-center gap-1 border-b pl-3",
+                ownTitleBar ? "pr-0" : "pr-3",
+              )}
             >
               <Button
                 type="button"
@@ -936,6 +947,8 @@ export function Launcher() {
               {newGroupButton}
               <div className="ml-1 flex min-w-0 flex-1">{searchField}</div>
               {moreButton}
+              {/* Windows: the window has no title bar, so its buttons are here. */}
+              {ownTitleBar && <WindowControls className="ml-2" maximizable={false} />}
             </header>
           ) : (
             <header className="border-border flex shrink-0 flex-col gap-2 border-b px-4 pt-4 pb-3">

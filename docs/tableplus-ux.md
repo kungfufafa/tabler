@@ -219,14 +219,20 @@ audit" pass; the TablePlus behaviour is the target.
     a full-bleed page.
 17. **No "Ungrouped" header:** connections without a group come first, without a header.
 18. **No pre-selected row** with a strong highlight on load; selection appears on click / ↑↓.
-19. **The Welcome window is a window of its own shape (macOS):** a window with nothing open is
-    760 × 480 and fixed, the list edge to edge, with its own toolbar beside the traffic lights (new
-    connection, new group, "Search for connection…"). Opening a connection turns the same window
-    into the workspace window (its last size and place, else 1280 × 820); closing the last one
-    turns it back. ⌘N shows the one Welcome window rather than opening another. A full-screen
-    window keeps its size and draws the centred panel of item 16. Windows and Linux keep the
-    in-window list. (`stores/windowShape`, `lib/windowDriver`, `app/WindowShapeHost`.)
-20. **A workspace window never draws the connection list (macOS):** asked for while a connection
+19. **The Welcome window is a window of its own shape (macOS and Windows):** a window with
+    nothing open is fixed at 760 × 480 (macOS) or 746 × 529 (Windows, TablePlus for Windows's
+    client area), the list edge to edge, with its own toolbar beside the traffic lights (macOS) or with the ⋮ app
+    menu above the app name and the window buttons (maximize greyed out) at the toolbar's right
+    (Windows). Opening a connection turns the same window into the workspace window (its last size
+    and place, else 1280 × 820); closing the last one turns it back. ⌘N shows the one Welcome window
+    rather than opening another. A full-screen window keeps its size and draws the centred panel of
+    item 16; so does a zoomed one on macOS. On Windows a maximized workspace window still becomes the
+    Welcome window and is maximized again when it next becomes a workspace window (or at the next
+    start, `rememberMaximized`). Windows builds every window hidden
+    (`tauri.windows.conf.json`, `decorations: false`) and shows it once it has its shape, so no
+    native title bar, menu bar, blank page or size jump is seen at startup. Linux keeps the in-window
+    list. (`stores/windowShape`, `lib/windowDriver`, `app/WindowShapeHost`.)
+20. **A workspace window never draws the connection list (macOS and Windows):** asked for while a connection
     is open (the rail's `+`, ⇧⌘K, the palette, ⌘N), the list comes up in the Welcome window, a
     window of its own (label `welcome`, built at 760 × 480 and shown once the list is laid out),
     and the workspace stays as it is. A connection picked there opens as a new workspace in the

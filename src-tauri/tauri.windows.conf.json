@@ -1,5 +1,21 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Tabler",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 600,
+        "center": true,
+        "decorations": false,
+        "visible": false,
+        "dragDropEnabled": false
+      }
+    ]
+  },
   "bundle": {
     "targets": ["nsis", "msi"],
     "windows": {
