@@ -1,8 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { NotificationToaster } from "@/features/notify/NotificationToaster";
 import { useDefaultActions } from "@/features/palette/defaultActions";
 import { useConnectionEvents } from "@/hooks/useConnectionEvents";
 import { useNativeMenu } from "@/hooks/useNativeMenu";
@@ -39,7 +39,7 @@ export function Providers({ children }: { children: ReactNode }) {
         <KeyboardProvider>
           <GlobalEffects />
           {children}
-          <Toaster />
+          <NotificationToaster />
         </KeyboardProvider>
       </TooltipProvider>
     </QueryClientProvider>
