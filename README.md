@@ -253,13 +253,18 @@ The "Release installers" workflow ([.github/workflows/build.yml](.github/workflo
 macOS DMG (Apple Silicon and Intel) and the Windows installers, and publishes them on the
 [Releases page](https://github.com/kungfufafa/tabler/releases):
 
-Run `pnpm dev:mock` for UI work or `pnpm tauri dev` for the desktop app. Check the change locally,
-commit it with a descriptive subject such as `fix: keep the query editor focused`, then push to
-`main` when the commits are ready to ship.
+1. Start a short-lived branch from current `main` for each change. Run `pnpm dev:mock` for UI work
+   or `pnpm tauri dev` for the desktop app, then run the relevant checks locally.
+2. Push the branch and open a pull request into `main`. Use a title such as
+   `fix: keep the query editor focused` and describe how you tested the change. Use a draft PR
+   while the change is still in progress.
+3. Resolve review conversations and wait for the required macOS and Windows checks.
+   Squash-merge once the PR is ready. GitHub uses the PR title for the squash commit and deletes
+   the merged branch.
+4. The merge queues the release build. After CI and both installers pass on the resulting
+   commit, GitHub creates the next patch tag and publishes the numbered release. The workflow
+   then refreshes the rolling `nightly` preview.
 
-- each push to `main` queues a build. After both installers and CI pass, the workflow publishes
-  a numbered release, then refreshes the rolling `nightly` preview. One push creates one build
-  even when it contains several commits. The tag records the exact commit shipped.
 - the build applies the version to its temporary checkout. The source manifests keep their base
   version. Rerunning the same tagged commit keeps its version and can finish an interrupted
   release. A failed CI or installer build leaves the previous release available;

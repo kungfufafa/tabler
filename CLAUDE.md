@@ -30,7 +30,12 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
 
 ## Git
 
-- One branch: `main`. Commit and push straight to `main`; no feature branches, PRs or `claude/*` worktrees (side sessions work in this checkout too).
+- Start each change on a short-lived branch from current `main` and open a pull request into
+  `main`. Use a separate worktree if the existing checkout has unrelated changes.
+- Give the PR a descriptive title such as `fix: keep the query editor focused`. Wait for all
+  required CI checks and resolve review conversations before squash-merging.
+- The merge triggers the release workflow for that exact commit. CI assigns the next patch
+  version and creates the release tag after both installers and CI pass.
 
 ## Dev databases
 
