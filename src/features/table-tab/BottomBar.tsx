@@ -163,10 +163,10 @@ export function TableBottomBar(p: TableBottomBarProps) {
           aria-label="Add row"
           disabled={!p.canAddRow}
           onClick={p.onAddRow}
-          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 transition-colors @max-sm:px-1"
+          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 transition-colors @max-md:px-1"
         >
           <Plus />
-          <span className="@max-sm:hidden">Add row</span>
+          <span className="@max-md:hidden">Add row</span>
         </Button>
       </BarTooltip>
       <div className="flex min-w-0 flex-1 justify-center px-1">

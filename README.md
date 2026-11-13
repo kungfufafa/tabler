@@ -261,8 +261,10 @@ macOS DMG (Apple Silicon and Intel) and the Windows installers, and publishes th
 1. Start a short-lived branch from current `main` for each change. Run `pnpm dev:mock` for UI work
    or `pnpm tauri dev` for the desktop app, then run the relevant checks locally.
 2. Push the branch and open a pull request into `main`. Use a title such as
-   `fix: keep the query editor focused` and describe how you tested the change. Use a draft PR
-   while the change is still in progress.
+   `fix: keep the query editor focused` and describe how you tested the change. The title must
+   start with a type (`feat`, `fix`, `ui`, `perf`, `refactor`, `docs`, `test`, `ci`, `build` or
+   `chore`): the release notes sort changes by it, and the `PR title` check fails without one.
+   Use a draft PR while the change is still in progress.
 3. Resolve review conversations and wait for the required macOS and Windows checks.
    Squash-merge once the PR is ready. GitHub uses the PR title for the squash commit and deletes
    the merged branch.

@@ -1,0 +1,36 @@
+name: Pull request
+
+# A pull request is squash-merged with its title as the commit subject on main, and the release
+# notes sort those subjects by their type (`feat: …` is "New", `fix: …` is "Fixed", `ci: …` is
+# left out). This check refuses a title without one. It is a workflow of its own, so that
+# renaming a pull request does not start the builds of check.yml again.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  # The title last given is the one that counts.
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    # The name is the status check a ruleset asks for: renaming it means changing the ruleset.
+    name: PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: dev/scripts/pr-title.mjs
+          sparse-checkout-cone-mode: false
+
+      # The script needs nothing installed: the Node of the runner image runs it.
+      - name: The title starts with a type the release notes know
+        # Through the environment, never inside `run`: the title is text anyone can write.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node dev/scripts/pr-title.mjs

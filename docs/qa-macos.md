@@ -13,6 +13,9 @@ Prepare: `cp .env.example .env`, `pnpm dev:db:seed`, `pnpm dev:sqlite:build`, `p
 - [ ] Traffic lights sit inside the 40px toolbar; dragging empty toolbar space moves the window; double-click zooms.
 - [ ] Fullscreen (⌃⌘F): the left inset disappears, tabs start at the edge.
 - [ ] Window size and position are restored after quitting and relaunching.
+- [ ] Startup shows no blank or resizing window: the first thing seen is the Welcome window (or the restored workspace) at its final size (the main window is built hidden, `tauri.macos.conf.json`; a renderer that never shows it is overruled after 2.5 s, log: "was still hidden: showing it"). Quit with a zoomed workspace, relaunch, connect: the workspace is zoomed again. Quit in full screen and relaunch: the window shows.
+- [ ] Closing the last workspace window (red button, or ⌘W with no tab left) brings up the Welcome window instead of ending the app; ⌘Q, and closing the Welcome window itself, still end it.
+- [ ] Tiled to half the screen (Window ▸ Move & Resize ▸ Left, or a drag to the edge) on a 1280-point-wide display, the workspace window fits its half (minimum width 620): the toolbar keeps the status pill, and the bottom bar keeps pagination and Refresh.
 - [ ] Light/Dark follow macOS appearance when the theme is "System"; explicit Light/Dark override it.
 
 ## Menu bar & quitting

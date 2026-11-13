@@ -9,6 +9,7 @@ import { pendingCount } from "@/features/staging/model";
 import { cycleWorkspace } from "@/features/tabs/workspaces";
 import { requestWindowClose } from "@/hooks/useUnsavedGuard";
 import { resolveScope } from "@/lib/keys/useShortcuts";
+import { isWindows } from "@/lib/platform";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTableTabsStore } from "@/stores/tableTabs";
 import { isTableTab, useTabsStore } from "@/stores/tabs";
@@ -77,8 +78,10 @@ export function useDefaultActions(): void {
         if (resolveScope(document.activeElement) === "dialog") return;
         // TablePlus ⌘W: "Close tab/window". The tab of the workspace on screen closes; with none to
         // close (the welcome screen or Connection Manager, an empty workspace, a ⌘N window) the
-        // window closes through the unsaved-work guard. The Connection Manager hides the open
-        // tabs, so ⌘W there must not close one of them unseen.
+        // window closes through the unsaved-work guard on macOS. TablePlus for Windows leaves the
+        // window alone there (Ctrl+W pressed once too often must not close the workspace and its
+        // connections). The Connection Manager hides the open tabs, so ⌘W there must not close one
+        // of them unseen.
         const { tabs: open, activeId } = tabs();
         const connectionId = workspace();
         const shown =
@@ -89,7 +92,7 @@ export function useDefaultActions(): void {
               )
             : undefined;
         if (shown) tabs().close(shown.id);
-        else void requestWindowClose();
+        else if (!isWindows) void requestWindowClose();
       }),
       // Tabs belong to the active connection's workspace (TablePlus): these stay inside it.
       actions.register("tab.close-all", () => tabs().closeAll(workspace())),

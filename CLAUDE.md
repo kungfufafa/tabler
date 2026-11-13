@@ -35,6 +35,10 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
   `main`. Use a separate worktree if the existing checkout has unrelated changes.
 - Give the PR a descriptive title such as `fix: keep the query editor focused`. Wait for all
   required CI checks and resolve review conversations before squash-merging.
+- The title becomes the squash commit's subject, and the release notes sort commits by its type:
+  write `type: subject` or `type(scope): subject` with `feat`, `fix`, `ui`, `perf`, `refactor`,
+  `docs`, `test`, `ci`, `build` or `chore`. The `PR title` check (`dev/scripts/pr-title.mjs`)
+  refuses any other title.
 - The merge triggers the release workflow for that exact commit. CI assigns the next patch
   version and creates the release tag after both installers and CI pass.
 
