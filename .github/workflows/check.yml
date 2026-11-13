@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   # Every main push has its own CI gate. Cancel superseded runs for pull requests only.
   group: check-${{ github.event_name == 'push' && github.run_id || github.ref }}
@@ -51,6 +54,7 @@ jobs:
           pnpm test
           node --test dev/scripts/pr-title.test.mjs
           pnpm test:lanes
+          node --test dev/scripts/build-version.test.mjs
 
       - name: Rust — fmt, clippy, tests
         # Integration tests self-skip while the TABLER_TEST_* URLs are unset.
