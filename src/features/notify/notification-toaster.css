@@ -1,10 +1,10 @@
 .tabler-toaster[data-sonner-toaster] {
-  --toast-shadow: 0 4px 16px rgb(0 0 0 / 9%);
-  width: min(384px, calc(100vw - var(--offset-left) - var(--offset-right)));
+  --toast-shadow: 0 2px 8px rgb(0 0 0 / 10%);
+  width: min(344px, calc(100vw - var(--offset-left) - var(--offset-right)));
   font-family: inherit;
+  pointer-events: none;
 }
 
-/* Sonner sets both insets on narrow screens. Keep the toast aligned to the right. */
 .tabler-toaster[data-sonner-toaster][data-x-position="right"] {
   left: auto;
 }
@@ -14,20 +14,29 @@
 }
 
 .tabler-toaster [data-sonner-toast][data-styled="true"] {
-  --toast-status: var(--muted-foreground);
+  --toast-status: var(--border-strong);
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: start;
   gap: 0;
-  width: 100%;
-  padding: 12px;
+  left: auto;
+  width: max-content;
+  max-width: 100%;
+  padding-block: 4px;
+  padding-inline: 8px 4px;
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  background: var(--popover);
+  border-inline-start: 2px solid var(--toast-status);
+  border-radius: 6px;
+  background: var(--surface-2);
   color: var(--popover-foreground);
   box-shadow: var(--toast-shadow);
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
+  line-height: 1rem;
   font-variant-numeric: tabular-nums;
+}
+
+.tabler-toaster [data-sonner-toast][data-visible="true"] {
+  pointer-events: auto;
 }
 
 .tabler-toaster [data-sonner-toast][data-type="success"] {
@@ -48,9 +57,9 @@
 
 .tabler-toaster [data-sonner-toast][data-styled="true"] > [data-icon] {
   grid-area: 1 / 1;
-  margin: 2px 0 0;
-  margin-inline-end: 8px;
-  color: var(--toast-status);
+  margin: 3px 0 0;
+  margin-inline-end: 6px;
+  color: var(--muted-foreground);
 }
 
 .tabler-toaster [data-sonner-toast][data-styled="true"] > [data-icon] svg {
@@ -63,27 +72,26 @@
 
 .tabler-toaster [data-sonner-toast][data-styled="true"] > [data-content] {
   grid-area: 1 / 2;
-  gap: 4px;
+  gap: 2px;
+  padding-block: 3px;
+  padding-inline-end: 4px;
 }
 
-.tabler-toaster [data-sonner-toast][data-styled="true"] [data-title] {
-  line-height: 1.25rem;
+.tabler-toaster [data-sonner-toast][data-styled="true"] :is([data-title], [data-description]) {
+  line-height: inherit;
 }
 
 .tabler-toaster [data-sonner-toast][data-styled="true"] [data-description] {
   color: var(--muted-foreground);
-  font-size: 0.75rem;
-  line-height: 1rem;
   white-space: pre-line;
 }
 
 .tabler-toaster[data-sonner-toaster] [data-sonner-toast][data-styled="true"] > [data-close-button] {
   position: static;
-  grid-area: 1 / 3;
-  width: 24px;
-  height: 24px;
-  margin-block-start: -2px;
-  margin-inline-start: 8px;
+  grid-area: 1 / 4;
+  width: 22px;
+  height: 22px;
+  margin-inline-start: 2px;
   transform: none;
   border: 0;
   border-radius: 4px;
@@ -92,19 +100,33 @@
 }
 
 .tabler-toaster[data-sonner-toaster] [data-sonner-toast][data-styled="true"] > [data-button] {
-  grid-column: 2 / -1;
+  grid-column: 3;
   justify-self: start;
   height: auto;
-  min-height: 24px;
-  margin: 8px 0 0;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
+  min-height: 22px;
+  margin: 0;
+  padding: 2px 6px;
+  border: 0;
   border-radius: 4px;
-  background: var(--surface-2);
-  color: inherit;
-  font-size: 0.75rem;
-  line-height: 1rem;
+  background: transparent;
+  color: var(--popover-foreground);
+  font: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
   white-space: normal;
+}
+
+.tabler-toaster[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"]:has(
+    > [data-content] > [data-description],
+    > [data-cancel]
+  )
+  > [data-button] {
+  grid-column: 2 / -1;
+  margin-block-start: 2px;
+  margin-inline-start: -4px;
+  padding-inline: 4px;
 }
 
 .tabler-toaster[data-sonner-toaster]
@@ -112,11 +134,18 @@
   > :is([data-close-button], [data-button]):hover {
   background: var(--accent);
   color: var(--popover-foreground);
+  text-decoration-color: currentColor;
 }
 
 .tabler-toaster [data-sonner-toast][data-styled="true"]:focus-visible,
 .tabler-toaster [data-sonner-toast][data-styled="true"] > button:focus-visible {
   outline: 2px solid var(--ring);
-  outline-offset: 2px;
+  outline-offset: 1px;
   box-shadow: none;
+}
+
+@media (max-width: 600px) {
+  .tabler-toaster[data-sonner-toaster][data-x-position="right"] {
+    right: var(--mobile-offset-right);
+  }
 }
