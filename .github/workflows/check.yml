@@ -49,6 +49,7 @@ jobs:
           pnpm lint
           pnpm format:check
           pnpm test
+          node --test dev/scripts/pr-title.test.mjs
           pnpm test:lanes
 
       - name: Rust — fmt, clippy, tests
