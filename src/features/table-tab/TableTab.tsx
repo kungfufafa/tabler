@@ -505,7 +505,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         edits.push({ rowKey: key, col, value, original: page.rows[r] });
       }
       if (sqliteDefaults > 0)
-        toast.message(`${driverLabel(driver)} can't set an existing value to DEFAULT`, {
+        toast.message(`${driverLabel(driver)} cannot set an existing value to DEFAULT`, {
           description: "DEFAULT works on new rows only.",
         });
       if (edits.length > 0) setStaging((s) => setCells(s, edits));
@@ -752,7 +752,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
           });
         }
         if (sqliteDefaults > 0)
-          toast.message(`${driverLabel(driver)} can't set an existing value to DEFAULT`, {
+          toast.message(`${driverLabel(driver)} cannot set an existing value to DEFAULT`, {
             description: "DEFAULT works on new rows only.",
           });
         if (notText > 0 && edits.length === 0) toast.message("EMPTY applies to text columns only");
@@ -1100,7 +1100,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
           {meta.isPending ? (
             <QuietLoading header />
           ) : (
-            <EmptyState title="Could not load table" description={errorWithHint(meta.error)} />
+            <EmptyState title="Could not load the table" description={errorWithHint(meta.error)} />
           )}
         </div>
         <BottomBarFrame aria-label="Table data">
@@ -1144,14 +1144,14 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         />
       )}
       {noKey && editable && (
-        <div className="border-warning/40 bg-warning/10 text-warning shrink-0 border-b px-3 py-1 text-[11px]">
+        <div className="border-warning/40 bg-warning/10 text-warning min-h-6 shrink-0 border-b px-3 py-1 text-xs">
           This table has no primary key: edits match every column of the original row and affect at
           most one row.
         </div>
       )}
       <div className="min-h-0 flex-1">
         {rows.isError ? (
-          <EmptyState title="Query failed" description={errorWithHint(rows.error)} />
+          <EmptyState title="Could not load the rows" description={errorWithHint(rows.error)} />
         ) : (
           <DataGrid
             columns={columns}
@@ -1163,7 +1163,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
                 ? "No rows match the filter"
                 : cursorStack.length > 0 || (page?.nextCursor ?? null) !== null
                   ? "No rows on this page"
-                  : "Table is empty"
+                  : "No rows"
             }
             sort={caps.data.sort ? state.sort : []}
             onSortChange={caps.data.sort ? onSortChange : undefined}
@@ -1243,16 +1243,17 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       <AlertDialog open={guard !== null} onOpenChange={(open) => !open && setGuard(null)}>
         <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle>
+            <AlertDialogTitle className="text-sm">
               {pending} pending change{pending === 1 ? "" : "s"}
             </AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogDescription className="text-xs">
               Reloading the rows will drop your unsaved edits. Commit them first, or discard them.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogCancel size="sm">Keep Editing</AlertDialogCancel>
             <AlertDialogAction
+              size="sm"
               variant="outline"
               onClick={() => {
                 const run = guard?.run;
@@ -1261,9 +1262,10 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
                 run?.();
               }}
             >
-              Discard and continue
+              Discard and Continue
             </AlertDialogAction>
             <AlertDialogAction
+              size="sm"
               onClick={() => {
                 // The Preview SQL sheet of the workspace commit; the interrupted change runs
                 // once it went through (and is dropped when the sheet is dismissed).

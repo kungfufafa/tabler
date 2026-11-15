@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { ColumnMeta } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
-import { BarTooltip } from "./BarParts";
+import { BAR_HOVER, BarTooltip } from "./BarParts";
 
 /**
  * The bottom bar's column visibility menu (⌥⌘F opens it from the keyboard, so its open state is
@@ -51,7 +51,8 @@ export function ColumnsMenu({
             size="xs"
             aria-label="Columns"
             className={cn(
-              "text-muted-foreground hover:text-foreground h-6 gap-1 px-2 transition-colors @max-sm:px-1",
+              "text-muted-foreground hover:text-foreground transition-colors @max-sm:px-1",
+              BAR_HOVER,
               someHidden && "text-brand hover:text-brand",
             )}
           >
@@ -81,11 +82,11 @@ export function ColumnsMenu({
           Columns
           <button
             type="button"
-            className="text-brand text-[11px] font-normal hover:underline disabled:opacity-50 disabled:hover:no-underline"
+            className="text-brand focus-visible:ring-ring/50 rounded-sm text-xs font-normal outline-none hover:underline focus-visible:ring-2 disabled:opacity-50 disabled:hover:no-underline"
             onClick={onShowAll}
             disabled={!someHidden}
           >
-            Show all
+            Show All
           </button>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
@@ -95,7 +96,7 @@ export function ColumnsMenu({
             checked={!hidden.includes(c.name)}
             onCheckedChange={(v) => onToggleColumn(c.name, v === true)}
             onSelect={(e) => e.preventDefault()}
-            className="font-mono text-xs"
+            className="font-mono"
           >
             {c.name}
           </DropdownMenuCheckboxItem>

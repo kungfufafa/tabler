@@ -118,7 +118,7 @@ describe("BigQuery's fields", () => {
         values={{ database: "demo-proj", driverParams: params({ keyFilePath: "/keys/sa.json" }) }}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "List datasets" }));
+    fireEvent.click(screen.getByRole("button", { name: "List Datasets" }));
     await waitFor(() =>
       expect(current!.getValues("driverParams.defaultDataset" as never)).toBe("shop"),
     );
@@ -148,7 +148,7 @@ describe("BigQuery's fields", () => {
         }}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "List projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "List Projects" }));
     await waitFor(() => expect(current!.getValues("database")).toBe("demo-proj"));
     expect(util.mock.calls[0]![1]).toBe("listProjects");
     expect(util.mock.calls[0]![0].password).toBe("ya29.t");
@@ -160,7 +160,7 @@ describe("BigQuery's fields", () => {
       message: "authentication failed: BigQuery refused the access token (HTTP 401)",
     });
     const { unmount } = render(<Harness values={{ database: "demo-proj" }} />);
-    fireEvent.click(screen.getByRole("button", { name: "List datasets" }));
+    fireEvent.click(screen.getByRole("button", { name: "List Datasets" }));
     expect(await screen.findByText("Choose the key file first")).toBeInTheDocument();
     expect(util).not.toHaveBeenCalled();
     unmount();
@@ -174,14 +174,14 @@ describe("BigQuery's fields", () => {
         }}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "List datasets" }));
+    fireEvent.click(screen.getByRole("button", { name: "List Datasets" }));
     expect(
       await screen.findByText(
         "Type the access token again to list (the stored one is used to connect)",
       ),
     ).toBeInTheDocument();
     act(() => current!.setValue("password", "expired"));
-    fireEvent.click(screen.getByRole("button", { name: "List datasets" }));
+    fireEvent.click(screen.getByRole("button", { name: "List Datasets" }));
     expect(
       await screen.findByText(
         "authentication failed: BigQuery refused the access token (HTTP 401)",

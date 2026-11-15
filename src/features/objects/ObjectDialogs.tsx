@@ -1,3 +1,4 @@
+import { FormField } from "@/components/FormField";
 import { QuietStatus } from "@/components/QuietLoading";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState, type ReactNode } from "react";
@@ -14,7 +15,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { invalidateSchema } from "@/features/structure/invalidate";
-import { Field } from "@/features/structure/parts";
 import type { DdlErrorInfo } from "@/features/structure/previewState";
 import { SqlBlock } from "@/features/structure/SqlBlock";
 import { KIND_LABEL } from "@/features/structure/tableActions";
@@ -133,7 +133,7 @@ function OpDialog({
   return (
     // While it runs, Esc / the overlay must not dismiss the dialog (its outcome would be lost).
     <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="flex max-h-[calc(100dvh-4rem)] flex-col gap-3 sm:max-w-[34rem]">
+      <DialogContent className="flex max-h-[calc(100dvh-4rem)] flex-col sm:max-w-[34rem]">
         <DialogHeader>
           <DialogTitle className="text-sm">{title}</DialogTitle>
           <DialogDescription className="text-xs">{description}</DialogDescription>
@@ -141,7 +141,7 @@ function OpDialog({
         {names.length > 1 && (
           <ul
             aria-label="Items"
-            className="border-border bg-surface max-h-28 overflow-auto rounded-md border px-2 py-1 font-mono text-[11px]"
+            className="border-border bg-surface max-h-28 overflow-auto rounded-md border px-2 py-1 font-mono text-xs"
           >
             {names.map((n, i) => (
               <li key={`${n}:${i}`} className="truncate">
@@ -152,9 +152,9 @@ function OpDialog({
         )}
         {children}
         {options.length > 0 && (
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col">
             {options.map((o) => (
-              <label key={o.id} className="flex items-center gap-2 text-xs">
+              <label key={o.id} className="flex h-7 items-center gap-2 text-xs">
                 <Checkbox checked={o.checked} onCheckedChange={(v) => o.onChange(v === true)} />
                 {o.label}
               </label>
@@ -166,7 +166,7 @@ function OpDialog({
           className="border-border bg-surface-2 max-h-48 min-h-10 overflow-auto rounded-md border px-3 py-2"
         >
           {op === null ? (
-            <p className="text-muted-foreground text-[11px]">Fill in the form to see the SQL.</p>
+            <p className="text-muted-foreground text-xs">Fill in the form to see the SQL</p>
           ) : preview.isError ? (
             <p className="text-error text-xs">{preview.error.message}</p>
           ) : preview.data ? (
@@ -178,13 +178,13 @@ function OpDialog({
           )}
         </div>
         {preview.data?.warnings.map((w) => (
-          <p key={w} className="text-warning text-[11px]">
+          <p key={w} className="text-warning text-xs">
             {w}
           </p>
         ))}
         <ErrorLine error={error} />
         <DialogFooter>
-          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
+          <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
           <Button
@@ -547,32 +547,32 @@ function CloneTableDialog({
       }}
       onClose={onClose}
     >
-      <Field label="New table name" htmlFor={`${id}-name`}>
+      <FormField label="New table name" htmlFor={`${id}-name`}>
         <Input
           id={`${id}-name`}
           autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
           onFocus={(e) => e.currentTarget.select()}
-          className="h-7 font-mono text-xs md:text-xs"
+          className="h-7 rounded-md font-mono text-xs md:text-xs"
           spellCheck={false}
           autoComplete="off"
         />
-      </Field>
-      <div role="radiogroup" aria-label="What to copy" className="flex flex-col gap-1.5 text-xs">
+      </FormField>
+      <div role="radiogroup" aria-label="What to copy" className="flex flex-col text-xs">
         {(
           [
             [false, "Structure only"],
             [true, "Structure and data"],
           ] as const
         ).map(([value, label]) => (
-          <label key={label} className="flex items-center gap-2">
+          <label key={label} className="flex h-7 items-center gap-1.5">
             <input
               type="radio"
               name={`${id}-what`}
               checked={withData === value}
               onChange={() => setWithData(value)}
-              className={cn("accent-primary size-3.5")}
+              className="accent-primary size-3.5"
             />
             {label}
           </label>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { toast } from "sonner";
-import { cn } from "@/lib/utils";
+import { EmptyState } from "@/components/EmptyState";
 import {
   columnWidth,
   GAP,
@@ -320,7 +320,7 @@ export function Canvas({
         {gesture && gesture.kind !== "wire" && gesture.moved && (
           <div
             aria-hidden
-            className="border-primary/60 bg-primary/5 pointer-events-none absolute rounded-lg border-2 border-dashed"
+            className="border-brand/50 bg-brand-soft pointer-events-none absolute rounded-lg border-2 border-dashed"
             style={rectStyle(toRect(gesture.layout, colW))}
           />
         )}
@@ -345,9 +345,6 @@ export function Canvas({
                   ...(moving
                     ? { transform: `translate(${gesture.dx}px, ${gesture.dy}px)`, opacity: 0.9 }
                     : {}),
-                  transition: gesture
-                    ? undefined
-                    : "left 120ms, top 120ms, width 120ms, height 120ms",
                 }}
               />
             );
@@ -383,15 +380,15 @@ export function Canvas({
           </svg>
         )}
         {objects.length === 0 && (
-          <div
-            className={cn(
-              "text-muted-foreground absolute inset-0 flex items-center justify-center p-6 text-center text-xs",
-            )}
-          >
-            {editing
-              ? "Add charts, scoreboards, tables and inputs with + above."
-              : "This board is empty. Click Edit to add objects."}
-          </div>
+          <EmptyState
+            className="absolute inset-0"
+            title="This board is empty"
+            description={
+              editing
+                ? "Add charts, scoreboards, tables and inputs with Add above."
+                : "Click Edit to add objects."
+            }
+          />
         )}
       </div>
     </div>

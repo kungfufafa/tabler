@@ -81,7 +81,7 @@ export function ChoiceCell<T extends string>({
           onKeyDown={onKeyDown}
           className={cn(CELL_BUTTON, className)}
         >
-          <span className={cn("truncate", !current && "text-muted-foreground/60")}>
+          <span className={cn("truncate", !current && "text-muted-foreground")}>
             {current?.label ?? value ?? placeholder ?? ""}
           </span>
           <Chevron />
@@ -90,7 +90,7 @@ export function ChoiceCell<T extends string>({
       <DropdownMenuContent className="min-w-32">
         <DropdownMenuRadioGroup value={value ?? ""} onValueChange={(v) => onChange(v as T)}>
           {options.map((o) => (
-            <DropdownMenuRadioItem key={o.value} value={o.value} className="text-xs">
+            <DropdownMenuRadioItem key={o.value} value={o.value}>
               <span className="font-mono">{o.label}</span>
               {o.hint && <span className="text-muted-foreground ml-auto pl-3">{o.hint}</span>}
             </DropdownMenuRadioItem>
@@ -134,7 +134,7 @@ export function FlagsCell({
     <DropdownMenu>
       <DropdownMenuTrigger asChild disabled={disabled}>
         <button type="button" aria-label={label} data-cell-key={cellKey} className={CELL_BUTTON}>
-          <span className="truncate font-mono text-[11px]" title={text || undefined}>
+          <span className="truncate font-mono text-xs" title={text || undefined}>
             {text}
           </span>
           <Chevron />
@@ -147,7 +147,7 @@ export function FlagsCell({
             checked={f.checked}
             disabled={f.disabled}
             onCheckedChange={(on) => onToggle(f.id, on === true)}
-            className="font-mono text-xs"
+            className="font-mono"
           >
             {f.label}
           </DropdownMenuCheckboxItem>
@@ -155,9 +155,7 @@ export function FlagsCell({
         {readOnly && (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuLabel className="text-muted-foreground font-mono text-[11px] font-normal">
-              {readOnly}
-            </DropdownMenuLabel>
+            <DropdownMenuLabel className="font-mono">{readOnly}</DropdownMenuLabel>
           </>
         )}
       </DropdownMenuContent>
@@ -193,7 +191,7 @@ export function PresetMenu({
           type="button"
           tabIndex={-1}
           aria-label={label}
-          className="text-muted-foreground hover:text-foreground hover:bg-accent data-[state=open]:bg-accent flex size-5 shrink-0 items-center justify-center rounded-sm opacity-0 outline-none group-focus-within:opacity-100 group-hover:opacity-100 disabled:hidden data-[state=open]:opacity-100"
+          className="text-muted-foreground hover:text-foreground hover:bg-accent data-[state=open]:bg-accent focus-visible:ring-ring/50 flex size-5 shrink-0 items-center justify-center rounded-sm opacity-0 outline-none group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:ring-2 disabled:hidden data-[state=open]:opacity-100"
         >
           <ChevronDown className="size-3" />
         </button>
@@ -210,12 +208,9 @@ export function PresetMenu({
             key={e.id}
             disabled={e.disabled}
             onSelect={() => setKeepFocus(onPick(e.id) === true)}
-            className="text-xs"
           >
             <span className="font-mono">{e.label}</span>
-            {e.hint && (
-              <span className="text-muted-foreground ml-auto pl-3 text-[11px]">{e.hint}</span>
-            )}
+            {e.hint && <span className="text-muted-foreground ml-auto pl-3 text-xs">{e.hint}</span>}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -267,16 +262,16 @@ export function ColumnsCell({
           type="button"
           aria-label={label}
           data-cell-key={cellKey}
-          className={cn(CELL_BUTTON, "font-mono text-[11px]")}
+          className={cn(CELL_BUTTON, "font-mono")}
         >
-          <span className={cn("truncate", !text && "text-muted-foreground/60 italic")} title={text}>
+          <span className={cn("truncate", !text && "text-null italic")} title={text}>
             {text || placeholder}
           </span>
           <Chevron />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 gap-2 p-2.5">
-        <p className="text-muted-foreground text-[11px]">{hint}</p>
+      <PopoverContent align="start" className="w-80 gap-2 p-3 text-xs">
+        <p className="text-muted-foreground text-xs">{hint}</p>
         <OrderedPicker
           label={label}
           options={options}
@@ -306,7 +301,7 @@ export function CellPopover({
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent align="start" className={cn("w-96 p-3", className)}>
+      <PopoverContent align="start" className={cn("w-96 gap-2 p-3 text-xs", className)}>
         {children}
       </PopoverContent>
     </Popover>

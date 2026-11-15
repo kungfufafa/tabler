@@ -84,7 +84,7 @@ export function SecretRow({
                   ? "••••••••"
                   : ""
             }
-            className="font-mono"
+            className="font-mono text-sm"
             autoComplete="new-password"
             disabled={clearPassword || !keychain}
           />
@@ -117,7 +117,7 @@ export function SecretRow({
           />
           {hasStoredPassword && keychain && (
             <label
-              className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-[11px] whitespace-nowrap"
+              className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs whitespace-nowrap"
               title={`Remove the ${secret} stored in the Keychain`}
             >
               <Controller
@@ -154,7 +154,7 @@ export function SecretRow({
             rows={2}
             spellCheck={false}
             autoComplete="off"
-            className="min-h-0 resize-none font-mono text-xs"
+            className="min-h-0 resize-none font-mono text-xs md:text-xs"
             aria-invalid={errors.passwordCommand ? true : undefined}
           />
         </Row>
@@ -192,6 +192,7 @@ export function ExtraSecretRows({
             type="password"
             autoComplete="off"
             spellCheck={false}
+            className="text-sm"
           />
         </Row>
       ))}

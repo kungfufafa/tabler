@@ -214,7 +214,7 @@ describe("CommandPalette", () => {
     const input = renderPalette(undefined, { setup: withDatabases });
     expect(input).toHaveAttribute(
       "placeholder",
-      "Search tables, views, databases, connections and commands…",
+      "Search tables, views, databases, connections and commands",
     );
     expect(groupLabels()).toEqual([]);
     expect(optionTexts()).toEqual([
@@ -261,7 +261,7 @@ describe("CommandPalette", () => {
     // Nothing but a command matches "sidebar": it comes under "Commands".
     type("sidebar");
     expect(groupLabels()).toEqual(["Commands"]);
-    expect(optionTexts()).toEqual([expect.stringMatching(/^Toggle sidebar/)]);
+    expect(optionTexts()).toEqual([expect.stringMatching(/^Toggle Sidebar/)]);
   });
 
   it("lists a few matching commands after the objects, every command after >", () => {
@@ -273,27 +273,27 @@ describe("CommandPalette", () => {
     // One character: objects only (no command).
     type("d");
     expect(groupLabels()).toEqual([]);
-    expect(screen.queryByRole("option", { name: /Duplicate row/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /Duplicate Row/ })).toBeNull();
     // Two characters: the matching commands follow the objects, each with its shortcut.
     type("du");
     expect(groupLabels()).toEqual(["Commands"]);
-    expect(optionTexts()).toEqual([expect.stringMatching(/^Duplicate row/)]);
+    expect(optionTexts()).toEqual([expect.stringMatching(/^Duplicate Row/)]);
     type("sidebar");
-    const hit = screen.getByRole("option", { name: /Toggle sidebar/ });
+    const hit = screen.getByRole("option", { name: /Toggle Sidebar/ });
     expect(within(hit).getByText(isMac ? "⌘0" : "Ctrl+0")).toBeInTheDocument();
     // An object of that name stays first.
     type("users");
     expect(groupLabels()).toEqual([]);
     type("> du");
-    expect(optionTexts()).toEqual([expect.stringMatching(/^Duplicate row/)]);
+    expect(optionTexts()).toEqual([expect.stringMatching(/^Duplicate Row/)]);
     // No kinds, no "Type >" hint among commands.
     expect(screen.queryByTestId("palette-command-hint")).toBeNull();
     type(">");
-    const toggle = screen.getByRole("option", { name: /Toggle sidebar/ });
+    const toggle = screen.getByRole("option", { name: /Toggle Sidebar/ });
     expect(within(toggle).getByText(isMac ? "⌘0" : "Ctrl+0")).toBeInTheDocument();
     // …and actions without a handler are hidden.
-    expect(screen.queryByRole("option", { name: /Commit changes/ })).toBeNull();
-    expect(screen.queryByRole("option", { name: /Open anything/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /Commit Changes/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /Open Anything/ })).toBeNull();
     expect(screen.getByRole("option", { name: /Theme: Dark/ })).toBeInTheDocument();
   });
 
@@ -314,7 +314,7 @@ describe("CommandPalette", () => {
 
     fireEvent.change(input, { target: { value: "qqqq" } });
     expect(screen.queryAllByRole("option")).toHaveLength(0);
-    expect(screen.getByText(/No results for/)).toBeInTheDocument();
+    expect(screen.getByText("No matches")).toBeInTheDocument();
   });
 
   it("completes the selected name inline and accepts it with Tab or →", () => {
@@ -459,7 +459,7 @@ describe("CommandPalette", () => {
       await waitFor(() => expect(tabsOf()).toHaveLength(2));
     });
 
-    it("Switch connection: a click only selects, a double-click switches", async () => {
+    it("Switch Connection: a click only selects, a double-click switches", async () => {
       useConnectionsStore.getState().add({
         ...info,
         connectionId: "c2",
@@ -479,7 +479,7 @@ describe("CommandPalette", () => {
       expect(usePaletteStore.getState().open).toBe(false);
     });
 
-    it("Switch database keeps its click rules", async () => {
+    it("Switch Database keeps its click rules", async () => {
       renderPalette(undefined, { mode: "databases", setup: withDatabases });
       const row = screen.getByRole("option", { name: /^inventory/ });
       click(row);
@@ -496,7 +496,7 @@ describe("CommandPalette", () => {
       cleanups.push(actions.register("ui.toggle-sidebar", run));
       renderPalette();
       type("> toggle sidebar");
-      const row = screen.getByRole("option", { name: /Toggle sidebar/ });
+      const row = screen.getByRole("option", { name: /Toggle Sidebar/ });
       click(row);
       expect(run).not.toHaveBeenCalled();
       expect(usePaletteStore.getState().open).toBe(true);

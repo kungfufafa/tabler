@@ -157,7 +157,7 @@ describe("find in results: stepping and the counter", () => {
   });
 
   it("labels the counter", () => {
-    expect(counterLabel(null, 0)).toBe("No results");
+    expect(counterLabel(null, 0)).toBe("No matches");
     expect(counterLabel(2, 12)).toBe("3 of 12");
     expect(counterLabel(null, 4)).toBe("4 results");
   });

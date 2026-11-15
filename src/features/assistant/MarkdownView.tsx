@@ -42,7 +42,7 @@ function renderInline(nodes: Inline[], key = "i"): ReactNode[] {
         return (
           <code
             key={k}
-            className="bg-surface-2 border-border rounded-[4px] border px-1 py-px font-mono text-[0.92em] break-words"
+            className="bg-surface-2 border-border rounded-sm border px-1 py-px font-mono text-[0.92em] break-words"
           >
             {n.text}
           </code>
@@ -61,7 +61,7 @@ function renderInline(nodes: Inline[], key = "i"): ReactNode[] {
             key={k}
             href={n.href}
             title={n.href}
-            className="text-primary underline underline-offset-2"
+            className="text-brand underline underline-offset-2"
             onClick={(e) => {
               e.preventDefault();
               void openLink(n.href);
@@ -98,8 +98,8 @@ function CodeBlock({
   );
   return (
     <div className="border-border bg-surface overflow-hidden rounded-md border" data-code-block>
-      <div className="border-border bg-surface-2 dark:bg-background/40 flex h-6 items-center gap-0.5 border-b pr-0.5 pl-2">
-        <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px]">
+      <div className="border-border bg-surface-2 dark:bg-background/40 flex h-7 items-center gap-0.5 border-b pr-0.5 pl-2">
+        <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-xs">
           {lang || (isSql ? "sql" : "code")}
         </span>
         {isSql && sql && (
@@ -107,7 +107,7 @@ function CodeBlock({
             <Button
               variant="ghost"
               size="xs"
-              className="h-5 px-1.5 text-[11px]"
+              className="hover:bg-accent dark:hover:bg-accent"
               disabled={!complete}
               onClick={() => sql.insert(text)}
               title="Insert into the SQL editor"
@@ -118,7 +118,7 @@ function CodeBlock({
             <Button
               variant="ghost"
               size="xs"
-              className="h-5 px-1.5 text-[11px]"
+              className="hover:bg-accent dark:hover:bg-accent"
               disabled={!complete}
               onClick={() => sql.run(text)}
               title="Run in a new query tab (safe mode applies)"
@@ -131,7 +131,7 @@ function CodeBlock({
         <Button
           variant="ghost"
           size="icon-xs"
-          className="size-5"
+          className="hover:bg-accent dark:hover:bg-accent"
           aria-label="Copy code"
           title="Copy"
           onClick={() => {
@@ -226,7 +226,7 @@ function Blocks({
           case "table":
             return (
               <div key={key} className="border-border overflow-x-auto rounded-md border">
-                <table className="w-full border-collapse text-[11.5px]">
+                <table className="w-full border-collapse text-xs">
                   <thead className="bg-surface-2 dark:bg-background/40">
                     <tr>
                       {b.header.map((h, j) => (

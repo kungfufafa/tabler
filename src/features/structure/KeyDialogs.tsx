@@ -1,3 +1,4 @@
+import { FormError } from "@/components/FormError";
 import { QuietStatus } from "@/components/QuietLoading";
 import { useQuery } from "@tanstack/react-query";
 import { useId, useMemo, useState, type FormEvent } from "react";
@@ -26,7 +27,7 @@ const DEFAULT = "__default";
 
 function Errors({ errors }: { errors: string[] }) {
   if (errors.length === 0) return null;
-  return <p className="text-error mr-auto self-center text-[11px]">{errors[0]}</p>;
+  return <FormError className="mr-auto self-center">{errors[0]}</FormError>;
 }
 
 /**
@@ -43,7 +44,7 @@ export function ForeignKeyForm({
   onSubmit,
   onCancel,
   onDelete,
-  submitLabel = "Add foreign key",
+  submitLabel = "Add Foreign Key",
   showName = true,
 }: {
   connectionId: string;
@@ -160,7 +161,7 @@ export function ForeignKeyForm({
             className="w-full font-mono text-xs"
             aria-label="Referenced table"
           >
-            <SelectValue placeholder="Pick a table" />
+            <SelectValue placeholder="Choose a table" />
           </SelectTrigger>
           <SelectContent>
             {tableOptions.map((t) => (
@@ -174,7 +175,7 @@ export function ForeignKeyForm({
       {refTable && (
         <Field label="Referenced columns (same order)">
           {refMeta.isPending ? (
-            <QuietStatus>Loading columns…</QuietStatus>
+            <QuietStatus>Loading columns</QuietStatus>
           ) : (
             <OrderedPicker
               label="Referenced columns"
@@ -190,13 +191,13 @@ export function ForeignKeyForm({
         {actionSelect("On delete", onDelete_, setOnDelete)}
       </div>
       {showName && (
-        <Field label="Constraint name (optional)" htmlFor={`${id}-name`}>
+        <Field label="Constraint name" htmlFor={`${id}-name`}>
           <Input
             id={`${id}-name`}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="chosen by the database"
-            className="h-7 font-mono text-xs md:text-xs"
+            placeholder="Optional"
+            className="h-7 rounded-md font-mono text-xs md:text-xs"
             spellCheck={false}
             autoComplete="off"
           />
@@ -215,7 +216,7 @@ export function ForeignKeyForm({
             Delete
           </Button>
         )}
-        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+        <Button type="button" variant="outline" size="sm" onClick={onCancel}>
           Cancel
         </Button>
         <Button type="submit" size="sm" disabled={submitted && !result.ok}>
@@ -254,7 +255,7 @@ export function AddForeignKeyDialog({
         }}
       >
         <DialogHeader>
-          <DialogTitle className="text-sm">Add foreign key</DialogTitle>
+          <DialogTitle className="text-sm">Add Foreign Key</DialogTitle>
           <DialogDescription className="text-xs">
             From <span className="font-mono">{table.name}</span> to a table of the same schema.
           </DialogDescription>

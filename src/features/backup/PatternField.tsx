@@ -1,9 +1,9 @@
 import { RotateCcw } from "lucide-react";
 import { useRef } from "react";
+import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DEFAULT_PATTERN, insertToken, PATTERN_TOKENS, type PatternToken } from "./pattern";
-import { Field } from "./parts";
 
 /**
  * "File name": the pattern with its tokens (inserted at the caret) and a live preview of the
@@ -37,7 +37,7 @@ export function PatternField({
     });
   };
   return (
-    <Field
+    <FormField
       label="File name"
       htmlFor="backup-pattern"
       hint={
@@ -61,7 +61,7 @@ export function PatternField({
           disabled={disabled}
           spellCheck={false}
           autoComplete="off"
-          className="h-7 min-w-0 flex-1 font-mono text-xs"
+          className="h-7 min-w-0 flex-1 rounded-md font-mono text-xs md:text-xs"
         />
         <Button
           type="button"
@@ -82,12 +82,12 @@ export function PatternField({
             type="button"
             disabled={disabled}
             onClick={() => insert(t.token)}
-            className="border-border text-muted-foreground hover:text-foreground hover:bg-accent h-5 rounded border px-1.5 text-[10px] disabled:opacity-50"
+            className="border-border text-muted-foreground hover:text-foreground hover:bg-accent focus-visible:ring-ring/50 h-5 rounded-sm border px-1.5 text-[10px] font-medium transition-colors outline-none focus-visible:ring-2 disabled:opacity-50"
           >
             {t.label}
           </button>
         ))}
       </div>
-    </Field>
+    </FormField>
   );
 }

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Kbd } from "@/components/Kbd";
+import { KbdHint } from "@/components/KbdHint";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { actions, type ActionId } from "@/features/palette/actions";
@@ -24,7 +24,7 @@ export function ToolbarTip({
       <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent side={side} className="flex items-center gap-1.5">
         {label}
-        {combo && <Kbd combo={combo} className="border-border/40 bg-transparent text-inherit" />}
+        {combo && <KbdHint combo={combo} />}
       </TooltipContent>
     </Tooltip>
   );
@@ -64,9 +64,10 @@ export function ToolbarButton({
         disabled={disabled}
         onClick={onClick ?? (() => void actions.run(action))}
         className={cn(
-          "text-muted-foreground hover:text-foreground size-7 rounded-md transition-colors",
+          "text-muted-foreground hover:bg-accent hover:text-foreground dark:hover:bg-accent aria-expanded:bg-accent transition-colors",
           text && "w-auto gap-1 px-2 text-xs font-medium",
-          pressed && "border-border bg-accent text-foreground hover:bg-accent",
+          pressed &&
+            "bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand dark:hover:bg-brand-soft",
           className,
         )}
       >

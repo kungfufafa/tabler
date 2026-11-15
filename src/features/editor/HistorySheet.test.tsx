@@ -184,7 +184,7 @@ describe("HistorySheet", () => {
     // Regex: a pattern, and an invalid one says so without asking the backend.
     fireEvent.click(toggle("Whole Word"));
     fireEvent.click(toggle("Regex"));
-    expect(input()).toHaveAttribute("placeholder", "Search SQL (regex)…");
+    expect(input()).toHaveAttribute("placeholder", "Search SQL (regex)");
     fireEvent.change(input(), { target: { value: "^update .* id = \\d$" } });
     await waitFor(() => expect(shown()).toBe(1));
     expect(await option(UPDATE)).toBeInTheDocument();

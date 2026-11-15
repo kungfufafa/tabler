@@ -10,9 +10,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { hasSingleHost, useSingleHost } from "@/features/export/singleHost";
 import { ipc, isMock, toIpcError, type SqliteSshEvent, type SshPromptRequest } from "@/lib/ipc";
 import { listenEvent, listenWindowEvent, type Unlisten } from "@/lib/ipc/events";
@@ -56,8 +56,8 @@ function Questions({
       }}
     >
       <AlertDialogHeader>
-        <AlertDialogTitle className="flex items-center gap-2">
-          <KeyRound className="text-brand size-4 shrink-0" />
+        <AlertDialogTitle className="flex items-center gap-2 text-sm">
+          <KeyRound aria-hidden className="text-brand size-4 shrink-0" />
           {title}
         </AlertDialogTitle>
         <AlertDialogDescription className="text-xs">
@@ -86,12 +86,9 @@ function Questions({
           {request.instructions.trim()}
         </p>
       )}
-      <div className="flex flex-col gap-2.5">
+      <div className="flex flex-col gap-3">
         {request.prompts.map((p, i) => (
-          <div key={i} className="flex flex-col gap-1">
-            <Label htmlFor={`${uid}-${i}`} className="text-xs font-normal">
-              {promptLabel(p.prompt)}
-            </Label>
+          <FormField key={i} label={promptLabel(p.prompt)} htmlFor={`${uid}-${i}`}>
             <Input
               id={`${uid}-${i}`}
               type={p.echo ? "text" : "password"}
@@ -102,12 +99,12 @@ function Questions({
               autoFocus={i === 0}
               autoComplete={p.echo ? "off" : "one-time-code"}
               spellCheck={false}
-              className="font-mono"
+              className="font-mono text-sm"
             />
-          </div>
+          </FormField>
         ))}
       </div>
-      <AlertDialogFooter className="py-3">
+      <AlertDialogFooter>
         <AlertDialogCancel size="sm" type="button">
           Cancel
         </AlertDialogCancel>
@@ -141,7 +138,7 @@ export function SshPrompt({
         if (!open && request) onAnswer(request.requestId, null);
       }}
     >
-      <AlertDialogContent className="grid-cols-1 gap-3 data-[size=default]:sm:max-w-[34rem]">
+      <AlertDialogContent className="grid-cols-1 data-[size=default]:sm:max-w-[34rem]">
         {shown && <Questions key={shown.requestId} request={shown} onAnswer={onAnswer} />}
       </AlertDialogContent>
     </AlertDialog>

@@ -40,7 +40,7 @@ describe("General ▸ Appearance ▸ Theme", () => {
 
   it("points to Appearance: the button opens that section", () => {
     show(<GeneralSection />);
-    fireEvent.click(screen.getByRole("button", { name: "More themes in Appearance" }));
+    fireEvent.click(screen.getByRole("button", { name: "More Themes in Appearance" }));
     expect(useSettingsDialog.getState()).toMatchObject({ open: true, section: "appearance" });
   });
 

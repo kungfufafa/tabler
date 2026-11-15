@@ -21,7 +21,7 @@ export function UserRow({
         id={`${uid}-user`}
         {...register("user")}
         placeholder={placeholder}
-        className="font-mono"
+        className="font-mono text-sm"
         autoComplete="off"
         aria-invalid={errors.user ? true : undefined}
       />

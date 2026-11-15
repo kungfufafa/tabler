@@ -27,6 +27,7 @@ import {
 import { toast } from "sonner";
 import { ColorDot } from "@/components/ColorDot";
 import { Kbd } from "@/components/Kbd";
+import { QuietStatus } from "@/components/QuietLoading";
 import { TableIcon } from "@/components/TypeIcon";
 import {
   ContextMenu,
@@ -65,7 +66,9 @@ import { usePaletteItems } from "./usePaletteItems";
 type PaletteRun = () => unknown;
 
 function reportFailure(e: unknown) {
-  toast.error("Command failed", { description: e instanceof Error ? e.message : String(e) });
+  toast.error("Could not run the command", {
+    description: e instanceof Error ? e.message : String(e),
+  });
 }
 
 /** Runs a chosen command now. Failures surface as a toast; a newly activated tab gets focus. */
@@ -110,22 +113,22 @@ const MODE_TEXT: Record<
   { title: string; description: string; placeholder: string; verb: string; empty: string }
 > = {
   all: {
-    title: "Open anything",
+    title: "Open Anything",
     description:
       "Search tables, views, schemas, databases, open tabs, connections and commands. Type > to list every command.",
-    placeholder: "Search tables, views, databases, connections and commands…",
+    placeholder: "Search tables, views, databases, connections and commands",
     verb: "Open",
-    empty: "Nothing to show",
+    empty: "No items",
   },
   databases: {
-    title: "Open database",
+    title: "Open Database",
     description: "Open a database in its own workspace, or return to one already open.",
     placeholder: "Search for database…",
     verb: "Open",
     empty: "No databases on this server",
   },
   connections: {
-    title: "Switch connection",
+    title: "Switch Connection",
     description: "Switch to an open connection or connect a saved one.",
     placeholder: "Switch connection…",
     verb: "Switch",
@@ -137,7 +140,7 @@ const MODE_TEXT: Record<
       "Search every table, view and function of the database, in all of its schemas, loaded or not.",
     placeholder: "Search in database…",
     verb: "Open",
-    empty: "Nothing in this database",
+    empty: "No tables, views or functions",
   },
 };
 
@@ -230,7 +233,7 @@ export function CommandPalette() {
           else if (el) focusTabSurface();
           flush();
         }}
-        className="bg-popover ring-foreground/10 top-[14vh] max-w-[calc(100%-2rem)] translate-y-0 gap-0 overflow-hidden rounded-xl p-0 shadow-2xl sm:max-w-[620px] dark:ring-white/10"
+        className="bg-popover ring-foreground/10 top-[14vh] max-w-[calc(100%-2rem)] translate-y-0 gap-0 overflow-hidden rounded-xl p-0 shadow-2xl sm:max-w-[620px]"
       >
         <DialogTitle className="sr-only">{MODE_TEXT[mode].title}</DialogTitle>
         <DialogDescription className="sr-only">{MODE_TEXT[mode].description}</DialogDescription>
@@ -295,7 +298,7 @@ function PaletteBody({
   const choose = (item: PaletteItem, alt: boolean) => {
     // Keys pressed during the close animation still reach the (fading) input; ignore them.
     if (!usePaletteStore.getState().open) return;
-    // "Load all schemas": the list grows in place.
+    // "Load All Schemas": the list grows in place.
     if (item.keepOpen) {
       execute(item.run);
       return;
@@ -342,7 +345,7 @@ function PaletteBody({
       className="flex min-h-0 flex-col"
     >
       <div className="border-border flex h-11 items-center gap-2.5 border-b px-3.5">
-        <Search className="text-muted-foreground size-4 shrink-0" />
+        <Search aria-hidden className="text-muted-foreground size-4 shrink-0" />
         <div className="relative h-full min-w-0 flex-1">
           {ghost && (
             <div
@@ -351,7 +354,7 @@ function PaletteBody({
               className="pointer-events-none absolute inset-0 flex items-center overflow-hidden text-base whitespace-pre"
             >
               <span className="invisible">{query}</span>
-              <span className="text-muted-foreground/60">{ghost}</span>
+              <span className="text-muted-foreground">{ghost}</span>
             </div>
           )}
           <CommandPrimitive.Input
@@ -359,15 +362,15 @@ function PaletteBody({
             value={query}
             onValueChange={setQuery}
             placeholder={text.placeholder}
-            className="placeholder:text-muted-foreground/80 relative h-full w-full bg-transparent text-base outline-none"
+            className="placeholder:text-muted-foreground relative h-full w-full bg-transparent text-base outline-none"
           />
         </div>
         {data.connection && (
-          <span className="text-muted-foreground flex max-w-[40%] shrink-0 items-center gap-1.5 text-[11px]">
+          <span className="text-muted-foreground flex max-w-[40%] shrink-0 items-center gap-1.5 text-xs">
             <ColorDot color={data.connection.color} size={6} />
             <span className="truncate">
               {data.connection.name}
-              {objects && data.schema && <span className="opacity-70"> · {data.schema}</span>}
+              {objects && data.schema && <span> · {data.schema}</span>}
             </span>
           </span>
         )}
@@ -377,12 +380,12 @@ function PaletteBody({
         ref={listRef}
         className={cn(
           "max-h-[min(440px,58vh)] scroll-py-1 overflow-x-hidden overflow-y-auto overscroll-contain px-1.5 pb-1.5",
-          "**:[[cmdk-group-heading]]:text-muted-foreground **:[[cmdk-group-heading]]:flex **:[[cmdk-group-heading]]:h-7 **:[[cmdk-group-heading]]:items-end **:[[cmdk-group-heading]]:px-2 **:[[cmdk-group-heading]]:pb-1 **:[[cmdk-group-heading]]:text-[11px] **:[[cmdk-group-heading]]:font-medium",
+          "**:[[cmdk-group-heading]]:text-muted-foreground **:[[cmdk-group-heading]]:flex **:[[cmdk-group-heading]]:h-7 **:[[cmdk-group-heading]]:items-end **:[[cmdk-group-heading]]:px-2 **:[[cmdk-group-heading]]:pb-1 **:[[cmdk-group-heading]]:text-xs **:[[cmdk-group-heading]]:font-medium",
         )}
       >
         {data.sections.length === 0 && (
-          <div className="text-muted-foreground py-10 text-center text-xs">
-            {query.trim() ? `No results for “${query.trim()}”` : text.empty}
+          <div className="text-muted-foreground px-3 py-2 text-xs">
+            {query.trim() ? "No matches" : text.empty}
           </div>
         )}
         {data.sections.map((section) => (
@@ -420,11 +423,7 @@ function caretAtEnd(e: ReactKeyboardEvent): boolean {
 
 /** Stands in for items that are still loading (tables, databases…). */
 function LoadingRow({ what }: { what: string }) {
-  return (
-    <div role="status" className="sr-only">
-      Loading {what}…
-    </div>
-  );
+  return <QuietStatus>{`Loading ${what}…`}</QuietStatus>;
 }
 
 /** A headed group (⌘K, ⇧⌘K), or Open Anything's flat list without a heading. */
@@ -475,8 +474,8 @@ function Section({
       ))}
       {section.loading !== undefined && <LoadingRow what={section.loading} />}
       {section.more > 0 && (
-        <div className="text-muted-foreground px-2 py-1 text-[11px]">
-          …{section.more.toLocaleString()} more — keep typing to narrow down
+        <div className="text-muted-foreground px-2 py-1 text-xs tabular-nums">
+          {section.more.toLocaleString()} more, keep typing to narrow down
         </div>
       )}
     </>
@@ -578,14 +577,12 @@ function PaletteItemRow({
       )}
       <span className="ml-auto flex shrink-0 items-center gap-2 pl-3">
         {item.meta && (
-          <span className="text-muted-foreground font-mono text-[11px] tabular-nums">
-            {item.meta}
-          </span>
+          <span className="text-muted-foreground font-mono text-xs tabular-nums">{item.meta}</span>
         )}
-        {item.current && <Check className="text-brand size-3.5" aria-label="Current" />}
+        {item.current && <Check className="text-brand size-3.5 shrink-0" aria-label="Current" />}
         {item.combo && <Kbd combo={item.combo} />}
         {showKind && item.kind && (
-          <span className="text-muted-foreground text-[11px]">{item.kind}</span>
+          <span className="text-muted-foreground text-xs">{item.kind}</span>
         )}
       </span>
     </CommandPrimitive.Item>
@@ -598,17 +595,23 @@ function ItemIcon({ icon }: { icon: PaletteIcon }) {
       return <TableIcon kind={icon.kind} />;
     case "tab": {
       const Icon = TAB_ICONS[icon.kind];
-      return <Icon className="text-muted-foreground size-3.5 shrink-0" />;
+      return <Icon aria-hidden className="text-muted-foreground size-3.5 shrink-0" />;
     }
     case "connection":
-      return <Database className="size-3.5 shrink-0" style={{ color: accentColor(icon.color) }} />;
+      return (
+        <Database
+          aria-hidden
+          className="size-3.5 shrink-0"
+          style={{ color: accentColor(icon.color) }}
+        />
+      );
     case "database":
-      return <Database className="text-muted-foreground size-3.5 shrink-0" />;
+      return <Database aria-hidden className="text-muted-foreground size-3.5 shrink-0" />;
     case "schema":
-      return <Layers className="text-muted-foreground size-3.5 shrink-0" />;
+      return <Layers aria-hidden className="text-muted-foreground size-3.5 shrink-0" />;
     case "action": {
       const Icon = icon.icon;
-      return <Icon className="text-muted-foreground size-3.5 shrink-0" />;
+      return <Icon aria-hidden className="text-muted-foreground size-3.5 shrink-0" />;
     }
   }
 }
@@ -655,7 +658,7 @@ function Footer({
   onRun: (fn: PaletteRun) => void;
 }) {
   return (
-    <div className="border-border bg-surface-2 text-muted-foreground flex h-7 shrink-0 items-center gap-3 border-t px-3 text-[11px]">
+    <div className="border-border bg-surface-2 text-muted-foreground flex h-7 shrink-0 items-center gap-3 border-t px-3 text-xs">
       {databaseActions && <DatabaseButtons selected={selected} onRun={onRun} />}
       <span className="flex items-center gap-1">
         <Kbd combo="Up" />
@@ -673,8 +676,8 @@ function Footer({
         </span>
       )}
       {hint && (
-        <span className="ml-auto" data-testid="palette-command-hint">
-          Type <kbd className="font-mono">{COMMAND_PREFIX}</kbd> for all commands
+        <span className="ml-auto flex items-center gap-1" data-testid="palette-command-hint">
+          Type <Kbd combo={COMMAND_PREFIX} /> for all commands
         </span>
       )}
       <span className={cn("flex items-center gap-1", !hint && "ml-auto")}>
@@ -708,7 +711,7 @@ function DatabaseButtons({
       ? "The current database cannot be dropped"
       : `Drop ${database.label}…`;
   const button =
-    "hover:bg-muted hover:text-foreground flex size-5 items-center justify-center rounded disabled:pointer-events-none disabled:opacity-40";
+    "hover:bg-accent hover:text-foreground focus-visible:ring-ring/50 flex size-5 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-50";
   return (
     <span className="-ml-1.5 flex items-center gap-0.5">
       <button
@@ -718,7 +721,7 @@ function DatabaseButtons({
         className={button}
         onClick={() => onRun(() => openCreateDatabase(connectionId))}
       >
-        <Plus className="size-3.5" />
+        <Plus aria-hidden className="size-3.5" />
       </button>
       <button
         type="button"
@@ -728,7 +731,7 @@ function DatabaseButtons({
         disabled={!database || database.current === true}
         onClick={() => database && onRun(() => openDropDatabase(connectionId, database.label))}
       >
-        <Minus className="size-3.5" />
+        <Minus aria-hidden className="size-3.5" />
       </button>
     </span>
   );

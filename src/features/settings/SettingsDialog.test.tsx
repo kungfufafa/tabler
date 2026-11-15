@@ -110,8 +110,8 @@ describe("SettingsDialog", () => {
       within(dialog).getByRole("searchbox", { name: "Search shortcuts" }),
       "duplicate",
     );
-    expect(within(dialog).getByText("Duplicate row")).toBeInTheDocument();
-    expect(within(dialog).queryByText("New query tab")).not.toBeInTheDocument();
+    expect(within(dialog).getByText("Duplicate Row")).toBeInTheDocument();
+    expect(within(dialog).queryByText("New Query Tab")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("Global")).not.toBeInTheDocument();
 
     // Esc clears a non-empty search before it closes the dialog.
@@ -142,10 +142,10 @@ describe("SettingsDialog", () => {
       expect.stringContaining("MCP Server"),
     ]);
     // Not inside General / Connections / Security any more.
-    expect(within(dialog).queryByText("Connections & settings")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Connections and settings")).not.toBeInTheDocument();
 
     fireEvent.keyDown(dialog, { code: "Digit4", key: "4", ctrlKey: true });
-    expect(await within(dialog).findByText("Connections & settings")).toBeInTheDocument();
+    expect(await within(dialog).findByText("Connections and settings")).toBeInTheDocument();
     expect(within(dialog).getByRole("heading", { name: "Locations", level: 2 })).toBeVisible();
 
     fireEvent.keyDown(dialog, { code: "Digit7", key: "7", ctrlKey: true });
@@ -265,7 +265,7 @@ describe("SettingsDialog", () => {
 
     const expected: [number, () => HTMLElement][] = [
       // General opens with the link to Appearance (the theme choice lives there now).
-      [1, () => within(dialog).getByRole("button", { name: "More themes in Appearance" })],
+      [1, () => within(dialog).getByRole("button", { name: "More Themes in Appearance" })],
       [2, () => within(dialog).getByRole("combobox", { name: "Font size" })],
       [3, () => within(dialog).getByRole("spinbutton", { name: "Connect timeout" })],
       [5, () => within(dialog).getByRole("searchbox", { name: "Search shortcuts" })],

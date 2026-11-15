@@ -1,3 +1,4 @@
+import { EmptyState } from "@/components/EmptyState";
 import { JsonDocumentEditor } from "@/features/documents/JsonDocumentEditor";
 import { PLAIN_JSON, type DocumentFields } from "@/features/documents/formats";
 import type { InspectorSlotProps } from "../types";
@@ -18,9 +19,9 @@ const META_FIELDS = ["_id", "_index", "_routing", "_seq_no", "_primary_term", "_
 export function ElasticInspector({ row, onStage }: InspectorSlotProps) {
   if (!row)
     return (
-      <p className="text-muted-foreground p-3 text-xs" data-testid="es-no-document">
-        Select a document to see it whole.
-      </p>
+      <div className="h-full" data-testid="es-no-document">
+        <EmptyState title="No document selected" description="Select a document to see it whole." />
+      </div>
     );
   return (
     <JsonDocumentEditor

@@ -252,7 +252,7 @@ describe("planning and settling a result commit (part of the workspace commit)",
   it("refuses edits whose source table is no longer known", () => {
     setResultEditability(RESULT, { kind: "readOnly", reason: "gone" });
     const plan = planResultCommit(TAB);
-    expect(plan).toMatchObject({ ok: false, problem: "These changes can't be committed" });
+    expect(plan).toMatchObject({ ok: false, problem: "These changes cannot be committed" });
   });
 
   it("refuses edits staged against another target than the result has now", () => {

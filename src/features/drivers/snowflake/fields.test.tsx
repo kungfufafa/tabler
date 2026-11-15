@@ -125,7 +125,7 @@ describe("Snowflake's fields", () => {
         }}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "List warehouses" }));
+    fireEvent.click(screen.getByRole("button", { name: "List Warehouses" }));
     await waitFor(() => expect(screen.getByText("2 warehouses: pick one")).toBeInTheDocument());
     const [input, method] = util.mock.calls[0]!;
     expect(method).toBe("listWarehouses");
@@ -137,7 +137,7 @@ describe("Snowflake's fields", () => {
 
   it("say what a list needs first, and show the key's fingerprint", async () => {
     render(<Harness values={{ driverParams: params({ account: "a" }) }} />);
-    fireEvent.click(screen.getByRole("button", { name: "List roles" }));
+    fireEvent.click(screen.getByRole("button", { name: "List Roles" }));
     expect(await screen.findByText("Enter the user first")).toBeInTheDocument();
     const util = vi
       .spyOn(ipc, "driverUtil")

@@ -38,11 +38,11 @@ export function RunPanel({ run }: { run: BackupRun }) {
     <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 py-3">
       <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
         {running ? null : run.status === "failed" ? (
-          <CircleAlert className="text-error size-4 shrink-0" />
+          <CircleAlert aria-hidden className="text-error size-4 shrink-0" />
         ) : run.errors > 0 ? (
-          <TriangleAlert className="text-warning size-4 shrink-0" />
+          <TriangleAlert aria-hidden className="text-warning size-4 shrink-0" />
         ) : (
-          <CircleCheck className="text-success size-4 shrink-0" />
+          <CircleCheck aria-hidden className="text-success size-4 shrink-0" />
         )}
         <span className="truncate" title={title}>
           {title}
@@ -52,7 +52,7 @@ export function RunPanel({ run }: { run: BackupRun }) {
         </span>
       </div>
       {run.path && (
-        <div className="text-muted-foreground truncate font-mono text-[11px]" title={run.path}>
+        <div className="text-muted-foreground truncate font-mono text-xs" title={run.path}>
           {run.mode === "backup" ? "→ " : "← "}
           {run.path}
         </div>
@@ -66,7 +66,7 @@ export function RunPanel({ run }: { run: BackupRun }) {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
         }}
-        className="border-border bg-surface-2 min-h-0 flex-1 overflow-auto rounded-md border px-2 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap"
+        className="border-border bg-surface-2 min-h-0 flex-1 overflow-auto rounded-md border px-2 py-1.5 font-mono text-xs leading-4 whitespace-pre-wrap"
       >
         {run.command && <div className="text-muted-foreground break-all">$ {run.command}</div>}
         {run.log.map((line, i) => (
@@ -74,7 +74,7 @@ export function RunPanel({ run }: { run: BackupRun }) {
             key={i}
             className={cn(
               "break-all",
-              line.stream === "info" && "text-muted-foreground italic",
+              line.stream === "info" && "text-muted-foreground",
               line.stream !== "info" && isErrorLine(line.text) && "text-error",
             )}
           >
@@ -87,18 +87,18 @@ export function RunPanel({ run }: { run: BackupRun }) {
       </div>
       {run.status === "failed" && run.error && (
         <div role="alert" className="text-error flex items-start gap-1.5 text-xs">
-          <CircleAlert className="mt-px size-3.5 shrink-0" />
-          <span className="flex min-w-0 flex-col gap-0.5">
+          <CircleAlert aria-hidden className="mt-px size-3.5 shrink-0" />
+          <span className="selectable flex min-w-0 flex-col gap-0.5">
             <span className="line-clamp-3 break-words" title={run.error}>
               {run.error}
             </span>
-            {run.errorHint && <span className="text-muted-foreground">{run.errorHint}</span>}
+            {run.errorHint && <span className="text-error/80">{run.errorHint}</span>}
           </span>
         </div>
       )}
       {run.status === "done" && run.errors > 0 && (
         <div role="alert" className="text-warning flex items-start gap-1.5 text-xs">
-          <TriangleAlert className="mt-px size-3.5 shrink-0" />
+          <TriangleAlert aria-hidden className="mt-px size-3.5 shrink-0" />
           <span>
             The restore finished, but {run.errors} statement{run.errors === 1 ? "" : "s"} failed
             (see the log). Add <span className="font-mono">-v ON_ERROR_STOP=1</span> to stop at the

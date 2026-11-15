@@ -1,11 +1,13 @@
 import { useQueries, type UseQueryResult } from "@tanstack/react-query";
-import { ChevronRight, CircleAlert, Database, Eye, FileDown, Search, Table2 } from "lucide-react";
+import { ChevronRight, Database, Eye, FileDown, Search, Table2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { Kbd } from "@/components/Kbd";
+import { FormError } from "@/components/FormError";
+import { KbdHint } from "@/components/KbdHint";
+import { QuietStatus } from "@/components/QuietLoading";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useCurrentSchema, useDatabases } from "@/features/sidebar/useSchemaTree";
 import { Segmented } from "@/features/settings/controls";
@@ -407,7 +409,7 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
       <li key={t.key}>
         <label
           className={cn(
-            "hover:bg-accent/60 flex h-7 cursor-default items-center gap-2 pr-2 text-xs",
+            "hover:bg-row-hover flex h-7 cursor-default items-center gap-2 pr-2 text-xs",
             leveled ? "pl-8" : "pl-2",
           )}
         >
@@ -415,7 +417,7 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
             checked={checked.has(t.key)}
             onCheckedChange={(v) => setKeys([t.key], v === true)}
           />
-          <Icon className="text-muted-foreground size-3.5 shrink-0" />
+          <Icon aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
           <span className="truncate font-mono">{label}</span>
           {t.summary.rowEstimate !== null && (
             <span className="text-muted-foreground ml-auto shrink-0 tabular-nums">
@@ -439,20 +441,18 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
         aria-label={leveled ? `Tables of ${db}` : "Tables"}
       >
         {q?.isPending && (
-          <li className="text-muted-foreground flex items-center gap-2 py-1.5 pl-8 text-xs">
-            <span className="sr-only">Loading tables…</span>
+          <li>
+            <QuietStatus>Loading tables</QuietStatus>
           </li>
         )}
         {q?.isError && (
-          <li className={cn("text-error py-1.5 pr-2 text-xs", leveled ? "pl-8" : "pl-2")}>
+          <li className={cn("text-error py-2 pr-3 text-xs", leveled ? "pl-8" : "pl-3")}>
             {toIpcError(q.error).message}
           </li>
         )}
         {q?.isSuccess && shown.length === 0 && (
-          <li
-            className={cn("text-muted-foreground py-1.5 pr-2 text-xs", leveled ? "pl-8" : "pl-2")}
-          >
-            {all.length === 0 ? "No tables." : "No table matches."}
+          <li className={cn("text-muted-foreground py-2 pr-3 text-xs", leveled ? "pl-8" : "pl-3")}>
+            {all.length === 0 ? "No tables" : "No matches"}
           </li>
         )}
         {shown.map((t) => tableRow(t, multiSchema))}
@@ -479,7 +479,7 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
     >
       <DialogHeader className="border-border shrink-0 gap-1 border-b px-4 py-3 pr-12">
         <DialogTitle className="flex items-center gap-2 text-sm">
-          <FileDown className="text-brand size-4" />
+          <FileDown aria-hidden className="text-brand size-4 shrink-0" />
           Export
         </DialogTitle>
         <DialogDescription className="flex min-w-0 items-center gap-1.5 text-xs">
@@ -497,10 +497,10 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
       <div className="min-h-0 flex-1 overflow-y-auto sm:overflow-hidden">
         <fieldset
           disabled={running}
-          className="flex min-w-0 flex-col gap-3 px-4 py-4 sm:grid sm:h-full sm:grid-cols-[minmax(0,18rem)_minmax(0,1fr)] sm:gap-4"
+          className="flex min-w-0 flex-col gap-3 p-4 sm:grid sm:h-full sm:grid-cols-[minmax(0,18rem)_minmax(0,1fr)] sm:gap-4"
         >
           <div className="border-border flex flex-col overflow-hidden rounded-md border sm:min-h-0">
-            <div className="border-border bg-surface-2/60 flex items-center gap-2 border-b px-2 py-1">
+            <div className="border-border bg-surface-2 flex items-center gap-2 border-b px-2 py-1">
               <Checkbox
                 aria-label="Select all tables"
                 checked={allState}
@@ -512,14 +512,17 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
                 }
               />
               <div className="relative min-w-0 flex-1">
-                <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-1.5 size-3.5 -translate-y-1/2" />
+                <Search
+                  aria-hidden
+                  className="text-muted-foreground pointer-events-none absolute top-1/2 left-1.5 size-3.5 -translate-y-1/2"
+                />
                 <Input
                   aria-label="Search tables"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder={leveled ? "Search tables and databases" : "Search tables"}
                   spellCheck={false}
-                  className="h-6 border-0 bg-transparent pl-6 text-xs shadow-none focus-visible:ring-0"
+                  className="focus-visible:ring-ring h-6 rounded-md border-0 bg-transparent pl-6 text-xs shadow-none focus-visible:ring-1 focus-visible:ring-inset md:text-xs"
                 />
               </div>
             </div>
@@ -527,7 +530,7 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
               {leveled ? (
                 <ul aria-label="Databases">
                   {dbList.isError && (
-                    <li className="text-error px-2 py-1.5 text-xs">
+                    <li className="text-error px-3 py-2 text-xs">
                       {toIpcError(dbList.error).message}
                     </li>
                   )}
@@ -537,16 +540,20 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
                     const n = tables?.filter((t) => checked.has(t.key)).length ?? 0;
                     return (
                       <li key={db ?? ""}>
-                        <div className="hover:bg-accent/60 flex h-7 items-center gap-1 pr-2 text-xs">
+                        <div className="hover:bg-row-hover flex h-7 items-center gap-1 pr-2 text-xs">
                           <button
                             type="button"
                             aria-label={`${isOpen ? "Close" : "Open"} ${db}`}
                             aria-expanded={isOpen}
                             onClick={() => toggleOpen(db)}
-                            className="text-muted-foreground hover:text-foreground flex size-6 shrink-0 items-center justify-center"
+                            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex size-6 shrink-0 items-center justify-center rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-inset"
                           >
                             <ChevronRight
-                              className={cn("size-3.5 transition-transform", isOpen && "rotate-90")}
+                              aria-hidden
+                              className={cn(
+                                "size-3.5 transition-transform duration-150 motion-reduce:transition-none",
+                                isOpen && "rotate-90",
+                              )}
                             />
                           </button>
                           <Checkbox
@@ -558,7 +565,10 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
                             )}
                             onCheckedChange={(v) => toggleDatabase(db, v === true)}
                           />
-                          <Database className="text-muted-foreground ml-1 size-3.5 shrink-0" />
+                          <Database
+                            aria-hidden
+                            className="text-muted-foreground ml-1 size-3.5 shrink-0"
+                          />
                           <span
                             className="min-w-0 cursor-default truncate font-mono"
                             onDoubleClick={() => toggleOpen(db)}
@@ -566,12 +576,12 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
                             {db}
                           </span>
                           {db === currentDb && (
-                            <span className="text-muted-foreground shrink-0 text-[10px]">
-                              current
+                            <span className="border-border text-muted-foreground inline-flex h-4 shrink-0 items-center rounded-sm border px-1 text-[10px] leading-none font-medium">
+                              Current
                             </span>
                           )}
                           {tables && (
-                            <span className="text-muted-foreground ml-auto shrink-0 tabular-nums">
+                            <span className="text-muted-foreground ml-auto shrink-0 font-normal tabular-nums">
                               {n > 0 ? `${formatCount(n)} / ` : ""}
                               {formatCount(tables.length)}
                             </span>
@@ -618,14 +628,14 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
                       onBlur={() =>
                         setBatchText(String(clampBatchSize(Number.parseInt(batchText, 10))))
                       }
-                      className="h-7 w-24 font-mono text-xs tabular-nums"
+                      className="h-7 w-24 rounded-md font-mono text-xs tabular-nums md:text-xs"
                     />
                   </Row>
                 )
               }
             />
             {nothing && (
-              <div className="text-warning text-[11px] leading-4">
+              <div className="text-warning text-xs leading-4">
                 Nothing to export: include the table structure or its content.
               </div>
             )}
@@ -633,12 +643,12 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
         </fieldset>
       </div>
 
-      <div className="border-border bg-surface-2 flex min-h-12 shrink-0 items-center gap-2 rounded-b-xl border-t px-4 py-2">
+      <DialogFooter className="m-0 shrink-0 flex-row items-center">
         <div className="min-w-0 flex-1">
           {run ? (
             <div className="flex min-w-0 flex-col gap-0.5">
               {run.table && (
-                <span className="text-muted-foreground truncate text-[11px]">
+                <span className="text-muted-foreground truncate text-xs">
                   Table {run.table.index + 1} of {run.table.count}:{" "}
                   <span className="text-foreground font-mono">
                     {run.table.database ? `${run.table.database} · ` : ""}
@@ -649,18 +659,15 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
               <Progress run={run} />
             </div>
           ) : error ? (
-            <div role="alert" className="text-error flex min-w-0 items-start gap-1.5 text-xs">
-              <CircleAlert className="mt-px size-3.5 shrink-0" />
-              <span className="line-clamp-2" title={error}>
-                {error}
-              </span>
-            </div>
+            <FormError clamp title={error}>
+              {error}
+            </FormError>
           ) : singleTable ? (
             <Button
               type="button"
               variant="link"
               size="xs"
-              className="h-auto px-0 text-[11px]"
+              className="h-auto px-0"
               title="Export this table with a filter, a column choice or the current page"
               onClick={() =>
                 openExport({ connectionId, source: { kind: "table", table: singleTable } })
@@ -669,7 +676,7 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
               Export Single Table…
             </Button>
           ) : (
-            <span className="text-muted-foreground block truncate text-[11px]">
+            <span className="text-muted-foreground block truncate text-xs">
               {chosen.length === 0
                 ? "Choose the tables to export"
                 : severalDbs
@@ -688,23 +695,20 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
             onClick={() => void cancelExport()}
             disabled={run.cancelling}
           >
-            Cancel export
+            Cancel Export
           </Button>
         ) : (
           <>
-            <Button type="button" variant="ghost" size="sm" onClick={closeExport}>
+            <Button type="button" variant="outline" size="sm" onClick={closeExport}>
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={!canSubmit}>
               Export…
-              <Kbd
-                combo="Mod+Enter"
-                className="border-primary-foreground/30 text-primary-foreground/80 bg-transparent"
-              />
+              <KbdHint combo="Mod+Enter" />
             </Button>
           </>
         )}
-      </div>
+      </DialogFooter>
     </form>
   );
 }

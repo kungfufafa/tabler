@@ -15,7 +15,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { MouseEvent, ReactNode } from "react";
-import { Kbd } from "@/components/Kbd";
+import { KbdHint } from "@/components/KbdHint";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -96,7 +96,7 @@ function Tip({
       <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent className="flex items-center gap-1.5">
         {label}
-        {combo && <Kbd combo={combo} className="border-border/40 bg-transparent text-inherit" />}
+        {combo && <KbdHint combo={combo} />}
       </TooltipContent>
     </Tooltip>
   );
@@ -126,7 +126,7 @@ function IconButton({
         onClick={onClick}
         disabled={disabled}
         className={cn(
-          "text-muted-foreground hover:text-foreground rounded-md transition-colors",
+          "text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent aria-expanded:bg-accent",
           className,
         )}
       >
@@ -152,7 +152,7 @@ function ButtonKbd({ action, className }: { action: ActionId; className?: string
   if (!combo) return null;
   return (
     <span aria-hidden className={className}>
-      <Kbd combo={combo} className="h-4 border-current/30 bg-transparent text-inherit" />
+      <KbdHint combo={combo} />
     </span>
   );
 }
@@ -161,9 +161,10 @@ function ButtonKbd({ action, className }: { action: ActionId; className?: string
 const SHIFT_CLICK = isMac ? "⇧-click" : "Shift+Click";
 
 /** Styles shared by the bar's split buttons (a labelled button + its ⌄ menu). */
-const splitMain = "h-7 gap-1 rounded-l-md rounded-r-none px-1 text-[12px] transition-colors";
-const splitMenu = "h-7 w-5 rounded-l-none rounded-r-md px-0 transition-colors";
-const runTone = "bg-foreground text-background hover:bg-foreground/90";
+const splitMain = "h-7 gap-1 rounded-l-md rounded-r-none px-1 text-[12px]";
+const splitMenu = "h-7 w-5 rounded-l-none rounded-r-md px-0";
+/** Ghost buttons on the bar's surface-2: the primitive's muted hover does not show there. */
+const ghostTone = "hover:bg-accent dark:hover:bg-accent aria-expanded:bg-accent";
 
 /**
  * "Line 4, Column 13, Location 40" (+ the selection size) of the pane used last when split. It
@@ -221,7 +222,7 @@ function RunSummary({ tabId }: { tabId: string }) {
     if (plan.status === "error")
       return <span className={cn(box, "text-error")}>{title} failed</span>;
     if (plan.status === "cancelled")
-      return <span className={cn(box, "text-warning")}>{title} cancelled</span>;
+      return <span className={cn(box, "text-warning")}>{title} canceled</span>;
     return (
       <span className={cn(box, "text-muted-foreground tabular-nums")}>
         {title}
@@ -246,7 +247,7 @@ function RunSummary({ tabId }: { tabId: string }) {
           className="text-warning shrink-0"
           title={`Only the first ${formatCount(rows)} rows were read. Raise the row limit to read more.`}
         >
-          limit reached
+          Limit reached
         </span>
       )}
     </span>
@@ -273,8 +274,8 @@ function RowLimitSelect({ tabId }: { tabId: string }) {
           size="sm"
           aria-label="Row limit"
           className={cn(
-            "text-muted-foreground hover:text-foreground hover:bg-muted dark:hover:bg-muted/50 gap-1 rounded-md border-transparent bg-transparent px-2 text-[12px] tabular-nums shadow-none data-[size=sm]:h-7 dark:bg-transparent [&_svg]:size-3.5",
-            "data-[state=open]:bg-muted data-[state=open]:text-foreground",
+            "text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent gap-1 border-transparent bg-transparent px-2 text-[12px] tabular-nums shadow-none dark:bg-transparent [&_svg]:size-3.5",
+            "data-[state=open]:bg-accent data-[state=open]:text-foreground",
           )}
         >
           <SelectValue>{limit === null ? "No limit" : `Limit ${limitLabel(limit)}`}</SelectValue>
@@ -320,7 +321,7 @@ function RunButton({
           variant="destructive"
           aria-label={cancelling ? "Stopping…" : "Cancel"}
           // As wide as Run, so the buttons beside it stay put when a run starts.
-          className="h-7 min-w-[7.5rem] gap-2 rounded-md px-2 text-[12px] transition-colors @max-[760px]:min-w-0"
+          className="h-7 min-w-[7.5rem] gap-2 rounded-md px-2 text-[12px] @max-[760px]:min-w-0"
           onClick={handlers.cancel}
           disabled={cancelling}
         >
@@ -338,7 +339,7 @@ function RunButton({
         <Button
           size="xs"
           aria-label={label.caption}
-          className={cn(splitMain, runTone, "gap-2 px-2")}
+          className={cn(splitMain, "gap-2 px-2")}
           onClick={mode === "all" ? handlers.run : handlers.runCurrent}
         >
           <Play className="size-3.5 fill-current" />
@@ -351,7 +352,7 @@ function RunButton({
           <Button
             size="xs"
             aria-label="Run options"
-            className={cn(splitMenu, runTone, "border-l-background/20")}
+            className={cn(splitMenu, "border-l-primary-foreground/20")}
           >
             <ChevronDown className="size-3.5" />
           </Button>
@@ -376,9 +377,7 @@ function RunButton({
             <MenuShortcut action="query.save-selection" />
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuLabel className="text-muted-foreground text-[11px] font-normal">
-            The Run button runs
-          </DropdownMenuLabel>
+          <DropdownMenuLabel>The Run button runs</DropdownMenuLabel>
           <DropdownMenuRadioGroup
             value={mode}
             onValueChange={(v) => setMode(v === "all" ? "all" : "current")}
@@ -400,16 +399,21 @@ function BeautifyButton({ handlers }: { handlers: EditorBarHandlers }) {
           variant="ghost"
           size="xs"
           aria-label="Beautify"
-          className={splitMain}
+          className={cn(splitMain, ghostTone)}
           onClick={handlers.format}
         >
-          <TextAlignStart className="size-4" />
+          <TextAlignStart className="size-3.5" />
           <span className="@max-[760px]:hidden">Beautify</span>
         </Button>
       </Tip>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="xs" aria-label="Format options" className={splitMenu}>
+          <Button
+            variant="ghost"
+            size="xs"
+            aria-label="Format options"
+            className={cn(splitMenu, ghostTone)}
+          >
             <ChevronDown className="size-3.5" />
           </Button>
         </DropdownMenuTrigger>
@@ -417,7 +421,7 @@ function BeautifyButton({ handlers }: { handlers: EditorBarHandlers }) {
           <DropdownMenuItem onSelect={handlers.format} className="items-start">
             <span className="flex min-w-0 flex-col">
               Beautify SQL
-              <span className="text-muted-foreground text-[11px] leading-4">
+              <span className="text-muted-foreground text-xs leading-4">
                 The selection, or the statement under the cursor
               </span>
             </span>
@@ -426,7 +430,7 @@ function BeautifyButton({ handlers }: { handlers: EditorBarHandlers }) {
           <DropdownMenuItem onSelect={handlers.minify} className="items-start">
             <span className="flex min-w-0 flex-col">
               Uglify SQL
-              <span className="text-muted-foreground text-[11px] leading-4">
+              <span className="text-muted-foreground text-xs leading-4">
                 On one line, without comments
               </span>
             </span>
@@ -468,11 +472,11 @@ function ExplainButton({
           variant="ghost"
           size="xs"
           aria-label="Explain"
-          className={splitMain}
+          className={cn(splitMain, ghostTone)}
           onClick={(e) => (e.shiftKey && analyze ? handlers.analyze() : handlers.explain())}
           disabled={busy}
         >
-          <ListTree className="size-4" />
+          <ListTree className="size-3.5" />
           <span className="@max-[760px]:hidden">Explain</span>
         </Button>
       </Tip>
@@ -482,7 +486,7 @@ function ExplainButton({
             variant="ghost"
             size="xs"
             aria-label="Explain options"
-            className={splitMenu}
+            className={cn(splitMenu, ghostTone)}
             disabled={busy}
           >
             <ChevronDown className="size-3.5" />
@@ -497,7 +501,7 @@ function ExplainButton({
             <DropdownMenuItem onSelect={handlers.analyze} className="items-start">
               <span className="flex min-w-0 flex-col">
                 Explain Analyze
-                <span className="text-muted-foreground text-[11px] leading-4">{analyzeNote}</span>
+                <span className="text-muted-foreground text-xs leading-4">{analyzeNote}</span>
               </span>
               <DropdownMenuShortcut>{SHIFT_CLICK}</DropdownMenuShortcut>
             </DropdownMenuItem>
@@ -545,7 +549,10 @@ function FileActions({ handlers }: { handlers: EditorBarHandlers }) {
               variant="ghost"
               size="icon-sm"
               aria-label="More query actions"
-              className="text-muted-foreground hover:text-foreground rounded-md transition-colors @min-[840px]:hidden"
+              className={cn(
+                "text-muted-foreground hover:text-foreground @min-[840px]:hidden",
+                ghostTone,
+              )}
             >
               <Ellipsis />
             </Button>

@@ -23,6 +23,8 @@ import {
   type UseFormReturn,
 } from "react-hook-form";
 import { toast } from "sonner";
+import { QuietStatus } from "@/components/QuietLoading";
+import { SectionLabel } from "@/components/SectionLabel";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -379,9 +381,9 @@ function Row({
       <div className="flex min-w-0 flex-col gap-1">
         {children}
         {error ? (
-          <p className="text-error text-[11px]">{error}</p>
+          <p className="text-error text-xs leading-4">{error}</p>
         ) : hint ? (
-          <p className="text-muted-foreground text-[11px]">{hint}</p>
+          <p className="text-muted-foreground text-xs leading-4">{hint}</p>
         ) : null}
       </div>
     </>
@@ -401,9 +403,7 @@ function Section({
   return (
     <section ref={sectionRef} aria-label={title} className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
-        <h3 className="text-muted-foreground text-[11px] font-semibold tracking-wide uppercase">
-          {title}
-        </h3>
+        <SectionLabel>{title}</SectionLabel>
         <div className="bg-border h-px flex-1" />
       </div>
       <div className={GRID}>{children}</div>
@@ -500,7 +500,7 @@ function SslFileButton({
         size="sm"
         title={path ? path : title}
         aria-label={path ? `${label} ${baseName(path)}` : label}
-        className={cn("max-w-40", path && "rounded-r-none font-mono text-[11px]")}
+        className={cn("max-w-40", path && "rounded-r-none font-mono text-xs")}
         onClick={async () => {
           const p = await pickFile(title);
           if (p) set(p);
@@ -575,9 +575,7 @@ function DriverPicker({
       )}
     >
       {kinds.length === 0 && (
-        <p className="text-muted-foreground col-span-full py-6 text-center text-sm">
-          No database matches.
-        </p>
+        <p className="text-muted-foreground col-span-full py-6 text-center text-xs">No matches</p>
       )}
       {kinds.map((d, i) => (
         <button
@@ -614,14 +612,14 @@ function DriverPicker({
           className={cn(
             "flex flex-col items-center rounded-xl border text-center transition-colors outline-none",
             wide ? "gap-2 px-1.5 pt-3.5 pb-2.5" : "gap-3 px-3 pt-6 pb-5",
-            "focus-visible:ring-ring/50 focus-visible:ring-3",
+            "focus-visible:ring-ring/50 focus-visible:ring-2",
             value === d
               ? "border-brand bg-brand-soft"
               : "border-border hover:border-border-strong hover:bg-row-hover",
           )}
         >
           <DriverBadge kind={d} color={KIND_TINT[d]} size="lg" />
-          <span className={cn("font-medium", wide ? "text-xs leading-tight" : "text-[13px]")}>
+          <span className={cn("font-medium", wide ? "text-xs leading-tight" : "text-sm")}>
             {KIND_LABEL[d]}
           </span>
         </button>
@@ -639,11 +637,11 @@ function BootstrapRow({ form, onOpen }: { form: Form; onOpen: () => void }) {
     <Row label="">
       <div className="flex h-8 min-w-0 items-center gap-2">
         <Button type="button" variant="outline" size="sm" onClick={onOpen}>
-          <ScrollText /> Bootstrap commands…
+          <ScrollText aria-hidden /> Bootstrap commands…
         </Button>
         {lines.length > 0 && (
           <span
-            className="text-muted-foreground min-w-0 truncate font-mono text-[11px]"
+            className="text-muted-foreground min-w-0 truncate font-mono text-xs"
             title={sql}
             data-testid="bootstrap-summary"
           >
@@ -653,7 +651,7 @@ function BootstrapRow({ form, onOpen }: { form: Form; onOpen: () => void }) {
         )}
         {script !== "" && (
           <span
-            className="text-muted-foreground shrink-0 text-[11px]"
+            className="text-muted-foreground shrink-0 text-xs"
             title={script}
             data-testid="bootstrap-script-summary"
           >
@@ -744,6 +742,7 @@ function GeneralFields({
           placeholder="My database"
           aria-invalid={errors.name ? true : undefined}
           autoFocus
+          className="text-sm"
         />
       </Row>
       <Row label="Tag" htmlFor={`${uid}-tag`}>
@@ -803,9 +802,11 @@ function GeneralFields({
                     title={c}
                     onClick={() => field.onChange(c)}
                     className={cn(
-                      "ring-offset-background size-4 rounded-full ring-offset-2 transition-transform outline-none",
+                      "ring-offset-background size-4 rounded-full ring-offset-2 transition-shadow outline-none",
                       "focus-visible:ring-ring focus-visible:ring-2",
-                      field.value === c ? "ring-foreground/60 scale-110 ring-2" : "hover:scale-110",
+                      field.value === c
+                        ? "ring-foreground/60 ring-2"
+                        : "hover:ring-foreground/25 hover:ring-2",
                     )}
                     style={{ background: accentColor(c) }}
                   />
@@ -945,7 +946,7 @@ function GeneralFields({
                   placeholder={
                     socketOverSsh ? MYSQL_REMOTE_SOCKET_PLACEHOLDER : MYSQL_SOCKET_PLACEHOLDER
                   }
-                  className="font-mono"
+                  className="font-mono text-sm"
                   aria-invalid={errors.socketPath ? true : undefined}
                 />
                 {socketToggle}
@@ -962,7 +963,7 @@ function GeneralFields({
                   id={`${uid}-host`}
                   {...register("host")}
                   placeholder="127.0.0.1"
-                  className="font-mono"
+                  className="font-mono text-sm"
                   aria-invalid={errors.host ? true : undefined}
                 />
                 <Label
@@ -979,7 +980,7 @@ function GeneralFields({
                       ? DEFAULT_PORT[driver]
                       : String(kindFacts.defaultPort)
                   }
-                  className="w-20 shrink-0 font-mono"
+                  className="w-20 shrink-0 font-mono text-sm"
                   inputMode="numeric"
                   aria-invalid={errors.port ? true : undefined}
                 />
@@ -992,7 +993,7 @@ function GeneralFields({
               id={`${uid}-user`}
               {...register("user")}
               placeholder={kindFacts.defaultUser ?? (driver === "postgres" ? "postgres" : "root")}
-              className="font-mono"
+              className="font-mono text-sm"
               autoComplete="off"
               aria-invalid={errors.user ? true : undefined}
             />
@@ -1022,7 +1023,7 @@ function GeneralFields({
                       ? "••••••••"
                       : ""
                 }
-                className="font-mono"
+                className="font-mono text-sm"
                 autoComplete="new-password"
                 disabled={clearPassword || !keychain}
               />
@@ -1053,7 +1054,7 @@ function GeneralFields({
               />
               {hasStoredPassword && keychain && (
                 <label
-                  className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-[11px] whitespace-nowrap"
+                  className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs whitespace-nowrap"
                   title="Remove the password stored in the Keychain"
                 >
                   <Controller
@@ -1090,7 +1091,7 @@ function GeneralFields({
                 rows={2}
                 spellCheck={false}
                 autoComplete="off"
-                className="min-h-0 resize-none font-mono text-xs"
+                className="min-h-0 resize-none font-mono text-xs md:text-xs"
                 aria-invalid={errors.passwordCommand ? true : undefined}
               />
             </Row>
@@ -1102,7 +1103,7 @@ function GeneralFields({
               kindFacts.defaultDatabase ? `Defaults to ${kindFacts.defaultDatabase}` : "Optional"
             }
           >
-            <Input id={`${uid}-database`} {...register("database")} className="font-mono" />
+            <Input id={`${uid}-database`} {...register("database")} className="font-mono text-sm" />
           </Row>
           <BootstrapRow form={form} onOpen={onBootstrap} />
           <Row
@@ -1240,9 +1241,9 @@ function LaneRows({
   if (ui === undefined)
     return (
       <Row label="">
-        <p className="text-muted-foreground flex h-8 items-center gap-2 text-xs" role="status">
-          <span className="sr-only">Loading the {KIND_LABEL[kind]} form…</span>
-        </p>
+        <div className="h-8">
+          <QuietStatus>{`Loading the ${KIND_LABEL[kind]} form`}</QuietStatus>
+        </div>
       </Row>
     );
   const facts = KIND_DESCRIPTORS[kind];
@@ -1334,7 +1335,7 @@ function SocketRow({ form }: { form: Form }) {
           id={`${uid}-socket`}
           {...form.register("socketPath")}
           disabled={!on}
-          className="font-mono"
+          className="font-mono text-sm"
         />
         <label className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs whitespace-nowrap">
           <Controller
@@ -1407,8 +1408,8 @@ function OtherOptionsRow({ form }: { form: Form }) {
         <DropdownMenu modal={false}>
           <DropdownMenuTrigger asChild>
             <Button type="button" variant="outline" size="sm">
-              Other options
-              <ChevronDown />
+              Other Options
+              <ChevronDown aria-hidden />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
@@ -1425,7 +1426,7 @@ function OtherOptionsRow({ form }: { form: Form }) {
         </DropdownMenu>
         {on.length > 0 && (
           <span
-            className="text-muted-foreground min-w-0 truncate text-[11px]"
+            className="text-muted-foreground min-w-0 truncate text-xs"
             data-testid="other-options-summary"
           >
             {on.map(([, label]) => label).join(", ")}
@@ -1463,7 +1464,7 @@ function SqliteFields({ form, hasStoredPassword }: { form: Form; hasStoredPasswo
             id={`${uid}-file`}
             {...register("sqlitePath")}
             placeholder="/var/lib/app/database.sqlite"
-            className="font-mono"
+            className="font-mono text-sm"
             aria-invalid={errors.sqlitePath ? true : undefined}
           />
         </Row>
@@ -1474,7 +1475,7 @@ function SqliteFields({ form, hasStoredPassword }: { form: Form; hasStoredPasswo
               id={`${uid}-file`}
               {...register("sqlitePath")}
               placeholder="/path/to/database.sqlite"
-              className="font-mono"
+              className="font-mono text-sm"
               aria-invalid={errors.sqlitePath ? true : undefined}
             />
             <Button
@@ -1501,7 +1502,7 @@ function SqliteFields({ form, hasStoredPassword }: { form: Form; hasStoredPasswo
       )}
       {remote && (
         <Row label="">
-          <label className="text-muted-foreground flex h-8 items-center gap-2 text-xs">
+          <label className="flex h-8 items-center gap-2 text-xs">
             <Controller
               control={control}
               name="sqliteSshUpload"
@@ -1546,7 +1547,7 @@ function SqliteFields({ form, hasStoredPassword }: { form: Form; hasStoredPasswo
                   ? "••••••••"
                   : ""
             }
-            className="font-mono"
+            className="font-mono text-sm"
             autoComplete="new-password"
             disabled={clearPassword || !keychain}
           />
@@ -1576,7 +1577,7 @@ function SqliteFields({ form, hasStoredPassword }: { form: Form; hasStoredPasswo
           />
           {hasStoredPassword && keychain && (
             <label
-              className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-[11px] whitespace-nowrap"
+              className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs whitespace-nowrap"
               title="Remove the key stored in the Keychain"
             >
               <Controller
@@ -1637,7 +1638,7 @@ function SqliteFields({ form, hasStoredPassword }: { form: Form; hasStoredPasswo
             id={`${uid}-rc`}
             {...register("sqliteResourceFile")}
             placeholder="~/.sqliterc"
-            className="font-mono"
+            className="font-mono text-sm"
           />
           <Button
             type="button"
@@ -1689,7 +1690,7 @@ function SshFields({ form }: { form: Form }) {
             id={`${uid}-host`}
             {...register("sshHost")}
             placeholder="bastion.example.com"
-            className="font-mono"
+            className="font-mono text-sm"
             aria-invalid={errors.sshHost ? true : undefined}
           />
           <Label
@@ -1702,7 +1703,7 @@ function SshFields({ form }: { form: Form }) {
             id={`${uid}-port`}
             {...register("sshPort")}
             placeholder="22"
-            className="w-20 shrink-0 font-mono"
+            className="w-20 shrink-0 font-mono text-sm"
             inputMode="numeric"
             aria-invalid={errors.sshPort ? true : undefined}
           />
@@ -1713,7 +1714,7 @@ function SshFields({ form }: { form: Form }) {
           id={`${uid}-user`}
           {...register("sshUser")}
           placeholder="Leave empty to use ~/.ssh/config"
-          className="font-mono"
+          className="font-mono text-sm"
           autoComplete="off"
           aria-invalid={errors.sshUser ? true : undefined}
         />
@@ -1744,7 +1745,7 @@ function SshFields({ form }: { form: Form }) {
                 id={`${uid}-key`}
                 {...register("sshKeyPath")}
                 placeholder="Leave empty to use ~/.ssh/config"
-                className="font-mono"
+                className="font-mono text-sm"
                 aria-invalid={errors.sshKeyPath ? true : undefined}
               />
               <Button
@@ -1768,7 +1769,7 @@ function SshFields({ form }: { form: Form }) {
               id={`${uid}-passphrase`}
               {...register("sshPassphrase")}
               type="password"
-              className="font-mono"
+              className="font-mono text-sm"
               autoComplete="new-password"
             />
           </Row>
@@ -1791,7 +1792,7 @@ function SshFields({ form }: { form: Form }) {
               id={`${uid}-password`}
               {...register("sshPassword")}
               type="password"
-              className="font-mono"
+              className="font-mono text-sm"
               autoComplete="new-password"
               placeholder={passwordMode === "keychain" ? "" : SSH_PASSWORD_MODE_LABEL[passwordMode]}
               disabled={passwordMode !== "keychain"}
@@ -1826,7 +1827,7 @@ function SshFields({ form }: { form: Form }) {
       {auth === "agent" && (
         <>
           <span />
-          <p className="text-muted-foreground text-[11px]">
+          <p className="text-muted-foreground text-xs leading-4">
             Uses the identities loaded in your SSH agent (<span className="font-mono">ssh-add</span>
             ).
           </p>
@@ -1843,7 +1844,7 @@ function SshFields({ form }: { form: Form }) {
               id={`${uid}-local-port`}
               {...register("sshLocalPort")}
               placeholder="auto"
-              className="w-24 shrink-0 font-mono"
+              className="w-24 shrink-0 font-mono text-sm"
               inputMode="numeric"
               aria-invalid={errors.sshLocalPort ? true : undefined}
             />
@@ -1858,15 +1859,15 @@ function SshFields({ form }: { form: Form }) {
             id={`${uid}-keepalive`}
             {...register("sshKeepaliveSecs")}
             placeholder="30"
-            className="w-20 shrink-0 font-mono"
+            className="w-20 shrink-0 font-mono text-sm"
             inputMode="numeric"
             aria-invalid={errors.sshKeepaliveSecs ? true : undefined}
           />
         </div>
       </Row>
       <span />
-      <p className="text-muted-foreground flex items-start gap-1.5 text-[11px]">
-        <Info className="mt-px size-3.5 shrink-0" />
+      <p className="text-muted-foreground flex items-start gap-1.5 text-xs leading-4">
+        <Info aria-hidden className="mt-px size-3.5 shrink-0" />
         <span className="min-w-0">
           Empty fields use <span className="font-mono">~/.ssh/config</span> · the host key is
           confirmed on first connect
@@ -1932,8 +1933,8 @@ function AdvancedFields({ form }: { form: Form }) {
               )}
             />
             <span className="text-muted-foreground text-xs">
-              Enforce them <span className="font-mono text-[11px]">(PRAGMA foreign_keys)</span>;
-              SQLite leaves this off unless asked
+              Enforce them <span className="font-mono">(PRAGMA foreign_keys)</span>; SQLite leaves
+              this off unless asked
             </span>
           </div>
         </Row>
@@ -1943,7 +1944,7 @@ function AdvancedFields({ form }: { form: Form }) {
           htmlFor={`${uid}-tz`}
           hint="e.g. UTC or Asia/Jakarta; empty keeps the server default"
         >
-          <Input id={`${uid}-tz`} {...register("timezone")} className="w-56 font-mono" />
+          <Input id={`${uid}-tz`} {...register("timezone")} className="w-56 font-mono text-sm" />
         </Row>
       ) : null}
       {driver !== null && driver !== "sqlite" && (
@@ -1962,7 +1963,7 @@ function AdvancedFields({ form }: { form: Form }) {
             {...register("encoding")}
             list={`${uid}-encodings`}
             placeholder={driver === "mysql" ? "utf8mb4" : "UTF8"}
-            className="w-56 font-mono"
+            className="w-56 font-mono text-sm"
             autoComplete="off"
             aria-invalid={formState.errors.encoding ? true : undefined}
           />
@@ -1992,7 +1993,7 @@ function AdvancedFields({ form }: { form: Form }) {
             rows={2}
             spellCheck={false}
             autoComplete="off"
-            className="min-h-0 resize-none font-mono text-xs"
+            className="min-h-0 resize-none font-mono text-xs md:text-xs"
           />
         </Row>
       )}
@@ -2005,7 +2006,7 @@ function AdvancedFields({ form }: { form: Form }) {
         <Input
           id={`${uid}-timeout`}
           {...register("connectTimeoutSecs")}
-          className="w-24 font-mono"
+          className="w-24 font-mono text-sm"
           inputMode="numeric"
           aria-invalid={formState.errors.connectTimeoutSecs ? true : undefined}
         />
@@ -2145,7 +2146,7 @@ export function ConnectionDialog({
   // Null at once for a core database; a lane's loads with its lane (undefined meanwhile).
   const kindUi = useKindUi(kind);
   kindUiRef.current = kindUi;
-  const title = profile ? `Edit ${profile.name}` : `New ${KIND_LABEL[kind]} connection`;
+  const title = profile ? `Edit ${profile.name}` : `New ${KIND_LABEL[kind]} Connection`;
 
   // An edited profile's lane form reads its params into its fields once it has loaded (the form
   // of the profile's own database: a render before the reset still shows the last one's).
@@ -2170,7 +2171,7 @@ export function ConnectionDialog({
     try {
       ui = await awaitKindUi(kind);
     } catch (err) {
-      toast.error(`The ${KIND_LABEL[kind]} form could not be loaded`, {
+      toast.error(`Could not load the ${KIND_LABEL[kind]} form`, {
         description: err instanceof Error ? err.message : String(err),
       });
       return false;
@@ -2317,20 +2318,24 @@ export function ConnectionDialog({
             ? "sm:max-w-[600px]"
             : built.length > 4
               ? "h-[min(34rem,calc(100dvh-4rem))] sm:max-w-[min(48rem,calc(100%-2rem))]"
-              : "sm:max-w-lg",
+              : "sm:max-w-[34rem]",
         )}
-        showCloseButton
       >
         {step === "driver" ? (
           <>
-            <DialogHeader className="border-border shrink-0 gap-3 border-b py-4 pr-12 pl-5">
-              <div className="flex flex-col gap-1.5">
-                <DialogTitle>New connection</DialogTitle>
-                <DialogDescription>Choose the database you are connecting to.</DialogDescription>
+            <DialogHeader className="shrink-0 gap-3 border-b px-4 py-3 pr-12">
+              <div className="flex flex-col gap-1">
+                <DialogTitle className="text-sm">New Connection</DialogTitle>
+                <DialogDescription className="text-xs">
+                  Choose the database you are connecting to.
+                </DialogDescription>
               </div>
               {built.length > 4 && (
                 <div className="relative">
-                  <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
+                  <Search
+                    aria-hidden
+                    className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2"
+                  />
                   <Input
                     value={kindQuery}
                     onChange={(e) => {
@@ -2348,8 +2353,8 @@ export function ConnectionDialog({
                       }
                     }}
                     aria-label="Search databases"
-                    placeholder="Search…"
-                    className="h-7 pl-7"
+                    placeholder="Search"
+                    className="h-7 rounded-md pl-7 text-xs md:text-xs"
                     spellCheck={false}
                     autoComplete="off"
                     autoFocus
@@ -2357,7 +2362,7 @@ export function ConnectionDialog({
                 </div>
               )}
             </DialogHeader>
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
               <DriverPicker
                 kinds={matchingKinds(built, kindQuery)}
                 wide={built.length > 4}
@@ -2366,12 +2371,17 @@ export function ConnectionDialog({
                 onConfirm={pickDriver}
               />
             </div>
-            <DialogFooter className="border-border mx-0 mb-0 shrink-0 border-t px-5 py-3 sm:justify-between">
+            <DialogFooter className="m-0 shrink-0 items-center sm:justify-between">
               <Button type="button" variant="ghost" size="sm" onClick={importFromUrl}>
-                <Link2 /> Import from URL…
+                <Link2 aria-hidden /> Import from URL…
               </Button>
               <div className="flex items-center gap-2">
-                <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onOpenChange(false)}
+                >
                   Cancel
                 </Button>
                 <Button type="button" size="sm" onClick={() => pickDriver(pickedDriver)}>
@@ -2382,10 +2392,10 @@ export function ConnectionDialog({
           </>
         ) : (
           <form onSubmit={submit(true)} className="flex min-h-0 flex-1 flex-col">
-            <DialogHeader className="border-border shrink-0 flex-row items-center gap-3 border-b py-3.5 pr-12 pl-5">
+            <DialogHeader className="shrink-0 flex-row items-center gap-3 border-b px-4 py-3 pr-12">
               <DriverBadge kind={kind} color={form.watch("color")} />
               <div className="flex min-w-0 flex-col gap-1">
-                <DialogTitle className="truncate">{title}</DialogTitle>
+                <DialogTitle className="truncate text-sm">{title}</DialogTitle>
                 <DialogDescription className="text-xs">
                   Credentials are stored in the {SECRET_STORE}, never in plain files.
                 </DialogDescription>
@@ -2399,11 +2409,11 @@ export function ConnectionDialog({
                   onClick={importFromUrl}
                   title="Fill the form from a connection URL (postgres://, mysql://, sqlite://…)"
                 >
-                  <Link2 /> Import from URL…
+                  <Link2 aria-hidden /> Import from URL…
                 </Button>
               )}
             </DialogHeader>
-            <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-4">
+            <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-4">
               <GeneralFields
                 form={form}
                 kindUi={kindUi}
@@ -2425,8 +2435,8 @@ export function ConnectionDialog({
                 </Section>
               )}
             </div>
-            <DialogFooter className="border-border mx-0 mb-0 shrink-0 flex-row items-center gap-2 border-t px-5 py-3 sm:justify-between">
-              <div className="flex shrink-0 items-center gap-1.5">
+            <DialogFooter className="m-0 shrink-0 flex-row items-center sm:justify-between">
+              <div className="flex shrink-0 items-center gap-2">
                 {desc.ssh !== "none" && (
                   <Button
                     type="button"
@@ -2444,7 +2454,7 @@ export function ConnectionDialog({
                         "border-brand/50 bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand dark:border-brand/50 dark:bg-brand-soft",
                     )}
                   >
-                    <Network /> Over SSH
+                    <Network aria-hidden /> Over SSH
                   </Button>
                 )}
                 <Button
@@ -2455,7 +2465,11 @@ export function ConnectionDialog({
                   onClick={toggleAdvanced}
                 >
                   <ChevronRight
-                    className={cn("transition-transform", advancedOpen && "rotate-90")}
+                    aria-hidden
+                    className={cn(
+                      "transition-transform duration-150 motion-reduce:transition-none",
+                      advancedOpen && "rotate-90",
+                    )}
                   />
                   Advanced
                 </Button>
@@ -2463,7 +2477,7 @@ export function ConnectionDialog({
               <div className="flex min-w-0 flex-1 justify-center">
                 <TestStatus result={testResult} error={testError} />
               </div>
-              <div className="flex shrink-0 items-center gap-1.5">
+              <div className="flex shrink-0 items-center gap-2">
                 <Button
                   type="button"
                   variant="outline"
@@ -2533,7 +2547,11 @@ function TestStatus({
         )}
         title={result.message}
       >
-        {result.ok ? <Check className="size-3.5 shrink-0" /> : <X className="size-3.5 shrink-0" />}
+        {result.ok ? (
+          <Check aria-hidden className="size-3.5 shrink-0" />
+        ) : (
+          <X aria-hidden className="size-3.5 shrink-0" />
+        )}
         <span className="truncate">
           {result.ok
             ? `${result.serverVersion ?? "OK"} · ${result.latencyMs} ms${result.tunnelUsed ? " · via SSH" : ""}`
@@ -2554,16 +2572,12 @@ function TestStatus({
         title={error.message}
       >
         {declined ? (
-          <ShieldOff className="size-3.5 shrink-0" />
+          <ShieldOff aria-hidden className="size-3.5 shrink-0" />
         ) : (
-          <X className="size-3.5 shrink-0" />
+          <X aria-hidden className="size-3.5 shrink-0" />
         )}
         <span className="truncate">
-          {!declined
-            ? error.message
-            : hostKeyDeclined(error)
-              ? "Host key not trusted"
-              : "Cancelled"}
+          {!declined ? error.message : hostKeyDeclined(error) ? "Host key not trusted" : "Canceled"}
         </span>
       </span>
     );

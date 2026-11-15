@@ -49,16 +49,14 @@ export function PasswordPrompt({
             if (request) onAnswer(request.id, value);
           }}
         >
-          <DialogHeader className="flex-row items-start gap-3">
-            <span className="bg-brand-soft text-brand flex size-9 shrink-0 items-center justify-center rounded-lg">
-              <KeyRound className="size-4.5" />
-            </span>
-            <div className="flex min-w-0 flex-col gap-1">
-              <DialogTitle className="truncate">{shown?.title}</DialogTitle>
-              {shown?.description ? (
-                <DialogDescription className="text-xs">{shown.description}</DialogDescription>
-              ) : null}
-            </div>
+          <DialogHeader>
+            <DialogTitle className="flex min-w-0 items-center gap-2 text-sm">
+              <KeyRound aria-hidden className="text-brand size-4 shrink-0" />
+              <span className="truncate">{shown?.title}</span>
+            </DialogTitle>
+            {shown?.description ? (
+              <DialogDescription className="text-xs">{shown.description}</DialogDescription>
+            ) : null}
           </DialogHeader>
           <div className="flex flex-col gap-1">
             <Input
@@ -66,14 +64,15 @@ export function PasswordPrompt({
               type="password"
               aria-label="Password"
               aria-invalid={shown?.error ? true : undefined}
+              aria-describedby={shown?.error ? `${id}-error` : undefined}
               value={value}
               onChange={(e) => setValue(e.target.value)}
               autoComplete="off"
-              className="font-mono"
+              className="font-mono text-sm"
               autoFocus
             />
             {shown?.error ? (
-              <p role="alert" className="text-error text-[11px]">
+              <p id={`${id}-error`} role="alert" className="text-error text-xs leading-4">
                 {shown.error}
               </p>
             ) : null}
@@ -81,7 +80,7 @@ export function PasswordPrompt({
           <DialogFooter>
             <Button
               type="button"
-              variant="ghost"
+              variant="outline"
               size="sm"
               onClick={() => request && onAnswer(request.id, null)}
             >

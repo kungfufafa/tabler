@@ -51,9 +51,7 @@ export function SettingsDialog() {
             keysRef={keysRef}
             searchRef={searchRef}
             title={
-              <DialogTitle className="px-2 pt-1 pb-1.5 text-[13px] font-semibold">
-                Settings
-              </DialogTitle>
+              <DialogTitle className="px-2 pt-1 pb-1.5 text-sm font-medium">Settings</DialogTitle>
             }
           />
         </DialogContent>

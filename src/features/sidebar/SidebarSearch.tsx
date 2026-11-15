@@ -58,10 +58,10 @@ export function SidebarSearch({
           <DropdownMenuTrigger
             aria-label="Search options"
             title="Search options"
-            className="text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground focus-visible:ring-sidebar-ring absolute top-1/2 left-1 z-10 flex h-6 w-8 -translate-y-1/2 items-center justify-center rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-inset"
+            className="text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground focus-visible:ring-sidebar-ring absolute top-1/2 left-1 z-10 flex h-6 w-8 -translate-y-1/2 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset"
           >
             <Search aria-hidden className="size-3.5" />
-            <ChevronDown aria-hidden className="size-2.5" />
+            <ChevronDown aria-hidden className="size-3" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
             <SearchMenuEntries build={menu} />
@@ -91,7 +91,7 @@ export function SidebarSearch({
         title={hint}
         className={cn(
           // Room on the right for the clear button, or for the badge once it shows.
-          "bg-surface h-8 rounded-md pr-8 text-xs md:text-xs",
+          "bg-surface h-8 pr-8 text-xs md:text-xs",
           kbdHint && !value && "@min-[15rem]/search:pr-24",
           menu ? "pl-10" : "pl-7",
         )}
@@ -101,7 +101,7 @@ export function SidebarSearch({
         {value ? (
           <button
             type="button"
-            className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-sidebar-ring pointer-events-auto flex size-6 items-center justify-center rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-inset"
+            className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-sidebar-ring pointer-events-auto flex size-6 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset"
             onClick={() => onChange("")}
             aria-label="Clear search"
           >

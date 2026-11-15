@@ -35,7 +35,7 @@ export function HostPortRow({
           id={`${uid}-host`}
           {...register("host")}
           placeholder={placeholder}
-          className="font-mono"
+          className="font-mono text-sm"
           aria-invalid={errors.host ? true : undefined}
         />
         <Label
@@ -48,7 +48,7 @@ export function HostPortRow({
           id={`${uid}-port`}
           {...register("port")}
           placeholder={defaultPort === null ? "" : String(defaultPort)}
-          className="w-20 shrink-0 font-mono"
+          className="w-20 shrink-0 font-mono text-sm"
           inputMode="numeric"
           aria-invalid={errors.port ? true : undefined}
         />

@@ -1,6 +1,7 @@
 import { KeyRound } from "lucide-react";
 import type { ReactNode } from "react";
 import { Kbd } from "@/components/Kbd";
+import { SectionLabel } from "@/components/SectionLabel";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -62,7 +63,7 @@ const EDITOR_FONT_SIZES = Array.from(
 );
 
 function InlineKbd({ combo }: { combo: string }) {
-  return <Kbd combo={combo} className="mx-0.5 h-4 min-w-4 align-[-2px] text-[10px]" />;
+  return <Kbd combo={combo} className="mx-0.5 align-middle" />;
 }
 
 export function GeneralSection() {
@@ -87,7 +88,7 @@ export function GeneralSection() {
           }
         >
           <Button variant="outline" size="xs" onClick={() => openSettings("appearance")}>
-            More themes in Appearance
+            More Themes in Appearance
           </Button>
         </SettingRow>
         <SettingRow
@@ -259,7 +260,7 @@ export function EditorSection() {
             <SelectTrigger
               id="pref-editor-font-size"
               size="sm"
-              className="h-7 w-22 rounded-md text-xs tabular-nums"
+              className="w-22 text-xs tabular-nums"
             >
               <SelectValue />
             </SelectTrigger>
@@ -315,7 +316,7 @@ export function EditorSection() {
       </SettingGroup>
       <EditorWorkflowSettings />
       <section className="flex flex-col gap-1.5">
-        <h3 className="text-muted-foreground px-1 text-[11px] font-medium">Preview</h3>
+        <SectionLabel className="px-1">Preview</SectionLabel>
         <EditorPreview />
       </section>
     </SectionShell>
@@ -391,10 +392,10 @@ export function ConnectionsSection() {
       </SettingGroup>
       <SettingGroup title="Security">
         <div className="flex items-start gap-2.5 px-3 py-2.5">
-          <KeyRound className="text-muted-foreground mt-0.5 size-4 shrink-0" />
+          <KeyRound aria-hidden className="text-muted-foreground mt-[3px] size-3.5 shrink-0" />
           <div className="flex flex-col gap-0.5">
-            <p className="text-[13px] leading-5">Passwords are stored in the macOS Keychain</p>
-            <p className="text-muted-foreground text-[11px] leading-4">
+            <p className="text-sm leading-5">Passwords are stored in the macOS Keychain</p>
+            <p className="text-muted-foreground text-xs leading-4">
               Connection profiles never contain secrets.
             </p>
           </div>
@@ -419,11 +420,7 @@ export function SecuritySection() {
             value={defaultSafeMode}
             onValueChange={(v) => setPref("defaultSafeMode", v as Prefs["defaultSafeMode"])}
           >
-            <SelectTrigger
-              id="pref-default-safe-mode"
-              size="sm"
-              className="h-7 w-72 rounded-md text-xs"
-            >
+            <SelectTrigger id="pref-default-safe-mode" size="sm" className="w-72 text-xs">
               <SelectValue />
             </SelectTrigger>
             {/* Kept in the dialog's keyboard scope, like the editor font size list. */}

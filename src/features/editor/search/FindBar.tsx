@@ -81,7 +81,7 @@ function OptionToggle({
           pressed={pressed}
           onPressedChange={onPressedChange}
           aria-label={label}
-          className="text-muted-foreground data-[state=on]:text-foreground h-6 min-w-6 rounded-md px-1 [&_svg:not([class*='size-'])]:size-3.5"
+          className="text-muted-foreground hover:bg-accent data-[state=on]:bg-brand-soft data-[state=on]:text-brand h-6 min-w-6 rounded-md px-1 [&_svg:not([class*='size-'])]:size-3.5"
         >
           {children}
         </Toggle>
@@ -190,7 +190,7 @@ export function FindBar({
     );
     if (plan.edits.length === 0) {
       if (plan.skipped > 0)
-        toast.message("This value can't be replaced", {
+        toast.message("This value cannot be replaced", {
           description: "Its column is read-only, or its type does not accept the new text.",
         });
       step(1);
@@ -274,7 +274,7 @@ export function FindBar({
           aria-label={find.replacing ? "Hide Replace" : "Show Replace"}
           aria-expanded={find.replacing}
           title={find.replacing ? "Hide Replace" : "Show Replace"}
-          className="text-muted-foreground hover:text-foreground"
+          className="text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent aria-expanded:bg-accent"
           onClick={() => setFind(tabId, { replacing: !find.replacing })}
         >
           {find.replacing ? <ChevronDown /> : <ChevronRight />}
@@ -332,7 +332,7 @@ export function FindBar({
           aria-label="Previous Match"
           title={`Previous Match (${formatCombo("Shift+Enter")})`}
           disabled={matches.length === 0}
-          className="text-muted-foreground hover:text-foreground"
+          className="text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent aria-expanded:bg-accent"
           onClick={() => step(-1)}
         >
           <ChevronUp />
@@ -341,9 +341,9 @@ export function FindBar({
           variant="ghost"
           size="icon-xs"
           aria-label="Next Match"
-          title="Next Match (↩)"
+          title={`Next Match (${formatCombo("Enter")})`}
           disabled={matches.length === 0}
-          className="text-muted-foreground hover:text-foreground"
+          className="text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent aria-expanded:bg-accent"
           onClick={() => step(1)}
         >
           <ChevronDown />
@@ -353,8 +353,8 @@ export function FindBar({
           variant="ghost"
           size="icon-xs"
           aria-label="Close Find"
-          title="Close (⎋)"
-          className="text-muted-foreground hover:text-foreground"
+          title={`Close (${formatCombo("Escape")})`}
+          className="text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent aria-expanded:bg-accent"
           onClick={close}
         >
           <X />
@@ -375,9 +375,11 @@ export function FindBar({
           <Button
             variant="outline"
             size="xs"
-            className="h-6 text-[11px]"
             disabled={!canReplace || current === null}
-            title={readOnlyReason ?? "Replace this match and go to the next one (↩)"}
+            title={
+              readOnlyReason ??
+              `Replace this match and go to the next one (${formatCombo("Enter")})`
+            }
             onClick={replaceOne}
           >
             Replace
@@ -385,7 +387,6 @@ export function FindBar({
           <Button
             variant="outline"
             size="xs"
-            className="h-6 text-[11px]"
             disabled={!canReplace}
             title={readOnlyReason ?? `Replace every match (${formatCombo("Alt+Enter")})`}
             onClick={replaceAll}

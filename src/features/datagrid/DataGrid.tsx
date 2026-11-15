@@ -1088,7 +1088,7 @@ export function DataGrid({
     if (f && row) void copyText(valueText(valueAt(row, f.c)) ?? "");
   }, [getRow, valueAt, copyText]);
   const copyColumnName = useCallback(
-    (col: GridColumn) => void copyText(col.name, "Column name copied"),
+    (col: GridColumn) => void copyText(col.name, "Copied column name"),
     [copyText],
   );
   /** Context menu ▸ Copy All Column Values: the focused column of every row the grid holds. */
@@ -1235,8 +1235,8 @@ export function DataGrid({
       if (edits.length > 0) onAction?.({ type: "setValues", edits });
       let msg = `Pasted ${plural(edits.length, "cell")}`;
       if (skipped > 0) msg += ` · ${skipped} skipped`;
-      if (plan.clippedRows > 0) msg += ` · ${plural(plan.clippedRows, "row")} didn't fit`;
-      if (plan.clippedCols > 0) msg += ` · ${plural(plan.clippedCols, "column")} didn't fit`;
+      if (plan.clippedRows > 0) msg += ` · ${plural(plan.clippedRows, "row")} did not fit`;
+      if (plan.clippedCols > 0) msg += ` · ${plural(plan.clippedCols, "column")} did not fit`;
       if (edits.length > 0) toast.success(msg);
       else toast.message(msg);
     },
@@ -2018,7 +2018,7 @@ export function DataGrid({
           tabIndex={0}
           data-scope="grid"
           className={cn(
-            "group/grid bg-surface focus-visible:ring-brand/40 relative h-full w-full overflow-auto outline-none select-none focus-visible:ring-1 focus-visible:ring-inset",
+            "group/grid bg-surface focus-visible:ring-ring relative h-full w-full overflow-auto outline-none select-none focus-visible:ring-1 focus-visible:ring-inset",
             // Selected rows (macOS table style): the accent while the grid has the focus, grey
             // otherwise.
             "[--grid-selection:color-mix(in_oklab,var(--foreground)_8%,transparent)] focus-within:[--grid-selection:color-mix(in_oklab,var(--brand)_18%,transparent)] dark:focus-within:[--grid-selection:color-mix(in_oklab,var(--brand)_28%,transparent)]",
@@ -2116,7 +2116,7 @@ export function DataGrid({
                       )}
                     </span>
                     {vc.size >= TYPE_LABEL_MIN_WIDTH && (
-                      <span className="text-muted-foreground max-w-[40%] min-w-0 shrink-[100] truncate text-[11px] font-normal">
+                      <span className="text-muted-foreground max-w-[40%] min-w-0 shrink-[100] truncate text-xs font-normal">
                         {col.dataType}
                       </span>
                     )}
@@ -2157,7 +2157,7 @@ export function DataGrid({
                   <div
                     data-gutter={vr.index}
                     className={cn(
-                      "border-border bg-surface-2 text-muted-foreground sticky left-0 z-[2] float-left flex h-full items-center justify-end border-r border-b pr-1.5 text-[11px] tabular-nums",
+                      "border-border bg-surface-2 text-muted-foreground sticky left-0 z-[2] float-left flex h-full items-center justify-end border-r border-b pr-1.5 text-xs tabular-nums",
                       (isFocusRow || selected || inRangeRows(vr.index)) && "text-foreground",
                       row?.error && "text-error",
                     )}
@@ -2260,15 +2260,9 @@ export function DataGrid({
                     }
                   }}
                 >
-                  <DropdownMenuLabel className="text-muted-foreground py-1 text-[11px] font-medium">
-                    Copy {plural(copyRows, "row")} as
-                  </DropdownMenuLabel>
+                  <DropdownMenuLabel>Copy {plural(copyRows, "row")} as</DropdownMenuLabel>
                   {copyChoices.map((choice, i) => (
-                    <DropdownMenuItem
-                      key={choice.label}
-                      className="text-[12.5px]"
-                      onSelect={() => void copyAs(choice)}
-                    >
+                    <DropdownMenuItem key={choice.label} onSelect={() => void copyAs(choice)}>
                       {choice.label}
                       {i < 10 && <DropdownMenuShortcut>{(i + 1) % 10}</DropdownMenuShortcut>}
                     </DropdownMenuItem>
@@ -2294,9 +2288,7 @@ export function DataGrid({
                     focusGrid();
                   }}
                 >
-                  <DropdownMenuLabel className="text-muted-foreground py-1 text-[11px] font-medium">
-                    Set Value
-                  </DropdownMenuLabel>
+                  <DropdownMenuLabel>Set Value</DropdownMenuLabel>
                   <DropdownMenuItem disabled={!settable.empty} onSelect={setEmpty}>
                     EMPTY
                     <DropdownMenuShortcut>{keysFor("grid.set-empty")}</DropdownMenuShortcut>
@@ -2337,13 +2329,12 @@ export function DataGrid({
                     focusGrid();
                   }}
                 >
-                  <DropdownMenuLabel className="text-muted-foreground py-1 text-[11px] font-medium">
+                  <DropdownMenuLabel>
                     {fkMenu.purpose === "join" ? "Generate JOIN with" : "Open"}
                   </DropdownMenuLabel>
                   {fkMenu.fks.map((fk, i) => (
                     <DropdownMenuItem
                       key={`${fk.name ?? ""}:${i}`}
-                      className="text-[12.5px]"
                       title={fk.name}
                       onSelect={() =>
                         runFk(fkMenu.purpose, fkMenu.column, fkMenu.value, fkMenu.cells, fk, true)
@@ -2413,7 +2404,7 @@ export function DataGrid({
             <div
               data-testid="loading-wallpaper"
               aria-hidden
-              className="text-muted-foreground/70 pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center text-[11px]"
+              className="pointer-events-none absolute inset-x-0 bottom-0"
               style={{
                 top: HEADER_H,
                 backgroundImage:
@@ -2438,7 +2429,7 @@ export function DataGrid({
                 }}
               >
                 <GeometryPreview g={geoPreview} />
-                <div className="text-muted-foreground mt-1 max-w-[180px] truncate font-mono text-[10px]">
+                <div className="text-muted-foreground mt-1 max-w-[180px] truncate font-mono text-xs">
                   {geoPreview.type}
                   {geoPreview.dims && ` ${geoPreview.dims}`}
                   {geoPreview.srid !== null && ` · SRID ${geoPreview.srid}`}

@@ -100,7 +100,7 @@ export function RawSqlInput({
         <ul
           role="listbox"
           aria-label="Suggestions"
-          className="border-border bg-popover text-popover-foreground absolute top-full left-0 z-50 mt-0.5 max-h-56 min-w-48 overflow-auto rounded-md border py-0.5 font-mono text-xs shadow-md"
+          className="border-border bg-popover text-popover-foreground absolute top-full left-0 z-50 mt-0.5 max-h-56 min-w-48 overflow-auto rounded-md border p-1 font-mono text-xs shadow-md"
         >
           {list.options.map((o, i) => (
             <li
@@ -113,12 +113,13 @@ export function RawSqlInput({
                 accept(o.label);
               }}
               className={cn(
-                "flex cursor-default items-center gap-2 px-2 py-0.5",
-                i === list.index && "bg-accent text-accent-foreground",
+                "flex cursor-default items-center gap-2 rounded-sm px-2 py-0.5",
+                // The active option is a selection (docs/ui-conventions.md, State tokens).
+                i === list.index && "bg-brand-soft",
               )}
             >
               <span className="min-w-0 flex-1 truncate">{o.label}</span>
-              <span className="text-muted-foreground font-sans text-[10px]">
+              <span className="text-muted-foreground font-sans text-xs">
                 {columns.includes(o.label) ? "column" : (o.type ?? "")}
               </span>
             </li>

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Kbd } from "@/components/Kbd";
+import { KbdHint } from "@/components/KbdHint";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -10,7 +11,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { comboFromEvent, formatCombo } from "@/lib/keys/combo";
+import { comboFromEvent } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { answerRerunConfirm, useRerunConfirmStore, type RerunConfirmRequest } from "./rerunConfirm";
 
@@ -31,7 +32,7 @@ export function RerunConfirmDialog() {
   return (
     <AlertDialog open={live !== null} onOpenChange={(open) => !open && answerRerunConfirm(false)}>
       <AlertDialogContent
-        className="gap-3 data-[size=default]:sm:max-w-md"
+        className="data-[size=default]:sm:max-w-md"
         onKeyDown={(e) => {
           if (comboFromEvent(e) !== CONFIRM_COMBO) return;
           e.preventDefault();
@@ -39,24 +40,23 @@ export function RerunConfirmDialog() {
         }}
       >
         <AlertDialogHeader>
-          <AlertDialogTitle className="text-sm font-semibold">
-            Discard {changes} and run?
-          </AlertDialogTitle>
+          <AlertDialogTitle className="text-sm">Discard {changes} and run?</AlertDialogTitle>
           <AlertDialogDescription className="text-xs">
             Running the query again replaces the result {n === 1 ? "it was" : "they were"} made in.
-            Commit with {formatCombo(shortcutFor("grid.commit") ?? "Mod+S")} first to keep{" "}
-            {n === 1 ? "it" : "them"}.
+            Commit with{" "}
+            <Kbd combo={shortcutFor("grid.commit") ?? "Mod+S"} className="mx-0.5 align-middle" />{" "}
+            first to keep {n === 1 ? "it" : "them"}.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <AlertDialogFooter className="px-4 py-3">
+        <AlertDialogFooter>
           <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
             size="sm"
             onClick={() => answerRerunConfirm(true)}
           >
-            Discard &amp; Run
-            <Kbd combo={CONFIRM_COMBO} className="border-current/25 bg-transparent text-inherit" />
+            Discard and Run
+            <KbdHint combo={CONFIRM_COMBO} />
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

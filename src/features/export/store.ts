@@ -267,9 +267,9 @@ function replacedLabel(n: number | undefined): string {
 
 /** A failure: inline while the dialog is open, a toast otherwise; a notification in background. */
 function reportFailure(message: string, open: boolean): void {
-  void notifyInBackground({ title: "Export failed", body: message });
+  void notifyInBackground({ title: "Could not export", body: message });
   if (open) useExportStore.setState({ error: message });
-  else toast.error("Export failed", { description: message });
+  else toast.error("Could not export", { description: message });
 }
 
 /** Saves the form's state for the current session (see `ExportDraft`). */
@@ -328,7 +328,7 @@ export async function runExport(
     useExportStore.setState({ run: null });
     if (!open) releaseExportTarget();
     if (e.code === "CANCELLED") {
-      toast.message("Export cancelled", { description: "No file was written." });
+      toast.message("Export canceled", { description: "No file was written." });
     } else {
       reportFailure(e.message, open);
     }
@@ -459,7 +459,7 @@ export async function runExportTables(
         ? ` The files of the ${formatCount(results.length)} database${results.length === 1 ? "" : "s"} exported before stay.`
         : "";
     if (e.code === "CANCELLED") {
-      toast.message("Export cancelled", {
+      toast.message("Export canceled", {
         description: kept ? kept.trim() : "No file was written.",
       });
     } else {
@@ -531,7 +531,7 @@ export async function runExportResults(
     useExportStore.setState({ run: null });
     if (!open) releaseExportTarget();
     if (e.code === "CANCELLED") {
-      toast.message("Export cancelled", { description: "No file was written." });
+      toast.message("Export canceled", { description: "No file was written." });
     } else {
       reportFailure(e.message, open);
     }

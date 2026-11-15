@@ -91,6 +91,7 @@ function TextPrefField({
         autoCorrect="off"
         aria-invalid={error ? true : undefined}
         aria-labelledby={`${id}-label`}
+        aria-describedby={error ? `${id}-error` : undefined}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
@@ -103,9 +104,13 @@ function TextPrefField({
             setDraft(null);
           }
         }}
-        className={className ?? "h-7 w-64 rounded-md px-2 font-mono text-xs"}
+        className={className ?? "h-7 w-64 rounded-md px-2 font-mono text-xs md:text-xs"}
       />
-      {error && <span className="text-destructive text-[11px]">{error}</span>}
+      {error && (
+        <span id={`${id}-error`} role="alert" className="text-error text-xs leading-4">
+          {error}
+        </span>
+      )}
     </div>
   );
 }
@@ -155,7 +160,7 @@ function ApiKeyRow({ provider }: { provider: Exclude<AssistantProvider, "ollama"
           value={draft}
           placeholder={stored ? "•••••••• (stored)" : "Paste the key"}
           onChange={(e) => setDraft(e.target.value)}
-          className="h-7 w-44 rounded-md px-2 font-mono text-xs"
+          className="h-7 w-44 rounded-md px-2 font-mono text-xs md:text-xs"
         />
         <Button type="submit" size="sm" variant="outline" disabled={busy || !draft.trim()}>
           Save
@@ -208,13 +213,13 @@ function TestRow({ settings }: { settings: Settings }) {
         description={
           result ? (
             <span
-              className={result.ok ? "text-foreground flex gap-1" : "text-destructive flex gap-1"}
+              className={result.ok ? "text-foreground flex gap-1" : "text-error flex gap-1"}
               role="status"
             >
               {result.ok ? (
-                <CheckCircle2 className="mt-px size-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <CheckCircle2 aria-hidden className="text-success mt-px size-3 shrink-0" />
               ) : (
-                <XCircle className="mt-px size-3 shrink-0" />
+                <XCircle aria-hidden className="mt-px size-3 shrink-0" />
               )}
               {result.message}
             </span>
@@ -268,13 +273,13 @@ export function AssistantSettingsGroup() {
 
   return (
     <div id={ASSISTANT_SETTINGS_ID} className="scroll-mt-4">
-      <SettingGroup title="AI Assistant">
+      <SettingGroup>
         <SettingRow
           id="pref-assistant-enabled"
           label="Enable Assistant tab on the right sidebar"
           description={
             <span className="flex gap-1">
-              <ShieldCheck className="mt-px size-3 shrink-0" />
+              <ShieldCheck aria-hidden className="mt-px size-3 shrink-0" />
               {STRUCTURE_ONLY_NOTE}
             </span>
           }
@@ -290,11 +295,7 @@ export function AssistantSettingsGroup() {
             value={provider}
             onValueChange={(v) => setPref("assistantProvider", v as Prefs["assistantProvider"])}
           >
-            <SelectTrigger
-              id="pref-assistant-provider"
-              size="sm"
-              className="h-7 w-44 rounded-md text-xs"
-            >
+            <SelectTrigger id="pref-assistant-provider" size="sm" className="w-44 text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent data-scope="dialog">
@@ -313,11 +314,7 @@ export function AssistantSettingsGroup() {
               value={anthropicModel}
               onValueChange={(v) => setPref("assistantAnthropicModel", v)}
             >
-              <SelectTrigger
-                id="pref-assistant-anthropic-model"
-                size="sm"
-                className="h-7 w-44 rounded-md text-xs"
-              >
+              <SelectTrigger id="pref-assistant-anthropic-model" size="sm" className="w-44 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent data-scope="dialog">
@@ -342,7 +339,7 @@ export function AssistantSettingsGroup() {
                     <button
                       key={p.url}
                       type="button"
-                      className="text-primary hover:underline"
+                      className="text-brand hover:underline"
                       onClick={() => setPref("assistantOpenaiBaseUrl", p.url)}
                     >
                       {p.label}
@@ -361,13 +358,13 @@ export function AssistantSettingsGroup() {
             <SettingRow
               id="pref-assistant-openai-model"
               label="Model"
-              description="As the server names it, e.g. deepseek-chat. Test lists the server's models."
+              description="As the server names it, e.g. deepseek-chat. Test lists the server’s models."
             >
               <TextPrefField
                 id="pref-assistant-openai-model"
                 prefKey="assistantOpenaiModel"
                 validate={modelValidate}
-                placeholder="model id"
+                placeholder="Model ID"
                 list="assistant-models-openai"
               />
             </SettingRow>
@@ -397,7 +394,7 @@ export function AssistantSettingsGroup() {
                 id="pref-assistant-ollama-model"
                 prefKey="assistantOllamaModel"
                 validate={modelValidate}
-                placeholder="model name"
+                placeholder="Model name"
                 list="assistant-models-ollama"
               />
             </SettingRow>

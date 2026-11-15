@@ -86,7 +86,7 @@ function DummyDataForm({ request }: { request: DummyDataRequest }) {
   };
 
   return (
-    <form onSubmit={(e) => void submit(e)} className="flex min-h-0 flex-1 flex-col gap-3">
+    <form onSubmit={(e) => void submit(e)} className="flex min-h-0 flex-1 flex-col gap-4">
       <DialogHeader>
         <DialogTitle className="text-sm">Generate Dummy Data</DialogTitle>
         <DialogDescription className="text-xs">
@@ -95,17 +95,21 @@ function DummyDataForm({ request }: { request: DummyDataRequest }) {
         </DialogDescription>
       </DialogHeader>
       <div className="flex items-center gap-2 text-xs">
-        <label htmlFor={`${id}-count`}>Rows</label>
+        <label htmlFor={`${id}-count`} className="text-muted-foreground font-medium">
+          Rows
+        </label>
         <Input
           id={`${id}-count`}
           autoFocus
           inputMode="numeric"
           value={countText}
           onChange={(e) => setCountText(e.target.value.replace(/[^\d]/g, ""))}
-          className="h-7 w-24 font-mono text-xs md:text-xs"
+          className="h-7 w-24 rounded-md font-mono text-xs md:text-xs"
           aria-invalid={!countOk}
         />
-        <span className="text-muted-foreground">1–{MAX_DUMMY_ROWS.toLocaleString()}</span>
+        <span className="text-muted-foreground tabular-nums">
+          1–{MAX_DUMMY_ROWS.toLocaleString()}
+        </span>
         <Button
           type="button"
           size="sm"
@@ -122,13 +126,13 @@ function DummyDataForm({ request }: { request: DummyDataRequest }) {
         ) : meta.isError ? (
           <p className="text-error text-xs">{errorText(meta.error)}</p>
         ) : (
-          <pre className="font-mono text-[11px] leading-4 whitespace-pre-wrap">
+          <pre className="font-mono text-[11.5px] leading-4 whitespace-pre-wrap">
             {sql.length > PREVIEW_CHARS ? `${sql.slice(0, PREVIEW_CHARS)}\n…` : sql}
           </pre>
         )}
       </div>
       <DialogFooter>
-        <Button type="button" variant="ghost" size="sm" onClick={closeDummyData} disabled={busy}>
+        <Button type="button" variant="outline" size="sm" onClick={closeDummyData} disabled={busy}>
           Cancel
         </Button>
         <Button type="submit" size="sm" disabled={busy || !countOk || sql === ""}>

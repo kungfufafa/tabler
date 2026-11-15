@@ -1,5 +1,6 @@
 import { FileCode2, Plus, Settings2, X, Zap } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
+import { SectionLabel } from "@/components/SectionLabel";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -15,15 +16,12 @@ import { cn } from "@/lib/utils";
 import { ChoiceCell } from "./cells";
 import type { TableOptionField } from "./objects";
 import type { StructureView } from "./model";
-import { CellInput } from "./parts";
+import { BAR_BUTTON, CellInput } from "./parts";
 import { tableOptionRows } from "./tableOptions";
 
 function Label({ children }: { children: ReactNode }) {
   return (
-    <span
-      aria-hidden
-      className="text-muted-foreground shrink-0 text-[11px] font-medium select-none"
-    >
+    <span aria-hidden className="text-muted-foreground shrink-0 text-xs font-medium select-none">
       {children}
     </span>
   );
@@ -72,13 +70,13 @@ export function StructureHeader({
     <div
       role="group"
       aria-label="Table"
-      className="border-border bg-surface-2/60 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b px-3 py-1.5"
+      className="border-border bg-surface-2 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b px-3 py-1.5"
     >
       <div className="flex min-w-0 items-center gap-1.5">
         <Label>Name</Label>
         <div
           className={cn(
-            "border-border w-44 rounded-sm border",
+            "border-border w-44 rounded-md border",
             info.opAt.name !== undefined && "bg-changed",
           )}
         >
@@ -98,13 +96,13 @@ export function StructureHeader({
         <div
           role="list"
           aria-label="Primary key"
-          className="border-border flex min-h-6 min-w-24 flex-wrap items-center gap-1 rounded-sm border px-1 py-0.5"
+          className="border-border flex min-h-6 min-w-24 flex-wrap items-center gap-1 rounded-md border px-1 py-0.5"
         >
           {pk.map((c) => (
             <span
               role="listitem"
               key={c}
-              className="bg-brand-soft text-foreground inline-flex h-5 items-center gap-0.5 rounded px-1.5 font-mono text-[11px]"
+              className="bg-brand-soft text-foreground inline-flex h-5 items-center gap-0.5 rounded-sm px-1.5 font-mono text-xs"
             >
               {c}
               {editable && (
@@ -112,23 +110,21 @@ export function StructureHeader({
                   type="button"
                   aria-label={`Remove ${c} from the primary key`}
                   onClick={() => onSetPrimaryKey(pk.filter((x) => x !== c))}
-                  className="text-muted-foreground hover:text-foreground -mr-0.5 rounded-sm outline-none focus-visible:ring-2"
+                  className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 -mr-0.5 rounded-sm transition-colors outline-none focus-visible:ring-2"
                 >
                   <X className="size-3" />
                 </button>
               )}
             </span>
           ))}
-          {pk.length === 0 && !editable && (
-            <span className="text-muted-foreground text-[11px] italic">none</span>
-          )}
+          {pk.length === 0 && !editable && <span className="text-null text-xs italic">none</span>}
           {editable && candidates.length > 0 && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
                   aria-label="Add a column to the primary key"
-                  className="text-muted-foreground hover:text-foreground hover:bg-accent flex size-5 items-center justify-center rounded-sm outline-none focus-visible:ring-2"
+                  className="text-muted-foreground hover:text-foreground hover:bg-accent aria-expanded:bg-accent focus-visible:ring-ring/50 flex size-5 items-center justify-center rounded-sm transition-colors outline-none focus-visible:ring-2"
                 >
                   <Plus className="size-3" />
                 </button>
@@ -137,7 +133,7 @@ export function StructureHeader({
                 {candidates.map((c) => (
                   <DropdownMenuItem
                     key={c}
-                    className="font-mono text-xs"
+                    className="font-mono"
                     onSelect={() => onSetPrimaryKey([...pk, c])}
                   >
                     {c}
@@ -153,7 +149,7 @@ export function StructureHeader({
           <Label>Comment</Label>
           <div
             className={cn(
-              "border-border min-w-32 flex-1 rounded-sm border",
+              "border-border min-w-32 flex-1 rounded-md border",
               info.opAt.comment !== undefined && "bg-changed",
             )}
           >
@@ -164,7 +160,7 @@ export function StructureHeader({
               cellKey="table:comment"
               label="Table comment"
               readOnly={!editable}
-              placeholder={editable ? "no comment" : undefined}
+              placeholder={editable ? "No comment" : undefined}
             />
           </div>
         </div>
@@ -187,9 +183,9 @@ export function StructureHeader({
           pressed={showTriggers}
           onPressedChange={onToggleTriggers}
           aria-label="Triggers"
-          className="h-6 gap-1 px-2 text-xs"
+          className="hover:bg-accent aria-pressed:bg-brand-soft aria-pressed:text-brand data-[state=on]:bg-brand-soft data-[state=on]:text-brand h-6 gap-1 px-2 text-xs"
         >
-          <Zap className="size-3.5" />
+          <Zap />
           Triggers
           {triggerCount > 0 && (
             <span className="text-muted-foreground tabular-nums">{triggerCount}</span>
@@ -201,7 +197,7 @@ export function StructureHeader({
           onClick={onInfo}
           aria-label="Info"
           title="The CREATE statement"
-          className="h-6"
+          className={BAR_BUTTON}
         >
           <FileCode2 /> Info
         </Button>
@@ -220,7 +216,7 @@ function StorageOptions({ options }: { options: TableOptions | null }) {
   const rows = tableOptionRows(options, false);
   if (rows.length === 0) return null;
   return (
-    <span data-testid="table-storage" className="text-muted-foreground px-1 text-[11px]">
+    <span data-testid="table-storage" className="text-muted-foreground px-1 text-xs">
       {rows.map(([label, value]) => `${label}: ${value}`).join(" · ")}
     </span>
   );
@@ -268,15 +264,15 @@ function OptionsButton({
           variant="ghost"
           size="xs"
           aria-label="Table options"
-          className={cn("h-6", changed && "bg-changed")}
+          className={cn(BAR_BUTTON, changed && "bg-changed")}
         >
           <Settings2 /> Options
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80 gap-2.5 p-3">
-        <p className="text-xs font-medium">Table options</p>
-        <div className="grid grid-cols-[96px_1fr] items-center gap-x-2 gap-y-1.5 text-xs">
-          <span className="text-muted-foreground text-[11px]">Engine</span>
+      <PopoverContent align="end" className="w-80 gap-2 p-3 text-xs">
+        <SectionLabel>Table options</SectionLabel>
+        <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5">
+          <span className="text-muted-foreground text-xs">Engine</span>
           <ChoiceCell
             value={o?.engine ?? null}
             options={list(engines, o?.engine)}
@@ -284,9 +280,9 @@ function OptionsButton({
             label="Engine"
             disabled={!editable}
             placeholder="—"
-            className="border-border font-mono text-[11px]"
+            className="border-border font-mono"
           />
-          <span className="text-muted-foreground text-[11px]">Charset</span>
+          <span className="text-muted-foreground text-xs">Charset</span>
           <ChoiceCell
             value={o?.charset ?? null}
             options={list(
@@ -297,9 +293,9 @@ function OptionsButton({
             label="Charset"
             disabled={!editable}
             placeholder="—"
-            className="border-border font-mono text-[11px]"
+            className="border-border font-mono"
           />
-          <span className="text-muted-foreground text-[11px]">Collation</span>
+          <span className="text-muted-foreground text-xs">Collation</span>
           <ChoiceCell
             value={collation}
             options={list(charset?.collations ?? [], collation)}
@@ -307,9 +303,9 @@ function OptionsButton({
             label="Collation"
             disabled={!editable}
             placeholder="—"
-            className="border-border font-mono text-[11px]"
+            className="border-border font-mono"
           />
-          <label htmlFor={aiId} className="text-muted-foreground text-[11px]">
+          <label htmlFor={aiId} className="text-muted-foreground text-xs">
             Auto increment
           </label>
           <Input
@@ -325,10 +321,10 @@ function OptionsButton({
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             }}
-            placeholder="next value"
-            className="h-6 font-mono text-xs md:text-xs"
+            placeholder="Next value"
+            className="h-6 rounded-md font-mono text-xs md:text-xs"
           />
-          <span className="text-muted-foreground text-[11px]">Row format</span>
+          <span className="text-muted-foreground text-xs">Row format</span>
           <ChoiceCell
             value={rowFormat}
             options={list(ROW_FORMATS, rowFormat)}
@@ -336,10 +332,10 @@ function OptionsButton({
             label="Row format"
             disabled={!editable}
             placeholder="—"
-            className="border-border font-mono text-[11px]"
+            className="border-border font-mono"
           />
         </div>
-        <p className="text-muted-foreground text-[11px]">
+        <p className="text-muted-foreground text-xs leading-4">
           A new charset or collation converts every text column (CONVERT TO CHARACTER SET).
         </p>
       </PopoverContent>

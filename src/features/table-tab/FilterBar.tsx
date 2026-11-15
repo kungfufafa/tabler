@@ -43,6 +43,7 @@ import {
   type FilterDefaultState,
 } from "@/stores/prefs";
 import type { FilterRowSpec } from "@/stores/tableTabs";
+import { BAR_HOVER } from "./BarParts";
 import { focusFilterRow, type FilterPart } from "./filterFocus";
 import { RawSqlInput } from "./RawSqlInput";
 import {
@@ -65,7 +66,12 @@ import {
 } from "./filters";
 
 const RAW_SQL_PLACEHOLDER = "e.g. age > 30 AND name LIKE 'A%'";
-const FIELD_CLASS = "bg-surface h-7 rounded-md font-mono text-xs";
+/**
+ * A field of the bar (docs/ui-conventions.md, Forms): h-6, 11px at every window width (the
+ * primitive's `md:text-sm` would win otherwise); `data-[size=sm]:h-6` beats a small select's h-7.
+ */
+const FIELD_CLASS =
+  "bg-surface h-6 rounded-md font-mono text-xs md:text-xs data-[size=sm]:h-6 data-[size=sm]:rounded-md";
 
 /** How the raw filter row reads for each kind of raw filter a session takes. */
 const RAW_FILTER: Record<RawFilter, { label: string; hint: string; placeholder: string }> = {
@@ -114,6 +120,7 @@ function SqlButton({
 }) {
   const [view, setView] = useState<"full" | "where">("full");
   const where = whereOfPageSql(sql);
+  const applyKeys = shortcutFor("filter.apply");
   const shown = view === "full" ? sql : where ? `WHERE ${where}` : null;
   const copy = async () => {
     if (!shown) return;
@@ -131,8 +138,10 @@ function SqlButton({
       aria-checked={view === id}
       onClick={() => setView(id)}
       className={cn(
-        "rounded px-1.5 text-[11px] leading-5",
-        view === id ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
+        "focus-visible:ring-ring/50 rounded px-1.5 text-xs leading-5 transition-colors outline-none focus-visible:ring-2",
+        view === id
+          ? "bg-brand-soft text-brand"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground",
       )}
     >
       {label}
@@ -146,12 +155,16 @@ function SqlButton({
           size="xs"
           aria-label="Show the filter's SQL"
           title="Show the query of the rows shown"
-          className="text-muted-foreground hover:text-foreground font-mono text-[11px]"
+          className={cn("text-muted-foreground hover:text-foreground font-mono", BAR_HOVER)}
         >
           SQL
         </Button>
       </PopoverTrigger>
-      <PopoverContent side="bottom" align="start" className="w-[32rem] max-w-[90vw] gap-1.5 p-2.5">
+      <PopoverContent
+        side="bottom"
+        align="start"
+        className="w-[32rem] max-w-[90vw] gap-2 p-3 text-xs"
+      >
         <div className="flex items-center gap-1">
           <div role="radiogroup" aria-label="SQL to show" className="flex items-center gap-0.5">
             {tab("full", "Full query")}
@@ -163,7 +176,7 @@ function SqlButton({
             size="xs"
             disabled={!shown}
             onClick={() => void copy()}
-            className="text-muted-foreground hover:text-foreground text-[11px]"
+            className="text-muted-foreground hover:text-foreground"
           >
             <Copy />
             Copy
@@ -172,7 +185,7 @@ function SqlButton({
         {shown ? (
           <pre
             data-testid={view === "full" ? "filter-sql" : "filter-where"}
-            className="bg-surface border-border max-h-60 overflow-auto rounded-md border px-2 py-1.5 font-mono text-[11px] whitespace-pre-wrap select-text"
+            className="bg-surface border-border max-h-60 overflow-auto rounded-md border px-2 py-1.5 font-mono text-[11.5px] whitespace-pre-wrap select-text"
           >
             {consoleSegments(shown, dialect).map((seg, i) => (
               <span key={i} className={seg.cls || undefined}>
@@ -186,8 +199,17 @@ function SqlButton({
           </p>
         )}
         {dirty && (
-          <p className="text-muted-foreground text-[11px]">
-            The bar has changes that are not applied yet ({keysOf("filter.apply")} applies them).
+          <p className="text-muted-foreground text-xs">
+            The bar has changes that are not applied yet
+            {applyKeys ? (
+              <>
+                {" ("}
+                <Kbd combo={applyKeys} className="mx-0.5 align-middle" />
+                {" applies them)."}
+              </>
+            ) : (
+              "."
+            )}
           </p>
         )}
       </PopoverContent>
@@ -200,7 +222,6 @@ function FilterSettings() {
   const column = usePrefs((p) => p.filterDefaultColumn);
   const operator = usePrefs((p) => p.filterDefaultOperator);
   const state = usePrefs((p) => p.filterDefaultState);
-  const label = "text-muted-foreground py-1 text-[11px] font-medium";
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
@@ -209,43 +230,43 @@ function FilterSettings() {
           size="icon-xs"
           aria-label="Filter settings"
           title="Filter settings"
-          className="text-muted-foreground hover:text-foreground size-6"
+          className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER)}
         >
           <Settings />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" side="bottom" className="w-60 text-xs">
-        <DropdownMenuLabel className={label}>Default filter column</DropdownMenuLabel>
+      <DropdownMenuContent align="start" side="bottom" className="w-60">
+        <DropdownMenuLabel>Default filter column</DropdownMenuLabel>
         <DropdownMenuRadioGroup
           value={column}
           onValueChange={(v) => setPref("filterDefaultColumn", v as FilterDefaultColumn)}
         >
           {FILTER_DEFAULT_COLUMNS.map((v) => (
-            <DropdownMenuRadioItem key={v} value={v} className="text-xs">
+            <DropdownMenuRadioItem key={v} value={v}>
               {COLUMN_LABELS[v]}
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
         <DropdownMenuSeparator />
-        <DropdownMenuLabel className={label}>Default filter operator</DropdownMenuLabel>
+        <DropdownMenuLabel>Default filter operator</DropdownMenuLabel>
         <DropdownMenuRadioGroup
           value={operator}
           onValueChange={(v) => setPref("filterDefaultOperator", v as FilterDefaultOperator)}
         >
           {FILTER_DEFAULT_OPERATORS.map((v) => (
-            <DropdownMenuRadioItem key={v} value={v} className="font-mono text-xs">
+            <DropdownMenuRadioItem key={v} value={v} className="font-mono">
               {OPERATOR_LABELS[v]}
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
         <DropdownMenuSeparator />
-        <DropdownMenuLabel className={label}>Default filter state</DropdownMenuLabel>
+        <DropdownMenuLabel>Default filter state</DropdownMenuLabel>
         <DropdownMenuRadioGroup
           value={state}
           onValueChange={(v) => setPref("filterDefaultState", v as FilterDefaultState)}
         >
           {FILTER_DEFAULT_STATES.map((v) => (
-            <DropdownMenuRadioItem key={v} value={v} className="text-xs">
+            <DropdownMenuRadioItem key={v} value={v}>
               {STATE_LABELS[v]}
             </DropdownMenuRadioItem>
           ))}
@@ -265,11 +286,9 @@ function ApplyAll({
   title: string;
   onApply: (conjunction: Conjunction) => void;
 }) {
+  // Changes waiting to be applied make Apply All the bar's primary action (the brand fill).
   const variant = dirty ? "default" : "outline";
-  const actionClass = cn(
-    "transition-colors",
-    dirty && "bg-foreground text-background hover:bg-foreground/90",
-  );
+  const actionClass = "transition-colors";
   return (
     <div className="flex items-center">
       <Button
@@ -290,18 +309,18 @@ function ApplyAll({
             className={cn(
               actionClass,
               "border-l-border -ml-px rounded-l-none px-1",
-              dirty && "border-l-background/30",
+              dirty && "border-l-primary-foreground/30",
             )}
           >
             <ChevronDown />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-auto min-w-72 text-xs">
-          <DropdownMenuItem className="text-xs" onSelect={() => onApply("and")}>
+        <DropdownMenuContent align="end" className="w-auto min-w-72">
+          <DropdownMenuItem onSelect={() => onApply("and")}>
             Apply All Checked Filters with AND – Default
             <DropdownMenuShortcut>{keysOf("filter.apply")}</DropdownMenuShortcut>
           </DropdownMenuItem>
-          <DropdownMenuItem className="text-xs" onSelect={() => onApply("or")}>
+          <DropdownMenuItem onSelect={() => onApply("or")}>
             Apply All Checked Filters with OR
             <DropdownMenuShortcut>{keysOf("filter.apply-or")}</DropdownMenuShortcut>
           </DropdownMenuItem>
@@ -612,7 +631,7 @@ export function FilterBar({
                   {i > 0 && (
                     <button
                       type="button"
-                      className="text-brand hover:bg-brand-soft focus-visible:outline-ring rounded px-1 font-mono text-[11px] leading-5"
+                      className="text-brand hover:bg-accent focus-visible:ring-ring/50 rounded px-1 font-mono text-xs leading-5 transition-colors outline-none focus-visible:ring-2"
                       title="Toggle AND / OR for all conditions"
                       onClick={() => onChange(rows, conjunction === "and" ? "or" : "and")}
                     >
@@ -719,7 +738,7 @@ export function FilterBar({
               )}
               {!raw && def.arity === 2 && (
                 <>
-                  <span className="text-muted-foreground text-[11px]">AND</span>
+                  <span className="text-muted-foreground text-xs">AND</span>
                   <Input
                     value={row.value2}
                     onChange={(e) => update(row.id, { value2: e.target.value })}
@@ -739,8 +758,8 @@ export function FilterBar({
                   variant={isApplied(row) ? "ghost" : "outline"}
                   size="xs"
                   className={cn(
-                    "mr-1 h-7 w-16 transition-colors",
-                    isApplied(row) && "text-muted-foreground",
+                    "mr-1 w-16 transition-colors",
+                    isApplied(row) && cn("text-muted-foreground", BAR_HOVER),
                   )}
                   data-filter-part="apply"
                   onClick={() => applyRow(row.id)}
@@ -755,7 +774,7 @@ export function FilterBar({
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  className="text-muted-foreground hover:text-foreground size-7 transition-colors"
+                  className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER)}
                   aria-label="Remove filter"
                   title={`Remove this condition (${keysOf("filter.remove")})`}
                   onClick={() => remove(row.id)}
@@ -765,7 +784,7 @@ export function FilterBar({
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  className="text-muted-foreground hover:text-foreground size-7 transition-colors"
+                  className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER)}
                   aria-label="Add filter"
                   title={`Add a condition below (${keysOf("filter.duplicate")} duplicates this one)`}
                   onClick={() => addAfter(row.id)}
@@ -777,14 +796,14 @@ export function FilterBar({
           );
         })}
       </div>
-      <div className="border-border/60 flex h-8 items-center gap-1 border-t px-2">
+      <div className="border-border flex h-8 items-center gap-1 border-t px-2">
         <FilterSettings />
         {onExport && (
           <Button
             variant="ghost"
             size="xs"
             onClick={onExport}
-            className="text-muted-foreground hover:text-foreground text-[11px]"
+            className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER)}
             title="Export the filtered rows"
           >
             <FileDown />
@@ -798,7 +817,7 @@ export function FilterBar({
           size="xs"
           onClick={onClear}
           disabled={rows.length === 0}
-          className="text-muted-foreground hover:text-foreground"
+          className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER)}
         >
           Clear
         </Button>

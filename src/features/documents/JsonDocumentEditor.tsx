@@ -1,9 +1,9 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
+import { KbdHint } from "@/components/KbdHint";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { reformatJson } from "@/features/datagrid/editors/json";
 import { insertAtCaret } from "@/features/datagrid/editors/useGrabFocus";
-import { formatCombo } from "@/lib/keys/combo";
 import { cn } from "@/lib/utils";
 import { documentChanges, PLAIN_JSON, type DocumentFields, type DocumentFormat } from "./formats";
 
@@ -150,14 +150,11 @@ export function JsonDocumentEditor({
             save();
           }
         }}
-        className="[field-sizing:fixed] min-h-32 flex-1 resize-y font-mono text-xs leading-5 md:text-xs"
+        className="[field-sizing:fixed] min-h-32 flex-1 resize-y rounded-md font-mono text-xs leading-5 md:text-xs"
       />
       <div
         role={error ? "alert" : undefined}
-        className={cn(
-          "min-h-4 truncate text-[11px]",
-          error ? "text-error" : "text-muted-foreground",
-        )}
+        className={cn("min-h-4 truncate text-xs", error ? "text-error" : "text-muted-foreground")}
         title={error ?? undefined}
       >
         {error ??
@@ -165,16 +162,16 @@ export function JsonDocumentEditor({
       </div>
       {footer}
       {(editable || onCancel) && (
-        <div className="flex justify-end gap-1.5">
+        <div className="flex justify-end gap-2">
           {onCancel && (
-            <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+            <Button type="button" variant="outline" size="sm" onClick={onCancel}>
               Cancel
             </Button>
           )}
           {editable && (
             <Button type="button" size="sm" disabled={!!error || changed === 0} onClick={save}>
               {saveLabel}
-              <kbd className="ml-1 text-[10px] opacity-70">{formatCombo("Mod+Enter")}</kbd>
+              <KbdHint combo="Mod+Enter" />
             </Button>
           )}
         </div>

@@ -27,7 +27,7 @@ function titleOf(phase: UpdatePhase): string {
   switch (phase.kind) {
     case "closed":
     case "checking":
-      return "Checking for updates…";
+      return "Checking for updates";
     case "upToDate":
       return "Tabler is up to date";
     case "unsupported":
@@ -49,7 +49,7 @@ function Notes({ update }: { update: AvailableUpdate }) {
   const notes = notesSince(update.notes, update.currentVersion);
   return (
     <div className="flex flex-col gap-1.5">
-      {published && <p className="text-muted-foreground text-[11px]">Published {published}</p>}
+      {published && <p className="text-muted-foreground text-xs">Published {published}</p>}
       {notes && (
         <div
           className="selectable border-border bg-surface max-h-48 overflow-y-auto rounded-md border px-2.5 py-2 text-xs leading-5 whitespace-pre-wrap"
@@ -78,12 +78,12 @@ function Progress({ progress }: { progress: UpdateProgress | null }) {
           className={
             percent === null
               ? "bg-primary h-full w-1/3 animate-pulse rounded-full"
-              : "bg-primary h-full rounded-full transition-[width] duration-150"
+              : "bg-primary h-full w-full rounded-full transition-transform duration-150 motion-reduce:transition-none"
           }
-          style={percent === null ? undefined : { width: `${percent}%` }}
+          style={percent === null ? undefined : { transform: `translateX(${percent - 100}%)` }}
         />
       </div>
-      <p className="text-muted-foreground text-[11px] tabular-nums">
+      <p className="text-muted-foreground text-xs tabular-nums">
         {progressLabel(progress)}
         {percent !== null && ` · ${percent}%`}
       </p>
@@ -112,8 +112,8 @@ export function UpdateDialog() {
         onEscapeKeyDown={(e) => busy && e.preventDefault()}
       >
         <DialogHeader>
-          <DialogTitle>{titleOf(phase)}</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-sm">{titleOf(phase)}</DialogTitle>
+          <DialogDescription className="text-xs">
             {phase.kind === "checking" && "Asking the release page for the newest build."}
             {phase.kind === "upToDate" &&
               `${running || phase.version} is the newest build of the ${channel} channel.`}

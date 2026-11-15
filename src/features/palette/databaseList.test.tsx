@@ -218,7 +218,7 @@ describe("admin commands", () => {
     fireEvent.change(input, { target: { value: "> user man" } });
     expect(screen.getAllByRole("option")[0]?.textContent).toMatch(/^User Management…/);
     fireEvent.change(input, { target: { value: "> process" } });
-    expect(screen.getAllByRole("option")[0]?.textContent).toMatch(/^Process list/);
+    expect(screen.getAllByRole("option")[0]?.textContent).toMatch(/^Process List/);
     fireEvent.change(input, { target: { value: "> drop schema" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
     await waitFor(() => expect(ran).toEqual(["drop-schema"]));

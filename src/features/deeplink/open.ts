@@ -158,7 +158,7 @@ function linkFilterRows(filter: UrlFilter | null, trusted: boolean): FilterRowSp
   if (!filter) return null;
   const seed = filterRowOf(filter);
   if ("error" in seed) {
-    toast.error("The link's filter was not applied", { description: seed.error });
+    toast.error("Could not apply the link's filter", { description: seed.error });
     return null;
   }
   return [rowOf(seed, seed.enabled || trusted)];
@@ -172,8 +172,8 @@ function linkFilterRows(filter: UrlFilter | null, trusted: boolean): FilterRowSp
  * A column condition applies at once (its value is a bound parameter). A raw SQL condition
  * (`condition` / `raw` / `query`) is SQL of the link's own: on a read-only connection, which
  * cannot change anything, it applies at once too; otherwise the table opens with it unchecked in
- * the filter bar and a dialog shows the SQL and asks (`confirmRawFilter`): "Apply filter" checks
- * it and reloads the table from the first page, "Not now" leaves it unchecked.
+ * the filter bar and a dialog shows the SQL and asks (`confirmRawFilter`): "Apply Filter" checks
+ * it and reloads the table from the first page, "Not Now" leaves it unchecked.
  */
 export function navigate(connectionId: string, target: UrlTarget | null): void {
   if (!target) return;
@@ -274,7 +274,7 @@ export async function createTemporary(
   const checked = connectionFormSchema.safeParse(form);
   if (!checked.success) {
     toast.error("Could not open the connection", {
-      description: checked.error.issues[0]?.message ?? "The URL is incomplete",
+      description: checked.error.issues[0]?.message ?? "The URL is incomplete.",
     });
     return null;
   }

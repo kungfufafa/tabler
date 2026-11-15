@@ -43,6 +43,7 @@ import { useShallow } from "zustand/react/shallow";
 import appIcon from "../../../design/app-icon.svg";
 import { EmptyState } from "@/components/EmptyState";
 import { Kbd } from "@/components/Kbd";
+import { KbdHint } from "@/components/KbdHint";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -137,15 +138,17 @@ function WelcomeAction({
       variant={variant}
       title={children}
       onClick={onClick}
-      className={cn(
-        "w-full justify-start gap-2 rounded-md px-2 text-left transition-colors",
-        variant === "default" && "bg-foreground text-background hover:bg-foreground/90",
-      )}
+      className="w-full justify-start gap-2 px-2 text-left transition-colors"
     >
-      <Icon aria-hidden className="size-4" />
+      <Icon aria-hidden />
       {/* No truncation: the welcome column is as wide as its longest action. */}
       <span className="flex-1">{children}</span>
-      {combo && <Kbd combo={combo} className="shrink-0" />}
+      {combo &&
+        (variant === "default" ? (
+          <KbdHint combo={combo} className="shrink-0" />
+        ) : (
+          <Kbd combo={combo} className="shrink-0" />
+        ))}
     </Button>
   );
 }
@@ -198,18 +201,21 @@ function GroupHeader({
           onClick={onToggle}
           style={{ paddingLeft: 8 + node.depth * INDENT_PX }}
           className={cn(
-            "text-muted-foreground hover:text-foreground hover:bg-row-hover flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-[12px] leading-4 font-medium transition-colors",
-            drop.isOver && "bg-brand-soft text-brand ring-brand/50 ring-1",
+            "text-muted-foreground hover:text-foreground hover:bg-row-hover flex h-7 w-full items-center gap-2 rounded-md pr-2 text-left text-[12px] leading-4 font-medium transition-colors",
+            drop.isOver && "bg-brand-soft ring-brand/50 ring-1 ring-inset",
             drag.isDragging && "opacity-50",
           )}
         >
           <ChevronRight
             aria-hidden
-            className={cn("size-4 shrink-0 transition-transform", !collapsed && "rotate-90")}
+            className={cn(
+              "size-3.5 shrink-0 transition-transform duration-150 motion-reduce:transition-none",
+              !collapsed && "rotate-90",
+            )}
           />
-          <GroupIcon icon={icon} image={image} className="size-4" />
+          <GroupIcon icon={icon} image={image} />
           <span className="truncate">{node.name}</span>
-          <span className="shrink-0 font-normal tabular-nums">{node.count}</span>
+          <span className="shrink-0 text-xs font-normal tabular-nums">{node.count}</span>
         </button>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-52">
@@ -231,7 +237,7 @@ function TopLevelDropZone({ label }: { label: string }) {
       data-drop-over={drop.isOver || undefined}
       className={cn(
         "border-border text-muted-foreground mb-2 flex h-8 items-center justify-center rounded-md border border-dashed text-xs",
-        drop.isOver && "border-brand bg-brand-soft text-brand",
+        drop.isOver && "bg-brand-soft ring-brand/50 border-transparent ring-1 ring-inset",
       )}
     >
       {label}
@@ -459,16 +465,16 @@ export function Launcher() {
     label: "Export Connections",
     icon: Share,
     items: [
-      { kind: "item", label: "Export all…", run: exportAll, disabled: all.length === 0 },
+      { kind: "item", label: "Export All…", run: exportAll, disabled: all.length === 0 },
       {
         kind: "item",
-        label: "Export this group…",
+        label: "Export This Group…",
         run: () => group && exportGroup(group),
         disabled: !group || idsInSubtree(all, group).length === 0,
       },
       {
         kind: "item",
-        label: "Export this connection…",
+        label: "Export This Connection…",
         run: () => p && exportOne(p),
         disabled: !p,
       },
@@ -502,7 +508,7 @@ export function Launcher() {
   };
   const sortMenu: MenuEntry = {
     kind: "sub",
-    label: "Sort by",
+    label: "Sort By",
     icon: ArrowUpDown,
     items: [
       {
@@ -597,7 +603,7 @@ export function Launcher() {
     },
     {
       kind: "item",
-      label: "Copy as URL (without password)",
+      label: "Copy as URL (Without Password)",
       run: () => void copyConnectionUrl(p, false),
     },
     separator,
@@ -637,7 +643,7 @@ export function Launcher() {
       items: [
         {
           kind: "item",
-          label: "Connection in this group…",
+          label: "Connection in This Group…",
           run: () => openNewConnectionInGroup(group),
         },
         { kind: "item", label: "Connection…", run: () => openConnectionDialog() },
@@ -790,7 +796,7 @@ export function Launcher() {
     <div className="relative min-w-0 flex-1">
       <Search
         aria-hidden
-        className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2"
+        className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2"
       />
       <Input
         ref={searchRef}
@@ -798,8 +804,8 @@ export function Launcher() {
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={onSearchKeyDown}
         aria-label="Search connections"
-        placeholder={windowed ? "Search for connection…" : "Search connections"}
-        className={cn("pr-12 pl-8", windowed ? "h-7 rounded-full" : "rounded-md")}
+        placeholder="Search connections"
+        className={cn("pr-12 pl-8 text-sm", windowed && "h-7 rounded-full")}
         spellCheck={false}
         autoComplete="off"
       />
@@ -816,7 +822,7 @@ export function Launcher() {
       size={windowed ? "icon-sm" : "icon"}
       aria-label="New group"
       title="New group"
-      className="rounded-md transition-colors"
+      className="transition-colors"
       onClick={() => openGroupDialog({ kind: "new", parent: "", moveIds: [] })}
     >
       <FolderPlus />
@@ -831,7 +837,7 @@ export function Launcher() {
           size={windowed ? "icon-sm" : "icon"}
           aria-label="More connection actions"
           title="More connection actions"
-          className="rounded-md transition-colors"
+          className="transition-colors"
         >
           <MoreHorizontal />
         </Button>
@@ -893,10 +899,10 @@ export function Launcher() {
               Create a new connection…
             </WelcomeAction>
             <WelcomeAction icon={Link2} onClick={() => setUrlOpen(true)}>
-              New connection from URL…
+              New Connection from URL…
             </WelcomeAction>
             <WelcomeAction icon={Import} onClick={() => void startImportConnections()}>
-              Import connections…
+              Import Connections…
             </WelcomeAction>
           </nav>
           <nav
@@ -906,7 +912,7 @@ export function Launcher() {
             <Button
               type="button"
               variant="ghost"
-              className="justify-start gap-2 rounded-md px-2 transition-colors"
+              className="justify-start gap-2 px-2 transition-colors"
               onClick={() => backup("backup")}
               title="Back up a database with its native dump tool"
             >
@@ -915,7 +921,7 @@ export function Launcher() {
             <Button
               type="button"
               variant="ghost"
-              className="justify-start gap-2 rounded-md px-2 transition-colors"
+              className="justify-start gap-2 px-2 transition-colors"
               onClick={() => backup("restore")}
               title="Restore a database from a dump file"
             >
@@ -941,7 +947,7 @@ export function Launcher() {
                 size="icon-sm"
                 aria-label="New connection"
                 title="Create a new connection"
-                className="rounded-md transition-colors"
+                className="transition-colors"
                 onClick={() => openConnectionDialog()}
               >
                 <Plus />
@@ -979,11 +985,11 @@ export function Launcher() {
                 ) : !hasList ? (
                   <EmptyState
                     icon={searching ? Search : Plug}
-                    title={searching ? "No matching connections" : "No connections yet"}
+                    title={searching ? "No matches" : "No connections yet"}
                     description={
                       searching
-                        ? "Try another search term"
-                        : "Enter your database details, paste a connection URL, or import saved connections"
+                        ? "Try another search term."
+                        : "Enter your database details, paste a connection URL, or import saved connections."
                     }
                   />
                 ) : (
@@ -1053,12 +1059,12 @@ export function Launcher() {
             </p>
             <Button
               type="button"
-              className="bg-foreground text-background hover:bg-foreground/90 min-w-24 gap-2 rounded-md px-3 transition-colors"
+              className="min-w-24 gap-2 px-3 transition-colors"
               disabled={!selected || selectedConnecting}
               aria-busy={selectedConnecting || undefined}
               onClick={() => selected && openProfile(selected.id)}
             >
-              {selectedConnecting ? "Connecting…" : selectedOpen ? "Open workspace" : "Connect"}
+              {selectedConnecting ? "Connecting…" : selectedOpen ? "Open Workspace" : "Connect"}
               <ArrowRight />
             </Button>
           </footer>
@@ -1071,15 +1077,16 @@ export function Launcher() {
       >
         <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete “{pendingDelete?.name}”?</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogTitle className="text-sm">Delete “{pendingDelete?.name}”?</AlertDialogTitle>
+            <AlertDialogDescription className="text-xs">
               The saved connection and its stored password are removed. The database itself is not
               touched.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>
             <AlertDialogAction
+              size="sm"
               variant="destructive"
               onClick={() => {
                 if (pendingDelete) remove.mutate(pendingDelete.id);

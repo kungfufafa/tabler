@@ -1,5 +1,7 @@
-import { CircleAlert, RotateCw, Search } from "lucide-react";
+import { RotateCw, Search } from "lucide-react";
 import { useMemo, useState, type KeyboardEvent } from "react";
+import { FormError } from "@/components/FormError";
+import { QuietStatus } from "@/components/QuietLoading";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -46,7 +48,10 @@ export function DatabaseList({
       <ColumnHeader>Databases</ColumnHeader>
       <div className="px-2 pt-2 pb-1">
         <div className="relative">
-          <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
+          <Search
+            aria-hidden
+            className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2"
+          />
           <Input
             aria-label="Search databases"
             placeholder="Search"
@@ -56,7 +61,7 @@ export function DatabaseList({
             disabled={disabled || loading || error !== null}
             spellCheck={false}
             autoComplete="off"
-            className="h-7 pl-7 text-xs"
+            className="h-7 rounded-md pl-7 text-xs md:text-xs"
           />
         </div>
       </div>
@@ -67,31 +72,24 @@ export function DatabaseList({
         aria-activedescendant={selected ? `backup-db-${selected}` : undefined}
         onKeyDown={onKeyDown}
         className={cn(
-          "min-h-0 flex-1 overflow-y-auto pb-1 outline-none",
-          disabled && "pointer-events-none opacity-60",
+          "focus-visible:ring-ring/50 min-h-0 flex-1 overflow-y-auto pb-1 outline-none focus-visible:ring-2 focus-visible:ring-inset",
+          disabled && "pointer-events-none opacity-50",
         )}
       >
-        {loading && (
-          <div className="text-muted-foreground flex items-center gap-2 px-3 py-2 text-xs">
-            <span className="sr-only">Loading databases…</span>
-          </div>
-        )}
+        {loading && <QuietStatus>Loading databases</QuietStatus>}
         {error !== null && (
-          <div role="alert" className="flex flex-col items-start gap-2 px-3 py-2 text-xs">
-            <span className="text-error flex items-start gap-1.5">
-              <CircleAlert className="mt-px size-3.5 shrink-0" />
-              <span className="line-clamp-4 break-words" title={error}>
-                {error}
-              </span>
-            </span>
+          <div className="flex flex-col items-start gap-2 px-3 py-2">
+            <FormError title={error} className="[&>span]:line-clamp-4">
+              {error}
+            </FormError>
             <Button type="button" variant="outline" size="xs" onClick={onRetry}>
-              <RotateCw /> Try again
+              <RotateCw /> Try Again
             </Button>
           </div>
         )}
         {!loading && error === null && shown.length === 0 && (
           <p className="text-muted-foreground px-3 py-2 text-xs">
-            {query ? "No database matches." : "No databases."}
+            {query ? "No matches" : "No databases"}
           </p>
         )}
         {shown.map((name) => (
@@ -102,7 +100,7 @@ export function DatabaseList({
             aria-selected={name === selected}
             onClick={() => onSelect(name)}
             className={cn(
-              "mx-1 flex h-7 cursor-default items-center gap-2 rounded-md px-2 font-mono text-xs",
+              "mx-1 flex h-7 cursor-default items-center gap-2 rounded-md px-2 font-mono text-xs transition-colors",
               name === selected ? "bg-brand-soft text-foreground" : "hover:bg-row-hover",
             )}
           >
@@ -110,7 +108,9 @@ export function DatabaseList({
               {name}
             </span>
             {name === current && (
-              <span className="text-muted-foreground shrink-0 font-sans text-[10px]">default</span>
+              <span className="border-border text-muted-foreground inline-flex h-4 shrink-0 items-center rounded-sm border px-1 font-sans text-[10px] leading-none font-medium">
+                default
+              </span>
             )}
           </div>
         ))}

@@ -106,12 +106,12 @@ export function ConnectionRow({
               {profile.options.tag && (
                 <TagPill
                   tag={profile.options.tag}
-                  className="block max-w-[min(7rem,30%)] truncate rounded-sm leading-4"
+                  className="block max-w-[min(7rem,30%)] truncate leading-4"
                 />
               )}
               {profile.options.readOnly && (
                 <span className="border-border text-muted-foreground inline-flex h-4 shrink-0 items-center rounded-sm border px-1 text-[10px] leading-none font-medium">
-                  read-only
+                  Read-only
                 </span>
               )}
               {connected && (
@@ -156,7 +156,7 @@ export function ConnectionRow({
                 onPointerDown={(e) => e.stopPropagation()}
                 aria-label="Connection actions"
               >
-                <MoreHorizontal />
+                <MoreHorizontal aria-hidden />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent

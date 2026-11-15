@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Kbd } from "@/components/Kbd";
+import { FormError } from "@/components/FormError";
+import { KbdHint } from "@/components/KbdHint";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -36,7 +37,7 @@ export function TriggerEditorDialog({
 }) {
   return (
     <Dialog open={editing !== null} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col gap-3 sm:max-w-[min(56rem,calc(100%-2rem))]">
+      <DialogContent className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(56rem,calc(100%-2rem))]">
         {editing && (
           <TriggerForm
             key={editing.key ?? "new"}
@@ -78,7 +79,7 @@ function TriggerForm({
     <>
       <DialogHeader>
         <DialogTitle className="text-sm">
-          {editing.readOnly ? "Trigger" : isNew ? "New trigger" : "Edit trigger"}
+          {editing.readOnly ? "Trigger" : isNew ? "New Trigger" : "Edit Trigger"}
         </DialogTitle>
         <DialogDescription className="text-xs">
           On <span className="font-mono">{tableName}</span>.{" "}
@@ -103,26 +104,19 @@ function TriggerForm({
         className="min-h-40 flex-1"
       />
       {dialect === "postgres" && !editing.readOnly && (
-        <p className="text-muted-foreground text-[11px]">
+        <p className="text-muted-foreground text-xs">
           PostgreSQL triggers call a function: create it first (it returns <code>trigger</code>).
         </p>
       )}
-      {error && (
-        <p role="alert" className="text-error text-xs">
-          {error}
-        </p>
-      )}
+      {error && <FormError>{error}</FormError>}
       <DialogFooter className="items-center">
-        <Button variant="ghost" size="sm" onClick={onClose}>
+        <Button variant="outline" size="sm" onClick={onClose}>
           {editing.readOnly ? "Close" : "Cancel"}
         </Button>
         {!editing.readOnly && (
           <Button size="sm" onClick={stage}>
-            {isNew ? "Add trigger" : "Stage changes"}
-            <Kbd
-              combo="Mod+S"
-              className="border-primary-foreground/30 ml-1 bg-transparent text-inherit"
-            />
+            {isNew ? "Add Trigger" : "Stage Changes"}
+            <KbdHint combo="Mod+S" />
           </Button>
         )}
       </DialogFooter>

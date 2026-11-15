@@ -22,7 +22,11 @@ import {
   type ExportOptions,
 } from "./options";
 
-/** Label column + control column; `id` labels a Segmented group (`${id}-label`). */
+/**
+ * Label column + control column: the side-column form of `FormField` (docs/ui-conventions.md,
+ * Forms), an 88px right-aligned muted label beside the control and the hint under it. `id` labels a
+ * Segmented group (`${id}-label`), which `FormField` cannot, so the export keeps its own row.
+ */
 export function Row({
   id,
   label,
@@ -35,17 +39,17 @@ export function Row({
   children: ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[84px_minmax(0,1fr)] items-start gap-x-3">
+    <div className="grid min-w-0 grid-cols-[5.5rem_minmax(0,1fr)] items-start gap-x-3">
       <label
         id={`${id}-label`}
         htmlFor={id}
-        className="text-muted-foreground pt-1.5 text-xs leading-4"
+        className="text-muted-foreground pt-1.5 text-right text-xs leading-4"
       >
         {label}
       </label>
       <div className="flex min-w-0 flex-col items-start gap-1">
         {children}
-        {hint && <div className="text-muted-foreground text-[11px] leading-4">{hint}</div>}
+        {hint && <div className="text-muted-foreground text-xs leading-4">{hint}</div>}
       </div>
     </div>
   );
@@ -67,10 +71,7 @@ export function Check({
   return (
     <label
       title={title}
-      className={cn(
-        "flex h-7 cursor-default items-center gap-2 text-xs",
-        disabled && "text-muted-foreground opacity-60",
-      )}
+      className={cn("flex h-7 cursor-default items-center gap-2 text-xs", disabled && "opacity-50")}
     >
       <Checkbox
         checked={checked}
@@ -123,7 +124,7 @@ function EncodingRow({
           id="export-encoding"
           size="sm"
           aria-label="Encoding"
-          className="h-7 w-48 text-xs"
+          className="w-48 text-xs"
         >
           <SelectValue />
         </SelectTrigger>

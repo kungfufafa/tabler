@@ -51,7 +51,7 @@ describe("locationPrompt", () => {
 });
 
 describe("Settings ▸ Locations", () => {
-  it("moves the connections & settings folder after a restart, and queries at once", async () => {
+  it("moves the connections and settings folder after a restart, and queries at once", async () => {
     const setData = vi.spyOn(ipc.locations, "setData");
     const setQueries = vi.spyOn(ipc.locations, "setQueries");
     renderWith(<LocationsSettings />);

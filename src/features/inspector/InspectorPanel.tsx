@@ -71,7 +71,7 @@ export function InspectorPanel() {
         aria-label="Row details"
         className="border-border bg-sidebar text-sidebar-foreground flex h-full min-w-0 flex-col border-l"
       >
-        <div className="border-border flex h-8 shrink-0 items-center gap-1 border-b px-2">
+        <div className="border-border flex h-8 shrink-0 items-center gap-2 border-b px-2">
           <ModeSwitch
             mode={assistantActive ? "assistant" : mode}
             modes={assistantEnabled ? MODES : ROW_MODES}
@@ -80,7 +80,7 @@ export function InspectorPanel() {
           <Button
             variant="ghost"
             size="icon-xs"
-            className="text-muted-foreground hover:text-foreground"
+            className="text-muted-foreground hover:bg-accent hover:text-foreground dark:hover:bg-accent"
             onClick={toggle}
             aria-label="Close row details"
             title={closeKeys ? `Close (${formatCombo(closeKeys)})` : "Close"}
@@ -94,7 +94,7 @@ export function InspectorPanel() {
           // Columns selected in a structure view: their attributes, edited together.
           <ColumnsPane selection={columns} />
         ) : !cell || !shown ? (
-          <EmptyState title="No row selected" description="Select a cell to inspect its row" />
+          <EmptyState title="No row selected" description="Select a cell to inspect its row." />
         ) : mode === "row" && cell.slot ? (
           <LaneInspector
             slot={cell.slot}
@@ -185,10 +185,10 @@ function ModeSwitch({
             onClick={() => onChange(m.mode)}
             onKeyDown={onKeyDown}
             className={cn(
-              "focus-visible:ring-ring/60 min-w-0 flex-auto truncate rounded-t-sm border-b-2 border-transparent px-1 text-[12px] leading-4 outline-none focus-visible:ring-2 focus-visible:ring-inset",
+              "focus-visible:ring-ring/50 min-w-0 flex-auto truncate rounded-t-sm border-b-2 border-transparent px-1 text-[12px] leading-4 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset",
               checked
                 ? "border-brand text-foreground font-medium"
-                : "text-muted-foreground hover:bg-row-hover hover:text-foreground",
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
           >
             {m.label}

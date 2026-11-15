@@ -1,5 +1,6 @@
 import { Plus } from "lucide-react";
 import { useState } from "react";
+import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -67,18 +68,23 @@ export function OptionChips({
             <CommandInput
               value={typed}
               onValueChange={setTyped}
-              placeholder={`Type a ${tool} option…`}
+              placeholder={`Type a ${tool} option`}
               className="font-mono text-xs"
               aria-label="Option"
             />
             <CommandList>
               <CommandEmpty className="text-muted-foreground px-3 py-3 text-left text-xs">
-                {problem ?? "Type an option and press ↩ to add it."}
+                {problem ?? (
+                  <>
+                    Type an option and press <Kbd combo="Enter" className="mx-0.5 align-middle" />{" "}
+                    to add it.
+                  </>
+                )}
               </CommandEmpty>
               {free !== "" && !problem && !known && !flags.includes(free) && (
                 <CommandGroup>
                   <CommandItem value={free} onSelect={() => add(free)} className="text-xs">
-                    <Plus />
+                    <Plus aria-hidden />
                     Add <span className="font-mono">{free}</span>
                   </CommandItem>
                 </CommandGroup>
@@ -93,7 +99,7 @@ export function OptionChips({
                       className="flex-col items-start gap-0 text-xs"
                     >
                       <span className="font-mono">{f.flag}</span>
-                      <span className="text-muted-foreground text-[11px]">{f.description}</span>
+                      <span className="text-muted-foreground text-xs">{f.description}</span>
                     </CommandItem>
                   ))}
                 </CommandGroup>

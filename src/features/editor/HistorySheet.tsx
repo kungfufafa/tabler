@@ -38,6 +38,7 @@ import {
   Sheet,
   SheetContent,
   SheetDescription,
+  SheetFooter,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
@@ -102,7 +103,7 @@ function OptionToggle({
       onPressedChange={onPressedChange}
       aria-label={label}
       title={label}
-      className="text-muted-foreground data-[state=on]:bg-brand-soft data-[state=on]:text-foreground h-5 min-w-5 rounded px-0.5 [&_svg:not([class*='size-'])]:size-3.5"
+      className="text-muted-foreground hover:bg-accent data-[state=on]:bg-brand-soft data-[state=on]:text-brand h-5 min-w-5 rounded px-0.5 [&_svg:not([class*='size-'])]:size-3.5"
     >
       {children}
     </Toggle>
@@ -250,15 +251,16 @@ export function HistorySheet({
         }}
         onKeyDown={onKeyDown}
       >
-        <SheetHeader className="border-border gap-2 border-b px-4 pt-4 pb-3">
-          <SheetTitle className="flex items-center gap-2 text-sm">
-            <History className="text-muted-foreground size-4" /> Query history
+        <SheetHeader className="gap-1 border-b px-4 py-3">
+          {/* pr-8 keeps the title clear of the sheet's close X; the search field runs full width. */}
+          <SheetTitle className="flex items-center gap-2 pr-8 text-sm">
+            <History aria-hidden className="text-brand size-4 shrink-0" /> Query History
           </SheetTitle>
           <SheetDescription className="text-xs">
-            Double-click or <Kbd combo="Enter" className="align-middle" /> inserts at the cursor,{" "}
-            <Kbd combo="Mod+Enter" className="align-middle" /> runs.
+            Double-click or <Kbd combo="Enter" className="mx-0.5 align-middle" /> inserts at the
+            cursor, <Kbd combo="Mod+Enter" className="mx-0.5 align-middle" /> runs.
           </SheetDescription>
-          <div className="relative">
+          <div className="relative mt-2">
             <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
             <Input
               autoFocus
@@ -269,10 +271,10 @@ export function HistorySheet({
               aria-activedescendant={activeDescendant}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={options.regex ? "Search SQL (regex)…" : "Search SQL…"}
+              placeholder={options.regex ? "Search SQL (regex)" : "Search SQL"}
               aria-label="Search history"
               aria-invalid={invalidRegex || undefined}
-              className="h-7 pr-20 pl-7 text-xs md:text-xs"
+              className="h-7 rounded-md pr-20 pl-7 text-xs md:text-xs"
             />
             <div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-px">
               <OptionToggle
@@ -303,7 +305,7 @@ export function HistorySheet({
         <div
           ref={listRef}
           id={listboxId}
-          className="focus-visible:ring-brand/40 min-h-0 flex-1 overflow-auto outline-none focus-visible:ring-1 focus-visible:ring-inset"
+          className="focus-visible:ring-ring min-h-0 flex-1 overflow-auto outline-none focus-visible:ring-1 focus-visible:ring-inset"
           role="listbox"
           aria-label="History"
           tabIndex={0}
@@ -315,7 +317,7 @@ export function HistorySheet({
               description="Fix the pattern, or turn Regex off."
             />
           ) : history.isError ? (
-            <EmptyState title="Could not load history" description={history.error.message} />
+            <EmptyState title="Could not load the history" description={history.error.message} />
           ) : entries.length === 0 && settled && !history.isPending ? (
             <EmptyState
               icon={History}
@@ -330,7 +332,7 @@ export function HistorySheet({
                 <div
                   id={`${listboxId}-day-${g.key}`}
                   aria-hidden
-                  className="bg-surface-2/95 text-muted-foreground border-border sticky top-0 z-[1] border-b px-4 py-1 text-[10px] font-semibold tracking-wider uppercase backdrop-blur"
+                  className="bg-surface-2/95 text-muted-foreground border-border sticky top-0 z-[1] border-b px-4 py-1 text-xs font-medium backdrop-blur"
                 >
                   {g.label}
                 </div>
@@ -354,7 +356,7 @@ export function HistorySheet({
                       }}
                       onDoubleClick={() => insert(e)}
                     >
-                      <div className="text-muted-foreground flex items-center gap-1.5 text-[11px]">
+                      <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
                         {e.success ? (
                           <CircleCheck
                             className="text-success size-3 shrink-0"
@@ -365,7 +367,7 @@ export function HistorySheet({
                         )}
                         <EntryMeta e={e} />
                         {e.source === "explain" && (
-                          <span className="border-border shrink-0 rounded border px-1 text-[9px] uppercase">
+                          <span className="border-border text-muted-foreground inline-flex h-4 shrink-0 items-center rounded-sm border px-1 text-[10px] leading-none font-medium">
                             explain
                           </span>
                         )}
@@ -377,7 +379,7 @@ export function HistorySheet({
                           aria-hidden
                           data-testid="history-run"
                           title={`Run (${formatCombo("Mod+Enter")})`}
-                          className="hover:text-foreground ml-auto shrink-0 opacity-0 group-hover:opacity-100"
+                          className="hover:text-foreground ml-auto shrink-0 opacity-0 transition-colors group-hover:opacity-100"
                           onClick={(ev) => {
                             ev.stopPropagation();
                             run(e);
@@ -390,7 +392,7 @@ export function HistorySheet({
                           tabIndex={-1}
                           aria-hidden
                           title={`Delete entry (${formatCombo("Mod+Backspace")})`}
-                          className="hover:text-error shrink-0 opacity-0 group-hover:opacity-100"
+                          className="hover:text-error shrink-0 opacity-0 transition-colors group-hover:opacity-100"
                           onClick={(ev) => {
                             ev.stopPropagation();
                             remove.mutate([e.id]);
@@ -399,11 +401,11 @@ export function HistorySheet({
                           <Trash2 className="size-3.5" />
                         </button>
                       </div>
-                      <pre className="text-foreground/90 mt-1 line-clamp-3 font-mono text-[11px] leading-4 break-words whitespace-pre-wrap">
+                      <pre className="text-foreground mt-1 line-clamp-3 font-mono text-[11.5px] leading-4 break-words whitespace-pre-wrap">
                         {e.sql}
                       </pre>
                       {!e.success && e.error && (
-                        <div className="text-error mt-0.5 truncate text-[11px]" title={e.error}>
+                        <div className="text-error mt-0.5 truncate text-xs" title={e.error}>
                           {e.error}
                         </div>
                       )}
@@ -415,7 +417,7 @@ export function HistorySheet({
           )}
         </div>
 
-        <div className="border-border text-muted-foreground flex h-10 shrink-0 items-center gap-2 border-t px-4 text-[11px]">
+        <SheetFooter className="bg-muted/50 text-muted-foreground mt-0 shrink-0 flex-row items-center justify-end border-t text-xs">
           <span className="tabular-nums">
             {entries.length === 200
               ? "Latest 200 entries"
@@ -423,29 +425,28 @@ export function HistorySheet({
           </span>
           <span className="flex-1" />
           <Button
-            variant="ghost"
-            size="xs"
-            className="hover:text-error"
+            variant="outline"
+            size="sm"
             disabled={entries.length === 0 || clear.isPending}
             onClick={() => setConfirmClear(true)}
           >
-            <Trash2 /> Clear all
+            <Trash2 /> Clear All…
           </Button>
-        </div>
+        </SheetFooter>
       </SheetContent>
 
       <AlertDialog open={confirmClear} onOpenChange={setConfirmClear}>
         <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle>Clear query history?</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogTitle className="text-sm">Clear query history?</AlertDialogTitle>
+            <AlertDialogDescription className="text-xs">
               Every recorded statement, for all connections, is deleted. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => clear.mutate()}>
-              Clear history
+            <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>
+            <AlertDialogAction size="sm" variant="destructive" onClick={() => clear.mutate()}>
+              Clear History
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

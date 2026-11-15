@@ -80,7 +80,7 @@ const NO_ROUTINES: readonly RoutineSummary[] = [];
 /**
  * Gathers everything the palette lists in `mode` and ranks it for `query`. Open Anything (⌘P):
  * one flat list of the current schema's tables (with lazy load: those of every loaded schema,
- * plus a "Load all schemas" row), the open tabs, schemas, databases and saved connections, or of
+ * plus a "Load All Schemas" row), the open tabs, schemas, databases and saved connections, or of
  * the actions once the query starts with `>`. ⌘K: databases and schemas. ⇧⌘K: connections.
  * Search in Database…: every table, view and routine of the database (`ipc.objects.databaseItems`).
  * Mount only while the palette is open.

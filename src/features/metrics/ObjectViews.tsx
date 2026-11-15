@@ -27,7 +27,7 @@ import { setInputText, setVariable, useMetricsStore, runKey } from "./store";
 
 /**
  * A scoreboard (stat tile): the label, one number (grouped, compact from 10,000), and its change
- * since the previous refresh, coloured by whether that change is good news (with an arrow and a
+ * since the previous refresh, colored by whether that change is good news (with an arrow and a
  * sign, never by colour alone).
  */
 export function ScoreboardView({
@@ -46,9 +46,9 @@ export function ScoreboardView({
   const good = diff !== null && diff !== 0 && diff > 0 === object.higherIsBetter;
   return (
     <div className="@container flex h-full min-h-0 flex-col justify-center gap-1 px-3 py-2">
-      <p className="text-muted-foreground truncate text-[12px] font-medium">{object.title}</p>
+      <p className="truncate text-[12px] font-semibold">{object.title}</p>
       <p
-        className="truncate text-2xl leading-tight font-semibold @[12rem]:text-3xl @[18rem]:text-4xl"
+        className="truncate text-2xl leading-tight font-semibold tabular-nums @[12rem]:text-3xl @[18rem]:text-4xl"
         title={value ? displayValue(value).text : undefined}
       >
         {text}
@@ -56,7 +56,7 @@ export function ScoreboardView({
       {diff !== null && previous !== null && n !== null && (
         <p
           className={cn(
-            "flex min-w-0 items-center gap-1 text-[11px]",
+            "flex min-w-0 items-center gap-1 text-xs",
             diff === 0 ? "text-muted-foreground" : good ? "text-success" : "text-error",
           )}
         >
@@ -117,7 +117,7 @@ export function DataTableView({ result }: { result: MetricsResult | null }) {
                 aria-sort={sort?.col === i ? (sort.desc ? "descending" : "ascending") : "none"}
                 onClick={() => setSort(next(i))}
                 className={cn(
-                  "hover:text-foreground flex min-w-0 items-center gap-1 px-2 text-left text-[11px] font-medium",
+                  "hover:text-foreground focus-visible:ring-ring flex min-w-0 items-center gap-1 px-2 text-left text-xs font-medium transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset",
                   numeric[i] && "justify-end",
                   sort?.col === i && "text-foreground",
                 )}
@@ -139,7 +139,7 @@ export function DataTableView({ result }: { result: MetricsResult | null }) {
                 <div
                   key={item.key}
                   role="row"
-                  className="border-gridline absolute inset-x-0 grid border-b hover:bg-black/[0.035] dark:hover:bg-white/[0.05]"
+                  className="border-gridline hover:bg-row-hover absolute inset-x-0 grid border-b"
                   style={{
                     gridTemplateColumns: template,
                     height: ROW_H,
@@ -156,7 +156,7 @@ export function DataTableView({ result }: { result: MetricsResult | null }) {
                         className={cn(
                           "truncate px-2 leading-6",
                           numeric[i] && "text-right font-mono tabular-nums",
-                          d?.placeholder && "text-muted-foreground italic",
+                          d?.placeholder && "text-null italic",
                         )}
                         title={d?.text}
                       >
@@ -170,7 +170,7 @@ export function DataTableView({ result }: { result: MetricsResult | null }) {
           </div>
         </div>
       </div>
-      <p className="text-muted-foreground border-border shrink-0 border-t px-2 py-0.5 text-[10px]">
+      <p className="text-muted-foreground border-border shrink-0 border-t px-2 py-0.5 text-xs tabular-nums">
         {rows.length.toLocaleString("en-US")} row{rows.length === 1 ? "" : "s"}
         {result.truncated && " (first rows only)"}
       </p>
@@ -211,7 +211,7 @@ export function InputView({
   };
   return (
     <label className="flex h-full min-h-0 flex-col justify-center gap-1 px-3">
-      <span className="text-muted-foreground truncate text-[11px] font-medium">{object.title}</span>
+      <span className="text-muted-foreground truncate text-xs font-medium">{object.title}</span>
       <Input
         type={
           object.inputType === "number" ? "number" : object.inputType === "date" ? "date" : "text"
@@ -219,7 +219,7 @@ export function InputView({
         value={text}
         disabled={disabled}
         placeholder={object.variable ? `{{${object.variable}}}` : undefined}
-        className="h-7 text-xs md:text-xs"
+        className="h-7 rounded-md text-xs md:text-xs"
         onChange={(e) => {
           const value = e.target.value;
           setInputText(boardId, object.id, value);
@@ -259,7 +259,7 @@ export function DropdownView({
   const selected = current ? valueKey(current) : undefined;
   return (
     <div className="flex h-full min-h-0 flex-col justify-center gap-1 px-3" aria-busy={running}>
-      <span className="text-muted-foreground flex items-center gap-1 truncate text-[11px] font-medium">
+      <span className="text-muted-foreground flex items-center gap-1 truncate text-xs font-medium">
         {object.title}
       </span>
       <Select
@@ -273,7 +273,7 @@ export function DropdownView({
         }}
       >
         <SelectTrigger size="sm" className="w-full text-xs" aria-label={object.title}>
-          <SelectValue placeholder={options.length === 0 ? "No options" : "Choose…"} />
+          <SelectValue placeholder={options.length === 0 ? "No options" : "Choose an option"} />
         </SelectTrigger>
         <SelectContent>
           {options.map((o) => {

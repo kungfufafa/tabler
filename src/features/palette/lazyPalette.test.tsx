@@ -167,7 +167,7 @@ describe("Search in Database… on MySQL", () => {
 });
 
 describe("Open Anything with lazy load", () => {
-  it("searches only the loaded schemas, and Load all schemas loads the others in place", async () => {
+  it("searches only the loaded schemas, and Load All Schemas loads the others in place", async () => {
     const tables = vi
       .spyOn(ipc.schema, "tables")
       .mockImplementation(async (_c, schema) => (schema === "inventory" ? INVENTORY : PUBLIC));
@@ -181,15 +181,15 @@ describe("Open Anything with lazy load", () => {
 
     type("items");
     // Nothing loaded matches; the row that loads the rest stays.
-    await waitFor(() => expect(optionTexts()).toEqual(["Load all schemas1 not searched"]));
+    await waitFor(() => expect(optionTexts()).toEqual(["Load All Schemas1 not searched"]));
     expect(tables).not.toHaveBeenCalledWith("c1", "inventory");
-    fireEvent.click(screen.getByRole("option", { name: /^Load all schemas/ }));
+    fireEvent.click(screen.getByRole("option", { name: /^Load All Schemas/ }));
     // The palette stays open and the list grows.
     expect(usePaletteStore.getState().open).toBe(true);
     await waitFor(() => expect(optionTexts()).toContain("itemsinventorytable"));
     expect(tables).toHaveBeenCalledWith("c1", "inventory");
     expect(lazyTreeOf(key).loaded).toEqual(["public", "inventory"]);
-    expect(optionTexts().some((t) => t.startsWith("Load all schemas"))).toBe(false);
+    expect(optionTexts().some((t) => t.startsWith("Load All Schemas"))).toBe(false);
 
     // Opening it expands its node in the sidebar.
     fireEvent.click(screen.getByRole("option", { name: /^items/ }));

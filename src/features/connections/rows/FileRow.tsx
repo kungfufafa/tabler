@@ -38,7 +38,7 @@ export function FileRow({
           id={`${uid}-file`}
           {...register("sqlitePath")}
           placeholder={placeholder}
-          className="font-mono"
+          className="font-mono text-sm"
           aria-invalid={errors.sqlitePath ? true : undefined}
         />
         <Button

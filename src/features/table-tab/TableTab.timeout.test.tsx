@@ -49,7 +49,7 @@ describe("a table load that the query time out stopped", () => {
   it("says so, with the hint that names the setting", async () => {
     vi.spyOn(ipc.browse, "rows").mockRejectedValue(new IpcError(TIMEOUT));
     await open();
-    expect(await screen.findByText("Query failed")).toBeInTheDocument();
+    expect(await screen.findByText("Could not load the rows")).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByText(/Query timed out after 300 s/)).toHaveTextContent(
         "Settings ▸ Connections ▸ Query time out",

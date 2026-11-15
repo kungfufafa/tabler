@@ -31,8 +31,8 @@ export function RedshiftFields({ form }: KindFieldsProps) {
   return (
     <Row label="IAM" hint={note ?? undefined}>
       <div className="flex h-8 items-center">
-        <Button type="button" variant="outline" size="sm" onClick={useIam}>
-          Use IAM credentials
+        <Button type="button" variant="outline" onClick={useIam}>
+          Use IAM Credentials
         </Button>
       </div>
     </Row>

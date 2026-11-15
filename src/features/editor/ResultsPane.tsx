@@ -108,7 +108,7 @@ function PaneTab({
                 ? "after:bg-brand after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5"
                 : "bg-accent",
             )
-          : "text-muted-foreground hover:text-foreground hover:bg-row-hover",
+          : "text-muted-foreground hover:text-foreground hover:bg-accent",
       )}
     >
       {children}
@@ -149,8 +149,8 @@ function ResultTab({
 
 function ResultsEmpty() {
   const shortcuts = [
-    { label: "Run current", combo: shortcutFor("query.run-current") },
-    { label: "Run all", combo: shortcutFor("query.run") },
+    { label: "Run Current", combo: shortcutFor("query.run-current") },
+    { label: "Run All", combo: shortcutFor("query.run") },
     { label: "Explain", combo: shortcutFor("query.explain") },
   ].flatMap(({ label, combo }) =>
     combo
@@ -165,11 +165,11 @@ function ResultsEmpty() {
   return (
     <EmptyState
       title="Run a query"
-      description="Results appear here after a statement runs"
+      description="Results appear here after a statement runs."
       className="justify-center-safe overflow-y-auto p-4"
     >
       {shortcuts.length > 0 && (
-        <ul className="text-muted-foreground flex flex-wrap justify-center gap-x-4 gap-y-2 text-[12px]">
+        <ul className="text-muted-foreground flex flex-wrap justify-center gap-x-4 gap-y-2 text-xs">
           {shortcuts}
         </ul>
       )}
@@ -194,14 +194,12 @@ function ResultsMenu({
       <DropdownMenuTrigger
         aria-label="Result options"
         title="Result options"
-        className="text-muted-foreground hover:text-foreground hover:bg-row-hover focus-visible:ring-ring/50 flex size-7 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
+        className="text-muted-foreground hover:text-foreground hover:bg-accent data-[state=open]:bg-accent focus-visible:ring-ring/50 flex size-7 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
       >
-        <Settings2 className="size-4" />
+        <Settings2 className="size-3.5" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-60">
-        <DropdownMenuLabel className="text-muted-foreground text-[11px]">
-          Result View Mode
-        </DropdownMenuLabel>
+        <DropdownMenuLabel>Result View Mode</DropdownMenuLabel>
         <DropdownMenuRadioGroup
           value={mode}
           onValueChange={(v) => setPref("resultViewMode", v as ResultViewMode)}
@@ -490,7 +488,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
 
   return (
     <div className="bg-surface flex h-full min-h-0 flex-col">
-      <div className="border-border flex h-9 shrink-0 items-center gap-2 border-b px-2">
+      <div className="border-border flex h-8 shrink-0 items-center gap-2 border-b px-2">
         <div
           role="tablist"
           aria-label="Results"
@@ -530,7 +528,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
           {run && (
             <PaneTab active={active === "messages"} onSelect={() => select("messages")}>
               Messages
-              {errors > 0 && <span className="text-error text-[12px] tabular-nums">{errors}</span>}
+              {errors > 0 && <span className="text-error tabular-nums">{errors}</span>}
             </PaneTab>
           )}
           {plan && (
@@ -551,11 +549,11 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
             disabled={!activeShown}
             onClick={() => (findOpen ? closeFind(tabId) : openFindHere())}
             className={cn(
-              "text-muted-foreground hover:text-foreground hover:bg-row-hover focus-visible:ring-ring/50 flex size-7 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-40",
-              findOpen && "bg-muted text-foreground",
+              "text-muted-foreground hover:text-foreground hover:bg-accent focus-visible:ring-ring/50 flex size-7 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-50",
+              findOpen && "bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand",
             )}
           >
-            <Search className="size-4" />
+            <Search className="size-3.5" />
           </button>
           <ResultsMenu
             mode={mode}

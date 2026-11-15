@@ -1,14 +1,17 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, FileUp, TriangleAlert } from "lucide-react";
+import { FileUp, TriangleAlert } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { Kbd } from "@/components/Kbd";
+import { FormError } from "@/components/FormError";
+import { KbdHint } from "@/components/KbdHint";
+import { QuietStatus } from "@/components/QuietLoading";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -109,7 +112,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
           body: `${fileName} · ${statements(result.executed)} ran${result.failed > 0 ? `, ${formatCount(result.failed)} failed` : ""}`,
         });
       if (result.cancelled) {
-        toast.message("Import cancelled", {
+        toast.message("Import canceled", {
           description: [
             `${statements(result.executed)} ran before it stopped.`,
             ...result.notes,
@@ -129,7 +132,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
       }
     } catch (e) {
       const message = toIpcError(e).message;
-      void notifyInBackground({ title: "SQL dump import failed", body: message });
+      void notifyInBackground({ title: "Could not import the SQL dump", body: message });
       setError(message);
     } finally {
       setRun(null);
@@ -169,7 +172,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
       >
         <DialogHeader className="border-border shrink-0 gap-1 border-b px-4 py-3 pr-12">
           <DialogTitle className="flex items-center gap-2 text-sm">
-            <FileUp className="text-brand size-4" />
+            <FileUp aria-hidden className="text-brand size-4 shrink-0" />
             Import SQL Dump
           </DialogTitle>
           <DialogDescription className="flex min-w-0 items-center gap-1.5 text-xs">
@@ -186,7 +189,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4">
           {report ? (
             <div className="flex min-h-0 flex-1 flex-col gap-2">
               <p className="text-xs">
@@ -203,7 +206,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
                 <ul aria-label="Notes" className="flex flex-col gap-1">
                   {report.notes.map((n) => (
                     <li key={n} className="flex items-start gap-1.5 text-xs">
-                      <TriangleAlert className="text-warning mt-px size-3.5 shrink-0" />
+                      <TriangleAlert aria-hidden className="text-warning mt-px size-3.5 shrink-0" />
                       <span>{n}</span>
                     </li>
                   ))}
@@ -215,11 +218,11 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
                 className="border-border min-h-0 flex-1 divide-y overflow-y-auto rounded-md border"
               >
                 {report.errors.map((e) => (
-                  <li key={e.index} className="divide-border flex flex-col gap-1 px-2 py-1.5">
+                  <li key={e.index} className="flex flex-col gap-1 px-2 py-1.5">
                     <span className="text-error text-xs">
                       Line {formatCount(e.line)}: {e.message}
                     </span>
-                    <pre className="text-muted-foreground line-clamp-3 font-mono text-[11px] leading-4 whitespace-pre-wrap">
+                    <pre className="text-muted-foreground line-clamp-3 font-mono text-[11.5px] leading-4 whitespace-pre-wrap">
                       {e.sql}
                     </pre>
                   </li>
@@ -227,14 +230,9 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
               </ul>
             </div>
           ) : preview.isError ? (
-            <div role="alert" className="text-error flex items-start gap-1.5 text-xs">
-              <CircleAlert className="mt-px size-3.5 shrink-0" />
-              {preview.error.message}
-            </div>
+            <FormError>{preview.error.message}</FormError>
           ) : !data ? (
-            <div className="text-muted-foreground flex items-center gap-2 text-xs">
-              <span className="sr-only">Reading the file…</span>
-            </div>
+            <QuietStatus>Reading the file</QuietStatus>
           ) : (
             <>
               <div className="text-muted-foreground text-xs">
@@ -244,13 +242,13 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
               </div>
               {invalidUtf8Warning(data.invalidUtf8, data.firstInvalidLine) && (
                 <div role="note" className="flex items-start gap-1.5 text-xs">
-                  <TriangleAlert className="text-warning mt-px size-3.5 shrink-0" />
+                  <TriangleAlert aria-hidden className="text-warning mt-px size-3.5 shrink-0" />
                   {invalidUtf8Warning(data.invalidUtf8, data.firstInvalidLine)}
                 </div>
               )}
               <pre
                 data-testid="sql-preview"
-                className="border-border bg-surface-2 min-h-24 flex-1 overflow-auto rounded-md border px-2 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap"
+                className="border-border bg-surface-2 min-h-24 flex-1 overflow-auto rounded-md border px-2 py-1.5 font-mono text-[11.5px] leading-4 whitespace-pre-wrap"
               >
                 {data.statements.map((s) => `${s};`).join("\n\n")}
                 {data.more ? "\n\n…" : ""}
@@ -267,7 +265,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
                 />
                 Stop on error
               </label>
-              <p className="text-muted-foreground text-[11px] leading-4">
+              <p className="text-muted-foreground text-xs leading-4">
                 The statements run one by one on this connection. For large or complex dumps use
                 File ▸ Restore…, which runs the database’s own tools.
               </p>
@@ -275,7 +273,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
           )}
         </div>
 
-        <div className="border-border bg-surface-2/60 flex min-h-12 shrink-0 items-center gap-2 rounded-b-xl border-t px-4 py-2">
+        <DialogFooter className="m-0 shrink-0 flex-row items-center">
           <div className="min-w-0 flex-1">
             {run ? (
               <div role="status" aria-live="polite" className="flex min-w-0 flex-col gap-1">
@@ -288,26 +286,20 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
                     {progress
                       ? ` · ${formatBytes(progress.bytes)} of ${formatBytes(progress.totalBytes)}`
                       : ""}
-                    {run.cancelling ? " · cancelling…" : ""}
+                    {run.cancelling ? " · canceling…" : ""}
                   </span>
                 </div>
                 <div className="bg-surface-2 h-1 w-56 overflow-hidden rounded-full">
                   <div
-                    className={cn(
-                      "bg-brand h-full rounded-full transition-[width] duration-200",
-                      pct === null && "w-0",
-                    )}
+                    className={cn("bg-brand h-full rounded-full", pct === null && "w-0")}
                     style={pct === null ? undefined : { width: `${pct}%` }}
                   />
                 </div>
               </div>
             ) : error ? (
-              <div role="alert" className="text-error flex min-w-0 items-start gap-1.5 text-xs">
-                <CircleAlert className="mt-px size-3.5 shrink-0" />
-                <span className="line-clamp-2" title={error}>
-                  {error}
-                </span>
-              </div>
+              <FormError clamp title={error}>
+                {error}
+              </FormError>
             ) : null}
           </div>
           {run ? (
@@ -318,7 +310,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
               onClick={() => void cancel()}
               disabled={run.cancelling}
             >
-              Cancel import
+              Cancel Import
             </Button>
           ) : report ? (
             <Button type="button" size="sm" onClick={() => closeImport()}>
@@ -326,7 +318,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
             </Button>
           ) : (
             <>
-              <Button type="button" variant="ghost" size="sm" onClick={close}>
+              <Button type="button" variant="outline" size="sm" onClick={close}>
                 Cancel
               </Button>
               <Button
@@ -336,14 +328,11 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
                 onClick={() => void start()}
               >
                 Continue
-                <Kbd
-                  combo="Mod+Enter"
-                  className="border-primary-foreground/30 text-primary-foreground/80 bg-transparent"
-                />
+                <KbdHint combo="Mod+Enter" />
               </Button>
             </>
           )}
-        </div>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

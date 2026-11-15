@@ -139,6 +139,7 @@ import {
   useStagedOps,
   useStructureStore,
 } from "./store";
+import { BAR_BUTTON } from "./parts";
 import { StructureHeader } from "./StructureHeader";
 import { isAlterable, isViewKind, KIND_LABEL, suggestIndexName } from "./tableActions";
 import { TriggerEditorDialog, type TriggerEditing } from "./TriggerEditorDialog";
@@ -871,7 +872,7 @@ function StructureTabView({
     return (
       <div className="flex h-full min-h-0 flex-col">
         <div className="min-h-0 flex-1">
-          <EmptyState title="Could not load table" description={meta.error.message} />
+          <EmptyState title="Could not load the table" description={meta.error.message} />
         </div>
         <BottomBar tabId={tab.id} />
       </div>
@@ -905,7 +906,7 @@ function StructureTabView({
       className="flex h-full min-h-0 flex-col outline-none"
     >
       {readOnlyNote && (
-        <div className="border-border text-muted-foreground flex shrink-0 items-center gap-1.5 border-b px-3 py-1 text-[11px]">
+        <div className="border-border bg-surface-2 text-muted-foreground flex min-h-6 shrink-0 items-center gap-1.5 border-b px-3 py-1 text-xs">
           <Lock className="size-3" />
           {readOnlyNote}
         </div>
@@ -913,7 +914,7 @@ function StructureTabView({
       {reverted && partialRan === 0 && (
         <div
           role="alert"
-          className="border-border bg-surface-2 text-muted-foreground flex shrink-0 items-center gap-2 border-b px-3 py-1 text-[11px]"
+          className="border-border bg-surface-2 text-muted-foreground flex min-h-6 shrink-0 items-center gap-2 border-b px-3 py-1 text-xs"
         >
           <AlertTriangle className="text-warning size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">
@@ -925,7 +926,7 @@ function StructureTabView({
       {partialRan > 0 && (
         <div
           role="alert"
-          className="border-warning/40 bg-warning/10 text-warning flex shrink-0 items-center gap-2 border-b px-3 py-1 text-[11px]"
+          className="border-warning/40 bg-warning/10 text-warning flex min-h-6 shrink-0 items-center gap-2 border-b px-3 py-1 text-xs"
         >
           <AlertTriangle className="size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">
@@ -933,7 +934,7 @@ function StructureTabView({
             already ran, so the table no longer matches the staged changes.
           </span>
           <Button variant="outline" size="xs" onClick={discardAndRefresh} className="shrink-0">
-            Discard &amp; refresh
+            Discard and Refresh
           </Button>
         </div>
       )}
@@ -1077,7 +1078,7 @@ function StructureTabView({
                 <Button
                   variant="ghost"
                   size="xs"
-                  className="h-6 shrink-0 px-1.5"
+                  className={cn(BAR_BUTTON, "shrink-0 px-1.5")}
                   onClick={() => onAddColumn()}
                 >
                   {/* Icon only in a narrow bar (a window snapped to half the screen). */}
@@ -1091,7 +1092,7 @@ function StructureTabView({
               <Button
                 variant="ghost"
                 size="xs"
-                className="h-6 shrink-0 px-1.5"
+                className={cn(BAR_BUTTON, "shrink-0 px-1.5")}
                 onClick={onAddIndex}
               >
                 <Plus /> <span className="@max-lg:sr-only">Index</span>
@@ -1102,7 +1103,7 @@ function StructureTabView({
         {!isView && !indexesOnly && (
           <div
             className={cn(
-              "border-border focus-within:border-ring bg-background ml-1 flex h-6 w-40 min-w-24 shrink items-center gap-1 rounded-md border px-1.5 @max-md:min-w-16",
+              "border-border focus-within:border-ring focus-within:ring-ring/50 bg-background ml-1 flex h-6 w-40 min-w-24 shrink items-center gap-1 rounded-md border px-1.5 focus-within:ring-2 @max-md:min-w-16",
               filter && "border-ring",
             )}
           >
@@ -1123,7 +1124,7 @@ function StructureTabView({
               }}
               spellCheck={false}
               autoComplete="off"
-              className="placeholder:text-muted-foreground/60 min-w-0 flex-1 bg-transparent text-xs outline-none"
+              className="placeholder:text-muted-foreground text-foreground min-w-0 flex-1 bg-transparent text-xs outline-none"
             />
           </div>
         )}
@@ -1134,7 +1135,7 @@ function StructureTabView({
                 <Button
                   variant="ghost"
                   size="xs"
-                  className="h-6 shrink-0 px-1.5"
+                  className={cn(BAR_BUTTON, "shrink-0 px-1.5")}
                   aria-label="Order columns by"
                 >
                   {columnOrder === "name" ? <ArrowDownAZ /> : <ListOrdered />}
@@ -1149,9 +1150,9 @@ function StructureTabView({
                 value={columnOrder}
                 onValueChange={(v) => setPref("structureColumnOrder", v as StructureColumnOrder)}
               >
-                <DropdownMenuRadioItem value="name">Order columns by Name</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="name">Order Columns by Name</DropdownMenuRadioItem>
                 <DropdownMenuRadioItem value="ordinal">
-                  Order columns by Ordinal position
+                  Order Columns by Ordinal Position
                 </DropdownMenuRadioItem>
               </DropdownMenuRadioGroup>
             </DropdownMenuContent>
@@ -1159,7 +1160,7 @@ function StructureTabView({
         )}
         <div className="flex min-w-0 flex-1 justify-center px-1">
           <span
-            className="text-foreground/80 min-w-0 truncate whitespace-nowrap tabular-nums"
+            className="text-foreground min-w-0 truncate whitespace-nowrap tabular-nums"
             title={m.comment ? `${qualifiedName} — ${m.comment}` : qualifiedName}
           >
             {summary}
@@ -1169,7 +1170,7 @@ function StructureTabView({
           <>
             {hasOps && (
               <span
-                className="bg-brand-soft text-brand shrink-0 rounded px-1.5 text-[11px] leading-5 font-medium whitespace-nowrap tabular-nums"
+                className="bg-brand-soft text-brand inline-flex h-4 shrink-0 items-center rounded-sm px-1 text-[10px] leading-none font-medium whitespace-nowrap tabular-nums"
                 title={`${plural(ops.length, "staged change")}`}
               >
                 {plural(ops.length, "change")}
@@ -1205,8 +1206,8 @@ function StructureTabView({
                   <Button
                     size="xs"
                     onClick={openPreview}
-                    aria-label="Review & apply"
-                    className="h-6 shrink-0 px-2"
+                    aria-label="Review and apply"
+                    className="shrink-0 px-2"
                   >
                     Review
                   </Button>
@@ -1223,7 +1224,10 @@ function StructureTabView({
             size="xs"
             aria-label="DDL"
             onClick={() => setShowDdl(true)}
-            className="text-muted-foreground hover:text-foreground h-6 shrink-0 px-1.5"
+            className={cn(
+              BAR_BUTTON,
+              "text-muted-foreground hover:text-foreground shrink-0 px-1.5",
+            )}
           >
             <FileCode2 /> <span className="@max-lg:hidden">DDL</span>
           </Button>

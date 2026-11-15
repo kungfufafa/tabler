@@ -50,7 +50,7 @@ export function ColorField({
       <input
         id={`${id}-picker`}
         type="color"
-        aria-label={`${label} colour picker`}
+        aria-label={`${label} color picker`}
         value={colorToOpaqueHex(value)}
         onChange={(e) => {
           // The picker is opaque: a translucent tint keeps its own alpha.
@@ -76,7 +76,7 @@ export function ColorField({
             update(null);
           }
         }}
-        className="h-7 w-[5.5rem] shrink-0 rounded-md px-2 font-mono text-xs uppercase"
+        className="h-7 w-[5.5rem] shrink-0 rounded-md px-2 font-mono text-xs uppercase md:text-xs"
       />
       <Button
         type="button"
@@ -170,7 +170,7 @@ export function FontField({
             commit();
           }
         }}
-        className="h-7 w-48 rounded-md px-2 text-xs"
+        className="h-7 w-48 rounded-md px-2 text-xs md:text-xs"
       />
       <datalist id={`${id}-list`}>
         {[defaultLabel, ...suggestions].map((name) => (
@@ -247,7 +247,7 @@ export function DecimalField({
             commit();
           }
         }}
-        className="h-7 w-16 [appearance:textfield] rounded-md px-2 text-right text-xs tabular-nums [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        className="h-7 w-16 [appearance:textfield] rounded-md px-2 text-right text-xs tabular-nums md:text-xs [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
       />
       {suffix && <span className="text-muted-foreground text-xs">{suffix}</span>}
     </div>

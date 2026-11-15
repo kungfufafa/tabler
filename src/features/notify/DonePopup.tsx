@@ -31,7 +31,7 @@ export function DonePopup() {
   return (
     <AlertDialog open={shown !== null} onOpenChange={(open) => !open && closeDonePopup()}>
       <AlertDialogContent
-        className="sm:max-w-[400px]"
+        className="data-[size=default]:sm:max-w-md"
         // OK takes Return (Radix would focus the cancel button: Show in Finder).
         onOpenAutoFocus={(e) => {
           e.preventDefault();
@@ -40,7 +40,7 @@ export function DonePopup() {
       >
         <AlertDialogHeader>
           <AlertDialogTitle className="flex items-center gap-2 text-sm">
-            <CircleCheck className="text-success size-4" />
+            <CircleCheck aria-hidden className="text-success size-4 shrink-0" />
             {notice?.popupTitle ?? notice?.title ?? ""}
           </AlertDialogTitle>
           <AlertDialogDescription className="flex flex-col gap-1 text-xs">
@@ -51,6 +51,7 @@ export function DonePopup() {
         <AlertDialogFooter>
           {path !== null && (
             <AlertDialogCancel
+              size="sm"
               onClick={() => {
                 revealFile(path);
                 closeDonePopup();
@@ -59,7 +60,7 @@ export function DonePopup() {
               <FolderOpen /> Show in Finder
             </AlertDialogCancel>
           )}
-          <AlertDialogAction ref={ok} onClick={closeDonePopup}>
+          <AlertDialogAction ref={ok} size="sm" onClick={closeDonePopup}>
             OK
           </AlertDialogAction>
         </AlertDialogFooter>

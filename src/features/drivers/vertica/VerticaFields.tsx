@@ -31,7 +31,7 @@ export function VerticaFields({ form }: KindFieldsProps) {
         id={`${uid}-${key}`}
         {...register(`driverParams.${key}` as Path<ConnectionFormValues>)}
         placeholder={placeholder}
-        className="font-mono"
+        className="font-mono text-sm"
         autoComplete="off"
         spellCheck={false}
       />

@@ -46,7 +46,7 @@ describe("DuckDB's fields", () => {
     render(<Harness />);
     fireEvent.click(screen.getByLabelText("Autoload extensions"));
     expect(current!.getValues().driverParams).toEqual({ autoloadExtensions: true });
-    fireEvent.click(screen.getByRole("button", { name: "In memory" }));
+    fireEvent.click(screen.getByRole("button", { name: "In Memory" }));
     expect(current!.getValues().sqlitePath).toBe(":memory:");
     // New… is the shared file row's (`newFile`), not a row of the lane's own.
     expect(screen.queryByRole("button", { name: /New…/ })).toBeNull();

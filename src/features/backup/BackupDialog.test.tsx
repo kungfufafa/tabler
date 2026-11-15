@@ -193,7 +193,7 @@ describe("Backup window", () => {
     expect(cancel).toHaveBeenCalledWith(useBackupStore.getState().run!.jobId);
     await act(async () => reject({ code: "CANCELLED", message: "query cancelled" }));
     await waitFor(() =>
-      expect(toast.message).toHaveBeenCalledWith("Backup cancelled", expect.anything()),
+      expect(toast.message).toHaveBeenCalledWith("Backup canceled", expect.anything()),
     );
     expect(useBackupStore.getState().run).toBeNull();
   });
@@ -208,7 +208,7 @@ describe("Backup window", () => {
     });
     expect(
       await within(dialog).findByText(
-        "SQLite databases are backed up by copying the database file.",
+        "SQLite databases are backed up by copying the database file",
       ),
     ).toBeInTheDocument();
     vi.spyOn(window, "prompt").mockReturnValue("/Users/me/Backups/sample-copy.sqlite");
@@ -216,7 +216,7 @@ describe("Backup window", () => {
     await user.click(within(dialog).getByRole("button", { name: /Copy Database File/ }));
     await waitFor(() => expect(toast.success).toHaveBeenCalledOnce());
     expect(copy).toHaveBeenCalledWith("p-sample-sqlite", "/Users/me/Backups/sample-copy.sqlite");
-    await user.click(within(dialog).getByRole("button", { name: "Choose another connection" }));
+    await user.click(within(dialog).getByRole("button", { name: "Choose Another Connection" }));
     expect(await within(dialog).findByRole("listbox", { name: "Connections" })).toBeInTheDocument();
   });
 

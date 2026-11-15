@@ -151,9 +151,9 @@ export function rematch(
   return i < 0 ? 0 : i;
 }
 
-/** "3 of 12", "No results", "10,000+ results"… */
+/** "3 of 12", "No matches", "10,000+ results"… */
 export function counterLabel(current: number | null, total: number): string {
-  if (total === 0) return "No results";
+  if (total === 0) return "No matches";
   const of = total >= MAX_MATCHES ? `${MAX_MATCHES.toLocaleString("en-US")}+` : String(total);
   return current === null ? `${of} results` : `${current + 1} of ${of}`;
 }

@@ -79,7 +79,7 @@ export function ErrorBlock({
         </div>
       </div>
       {meta.length > 0 && (
-        <div className="text-error/75 mt-0.5 pl-5 text-[10px] tabular-nums">{meta.join(" · ")}</div>
+        <div className="text-error/80 mt-0.5 pl-5 tabular-nums">{meta.join(" · ")}</div>
       )}
     </div>
   );

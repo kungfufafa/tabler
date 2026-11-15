@@ -35,8 +35,8 @@ describe("ShortcutsSection (keymap editor)", { timeout: 20_000 }, () => {
 
   it("records a new shortcut for the clicked binding", () => {
     renderSection();
-    fireEvent.click(slot("New query tab", "Mod+T"));
-    const recorder = screen.getByLabelText("New query tab: type a shortcut");
+    fireEvent.click(slot("New Query Tab", "Mod+T"));
+    const recorder = screen.getByLabelText("New Query Tab: type a shortcut");
     expect(recorder).toHaveFocus();
     expect(recorder).toHaveTextContent("Type a shortcut…");
     // A modifier alone keeps waiting.
@@ -44,22 +44,22 @@ describe("ShortcutsSection (keymap editor)", { timeout: 20_000 }, () => {
     fireEvent.keyDown(recorder, { key: "y", code: "KeyY", ...mod });
     expect(getPrefs().keymapOverrides).toEqual({ "tab.new-query": ["Mod+Y", "Mod+E"] });
     expect(shortcutFor("tab.new-query")).toBe("Mod+Y");
-    expect(slot("New query tab", "Mod+Y")).toBeInTheDocument();
+    expect(slot("New Query Tab", "Mod+Y")).toBeInTheDocument();
     // Its alternative row (Open SQL editor ⌘E) is untouched.
-    expect(slot("Open SQL editor", "Mod+E")).toBeInTheDocument();
+    expect(slot("Open SQL Editor", "Mod+E")).toBeInTheDocument();
   });
 
   it("cancels on Esc and removes the binding on Backspace", () => {
     renderSection();
-    fireEvent.click(slot("Next tab", "Mod+]"));
-    fireEvent.keyDown(screen.getByLabelText("Next tab: type a shortcut"), {
+    fireEvent.click(slot("Next Tab", "Mod+]"));
+    fireEvent.keyDown(screen.getByLabelText("Next Tab: type a shortcut"), {
       key: "Escape",
       code: "Escape",
     });
     expect(getPrefs().keymapOverrides).toEqual({});
     // Alt+← off macOS, where the tests run (⌃- on macOS).
-    fireEvent.click(slot("Go back", "Alt+Left"));
-    fireEvent.keyDown(screen.getByLabelText("Go back: type a shortcut"), {
+    fireEvent.click(slot("Go Back", "Alt+Left"));
+    fireEvent.keyDown(screen.getByLabelText("Go Back: type a shortcut"), {
       key: "Backspace",
       code: "Backspace",
     });
@@ -72,8 +72,8 @@ describe("ShortcutsSection (keymap editor)", { timeout: 20_000 }, () => {
 
   it("warns about a combo another action of the scope uses, and refuses reserved ones", () => {
     renderSection();
-    fireEvent.click(slot("Next tab", "Mod+]"));
-    const recorder = () => screen.getByLabelText("Next tab: type a shortcut");
+    fireEvent.click(slot("Next Tab", "Mod+]"));
+    const recorder = () => screen.getByLabelText("Next Tab: type a shortcut");
     fireEvent.keyDown(recorder(), { key: "r", code: "KeyR", ...mod });
     expect(within(row("tab.next")).getByText(/is reserved/)).toBeInTheDocument();
     expect(getPrefs().keymapOverrides).toEqual({});
@@ -81,32 +81,32 @@ describe("ShortcutsSection (keymap editor)", { timeout: 20_000 }, () => {
     expect(within(row("tab.next")).getByText(/plain keys type text/)).toBeInTheDocument();
     fireEvent.keyDown(recorder(), { key: "k", code: "KeyK", ...mod });
     expect(
-      within(row("tab.next")).getByText("Also used by “Switch database”."),
+      within(row("tab.next")).getByText("Also used by “Switch Database”."),
     ).toBeInTheDocument();
     expect(
-      within(row("palette.databases")).getByText("Also used by “Next tab”."),
+      within(row("palette.databases")).getByText("Also used by “Next Tab”."),
     ).toBeInTheDocument();
   });
 
   it("keeps ⌘R and ⌘0 fixed", () => {
     renderSection();
     expect(
-      screen.queryByLabelText(`Reload workspace: ${formatCombo("Mod+R")}. Change shortcut`),
+      screen.queryByLabelText(`Reload Workspace: ${formatCombo("Mod+R")}. Change shortcut`),
     ).not.toBeInTheDocument();
-    expect(within(row("workspace.reload")).getByTitle(/can't be changed/)).toBeInTheDocument();
+    expect(within(row("workspace.reload")).getByTitle(/cannot be changed/)).toBeInTheDocument();
     // Reload current tab (⌥⌘R, its own action since ⌘R reloads the workspace) can move.
-    expect(slot("Reload current tab", "Mod+Alt+R")).toBeInTheDocument();
+    expect(slot("Reload Current Tab", "Mod+Alt+R")).toBeInTheDocument();
   });
 
   it("resets a row and everything", () => {
     renderSection();
-    fireEvent.click(slot("New query tab", "Mod+T"));
+    fireEvent.click(slot("New Query Tab", "Mod+T"));
     fireEvent.keyDown(screen.getByLabelText(/type a shortcut/), {
       key: "y",
       code: "KeyY",
       ...mod,
     });
-    fireEvent.click(slot("Next tab", "Mod+]"));
+    fireEvent.click(slot("Next Tab", "Mod+]"));
     fireEvent.keyDown(screen.getByLabelText(/type a shortcut/), {
       key: "j",
       code: "KeyJ",
@@ -114,7 +114,7 @@ describe("ShortcutsSection (keymap editor)", { timeout: 20_000 }, () => {
       altKey: true,
     });
     expect(Object.keys(getPrefs().keymapOverrides)).toEqual(["tab.new-query", "tab.next"]);
-    fireEvent.click(screen.getByLabelText("Reset New query tab"));
+    fireEvent.click(screen.getByLabelText("Reset New Query Tab"));
     expect(getPrefs().keymapOverrides).toEqual({
       "tab.next": ["Mod+Alt+J", "Mod+Tab"],
     });
@@ -127,8 +127,8 @@ describe("ShortcutsSection (keymap editor)", { timeout: 20_000 }, () => {
     const close = vi.fn();
     const unregister = actions.register("tab.close", close);
     renderSection();
-    fireEvent.click(slot("Close tab", "Mod+W"));
-    const recorder = screen.getByLabelText("Close tab: type a shortcut");
+    fireEvent.click(slot("Close Tab", "Mod+W"));
+    const recorder = screen.getByLabelText("Close Tab: type a shortcut");
     fireEvent.keyDown(recorder, { key: "w", code: "KeyW", ...mod });
     expect(close).not.toHaveBeenCalled();
     // Recording ended: the shortcut runs again.
@@ -140,7 +140,7 @@ describe("ShortcutsSection (keymap editor)", { timeout: 20_000 }, () => {
   it("searches the current keys", () => {
     setPref("keymapOverrides", { "tab.new-query": ["Mod+Y", "Mod+E"] });
     renderSection("ctrl+y");
-    expect(screen.getByText("New query tab")).toBeInTheDocument();
-    expect(screen.queryByText("Open SQL editor")).not.toBeInTheDocument();
+    expect(screen.getByText("New Query Tab")).toBeInTheDocument();
+    expect(screen.queryByText("Open SQL Editor")).not.toBeInTheDocument();
   });
 });

@@ -15,7 +15,7 @@ export const useRerunConfirmStore = create<{ request: RerunConfirmRequest | null
   request: null,
 }));
 
-/** Asks; resolves true for Discard & Run, false for Cancel. A newer question cancels an older one. */
+/** Asks; resolves true for Discard and Run, false for Cancel. A newer question cancels an older one. */
 export function confirmRerunDiscard(tabId: string, count: number): Promise<boolean> {
   return new Promise((resolve) => {
     useRerunConfirmStore.getState().request?.resolve(false);

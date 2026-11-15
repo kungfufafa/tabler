@@ -1,4 +1,5 @@
-import { QuietStatus } from "@/components/QuietLoading";
+import { EmptyState } from "@/components/EmptyState";
+import { QuietLoading } from "@/components/QuietLoading";
 import {
   AlertCircle,
   ChartColumnBig,
@@ -124,25 +125,25 @@ function BoardView({
 
   return (
     <section aria-label={board.name} className="flex min-w-0 flex-1 flex-col">
-      <div className="border-border flex h-9 shrink-0 items-center gap-1 border-b px-3">
-        <h2 className="min-w-0 truncate text-[13px] font-semibold">{board.name}</h2>
+      <div className="border-border flex h-8 shrink-0 items-center gap-1 border-b px-3 text-xs">
+        <h2 className="min-w-0 truncate text-xs font-medium">{board.name}</h2>
         {board.saveError ? (
           <button
             type="button"
-            className="text-error ml-1 flex items-center gap-1 text-[11px]"
+            className="text-error focus-visible:ring-ring/50 ml-1 flex items-center gap-1 rounded-sm outline-none hover:underline focus-visible:ring-2"
             title={board.saveError}
             onClick={() => void flushSave(board.id)}
           >
-            <AlertCircle className="size-3" />
+            <AlertCircle aria-hidden className="size-3.5" />
             Not saved. Retry
           </button>
         ) : (
-          board.dirty && <span className="text-muted-foreground ml-1 text-[11px]">Saving…</span>
+          board.dirty && <span className="text-muted-foreground ml-1">Saving…</span>
         )}
         <span className="flex-1" />
         <Button
           variant="ghost"
-          size="icon-sm"
+          size="icon-xs"
           aria-label="Refresh all"
           aria-busy={anyRunning}
           title={`Refresh all (${formatCombo(shortcutFor("workspace.reload") ?? "Mod+R")})`}
@@ -312,12 +313,7 @@ export function MetricsBoardTab({ tab, params }: ToolTabProps<MetricsParams>) {
     onDelete: (id: string) => setDeleting(boards.find((x) => x.id === id) ?? null),
   };
 
-  if (!info)
-    return (
-      <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
-        Not connected.
-      </div>
-    );
+  if (!info) return <EmptyState title="Not connected" />;
   // Its queries are split and classified by the session's core dialect, on a session that offers
   // boards (a restored tab skips the opener's check): none for a Redshift session, although its
   // driver is PostgreSQL's.
@@ -345,20 +341,19 @@ export function MetricsBoardTab({ tab, params }: ToolTabProps<MetricsParams>) {
           setEditing={setEditing}
         />
       ) : (
-        <div className="text-muted-foreground flex min-w-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-xs">
+        <div className="flex min-w-0 flex-1 flex-col">
           {status === "loading" || status === undefined ? (
-            <QuietStatus />
+            <QuietLoading className="bg-background" />
           ) : (
-            <>
-              <p>
-                A board shows charts, scoreboards and tables from your queries, with inputs to
-                filter them.
-              </p>
+            <EmptyState
+              title="No boards yet"
+              description="A board shows charts, scoreboards and tables from your queries, with inputs to filter them."
+            >
               <Button size="sm" onClick={actions.onNew}>
                 <Plus />
                 New Board…
               </Button>
-            </>
+            </EmptyState>
           )}
         </div>
       )}

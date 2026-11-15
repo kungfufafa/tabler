@@ -238,7 +238,7 @@ function QueryTabView({
               <div
                 role="status"
                 data-testid="head-notice"
-                className="border-border bg-muted/50 text-muted-foreground flex shrink-0 items-center gap-1.5 border-b px-3 py-1 text-[11px]"
+                className="border-border bg-surface-2 text-muted-foreground flex min-h-6 shrink-0 items-center gap-1.5 border-b px-3 py-1 text-xs"
               >
                 <Info aria-hidden className="size-3 shrink-0" />
                 <span className="min-w-0 truncate">{headNotice}</span>

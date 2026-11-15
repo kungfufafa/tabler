@@ -26,12 +26,12 @@ export function DuckdbFields({ form }: KindFieldsProps) {
             setValue("sqlitePath", MEMORY, { shouldValidate: true, shouldDirty: true })
           }
         >
-          In memory
+          In Memory
         </Button>
       </Row>
       <Row
         label=""
-        hint="Downloads the extensions a statement needs from extensions.duckdb.org into ~/.duckdb. Off: the built-in JSON and Parquet, and what the startup SQL loads"
+        hint="Downloads the extensions a statement needs from extensions.duckdb.org into ~/.duckdb. Off: the built-in JSON and Parquet, and what the startup SQL loads."
       >
         <label className="flex h-8 items-center gap-2 text-xs">
           <Controller

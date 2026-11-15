@@ -145,7 +145,7 @@ function RenameInput({
         else if (e.key === "Escape") finish(null);
       }}
       onClick={(e) => e.stopPropagation()}
-      className="bg-background border-ring h-4.5 min-w-0 flex-1 rounded-sm border px-1 text-xs outline-none"
+      className="bg-background border-ring h-5 min-w-0 flex-1 rounded-sm border px-1 text-xs outline-none"
     />
   );
 }
@@ -424,21 +424,21 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             onKeyDown={(e) => onRowKeyDown(e, row)}
             style={{ paddingLeft: 6 + row.depth * INDENT }}
             className={cn(
-              "hover:bg-sidebar-accent/60 focus-visible:bg-sidebar-accent flex h-5.5 w-full cursor-default items-center gap-1 pr-2.5 text-left text-xs outline-none select-none",
-              dropTarget === f.id && "bg-brand/15 ring-brand/50 ring-1 ring-inset",
+              "hover:bg-row-hover focus-visible:ring-sidebar-ring flex h-6 w-full cursor-default items-center gap-1 pr-2.5 text-left text-xs transition-colors outline-none select-none focus-visible:ring-1 focus-visible:ring-inset",
+              dropTarget === f.id && "bg-brand-soft ring-brand/50 ring-1 ring-inset",
             )}
           >
             <ChevronRight
               aria-hidden
               className={cn(
-                "text-muted-foreground size-3 shrink-0 transition-transform",
+                "text-muted-foreground size-3.5 shrink-0 transition-transform duration-150 motion-reduce:transition-none",
                 row.open && "rotate-90",
               )}
             />
             {row.open ? (
-              <FolderOpen aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
+              <FolderOpen aria-hidden className="text-muted-foreground size-4 shrink-0" />
             ) : (
-              <Folder aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
+              <Folder aria-hidden className="text-muted-foreground size-4 shrink-0" />
             )}
             {editing ? (
               <RenameInput
@@ -449,7 +449,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
               <span className="min-w-0 flex-1 truncate">{f.name}</span>
             )}
             {!editing && row.count > 0 && (
-              <span className="text-muted-foreground/80 shrink-0 text-[10px] tabular-nums">
+              <span className="text-muted-foreground shrink-0 text-[10px] tabular-nums">
                 {row.count}
               </span>
             )}
@@ -518,10 +518,10 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             onDrop={(e) => onDrop(e, q.folderId)}
             onDoubleClick={() => !editing && activate(q)}
             onKeyDown={(e) => onRowKeyDown(e, row)}
-            style={{ paddingLeft: 6 + row.depth * INDENT + 16 }}
-            className="hover:bg-sidebar-accent/60 focus-visible:bg-sidebar-accent flex h-5.5 w-full cursor-default items-center gap-1.5 pr-2.5 text-left text-xs outline-none select-none"
+            style={{ paddingLeft: 6 + row.depth * INDENT + 18 }}
+            className="hover:bg-row-hover focus-visible:ring-sidebar-ring flex h-6 w-full cursor-default items-center gap-1.5 pr-2.5 text-left text-xs transition-colors outline-none select-none focus-visible:ring-1 focus-visible:ring-inset"
           >
-            <FileCode2 aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
+            <FileCode2 aria-hidden className="text-muted-foreground size-4 shrink-0" />
             {editing ? (
               <RenameInput
                 initial={q.name}
@@ -532,7 +532,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             )}
             {!editing && q.keyword && (
               <span
-                className="text-muted-foreground border-border shrink-0 rounded border px-1 font-mono text-[10px] leading-3.5"
+                className="text-muted-foreground border-border inline-flex h-4 shrink-0 items-center rounded-sm border px-1 font-mono text-[10px] leading-none font-medium"
                 title={`Keyword: type “${q.keyword}” in the SQL editor`}
               >
                 {q.keyword}
@@ -589,7 +589,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
 
   let body;
   if (error && allQueries.length === 0) {
-    body = <EmptyState title="Could not load queries" description={error} />;
+    body = <EmptyState title="Could not load the queries" description={error} />;
   } else if (!loaded) {
     body = null;
   } else if (rows.length === 0) {
@@ -614,7 +614,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
           value={search}
           onChange={setSearch}
           onArrowDown={() => focusRow(0)}
-          placeholder="Search queries…"
+          placeholder="Search queries"
           label="Search queries"
           kbdHint={false}
         />
@@ -624,16 +624,12 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
               type="button"
               aria-label="New"
               title="New query or folder"
-              className="text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground focus-visible:ring-ring/50 data-[state=open]:bg-sidebar-accent flex size-6.5 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2"
+              className="text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground focus-visible:ring-sidebar-ring flex size-6 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset"
             >
-              <Plus className="size-3.5" />
+              <Plus aria-hidden className="size-3.5" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="end"
-            className="w-52 text-xs"
-            onCloseAutoFocus={onMenuCloseAutoFocus}
-          >
+          <DropdownMenuContent align="end" className="w-52" onCloseAutoFocus={onMenuCloseAutoFocus}>
             <DropdownMenuItem onSelect={() => newQuery()}>
               <BookmarkPlus /> Query…
             </DropdownMenuItem>
@@ -655,12 +651,12 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
               type="button"
               aria-label="Queries options"
               title="Options"
-              className="text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground focus-visible:ring-ring/50 data-[state=open]:bg-sidebar-accent flex size-6.5 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2"
+              className="text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground focus-visible:ring-sidebar-ring flex size-6 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset"
             >
-              <Settings className="size-3.5" />
+              <Settings aria-hidden className="size-3.5" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56 text-xs">
+          <DropdownMenuContent align="end" className="w-56">
             <DropdownMenuCheckboxItem
               checked={doubleClickInserts}
               onCheckedChange={(v) => setPref("queriesDoubleClickInsert", v === true)}
@@ -686,7 +682,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
         aria-label="Saved queries"
         className={cn(
           "relative min-h-0 flex-1 overflow-auto pb-1",
-          dropTarget === "" && "bg-brand/5",
+          dropTarget === "" && "bg-brand-soft ring-brand/50 ring-1 ring-inset",
         )}
         // Dropping on the empty part of the list moves to the top level.
         onDragOver={(e) => onDragOver(e, null)}
@@ -698,7 +694,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
         {body}
       </div>
       <AlertDialog open={pendingDelete !== null} onOpenChange={(o) => !o && setPendingDelete(null)}>
-        <AlertDialogContent size="sm" className="data-[size=sm]:sm:max-w-md">
+        <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-sm">
               {pendingDelete?.kind === "folder"

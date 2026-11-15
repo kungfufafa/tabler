@@ -1,5 +1,7 @@
 import { useId, useState, type FormEvent } from "react";
 import { toast } from "sonner";
+import { FormError } from "@/components/FormError";
+import { FormField } from "@/components/FormField";
 import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
 import {
@@ -139,48 +141,56 @@ function PasscodeForm({ mode, onDone }: { mode: PasscodeDialogMode; onDone: () =
     }
   };
 
+  // One field (Turn Off) is a single-field prompt named by its placeholder; the set and change
+  // forms label each field.
+  const labelled = asksNew;
   const field = (
     key: string,
     label: string,
     value: string,
     set: (v: string) => void,
     autoFocus: boolean,
-  ) => (
-    <Input
-      id={`${id}-${key}`}
-      type="password"
-      aria-label={label}
-      placeholder={label}
-      autoComplete="off"
-      autoFocus={autoFocus}
-      value={value}
-      onChange={(e) => {
-        set(e.target.value);
-        setError(null);
-      }}
-      className="h-8 text-[13px]"
-    />
-  );
+  ) => {
+    const input = (
+      <Input
+        id={`${id}-${key}`}
+        type="password"
+        aria-label={labelled ? undefined : label}
+        placeholder={labelled ? undefined : label}
+        autoComplete="off"
+        autoFocus={autoFocus}
+        value={value}
+        onChange={(e) => {
+          set(e.target.value);
+          setError(null);
+        }}
+        className="text-sm"
+      />
+    );
+    return labelled ? (
+      <FormField label={label} htmlFor={`${id}-${key}`}>
+        {input}
+      </FormField>
+    ) : (
+      input
+    );
+  };
 
   return (
     <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-4">
       <DialogHeader>
-        <DialogTitle>{text.title}</DialogTitle>
-        <DialogDescription>{text.description}</DialogDescription>
+        <DialogTitle className="text-sm">{text.title}</DialogTitle>
+        <DialogDescription className="text-xs">{text.description}</DialogDescription>
       </DialogHeader>
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-3">
         {asksCurrent && field("current", "Current passcode", current, setCurrent, true)}
         {asksNew &&
           field("new", mode === "set" ? "Passcode" : "New passcode", next, setNext, !asksCurrent)}
         {asksNew && field("confirm", "Confirm passcode", confirm, setConfirm, false)}
-        {error && (
-          <p role="alert" className="text-error text-[11px]">
-            {error}
-          </p>
-        )}
+        {error && <FormError>{error}</FormError>}
       </div>
       <DialogFooter>
-        <Button type="button" variant="ghost" size="sm" onClick={onDone}>
+        <Button type="button" variant="outline" size="sm" onClick={onDone}>
           Cancel
         </Button>
         <Button
@@ -216,10 +226,7 @@ export function PasscodeSettings() {
         description={
           <>
             Asked at startup and after being away. Lock now from Window ▸ Lock Tabler
-            {lockKeys && (
-              <Kbd combo={lockKeys} className="mx-0.5 h-4 min-w-4 align-[-2px] text-[10px]" />
-            )}
-            .
+            {lockKeys && <Kbd combo={lockKeys} className="mx-0.5 align-middle" />}.
           </>
         }
       >
@@ -262,7 +269,7 @@ export function PasscodeSettings() {
           disabled={!enabled}
           onValueChange={(v) => setPref("autoLockMinutes", Number(v) as AutoLockMinutes)}
         >
-          <SelectTrigger id="pref-auto-lock" size="sm" className="h-7 w-32 rounded-md text-xs">
+          <SelectTrigger id="pref-auto-lock" size="sm" className="w-32 text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent data-scope="dialog">

@@ -45,7 +45,7 @@ export async function runPluginCommand(runId: RunId, inv: PluginInvocation): Pro
     await runCommandRef(command, inv);
   } catch (e) {
     if (e instanceof PluginCancelled) return;
-    toast.error(`${command.plugin.name}: ${command.name} failed`, {
+    toast.error(`Could not run ${command.plugin.name}: ${command.name}`, {
       description: errorText(e).slice(0, 500),
     });
   }

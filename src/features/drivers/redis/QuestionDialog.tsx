@@ -43,10 +43,12 @@ export function QuestionDialog({
   const ok = q.input === undefined || text.trim() !== "";
   return (
     <Dialog open={open} onOpenChange={(o) => !o && finish(null)}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-[34rem]">
         <DialogHeader>
-          <DialogTitle>{q.title}</DialogTitle>
-          {q.description && <DialogDescription>{q.description}</DialogDescription>}
+          <DialogTitle className="text-sm">{q.title}</DialogTitle>
+          {q.description && (
+            <DialogDescription className="text-xs">{q.description}</DialogDescription>
+          )}
         </DialogHeader>
         {q.input &&
           (q.input.multiline ? (
@@ -55,7 +57,7 @@ export function QuestionDialog({
               value={text}
               placeholder={q.input.placeholder}
               onChange={(e) => setText(e.target.value)}
-              className="min-h-32 font-mono text-xs"
+              className="min-h-32 rounded-md font-mono text-xs md:text-xs"
               spellCheck={false}
               autoFocus
             />
@@ -68,7 +70,7 @@ export function QuestionDialog({
               onKeyDown={(e) => {
                 if (e.key === "Enter" && ok) finish(text.trim());
               }}
-              className="font-mono"
+              className="font-mono text-sm"
               spellCheck={false}
               autoFocus
             />
@@ -76,16 +78,17 @@ export function QuestionDialog({
         {q.command && (
           <pre
             data-testid="redis-command"
-            className="bg-muted max-h-48 overflow-auto rounded-md p-2 font-mono text-[11px] break-all whitespace-pre-wrap"
+            className="bg-muted max-h-48 overflow-auto rounded-md p-2 font-mono text-xs break-all whitespace-pre-wrap"
           >
             {q.command}
           </pre>
         )}
         <DialogFooter>
-          <Button variant="outline" onClick={() => finish(null)}>
+          <Button variant="outline" size="sm" onClick={() => finish(null)}>
             Cancel
           </Button>
           <Button
+            size="sm"
             variant={q.destructive ? "destructive" : "default"}
             disabled={!ok}
             onClick={() => finish(q.input ? text.trim() : "")}

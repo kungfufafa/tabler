@@ -76,7 +76,7 @@ export function BoardSqlEditor({
     <div
       ref={host}
       data-slot="metrics-sql-editor"
-      className="border-border bg-background max-h-64 min-h-24 overflow-auto rounded-md border text-[12px]"
+      className="border-border bg-background focus-within:border-ring focus-within:ring-ring/50 max-h-64 min-h-24 overflow-auto rounded-md border text-[12px] focus-within:ring-2"
     />
   );
 }

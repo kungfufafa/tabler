@@ -32,7 +32,7 @@ export function locationPrompt(kind: LocationKind, seen: LocationInspection): Lo
         ],
       };
     return {
-      title: `Keep connections & settings in “${name}”?`,
+      title: `Keep connections and settings in “${name}”?`,
       description:
         "Move the current connections, settings and history there (the old copy stays where it is), or start empty. Tabler switches after a restart; passwords stay in the Keychain.",
       choices: [

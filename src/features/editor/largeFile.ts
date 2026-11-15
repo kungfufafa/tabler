@@ -4,7 +4,7 @@ import { create } from "zustand";
 export const LARGE_FILE_BYTES = 8 * 1024 * 1024;
 /** The same for a gzip file, by its compressed size: it unpacks to several times that. */
 export const LARGE_GZ_BYTES = 2 * 1024 * 1024;
-/** How much "Open the first 5 MB" reads. */
+/** How much "Open the First 5 MB" reads. */
 export const HEAD_BYTES = 5 * 1024 * 1024;
 
 /** What the user chose for a file that is too big to open without asking. */
@@ -15,7 +15,7 @@ export interface LargeFileRequest {
   /** Size on disk. */
   bytes: number;
   compressed: boolean;
-  /** "Import as SQL dump…" needs a connection to import into. */
+  /** "Import as SQL Dump…" needs a connection to import into. */
   canImport: boolean;
   resolve: (choice: LargeFileChoice) => void;
 }

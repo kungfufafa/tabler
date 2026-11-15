@@ -107,13 +107,13 @@ export function esObjectMenu(item: SidebarItemRef, ctx: ObjectMenuContext): Obje
     disabled: readOnly,
     run: async () => {
       const name = await ask({
-        title: "New index",
+        title: "New Index",
         input: { label: "Name", placeholder: "logs-2026" },
         confirmLabel: "Next",
       });
       if (name === null) return;
       const body = await ask({
-        title: `Settings and mappings of ${name}`,
+        title: `Settings and Mappings of ${name}`,
         description: "The body of PUT /<index> (empty: the cluster's defaults).",
         input: {
           label: "Body",

@@ -51,7 +51,7 @@ export function DetailsView({
       {bulk && (
         <div
           role="status"
-          className="border-border text-foreground bg-brand-soft shrink-0 border-b px-4 py-2 text-xs font-medium tabular-nums"
+          className="border-border text-foreground bg-brand-soft min-h-6 shrink-0 border-b px-3 py-1 text-xs font-medium tabular-nums"
         >
           {bulk.count.toLocaleString()} rows selected
           {edit && (
@@ -63,7 +63,7 @@ export function DetailsView({
         <div className="relative">
           <Search
             aria-hidden
-            className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2"
+            className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2"
           />
           <input
             type="search"
@@ -79,7 +79,7 @@ export function DetailsView({
             aria-label="Search for field"
             spellCheck={false}
             autoComplete="off"
-            className="border-border bg-surface placeholder:text-muted-foreground focus:border-ring focus:ring-ring/30 h-7 w-full min-w-0 rounded-md border pr-2 pl-8 text-[12px] outline-none focus:ring-2 [&::-webkit-search-cancel-button]:hidden"
+            className="border-border bg-surface placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 h-7 w-full min-w-0 rounded-md border pr-2 pl-7 text-xs transition-colors outline-none focus-visible:ring-2 [&::-webkit-search-cancel-button]:hidden"
           />
         </div>
       </div>
@@ -90,9 +90,7 @@ export function DetailsView({
         className="min-h-0 flex-1 overflow-y-auto px-2 pb-2"
       >
         {fields.length === 0 && (
-          <div className="text-muted-foreground px-2 py-4 text-center text-xs">
-            No matching fields
-          </div>
+          <div className="text-muted-foreground px-3 py-2 text-xs">No matches</div>
         )}
         {fields.map(({ col, i }) => (
           <FieldBlock

@@ -124,7 +124,7 @@ export const ENCODINGS: ReadonlyArray<{ value: ExportEncoding; label: string; ti
   {
     value: "utf8Bom",
     label: "UTF-8 with BOM",
-    title: "Unicode with a byte order mark (how Excel recognises a UTF-8 CSV)",
+    title: "Unicode with a byte order mark (how Excel recognizes a UTF-8 CSV)",
   },
   { value: "utf16Le", label: "UTF-16 LE", title: "Unicode, 16-bit little-endian, with BOM" },
   { value: "windows1252", label: "Windows-1252", title: "Western European (Windows)" },

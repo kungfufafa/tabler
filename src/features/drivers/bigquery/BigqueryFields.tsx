@@ -119,7 +119,7 @@ export function BigqueryFields({ form, hasStoredPassword }: KindFieldsProps) {
         id={`${uid}-${key}`}
         {...register(`driverParams.${key}` as Path<ConnectionFormValues>)}
         placeholder={placeholder}
-        className="font-mono"
+        className="font-mono text-sm"
         autoComplete="off"
         spellCheck={false}
       />
@@ -127,7 +127,7 @@ export function BigqueryFields({ form, hasStoredPassword }: KindFieldsProps) {
   );
 
   const listButton = (label: string, loading: boolean, onClick: () => void) => (
-    <Button type="button" variant="outline" size="sm" disabled={loading} onClick={onClick}>
+    <Button type="button" variant="outline" disabled={loading} onClick={onClick}>
       {label}
     </Button>
   );
@@ -152,11 +152,11 @@ export function BigqueryFields({ form, hasStoredPassword }: KindFieldsProps) {
             {...register("database")}
             list={`${uid}-projects`}
             placeholder="my-project-123"
-            className="font-mono"
+            className="font-mono text-sm"
             autoComplete="off"
             spellCheck={false}
           />
-          {listButton("List projects", projects.state === "loading", () => void listProjects())}
+          {listButton("List Projects", projects.state === "loading", () => void listProjects())}
         </div>
         <datalist id={`${uid}-projects`} data-testid="bigquery-projects">
           {projects.state === "done" &&
@@ -205,7 +205,7 @@ export function BigqueryFields({ form, hasStoredPassword }: KindFieldsProps) {
               id={`${uid}-keyFilePath`}
               {...register("driverParams.keyFilePath" as Path<ConnectionFormValues>)}
               placeholder="/path/to/service-account.json"
-              className="font-mono"
+              className="font-mono text-sm"
               autoComplete="off"
               spellCheck={false}
             />
@@ -231,7 +231,7 @@ export function BigqueryFields({ form, hasStoredPassword }: KindFieldsProps) {
       )}
       {params.auth === "applicationDefault" && (
         <Row label="">
-          <p className="text-muted-foreground text-[11px]">
+          <p className="text-muted-foreground text-xs">
             GOOGLE_APPLICATION_CREDENTIALS, or the file of gcloud auth application-default login
           </p>
         </Row>
@@ -261,11 +261,11 @@ export function BigqueryFields({ form, hasStoredPassword }: KindFieldsProps) {
             {...register("driverParams.defaultDataset" as Path<ConnectionFormValues>)}
             list={`${uid}-datasets`}
             placeholder="analytics"
-            className="font-mono"
+            className="font-mono text-sm"
             autoComplete="off"
             spellCheck={false}
           />
-          {listButton("List datasets", datasets.state === "loading", () => void listDatasets())}
+          {listButton("List Datasets", datasets.state === "loading", () => void listDatasets())}
         </div>
         <datalist id={`${uid}-datasets`} data-testid="bigquery-datasets">
           {datasets.state === "done" &&
@@ -294,7 +294,7 @@ export function BigqueryFields({ form, hasStoredPassword }: KindFieldsProps) {
         error={errors?.maximumBytesBilled?.message}
         hint={
           unlimited ? (
-            <span className="text-amber-600 dark:text-amber-500">
+            <span className="text-warning">
               No limit: a query is billed for everything it scans
             </span>
           ) : (
@@ -306,7 +306,7 @@ export function BigqueryFields({ form, hasStoredPassword }: KindFieldsProps) {
           id={`${uid}-maximumBytesBilled`}
           {...register("driverParams.maximumBytesBilled" as Path<ConnectionFormValues>)}
           placeholder="No limit"
-          className="font-mono"
+          className="font-mono text-sm"
           autoComplete="off"
           spellCheck={false}
         />
@@ -343,7 +343,7 @@ export function BigqueryFields({ form, hasStoredPassword }: KindFieldsProps) {
           id={`${uid}-labels`}
           {...register("driverParams.labels" as Path<ConnectionFormValues>)}
           placeholder="team = data"
-          className="min-h-16 font-mono text-xs"
+          className="min-h-16 font-mono text-xs md:text-xs"
           autoComplete="off"
           spellCheck={false}
         />
@@ -366,7 +366,7 @@ export function BigqueryFields({ form, hasStoredPassword }: KindFieldsProps) {
           onChange={(e) => setPasted(e.target.value)}
           onBlur={(e) => takeUrl(e.target.value)}
           placeholder="bigquery://my-project?keyFile=/keys/sa.json&dataset=analytics"
-          className="font-mono"
+          className="font-mono text-sm"
           autoComplete="off"
           spellCheck={false}
           aria-label="BigQuery URL"

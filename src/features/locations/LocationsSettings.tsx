@@ -39,7 +39,7 @@ interface Pending {
 
 function PathText({ path }: { path: string }) {
   return (
-    <span className="selectable block max-w-80 truncate font-mono text-[11px]" title={path}>
+    <span className="selectable block max-w-80 truncate font-mono text-xs" title={path}>
       {path}
     </span>
   );
@@ -101,7 +101,7 @@ export function LocationsSettings() {
     const path = reset
       ? null
       : await pickFolder(
-          kind === "data" ? "Connections & Settings Folder" : "Queries Folder",
+          kind === "data" ? "Connections and Settings Folder" : "Queries Folder",
           kind === "data" ? current.dataDir : current.queriesDir,
         );
     if (!reset && !path) return;
@@ -168,10 +168,10 @@ export function LocationsSettings() {
 
   return (
     <>
-      <SettingGroup title="Locations">
+      <SettingGroup>
         <SettingRow
           id="locations-data"
-          label="Connections & settings"
+          label="Connections and settings"
           description={
             <>
               <PathText path={data.dataDir} />
@@ -179,7 +179,7 @@ export function LocationsSettings() {
               in the macOS Keychain, so another Mac asks for them again.
               {data.dataFallback && data.configuredDataDir && (
                 <span className="text-warning mt-1 flex items-start gap-1">
-                  <TriangleAlert className="mt-0.5 size-3 shrink-0" />
+                  <TriangleAlert aria-hidden className="mt-0.5 size-3 shrink-0" />
                   {`${data.configuredDataDir} was not available at startup: this session uses the default folder.`}
                 </span>
               )}
@@ -210,11 +210,11 @@ export function LocationsSettings() {
           <Button
             size="icon-xs"
             variant="ghost"
-            aria-label="Show the connections & settings file in Finder"
+            aria-label="Show the connections and settings file in Finder"
             title="Show in Finder"
             onClick={() => reveal("data")}
           >
-            <FolderSearch />
+            <FolderSearch aria-hidden />
           </Button>
         </SettingRow>
         <SettingRow
@@ -226,7 +226,7 @@ export function LocationsSettings() {
               Saved queries, one .sql file each; folders are sub-folders. Changes apply at once.
               {data.queriesFallback && data.configuredQueriesDir && (
                 <span className="text-warning mt-1 flex items-start gap-1">
-                  <TriangleAlert className="mt-0.5 size-3 shrink-0" />
+                  <TriangleAlert aria-hidden className="mt-0.5 size-3 shrink-0" />
                   {`${data.configuredQueriesDir} was not available at startup: this session uses the default folder.`}
                 </span>
               )}
@@ -251,7 +251,7 @@ export function LocationsSettings() {
             title="Show in Finder"
             onClick={() => reveal("queries")}
           >
-            <FolderSearch />
+            <FolderSearch aria-hidden />
           </Button>
         </SettingRow>
       </SettingGroup>
@@ -262,9 +262,7 @@ export function LocationsSettings() {
             <AlertDialogDescription className="text-xs">
               {prompt?.description}
               {pending && (
-                <span className="mt-1 block font-mono text-[11px] break-all">
-                  {pending.seen.path}
-                </span>
+                <span className="mt-1 block font-mono break-all">{pending.seen.path}</span>
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>

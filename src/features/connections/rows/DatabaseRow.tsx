@@ -27,7 +27,7 @@ export function DatabaseRow({
         id={`${uid}-database`}
         {...register("database")}
         placeholder={placeholder}
-        className="font-mono"
+        className="font-mono text-sm"
       />
     </Row>
   );

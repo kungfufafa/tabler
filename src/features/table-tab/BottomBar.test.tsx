@@ -86,9 +86,9 @@ describe("TableBottomBar", () => {
     expect(summary()).toHaveTextContent(/^0 rows/);
     rerender({ offset: 0, pageRows: 1, count: { count: 1, exact: true } });
     expect(summary()).toHaveTextContent(/^1–1 of 1 row\b/);
-    // While the page loads, a spinner takes the time's place.
+    // While the page loads, a quiet status takes the time's place.
     rerender({ loading: true });
-    expect(within(summary()).getByLabelText("Loading")).toBeInTheDocument();
+    expect(within(summary()).getByRole("status")).toHaveTextContent("Loading");
     expect(summary()).not.toHaveTextContent("4 ms");
   });
 
@@ -176,7 +176,7 @@ describe("TableBottomBar", () => {
     expect(bio).toHaveAttribute("aria-checked", "false");
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "email" }));
     expect(onToggleColumn).toHaveBeenCalledWith("email", false);
-    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show All" }));
     expect(onShowAllColumns).toHaveBeenCalledOnce();
   });
 

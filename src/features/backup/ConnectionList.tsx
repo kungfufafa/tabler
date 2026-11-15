@@ -1,4 +1,5 @@
 import { useMemo, type KeyboardEvent } from "react";
+import { SectionLabel } from "@/components/SectionLabel";
 import { DriverBadge } from "@/features/connections/badges";
 import { groupProfiles } from "@/features/connections/list";
 import type { ConnectionProfile } from "@/lib/ipc";
@@ -47,21 +48,21 @@ export function ConnectionList({
         aria-activedescendant={selectedId ? `backup-conn-${selectedId}` : undefined}
         onKeyDown={onKeyDown}
         className={cn(
-          "min-h-0 flex-1 overflow-y-auto py-1 outline-none",
-          disabled && "pointer-events-none opacity-60",
+          "focus-visible:ring-ring/50 min-h-0 flex-1 overflow-y-auto py-1 outline-none focus-visible:ring-2 focus-visible:ring-inset",
+          disabled && "pointer-events-none opacity-50",
         )}
       >
         {flat.length === 0 && (
           <p className="text-muted-foreground px-3 py-2 text-xs">
-            No PostgreSQL or MySQL connections yet.
+            No PostgreSQL or MySQL connections yet
           </p>
         )}
         {groups.map(([group, items]) => (
           <div key={group || "(none)"} role="group" aria-label={group || "Connections"}>
             {group && (
-              <div className="text-muted-foreground px-3 pt-2 pb-0.5 text-[10px] font-semibold tracking-wide uppercase">
+              <SectionLabel as="div" className="truncate px-3 pt-2 pb-0.5">
                 {group}
-              </div>
+              </SectionLabel>
             )}
             {items.map((p) => {
               const selected = p.id === selectedId;
@@ -73,7 +74,7 @@ export function ConnectionList({
                   aria-selected={selected}
                   onClick={() => onSelect(p.id)}
                   className={cn(
-                    "mx-1 flex h-8 cursor-default items-center gap-2 rounded-md px-1.5 text-xs",
+                    "mx-1 flex h-7 cursor-default items-center gap-2 rounded-md px-1.5 text-xs transition-colors",
                     selected ? "bg-brand-soft text-foreground" : "hover:bg-row-hover",
                   )}
                 >

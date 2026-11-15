@@ -1,4 +1,6 @@
+import { KbdHint } from "@/components/KbdHint";
 import { QuietStatus } from "@/components/QuietLoading";
+import { SectionLabel } from "@/components/SectionLabel";
 import { AlertTriangle, CheckCircle2, Eraser, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -22,7 +24,6 @@ import {
   type TxMode,
   type WorkspacePlan,
 } from "@/lib/ipc";
-import { formatCombo } from "@/lib/keys/combo";
 import { useConnectionsStore } from "@/stores/connections";
 import { restoreNote } from "./definitions";
 import { useCommitStore, useCommitting, closeWorkspaceSheet, type CommitFailure } from "./store";
@@ -123,9 +124,9 @@ function Failure({
   return (
     <div
       role="alert"
-      className="text-error flex items-start gap-1.5 text-[11px] break-words whitespace-pre-wrap"
+      className="text-error flex items-start gap-1.5 text-xs break-words whitespace-pre-wrap"
     >
-      <AlertTriangle className="mt-px size-3.5 shrink-0" />
+      <AlertTriangle aria-hidden className="mt-px size-3.5 shrink-0" />
       <div className="flex min-w-0 flex-col gap-1">
         <span className="font-medium">{failure.message}</span>
         {failure.detail && <span>{failure.detail}</span>}
@@ -161,15 +162,15 @@ function RestoreOutcome({
       {restore.restored ? (
         <p
           role="status"
-          className="text-foreground flex items-start gap-1.5 text-[11px] break-words whitespace-pre-wrap"
+          className="text-foreground flex items-start gap-1.5 text-xs break-words whitespace-pre-wrap"
         >
-          <CheckCircle2 className="text-success mt-px size-3.5 shrink-0" />
+          <CheckCircle2 aria-hidden className="text-success mt-px size-3.5 shrink-0" />
           {restoreNote(restore)}
         </p>
       ) : (
         <>
-          <p className="text-error flex items-start gap-1.5 text-[11px] break-words whitespace-pre-wrap">
-            <AlertTriangle className="mt-px size-3.5 shrink-0" />
+          <p className="text-error flex items-start gap-1.5 text-xs break-words whitespace-pre-wrap">
+            <AlertTriangle aria-hidden className="mt-px size-3.5 shrink-0" />
             {restoreNote(restore)}
           </p>
           <div className="border-border bg-surface-2 rounded-md border px-3 py-2">
@@ -194,12 +195,12 @@ function Section({
 }) {
   return (
     <section aria-label={`${label} ${title}`} className="flex flex-col gap-1.5">
-      <h3 className="text-muted-foreground flex items-center gap-2 text-[11px] font-semibold">
+      <SectionLabel className="flex items-center gap-2">
         <span className="truncate">{title}</span>
-        <span className="font-normal">
+        <span className="shrink-0 font-normal tabular-nums">
           {label} · {plural(count, "change")}
         </span>
-      </h3>
+      </SectionLabel>
       <div className="border-border bg-surface-2 flex flex-col gap-2 rounded-md border px-3 py-2">
         {children}
       </div>
@@ -221,7 +222,7 @@ function Statements({
   return (
     <>
       {(plan?.warnings ?? []).map((w) => (
-        <p key={w} role="status" className="text-warning text-[11px]">
+        <p key={w} role="status" className="text-warning text-xs">
           {w}
         </p>
       ))}
@@ -247,8 +248,8 @@ function OpItem({
   const Icon = op.kind === "drop" ? Trash2 : Eraser;
   return (
     <li data-pending-op={op.kind} className="flex flex-col gap-1">
-      <div className="flex items-center gap-1.5 text-[11px] font-medium">
-        <Icon className="text-muted-foreground size-3.5 shrink-0" />
+      <div className="flex items-center gap-1.5 text-xs font-medium">
+        <Icon aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
         <span className="truncate">
           {verb} {what}
         </span>
@@ -257,18 +258,18 @@ function OpItem({
           aria-label={`Remove ${verb.toLowerCase()} of ${what}`}
           onClick={onRemove}
           disabled={disabled}
-          className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 ml-auto rounded-sm outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-40"
+          className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 ml-auto rounded-sm outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-50"
         >
-          <X className="size-3.5" />
+          <X aria-hidden className="size-3.5" />
         </button>
       </div>
       <SqlBlock sql={sqlOf(plan?.statements ?? op.statements)} dialect={dialect} />
       {op.error && (
         <p
           role="alert"
-          className="text-error flex items-start gap-1.5 text-[11px] break-words whitespace-pre-wrap"
+          className="text-error flex items-start gap-1.5 text-xs break-words whitespace-pre-wrap"
         >
-          <AlertTriangle className="mt-px size-3.5 shrink-0" />
+          <AlertTriangle aria-hidden className="mt-px size-3.5 shrink-0" />
           {op.error}
         </p>
       )}
@@ -281,7 +282,7 @@ function Problems({ problems }: { problems: readonly WorkspaceProblem[] }) {
   return (
     <div
       role="alert"
-      className="border-warning/40 bg-warning/10 text-warning flex flex-col gap-1 rounded-md border px-3 py-2 text-[11px]"
+      className="border-warning/40 bg-warning/10 text-warning flex flex-col gap-1 rounded-md border px-3 py-2 text-xs"
     >
       {problems.map((p) => (
         <p key={`${p.title}:${p.message}`}>
@@ -373,9 +374,9 @@ export function WorkspaceSheet() {
           }
         }}
       >
-        <SheetHeader className="border-border border-b px-5 py-4">
-          <SheetTitle>Preview changes</SheetTitle>
-          <SheetDescription>
+        <SheetHeader className="gap-1 border-b px-4 py-3 pr-12">
+          <SheetTitle className="text-sm">Preview Changes</SheetTitle>
+          <SheetDescription className="text-xs">
             {name ? `${name}: ` : ""}
             {plural(total, "pending change")} in {plural(tabs, "tab")}.{" "}
             {atomic
@@ -385,7 +386,7 @@ export function WorkspaceSheet() {
                 : nonAtomicNote(dialect, sources)}
           </SheetDescription>
         </SheetHeader>
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto px-5 py-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto px-4 py-3">
           <Problems problems={problems} />
           {sources.map((s, i) => {
             if (s.kind === "object") return null;
@@ -393,7 +394,7 @@ export function WorkspaceSheet() {
             return (
               <Section key={s.key} title={s.title} label={KIND_LABEL[s.kind]} count={s.count}>
                 {s.kind === "rows" && s.noKey && (
-                  <p className="text-warning text-[11px]">{NO_KEY_WARNING}</p>
+                  <p className="text-warning text-xs">{NO_KEY_WARNING}</p>
                 )}
                 <Statements plan={groupPlan} loading={loading} dialect={dialect} />
                 {mine?.key === s.key && (
@@ -430,8 +431,8 @@ export function WorkspaceSheet() {
             </Section>
           )}
         </div>
-        <SheetFooter className="border-border flex-row items-center justify-end gap-2 border-t px-5 py-3">
-          <Button variant="ghost" size="sm" onClick={closeWorkspaceSheet} disabled={committing}>
+        <SheetFooter className="bg-muted/50 flex-row items-center justify-end border-t">
+          <Button variant="outline" size="sm" onClick={closeWorkspaceSheet} disabled={committing}>
             Cancel
           </Button>
           <Button
@@ -440,7 +441,7 @@ export function WorkspaceSheet() {
             disabled={committing || sources.length === 0 || problems.length > 0}
           >
             Commit
-            <kbd className="ml-1 text-[10px] opacity-70">{formatCombo("Mod+Enter")}</kbd>
+            <KbdHint combo="Mod+Enter" />
           </Button>
         </SheetFooter>
       </SheetContent>

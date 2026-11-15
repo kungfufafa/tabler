@@ -6,7 +6,7 @@ export function McpBadge({ className }: { className?: string }) {
     <span
       title="Run by an MCP client"
       className={cn(
-        "border-border text-muted-foreground shrink-0 rounded border px-1 text-[9px] leading-3.5 uppercase",
+        "border-border text-muted-foreground inline-flex h-4 shrink-0 items-center rounded-sm border px-1 text-[10px] leading-none font-medium",
         className,
       )}
     >

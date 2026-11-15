@@ -39,7 +39,7 @@ export function ClickhouseFields({ form }: KindFieldsProps) {
         id={`${uid}-${key}`}
         {...register(`driverParams.${key}` as Path<ConnectionFormValues>)}
         placeholder={placeholder}
-        className="font-mono"
+        className="font-mono text-sm"
         autoComplete="off"
         spellCheck={false}
       />
@@ -84,7 +84,7 @@ export function ClickhouseFields({ form }: KindFieldsProps) {
           id={`${uid}-settings`}
           {...register("driverParams.settings" as Path<ConnectionFormValues>)}
           placeholder="max_execution_time = 60"
-          className="min-h-16 font-mono text-xs"
+          className="min-h-16 font-mono text-xs md:text-xs"
           autoComplete="off"
           spellCheck={false}
         />

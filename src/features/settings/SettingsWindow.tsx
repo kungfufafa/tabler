@@ -221,16 +221,16 @@ export function SettingsWindow() {
       <SettingsPanel
         variant="window"
         keysRef={keysRef}
-        title={<h1 className="px-2 pt-1 pb-1.5 text-[13px] font-semibold">Settings</h1>}
+        title={<h1 className="px-2 pt-1 pb-1.5 text-sm font-medium">Settings</h1>}
       />
       {ownTitleBar && (
         <button
           type="button"
           aria-label="Close"
           onClick={closeSettingsWindow}
-          className="text-foreground/80 absolute top-0 right-0 flex h-11 w-11 items-center justify-center transition-colors outline-none hover:bg-[#c42b1c] hover:text-white focus-visible:bg-[#c42b1c] focus-visible:text-white"
+          className="text-muted-foreground focus-visible:ring-ring/50 absolute top-0 right-0 flex h-11 w-11 items-center justify-center transition-colors outline-none hover:bg-[#c42b1c] hover:text-white focus-visible:ring-2 focus-visible:ring-inset"
         >
-          <X className="size-4" strokeWidth={1.25} />
+          <X aria-hidden className="size-4" strokeWidth={1.25} />
         </button>
       )}
     </div>

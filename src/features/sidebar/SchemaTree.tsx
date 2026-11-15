@@ -174,9 +174,13 @@ const MENU_FOCUS_RING = cn(
 );
 
 const BRANCH_ROW =
-  "text-muted-foreground hover:bg-row-hover hover:text-foreground flex items-center gap-2 rounded-md pr-2 text-left text-xs font-medium";
+  "text-muted-foreground hover:bg-row-hover hover:text-foreground flex items-center gap-2 rounded-md pr-2 text-left text-xs font-medium transition-colors";
 
-const DISCLOSURE_ICON = "size-3.5 shrink-0 transition-transform";
+const DISCLOSURE_ICON =
+  "size-3.5 shrink-0 transition-transform duration-150 motion-reduce:transition-none";
+
+/** A count at the end of a row (sidebar counts are 10px). */
+const COUNT = "text-muted-foreground ml-auto shrink-0 text-[10px] font-normal tabular-nums";
 
 /** Headers whose menu offers the Item Overview (spec §2.3: the "Tables" header). */
 const OVERVIEW_HEADERS = new Set(["Tables", "Views", "Materialized views"]);
@@ -528,7 +532,7 @@ export function SchemaTree({
   if (loading) {
     return <QuietLoading data-slot="tree-loading" className="min-h-0 flex-1 bg-transparent" />;
   }
-  if (error) return <EmptyState title="Could not load tables" description={error} />;
+  if (error) return <EmptyState title="Could not load the tables" description={error} />;
   if (rows.length === 0) {
     return (
       <ContextMenu>
@@ -536,7 +540,7 @@ export function SchemaTree({
           <div className="min-h-0 flex-1">
             <EmptyState
               icon={Table2}
-              title={search ? "No items match" : "No tables"}
+              title={search ? "No matches" : "No tables"}
               description={
                 search ? `Nothing matches “${search}”.` : "This schema has no tables or views."
               }
@@ -1055,11 +1059,7 @@ export function SchemaTree({
                       <Layers aria-hidden className="text-muted-foreground size-4 shrink-0" />
                     )}
                     <span className="truncate">{row.schema}</span>
-                    {row.count !== null && (
-                      <span className="text-muted-foreground ml-auto shrink-0 text-xs font-normal tabular-nums">
-                        {row.count}
-                      </span>
-                    )}
+                    {row.count !== null && <span className={COUNT}>{row.count}</span>}
                   </button>
                 </ContextMenuTrigger>
                 <ContextMenuContent>
@@ -1078,7 +1078,7 @@ export function SchemaTree({
                 className="text-muted-foreground flex items-center gap-2 pr-2 pl-8 text-xs"
               >
                 {row.status === "loading" ? (
-                  <span className="sr-only">Loading items…</span>
+                  <span className="sr-only">Loading items</span>
                 ) : (
                   <span className="text-error truncate" title={row.message ?? undefined}>
                     {row.message ?? "Could not load the items"}
@@ -1122,9 +1122,7 @@ export function SchemaTree({
                       />
                     </span>
                     <span className="truncate">{sectionLabel(row.label)}</span>
-                    <span className="text-muted-foreground ml-auto shrink-0 font-normal tabular-nums">
-                      {row.count}
-                    </span>
+                    <span className={COUNT}>{row.count}</span>
                   </button>
                 </ContextMenuTrigger>
                 <ContextMenuContent>
@@ -1196,8 +1194,7 @@ export function SchemaTree({
                       BRANCH_ROW,
                       isNested(row.key) ? "pl-5" : "pl-2",
                       MENU_FOCUS_RING,
-                      dropping &&
-                        "bg-sidebar-accent/60 text-foreground ring-sidebar-ring/70 ring-1",
+                      dropping && "bg-brand-soft text-foreground ring-brand/50 ring-1 ring-inset",
                     )}
                   >
                     <ChevronRight
@@ -1212,9 +1209,7 @@ export function SchemaTree({
                         className="text-warning size-3 shrink-0"
                       />
                     )}
-                    <span className="text-muted-foreground ml-auto shrink-0 font-normal tabular-nums">
-                      {row.count}
-                    </span>
+                    <span className={COUNT}>{row.count}</span>
                   </button>
                 </ContextMenuTrigger>
                 <ContextMenuContent>
@@ -1251,7 +1246,7 @@ export function SchemaTree({
                   remember(row.table, true);
                 }}
                 className={cn(
-                  "hover:bg-row-hover flex items-center gap-2 rounded-md pr-2 text-left text-xs select-none",
+                  "hover:bg-row-hover flex items-center gap-2 rounded-md pr-2 text-left text-xs transition-colors select-none",
                   isNested(row.key) ? "pl-14" : "pl-11",
                   FOCUS_RING,
                 )}
@@ -1259,10 +1254,7 @@ export function SchemaTree({
                 {row.pk ? (
                   <KeyRound aria-label="Primary key" className="text-warning size-3 shrink-0" />
                 ) : row.fk ? (
-                  <ArrowUpRight
-                    aria-label="Foreign key"
-                    className="text-brand/80 size-3 shrink-0"
-                  />
+                  <ArrowUpRight aria-label="Foreign key" className="text-brand size-3 shrink-0" />
                 ) : (
                   <span aria-hidden className="size-3 shrink-0" />
                 )}
@@ -1286,7 +1278,7 @@ export function SchemaTree({
                 )}
               >
                 {row.status === "loading" ? (
-                  <span className="sr-only">Loading columns…</span>
+                  <span className="sr-only">Loading columns</span>
                 ) : (
                   <span className="text-error truncate" title={row.message ?? undefined}>
                     {row.message ?? "Could not load the columns"}
@@ -1304,7 +1296,7 @@ export function SchemaTree({
             (activeTab.table.schema ?? "") === (row.table.schema ?? "");
           const nested = isNested(row.key);
           const rowClass = cn(
-            "flex items-center gap-2 rounded-md pr-2 text-left text-xs select-none",
+            "flex items-center gap-2 rounded-md pr-2 text-left text-xs transition-colors select-none",
             nested ? "pl-9" : "pl-6",
             MENU_FOCUS_RING,
             isActive
@@ -1401,7 +1393,7 @@ export function SchemaTree({
                     }}
                     onDoubleClick={(e) => e.stopPropagation()}
                     className={cn(
-                      "text-muted-foreground hover:text-foreground absolute inset-y-0 flex w-5 items-center justify-center",
+                      "text-muted-foreground hover:text-foreground absolute inset-y-0 flex w-5 items-center justify-center transition-colors",
                       nested ? "left-4" : "left-1",
                     )}
                   >
@@ -1427,7 +1419,7 @@ export function SchemaTree({
                   <span
                     aria-hidden
                     data-slot="pending-truncate"
-                    className="border-warning/50 text-warning shrink-0 rounded-sm border px-1 text-[9px] leading-3 font-medium"
+                    className="border-warning/50 text-warning inline-flex h-4 shrink-0 items-center rounded-sm border px-1 text-[9px] leading-none font-medium"
                   >
                     Truncate
                   </span>

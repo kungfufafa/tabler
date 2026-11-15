@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,7 +12,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { useAction } from "@/features/palette/actions";
 import { ipc, toIpcError } from "@/lib/ipc";
 import { useActiveConnection, useConnectionsStore } from "@/stores/connections";
@@ -85,8 +85,8 @@ function EncodingDialog() {
     <Dialog open={connectionId !== null} onOpenChange={(o) => !o && close()}>
       <DialogContent className="sm:max-w-[34rem]">
         <DialogHeader>
-          <DialogTitle>View Using Encoding</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-sm">View Using Encoding</DialogTitle>
+          <DialogDescription className="text-xs">
             {server
               ? `Reads the data of ${conn?.info.name ?? "the connection"} with another encoding; the open tabs reload. Reconnecting goes back to ${own}.`
               : "SQLite text is always UTF-8: there is no connection encoding."}
@@ -94,22 +94,37 @@ function EncodingDialog() {
         </DialogHeader>
         {server && (
           <form
-            className="flex flex-col gap-3"
+            className="flex flex-col gap-4"
             onSubmit={(e) => {
               e.preventDefault();
               if (valid && !busy) void apply(value.trim());
             }}
           >
-            <div className="flex items-center gap-3">
-              <Label htmlFor={`${uid}-enc`} className="text-muted-foreground text-xs font-normal">
-                Encoding
-              </Label>
+            <FormField
+              orientation="inline"
+              label="Encoding"
+              htmlFor={`${uid}-enc`}
+              hint={
+                <>
+                  <p>
+                    Now: <span className="font-mono">{current.data ?? "…"}</span>
+                    {current.isError ? ` (${toIpcError(current.error).message})` : ""}
+                  </p>
+                  {valid && !isUtf8Encoding(value) && (
+                    <p role="note" className="text-warning">
+                      {NON_UTF8_NOTE}
+                    </p>
+                  )}
+                </>
+              }
+            >
               <Input
                 id={`${uid}-enc`}
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
                 list={`${uid}-choices`}
-                className="w-56 font-mono"
+                aria-describedby={`${uid}-enc-hint`}
+                className="h-7 w-56 rounded-md font-mono text-xs md:text-xs"
                 autoComplete="off"
                 autoFocus
                 aria-invalid={value !== "" && !valid ? true : undefined}
@@ -119,28 +134,20 @@ function EncodingDialog() {
                   <option key={c} value={c} />
                 ))}
               </datalist>
-            </div>
-            <p className="text-muted-foreground text-[11px]">
-              Now: <span className="font-mono">{current.data ?? "…"}</span>
-              {current.isError ? ` (${toIpcError(current.error).message})` : ""}
-            </p>
-            {valid && !isUtf8Encoding(value) && (
-              <p role="note" className="text-warning text-[11px]">
-                {NON_UTF8_NOTE}
-              </p>
-            )}
+            </FormField>
             <DialogFooter>
               <Button
                 type="button"
-                variant="ghost"
+                variant="outline"
                 size="sm"
+                className="sm:mr-auto"
                 disabled={busy}
                 onClick={() => void apply(null)}
                 title="Use the connection's own encoding"
               >
                 Reset to {own}
               </Button>
-              <Button type="button" variant="ghost" size="sm" onClick={close}>
+              <Button type="button" variant="outline" size="sm" onClick={close}>
                 Cancel
               </Button>
               <Button type="submit" size="sm" disabled={!valid || busy}>

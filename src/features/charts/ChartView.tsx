@@ -108,7 +108,7 @@ export function Tooltip({
   return (
     <div
       role="tooltip"
-      className="bg-popover text-popover-foreground border-border pointer-events-none absolute z-10 max-w-64 rounded-md border px-2 py-1.5 text-[11px] shadow-md"
+      className="bg-popover text-popover-foreground border-border pointer-events-none absolute z-10 max-w-64 rounded-md border px-2 py-1.5 text-xs shadow-md"
       style={{ left: x, top: y, transform: flip ? "translateX(-100%)" : undefined }}
     >
       {data.title && <div className="text-muted-foreground mb-1 truncate">{data.title}</div>}
@@ -285,7 +285,7 @@ export function ChartView({ resultId, columns, directive, done }: ChartViewProps
       data-slot="result-chart"
       aria-busy={!done}
     >
-      <div className="border-border flex h-7 shrink-0 items-center gap-1 border-b px-2 text-[11px]">
+      <div className="border-border flex h-7 shrink-0 items-center gap-1 border-b pr-2 pl-3 text-xs">
         <span className="text-muted-foreground min-w-0 flex-1 truncate" title={notes.join(" ")}>
           {notes.join(" ")}
         </span>

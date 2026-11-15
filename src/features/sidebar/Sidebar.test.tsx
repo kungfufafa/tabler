@@ -113,7 +113,13 @@ describe("Sidebar", () => {
     renderSidebar();
     // TablePlus's line; the list opens from the shortcut or the toolbar only.
     expect(
-      screen.getByText(/^No database selected, press (Ctrl\+K|⌘K) to select a database$/),
+      screen.getByText(
+        (_, el) =>
+          el?.tagName === "P" &&
+          /^No database selected, press (Ctrl\+K|⌘K) to select a database$/.test(
+            el.textContent ?? "",
+          ),
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /database/i })).toBeNull();
     expect(ipc.schema.tables).not.toHaveBeenCalled();
@@ -142,7 +148,7 @@ describe("Sidebar", () => {
   it("shows why the tree is empty when the schemas cannot be loaded", async () => {
     vi.spyOn(ipc.schema, "schemas").mockRejectedValue(new Error("permission denied"));
     renderSidebar();
-    expect(await screen.findByText("Could not load tables")).toBeInTheDocument();
+    expect(await screen.findByText("Could not load the tables")).toBeInTheDocument();
     expect(screen.getByText("permission denied")).toBeInTheDocument();
     expect(screen.queryByText("No tables")).toBeNull();
   });
@@ -239,7 +245,7 @@ describe("Sidebar", () => {
 
       openMenu("New item");
       fireEvent.click(screen.getByRole("menuitem", { name: "New Table…" }));
-      expect(await screen.findByRole("dialog", { name: "New table" })).toBeInTheDocument();
+      expect(await screen.findByRole("dialog", { name: "New Table" })).toBeInTheDocument();
     } finally {
       unregister();
     }

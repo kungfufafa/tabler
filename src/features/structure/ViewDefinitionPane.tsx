@@ -1,8 +1,9 @@
-import { QuietStatus } from "@/components/QuietLoading";
+import { EmptyState } from "@/components/EmptyState";
+import { Kbd } from "@/components/Kbd";
+import { QuietLoading } from "@/components/QuietLoading";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import { ipc, type DdlOp, type Dialect, type TableKind, type TableRef } from "@/lib/ipc";
-import { formatCombo } from "@/lib/keys/combo";
 import { ddlKey } from "./invalidate";
 import { StructureSqlEditor } from "./StructureSqlEditor";
 import { editableViewSql, viewOps } from "./viewEdit";
@@ -46,21 +47,26 @@ export function ViewDefinitionPane({
     },
     [original, onStage, dialect, kind, table],
   );
-  if (ddl.isPending) return <QuietStatus />;
+  if (ddl.isPending) return <QuietLoading />;
   if (ddl.isError)
     return (
-      <p className="text-error p-4 text-xs" role="alert">
-        Could not load the definition: {ddl.error.message}
-      </p>
+      <div role="alert" className="h-full">
+        <EmptyState title="Could not load the definition" description={ddl.error.message} />
+      </div>
     );
   return (
     <section aria-label="Definition" className="flex h-full min-h-0 flex-col gap-1.5 p-3">
-      <p className="text-muted-foreground text-[11px]">
-        {editable
-          ? kind === "materializedView" || dialect === "sqlite"
-            ? `Edit the definition and press ${formatCombo("Mod+S")}: the view is dropped and created again.`
-            : `Edit the definition and press ${formatCombo("Mod+S")}: the view is replaced (CREATE OR REPLACE VIEW).`
-          : "The view's definition."}
+      <p className="text-muted-foreground text-xs">
+        {editable ? (
+          <>
+            Edit the definition and press <Kbd combo="Mod+S" className="mx-0.5 align-middle" />:{" "}
+            {kind === "materializedView" || dialect === "sqlite"
+              ? "the view is dropped and created again."
+              : "the view is replaced (CREATE OR REPLACE VIEW)."}
+          </>
+        ) : (
+          "The view's definition"
+        )}
       </p>
       <StructureSqlEditor
         key={`${table.schema ?? ""}.${table.name}:${original ?? ""}`}

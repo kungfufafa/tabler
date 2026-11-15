@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, RefreshCw, Server, TriangleAlert } from "lucide-rea
 import { useMemo, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
+import { QuietStatus } from "@/components/QuietLoading";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -14,7 +15,14 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { guardExecution } from "@/features/safety/guard";
 import { ipc, type Driver, type KillScope, type ProcessRow } from "@/lib/ipc";
 import { isMac } from "@/lib/keys/combo";
@@ -49,12 +57,10 @@ export function ProcessListDialog({
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="flex h-[min(680px,calc(100dvh-4rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1120px,calc(100%-2rem))]">
-        <header className="border-border flex h-11 shrink-0 items-center gap-2 border-b pr-12 pl-4">
-          <DialogTitle className="text-[13px] font-semibold">Running Queries</DialogTitle>
-          <DialogDescription className="text-muted-foreground truncate text-xs">
-            {connectionName}
-          </DialogDescription>
-        </header>
+        <DialogHeader className="shrink-0 gap-1 border-b px-4 py-3 pr-12">
+          <DialogTitle className="text-sm">Running Queries</DialogTitle>
+          <DialogDescription className="truncate text-xs">{connectionName}</DialogDescription>
+        </DialogHeader>
         {driver === "sqlite" ? (
           <EmptyState
             icon={Server}
@@ -150,7 +156,7 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
   return (
     <>
       <div className="border-border flex h-10 shrink-0 items-center gap-3 border-b px-3 text-xs">
-        <label className="flex items-center gap-1.5">
+        <label className="flex items-center gap-1.5 whitespace-nowrap">
           <span className="text-muted-foreground">Database</span>
           <NativeSelect
             aria-label="Database filter"
@@ -166,11 +172,11 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
             ))}
           </NativeSelect>
         </label>
-        <label className="flex items-center gap-1.5">
+        <label className="flex h-7 items-center gap-2 whitespace-nowrap">
           <Checkbox checked={hideIdle} onCheckedChange={(v) => setHideIdle(v === true)} />
           Hide idle
         </label>
-        <label className="flex items-center gap-1.5">
+        <label className="flex h-7 items-center gap-2 whitespace-nowrap">
           <Checkbox checked={auto} onCheckedChange={(v) => setAuto(v === true)} />
           Auto-refresh (2 s)
         </label>
@@ -192,7 +198,7 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
         aria-multiselectable
         tabIndex={0}
         onKeyDown={onKeyDown}
-        className="min-h-0 flex-1 overflow-auto outline-none"
+        className="focus-visible:ring-ring min-h-0 flex-1 overflow-auto outline-none focus-visible:ring-1 focus-visible:ring-inset"
       >
         {list.isError ? (
           <EmptyState
@@ -201,13 +207,11 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
             description={errorInfo(list.error).message}
           >
             <Button variant="outline" size="xs" onClick={() => void list.refetch()}>
-              Try again
+              Try Again
             </Button>
           </EmptyState>
         ) : list.isPending ? (
-          <div className="text-muted-foreground flex h-full items-center justify-center gap-2 text-xs">
-            <span className="sr-only">Loading processes…</span>
-          </div>
+          <QuietStatus>Loading processes</QuietStatus>
         ) : (
           <table className="w-full min-w-[900px] table-fixed border-collapse text-xs">
             <colgroup>
@@ -216,7 +220,7 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
               ))}
             </colgroup>
             <thead>
-              <tr className="text-muted-foreground [&>th]:bg-surface-2 h-7 text-left text-[11px] [&>th]:sticky [&>th]:top-0 [&>th]:z-10 [&>th]:shadow-[inset_0_-1px_0_var(--color-border)]">
+              <tr className="text-muted-foreground [&>th]:bg-surface-2 h-7 text-left text-xs [&>th]:sticky [&>th]:top-0 [&>th]:z-10 [&>th]:shadow-[inset_0_-1px_0_var(--color-border)]">
                 {columns.map((c) => (
                   <th
                     key={c.id}
@@ -229,16 +233,16 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
                       type="button"
                       onClick={() => toggleSort(c.id)}
                       className={cn(
-                        "hover:text-foreground flex h-7 w-full items-center gap-1 px-2 text-left",
+                        "hover:text-foreground focus-visible:ring-ring flex h-7 w-full items-center gap-1 px-2 text-left transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset",
                         c.numeric && "justify-end",
                       )}
                     >
                       {c.label}
                       {sort.column === c.id &&
                         (sort.desc ? (
-                          <ArrowDown className="size-3" />
+                          <ArrowDown aria-hidden className="size-3" />
                         ) : (
-                          <ArrowUp className="size-3" />
+                          <ArrowUp aria-hidden className="size-3" />
                         ))}
                     </button>
                   </th>
@@ -260,7 +264,7 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
                 <tr>
                   <td
                     colSpan={columns.length}
-                    className="text-muted-foreground px-3 py-6 text-center text-[11px]"
+                    className="text-muted-foreground py-6 text-center text-xs"
                   >
                     {all.length === 0 ? "No sessions" : "No sessions match the filter"}
                   </td>
@@ -273,18 +277,17 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
 
       {focused?.query && (
         <div className="border-border bg-surface-2 max-h-24 shrink-0 overflow-auto border-t px-3 py-2">
-          <pre className="selectable font-mono text-[11px] break-words whitespace-pre-wrap">
+          <pre className="selectable font-mono text-xs break-words whitespace-pre-wrap">
             {focused.query}
           </pre>
         </div>
       )}
 
-      <footer className="border-border flex h-11 shrink-0 items-center gap-2 border-t px-3 text-xs">
-        <span className="text-muted-foreground tabular-nums">
+      <DialogFooter className="m-0 shrink-0 items-center">
+        <div className="text-muted-foreground min-w-0 flex-1 text-xs tabular-nums">
           {rows.length} {rows.length === 1 ? "session" : "sessions"}
           {picked.length > 0 && ` · ${picked.length} selected`}
-        </span>
-        <span className="flex-1" />
+        </div>
         <Button
           variant="outline"
           size="sm"
@@ -301,7 +304,7 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
         >
           Kill Connection
         </Button>
-      </footer>
+      </DialogFooter>
 
       {confirm && (
         <KillConfirm
@@ -341,7 +344,7 @@ function ProcessTableRow({
       onClick={onClick}
       className={cn(
         "border-gridline h-7 cursor-default border-b select-none",
-        selected ? "bg-brand-soft" : "hover:bg-muted/50",
+        selected ? "bg-brand-soft" : "hover:bg-row-hover",
       )}
     >
       {columns.map((c) => {
@@ -359,13 +362,13 @@ function ProcessTableRow({
             className={cn(
               "truncate px-2",
               numeric.includes(c) && "text-right tabular-nums",
-              (c === "query" || c === "id") && "font-mono text-[11px]",
-              c === "query" && !text && "text-muted-foreground/60",
+              (c === "query" || c === "id") && "font-mono",
+              c === "query" && !text && "text-null",
             )}
           >
             {c === "id" && row.own && (
               <span
-                className="bg-brand-soft text-brand mr-1 rounded px-1 font-sans text-[10px] font-medium"
+                className="bg-brand-soft text-brand mr-1 inline-flex h-4 items-center rounded-sm px-1 font-sans text-[10px] leading-none font-medium"
                 title={
                   row.current
                     ? "The session listing these processes"
@@ -430,7 +433,7 @@ function KillConfirm({
             role="alert"
             className="border-warning/40 bg-warning/10 flex gap-2 rounded-md border px-2.5 py-2 text-xs"
           >
-            <TriangleAlert className="text-warning mt-0.5 size-3.5 shrink-0" />
+            <TriangleAlert aria-hidden className="text-warning mt-0.5 size-3.5 shrink-0" />
             <span>
               {own.length === targets.length && own.length === 1
                 ? "This is "

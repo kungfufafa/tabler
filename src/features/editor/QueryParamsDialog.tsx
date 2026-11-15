@@ -1,5 +1,6 @@
 import { useState, type KeyboardEvent } from "react";
-import { Kbd } from "@/components/Kbd";
+import { FormField } from "@/components/FormField";
+import { KbdHint } from "@/components/KbdHint";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -35,8 +36,8 @@ function ParamsForm({ request }: { request: ParamsRequest }) {
   };
 
   return (
-    <DialogContent className="gap-3 sm:max-w-[34rem]" onKeyDown={onKeyDown}>
-      <DialogHeader className="gap-1">
+    <DialogContent className="sm:max-w-[34rem]" onKeyDown={onKeyDown}>
+      <DialogHeader>
         <DialogTitle className="text-sm">Query Parameters</DialogTitle>
         <DialogDescription className="text-xs">
           Values go into the SQL exactly as typed: quote text yourself (
@@ -44,7 +45,7 @@ function ParamsForm({ request }: { request: ParamsRequest }) {
         </DialogDescription>
       </DialogHeader>
       <form
-        className="flex max-h-[50dvh] flex-col gap-1.5 overflow-auto"
+        className="flex max-h-[50dvh] flex-col gap-3 overflow-auto"
         onSubmit={(e) => {
           e.preventDefault();
           apply();
@@ -53,14 +54,16 @@ function ParamsForm({ request }: { request: ParamsRequest }) {
         {request.fields.map((f, i) => {
           const id = `query-param-${i}`;
           return (
-            <div key={f.key} className="grid grid-cols-[minmax(5rem,auto)_1fr] items-center gap-2">
-              <label
-                htmlFor={id}
-                className="text-muted-foreground truncate text-right font-mono text-xs"
-                title={f.label}
-              >
-                {f.label}
-              </label>
+            <FormField
+              key={f.key}
+              orientation="inline"
+              htmlFor={id}
+              label={
+                <span className="block truncate font-mono" title={f.label}>
+                  {f.label}
+                </span>
+              }
+            >
               <Input
                 id={id}
                 autoFocus={i === 0}
@@ -69,22 +72,19 @@ function ParamsForm({ request }: { request: ParamsRequest }) {
                 onKeyDown={(e) => onFieldKeyDown(e, i)}
                 spellCheck={false}
                 autoComplete="off"
-                className="h-7 font-mono text-xs"
+                className="h-7 rounded-md font-mono text-xs md:text-xs"
               />
-            </div>
+            </FormField>
           );
         })}
       </form>
-      <DialogFooter className="py-3">
+      <DialogFooter>
         <Button size="sm" variant="outline" onClick={() => request.resolve(null)}>
           Cancel
         </Button>
         <Button size="sm" onClick={apply}>
           Run
-          <Kbd
-            combo="Mod+Enter"
-            className="border-primary-foreground/30 bg-transparent text-inherit"
-          />
+          <KbdHint combo="Mod+Enter" />
         </Button>
       </DialogFooter>
     </DialogContent>

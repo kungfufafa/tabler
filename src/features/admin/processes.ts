@@ -194,7 +194,7 @@ export function killSummary(
   const failed = outcomes
     .filter((o) => !o.ok)
     .map((o) => ({ id: o.id, message: o.message ?? "failed" }));
-  const what = scope === "query" ? "Cancelled the query of" : "Killed the connection of";
+  const what = scope === "query" ? "Canceled the query of" : "Killed the connection of";
   const noun = (n: number) => (n === 1 ? "process" : "processes");
   const title =
     failed.length === 0

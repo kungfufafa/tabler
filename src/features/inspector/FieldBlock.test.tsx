@@ -492,7 +492,7 @@ describe("FieldBlock JSON ▸ Sort keys", () => {
       '{\n  "b": 9007199254740993,\n  "a": {\n    "d": 1.10,\n    "c": 2\n  },\n  "b": 3\n}',
     );
     const menu = await openMenu();
-    fireEvent.click(within(menu).getByRole("menuitemcheckbox", { name: "Sort keys" }));
+    fireEvent.click(within(menu).getByRole("menuitemcheckbox", { name: "Sort Keys" }));
     expect(cmView("doc").state.doc.toString()).toBe(
       '{\n  "a": {\n    "c": 2,\n    "d": 1.10\n  },\n  "b": 9007199254740993,\n  "b": 3\n}',
     );

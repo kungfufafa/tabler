@@ -268,7 +268,7 @@ describe("the toolbar, ⇧⌘P and ⇧⌘⌫ work on a new-view tab", () => {
 
     // ⇧⌘P: one sheet with the rows and the definition.
     await act(() => actions.run("grid.preview"));
-    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
     await waitFor(() => expect(sheet).toHaveTextContent("rows statement"));
     expect(within(sheet).getByRole("region", { name: /^Rows/ })).toBeInTheDocument();
     const def = within(sheet).getByRole("region", { name: /^Definition/ });

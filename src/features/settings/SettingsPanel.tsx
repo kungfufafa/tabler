@@ -17,7 +17,8 @@ import { AppearanceSettings } from "@/features/appearance";
 import { AssistantSettingsGroup } from "@/features/assistant/AssistantSettings";
 import { LocationsSettings } from "@/features/locations/LocationsSettings";
 import { McpSettings } from "@/features/mcp/McpSettings";
-import { comboFromEvent, formatCombo, isMac } from "@/lib/keys/combo";
+import { Kbd } from "@/components/Kbd";
+import { comboFromEvent, isMac } from "@/lib/keys/combo";
 import { isCapturingShortcut } from "@/lib/keys/useShortcuts";
 import { cn } from "@/lib/utils";
 import { flushPrefs, loadPrefs, usePrefs } from "@/stores/prefs";
@@ -193,13 +194,14 @@ export function SettingsPanel({
                   triggerRefs.current[id] = el;
                 }}
                 aria-keyshortcuts={`${isMac ? "Meta" : "Control"}+${i + 1}`}
-                className="group text-foreground/80 hover:bg-accent/70 focus-visible:ring-ring/60 data-[state=active]:bg-brand-soft data-[state=active]:text-foreground flex h-7 items-center gap-2 rounded-md px-2 text-left text-[13px] outline-none focus-visible:ring-1"
+                className="group text-foreground hover:bg-row-hover focus-visible:ring-ring data-[state=active]:bg-brand-soft flex h-7 items-center gap-2 rounded-md px-2 text-left text-sm transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset"
               >
-                <Icon className="text-muted-foreground group-data-[state=active]:text-brand size-3.5 shrink-0" />
+                <Icon
+                  aria-hidden
+                  className="text-muted-foreground group-data-[state=active]:text-brand size-3.5 shrink-0"
+                />
                 <span className="flex-1 truncate">{label}</span>
-                <span className="text-muted-foreground/70 hidden text-[10px] tabular-nums group-hover:inline">
-                  {formatCombo(combo)}
-                </span>
+                <Kbd combo={combo} className="hidden group-hover:inline-flex" />
               </TabsPrimitive.Trigger>
             );
           })}

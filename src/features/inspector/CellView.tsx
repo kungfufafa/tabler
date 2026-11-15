@@ -72,12 +72,13 @@ export function CellView({ cell }: { cell: InspectedCell }) {
           size="icon-xs"
           aria-label="Copy value"
           title={shown.t === "bytes" ? "Copy as base64" : "Copy value"}
+          className="text-muted-foreground hover:bg-accent hover:text-foreground dark:hover:bg-accent"
           onClick={() => copy(copyText(shown))}
         >
           <Copy />
         </Button>
       </div>
-      <div className="border-border text-muted-foreground flex min-h-8 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-1 text-[12px]">
+      <div className="border-border text-muted-foreground flex min-h-8 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-1 text-xs">
         <span className="font-mono">{column.dataType}</span>
         {stats && <span>· {stats}</span>}
         {sortable && (
@@ -89,7 +90,7 @@ export function CellView({ cell }: { cell: InspectedCell }) {
             }}
             title="List the keys of every object in order (display only)"
           >
-            Sort keys
+            Sort Keys
           </Toggle>
         )}
         {shown.t === "bytes" && (
@@ -102,17 +103,17 @@ export function CellView({ cell }: { cell: InspectedCell }) {
           <Button
             variant="outline"
             size="xs"
-            className="ml-auto h-5 text-[11px]"
+            className="ml-auto"
             disabled={current?.status === "loading"}
             onClick={() => void loadFull()}
           >
             <Download />
-            Load full value
+            Load Full Value
           </Button>
         )}
       </div>
       {current?.status === "error" && (
-        <div className="text-error border-border shrink-0 border-b px-3 py-1.5 text-[11px]">
+        <div className="text-error border-border selectable shrink-0 border-b px-3 py-1.5 text-xs">
           {current.error}
         </div>
       )}
@@ -168,13 +169,13 @@ function BytesView({ value }: { value: Extract<Value, { t: "bytes" }> }) {
           "selectable min-h-0 flex-1 overflow-auto p-3 font-mono",
           view === "text"
             ? "text-xs leading-5 break-words whitespace-pre-wrap"
-            : "text-[11px] leading-4 whitespace-pre",
+            : "text-xs leading-4 whitespace-pre",
         )}
       >
         {view === "text" ? text : (dump ?? `base64: ${base64.slice(0, 2000)}`)}
       </pre>
       {len > shownBytes && (
-        <div className="border-border text-muted-foreground border-t px-3 py-1 text-[11px]">
+        <div className="border-border text-muted-foreground border-t px-3 py-1 text-xs tabular-nums">
           Showing the first {formatBytes(shownBytes)} of {formatBytes(len)}
         </div>
       )}

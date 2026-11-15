@@ -1,5 +1,6 @@
 import { Copy, Play, Trash2, X } from "lucide-react";
-import { useId, useState, type ReactNode } from "react";
+import { useId, useState } from "react";
+import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -41,16 +42,6 @@ import { runKey, updateObject, updateObjects, useMetricsStore } from "./store";
 const FIRST = "\u0000first";
 const SLOTS = [0, 1, 2, 3, 4, 5, 6, 7];
 
-function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="text-muted-foreground text-[11px] font-medium">{label}</span>
-      {children}
-      {hint && <p className="text-muted-foreground text-[10px] leading-snug">{hint}</p>}
-    </div>
-  );
-}
-
 function Toggle({
   label,
   checked,
@@ -64,12 +55,12 @@ function Toggle({
 }) {
   const id = useId();
   return (
-    <div className="flex flex-col gap-0.5">
-      <label htmlFor={id} className="flex items-center justify-between gap-2 text-xs">
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="flex min-h-7 items-center justify-between gap-2 text-xs">
         {label}
         <Switch id={id} size="sm" checked={checked} onCheckedChange={onChange} />
       </label>
-      {hint && <p className="text-muted-foreground text-[10px] leading-snug">{hint}</p>}
+      {hint && <p className="text-muted-foreground text-xs leading-4">{hint}</p>}
     </div>
   );
 }
@@ -88,7 +79,7 @@ function RefreshField({
 }) {
   const r = object.refresh;
   return (
-    <Field
+    <FormField
       label="Refresh"
       hint={
         r.mode === "event"
@@ -131,7 +122,7 @@ function RefreshField({
             type="number"
             min={MIN_INTERVAL}
             aria-label="Seconds"
-            className="h-7 w-16 text-xs md:text-xs"
+            className="h-7 w-16 rounded-md text-xs md:text-xs"
             value={r.seconds}
             onChange={(e) => {
               const n = Math.round(Number(e.target.value));
@@ -141,11 +132,11 @@ function RefreshField({
           />
         )}
       </div>
-    </Field>
+    </FormField>
   );
 }
 
-/** "Query timeout": seconds after which the object's query is cancelled (5 to 600). */
+/** "Query timeout": seconds after which the object's query is canceled (5 to 600). */
 function TimeoutField({
   seconds,
   onChange,
@@ -156,16 +147,16 @@ function TimeoutField({
   const [text, setText] = useState(String(seconds));
   const inRange = (n: number) => Number.isInteger(n) && n >= MIN_TIMEOUT && n <= MAX_TIMEOUT;
   return (
-    <Field
+    <FormField
       label="Query timeout (seconds)"
-      hint={`A query still running after this is cancelled and the object says so. ${MIN_TIMEOUT} to ${MAX_TIMEOUT} seconds.`}
+      hint={`A query still running after this is canceled and the object says so. ${MIN_TIMEOUT} to ${MAX_TIMEOUT} seconds.`}
     >
       <Input
         type="number"
         min={MIN_TIMEOUT}
         max={MAX_TIMEOUT}
         aria-label="Query timeout"
-        className="h-7 w-24 text-xs md:text-xs"
+        className="h-7 w-24 rounded-md text-xs md:text-xs"
         value={text}
         onChange={(e) => {
           setText(e.target.value);
@@ -183,7 +174,7 @@ function TimeoutField({
           if (next !== seconds) onChange(next);
         }}
       />
-    </Field>
+    </FormField>
   );
 }
 
@@ -202,7 +193,7 @@ function ColumnSelect({
 }) {
   const list = value !== null && !columns.includes(value) ? [value, ...columns] : columns;
   return (
-    <Field label={label}>
+    <FormField label={label}>
       <Select value={value ?? FIRST} onValueChange={(v) => onChange(v === FIRST ? null : v)}>
         <SelectTrigger size="sm" className="w-full text-xs" aria-label={label}>
           <SelectValue />
@@ -218,11 +209,11 @@ function ColumnSelect({
           ))}
         </SelectContent>
       </Select>
-    </Field>
+    </FormField>
   );
 }
 
-/** A series' colour: one of the chart palette's eight slots. */
+/** A series' color: one of the chart palette's eight slots. */
 function SwatchRow({
   name,
   slot,
@@ -234,15 +225,15 @@ function SwatchRow({
 }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{name}</span>
-      <div role="radiogroup" aria-label={`Colour of ${name}`} className="flex gap-0.5">
+      <span className="min-w-0 flex-1 truncate font-mono text-xs">{name}</span>
+      <div role="radiogroup" aria-label={`Color of ${name}`} className="flex gap-0.5">
         {SLOTS.map((s) => (
           <button
             key={s}
             type="button"
             role="radio"
             aria-checked={s === slot}
-            aria-label={`Colour ${s + 1}`}
+            aria-label={`Color ${s + 1}`}
             onClick={() => onPick(s)}
             className={cn(
               "ring-offset-surface size-3.5 rounded-[3px] ring-offset-1",
@@ -258,7 +249,7 @@ function SwatchRow({
 
 /**
  * The selected object's settings (edit mode): title, SQL (the app's CodeMirror setup), refresh
- * rate, "Allow data changes", chart mappings and colours, scoreboard / input / dropdown options,
+ * rate, "Allow data changes", chart mappings and colors, scoreboard / input / dropdown options,
  * and the objects it refreshes.
  */
 export function Inspector({
@@ -298,6 +289,7 @@ export function Inspector({
           ? "Another input or dropdown sets this variable"
           : null;
   const [optionsText, setOptionsText] = useState(() => formatOptions(object.options));
+  const variableId = useId();
 
   const hasSql =
     info.data ||
@@ -319,7 +311,7 @@ export function Inspector({
     object.kind === "dropdown"
       ? "SELECT id, name FROM customers ORDER BY name"
       : object.kind === "button"
-        ? "UPDATE orders SET status = 'shipped' WHERE id = {{order}}"
+        ? "Optional, e.g. UPDATE orders SET status = 'shipped' WHERE id = {{order}}"
         : object.kind === "scoreboard"
           ? "SELECT count(*) AS orders FROM orders"
           : "SELECT date(created_at) AS day, count(*) AS orders FROM orders GROUP BY 1";
@@ -330,32 +322,42 @@ export function Inspector({
       data-slot="metrics-inspector"
       className="border-border bg-surface-2 flex h-full w-72 shrink-0 flex-col border-l"
     >
-      <div className="border-border flex h-9 shrink-0 items-center gap-2 border-b px-3">
-        <span className="min-w-0 flex-1 truncate text-xs font-semibold">{info.label}</span>
-        <Button variant="ghost" size="icon-xs" aria-label="Close settings" onClick={onClose}>
+      <div className="border-border flex h-8 shrink-0 items-center gap-2 border-b px-3 text-xs">
+        <span className="min-w-0 flex-1 truncate text-xs font-medium">{info.label}</span>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Close settings"
+          className="hover:bg-accent dark:hover:bg-accent"
+          onClick={onClose}
+        >
           <X />
         </Button>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
-        <Field label={object.kind === "button" ? "Label" : "Title"}>
+        <FormField label={object.kind === "button" ? "Label" : "Title"}>
           <Input
             value={object.title}
             aria-label="Title"
-            className="h-7 text-xs md:text-xs"
+            className="h-7 rounded-md text-xs md:text-xs"
             onChange={(e) => set({ title: e.target.value })}
           />
-        </Field>
+        </FormField>
 
         {(object.kind === "input" || object.kind === "dropdown") && (
-          <Field
+          <FormField
             label="Variable"
-            hint={variableError ?? `Use {{${variable}}} in any object's SQL.`}
+            htmlFor={variableId}
+            error={variableError}
+            hint={`Use {{${variable}}} in any object's SQL.`}
           >
             <Input
+              id={variableId}
               value={variable}
               aria-label="Variable"
               aria-invalid={variableError !== null}
-              className="h-7 font-mono text-xs md:text-xs"
+              aria-describedby={variableError ? `${variableId}-error` : `${variableId}-hint`}
+              className="h-7 rounded-md font-mono text-xs md:text-xs"
               onChange={(e) => {
                 const v = e.target.value.trim();
                 setVariableText(v);
@@ -363,12 +365,12 @@ export function Inspector({
                 if (isVariableName(v) && !taken) set({ variable: v });
               }}
             />
-          </Field>
+          </FormField>
         )}
 
         {object.kind === "input" && (
           <>
-            <Field label="Type">
+            <FormField label="Type">
               <Select
                 value={object.inputType}
                 onValueChange={(v) => set({ inputType: v as InputType, defaultValue: "" })}
@@ -388,8 +390,8 @@ export function Inspector({
                   </SelectItem>
                 </SelectContent>
               </Select>
-            </Field>
-            <Field label="Default value">
+            </FormField>
+            <FormField label="Default value">
               <Input
                 type={
                   object.inputType === "number"
@@ -400,15 +402,15 @@ export function Inspector({
                 }
                 value={object.defaultValue}
                 aria-label="Default value"
-                className="h-7 text-xs md:text-xs"
+                className="h-7 rounded-md text-xs md:text-xs"
                 onChange={(e) => set({ defaultValue: e.target.value })}
               />
-            </Field>
+            </FormField>
           </>
         )}
 
         {object.kind === "dropdown" && (
-          <Field label="Options">
+          <FormField label="Options">
             <Select
               value={object.optionsSource}
               onValueChange={(v) =>
@@ -430,38 +432,38 @@ export function Inspector({
                 </SelectItem>
               </SelectContent>
             </Select>
-          </Field>
+          </FormField>
         )}
         {object.kind === "dropdown" && object.optionsSource === "static" && (
-          <Field label="Option list" hint="One per line: value, or value | label.">
+          <FormField label="Option list" hint="One per line: value, or value | label.">
             <Textarea
               value={optionsText}
               aria-label="Option list"
               rows={5}
-              className="min-h-20 font-mono text-xs md:text-xs"
+              className="min-h-20 rounded-md font-mono text-xs md:text-xs"
               onChange={(e) => {
                 setOptionsText(e.target.value);
                 set({ options: parseOptions(e.target.value) });
               }}
             />
-          </Field>
+          </FormField>
         )}
         {object.kind === "dropdown" && (
-          <Field label="Default value" hint="The option chosen at first (else the first one).">
+          <FormField label="Default value" hint="The option chosen at first (else the first one).">
             <Input
               value={object.defaultValue}
               aria-label="Default value"
-              className="h-7 text-xs md:text-xs"
+              className="h-7 rounded-md text-xs md:text-xs"
               onChange={(e) => set({ defaultValue: e.target.value })}
             />
-          </Field>
+          </FormField>
         )}
 
         {hasSql && (
-          <Field
+          <FormField
             label={
               object.kind === "button"
-                ? "SQL (runs when clicked, optional)"
+                ? "SQL (runs when clicked)"
                 : object.kind === "dropdown"
                   ? "SQL (value column, then label column)"
                   : "SQL query"
@@ -481,7 +483,7 @@ export function Inspector({
               onChange={(sql) => set({ sql })}
               onRun={onRun}
             />
-          </Field>
+          </FormField>
         )}
 
         {scheduled && <RefreshField object={object} onChange={(refresh) => set({ refresh })} />}
@@ -511,7 +513,7 @@ export function Inspector({
               firstLabel="First column"
               onChange={(x) => set({ x })}
             />
-            <Field
+            <FormField
               label={object.kind === "pie" ? "Value column (y)" : "Y columns"}
               hint={
                 object.y.length === 0
@@ -521,9 +523,9 @@ export function Inspector({
                     : undefined
               }
             >
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col">
                 {(names.length > 0 ? names : object.y).map((name) => (
-                  <label key={name} className="flex items-center gap-2 text-xs">
+                  <label key={name} className="flex h-7 items-center gap-2 text-xs">
                     <Checkbox
                       checked={object.y.includes(name)}
                       onCheckedChange={(v) => {
@@ -543,9 +545,9 @@ export function Inspector({
                   </label>
                 ))}
               </div>
-            </Field>
+            </FormField>
             {series.length > 0 && object.kind !== "pie" && (
-              <Field label="Colours">
+              <FormField label="Colors">
                 <div className="tabler-chart flex flex-col gap-1">
                   {series.map((name, i) => (
                     <SwatchRow
@@ -560,7 +562,7 @@ export function Inspector({
                     />
                   ))}
                 </div>
-              </Field>
+              </FormField>
             )}
           </>
         )}
@@ -578,18 +580,18 @@ export function Inspector({
               label="Higher is better"
               checked={object.higherIsBetter}
               onChange={(higherIsBetter) => set({ higherIsBetter })}
-              hint="Colours the change since the previous refresh."
+              hint="Colors the change since the previous refresh."
             />
           </>
         )}
 
         {info.source && (
-          <Field
+          <FormField
             label={object.kind === "button" ? "Refreshes when clicked" : "Refreshes when changed"}
             hint="Drag the green dot onto an object to wire it (it switches to Refresh on event)."
           >
             {object.targets.length === 0 ? (
-              <p className="text-muted-foreground text-[11px] italic">Nothing wired yet</p>
+              <p className="text-muted-foreground text-xs">Nothing wired yet</p>
             ) : (
               <ul className="flex flex-col gap-0.5">
                 {object.targets.map((id) => {
@@ -602,6 +604,7 @@ export function Inspector({
                         variant="ghost"
                         size="icon-xs"
                         aria-label={`Unwire ${target?.title ?? id}`}
+                        className="hover:bg-accent dark:hover:bg-accent"
                         onClick={() =>
                           updateObjects(boardId, (list) => unwire(list, object.id, id))
                         }
@@ -613,12 +616,18 @@ export function Inspector({
                 })}
               </ul>
             )}
-          </Field>
+          </FormField>
         )}
       </div>
-      <div className="border-border flex shrink-0 items-center gap-1 border-t px-2 py-1.5">
+      <div className="border-border flex h-8 shrink-0 items-center gap-1 border-t px-2">
         {hasSql && (
-          <Button size="xs" variant="outline" onClick={onRun} disabled={object.sql.trim() === ""}>
+          <Button
+            size="xs"
+            variant="outline"
+            title={`${object.kind === "button" ? "Click" : "Run"} (${formatCombo("Mod+Enter")})`}
+            onClick={onRun}
+            disabled={object.sql.trim() === ""}
+          >
             <Play />
             {object.kind === "button" ? "Click" : "Run"}
           </Button>
@@ -629,6 +638,7 @@ export function Inspector({
           variant="ghost"
           aria-label="Duplicate"
           title="Duplicate"
+          className="hover:bg-accent dark:hover:bg-accent"
           onClick={onDuplicate}
         >
           <Copy />
@@ -638,6 +648,7 @@ export function Inspector({
           variant="ghost"
           aria-label="Delete"
           title="Delete"
+          className="hover:bg-accent dark:hover:bg-accent"
           onClick={onDelete}
         >
           <Trash2 />

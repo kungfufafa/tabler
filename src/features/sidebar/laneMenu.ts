@@ -50,7 +50,9 @@ export function laneMenuEntries(
           .then(i.run)
           .catch((e: unknown) => {
             if (e instanceof Error && e.message === "Cancelled") return;
-            toast.error(`${i.label.replace(/…$/, "")} failed`, { description: errorWithHint(e) });
+            toast.error(`Could not run “${i.label.replace(/…$/, "")}”`, {
+              description: errorWithHint(e),
+            });
           }),
     })),
   ];

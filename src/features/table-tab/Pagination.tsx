@@ -12,8 +12,9 @@ import {
 } from "@/components/ui/select";
 import { formatCount } from "@/lib/format/time";
 import type { RowCount } from "@/lib/ipc";
+import { cn } from "@/lib/utils";
 import { PAGE_SIZES } from "@/stores/prefs";
-import { BarIconButton, BarTooltip } from "./BarParts";
+import { BAR_HOVER, BarIconButton, BarTooltip } from "./BarParts";
 import { DEFAULT_ORDERS, type DefaultOrder } from "./tableViewMemory";
 
 const ORDER_LABELS: Record<DefaultOrder, string> = {
@@ -126,7 +127,10 @@ export function Pagination({
               variant="ghost"
               size="xs"
               aria-label="Pagination settings"
-              className="text-muted-foreground hover:text-foreground h-6 min-w-6 gap-1 px-1 transition-colors"
+              className={cn(
+                "text-muted-foreground hover:text-foreground min-w-6 px-1 transition-colors",
+                BAR_HOVER,
+              )}
             >
               <span className="tabular-nums @max-lg:hidden">Page {page.toLocaleString()}</span>
               <Settings2 />
@@ -162,7 +166,7 @@ export function Pagination({
                 id={`${id}-limit`}
                 size="sm"
                 aria-label="Limit"
-                className="h-7 w-full text-xs"
+                className="w-full text-xs"
               >
                 <SelectValue />
               </SelectTrigger>
@@ -188,7 +192,7 @@ export function Pagination({
                   value={draft.offset}
                   onChange={(e) => setDraft((d) => ({ ...d, offset: e.target.value }))}
                   aria-invalid={!offsetValid || undefined}
-                  className="h-7 text-xs tabular-nums"
+                  className="h-7 rounded-md text-xs tabular-nums md:text-xs"
                 />
               </>
             )}
@@ -203,7 +207,7 @@ export function Pagination({
                     onClick={() => go({ offset: 0, limit })}
                   >
                     <ChevronsLeft />
-                    First page
+                    First Page
                   </Button>
                   <Button
                     type="button"
@@ -212,7 +216,7 @@ export function Pagination({
                     disabled={pages === null || page >= pages}
                     onClick={() => pages !== null && go({ offset: (pages - 1) * limit, limit })}
                   >
-                    Last page
+                    Last Page
                     <ChevronsRight />
                   </Button>
                 </>
@@ -242,7 +246,7 @@ export function Pagination({
                       ? "How rows are ordered while no column is sorted (this table)"
                       : "This table has no primary key"
                   }
-                  className="h-7 w-full text-xs"
+                  className="w-full text-xs"
                 >
                   <SelectValue />
                 </SelectTrigger>
@@ -269,7 +273,7 @@ export function Pagination({
                   onCountExact();
                 }}
               >
-                Count rows exactly
+                Count Rows Exactly
               </Button>
             </div>
           )}

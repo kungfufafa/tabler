@@ -1,4 +1,6 @@
 import { useState, type FormEvent } from "react";
+import { FormError } from "@/components/FormError";
+import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -9,7 +11,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -61,86 +62,72 @@ export function AgentDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[min(48rem,calc(100%-2rem))]">
-        <form onSubmit={submit} className="flex flex-col gap-3">
+      <DialogContent className="sm:max-w-[34rem]">
+        <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>{editing ? "Edit Agent" : "New Agent"}</DialogTitle>
-            <DialogDescription>
+            <DialogTitle className="text-sm">{editing ? "Edit Agent" : "New Agent"}</DialogTitle>
+            <DialogDescription className="text-xs">
               Instructions the assistant follows in this agent’s conversations. The structure of the
               current connection is added after them.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="agent-name" className="text-xs">
-              Name
-            </Label>
-            <Input
-              id="agent-name"
-              autoFocus
-              value={name}
-              maxLength={MAX_AGENT_NAME}
-              onChange={(e) => setName(e.target.value)}
-              className="h-7 text-xs"
-            />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="agent-prompt" className="text-xs">
-              Instructions
-            </Label>
-            <Textarea
-              id="agent-prompt"
-              value={prompt}
-              rows={8}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="e.g. You review SQL migrations for PostgreSQL and point out locking risks."
-              className="max-h-72 min-h-32 font-mono text-xs md:text-xs"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="agent-provider" className="text-xs">
-                Provider
-              </Label>
-              <Select
-                value={provider ?? DEFAULT_PROVIDER}
-                onValueChange={(v) =>
-                  setProvider(v === DEFAULT_PROVIDER ? null : (v as AssistantProvider))
-                }
-              >
-                <SelectTrigger id="agent-provider" size="sm" className="h-7 w-full text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent data-scope="dialog">
-                  <SelectItem value={DEFAULT_PROVIDER} className="text-xs">
-                    Default (Settings)
-                  </SelectItem>
-                  {ASSISTANT_PROVIDERS.map((p) => (
-                    <SelectItem key={p} value={p} className="text-xs">
-                      {PROVIDER_LABELS[p]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="agent-model" className="text-xs">
-                Model
-              </Label>
+          <div className="flex flex-col gap-3">
+            <FormField label="Name" htmlFor="agent-name">
               <Input
-                id="agent-model"
-                value={model}
-                spellCheck={false}
-                placeholder="Provider's model"
-                onChange={(e) => setModel(e.target.value)}
-                className="h-7 font-mono text-xs"
+                id="agent-name"
+                autoFocus
+                value={name}
+                maxLength={MAX_AGENT_NAME}
+                onChange={(e) => setName(e.target.value)}
+                className="h-7 rounded-md text-xs md:text-xs"
               />
+            </FormField>
+            <FormField label="Instructions" htmlFor="agent-prompt">
+              <Textarea
+                id="agent-prompt"
+                value={prompt}
+                rows={8}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder="You review SQL migrations for PostgreSQL and point out locking risks."
+                className="max-h-72 min-h-32 rounded-md font-mono text-xs md:text-xs"
+              />
+            </FormField>
+            <div className="grid grid-cols-2 gap-3">
+              <FormField label="Provider" htmlFor="agent-provider">
+                <Select
+                  value={provider ?? DEFAULT_PROVIDER}
+                  onValueChange={(v) =>
+                    setProvider(v === DEFAULT_PROVIDER ? null : (v as AssistantProvider))
+                  }
+                >
+                  <SelectTrigger id="agent-provider" size="sm" className="w-full text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent data-scope="dialog">
+                    <SelectItem value={DEFAULT_PROVIDER} className="text-xs">
+                      Default (Settings)
+                    </SelectItem>
+                    {ASSISTANT_PROVIDERS.map((p) => (
+                      <SelectItem key={p} value={p} className="text-xs">
+                        {PROVIDER_LABELS[p]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FormField>
+              <FormField label="Model" htmlFor="agent-model">
+                <Input
+                  id="agent-model"
+                  value={model}
+                  spellCheck={false}
+                  placeholder="Optional, the provider’s model"
+                  onChange={(e) => setModel(e.target.value)}
+                  className="h-7 rounded-md font-mono text-xs md:text-xs"
+                />
+              </FormField>
             </div>
+            {error && <FormError>{error}</FormError>}
           </div>
-          {error && (
-            <p role="alert" className="text-destructive text-xs">
-              {error}
-            </p>
-          )}
           <DialogFooter>
             <Button type="button" variant="outline" size="sm" onClick={() => onOpenChange(false)}>
               Cancel

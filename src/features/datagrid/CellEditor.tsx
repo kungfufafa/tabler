@@ -223,7 +223,7 @@ export function CellEditor({
     >
       {body}
       {error && mode !== "multiline" && mode !== "json" && (
-        <div className="bg-error absolute top-full left-0 z-10 mt-0.5 rounded px-1.5 py-0.5 text-[11px] whitespace-nowrap text-white shadow">
+        <div className="bg-error text-primary-foreground absolute top-full left-0 z-10 mt-0.5 rounded px-1.5 py-0.5 text-xs whitespace-nowrap shadow">
           {error}
         </div>
       )}

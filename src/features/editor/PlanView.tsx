@@ -1,5 +1,6 @@
 import { Copy } from "lucide-react";
 import { toast } from "sonner";
+import { QuietLoading } from "@/components/QuietLoading";
 import { Button } from "@/components/ui/button";
 import { writeClipboard } from "@/features/datagrid/clipboard";
 import { formatDuration } from "@/lib/format/time";
@@ -33,8 +34,8 @@ export function PlanView({
   const text = plan.result?.text ?? null;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="border-gridline text-muted-foreground flex h-7 shrink-0 items-center gap-2 border-b px-3 text-[11px]">
-        <span className="text-foreground/80 font-semibold tracking-wide">{title}</span>
+      <div className="border-gridline text-muted-foreground flex h-7 shrink-0 items-center gap-2 border-b px-3 text-xs">
+        <span className="text-foreground font-medium">{title}</span>
         <span className="min-w-0 flex-1 truncate font-mono">{firstLine(plan.sql)}</span>
         {plan.status === "running" && (
           <span className="sr-only">
@@ -60,7 +61,7 @@ export function PlanView({
       {/* The backend wraps PostgreSQL / MySQL analyzes in a transaction (or savepoint) it rolls
           back; SQLite's plan never executes anything. */}
       {plan.mode === "analyze" && dialect !== "sqlite" && plan.status === "done" && (
-        <p className="border-gridline text-muted-foreground shrink-0 border-b px-3 py-1 text-[11px] leading-4">
+        <p className="border-gridline bg-surface-2 text-muted-foreground min-h-6 shrink-0 border-b px-3 py-1 text-xs">
           {rollsBack
             ? "Ran inside a transaction that was rolled back — no changes were kept (non-transactional MySQL tables excepted)."
             : "This connection cannot roll a statement back: whatever the analyzed statement changed was kept."}
@@ -68,12 +69,10 @@ export function PlanView({
       )}
       <div className="min-h-0 flex-1">
         {plan.status === "running" ? (
-          <div className="text-muted-foreground flex items-center gap-2 p-3 text-xs">
-            <span className="sr-only">Explaining…</span>
-          </div>
+          <QuietLoading aria-label="Explaining" />
         ) : plan.status === "cancelled" ? (
           <div className="text-warning p-3 text-xs">
-            {plan.error?.message ?? "The explain was cancelled."}
+            {plan.error?.message ?? "The explain was canceled."}
           </div>
         ) : plan.error ? (
           <div className="p-3">

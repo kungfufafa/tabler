@@ -197,7 +197,7 @@ describe("QueryTab", () => {
     const run = getQueryTab(id).run!;
     expect(run.status).toBe("cancelled");
     expect(run.statements[0]?.status).toBe("cancelled");
-    expect(screen.getByText(/^Cancelled · /)).toBeInTheDocument();
+    expect(screen.getByText(/^Canceled · /)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
     expect(screen.getByRole("button", { name: "Run Current" })).toBeEnabled();
     expect(screen.getByText("canceling statement due to user request")).toBeInTheDocument();
@@ -664,7 +664,7 @@ describe("Editor bar", () => {
       expect(run.mock.calls.at(-1)?.[3]).toEqual({ maxRows: 100, stopOnError: true });
       expect(getQueryTab(id).run?.results[0]?.truncated).toBe(true);
       expect(screen.getByText(/^1 statement · 100 rows · \d+ ms$/)).toBeInTheDocument();
-      expect(screen.getByText("limit reached")).toBeInTheDocument();
+      expect(screen.getByText("Limit reached")).toBeInTheDocument();
 
       // Back to "No limit".
       act(() => updateQueryTab(id, { rowLimit: null }));

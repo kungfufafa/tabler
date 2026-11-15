@@ -40,7 +40,7 @@ export function DriverBadge(
 ) {
   const { color, busy = false, size = "md", className } = props;
   const kind = badgeKind(props);
-  const logoClass = size === "md" ? "size-[18px]" : "size-8";
+  const logoClass = size === "md" ? "size-4.5" : "size-8";
   return (
     <span
       aria-hidden
@@ -82,7 +82,7 @@ export function TagPill({ tag, className }: { tag: ConnectionTag; className?: st
       title={`Tag: ${tagLabel(tag)}`}
       className={cn(
         TINTED,
-        "inline-flex h-4 shrink-0 items-center rounded-full px-1.5 text-[10px] leading-none font-medium",
+        "inline-flex h-4 shrink-0 items-center rounded-sm px-1 text-[10px] leading-none font-medium",
         className,
       )}
     >
@@ -134,7 +134,7 @@ export function GroupBreadcrumb({ path, className }: { path: string; className?:
       <Folder aria-hidden className="mr-0.5 size-3 shrink-0" />
       {levels.map((level, i) => (
         <Fragment key={i}>
-          {i > 0 && <ChevronRight aria-hidden className="size-3 shrink-0 opacity-60" />}
+          {i > 0 && <ChevronRight aria-hidden className="size-3 shrink-0" />}
           <span className="truncate">{level}</span>
         </Fragment>
       ))}

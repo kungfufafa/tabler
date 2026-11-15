@@ -63,7 +63,7 @@ function StatementList({ statements }: { statements: string[] }) {
       role="list"
       aria-label="Queries"
       tabIndex={-1}
-      className="border-border bg-surface-2 max-h-56 min-w-0 overflow-auto rounded-md border font-mono text-[11px] leading-4"
+      className="border-border bg-surface-2 max-h-56 min-w-0 overflow-auto rounded-md border font-mono text-[11.5px] leading-4"
     >
       {shown.map((sql, i) => (
         <div
@@ -116,7 +116,7 @@ function AlertBody({ prompt }: { prompt: SafetyPrompt }) {
     <>
       <Header prompt={prompt} />
       <StatementList statements={prompt.statements} />
-      <AlertDialogFooter className="py-1">
+      <AlertDialogFooter>
         <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>
         <AlertDialogAction
           ref={confirmRef}
@@ -221,15 +221,19 @@ function PasswordBody({ prompt }: { prompt: PasswordPrompt }) {
             setValue(e.target.value);
             setError(null);
           }}
-          className="h-8 text-[13px]"
+          className="text-sm"
         />
         {error && (
-          <p id={`safety-error-${prompt.id}`} role="alert" className="text-error text-xs">
+          <p
+            id={`safety-error-${prompt.id}`}
+            role="alert"
+            className="text-error selectable text-xs leading-4 break-words"
+          >
             {error}
           </p>
         )}
       </div>
-      <AlertDialogFooter className="py-1">
+      <AlertDialogFooter>
         {touchIdPref && touchId !== "unavailable" && (
           <Button
             type="button"
@@ -303,7 +307,7 @@ export function SafetyDialog({ prompt }: { prompt: SafetyPrompt | null }) {
           e.preventDefault();
           contentRef.current?.querySelector<HTMLElement>("[data-safety-autofocus]")?.focus();
         }}
-        className="grid-cols-1 gap-3 data-[size=default]:sm:max-w-lg"
+        className="grid-cols-1 data-[size=default]:sm:max-w-[34rem]"
       >
         {shown &&
           (shown.kind === "password" ? (

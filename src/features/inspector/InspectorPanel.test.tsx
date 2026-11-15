@@ -123,7 +123,7 @@ describe("InspectorPanel", () => {
     render(<InspectorPanel />);
     show({ focused: 2 });
     expect(screen.getByText(/\(preview\)/)).toBeInTheDocument();
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Load full value/ })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Load Full Value/ })));
     expect(cell).toHaveBeenCalledWith(
       "c1",
       { schema: "public", name: "users" },
@@ -133,7 +133,7 @@ describe("InspectorPanel", () => {
       },
       "avatar",
     );
-    expect(screen.queryByRole("button", { name: /Load full value/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Load Full Value/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/\(preview\)/)).not.toBeInTheDocument();
     expect(screen.getByText(/Showing the first 4\.0 KB of 68\.4 KB/)).toBeInTheDocument();
   });
@@ -143,10 +143,10 @@ describe("InspectorPanel", () => {
     cellMode();
     render(<InspectorPanel />);
     show({ focused: 2 });
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Load full value/ })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Load Full Value/ })));
     expect(screen.getByText(/Only a preview of this value could be loaded/)).toBeInTheDocument();
     expect(screen.getByText(/\(preview\)/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Load full value/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Load Full Value/ })).toBeInTheDocument();
   });
 
   it("shows and copies JSON exactly as stored (no JSON.parse round trip)", async () => {
@@ -188,7 +188,7 @@ describe("InspectorPanel", () => {
     cellMode();
     render(<InspectorPanel />);
     show({ focused: 2, fetch: null });
-    expect(screen.queryByRole("button", { name: /Load full value/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Load Full Value/ })).not.toBeInTheDocument();
   });
 
   it("lists the whole row in Details: names, types, placeholders, hidden, focus, search", () => {
@@ -226,7 +226,7 @@ describe("InspectorPanel", () => {
     fireEvent.change(screen.getByRole("searchbox", { name: "Search for field" }), {
       target: { value: "zzz" },
     });
-    expect(screen.getByText("No matching fields")).toBeInTheDocument();
+    expect(screen.getByText("No matches")).toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("searchbox", { name: "Search for field" }), {
       key: "Escape",
     });
@@ -240,7 +240,7 @@ describe("InspectorPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show avatar in the Cell view" }));
     expect(useInspectorStore.getState().mode).toBe("cell");
     expect(screen.getByText("bytea")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Load full value/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Load Full Value/ }));
     expect(ipc.browse.cell).toHaveBeenCalledWith(
       "c1",
       expect.anything(),

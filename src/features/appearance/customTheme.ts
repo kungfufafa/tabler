@@ -57,12 +57,12 @@ export type TokenCheck = { ok: true; tokens: Partial<ThemeTokens> } | { ok: fals
 /** Validates a token map: only known names, only colours. Values are trimmed. */
 export function checkTokens(raw: unknown): TokenCheck {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
-    return { ok: false, error: "The theme's colours must be an object." };
+    return { ok: false, error: "The theme's colors must be an object." };
   const tokens: Partial<ThemeTokens> = {};
   for (const [name, value] of Object.entries(raw)) {
-    if (!isThemeToken(name)) return { ok: false, error: `Unknown colour “${name.slice(0, 40)}”.` };
+    if (!isThemeToken(name)) return { ok: false, error: `Unknown color “${name.slice(0, 40)}”.` };
     if (!isThemeColor(value))
-      return { ok: false, error: `“${name}” is not a colour (use #rrggbb or oklch(…)).` };
+      return { ok: false, error: `“${name}” is not a color (use #rrggbb or oklch(…)).` };
     tokens[name] = value.trim();
   }
   return { ok: true, tokens };

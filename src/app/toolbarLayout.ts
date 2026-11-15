@@ -29,7 +29,7 @@ export const TOOLBAR_ITEM_LABEL: Record<ToolbarItemId, string> = {
   sidebar: "Toggle Sidebar",
   actions: "Action Control",
   safeMode: "Safe Mode",
-  databases: "Databases & SQL",
+  databases: "Databases and SQL",
   status: "Status",
   refresh: "Refresh",
   openAnything: "Open Anything",
@@ -60,7 +60,7 @@ export const TOOLBAR_ITEM_SHORT: Record<ToolbarItemId, string> = {
 
 /**
  * The default set, left → right, TablePlus's toolbar as observed on Windows (27.2): the sidebar
- * toggle first, then the staged-changes action control, the safe-mode lock, Databases & SQL, the
+ * toggle first, then the staged-changes action control, the safe-mode lock, Databases and SQL, the
  * centred status pill, and Refresh, Open Anything, Show Workspaces, User Management, Metrics Board
  * and the panel switches on the right (those drop their own sidebar toggle while the first item
  * is here).
@@ -79,7 +79,7 @@ export const DEFAULT_TOOLBAR_ITEMS: readonly ToolbarItemId[] = Object.freeze([
 
 /**
  * The previous defaults: a stored layout still equal to one of them moves to the current default.
- * The first lacked the sidebar toggle and Databases & SQL; the second had Show Workspaces and
+ * The first lacked the sidebar toggle and Databases and SQL; the second had Show Workspaces and
  * User Management on the right, which TablePlus's toolbar does not (its right group is Metrics
  * Board, Refresh, Open Anything and the panel switches).
  */

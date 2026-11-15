@@ -123,7 +123,7 @@ function ColorGrid({
       </div>
       <div className="flex justify-end">
         <Button variant="ghost" size="xs" disabled={!anyOverridden} onClick={resetAll}>
-          Reset to theme default
+          Reset to Theme Default
         </Button>
       </div>
     </div>
@@ -143,7 +143,7 @@ function ThemeSelect() {
       value={known ? themePref : "system"}
       onValueChange={(v) => isThemePref(v) && setThemePref(v)}
     >
-      <SelectTrigger id="pref-theme" size="sm" className="h-7 w-44 rounded-md text-xs">
+      <SelectTrigger id="pref-theme" size="sm" className="w-44 text-xs">
         <SelectValue />
       </SelectTrigger>
       <SelectContent data-scope="dialog">
@@ -159,7 +159,7 @@ function ThemeSelect() {
           <>
             <SelectSeparator />
             <SelectGroup>
-              <SelectLabel className="text-[11px]">Custom</SelectLabel>
+              <SelectLabel>Custom</SelectLabel>
               {customs.map((t) => (
                 <SelectItem key={t.id} value={`custom:${t.id}`} className="text-xs">
                   {t.name}
@@ -256,7 +256,7 @@ function ThemeGroup({ selection }: { selection: ThemeSelection }) {
             )
           }
         >
-          <Copy /> Duplicate
+          <Copy /> Duplicate…
         </Button>
         <Button variant="outline" size="xs" onClick={() => void onExport()}>
           <FileDown /> Export Theme…
@@ -307,7 +307,7 @@ function FontSizeSelect({
 }) {
   return (
     <Select value={String(value)} onValueChange={(v) => onChange(Number(v))}>
-      <SelectTrigger id={id} size="sm" className="h-7 w-22 rounded-md text-xs tabular-nums">
+      <SelectTrigger id={id} size="sm" className="w-22 text-xs tabular-nums">
         <SelectValue />
       </SelectTrigger>
       <SelectContent data-scope="dialog">

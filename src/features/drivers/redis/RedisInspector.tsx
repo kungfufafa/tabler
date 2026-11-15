@@ -1,5 +1,8 @@
+import { X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { EmptyState } from "@/components/EmptyState";
+import { QuietStatus } from "@/components/QuietLoading";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -51,7 +54,7 @@ async function copyKey(connectionId: string, db: number, from: Value): Promise<v
   try {
     const r = await ipc.sessionCall<RedisEditResult>(connectionId, "copyKey", args);
     const failed = r.results.find((x) => !x.ok);
-    if (failed) toast.error(failed.error ?? "The key was not copied");
+    if (failed) toast.error(failed.error ?? "Could not copy the key");
     else toast.success(`Copied to ${to}: reload the page to see it`);
   } catch (e) {
     toast.error(errorText(e));
@@ -61,9 +64,9 @@ async function copyKey(connectionId: string, db: number, from: Value): Promise<v
 export function RedisInspector({ connectionId, table, row, onStage }: InspectorSlotProps) {
   if (!row)
     return (
-      <p className="text-muted-foreground p-3 text-xs" data-testid="redis-no-key">
-        Select a key to see its value.
-      </p>
+      <div className="h-full" data-testid="redis-no-key">
+        <EmptyState title="No key selected" description="Select a key to see its value." />
+      </div>
     );
   const key = row.key ?? text("");
   const typeCell = row.type;
@@ -74,12 +77,14 @@ export function RedisInspector({ connectionId, table, row, onStage }: InspectorS
         <span className="font-mono break-all" data-testid="redis-key">
           {show(key)}
         </span>
-        <span className="bg-muted rounded px-1.5 py-0.5 font-mono">{type || "?"}</span>
+        <span className="border-border text-muted-foreground inline-flex h-4 shrink-0 items-center rounded-sm border px-1 font-mono text-[10px] leading-none font-medium">
+          {type || "?"}
+        </span>
         {onStage && (
           <Button
-            size="sm"
+            size="xs"
             variant="ghost"
-            className="ml-auto h-6"
+            className="ml-auto"
             onClick={() => void copyKey(connectionId, dbOf(table), key)}
           >
             Copy to…
@@ -129,9 +134,9 @@ function TtlEditor({
       <Input
         id="redis-ttl"
         aria-label="TTL"
-        className="h-7 w-32 font-mono text-xs"
+        className="h-7 w-32 rounded-md font-mono text-xs md:text-xs"
         value={draft}
-        placeholder="no expiry"
+        placeholder="No expiry"
         disabled={!onStage}
         onChange={(e) => setDraft(e.target.value)}
       />
@@ -140,7 +145,6 @@ function TtlEditor({
         <Button
           size="sm"
           variant="outline"
-          className="h-7"
           disabled={draft.trim() === initial}
           // Empty is no expiry (PERSIST); the backend refuses zero and other negatives.
           onClick={() => onStage({ ttl: draft.trim() === "" ? { t: "null" } : text(draft.trim()) })}
@@ -181,13 +185,13 @@ function ValueEditor({
     <div className="flex flex-col gap-2">
       <Textarea
         aria-label="Value"
-        className="min-h-40 font-mono text-xs"
+        className="min-h-40 rounded-md font-mono text-xs md:text-xs"
         spellCheck={false}
         value={draft}
         readOnly={!onStage}
         onChange={(e) => setDraft(e.target.value)}
       />
-      {bad && <p className="text-destructive">Not JSON: {bad}</p>}
+      {bad && <p className="text-error">Not JSON: {bad}</p>}
       {onStage && (
         <Button
           size="sm"
@@ -195,7 +199,7 @@ function ValueEditor({
           disabled={draft === initial || bad !== null}
           onClick={() => onStage({ value: text(draft) })}
         >
-          Stage value
+          Stage Value
         </Button>
       )}
     </div>
@@ -268,7 +272,7 @@ function Elements({ connectionId, db, redisKey, type, editable }: ElementsProps)
       if (!(await guardExecution(connectionId, { kind: "commit", statements: preview }))) return;
       const r = await ipc.sessionCall<RedisEditResult>(connectionId, "editKey", args);
       const failed = r.results.find((x) => !x.ok);
-      if (failed) toast.error(failed.error ?? "The edit was not applied");
+      if (failed) toast.error(failed.error ?? "Could not apply the edit");
       else {
         setName("");
         setValue("");
@@ -322,49 +326,66 @@ function Elements({ connectionId, db, redisKey, type, editable }: ElementsProps)
   };
 
   const [first, second] = COLUMNS[type] ?? ["Name", "Value"];
+  const span = 1 + (second ? 1 : 0) + (editable ? 1 : 0);
   const addLabel: Record<string, string> = {
-    hash: "Set field",
+    hash: "Set Field",
     list: "Push",
-    set: "Add member",
-    zset: "Set score",
-    stream: "Add entry",
+    set: "Add Member",
+    zset: "Set Score",
+    stream: "Add Entry",
   };
   const nameLabel = type === "list" ? "Element" : type === "stream" ? "Field" : first;
   const valueLabel = type === "stream" ? "Value" : second;
   return (
     <div className="flex flex-col gap-2" data-testid="redis-elements">
-      <div className="text-muted-foreground">
+      <div className="text-muted-foreground tabular-nums">
         {size && size.t !== "null" ? `${show(size)} elements` : ""}
         {elements.length > 0 ? `, ${elements.length.toLocaleString()} loaded` : ""}
       </div>
-      {error && <p className="text-destructive">{error}</p>}
+      {error && <p className="text-error">{error}</p>}
       <table className="w-full table-fixed border-collapse font-mono">
         <thead>
-          <tr className="text-muted-foreground text-left">
+          <tr className="text-muted-foreground text-left font-sans">
             <th className="w-2/5 font-normal">{first}</th>
             {second && <th className="font-normal">{second}</th>}
             {editable && <th className="w-8" />}
           </tr>
         </thead>
         <tbody>
+          {elements.length === 0 && busy && (
+            <tr>
+              <td colSpan={span}>
+                <QuietStatus />
+              </td>
+            </tr>
+          )}
+          {elements.length === 0 && !busy && size !== null && error === null && (
+            <tr>
+              <td
+                colSpan={span}
+                className="text-muted-foreground py-6 text-center font-sans text-xs"
+              >
+                No elements
+              </td>
+            </tr>
+          )}
           {elements.map((el, i) => {
             const del = editable ? remove(el) : null;
             return (
-              <tr key={i} className="border-t align-top">
+              <tr key={i} className="hover:bg-row-hover border-t align-top">
                 <td className="py-0.5 pr-2 break-all">{show(el.name)}</td>
                 {second && <td className="py-0.5 pr-2 break-all">{show(el.value)}</td>}
                 {editable && (
                   <td>
                     {del && (
                       <Button
-                        size="sm"
+                        size="icon-xs"
                         variant="ghost"
-                        className="h-6 px-1"
                         aria-label={`Delete ${show(el.name)}`}
                         disabled={busy}
                         onClick={() => void edit(del)}
                       >
-                        ×
+                        <X />
                       </Button>
                     )}
                   </td>
@@ -382,7 +403,7 @@ function Elements({ connectionId, db, redisKey, type, editable }: ElementsProps)
           disabled={busy}
           onClick={() => void load(next)}
         >
-          Load more
+          Load More
         </Button>
       )}
       {editable && (
@@ -390,7 +411,7 @@ function Elements({ connectionId, db, redisKey, type, editable }: ElementsProps)
           <Input
             aria-label={nameLabel}
             placeholder={nameLabel}
-            className="h-7 w-40 font-mono text-xs"
+            className="h-7 w-40 rounded-md font-mono text-xs md:text-xs"
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
@@ -398,14 +419,13 @@ function Elements({ connectionId, db, redisKey, type, editable }: ElementsProps)
             <Input
               aria-label={valueLabel}
               placeholder={valueLabel}
-              className="h-7 w-40 font-mono text-xs"
+              className="h-7 w-40 rounded-md font-mono text-xs md:text-xs"
               value={value}
               onChange={(e) => setValue(e.target.value)}
             />
           )}
           <Button
             size="sm"
-            className="h-7"
             disabled={busy || added() === null}
             onClick={() => {
               const e = added();

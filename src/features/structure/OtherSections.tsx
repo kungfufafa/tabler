@@ -16,7 +16,14 @@ import {
   type RowStatus,
   type TriggerRow,
 } from "./model";
-import { CellInput, HEAD_ROW, IconAction, SectionHeader, type PrefixLengths } from "./parts";
+import {
+  BAR_BUTTON,
+  CellInput,
+  HEAD_ROW,
+  IconAction,
+  SectionHeader,
+  type PrefixLengths,
+} from "./parts";
 import {
   indexMethods,
   supportsIncludeColumns,
@@ -27,7 +34,7 @@ import {
 
 function rowClass(status: RowStatus) {
   return cn(
-    "group border-gridline h-7 border-b",
+    "group border-gridline focus-visible:ring-ring h-7 border-b outline-none focus-visible:ring-1 focus-visible:ring-inset",
     status === "existing" && "focus-within:bg-row-hover",
     status === "added" && "bg-inserted",
     status === "changed" && "bg-changed",
@@ -46,7 +53,7 @@ export type BlankKind = "columns" | "indexes" | "triggers";
 export function EmptyRow({ span, text, kind }: { span: number; text: string; kind?: BlankKind }) {
   return (
     <tr data-blank-row={kind}>
-      <td colSpan={span} className="text-muted-foreground px-3 py-2 text-[11px] italic">
+      <td colSpan={span} className="text-muted-foreground px-3 py-2 text-xs">
         {text}
       </td>
     </tr>
@@ -60,7 +67,7 @@ export function EmptyRow({ span, text, kind }: { span: number; text: string; kin
 export function BlankRow({ span, kind, text }: { span: number; kind: BlankKind; text: string }) {
   return (
     <tr data-blank-row={kind} className="h-7">
-      <td colSpan={span} className="text-muted-foreground/50 px-3 text-[11px] italic select-none">
+      <td colSpan={span} className="text-muted-foreground px-3 text-xs select-none">
         {text}
       </td>
     </tr>
@@ -180,9 +187,9 @@ export function IndexesSection({
     <section aria-label="Indexes">
       <SectionHeader title="Indexes" count={rows.filter((r) => r.status !== "dropped").length}>
         {editable && (
-          <Button variant="ghost" size="xs" onClick={onAdd}>
+          <Button variant="ghost" size="xs" onClick={onAdd} className={BAR_BUTTON}>
             <Plus /> Index
-            {newKeys && <Kbd combo={newKeys} className="ml-0.5" />}
+            {newKeys && <Kbd combo={newKeys} />}
           </Button>
         )}
       </SectionHeader>
@@ -228,13 +235,13 @@ export function IndexesSection({
                 cellKey={`${r.key}:${field}`}
                 label={`${r.name} ${field === "predicate" ? "condition" : field}`}
                 readOnly={!canEdit}
-                className={cn(mono && "font-mono text-[11px]")}
+                className={cn(mono && "font-mono")}
               />
             );
             return (
               <tr
                 key={r.key}
-                className={cn(rowClass(r.status), "outline-none")}
+                className={rowClass(r.status)}
                 data-status={r.status}
                 data-row-kind="index"
                 data-row-key={r.key}
@@ -253,7 +260,7 @@ export function IndexesSection({
                   <div className="flex items-center">
                     {text("name")}
                     {r.primary && (
-                      <span className="bg-brand-soft text-brand mr-1 rounded px-1 py-px font-sans text-[9px] font-semibold tracking-wide no-underline">
+                      <span className="bg-brand-soft text-brand mr-1 inline-flex h-4 shrink-0 items-center rounded-sm px-1 font-sans text-[10px] leading-none font-medium no-underline">
                         PRIMARY
                       </span>
                     )}
@@ -272,7 +279,7 @@ export function IndexesSection({
                       label={`${r.name} algorithm`}
                       cellKey={`${r.key}:method`}
                       disabled={!canEdit}
-                      className="font-mono text-[11px]"
+                      className="font-mono"
                     />
                   </td>
                 )}
@@ -285,7 +292,7 @@ export function IndexesSection({
                     label={`${r.name} unique`}
                     cellKey={`${r.key}:unique`}
                     disabled={!canEdit}
-                    className="font-mono text-[11px]"
+                    className="font-mono"
                   />
                 </td>
                 <td className="px-1">
@@ -361,7 +368,7 @@ export function ChecksSection({
     <section aria-label="Checks">
       <SectionHeader title="Checks" count={rows.filter((r) => r.status !== "dropped").length}>
         {editable && (
-          <Button variant="ghost" size="xs" onClick={onAdd}>
+          <Button variant="ghost" size="xs" onClick={onAdd} className={BAR_BUTTON}>
             <Plus /> Check
           </Button>
         )}
@@ -390,7 +397,7 @@ export function ChecksSection({
             return (
               <tr
                 key={r.key}
-                className={cn(rowClass(r.status), "outline-none")}
+                className={rowClass(r.status)}
                 data-status={r.status}
                 data-row-kind="check"
                 data-row-key={r.key}
@@ -411,8 +418,8 @@ export function ChecksSection({
                     cellKey={`${r.key}:name`}
                     label={`Check ${r.name || i + 1} name`}
                     readOnly={!canEdit}
-                    placeholder="chosen by the database"
-                    className="font-mono text-[11px]"
+                    placeholder="Optional"
+                    className="font-mono"
                   />
                 </td>
                 <td className="px-1">
@@ -428,11 +435,11 @@ export function ChecksSection({
                     label={`Check ${r.name || i + 1} expression`}
                     readOnly={!canEdit}
                     placeholder="price > 0"
-                    className="font-mono text-[11px]"
+                    className="font-mono"
                   />
                 </td>
                 <td
-                  className="text-muted-foreground truncate px-3 font-mono text-[11px]"
+                  className="text-muted-foreground truncate px-3 font-mono"
                   title={r.columns.join(", ")}
                 >
                   {r.columns.join(", ")}
@@ -449,7 +456,7 @@ export function ChecksSection({
               </tr>
             );
           })}
-          {rows.length === 0 && <EmptyRow span={4} text="No CHECK constraints" />}
+          {rows.length === 0 && <EmptyRow span={4} text="No checks" />}
         </tbody>
       </table>
     </section>
@@ -475,8 +482,8 @@ export function ForeignKeysSection({
     <section aria-label="Foreign keys">
       <SectionHeader title="Foreign keys" count={rows.filter((r) => r.status !== "dropped").length}>
         {editable && (
-          <Button variant="ghost" size="xs" onClick={onAdd}>
-            <Plus /> Foreign key
+          <Button variant="ghost" size="xs" onClick={onAdd} className={BAR_BUTTON}>
+            <Plus /> Foreign Key
           </Button>
         )}
       </SectionHeader>
@@ -515,11 +522,11 @@ export function ForeignKeysSection({
                   );
               }}
             >
-              <td className="truncate px-3 font-mono text-[11px]" title={r.name ?? undefined}>
-                {r.name ?? <span className="text-muted-foreground italic">auto</span>}
+              <td className="truncate px-3 font-mono" title={r.name ?? undefined}>
+                {r.name ?? <span className="text-null italic">auto</span>}
               </td>
-              <td className="truncate px-3 font-mono text-[11px]">{r.columns.join(", ")}</td>
-              <td className="truncate px-3 font-mono text-[11px]">
+              <td className="truncate px-3 font-mono">{r.columns.join(", ")}</td>
+              <td className="truncate px-3 font-mono">
                 <button
                   type="button"
                   className="text-brand hover:underline"
@@ -530,11 +537,11 @@ export function ForeignKeysSection({
                 </button>
                 <span className="text-muted-foreground">({r.refColumns.join(", ")})</span>
               </td>
-              <td className="text-muted-foreground truncate px-3 text-[11px]">
-                {r.onUpdate ?? "default"}
+              <td className="text-muted-foreground truncate px-3">
+                {r.onUpdate ?? <span className="text-null italic">default</span>}
               </td>
-              <td className="text-muted-foreground truncate px-3 text-[11px]">
-                {r.onDelete ?? "default"}
+              <td className="text-muted-foreground truncate px-3">
+                {r.onDelete ?? <span className="text-null italic">default</span>}
               </td>
               <td className="px-1">
                 <DropToggle
@@ -584,7 +591,7 @@ export function TriggersSection({
     <section aria-label="Triggers" className="pb-6">
       <SectionHeader title="Triggers" count={rows.filter((r) => r.status !== "dropped").length}>
         {editable && (
-          <Button variant="ghost" size="xs" onClick={onAdd}>
+          <Button variant="ghost" size="xs" onClick={onAdd} className={BAR_BUTTON}>
             <Plus /> Trigger
           </Button>
         )}
@@ -635,15 +642,13 @@ export function TriggersSection({
                 }}
               >
                 <td
-                  className={cn("truncate px-3 font-mono text-[11px]", disabled && "italic")}
+                  className="truncate px-3 font-mono"
                   title={disabled ? `${r.name} (disabled)` : r.name}
                 >
                   {r.name}
                 </td>
-                <td className="text-muted-foreground truncate px-3 text-[11px]">
-                  {r.timing ?? ""}
-                </td>
-                <td className="truncate px-3 text-[11px]">{r.events.join(" OR ")}</td>
+                <td className="text-muted-foreground truncate px-3">{r.timing ?? ""}</td>
+                <td className="truncate px-3">{r.events.join(" OR ")}</td>
                 {enabledColumn && (
                   <td
                     className={cn(
@@ -661,12 +666,12 @@ export function TriggersSection({
                       label={`${r.name} enabled`}
                       cellKey={`${r.key}:enabled`}
                       disabled={!editable || !onSetEnabled || r.status === "dropped"}
-                      className="justify-center font-mono text-[11px]"
+                      className="justify-center font-mono"
                     />
                   </td>
                 )}
                 <td
-                  className="text-muted-foreground selectable truncate px-3 font-mono text-[11px]"
+                  className="text-muted-foreground selectable truncate px-3 font-mono"
                   title={statement}
                 >
                   {statement}

@@ -44,9 +44,9 @@ export function firstLine(sql: string, max = 140): string {
   return more ? `${line} …` : line;
 }
 
-/** "3 statements · 45 ms", "1 statement · 1 error · 4 ms", "Cancelled · 1.20 s". */
+/** "3 statements · 45 ms", "1 statement · 1 error · 4 ms", "Canceled · 1.20 s". */
 export function runStatusText(s: RunSummary): string {
-  const parts = [s.cancelled ? "Cancelled" : plural(s.statements, "statement")];
+  const parts = [s.cancelled ? "Canceled" : plural(s.statements, "statement")];
   if (s.errors > 0) parts.push(plural(s.errors, "error"));
   if (s.totalMs !== null) parts.push(formatDuration(s.totalMs));
   return parts.join(" · ");
@@ -58,7 +58,7 @@ export function runStatusText(s: RunSummary): string {
  * pane shows (null when it shows none: then the rows the run changed, if any).
  */
 export function runSummaryText(s: RunSummary, rows: number | null): string {
-  const parts = [s.cancelled ? "Cancelled" : plural(s.statements, "statement")];
+  const parts = [s.cancelled ? "Canceled" : plural(s.statements, "statement")];
   if (rows !== null) parts.push(rowsLabel(rows));
   else if (s.affected > 0) parts.push(`${plural(s.affected, "row")} affected`);
   if (s.errors > 0) parts.push(plural(s.errors, "error"));

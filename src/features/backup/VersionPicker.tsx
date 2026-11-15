@@ -1,4 +1,5 @@
 import { RotateCw, TriangleAlert } from "lucide-react";
+import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -11,7 +12,6 @@ import type { DumpBinary, DumpTool, ParsedVersion } from "@/lib/ipc";
 import { InstallHelpNote } from "./InstallHelp";
 import { installHelp } from "./install";
 import { binaryLabel, versionWarning } from "./options";
-import { Field } from "./parts";
 
 const folder = (path: string) => path.slice(0, path.lastIndexOf("/")) || "/";
 
@@ -45,7 +45,7 @@ export function VersionPicker({
   const warning = help ? null : versionWarning(selected, server);
   const id = `backup-version-${tool}`;
   return (
-    <Field
+    <FormField
       label="Choose version"
       htmlFor={id}
       hint={
@@ -68,7 +68,7 @@ export function VersionPicker({
             className="min-w-0 flex-1 text-xs"
             aria-label="Choose version"
           >
-            <SelectValue placeholder={loading ? "Looking for binaries…" : `No ${tool} found`}>
+            <SelectValue placeholder={loading ? "Looking for binaries" : `No ${tool} found`}>
               {selected ? `${binaryLabel(selected)} — ${tool}` : undefined}
             </SelectValue>
           </SelectTrigger>
@@ -79,7 +79,7 @@ export function VersionPicker({
                   <span>
                     {binaryLabel(b)} <span className="text-muted-foreground">— {tool}</span>
                   </span>
-                  <span className="text-muted-foreground max-w-80 truncate font-mono text-[10px]">
+                  <span className="text-muted-foreground max-w-80 truncate font-mono text-xs">
                     {folder(b.path)}
                   </span>
                 </span>
@@ -103,11 +103,11 @@ export function VersionPicker({
         <InstallHelpNote help={help} loading={loading} onRescan={onRescan} disabled={disabled} />
       )}
       {warning && (
-        <div role="note" className="text-warning flex items-start gap-1.5 text-[11px] leading-4">
-          <TriangleAlert className="mt-px size-3.5 shrink-0" />
+        <div role="note" className="text-warning flex items-start gap-1.5 text-xs leading-4">
+          <TriangleAlert aria-hidden className="mt-px size-3.5 shrink-0" />
           <span>{warning}</span>
         </div>
       )}
-    </Field>
+    </FormField>
   );
 }

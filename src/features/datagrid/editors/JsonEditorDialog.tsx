@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { formatCombo } from "@/lib/keys/combo";
+import { KbdHint } from "@/components/KbdHint";
 import { cn } from "@/lib/utils";
 import type { GridColumn } from "../types";
 import { jsonError, reformatJson } from "./json";
@@ -60,7 +60,7 @@ export function JsonEditorDialog({
     <Dialog open onOpenChange={(open) => !open && onCancel()}>
       <DialogContent
         data-scope="grid-edit"
-        className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col gap-3 sm:max-w-[min(56rem,calc(100%-2rem))]"
+        className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(56rem,calc(100%-2rem))]"
         onOpenAutoFocus={(e) => {
           e.preventDefault();
           ref.current?.focus({ preventScroll: true });
@@ -103,10 +103,7 @@ export function JsonEditorDialog({
         />
         <div
           role={error ? "alert" : undefined}
-          className={cn(
-            "min-h-4 truncate text-[11px]",
-            error ? "text-error" : "text-muted-foreground",
-          )}
+          className={cn("min-h-4 truncate text-xs", error ? "text-error" : "text-muted-foreground")}
           title={error ?? undefined}
         >
           {error ?? "Valid JSON"}
@@ -121,17 +118,17 @@ export function JsonEditorDialog({
             </Button>
           </div>
           <div className="flex gap-1.5">
+            <Button variant="outline" size="sm" onClick={onCancel}>
+              Cancel
+            </Button>
             {onSetNull && (
-              <Button variant="ghost" size="sm" onClick={onSetNull}>
+              <Button variant="outline" size="sm" onClick={onSetNull}>
                 Set NULL
               </Button>
             )}
-            <Button variant="ghost" size="sm" onClick={onCancel}>
-              Cancel
-            </Button>
             <Button size="sm" disabled={!!error} onClick={save}>
               Save
-              <kbd className="ml-1 text-[10px] opacity-70">{formatCombo("Mod+Enter")}</kbd>
+              <KbdHint combo="Mod+Enter" />
             </Button>
           </div>
         </DialogFooter>

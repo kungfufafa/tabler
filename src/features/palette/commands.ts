@@ -150,7 +150,7 @@ export function usePaletteCommands(): PaletteCommands {
         try {
           await reloadSchema(qc, connectionId);
         } catch (e) {
-          toast.error("Could not reload schema", { description: errorMessage(e) });
+          toast.error("Could not reload the schema", { description: errorMessage(e) });
           return;
         }
         toast.success("Schema reloaded");
@@ -267,7 +267,7 @@ export function paletteCommandItems(ctx: {
   items.push({
     key: "cmd:connection.new",
     group: "actions",
-    label: "New connection…",
+    label: "New Connection…",
     keywords: ["add create connection profile launcher manager"],
     icon: { type: "action", icon: Plus },
     run: () => commands.newConnection(),
@@ -287,7 +287,7 @@ export function paletteCommandItems(ctx: {
       {
         key: "cmd:schema.reload",
         group: "actions",
-        label: "Reload schema",
+        label: "Reload Schema",
         detail: active.schema ?? undefined,
         keywords: ["refresh tables metadata cache"],
         icon: { type: "action", icon: DatabaseZap },

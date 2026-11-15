@@ -31,8 +31,8 @@ import {
 const LEGEND = isMac ? "⌘ Command  ·  ⌥ Option  ·  ⇧ Shift  ·  ⌃ Control" : null;
 
 const PROBLEM_TEXT = {
-  reserved: (combo: string) => `${formatCombo(combo)} is reserved and can't be assigned.`,
-  invalid: (combo: string) => `${formatCombo(combo)} can't be used as a shortcut.`,
+  reserved: (combo: string) => `${formatCombo(combo)} is reserved and cannot be assigned.`,
+  invalid: (combo: string) => `${formatCombo(combo)} cannot be used as a shortcut.`,
   "needs-modifier": () => `Include ${isMac ? "⌘, ⌃ or ⌥" : "Ctrl or Alt"}: plain keys type text.`,
 } as const;
 
@@ -87,11 +87,11 @@ function SlotKey({
   if (slot?.fixed) {
     return (
       <span
-        title={`${formatCombo(slot.keys)} can't be changed`}
+        title={`${formatCombo(slot.keys)} cannot be changed`}
         className="text-muted-foreground inline-flex items-center gap-1"
       >
-        <Lock className="size-2.5" aria-hidden />
-        <Kbd combo={slot.keys} className="bg-surface-2 text-foreground/60 h-5 min-w-5 px-1.5" />
+        <Lock className="size-3" aria-hidden />
+        <Kbd combo={slot.keys} className="bg-surface-2" />
       </span>
     );
   }
@@ -117,16 +117,16 @@ function SlotKey({
       )}
     >
       {recording ? (
-        <span className="bg-brand-soft text-brand inline-flex h-5 items-center rounded px-2 text-[11px]">
+        <span className="bg-brand-soft text-brand inline-flex h-4.5 items-center rounded px-1.5 text-[10px] font-medium">
           Type a shortcut…
         </span>
       ) : keys ? (
         <Kbd
           combo={keys}
-          className="bg-surface-2 text-foreground/80 hover:border-foreground/30 h-5 min-w-5 cursor-pointer px-1.5 text-[11px]"
+          className="bg-surface-2 text-foreground hover:border-border-strong cursor-pointer transition-colors"
         />
       ) : (
-        <span className="border-border text-muted-foreground hover:text-foreground inline-flex h-5 items-center rounded border border-dashed px-2 text-[11px]">
+        <span className="border-border text-muted-foreground hover:text-foreground inline-flex h-4.5 items-center rounded border border-dashed px-1.5 text-[10px] font-medium transition-colors">
           None
         </span>
       )}
@@ -162,7 +162,7 @@ const KeymapRowView = memo(function KeymapRowView({
   return (
     <div
       data-row={row.id}
-      className="flex min-h-7 flex-col justify-center gap-0.5 px-3 py-1 text-[13px]"
+      className="flex min-h-7 flex-col justify-center gap-0.5 px-3 py-1 text-sm"
     >
       <div className="flex items-center gap-3">
         <span className="min-w-0 flex-1 truncate">{row.label}</span>
@@ -172,7 +172,7 @@ const KeymapRowView = memo(function KeymapRowView({
             aria-label={`Reset ${row.label}`}
             title="Reset to the default"
             onClick={() => actions.reset(row)}
-            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 inline-flex items-center gap-1 rounded px-1 text-[11px] outline-none focus-visible:ring-2"
+            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 inline-flex items-center gap-1 rounded px-1 text-xs transition-colors outline-none focus-visible:ring-2"
           >
             <RotateCcw className="size-3" aria-hidden />
             Reset
@@ -203,7 +203,7 @@ const KeymapRowView = memo(function KeymapRowView({
         </span>
       </div>
       {(message || conflicts) && (
-        <p className="text-warning flex items-center gap-1 text-[11px] leading-4">
+        <p className="text-warning flex items-center gap-1 text-xs leading-4">
           <TriangleAlert className="size-3 shrink-0" aria-hidden />
           {message ?? `Also used by ${conflicts}.`}
         </p>
@@ -215,15 +215,11 @@ const KeymapRowView = memo(function KeymapRowView({
 /** A key the app handles itself (read-only). */
 const ReferenceRowView = memo(function ReferenceRowView({ row }: { row: ShortcutRow }) {
   return (
-    <div className="flex h-7 items-center gap-3 px-3 text-[13px]">
-      <span className="text-foreground/80 min-w-0 flex-1 truncate">{row.label}</span>
+    <div className="flex h-7 items-center gap-3 px-3 text-sm">
+      <span className="text-muted-foreground min-w-0 flex-1 truncate">{row.label}</span>
       <span className="flex shrink-0 items-center gap-1">
         {row.keys.map((k) => (
-          <Kbd
-            key={k}
-            combo={k}
-            className="bg-surface-2 text-foreground/60 h-5 min-w-5 px-1.5 text-[11px]"
-          />
+          <Kbd key={k} combo={k} className="bg-surface-2" />
         ))}
       </span>
     </div>
@@ -308,7 +304,10 @@ export function ShortcutsSection({
       actions={
         <div className="flex items-center gap-2">
           <div className="relative">
-            <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
+            <Search
+              aria-hidden
+              className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2"
+            />
             <Input
               ref={searchRef}
               type="search"
@@ -336,9 +335,7 @@ export function ShortcutsSection({
       }
     >
       {groups.length === 0 ? (
-        <p className="text-muted-foreground py-10 text-center text-xs">
-          No shortcuts match “{query.trim()}”.
-        </p>
+        <p className="text-muted-foreground py-10 text-center text-xs">No matches</p>
       ) : (
         groups.map((g) => (
           <SettingGroup key={g.scope} title={g.title}>
@@ -363,9 +360,11 @@ export function ShortcutsSection({
           </SettingGroup>
         ))
       )}
-      <p className="text-muted-foreground mt-auto px-1 text-[11px] leading-4">
-        Click a shortcut and type the new one: {formatCombo("Escape")} cancels,{" "}
-        {formatCombo("Backspace")} removes it. The native menu follows your changes.
+      <p className="text-muted-foreground mt-auto px-1 text-xs leading-4">
+        Click a shortcut and type the new one:{" "}
+        <Kbd combo="Escape" className="mx-0.5 align-middle" /> cancels,{" "}
+        <Kbd combo="Backspace" className="mx-0.5 align-middle" /> removes it. The native menu
+        follows your changes.
         {LEGEND && <span className="block whitespace-pre">{LEGEND}</span>}
       </p>
     </SectionShell>

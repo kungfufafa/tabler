@@ -1,3 +1,5 @@
+import { EmptyState } from "@/components/EmptyState";
+import { Kbd } from "@/components/Kbd";
 import { QuietStatus } from "@/components/QuietLoading";
 import {
   ChevronDown,
@@ -597,7 +599,7 @@ export function DiagramDialog({
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent
         aria-label={title}
-        className="flex h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] flex-col gap-2 p-3 sm:max-w-[calc(100%-2rem)]"
+        className="flex h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(100%-2rem)]"
         onOpenAutoFocus={(e) => {
           e.preventDefault();
           canvasRef.current?.focus({ preventScroll: true });
@@ -612,8 +614,8 @@ export function DiagramDialog({
         }}
         onKeyDown={onKeyDown}
       >
-        <DialogHeader className="flex-row items-center gap-2 space-y-0 pr-8">
-          <div className="min-w-0 flex-1">
+        <DialogHeader className="flex-row items-center gap-2 border-b px-4 py-3 pr-12">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
             <DialogTitle className="truncate text-sm">{title}</DialogTitle>
             <DialogDescription className="truncate text-xs">{counts}</DialogDescription>
           </div>
@@ -622,7 +624,7 @@ export function DiagramDialog({
             <Input
               ref={searchRef}
               aria-label="Search tables"
-              placeholder={`Search tables (${formatCombo("Mod+F")})`}
+              placeholder="Search tables"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => {
@@ -631,24 +633,28 @@ export function DiagramDialog({
                   searchEnter();
                 }
               }}
-              className="h-7 w-52 pl-7 text-xs md:text-xs"
+              className="h-7 w-52 rounded-md pr-12 pl-7 text-xs md:text-xs"
             />
-            {isSearching(search) && (
-              <span className="text-muted-foreground pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-[10px] tabular-nums">
-                {matches.size}
-              </span>
-            )}
+            <span className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2">
+              {isSearching(search) ? (
+                <span className="text-muted-foreground text-xs tabular-nums">{matches.size}</span>
+              ) : (
+                <Kbd combo="Mod+F" />
+              )}
+            </span>
           </div>
           <Button
-            variant={onlySelected ? "secondary" : "ghost"}
+            variant="ghost"
             size="sm"
             aria-pressed={onlySelected}
             onClick={toggleOnlySelected}
             title="Show only the selected tables and the tables related to them"
-            className="h-7 text-xs"
+            className={cn(
+              onlySelected && "bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand",
+            )}
           >
             <Focus />
-            Selected + Neighbours
+            Selected + Neighbors
           </Button>
           <Button
             variant="ghost"
@@ -669,14 +675,13 @@ export function DiagramDialog({
             onClick={autoArrange}
             disabled={!data}
             title="Arrange every table again (forgets the positions you moved them to)"
-            className="h-7 text-xs"
           >
             <LayoutTemplate />
             Auto Layout
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm" disabled={!positions} className="h-7 text-xs">
+              <Button variant="ghost" size="sm" disabled={!positions}>
                 Export
                 <ChevronDown />
               </Button>
@@ -717,8 +722,8 @@ export function DiagramDialog({
           tabIndex={0}
           onPointerDown={onCanvasPointerDown}
           className={cn(
-            "bg-background border-border relative min-h-0 flex-1 touch-none overflow-hidden rounded-md border outline-none select-none",
-            "focus-visible:ring-ring/40 focus-visible:ring-2",
+            "bg-background relative min-h-0 flex-1 touch-none overflow-hidden outline-none select-none",
+            "focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:ring-inset",
             panning ? "cursor-grabbing" : spaceHeld && "cursor-grab",
           )}
           style={{
@@ -748,26 +753,24 @@ export function DiagramDialog({
             </div>
           )}
           {query.isError && (
-            <div role="alert" className="absolute inset-0 grid place-items-center p-6">
-              <div className="flex max-w-md flex-col items-center gap-2 text-center">
-                <p className="text-error text-xs">{query.error.message}</p>
+            <div role="alert" className="absolute inset-0">
+              <EmptyState title="Could not load the schema" description={query.error.message}>
                 <Button size="sm" variant="outline" onClick={() => void query.refetch()}>
                   Try Again
                 </Button>
-              </div>
+              </EmptyState>
             </div>
           )}
           {data && data.tables.length === 0 && (
-            <p className="text-muted-foreground absolute inset-0 grid place-items-center text-xs italic">
-              This schema has no tables
-            </p>
+            <EmptyState className="absolute inset-0" title="No tables in this schema" />
           )}
         </div>
 
-        <div className="flex items-center gap-1">
+        <div className="bg-surface-2 flex h-8 shrink-0 items-center gap-1 border-t px-2 text-xs">
           <Button
             variant="ghost"
             size="icon-xs"
+            className="hover:bg-accent dark:hover:bg-accent"
             aria-label="Zoom out"
             title={`Zoom out (${formatCombo("Mod+-")})`}
             onClick={() => zoomBy(1 / ZOOM_STEP)}
@@ -778,13 +781,14 @@ export function DiagramDialog({
             type="button"
             onClick={actualSize}
             title={`Actual size (${formatCombo("Mod+0")})`}
-            className="text-muted-foreground hover:text-foreground w-11 text-center text-[11px] tabular-nums"
+            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 h-6 w-11 rounded-md text-center text-xs tabular-nums transition-colors outline-none focus-visible:ring-2"
           >
             {Math.round(view.k * 100)}%
           </button>
           <Button
             variant="ghost"
             size="icon-xs"
+            className="hover:bg-accent dark:hover:bg-accent"
             aria-label="Zoom in"
             title={`Zoom in (${formatCombo("Mod+=")})`}
             onClick={() => zoomBy(ZOOM_STEP)}
@@ -797,12 +801,12 @@ export function DiagramDialog({
             onClick={() => fitTo()}
             disabled={!positions}
             title="Fit the diagram to the window"
-            className="text-xs"
+            className="hover:bg-accent dark:hover:bg-accent"
           >
             <Maximize />
             Fit
           </Button>
-          <p className="text-muted-foreground ml-auto truncate text-[11px]">
+          <p className="text-muted-foreground ml-auto truncate">
             Click a name to open the table, double-click for its structure · drag cards to move them
             · drag or scroll to pan, {isMac ? "⌘-scroll" : "Ctrl+scroll"} or pinch to zoom
           </p>

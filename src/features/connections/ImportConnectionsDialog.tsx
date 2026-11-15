@@ -2,6 +2,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Lock, ShieldCheck, SquareTerminal, TriangleAlert } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
+import { FormError } from "@/components/FormError";
+import { QuietStatus } from "@/components/QuietLoading";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -40,7 +42,7 @@ function ImportedBehaviour({ profile }: { profile: ConnectionProfile }) {
   const startupSql = options.startupSql?.trim() ?? "";
   return (
     <>
-      <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+      <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
         <span className="inline-flex items-center gap-1">
           <ShieldCheck className="size-3" aria-hidden />
           {safeModeText(effectiveLevel(options.safeMode))}
@@ -61,7 +63,7 @@ function ImportedBehaviour({ profile }: { profile: ConnectionProfile }) {
       {startupSql && (
         <pre
           aria-label={`Startup SQL of ${profile.name}`}
-          className="border-warning/40 bg-warning/5 mt-1 max-h-24 overflow-auto rounded border px-1.5 py-1 font-mono text-[11px] whitespace-pre-wrap"
+          className="border-warning/40 bg-warning/10 mt-1 max-h-24 overflow-auto rounded-md border px-1.5 py-1 font-mono text-xs whitespace-pre-wrap"
         >
           {startupSql}
         </pre>
@@ -90,19 +92,19 @@ function ImportedPasswordCommand({
     <div
       role="group"
       aria-label={`Password command of ${profile.name}`}
-      className="border-warning/40 bg-warning/5 mt-1 rounded border px-1.5 py-1 text-[11px]"
+      className="border-warning/40 bg-warning/10 mt-1 rounded-md border px-1.5 py-1 text-xs"
     >
       <div className="text-warning flex items-center gap-1 font-medium">
         <SquareTerminal className="size-3 shrink-0" aria-hidden />
         Runs this shell command to get its password
       </div>
       <pre className="mt-0.5 max-h-24 overflow-auto font-mono whitespace-pre-wrap">{command}</pre>
-      <label className="mt-1 flex items-center gap-1.5">
+      <label className="flex h-7 items-center gap-2">
         <Checkbox checked={keep} onCheckedChange={(v) => onKeepChange(v === true)} />
         Keep this password command
       </label>
       {!keep && (
-        <div className="text-muted-foreground mt-0.5">
+        <div className="text-muted-foreground pl-6 leading-4">
           Without it, the password is asked on every connect.
         </div>
       )}
@@ -121,7 +123,7 @@ function SkippedConnections({ skipped }: { skipped: SkippedConnection[] }) {
     <div
       role="group"
       aria-label="Connections that cannot be imported"
-      className="border-warning/40 bg-warning/5 rounded-md border px-2.5 py-2 text-[11px]"
+      className="border-warning/40 bg-warning/10 rounded-md border px-2.5 py-2 text-xs"
     >
       <div className="text-warning flex items-center gap-1 font-medium">
         <TriangleAlert className="size-3 shrink-0" aria-hidden />
@@ -130,7 +132,11 @@ function SkippedConnections({ skipped }: { skipped: SkippedConnection[] }) {
       <ul className="mt-1 flex max-h-28 flex-col gap-0.5 overflow-y-auto">
         {skipped.map((s, i) => (
           <li key={i}>
-            <span className="font-semibold">{s.name.trim() || "Unnamed connection"}</span>{" "}
+            {s.name.trim() ? (
+              <span className="font-medium">{s.name.trim()}</span>
+            ) : (
+              <span className="text-null italic">Unnamed connection</span>
+            )}{" "}
             <span className="text-muted-foreground">{s.reason}</span>
           </li>
         ))}
@@ -269,29 +275,24 @@ export function ImportConnectionsDialog({
         )}
       >
         <DialogHeader>
-          <DialogTitle>Import Connections</DialogTitle>
-          <DialogDescription className="truncate" title={path ?? undefined}>
+          <DialogTitle className="text-sm">Import Connections</DialogTitle>
+          <DialogDescription className="truncate text-xs" title={path ?? undefined}>
             {path ? fileName(path) : null}
           </DialogDescription>
         </DialogHeader>
 
         {phase.kind === "loading" && (
-          <div className="text-muted-foreground flex items-center gap-2 py-6 text-xs">
-            <span className="sr-only">Reading the file…</span>
+          <div className="py-6">
+            <QuietStatus>Reading the file</QuietStatus>
           </div>
         )}
 
-        {phase.kind === "failed" && (
-          <p role="alert" className="text-error flex items-start gap-2 py-2 text-xs">
-            <TriangleAlert className="mt-px size-4 shrink-0" />
-            {phase.message}
-          </p>
-        )}
+        {phase.kind === "failed" && <FormError className="py-2">{phase.message}</FormError>}
 
         {phase.kind === "password" && (
           <form
             id={`${id}-unlock`}
-            className="flex flex-col gap-1.5"
+            className="flex flex-col gap-1"
             onSubmit={(e) => {
               e.preventDefault();
               void unlock();
@@ -307,12 +308,13 @@ export function ImportConnectionsDialog({
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               aria-invalid={phase.error ? true : undefined}
+              aria-describedby={phase.error ? `${id}-password-error` : undefined}
               autoComplete="off"
-              className="font-mono"
+              className="font-mono text-sm"
               autoFocus
             />
             {phase.error && (
-              <p role="alert" className="text-error text-[11px]">
+              <p id={`${id}-password-error`} role="alert" className="text-error text-xs leading-4">
                 {phase.error}
               </p>
             )}
@@ -322,11 +324,11 @@ export function ImportConnectionsDialog({
         {phase.kind === "preview" &&
           (items.length === 0 ? (
             skipped.length === 0 && (
-              <p className="text-muted-foreground py-4 text-xs">The file has no connections.</p>
+              <p className="text-muted-foreground py-4 text-xs">No connections in the file</p>
             )
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-2">
-              <label className="text-muted-foreground flex items-center gap-2 px-1 text-xs">
+              <label className="text-muted-foreground flex h-7 items-center gap-2.5 border border-transparent px-2.5 text-xs tabular-nums">
                 <Checkbox
                   aria-label="Select all"
                   checked={allChecked ? true : someChecked ? "indeterminate" : false}
@@ -353,7 +355,7 @@ export function ImportConnectionsDialog({
                     <DriverBadge kind={kindOf(c.profile)} color={c.profile.color} />
                     <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 items-center gap-1.5">
-                        <span className="truncate text-[13px] font-semibold">{c.profile.name}</span>
+                        <span className="truncate text-sm font-medium">{c.profile.name}</span>
                         {c.profile.options.tag && <TagPill tag={c.profile.options.tag} />}
                         {(c.hasPassword || c.hasSshSecrets) && (
                           <KeyRound
@@ -363,7 +365,7 @@ export function ImportConnectionsDialog({
                           />
                         )}
                       </div>
-                      <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-[11px]">
+                      <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
                         {c.profile.group && (
                           <GroupBreadcrumb
                             path={c.profile.group}
@@ -379,7 +381,7 @@ export function ImportConnectionsDialog({
                         onKeepChange={(on) => toggleKeep(c.profile.id, on)}
                       />
                       {c.duplicateName && (
-                        <div className={cn("text-warning mt-0.5 text-[11px]")}>
+                        <div className="text-warning mt-0.5 text-xs">
                           A connection named “{c.profile.name}” already exists; this one is added
                           next to it.
                         </div>
@@ -393,7 +395,7 @@ export function ImportConnectionsDialog({
         {skipped.length > 0 && <SkippedConnections skipped={skipped} />}
 
         <DialogFooter>
-          <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+          <Button type="button" variant="outline" size="sm" onClick={onClose}>
             Cancel
           </Button>
           {phase.kind === "password" ? (

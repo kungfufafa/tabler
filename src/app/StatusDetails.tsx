@@ -19,7 +19,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <>
       <dt className="text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 truncate font-mono text-[11px]" title={String(children ?? "")}>
+      <dd className="min-w-0 truncate font-mono text-xs" title={String(children ?? "")}>
         {children}
       </dd>
     </>
@@ -59,7 +59,7 @@ function ColorRow({ conn }: { conn: OpenConnection }) {
       }
       void qc.invalidateQueries({ queryKey: profileKeys.all });
     } catch (err) {
-      toast.error("Could not change the colour", { description: toIpcError(err).message });
+      toast.error("Could not change the color", { description: toIpcError(err).message });
     } finally {
       wanted.current = null;
       busy.current = false;
@@ -68,8 +68,8 @@ function ColorRow({ conn }: { conn: OpenConnection }) {
   };
   return (
     <div className="flex items-center justify-between gap-2">
-      <span className="text-muted-foreground text-xs">Colour</span>
-      <div role="radiogroup" aria-label="Connection colour" className="flex items-center gap-1.5">
+      <span className="text-muted-foreground text-xs">Color</span>
+      <div role="radiogroup" aria-label="Connection color" className="flex items-center gap-1.5">
         {ACCENT_PRESETS.map((c) => (
           <button
             key={c}
@@ -81,9 +81,9 @@ function ColorRow({ conn }: { conn: OpenConnection }) {
             disabled={saving}
             onClick={() => void choose(c)}
             className={cn(
-              "ring-offset-popover size-4 rounded-full ring-offset-2 transition-transform outline-none",
-              "focus-visible:ring-ring focus-visible:ring-2 disabled:opacity-60",
-              current === c ? "ring-foreground/60 scale-110 ring-2" : "hover:scale-110",
+              "ring-offset-popover size-4 rounded-full ring-offset-2 transition-shadow outline-none",
+              "focus-visible:ring-ring focus-visible:ring-2 disabled:opacity-50",
+              current === c ? "ring-foreground/60 ring-2" : "hover:ring-foreground/25 hover:ring-2",
             )}
             style={{ background: accentColor(c) }}
           />
@@ -125,7 +125,7 @@ export function StatusDetails({
           className="size-2.5 shrink-0 rounded-full"
           style={{ background: accentColor(info.color) }}
         />
-        <span className="min-w-0 truncate text-[13px] font-semibold">{info.name}</span>
+        <span className="min-w-0 truncate text-sm font-medium">{info.name}</span>
         {tag && <TagPill tag={tag} />}
       </div>
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">

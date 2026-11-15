@@ -26,9 +26,7 @@ import { tabIcon } from "./tabIcon";
 
 function Shortcut({ id }: { id: ActionId }) {
   const keys = shortcutFor(id);
-  return keys ? (
-    <ContextMenuShortcut className="tracking-normal">{formatCombo(keys)}</ContextMenuShortcut>
-  ) : null;
+  return keys ? <ContextMenuShortcut>{formatCombo(keys)}</ContextMenuShortcut> : null;
 }
 
 /**
@@ -60,7 +58,6 @@ function TabMenu({ tab }: { tab: Tab }) {
   const group = useTabsStore((s) => groupOf(s.splits, tab));
   const split = useTabsStore((s) => !!s.splits[tab.connectionId]);
   const store = useTabsStore.getState;
-  const item = "py-0.5 text-xs";
   return (
     <ContextMenuContent
       className="min-w-48"
@@ -71,75 +68,50 @@ function TabMenu({ tab }: { tab: Tab }) {
     >
       {tab.kind !== "query" && tab.preview && (
         <>
-          <ContextMenuItem className={item} onSelect={() => store().pin(tab.id)}>
-            Keep Open
-          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => store().pin(tab.id)}>Keep Open</ContextMenuItem>
           <ContextMenuSeparator />
         </>
       )}
-      <ContextMenuItem className={item} onSelect={() => startTabRename(tab.id)}>
-        Rename Tab…
-      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => startTabRename(tab.id)}>Rename Tab…</ContextMenuItem>
       <ContextMenuSeparator />
-      <ContextMenuItem className={item} onSelect={() => store().close(tab.id)}>
+      <ContextMenuItem onSelect={() => store().close(tab.id)}>
         Close
         <Shortcut id="tab.close" />
       </ContextMenuItem>
-      <ContextMenuItem
-        className={item}
-        disabled={count < 2}
-        onSelect={() => store().closeOthers(tab.id)}
-      >
+      <ContextMenuItem disabled={count < 2} onSelect={() => store().closeOthers(tab.id)}>
         Close Others
       </ContextMenuItem>
-      <ContextMenuItem
-        className={item}
-        disabled={isLast}
-        onSelect={() => store().closeToRight(tab.id)}
-      >
+      <ContextMenuItem disabled={isLast} onSelect={() => store().closeToRight(tab.id)}>
         Close Tabs to the Right
       </ContextMenuItem>
-      <ContextMenuItem className={item} onSelect={() => store().closeAll()}>
+      <ContextMenuItem onSelect={() => store().closeAll()}>
         Close All Tabs
         <Shortcut id="tab.close-all" />
       </ContextMenuItem>
       <ContextMenuSeparator />
       {/* A table tab's copy starts with its filters, sort and column layout (not its staged edits). */}
       {(tab.kind === "query" || isTableTab(tab)) && (
-        <ContextMenuItem className={item} onSelect={() => store().duplicate(tab.id)}>
-          Duplicate Tab
-        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => store().duplicate(tab.id)}>Duplicate Tab</ContextMenuItem>
       )}
-      <ContextMenuItem
-        className={item}
-        disabled={!canReopen}
-        onSelect={() => store().reopenClosed()}
-      >
+      <ContextMenuItem disabled={!canReopen} onSelect={() => store().reopenClosed()}>
         Reopen Closed Tab
         <Shortcut id="tab.reopen" />
       </ContextMenuItem>
       <ContextMenuSeparator />
-      <ContextMenuItem className={item} onSelect={() => store().splitRight(tab.id)}>
+      <ContextMenuItem onSelect={() => store().splitRight(tab.id)}>
         Split Right
         <Shortcut id="workspace.split-right" />
       </ContextMenuItem>
       {split ? (
-        <ContextMenuItem
-          className={item}
-          onSelect={() => store().moveToGroup(tab.id, group === 0 ? 1 : 0)}
-        >
+        <ContextMenuItem onSelect={() => store().moveToGroup(tab.id, group === 0 ? 1 : 0)}>
           {group === 0 ? "Move to Right Group" : "Move to Left Group"}
         </ContextMenuItem>
       ) : (
-        <ContextMenuItem
-          className={item}
-          disabled={count < 2}
-          onSelect={() => store().moveToGroup(tab.id, 1)}
-        >
+        <ContextMenuItem disabled={count < 2} onSelect={() => store().moveToGroup(tab.id, 1)}>
           Move to Right Group
         </ContextMenuItem>
       )}
-      <ContextMenuItem className={item} onSelect={() => void moveTabToNewWindow(tab.id)}>
+      <ContextMenuItem onSelect={() => void moveTabToNewWindow(tab.id)}>
         Move Tab to New Window
       </ContextMenuItem>
     </ContextMenuContent>
@@ -187,7 +159,7 @@ function TitleInput({ tab }: { tab: Tab }) {
       // Typing and selecting text must not drag, activate or close the tab.
       onPointerDown={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
-      className="bg-background ring-brand h-6 w-full min-w-0 rounded px-1 text-center text-[12px] leading-4 ring-1 outline-none select-text"
+      className="bg-background ring-brand h-6 w-full min-w-0 rounded-md px-1 text-center text-[12px] leading-4 ring-1 outline-none select-text"
     />
   );
 }
@@ -269,7 +241,7 @@ export function TabItem({
           className={cn(
             // macOS document tabs (TablePlus): the tabs share the whole bar in equal widths (one tab
             // spans it), down to 110px each; past that the row scrolls.
-            "group border-border focus-visible:ring-ring relative flex h-full min-w-[110px] flex-[1_1_0] cursor-default items-center border-r text-[12px] leading-4 select-none last:border-r-0 focus-visible:ring-1 focus-visible:ring-inset",
+            "group border-border focus-visible:ring-ring relative flex h-full min-w-[110px] flex-[1_1_0] cursor-default items-center border-r text-[12px] leading-4 transition-colors select-none last:border-r-0 focus-visible:ring-1 focus-visible:ring-inset",
             active
               ? [
                   "bg-background text-foreground font-medium after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 forced-colors:outline forced-colors:-outline-offset-1 forced-colors:outline-[Highlight]",
@@ -299,7 +271,7 @@ export function TabItem({
             }}
             className={cn(
               // macOS puts the close button at the tab's left edge.
-              "text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring absolute top-1/2 left-1 flex size-6 -translate-y-1/2 items-center justify-center rounded-md outline-none focus-visible:ring-1 focus-visible:ring-inset",
+              "text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring absolute top-1/2 left-1 flex size-6 -translate-y-1/2 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset",
               // The open tab shows its close button. Tabs with unsaved work show a dot until hover.
               unsaved === 0 &&
                 !active &&

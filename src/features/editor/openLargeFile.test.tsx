@@ -118,7 +118,7 @@ describe("opening an SQL file in the editor", () => {
     expect(toast.message).not.toHaveBeenCalled();
   });
 
-  it("asks above 8 MB (2 MB when gzipped), and 'Import as SQL dump…' hands the file to the wizard", async () => {
+  it("asks above 8 MB (2 MB when gzipped), and 'Import as SQL Dump…' hands the file to the wizard", async () => {
     bigFile(50 * MB);
     const read = vi.spyOn(ipc.sqlFiles, "read");
     const head = vi.spyOn(ipc.sqlFiles, "readHead");
@@ -170,7 +170,7 @@ describe("opening an SQL file in the editor", () => {
     }
   });
 
-  it("'Open the first 5 MB' opens a tab that is NOT linked to the file, with a notice", async () => {
+  it("'Open the First 5 MB' opens a tab that is NOT linked to the file, with a notice", async () => {
     bigFile(50 * MB);
     const head = headRead();
     const tabId = busyTab();
@@ -214,7 +214,7 @@ describe("opening an SQL file in the editor", () => {
     });
   });
 
-  it("'Open anyway' reads the whole file and links the tab to it", async () => {
+  it("'Open Anyway' reads the whole file and links the tab to it", async () => {
     bigFile(50 * MB);
     const head = headRead({ truncated: false, text: "select 7;" });
     const { opened } = await openAndWaitForQuestion(busyTab());
@@ -314,24 +314,24 @@ describe("LargeFileDialog", () => {
     bigFile(50 * MB);
     const read = readSqlFileGuarded(BIG, { connectionId: info.connectionId });
     expect(
-      await screen.findByRole("button", { name: "Open the first 5 MB (read-only)" }),
+      await screen.findByRole("button", { name: "Open the First 5 MB (Read-Only)" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("alertdialog")).toHaveTextContent("huge-dump.sql is 50 MB");
-    for (const name of ["Import as SQL dump…", "Open anyway", "Cancel"])
+    for (const name of ["Import as SQL Dump…", "Open Anyway", "Cancel"])
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
 
     headRead();
-    fireEvent.click(screen.getByRole("button", { name: "Open the first 5 MB (read-only)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open the First 5 MB (Read-Only)" }));
     await expect(read).resolves.toMatchObject({ readOnlyHead: true });
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   });
 
-  it("Escape cancels, and 'Import as SQL dump…' is left out without a connection", async () => {
+  it("Escape cancels, and 'Import as SQL Dump…' is left out without a connection", async () => {
     render(<LargeFileDialog />);
     bigFile(50 * MB);
     const read = readSqlFileGuarded(BIG);
     await screen.findByRole("alertdialog");
-    expect(screen.queryByRole("button", { name: "Import as SQL dump…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Import as SQL Dump…" })).toBeNull();
     fireEvent.keyDown(screen.getByRole("alertdialog"), { key: "Escape" });
     await expect(read).resolves.toBeNull();
   });

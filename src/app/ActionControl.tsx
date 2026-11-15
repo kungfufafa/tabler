@@ -29,7 +29,7 @@ function Segment({
       disabled={disabled}
       onClick={() => void actions.run(action)}
       className={cn(
-        "text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-ring/50 flex h-full min-w-7 items-center justify-center gap-1 px-1.5 outline-none focus-visible:ring-2 focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-40",
+        "text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring/50 flex h-full min-w-7 items-center justify-center gap-1 px-1.5 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-50",
         className,
       )}
     >
@@ -83,7 +83,7 @@ export function ActionControl() {
         {!none && (
           <span
             data-slot="pending-badge"
-            className="bg-foreground text-background flex h-4 min-w-4 items-center justify-center rounded px-1 text-[10px] leading-none font-medium tabular-nums"
+            className="bg-brand-soft text-brand flex h-4 min-w-4 items-center justify-center rounded-sm px-1 text-[10px] leading-none font-medium tabular-nums"
           >
             {pending > 999 ? "999+" : pending}
           </span>

@@ -46,7 +46,7 @@ describe("ExportConnectionsDialog", () => {
     wrap(<ExportConnectionsDialog scope={SCOPE} onClose={onClose} />);
     const dialog = await screen.findByRole("dialog", { name: "Export “Staging”" });
     expect(dialog).toHaveTextContent("2 connections");
-    expect(within(dialog).getByLabelText("File password (optional)")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("File password")).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("checkbox", { name: "Include database passwords" }));
     await user.click(within(dialog).getByRole("button", { name: "Export…" }));
@@ -91,7 +91,7 @@ describe("ExportConnectionsDialog", () => {
     const user = userEvent.setup();
     const { unmount } = wrap(<ExportConnectionsDialog scope={SCOPE} onClose={() => {}} />);
     const exporting = await screen.findByRole("dialog");
-    await user.type(within(exporting).getByLabelText("File password (optional)"), "secret");
+    await user.type(within(exporting).getByLabelText("File password"), "secret");
     await user.click(within(exporting).getByRole("button", { name: "Export…" }));
     await vi.waitFor(() => expect(toast.success).toHaveBeenCalled());
     unmount();
@@ -276,7 +276,7 @@ describe("ExportConnectionsDialog", () => {
       name: "Connections that cannot be imported",
     });
     expect(skipped).toHaveTextContent("1 connection needs a newer version of Tabler");
-    expect(screen.queryByText("The file has no connections.")).not.toBeInTheDocument();
+    expect(screen.queryByText("No connections in the file")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
   });
 

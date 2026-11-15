@@ -56,7 +56,7 @@ export function AutoSaveQueryTabsRow() {
           id="pref-auto-save-query-tabs"
           size="sm"
           aria-describedby="pref-auto-save-query-tabs-description"
-          className="h-7 w-56 rounded-md text-xs"
+          className="w-56 text-xs"
         >
           <SelectValue />
         </SelectTrigger>

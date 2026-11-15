@@ -153,7 +153,7 @@ export function LockScreen() {
           <LockKeyhole className="size-5" aria-hidden />
         </div>
         <div className="flex flex-col items-center gap-0.5 text-center">
-          <h2 id="lock-screen-title" className="text-sm font-semibold">
+          <h2 id="lock-screen-title" className="text-sm font-medium">
             Tabler is locked
           </h2>
           <p className="text-muted-foreground text-xs">Enter your passcode to unlock.</p>
@@ -175,7 +175,7 @@ export function LockScreen() {
             setValue(e.target.value);
             setMessage(null);
           }}
-          className="h-8 text-center text-[13px]"
+          className="text-center text-sm"
         />
         <p
           id="lock-screen-message"

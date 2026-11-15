@@ -53,7 +53,7 @@ export interface ResolvedExportSource {
 }
 
 /** Why a shown result is incomplete (see `ExportSourceSpec`'s `stopped`). */
-const STOPPED_LABEL = { cancelled: "cancelled", error: "failed partway" } as const;
+const STOPPED_LABEL = { cancelled: "canceled", error: "failed partway" } as const;
 
 function sortText(sort: SortSpec[]): string | null {
   if (sort.length === 0) return null;
