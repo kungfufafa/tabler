@@ -19,7 +19,7 @@ it.each([
   { driver: "mysql" as const, database: "shop", connectedDatabase: "shop" },
   { driver: "postgres" as const, database: null, connectedDatabase: "postgres" },
 ])(
-  "opens the database chooser only when the profile has no database ($driver, $database)",
+  "opens an empty workspace, never the database list, on connect ($driver, $database)",
   async ({ driver, database, connectedDatabase }) => {
     const saved = profile({ id: "p1", name: "Local", driver, database });
     const info: ConnectionInfo = {
@@ -44,8 +44,7 @@ it.each([
     await act(async () => {
       await result.current.mutateAsync("p1");
     });
-    expect(usePaletteStore.getState().open).toBe(database === null);
-    if (database === null) expect(usePaletteStore.getState().mode).toBe("databases");
+    expect(usePaletteStore.getState().open).toBe(false);
     expect(useConnectionsStore.getState().activeId).toBe("c1");
     expect(useConnectionsStore.getState().byId.c1!.info.currentDatabase).toBe(database);
   },

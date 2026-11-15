@@ -352,8 +352,10 @@ out of the repository: its screenshots show the user's hosts) against the mock b
   the rail and the admin menu reach both).
 - Open database (⌘K): each database opens in a workspace of its own (TablePlus), or returns to
   the one already open; the palette and its rows say "Open". A login without a database (a
-  server-only profile, or a driver that logs into its maintenance database) asks which one to
-  open instead of browsing the fallback, and MySQL lists only the open database's objects.
+  server-only profile, or a driver that logs into its maintenance database) opens an empty
+  workspace instead of browsing the fallback: the sidebar says "No database selected, press
+  Ctrl+K to select a database" (TablePlus 27.2 on Windows, MySQL) and the list opens on ⌘K or
+  the toolbar, never by itself. MySQL lists only the open database's objects.
 - Short windows: no dialog grows past the window (a base-layer cap; dialogs with their own
   fixed header and footer keep them). The sidebar search hides its shortcut badge where it would
   cover the placeholder, and the Structure footer's order button keeps only its icon when tight.

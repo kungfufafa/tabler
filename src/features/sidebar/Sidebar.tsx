@@ -1,4 +1,4 @@
-import { Database, Plug } from "lucide-react";
+import { Plug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,8 @@ import {
   useSidebarPaneId,
   type SidebarPaneId,
 } from "@/features/queries/sidebarPane";
+import { formatCombo } from "@/lib/keys/combo";
+import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { capsOf } from "@/lib/caps";
 import { useActiveConnection, type OpenConnection } from "@/stores/connections";
@@ -188,20 +190,14 @@ function ItemsPane(props: Parameters<typeof DatabaseItemsPane>[0]) {
   const { info } = props.connection;
   if (capsOf(info).namespaces.databases && info.currentDatabase === null)
     return (
-      <div hidden={props.hidden} className="min-h-0 flex-1">
-        <EmptyState
-          icon={Database}
-          title="Choose a database"
-          description="Open a database to browse its tables and queries."
-        >
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => usePaletteStore.getState().openPalette("databases")}
-          >
-            Choose database
-          </Button>
-        </EmptyState>
+      // TablePlus (Windows 27.2, MySQL without a database): this line alone, no button; the
+      // database list opens from Ctrl+K or the toolbar.
+      <div
+        hidden={props.hidden}
+        className="text-muted-foreground flex min-h-0 flex-1 items-center justify-center p-4 text-center text-xs font-medium"
+      >
+        No database selected, press {formatCombo(shortcutFor("palette.databases") ?? "Mod+K")} to
+        select a database
       </div>
     );
   return <DatabaseItemsPane {...props} />;
