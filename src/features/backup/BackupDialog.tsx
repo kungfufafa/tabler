@@ -68,7 +68,7 @@ function useClock(): Date {
 
 function Footer({ children, left }: { children: ReactNode; left?: ReactNode }) {
   return (
-    <div className="border-border bg-surface-2/60 flex min-h-12 items-center gap-2 rounded-b-xl border-t px-4 py-2">
+    <div className="border-border bg-surface-2/60 flex min-h-12 shrink-0 items-center gap-2 rounded-b-xl border-t px-4 py-2">
       <div className="min-w-0 flex-1">{left}</div>
       {children}
     </div>
@@ -282,7 +282,7 @@ function BackupForm({ request }: { request: BackupRequest }) {
 
   if (run) {
     return (
-      <div className="flex h-[480px] flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         <RunPanel run={run} />
         <Footer>
           {run.status === "running" ? (
@@ -321,9 +321,9 @@ function BackupForm({ request }: { request: BackupRequest }) {
           void start();
         }
       }}
-      className="flex flex-col"
+      className="flex min-h-0 flex-1 flex-col"
     >
-      <div className="grid h-[440px] min-h-0 grid-cols-[200px_210px_minmax(0,1fr)]">
+      <div className="grid min-h-0 flex-1 grid-cols-[200px_210px_minmax(0,1fr)]">
         <ConnectionList
           profiles={dumpable}
           selectedId={profile?.id ?? null}
@@ -476,11 +476,11 @@ export function BackupDialog() {
   return (
     <Dialog open={open} onOpenChange={(next) => !next && closeBackup()}>
       <DialogContent
-        className="gap-0 overflow-hidden p-0 sm:max-w-[880px]"
+        className="flex h-[min(34rem,calc(100dvh-4rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(880px,calc(100%-2rem))]"
         showCloseButton
         onCloseAutoFocus={releaseBackupWindow}
       >
-        <div className="border-border flex items-center gap-2 border-b px-4 py-2.5 pr-12">
+        <div className="border-border flex shrink-0 items-center gap-2 border-b px-4 py-2.5 pr-12">
           {mode === "backup" ? (
             <DatabaseBackup className="text-brand size-4" />
           ) : (

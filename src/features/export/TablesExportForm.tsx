@@ -491,10 +491,15 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
         </DialogDescription>
       </DialogHeader>
 
-      {/* The wrapper scrolls: a fieldset does not clip its own overflow in every engine. */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <fieldset disabled={running} className="flex min-w-0 flex-col gap-3 px-4 py-4">
-          <div className="border-border flex flex-col overflow-hidden rounded-md border">
+      {/* The wrapper scrolls: a fieldset does not clip its own overflow in every engine. From
+          sm up the tables and the options sit side by side like TablePlus's Export window, and
+          each column scrolls on its own. */}
+      <div className="min-h-0 flex-1 overflow-y-auto sm:overflow-hidden">
+        <fieldset
+          disabled={running}
+          className="flex min-w-0 flex-col gap-3 px-4 py-4 sm:grid sm:h-full sm:grid-cols-[minmax(0,18rem)_minmax(0,1fr)] sm:gap-4"
+        >
+          <div className="border-border flex flex-col overflow-hidden rounded-md border sm:min-h-0">
             <div className="border-border bg-surface-2/60 flex items-center gap-2 border-b px-2 py-1">
               <Checkbox
                 aria-label="Select all tables"
@@ -518,7 +523,7 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
                 />
               </div>
             </div>
-            <div className="max-h-56 min-h-16 overflow-y-auto py-0.5">
+            <div className="max-h-56 min-h-16 overflow-y-auto py-0.5 sm:max-h-none sm:flex-1">
               {leveled ? (
                 <ul aria-label="Databases">
                   {dbList.isError && (
@@ -583,46 +588,48 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
             </div>
           </div>
 
-          <Row id="export-format" label="Format">
-            <Segmented<FormatKind>
-              id="export-format"
-              value={options.format}
-              onChange={(format) => setOptions((o) => ({ ...o, format }))}
-              options={formats}
+          <div className="flex min-w-0 flex-col gap-3 sm:min-h-0 sm:overflow-y-auto sm:pr-1">
+            <Row id="export-format" label="Format">
+              <Segmented<FormatKind>
+                id="export-format"
+                value={options.format}
+                onChange={(format) => setOptions((o) => ({ ...o, format }))}
+                options={formats}
+              />
+            </Row>
+            {layoutRow}
+            <FormatOptions
+              options={options}
+              setOptions={setOptions}
+              tableSource
+              encodingFollows={following ? `Follows View Using Encoding (${charset})` : undefined}
+              onEncodingChange={() => setEncodingTouched(true)}
+              sqlExtra={
+                options.sql.content && (
+                  <Row id="export-batch" label="Batch size" hint="Rows per INSERT statement">
+                    <Input
+                      id="export-batch"
+                      type="number"
+                      inputMode="numeric"
+                      min={BATCH_SIZE_RANGE.min}
+                      max={BATCH_SIZE_RANGE.max}
+                      value={batchText}
+                      onChange={(e) => setBatchText(e.target.value)}
+                      onBlur={() =>
+                        setBatchText(String(clampBatchSize(Number.parseInt(batchText, 10))))
+                      }
+                      className="h-7 w-24 font-mono text-xs tabular-nums"
+                    />
+                  </Row>
+                )
+              }
             />
-          </Row>
-          {layoutRow}
-          <FormatOptions
-            options={options}
-            setOptions={setOptions}
-            tableSource
-            encodingFollows={following ? `Follows View Using Encoding (${charset})` : undefined}
-            onEncodingChange={() => setEncodingTouched(true)}
-            sqlExtra={
-              options.sql.content && (
-                <Row id="export-batch" label="Batch size" hint="Rows per INSERT statement">
-                  <Input
-                    id="export-batch"
-                    type="number"
-                    inputMode="numeric"
-                    min={BATCH_SIZE_RANGE.min}
-                    max={BATCH_SIZE_RANGE.max}
-                    value={batchText}
-                    onChange={(e) => setBatchText(e.target.value)}
-                    onBlur={() =>
-                      setBatchText(String(clampBatchSize(Number.parseInt(batchText, 10))))
-                    }
-                    className="h-7 w-24 font-mono text-xs tabular-nums"
-                  />
-                </Row>
-              )
-            }
-          />
-          {nothing && (
-            <div className="text-warning text-[11px] leading-4">
-              Nothing to export: include the table structure or its content.
-            </div>
-          )}
+            {nothing && (
+              <div className="text-warning text-[11px] leading-4">
+                Nothing to export: include the table structure or its content.
+              </div>
+            )}
+          </div>
         </fieldset>
       </div>
 

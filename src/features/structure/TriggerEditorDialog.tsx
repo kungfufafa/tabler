@@ -36,7 +36,7 @@ export function TriggerEditorDialog({
 }) {
   return (
     <Dialog open={editing !== null} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="flex max-h-[85vh] flex-col gap-3 sm:max-w-2xl">
+      <DialogContent className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col gap-3 sm:max-w-[min(56rem,calc(100%-2rem))]">
         {editing && (
           <TriggerForm
             key={editing.key ?? "new"}
@@ -100,7 +100,7 @@ function TriggerForm({
         onSave={stage}
         autoFocus
         readOnly={editing.readOnly}
-        className="h-72"
+        className="min-h-40 flex-1"
       />
       {dialect === "postgres" && !editing.readOnly && (
         <p className="text-muted-foreground text-[11px]">

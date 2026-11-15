@@ -2313,7 +2313,11 @@ export function ConnectionDialog({
       <DialogContent
         className={cn(
           "flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0",
-          step === "form" ? "sm:max-w-[600px]" : built.length > 4 ? "sm:max-w-3xl" : "sm:max-w-lg",
+          step === "form"
+            ? "sm:max-w-[600px]"
+            : built.length > 4
+              ? "h-[min(34rem,calc(100dvh-4rem))] sm:max-w-[min(48rem,calc(100%-2rem))]"
+              : "sm:max-w-lg",
         )}
         showCloseButton
       >
@@ -2353,7 +2357,7 @@ export function ConnectionDialog({
                 </div>
               )}
             </DialogHeader>
-            <div className="min-h-0 overflow-y-auto px-5 py-5">
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
               <DriverPicker
                 kinds={matchingKinds(built, kindQuery)}
                 wide={built.length > 4}

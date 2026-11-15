@@ -35,7 +35,7 @@ function ParamsForm({ request }: { request: ParamsRequest }) {
   };
 
   return (
-    <DialogContent className="gap-3 sm:max-w-md" onKeyDown={onKeyDown}>
+    <DialogContent className="gap-3 sm:max-w-[34rem]" onKeyDown={onKeyDown}>
       <DialogHeader className="gap-1">
         <DialogTitle className="text-sm">Query Parameters</DialogTitle>
         <DialogDescription className="text-xs">
@@ -44,7 +44,7 @@ function ParamsForm({ request }: { request: ParamsRequest }) {
         </DialogDescription>
       </DialogHeader>
       <form
-        className="flex max-h-[50vh] flex-col gap-1.5 overflow-auto"
+        className="flex max-h-[50dvh] flex-col gap-1.5 overflow-auto"
         onSubmit={(e) => {
           e.preventDefault();
           apply();

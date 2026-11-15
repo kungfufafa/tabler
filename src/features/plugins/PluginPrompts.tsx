@@ -47,7 +47,7 @@ function Body({ prompt }: { prompt: PluginPrompt }) {
           <AlertDialogDescription asChild>
             <div className="flex flex-col gap-2">
               {prompt.message && (
-                <p className="max-h-[50vh] overflow-y-auto text-xs break-words whitespace-pre-wrap">
+                <p className="max-h-[50dvh] overflow-y-auto text-xs break-words whitespace-pre-wrap">
                   {prompt.message}
                 </p>
               )}
@@ -118,7 +118,7 @@ export function PluginPrompts() {
       open
       onOpenChange={(o) => !o && answerPluginPrompt(prompt.id, prompt.kind === "alert")}
     >
-      <AlertDialogContent>
+      <AlertDialogContent className="data-[size=default]:sm:max-w-md">
         <Body prompt={prompt} />
         <AlertDialogFooter>
           {prompt.kind !== "alert" && (

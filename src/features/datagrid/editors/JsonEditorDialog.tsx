@@ -60,7 +60,7 @@ export function JsonEditorDialog({
     <Dialog open onOpenChange={(open) => !open && onCancel()}>
       <DialogContent
         data-scope="grid-edit"
-        className="flex max-h-[85vh] flex-col gap-3 sm:max-w-2xl"
+        className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col gap-3 sm:max-w-[min(56rem,calc(100%-2rem))]"
         onOpenAutoFocus={(e) => {
           e.preventDefault();
           ref.current?.focus({ preventScroll: true });
@@ -99,7 +99,7 @@ export function JsonEditorDialog({
               saveAndCommit();
             }
           }}
-          className="[field-sizing:fixed] h-72 min-h-32 resize-y font-mono text-xs leading-5 md:text-xs"
+          className="[field-sizing:fixed] min-h-32 flex-1 resize-none font-mono text-xs leading-5 md:text-xs"
         />
         <div
           role={error ? "alert" : undefined}

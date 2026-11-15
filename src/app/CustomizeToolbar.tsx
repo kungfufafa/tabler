@@ -283,7 +283,7 @@ export function CustomizeToolbarDialog({
         data-slot="customize-toolbar"
         data-scope="dialog"
         // Hangs from under the toolbar (top-14), so it may use the window less that and a margin.
-        className="top-14 max-h-[calc(100dvh-4.5rem)] translate-y-0 overflow-y-auto sm:max-w-2xl"
+        className="top-14 max-h-[calc(100dvh-4.5rem)] translate-y-0 overflow-y-auto sm:max-w-[min(48rem,calc(100%-2rem))]"
       >
         <DialogHeader>
           <DialogTitle>Customize Toolbar</DialogTitle>

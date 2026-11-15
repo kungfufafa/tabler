@@ -48,7 +48,7 @@ export function ProcessListDialog({
 }) {
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="flex h-[min(680px,80vh)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1120px,calc(100%-2rem))]">
+      <DialogContent className="flex h-[min(680px,calc(100dvh-4rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1120px,calc(100%-2rem))]">
         <header className="border-border flex h-11 shrink-0 items-center gap-2 border-b pr-12 pl-4">
           <DialogTitle className="text-[13px] font-semibold">Running Queries</DialogTitle>
           <DialogDescription className="text-muted-foreground truncate text-xs">
@@ -418,7 +418,7 @@ function KillConfirm({
       : `Kill the ${what === "query" ? "queries" : "connections"} of ${targets.length} processes?`;
   return (
     <AlertDialog open onOpenChange={(open) => !open && onCancel()}>
-      <AlertDialogContent>
+      <AlertDialogContent className="data-[size=default]:sm:max-w-md">
         <AlertDialogHeader>
           <AlertDialogTitle className="text-sm">{title}</AlertDialogTitle>
           <AlertDialogDescription className="text-xs">

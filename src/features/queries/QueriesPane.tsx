@@ -698,7 +698,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
         {body}
       </div>
       <AlertDialog open={pendingDelete !== null} onOpenChange={(o) => !o && setPendingDelete(null)}>
-        <AlertDialogContent size="sm">
+        <AlertDialogContent size="sm" className="data-[size=sm]:sm:max-w-md">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-sm">
               {pendingDelete?.kind === "folder"

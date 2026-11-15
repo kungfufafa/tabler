@@ -156,7 +156,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
   return (
     <Dialog open onOpenChange={(open) => !open && close()}>
       <DialogContent
-        className="flex max-h-[min(640px,calc(100vh-2rem))] flex-col gap-0 p-0 sm:max-w-[640px]"
+        className="flex h-[min(34rem,calc(100dvh-4rem))] flex-col gap-0 p-0 sm:max-w-[min(48rem,calc(100%-2rem))]"
         showCloseButton={!running}
         onInteractOutside={(e) => running && e.preventDefault()}
         onEscapeKeyDown={(e) => running && e.preventDefault()}
@@ -167,7 +167,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
           }
         }}
       >
-        <DialogHeader className="border-border gap-1 border-b px-4 py-3 pr-12">
+        <DialogHeader className="border-border shrink-0 gap-1 border-b px-4 py-3 pr-12">
           <DialogTitle className="flex items-center gap-2 text-sm">
             <FileUp className="text-brand size-4" />
             Import SQL Dump
@@ -188,7 +188,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
           {report ? (
-            <div className="flex min-h-0 flex-col gap-2">
+            <div className="flex min-h-0 flex-1 flex-col gap-2">
               <p className="text-xs">
                 {statements(report.executed)} ran
                 {report.failed > 0 && (

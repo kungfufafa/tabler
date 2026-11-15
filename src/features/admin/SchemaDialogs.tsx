@@ -86,7 +86,7 @@ export function CreateSchemaDialog({
 
   return (
     <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-[34rem]">
         <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-3">
           <DialogHeader>
             <DialogTitle className="text-sm">New Schema</DialogTitle>
@@ -179,7 +179,7 @@ export function DropSchemaDialog({
 
   return (
     <AlertDialog open onOpenChange={(open) => !open && !busy && onClose()}>
-      <AlertDialogContent>
+      <AlertDialogContent className="data-[size=default]:sm:max-w-md">
         <AlertDialogHeader>
           <AlertDialogTitle className="text-sm">
             {target ? `Drop schema ${target}?` : "Drop Schema"}

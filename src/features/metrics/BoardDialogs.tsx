@@ -68,7 +68,7 @@ export function ExportBoardDialog({
 
   return (
     <Dialog open={board !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-md">
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle>Export Board</DialogTitle>
@@ -170,7 +170,7 @@ export function ImportPasswordDialog({
 
   return (
     <Dialog open={path !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-md">
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle>Import Board</DialogTitle>
@@ -224,7 +224,7 @@ export function DeleteBoardDialog({
 }) {
   return (
     <AlertDialog open={board !== null} onOpenChange={(open) => !open && onClose()}>
-      <AlertDialogContent size="sm">
+      <AlertDialogContent size="sm" className="data-[size=sm]:sm:max-w-md">
         <AlertDialogHeader>
           <AlertDialogTitle>Delete “{board?.name}”?</AlertDialogTitle>
           <AlertDialogDescription>

@@ -82,7 +82,7 @@ export function ExportConnectionsDialog({
 
   return (
     <Dialog open={scope !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-[34rem]">
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle>{shown?.title}</DialogTitle>

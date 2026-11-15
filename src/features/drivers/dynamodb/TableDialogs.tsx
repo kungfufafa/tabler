@@ -136,7 +136,7 @@ export function IndexBrowserDialog({
   const next = page.state === "done" ? (page.page.nextCursor ?? null) : null;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-4xl">
+      <DialogContent className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(56rem,calc(100%-2rem))]">
         <DialogHeader>
           <DialogTitle>Browse an index of {table.name}</DialogTitle>
           <DialogDescription>
@@ -174,7 +174,7 @@ export function IndexBrowserDialog({
             )}
           </span>
         </div>
-        <div className="max-h-[50vh] overflow-auto rounded border">
+        <div className="min-h-0 flex-1 overflow-auto rounded border">
           {page.state === "done" && (
             <table className="w-full text-xs" data-testid="dynamo-index-page">
               <thead className="bg-muted sticky top-0">

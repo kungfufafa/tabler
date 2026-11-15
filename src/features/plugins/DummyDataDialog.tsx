@@ -86,7 +86,7 @@ function DummyDataForm({ request }: { request: DummyDataRequest }) {
   };
 
   return (
-    <form onSubmit={(e) => void submit(e)} className="flex min-h-0 flex-col gap-3">
+    <form onSubmit={(e) => void submit(e)} className="flex min-h-0 flex-1 flex-col gap-3">
       <DialogHeader>
         <DialogTitle className="text-sm">Generate Dummy Data</DialogTitle>
         <DialogDescription className="text-xs">
@@ -116,13 +116,13 @@ function DummyDataForm({ request }: { request: DummyDataRequest }) {
           <Dices /> Shuffle
         </Button>
       </div>
-      <div className="bg-muted/50 min-h-32 overflow-auto rounded-md border p-2">
+      <div className="bg-muted/50 min-h-32 flex-1 overflow-auto rounded-md border p-2">
         {meta.isPending ? (
           <QuietStatus />
         ) : meta.isError ? (
           <p className="text-error text-xs">{errorText(meta.error)}</p>
         ) : (
-          <pre className="max-h-[40vh] font-mono text-[11px] leading-4 whitespace-pre-wrap">
+          <pre className="font-mono text-[11px] leading-4 whitespace-pre-wrap">
             {sql.length > PREVIEW_CHARS ? `${sql.slice(0, PREVIEW_CHARS)}\n…` : sql}
           </pre>
         )}
@@ -144,7 +144,7 @@ export function DummyDataDialog() {
   const request = usePluginsStore((s) => s.dummy);
   return (
     <Dialog open={request !== null} onOpenChange={(o) => !o && closeDummyData()}>
-      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-xl">
+      <DialogContent className="flex h-[min(34rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(48rem,calc(100%-2rem))]">
         {request && <DummyDataForm request={request} />}
       </DialogContent>
     </Dialog>

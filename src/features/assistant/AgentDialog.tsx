@@ -61,7 +61,7 @@ export function AgentDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-[min(48rem,calc(100%-2rem))]">
         <form onSubmit={submit} className="flex flex-col gap-3">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit Agent" : "New Agent"}</DialogTitle>

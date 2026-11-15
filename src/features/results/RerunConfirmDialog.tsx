@@ -31,7 +31,7 @@ export function RerunConfirmDialog() {
   return (
     <AlertDialog open={live !== null} onOpenChange={(open) => !open && answerRerunConfirm(false)}>
       <AlertDialogContent
-        className="gap-3"
+        className="gap-3 data-[size=default]:sm:max-w-md"
         onKeyDown={(e) => {
           if (comboFromEvent(e) !== CONFIRM_COMBO) return;
           e.preventDefault();

@@ -52,7 +52,7 @@ export function NewKeyDialog({
           : null;
   return (
     <Dialog open={open} onOpenChange={(o) => !o && finish(null)}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-[34rem]">
         <DialogHeader>
           <DialogTitle>New key in db{db}</DialogTitle>
           <DialogDescription>Refused when a key of this name exists.</DialogDescription>

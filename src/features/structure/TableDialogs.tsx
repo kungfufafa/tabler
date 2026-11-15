@@ -266,7 +266,7 @@ export function CreateTableDialog({
     // outcome (an error to show, or the new table's tab) would land in a closed dialog.
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
       <DialogContent
-        className="flex max-h-[85vh] flex-col gap-3 sm:max-w-3xl"
+        className="flex h-[min(34rem,calc(100dvh-4rem))] flex-col gap-3 sm:max-w-[min(48rem,calc(100%-2rem))]"
         onKeyDown={onKeyDown}
       >
         <DialogHeader>
@@ -297,7 +297,7 @@ export function CreateTableDialog({
             <option key={t} value={t} />
           ))}
         </datalist>
-        <div className="border-border min-h-0 overflow-auto rounded-md border">
+        <div className="border-border min-h-24 flex-1 overflow-auto rounded-md border">
           <table className="w-full min-w-[640px] table-fixed border-collapse text-xs">
             <colgroup>
               <col className="w-[22%]" />
@@ -551,7 +551,7 @@ export function RenameTableDialog({
 
   return (
     <Dialog open onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-md">
         <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-3">
           <DialogHeader>
             <DialogTitle className="text-sm">
@@ -628,7 +628,7 @@ export function TruncateTableDialog({
 
   return (
     <AlertDialog open onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <AlertDialogContent>
+      <AlertDialogContent className="data-[size=default]:sm:max-w-md">
         <AlertDialogHeader>
           <AlertDialogTitle className="text-sm">Truncate {table.name}?</AlertDialogTitle>
           <AlertDialogDescription className="text-xs">
@@ -709,6 +709,7 @@ export function DropTableDialog({
   return (
     <AlertDialog open onOpenChange={(o) => !busy && onOpenChange(o)}>
       <AlertDialogContent
+        className="data-[size=default]:sm:max-w-md"
         onOpenAutoFocus={(e) => {
           // Start in the confirmation field (AlertDialog focuses Cancel by default).
           e.preventDefault();

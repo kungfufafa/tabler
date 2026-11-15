@@ -108,7 +108,7 @@ export function UserManagementDialog({
   const [requestClose, setRequestClose] = useState(0);
   return (
     <Dialog open onOpenChange={(open) => !open && setRequestClose((n) => n + 1)}>
-      <DialogContent className="flex h-[min(720px,85vh)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(980px,calc(100%-2rem))]">
+      <DialogContent className="flex h-[min(720px,calc(100dvh-4rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(980px,calc(100%-2rem))]">
         <header className="border-border flex h-11 shrink-0 items-center gap-2 border-b pr-12 pl-4">
           <DialogTitle className="text-[13px] font-semibold">User Management</DialogTitle>
           <DialogDescription className="text-muted-foreground truncate text-xs">
@@ -428,7 +428,7 @@ function UserManagementBody({
 
       {pending && (
         <AlertDialog open onOpenChange={(open) => !open && setPending(null)}>
-          <AlertDialogContent>
+          <AlertDialogContent className="data-[size=default]:sm:max-w-md">
             <AlertDialogHeader>
               <AlertDialogTitle className="text-sm">Discard changes?</AlertDialogTitle>
               <AlertDialogDescription className="text-xs">
@@ -456,7 +456,7 @@ function UserManagementBody({
 
       {confirmDrop && (
         <AlertDialog open onOpenChange={(open) => !open && setConfirmDrop(null)}>
-          <AlertDialogContent>
+          <AlertDialogContent className="data-[size=default]:sm:max-w-md">
             <AlertDialogHeader>
               <AlertDialogTitle className="text-sm">
                 Drop {driver === "postgres" ? "role" : "user"} {userLabel(confirmDrop)}?

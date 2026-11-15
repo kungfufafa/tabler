@@ -216,7 +216,7 @@ function SavedQueryForm({ request }: { request: SavedQueryDialogRequest }) {
             onChange={(e) => set({ sql: e.target.value })}
             spellCheck={false}
             rows={10}
-            className="max-h-[40vh] min-h-40 resize-y font-mono text-xs leading-5 md:text-xs"
+            className="max-h-[40dvh] min-h-40 resize-y font-mono text-xs leading-5 md:text-xs"
           />
         </Field>
         <div className="grid grid-cols-2 gap-x-3">

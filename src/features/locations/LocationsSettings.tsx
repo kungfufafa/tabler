@@ -234,7 +234,7 @@ export function LocationsSettings() {
         </SettingRow>
       </SettingGroup>
       <AlertDialog open={pending !== null} onOpenChange={(o) => !o && !busy && setPending(null)}>
-        <AlertDialogContent>
+        <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-sm">{prompt?.title}</AlertDialogTitle>
             <AlertDialogDescription className="text-xs">

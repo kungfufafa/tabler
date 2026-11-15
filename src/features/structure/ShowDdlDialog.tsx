@@ -59,7 +59,7 @@ export function ShowDdlDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="flex max-h-[80vh] flex-col gap-0 p-0 sm:max-w-3xl"
+        className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col gap-0 p-0 sm:max-w-[min(56rem,calc(100%-2rem))]"
         onCloseAutoFocus={(e) => {
           if (openedSql.current) {
             openedSql.current = false;
