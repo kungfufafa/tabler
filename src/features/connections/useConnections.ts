@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tansta
 import { useCallback } from "react";
 import { toast } from "sonner";
 import { create } from "zustand";
-import { usePaletteStore } from "@/features/palette/store";
 import { capsOf } from "@/lib/caps";
 import { hasSingleHost } from "@/features/export/singleHost";
 import { ipc, toIpcError, type ConnectionProfile, type ProfileInput } from "@/lib/ipc";
@@ -276,11 +275,10 @@ export function useConnect() {
         (!info.currentDatabase || (profile !== undefined && !profile.database?.trim()));
       // Drivers may log into a maintenance database to discover the server (e.g. postgres).
       // It is not a user-opened database workspace; the first choice completes this login.
+      // Like TablePlus, the workspace then opens empty: the database list waits for the user
+      // (⌘K, the toolbar, or the sidebar's "Choose database") instead of covering the window.
       add(chooseDatabase ? { ...info, currentDatabase: null } : info);
       setView("workspace");
-      // A server login without a database is a discovery step. Ask which database to open
-      // rather than silently browsing the driver's fallback database.
-      if (chooseDatabase) usePaletteStore.getState().openPalette("databases");
       void qc.invalidateQueries({ queryKey: profileKeys.all });
     },
     onError: (e, profileId) => {

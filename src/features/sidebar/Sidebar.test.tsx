@@ -106,15 +106,18 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("radiogroup")).toBeNull();
   });
 
-  it("asks for a database after a server-only login without loading other databases' tables", () => {
+  it("says no database is selected after a server-only login, without loading tables or opening the list", () => {
     connect("mysql");
     const connection = useConnectionsStore.getState().byId.c1!;
     useConnectionsStore.getState().setInfo({ ...connection.info, currentDatabase: null });
     renderSidebar();
-    expect(screen.getByText("Choose a database")).toBeInTheDocument();
+    // TablePlus's line; the list opens from the shortcut or the toolbar only.
+    expect(
+      screen.getByText(/^No database selected, press (Ctrl\+K|⌘K) to select a database$/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /database/i })).toBeNull();
     expect(ipc.schema.tables).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Choose database" }));
-    expect(usePaletteStore.getState().mode).toBe("databases");
+    expect(usePaletteStore.getState().open).toBe(false);
   });
 
   it("keeps MySQL objects in the active database even when the schema list includes others", async () => {
