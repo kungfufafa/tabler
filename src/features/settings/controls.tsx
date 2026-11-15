@@ -16,7 +16,11 @@ export function SectionShell({
 }) {
   return (
     <>
-      <header className="border-border flex h-11 shrink-0 items-center gap-3 border-b pr-12 pl-5">
+      {/* data-settings-drag: drags the Settings window on Windows (no title bar, like TablePlus). */}
+      <header
+        data-settings-drag=""
+        className="border-border flex h-11 shrink-0 items-center gap-3 border-b pr-12 pl-5"
+      >
         <h2 className="text-[13px] font-semibold">{title}</h2>
         {actions && <div className="ml-auto flex items-center">{actions}</div>}
       </header>

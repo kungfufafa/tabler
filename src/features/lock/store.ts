@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { ipc, toIpcError } from "@/lib/ipc";
 import { broadcastEvent, listenEvent, RENDERER_ID } from "@/lib/ipc/events";
+import { isSettingsWindow } from "@/lib/windowKind";
 import { authenticateOwner } from "./biometric";
 import {
   attemptsLeft,
@@ -56,16 +57,26 @@ export interface LockState {
   lockCount: number;
 }
 
+/**
+ * Whether this window starts locked when a passcode is set. Not the Settings window: it opens only
+ * from a window that is unlocked (a locked window refuses Settings…), so it is no app startup. It
+ * still locks like the others (Lock Tabler, the idle timer, the system).
+ */
+function startsLocked(): boolean {
+  return !isSettingsWindow();
+}
+
 function initialState(): LockState {
   const enabled = readLocal();
+  const locked = enabled && startsLocked();
   return {
-    status: enabled ? "locked" : "unlocked",
-    reason: enabled ? "startup" : null,
+    status: locked ? "locked" : "unlocked",
+    reason: locked ? "startup" : null,
     enabled,
     biometrics: false,
     checked: false,
     attempts: NO_ATTEMPTS,
-    lockCount: enabled ? 1 : 0,
+    lockCount: locked ? 1 : 0,
   };
 }
 
@@ -77,7 +88,8 @@ export function resetLockForTests(): void {
 }
 
 /**
- * Reads whether a passcode is set: the window locks at startup when one is, and unlocks when the
+ * Reads whether a passcode is set: the window locks at startup when one is (not the Settings
+ * window, `startsLocked`), and unlocks when the
  * localStorage flag was stale. Without an answer (the backend failed) a locked window stays
  * locked.
  */
@@ -86,7 +98,7 @@ export async function loadLockStatus(): Promise<void> {
     const { enabled, biometrics } = await ipc.security.passcodeStatus();
     writeLocal(enabled);
     useLockStore.setState((s) => {
-      if (enabled && !s.checked && s.status === "unlocked")
+      if (enabled && !s.checked && s.status === "unlocked" && startsLocked())
         return {
           enabled,
           biometrics,

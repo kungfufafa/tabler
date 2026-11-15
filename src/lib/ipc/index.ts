@@ -788,6 +788,15 @@ export const ipc = {
     isSessionOwner: () => invoke<boolean>("window_is_session_owner"),
     /** The user kept their work in the unsaved-changes dialog: a quit under way is off. */
     cancelQuit: () => invoke<void>("cancel_quit"),
+    /**
+     * Settings… (⌘,): opens the Settings window (one at most, like TablePlus's) or brings it to
+     * the front, showing `section` (null: the section it shows). An open Settings window hears
+     * the section as `settings:section`.
+     */
+    openSettings: (section: string | null = null) =>
+      invoke<void>("window_open_settings", { section }),
+    /** The section the Settings window was opened on (once; null in any other window). */
+    takeSettingsSection: () => invoke<string | null>("window_take_settings_section"),
   },
 
   menu: {

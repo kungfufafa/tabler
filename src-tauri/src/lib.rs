@@ -485,8 +485,9 @@ pub mod shell {
         if id == QUIT_ITEM_ID {
             let _ = app.emit(EVENT_QUIT_REQUESTED, ());
         } else if let Some(action) = menu_action(id) {
-            // Only the window the menu acts on (the focused one) runs it.
-            crate::windows::emit_to_target(app, EVENT_MENU_ACTION, action);
+            // Only the window the menu acts on runs it: the focused workspace window, or the
+            // Settings window for the few items it handles (`windows::menu_route`).
+            crate::windows::emit_menu_action(app, EVENT_MENU_ACTION, action);
         }
     }
 
@@ -1175,6 +1176,8 @@ pub fn run() {
             commands::app::set_unsaved,
             commands::app::cancel_quit,
             commands::app::window_open,
+            commands::app::window_open_settings,
+            commands::app::window_take_settings_section,
             commands::app::window_route_profile,
             commands::app::window_take_handoff,
             commands::app::window_set_connections,

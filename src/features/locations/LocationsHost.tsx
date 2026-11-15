@@ -6,6 +6,7 @@ import { openSettings } from "@/features/settings/store";
 import { usePrefs, usePrefsStore } from "@/stores/prefs";
 import { pruneHistory } from "./historyRetention";
 import { loadLocations } from "./store";
+import { installLocationsSync } from "./sync";
 
 /**
  * App-wide: shows the Locations problems found at startup once (a chosen folder missing, so the
@@ -34,6 +35,9 @@ export function LocationsHost() {
       cancelled = true;
     };
   }, []);
+
+  // Settings is a window of its own: a folder it moved, and a restart it is about to make.
+  useEffect(() => installLocationsSync(), []);
 
   useEffect(() => {
     if (!loaded || retention === "forever") return;

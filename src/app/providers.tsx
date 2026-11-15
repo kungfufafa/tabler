@@ -23,7 +23,26 @@ function GlobalEffects() {
   return null;
 }
 
-export function Providers({ children }: { children: ReactNode }) {
+/**
+ * The Settings window's share of `GlobalEffects`: the theme, the menu items it handles
+ * (`menu:action`, see `menu_route` in src-tauri/src/windows.rs) and the build's info (General ▸
+ * the running version). No tabs, connections or workspace actions.
+ */
+function AuxEffects() {
+  useTheme();
+  useNativeMenu();
+  useEffect(() => void loadAppInfo(), []);
+  return null;
+}
+
+export function Providers({
+  children,
+  aux = false,
+}: {
+  children: ReactNode;
+  /** A window that is not an app window (the Settings window): only what it needs. */
+  aux?: boolean;
+}) {
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -37,9 +56,9 @@ export function Providers({ children }: { children: ReactNode }) {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={400}>
         <KeyboardProvider>
-          <GlobalEffects />
+          {aux ? <AuxEffects /> : <GlobalEffects />}
           {children}
-          <NotificationToaster />
+          <NotificationToaster compact={aux} />
         </KeyboardProvider>
       </TooltipProvider>
     </QueryClientProvider>

@@ -746,7 +746,7 @@ pub mod menu {
             return true;
         }
         if let Some(run) = run_id(id) {
-            crate::windows::emit_to_target(app, EVENT_RUN, run.to_string());
+            crate::windows::emit_menu_action(app, EVENT_RUN, run);
             return true;
         }
         false

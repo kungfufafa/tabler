@@ -11,6 +11,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { flushThemes } from "@/features/appearance/themesStore";
 import { flushFileAutoSaves } from "@/features/editor/fileAutoSave";
 import { pickFolder } from "@/features/queries/files";
 import { refreshSavedQueries } from "@/features/queries/store";
@@ -21,7 +22,9 @@ import {
   type LocationChange,
   type LocationInspection,
   type LocationKind,
+  type LocationsInfo,
 } from "@/lib/ipc";
+import { broadcastEvent, RENDERER_ID } from "@/lib/ipc/events";
 import { flushPrefs } from "@/stores/prefs";
 import { hasUnsaved } from "@/stores/tabs";
 import { locationPrompt } from "./model";
@@ -42,7 +45,20 @@ function PathText({ path }: { path: string }) {
   );
 }
 
-/** Restarts so a new data folder is used (refused while something is unsaved). */
+/** How long a restart leaves the other windows to write their pending saves. */
+const FLUSH_WAIT_MS = 300;
+
+/** Tells the other windows a folder moved: they read the locations (and saved queries) again. */
+function announce(info: LocationsInfo, queries: boolean): void {
+  void broadcastEvent("locations:changed", { from: RENDERER_ID, info, queries }).catch(
+    (err: unknown) => console.warn("[locations] could not tell the other windows", err),
+  );
+}
+
+/**
+ * Restarts so a new data folder is used (refused while something is unsaved: this window's work
+ * here, every window's in the backend).
+ */
 async function restartNow(): Promise<void> {
   if (hasUnsaved()) {
     toast.message("Save or close the unsaved work first", {
@@ -52,6 +68,10 @@ async function restartNow(): Promise<void> {
   }
   flushFileAutoSaves();
   await flushPrefs();
+  await flushThemes();
+  // The other windows (Settings is a window of its own) write their pending saves too.
+  await broadcastEvent("app:flush-saves", { from: RENDERER_ID }).catch(() => undefined);
+  await new Promise((resolve) => setTimeout(resolve, FLUSH_WAIT_MS));
   try {
     await ipc.locations.restart();
   } catch (e) {
@@ -112,6 +132,7 @@ export function LocationsSettings() {
       if (p.kind === "data") {
         const next = await ipc.locations.setData(p.path, change);
         setLocations(next);
+        announce(next, false);
         if (next.pendingDataDir)
           toast.success("Restart Tabler to use the new folder", {
             action: { label: "Restart Now", onClick: () => void restartNow() },
@@ -120,6 +141,7 @@ export function LocationsSettings() {
       } else {
         const next = await ipc.locations.setQueries(p.path, change);
         setLocations(next);
+        announce(next, true);
         await refreshSavedQueries();
         toast.success("Saved queries now live in the new folder");
       }

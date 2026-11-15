@@ -89,3 +89,34 @@ export const mockSessionOwner = { label: "main" };
 registerMock("window_is_session_owner", () => mockWindowLabel() === mockSessionOwner.label);
 
 registerMock("cancel_quit", () => null);
+
+/**
+ * Sections the Settings window was asked for (tests read it). In the browser mock Settings stays
+ * the in-window dialog (`openSettings`), so nothing calls this but tests; a tab opened with
+ * `?view=settings` shows the Settings window's own layout.
+ */
+export const mockSettingsOpens: (string | null)[] = [];
+
+registerMock("window_open_settings", ({ section }) => {
+  mockSettingsOpens.push((section as string | null | undefined) ?? null);
+  return null;
+});
+
+let settingsSectionTaken = false;
+
+/** A `?view=settings` tab's `?section=`, once (the parked section of the real window). */
+registerMock("window_take_settings_section", () => {
+  if (settingsSectionTaken) return null;
+  settingsSectionTaken = true;
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? "").get("section");
+  } catch {
+    return null;
+  }
+});
+
+/** Test helper: the Settings window's section can be taken again. */
+export function resetMockSettingsWindow(): void {
+  settingsSectionTaken = false;
+  mockSettingsOpens.length = 0;
+}

@@ -8,11 +8,12 @@ import "./notification-toaster.css";
 const workspaceOffset = { left: 12, right: 12, bottom: 16 };
 const launcherOffset = { ...workspaceOffset, bottom: 68 };
 
-export function NotificationToaster() {
+/** `compact`: a window without a status bar to keep clear of (the Settings window). */
+export function NotificationToaster({ compact = false }: { compact?: boolean }) {
   const launcher = useUiStore((state) => state.view === "launcher");
   const active = useActiveConnection();
   const welcome = useIsWelcomeWindow();
-  const offset = launcher || !active || welcome ? launcherOffset : workspaceOffset;
+  const offset = !compact && (launcher || !active || welcome) ? launcherOffset : workspaceOffset;
 
   return (
     <Toaster

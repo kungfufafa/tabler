@@ -261,7 +261,7 @@ pub fn on_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) -> bool {
         return true;
     }
     if id.starts_with(CONNECTION_PREFIX) || id.starts_with(FILE_PREFIX) {
-        crate::windows::emit_to_target(app, crate::shell::EVENT_MENU_ACTION, id.to_string());
+        crate::windows::emit_menu_action(app, crate::shell::EVENT_MENU_ACTION, id);
         return true;
     }
     false

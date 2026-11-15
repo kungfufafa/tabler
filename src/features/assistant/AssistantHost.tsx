@@ -1,6 +1,8 @@
+import { useEffect } from "react";
 import { useAction } from "@/features/palette/actions";
 import { useActiveConnection } from "@/stores/connections";
 import { usePrefs } from "@/stores/prefs";
+import { installKeySync } from "./keys";
 import { askAssistant } from "./store";
 
 /**
@@ -12,5 +14,7 @@ export function AssistantHost() {
   const enabled = usePrefs((p) => p.assistantEnabled);
   const connection = useActiveConnection();
   useAction("assistant.ask", enabled && connection ? askAssistant : null);
+  // A key stored in the Settings window reaches this window's Assistant panel at once.
+  useEffect(() => installKeySync(), []);
   return null;
 }
