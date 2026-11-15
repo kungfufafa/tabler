@@ -1,4 +1,5 @@
 import type { ConnectionStatusEvent } from "./bindings/ConnectionStatusEvent";
+import type { LocationsInfo } from "./bindings/LocationsInfo";
 import type { SqliteSshEvent } from "./bindings/SqliteSshEvent";
 import type { SshPromptDone } from "./bindings/SshPromptDone";
 import type { SshPromptRequest } from "./bindings/SshPromptRequest";
@@ -34,6 +35,14 @@ type EventMap = {
   "prefs:changed": { from: string; changed: Record<string, unknown> };
   /** Another window set, changed or turned off the passcode. */
   "lock:changed": { from: string; enabled: boolean };
+  /** The Settings window is asked to show this section (Settings… from another window). */
+  "settings:section": string | null;
+  /** Settings ▸ Locations moved a folder in another window (`queries`: the saved queries' one). */
+  "locations:changed": { from: string; info: LocationsInfo; queries: boolean };
+  /** Settings ▸ AI Assistant stored or removed an API key in another window. */
+  "assistant:keys-changed": { from: string };
+  /** A window is about to restart the app: write what waits to be saved now. */
+  "app:flush-saves": { from: string };
 };
 
 /** Subscribes to a global backend event (Tauri `listen`, or the mock emitter in the browser). */

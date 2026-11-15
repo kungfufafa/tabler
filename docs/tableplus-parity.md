@@ -52,6 +52,12 @@ Target and details: [`tableplus-ux.md`](tableplus-ux.md). Done:
 - Welcome screen (connection list with driver badges and tag pills, double-click to connect,
   New connection from URL, Copy as URL) and a one-page connection form (driver picker, Tag, colour,
   Over SSH, Advanced).
+- Settings (⌘,) is a **window of its own**, like TablePlus's Settings / Preferences window (spec
+  §10.1; `docs/research/tableplus-windows-2026-11-03/screenshots/20-settings-general.jpg`): one at
+  most, 888×654 and centred on the window it was opened from, the section list on the left; on
+  Windows no title bar, only a close button. ⌘, again (or a "Settings…" link anywhere) brings it to
+  the front on the section asked for; ⌘W closes it, Esc does not. What it changes reaches every
+  open window at once. The browser mock (`pnpm dev:mock`) keeps it as an in-window dialog.
 - SQL tab: the editor bar sits under the editor (cursor position, run summary, row limit,
   Beautify, Explain, Run Current).
 - Grid: 22px rows, centred semibold headers, right-aligned numbers, zebra rows, full-row selection,

@@ -44,7 +44,8 @@ pub fn quit_app(
     }
     log::info!("quit confirmed by the renderer");
     quit.confirm();
-    app.exit(0);
+    // The Settings window writes what it still has to save first (it has nothing to ask).
+    windows::exit_after_settings(&app);
 }
 
 /// The user kept their work in the unsaved-changes dialog: a quit under way is off.
@@ -77,6 +78,29 @@ pub async fn window_open(
 ) -> Result<String, AppError> {
     windows::open_window(&app, handoff, welcome.unwrap_or(false))
         .map_err(|e| AppError::Internal(e.to_string()))
+}
+
+/// Settings… (⌘,): opens the Settings window, or brings it to the front, on `section` (none: the
+/// section it shows). Async: building a window from a synchronous command can deadlock (WebView2).
+#[tauri::command]
+pub async fn window_open_settings(
+    app: AppHandle,
+    webview: Webview,
+    section: Option<String>,
+) -> Result<(), AppError> {
+    windows::open_settings_window(&app, Some(webview.label()), section)
+        .map_err(|e| AppError::Internal(e.to_string()))
+}
+
+/// The section the Settings window was opened on (once; `None` in any other window).
+#[tauri::command]
+pub fn window_take_settings_section(
+    webview: Webview,
+    registry: State<'_, WindowRegistry>,
+) -> Option<String> {
+    windows::is_aux_window(webview.label())
+        .then(|| registry.take_settings_section())
+        .flatten()
 }
 
 /// A connection picked in this window (the Welcome window) opens in a workspace window when one

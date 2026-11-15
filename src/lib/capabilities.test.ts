@@ -49,6 +49,22 @@ describe("window capabilities", () => {
       expect(granted.has(permission)).toBe(true);
   });
 
+  // The Settings window: shown by its renderer, dragged by its headers on Windows, closed by its
+  // own button and destroyed once its pending saves are written.
+  it("lets the Settings window show, theme, drag and close itself", () => {
+    const granted = grantedTo("settings");
+    for (const permission of [
+      "core:window:allow-show",
+      "core:window:allow-set-focus",
+      "core:window:allow-start-dragging",
+      "core:window:allow-close",
+      "core:window:allow-destroy",
+      "core:window:allow-set-theme",
+      "core:app:allow-set-app-theme",
+    ])
+      expect(granted.has(permission)).toBe(true);
+  });
+
   it.each(["main", "w-2"])("lets the window-state plugin restore %s", (window) => {
     expect(grantedTo(window).has("window-state:default")).toBe(true);
   });
