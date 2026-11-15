@@ -83,7 +83,7 @@ function EncodingDialog() {
 
   return (
     <Dialog open={connectionId !== null} onOpenChange={(o) => !o && close()}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-[34rem]">
         <DialogHeader>
           <DialogTitle>View Using Encoding</DialogTitle>
           <DialogDescription>

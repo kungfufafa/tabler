@@ -356,6 +356,10 @@ out of the repository: its screenshots show the user's hosts) against the mock b
   workspace instead of browsing the fallback: the sidebar says "No database selected, press
   Ctrl+K to select a database" (TablePlus 27.2 on Windows, MySQL) and the list opens on ⌘K or
   the toolbar, never by itself. MySQL lists only the open database's objects.
+- Dialog sizes follow TablePlus (Windows screenshots in `docs/research/`): sized to the task and
+  the window, not shrink-wrapped. Confirmations 448px, forms 544px, list/tool panels 768px
+  (Export tables puts the tables left and the options right, ~768×544), viewers and editors
+  (DDL Info, JSON, trigger, Settings) 896×640; each capped at the window.
 - Short windows: no dialog grows past the window (a base-layer cap; dialogs with their own
   fixed header and footer keep them). The sidebar search hides its shortcut badge where it would
   cover the placeholder, and the Structure footer's order button keeps only its icon when tight.

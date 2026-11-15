@@ -597,7 +597,7 @@ export function DiagramDialog({
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent
         aria-label={title}
-        className="flex h-[94vh] max-h-[94vh] w-[96vw] max-w-[96vw] flex-col gap-2 p-3 sm:max-w-[96vw]"
+        className="flex h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] flex-col gap-2 p-3 sm:max-w-[calc(100%-2rem)]"
         onOpenAutoFocus={(e) => {
           e.preventDefault();
           canvasRef.current?.focus({ preventScroll: true });

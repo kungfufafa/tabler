@@ -614,7 +614,7 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
         {body}
       </div>
       <AlertDialog open={confirmClear} onOpenChange={setConfirmClear}>
-        <AlertDialogContent size="sm">
+        <AlertDialogContent size="sm" className="data-[size=sm]:sm:max-w-md">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-sm">Clear all history?</AlertDialogTitle>
             <AlertDialogDescription className="text-xs">
@@ -630,7 +630,7 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
         </AlertDialogContent>
       </AlertDialog>
       <AlertDialog open={olderThan !== null} onOpenChange={(o) => !o && setOlderThan(null)}>
-        <AlertDialogContent size="sm">
+        <AlertDialogContent size="sm" className="data-[size=sm]:sm:max-w-md">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-sm">Clear history older than…</AlertDialogTitle>
             <AlertDialogDescription className="text-xs">

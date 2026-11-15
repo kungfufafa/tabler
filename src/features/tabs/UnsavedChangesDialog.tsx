@@ -115,7 +115,7 @@ export function UnsavedChangesDialog() {
   return (
     <AlertDialog open={live !== null} onOpenChange={(open) => !open && cancel()}>
       <AlertDialogContent
-        className="gap-3"
+        className="gap-3 data-[size=default]:sm:max-w-md"
         onKeyDown={(e) => {
           if (comboFromEvent(e) === DISCARD_COMBO) {
             e.preventDefault();

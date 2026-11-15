@@ -350,7 +350,7 @@ export function ItemOverviewDialog({
 }) {
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="flex h-[80vh] max-h-[80vh] flex-col gap-3 sm:max-w-6xl">
+      <DialogContent className="flex h-[min(80dvh,calc(100dvh-4rem))] flex-col gap-3 sm:max-w-[min(72rem,calc(100%-2rem))]">
         <ItemOverviewView
           connectionId={request.connectionId}
           dialect={request.dialect}

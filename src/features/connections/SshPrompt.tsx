@@ -141,7 +141,7 @@ export function SshPrompt({
         if (!open && request) onAnswer(request.requestId, null);
       }}
     >
-      <AlertDialogContent className="grid-cols-1 gap-3 data-[size=default]:sm:max-w-md">
+      <AlertDialogContent className="grid-cols-1 gap-3 data-[size=default]:sm:max-w-[34rem]">
         {shown && <Questions key={shown.requestId} request={shown} onAnswer={onAnswer} />}
       </AlertDialogContent>
     </AlertDialog>

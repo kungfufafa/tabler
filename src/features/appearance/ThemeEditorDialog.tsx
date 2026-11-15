@@ -51,7 +51,7 @@ export function ThemeEditorDialog({
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
-        className="flex max-h-[calc(100vh-4rem)] w-[760px] max-w-[calc(100%-2rem)] flex-col gap-3 sm:max-w-[760px]"
+        className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col gap-3 sm:max-w-[min(48rem,calc(100%-2rem))]"
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
             e.preventDefault();

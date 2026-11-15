@@ -30,7 +30,7 @@ export function LargeFileDialog() {
   const req = live ?? last;
   return (
     <AlertDialog open={live !== null} onOpenChange={(open) => !open && answerLargeFile("cancel")}>
-      <AlertDialogContent className="gap-3 sm:max-w-md">
+      <AlertDialogContent className="gap-3 data-[size=default]:sm:max-w-md">
         <AlertDialogHeader>
           <AlertDialogTitle className="text-sm font-semibold">
             {req ? `${req.name} is ${sizeLabel(req.bytes)}` : "Large file"}

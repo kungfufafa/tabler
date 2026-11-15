@@ -849,7 +849,7 @@ export function QuickLook({
         // Its editor keeps the SQL editor's keyboard scope: the shield above takes those keys.
         data-shortcut-scope="editor"
         aria-label={`Quick Look: ${column.name}`}
-        className="flex h-[min(42rem,85vh)] flex-col gap-2.5 sm:max-w-3xl"
+        className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col gap-2.5 sm:max-w-[min(56rem,calc(100%-2rem))]"
         onCloseAutoFocus={(e) => e.preventDefault()}
         onPointerDown={(e) => e.stopPropagation()}
         onDoubleClick={(e) => e.stopPropagation()}

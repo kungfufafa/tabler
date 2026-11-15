@@ -1069,7 +1069,7 @@ export function Launcher() {
         open={pendingDelete !== null}
         onOpenChange={(open) => !open && setPendingDelete(null)}
       >
-        <AlertDialogContent>
+        <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>
             <AlertDialogTitle>Delete “{pendingDelete?.name}”?</AlertDialogTitle>
             <AlertDialogDescription>

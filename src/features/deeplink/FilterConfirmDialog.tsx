@@ -30,7 +30,7 @@ export function FilterConfirmDialog() {
         if (!open) answerFilterRequest(request.id, false);
       }}
     >
-      <AlertDialogContent size="default" className="sm:max-w-md">
+      <AlertDialogContent size="default" className="data-[size=default]:sm:max-w-md">
         <AlertDialogHeader>
           <AlertDialogTitle className="flex items-center gap-2">
             <ShieldAlert className="text-warning size-4" aria-hidden />

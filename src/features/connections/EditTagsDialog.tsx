@@ -133,7 +133,7 @@ export function EditTagsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-3 sm:max-w-lg">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-3 sm:max-w-[34rem]">
         <DialogHeader>
           <DialogTitle>Edit Tags</DialogTitle>
           <DialogDescription>

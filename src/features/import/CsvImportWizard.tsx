@@ -455,7 +455,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
   return (
     <Dialog open onOpenChange={(open) => !open && close()}>
       <DialogContent
-        className="flex max-h-[min(760px,calc(100vh-2rem))] flex-col gap-0 p-0 sm:max-w-[min(980px,calc(100vw-2rem))]"
+        className="flex max-h-[min(760px,calc(100dvh-4rem))] flex-col gap-0 p-0 sm:max-w-[min(980px,calc(100%-2rem))]"
         showCloseButton={!running}
         onInteractOutside={(e) => running && e.preventDefault()}
         onEscapeKeyDown={(e) => running && e.preventDefault()}

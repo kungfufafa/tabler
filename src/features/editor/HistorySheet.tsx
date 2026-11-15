@@ -435,7 +435,7 @@ export function HistorySheet({
       </SheetContent>
 
       <AlertDialog open={confirmClear} onOpenChange={setConfirmClear}>
-        <AlertDialogContent>
+        <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>
             <AlertDialogTitle>Clear query history?</AlertDialogTitle>
             <AlertDialogDescription>

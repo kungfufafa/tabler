@@ -246,7 +246,7 @@ export function AddForeignKeyDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="sm:max-w-lg"
+        className="sm:max-w-[34rem]"
         onCloseAutoFocus={(e) => {
           if (!returnFocus) return;
           e.preventDefault();

@@ -41,7 +41,7 @@ export function PasswordPrompt({
         if (!open && request) onAnswer(request.id, null);
       }}
     >
-      <DialogContent className="sm:max-w-sm" showCloseButton={false}>
+      <DialogContent className="sm:max-w-md" showCloseButton={false}>
         <form
           className="flex flex-col gap-4"
           onSubmit={(e) => {

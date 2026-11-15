@@ -159,7 +159,7 @@ export function PluginManager() {
   return (
     <>
       <Dialog open={open} onOpenChange={(o) => !o && closePluginManager()}>
-        <DialogContent className="flex max-h-[85vh] flex-col gap-3 sm:max-w-2xl">
+        <DialogContent className="flex h-[min(34rem,calc(100dvh-4rem))] flex-col gap-3 sm:max-w-[min(48rem,calc(100%-2rem))]">
           <DialogHeader>
             <DialogTitle className="text-sm">Plugins</DialogTitle>
             <DialogDescription className="text-xs">
@@ -240,7 +240,7 @@ export function PluginManager() {
         </DialogContent>
       </Dialog>
       <AlertDialog open={removing !== null} onOpenChange={(o) => !o && setRemoving(null)}>
-        <AlertDialogContent>
+        <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>
             <AlertDialogTitle>Remove “{removing?.name}”?</AlertDialogTitle>
             <AlertDialogDescription>

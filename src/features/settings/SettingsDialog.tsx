@@ -146,7 +146,7 @@ export function SettingsDialog() {
       <PrefsLoader />
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
-          className="flex h-[520px] max-h-[calc(100vh-4rem)] w-[680px] max-w-[calc(100%-2rem)] gap-0 overflow-hidden p-0 sm:max-w-[680px]"
+          className="flex h-[min(40rem,calc(100dvh-4rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(56rem,calc(100%-2rem))]"
           onKeyDown={onKeyDown}
           onEscapeKeyDown={(e) => {
             // Esc while a shortcut is being recorded only cancels the recording.

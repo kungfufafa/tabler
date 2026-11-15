@@ -261,7 +261,13 @@ export function ImportConnectionsDialog({
 
   return (
     <Dialog open={path !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-lg">
+      <DialogContent
+        className={cn(
+          "flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-[min(48rem,calc(100%-2rem))]",
+          // The list of connections gets the room; the password and error steps stay compact.
+          phase.kind === "preview" && items.length > 0 && "h-[min(34rem,calc(100dvh-4rem))]",
+        )}
+      >
         <DialogHeader>
           <DialogTitle>Import Connections</DialogTitle>
           <DialogDescription className="truncate" title={path ?? undefined}>
@@ -319,7 +325,7 @@ export function ImportConnectionsDialog({
               <p className="text-muted-foreground py-4 text-xs">The file has no connections.</p>
             )
           ) : (
-            <div className="flex min-h-0 flex-col gap-2">
+            <div className="flex min-h-0 flex-1 flex-col gap-2">
               <label className="text-muted-foreground flex items-center gap-2 px-1 text-xs">
                 <Checkbox
                   aria-label="Select all"
@@ -332,7 +338,7 @@ export function ImportConnectionsDialog({
               </label>
               <ul
                 aria-label="Connections in the file"
-                className="border-border min-h-0 overflow-y-auto rounded-md border"
+                className="border-border min-h-0 flex-1 overflow-y-auto rounded-md border"
               >
                 {items.map((c) => (
                   <li

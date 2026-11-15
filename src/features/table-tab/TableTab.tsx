@@ -1241,7 +1241,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         filterable={filterable}
       />
       <AlertDialog open={guard !== null} onOpenChange={(open) => !open && setGuard(null)}>
-        <AlertDialogContent>
+        <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>
             <AlertDialogTitle>
               {pending} pending change{pending === 1 ? "" : "s"}

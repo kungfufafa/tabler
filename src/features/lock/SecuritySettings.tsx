@@ -87,7 +87,7 @@ export function PasscodeDialog({
   if (mode && mode !== shown) setShown(mode);
   return (
     <Dialog open={mode !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-sm" data-scope="dialog">
+      <DialogContent className="sm:max-w-md" data-scope="dialog">
         {shown && <PasscodeForm key={`${shown}:${mode !== null}`} mode={shown} onDone={onClose} />}
       </DialogContent>
     </Dialog>

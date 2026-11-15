@@ -732,8 +732,14 @@ export function ExportDialog() {
     <Dialog open={open} onOpenChange={(next) => !next && closeExport()}>
       <DialogContent
         // Capped to the window: the header and footer stay put, the options scroll (a short
-        // window otherwise cut both off).
-        className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[480px]"
+        // window otherwise cut both off). Exporting tables lists them, like TablePlus's wide
+        // Export window; one result is a form of options.
+        className={cn(
+          "flex max-h-[calc(100dvh-4rem)] flex-col gap-0 overflow-hidden p-0",
+          target?.source.kind === "tables"
+            ? "sm:h-[min(34rem,calc(100dvh-4rem))] sm:max-w-[min(48rem,calc(100%-2rem))]"
+            : "sm:max-w-[34rem]",
+        )}
         showCloseButton
         // Closed and animated out: the source (a shown result's rows) is no longer needed.
         onCloseAutoFocus={releaseExportTarget}

@@ -129,7 +129,7 @@ export function CreateDatabaseDialog({
   const loading = options.isPending;
   return (
     <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
-      <DialogContent className="sm:max-w-md" onKeyDown={onKeyDown}>
+      <DialogContent className="sm:max-w-[34rem]" onKeyDown={onKeyDown}>
         <form
           onSubmit={(e: FormEvent) => {
             e.preventDefault();
@@ -306,7 +306,7 @@ export function RenameDatabaseDialog({
 
   return (
     <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-md">
         <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-3">
           <DialogHeader>
             <DialogTitle className="text-sm">Rename Database</DialogTitle>
@@ -384,6 +384,7 @@ export function DropDatabaseDialog({
   return (
     <AlertDialog open onOpenChange={(open) => !open && !busy && onClose()}>
       <AlertDialogContent
+        className="data-[size=default]:sm:max-w-md"
         onOpenAutoFocus={(e) => {
           // Start in the confirmation field (AlertDialog focuses Cancel by default).
           if (database === null) return;

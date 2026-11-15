@@ -50,7 +50,7 @@ function StandaloneViewer() {
     <Dialog open onOpenChange={(open) => !open && requestClose()}>
       <DialogContent
         aria-label="SQL Viewer"
-        className="flex h-[86vh] max-h-[86vh] w-[92vw] max-w-[92vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[92vw]"
+        className="flex h-[min(86dvh,calc(100dvh-2rem))] w-[92vw] max-w-[min(92vw,calc(100%-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(92vw,calc(100%-2rem))]"
         showCloseButton={false}
         // The editor takes the focus itself once it mounts.
         onOpenAutoFocus={(e) => e.preventDefault()}

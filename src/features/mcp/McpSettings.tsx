@@ -274,7 +274,7 @@ export function McpSettings() {
         </div>
       </SettingGroup>
       <AlertDialog open={preview !== null} onOpenChange={(o) => !o && !writing && setPreview(null)}>
-        <AlertDialogContent className="data-[size=default]:sm:max-w-xl">
+        <AlertDialogContent className="data-[size=default]:sm:max-w-[min(48rem,calc(100%-2rem))]">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-sm">
               {preview && `Add Tabler to ${labelOf(preview.client)}?`}

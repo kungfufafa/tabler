@@ -133,7 +133,7 @@ function OpDialog({
   return (
     // While it runs, Esc / the overlay must not dismiss the dialog (its outcome would be lost).
     <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="flex max-h-[85vh] flex-col gap-3 sm:max-w-lg">
+      <DialogContent className="flex max-h-[calc(100dvh-4rem)] flex-col gap-3 sm:max-w-[34rem]">
         <DialogHeader>
           <DialogTitle className="text-sm">{title}</DialogTitle>
           <DialogDescription className="text-xs">{description}</DialogDescription>
