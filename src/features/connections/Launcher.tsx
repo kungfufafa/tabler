@@ -773,6 +773,8 @@ export function Launcher() {
     useLauncherPrefs.getState().renameCollapsed(group, null);
     toast.message(`Group “${leafName(group)}” deleted`, {
       description: "Its connections and subgroups moved up one level.",
+      // sonner's 4 s default is too short to notice the toast, read it and reach Undo.
+      duration: 8_000,
       action: {
         label: "Undo",
         onClick: () =>

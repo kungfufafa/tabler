@@ -873,6 +873,7 @@ describe("Launcher", () => {
         expect(useLauncherPrefs.getState().collapsedGroups).toEqual(["EU"]);
         const [title, opts] = vi.mocked(toast.message).mock.calls.at(-1)!;
         expect(title).toBe("Group “Staging” deleted");
+        expect(opts).toMatchObject({ duration: 8_000 });
         const action = (opts as { action: { label: string; onClick: () => void } }).action;
         expect(action.label).toBe("Undo");
 
