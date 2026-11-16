@@ -263,8 +263,38 @@ describe("HistoryPane", () => {
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Copied 3 statements"));
     fireEvent.contextMenu(await entry(UPDATE));
     fireEvent.click(screen.getByRole("menuitem", { name: /Delete 3 Entries/ }));
+    // Several entries ask first and say how many went.
+    const ask = await screen.findByRole("alertdialog", { name: "Delete 3 history entries?" });
+    expect(screen.getByText(UPDATE)).toBeInTheDocument();
+    fireEvent.click(within(ask).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(screen.queryByText(UPDATE)).toBeNull());
     expect(screen.getByText(USERS)).toBeInTheDocument();
+    expect(toast.success).toHaveBeenCalledWith("Deleted 3 entries");
+  });
+
+  it("deletes one entry with Delete at once, and asks before deleting everything after ⌘A", async () => {
+    const remove = vi.spyOn(ipc.history, "delete");
+    const { entry } = setup();
+    fireEvent.keyDown(await entry(UPDATE), { key: "Delete" });
+    await waitFor(() => expect(screen.queryByText(UPDATE)).toBeNull());
+    expect(remove).toHaveBeenCalledExactlyOnceWith([3]);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+
+    fireEvent.keyDown(await entry(NEWEST), { key: "a", metaKey: true });
+    fireEvent.keyDown(await entry(NEWEST), { key: "Delete" });
+    const ask = await screen.findByRole("alertdialog", { name: "Delete 3 history entries?" });
+    fireEvent.click(within(ask).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(remove).toHaveBeenCalledOnce();
+    expect(screen.getByText(USERS)).toBeInTheDocument();
+  });
+
+  it("offers Retry when the history could not be read", async () => {
+    vi.spyOn(ipc.history, "list").mockRejectedValueOnce(new Error("database is locked"));
+    const { entry } = setup();
+    expect(await screen.findByText("Could not load the history")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await entry(NEWEST)).toBeInTheDocument();
   });
 
   it("searches with Match Case / Whole Word / Regex from the filter menu", async () => {

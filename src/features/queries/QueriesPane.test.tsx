@@ -6,6 +6,7 @@ import { getEditorState, seedEditor } from "@/features/editor/editorStates";
 import { closeImport, useImportStore } from "@/features/import/store";
 import { ipc, type ConnectionInfo } from "@/lib/ipc";
 import { resetMockSavedQueries } from "@/lib/ipc/mock/queries";
+import { REVEAL_LABEL } from "@/lib/platform";
 import type { OpenConnection } from "@/stores/connections";
 import { getPrefs, resetPrefsForTests, setPref } from "@/stores/prefs";
 import { useTabsStore } from "@/stores/tabs";
@@ -317,6 +318,89 @@ describe("QueriesPane", () => {
     await waitFor(() => expect(names()).not.toContain("Reports"));
     expect(names()).not.toContain("User by id");
   });
+
+  it("keeps the clicked row highlighted", async () => {
+    const { row } = setup();
+    const recent = await row("Recent users");
+    expect(recent.getAttribute("aria-selected")).toBe("false");
+    // A mouse click focuses the row; that is the selection Delete, ⌘C and F2 act on.
+    act(() => recent.focus());
+    expect(recent.getAttribute("aria-selected")).toBe("true");
+    act(() => screen.getByRole("treeitem", { name: "Reports" }).focus());
+    expect(recent.getAttribute("aria-selected")).toBe("false");
+    expect((await row("Reports")).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("offers New Query… on the empty pane and on a right-click of the empty list", async () => {
+    resetMockSavedQueries({ empty: true });
+    setup();
+    expect(await screen.findByText("No saved queries")).toBeInTheDocument();
+    fireEvent.contextMenu(screen.getByRole("tree", { name: "Saved queries" }));
+    for (const name of [
+      "New Query…",
+      "New Folder…",
+      "Add Files to Queries…",
+      "Add Folder to Favorites…",
+    ])
+      expect(await screen.findByRole("menuitem", { name })).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "New Query…" }));
+    expect(await screen.findByRole("dialog", { name: "Add to Queries" })).toBeInTheDocument();
+  });
+
+  it("right-clicking a row opens only that row's menu", async () => {
+    const { row } = setup();
+    fireEvent.contextMenu(await row("Recent users"));
+    expect(await screen.findByRole("menuitem", { name: /^Run/ })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "New Folder…" })).toBeNull();
+  });
+
+  it("retries after the library could not be read", async () => {
+    vi.spyOn(ipc.savedQueries, "list").mockRejectedValueOnce(new Error("disk is busy"));
+    const { row } = setup();
+    expect(await screen.findByText("Could not load the queries")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await row("Recent users")).toBeInTheDocument();
+  });
+});
+
+describe("Saved query popup: unsaved edits", () => {
+  const editRecent = async () => {
+    const { row } = setup();
+    fireEvent.contextMenu(await row("Recent users"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Edit…" }));
+    return screen.findByRole("dialog", { name: "Edit Query" });
+  };
+  const escape = () =>
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+
+  it("closes at once while nothing changed", async () => {
+    await editRecent();
+    escape();
+    await waitFor(() => expect(useSavedQueryDialogStore.getState().request).toBeNull());
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("asks before Escape or Cancel throws away edited SQL", async () => {
+    const dialog = await editRecent();
+    fireEvent.change(within(dialog).getByLabelText("SQL"), { target: { value: "select 2;" } });
+    escape();
+    const ask = await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" });
+    fireEvent.click(within(ask).getByRole("button", { name: "Keep Editing" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(useSavedQueryDialogStore.getState().request).not.toBeNull();
+    expect(within(dialog).getByLabelText("SQL")).toHaveValue("select 2;");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    const again = await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" });
+    fireEvent.click(within(again).getByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(useSavedQueryDialogStore.getState().request).toBeNull());
+    expect(
+      useSavedQueriesStore.getState().queries.find((q) => q.id === "q-recent-users")?.sql,
+    ).not.toBe("select 2;");
+  });
 });
 
 describe("Add to Queries popup", () => {
@@ -350,7 +434,7 @@ describe("Add to Queries popup", () => {
 });
 
 describe("Queries files", () => {
-  it("imports .sql files, adds a folder from disk and shows items in Finder", async () => {
+  it("imports .sql files, adds a folder from disk and shows items in the file manager", async () => {
     const { row } = setup();
     await row("Recent users");
     const prompt = vi
@@ -376,10 +460,10 @@ describe("Queries files", () => {
 
     const reveal = vi.spyOn(ipc.savedQueries, "reveal");
     fireEvent.contextMenu(await row("Recent users"));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Show in Finder" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: REVEAL_LABEL }));
     expect(reveal).toHaveBeenCalledWith("q-recent-users", false);
     fireEvent.contextMenu(await row("Reports"));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Show in Finder" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: REVEAL_LABEL }));
     expect(reveal).toHaveBeenLastCalledWith("f-reports", true);
   });
 

@@ -4,7 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { HISTORY_SEARCH_OPTIONS_KEY } from "@/features/sidebar/historyEntry";
 import { ipc } from "@/lib/ipc";
 import { resetMockQueryState } from "@/lib/ipc/mock/query";
-import { HistorySheet } from "./HistorySheet";
+import { HISTORY_UNDO_MS, HistorySheet } from "./HistorySheet";
 
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), message: vi.fn() }));
 vi.mock("sonner", () => ({ toast }));
@@ -57,7 +57,7 @@ function setup() {
   const input = () => screen.getByRole("combobox", { name: "Search history" });
   const option = async (sql: string) =>
     (await screen.findByText(sql, { selector: "pre" })).closest<HTMLElement>("[role=option]")!;
-  return { onInsert, onRun, onOpenChange, input, option, reopen };
+  return { onInsert, onRun, onOpenChange, input, option, reopen, unmount: utils.unmount };
 }
 
 const ids = async () => (await ipc.history.list({ search: null, limit: 200 })).map((e) => e.id);
@@ -96,6 +96,43 @@ describe("HistorySheet", () => {
     act(() => listbox.focus());
     fireEvent.keyDown(listbox, { key: "ArrowDown" });
     expect(fireEvent.keyDown(listbox, { key: "Backspace", ctrlKey: true })).toBe(false);
+    // Gone from the list at once; deleted for good once the Undo window ends.
+    await waitFor(() => expect(screen.queryByText(UPDATE, { selector: "pre" })).toBeNull());
+    expect(await ids()).toEqual([4, 3, 2, 1]);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, HISTORY_UNDO_MS + 50));
+    });
+    await waitFor(async () => expect(await ids()).toEqual([4, 2, 1]));
+  }, 15_000);
+
+  it("brings a deleted entry back with Undo", async () => {
+    const { option } = setup();
+    const update = await option(UPDATE);
+    fireEvent.click(within(update).getByTitle(/^Delete entry/));
+    await waitFor(() => expect(screen.queryByText(UPDATE, { selector: "pre" })).toBeNull());
+    expect(toast.message).toHaveBeenCalledWith(
+      "Deleted the history entry",
+      expect.objectContaining({ action: expect.objectContaining({ label: "Undo" }) }),
+    );
+    const [, opts] = toast.message.mock.lastCall as unknown as [
+      string,
+      { action: { onClick: () => void } },
+    ];
+    act(() => opts.action.onClick());
+    expect(await option(UPDATE)).toBeInTheDocument();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, HISTORY_UNDO_MS + 50));
+    });
+    expect(await ids()).toEqual([4, 3, 2, 1]);
+  }, 15_000);
+
+  it("keeps a delete still in its Undo window when the sheet goes away", async () => {
+    const { option, unmount } = setup();
+    const update = await option(UPDATE);
+    fireEvent.click(within(update).getByTitle(/^Delete entry/));
+    await waitFor(() => expect(screen.queryByText(UPDATE, { selector: "pre" })).toBeNull());
+    expect(await ids()).toEqual([4, 3, 2, 1]);
+    unmount();
     await waitFor(async () => expect(await ids()).toEqual([4, 2, 1]));
   });
 

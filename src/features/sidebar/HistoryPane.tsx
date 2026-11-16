@@ -15,6 +15,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
+import { QuietStatus } from "@/components/QuietLoading";
 import { SectionLabel } from "@/components/SectionLabel";
 import {
   AlertDialog,
@@ -26,6 +27,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -59,6 +61,7 @@ import { openAddToQueries } from "@/features/queries/dialogStore";
 import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
 import { ipc, toIpcError, type HistoryEntry } from "@/lib/ipc";
 import { formatCombo } from "@/lib/keys/combo";
+import { REVEAL_LABEL } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import type { OpenConnection } from "@/stores/connections";
 import { HISTORY_RETENTIONS, setPref, usePrefs, type HistoryRetention } from "@/stores/prefs";
@@ -191,6 +194,11 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
   const [selected, setSelected] = useState<ReadonlySet<number>>(() => new Set());
   const anchor = useRef<number | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  /** Several selected entries waiting for "Delete N entries?" (and what to do once deleted). */
+  const [pendingRemove, setPendingRemove] = useState<{
+    ids: number[];
+    after?: () => void;
+  } | null>(null);
   const [olderThan, setOlderThan] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -220,9 +228,31 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
   const remove = useMutation({
     mutationFn: (ids: number[]) => ipc.history.delete(ids),
     onSuccess: () => void qc.invalidateQueries({ queryKey: HISTORY_KEY }),
-    onError: (e) =>
-      toast.error("Could not delete the entry", { description: toIpcError(e).message }),
+    onError: (e, ids) =>
+      toast.error(ids.length > 1 ? "Could not delete the entries" : "Could not delete the entry", {
+        description: toIpcError(e).message,
+      }),
   });
+
+  /**
+   * Deletes history entries. One goes at once, as in TablePlus; several (⌘A, then Delete) ask
+   * first and say how many went, so a stray key cannot silently empty the list.
+   */
+  const removeEntries = (ids: number[], after?: () => void) => {
+    if (ids.length > 1) setPendingRemove({ ids, after });
+    else remove.mutate(ids, { onSuccess: after });
+  };
+  const confirmRemove = () => {
+    const target = pendingRemove;
+    setPendingRemove(null);
+    if (!target) return;
+    remove.mutate(target.ids, {
+      onSuccess: () => {
+        toast.success(`Deleted ${target.ids.length.toLocaleString()} entries`);
+        target.after?.();
+      },
+    });
+  };
 
   const scope = allConnections ? "every connection" : connection.info.name;
   const clearAll = () => {
@@ -337,15 +367,15 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
       ev.preventDefault();
       const rows = rowsOf();
       const i = rows.indexOf(ev.currentTarget);
-      remove.mutate(
+      removeEntries(
         targets(e).map((x) => x.id),
         // Keep the keyboard in the list: the entry that took the deleted one's place.
-        { onSuccess: () => requestAnimationFrame(() => focusRow(i)) },
+        () => requestAnimationFrame(() => focusRow(i)),
       );
     }
   };
 
-  /** Clear History Older Than…, Clear All History…, Show in Finder (both menus). */
+  /** Clear History Older Than…, Clear All History…, Show in Finder / File Explorer (both menus). */
   const clearActions = [
     {
       label: "Clear History Older Than…",
@@ -360,7 +390,7 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
       variant: "destructive" as const,
     },
     {
-      label: "Show in Finder",
+      label: REVEAL_LABEL,
       icon: <FolderSearch />,
       run: revealHistoryStore,
       variant: "default" as const,
@@ -376,8 +406,17 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
       />
     );
   } else if (history.isError) {
-    body = <EmptyState title="Could not load the history" description={history.error.message} />;
-  } else if (entries.length === 0 && settled && !history.isPending) {
+    body = (
+      <EmptyState title="Could not load the history" description={history.error.message}>
+        <Button size="sm" variant="outline" onClick={() => void history.refetch()}>
+          Retry
+        </Button>
+      </EmptyState>
+    );
+  } else if (history.isPending && entries.length === 0) {
+    // The first read: usually instant, so "Loading…" only shows when it is slow.
+    body = <QuietStatus delay={400}>Loading history</QuietStatus>;
+  } else if (entries.length === 0 && settled) {
     body = (
       <EmptyState
         icon={History}
@@ -483,7 +522,7 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
                 <ContextMenuSeparator />
                 <ContextMenuItem
                   variant="destructive"
-                  onSelect={() => remove.mutate(targets(e).map((x) => x.id))}
+                  onSelect={() => removeEntries(targets(e).map((x) => x.id))}
                 >
                   <Trash2 /> {many > 1 ? `Delete ${many} Entries` : "Delete Entry"}
                   <ContextMenuShortcut>{formatCombo("Mod+Backspace")}</ContextMenuShortcut>
@@ -616,6 +655,24 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
       >
         {body}
       </div>
+      <AlertDialog open={pendingRemove !== null} onOpenChange={(o) => !o && setPendingRemove(null)}>
+        <AlertDialogContent className="data-[size=default]:sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-sm">
+              {`Delete ${pendingRemove?.ids.length.toLocaleString() ?? ""} history entries?`}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-xs">
+              The selected statements are removed from the history. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>
+            <AlertDialogAction size="sm" variant="destructive" onClick={confirmRemove}>
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={confirmClear} onOpenChange={setConfirmClear}>
         <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>

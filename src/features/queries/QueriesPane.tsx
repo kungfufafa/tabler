@@ -23,6 +23,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
+import { QuietStatus } from "@/components/QuietLoading";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -33,6 +34,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -54,7 +56,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { SidebarSearch } from "@/features/sidebar/SidebarSearch";
 import { toIpcError, type QueryFolder, type SavedQuery } from "@/lib/ipc";
-import { formatCombo } from "@/lib/keys/combo";
+import { formatCombo, isMac } from "@/lib/keys/combo";
+import { FILE_MANAGER, isWindows, REVEAL_LABEL } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import type { OpenConnection } from "@/stores/connections";
 import { setPref, usePrefs } from "@/stores/prefs";
@@ -76,6 +79,7 @@ import {
   moveSavedQuery,
   putQueryFolder,
   queriesFor,
+  refreshSavedQueries,
   renameSavedQuery,
   revealSavedQuery,
   uniqueName,
@@ -115,6 +119,18 @@ type PendingDelete =
 
 const rowKey = (r: QueryRow) => (r.kind === "folder" ? `f:${r.folder.id}` : `q:${r.query.id}`);
 const INDENT = 12;
+/** The options menu item that opens the library folder, worded for this system's file manager. */
+const REVEAL_LIBRARY_LABEL =
+  isMac || isWindows ? `Show Queries Folder in ${FILE_MANAGER}` : "Open Queries Folder";
+/** A row's look: the clicked (focused) row keeps a fill, like the History and Items lists. */
+const rowClass = (selected: boolean) =>
+  cn(
+    "focus-visible:ring-sidebar-ring flex h-6 w-full cursor-default items-center pr-2.5 text-left text-xs transition-colors outline-none select-none focus-visible:ring-1 focus-visible:ring-inset",
+    selected
+      ? // Grey while the list is not focused, the sidebar accent while it is.
+        "bg-accent text-accent-foreground group-focus-within/queries:bg-sidebar-accent group-focus-within/queries:text-sidebar-accent-foreground"
+      : "hover:bg-row-hover",
+  );
 
 /** The inline name editor of a row (Rename…, New Folder…): ↩ / blur keeps it, Esc cancels. */
 function RenameInput({
@@ -171,6 +187,8 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
   const [renaming, setRenaming] = useState<Renaming>(null);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  /** The row a click or the arrow keys last landed on: what Delete, ⌘C and F2 act on. */
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   /** A menu item starts an inline rename: the closing menu must not take the focus back. */
@@ -294,7 +312,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
   };
 
   const reveal = (target: { kind: "query" | "folder"; id: string } | null) =>
-    void revealSavedQuery(target).catch(fail("Could not show it in Finder"));
+    void revealSavedQuery(target).catch(fail(`Could not show it in ${FILE_MANAGER}`));
 
   const confirmDelete = () => {
     const target = pendingDelete;
@@ -409,8 +427,10 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             aria-expanded={row.open}
             aria-level={row.depth + 1}
             aria-label={f.name}
+            aria-selected={selectedKey === rowKey(row)}
             tabIndex={0}
             data-query-row
+            onFocus={() => setSelectedKey(rowKey(row))}
             draggable={!editing}
             onDragStart={(e) => {
               e.dataTransfer.setData(DRAG_FOLDER, f.id);
@@ -424,7 +444,8 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             onKeyDown={(e) => onRowKeyDown(e, row)}
             style={{ paddingLeft: 6 + row.depth * INDENT }}
             className={cn(
-              "hover:bg-row-hover focus-visible:ring-sidebar-ring flex h-6 w-full cursor-default items-center gap-1 pr-2.5 text-left text-xs transition-colors outline-none select-none focus-visible:ring-1 focus-visible:ring-inset",
+              rowClass(selectedKey === rowKey(row)),
+              "gap-1",
               dropTarget === f.id && "bg-brand-soft ring-brand/50 ring-1 ring-inset",
             )}
           >
@@ -469,7 +490,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             <FolderInput /> Add Folder to Favorites…
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => reveal({ kind: "folder", id: f.id })}>
-            <FolderSearch /> Show in Finder
+            <FolderSearch /> {REVEAL_LABEL}
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => startRename({ kind: "folder", id: f.id })}>
@@ -503,8 +524,10 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             role="treeitem"
             aria-level={row.depth + 1}
             aria-label={q.name}
+            aria-selected={selectedKey === rowKey(row)}
             tabIndex={0}
             data-query-row
+            onFocus={() => setSelectedKey(rowKey(row))}
             title={q.sql.length > 600 ? `${q.sql.slice(0, 600)}…` : q.sql}
             draggable={!editing}
             onDragStart={(e) => {
@@ -519,7 +542,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             onDoubleClick={() => !editing && activate(q)}
             onKeyDown={(e) => onRowKeyDown(e, row)}
             style={{ paddingLeft: 6 + row.depth * INDENT + 18 }}
-            className="hover:bg-row-hover focus-visible:ring-sidebar-ring flex h-6 w-full cursor-default items-center gap-1.5 pr-2.5 text-left text-xs transition-colors outline-none select-none focus-visible:ring-1 focus-visible:ring-inset"
+            className={cn(rowClass(selectedKey === rowKey(row)), "gap-1.5")}
           >
             <FileCode2 aria-hidden className="text-muted-foreground size-4 shrink-0" />
             {editing ? (
@@ -572,7 +595,7 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             onMove={(target) => moveQuery(q, target)}
           />
           <ContextMenuItem onSelect={() => reveal({ kind: "query", id: q.id })}>
-            <FolderSearch /> Show in Finder
+            <FolderSearch /> {REVEAL_LABEL}
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem
@@ -589,18 +612,30 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
 
   let body;
   if (error && allQueries.length === 0) {
-    body = <EmptyState title="Could not load the queries" description={error} />;
+    body = (
+      <EmptyState title="Could not load the queries" description={error}>
+        <Button size="sm" variant="outline" onClick={() => void refreshSavedQueries()}>
+          Retry
+        </Button>
+      </EmptyState>
+    );
   } else if (!loaded) {
-    body = null;
+    // The library is local and usually here at once; only a slow read says "Loading…".
+    body = <QuietStatus delay={400}>Loading queries</QuietStatus>;
   } else if (rows.length === 0) {
     body = search.trim() ? (
       <EmptyState title="No matches" description={`No saved query contains “${search.trim()}”.`} />
     ) : (
+      // TablePlus: "No query added, 'Right click' to add a new query" (the list has that menu).
       <EmptyState
         icon={BookmarkPlus}
         title="No saved queries"
-        description={`Save SQL with Add to Queries… (${formatCombo("Mod+Alt+S")}) in the SQL editor, or New ▸ Query….`}
-      />
+        description={`Right-click or use + to add a query, or Add to Queries… (${formatCombo("Mod+Alt+S")}) in the SQL editor.`}
+      >
+        <Button size="sm" variant="outline" onClick={() => newQuery()}>
+          New Query…
+        </Button>
+      </EmptyState>
     );
   } else {
     body = rows.map((r) => (r.kind === "folder" ? folderRow(r) : queryRow(r)));
@@ -671,28 +706,48 @@ export function QueriesPane({ connection }: { connection: OpenConnection }) {
             </DropdownMenuCheckboxItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => reveal(null)}>
-              <FolderSearch /> Show Queries Folder in Finder
+              <FolderSearch /> {REVEAL_LIBRARY_LABEL}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <div
-        ref={listRef}
-        role="tree"
-        aria-label="Saved queries"
-        className={cn(
-          "relative min-h-0 flex-1 overflow-auto pb-1",
-          dropTarget === "" && "bg-brand-soft ring-brand/50 ring-1 ring-inset",
-        )}
-        // Dropping on the empty part of the list moves to the top level.
-        onDragOver={(e) => onDragOver(e, null)}
-        onDragLeave={(e) => {
-          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null);
-        }}
-        onDrop={(e) => onDrop(e, null)}
-      >
-        {body}
-      </div>
+      {/* Right-clicking the empty part of the list adds at the top level (a row's own menu wins). */}
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div
+            ref={listRef}
+            role="tree"
+            aria-label="Saved queries"
+            className={cn(
+              "group/queries relative min-h-0 flex-1 overflow-auto pb-1",
+              dropTarget === "" && "bg-brand-soft ring-brand/50 ring-1 ring-inset",
+            )}
+            // Dropping on the empty part of the list moves to the top level.
+            onDragOver={(e) => onDragOver(e, null)}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null);
+            }}
+            onDrop={(e) => onDrop(e, null)}
+          >
+            {body}
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-52" onCloseAutoFocus={onMenuCloseAutoFocus}>
+          <ContextMenuItem onSelect={() => newQuery()}>
+            <BookmarkPlus /> New Query…
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => newFolder()}>
+            <FolderPlus /> New Folder…
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => importFiles()}>
+            <FileDown /> Add Files to Queries…
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => addFolder()}>
+            <FolderInput /> Add Folder to Favorites…
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
       <AlertDialog open={pendingDelete !== null} onOpenChange={(o) => !o && setPendingDelete(null)}>
         <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>
