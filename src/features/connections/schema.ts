@@ -745,8 +745,9 @@ export function urlToForm(
   safeMode: SafeModeLevel = "silent",
 ): ConnectionFormValues {
   const base = newProfileForm(connectTimeout, safeMode);
-  const kind = formKind({ ...base, ...parsed.values });
-  return { ...base, user: defaultUserOf(kind), ...parsed.values, password: parsed.password ?? "" };
+  // A URL without a user stays without one (the driver's own default applies, as with a deep
+  // link); only a new connection typed into the form starts with the usual user.
+  return { ...base, user: "", ...parsed.values, password: parsed.password ?? "" };
 }
 
 /** What a form with typed input keeps over a URL that does not set it: the user's own choices. */

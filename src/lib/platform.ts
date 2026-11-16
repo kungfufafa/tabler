@@ -11,7 +11,11 @@ export const SECRET_STORE: string = isMac
     : "system keyring";
 
 /** The file manager, as this system calls it ("Could not show it in …"). */
-export const FILE_MANAGER: string = isMac ? "Finder" : isWindows ? "File Explorer" : "file manager";
+export const FILE_MANAGER: string = isMac
+  ? "Finder"
+  : isWindows
+    ? "File Explorer"
+    : "the file manager";
 
 /** The menu item that shows a file in the file manager. */
 export const REVEAL_LABEL: string = isMac

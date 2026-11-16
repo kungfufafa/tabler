@@ -582,9 +582,9 @@ describe("defaults instead of placeholders", () => {
     expect(isDefaultUser("reader")).toBe(false);
   });
 
-  it("a URL without a user gets the URL's database's usual one", () => {
+  it("a URL without a user stays without one", () => {
     const parsed = { values: { driver: "mysql" as const, host: "db" }, password: null };
-    expect(urlToForm(parsed, 60).user).toBe("root");
+    expect(urlToForm(parsed, 60).user).toBe("");
     expect(urlToForm({ ...parsed, values: { ...parsed.values, user: "app" } }, 60).user).toBe(
       "app",
     );

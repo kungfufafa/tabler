@@ -1009,7 +1009,7 @@ function GeneralFields({
             <Input
               id={`${uid}-user`}
               {...register("user")}
-              placeholder={kindFacts.defaultUser ?? (driver === "postgres" ? "postgres" : "root")}
+              placeholder={defaultUserOf(kind)}
               className="font-mono text-sm"
               autoComplete="off"
               aria-invalid={errors.user ? true : undefined}
