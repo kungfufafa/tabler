@@ -269,7 +269,16 @@ function PaletteBody({
   const [query, setQuery] = useState(initialQuery);
   const data = usePaletteItems(query, commands, mode);
   const text = MODE_TEXT[mode];
-  const flat = useMemo(() => flattenSections(data.sections), [data.sections]);
+  // Switch Connection with nothing to list: offer the next step, as TablePlus's welcome window
+  // always offers "Create a new connection", instead of a dead end.
+  const sections = useMemo<PaletteSection[]>(
+    () =>
+      mode === "connections" && data.sections.length === 0
+        ? [newConnectionSection(commands)]
+        : data.sections,
+    [mode, data.sections, commands],
+  );
+  const flat = useMemo(() => flattenSections(sections), [sections]);
 
   // Selection belongs to a query: a new query selects its best match.
   const [selection, setSelection] = useState<{ query: string; key: string } | null>(null);
@@ -388,7 +397,7 @@ function PaletteBody({
             {query.trim() ? "No matches" : text.empty}
           </div>
         )}
-        {data.sections.map((section) => (
+        {sections.map((section) => (
           <Section
             key={section.id}
             section={section}
@@ -419,6 +428,20 @@ function caretAtEnd(e: ReactKeyboardEvent): boolean {
     input.selectionStart === input.value.length &&
     input.selectionEnd === input.value.length
   );
+}
+
+/** The single "New Connection…" row under an empty Switch Connection list. */
+function newConnectionSection(commands: PaletteCommands): PaletteSection {
+  const item: PaletteItem = {
+    key: "empty:connection.new",
+    group: "actions",
+    label: "New Connection…",
+    icon: { type: "action", icon: Plus },
+    run: () => commands.newConnection(),
+    verb: "Run",
+    noRecent: true,
+  };
+  return { id: "actions", items: [{ item, ranges: [] }], more: 0 };
 }
 
 /** Stands in for items that are still loading (tables, databases…). */

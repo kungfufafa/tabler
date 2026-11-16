@@ -21,7 +21,7 @@ import { guardExecution } from "@/features/safety/guard";
 import { invalidateConnectionSchema, reportHeldTables } from "@/features/structure/invalidate";
 import { ipc, toIpcError, type SqlImportProgress, type SqlImportReport } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
-import { ENCODINGS } from "./mapping";
+import { ENCODINGS, fileNameOf } from "./mapping";
 import { closeImport, type ImportRequest } from "./store";
 
 const statements = (n: number) => `${formatCount(n)} statement${n === 1 ? "" : "s"}`;
@@ -64,7 +64,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
   });
   const data = preview.data;
   const running = run !== null || guarding;
-  const fileName = data?.fileName ?? path.slice(path.lastIndexOf("/") + 1);
+  const fileName = data?.fileName ?? fileNameOf(path);
 
   const close = () => {
     if (!running) closeImport();
@@ -215,7 +215,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
               <ul
                 aria-label="Errors"
                 hidden={report.errors.length === 0}
-                className="border-border min-h-0 flex-1 divide-y overflow-y-auto rounded-md border"
+                className="selectable border-border min-h-0 flex-1 divide-y overflow-y-auto rounded-md border"
               >
                 {report.errors.map((e) => (
                   <li key={e.index} className="flex flex-col gap-1 px-2 py-1.5">
@@ -232,7 +232,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
           ) : preview.isError ? (
             <FormError>{preview.error.message}</FormError>
           ) : !data ? (
-            <QuietStatus>Reading the file</QuietStatus>
+            <QuietStatus delay={400}>Reading the file</QuietStatus>
           ) : (
             <>
               <div className="text-muted-foreground text-xs">
@@ -248,7 +248,7 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
               )}
               <pre
                 data-testid="sql-preview"
-                className="border-border bg-surface-2 min-h-24 flex-1 overflow-auto rounded-md border px-2 py-1.5 font-mono text-[11.5px] leading-4 whitespace-pre-wrap"
+                className="selectable border-border bg-surface-2 min-h-24 flex-1 overflow-auto rounded-md border px-2 py-1.5 font-mono text-[11.5px] leading-4 whitespace-pre-wrap"
               >
                 {data.statements.map((s) => `${s};`).join("\n\n")}
                 {data.more ? "\n\n…" : ""}
@@ -290,8 +290,13 @@ export function SqlImportDialog({ request, path }: { request: ImportRequest; pat
                   </span>
                 </div>
                 <div className="bg-surface-2 h-1 w-56 overflow-hidden rounded-full">
+                  {/* Before the first progress event the size read is not known yet: a pulsing
+                      partial fill says the import is under way rather than an empty, stuck bar. */}
                   <div
-                    className={cn("bg-brand h-full rounded-full", pct === null && "w-0")}
+                    className={cn(
+                      "bg-brand h-full rounded-full",
+                      pct === null && "w-1/3 animate-pulse",
+                    )}
                     style={pct === null ? undefined : { width: `${pct}%` }}
                   />
                 </div>
