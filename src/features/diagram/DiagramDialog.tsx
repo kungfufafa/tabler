@@ -459,6 +459,15 @@ export function DiagramDialog({
     if (data) fitTo(visibleTables(data, selected, next));
   };
 
+  // The Auto Layout Undo belongs to this diagram: its message goes away when the diagram closes.
+  const undoToast = useRef<string | number | null>(null);
+  useEffect(
+    () => () => {
+      if (undoToast.current !== null) toast.dismiss(undoToast.current);
+    },
+    [],
+  );
+
   const autoArrange = () => {
     if (!data) return;
     // One click must not lose an arrangement for good: keep it for the toast's Undo.
@@ -471,10 +480,14 @@ export function DiagramDialog({
     const s = latest.current.size;
     if (s.w > 0) setView(fitView(boundsOf(visible, fresh), s));
     if (!before) return;
-    toast.message("Tables rearranged", {
+    if (undoToast.current !== null) toast.dismiss(undoToast.current);
+    undoToast.current = toast.message("Tables rearranged", {
       action: {
         label: "Undo",
         onClick: () => {
+          undoToast.current = null;
+          // Positions of another schema (switched meanwhile) must not land on this one.
+          if (latest.current.storageKey !== storageKey) return;
           setPositions(before);
           setView(viewBefore);
           if (storageKey && remembered) savePositions(storageKey, before);

@@ -10,7 +10,12 @@ import { DiagramHost } from "./DiagramHost";
 import { closeDiagram, openDiagram, useDiagramStore } from "./store";
 import { positionsKey } from "./viewport";
 
-const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), message: vi.fn() }));
+const toast = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  message: vi.fn((_title: string, _options?: unknown): string | number => "toast-id"),
+  dismiss: vi.fn(),
+}));
 vi.mock("sonner", () => ({ toast }));
 
 let info: ConnectionInfo;
@@ -183,6 +188,11 @@ describe("Diagram", () => {
     act(() => action.onClick());
     expect(card(dialog, "users")).toHaveAttribute("transform", `translate(${x! + 60} ${y! + 30})`);
     expect(JSON.parse(localStorage.getItem(key) ?? "{}").users).toEqual({ x: x! + 60, y: y! + 30 });
+    // The Undo belongs to this diagram: closing it takes the message away.
+    toast.message.mockReturnValue("layout-toast");
+    fireEvent.click(within(dialog).getByRole("button", { name: /Auto Layout/ }));
+    act(() => closeDiagram());
+    expect(toast.dismiss).toHaveBeenCalledWith("layout-toast");
   });
 
   it("pans with the background and the arrow keys, zooms with ⌘+ / ⌘− / ⌘0", async () => {

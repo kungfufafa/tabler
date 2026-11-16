@@ -165,6 +165,8 @@ function OpDialog({
           className="flex min-h-0 flex-col gap-4"
           onSubmit={(e) => {
             e.preventDefault();
+            // React bubbles a submit through the portal to any form the dialog was opened from.
+            e.stopPropagation();
             void run();
           }}
         >
