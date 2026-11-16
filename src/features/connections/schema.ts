@@ -4,6 +4,7 @@ import {
   DESCRIPTORS,
   inSentence,
   isCoreDriver,
+  KIND_DESCRIPTORS,
   KINDS,
   SECRET_LABEL,
 } from "@/features/drivers/catalog";
@@ -469,7 +470,43 @@ export function newProfileForm(
   connectTimeout: number,
   safeMode: SafeModeLevel = "silent",
 ): ConnectionFormValues {
-  return { ...DEFAULT_FORM, port: "5432", connectTimeoutSecs: String(connectTimeout), safeMode };
+  return {
+    ...DEFAULT_FORM,
+    port: "5432",
+    user: defaultUserOf("postgres"),
+    connectTimeoutSecs: String(connectTimeout),
+    safeMode,
+  };
+}
+
+/**
+ * The user a new connection of `kind` starts with, as a real value rather than a placeholder
+ * that only looks like one (a grey "postgres" read as a default that the form then refused).
+ * Empty for a database without a usual user.
+ */
+export function defaultUserOf(kind: DatabaseKind): string {
+  const k = KIND_DESCRIPTORS[kind];
+  if (k.defaultUser) return k.defaultUser;
+  return k.driver === "postgres" ? "postgres" : k.driver === "mysql" ? "root" : "";
+}
+
+/** Some database's default user (or empty): a switch of database may replace it with its own. */
+export function isDefaultUser(user: string): boolean {
+  return user === "" || KINDS.some((k) => defaultUserOf(k.kind) === user);
+}
+
+/**
+ * The name a connection saved with a blank Name gets: the database file's name, the database,
+ * the host, or else the database kind (`kindLabel`), so a form filled with only a host and a
+ * password still saves.
+ */
+export function defaultConnectionName(
+  v: Pick<ConnectionFormValues, "driver" | "sqlitePath" | "database" | "host">,
+  kindLabel: string,
+): string {
+  const file = isFileProfile(v) ? (v.sqlitePath.split(/[\\/]/).filter(Boolean).at(-1) ?? "") : "";
+  const name = file.trim() || v.database.trim() || v.host.trim() || kindLabel;
+  return name.slice(0, 80);
 }
 
 /**
@@ -708,7 +745,57 @@ export function urlToForm(
   safeMode: SafeModeLevel = "silent",
 ): ConnectionFormValues {
   const base = newProfileForm(connectTimeout, safeMode);
-  return { ...base, ...parsed.values, password: parsed.password ?? "" };
+  const kind = formKind({ ...base, ...parsed.values });
+  return { ...base, user: defaultUserOf(kind), ...parsed.values, password: parsed.password ?? "" };
+}
+
+/** What a form with typed input keeps over a URL that does not set it: the user's own choices. */
+const KEPT_FROM_FORM = [
+  "color",
+  "tag",
+  "group",
+  "readOnly",
+  "safeMode",
+  "timezone",
+  "connectTimeoutSecs",
+  "startupSql",
+  "bootstrapScript",
+] as const satisfies readonly (keyof ConnectionFormValues)[];
+
+/** The SSH tunnel's fields, kept together unless the URL is a `+ssh` one. */
+const SSH_FIELDS = [
+  "sshEnabled",
+  "sshHost",
+  "sshPort",
+  "sshUser",
+  "sshAuth",
+  "sshKeyPath",
+  "sshPassword",
+  "sshPassphrase",
+  "sshPasswordMode",
+  "sshLocalPort",
+  "sshKeepaliveSecs",
+] as const satisfies readonly (keyof ConnectionFormValues)[];
+
+/**
+ * "Import from URL…" over a form with typed input: the URL's connection over `current`, keeping
+ * what was typed that the URL does not set (a typed name, the tag, colour, group, SSH tunnel and
+ * connection options), so importing does not throw away earlier work.
+ */
+export function mergeUrlIntoForm(
+  current: ConnectionFormValues,
+  parsed: { values: Partial<ConnectionFormValues>; password: string | null },
+  connectTimeout: number,
+  safeMode: SafeModeLevel = "silent",
+): ConnectionFormValues {
+  const next: Record<string, unknown> = { ...urlToForm(parsed, connectTimeout, safeMode) };
+  const set: Record<string, unknown> = parsed.values;
+  const typed: Record<string, unknown> = current;
+  // The URL always derives a name (`user@host`): one the user typed wins.
+  if (current.name.trim() !== "") next.name = current.name;
+  for (const field of KEPT_FROM_FORM) if (set[field] === undefined) next[field] = typed[field];
+  if (set.sshEnabled === undefined) for (const field of SSH_FIELDS) next[field] = typed[field];
+  return next as ConnectionFormValues;
 }
 
 /**

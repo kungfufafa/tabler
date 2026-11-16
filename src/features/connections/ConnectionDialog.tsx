@@ -3,10 +3,12 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   FilePlus2,
   FolderOpen,
   Info,
   Link2,
+  LoaderCircle,
   Network,
   ScrollText,
   Search,
@@ -91,8 +93,11 @@ import { ACCENT_PRESETS } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { useAppInfo } from "@/stores/appInfo";
 import { getPrefs } from "@/stores/prefs";
+import { writeClipboard } from "@/features/datagrid/clipboard";
+import { useDirtyDialogGuard } from "@/hooks/useDirtyDialogGuard";
 import { DriverBadge } from "./badges";
 import { BootstrapCommandsDialog } from "./BootstrapCommandsDialog";
+import { ConnectionUrlDialog } from "./ConnectionUrlDialog";
 import {
   accentColor,
   cssColor,
@@ -125,10 +130,14 @@ import {
   CONNECTION_TAGS,
   connectionFormSchema,
   DEFAULT_CONNECT_TIMEOUT_SECS,
+  defaultConnectionName,
+  defaultUserOf,
   ENCODING_CHOICES,
   DEFAULT_FORM,
   formKind,
   formToProfileInput,
+  isDefaultUser,
+  mergeUrlIntoForm,
   MYSQL_REMOTE_SOCKET_PLACEHOLDER,
   MYSQL_SOCKET_PLACEHOLDER,
   MYSQL_VERSION_LABEL,
@@ -144,7 +153,7 @@ import {
   urlToForm,
   type ConnectionFormValues,
 } from "./schema";
-import { openConnectionUrlDialog } from "./store";
+import { openConnectionUrlDialog, useLauncherPrefs } from "./store";
 import { tagColorOf, tagLabel, useCustomTags, type CustomTag } from "./tags";
 import type { ParsedConnectionUrl } from "./url";
 import {
@@ -559,6 +568,11 @@ function DriverPicker({
 }) {
   const tiles = useRef(new Map<DatabaseKind, HTMLButtonElement>());
   const grid = useRef<HTMLDivElement>(null);
+  // The selected tile stays in view: the remembered database may sit below the fold, and focus
+  // stays where it is (the search field of a full picker).
+  useEffect(() => {
+    tiles.current.get(value)?.scrollIntoView?.({ block: "nearest" });
+  }, [value]);
   const rowStep = () => {
     if (!wide || !grid.current) return 1;
     const columns = getComputedStyle(grid.current).gridTemplateColumns.split(" ").filter(Boolean);
@@ -857,6 +871,9 @@ function GeneralFields({
                   // Follow the driver unless the port was typed in.
                   if (next !== "sqlite" && (port === "" || port === "5432" || port === "3306"))
                     setValue("port", DEFAULT_PORT[next]);
+                  // The user follows too, unless it was typed in.
+                  if (isDefaultUser(getValues("user")))
+                    setValue("user", defaultUserOf(databaseKind(next)));
                 }}
               >
                 <SelectTrigger id={`${uid}-driver`} className="w-48">
@@ -1005,7 +1022,7 @@ function GeneralFields({
               !keychain
                 ? PASSWORD_HINT[passwordMode]
                 : hasStoredPassword && !clearPassword
-                  ? "Stored in Keychain — leave empty to keep"
+                  ? `Stored in the ${SECRET_STORE} — leave empty to keep`
                   : clearPassword
                     ? "The stored password is removed on save"
                     : `Stored in the ${SECRET_STORE}`
@@ -1035,7 +1052,7 @@ function GeneralFields({
                     value={field.value}
                     onValueChange={(v) => {
                       field.onChange(v as PasswordMode);
-                      // Only the Keychain keeps a typed password.
+                      // Only the secret store keeps a typed password.
                       if (v !== "keychain") setValue("password", "");
                     }}
                   >
@@ -1055,7 +1072,7 @@ function GeneralFields({
               {hasStoredPassword && keychain && (
                 <label
                   className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs whitespace-nowrap"
-                  title="Remove the password stored in the Keychain"
+                  title={`Remove the password stored in the ${SECRET_STORE}`}
                 >
                   <Controller
                     control={control}
@@ -1527,7 +1544,7 @@ function SqliteFields({ form, hasStoredPassword }: { form: Form; hasStoredPasswo
             : mode === "none"
               ? "A plain, unencrypted database"
               : hasStoredPassword && !clearPassword
-                ? "Stored in Keychain — leave empty to keep"
+                ? `Stored in the ${SECRET_STORE} — leave empty to keep`
                 : clearPassword
                   ? "The stored key is removed on save"
                   : "SQLCipher; leave empty for a plain database"
@@ -1578,7 +1595,7 @@ function SqliteFields({ form, hasStoredPassword }: { form: Form; hasStoredPasswo
           {hasStoredPassword && keychain && (
             <label
               className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs whitespace-nowrap"
-              title="Remove the key stored in the Keychain"
+              title={`Remove the key stored in the ${SECRET_STORE}`}
             >
               <Controller
                 control={control}
@@ -2036,6 +2053,15 @@ function withLaneChecks(ui: () => KindUi | null | undefined): Resolver<Connectio
   };
 }
 
+/** Fields that do not change how the connection is made: editing them keeps the Test result. */
+const TEST_NEUTRAL_FIELDS: ReadonlySet<string> = new Set<keyof ConnectionFormValues>([
+  "name",
+  "color",
+  "tag",
+  "group",
+  "safeMode",
+]);
+
 /** Fields that live in the (collapsible) Advanced block. */
 const ADVANCED_FIELDS = [
   "connectTimeoutSecs",
@@ -2084,6 +2110,8 @@ export function ConnectionDialog({
   );
   const [step, setStep] = useState<"driver" | "form">("form");
   const [pickedDriver, setPickedDriver] = useState<DatabaseKind>("postgres");
+  /** "Import from URL…" of a form with typed input: the URL dialog opens over the form. */
+  const [urlOpen, setUrlOpen] = useState(false);
   /** The picker's search (TablePlus: a search field above the tiles). */
   const [kindQuery, setKindQuery] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -2121,10 +2149,13 @@ export function ConnectionDialog({
     test.reset();
     // A prefill without a driver ("New ▸ Connection in this group…") still picks one first.
     setStep(profile || prefill?.values.driver !== undefined ? "form" : "driver");
-    setPickedDriver("postgres");
+    // The picker starts on the database chosen last time, while this build has it.
+    const last = useLauncherPrefs.getState().lastKind;
+    setPickedDriver(last && built.includes(last) ? last : "postgres");
     setKindQuery("");
     setAdvancedOpen(false);
     setBootstrapOpen(false);
+    setUrlOpen(false);
     setTagsOpen(false);
     setBusy(null);
     setTesting(false);
@@ -2141,6 +2172,14 @@ export function ConnectionDialog({
   const sftp = desc.ssh === "sftp";
   const testResult = test.isSuccess ? test.data : undefined;
   const testError = test.isError ? test.error : null;
+  const testRunning = testing || test.isPending;
+  /** Why the last Test failed, in full (a cancelled question is no failure). */
+  const testFailure =
+    testResult && !testResult.ok
+      ? testResult.message
+      : testError && !testDeclined(testError)
+        ? testError.message
+        : null;
   const mysqlVersion = form.watch("mysqlVersion");
   const kind = formKind({ driver, mysqlVersion, pgFlavor: form.watch("pgFlavor") });
   // Null at once for a core database; a lane's loads with its lane (undefined meanwhile).
@@ -2154,9 +2193,30 @@ export function ConnectionDialog({
     const p = unread.current;
     if (!open || !kindUi || !p || kindOf(p) !== kind) return;
     unread.current = null;
+    const untouched = !form.formState.isDirty;
     for (const [field, value] of Object.entries(kindUi.fromProfile?.(p) ?? {}))
       form.setValue(field as keyof ConnectionFormValues, value as never);
+    // The saved params are where an untouched form starts, not an edit to ask about on close.
+    if (untouched) form.reset(form.getValues());
   }, [open, profile, kind, kindUi, form]);
+
+  // A Test result belongs to the values it tried: changing how to connect clears it (not the
+  // name, colour or tag, which the server never sees).
+  useEffect(() => {
+    if (!open) return;
+    const sub = form.watch((_, { name }) => {
+      if (name && !TEST_NEUTRAL_FIELDS.has(name)) test.reset();
+    });
+    return () => sub.unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, form]);
+
+  const dirty = open && step === "form" && form.formState.isDirty;
+  const guard = useDirtyDialogGuard({
+    dirty,
+    onClose: () => onOpenChange(false),
+    what: "the connection details you entered",
+  });
 
   const buildInput = (values: ConnectionFormValues) =>
     formToProfileInput(values, profile, id, kindUiRef.current);
@@ -2178,25 +2238,40 @@ export function ConnectionDialog({
     }
     if (opened !== session.current) return false;
     unread.current = null;
-    form.reset({ ...form.getValues(), ...kindValues(kind, ui, form.getValues("ssl")) });
+    const current = form.getValues();
+    const user = isDefaultUser(current.user) ? defaultUserOf(kind) : current.user;
+    // From the picker this is where the form starts; inside the form (Driver ▸ another database)
+    // it is an edit, so what was typed still counts as unsaved.
+    form.reset(
+      { ...current, user, ...kindValues(kind, ui, current.ssl) },
+      { keepDefaultValues: step === "form" },
+    );
     return true;
   };
 
   const pickDriver = (kind: DatabaseKind) => {
+    useLauncherPrefs.getState().setLastKind(kind);
     const d = kindDriver(kind);
     // A lane's database (a PostgreSQL flavor too) waits for its lane's form.
     if (!isCoreDriver(d) || !isCoreKind(kind)) {
       void startKind(kind).then((ok) => ok && setStep("form"));
       return;
     }
-    form.setValue("driver", d);
-    form.setValue("port", DEFAULT_PORT[d]);
+    const current = form.getValues();
+    const next: ConnectionFormValues = {
+      ...current,
+      driver: d,
+      port: DEFAULT_PORT[d],
+      user: isDefaultUser(current.user) ? defaultUserOf(kind) : current.user,
+    };
     // MariaDB is the MySQL driver with Ver. ▸ MariaDB (and its SSL mode names).
     if (d === "mysql") {
       const version = KIND_DESCRIPTORS[kind].mysqlVersion ?? "default";
-      form.setValue("mysqlVersion", version);
-      form.setValue("ssl", sslForVersion(form.getValues("ssl"), version));
+      next.mysqlVersion = version;
+      next.ssl = sslForVersion(current.ssl, version);
     }
+    // A reset, not edits: the chosen database is where the form starts, with nothing unsaved.
+    form.reset(next);
     setStep("form");
   };
 
@@ -2208,6 +2283,8 @@ export function ConnectionDialog({
   /** Saves the form (no toast); null when it failed (useSaveProfile told the user). */
   const persist = async (values: ConnectionFormValues): Promise<ConnectionProfile | null> => {
     const input = buildInput(values);
+    // The fields as typed (`values` may be the checked, trimmed copy): the new clean state.
+    const typed = form.getValues();
     // A saved Safe Mode 1 / 2 connection asks for its password before a save that weakens its
     // protection (a lower level, Read-only off, another password), as the toolbar lock does for
     // the level; once per dialog session.
@@ -2220,6 +2297,8 @@ export function ConnectionDialog({
       const saved = await save.mutateAsync(input);
       rememberSafeModeLevel(saved.id, saved.options.safeMode);
       savedOnce.current = true;
+      // What is saved is no longer unsaved: closing after Test does not ask to discard it.
+      form.reset(typed, { keepValues: true });
       onSaved?.(saved);
       return saved;
     } catch {
@@ -2227,9 +2306,21 @@ export function ConnectionDialog({
     }
   };
 
+  /**
+   * A blank Name is filled in, visibly, before the form is checked: the database file, database
+   * or host names the connection, like the name a connection URL gets.
+   */
+  const fillBlankName = () => {
+    if (form.getValues("name").trim() !== "") return;
+    form.setValue("name", defaultConnectionName(form.getValues(), KIND_LABEL[kind]), {
+      shouldDirty: true,
+    });
+  };
+
   /** Save, or Save + Connect (the form's default action, like TablePlus). */
-  const submit = (connect: boolean) =>
-    form.handleSubmit(async (values) => {
+  const submit = (connect: boolean) => (e?: React.BaseSyntheticEvent) => {
+    fillBlankName();
+    return form.handleSubmit(async (values) => {
       setBusy(connect ? "connect" : "save");
       const updating = profile !== null || savedOnce.current;
       const saved = await persist(values);
@@ -2247,13 +2338,15 @@ export function ConnectionDialog({
           description: `Reconnect (${formatCombo(shortcutFor("connection.reconnect") ?? "Mod+Shift+R")}) to apply the changes to the open session.`,
         });
       openProfile(saved.id);
-    }, onInvalid);
+    }, onInvalid)(e);
+  };
 
   /**
    * Test: saves the (valid) connection first, as TablePlus does, then tries it. An "Ask every
    * time" connection asks for its password (once per dialog session while it works).
    */
   const onTest = async () => {
+    fillBlankName();
     const valid = await form.trigger();
     if (!valid) {
       onInvalid(form.formState.errors);
@@ -2284,12 +2377,30 @@ export function ConnectionDialog({
   };
 
   /**
-   * "Import from URL…" of the New connection sheet: closes it and opens the URL dialog, which
-   * opens the form again with the link's values.
+   * "Import from URL…" of the New connection sheet. An untouched sheet closes and the app's URL
+   * dialog opens the form again with the link's values; a sheet with typed input stays open
+   * under the URL dialog, which fills it in without losing what was typed (`mergeUrlIntoForm`).
    */
   const importFromUrl = () => {
+    if (dirty) {
+      setUrlOpen(true);
+      return;
+    }
     onOpenChange(false);
     openConnectionUrlDialog();
+  };
+
+  const mergeUrl = (parsed: ParsedConnectionUrl) => {
+    const { connectTimeout, defaultSafeMode } = getPrefs();
+    unread.current = null;
+    // Still unsaved: the baseline stays the form as opened, so closing asks first.
+    form.reset(mergeUrlIntoForm(form.getValues(), parsed, connectTimeout, defaultSafeMode), {
+      keepDefaultValues: true,
+    });
+    test.reset();
+    askedPassword.current = null;
+    setStep("form");
+    requestAnimationFrame(() => form.setFocus("name"));
   };
 
   const toggleSsh = () => {
@@ -2309,9 +2420,10 @@ export function ConnectionDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={guard.onOpenChange}>
       {/* Header and footer stay put; the body scrolls when the window is short (min 600px). */}
       <DialogContent
+        {...guard.contentProps}
         className={cn(
           "flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0",
           step === "form"
@@ -2376,12 +2488,7 @@ export function ConnectionDialog({
                 <Link2 aria-hidden /> Import from URL…
               </Button>
               <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onOpenChange(false)}
-                >
+                <Button type="button" variant="outline" size="sm" onClick={guard.requestClose}>
                   Cancel
                 </Button>
                 <Button type="button" size="sm" onClick={() => pickDriver(pickedDriver)}>
@@ -2435,6 +2542,9 @@ export function ConnectionDialog({
                 </Section>
               )}
             </div>
+            {testFailure !== null && !testRunning && (
+              <TestFailure key={testFailure} message={testFailure} />
+            )}
             <DialogFooter className="m-0 shrink-0 flex-row items-center sm:justify-between">
               <div className="flex shrink-0 items-center gap-2">
                 {desc.ssh !== "none" && (
@@ -2475,7 +2585,7 @@ export function ConnectionDialog({
                 </Button>
               </div>
               <div className="flex min-w-0 flex-1 justify-center">
-                <TestStatus result={testResult} error={testError} />
+                <TestStatus result={testResult} error={testError} testing={testRunning} />
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <Button
@@ -2483,7 +2593,8 @@ export function ConnectionDialog({
                   variant="outline"
                   size="sm"
                   onClick={onTest}
-                  disabled={test.isPending || testing || busy !== null}
+                  disabled={testRunning || busy !== null}
+                  aria-busy={testRunning || undefined}
                   title="Save and test the connection"
                 >
                   Test
@@ -2494,11 +2605,19 @@ export function ConnectionDialog({
                   size="sm"
                   onClick={submit(false)}
                   disabled={busy !== null}
+                  aria-busy={busy === "save" || undefined}
                 >
-                  Save
+                  {busy === "save" && <LoaderCircle aria-hidden className="animate-spin" />}
+                  {busy === "save" ? "Saving…" : "Save"}
                 </Button>
-                <Button type="submit" size="sm" disabled={busy !== null}>
-                  Connect
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={busy !== null}
+                  aria-busy={busy === "connect" || undefined}
+                >
+                  {busy === "connect" && <LoaderCircle aria-hidden className="animate-spin" />}
+                  {busy === "connect" ? "Connecting…" : "Connect"}
                 </Button>
               </div>
             </DialogFooter>
@@ -2524,63 +2643,115 @@ export function ConnectionDialog({
             if (form.getValues("tag") === from) form.setValue("tag", to, { shouldDirty: true });
           }}
         />
+        <ConnectionUrlDialog open={urlOpen} onOpenChange={setUrlOpen} onParsed={mergeUrl} />
       </DialogContent>
+      {guard.confirm}
     </Dialog>
   );
 }
 
-/** The last Test's outcome: server version, latency and tunnel, or why it failed. */
+/** The host key was not trusted or the SSH 2FA question was cancelled: nothing went wrong. */
+function testDeclined(error: Error): boolean {
+  return hostKeyDeclined(error) || toIpcError(error).code === "CANCELLED";
+}
+
+/**
+ * The footer's compact line for the last Test: "Testing…" while it runs (a slow SSH or remote
+ * test must not look frozen), then the server version, latency and tunnel, or a declined
+ * question. A failure gets the full-width strip above the footer instead (`TestFailure`).
+ */
 function TestStatus({
   result,
   error,
+  testing,
 }: {
   result: ReturnType<typeof useTestConnection>["data"];
   error: Error | null;
+  testing: boolean;
 }) {
-  if (result)
+  if (testing)
+    return (
+      <span role="status" className="text-muted-foreground flex items-center gap-1 text-xs">
+        <LoaderCircle aria-hidden className="size-3.5 shrink-0 animate-spin" />
+        Testing…
+      </span>
+    );
+  if (result?.ok)
     return (
       <span
         role="status"
-        className={cn(
-          "flex min-w-0 items-center gap-1 text-xs",
-          result.ok ? "text-success" : "text-error",
-        )}
+        className="text-success flex min-w-0 items-center gap-1 text-xs"
         title={result.message}
       >
-        {result.ok ? (
-          <Check aria-hidden className="size-3.5 shrink-0" />
-        ) : (
-          <X aria-hidden className="size-3.5 shrink-0" />
-        )}
+        <Check aria-hidden className="size-3.5 shrink-0" />
         <span className="truncate">
-          {result.ok
-            ? `${result.serverVersion ?? "OK"} · ${result.latencyMs} ms${result.tunnelUsed ? " · via SSH" : ""}`
-            : result.message}
+          {`${result.serverVersion ?? "OK"} · ${result.latencyMs} ms${result.tunnelUsed ? " · via SSH" : ""}`}
         </span>
       </span>
     );
-  if (error) {
-    // The SSH 2FA question was cancelled: nothing went wrong.
-    const declined = hostKeyDeclined(error) || toIpcError(error).code === "CANCELLED";
+  if (error && testDeclined(error))
     return (
       <span
         role="status"
-        className={cn(
-          "flex min-w-0 items-center gap-1 text-xs",
-          declined ? "text-muted-foreground" : "text-error",
-        )}
+        className="text-muted-foreground flex min-w-0 items-center gap-1 text-xs"
         title={error.message}
       >
-        {declined ? (
-          <ShieldOff aria-hidden className="size-3.5 shrink-0" />
-        ) : (
-          <X aria-hidden className="size-3.5 shrink-0" />
-        )}
+        <ShieldOff aria-hidden className="size-3.5 shrink-0" />
         <span className="truncate">
-          {!declined ? error.message : hostKeyDeclined(error) ? "Host key not trusted" : "Canceled"}
+          {hostKeyDeclined(error) ? "Host key not trusted" : "Canceled"}
         </span>
       </span>
     );
-  }
   return null;
+}
+
+/** A failure over three lines folds: "Show more" unfolds it. */
+const FOLDED_FAILURE_CHARS = 240;
+
+/**
+ * Why the last Test failed, in full: driver errors (auth, TLS, DNS) are often long and are what
+ * the user needs to fix the form, so they wrap, can be selected, and have Copy.
+ */
+function TestFailure({ message }: { message: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const long = message.length > FOLDED_FAILURE_CHARS || message.split("\n").length > 3;
+  return (
+    <div
+      role="alert"
+      className="border-error/30 bg-error/5 text-error flex shrink-0 items-start gap-2 border-t px-4 py-2 text-xs"
+    >
+      <X aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+      <p
+        className={cn(
+          "min-w-0 flex-1 overflow-y-auto leading-4 break-words whitespace-pre-wrap select-text",
+          expanded ? "max-h-40" : "line-clamp-3",
+        )}
+      >
+        {message}
+      </p>
+      <div className="flex shrink-0 items-center gap-1">
+        {long && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? "Show less" : "Show more"}
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          onClick={() => void writeClipboard(message).then(() => setCopied(true))}
+        >
+          {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
+          {copied ? "Copied" : "Copy"}
+        </Button>
+      </div>
+    </div>
+  );
 }

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { EditorView } from "@codemirror/view";
@@ -15,7 +15,7 @@ import { useUiStore } from "@/stores/ui";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { PasswordPromptHost } from "./PasswordPrompt";
 import { usePasswordPromptStore } from "./passwordPromptStore";
-import { useConnectionDialog } from "./store";
+import { useConnectionDialog, useLauncherPrefs } from "./store";
 import { parseConnectionUrl, type ParsedConnectionUrl } from "./url";
 import { resetCustomTags } from "./tags";
 import { profileKeys } from "./useConnections";
@@ -79,6 +79,7 @@ beforeEach(() => {
   useConnectionsStore.setState({ byId: {}, order: [], activeId: null });
   usePaletteStore.setState({ connecting: [] });
   useUiStore.setState({ view: "launcher" });
+  useLauncherPrefs.setState({ lastKind: null });
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -139,11 +140,14 @@ describe("ConnectionDialog — new connection", () => {
       within(await screen.findByRole("dialog")).getByRole("button", { name: "Create" }),
     );
     const form = await screen.findByRole("dialog", { name: "New PostgreSQL Connection" });
+    // The usual user is a real value, not a placeholder that only looks like one.
+    expect(within(form).getByLabelText("User")).toHaveValue("postgres");
+    await user.clear(within(form).getByLabelText("User"));
     await user.click(within(form).getByRole("button", { name: "Save" }));
-    expect(within(form).getByText("Name is required")).toBeInTheDocument();
-    expect(within(form).getByText("User is required")).toBeInTheDocument();
+    expect(await within(form).findByText("User is required")).toBeInTheDocument();
     expect(save).not.toHaveBeenCalled();
 
+    await user.clear(within(form).getByLabelText("Name"));
     await user.type(within(form).getByLabelText("Name"), "Analytics");
     await user.type(within(form).getByLabelText("User"), "reader");
     await user.type(within(form).getByLabelText("Password"), "pw");
@@ -164,6 +168,185 @@ describe("ConnectionDialog — new connection", () => {
     expect(toast.success).toHaveBeenCalledWith("Connection created");
     // Save alone does not connect.
     expect(useConnectionsStore.getState().order).toEqual([]);
+  });
+
+  it("a blank Name is filled from the database, then the host, and shown in the field", async () => {
+    const save = vi.spyOn(ipc.profiles, "save");
+    const user = userEvent.setup();
+    renderDialog();
+    await user.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Create" }),
+    );
+    const form = await screen.findByRole("dialog", { name: "New PostgreSQL Connection" });
+    await user.type(within(form).getByLabelText("Database"), "shop");
+    await user.click(within(form).getByRole("button", { name: "Test" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile).toMatchObject({ name: "shop", user: "postgres" });
+    expect(within(form).getByLabelText("Name")).toHaveValue("shop");
+  });
+
+  it("the picker starts on the database chosen last time", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    let picker = await screen.findByRole("dialog", { name: "New Connection" });
+    await user.dblClick(within(picker).getByRole("radio", { name: "MySQL" }));
+    const form = await screen.findByRole("dialog", { name: "New MySQL Connection" });
+    expect(within(form).getByLabelText("User")).toHaveValue("root");
+    expect(useLauncherPrefs.getState().lastKind).toBe("mysql");
+    cleanup();
+    renderDialog();
+    picker = await screen.findByRole("dialog", { name: "New Connection" });
+    expect(within(picker).getByRole("radio", { name: "MySQL" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    // A kind this build does not have falls back to PostgreSQL.
+    cleanup();
+    useLauncherPrefs.setState({ lastKind: "snowflake" });
+    renderDialog();
+    picker = await screen.findByRole("dialog", { name: "New Connection" });
+    expect(within(picker).getByRole("radio", { name: "PostgreSQL" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  });
+});
+
+describe("ConnectionDialog — unsaved changes", () => {
+  it("Escape on a clean form closes at once; with typed input it asks first", async () => {
+    const user = userEvent.setup();
+    const { onOpenChange } = renderDialog({ profile: SEED_PROFILES[0]! });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    await user.keyboard("{Escape}");
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    onOpenChange.mockClear();
+
+    await user.type(within(form).getByLabelText("Database"), "x");
+    await user.keyboard("{Escape}");
+    const ask = await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    await user.click(within(ask).getByRole("button", { name: "Keep Editing" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(within(form).getByLabelText("Database")).toHaveValue("tabler_devx");
+
+    await user.keyboard("{Escape}");
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Discard" }),
+    );
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("the driver picker counts as untouched, and a successful Test clears the unsaved state", async () => {
+    const user = userEvent.setup();
+    const { onOpenChange } = renderDialog({
+      prefill: parseConnectionUrl("mysql://root@127.0.0.1/shop?name=Shop"),
+    });
+    const form = await screen.findByRole("dialog", { name: "New MySQL Connection" });
+    await user.type(within(form).getByLabelText("Database"), "2");
+    await user.click(within(form).getByRole("button", { name: "Test" }));
+    await vi.waitFor(() =>
+      expect(within(form).getByRole("status")).toHaveTextContent(/MySQL 9\.6\.0/),
+    );
+    // Saved by Test: nothing is left to lose.
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("Import from URL… on a form with typed input fills it in place, keeping the typed name", async () => {
+    const user = userEvent.setup();
+    useConnectionDialog.setState({ urlOpen: false });
+    const { onOpenChange } = renderDialog();
+    await user.dblClick(
+      within(await screen.findByRole("dialog", { name: "New Connection" })).getByRole("radio", {
+        name: "PostgreSQL",
+      }),
+    );
+    const form = await screen.findByRole("dialog", { name: "New PostgreSQL Connection" });
+    await user.type(within(form).getByLabelText("Name"), "Mine");
+    await user.type(within(form).getByLabelText("Group"), "Clients");
+    await user.click(within(form).getByRole("button", { name: "Import from URL…" }));
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(useConnectionDialog.getState().urlOpen).toBe(false);
+    const urlDialog = await screen.findByRole("dialog", { name: "New Connection from URL" });
+    await user.type(
+      within(urlDialog).getByLabelText("Connection URL"),
+      "mysql://app@db.example.com:3307/shop{Enter}",
+    );
+    const merged = await screen.findByRole("dialog", { name: "New MySQL Connection" });
+    expect(within(merged).getByLabelText("Name")).toHaveValue("Mine");
+    expect(within(merged).getByLabelText("Group")).toHaveValue("Clients");
+    expect(within(merged).getByLabelText("Host")).toHaveValue("db.example.com");
+    expect(within(merged).getByLabelText("User")).toHaveValue("app");
+    // Still unsaved.
+    await user.keyboard("{Escape}");
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+  });
+
+  it("the Bootstrap commands editor asks before throwing away edits", async () => {
+    const user = userEvent.setup();
+    renderDialog({ profile: SEED_PROFILES[0]! });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    await user.click(within(form).getByRole("button", { name: /Bootstrap commands/ }));
+    const editor = await screen.findByRole("dialog", { name: "Bootstrap commands" });
+    await user.type(within(editor).getByLabelText(/Shell script/), "echo hi");
+    await user.click(within(editor).getByRole("button", { name: "Cancel" }));
+    const ask = await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" });
+    await user.click(within(ask).getByRole("button", { name: "Discard" }));
+    await vi.waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Bootstrap commands" })).toBeNull(),
+    );
+    // The connection form itself is untouched and still open.
+    expect(screen.getByRole("dialog", { name: "Edit Local Postgres" })).toBeInTheDocument();
+  });
+});
+
+describe("ConnectionDialog — Test feedback", () => {
+  it("shows Testing… while it runs and clears a result once a connection field changes", async () => {
+    let finish: (() => void) | undefined;
+    const real = ipc.profiles.test.bind(ipc.profiles);
+    vi.spyOn(ipc.profiles, "test").mockImplementation(
+      (input) =>
+        new Promise((resolve) => {
+          finish = () => void real(input).then(resolve);
+        }),
+    );
+    const user = userEvent.setup();
+    renderDialog({ profile: SEED_PROFILES[0]! });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    const testButton = within(form).getByRole("button", { name: "Test" });
+    await user.click(testButton);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    expect(within(form).getByRole("status")).toHaveTextContent("Testing…");
+    expect(testButton).toHaveAttribute("aria-busy", "true");
+    act(() => finish!());
+    await vi.waitFor(() => expect(within(form).getByRole("status")).toHaveTextContent(/ · 12 ms$/));
+    // The name does not change how to connect; the host does.
+    await user.type(within(form).getByLabelText("Name"), "!");
+    expect(within(form).getByRole("status")).toHaveTextContent(/ · 12 ms$/);
+    await user.type(within(form).getByLabelText("Host"), "1");
+    expect(within(form).queryByRole("status")).toBeNull();
+  });
+
+  it("a failure is a full, selectable alert above the footer with Copy", async () => {
+    const message = `password authentication failed for user "postgres" ${"(details) ".repeat(40)}`;
+    vi.spyOn(ipc.profiles, "test").mockResolvedValue({
+      ok: false,
+      message,
+      serverVersion: null,
+      latencyMs: 0,
+      tunnelUsed: false,
+    } as Awaited<ReturnType<typeof ipc.profiles.test>>);
+    const user = userEvent.setup();
+    renderDialog({ profile: SEED_PROFILES[0]! });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    await user.click(within(form).getByRole("button", { name: "Test" }));
+    const alert = await within(form).findByRole("alert");
+    expect(alert).toHaveTextContent(message.trim());
+    expect(within(form).queryByRole("status")).toBeNull();
+    await user.click(within(alert).getByRole("button", { name: "Show more" }));
+    expect(within(alert).getByRole("button", { name: "Show less" })).toBeInTheDocument();
+    expect(within(alert).getByRole("button", { name: "Copy" })).toBeInTheDocument();
   });
 });
 
@@ -343,7 +526,9 @@ describe("ConnectionDialog — form", () => {
     renderDialog({ profile: SEED_PROFILES[0]! });
     const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
     await user.click(within(form).getByRole("button", { name: "Test" }));
-    expect(await within(form).findByRole("status")).toHaveTextContent(/PostgreSQL.* · 12 ms$/);
+    await vi.waitFor(() =>
+      expect(within(form).getByRole("status")).toHaveTextContent(/PostgreSQL.* · 12 ms$/),
+    );
   });
 });
 
@@ -359,7 +544,9 @@ describe("ConnectionDialog — TablePlus parity", () => {
     });
     const form = await screen.findByRole("dialog", { name: "New MySQL Connection" });
     await user.click(within(form).getByRole("button", { name: "Test" }));
-    expect(await within(form).findByRole("status")).toHaveTextContent(/MySQL 9\.6\.0/);
+    await vi.waitFor(() =>
+      expect(within(form).getByRole("status")).toHaveTextContent(/MySQL 9\.6\.0/),
+    );
     expect(save).toHaveBeenCalledTimes(1);
     expect(test).toHaveBeenCalledTimes(1);
     expect(save.mock.invocationCallOrder[0]!).toBeLessThan(test.mock.invocationCallOrder[0]!);
@@ -394,7 +581,9 @@ describe("ConnectionDialog — TablePlus parity", () => {
       profile: { options: { passwordMode: "ask" } },
     });
     await user.type(within(prompt).getByLabelText("Password"), "s3cret{Enter}");
-    expect(await within(form).findByRole("status")).toHaveTextContent(/PostgreSQL/);
+    await vi.waitFor(() =>
+      expect(within(form).getByRole("status")).toHaveTextContent(/PostgreSQL/),
+    );
     expect(test.mock.calls[0]![0].password).toBe("s3cret");
 
     // Connect does not ask again in this dialog session.
@@ -559,7 +748,9 @@ describe("ConnectionDialog — IAM command and MySQL socket", () => {
 
     await user.type(command, IAM);
     await user.click(within(form).getByRole("button", { name: "Test" }));
-    expect(await within(form).findByRole("status")).toHaveTextContent(/PostgreSQL/);
+    await vi.waitFor(() =>
+      expect(within(form).getByRole("status")).toHaveTextContent(/PostgreSQL/),
+    );
     const input = save.mock.calls[0]![0];
     expect(input.profile.options).toMatchObject({ passwordMode: "command", passwordCommand: IAM });
     expect(input.password).toBeNull();

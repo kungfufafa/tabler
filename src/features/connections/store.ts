@@ -2,7 +2,7 @@ import { toast } from "sonner";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { isCoreDriver, kindOf, visibleKinds } from "@/features/drivers/catalog";
-import type { ConnectionProfile } from "@/lib/ipc";
+import type { ConnectionProfile, DatabaseKind } from "@/lib/ipc";
 import { useAppInfoStore } from "@/stores/appInfo";
 import { liftPath, normalizePath, rebasePath } from "./groups";
 import { CONNECTION_SORTS, type ConnectionSort } from "./list";
@@ -69,8 +69,8 @@ export function openNewConnectionInGroup(group: string): void {
 
 /**
  * Opens "New connection from URL…": the welcome screen's action, and what "Import from URL…" in
- * the New connection sheet calls after closing the sheet (the URL dialog then reopens the form,
- * prefilled, through `openConnectionDialog`).
+ * an untouched New connection sheet calls after closing the sheet (the URL dialog then reopens the
+ * form, prefilled, through `openConnectionDialog`). A sheet with typed input imports in place.
  */
 export function openConnectionUrlDialog(): void {
   useConnectionDialog.setState({ urlOpen: true });
@@ -91,6 +91,12 @@ interface LauncherPrefsState {
    * (`to` null) forgets it and moves its subgroups' state up one level.
    */
   renameCollapsed: (from: string, to: string | null) => void;
+  /**
+   * The database last chosen in the New Connection picker: the next picker starts on its tile, so
+   * someone who mostly adds MySQL connections does not hunt for it every time. Null: PostgreSQL.
+   */
+  lastKind: DatabaseKind | null;
+  setLastKind: (kind: DatabaseKind) => void;
 }
 
 /** The collapsed paths after the group `from` became `to` (null: was deleted). */
@@ -109,6 +115,13 @@ export function remapCollapsed(
 
 const isSort = (v: unknown): v is ConnectionSort =>
   (CONNECTION_SORTS as readonly unknown[]).includes(v);
+
+/** What is kept of the launcher preferences (`lastKind` came later, without a new version). */
+interface StoredLauncherPrefs {
+  collapsedGroups: readonly string[];
+  sortBy: ConnectionSort;
+  lastKind?: DatabaseKind | null;
+}
 
 /** Launcher list preferences, remembered across launches. */
 export const useLauncherPrefs = create<LauncherPrefsState>()(
@@ -133,13 +146,20 @@ export const useLauncherPrefs = create<LauncherPrefsState>()(
             next.some((g, i) => g !== s.collapsedGroups[i]);
           return changed ? { collapsedGroups: next } : s;
         }),
+      lastKind: null,
+      setLastKind: (lastKind) => set({ lastKind }),
     }),
     {
       name: "tabler.launcher",
       version: 3,
-      partialize: (s) => ({ collapsedGroups: s.collapsedGroups, sortBy: s.sortBy }),
+      partialize: (s): StoredLauncherPrefs => ({
+        collapsedGroups: s.collapsedGroups,
+        sortBy: s.sortBy,
+        lastKind: s.lastKind,
+      }),
       // v1 had an "Ungrouped" header that could collapse "": drop it, there is no header to undo it.
-      // v3 added the sort order.
+      // v3 added the sort order. `lastKind` needs no new version: a store without it keeps null,
+      // and the picker ignores a kind this build does not have.
       migrate: (persisted) => {
         const state = persisted as { collapsedGroups?: unknown; sortBy?: unknown } | null;
         const groups = Array.isArray(state?.collapsedGroups) ? state.collapsedGroups : [];

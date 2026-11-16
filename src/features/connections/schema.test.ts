@@ -6,7 +6,11 @@ import {
   connectionFormSchema,
   DEFAULT_CONNECT_TIMEOUT_SECS,
   DEFAULT_FORM,
+  defaultConnectionName,
+  defaultUserOf,
   formToProfileInput,
+  isDefaultUser,
+  mergeUrlIntoForm,
   MYSQL_VERSION_LABEL,
   MYSQL_VERSIONS,
   newProfileForm,
@@ -558,5 +562,92 @@ describe("conn3a: SQLCipher, resource file, driver options, encoding, tags", () 
     expect(input.profile.options.tag).toBe("QA");
     expect(profileToForm(input.profile).tag).toBe("QA");
     expect(connectionFormSchema.safeParse({ ...pg, tag: "x".repeat(41) }).success).toBe(false);
+  });
+});
+
+describe("defaults instead of placeholders", () => {
+  it("a new connection starts with its database's usual user", () => {
+    expect(newProfileForm(60).user).toBe("postgres");
+    expect(defaultUserOf("mysql")).toBe("root");
+    expect(defaultUserOf("mariadb")).toBe("root");
+    expect(defaultUserOf("sqlite")).toBe("");
+    // A kind's own default user wins (CockroachDB: root).
+    expect(defaultUserOf("cockroachdb")).toBe("root");
+  });
+
+  it("only a default or empty user follows a switch of database", () => {
+    expect(isDefaultUser("")).toBe(true);
+    expect(isDefaultUser("postgres")).toBe(true);
+    expect(isDefaultUser("root")).toBe(true);
+    expect(isDefaultUser("reader")).toBe(false);
+  });
+
+  it("a URL without a user gets the URL's database's usual one", () => {
+    const parsed = { values: { driver: "mysql" as const, host: "db" }, password: null };
+    expect(urlToForm(parsed, 60).user).toBe("root");
+    expect(urlToForm({ ...parsed, values: { ...parsed.values, user: "app" } }, 60).user).toBe(
+      "app",
+    );
+  });
+
+  it("a blank name comes from the file, the database, the host, then the kind", () => {
+    const base = newProfileForm(60);
+    expect(defaultConnectionName({ ...base, database: "shop" }, "PostgreSQL")).toBe("shop");
+    expect(defaultConnectionName({ ...base, host: "db.example.com" }, "PostgreSQL")).toBe(
+      "db.example.com",
+    );
+    expect(defaultConnectionName({ ...base, host: "" }, "PostgreSQL")).toBe("PostgreSQL");
+    expect(
+      defaultConnectionName(
+        { ...base, driver: "sqlite", sqlitePath: "/data/app.sqlite", database: "x" },
+        "SQLite",
+      ),
+    ).toBe("app.sqlite");
+    expect(
+      defaultConnectionName({ ...base, driver: "sqlite", sqlitePath: "C:\\db\\w.db" }, "SQLite"),
+    ).toBe("w.db");
+  });
+});
+
+describe("Import from URL over typed input", () => {
+  it("keeps the typed name, tag, colour, group, SSH and options the URL does not set", () => {
+    const current = {
+      ...newProfileForm(60),
+      name: "Mine",
+      tag: "production",
+      color: "red",
+      group: "Clients",
+      readOnly: true,
+      sshEnabled: true,
+      sshHost: "bastion",
+      sshUser: "ops",
+    };
+    const merged = mergeUrlIntoForm(current, parseConnectionUrl("mysql://app@db:3307/shop"), 60);
+    expect(merged).toMatchObject({
+      name: "Mine",
+      tag: "production",
+      color: "red",
+      group: "Clients",
+      readOnly: true,
+      sshEnabled: true,
+      sshHost: "bastion",
+      driver: "mysql",
+      host: "db",
+      port: "3307",
+      user: "app",
+      database: "shop",
+    });
+  });
+
+  it("the URL wins where it sets a value, and a blank name takes the URL's", () => {
+    const current = { ...newProfileForm(60), sshEnabled: true, sshHost: "old" };
+    const merged = mergeUrlIntoForm(
+      current,
+      parseConnectionUrl("postgresql+ssh://ops@bastion/app@127.0.0.1/shop?tag=testing"),
+      60,
+    );
+    expect(merged.name).toBe("app@127.0.0.1 via bastion");
+    expect(merged.tag).toBe("testing");
+    expect(merged.sshHost).toBe("bastion");
   });
 });

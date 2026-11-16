@@ -9,12 +9,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { SECRET_STORE } from "@/lib/platform";
 import { loadUrlSchemes, parseConnectionUrl, type ParsedConnectionUrl } from "./url";
 
 /**
  * "New connection from URL…": one field for a `postgres://` / `mysql://` / `mariadb://` /
  * `sqlite://` URL. A valid URL hands its parsed values (password included) to `onParsed`, which
- * opens the connection form prefilled; anything else shows why, inline.
+ * opens the connection form prefilled (or fills in the open form that asked for it); anything
+ * else shows why, inline.
  */
 export function ConnectionUrlDialog({
   open,
@@ -66,9 +68,8 @@ export function ConnectionUrlDialog({
           <DialogHeader>
             <DialogTitle className="text-sm">New Connection from URL</DialogTitle>
             <DialogDescription className="text-xs">
-              Paste a postgres://, mysql://, mariadb:// or sqlite:// URL (over SSH:
-              postgresql+ssh://sshuser@sshhost/user@host/db). You can review it before saving; the
-              passwords go to the Keychain.
+              Paste a postgres://, mysql://, mariadb:// or sqlite:// URL. You can review it before
+              saving; passwords are stored in the {SECRET_STORE}.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1">
@@ -92,6 +93,13 @@ export function ConnectionUrlDialog({
                 {error}
               </p>
             )}
+            {/* The +ssh syntax is for the few who need it: an example on demand, not prose. */}
+            <details className="text-muted-foreground text-xs">
+              <summary className="w-fit cursor-default select-none">Over SSH</summary>
+              <p className="mt-1 font-mono break-all select-text">
+                postgresql+ssh://sshuser@sshhost/user@host/db
+              </p>
+            </details>
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" size="sm" onClick={() => onOpenChange(false)}>
