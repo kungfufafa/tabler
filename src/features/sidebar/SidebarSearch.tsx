@@ -18,14 +18,15 @@ export const ITEMS_SEARCH_HINT =
   'Fuzzy match. ^name$ anchors the start / end, | or , separates alternatives, "quotes" match exactly.';
 
 /**
- * The sidebar's search field. Esc clears it (and leaves it); ↓ hands focus to the list below
- * (`onArrowDown`). Shows its focus shortcut (`kbdHint`) while empty. With `menu`, the magnifier
+ * The sidebar's search field. Esc clears it, and leaves it once it is empty; ↓ hands focus to the
+ * list below (`onArrowDown`), Enter acts on it (`onEnter`). Shows its focus shortcut (`kbdHint`) while empty. With `menu`, the magnifier
  * opens the field's menu (TablePlus: Search in Database…, Matching Strategy ▸, Settings ▸).
  */
 export function SidebarSearch({
   value,
   onChange,
   onArrowDown,
+  onEnter,
   placeholder = ITEMS_LABEL,
   label = ITEMS_LABEL,
   hint = label === ITEMS_LABEL ? ITEMS_SEARCH_HINT : undefined,
@@ -37,6 +38,8 @@ export function SidebarSearch({
   value: string;
   onChange: (v: string) => void;
   onArrowDown?: () => void;
+  /** Enter in the field (the Items search opens its first match). */
+  onEnter?: () => void;
   placeholder?: string;
   label?: string;
   /** Tooltip of the field (the item search explains its syntax). */
@@ -79,11 +82,16 @@ export function SidebarSearch({
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
-            onChange("");
-            (e.target as HTMLInputElement).blur();
+            // A first Esc clears the text and stays, so the next search can be typed at once;
+            // Esc on an empty field leaves it.
+            if (value) onChange("");
+            else (e.target as HTMLInputElement).blur();
           } else if (e.key === "ArrowDown" && onArrowDown) {
             e.preventDefault();
             onArrowDown();
+          } else if (e.key === "Enter" && onEnter && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            onEnter();
           }
         }}
         placeholder={placeholder}

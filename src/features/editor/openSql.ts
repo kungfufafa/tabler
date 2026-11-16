@@ -24,6 +24,47 @@ export function openSqlInNewQueryTab(
 }
 
 /**
+ * The query tab each sidebar object (a routine, a sequence) was last opened in, by `objectKey`.
+ * A single click opens the object, so clicking it again while browsing must show that tab rather
+ * than pile up copies of it.
+ */
+const objectTabs = new Map<string, string>();
+
+/**
+ * The open query tab of the connection that `objectKey` was opened in (`openSqlInObjectTab`),
+ * activated; null when there is none (never opened, or the tab was closed since).
+ */
+export function activateObjectTab(connectionId: string, objectKey: string): string | null {
+  const key = `${connectionId}\u0000${objectKey}`;
+  const id = objectTabs.get(key);
+  if (id === undefined) return null;
+  const tabs = useTabsStore.getState();
+  const tab = tabs.tabs.find((t) => t.id === id);
+  if (!tab || tab.kind !== "query" || tab.connectionId !== connectionId) {
+    objectTabs.delete(key);
+    return null;
+  }
+  tabs.activate(id);
+  return id;
+}
+
+/**
+ * `openSqlInNewQueryTab` for a sidebar object: remembers the tab under `objectKey` so the next
+ * open of the same object shows it again (`activateObjectTab`).
+ */
+export function openSqlInObjectTab(
+  connectionId: string,
+  objectKey: string,
+  sql: string,
+  dialect: SqlDialect | null,
+  title?: string,
+): string {
+  const id = openSqlInNewQueryTab(connectionId, sql, dialect, title);
+  objectTabs.set(`${connectionId}\u0000${objectKey}`, id);
+  return id;
+}
+
+/**
  * Links a query tab to the file it was read from: the tab is titled after it and saves to it. The
  * head of a big file (`readOnlyHead`) is a copy instead: no file behind the tab, a notice above
  * the editor and a title of its own, so saving can never truncate the original.

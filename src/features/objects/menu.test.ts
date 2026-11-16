@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { isMac } from "@/lib/keys/combo";
 import {
+  DELETE_SHORTCUT,
   groupEntries,
   groupHeaderMenu,
   headerMenu,
@@ -102,6 +104,22 @@ describe("sidebar menus", () => {
       { "Copy Script As": ["CREATION", "DROP", "TRUNCATE", "Laravel Migration"] },
       "Generate Diagram…",
     ]);
+  });
+
+  it("prints the keys that already work beside Copy Name, Rename… and Delete…", () => {
+    const keys = Object.fromEntries(
+      tableMenu(TABLE, tableHandlers()).flatMap((e) =>
+        e.kind === "item" && e.shortcut ? [[e.id, e.shortcut]] : [],
+      ),
+    );
+    expect(keys).toEqual({
+      "copy-name": "Mod+C",
+      rename: "F2",
+      truncate: "Alt+Backspace",
+      delete: DELETE_SHORTCUT,
+    });
+    // ⌫ on macOS; the Del key elsewhere (the tree takes both).
+    expect(DELETE_SHORTCUT).toBe(isMac ? "Backspace" : "Delete");
   });
 
   it("offers Export this Table with Column Selection… for one target only", () => {

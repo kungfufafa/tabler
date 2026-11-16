@@ -380,6 +380,18 @@ export function deleteGroup(scope: string, id: string): void {
 }
 
 /**
+ * Undo of Delete Group: puts `group` back at `index` (its place in the list, so the sidebar order
+ * comes back too). Nothing happens when a group with its id exists again.
+ */
+export function restoreGroup(scope: string, group: SidebarGroup, index: number): void {
+  update(scope, (list) => {
+    if (list.some((g) => g.id === group.id)) return list;
+    const at = Math.max(0, Math.min(index, list.length));
+    return [...list.slice(0, at), group, ...list.slice(at)];
+  });
+}
+
+/**
  * Puts items into a manual group. An item lives in one manual group: it leaves the others of the
  * scope.
  */

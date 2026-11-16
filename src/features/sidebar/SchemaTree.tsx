@@ -28,10 +28,12 @@ import {
   type MouseEvent,
   type Ref,
 } from "react";
+import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
 import { TableIcon } from "@/components/TypeIcon";
+import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { QuietLoading } from "@/components/QuietLoading";
+import { QuietLoading, QuietStatus } from "@/components/QuietLoading";
 import { openDiagram } from "@/features/diagram/store";
 import { useDriverUi } from "@/features/drivers/registry";
 import {
@@ -111,6 +113,7 @@ import {
   groupWarning,
   openGroupDialog,
   removeFromGroup,
+  restoreGroup,
   routineItemKey,
   sequenceItemKey,
   setGroupCollapsed,
@@ -202,6 +205,21 @@ const ROUTINE_LABEL: Record<RoutineKind, string> = {
 export interface SchemaTreeHandle {
   /** Focuses the first item row (scrolling it into view); false when the tree lists none. */
   focusFirstRow: () => boolean;
+  /**
+   * Opens the first item the way Enter on its row does (the search field's Enter: type, Enter,
+   * open); false when the tree lists none.
+   */
+  openFirstRow: () => boolean;
+}
+
+/** Delay before a slow schema node or column list says it is loading (fast loads show nothing). */
+const SLOW_LOAD_MS = 400;
+
+/** The enabled menu item `id`, looked up in submenus too. */
+function enabledItem(entries: readonly MenuEntry[], id: string): boolean {
+  return entries.some((e) =>
+    e.kind === "sub" ? enabledItem(e.items, id) : e.kind === "item" && e.id === id && !e.disabled,
+  );
 }
 
 /**
@@ -297,6 +315,8 @@ export function SchemaTree({
   groups = EMPTY_GROUPS,
   strategy = "fuzzy",
   lazyKey = null,
+  onRetry,
+  onSearchDatabase,
   ref,
 }: {
   connectionId: string;
@@ -323,6 +343,10 @@ export function SchemaTree({
   strategy?: MatchStrategy;
   /** Lazy load: the tree state's key (`lazyKey`) the schema nodes toggle; null otherwise. */
   lazyKey?: string | null;
+  /** Loads the tree again after `error` (the error state's Retry button). */
+  onRetry?: () => void;
+  /** Search in Database… for `search`, offered when the search matches nothing loaded. */
+  onSearchDatabase?: () => void;
   ref?: Ref<SchemaTreeHandle>;
 }) {
   const qc = useQueryClient();
@@ -499,15 +523,6 @@ export function SchemaTree({
     if (el) el.focus({ preventScroll: true });
     else pendingFocus.current = index;
   };
-  useImperativeHandle(ref, () => ({
-    focusFirstRow: () => {
-      const first = nextItemRow(rows, -1, 1);
-      if (first === null) return false;
-      focusRow(first);
-      return true;
-    },
-  }));
-
   const ctx: ObjectContext = { connectionId, driver, readOnly, schema: currentSchema, pinScope };
   /** The context of a row of `schema` (a lazy-loaded tree lists several schemas). */
   const ctxFor = (schema: string | null | undefined): ObjectContext =>
@@ -528,39 +543,6 @@ export function SchemaTree({
     const s = schema ?? currentSchema;
     if (s !== null && dialect) openItemOverview({ connectionId, dialect, schema: s });
   };
-
-  if (loading) {
-    return <QuietLoading data-slot="tree-loading" className="min-h-0 flex-1 bg-transparent" />;
-  }
-  if (error) return <EmptyState title="Could not load the tables" description={error} />;
-  if (rows.length === 0) {
-    return (
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
-          <div className="min-h-0 flex-1">
-            <EmptyState
-              icon={Table2}
-              title={search ? "No matches" : "No tables"}
-              description={
-                search ? `Nothing matches “${search}”.` : "This schema has no tables or views."
-              }
-            />
-          </div>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuEntries
-            entries={headerMenu(
-              { driver, readOnly, overview: false, groups: hasGroups, features, dialect },
-              {
-                ...newHandlers,
-                itemOverview: () => overviewOf(null),
-              },
-            )}
-          />
-        </ContextMenuContent>
-      </ContextMenu>
-    );
-  }
 
   /** The connection manager may be showing: an opened table must be seen. */
   const showWorkspace = () => useUiStore.getState().setView("workspace");
@@ -585,11 +567,95 @@ export function SchemaTree({
   const remember = (t: TableSummary, later = false) => {
     if (pinScope !== null) rememberOpened(pinScope, refOf(t), later);
   };
-  /** Routines and sequences open their SQL in a new query tab (click or Enter). */
-  const openObject = (row: ItemRow) => {
-    if (row.type === "routine") void openRoutine(ctx, row.routine);
-    else if (row.type === "sequence") void openSequence(ctx, row.sequence);
+  /**
+   * Routines and sequences open their SQL in a query tab (click or Enter): the tab they are open
+   * in already, or a new one. `newTab` (Open in New Tab) always opens another.
+   */
+  const openObject = (row: ItemRow, newTab = false) => {
+    if (row.type === "routine") void openRoutine(ctx, row.routine, newTab);
+    else if (row.type === "sequence") void openSequence(ctx, row.sequence, newTab);
   };
+  /** Enter on a row: tables keep their tab (not the preview), other items open their SQL. */
+  const openRow = (row: ItemRow) => {
+    if (row.type === "table") {
+      openPinned(row.table);
+      remember(row.table);
+    } else openObject(row);
+  };
+  useImperativeHandle(ref, () => ({
+    focusFirstRow: () => {
+      const first = nextItemRow(rows, -1, 1);
+      if (first === null) return false;
+      focusRow(first);
+      return true;
+    },
+    openFirstRow: () => {
+      if (loading || error) return false;
+      const first = rows.find(isItemRow);
+      if (!first) return false;
+      select(selectOnly(first.key));
+      openRow(first);
+      return true;
+    },
+  }));
+
+  if (loading) {
+    return <QuietLoading data-slot="tree-loading" className="min-h-0 flex-1 bg-transparent" />;
+  }
+  if (error)
+    return (
+      <EmptyState title="Could not load the tables" description={error}>
+        {onRetry && (
+          <Button size="sm" variant="outline" onClick={onRetry}>
+            Retry
+          </Button>
+        )}
+      </EmptyState>
+    );
+  if (rows.length === 0) {
+    const emptyMenu = headerMenu(
+      { driver, readOnly, overview: false, groups: hasGroups, features, dialect },
+      {
+        ...newHandlers,
+        itemOverview: () => overviewOf(null),
+      },
+    );
+    // An empty schema says how to fill it; a search that found nothing offers the search that
+    // also looks in schemas not loaded (the field's own × already clears it).
+    const canCreate = !search && enabledItem(emptyMenu, "new-table");
+    return (
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div className="min-h-0 flex-1">
+            <EmptyState
+              icon={Table2}
+              title={search ? "No matches" : "No tables"}
+              description={
+                search
+                  ? `Nothing matches “${search}”.`
+                  : canCreate
+                    ? "This schema has no tables or views. Create one, or right-click for more."
+                    : "This schema has no tables or views."
+              }
+            >
+              {search && onSearchDatabase ? (
+                <Button size="sm" variant="outline" onClick={onSearchDatabase}>
+                  Search in Database…
+                </Button>
+              ) : canCreate ? (
+                <Button size="sm" variant="outline" onClick={() => newHandlers.newItem("table")}>
+                  New Table…
+                </Button>
+              ) : null}
+            </EmptyState>
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuEntries entries={emptyMenu} />
+        </ContextMenuContent>
+      </ContextMenu>
+    );
+  }
 
   /** The rows a menu or key acts on: the selection when it holds `key`, else that row alone. */
   const targetsOf = (key: string): ItemRow[] => {
@@ -822,7 +888,7 @@ export function SchemaTree({
       },
       {
         ...newIn(schemaOfItem(row)),
-        open: () => openObject(row),
+        open: () => openObject(row, true),
         copyName: () => copyNames(targets.map(itemName)),
         copyScript: (kind) =>
           row.type === "routine"
@@ -873,10 +939,14 @@ export function SchemaTree({
       case "Enter":
         // Instead of the button's click (a preview open): Enter keeps the tab.
         handled();
-        if (row.type === "table") {
-          openPinned(row.table);
-          remember(row.table);
-        } else openObject(row);
+        openRow(row);
+        return;
+      case "F2":
+        // Rename… from the keyboard (the Windows convention; the grid's F2 edits a cell), only
+        // where the row's menu offers it.
+        handled();
+        if (row.type === "table" && enabledItem(tableEntries(row), "rename"))
+          dialog({ kind: "renameTable", table: row.table });
         return;
       case "Backspace":
       case "Delete":
@@ -1074,11 +1144,15 @@ export function SchemaTree({
                 key={row.key}
                 style={style}
                 data-row-index={v.index}
-                role="status"
+                // QuietStatus is its own live region while loading; the error is announced here.
+                role={row.status === "loading" ? undefined : "status"}
                 className="text-muted-foreground flex items-center gap-2 pr-2 pl-8 text-xs"
               >
                 {row.status === "loading" ? (
-                  <span className="sr-only">Loading items</span>
+                  // A slow server: after a moment the row says so, instead of an empty gap.
+                  <QuietStatus delay={SLOW_LOAD_MS} className="truncate p-0">
+                    Loading items
+                  </QuietStatus>
                 ) : (
                   <span className="text-error truncate" title={row.message ?? undefined}>
                     {row.message ?? "Could not load the items"}
@@ -1219,7 +1293,18 @@ export function SchemaTree({
                         if (pinScope !== null) openGroupDialog({ scope: pinScope, group: g });
                       },
                       remove: () => {
-                        if (pinScope !== null) deleteGroup(pinScope, g.id);
+                        if (pinScope === null) return;
+                        // No confirm: the group goes at once, and the toast's Undo puts it back
+                        // where it was, with its rules and members.
+                        const scope = pinScope;
+                        const index = groups.findIndex((x) => x.id === g.id);
+                        deleteGroup(scope, g.id);
+                        toast.message(`Deleted group “${g.name}”`, {
+                          action: {
+                            label: "Undo",
+                            onClick: () => restoreGroup(scope, g, index),
+                          },
+                        });
                       },
                     })}
                   />
@@ -1271,14 +1356,16 @@ export function SchemaTree({
                 key={row.key}
                 style={style}
                 data-row-index={v.index}
-                role="status"
+                role={row.status === "loading" ? undefined : "status"}
                 className={cn(
                   "text-muted-foreground flex items-center gap-2 pr-2 text-xs",
                   isNested(row.key) ? "pl-14" : "pl-11",
                 )}
               >
                 {row.status === "loading" ? (
-                  <span className="sr-only">Loading columns</span>
+                  <QuietStatus delay={SLOW_LOAD_MS} className="truncate p-0">
+                    Loading columns
+                  </QuietStatus>
                 ) : (
                   <span className="text-error truncate" title={row.message ?? undefined}>
                     {row.message ?? "Could not load the columns"}
@@ -1355,13 +1442,17 @@ export function SchemaTree({
                   openPinned(t, "table", true);
                   remember(t, true);
                 }}
-                title={
+                // The full name first: a long one is cut off in a narrow sidebar.
+                title={[
+                  t.name,
                   mark === "drop"
                     ? "Delete pending: commit to drop it"
                     : mark === "truncate"
                       ? "Truncate pending: commit to empty it"
-                      : (t.comment ?? undefined)
-                }
+                      : t.comment,
+                ]
+                  .filter(Boolean)
+                  .join(" — ")}
                 // The name alone, not the icon, pin and row count run together; the rest is a
                 // description for screen readers.
                 aria-label={t.name}

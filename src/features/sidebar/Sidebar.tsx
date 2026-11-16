@@ -132,6 +132,13 @@ function DatabaseItemsPane({
     groups,
   });
   const rows = lazy ? lazyTree.rows : regularRows;
+  // Every object of the database, in schemas not loaded too, starting from this search.
+  const searchInDatabase = () => usePaletteStore.getState().openPalette("objects", search.trim());
+  /** Error state's Retry: loads again what failed (the schema list also roots the lazy tree). */
+  const retry = () => {
+    if (schemas.isError) void schemas.refetch();
+    if (tables.isError) void tables.refetch();
+  };
   /** The search field's menu: Search in Database…, Matching Strategy ▸, Settings ▸. */
   const menu = () =>
     searchMenu(
@@ -140,11 +147,7 @@ function DatabaseItemsPane({
         settings: searchSettingsEntries(connection.info.driver, settings, set),
         canSearchDatabase: true,
       },
-      {
-        // Every object of the database, in schemas not loaded too, starting from this search.
-        searchInDatabase: () => usePaletteStore.getState().openPalette("objects", search.trim()),
-        setStrategy: setMatchStrategy,
-      },
+      { searchInDatabase, setStrategy: setMatchStrategy },
     );
 
   // Only a bump after mounting focuses: a remount (another connection) must not take focus.
@@ -164,6 +167,7 @@ function DatabaseItemsPane({
           value={search}
           onChange={setSearch}
           onArrowDown={() => treeRef.current?.focusFirstRow()}
+          onEnter={() => treeRef.current?.openFirstRow()}
           hint={searchHint(strategy)}
           menu={menu}
         />
@@ -181,6 +185,8 @@ function DatabaseItemsPane({
         groups={groups}
         strategy={strategy}
         lazyKey={lazy ? lazyKey(connectionId, connection.info.currentDatabase) : null}
+        onRetry={retry}
+        onSearchDatabase={searchInDatabase}
       />
     </div>
   );
