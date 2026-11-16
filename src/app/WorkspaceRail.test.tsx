@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ipc, type ConnectionInfo } from "@/lib/ipc";
@@ -112,5 +112,33 @@ describe("WorkspaceRail database icons", () => {
         tab: null,
       }),
     );
+  });
+
+  it("offers Reconnect for a lost workspace only", async () => {
+    vi.spyOn(ipc.connections, "ping").mockResolvedValue("connected");
+    useConnectionsStore.getState().add(info("a", "shop"));
+    renderRail();
+    const button = within(rail()).getByRole("button", { name: /shop/ });
+    fireEvent.contextMenu(button);
+    expect(screen.queryByRole("menuitem", { name: "Reconnect" })).toBeNull();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    await vi.waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+
+    act(() => useConnectionsStore.getState().setStatus("a", "lost", "timeout"));
+    fireEvent.contextMenu(button);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Reconnect" }));
+    await vi.waitFor(() => expect(ipc.connections.ping).toHaveBeenCalledWith("a"));
+    await vi.waitFor(() =>
+      expect(useConnectionsStore.getState().byId["a"]?.status).toBe("connected"),
+    );
+  });
+
+  it("shows the switch shortcuts in the icon's tooltip", async () => {
+    useConnectionsStore.getState().add(info("a", "shop"));
+    renderRail();
+    fireEvent.focus(within(rail()).getByRole("button", { name: /shop/ }));
+    const tip = await screen.findByRole("tooltip");
+    expect(tip).toHaveTextContent("Switch workspaces");
+    expect(tip.querySelectorAll("kbd")).toHaveLength(2);
   });
 });

@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { LoaderCircle } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -7,6 +8,7 @@ import { CustomColorSwatch } from "@/features/connections/CustomColorSwatch";
 import { profileKeys } from "@/features/connections/useConnections";
 import { openConnectionDialog } from "@/features/connections/store";
 import { actions } from "@/features/palette/actions";
+import { reconnectConnection, useReconnectInFlight } from "@/hooks/useConnectionEvents";
 import { toIpcError, type ConnectionProfile, type SessionDetails } from "@/lib/ipc";
 import { ACCENT_PRESETS, accentColor, type AccentPreset } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -101,7 +103,8 @@ function ColorRow({ conn }: { conn: OpenConnection }) {
 
 /**
  * The status bar's details (click the pill): server, user, host, database, schema, encoding,
- * TLS, tunnel and session start, then the connection colour and the switch / edit actions.
+ * TLS, tunnel and session start, then the connection colour and the switch / edit actions, and
+ * Reconnect while the connection is lost.
  */
 export function StatusDetails({
   conn,
@@ -117,6 +120,7 @@ export function StatusDetails({
   const { info } = conn;
   const at = connectedSince(info.connectionId);
   const tag = profile?.options.tag ?? null;
+  const problem = conn.status === "lost" || conn.status === "reconnecting";
   return (
     <div data-slot="status-details" className="flex flex-col gap-3 text-xs">
       <div className="flex min-w-0 items-center gap-2">
@@ -162,7 +166,24 @@ export function StatusDetails({
         >
           Switch Connection…
         </Button>
+        {problem && <ReconnectButton connectionId={info.connectionId} />}
       </div>
     </div>
+  );
+}
+
+/**
+ * The fix next to the problem: while the connection is lost (the pill turns amber and is what
+ * the user clicks), Reconnect is the footer's primary button. Same attempt as the banner's
+ * Reconnect (a ping first, then a fresh session), shared with it while it runs.
+ */
+function ReconnectButton({ connectionId }: { connectionId: string }) {
+  const qc = useQueryClient();
+  const busy = useReconnectInFlight(connectionId);
+  return (
+    <Button size="xs" disabled={busy} onClick={() => void reconnectConnection(connectionId, qc)}>
+      {busy && <LoaderCircle className="animate-spin" aria-hidden />}
+      {busy ? "Reconnecting…" : "Reconnect"}
+    </Button>
   );
 }

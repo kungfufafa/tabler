@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { comboFromEvent, formatCombo } from "./combo";
-import { BUILTIN_KEYMAP, findShortcut, platformKeymap } from "./keymap";
+import { BUILTIN_KEYMAP, findShortcut, platformKeymap, WINDOWS_KEYMAP } from "./keymap";
 
 const MAC = platformKeymap(BUILTIN_KEYMAP, true);
 const PC = platformKeymap(BUILTIN_KEYMAP, false);
@@ -173,5 +173,17 @@ describe("formatCombo", () => {
     expect(formatCombo("Mod+Shift+Enter", true)).toBe("⌘⇧↩");
     expect(formatCombo("Ctrl+Tab", true)).toBe("⌃⇥");
     expect(formatCombo("Mod+K", false)).toBe("Ctrl+K");
+  });
+});
+
+describe("WINDOWS_KEYMAP", () => {
+  it("binds F10 (no bare Alt) to the app menu, on Windows only", () => {
+    expect(WINDOWS_KEYMAP).toEqual([
+      expect.objectContaining({ id: "ui.app-menu", keys: "F10", scope: "global" }),
+    ]);
+    expect(comboFromEvent(ev({ code: "F10", key: "F10" }), false)).toBe("F10");
+    expect(findShortcut("F10", "grid", [...PC, ...WINDOWS_KEYMAP])?.id).toBe("ui.app-menu");
+    // macOS and Linux have a menu bar: the shared keymap leaves F10 alone.
+    expect(BUILTIN_KEYMAP.some((d) => d.id === "ui.app-menu" || d.keys === "F10")).toBe(false);
   });
 });

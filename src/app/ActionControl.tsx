@@ -12,6 +12,7 @@ function Segment({
   action,
   icon: Icon,
   disabled,
+  disabledReason,
   className,
   children,
 }: {
@@ -19,6 +20,8 @@ function Segment({
   action: ActionId;
   icon: LucideIcon;
   disabled: boolean;
+  /** Why it is greyed out, under the label in the tooltip. */
+  disabledReason: string;
   className?: string;
   children?: ReactNode;
 }) {
@@ -37,14 +40,23 @@ function Segment({
       {children}
     </button>
   );
-  // Always wrapped (a disabled button gets no pointer events, so no tooltip): toggling `disabled`
-  // must not remount the button.
+  // The tooltip hangs on a span around the button: a disabled button gets no pointer events, and
+  // its tooltip says why it is off. Always wrapped, so toggling `disabled` does not remount it.
   return (
-    <ToolbarTip label={label} action={action}>
+    <ToolbarTip
+      label={label}
+      action={action}
+      disabledReason={disabled ? disabledReason : undefined}
+      wrap
+      wrapClassName="flex h-full"
+    >
       {button}
     </ToolbarTip>
   );
 }
+
+/** Why Discard / Commit are off while a commit runs. */
+const BUSY_REASON = "Wait for the commit to finish";
 
 /**
  * TablePlus's action control: Discard / Preview SQL / Commit of the whole workspace — every
@@ -71,13 +83,21 @@ export function ActionControl() {
         action="grid.discard"
         icon={CircleX}
         disabled={none || committing}
+        disabledReason={none ? "No changes to discard" : BUSY_REASON}
       />
-      <Segment label="Preview SQL" action="grid.preview" icon={Eye} disabled={none} />
+      <Segment
+        label="Preview SQL"
+        action="grid.preview"
+        icon={Eye}
+        disabled={none}
+        disabledReason="No changes to preview"
+      />
       <Segment
         label={none ? "Commit changes" : `Commit ${changes}`}
         action="grid.commit"
         icon={ArrowUpFromLine}
         disabled={none || committing}
+        disabledReason={none ? "Nothing to commit" : BUSY_REASON}
         className={cn(!none && "bg-accent text-foreground")}
       >
         {!none && (
