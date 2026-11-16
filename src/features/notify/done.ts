@@ -1,6 +1,7 @@
 import { toast } from "sonner";
 import { create } from "zustand";
 import { toIpcError } from "@/lib/ipc";
+import { REVEAL_LABEL } from "@/lib/platform";
 import { getPrefs } from "@/stores/prefs";
 import { notifyInBackground, revealInFinder } from "./notify";
 
@@ -39,8 +40,8 @@ export function revealFile(path: string): void {
 /**
  * After an export or a backup wrote its file: the "open containing folder" popup when Settings ▸
  * "Show open containing folder popup after exporting data" is on (TablePlus's default), a toast
- * with "Show in Finder" otherwise. A native notification goes out too while Tabler is in the
- * background ("Show notifications").
+ * with the reveal action ("Show in Finder") otherwise. A native notification goes out too while
+ * Tabler is in the background ("Show notifications").
  */
 export function announceFileDone(notice: DoneNotice): void {
   void notifyInBackground({ title: notice.title, body: notice.description });
@@ -51,8 +52,7 @@ export function announceFileDone(notice: DoneNotice): void {
   }
   toast.success(notice.title, {
     description: notice.description,
-    action:
-      path === null ? undefined : { label: "Show in Finder", onClick: () => revealFile(path) },
+    action: path === null ? undefined : { label: REVEAL_LABEL, onClick: () => revealFile(path) },
   });
 }
 

@@ -13,3 +13,13 @@ export function isErrorLine(line: string): boolean {
     l.startsWith("FATAL:")
   );
 }
+
+/** The run's log as plain text for the clipboard: the command line, then every output line. */
+export function outputText(run: {
+  command: string | null;
+  log: readonly { text: string }[];
+}): string {
+  const lines = run.log.map((l) => l.text);
+  if (run.command) lines.unshift(`$ ${run.command}`);
+  return lines.join("\n");
+}

@@ -165,9 +165,37 @@ export function openExport(args: OpenExportArgs): void {
   );
 }
 
-/** Closes the dialog; a running export keeps going and reports through a toast. */
+/**
+ * Closes the dialog; a running export keeps going, shows its progress in a toast
+ * (`exportProgressToast`) and reports through a toast when it ends.
+ */
 export function closeExport(): void {
   useExportStore.setState({ open: false });
+}
+
+/** "Show" on the progress toast: the dialog again, on the running export's progress. */
+export function reopenExport(): void {
+  useExportStore.setState((s) => (s.run ? { open: true } : s));
+}
+
+/** The progress toast while the dialog is closed during an export; null = no toast. */
+export function exportProgressToast(
+  s: Pick<ExportState, "open" | "run">,
+): { title: string; description: string } | null {
+  const run = s.run;
+  if (s.open || !run) return null;
+  const rows =
+    run.expectedRows !== null && run.expectedRows > 0
+      ? `${formatCount(run.rows)} of ${rowsLabel(run.expectedRows)}`
+      : rowsLabel(run.rows);
+  const table =
+    run.table && run.table.count > 1
+      ? `${run.table.name} (${formatCount(run.table.index + 1)} of ${formatCount(run.table.count)}) · `
+      : "";
+  return {
+    title: `Exporting ${basename(run.path)}`,
+    description: `${table}${rows} · ${formatBytes(run.bytes)}${run.cancelling ? " · canceling…" : ""}`,
+  };
 }
 
 /**

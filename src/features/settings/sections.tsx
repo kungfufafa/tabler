@@ -27,6 +27,7 @@ import {
   TableDataSettings,
 } from "@/features/table-tab/TableDataSettings";
 import { shortcutFor } from "@/lib/keys/keymap";
+import { SECRET_STORE } from "@/lib/platform";
 import {
   CONNECT_TIMEOUT_RANGE,
   EDITOR_FONT_SIZE_RANGE,
@@ -394,7 +395,7 @@ export function ConnectionsSection() {
         <div className="flex items-start gap-2.5 px-3 py-2.5">
           <KeyRound aria-hidden className="text-muted-foreground mt-[3px] size-3.5 shrink-0" />
           <div className="flex flex-col gap-0.5">
-            <p className="text-sm leading-5">Passwords are stored in the macOS Keychain</p>
+            <p className="text-sm leading-5">Passwords are stored in the {SECRET_STORE}</p>
             <p className="text-muted-foreground text-xs leading-4">
               Connection profiles never contain secrets.
             </p>

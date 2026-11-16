@@ -76,7 +76,11 @@ export function DatabaseList({
           disabled && "pointer-events-none opacity-50",
         )}
       >
-        {loading && <QuietStatus>Loading databases</QuietStatus>}
+        {loading && (
+          <QuietStatus delay={400} className="block px-3 py-1.5">
+            Loading databases
+          </QuietStatus>
+        )}
         {error !== null && (
           <div className="flex flex-col items-start gap-2 px-3 py-2">
             <FormError title={error} className="[&>span]:line-clamp-4">

@@ -91,12 +91,34 @@ export function openBackup(request: BackupRequest): void {
   });
 }
 
-/** Closes the window; a running job keeps going and reports through a toast. */
+/**
+ * Closes the window; a running job keeps going, shows its progress in a toast
+ * (`backupProgressToast`) and reports through a toast when it ends.
+ */
 export function closeBackup(): void {
   useBackupStore.setState((s) => ({
     request: null,
     run: s.run?.status === "running" ? s.run : null,
   }));
+}
+
+/** "Show" on the progress toast: the window again, on the running job. */
+export function reopenBackup(): void {
+  const run = useBackupStore.getState().run;
+  if (run?.status === "running")
+    openBackup({ mode: run.mode, profileId: run.profileId, database: run.database });
+}
+
+/** The progress toast while the window is closed during a job; null = no toast. */
+export function backupProgressToast(
+  s: Pick<BackupState, "request" | "run">,
+): { title: string; description: string } | null {
+  const run = s.run;
+  if (s.request !== null || run?.status !== "running") return null;
+  return {
+    title: run.mode === "backup" ? `Backing up ${run.database}` : `Restoring into ${run.database}`,
+    description: `${bytesLabel(run)}${run.cancelling ? " · canceling…" : ""}`,
+  };
 }
 
 /** Lets go of the closed window's content once it has animated out. */
