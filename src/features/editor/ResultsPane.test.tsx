@@ -144,6 +144,35 @@ describe("results pane", { timeout: 20_000 }, () => {
     expect(within(footer()).getByRole("button", { name: "Show Row Numbers" })).toBeInTheDocument();
   });
 
+  it("keeps Pin Result and row numbers out of the ⚙ menu (the footer has them)", async () => {
+    const { run } = setup();
+    await run("select id from users limit 2");
+    fireEvent.keyDown(await screen.findByRole("button", { name: "Result options" }), {
+      key: "Enter",
+    });
+    const menu = await screen.findByRole("menu");
+    expect(
+      within(menu).getByRole("menuitemradio", { name: /Split Results into Tabs/ }),
+    ).toBeInTheDocument();
+    expect(within(menu).queryByText(/Pin Result|Row Numbers/)).not.toBeInTheDocument();
+  });
+
+  it("closes a stale Plan tab with its ×", async () => {
+    const { id, run } = setup();
+    await run("select id from users limit 2");
+    await act(() => actions.run("query.explain"));
+    expect(await screen.findByRole("tab", { name: "Plan" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close Plan" }));
+    expect(getQueryTab(id).plan).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Plan" })).not.toBeInTheDocument();
+    // Back to the run's result.
+    expect(getQueryTab(id).pane).toBe(getQueryTab(id).run!.results[0]!.id);
+    expect(screen.getByRole("tab", { name: "Result 1" })).toHaveAttribute("aria-selected", "true");
+  });
+
   it("edits a result from one table and commits it with ⌘S", async () => {
     const { id, run } = setup();
     await run("select id, email from users limit 5");
@@ -224,9 +253,10 @@ describe("results pane", { timeout: 20_000 }, () => {
     const { id, run } = setup();
     await run("select id from users limit 2");
     fireEvent.click(await within(footer()).findByRole("button", { name: "Pin Result" }));
-    expect(
-      await screen.findByRole("tab", { name: /Pinned.*Result 1 · 2 rows/ }),
-    ).toBeInTheDocument();
+    // The only result tab: no counts in its label (the footer has them).
+    expect(await screen.findByRole("tab", { name: /Pinned.*Result 1/ })).toHaveTextContent(
+      /^Result 1$/,
+    );
     await run("select id from posts limit 3");
     const tabs = screen.getAllByRole("tab", { name: /Result 1/ });
     expect(tabs.map((t) => t.textContent)).toEqual([
@@ -282,7 +312,7 @@ describe("results pane", { timeout: 20_000 }, () => {
       const { run } = setup();
       await run("select id from users limit 2");
       fireEvent.click(await within(footer()).findByRole("button", { name: "Pin Result" }));
-      await screen.findByRole("tab", { name: /Pinned.*Result 1 · 2 rows/ });
+      await screen.findByRole("tab", { name: /Pinned.*Result 1/ });
       await run("select id from posts limit 3");
       // Back to the pinned result, then its grid's menu.
       fireEvent.click(screen.getByRole("tab", { name: /Pinned.*Result 1 · 2 rows/ }));
