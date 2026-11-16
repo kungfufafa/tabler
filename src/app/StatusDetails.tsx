@@ -144,7 +144,8 @@ export function StatusDetails({
         <Row label="Connected">{at === null ? "—" : sinceLabel(at)}</Row>
       </dl>
       <ColorRow conn={conn} />
-      <div className="border-border flex items-center justify-end gap-1.5 border-t pt-2.5">
+      {/* Wraps: with Reconnect (Reconnecting…) the three buttons are wider than the w-80 popover. */}
+      <div className="border-border flex flex-wrap items-center justify-end gap-1.5 border-t pt-2.5">
         <Button
           variant="ghost"
           size="xs"
