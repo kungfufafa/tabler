@@ -60,6 +60,8 @@ import { groupByDay, HISTORY_KEY, timeOfDay } from "./historyGroups";
 import { plural, rowsLabel } from "./labels";
 
 const SEARCH_DEBOUNCE_MS = 200;
+/** How long a deleted entry can still be brought back with the toast's Undo. */
+export const HISTORY_UNDO_MS = 5000;
 
 function useDebounced<T>(value: T, ms: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -146,18 +148,21 @@ export function HistorySheet({
     enabled: open && historyMatcher(term, options) !== "invalid",
     placeholderData: (prev) => prev,
   });
+  /** Entries deleted in the sheet but still undoable: hidden now, deleted when the toast ends. */
+  const [undoable, setUndoable] = useState<ReadonlySet<number>>(() => new Set());
   // The fetch is debounced and keeps showing the previous list until the new one lands. Filter by
   // what is typed right now, so the rows on screen (and the one Enter / ⌘↩ acts on) always match.
   const entries = useMemo(
     () =>
       typedMatcher === "invalid"
         ? []
-        : typeof typedMatcher === "function"
-          ? (history.data ?? []).filter((e) => typedMatcher(e.sql))
-          : (history.data ?? []),
+        : (history.data ?? []).filter(
+            (e) =>
+              !undoable.has(e.id) && (typeof typedMatcher !== "function" || typedMatcher(e.sql)),
+          ),
     // The matcher is rebuilt each render; what it depends on is listed instead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [history.data, needle, options],
+    [history.data, needle, options, undoable],
   );
   const setOptions = (patch: Partial<HistorySearchOptions>) =>
     setOptionsState((o) => {
@@ -199,6 +204,60 @@ export function HistorySheet({
     onError: (e) =>
       toast.error("Could not delete the entry", { description: toIpcError(e).message }),
   });
+  /** Deletes waiting for their Undo window to end, by entry id. */
+  const pendingDeletes = useRef(new Map<number, ReturnType<typeof setTimeout>>());
+  const commitDelete = (id: number) => {
+    const timer = pendingDeletes.current.get(id);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    pendingDeletes.current.delete(id);
+    remove.mutate([id], {
+      onSettled: () =>
+        setUndoable((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        }),
+    });
+  };
+  const commitDeleteRef = useRef(commitDelete);
+  commitDeleteRef.current = commitDelete;
+  // A delete still in its Undo window when the editor goes away is kept, not forgotten.
+  useEffect(() => {
+    const pending = pendingDeletes.current;
+    return () => {
+      for (const id of [...pending.keys()]) commitDeleteRef.current(id);
+    };
+  }, []);
+  /**
+   * One entry (the trash icon, ⌘⌫): it leaves the list at once and is deleted when the toast's
+   * Undo window ends, so a slip of the mouse is not permanent.
+   */
+  const deleteEntry = (e: HistoryEntry) => {
+    if (pendingDeletes.current.has(e.id)) return;
+    setUndoable((prev) => new Set(prev).add(e.id));
+    pendingDeletes.current.set(
+      e.id,
+      setTimeout(() => commitDeleteRef.current(e.id), HISTORY_UNDO_MS),
+    );
+    toast.message("Deleted the history entry", {
+      duration: HISTORY_UNDO_MS,
+      action: {
+        label: "Undo",
+        onClick: () => {
+          const timer = pendingDeletes.current.get(e.id);
+          if (timer === undefined) return;
+          clearTimeout(timer);
+          pendingDeletes.current.delete(e.id);
+          setUndoable((prev) => {
+            const next = new Set(prev);
+            next.delete(e.id);
+            return next;
+          });
+        },
+      },
+    });
+  };
   const clear = useMutation({
     mutationFn: () => ipc.history.clear(null),
     onSuccess: () => {
@@ -235,7 +294,7 @@ export function HistorySheet({
       // In the search field ⌘⌫ deletes the typed text; only the focused list deletes entries.
       if (isTextField(target) || !activeEntry) return;
       ev.preventDefault();
-      remove.mutate([activeEntry.id]);
+      deleteEntry(activeEntry);
     }
   };
 
@@ -395,7 +454,7 @@ export function HistorySheet({
                           className="hover:text-error shrink-0 opacity-0 transition-colors group-hover:opacity-100"
                           onClick={(ev) => {
                             ev.stopPropagation();
-                            remove.mutate([e.id]);
+                            deleteEntry(e);
                           }}
                         >
                           <Trash2 className="size-3.5" />
