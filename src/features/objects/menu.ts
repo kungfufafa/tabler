@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { coreDialect } from "@/features/drivers/catalog";
 import type { Dialect, Driver, Feature } from "@/lib/ipc";
+import { isMac } from "@/lib/keys/combo";
 import {
   isMatchStrategy,
   MATCH_STRATEGIES,
@@ -77,6 +78,12 @@ export type MenuEntry =
   | { kind: "label"; id: string; label: string };
 
 const sep = (id: string): MenuEntry => ({ kind: "separator", id });
+
+/**
+ * The key a sidebar row deletes with, as its menu shows it: ⌫ on macOS (TablePlus), elsewhere the
+ * Del key people press there (the tree takes both).
+ */
+export const DELETE_SHORTCUT = isMac ? "Backspace" : "Delete";
 
 /** The feature each entry needs (`SessionCaps.features`); the others need none. */
 const ENTRY_FEATURE: Readonly<Record<string, Feature>> = {
@@ -336,6 +343,7 @@ export function tableMenu(
       id: "copy-name",
       label: o.count > 1 ? `Copy ${o.count} Names` : "Copy Name",
       icon: Copy,
+      shortcut: "Mod+C",
       onSelect: on.copyName,
     },
   ];
@@ -412,6 +420,7 @@ export function tableMenu(
       id: "rename",
       label: "Rename…",
       icon: PencilLine,
+      shortcut: "F2",
       disabled: o.readOnly || !o.renamable || o.count > 1,
       onSelect: on.rename,
     },
@@ -429,7 +438,7 @@ export function tableMenu(
       id: "delete",
       label: `Delete${many(o.droppable)}…`,
       icon: Trash2,
-      shortcut: "Backspace",
+      shortcut: DELETE_SHORTCUT,
       destructive: true,
       disabled: o.readOnly || o.droppable === 0,
       onSelect: on.drop,
@@ -583,6 +592,7 @@ export function objectMenu(
       id: "copy-name",
       label: o.count > 1 ? `Copy ${o.count} Names` : "Copy Name",
       icon: Copy,
+      shortcut: "Mod+C",
       onSelect: on.copyName,
     },
     ...groupItems,
@@ -613,7 +623,7 @@ export function objectMenu(
       id: "delete",
       label: `Delete${many(o.droppable ?? o.count)}…`,
       icon: Trash2,
-      shortcut: "Backspace",
+      shortcut: DELETE_SHORTCUT,
       destructive: true,
       disabled: o.readOnly || o.droppable === 0,
       onSelect: on.drop,
