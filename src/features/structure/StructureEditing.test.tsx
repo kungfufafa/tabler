@@ -359,6 +359,84 @@ describe("columns grid", () => {
     expect(cell("c:body:foreignKey")).toHaveTextContent("tags(id)");
   });
 
+  it("an empty foreign_key cell says EMPTY; the → of a key opens the referenced table", async () => {
+    await setup("p-local-pg", { schema: "public", name: "posts" });
+    expect(cell("c:body:foreignKey")).toHaveTextContent("EMPTY");
+    fireEvent.click(screen.getByRole("button", { name: "Open users" }));
+    expect(useTabsStore.getState().tabs.at(-1)).toMatchObject({
+      kind: "structure",
+      table: { schema: "public", name: "users" },
+    });
+  });
+
+  it("double-click or Enter on a foreign key row edits it (staged as a replace)", async () => {
+    const { ops } = await setup("p-local-pg", { schema: "public", name: "posts" });
+    const row = screen.getByText("posts_user_id_fkey").closest("tr")!;
+    fireEvent.doubleClick(row);
+    const dialog = await screen.findByRole("dialog", { name: "Edit Foreign Key" });
+    const form = within(dialog).getByRole("form", { name: "Foreign key" });
+    expect(within(form).getByLabelText("Constraint name")).toHaveValue("posts_user_id_fkey");
+    fireEvent.change(within(form).getByLabelText("On delete"), { target: { value: "SET NULL" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(ops().map((o) => o.op)).toEqual(["dropForeignKey", "addForeignKey"]);
+    expect(ops()[1]).toMatchObject({
+      fk: { name: "posts_user_id_fkey", columns: ["user_id"], onDelete: "SET NULL" },
+    });
+
+    // Enter on the focused row opens it as well (the staged key that replaces the old one)
+    const again = document.querySelector<HTMLElement>('[data-row-kind="fk"][data-status="added"]')!;
+    again.focus();
+    fireEvent.keyDown(again, { key: "Enter" });
+    const edit = await screen.findByRole("dialog", { name: "Edit Foreign Key" });
+    fireEvent.click(within(edit).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(ops().map((o) => o.op)).toEqual(["dropForeignKey", "addForeignKey"]);
+
+    // + Foreign Key afterwards starts a new, empty key
+    const fks = screen.getByRole("region", { name: "Foreign keys" });
+    fireEvent.click(within(fks).getByRole("button", { name: "Foreign Key" }));
+    const add = await screen.findByRole("dialog", { name: "Add Foreign Key" });
+    expect(within(add).getByLabelText("Constraint name")).toHaveValue("");
+  });
+
+  it("index, check, foreign key and trigger rows have a right-click menu", async () => {
+    const { ops } = await setup("p-local-pg", { schema: "public", name: "posts" });
+    fireEvent.contextMenu(cell("i:posts_pkey:name").closest("tr")!);
+    // the primary key cannot be dropped here: Add and Copy Name only
+    expect(screen.getByRole("menuitem", { name: "Add Index" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Copy Name" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Delete Index" })).toBeNull();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+
+    fireEvent.contextMenu(screen.getByText("posts_user_id_fkey").closest("tr")!);
+    expect(screen.getByRole("menuitem", { name: "Edit Foreign Key…" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete Foreign Key" }));
+    expect(ops()).toEqual([expect.objectContaining({ op: "dropForeignKey" })]);
+  });
+
+  it("Escape in the index column picker backs out; Done applies", async () => {
+    const { ops } = await setup();
+    screen.getByRole("button", { name: "Select column email" }).focus();
+    fireEvent.click(screen.getAllByRole("button", { name: "Index" })[0]!);
+    await waitFor(() => expect(ops().map((o) => o.op)).toEqual(["addIndex"]));
+    const staged = () => JSON.stringify(ops());
+    const before = staged();
+    fireEvent.click(cell("ni:0:columns"));
+    const group = await screen.findByRole("group", { name: /columns$/ });
+    fireEvent.click(within(group).getByRole("button", { name: "name" }));
+    fireEvent.keyDown(group, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("group", { name: /columns$/ })).toBeNull());
+    expect(staged()).toBe(before);
+    expect(cell("ni:0:columns")).not.toHaveTextContent("name");
+
+    fireEvent.click(cell("ni:0:columns"));
+    const again = await screen.findByRole("group", { name: /columns$/ });
+    fireEvent.click(within(again).getByRole("button", { name: "name" }));
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(cell("ni:0:columns")).toHaveTextContent("email, name"));
+  });
+
   it("⌘F searches the columns; Delete drops the selected row", async () => {
     const { ops } = await setup();
     await act(() => actions.run("grid.filter"));
@@ -432,7 +510,7 @@ describe("indexes and checks", () => {
     fireEvent.click(include);
     const group = await screen.findByRole("group", { name: "users_email_idx include" });
     fireEvent.click(within(group).getByRole("button", { name: "name" }));
-    fireEvent.keyDown(group, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
     await waitFor(() =>
       expect(ops()[0]).toMatchObject({ op: "addIndex", index: { include: ["name"] } }),
     );
@@ -449,6 +527,14 @@ describe("indexes and checks", () => {
       .getAllByRole("columnheader")
       .map((h) => h.textContent);
     expect(heads).not.toContain("include");
+  });
+
+  it("an empty section is just its bar: no header row, no placeholder", async () => {
+    await setup();
+    const fks = screen.getByRole("region", { name: "Foreign keys" });
+    expect(within(fks).queryByRole("table")).toBeNull();
+    expect(within(fks).getByText("0")).toBeInTheDocument();
+    expect(within(fks).getByRole("button", { name: "Foreign Key" })).toBeInTheDocument();
   });
 
   it("+ Check adds a check; an empty one goes away again", async () => {
@@ -575,5 +661,31 @@ describe("triggers", () => {
     expect((await structureSection()).section).toHaveTextContent(
       'DROP TRIGGER "posts_set_updated_at" ON "public"."posts"',
     );
+  });
+
+  it("the trigger editor asks before an Escape or Cancel throws an edited body away", async () => {
+    await setup("p-local-pg", { schema: "public", name: "posts" });
+    fireEvent.click(screen.getByRole("button", { name: "Triggers" }));
+    const region = screen.getByRole("region", { name: "Triggers" });
+    fireEvent.doubleClick(within(region).getByText("posts_set_updated_at").closest("tr")!);
+    let dialog = await screen.findByRole("dialog", { name: "Edit Trigger" });
+    // untouched: Cancel closes at once
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.doubleClick(within(region).getByText("posts_set_updated_at").closest("tr")!);
+    dialog = await screen.findByRole("dialog", { name: "Edit Trigger" });
+    const editor = EditorView.findFromDOM(
+      within(dialog).getByTestId("structure-sql-editor").querySelector(".cm-editor") as HTMLElement,
+    )!;
+    act(() => editor.dispatch({ changes: { from: 0, insert: "-- note\n" } }));
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" });
+    fireEvent.click(screen.getByRole("button", { name: "Keep Editing" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(editor.state.doc.toString()).toMatch(/^-- note\n/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 });

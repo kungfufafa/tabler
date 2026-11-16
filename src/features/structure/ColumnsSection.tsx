@@ -1,4 +1,12 @@
-import { KeyRound, ListPlus, Plus, SlidersHorizontal, Trash2, Undo2 } from "lucide-react";
+import {
+  ArrowRight,
+  KeyRound,
+  ListPlus,
+  Plus,
+  SlidersHorizontal,
+  Trash2,
+  Undo2,
+} from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { Kbd } from "@/components/Kbd";
 import { SectionLabel } from "@/components/SectionLabel";
@@ -16,7 +24,7 @@ import type { Dialect, FkDef, TableRef } from "@/lib/ipc";
 import { isMac } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
-import { CellPopover, ChoiceCell, FlagsCell, PresetMenu, CELL_BUTTON } from "./cells";
+import { CellChevron, CellPopover, ChoiceCell, FlagsCell, PresetMenu, CELL_BUTTON } from "./cells";
 import {
   GRID_LABEL,
   gridColumns,
@@ -33,10 +41,21 @@ import { ForeignKeyForm } from "./KeyDialogs";
 import type { ColumnRow, FkRow, StructureView } from "./model";
 import { columnCheck } from "./objects";
 import { BlankRow, EmptyRow } from "./OtherSections";
-import { BAR_BUTTON, CellInput, Field, HEAD_ROW, IconAction, SectionHeader } from "./parts";
+import {
+  BAR_BUTTON,
+  CellInput,
+  CopyNameItem,
+  DeleteRowShortcut,
+  MenuKeys,
+  Field,
+  HEAD_ROW,
+  IconAction,
+  SectionHeader,
+} from "./parts";
 
 export interface ColumnHandlers {
-  onEdit: (key: string, field: ColumnField, raw: string | boolean) => void;
+  /** False when the edit was refused (a toast says why): the cell keeps what was typed. */
+  onEdit: (key: string, field: ColumnField, raw: string | boolean) => boolean | void;
   /** A `column_default` preset; `value` is the typed constant for "Constant…". */
   onPreset: (key: string, preset: DefaultPreset, value?: string) => void;
   /** PostgreSQL `check` cell of the column called `column` (null / "" removes it). */
@@ -55,6 +74,8 @@ export interface ColumnHandlers {
    * ⇧ extends) for the sidebar's bulk edit and for Delete.
    */
   onSelect?: (key: string, mods: { meta: boolean; shift: boolean }) => void;
+  /** Follows a foreign key to its referenced table (the → next to a `foreign_key` cell). */
+  onOpenTable?: (table: TableRef) => void;
 }
 
 const NULLABLE = [
@@ -190,15 +211,21 @@ export function ColumnsSection({
               handlers={handlers}
             />
           ))}
-          {shown.length === 0 && (
+          {shown.length === 0 && !editable && (
             <EmptyRow
               span={cols.length + 2}
               text={rows.length === 0 ? "No columns" : "No matches"}
-              kind={editable ? "columns" : undefined}
             />
           )}
           {editable && (
-            <BlankRow span={cols.length + 2} kind="columns" text="+ double-click to add a column" />
+            <BlankRow
+              span={cols.length + 2}
+              kind="columns"
+              text="+ double-click to add a column"
+              empty={
+                shown.length === 0 ? (rows.length === 0 ? "No columns" : "No matches") : undefined
+              }
+            />
           )}
         </tbody>
       </table>
@@ -398,6 +425,7 @@ function ColumnRowView({
               columns={liveNames}
               onSave={handlers.onSaveFk}
               onDelete={handlers.onDeleteFk}
+              onOpenTable={handlers.onOpenTable}
             />
           </td>
         );
@@ -493,19 +521,26 @@ function ColumnRowView({
     </tr>
   );
   if (!editable) return rowEl;
-  // Right-click menu of the row: MySQL places a new column after this one (`AFTER`).
+  // Right-click menu of the row: MySQL places a new column after this one (`AFTER`). The keys
+  // that do the same on the row are listed next to the items, as TablePlus menus do.
+  const addKeys = shortcutFor("grid.new-row");
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{rowEl}</ContextMenuTrigger>
-      <ContextMenuContent className="min-w-44" aria-label={`Column ${r.name}`}>
+      <ContextMenuContent className="min-w-48" aria-label={`Column ${r.name}`}>
         {supportsColumnPosition(dialect) && !dropped && (
           <ContextMenuItem onSelect={() => onAdd(r.name)}>Insert Column After</ContextMenuItem>
         )}
-        <ContextMenuItem onSelect={() => onAdd()}>Add Column</ContextMenuItem>
+        <ContextMenuItem onSelect={() => onAdd()}>
+          Add Column
+          {addKeys && <MenuKeys combo={addKeys} />}
+        </ContextMenuItem>
+        {!many && r.name && <CopyNameItem name={r.name} />}
         <ContextMenuSeparator />
         {dropped ? (
           <ContextMenuItem onSelect={dropRows}>
             {many ? `Restore ${targets.length} Columns` : "Restore Column"}
+            <DeleteRowShortcut />
           </ContextMenuItem>
         ) : (
           <ContextMenuItem onSelect={dropRows}>
@@ -514,6 +549,7 @@ function ColumnRowView({
               : added
                 ? "Remove New Column"
                 : "Delete Column"}
+            <DeleteRowShortcut />
           </ContextMenuItem>
         )}
       </ContextMenuContent>
@@ -638,6 +674,7 @@ function FkCell({
   columns,
   onSave,
   onDelete,
+  onOpenTable,
 }: {
   row: ColumnRow;
   fk: FkRow | null;
@@ -647,6 +684,7 @@ function FkCell({
   columns: string[];
   onSave: (replaces: string | null, fk: FkDef) => void;
   onDelete: (key: string) => void;
+  onOpenTable?: (table: TableRef) => void;
 }) {
   const [open, setOpen] = useState(false);
   const label = fk ? `${fk.refTable.name}(${fk.refColumns.join(", ")})` : "";
@@ -664,48 +702,77 @@ function FkCell({
       )}
       title={label || undefined}
     >
-      <span className={cn("truncate", fk && "text-brand")}>{label}</span>
+      {/* TablePlus shows a muted EMPTY, so the blank cell reads as something to click. */}
+      {fk ? (
+        <span className="text-brand truncate">{label}</span>
+      ) : canEdit ? (
+        <span className="text-null truncate italic">EMPTY</span>
+      ) : null}
+      {canEdit && <CellChevron />}
     </button>
   );
-  if (!canEdit) return trigger;
+  // The → follows the key to its table; it sits outside the trigger, which takes no pointer
+  // events on a read-only view.
+  const follow = fk && onOpenTable && (
+    <IconAction
+      label={`Open ${fk.refTable.name}`}
+      onClick={() => onOpenTable(fk.refTable)}
+      tabIndex={-1}
+      className="size-5 shrink-0"
+    >
+      <ArrowRight />
+    </IconAction>
+  );
+  if (!canEdit)
+    return follow ? (
+      <div className="flex min-w-0 items-center gap-0.5">
+        {trigger}
+        {follow}
+      </div>
+    ) : (
+      trigger
+    );
   return (
-    <CellPopover open={open} onOpenChange={setOpen} trigger={trigger}>
-      <SectionLabel as="p">
-        {fk ? "Foreign key" : "Create a foreign key on column"}{" "}
-        <span className="font-mono">{r.name}</span>
-      </SectionLabel>
-      <ForeignKeyForm
-        connectionId={connectionId}
-        table={table}
-        columns={columns}
-        initial={
-          fk
-            ? {
-                columns: fk.columns,
-                refTable: fk.refTable,
-                refColumns: fk.refColumns,
-                onUpdate: fk.onUpdate,
-                onDelete: fk.onDelete,
-              }
-            : { columns: [r.name] }
-        }
-        showName={false}
-        submitLabel="Ok"
-        onSubmit={(def) => {
-          onSave(fk?.key ?? null, def);
-          setOpen(false);
-        }}
-        onCancel={() => setOpen(false)}
-        onDelete={
-          fk
-            ? () => {
-                onDelete(fk.key);
-                setOpen(false);
-              }
-            : undefined
-        }
-      />
-    </CellPopover>
+    <div className="flex min-w-0 items-center gap-0.5">
+      <CellPopover open={open} onOpenChange={setOpen} trigger={trigger}>
+        <SectionLabel as="p">
+          {fk ? "Foreign key" : "Create a foreign key on column"}{" "}
+          <span className="font-mono">{r.name}</span>
+        </SectionLabel>
+        <ForeignKeyForm
+          connectionId={connectionId}
+          table={table}
+          columns={columns}
+          initial={
+            fk
+              ? {
+                  columns: fk.columns,
+                  refTable: fk.refTable,
+                  refColumns: fk.refColumns,
+                  onUpdate: fk.onUpdate,
+                  onDelete: fk.onDelete,
+                }
+              : { columns: [r.name] }
+          }
+          showName={false}
+          submitLabel="Ok"
+          onSubmit={(def) => {
+            onSave(fk?.key ?? null, def);
+            setOpen(false);
+          }}
+          onCancel={() => setOpen(false)}
+          onDelete={
+            fk
+              ? () => {
+                  onDelete(fk.key);
+                  setOpen(false);
+                }
+              : undefined
+          }
+        />
+      </CellPopover>
+      {follow}
+    </div>
   );
 }
 
@@ -716,7 +783,8 @@ function DetailsButton({
 }: {
   row: ColumnRow;
   collationsId: string;
-  onEdit: (key: string, field: ColumnField, raw: string | boolean) => void;
+  /** False when the edit was refused (a toast says why): the cell keeps what was typed. */
+  onEdit: (key: string, field: ColumnField, raw: string | boolean) => boolean | void;
 }) {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState(r.collation ?? "");

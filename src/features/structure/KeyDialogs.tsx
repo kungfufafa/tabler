@@ -234,6 +234,7 @@ export function AddForeignKeyDialog({
   table,
   columns,
   onAdd,
+  initial,
   returnFocus,
 }: {
   open: boolean;
@@ -241,9 +242,13 @@ export function AddForeignKeyDialog({
   connectionId: string;
   table: TableRef;
   columns: readonly string[];
+  /** Called with the new key, or with the edited one when `initial` is set. */
   onAdd: (fk: FkDef) => void;
+  /** An existing key opened from its row: the dialog edits it (staged as a drop + create). */
+  initial?: Partial<FkDef>;
   returnFocus?: () => void;
 }) {
+  const editing = initial !== undefined;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -255,15 +260,25 @@ export function AddForeignKeyDialog({
         }}
       >
         <DialogHeader>
-          <DialogTitle className="text-sm">Add Foreign Key</DialogTitle>
+          <DialogTitle className="text-sm">
+            {editing ? "Edit Foreign Key" : "Add Foreign Key"}
+          </DialogTitle>
           <DialogDescription className="text-xs">
-            From <span className="font-mono">{table.name}</span> to a table of the same schema.
+            {editing ? (
+              "Staged until you apply: the key is dropped and created again."
+            ) : (
+              <>
+                From <span className="font-mono">{table.name}</span> to a table of the same schema.
+              </>
+            )}
           </DialogDescription>
         </DialogHeader>
         <ForeignKeyForm
           connectionId={connectionId}
           table={table}
           columns={columns}
+          initial={initial}
+          submitLabel={editing ? "Save" : undefined}
           onSubmit={(fk) => {
             onAdd(fk);
             onOpenChange(false);
