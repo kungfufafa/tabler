@@ -1,4 +1,4 @@
-import { FileDown, Filter, Plus } from "lucide-react";
+import { FileDown, Filter, Lock, Plus } from "lucide-react";
 import type { ReactNode } from "react";
 import { QuietStatus } from "@/components/QuietLoading";
 import { Button } from "@/components/ui/button";
@@ -84,8 +84,9 @@ function RowSummary({
         </span>
       )}
       {loading ? (
-        // Nothing to look at while a page loads: the rows and the time appear when it is in.
-        <QuietStatus />
+        // Nothing to look at while a page loads quickly: the rows and the time appear when it is
+        // in. A slow one says "Loading…" in the time's place, so a click on › does not look dead.
+        <QuietStatus delay={400} className="shrink-0 p-0" />
       ) : (
         durationMs !== null && (
           <span className="text-muted-foreground shrink-0 @max-xl:hidden">
@@ -103,6 +104,11 @@ export interface TableBottomBarProps {
   /** `[+ Row]` inserts a row (disabled on read-only tables). */
   canAddRow: boolean;
   onAddRow: () => void;
+  /**
+   * Why the rows cannot be edited: a quiet "Read-only" label after `[+ Row]` with this as its
+   * tooltip, so the state shows before the user tries to edit.
+   */
+  readOnlyReason?: string;
   // ---- the row summary and paging
   offset: number;
   limit: number;
@@ -173,6 +179,21 @@ export function TableBottomBar(p: TableBottomBarProps) {
           <span className="@max-md:hidden">Add Row</span>
         </Button>
       </BarTooltip>
+      {p.readOnlyReason && (
+        <BarTooltip label={p.readOnlyReason}>
+          {/* Focusable, so the reason is reachable from the keyboard too. */}
+          <span
+            role="note"
+            tabIndex={0}
+            data-testid="read-only"
+            aria-label={p.readOnlyReason}
+            className="text-muted-foreground focus-visible:ring-ring/50 flex shrink-0 items-center gap-1 rounded-sm px-1 text-xs outline-none focus-visible:ring-2"
+          >
+            <Lock aria-hidden className="size-3" />
+            <span className="@max-lg:hidden">Read-only</span>
+          </span>
+        </BarTooltip>
+      )}
       <div className="flex min-w-0 flex-1 justify-center px-1">
         <RowSummary
           offset={p.offset}

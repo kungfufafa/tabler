@@ -113,6 +113,7 @@ export function Pagination({
     <div className="border-border bg-surface flex h-7 shrink-0 items-center gap-1 rounded-md border @max-sm:gap-0">
       <BarIconButton
         label="Previous page"
+        action="grid.prev-page"
         disabled={atFirst}
         onClick={() =>
           cursor ? cursor.onTurn(-1) : onChange({ offset: Math.max(0, offset - limit), limit })
@@ -281,6 +282,7 @@ export function Pagination({
       </Popover>
       <BarIconButton
         label="Next page"
+        action="grid.next-page"
         disabled={!hasNext}
         onClick={() => (cursor ? cursor.onTurn(1) : onChange({ offset: offset + limit, limit }))}
       >

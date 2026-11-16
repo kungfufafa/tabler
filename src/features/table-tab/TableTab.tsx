@@ -3,6 +3,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
+import { Button } from "@/components/ui/button";
+import { useDelayedFlag } from "@/hooks/useDelayedFlag";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -65,6 +67,7 @@ import {
   type Conjunction,
   type RowKey,
   type SortSpec,
+  type TableKind,
   type Value,
 } from "@/lib/ipc";
 import { capsOf, featureLabel, has, sessionDialect } from "@/lib/caps";
@@ -151,6 +154,35 @@ function uniqueRows(page: BrowsePage): BrowsePage {
 }
 
 const NO_CURSOR_PAGES: NonNullable<TableTabState["cursorPages"]>["stack"] = [];
+
+const KIND_NOUN: Partial<Record<TableKind, string>> = {
+  view: "a view",
+  materializedView: "a materialized view",
+  foreignTable: "a foreign table",
+  systemView: "a system view",
+  partitioned: "a partitioned table",
+};
+
+/**
+ * Why a table tab's rows cannot be edited, in the user's words: the first reason that applies,
+ * so the user knows whether another object, the connection or the session is the cause.
+ */
+function readOnlyWhy(p: {
+  kind: TableKind | undefined;
+  connectionReadOnly: boolean;
+  canEdit: boolean;
+  noKey: boolean;
+  /** "Editing rows is not available for … connections". */
+  notAvailable: string;
+}): string {
+  if (p.kind && p.kind !== "table")
+    return `Read-only: this is ${KIND_NOUN[p.kind] ?? "not a table"}, so its rows cannot be edited here`;
+  if (p.connectionReadOnly) return "Read-only: the connection is read-only";
+  if (!p.canEdit) return `Read-only: ${p.notAvailable}`;
+  if (p.noKey)
+    return "Read-only: the table has no primary key, and this connection cannot edit rows without one";
+  return "This table is read-only";
+}
 
 export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   const { connectionId, table } = tab;
@@ -321,6 +353,9 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     [state.offset, state.limit, cursorAt, state.sort, state.filters],
   );
   const rows = useTableRows(connectionId, table, request, state.refreshToken, pending > 0);
+  // A slow page, sort or filter: the old rows stay (no dimming) and a thin bar under the header
+  // says new ones are coming. Fast loads show nothing.
+  const refreshing = useDelayedFlag(rows.isFetching && !rows.isPending, 400);
   const rowNumbers = usePrefs((p) => p.gridRowNumbers);
   const estimateCount = usePrefs((p) => p.gridEstimateCount);
   const estimateAbove = usePrefs((p) => p.gridEstimateThreshold);
@@ -358,6 +393,16 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   // The page's key decides what an edit may do: without one, rows are matched by all their
   // columns, which a session must offer.
   const editable = tableEditable && (page?.identity !== "none" || has(caps, "editWithoutKey"));
+  /** Why the rows cannot be edited (the grid's notice and the bottom bar's "Read-only" tip). */
+  const readOnlyReason = editable
+    ? undefined
+    : readOnlyWhy({
+        kind: meta.data?.kind,
+        connectionReadOnly: connection?.info.readOnly ?? false,
+        canEdit: has(caps, "editRows"),
+        noKey: page?.identity === "none",
+        notAvailable: notAvailableFor(kind, featureLabel("editRows")),
+      });
   const canInsert = editable && has(caps, "insertRows");
   const canDelete = editable && has(caps, "deleteRows");
   // Grid columns follow the PAGE's columns (row cells are in that order); the metadata may be newer
@@ -1080,14 +1125,15 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
     update(tab.id, (s) => ({ filtersVisible: !s.filtersVisible }));
   };
   const onToggleColumn = (name: string, visible: boolean) =>
-    update(tab.id, (s) => ({
-      columnState: {
-        ...s.columnState,
-        hidden: visible
-          ? s.columnState.hidden.filter((h) => h !== name)
-          : [...s.columnState.hidden, name],
-      },
-    }));
+    update(tab.id, (s) => {
+      const hidden = visible
+        ? s.columnState.hidden.filter((h) => h !== name)
+        : [...s.columnState.hidden, name];
+      // Never every column: an empty grid has no header left to bring them back from.
+      const all = meta.data?.columns ?? [];
+      if (!visible && all.length > 0 && all.every((c) => hidden.includes(c.name))) return {};
+      return { columnState: { ...s.columnState, hidden } };
+    });
 
   const onSortChange = (sort: SortSpec[]) => guarded(() => update(tab.id, { sort, offset: 0 }));
   const onColumnStateChange = (columnState: ColumnState) => update(tab.id, { columnState });
@@ -1112,6 +1158,16 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
   const noKey = page?.identity === "none";
   /** Conditions the applied filter actually holds (blank and unchecked rows do nothing). */
   const appliedFilters = filterGroup?.items.length ?? 0;
+  /** The filter bar's Clear, also offered where a filter left nothing to show. */
+  const clearFilters = () => {
+    setDraft({ rows: [], conjunction: "and" });
+    guarded(() => update(tab.id, { filters: [], offset: 0 }));
+  };
+  const clearFiltersButton = filtered ? (
+    <Button variant="outline" size="sm" onClick={clearFilters}>
+      Clear Filters
+    </Button>
+  ) : null;
 
   return (
     <div ref={rootRef} className="flex h-full min-h-0 flex-col">
@@ -1129,10 +1185,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
           onApplyRow={applyFilterRow}
           appliedRows={state.filters}
           table={table.name}
-          onClear={() => {
-            setDraft({ rows: [], conjunction: "and" });
-            guarded(() => update(tab.id, { filters: [], offset: 0 }));
-          }}
+          onClear={clearFilters}
           onClose={() => {
             update(tab.id, { filtersVisible: false });
             focusGrid();
@@ -1151,13 +1204,20 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
       )}
       <div className="min-h-0 flex-1">
         {rows.isError ? (
-          <EmptyState title="Could not load the rows" description={errorWithHint(rows.error)} />
+          <EmptyState title="Could not load the rows" description={errorWithHint(rows.error)}>
+            <Button variant="outline" size="sm" onClick={() => void rows.refetch()}>
+              Try Again
+            </Button>
+            {clearFiltersButton}
+          </EmptyState>
         ) : (
           <DataGrid
             columns={columns}
             rowCount={viewRows.length}
             getRow={getRow}
             loading={rows.isPending}
+            refreshing={refreshing}
+            emptyAction={clearFiltersButton}
             emptyText={
               state.filters.length > 0
                 ? "No rows match the filter"
@@ -1184,7 +1244,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
                 : undefined
             }
             editable={editable && !!page}
-            readOnlyNotice={editable ? undefined : "This table is read-only"}
+            readOnlyNotice={readOnlyReason}
             active={isActive}
             onEditCommit={onEditCommit}
             onAction={onAction}
@@ -1209,6 +1269,7 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         leading={<ViewSwitch tabId={tab.id} view="table" />}
         canAddRow={canInsert && !!page}
         onAddRow={addRow}
+        readOnlyReason={page ? readOnlyReason : undefined}
         offset={byCursor ? (cursorAt?.before ?? 0) : state.offset}
         limit={state.limit}
         pageRows={page?.rows.length ?? 0}

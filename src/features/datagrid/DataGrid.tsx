@@ -29,6 +29,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
@@ -115,6 +116,8 @@ import { NOW_KINDS, NOW_LABEL } from "./setValue";
 import { addSort, nextSort } from "./sort";
 import {
   acceptsEmpty,
+  AUTO_FIT_SAMPLE_ROWS,
+  autoFitWidth,
   columnWidth,
   EMPTY_COLUMN_STATE,
   fkColumnsText,
@@ -195,7 +198,14 @@ export interface DataGridProps {
   rowCount: number;
   getRow: (index: number) => ViewRow | undefined;
   loading?: boolean;
+  /**
+   * New rows are on their way while the old ones still show (a slow page, sort or filter): a thin
+   * bar under the header says so. The caller sets it only after a delay, so fast loads show nothing.
+   */
+  refreshing?: boolean;
   emptyText?: string;
+  /** A way out under `emptyText` (e.g. Clear Filters when no rows match the filter). */
+  emptyAction?: ReactNode;
   sort?: SortSpec[];
   onSortChange?: (sort: SortSpec[]) => void;
   columnState?: ColumnState;
@@ -489,7 +499,9 @@ export function DataGrid({
   rowCount,
   getRow,
   loading,
+  refreshing = false,
   emptyText = "No rows",
+  emptyAction,
   sort = [],
   onSortChange,
   columnState: columnStateProp,
@@ -541,7 +553,18 @@ export function DataGrid({
   // `cols` are the visible columns in display order; `src[c]` maps a visual column to its index in
   // `columns` / `row.cells`. Selection and virtualization use visual indexes; data access uses src.
   const { cols, src } = useMemo(() => layoutColumns(columns, columnState), [columns, columnState]);
-  const widths = useMemo(() => cols.map((c) => columnWidth(c, columnState)), [cols, columnState]);
+  // Columns open sized to their content (TablePlus): each column the user has not sized is fitted
+  // once to the table's first rows. The fit is not remembered, so a later schema or data change
+  // fits again, and a column the user resizes keeps the user's width from then on.
+  const [fitted, setFitted] = useState<{ key: string; widths: Record<string, number> } | null>(
+    null,
+  );
+  const fitKey = useMemo(() => columns.map((c) => c.id).join("\u0001"), [columns]);
+  const fittedWidths = fitted?.key === fitKey ? fitted.widths : undefined;
+  const widths = useMemo(
+    () => cols.map((c) => columnWidth(c, columnState, fittedWidths)),
+    [cols, columnState, fittedWidths],
+  );
   const offsets = useMemo(() => {
     const out: number[] = new Array(widths.length + 1);
     out[0] = 0;
@@ -562,6 +585,24 @@ export function DataGrid({
     (row: ViewRow, c: number): Value => row.cells[src[c] ?? -1] ?? NULL,
     [src],
   );
+  // Before paint, so the columns do not visibly jump from their header widths.
+  useLayoutEffect(() => {
+    if (fitted?.key === fitKey || rowCount === 0 || loading) return;
+    const sample: ViewRow[] = [];
+    for (let r = 0; r < Math.min(rowCount, AUTO_FIT_SAMPLE_ROWS); r++) {
+      const row = getRow(r);
+      if (row) sample.push(row);
+    }
+    // Rows that are not loaded yet: fit once they are.
+    if (sample.length === 0) return;
+    const next: Record<string, number> = {};
+    columns.forEach((col, i) => {
+      const texts = sample.map((row) => cellDisplay(row.cells[i] ?? NULL, lacksFields).text);
+      const fk = fksOf(col).length > 0 ? 16 : 0;
+      next[col.id] = autoFitWidth(fitWidth(col, texts, gridFontSize) + fk);
+    });
+    setFitted({ key: fitKey, widths: next });
+  }, [fitted, fitKey, rowCount, loading, getRow, columns, gridFontSize, lacksFields]);
 
   const [restoredViewport] = useState(() =>
     viewport?.scope === JSON.stringify(scrollResetKey) ? { ...viewport } : undefined,
@@ -764,20 +805,43 @@ export function DataGrid({
     [editable, cols, getRow, valueAt],
   );
 
-  /** Opens the editor on a cell with its current value (typing never starts an edit). */
+  /**
+   * Opens the editor on a cell with its current value (typing never starts an edit), or with
+   * `text` (the edit a blur could not stage, reopened from its toast).
+   */
   const startEdit = useCallback(
-    (pos: CellPos) => {
+    (pos: CellPos, text?: string) => {
       if (!canEditCell(pos)) return;
       const row = getRow(pos.r)!;
       const value = valueAt(row, pos.c);
       setEditing({
         pos,
         source: src[pos.c]!,
-        initialText: value.t === "bytes" ? bytesHex(value.v.base64) : editText(value),
+        initialText: text ?? (value.t === "bytes" ? bytesHex(value.v.base64) : editText(value)),
       });
     },
     [canEditCell, getRow, src, valueAt],
   );
+  // The toast's "Edit" runs later, against the grid as it is then.
+  const startEditRef = useRef(startEdit);
+  startEditRef.current = startEdit;
+  /**
+   * A blur left an edit whose text does not parse: rather than lose it without a word, say why and
+   * offer to reopen the editor on the same cell with the typed text.
+   */
+  const dropInvalidEdit = (pos: CellPos, colName: string, text: string, error: string) => {
+    toast.error(`${colName}: ${error}`, {
+      description: "The edit was not staged.",
+      action: {
+        label: "Edit",
+        onClick: () => {
+          dispatch({ type: "set", pos });
+          focusGrid();
+          startEditRef.current(pos, text);
+        },
+      },
+    });
+  };
 
   const finishEdit = (value: Value | null, exit: EditorExit) => {
     const current = editing;
@@ -848,22 +912,32 @@ export function DataGrid({
    * selected and the first one focused, so new rows on a long page are scrolled into view.
    * `before` is the row count when they were asked for.
    */
-  const pendingRows = useRef<{ before: number; count: number } | null>(null);
+  const pendingRows = useRef<{ before: number; count: number; blank?: boolean } | null>(null);
   const newRow = useCallback(() => {
     if (!onAction) return;
-    pendingRows.current = { before: rowCount, count: 1 };
+    pendingRows.current = { before: rowCount, count: 1, blank: true };
     onAction({ type: "newRow" });
   }, [onAction, rowCount]);
+  // A blank new row is focused on the first column the user has to fill (editable, no default),
+  // not on an auto-increment id; no editor opens, so ↩ or a double-click starts the edit there.
+  const colsRef = useRef(cols);
+  colsRef.current = cols;
   useEffect(() => {
     const pending = pendingRows.current;
     if (pending === null || rowCount === pending.before) return;
     pendingRows.current = null;
+    const c = pending.blank
+      ? Math.max(
+          0,
+          colsRef.current.findIndex((col) => col.editable && !col.hasDefault),
+        )
+      : 0;
     if (rowCount === pending.before + pending.count)
       dispatch({
         type: "selectRows",
         r0: pending.before,
         r1: rowCount - 1,
-        focus: { r: pending.before, c: 0 },
+        focus: { r: pending.before, c },
       });
   }, [rowCount, dispatch]);
 
@@ -1426,7 +1500,8 @@ export function DataGrid({
         y: e.clientY,
         shift: e.shiftKey,
         alt: e.altKey,
-        meta: e.metaKey,
+        // ⌘ on macOS, Ctrl elsewhere (TablePlus for Windows maps every ⌘ to Ctrl).
+        meta: isMac ? e.metaKey : e.ctrlKey,
         dragging: false,
       };
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -2071,6 +2146,15 @@ export function DataGrid({
                   <MoveHorizontal className="size-3.5" />
                 </button>
               </div>
+              {refreshing && (
+                // Along the header's bottom edge, so it stays in view however far the rows scroll.
+                <div
+                  data-testid="grid-refreshing"
+                  role="progressbar"
+                  aria-label="Loading rows"
+                  className="bg-brand/70 pointer-events-none absolute inset-x-0 bottom-0 z-[5] h-0.5 animate-pulse motion-reduce:animate-none"
+                />
+              )}
               {virtualCols.map((vc) => {
                 const col = cols[vc.index]!;
                 const s = sort.find((x) => x.column === col.id);
@@ -2226,6 +2310,9 @@ export function DataGrid({
                 {...editorRect}
                 onCommit={(v, exit) => finishEdit(v, exit)}
                 onCancel={() => finishEdit(null, "blur")}
+                onDropInvalid={(text, error) =>
+                  dropInvalidEdit(editing.pos, editingCol.name, text, error)
+                }
               />
             )}
             {copyMenu && selection.focus && (
@@ -2393,10 +2480,22 @@ export function DataGrid({
 
           {rowCount === 0 && !loading && (
             <div
-              className="text-muted-foreground pointer-events-none absolute inset-0 flex items-center justify-center text-xs"
+              className="text-muted-foreground pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-xs"
               style={{ paddingTop: HEADER_H }}
             >
               {emptyText}
+              {/* The overlay lets clicks through to the grid; only the action takes them (and keeps
+                  them from the grid's own press, double-click and key handling). */}
+              {emptyAction && (
+                <div
+                  className="pointer-events-auto"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                >
+                  {emptyAction}
+                </div>
+              )}
             </div>
           )}
           {rowCount === 0 && loading && loadingWallpaper && (
@@ -2712,7 +2811,10 @@ export function DataGrid({
                   onSelect={deleteRows}
                 >
                   <Trash2 /> Delete
-                  <ContextMenuShortcut>{formatCombo("Backspace")}</ContextMenuShortcut>
+                  {/* ⌫ on a Mac keyboard; elsewhere the Delete key (both work, see onKeyDown). */}
+                  <ContextMenuShortcut>
+                    {formatCombo(isMac ? "Backspace" : "Delete")}
+                  </ContextMenuShortcut>
                 </ContextMenuItem>
                 <DiscardChangesItem
                   hasChanges={selectionHasChanges}

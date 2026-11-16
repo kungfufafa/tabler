@@ -1,6 +1,7 @@
 import { Columns3 } from "lucide-react";
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -12,6 +13,9 @@ import {
 import type { ColumnMeta } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { BAR_HOVER, BarTooltip } from "./BarParts";
+
+/** More columns than this and the menu offers a search field. */
+const SEARCH_FROM = 12;
 
 /**
  * The bottom bar's column visibility menu (⌥⌘F opens it from the keyboard, so its open state is
@@ -42,8 +46,18 @@ export function ColumnsMenu({
   }, [open]);
   const shown = columns.filter((c) => !hidden.includes(c.name)).length;
   const someHidden = shown < columns.length;
+  // A wide table gets a search field instead of a long scroll; cleared as the menu closes.
+  const [query, setQuery] = useState("");
+  const openChange = (next: boolean) => {
+    if (!next) setQuery("");
+    onOpenChange(next);
+  };
+  const searchable = columns.length > SEARCH_FROM;
+  const needle = query.trim().toLowerCase();
+  const listed =
+    searchable && needle ? columns.filter((c) => c.name.toLowerCase().includes(needle)) : columns;
   return (
-    <DropdownMenu open={open} onOpenChange={onOpenChange}>
+    <DropdownMenu open={open} onOpenChange={openChange}>
       <BarTooltip label="Show / hide columns" action="grid.columns">
         <DropdownMenuTrigger asChild>
           <Button
@@ -90,17 +104,43 @@ export function ColumnsMenu({
           </button>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {columns.map((c) => (
-          <DropdownMenuCheckboxItem
-            key={c.name}
-            checked={!hidden.includes(c.name)}
-            onCheckedChange={(v) => onToggleColumn(c.name, v === true)}
-            onSelect={(e) => e.preventDefault()}
-            className="font-mono"
-          >
-            {c.name}
-          </DropdownMenuCheckboxItem>
-        ))}
+        {searchable && (
+          <div className="px-1 pb-1">
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              // The menu's type-ahead would take the letters; ↓ and ⎋ still reach the menu.
+              onKeyDown={(e) => {
+                if (e.key !== "Escape" && e.key !== "ArrowDown" && e.key !== "Tab")
+                  e.stopPropagation();
+              }}
+              placeholder="Search columns"
+              aria-label="Search columns"
+              spellCheck={false}
+              autoComplete="off"
+              className="h-6 text-xs md:text-xs"
+            />
+          </div>
+        )}
+        {listed.map((c) => {
+          const visible = !hidden.includes(c.name);
+          return (
+            <DropdownMenuCheckboxItem
+              key={c.name}
+              checked={visible}
+              // The grid keeps at least one column (the header menu's Hide Column does the same).
+              disabled={visible && shown <= 1}
+              onCheckedChange={(v) => onToggleColumn(c.name, v === true)}
+              onSelect={(e) => e.preventDefault()}
+              className="font-mono"
+            >
+              {c.name}
+            </DropdownMenuCheckboxItem>
+          );
+        })}
+        {listed.length === 0 && (
+          <p className="text-muted-foreground px-2 py-1.5 text-xs">No matching columns</p>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

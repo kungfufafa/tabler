@@ -1,9 +1,17 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { createElement, useState } from "react";
+import {
+  act,
+  fireEvent,
+  render as rtlRender,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { createElement, useState, type ReactElement } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { actions } from "@/features/palette/actions";
 import { TABLE_COLUMNS, tableMetaFor } from "@/lib/ipc/mock/fixtures";
-import { isMac } from "@/lib/keys/combo";
+import { formatCombo, isMac } from "@/lib/keys/combo";
 import { KeyboardProvider } from "@/lib/keys/useShortcuts";
 import { getPrefs, resetPrefsForTests, setPref } from "@/stores/prefs";
 import type { FilterRowSpec } from "@/stores/tableTabs";
@@ -23,6 +31,9 @@ import {
   toFilterGroup,
   whereOfPageSql,
 } from "./filters";
+
+// The bar's buttons carry tooltips; the app provides their provider once at its root.
+const render = (ui: ReactElement) => rtlRender(ui, { wrapper: TooltipProvider });
 
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), message: vi.fn() }));
 vi.mock("sonner", () => ({ toast }));
@@ -269,6 +280,30 @@ describe("filters", () => {
     expect(onApply).not.toHaveBeenCalled();
   });
 
+  it("a row whose value the column cannot take never reads Applied, and says why in words", () => {
+    // "xyz" is no hex for a blob column: the query leaves the condition out, so it must not
+    // look applied.
+    const rows = [{ ...row("avatar", "eq", "xyz"), id: "r1" }];
+    expect(toFilterGroup(rows, users, "and")?.items ?? []).toEqual([]);
+    render(
+      createElement(FilterBar, {
+        columns: users,
+        rows,
+        conjunction: "and",
+        dirty: false,
+        appliedRows: rows,
+        onChange: vi.fn(),
+        onApply: vi.fn(),
+        onApplyRow: vi.fn(),
+        onClear: vi.fn(),
+      }),
+    );
+    expect(screen.getByRole("button", { name: /^Appl(y|ied)$/ })).toHaveTextContent(/^Apply$/);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "avatar: Enter hex bytes (pairs of 0-9 / a-f) — this condition is skipped until it is fixed.",
+    );
+  });
+
   it("reads the WHERE condition back from a page's SELECT", () => {
     expect(
       whereOfPageSql(
@@ -413,11 +448,22 @@ describe("filters", () => {
       expect(screen.getByRole("button", { name: "Copy" })).toBeDisabled();
     });
 
-    it("Export exports the filtered rows and does not advertise ⇧⌘E (the multi-table export)", () => {
+    it("Export exports the filtered rows and does not advertise ⇧⌘E (the multi-table export)", async () => {
       mount();
       const button = screen.getByRole("button", { name: "Export" });
-      expect(button).toHaveAttribute("title", "Export the filtered rows");
-      expect(button.getAttribute("title")).not.toMatch(/⇧⌘E|Shift\+E|Ctrl\+Shift/);
+      fireEvent.focus(button);
+      const tip = await screen.findByRole("tooltip");
+      expect(tip).toHaveTextContent("Export the filtered rows");
+      expect(tip.textContent).not.toMatch(/⇧⌘E|Shift\+E|Ctrl\+Shift/);
+    });
+
+    it("prints the bar's keys in the strip (TablePlus's legend)", () => {
+      mount();
+      const legend = screen.getByTestId("filter-keys");
+      expect(legend).toHaveTextContent(`Insert: ${formatCombo("Mod+I")}`);
+      expect(legend).toHaveTextContent(`Remove: ${formatCombo("Mod+Shift+I")}`);
+      expect(legend).toHaveTextContent(`Up: ${formatCombo("Mod+Up")}`);
+      expect(legend).toHaveTextContent(`Hide: ${formatCombo("Escape")}`);
     });
   });
 
