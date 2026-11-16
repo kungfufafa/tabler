@@ -79,6 +79,10 @@
 
 .tabler-toaster [data-sonner-toast][data-styled="true"] :is([data-title], [data-description]) {
   line-height: inherit;
+  /* Error text can be selected and copied (sonner itself turns selection off). */
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 }
 
 .tabler-toaster [data-sonner-toast][data-styled="true"] [data-description] {

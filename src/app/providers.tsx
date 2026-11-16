@@ -6,6 +6,7 @@ import { NotificationToaster } from "@/features/notify/NotificationToaster";
 import { useDefaultActions } from "@/features/palette/defaultActions";
 import { useConnectionEvents } from "@/hooks/useConnectionEvents";
 import { useNativeMenu } from "@/hooks/useNativeMenu";
+import { useSuppressNativeContextMenu } from "@/hooks/useSuppressNativeContextMenu";
 import { useTheme } from "@/hooks/useTheme";
 import { KeyboardProvider } from "@/lib/keys/useShortcuts";
 import { installActiveSync } from "@/stores/activeSync";
@@ -13,6 +14,7 @@ import { loadAppInfo } from "@/stores/appInfo";
 
 function GlobalEffects() {
   useTheme();
+  useSuppressNativeContextMenu();
   useDefaultActions();
   useConnectionEvents();
   useNativeMenu();
@@ -30,6 +32,7 @@ function GlobalEffects() {
  */
 function AuxEffects() {
   useTheme();
+  useSuppressNativeContextMenu();
   useNativeMenu();
   useEffect(() => void loadAppInfo(), []);
   return null;
