@@ -334,6 +334,11 @@ function UserManagementBody({
               <ErrorLine error={errorInfo(users.error)} />
             </li>
           )}
+          {users.isPending && (
+            <li className="px-1">
+              <QuietStatus delay={400}>Loading users</QuietStatus>
+            </li>
+          )}
           {selectedKey === NEW_KEY && (
             <li
               id={`${listId}-new`}
@@ -409,7 +414,7 @@ function UserManagementBody({
             />
           ) : (
             <div className="flex-1">
-              <QuietStatus>Loading the account</QuietStatus>
+              <QuietStatus delay={400}>Loading the account</QuietStatus>
             </div>
           )
         ) : (
@@ -1163,7 +1168,7 @@ function UserFooter({
               dialect={coreDialect(driver)}
             />
           ) : (
-            <QuietStatus />
+            <QuietStatus delay={400} />
           )}
         </div>
       )}

@@ -16,6 +16,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuShortcut,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -25,7 +33,7 @@ import {
 } from "@/components/ui/dialog";
 import { guardExecution } from "@/features/safety/guard";
 import { ipc, type Driver, type KillScope, type ProcessRow } from "@/lib/ipc";
-import { isMac } from "@/lib/keys/combo";
+import { formatCombo, isMac } from "@/lib/keys/combo";
 import { cn } from "@/lib/utils";
 import { adminKeys, PROCESS_REFRESH_MS } from "./keys";
 import { NativeSelect } from "./parts";
@@ -111,11 +119,25 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
     if (!e.shiftKey) setAnchor(id);
   };
 
+  // A right-click on a row outside the selection acts on that row alone, as in the sidebar.
+  const onRowContextMenu = (id: string) => {
+    if (selected.has(id)) return;
+    setSelected(new Set([id]));
+    setAnchor(id);
+  };
+
   const onKeyDown = (e: KeyboardEvent) => {
     const mod = isMac ? e.metaKey : e.ctrlKey;
     if (mod && e.key.toLowerCase() === "a") {
       e.preventDefault();
       setSelected(new Set(ids));
+      return;
+    }
+    // Delete asks to kill the selected queries, through the usual confirmation. Kill Connection
+    // stays on the menu and the footer only: it is too destructive for a single key.
+    if ((e.key === "Delete" || e.key === "Backspace") && !mod && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      if (picked.length > 0 && !killing) setConfirm("query");
       return;
     }
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -211,7 +233,7 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
             </Button>
           </EmptyState>
         ) : list.isPending ? (
-          <QuietStatus>Loading processes</QuietStatus>
+          <QuietStatus delay={400}>Loading processes</QuietStatus>
         ) : (
           <table className="w-full min-w-[900px] table-fixed border-collapse text-xs">
             <colgroup>
@@ -258,6 +280,8 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
                   numeric={columns.filter((c) => c.numeric).map((c) => c.id)}
                   selected={selected.has(r.id)}
                   onClick={(e) => onRowClick(e, r.id)}
+                  onContextMenu={() => onRowContextMenu(r.id)}
+                  onKill={(scope) => !killing && setConfirm(scope)}
                 />
               ))}
               {rows.length === 0 && (
@@ -325,28 +349,83 @@ function ProcessTableRow({
   numeric,
   selected,
   onClick,
+  onContextMenu,
+  onKill,
 }: {
   row: ProcessRow;
   columns: ProcessColumnId[];
   numeric: ProcessColumnId[];
   selected: boolean;
   onClick: (e: MouseEvent) => void;
+  onContextMenu: () => void;
+  onKill: (scope: KillScope) => void;
 }) {
   return (
-    <tr
-      role="row"
-      aria-selected={selected}
-      data-process={row.id}
-      onMouseDown={(e) => {
-        // ⇧-click extends the selection; keep the browser from selecting text.
-        if (e.shiftKey) e.preventDefault();
-      }}
-      onClick={onClick}
-      className={cn(
-        "border-gridline h-7 cursor-default border-b select-none",
-        selected ? "bg-brand-soft" : "hover:bg-row-hover",
-      )}
-    >
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <tr
+          role="row"
+          aria-selected={selected}
+          data-process={row.id}
+          onMouseDown={(e) => {
+            // ⇧-click extends the selection; keep the browser from selecting text.
+            if (e.shiftKey) e.preventDefault();
+          }}
+          onClick={onClick}
+          onContextMenu={onContextMenu}
+          className={cn(
+            "border-gridline h-7 cursor-default border-b select-none",
+            selected ? "bg-brand-soft" : "hover:bg-row-hover",
+          )}
+        >
+          <ProcessCells row={row} columns={columns} numeric={numeric} />
+        </tr>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={() => onKill("query")}>
+          Kill Query…
+          <ContextMenuShortcut>{formatCombo(isMac ? "Backspace" : "Delete")}</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem variant="destructive" onSelect={() => onKill("connection")}>
+          Kill Connection…
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          disabled={!row.query}
+          onSelect={() => row.query && copyToClipboard(row.query)}
+        >
+          Copy Query
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => copyToClipboard(row.id)}>Copy ID</ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
+/** The rows are not selectable text: the menu's Copy items put a query or id on the clipboard. */
+function copyToClipboard(text: string): void {
+  const clip = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+  if (!clip) {
+    toast.error("Could not copy");
+    return;
+  }
+  void clip.writeText(text).then(
+    () => toast.success("Copied"),
+    () => toast.error("Could not copy"),
+  );
+}
+
+function ProcessCells({
+  row,
+  columns,
+  numeric,
+}: {
+  row: ProcessRow;
+  columns: ProcessColumnId[];
+  numeric: ProcessColumnId[];
+}) {
+  return (
+    <>
       {columns.map((c) => {
         const text = cellText(row, c);
         return (
@@ -382,7 +461,7 @@ function ProcessTableRow({
           </td>
         );
       })}
-    </tr>
+    </>
   );
 }
 

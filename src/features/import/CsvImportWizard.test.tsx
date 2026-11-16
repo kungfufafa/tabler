@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ipc, type ConnectionInfo, type CsvPreview, type CsvPreviewRequest } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
@@ -88,5 +88,44 @@ describe("CSV import wizard: CSV default options", () => {
       ),
     );
     expect(preview.mock.calls[0]![0].format).toMatchObject({ delimiter: null, quote: "'" });
+  });
+});
+
+describe("CSV import wizard: keeping the user's settings", () => {
+  const pressEscape = () =>
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape", code: "Escape" });
+
+  it("closes on Escape at once while nothing was changed", async () => {
+    await openWizard("/Users/me/Downloads/users.csv");
+    await screen.findByText("user0@example.com");
+    pressEscape();
+    await waitFor(() => expect(useImportStore.getState().request).toBeNull());
+  });
+
+  it("asks before Escape throws away changed settings; Cancel still closes at once", async () => {
+    await openWizard("/Users/me/Downloads/users.csv");
+    await screen.findByText("user0@example.com");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Empty unquoted field as NULL" }));
+    pressEscape();
+    const ask = await screen.findByRole("alertdialog");
+    expect(ask).toHaveTextContent("Discard unsaved changes?");
+    fireEvent.click(within(ask).getByRole("button", { name: "Keep Editing" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(useImportStore.getState().request).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(useImportStore.getState().request).toBeNull();
+  });
+
+  it("puts the cursor in the name field when Create new table is turned on", async () => {
+    // The mock has no file at this path: the header and the name come from the path alone.
+    await openWizard("C:\\Users\\me\\Downloads\\users.csv");
+    expect(screen.getByRole("dialog")).toHaveTextContent("users.csv");
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("C:\\Users");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Create new table" }));
+    const name = await screen.findByRole("textbox", { name: "New table name" });
+    await waitFor(() => expect(name).toHaveFocus());
+    // The name comes from the file name, not the whole Windows path.
+    expect(name).toHaveValue("users");
   });
 });

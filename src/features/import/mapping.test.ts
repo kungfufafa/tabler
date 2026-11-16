@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyOverrides,
+  fileNameOf,
   insertModesFor,
   loadCsvPrefs,
   matchColumns,
@@ -92,6 +93,12 @@ describe("insert options and names", () => {
     expect(tableNameFromFile("2026-orders.csv")).toBe("t_2026_orders");
     expect(tableNameFromFile("Café.tsv")).toBe("cafe");
     expect(tableNameFromFile("...csv")).toBe("imported");
+  });
+
+  it("takes the file name from macOS and Windows paths", () => {
+    expect(fileNameOf("/Users/me/Downloads/users.csv")).toBe("users.csv");
+    expect(fileNameOf("C:\\Users\\me\\Downloads\\users.csv")).toBe("users.csv");
+    expect(fileNameOf("users.csv")).toBe("users.csv");
   });
 
   it("offers the double quote, the single quote and Space", () => {

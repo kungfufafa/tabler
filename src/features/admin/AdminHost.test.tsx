@@ -325,6 +325,41 @@ describe("process list", () => {
     expect(ids()).toEqual(["1"]);
   });
 
+  it("offers the row actions on right-click, and Delete asks to kill the query", async () => {
+    vi.spyOn(ipc.admin, "processes").mockResolvedValue([proc(10), proc(11)]);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    setup();
+    act(() => openProcessList("c1"));
+    const dialog = await screen.findByRole("dialog", { name: "Running Queries" });
+    const rowOf = (id: number) => dialog.querySelector(`[data-process="${id}"]`) as HTMLElement;
+    await waitFor(() => expect(rowOf(11)).not.toBeNull());
+
+    // A right-click selects the row it lands on.
+    fireEvent.click(rowOf(10));
+    fireEvent.contextMenu(rowOf(11));
+    expect(rowOf(11)).toHaveAttribute("aria-selected", "true");
+    expect(rowOf(10)).toHaveAttribute("aria-selected", "false");
+    const menu = await screen.findByRole("menu");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy Query" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("select 11"));
+
+    fireEvent.contextMenu(rowOf(11));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Kill Connection/ }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent(
+      "Kill the connection of process 11?",
+    );
+    fireEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+
+    fireEvent.keyDown(within(dialog).getByRole("grid", { name: "Processes" }), { key: "Delete" });
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent(
+      "Kill the query of process 11?",
+    );
+  });
+
   it("is not available for SQLite", async () => {
     const list = vi.spyOn(ipc.admin, "processes");
     setup("sqlite");
